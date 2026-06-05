@@ -519,70 +519,72 @@ function App() {
   }
 
   return (
-    <main className="shell">
-      <aside className="sidebar">
-        <div className="sidebar-main">
-          <div className="brand">
-            <div className="mark">A</div>
-            <div>
-              <h1>Atelier</h1>
-              <p>Local AI harness</p>
+    <main className={view === 'settings' ? 'shell settings-open' : 'shell'}>
+      {view === 'settings' ? null : (
+        <aside className="sidebar">
+          <div className="sidebar-main">
+            <div className="brand">
+              <div className="mark">A</div>
+              <div>
+                <h1>Atelier</h1>
+                <p>Local AI harness</p>
+              </div>
+            </div>
+
+            <nav className="side-nav" aria-label="Atelier navigation">
+              <button onClick={startNewChat}>
+                <span className="nav-icon">+</span>
+                Chat
+              </button>
+              <button onClick={startNewImage}>
+                <span className="nav-icon">+</span>
+                Image
+              </button>
+            </nav>
+
+            <div className="history-area">
+              <div className="section-label">Chats</div>
+              {asArray(conversations).length ? (
+                asArray(conversations).map((conversation) => (
+                  <div key={conversation.id} className="history-item">
+                    {editingTitleID === conversation.id ? (
+                      <input
+                        value={editingTitle}
+                        onChange={(event) => setEditingTitle(event.target.value)}
+                        onBlur={() => saveConversationTitle(conversation)}
+                        onKeyDown={(event) => handleConversationTitleKeyDown(event, conversation)}
+                        autoFocus
+                      />
+                    ) : (
+                      <>
+                        <button className="history-open" onClick={() => openConversationSummary(conversation)}>
+                          <span>{conversation.title}</span>
+                          <small>{conversation.kind === 'image_generation' ? 'Image' : 'Chat'}</small>
+                        </button>
+                        <div className="history-actions">
+                          <button className="history-action" aria-label={`Edit ${conversation.title}`} onClick={() => startEditingConversationTitle(conversation)}>
+                            Edit
+                          </button>
+                          <button className="history-action danger-text" aria-label={`Archive ${conversation.title}`} onClick={() => archiveConversation(conversation)}>
+                            Archive
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ))
+              ) : (
+                <div className="history-empty">No conversations yet.</div>
+              )}
             </div>
           </div>
 
-          <nav className="side-nav" aria-label="Atelier navigation">
-            <button onClick={startNewChat}>
-              <span className="nav-icon">+</span>
-              Chat
-            </button>
-            <button onClick={startNewImage}>
-              <span className="nav-icon">+</span>
-              Image
-            </button>
-          </nav>
-
-          <div className="history-area">
-            <div className="section-label">Chats</div>
-            {asArray(conversations).length ? (
-              asArray(conversations).map((conversation) => (
-                <div key={conversation.id} className="history-item">
-                  {editingTitleID === conversation.id ? (
-                    <input
-                      value={editingTitle}
-                      onChange={(event) => setEditingTitle(event.target.value)}
-                      onBlur={() => saveConversationTitle(conversation)}
-                      onKeyDown={(event) => handleConversationTitleKeyDown(event, conversation)}
-                      autoFocus
-                    />
-                  ) : (
-                    <>
-                      <button className="history-open" onClick={() => openConversationSummary(conversation)}>
-                        <span>{conversation.title}</span>
-                        <small>{conversation.kind === 'image_generation' ? 'Image' : 'Chat'}</small>
-                      </button>
-                      <div className="history-actions">
-                        <button className="history-action" aria-label={`Edit ${conversation.title}`} onClick={() => startEditingConversationTitle(conversation)}>
-                          Edit
-                        </button>
-                        <button className="history-action danger-text" aria-label={`Archive ${conversation.title}`} onClick={() => archiveConversation(conversation)}>
-                          Archive
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              ))
-            ) : (
-              <div className="history-empty">No conversations yet.</div>
-            )}
-          </div>
-        </div>
-
-        <button className={view === 'settings' ? 'settings-button active' : 'settings-button'} onClick={() => setView('settings')}>
-          <span className="gear-icon" aria-hidden="true" />
-          Settings
-        </button>
-      </aside>
+          <button className="settings-button" onClick={() => setView('settings')}>
+            <span className="gear-icon" aria-hidden="true" />
+            Settings
+          </button>
+        </aside>
+      )}
 
       <section className="workspace">
         {startupError ? (

@@ -8,6 +8,10 @@
   color: #f3f0e8;
 }
 
+.shell.settings-open {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .boot-error,
 .startup-error {
   box-sizing: border-box;
