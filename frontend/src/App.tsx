@@ -449,12 +449,11 @@ function App() {
         .map((entry) => ({
           role: entry.role,
           content: entry.content,
-          images: entry.images?.map((image) => image.replace(/^data:image\/[a-z+.-]+;base64,/, '')),
         })),
       {
         role: 'user',
         content: trimmed,
-        images: attachments.map((item) => item.payload),
+        ...(attachments.length ? {images: attachments.map((item) => item.payload)} : {}),
       },
     ];
 
