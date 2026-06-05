@@ -2,7 +2,7 @@
   height: 100vh;
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width, 320px) 6px minmax(0, 1fr);
   overflow: hidden;
   background: #151719;
   color: #f3f0e8;
@@ -10,6 +10,10 @@
 
 .shell.settings-open {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.shell.resizing {
+  cursor: col-resize;
 }
 
 .boot-error,
@@ -66,8 +70,21 @@
   justify-content: space-between;
   gap: 22px;
   padding: 22px;
-  border-right: 1px solid #2b2e30;
   background: #1d2022;
+}
+
+.sidebar-resizer {
+  width: 6px;
+  border-left: 1px solid #2b2e30;
+  border-right: 1px solid transparent;
+  background: #181b1d;
+  cursor: col-resize;
+}
+
+.sidebar-resizer:hover,
+.shell.resizing .sidebar-resizer {
+  border-left-color: #5da9b7;
+  background: #20282a;
 }
 
 .sidebar-main {
@@ -213,10 +230,14 @@
   white-space: nowrap;
 }
 
-.history-open small {
+.history-kind {
   flex: 0 0 auto;
+  width: 18px;
+  display: grid;
+  place-items: center;
   color: #9ea5a3;
-  font-size: 11px;
+  font-size: 14px;
+  line-height: 1;
 }
 
 .history-actions {
@@ -878,6 +899,10 @@ button:disabled {
   .image-controls {
     border-right: 0;
     border-bottom: 1px solid #2b2e30;
+  }
+
+  .sidebar-resizer {
+    display: none;
   }
 
   .shell {

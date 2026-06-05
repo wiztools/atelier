@@ -64,6 +64,9 @@ type PixelPreset = {
 };
 
 const defaultBaseURL = 'http://localhost:11434';
+const defaultSidebarWidth = 320;
+const minSidebarWidth = 240;
+const maxSidebarWidth = 560;
 const defaultImageRatio = '1:1';
 const defaultImagePixels = '0.6';
 const ratioPresets: RatioPreset[] = [
@@ -108,7 +111,10 @@ function App() {
   const [editingTitleID, setEditingTitleID] = useState('');
   const [editingTitle, setEditingTitle] = useState('');
   const [openHistoryMenuID, setOpenHistoryMenuID] = useState('');
+  const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth);
+  const [resizingSidebar, setResizingSidebar] = useState(false);
   const [view, setView] = useState<View>('app');
+  const shellRef = useRef<HTMLElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const chatPromptRef = useRef<HTMLTextAreaElement | null>(null);
   const imagePromptRef = useRef<HTMLTextAreaElement | null>(null);
@@ -199,6 +205,28 @@ function App() {
   useEffect(() => {
     transcriptRef.current?.scrollTo({top: transcriptRef.current.scrollHeight, behavior: 'smooth'});
   }, [chat]);
+
+  useEffect(() => {
+    if (!resizingSidebar) {
+      return;
+    }
+    const onMouseMove = (event: MouseEvent) => {
+      const left = shellRef.current?.getBoundingClientRect().left ?? 0;
+      const max = Math.min(maxSidebarWidth, window.innerWidth - 420);
+      setSidebarWidth(clampSidebarWidth(event.clientX - left, max));
+    };
+    const onMouseUp = () => setResizingSidebar(false);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, [resizingSidebar]);
+
+  useEffect(() => {
+    window.localStorage.setItem('atelier.sidebarWidth', String(sidebarWidth));
+  }, [sidebarWidth]);
 
   const modelOptions = useMemo(() => {
     return Array.from(new Set([...asArray(models).map((item) => item.name), model, imageModel].filter(Boolean)));
@@ -534,7 +562,11 @@ function App() {
   }
 
   return (
-    <main className={view === 'settings' ? 'shell settings-open' : 'shell'}>
+    <main
+      ref={shellRef}
+      className={view === 'settings' ? 'shell settings-open' : resizingSidebar ? 'shell resizing' : 'shell'}
+      style={view === 'settings' ? undefined : {'--sidebar-width': `${sidebarWidth}px`} as Record<string, string>}
+    >
       {view === 'settings' ? null : (
         <aside className="sidebar">
           <div className="sidebar-main">
@@ -574,7 +606,13 @@ function App() {
                       <>
                       <button className="history-open" onClick={() => openConversationSummary(conversation)}>
                         <span>{conversation.title}</span>
-                        <small>{conversation.kind === 'image_generation' ? 'Image' : 'Chat'}</small>
+                        <small
+                          className="history-kind"
+                          title={conversation.kind === 'image_generation' ? 'Image' : 'Chat'}
+                          aria-label={conversation.kind === 'image_generation' ? 'Image conversation' : 'Chat conversation'}
+                        >
+                          {conversation.kind === 'image_generation' ? '▧' : '◌'}
+                        </small>
                       </button>
                       <div className="history-actions">
                         <button className="history-icon-button" aria-label={`Edit ${conversation.title}`} title="Edit" onClick={() => startEditingConversationTitle(conversation)}>
@@ -609,6 +647,18 @@ function App() {
             Settings
           </button>
         </aside>
+      )}
+      {view === 'settings' ? null : (
+        <div
+          className="sidebar-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar"
+          onMouseDown={(event) => {
+            event.preventDefault();
+            setResizingSidebar(true);
+          }}
+        />
       )}
 
       <section className="workspace">
@@ -839,6 +889,15 @@ function App() {
 
 function summarizeRaw(raw: string): string {
   return raw.length > 1200 ? `${raw.slice(0, 1200)}...` : raw;
+}
+
+function loadSidebarWidth(): number {
+  const stored = Number(window.localStorage.getItem('atelier.sidebarWidth'));
+  return clampSidebarWidth(Number.isFinite(stored) && stored > 0 ? stored : defaultSidebarWidth);
+}
+
+function clampSidebarWidth(width: number, max = maxSidebarWidth): number {
+  return Math.round(Math.max(minSidebarWidth, Math.min(Math.max(minSidebarWidth, max), width)));
 }
 
 function computeImageDimensions(ratioID: string, pixelsID: string): {width: number; height: number} {
