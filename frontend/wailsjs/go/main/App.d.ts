@@ -6,12 +6,24 @@ export function CancelStream(arg1:string):Promise<void>;
 
 export function CheckOllama(arg1:string):Promise<main.OllamaStatus>;
 
+export function DeleteConversation(arg1:string):Promise<void>;
+
 export function GenerateImage(arg1:main.ImageGenerateRequest):Promise<main.ImageGenerateResponse>;
 
+export function GetConfig():Promise<main.AppConfig>;
+
+export function GetConversation(arg1:string):Promise<main.ConversationDetail>;
+
+export function ListConversations():Promise<Array<main.ConversationSummary>>;
+
 export function ListModels(arg1:string):Promise<Array<main.OllamaModel>>;
+
+export function SaveConfig(arg1:main.AppConfig):Promise<void>;
 
 export function SaveImage(arg1:main.SaveImageRequest):Promise<string>;
 
 export function SetOllamaBaseURL(arg1:string):Promise<void>;
 
 export function StreamChat(arg1:main.ChatRequest):Promise<string>;
+
+export function UpdateConversationTitle(arg1:string,arg2:string):Promise<main.ConversationSummary>;

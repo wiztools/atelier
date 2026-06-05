@@ -10,12 +10,32 @@ export function CheckOllama(arg1) {
   return window['go']['main']['App']['CheckOllama'](arg1);
 }
 
+export function DeleteConversation(arg1) {
+  return window['go']['main']['App']['DeleteConversation'](arg1);
+}
+
 export function GenerateImage(arg1) {
   return window['go']['main']['App']['GenerateImage'](arg1);
 }
 
+export function GetConfig() {
+  return window['go']['main']['App']['GetConfig']();
+}
+
+export function GetConversation(arg1) {
+  return window['go']['main']['App']['GetConversation'](arg1);
+}
+
+export function ListConversations() {
+  return window['go']['main']['App']['ListConversations']();
+}
+
 export function ListModels(arg1) {
   return window['go']['main']['App']['ListModels'](arg1);
+}
+
+export function SaveConfig(arg1) {
+  return window['go']['main']['App']['SaveConfig'](arg1);
 }
 
 export function SaveImage(arg1) {
@@ -28,4 +48,8 @@ export function SetOllamaBaseURL(arg1) {
 
 export function StreamChat(arg1) {
   return window['go']['main']['App']['StreamChat'](arg1);
+}
+
+export function UpdateConversationTitle(arg1, arg2) {
+  return window['go']['main']['App']['UpdateConversationTitle'](arg1, arg2);
 }

@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +14,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +29,7 @@ type App struct {
 	ctx       context.Context
 	client    *http.Client
 	baseURL   string
+	configMu  sync.Mutex
 	streams   map[string]context.CancelFunc
 	streamsMu sync.Mutex
 }
@@ -41,6 +46,53 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+}
+
+type AppConfig struct {
+	Version    int              `json:"version"`
+	Storage    ConfigStorage    `json:"storage"`
+	Providers  ConfigProviders  `json:"providers"`
+	Prompts    ConfigPrompts    `json:"prompts"`
+	Generation ConfigGeneration `json:"generation"`
+	UI         ConfigUI         `json:"ui"`
+}
+
+type ConfigStorage struct {
+	Root      string `json:"root"`
+	History   string `json:"history"`
+	Artifacts string `json:"artifacts"`
+}
+
+type ConfigProviders struct {
+	Ollama ConfigOllama `json:"ollama"`
+}
+
+type ConfigOllama struct {
+	BaseURL string             `json:"baseURL"`
+	Models  ConfigOllamaModels `json:"models"`
+}
+
+type ConfigOllamaModels struct {
+	Chat  string `json:"chat"`
+	Image string `json:"image"`
+}
+
+type ConfigPrompts struct {
+	System string `json:"system"`
+}
+
+type ConfigGeneration struct {
+	Image ConfigImageGeneration `json:"image"`
+}
+
+type ConfigImageGeneration struct {
+	Width  int `json:"width"`
+	Height int `json:"height"`
+	Steps  int `json:"steps"`
+}
+
+type ConfigUI struct {
+	Mode string `json:"mode"`
 }
 
 type OllamaStatus struct {
@@ -87,14 +139,15 @@ type ChatRequest struct {
 }
 
 type ChatStreamEvent struct {
-	RequestID string `json:"requestID"`
-	Content   string `json:"content,omitempty"`
-	Thinking  string `json:"thinking,omitempty"`
-	Done      bool   `json:"done"`
-	Error     string `json:"error,omitempty"`
-	Model     string `json:"model,omitempty"`
-	Reason    string `json:"reason,omitempty"`
-	Tokens    int    `json:"tokens,omitempty"`
+	RequestID      string `json:"requestID"`
+	Content        string `json:"content,omitempty"`
+	Thinking       string `json:"thinking,omitempty"`
+	Done           bool   `json:"done"`
+	Error          string `json:"error,omitempty"`
+	Model          string `json:"model,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	Tokens         int    `json:"tokens,omitempty"`
+	ConversationID string `json:"conversationId,omitempty"`
 }
 
 type ollamaChatChunk struct {
@@ -110,6 +163,17 @@ type ollamaChatChunk struct {
 	Error      string `json:"error"`
 }
 
+type ollamaChatResponse struct {
+	Model   string `json:"model"`
+	Message struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	} `json:"message"`
+	Response string `json:"response"`
+	Done     bool   `json:"done"`
+	Error    string `json:"error"`
+}
+
 type ImageGenerateRequest struct {
 	BaseURL string `json:"baseURL,omitempty"`
 	Model   string `json:"model"`
@@ -120,11 +184,12 @@ type ImageGenerateRequest struct {
 }
 
 type ImageGenerateResponse struct {
-	Model  string   `json:"model,omitempty"`
-	Text   string   `json:"text,omitempty"`
-	Images []string `json:"images"`
-	Raw    string   `json:"raw,omitempty"`
-	Error  string   `json:"error,omitempty"`
+	Model          string   `json:"model,omitempty"`
+	Text           string   `json:"text,omitempty"`
+	Images         []string `json:"images"`
+	Raw            string   `json:"raw,omitempty"`
+	Error          string   `json:"error,omitempty"`
+	ConversationID string   `json:"conversationId,omitempty"`
 }
 
 type SaveImageRequest struct {
@@ -139,6 +204,143 @@ type ollamaGenerateResponse struct {
 	Images   []string `json:"images"`
 	Done     bool     `json:"done"`
 	Error    string   `json:"error"`
+}
+
+type ConversationSummary struct {
+	ID            string `json:"id"`
+	Kind          string `json:"kind"`
+	Title         string `json:"title"`
+	CreatedAt     string `json:"createdAt"`
+	UpdatedAt     string `json:"updatedAt"`
+	DeletedAt     string `json:"deletedAt,omitempty"`
+	TurnCount     int    `json:"turnCount"`
+	ArtifactCount int    `json:"artifactCount"`
+}
+
+type ConversationDetail struct {
+	Conversation HistoryConversation `json:"conversation"`
+	Turns        []HistoryTurn       `json:"turns"`
+}
+
+type HistoryConversation struct {
+	SchemaVersion int                      `json:"schemaVersion"`
+	ID            string                   `json:"id"`
+	Kind          string                   `json:"kind"`
+	Title         string                   `json:"title"`
+	CreatedAt     string                   `json:"createdAt"`
+	UpdatedAt     string                   `json:"updatedAt"`
+	DeletedAt     string                   `json:"deletedAt,omitempty"`
+	Provider      HistoryProvider          `json:"provider"`
+	Defaults      HistoryDefaults          `json:"defaults"`
+	Stats         HistoryConversationStats `json:"stats"`
+}
+
+type HistoryProvider struct {
+	ID      string `json:"id"`
+	BaseURL string `json:"baseURL"`
+}
+
+type HistoryDefaults struct {
+	ChatModel  string `json:"chatModel,omitempty"`
+	ImageModel string `json:"imageModel,omitempty"`
+	System     string `json:"system,omitempty"`
+}
+
+type HistoryConversationStats struct {
+	TurnCount     int `json:"turnCount"`
+	ArtifactCount int `json:"artifactCount"`
+}
+
+type HistoryTurn struct {
+	SchemaVersion    int              `json:"schemaVersion"`
+	ID               string           `json:"id"`
+	ConversationID   string           `json:"conversationId"`
+	CreatedAt        string           `json:"createdAt"`
+	Kind             string           `json:"kind"`
+	Role             string           `json:"role"`
+	Model            string           `json:"model,omitempty"`
+	Content          []HistoryContent `json:"content"`
+	Request          map[string]any   `json:"request,omitempty"`
+	ProviderResponse map[string]any   `json:"providerResponse,omitempty"`
+	DeletedAt        string           `json:"deletedAt,omitempty"`
+}
+
+type HistoryContent struct {
+	Type       string `json:"type"`
+	Text       string `json:"text,omitempty"`
+	ArtifactID string `json:"artifactId,omitempty"`
+	Path       string `json:"path,omitempty"`
+	MimeType   string `json:"mimeType,omitempty"`
+	Width      int    `json:"width,omitempty"`
+	Height     int    `json:"height,omitempty"`
+}
+
+func (a *App) GetConfig() (AppConfig, error) {
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+
+	config, err := loadAppConfig()
+	if err != nil {
+		return AppConfig{}, err
+	}
+	if err := writeAppConfig(config); err != nil {
+		return AppConfig{}, err
+	}
+	if err := ensureStorageDirs(config.Storage); err != nil {
+		return AppConfig{}, err
+	}
+	a.baseURL = config.Providers.Ollama.BaseURL
+	return config, nil
+}
+
+func (a *App) SaveConfig(config AppConfig) error {
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+
+	merged := mergeAppConfig(config)
+	if err := writeAppConfig(merged); err != nil {
+		return err
+	}
+	if err := ensureStorageDirs(merged.Storage); err != nil {
+		return err
+	}
+	a.baseURL = merged.Providers.Ollama.BaseURL
+	return nil
+}
+
+func (a *App) ListConversations() ([]ConversationSummary, error) {
+	config, err := loadAppConfig()
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureStorageDirs(config.Storage); err != nil {
+		return nil, err
+	}
+	return listConversations(config.Storage)
+}
+
+func (a *App) GetConversation(conversationID string) (ConversationDetail, error) {
+	config, err := loadAppConfig()
+	if err != nil {
+		return ConversationDetail{}, err
+	}
+	return getConversation(config.Storage, conversationID)
+}
+
+func (a *App) DeleteConversation(conversationID string) error {
+	config, err := loadAppConfig()
+	if err != nil {
+		return err
+	}
+	return deleteConversation(config.Storage, conversationID)
+}
+
+func (a *App) UpdateConversationTitle(conversationID string, title string) (ConversationSummary, error) {
+	config, err := loadAppConfig()
+	if err != nil {
+		return ConversationSummary{}, err
+	}
+	return updateConversationTitle(config.Storage, conversationID, title)
 }
 
 func (a *App) SetOllamaBaseURL(baseURL string) error {
@@ -293,11 +495,28 @@ func (a *App) GenerateImage(req ImageGenerateRequest) (*ImageGenerateResponse, e
 	}
 	images = append(images, collectImagesFromJSON(raw)...)
 
+	images = dedupeStrings(images)
+	conversationID := ""
+	if len(images) > 0 {
+		config, err := loadAppConfig()
+		if err != nil {
+			return nil, err
+		}
+		if err := ensureStorageDirs(config.Storage); err != nil {
+			return nil, err
+		}
+		conversationID, err = writeImageGenerationConversation(config, req, payload, images, compactRawResponse(raw))
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	return &ImageGenerateResponse{
-		Model:  payload.Model,
-		Text:   payload.Response,
-		Images: dedupeStrings(images),
-		Raw:    compactRawResponse(raw),
+		Model:          payload.Model,
+		Text:           payload.Response,
+		Images:         images,
+		Raw:            compactRawResponse(raw),
+		ConversationID: conversationID,
 	}, nil
 }
 
@@ -391,6 +610,11 @@ func (a *App) runChatStream(ctx context.Context, requestID string, req ChatReque
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	var assistantContent strings.Builder
+	var assistantThinking strings.Builder
+	var finalModel string
+	var finalReason string
+	var finalTokens int
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -407,14 +631,37 @@ func (a *App) runChatStream(ctx context.Context, requestID string, req ChatReque
 			return
 		}
 
+		assistantContent.WriteString(chunk.Message.Content)
+		assistantThinking.WriteString(chunk.Message.Thinking)
+		if chunk.Model != "" {
+			finalModel = chunk.Model
+		}
+		if chunk.DoneReason != "" {
+			finalReason = chunk.DoneReason
+		}
+		if chunk.EvalCount > 0 {
+			finalTokens = chunk.EvalCount
+		}
+
+		conversationID := ""
+		if chunk.Done {
+			var err error
+			conversationID, err = a.writeChatConversation(req, assistantContent.String(), assistantThinking.String(), finalModel, finalReason, finalTokens)
+			if err != nil {
+				a.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: fmt.Sprintf("history save failed: %v", err), Done: true})
+				return
+			}
+		}
+
 		a.emitChatEvent(ChatStreamEvent{
-			RequestID: requestID,
-			Content:   chunk.Message.Content,
-			Thinking:  chunk.Message.Thinking,
-			Done:      chunk.Done,
-			Model:     chunk.Model,
-			Reason:    chunk.DoneReason,
-			Tokens:    chunk.EvalCount,
+			RequestID:      requestID,
+			Content:        chunk.Message.Content,
+			Thinking:       chunk.Message.Thinking,
+			Done:           chunk.Done,
+			Model:          chunk.Model,
+			Reason:         chunk.DoneReason,
+			Tokens:         chunk.EvalCount,
+			ConversationID: conversationID,
 		})
 		if chunk.Done {
 			return
@@ -423,6 +670,74 @@ func (a *App) runChatStream(ctx context.Context, requestID string, req ChatReque
 	if err := scanner.Err(); err != nil && !errors.Is(err, context.Canceled) {
 		a.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
 	}
+}
+
+func (a *App) writeChatConversation(req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int) (string, error) {
+	if strings.TrimSpace(assistantContent) == "" && strings.TrimSpace(assistantThinking) == "" {
+		return "", nil
+	}
+	config, err := loadAppConfig()
+	if err != nil {
+		return "", err
+	}
+	if err := ensureStorageDirs(config.Storage); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(model) == "" {
+		model = req.Model
+	}
+	title := a.generateConversationTitle(config, req, assistantContent)
+	return writeChatConversation(config, req, assistantContent, assistantThinking, model, reason, tokens, title)
+}
+
+func (a *App) generateConversationTitle(config AppConfig, req ChatRequest, assistantContent string) string {
+	userPrompt := lastUserPrompt(req.Messages)
+	fallback := titleFromPrompt(userPrompt)
+	if strings.TrimSpace(req.Model) == "" || strings.TrimSpace(userPrompt) == "" {
+		return fallback
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	titlePrompt := "Generate a concise title for this chat conversation. Return only the title, no quotes, no punctuation wrapper, no explanation. Keep it under 8 words.\n\nUser:\n" +
+		compactString(userPrompt, 1600) +
+		"\n\nAssistant:\n" +
+		compactString(assistantContent, 1600)
+	body := map[string]any{
+		"model":  req.Model,
+		"stream": false,
+		"messages": []ChatMessage{
+			{Role: "system", Content: "You create short, specific conversation titles."},
+			{Role: "user", Content: titlePrompt},
+		},
+		"options": map[string]any{
+			"temperature": 0,
+			"num_predict": 24,
+		},
+	}
+
+	resp, err := a.postJSON(ctx, a.resolveBaseURL(req.BaseURL)+"/api/chat", body)
+	if err != nil {
+		return fallback
+	}
+	defer resp.Body.Close()
+
+	var payload ollamaChatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return fallback
+	}
+	if payload.Error != "" {
+		return fallback
+	}
+	title := cleanGeneratedTitle(payload.Message.Content)
+	if title == "" {
+		title = cleanGeneratedTitle(payload.Response)
+	}
+	if title == "" {
+		return fallback
+	}
+	return title
 }
 
 func (a *App) emitChatEvent(event ChatStreamEvent) {
@@ -501,6 +816,656 @@ func normalizeBaseURL(baseURL string) (string, error) {
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return strings.TrimRight(parsed.String(), "/"), nil
+}
+
+func configPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".atelier", "config.json"), nil
+}
+
+func loadAppConfig() (AppConfig, error) {
+	path, err := configPath()
+	if err != nil {
+		return AppConfig{}, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return defaultAppConfig(), nil
+		}
+		return AppConfig{}, err
+	}
+
+	var config AppConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return AppConfig{}, err
+	}
+	return mergeAppConfig(config), nil
+}
+
+func writeAppConfig(config AppConfig) error {
+	path, err := configPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+
+	data, err := json.MarshalIndent(mergeAppConfig(config), "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+
+	tempPath := path + ".tmp"
+	if err := os.WriteFile(tempPath, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
+}
+
+func defaultAppConfig() AppConfig {
+	root := defaultStorageRoot()
+	history := filepath.Join(root, "history")
+	return AppConfig{
+		Version: 1,
+		Storage: ConfigStorage{
+			Root:      root,
+			History:   history,
+			Artifacts: history,
+		},
+		Providers: ConfigProviders{
+			Ollama: ConfigOllama{
+				BaseURL: defaultOllamaBaseURL,
+				Models: ConfigOllamaModels{
+					Chat:  "mistral-small3.1:latest",
+					Image: "x/z-image-turbo:latest",
+				},
+			},
+		},
+		Prompts: ConfigPrompts{
+			System: "You are Atelier, a precise local AI collaborator.",
+		},
+		Generation: ConfigGeneration{
+			Image: ConfigImageGeneration{
+				Width:  768,
+				Height: 768,
+				Steps:  24,
+			},
+		},
+		UI: ConfigUI{
+			Mode: "chat",
+		},
+	}
+}
+
+func mergeAppConfig(config AppConfig) AppConfig {
+	defaults := defaultAppConfig()
+	if config.Version <= 0 {
+		config.Version = defaults.Version
+	}
+	config.Storage = mergeStorageConfig(config.Storage, defaults.Storage)
+	if normalized, err := normalizeBaseURL(config.Providers.Ollama.BaseURL); err == nil && normalized != "" {
+		config.Providers.Ollama.BaseURL = normalized
+	} else {
+		config.Providers.Ollama.BaseURL = defaults.Providers.Ollama.BaseURL
+	}
+	if strings.TrimSpace(config.Providers.Ollama.Models.Chat) == "" {
+		config.Providers.Ollama.Models.Chat = defaults.Providers.Ollama.Models.Chat
+	}
+	if strings.TrimSpace(config.Providers.Ollama.Models.Image) == "" {
+		config.Providers.Ollama.Models.Image = defaults.Providers.Ollama.Models.Image
+	}
+	if strings.TrimSpace(config.Prompts.System) == "" {
+		config.Prompts.System = defaults.Prompts.System
+	}
+	if config.Generation.Image.Width <= 0 {
+		config.Generation.Image.Width = defaults.Generation.Image.Width
+	}
+	if config.Generation.Image.Height <= 0 {
+		config.Generation.Image.Height = defaults.Generation.Image.Height
+	}
+	if config.Generation.Image.Steps <= 0 {
+		config.Generation.Image.Steps = defaults.Generation.Image.Steps
+	}
+	if config.UI.Mode != "chat" && config.UI.Mode != "image" {
+		config.UI.Mode = defaults.UI.Mode
+	}
+	return config
+}
+
+func defaultStorageRoot() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".", ".atelier")
+	}
+	return filepath.Join(home, ".atelier")
+}
+
+func mergeStorageConfig(storage ConfigStorage, defaults ConfigStorage) ConfigStorage {
+	storage.Root = normalizeStoragePath(storage.Root)
+	storage.History = normalizeStoragePath(storage.History)
+	storage.Artifacts = normalizeStoragePath(storage.Artifacts)
+	if storage.Root == "" {
+		storage.Root = defaults.Root
+	}
+	if storage.History == "" {
+		storage.History = filepath.Join(storage.Root, "history")
+	}
+	if storage.Artifacts == "" {
+		storage.Artifacts = storage.History
+	}
+	return storage
+}
+
+func normalizeStoragePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path
+		}
+		if path == "~" {
+			return home
+		}
+		path = filepath.Join(home, path[2:])
+	}
+	if absolute, err := filepath.Abs(path); err == nil {
+		return absolute
+	}
+	return path
+}
+
+func ensureStorageDirs(storage ConfigStorage) error {
+	for _, path := range []string{
+		storage.Root,
+		storage.History,
+		storage.Artifacts,
+		filepath.Join(storage.History, "conversations"),
+		filepath.Join(storage.History, "indexes"),
+	} {
+		if err := os.MkdirAll(path, 0755); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int, title string) (string, error) {
+	now := time.Now()
+	nowText := now.Format(time.RFC3339)
+	conversationID := randomID("conv")
+	conversationDir := conversationDir(config.Storage, now, conversationID)
+	turnsDir := filepath.Join(conversationDir, "turns")
+	if err := os.MkdirAll(turnsDir, 0755); err != nil {
+		return "", err
+	}
+
+	userPrompt := lastUserPrompt(req.Messages)
+	conversation := HistoryConversation{
+		SchemaVersion: 1,
+		ID:            conversationID,
+		Kind:          "chat",
+		Title:         normalizeConversationTitle(title, userPrompt),
+		CreatedAt:     nowText,
+		UpdatedAt:     nowText,
+		Provider: HistoryProvider{
+			ID:      "ollama",
+			BaseURL: config.Providers.Ollama.BaseURL,
+		},
+		Defaults: HistoryDefaults{
+			ChatModel: req.Model,
+			System:    req.System,
+		},
+		Stats: HistoryConversationStats{
+			TurnCount:     2,
+			ArtifactCount: countMessageImages(req.Messages),
+		},
+	}
+
+	userTurn := HistoryTurn{
+		SchemaVersion:  1,
+		ID:             "turn_000001",
+		ConversationID: conversationID,
+		CreatedAt:      nowText,
+		Kind:           "chat",
+		Role:           "user",
+		Content:        historyContentForMessage(lastUserMessage(req.Messages)),
+		Request: map[string]any{
+			"model": req.Model,
+		},
+	}
+	if req.Options != nil {
+		userTurn.Request["options"] = req.Options
+	}
+	if req.Think != nil {
+		userTurn.Request["think"] = req.Think
+	}
+
+	assistantContents := []HistoryContent{{Type: "text", Text: assistantContent}}
+	if strings.TrimSpace(assistantThinking) != "" {
+		assistantContents = append(assistantContents, HistoryContent{Type: "thinking", Text: assistantThinking})
+	}
+	assistantTurn := HistoryTurn{
+		SchemaVersion:  1,
+		ID:             "turn_000002",
+		ConversationID: conversationID,
+		CreatedAt:      nowText,
+		Kind:           "chat",
+		Role:           "assistant",
+		Model:          model,
+		Content:        assistantContents,
+		ProviderResponse: map[string]any{
+			"doneReason": reason,
+			"tokens":     tokens,
+		},
+	}
+
+	if err := writeJSONFile(filepath.Join(conversationDir, "conversation.json"), conversation); err != nil {
+		return "", err
+	}
+	if err := writeJSONFile(filepath.Join(turnsDir, userTurn.ID+".json"), userTurn); err != nil {
+		return "", err
+	}
+	if err := writeJSONFile(filepath.Join(turnsDir, assistantTurn.ID+".json"), assistantTurn); err != nil {
+		return "", err
+	}
+	return conversationID, nil
+}
+
+func writeImageGenerationConversation(config AppConfig, req ImageGenerateRequest, payload ollamaGenerateResponse, images []string, raw string) (string, error) {
+	now := time.Now()
+	nowText := now.Format(time.RFC3339)
+	conversationID := randomID("conv")
+	conversationDir := conversationDir(config.Storage, now, conversationID)
+	turnsDir := filepath.Join(conversationDir, "turns")
+	artifactsDir := filepath.Join(conversationDir, "artifacts")
+	if err := os.MkdirAll(turnsDir, 0755); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(artifactsDir, 0755); err != nil {
+		return "", err
+	}
+
+	imageContents := make([]HistoryContent, 0, len(images))
+	for index, image := range images {
+		data, extension, err := decodeImagePayload(image)
+		if err != nil {
+			return "", err
+		}
+		artifactID := fmt.Sprintf("img_%06d", index+1)
+		filename := artifactID + extension
+		artifactPath := filepath.Join(artifactsDir, filename)
+		if err := os.WriteFile(artifactPath, data, 0644); err != nil {
+			return "", err
+		}
+		imageContents = append(imageContents, HistoryContent{
+			Type:       "image",
+			ArtifactID: artifactID,
+			Path:       filepath.ToSlash(filepath.Join("artifacts", filename)),
+			MimeType:   mediaTypeForExtension(extension),
+			Width:      req.Width,
+			Height:     req.Height,
+		})
+	}
+
+	conversation := HistoryConversation{
+		SchemaVersion: 1,
+		ID:            conversationID,
+		Kind:          "image_generation",
+		Title:         titleFromPrompt(req.Prompt),
+		CreatedAt:     nowText,
+		UpdatedAt:     nowText,
+		Provider: HistoryProvider{
+			ID:      "ollama",
+			BaseURL: config.Providers.Ollama.BaseURL,
+		},
+		Defaults: HistoryDefaults{
+			ChatModel:  config.Providers.Ollama.Models.Chat,
+			ImageModel: req.Model,
+			System:     config.Prompts.System,
+		},
+		Stats: HistoryConversationStats{
+			TurnCount:     2,
+			ArtifactCount: len(imageContents),
+		},
+	}
+
+	userTurn := HistoryTurn{
+		SchemaVersion:  1,
+		ID:             "turn_000001",
+		ConversationID: conversationID,
+		CreatedAt:      nowText,
+		Kind:           "image_generation",
+		Role:           "user",
+		Content: []HistoryContent{
+			{Type: "text", Text: req.Prompt},
+		},
+		Request: map[string]any{
+			"prompt": req.Prompt,
+			"width":  req.Width,
+			"height": req.Height,
+			"steps":  req.Steps,
+		},
+	}
+
+	assistantTurn := HistoryTurn{
+		SchemaVersion:  1,
+		ID:             "turn_000002",
+		ConversationID: conversationID,
+		CreatedAt:      nowText,
+		Kind:           "image_generation",
+		Role:           "assistant",
+		Model:          req.Model,
+		Content:        imageContents,
+		ProviderResponse: map[string]any{
+			"done":       payload.Done,
+			"rawCompact": raw,
+		},
+	}
+
+	if err := writeJSONFile(filepath.Join(conversationDir, "conversation.json"), conversation); err != nil {
+		return "", err
+	}
+	if err := writeJSONFile(filepath.Join(turnsDir, userTurn.ID+".json"), userTurn); err != nil {
+		return "", err
+	}
+	if err := writeJSONFile(filepath.Join(turnsDir, assistantTurn.ID+".json"), assistantTurn); err != nil {
+		return "", err
+	}
+	return conversationID, nil
+}
+
+func listConversations(storage ConfigStorage) ([]ConversationSummary, error) {
+	root := filepath.Join(storage.History, "conversations")
+	summaries := []ConversationSummary{}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || filepath.Base(path) != "conversation.json" {
+			return nil
+		}
+		var conversation HistoryConversation
+		if err := readJSONFile(path, &conversation); err != nil {
+			return err
+		}
+		if conversation.DeletedAt != "" {
+			return nil
+		}
+		summaries = append(summaries, ConversationSummary{
+			ID:            conversation.ID,
+			Kind:          conversation.Kind,
+			Title:         conversation.Title,
+			CreatedAt:     conversation.CreatedAt,
+			UpdatedAt:     conversation.UpdatedAt,
+			TurnCount:     conversation.Stats.TurnCount,
+			ArtifactCount: conversation.Stats.ArtifactCount,
+		})
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []ConversationSummary{}, nil
+		}
+		return nil, err
+	}
+	sort.Slice(summaries, func(i, j int) bool {
+		return summaries[i].UpdatedAt > summaries[j].UpdatedAt
+	})
+	return summaries, nil
+}
+
+func getConversation(storage ConfigStorage, conversationID string) (ConversationDetail, error) {
+	conversationPath, err := findConversationPath(storage, conversationID)
+	if err != nil {
+		return ConversationDetail{}, err
+	}
+
+	var conversation HistoryConversation
+	if err := readJSONFile(conversationPath, &conversation); err != nil {
+		return ConversationDetail{}, err
+	}
+	if conversation.DeletedAt != "" {
+		return ConversationDetail{}, fmt.Errorf("conversation %s is deleted", conversationID)
+	}
+
+	turnsDir := filepath.Join(filepath.Dir(conversationPath), "turns")
+	turns := []HistoryTurn{}
+	err = filepath.WalkDir(turnsDir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".json" {
+			return nil
+		}
+		var turn HistoryTurn
+		if err := readJSONFile(path, &turn); err != nil {
+			return err
+		}
+		if turn.DeletedAt != "" {
+			return nil
+		}
+		turn.Content = hydrateHistoryContent(filepath.Dir(conversationPath), turn.Content)
+		turns = append(turns, turn)
+		return nil
+	})
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return ConversationDetail{}, err
+		}
+	}
+	sort.Slice(turns, func(i, j int) bool {
+		return turns[i].ID < turns[j].ID
+	})
+	return ConversationDetail{Conversation: conversation, Turns: turns}, nil
+}
+
+func deleteConversation(storage ConfigStorage, conversationID string) error {
+	conversationPath, err := findConversationPath(storage, conversationID)
+	if err != nil {
+		return err
+	}
+	now := time.Now().Format(time.RFC3339)
+	var conversation HistoryConversation
+	if err := readJSONFile(conversationPath, &conversation); err != nil {
+		return err
+	}
+	conversation.DeletedAt = now
+	if err := writeJSONFile(conversationPath, conversation); err != nil {
+		return err
+	}
+	tombstone := map[string]any{
+		"schemaVersion":  1,
+		"conversationId": conversationID,
+		"deletedAt":      now,
+		"reason":         "user_deleted",
+	}
+	return writeJSONFile(filepath.Join(filepath.Dir(conversationPath), "tombstone.json"), tombstone)
+}
+
+func updateConversationTitle(storage ConfigStorage, conversationID string, title string) (ConversationSummary, error) {
+	conversationPath, err := findConversationPath(storage, conversationID)
+	if err != nil {
+		return ConversationSummary{}, err
+	}
+
+	var conversation HistoryConversation
+	if err := readJSONFile(conversationPath, &conversation); err != nil {
+		return ConversationSummary{}, err
+	}
+	if conversation.DeletedAt != "" {
+		return ConversationSummary{}, fmt.Errorf("conversation %s is deleted", conversationID)
+	}
+	conversation.Title = normalizeConversationTitle(title, conversation.Title)
+	conversation.UpdatedAt = time.Now().Format(time.RFC3339)
+	if err := writeJSONFile(conversationPath, conversation); err != nil {
+		return ConversationSummary{}, err
+	}
+	return ConversationSummary{
+		ID:            conversation.ID,
+		Kind:          conversation.Kind,
+		Title:         conversation.Title,
+		CreatedAt:     conversation.CreatedAt,
+		UpdatedAt:     conversation.UpdatedAt,
+		TurnCount:     conversation.Stats.TurnCount,
+		ArtifactCount: conversation.Stats.ArtifactCount,
+	}, nil
+}
+
+func findConversationPath(storage ConfigStorage, conversationID string) (string, error) {
+	root := filepath.Join(storage.History, "conversations")
+	var found string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || filepath.Base(path) != "conversation.json" {
+			return nil
+		}
+		var conversation HistoryConversation
+		if err := readJSONFile(path, &conversation); err != nil {
+			return err
+		}
+		if conversation.ID == conversationID {
+			found = path
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if found == "" {
+		return "", fmt.Errorf("conversation %s not found", conversationID)
+	}
+	return found, nil
+}
+
+func conversationDir(storage ConfigStorage, createdAt time.Time, conversationID string) string {
+	return filepath.Join(
+		storage.History,
+		"conversations",
+		createdAt.Format("2006"),
+		createdAt.Format("01"),
+		conversationID,
+	)
+}
+
+func writeJSONFile(path string, value any) error {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	tempPath := path + ".tmp"
+	if err := os.WriteFile(tempPath, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
+}
+
+func readJSONFile(path string, target any) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, target)
+}
+
+func hydrateHistoryContent(conversationDir string, contents []HistoryContent) []HistoryContent {
+	hydrated := make([]HistoryContent, 0, len(contents))
+	for _, content := range contents {
+		if content.Type == "image" && content.Path != "" && !strings.HasPrefix(content.Path, "data:image/") {
+			path := filepath.Join(conversationDir, filepath.FromSlash(content.Path))
+			if data, err := os.ReadFile(path); err == nil && isImageBytes(data) {
+				content.Text = "data:" + content.MimeType + ";base64," + base64.StdEncoding.EncodeToString(data)
+			}
+		}
+		hydrated = append(hydrated, content)
+	}
+	return hydrated
+}
+
+func randomID(prefix string) string {
+	var bytes [12]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		return fmt.Sprintf("%s_%d", prefix, time.Now().UnixNano())
+	}
+	return prefix + "_" + hex.EncodeToString(bytes[:])
+}
+
+func titleFromPrompt(prompt string) string {
+	prompt = strings.Join(strings.Fields(prompt), " ")
+	if prompt == "" {
+		return "Untitled"
+	}
+	return compactString(prompt, 72)
+}
+
+func cleanGeneratedTitle(title string) string {
+	title = strings.TrimSpace(title)
+	title = strings.TrimPrefix(title, "#")
+	title = strings.TrimSpace(title)
+	for _, prefix := range []string{"Title:", "title:", "Conversation title:", "conversation title:"} {
+		title = strings.TrimSpace(strings.TrimPrefix(title, prefix))
+	}
+	title = strings.Trim(title, "\"'`“”‘’")
+	title = strings.Join(strings.Fields(title), " ")
+	return compactString(title, 72)
+}
+
+func normalizeConversationTitle(title string, fallback string) string {
+	title = cleanGeneratedTitle(title)
+	if title != "" {
+		return title
+	}
+	return titleFromPrompt(fallback)
+}
+
+func lastUserMessage(messages []ChatMessage) ChatMessage {
+	for index := len(messages) - 1; index >= 0; index-- {
+		if messages[index].Role == "user" {
+			return messages[index]
+		}
+	}
+	if len(messages) == 0 {
+		return ChatMessage{}
+	}
+	return messages[len(messages)-1]
+}
+
+func lastUserPrompt(messages []ChatMessage) string {
+	return lastUserMessage(messages).Content
+}
+
+func historyContentForMessage(message ChatMessage) []HistoryContent {
+	contents := []HistoryContent{}
+	if strings.TrimSpace(message.Content) != "" {
+		contents = append(contents, HistoryContent{Type: "text", Text: message.Content})
+	}
+	for range message.Images {
+		contents = append(contents, HistoryContent{Type: "image"})
+	}
+	if len(contents) == 0 {
+		return []HistoryContent{{Type: "text", Text: ""}}
+	}
+	return contents
+}
+
+func countMessageImages(messages []ChatMessage) int {
+	count := 0
+	for _, message := range messages {
+		count += len(message.Images)
+	}
+	return count
 }
 
 func normalizeImagePayloads(images []string) []string {
@@ -658,6 +1623,19 @@ func extensionForMediaType(mediaType string) string {
 		return ".gif"
 	default:
 		return ".png"
+	}
+}
+
+func mediaTypeForExtension(extension string) string {
+	switch strings.ToLower(extension) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".webp":
+		return "image/webp"
+	case ".gif":
+		return "image/gif"
+	default:
+		return "image/png"
 	}
 }
 

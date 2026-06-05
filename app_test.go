@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestNormalizeBaseURL(t *testing.T) {
 	got, err := normalizeBaseURL("localhost:11434/")
@@ -66,5 +70,209 @@ func TestSanitizeFilename(t *testing.T) {
 	got := sanitizeFilename(`bad/name:image?.png`)
 	if got != "bad-name-image-.png" {
 		t.Fatalf("sanitizeFilename = %q", got)
+	}
+}
+
+func TestMergeAppConfigFillsDefaults(t *testing.T) {
+	config := mergeAppConfig(AppConfig{})
+	if config.Version != 1 {
+		t.Fatalf("version = %d, want 1", config.Version)
+	}
+	if config.Providers.Ollama.BaseURL != defaultOllamaBaseURL {
+		t.Fatalf("baseURL = %q", config.Providers.Ollama.BaseURL)
+	}
+	if config.Storage.History == "" {
+		t.Fatal("history storage should default")
+	}
+	if config.Prompts.System == "" {
+		t.Fatal("system prompt should default")
+	}
+	if config.Generation.Image.Width != 768 || config.Generation.Image.Steps != 24 {
+		t.Fatalf("image generation defaults = %+v", config.Generation.Image)
+	}
+}
+
+func TestMergeAppConfigNormalizesOllamaEndpoint(t *testing.T) {
+	config := mergeAppConfig(AppConfig{
+		Providers: ConfigProviders{
+			Ollama: ConfigOllama{
+				BaseURL: "localhost:11434/",
+				Models: ConfigOllamaModels{
+					Chat:  "chat-model",
+					Image: "image-model",
+				},
+			},
+		},
+		Prompts: ConfigPrompts{
+			System: "custom",
+		},
+		Generation: ConfigGeneration{
+			Image: ConfigImageGeneration{Width: 512, Height: 512, Steps: 8},
+		},
+		UI: ConfigUI{Mode: "image"},
+	})
+	if config.Providers.Ollama.BaseURL != "http://localhost:11434" {
+		t.Fatalf("baseURL = %q", config.Providers.Ollama.BaseURL)
+	}
+	if config.UI.Mode != "image" {
+		t.Fatalf("mode = %q", config.UI.Mode)
+	}
+}
+
+func TestMergeStorageConfigExpandsHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	storage := mergeStorageConfig(ConfigStorage{Root: "~/.atelier"}, defaultAppConfig().Storage)
+	if storage.Root != filepath.Join(home, ".atelier") {
+		t.Fatalf("root = %q", storage.Root)
+	}
+	if storage.History != filepath.Join(home, ".atelier", "history") {
+		t.Fatalf("history = %q", storage.History)
+	}
+}
+
+func TestEnsureStorageDirs(t *testing.T) {
+	root := t.TempDir()
+	storage := ConfigStorage{
+		Root:      filepath.Join(root, ".atelier"),
+		History:   filepath.Join(root, ".atelier", "history"),
+		Artifacts: filepath.Join(root, ".atelier", "history"),
+	}
+	if err := ensureStorageDirs(storage); err != nil {
+		t.Fatalf("ensureStorageDirs returned error: %v", err)
+	}
+	for _, path := range []string{
+		storage.Root,
+		filepath.Join(storage.History, "conversations"),
+		filepath.Join(storage.History, "indexes"),
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("expected %s to exist: %v", path, err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("%s is not a directory", path)
+		}
+	}
+}
+
+func TestImageGenerationConversationLifecycle(t *testing.T) {
+	root := t.TempDir()
+	storage := ConfigStorage{
+		Root:      filepath.Join(root, ".atelier"),
+		History:   filepath.Join(root, ".atelier", "history"),
+		Artifacts: filepath.Join(root, ".atelier", "history"),
+	}
+	config := defaultAppConfig()
+	config.Storage = storage
+	if err := ensureStorageDirs(storage); err != nil {
+		t.Fatalf("ensureStorageDirs returned error: %v", err)
+	}
+
+	conversationID, err := writeImageGenerationConversation(
+		config,
+		ImageGenerateRequest{Model: "image-model", Prompt: "Paint a small house", Width: 64, Height: 64, Steps: 2},
+		ollamaGenerateResponse{Model: "image-model", Done: true},
+		[]string{"data:image/png;base64,iVBORw0KGgo="},
+		"{}",
+	)
+	if err != nil {
+		t.Fatalf("writeImageGenerationConversation returned error: %v", err)
+	}
+
+	conversations, err := listConversations(storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	if len(conversations) != 1 {
+		t.Fatalf("conversation count = %d, want 1", len(conversations))
+	}
+	if conversations[0].ID != conversationID {
+		t.Fatalf("conversation id = %q, want %q", conversations[0].ID, conversationID)
+	}
+
+	if err := deleteConversation(storage, conversationID); err != nil {
+		t.Fatalf("deleteConversation returned error: %v", err)
+	}
+	conversations, err = listConversations(storage)
+	if err != nil {
+		t.Fatalf("listConversations after delete returned error: %v", err)
+	}
+	if len(conversations) != 0 {
+		t.Fatalf("conversation count after delete = %d, want 0", len(conversations))
+	}
+}
+
+func TestChatConversationLifecycle(t *testing.T) {
+	root := t.TempDir()
+	storage := ConfigStorage{
+		Root:      filepath.Join(root, ".atelier"),
+		History:   filepath.Join(root, ".atelier", "history"),
+		Artifacts: filepath.Join(root, ".atelier", "history"),
+	}
+	config := defaultAppConfig()
+	config.Storage = storage
+	if err := ensureStorageDirs(storage); err != nil {
+		t.Fatalf("ensureStorageDirs returned error: %v", err)
+	}
+
+	conversationID, err := writeChatConversation(
+		config,
+		ChatRequest{
+			Model:  "chat-model",
+			System: "Be useful.",
+			Messages: []ChatMessage{
+				{Role: "user", Content: "Explain markdown tables"},
+			},
+		},
+		"Here is a table.",
+		"",
+		"chat-model",
+		"stop",
+		12,
+		"Markdown Tables",
+	)
+	if err != nil {
+		t.Fatalf("writeChatConversation returned error: %v", err)
+	}
+
+	conversations, err := listConversations(storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	if len(conversations) != 1 {
+		t.Fatalf("conversation count = %d, want 1", len(conversations))
+	}
+	if conversations[0].ID != conversationID {
+		t.Fatalf("conversation id = %q, want %q", conversations[0].ID, conversationID)
+	}
+	if conversations[0].Kind != "chat" {
+		t.Fatalf("conversation kind = %q, want chat", conversations[0].Kind)
+	}
+	if conversations[0].Title != "Markdown Tables" {
+		t.Fatalf("conversation title = %q, want Markdown Tables", conversations[0].Title)
+	}
+
+	updated, err := updateConversationTitle(storage, conversationID, "Edited Title")
+	if err != nil {
+		t.Fatalf("updateConversationTitle returned error: %v", err)
+	}
+	if updated.Title != "Edited Title" {
+		t.Fatalf("updated title = %q, want Edited Title", updated.Title)
+	}
+
+	detail, err := getConversation(storage, conversationID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	if detail.Conversation.ID != conversationID {
+		t.Fatalf("detail conversation id = %q, want %q", detail.Conversation.ID, conversationID)
+	}
+	if len(detail.Turns) != 2 {
+		t.Fatalf("detail turn count = %d, want 2", len(detail.Turns))
+	}
+	if detail.Turns[0].Role != "user" || detail.Turns[1].Role != "assistant" {
+		t.Fatalf("turn roles = %q/%q, want user/assistant", detail.Turns[0].Role, detail.Turns[1].Role)
 	}
 }

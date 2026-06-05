@@ -12,6 +12,7 @@ The first slice focuses on the gap in Ollama Desktop: image-generation models ca
 - Sends base64 image attachments for vision-capable chat models.
 - Calls `/api/generate` for experimental image generation with width, height, and steps.
 - Normalizes generated base64 image responses into browser-renderable image data URLs.
+- Stores image-generation conversations and generated artifacts under `~/.atelier/history`.
 
 ## Development
 
@@ -42,3 +43,58 @@ Recommended local starting points:
 - Chat: `gpt-oss:20b`, `mistral-small3.1:latest`, or another general model.
 - Vision input: `llava:7b` or another multimodal model.
 - Image generation: `x/z-image-turbo:latest` or `x/flux2-klein:4b`.
+
+## Configuration
+
+Atelier stores local preferences in:
+
+```sh
+~/.atelier/config.json
+```
+
+The file is versioned and hierarchical so more providers, model profiles, generation defaults, and UI preferences can be added without flattening the schema:
+
+```json
+{
+  "version": 1,
+  "storage": {
+    "root": "~/.atelier",
+    "history": "~/.atelier/history",
+    "artifacts": "~/.atelier/history"
+  },
+  "providers": {
+    "ollama": {
+      "baseURL": "http://localhost:11434",
+      "models": {
+        "chat": "mistral-small3.1:latest",
+        "image": "x/z-image-turbo:latest"
+      }
+    }
+  },
+  "prompts": {
+    "system": "You are Atelier, a precise local AI collaborator."
+  },
+  "generation": {
+    "image": {
+      "width": 768,
+      "height": 768,
+      "steps": 24
+    }
+  },
+  "ui": {
+    "mode": "chat"
+  }
+}
+```
+
+On startup, Atelier creates the storage root and history scaffold:
+
+```text
+~/.atelier/
+  config.json
+  history/
+    conversations/
+    indexes/
+```
+
+Image generations are stored as conversation folders with `conversation.json`, turn JSON files, and generated image artifacts.
