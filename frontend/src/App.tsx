@@ -50,7 +50,35 @@ type Attachment = {
   payload: string;
 };
 
+type RatioPreset = {
+  id: string;
+  label: string;
+  width: number;
+  height: number;
+};
+
+type PixelPreset = {
+  id: string;
+  label: string;
+  megapixels: number;
+};
+
 const defaultBaseURL = 'http://localhost:11434';
+const defaultImageRatio = '1:1';
+const defaultImagePixels = '0.6';
+const ratioPresets: RatioPreset[] = [
+  {id: '1:1', label: '1:1 Square', width: 1, height: 1},
+  {id: '16:9', label: '16:9 Landscape', width: 16, height: 9},
+  {id: '9:16', label: '9:16 Portrait', width: 9, height: 16},
+  {id: '4:3', label: '4:3 Landscape', width: 4, height: 3},
+  {id: '3:4', label: '3:4 Portrait', width: 3, height: 4},
+];
+const pixelPresets: PixelPreset[] = [
+  {id: '0.6', label: '0.6 MP', megapixels: 0.6},
+  {id: '1', label: '1 MP', megapixels: 1},
+  {id: '2', label: '2 MP', megapixels: 2},
+  {id: '4', label: '4 MP', megapixels: 4},
+];
 
 function App() {
   const [baseURL, setBaseURL] = useState(defaultBaseURL);
@@ -66,7 +94,8 @@ function App() {
   const [conversations, setConversations] = useState<main.ConversationSummary[]>([]);
   const [activeStream, setActiveStream] = useState<string | null>(null);
   const [imagePrompt, setImagePrompt] = useState('');
-  const [imageSize, setImageSize] = useState(768);
+  const [imageRatio, setImageRatio] = useState(defaultImageRatio);
+  const [imagePixels, setImagePixels] = useState(defaultImagePixels);
   const [imageSteps, setImageSteps] = useState(24);
   const [imageResult, setImageResult] = useState<main.ImageGenerateResponse | null>(null);
   const [imageError, setImageError] = useState('');
@@ -84,6 +113,7 @@ function App() {
 
   const assistantEntryID = activeStream ? `assistant-${activeStream}` : '';
   const generatedImages = asArray(imageResult?.images);
+  const imageDimensions = useMemo(() => computeImageDimensions(imageRatio, imagePixels), [imagePixels, imageRatio]);
 
   useEffect(() => {
     loadConfig().catch((error) => {
@@ -119,8 +149,8 @@ function App() {
         },
         generation: {
           image: {
-            width: imageSize,
-            height: imageSize,
+            width: imageDimensions.width,
+            height: imageDimensions.height,
             steps: imageSteps,
           },
         },
@@ -132,7 +162,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, imageModel, imageSize, imageSteps, mode, model, storageConfig, system]);
+  }, [baseURL, configLoaded, imageDimensions.height, imageDimensions.width, imageModel, imageSteps, mode, model, storageConfig, system]);
 
   useEffect(() => {
     const onChunk = (chunk: ChatChunk) => {
@@ -175,8 +205,10 @@ function App() {
     const nextChatModel = config.providers?.ollama?.models?.chat ?? '';
     const nextImageModel = config.providers?.ollama?.models?.image ?? '';
     const nextSystem = config.prompts?.system || 'You are Atelier, a precise local AI collaborator.';
-    const nextImageSize = config.generation?.image?.width || 768;
+    const nextImageWidth = config.generation?.image?.width || 768;
+    const nextImageHeight = config.generation?.image?.height || nextImageWidth;
     const nextImageSteps = config.generation?.image?.steps || 24;
+    const nextImagePreset = inferImagePreset(nextImageWidth, nextImageHeight);
 
     setStartupError('');
     setStorageConfig(config.storage ?? null);
@@ -184,7 +216,8 @@ function App() {
     setModel(nextChatModel);
     setImageModel(nextImageModel);
     setSystem(nextSystem);
-    setImageSize(nextImageSize);
+    setImageRatio(nextImagePreset.ratio);
+    setImagePixels(nextImagePreset.pixels);
     setImageSteps(nextImageSteps);
     setMode(config.ui?.mode === 'image' ? 'image' : 'chat');
     setConfigLoaded(true);
@@ -453,8 +486,8 @@ function App() {
         baseURL,
         model: imageModel,
         prompt: imagePrompt.trim(),
-        width: imageSize,
-        height: imageSize,
+        width: imageDimensions.width,
+        height: imageDimensions.height,
         steps: imageSteps,
       }));
       setImageResult({...result, images: asArray(result.images)});
@@ -709,14 +742,23 @@ function App() {
               />
               <div className="inline-fields">
                 <label>
-                  Size
-                  <input type="number" min={256} step={64} value={imageSize} onChange={(event) => setImageSize(Number(event.target.value))} />
+                  Ratio
+                  <select value={imageRatio} onChange={(event) => setImageRatio(event.target.value)}>
+                    {ratioPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
+                  </select>
+                </label>
+                <label>
+                  Pixels
+                  <select value={imagePixels} onChange={(event) => setImagePixels(event.target.value)}>
+                    {pixelPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
+                  </select>
                 </label>
                 <label>
                   Steps
                   <input type="number" min={1} max={80} value={imageSteps} onChange={(event) => setImageSteps(Number(event.target.value))} />
                 </label>
               </div>
+              <div className="dimension-note">{imageDimensions.width} x {imageDimensions.height}</div>
               <button className="primary" onClick={generateImage} disabled={!imagePrompt.trim() || !imageModel || imageBusy}>
                 {imageBusy ? 'Generating' : 'Generate'}
               </button>
@@ -770,6 +812,43 @@ function App() {
 
 function summarizeRaw(raw: string): string {
   return raw.length > 1200 ? `${raw.slice(0, 1200)}...` : raw;
+}
+
+function computeImageDimensions(ratioID: string, pixelsID: string): {width: number; height: number} {
+  const ratio = ratioPresets.find((preset) => preset.id === ratioID) ?? ratioPresets[0];
+  const pixelPreset = pixelPresets.find((preset) => preset.id === pixelsID) ?? pixelPresets[0];
+  const targetPixels = pixelPreset.megapixels * 1_000_000;
+  const rawHeight = Math.sqrt(targetPixels * ratio.height / ratio.width);
+  const rawWidth = rawHeight * ratio.width / ratio.height;
+  let width = clampDimension(roundToMultiple(rawWidth, 16));
+  let height = clampDimension(roundToMultiple(rawHeight, 16));
+  while (width * height > targetPixels && width > 64 && height > 64) {
+    width = clampDimension(width - 16);
+    height = clampDimension(Math.round(width * ratio.height / ratio.width / 16) * 16);
+  }
+  return {width, height};
+}
+
+function inferImagePreset(width: number, height: number): {ratio: string; pixels: string} {
+  const actualRatio = width / Math.max(height, 1);
+  const ratio = ratioPresets.reduce((best, preset) => {
+    const presetRatio = preset.width / preset.height;
+    const bestRatio = best.width / best.height;
+    return Math.abs(presetRatio - actualRatio) < Math.abs(bestRatio - actualRatio) ? preset : best;
+  }, ratioPresets[0]);
+  const megapixels = width * height / 1_000_000;
+  const pixels = pixelPresets.reduce((best, preset) => {
+    return Math.abs(preset.megapixels - megapixels) < Math.abs(best.megapixels - megapixels) ? preset : best;
+  }, pixelPresets[0]);
+  return {ratio: ratio.id, pixels: pixels.id};
+}
+
+function roundToMultiple(value: number, multiple: number): number {
+  return Math.max(multiple, Math.round(value / multiple) * multiple);
+}
+
+function clampDimension(value: number): number {
+  return Math.max(64, Math.min(4096, value));
 }
 
 function asArray<T>(value: T[] | null | undefined): T[] {

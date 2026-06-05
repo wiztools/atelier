@@ -751,7 +751,7 @@ button:disabled {
 
 .inline-fields {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1.15fr 0.85fr 0.8fr;
   gap: 10px;
 }
 
@@ -759,6 +759,11 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.dimension-note {
+  color: #9ea5a3;
+  font-size: 12px;
 }
 
 .image-output {
