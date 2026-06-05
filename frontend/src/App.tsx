@@ -92,6 +92,7 @@ function App() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [chat, setChat] = useState<ChatEntry[]>([]);
   const [conversations, setConversations] = useState<main.ConversationSummary[]>([]);
+  const [activeConversationID, setActiveConversationID] = useState('');
   const [activeStream, setActiveStream] = useState<string | null>(null);
   const [imagePrompt, setImagePrompt] = useState('');
   const [imageRatio, setImageRatio] = useState(defaultImageRatio);
@@ -106,6 +107,7 @@ function App() {
   const [startupError, setStartupError] = useState('');
   const [editingTitleID, setEditingTitleID] = useState('');
   const [editingTitle, setEditingTitle] = useState('');
+  const [openHistoryMenuID, setOpenHistoryMenuID] = useState('');
   const [view, setView] = useState<View>('app');
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const chatPromptRef = useRef<HTMLTextAreaElement | null>(null);
@@ -182,6 +184,9 @@ function App() {
       );
       if (chunk.done || chunk.error) {
         setActiveStream((current) => current === chunk.requestID ? null : current);
+        if (chunk.conversationId) {
+          setActiveConversationID(chunk.conversationId);
+        }
         if (!chunk.error) {
           void refreshConversations();
         }
@@ -259,6 +264,7 @@ function App() {
     setChat([]);
     setPrompt('');
     setAttachments([]);
+    setActiveConversationID('');
     setImageResult(null);
     setImageError('');
     setImageSaveStatus('');
@@ -299,6 +305,7 @@ function App() {
   }
 
   function startEditingConversationTitle(conversation: main.ConversationSummary) {
+    setOpenHistoryMenuID('');
     setEditingTitleID(conversation.id);
     setEditingTitle(conversation.title);
   }
@@ -348,6 +355,7 @@ function App() {
       thinking: historyText(turn.content, 'thinking'),
       images: historyImages(turn.content),
     })));
+    setActiveConversationID(detail.conversation.id);
     setPrompt('');
     setAttachments([]);
     setImageResult(null);
@@ -372,16 +380,22 @@ function App() {
     setImageError('');
     setImageSaveStatus('');
     setChat([]);
+    setActiveConversationID('');
     setPrompt('');
     setAttachments([]);
   }
 
   async function archiveConversation(conversation: main.ConversationSummary) {
     try {
+      setOpenHistoryMenuID('');
       await DeleteConversation(conversation.id);
       setConversations((items) => asArray(items).filter((item) => item.id !== conversation.id));
       if (editingTitleID === conversation.id) {
         cancelEditingConversationTitle();
+      }
+      if (activeConversationID === conversation.id) {
+        setActiveConversationID('');
+        setChat([]);
       }
     } catch (error) {
       setStartupError(formatError(error));
@@ -425,6 +439,7 @@ function App() {
     ]);
 
     const requestID = await StreamChat(main.ChatRequest.createFrom({
+      conversationId: activeConversationID || undefined,
       baseURL,
       model,
       system,
@@ -557,19 +572,29 @@ function App() {
                       />
                     ) : (
                       <>
-                        <button className="history-open" onClick={() => openConversationSummary(conversation)}>
-                          <span>{conversation.title}</span>
-                          <small>{conversation.kind === 'image_generation' ? 'Image' : 'Chat'}</small>
+                      <button className="history-open" onClick={() => openConversationSummary(conversation)}>
+                        <span>{conversation.title}</span>
+                        <small>{conversation.kind === 'image_generation' ? 'Image' : 'Chat'}</small>
+                      </button>
+                      <div className="history-actions">
+                        <button className="history-icon-button" aria-label={`Edit ${conversation.title}`} title="Edit" onClick={() => startEditingConversationTitle(conversation)}>
+                          ✎
                         </button>
-                        <div className="history-actions">
-                          <button className="history-action" aria-label={`Edit ${conversation.title}`} onClick={() => startEditingConversationTitle(conversation)}>
-                            Edit
-                          </button>
-                          <button className="history-action danger-text" aria-label={`Archive ${conversation.title}`} onClick={() => archiveConversation(conversation)}>
-                            Archive
-                          </button>
-                        </div>
-                      </>
+                        <button
+                          className="history-icon-button"
+                          aria-label={`More actions for ${conversation.title}`}
+                          title="More"
+                          onClick={() => setOpenHistoryMenuID((current) => current === conversation.id ? '' : conversation.id)}
+                        >
+                          ⋮
+                        </button>
+                        {openHistoryMenuID === conversation.id ? (
+                          <div className="history-menu">
+                            <button onClick={() => archiveConversation(conversation)}>Archive</button>
+                          </div>
+                        ) : null}
+                      </div>
+                    </>
                     )}
                   </div>
                 ))

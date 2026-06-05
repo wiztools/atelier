@@ -275,4 +275,36 @@ func TestChatConversationLifecycle(t *testing.T) {
 	if detail.Turns[0].Role != "user" || detail.Turns[1].Role != "assistant" {
 		t.Fatalf("turn roles = %q/%q, want user/assistant", detail.Turns[0].Role, detail.Turns[1].Role)
 	}
+
+	appendedID, err := appendChatConversation(
+		config,
+		ChatRequest{
+			ConversationID: conversationID,
+			Model:          "chat-model",
+			Messages: []ChatMessage{
+				{Role: "user", Content: "Add one more example"},
+			},
+		},
+		"Here is another example.",
+		"",
+		"chat-model",
+		"stop",
+		8,
+	)
+	if err != nil {
+		t.Fatalf("appendChatConversation returned error: %v", err)
+	}
+	if appendedID != conversationID {
+		t.Fatalf("appended id = %q, want %q", appendedID, conversationID)
+	}
+	detail, err = getConversation(storage, conversationID)
+	if err != nil {
+		t.Fatalf("getConversation after append returned error: %v", err)
+	}
+	if len(detail.Turns) != 4 {
+		t.Fatalf("detail turn count after append = %d, want 4", len(detail.Turns))
+	}
+	if detail.Conversation.Stats.TurnCount != 4 {
+		t.Fatalf("conversation turn count after append = %d, want 4", detail.Conversation.Stats.TurnCount)
+	}
 }

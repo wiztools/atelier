@@ -129,13 +129,14 @@ type ChatMessage struct {
 }
 
 type ChatRequest struct {
-	RequestID string         `json:"requestID,omitempty"`
-	BaseURL   string         `json:"baseURL,omitempty"`
-	Model     string         `json:"model"`
-	System    string         `json:"system,omitempty"`
-	Messages  []ChatMessage  `json:"messages"`
-	Think     any            `json:"think,omitempty"`
-	Options   map[string]any `json:"options,omitempty"`
+	RequestID      string         `json:"requestID,omitempty"`
+	ConversationID string         `json:"conversationId,omitempty"`
+	BaseURL        string         `json:"baseURL,omitempty"`
+	Model          string         `json:"model"`
+	System         string         `json:"system,omitempty"`
+	Messages       []ChatMessage  `json:"messages"`
+	Think          any            `json:"think,omitempty"`
+	Options        map[string]any `json:"options,omitempty"`
 }
 
 type ChatStreamEvent struct {
@@ -686,8 +687,11 @@ func (a *App) writeChatConversation(req ChatRequest, assistantContent, assistant
 	if strings.TrimSpace(model) == "" {
 		model = req.Model
 	}
-	title := a.generateConversationTitle(config, req, assistantContent)
-	return writeChatConversation(config, req, assistantContent, assistantThinking, model, reason, tokens, title)
+	title := ""
+	if strings.TrimSpace(req.ConversationID) == "" {
+		title = a.generateConversationTitle(config, req, assistantContent)
+	}
+	return newHarnessEngine(config).SaveChatTurn(req, assistantContent, assistantThinking, model, reason, tokens, title)
 }
 
 func (a *App) generateConversationTitle(config AppConfig, req ChatRequest, assistantContent string) string {
@@ -1026,15 +1030,30 @@ func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, 
 		},
 		Stats: HistoryConversationStats{
 			TurnCount:     2,
-			ArtifactCount: countMessageImages(req.Messages),
+			ArtifactCount: countMessageImages([]ChatMessage{lastUserMessage(req.Messages)}),
 		},
 	}
 
+	userTurn, assistantTurn := buildChatTurnPair(conversationID, 1, nowText, req, assistantContent, assistantThinking, model, reason, tokens)
+
+	if err := writeJSONFile(filepath.Join(conversationDir, "conversation.json"), conversation); err != nil {
+		return "", err
+	}
+	if err := writeJSONFile(filepath.Join(turnsDir, userTurn.ID+".json"), userTurn); err != nil {
+		return "", err
+	}
+	if err := writeJSONFile(filepath.Join(turnsDir, assistantTurn.ID+".json"), assistantTurn); err != nil {
+		return "", err
+	}
+	return conversationID, nil
+}
+
+func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt string, req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int) (HistoryTurn, HistoryTurn) {
 	userTurn := HistoryTurn{
 		SchemaVersion:  1,
-		ID:             "turn_000001",
+		ID:             fmt.Sprintf("turn_%06d", firstTurnNumber),
 		ConversationID: conversationID,
-		CreatedAt:      nowText,
+		CreatedAt:      createdAt,
 		Kind:           "chat",
 		Role:           "user",
 		Content:        historyContentForMessage(lastUserMessage(req.Messages)),
@@ -1055,9 +1074,9 @@ func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, 
 	}
 	assistantTurn := HistoryTurn{
 		SchemaVersion:  1,
-		ID:             "turn_000002",
+		ID:             fmt.Sprintf("turn_%06d", firstTurnNumber+1),
 		ConversationID: conversationID,
-		CreatedAt:      nowText,
+		CreatedAt:      createdAt,
 		Kind:           "chat",
 		Role:           "assistant",
 		Model:          model,
@@ -1067,8 +1086,43 @@ func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, 
 			"tokens":     tokens,
 		},
 	}
+	return userTurn, assistantTurn
+}
 
-	if err := writeJSONFile(filepath.Join(conversationDir, "conversation.json"), conversation); err != nil {
+func appendChatConversation(config AppConfig, req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int) (string, error) {
+	conversationID := strings.TrimSpace(req.ConversationID)
+	conversationPath, err := findConversationPath(config.Storage, conversationID)
+	if err != nil {
+		return "", err
+	}
+
+	var conversation HistoryConversation
+	if err := readJSONFile(conversationPath, &conversation); err != nil {
+		return "", err
+	}
+	if conversation.DeletedAt != "" {
+		return "", fmt.Errorf("conversation %s is deleted", conversationID)
+	}
+	if conversation.Kind != "chat" {
+		return "", fmt.Errorf("conversation %s is not a chat conversation", conversationID)
+	}
+
+	detail, err := getConversation(config.Storage, conversationID)
+	if err != nil {
+		return "", err
+	}
+	nextTurnNumber := len(detail.Turns) + 1
+	nowText := time.Now().Format(time.RFC3339)
+	userTurn, assistantTurn := buildChatTurnPair(conversationID, nextTurnNumber, nowText, req, assistantContent, assistantThinking, model, reason, tokens)
+	turnsDir := filepath.Join(filepath.Dir(conversationPath), "turns")
+	if err := os.MkdirAll(turnsDir, 0755); err != nil {
+		return "", err
+	}
+
+	conversation.UpdatedAt = nowText
+	conversation.Stats.TurnCount += 2
+	conversation.Stats.ArtifactCount += countMessageImages([]ChatMessage{lastUserMessage(req.Messages)})
+	if err := writeJSONFile(conversationPath, conversation); err != nil {
 		return "", err
 	}
 	if err := writeJSONFile(filepath.Join(turnsDir, userTurn.ID+".json"), userTurn); err != nil {
