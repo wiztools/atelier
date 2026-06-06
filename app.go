@@ -24,12 +24,14 @@ import (
 const defaultOllamaBaseURL = "http://localhost:11434"
 
 type App struct {
-	ctx       context.Context
-	client    *http.Client
-	baseURL   string
-	configMu  sync.Mutex
-	streams   map[string]context.CancelFunc
-	streamsMu sync.Mutex
+	ctx           context.Context
+	client        *http.Client
+	baseURL       string
+	configMu      sync.Mutex
+	streams       map[string]context.CancelFunc
+	streamsMu     sync.Mutex
+	permissions   map[string]chan bool
+	permissionsMu sync.Mutex
 }
 
 func NewApp() *App {
@@ -37,8 +39,9 @@ func NewApp() *App {
 		client: &http.Client{
 			Timeout: 10 * time.Minute,
 		},
-		baseURL: defaultOllamaBaseURL,
-		streams: map[string]context.CancelFunc{},
+		baseURL:     defaultOllamaBaseURL,
+		streams:     map[string]context.CancelFunc{},
+		permissions: map[string]chan bool{},
 	}
 }
 
@@ -52,6 +55,7 @@ type AppConfig struct {
 	Providers  ConfigProviders  `json:"providers"`
 	Prompts    ConfigPrompts    `json:"prompts"`
 	Generation ConfigGeneration `json:"generation"`
+	Tools      ConfigTools      `json:"tools"`
 	UI         ConfigUI         `json:"ui"`
 }
 
@@ -88,6 +92,16 @@ type ConfigImageGeneration struct {
 	Width  int `json:"width"`
 	Height int `json:"height"`
 	Steps  int `json:"steps"`
+}
+
+type ConfigTools struct {
+	Filesystem ConfigFilesystemTool `json:"filesystem"`
+}
+
+type ConfigFilesystemTool struct {
+	Root           string `json:"root"`
+	MaxOutputBytes int    `json:"maxOutputBytes"`
+	TimeoutMS      int    `json:"timeoutMs"`
 }
 
 type ConfigUI struct {
@@ -167,6 +181,19 @@ type ChatStreamEvent struct {
 	Reason         string   `json:"reason,omitempty"`
 	Tokens         int      `json:"tokens,omitempty"`
 	ConversationID string   `json:"conversationId,omitempty"`
+}
+
+type ToolPermissionRequestEvent struct {
+	ID             string   `json:"id"`
+	RequestID      string   `json:"requestID,omitempty"`
+	ConversationID string   `json:"conversationId,omitempty"`
+	ToolName       string   `json:"toolName"`
+	Action         string   `json:"action"`
+	Summary        string   `json:"summary"`
+	Command        []string `json:"command,omitempty"`
+	Cwd            string   `json:"cwd,omitempty"`
+	Path           string   `json:"path,omitempty"`
+	ContentPreview string   `json:"contentPreview,omitempty"`
 }
 
 type ollamaChatChunk struct {
@@ -443,6 +470,93 @@ func (a *App) CheckOllama(baseURL string) OllamaStatus {
 
 func (a *App) ListModels(baseURL string) ([]OllamaModel, error) {
 	return a.ollamaClient(baseURL).ListModels(context.Background())
+}
+
+func (a *App) ChooseToolWorkspace(current string) (string, error) {
+	current = normalizeStoragePath(current)
+	if current == "" {
+		current = defaultAppConfig().Tools.Filesystem.Root
+	}
+	if err := os.MkdirAll(current, 0755); err != nil {
+		return "", err
+	}
+	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+		Title:                "Choose Atelier workspace",
+		DefaultDirectory:     current,
+		CanCreateDirectories: true,
+	})
+	if err != nil {
+		return "", err
+	}
+	if path == "" {
+		return "", nil
+	}
+	return normalizeStoragePath(path), nil
+}
+
+func (a *App) ResolveToolPermission(permissionID string, approved bool) error {
+	permissionID = strings.TrimSpace(permissionID)
+	if permissionID == "" {
+		return errors.New("permission id is required")
+	}
+	a.permissionsMu.Lock()
+	response, ok := a.permissions[permissionID]
+	if ok {
+		delete(a.permissions, permissionID)
+	}
+	a.permissionsMu.Unlock()
+	if !ok {
+		return fmt.Errorf("permission request %q is not pending", permissionID)
+	}
+	select {
+	case response <- approved:
+	default:
+	}
+	return nil
+}
+
+func (a *App) RunToolCommand(req ToolCommandRequest) (ToolCommandResult, error) {
+	config, err := loadAppConfig()
+	if err != nil {
+		return ToolCommandResult{}, err
+	}
+	if err := ensureStorageDirs(config.Storage); err != nil {
+		return ToolCommandResult{}, err
+	}
+	return newFilesystemToolLayer(config.Tools.Filesystem).RunCommand(context.Background(), req)
+}
+
+func (a *App) ListToolFiles(req ToolFileListRequest) (ToolFileListResult, error) {
+	config, err := loadAppConfig()
+	if err != nil {
+		return ToolFileListResult{}, err
+	}
+	if err := ensureStorageDirs(config.Storage); err != nil {
+		return ToolFileListResult{}, err
+	}
+	return newFilesystemToolLayer(config.Tools.Filesystem).ListFiles(req)
+}
+
+func (a *App) ReadToolFile(req ToolFileReadRequest) (ToolFileReadResult, error) {
+	config, err := loadAppConfig()
+	if err != nil {
+		return ToolFileReadResult{}, err
+	}
+	if err := ensureStorageDirs(config.Storage); err != nil {
+		return ToolFileReadResult{}, err
+	}
+	return newFilesystemToolLayer(config.Tools.Filesystem).ReadFile(req)
+}
+
+func (a *App) WriteToolFile(req ToolFileWriteRequest) (ToolFileWriteResult, error) {
+	config, err := loadAppConfig()
+	if err != nil {
+		return ToolFileWriteResult{}, err
+	}
+	if err := ensureStorageDirs(config.Storage); err != nil {
+		return ToolFileWriteResult{}, err
+	}
+	return newFilesystemToolLayer(config.Tools.Filesystem).WriteFile(req)
 }
 
 func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {
@@ -746,6 +860,35 @@ func (a *App) emitChatEvent(event ChatStreamEvent) {
 	}
 }
 
+func (a *App) requestToolPermission(ctx context.Context, event ToolPermissionRequestEvent) bool {
+	if a.ctx == nil {
+		return true
+	}
+	if strings.TrimSpace(event.ID) == "" {
+		event.ID = randomID("permission")
+	}
+	response := make(chan bool, 1)
+	a.permissionsMu.Lock()
+	a.permissions[event.ID] = response
+	a.permissionsMu.Unlock()
+	runtime.EventsEmit(a.ctx, "atelier:tool-permission", event)
+
+	select {
+	case approved := <-response:
+		return approved
+	case <-ctx.Done():
+		a.permissionsMu.Lock()
+		delete(a.permissions, event.ID)
+		a.permissionsMu.Unlock()
+		return false
+	case <-time.After(2 * time.Minute):
+		a.permissionsMu.Lock()
+		delete(a.permissions, event.ID)
+		a.permissionsMu.Unlock()
+		return false
+	}
+}
+
 func (a *App) resolveBaseURL(baseURL string) string {
 	normalized, err := normalizeBaseURL(baseURL)
 	if err != nil {
@@ -862,6 +1005,13 @@ func defaultAppConfig() AppConfig {
 				Steps:  24,
 			},
 		},
+		Tools: ConfigTools{
+			Filesystem: ConfigFilesystemTool{
+				Root:           defaultDocumentsRoot(),
+				MaxOutputBytes: 64 * 1024,
+				TimeoutMS:      30 * 1000,
+			},
+		},
 		UI: ConfigUI{
 			Mode: "chat",
 		},
@@ -900,10 +1050,25 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	if config.Generation.Image.Steps <= 0 {
 		config.Generation.Image.Steps = defaults.Generation.Image.Steps
 	}
+	config.Tools = mergeToolsConfig(config.Tools, defaults.Tools)
 	if config.UI.Mode != "chat" && config.UI.Mode != "image" {
 		config.UI.Mode = defaults.UI.Mode
 	}
 	return config
+}
+
+func mergeToolsConfig(tools ConfigTools, defaults ConfigTools) ConfigTools {
+	tools.Filesystem.Root = normalizeStoragePath(tools.Filesystem.Root)
+	if tools.Filesystem.Root == "" {
+		tools.Filesystem.Root = defaults.Filesystem.Root
+	}
+	if tools.Filesystem.MaxOutputBytes <= 0 {
+		tools.Filesystem.MaxOutputBytes = defaults.Filesystem.MaxOutputBytes
+	}
+	if tools.Filesystem.TimeoutMS <= 0 {
+		tools.Filesystem.TimeoutMS = defaults.Filesystem.TimeoutMS
+	}
+	return tools
 }
 
 func defaultStorageRoot() string {
@@ -912,6 +1077,29 @@ func defaultStorageRoot() string {
 		return filepath.Join(".", ".atelier")
 	}
 	return filepath.Join(home, ".atelier")
+}
+
+func defaultDocumentsRoot() string {
+	if path := strings.TrimSpace(os.Getenv("XDG_DOCUMENTS_DIR")); path != "" {
+		path = strings.Trim(path, `"`)
+		path = strings.ReplaceAll(path, "$HOME", userHomeFallback())
+		return normalizeStoragePath(path)
+	}
+	return filepath.Join(userHomeFallback(), "Documents")
+}
+
+func userHomeFallback() string {
+	home, err := os.UserHomeDir()
+	if err == nil && home != "" {
+		return home
+	}
+	if home := strings.TrimSpace(os.Getenv("USERPROFILE")); home != "" {
+		return home
+	}
+	if home := strings.TrimSpace(os.Getenv("HOME")); home != "" {
+		return home
+	}
+	return "."
 }
 
 func mergeStorageConfig(storage ConfigStorage, defaults ConfigStorage) ConfigStorage {

@@ -64,6 +64,75 @@
   color: #f0a09a;
 }
 
+.tool-permission-panel {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  z-index: 20;
+  display: grid;
+  gap: 10px;
+  width: min(520px, calc(100vw - 36px));
+}
+
+.tool-permission-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid #5c4934;
+  border-radius: 8px;
+  background: #1d1f20;
+  box-shadow: 0 16px 40px rgb(0 0 0 / 36%);
+}
+
+.tool-permission-card > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.tool-permission-card strong {
+  font-size: 14px;
+}
+
+.tool-permission-card span,
+.tool-permission-card small {
+  color: #b5b1a8;
+}
+
+.tool-permission-card code,
+.tool-permission-card pre {
+  max-height: 120px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid #303438;
+  border-radius: 6px;
+  overflow: auto;
+  background: #101213;
+  color: #e7dcc6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tool-permission-actions {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+}
+
+.tool-permission-actions button {
+  min-width: 64px;
+  min-height: 34px;
+  padding: 6px 12px;
+}
+
+.tool-permission-actions .primary {
+  border-color: #c0914b;
+  background: #c5914d;
+  color: #1c1711;
+  font-weight: 800;
+}
+
 .sidebar {
   box-sizing: border-box;
   min-height: 0;
@@ -555,14 +624,14 @@ button:disabled {
   gap: 10px;
 }
 
-.storage-list div {
+.storage-list > div {
   display: grid;
   grid-template-columns: 90px minmax(0, 1fr);
   gap: 12px;
   align-items: center;
 }
 
-.storage-list span {
+.storage-list > div > span {
   color: #9ea5a3;
   font-size: 12px;
   font-weight: 700;
@@ -575,6 +644,20 @@ button:disabled {
   background: #121415;
   color: #d7d1c3;
   overflow-wrap: anywhere;
+}
+
+.workspace-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.workspace-picker button {
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 12px;
+  font-size: 13px;
 }
 
 .storage-actions {

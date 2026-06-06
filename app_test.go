@@ -151,6 +151,15 @@ func TestMergeAppConfigFillsDefaults(t *testing.T) {
 	if config.Generation.Image.Width != 768 || config.Generation.Image.Steps != 24 {
 		t.Fatalf("image generation defaults = %+v", config.Generation.Image)
 	}
+	if config.Tools.Filesystem.Root == "" {
+		t.Fatal("filesystem tool root should default")
+	}
+	if config.Tools.Filesystem.MaxOutputBytes <= 0 {
+		t.Fatal("filesystem tool output limit should default")
+	}
+	if config.Tools.Filesystem.TimeoutMS <= 0 {
+		t.Fatal("filesystem tool timeout should default")
+	}
 }
 
 func TestMergeAppConfigNormalizesOllamaEndpoint(t *testing.T) {
@@ -194,6 +203,178 @@ func TestMergeStorageConfigExpandsHome(t *testing.T) {
 	}
 	if storage.History != filepath.Join(home, ".atelier", "history") {
 		t.Fatalf("history = %q", storage.History)
+	}
+}
+
+func TestDefaultDocumentsRootUsesHomeDocuments(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", "")
+	t.Setenv("XDG_DOCUMENTS_DIR", "")
+
+	if got := defaultDocumentsRoot(); got != filepath.Join(home, "Documents") {
+		t.Fatalf("defaultDocumentsRoot = %q, want home Documents", got)
+	}
+	config := mergeAppConfig(AppConfig{})
+	if config.Tools.Filesystem.Root != filepath.Join(home, "Documents") {
+		t.Fatalf("filesystem root = %q, want Documents default", config.Tools.Filesystem.Root)
+	}
+}
+
+func TestDefaultDocumentsRootUsesXDGDocumentsDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DOCUMENTS_DIR", "$HOME/Docs")
+
+	if got := defaultDocumentsRoot(); got != filepath.Join(home, "Docs") {
+		t.Fatalf("defaultDocumentsRoot = %q, want XDG documents dir", got)
+	}
+}
+
+func TestFilesystemToolRunCommandCapturesOutput(t *testing.T) {
+	root := t.TempDir()
+	tool := newFilesystemToolLayer(ConfigFilesystemTool{
+		Root:           root,
+		MaxOutputBytes: 1024,
+		TimeoutMS:      1000,
+	})
+
+	result, err := tool.RunCommand(context.Background(), ToolCommandRequest{
+		Command: "/bin/echo",
+		Args:    []string{"hello atelier"},
+	})
+	if err != nil {
+		t.Fatalf("RunCommand returned error: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", result.ExitCode, result.Stderr)
+	}
+	if strings.TrimSpace(result.Stdout) != "hello atelier" {
+		t.Fatalf("stdout = %q", result.Stdout)
+	}
+	if result.Cwd != root {
+		t.Fatalf("cwd = %q, want %q", result.Cwd, root)
+	}
+}
+
+func TestFilesystemToolRejectsCwdOutsideRoot(t *testing.T) {
+	tool := newFilesystemToolLayer(ConfigFilesystemTool{Root: t.TempDir()})
+	_, err := tool.RunCommand(context.Background(), ToolCommandRequest{
+		Command: "/bin/echo",
+		Cwd:     "/",
+	})
+	if err == nil {
+		t.Fatal("RunCommand should reject cwd outside root")
+	}
+}
+
+func TestFilesystemToolTruncatesCommandOutput(t *testing.T) {
+	root := t.TempDir()
+	tool := newFilesystemToolLayer(ConfigFilesystemTool{
+		Root:           root,
+		MaxOutputBytes: 4,
+		TimeoutMS:      1000,
+	})
+
+	result, err := tool.RunCommand(context.Background(), ToolCommandRequest{
+		Command: "/bin/echo",
+		Args:    []string{"abcdef"},
+	})
+	if err != nil {
+		t.Fatalf("RunCommand returned error: %v", err)
+	}
+	if !result.Truncated {
+		t.Fatal("result should be marked truncated")
+	}
+	if result.Stdout != "abcd" {
+		t.Fatalf("stdout = %q, want truncated output", result.Stdout)
+	}
+}
+
+func TestFilesystemToolRejectsRecursiveDelete(t *testing.T) {
+	tool := newFilesystemToolLayer(ConfigFilesystemTool{Root: t.TempDir()})
+	_, err := tool.RunCommand(context.Background(), ToolCommandRequest{
+		Command: "rm",
+		Args:    []string{"-rf", "anything"},
+	})
+	if err == nil {
+		t.Fatal("RunCommand should reject recursive delete")
+	}
+}
+
+func TestFilesystemToolReadWriteAndListFiles(t *testing.T) {
+	root := t.TempDir()
+	tool := newFilesystemToolLayer(ConfigFilesystemTool{Root: root})
+
+	writeResult, err := tool.WriteFile(ToolFileWriteRequest{
+		Path:    "notes/todo.txt",
+		Content: "ship tools",
+	})
+	if err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if writeResult.Bytes != len("ship tools") {
+		t.Fatalf("written bytes = %d", writeResult.Bytes)
+	}
+
+	readResult, err := tool.ReadFile(ToolFileReadRequest{Path: "notes/todo.txt"})
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if readResult.Content != "ship tools" {
+		t.Fatalf("content = %q", readResult.Content)
+	}
+
+	listResult, err := tool.ListFiles(ToolFileListRequest{Path: "notes"})
+	if err != nil {
+		t.Fatalf("ListFiles returned error: %v", err)
+	}
+	if len(listResult.Entries) != 1 || listResult.Entries[0].Name != "todo.txt" {
+		t.Fatalf("entries = %+v", listResult.Entries)
+	}
+}
+
+func TestFilesystemToolRejectsFileOutsideRoot(t *testing.T) {
+	tool := newFilesystemToolLayer(ConfigFilesystemTool{Root: t.TempDir()})
+	_, err := tool.WriteFile(ToolFileWriteRequest{
+		Path:    "../outside.txt",
+		Content: "nope",
+	})
+	if err == nil {
+		t.Fatal("WriteFile should reject paths outside root")
+	}
+}
+
+func TestResolveToolPermissionSignalsDecision(t *testing.T) {
+	app := NewApp()
+	response := make(chan bool, 1)
+	app.permissionsMu.Lock()
+	app.permissions["permission-1"] = response
+	app.permissionsMu.Unlock()
+
+	if err := app.ResolveToolPermission("permission-1", true); err != nil {
+		t.Fatalf("ResolveToolPermission returned error: %v", err)
+	}
+	select {
+	case approved := <-response:
+		if !approved {
+			t.Fatal("permission decision = false, want true")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("permission decision was not signaled")
+	}
+	app.permissionsMu.Lock()
+	_, exists := app.permissions["permission-1"]
+	app.permissionsMu.Unlock()
+	if exists {
+		t.Fatal("permission should be removed after decision")
+	}
+}
+
+func TestResolveToolPermissionRejectsMissingRequest(t *testing.T) {
+	app := NewApp()
+	if err := app.ResolveToolPermission("missing", true); err == nil {
+		t.Fatal("ResolveToolPermission should reject missing request")
 	}
 }
 
@@ -754,6 +935,113 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 	streaming := harnessStepByKind(t, steps, "streaming")
 	if streaming["status"] != "completed" || streaming["tokens"] != float64(3) {
 		t.Fatalf("streaming step = %+v, want completed streaming metadata", streaming)
+	}
+}
+
+func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Tools.Filesystem.Root = filepath.Join(home, "tool-root")
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Chat = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(config.Tools.Filesystem.Root, "status.txt"), []byte("Project status: green"), 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	var responseSystem string
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/chat" {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Status:     "404 Not Found",
+				Body:       io.NopCloser(strings.NewReader("not found")),
+				Header:     http.Header{},
+			}, nil
+		}
+		var payload map[string]any
+		data, _ := io.ReadAll(req.Body)
+		if err := json.Unmarshal(data, &payload); err != nil {
+			t.Fatalf("provider request body is not JSON: %v", err)
+		}
+		if payload["stream"] == false {
+			body := "{\"model\":\"harness-model\",\"message\":{\"role\":\"assistant\",\"content\":\"```json\\n{\\\"brief\\\":\\\"Use the status file to answer.\\\",\\\"toolCalls\\\":[{\\\"name\\\":\\\"read_file\\\",\\\"path\\\":\\\"status.txt\\\"}]}\\n```\"},\"done\":true,\"done_reason\":\"stop\",\"eval_count\":2}"
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+			}, nil
+		}
+		messages, ok := payload["messages"].([]any)
+		if !ok || len(messages) == 0 {
+			t.Fatalf("stream request messages = %+v, want system handoff", payload["messages"])
+		}
+		systemMessage, ok := messages[0].(map[string]any)
+		if !ok || systemMessage["role"] != "system" {
+			t.Fatalf("first message = %+v, want system handoff", messages[0])
+		}
+		responseSystem, _ = systemMessage["content"].(string)
+		body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"The project is green."},"done":false}`) +
+			fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{"Content-Type": []string{"application/x-ndjson"}},
+		}, nil
+	})
+
+	app.runChatStream(context.Background(), "request-tools", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "What is the project status?"},
+		},
+	})
+	if !strings.Contains(responseSystem, "Filesystem tool observations") || !strings.Contains(responseSystem, "Project status: green") {
+		t.Fatalf("response system handoff = %q, want filesystem observation", responseSystem)
+	}
+
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	if got := detail.Turns[1].Content[0].Text; got != "The project is green." {
+		t.Fatalf("assistant content = %q, want final model answer", got)
+	}
+	if thinking := historyTextForTest(detail.Turns[1].Content, "thinking"); !strings.Contains(thinking, "Tool results") || !strings.Contains(thinking, "Project status: green") {
+		t.Fatalf("assistant thinking = %q, want tool results", thinking)
+	}
+	harnessRun, ok := detail.Turns[1].ProviderResponse["harnessRun"].(map[string]any)
+	if !ok {
+		t.Fatalf("assistant provider response missing harness run: %+v", detail.Turns[1].ProviderResponse)
+	}
+	steps, ok := harnessRun["steps"].([]any)
+	if !ok {
+		t.Fatalf("harness steps = %+v, want timeline", harnessRun["steps"])
+	}
+	toolStep := harnessStepByKind(t, steps, "tool_call")
+	if toolStep["status"] != "completed" || toolStep["provider"] != "filesystem" {
+		t.Fatalf("tool step = %+v, want completed filesystem call", toolStep)
 	}
 }
 

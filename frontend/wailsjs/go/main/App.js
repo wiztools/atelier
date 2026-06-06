@@ -10,6 +10,10 @@ export function CheckOllama(arg1) {
   return window['go']['main']['App']['CheckOllama'](arg1);
 }
 
+export function ChooseToolWorkspace(arg1) {
+  return window['go']['main']['App']['ChooseToolWorkspace'](arg1);
+}
+
 export function DeleteConversation(arg1) {
   return window['go']['main']['App']['DeleteConversation'](arg1);
 }
@@ -34,8 +38,24 @@ export function ListModels(arg1) {
   return window['go']['main']['App']['ListModels'](arg1);
 }
 
+export function ListToolFiles(arg1) {
+  return window['go']['main']['App']['ListToolFiles'](arg1);
+}
+
 export function PurgeArchivedConversations() {
   return window['go']['main']['App']['PurgeArchivedConversations']();
+}
+
+export function ReadToolFile(arg1) {
+  return window['go']['main']['App']['ReadToolFile'](arg1);
+}
+
+export function ResolveToolPermission(arg1, arg2) {
+  return window['go']['main']['App']['ResolveToolPermission'](arg1, arg2);
+}
+
+export function RunToolCommand(arg1) {
+  return window['go']['main']['App']['RunToolCommand'](arg1);
 }
 
 export function SaveConfig(arg1) {
@@ -60,4 +80,8 @@ export function StreamChat(arg1) {
 
 export function UpdateConversationTitle(arg1, arg2) {
   return window['go']['main']['App']['UpdateConversationTitle'](arg1, arg2);
+}
+
+export function WriteToolFile(arg1) {
+  return window['go']['main']['App']['WriteToolFile'](arg1);
 }

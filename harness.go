@@ -20,6 +20,41 @@ type HarnessEngine struct {
 	app    *App
 }
 
+type HarnessPreparedTurn struct {
+	Brief       string
+	Completion  ChatCompletionResult
+	ToolCalls   []HarnessToolCall
+	ToolResults []HarnessToolResult
+}
+
+type HarnessToolPlan struct {
+	Brief     string            `json:"brief"`
+	ToolCalls []HarnessToolCall `json:"toolCalls"`
+}
+
+type HarnessToolCall struct {
+	Name        string            `json:"name"`
+	Command     string            `json:"command,omitempty"`
+	Args        []string          `json:"args,omitempty"`
+	Cwd         string            `json:"cwd,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
+	TimeoutMS   int               `json:"timeoutMs,omitempty"`
+	Path        string            `json:"path,omitempty"`
+	Content     string            `json:"content,omitempty"`
+	Append      bool              `json:"append,omitempty"`
+	Overwrite   bool              `json:"overwrite,omitempty"`
+	MaxBytes    int               `json:"maxBytes,omitempty"`
+	AllowBinary bool              `json:"allowBinary,omitempty"`
+}
+
+type HarnessToolResult struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Summary string `json:"summary"`
+	Result  any    `json:"result,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
 func newHarnessEngine(config AppConfig, app ...*App) *HarnessEngine {
 	engine := &HarnessEngine{config: config}
 	if len(app) > 0 {
@@ -76,8 +111,14 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
 		return
 	}
+	h.completeStep(&run, "preparing", "completed", preparation.Completion.Reason, preparation.Completion.EvalTokens, "")
+	if len(preparation.ToolCalls) > 0 {
+		insertToolCallStep(&run)
+		h.startStep(&run, "tool_call")
+		preparation.ToolResults = h.runFilesystemToolCalls(ctx, requestID, conversationID, preparation.ToolCalls)
+		h.completeStep(&run, "tool_call", "completed", "tool_call", 0, "")
+	}
 	preparationThinking := formatHarnessPreparationThinking(preparation)
-	h.completeStep(&run, "preparing", "completed", preparation.Reason, preparation.EvalTokens, "")
 	if preparationThinking != "" {
 		h.app.emitChatEvent(ChatStreamEvent{
 			RequestID:      requestID,
@@ -86,7 +127,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		})
 	}
 
-	responseReq := h.preparedResponseRequest(req, responseModel, preparation.Content)
+	responseReq := h.preparedResponseRequest(req, responseModel, preparation)
 	h.startStep(&run, "model_call")
 	resp, err := h.app.ollamaClient(req.BaseURL).OpenChatStream(ctx, responseReq)
 	if err != nil {
@@ -199,10 +240,21 @@ func (h *HarnessEngine) responseModelForChatSelection(req ChatRequest) string {
 	return model
 }
 
-func (h *HarnessEngine) prepareChatTurn(ctx context.Context, req ChatRequest) (ChatCompletionResult, error) {
+func (h *HarnessEngine) prepareChatTurn(ctx context.Context, req ChatRequest) (HarnessPreparedTurn, error) {
 	system := strings.TrimSpace(`You are Atelier's private harness model. Prepare a concise markdown brief for the next model that will answer the user.
 Do not answer the user directly. Do not include hidden chain-of-thought. Capture only useful answer guidance: intent, constraints, relevant context, response shape, and cautions.
-Keep it compact.`)
+Keep it compact.
+
+If filesystem context would materially improve the answer, include one fenced JSON block in this exact shape:
+{
+  "brief": "concise guidance for the final model",
+  "toolCalls": [
+    {"name":"run_command","command":"pwd","args":[],"cwd":""},
+    {"name":"list_files","path":""},
+    {"name":"read_file","path":"relative/path.txt","maxBytes":20000}
+  ]
+}
+Use at most 3 tool calls. Prefer read-only calls unless the user clearly asks to modify files. Paths are scoped to Atelier's configured filesystem tool root.`)
 	if strings.TrimSpace(req.System) != "" {
 		system += "\n\nUser-facing system prompt to preserve:\n" + strings.TrimSpace(req.System)
 	}
@@ -216,40 +268,239 @@ Keep it compact.`)
 			"num_predict": 512,
 		},
 	}
-	return h.app.ollamaClient(req.BaseURL).CompleteChat(ctx, prepReq)
+	completion, err := h.app.ollamaClient(req.BaseURL).CompleteChat(ctx, prepReq)
+	if err != nil {
+		return HarnessPreparedTurn{}, err
+	}
+	plan := parseHarnessToolPlan(completion.Content)
+	brief := strings.TrimSpace(plan.Brief)
+	if brief == "" {
+		brief = strings.TrimSpace(completion.Content)
+	}
+	return HarnessPreparedTurn{
+		Brief:      brief,
+		Completion: completion,
+		ToolCalls:  plan.ToolCalls,
+	}, nil
 }
 
-func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel, preparation string) ChatRequest {
+func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel string, preparation HarnessPreparedTurn) ChatRequest {
 	responseReq := req
 	responseReq.Model = responseModel
 	responseReq.System = appendHarnessPreparationToSystem(req.System, preparation)
 	return responseReq
 }
 
-func appendHarnessPreparationToSystem(system, preparation string) string {
-	preparation = strings.TrimSpace(preparation)
-	if preparation == "" {
+func appendHarnessPreparationToSystem(system string, preparation HarnessPreparedTurn) string {
+	handoffContent := strings.TrimSpace(preparation.Brief)
+	if len(preparation.ToolResults) > 0 {
+		if data, err := json.MarshalIndent(preparation.ToolResults, "", "  "); err == nil {
+			handoffContent = strings.TrimSpace(handoffContent + "\n\nFilesystem tool observations:\n```json\n" + string(data) + "\n```")
+		}
+	}
+	if handoffContent == "" {
 		return system
 	}
-	handoff := "Atelier harness-prepared brief for this turn. Use it as private guidance for the final response; do not quote or mention it unless the user asks about process.\n\n" + preparation
+	handoff := "Atelier harness-prepared brief for this turn. Use it as private guidance for the final response; do not quote or mention it unless the user asks about process.\n\n" + handoffContent
 	if strings.TrimSpace(system) == "" {
 		return handoff
 	}
 	return strings.TrimSpace(system) + "\n\n" + handoff
 }
 
-func formatHarnessPreparationThinking(preparation ChatCompletionResult) string {
+func formatHarnessPreparationThinking(preparation HarnessPreparedTurn) string {
 	var parts []string
-	if text := strings.TrimSpace(preparation.Content); text != "" {
+	if text := strings.TrimSpace(preparation.Brief); text != "" {
 		parts = append(parts, "### Harness preparation\n\n"+text)
 	}
-	if text := strings.TrimSpace(preparation.Thinking); text != "" {
+	if len(preparation.ToolCalls) > 0 {
+		if data, err := json.MarshalIndent(preparation.ToolCalls, "", "  "); err == nil {
+			parts = append(parts, "### Tool plan\n\n```json\n"+string(data)+"\n```")
+		}
+	}
+	if len(preparation.ToolResults) > 0 {
+		if data, err := json.MarshalIndent(preparation.ToolResults, "", "  "); err == nil {
+			parts = append(parts, "### Tool results\n\n```json\n"+string(data)+"\n```")
+		}
+	}
+	if text := strings.TrimSpace(preparation.Completion.Thinking); text != "" {
 		parts = append(parts, "### Harness model thinking\n\n"+text)
 	}
 	if len(parts) == 0 {
 		return ""
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+func parseHarnessToolPlan(content string) HarnessToolPlan {
+	for _, candidate := range harnessJSONCandidates(content) {
+		var plan HarnessToolPlan
+		if err := json.Unmarshal([]byte(candidate), &plan); err == nil && (strings.TrimSpace(plan.Brief) != "" || len(plan.ToolCalls) > 0) {
+			if len(plan.ToolCalls) > 3 {
+				plan.ToolCalls = plan.ToolCalls[:3]
+			}
+			return plan
+		}
+	}
+	return HarnessToolPlan{}
+}
+
+func harnessJSONCandidates(content string) []string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil
+	}
+	candidates := []string{}
+	search := content
+	for {
+		start := strings.Index(search, "```")
+		if start < 0 {
+			break
+		}
+		afterFence := search[start+3:]
+		lineEnd := strings.Index(afterFence, "\n")
+		if lineEnd < 0 {
+			break
+		}
+		fenceInfo := strings.ToLower(strings.TrimSpace(afterFence[:lineEnd]))
+		afterHeader := afterFence[lineEnd+1:]
+		end := strings.Index(afterHeader, "```")
+		if end < 0 {
+			break
+		}
+		if fenceInfo == "" || strings.Contains(fenceInfo, "json") {
+			candidates = append(candidates, strings.TrimSpace(afterHeader[:end]))
+		}
+		search = afterHeader[end+3:]
+	}
+	candidates = append(candidates, content)
+	return candidates
+}
+
+func (h *HarnessEngine) runFilesystemToolCalls(ctx context.Context, requestID, conversationID string, calls []HarnessToolCall) []HarnessToolResult {
+	tool := newFilesystemToolLayer(h.config.Tools.Filesystem)
+	results := make([]HarnessToolResult, 0, len(calls))
+	for _, call := range calls {
+		results = append(results, h.runFilesystemToolCall(ctx, requestID, conversationID, tool, call))
+	}
+	return results
+}
+
+func (h *HarnessEngine) runFilesystemToolCall(ctx context.Context, requestID, conversationID string, tool *FilesystemToolLayer, call HarnessToolCall) HarnessToolResult {
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		name = "run_command"
+	}
+	result := HarnessToolResult{Name: name, Status: "completed"}
+	switch name {
+	case "run_command":
+		if !h.requestFilesystemToolPermission(ctx, requestID, conversationID, call) {
+			return HarnessToolResult{Name: name, Status: "denied", Summary: "command was not approved", Error: "permission denied"}
+		}
+		output, err := tool.RunCommand(ctx, ToolCommandRequest{
+			Command:   call.Command,
+			Args:      call.Args,
+			Cwd:       call.Cwd,
+			Env:       call.Env,
+			TimeoutMS: call.TimeoutMS,
+		})
+		result.Result = output
+		result.Summary = fmt.Sprintf("command exited with code %d", output.ExitCode)
+		if err != nil {
+			result.Status = "failed"
+			result.Error = err.Error()
+			result.Summary = "command rejected before execution"
+		} else if output.Error != "" {
+			result.Status = "failed"
+			result.Error = output.Error
+		}
+	case "list_files":
+		output, err := tool.ListFiles(ToolFileListRequest{Path: call.Path})
+		result.Result = output
+		result.Summary = fmt.Sprintf("listed %d entries", len(output.Entries))
+		if err != nil {
+			result.Status = "failed"
+			result.Error = err.Error()
+			result.Summary = "list_files failed"
+		}
+	case "read_file":
+		output, err := tool.ReadFile(ToolFileReadRequest{
+			Path:        call.Path,
+			MaxBytes:    call.MaxBytes,
+			AllowBinary: call.AllowBinary,
+		})
+		result.Result = output
+		result.Summary = fmt.Sprintf("read %d bytes", output.Bytes)
+		if err != nil {
+			result.Status = "failed"
+			result.Error = err.Error()
+			result.Summary = "read_file failed"
+		}
+	case "write_file":
+		if !h.requestFilesystemToolPermission(ctx, requestID, conversationID, call) {
+			return HarnessToolResult{Name: name, Status: "denied", Summary: "file write was not approved", Error: "permission denied"}
+		}
+		output, err := tool.WriteFile(ToolFileWriteRequest{
+			Path:      call.Path,
+			Content:   call.Content,
+			Append:    call.Append,
+			Overwrite: call.Overwrite,
+		})
+		result.Result = output
+		result.Summary = fmt.Sprintf("wrote %d bytes", output.Bytes)
+		if err != nil {
+			result.Status = "failed"
+			result.Error = err.Error()
+			result.Summary = "write_file failed"
+		}
+	default:
+		result.Status = "failed"
+		result.Error = fmt.Sprintf("unknown filesystem tool %q", name)
+		result.Summary = "tool not recognized"
+	}
+	return result
+}
+
+func (h *HarnessEngine) requestFilesystemToolPermission(ctx context.Context, requestID, conversationID string, call HarnessToolCall) bool {
+	if h.app == nil {
+		return true
+	}
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		name = "run_command"
+	}
+	event := ToolPermissionRequestEvent{
+		ID:             randomID("permission"),
+		RequestID:      requestID,
+		ConversationID: conversationID,
+		ToolName:       name,
+		Action:         name,
+	}
+	switch name {
+	case "run_command":
+		event.Command = append([]string{call.Command}, call.Args...)
+		event.Cwd = call.Cwd
+		event.Summary = strings.TrimSpace(strings.Join(event.Command, " "))
+		if event.Summary == "" {
+			event.Summary = "Run command"
+		}
+	case "write_file":
+		event.Path = call.Path
+		event.ContentPreview = previewToolContent(call.Content)
+		event.Summary = "Write file"
+		if strings.TrimSpace(call.Path) != "" {
+			event.Summary = "Write " + call.Path
+		}
+	}
+	return h.app.requestToolPermission(ctx, event)
+}
+
+func previewToolContent(content string) string {
+	content = strings.TrimSpace(content)
+	if len(content) <= 500 {
+		return content
+	}
+	return content[:500] + "\n..."
 }
 
 func (h *HarnessEngine) shouldUseImageTool(req ChatRequest) bool {
@@ -501,6 +752,34 @@ func newImageToolHarnessRun(chatModel, imageModel, requestID, conversationID str
 			},
 		},
 	}
+}
+
+func insertToolCallStep(run *HarnessRun) {
+	for _, step := range run.Steps {
+		if step.Kind == "tool_call" {
+			return
+		}
+	}
+	now := time.Now().Format(time.RFC3339)
+	step := HarnessStep{
+		ID:        "step_000003_tool",
+		Kind:      "tool_call",
+		Iteration: 1,
+		Provider:  "filesystem",
+		Status:    "pending",
+		StartedAt: now,
+		Summary:   "filesystem tool calls requested by harness preparation",
+	}
+	insertAt := len(run.Steps)
+	for index, existing := range run.Steps {
+		if existing.Kind == "model_call" {
+			insertAt = index
+			break
+		}
+	}
+	run.Steps = append(run.Steps, HarnessStep{})
+	copy(run.Steps[insertAt+1:], run.Steps[insertAt:])
+	run.Steps[insertAt] = step
 }
 
 func firstHarnessRun(model, reason string, tokens int, runs []HarnessRun) HarnessRun {

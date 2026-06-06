@@ -5,12 +5,14 @@ import './App.css';
 import {
   CancelStream,
   CheckOllama,
+  ChooseToolWorkspace,
   DeleteConversation,
   GetConversation,
   GetConfig,
   ListConversations,
   ListModels,
   PurgeArchivedConversations,
+  ResolveToolPermission,
   SaveImage,
   SaveConfig,
   StartImageGeneration,
@@ -65,6 +67,19 @@ type ImageGenerationEvent = {
   raw?: string;
   error?: string;
   conversationId?: string;
+};
+
+type ToolPermissionEvent = {
+  id: string;
+  requestID?: string;
+  conversationId?: string;
+  toolName: string;
+  action: string;
+  summary: string;
+  command?: string[];
+  cwd?: string;
+  path?: string;
+  contentPreview?: string;
 };
 
 type InFlightConversation = {
@@ -177,6 +192,8 @@ function App() {
   const [imageBusy, setImageBusy] = useState(false);
   const [configLoaded, setConfigLoaded] = useState(false);
   const [storageConfig, setStorageConfig] = useState<main.ConfigStorage | null>(null);
+  const [toolConfig, setToolConfig] = useState<main.ConfigTools | null>(null);
+  const [toolPermissions, setToolPermissions] = useState<ToolPermissionEvent[]>([]);
   const [startupError, setStartupError] = useState('');
   const [editingTitleID, setEditingTitleID] = useState('');
   const [editingTitle, setEditingTitle] = useState('');
@@ -275,6 +292,7 @@ function App() {
             steps: imageSteps,
           },
         },
+        tools: toolConfig ?? undefined,
         ui: {
           mode,
         },
@@ -283,7 +301,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, harnessModel, imageDimensions.height, imageDimensions.width, imageModel, imageSteps, mode, model, storageConfig, system]);
+  }, [baseURL, configLoaded, harnessModel, imageDimensions.height, imageDimensions.width, imageModel, imageSteps, mode, model, storageConfig, system, toolConfig]);
 
   useEffect(() => {
     const onChunk = (chunk: ChatChunk) => {
@@ -383,6 +401,23 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const onToolPermission = (event: ToolPermissionEvent) => {
+      setToolPermissions((current) => current.some((item) => item.id === event.id) ? current : [...current, event]);
+    };
+    EventsOn('atelier:tool-permission', onToolPermission);
+    return () => EventsOff('atelier:tool-permission');
+  }, []);
+
+  async function resolveToolPermission(permissionID: string, approved: boolean) {
+    setToolPermissions((current) => current.filter((item) => item.id !== permissionID));
+    try {
+      await ResolveToolPermission(permissionID, approved);
+    } catch (error) {
+      setStartupError(formatError(error));
+    }
+  }
+
+  useEffect(() => {
     const transcript = transcriptRef.current;
     if (!transcript || !shouldFollowTranscriptRef.current) {
       return;
@@ -454,6 +489,7 @@ function App() {
 
     setStartupError('');
     setStorageConfig(config.storage ?? null);
+    setToolConfig(config.tools ?? null);
     setBaseURL(nextBaseURL);
     setModel(nextChatModel);
     setHarnessModel(nextHarnessModel);
@@ -484,6 +520,23 @@ function App() {
   function showMoreConversations() {
     setHistoryExpanded(true);
     setVisibleHistoryCount((current) => Math.max(current, compactHistoryLimit) + expandedHistoryBatchSize);
+  }
+
+  async function chooseToolWorkspace() {
+    try {
+      const selected = await ChooseToolWorkspace(toolConfig?.filesystem?.root ?? '');
+      if (!selected) {
+        return;
+      }
+      setToolConfig((currentConfig) => main.ConfigTools.createFrom({
+        filesystem: {
+          ...(currentConfig?.filesystem ?? {}),
+          root: selected,
+        },
+      }));
+    } catch (error) {
+      setStartupError(formatError(error));
+    }
   }
 
   function handleHistoryScroll(event: React.UIEvent<HTMLDivElement>) {
@@ -1002,6 +1055,26 @@ function App() {
             <span>{startupError}</span>
           </div>
         ) : null}
+        {toolPermissions.length ? (
+          <div className="tool-permission-panel">
+            {toolPermissions.map((permission) => (
+              <div className="tool-permission-card" key={permission.id}>
+                <div>
+                  <strong>{toolPermissionTitle(permission)}</strong>
+                  <span>{permission.summary}</span>
+                  {permission.command?.length ? <code>{permission.command.join(' ')}</code> : null}
+                  {permission.cwd ? <small>in {shortenHomePath(permission.cwd)}</small> : null}
+                  {permission.path ? <code>{shortenHomePath(permission.path)}</code> : null}
+                  {permission.contentPreview ? <pre>{permission.contentPreview}</pre> : null}
+                </div>
+                <div className="tool-permission-actions">
+                  <button onClick={() => resolveToolPermission(permission.id, false)}>Deny</button>
+                  <button className="primary" onClick={() => resolveToolPermission(permission.id, true)}>Allow</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
         {view === 'settings' ? (
           <>
             <div className="toolbar">
@@ -1034,11 +1107,18 @@ function App() {
                 <div className="storage-list">
                   <div>
                     <span>Root</span>
-                    <code>{storageConfig?.root ?? '~/.atelier'}</code>
+                    <code>{shortenHomePath(storageConfig?.root ?? '~/.atelier')}</code>
                   </div>
                   <div>
                     <span>History</span>
-                    <code>{storageConfig?.history ?? '~/.atelier/history'}</code>
+                    <code>{shortenHomePath(storageConfig?.history ?? '~/.atelier/history')}</code>
+                  </div>
+                  <div>
+                    <span>Workspace</span>
+                    <div className="workspace-picker">
+                      <code>{shortenHomePath(toolConfig?.filesystem?.root ?? '~/Documents')}</code>
+                      <button onClick={chooseToolWorkspace}>Choose</button>
+                    </div>
                   </div>
                 </div>
                 <div className="storage-actions">
@@ -1483,6 +1563,31 @@ function imagePayloadForOllama(image: string): string {
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function toolPermissionTitle(permission: ToolPermissionEvent): string {
+  if (permission.toolName === 'run_command') {
+    return 'Run command?';
+  }
+  if (permission.toolName === 'write_file') {
+    return 'Write file?';
+  }
+  return 'Allow tool action?';
+}
+
+function shortenHomePath(path: string): string {
+  const home = inferHomePath(path);
+  if (!home || !path.startsWith(home)) {
+    return path;
+  }
+  if (path.length === home.length) {
+    return '~';
+  }
+  return `~${path.slice(home.length)}`;
+}
+
+function inferHomePath(path: string): string {
+  return path.match(/^\/Users\/[^/]+/)?.[0] ?? path.match(/^\/home\/[^/]+/)?.[0] ?? '';
 }
 
 async function readImageFile(file: File): Promise<Attachment> {

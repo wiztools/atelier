@@ -6,6 +6,8 @@ export function CancelStream(arg1:string):Promise<void>;
 
 export function CheckOllama(arg1:string):Promise<main.OllamaStatus>;
 
+export function ChooseToolWorkspace(arg1:string):Promise<string>;
+
 export function DeleteConversation(arg1:string):Promise<void>;
 
 export function GenerateImage(arg1:main.ImageGenerateRequest):Promise<main.ImageGenerateResponse>;
@@ -18,7 +20,15 @@ export function ListConversations():Promise<Array<main.ConversationSummary>>;
 
 export function ListModels(arg1:string):Promise<Array<main.OllamaModel>>;
 
+export function ListToolFiles(arg1:main.ToolFileListRequest):Promise<main.ToolFileListResult>;
+
 export function PurgeArchivedConversations():Promise<main.PurgeArchivedResult>;
+
+export function ReadToolFile(arg1:main.ToolFileReadRequest):Promise<main.ToolFileReadResult>;
+
+export function ResolveToolPermission(arg1:string,arg2:boolean):Promise<void>;
+
+export function RunToolCommand(arg1:main.ToolCommandRequest):Promise<main.ToolCommandResult>;
 
 export function SaveConfig(arg1:main.AppConfig):Promise<void>;
 
@@ -31,3 +41,5 @@ export function StartImageGeneration(arg1:main.ImageGenerateRequest):Promise<str
 export function StreamChat(arg1:main.ChatRequest):Promise<main.ChatStreamStart>;
 
 export function UpdateConversationTitle(arg1:string,arg2:string):Promise<main.ConversationSummary>;
+
+export function WriteToolFile(arg1:main.ToolFileWriteRequest):Promise<main.ToolFileWriteResult>;
