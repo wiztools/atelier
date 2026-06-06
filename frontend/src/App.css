@@ -183,7 +183,7 @@
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
   overflow: auto;
   padding-right: 2px;
 }
@@ -195,7 +195,7 @@
 }
 
 .history-item {
-  height: 42px;
+  height: 34px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
@@ -217,7 +217,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 0 10px;
+  padding: 0 8px;
   color: inherit;
   text-align: left;
 }

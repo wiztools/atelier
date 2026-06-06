@@ -94,7 +94,7 @@ const minSidebarWidth = 240;
 const maxSidebarWidth = 560;
 const defaultImageRatio = '1:1';
 const defaultImagePixels = '0.6';
-const compactHistoryLimit = 5;
+const compactHistoryLimit = 10;
 const expandedHistoryBatchSize = 20;
 const ratioPresets: RatioPreset[] = [
   {id: '1:1', label: '1:1 Square', width: 1, height: 1},
