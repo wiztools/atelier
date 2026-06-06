@@ -1008,7 +1008,11 @@ func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, 
 	conversationID := randomID("conv")
 	conversationDir := conversationDir(config.Storage, now, conversationID)
 	turnsDir := filepath.Join(conversationDir, "turns")
+	artifactsDir := filepath.Join(conversationDir, "artifacts")
 	if err := os.MkdirAll(turnsDir, 0755); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(artifactsDir, 0755); err != nil {
 		return "", err
 	}
 
@@ -1034,7 +1038,10 @@ func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, 
 		},
 	}
 
-	userTurn, assistantTurn := buildChatTurnPair(conversationID, 1, nowText, req, assistantContent, assistantThinking, model, reason, tokens)
+	userTurn, assistantTurn, err := buildChatTurnPair(conversationID, 1, nowText, req, assistantContent, assistantThinking, model, reason, tokens, artifactsDir)
+	if err != nil {
+		return "", err
+	}
 
 	if err := writeJSONFile(filepath.Join(conversationDir, "conversation.json"), conversation); err != nil {
 		return "", err
@@ -1048,7 +1055,11 @@ func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, 
 	return conversationID, nil
 }
 
-func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt string, req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int) (HistoryTurn, HistoryTurn) {
+func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt string, req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int, artifactsDir string) (HistoryTurn, HistoryTurn, error) {
+	userContent, err := historyContentForMessage(lastUserMessage(req.Messages), artifactsDir, firstTurnNumber)
+	if err != nil {
+		return HistoryTurn{}, HistoryTurn{}, err
+	}
 	userTurn := HistoryTurn{
 		SchemaVersion:  1,
 		ID:             fmt.Sprintf("turn_%06d", firstTurnNumber),
@@ -1056,7 +1067,7 @@ func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt str
 		CreatedAt:      createdAt,
 		Kind:           "chat",
 		Role:           "user",
-		Content:        historyContentForMessage(lastUserMessage(req.Messages)),
+		Content:        userContent,
 		Request: map[string]any{
 			"model": req.Model,
 		},
@@ -1086,7 +1097,7 @@ func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt str
 			"tokens":     tokens,
 		},
 	}
-	return userTurn, assistantTurn
+	return userTurn, assistantTurn, nil
 }
 
 func appendChatConversation(config AppConfig, req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int) (string, error) {
@@ -1113,7 +1124,11 @@ func appendChatConversation(config AppConfig, req ChatRequest, assistantContent,
 	}
 	nextTurnNumber := len(detail.Turns) + 1
 	nowText := time.Now().Format(time.RFC3339)
-	userTurn, assistantTurn := buildChatTurnPair(conversationID, nextTurnNumber, nowText, req, assistantContent, assistantThinking, model, reason, tokens)
+	artifactsDir := filepath.Join(filepath.Dir(conversationPath), "artifacts")
+	userTurn, assistantTurn, err := buildChatTurnPair(conversationID, nextTurnNumber, nowText, req, assistantContent, assistantThinking, model, reason, tokens, artifactsDir)
+	if err != nil {
+		return "", err
+	}
 	turnsDir := filepath.Join(filepath.Dir(conversationPath), "turns")
 	if err := os.MkdirAll(turnsDir, 0755); err != nil {
 		return "", err
@@ -1500,18 +1515,38 @@ func lastUserPrompt(messages []ChatMessage) string {
 	return lastUserMessage(messages).Content
 }
 
-func historyContentForMessage(message ChatMessage) []HistoryContent {
+func historyContentForMessage(message ChatMessage, artifactsDir string, turnNumber int) ([]HistoryContent, error) {
 	contents := []HistoryContent{}
 	if strings.TrimSpace(message.Content) != "" {
 		contents = append(contents, HistoryContent{Type: "text", Text: message.Content})
 	}
-	for range message.Images {
-		contents = append(contents, HistoryContent{Type: "image"})
+	if len(message.Images) > 0 {
+		if err := os.MkdirAll(artifactsDir, 0755); err != nil {
+			return nil, err
+		}
+	}
+	for index, image := range message.Images {
+		data, extension, err := decodeImagePayload(image)
+		if err != nil {
+			return nil, err
+		}
+		artifactID := fmt.Sprintf("input_%06d_%06d", turnNumber, index+1)
+		filename := artifactID + extension
+		artifactPath := filepath.Join(artifactsDir, filename)
+		if err := os.WriteFile(artifactPath, data, 0644); err != nil {
+			return nil, err
+		}
+		contents = append(contents, HistoryContent{
+			Type:       "image",
+			ArtifactID: artifactID,
+			Path:       filepath.ToSlash(filepath.Join("artifacts", filename)),
+			MimeType:   mediaTypeForExtension(extension),
+		})
 	}
 	if len(contents) == 0 {
-		return []HistoryContent{{Type: "text", Text: ""}}
+		return []HistoryContent{{Type: "text", Text: ""}}, nil
 	}
-	return contents
+	return contents, nil
 }
 
 func countMessageImages(messages []ChatMessage) int {

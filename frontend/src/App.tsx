@@ -445,10 +445,11 @@ function App() {
     };
     const requestMessages: main.ChatMessage[] = [
       ...chat
-        .filter((entry) => entry.role !== 'system' && entry.content)
+        .filter((entry) => entry.role !== 'system' && (entry.content || entry.images?.length))
         .map((entry) => ({
           role: entry.role,
           content: entry.content,
+          ...(entry.images?.length ? {images: entry.images.map(imagePayloadForOllama).filter(Boolean)} : {}),
         })),
       {
         role: 'user',
@@ -955,6 +956,10 @@ function historyImages(contents: main.HistoryContent[] | null | undefined): stri
     .filter(Boolean);
 }
 
+function imagePayloadForOllama(image: string): string {
+  return image.replace(/^data:image\/[a-z+.-]+;base64,/, '');
+}
+
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -970,7 +975,7 @@ async function readImageFile(file: File): Promise<Attachment> {
   return {
     name: file.name,
     src: dataURL,
-    payload: dataURL.replace(/^data:image\/[a-z+.-]+;base64,/, ''),
+    payload: imagePayloadForOllama(dataURL),
   };
 }
 

@@ -275,6 +275,9 @@ func TestChatConversationLifecycle(t *testing.T) {
 	if detail.Turns[0].Role != "user" || detail.Turns[1].Role != "assistant" {
 		t.Fatalf("turn roles = %q/%q, want user/assistant", detail.Turns[0].Role, detail.Turns[1].Role)
 	}
+	if len(detail.Turns[0].Content) != 1 || detail.Turns[0].Content[0].Text != "Explain markdown tables" {
+		t.Fatalf("initial user content = %+v, want text prompt", detail.Turns[0].Content)
+	}
 
 	appendedID, err := appendChatConversation(
 		config,
@@ -306,5 +309,67 @@ func TestChatConversationLifecycle(t *testing.T) {
 	}
 	if detail.Conversation.Stats.TurnCount != 4 {
 		t.Fatalf("conversation turn count after append = %d, want 4", detail.Conversation.Stats.TurnCount)
+	}
+}
+
+func TestWriteChatConversationPersistsInputImages(t *testing.T) {
+	root := t.TempDir()
+	storage := ConfigStorage{
+		Root:      filepath.Join(root, ".atelier"),
+		History:   filepath.Join(root, ".atelier", "history"),
+		Artifacts: filepath.Join(root, ".atelier", "history"),
+	}
+	config := defaultAppConfig()
+	config.Storage = storage
+	if err := ensureStorageDirs(storage); err != nil {
+		t.Fatalf("ensureStorageDirs returned error: %v", err)
+	}
+
+	const pngDataURL = "data:image/png;base64,iVBORw0KGgo="
+	conversationID, err := writeChatConversation(
+		config,
+		ChatRequest{
+			Model: "chat-model",
+			Messages: []ChatMessage{
+				{Role: "user", Content: "Describe this image", Images: []string{pngDataURL}},
+			},
+		},
+		"It is a tiny png.",
+		"",
+		"chat-model",
+		"stop",
+		4,
+		"Image Description",
+	)
+	if err != nil {
+		t.Fatalf("writeChatConversation returned error: %v", err)
+	}
+
+	detail, err := getConversation(storage, conversationID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	if detail.Conversation.Stats.ArtifactCount != 1 {
+		t.Fatalf("artifact count = %d, want 1", detail.Conversation.Stats.ArtifactCount)
+	}
+	if len(detail.Turns) != 2 {
+		t.Fatalf("turn count = %d, want 2", len(detail.Turns))
+	}
+	userContent := detail.Turns[0].Content
+	if len(userContent) != 2 {
+		t.Fatalf("user content count = %d, want text and image", len(userContent))
+	}
+	imageContent := userContent[1]
+	if imageContent.Type != "image" {
+		t.Fatalf("image content type = %q, want image", imageContent.Type)
+	}
+	if imageContent.Path != "artifacts/input_000001_000001.png" {
+		t.Fatalf("image path = %q, want artifact path", imageContent.Path)
+	}
+	if imageContent.MimeType != "image/png" {
+		t.Fatalf("image mime type = %q, want image/png", imageContent.MimeType)
+	}
+	if imageContent.Text != pngDataURL {
+		t.Fatalf("hydrated image text = %q, want data URL", imageContent.Text)
 	}
 }
