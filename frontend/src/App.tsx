@@ -121,6 +121,7 @@ function App() {
   const [purgeStatus, setPurgeStatus] = useState('');
   const shellRef = useRef<HTMLElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const shouldFollowTranscriptRef = useRef(true);
   const chatPromptRef = useRef<HTMLTextAreaElement | null>(null);
   const imagePromptRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -208,7 +209,11 @@ function App() {
   }, []);
 
   useEffect(() => {
-    transcriptRef.current?.scrollTo({top: transcriptRef.current.scrollHeight, behavior: 'smooth'});
+    const transcript = transcriptRef.current;
+    if (!transcript || !shouldFollowTranscriptRef.current) {
+      return;
+    }
+    transcript.scrollTo({top: transcript.scrollHeight, behavior: 'smooth'});
   }, [chat]);
 
   useEffect(() => {
@@ -344,8 +349,16 @@ function App() {
     await resetWorkspace('chat');
   }
 
-  async function startNewImage() {
-    await resetWorkspace('image');
+  function startNewImage() {
+    setImageResult(null);
+    setImageError('');
+    setImageSaveStatus('');
+    setImagePrompt('');
+    setView('app');
+    setMode('image');
+    window.setTimeout(() => {
+      imagePromptRef.current?.focus();
+    }, 0);
   }
 
   async function openConversationSummary(conversation: main.ConversationSummary) {
@@ -408,6 +421,7 @@ function App() {
       void CancelStream(activeStream);
       setActiveStream(null);
     }
+    shouldFollowTranscriptRef.current = true;
     setChat(asArray(detail.turns).map((turn) => ({
       id: turn.id,
       role: turn.role === 'user' || turn.role === 'system' ? turn.role : 'assistant',
@@ -424,10 +438,6 @@ function App() {
   }
 
   function hydrateImageConversation(detail: main.ConversationDetail) {
-    if (activeStream) {
-      void CancelStream(activeStream);
-      setActiveStream(null);
-    }
     const userTurn = asArray(detail.turns).find((turn) => turn.role === 'user');
     const assistantTurn = asArray(detail.turns).find((turn) => turn.role === 'assistant');
     const images = historyImages(assistantTurn?.content);
@@ -439,10 +449,12 @@ function App() {
     }));
     setImageError('');
     setImageSaveStatus('');
-    setChat([]);
-    setActiveConversationID('');
-    setPrompt('');
-    setAttachments([]);
+    if (!activeStream) {
+      setChat([]);
+      setActiveConversationID('');
+      setPrompt('');
+      setAttachments([]);
+    }
   }
 
   async function archiveConversation(conversation: main.ConversationSummary) {
@@ -499,6 +511,7 @@ function App() {
       content: trimmed,
       images: attachments.map((item) => item.src),
     };
+    const requestID = `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const requestMessages: main.ChatMessage[] = [
       ...chat
         .filter((entry) => entry.role !== 'system' && (entry.content || entry.images?.length))
@@ -516,26 +529,31 @@ function App() {
 
     setPrompt('');
     setAttachments([]);
+    shouldFollowTranscriptRef.current = true;
+    setActiveStream(requestID);
     setChat((entries) => [
       ...entries,
       userEntry,
-      {id: 'assistant-pending', role: 'assistant', content: '', streaming: true},
+      {id: `assistant-${requestID}`, role: 'assistant', content: '', streaming: true},
     ]);
 
-    const requestID = await StreamChat(main.ChatRequest.createFrom({
-      conversationId: activeConversationID || undefined,
-      baseURL,
-      model,
-      system,
-      messages: requestMessages,
-    }));
-
-    setActiveStream(requestID);
-    setChat((entries) =>
-      entries.map((entry) =>
-        entry.id === 'assistant-pending' ? {...entry, id: `assistant-${requestID}`} : entry,
-      ),
-    );
+    try {
+      await StreamChat(main.ChatRequest.createFrom({
+        requestID,
+        conversationId: activeConversationID || undefined,
+        baseURL,
+        model,
+        system,
+        messages: requestMessages,
+      }));
+    } catch (error) {
+      setActiveStream(null);
+      setChat((entries) =>
+        entries.map((entry) =>
+          entry.id === `assistant-${requestID}` ? {...entry, streaming: false, error: formatError(error)} : entry,
+        ),
+      );
+    }
   }
 
   function handleChatPromptKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -815,7 +833,13 @@ function App() {
 
             {mode === 'chat' ? (
               <div className="chat-panel">
-            <div className="transcript" ref={transcriptRef}>
+            <div
+              className="transcript"
+              ref={transcriptRef}
+              onScroll={(event) => {
+                shouldFollowTranscriptRef.current = isNearScrollBottom(event.currentTarget);
+              }}
+            >
               {asArray(chat).length === 0 ? (
                 <div className="empty-state">
                   <h2>Ask a model, attach an image, or stream a long answer.</h2>
@@ -1035,6 +1059,10 @@ function clampDimension(value: number): number {
 
 function asArray<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : [];
+}
+
+function isNearScrollBottom(element: HTMLElement): boolean {
+  return element.scrollHeight - element.scrollTop - element.clientHeight < 48;
 }
 
 function historyText(contents: main.HistoryContent[] | null | undefined, type: string): string {

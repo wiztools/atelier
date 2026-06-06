@@ -1,10 +1,20 @@
 package main
 
 import (
+	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
 
 func TestNormalizeBaseURL(t *testing.T) {
 	got, err := normalizeBaseURL("localhost:11434/")
@@ -340,6 +350,13 @@ func TestChatConversationLifecycle(t *testing.T) {
 	if detail.Turns[0].Role != "user" || detail.Turns[1].Role != "assistant" {
 		t.Fatalf("turn roles = %q/%q, want user/assistant", detail.Turns[0].Role, detail.Turns[1].Role)
 	}
+	harnessRun, ok := detail.Turns[1].ProviderResponse["harnessRun"].(map[string]any)
+	if !ok {
+		t.Fatalf("assistant provider response missing harness run: %+v", detail.Turns[1].ProviderResponse)
+	}
+	if harnessRun["mode"] != "chat" || harnessRun["status"] != "completed" {
+		t.Fatalf("harness run = %+v, want completed chat run", harnessRun)
+	}
 	if len(detail.Turns[0].Content) != 1 || detail.Turns[0].Content[0].Text != "Explain markdown tables" {
 		t.Fatalf("initial user content = %+v, want text prompt", detail.Turns[0].Content)
 	}
@@ -374,6 +391,65 @@ func TestChatConversationLifecycle(t *testing.T) {
 	}
 	if detail.Conversation.Stats.TurnCount != 4 {
 		t.Fatalf("conversation turn count after append = %d, want 4", detail.Conversation.Stats.TurnCount)
+	}
+}
+
+func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Chat = "chat-model"
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/chat" {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Status:     "404 Not Found",
+				Body:       io.NopCloser(strings.NewReader("not found")),
+				Header:     http.Header{},
+			}, nil
+		}
+		body := fmt.Sprintln(`{"model":"chat-model","message":{"role":"assistant","content":"Hello from harness."},"done":false}`) +
+			fmt.Sprintln(`{"model":"chat-model","done":true,"done_reason":"stop","eval_count":3}`)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{"Content-Type": []string{"application/x-ndjson"}},
+		}, nil
+	})
+	app.runChatStream(t.Context(), "request-1", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Say hello"},
+		},
+	})
+
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	if len(conversations) != 1 {
+		t.Fatalf("conversation count = %d, want 1", len(conversations))
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	if got := detail.Turns[1].Content[0].Text; got != "Hello from harness." {
+		t.Fatalf("assistant content = %q, want streamed content", got)
 	}
 }
 

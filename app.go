@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -279,6 +278,27 @@ type HistoryContent struct {
 	MimeType   string `json:"mimeType,omitempty"`
 	Width      int    `json:"width,omitempty"`
 	Height     int    `json:"height,omitempty"`
+}
+
+type HarnessRun struct {
+	ID          string        `json:"id"`
+	Mode        string        `json:"mode"`
+	Status      string        `json:"status"`
+	StartedAt   string        `json:"startedAt"`
+	CompletedAt string        `json:"completedAt,omitempty"`
+	Steps       []HarnessStep `json:"steps"`
+}
+
+type HarnessStep struct {
+	ID          string `json:"id"`
+	Kind        string `json:"kind"`
+	Provider    string `json:"provider"`
+	Model       string `json:"model"`
+	Status      string `json:"status"`
+	StartedAt   string `json:"startedAt"`
+	CompletedAt string `json:"completedAt,omitempty"`
+	DoneReason  string `json:"doneReason,omitempty"`
+	Tokens      int    `json:"tokens,omitempty"`
 }
 
 func (a *App) GetConfig() (AppConfig, error) {
@@ -600,90 +620,16 @@ func decodeImagePayload(image string) ([]byte, string, error) {
 }
 
 func (a *App) runChatStream(ctx context.Context, requestID string, req ChatRequest) {
-	body := map[string]any{
-		"model":    req.Model,
-		"messages": req.Messages,
-		"stream":   true,
-	}
-	if req.System != "" {
-		body["messages"] = append([]ChatMessage{{Role: "system", Content: req.System}}, req.Messages...)
-	}
-	if req.Think != nil {
-		body["think"] = req.Think
-	}
-	if req.Options != nil {
-		body["options"] = req.Options
-	}
-
-	resp, err := a.postJSON(ctx, a.resolveBaseURL(req.BaseURL)+"/api/chat", body)
+	config, err := loadAppConfig()
 	if err != nil {
 		a.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
 		return
 	}
-	defer resp.Body.Close()
-
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	var assistantContent strings.Builder
-	var assistantThinking strings.Builder
-	var finalModel string
-	var finalReason string
-	var finalTokens int
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-
-		var chunk ollamaChatChunk
-		if err := json.Unmarshal([]byte(line), &chunk); err != nil {
-			a.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
-			return
-		}
-		if chunk.Error != "" {
-			a.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: chunk.Error, Done: true})
-			return
-		}
-
-		assistantContent.WriteString(chunk.Message.Content)
-		assistantThinking.WriteString(chunk.Message.Thinking)
-		if chunk.Model != "" {
-			finalModel = chunk.Model
-		}
-		if chunk.DoneReason != "" {
-			finalReason = chunk.DoneReason
-		}
-		if chunk.EvalCount > 0 {
-			finalTokens = chunk.EvalCount
-		}
-
-		conversationID := ""
-		if chunk.Done {
-			var err error
-			conversationID, err = a.writeChatConversation(req, assistantContent.String(), assistantThinking.String(), finalModel, finalReason, finalTokens)
-			if err != nil {
-				a.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: fmt.Sprintf("history save failed: %v", err), Done: true})
-				return
-			}
-		}
-
-		a.emitChatEvent(ChatStreamEvent{
-			RequestID:      requestID,
-			Content:        chunk.Message.Content,
-			Thinking:       chunk.Message.Thinking,
-			Done:           chunk.Done,
-			Model:          chunk.Model,
-			Reason:         chunk.DoneReason,
-			Tokens:         chunk.EvalCount,
-			ConversationID: conversationID,
-		})
-		if chunk.Done {
-			return
-		}
-	}
-	if err := scanner.Err(); err != nil && !errors.Is(err, context.Canceled) {
+	if err := ensureStorageDirs(config.Storage); err != nil {
 		a.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
+		return
 	}
+	newHarnessEngine(config, a).RunChatStream(ctx, requestID, req)
 }
 
 func (a *App) writeChatConversation(req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int) (string, error) {
@@ -704,7 +650,8 @@ func (a *App) writeChatConversation(req ChatRequest, assistantContent, assistant
 	if strings.TrimSpace(req.ConversationID) == "" {
 		title = a.generateConversationTitle(config, req, assistantContent)
 	}
-	return newHarnessEngine(config).SaveChatTurn(req, assistantContent, assistantThinking, model, reason, tokens, title)
+	run := newChatHarnessRun(req.Model, reason, tokens)
+	return newHarnessEngine(config).SaveChatTurn(req, assistantContent, assistantThinking, model, reason, tokens, title, run)
 }
 
 func (a *App) generateConversationTitle(config AppConfig, req ChatRequest, assistantContent string) string {
@@ -1015,7 +962,7 @@ func ensureStorageDirs(storage ConfigStorage) error {
 	return nil
 }
 
-func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int, title string) (string, error) {
+func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int, title string, run ...HarnessRun) (string, error) {
 	now := time.Now()
 	nowText := now.Format(time.RFC3339)
 	conversationID := randomID("conv")
@@ -1051,7 +998,7 @@ func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, 
 		},
 	}
 
-	userTurn, assistantTurn, err := buildChatTurnPair(conversationID, 1, nowText, req, assistantContent, assistantThinking, model, reason, tokens, artifactsDir)
+	userTurn, assistantTurn, err := buildChatTurnPair(conversationID, 1, nowText, req, assistantContent, assistantThinking, model, reason, tokens, artifactsDir, firstHarnessRun(model, reason, tokens, run))
 	if err != nil {
 		return "", err
 	}
@@ -1068,7 +1015,7 @@ func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, 
 	return conversationID, nil
 }
 
-func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt string, req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int, artifactsDir string) (HistoryTurn, HistoryTurn, error) {
+func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt string, req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int, artifactsDir string, run HarnessRun) (HistoryTurn, HistoryTurn, error) {
 	userContent, err := historyContentForMessage(lastUserMessage(req.Messages), artifactsDir, firstTurnNumber)
 	if err != nil {
 		return HistoryTurn{}, HistoryTurn{}, err
@@ -1107,13 +1054,14 @@ func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt str
 		Content:        assistantContents,
 		ProviderResponse: map[string]any{
 			"doneReason": reason,
+			"harnessRun": run,
 			"tokens":     tokens,
 		},
 	}
 	return userTurn, assistantTurn, nil
 }
 
-func appendChatConversation(config AppConfig, req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int) (string, error) {
+func appendChatConversation(config AppConfig, req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int, run ...HarnessRun) (string, error) {
 	conversationID := strings.TrimSpace(req.ConversationID)
 	conversationPath, err := findConversationPath(config.Storage, conversationID)
 	if err != nil {
@@ -1138,7 +1086,7 @@ func appendChatConversation(config AppConfig, req ChatRequest, assistantContent,
 	nextTurnNumber := len(detail.Turns) + 1
 	nowText := time.Now().Format(time.RFC3339)
 	artifactsDir := filepath.Join(filepath.Dir(conversationPath), "artifacts")
-	userTurn, assistantTurn, err := buildChatTurnPair(conversationID, nextTurnNumber, nowText, req, assistantContent, assistantThinking, model, reason, tokens, artifactsDir)
+	userTurn, assistantTurn, err := buildChatTurnPair(conversationID, nextTurnNumber, nowText, req, assistantContent, assistantThinking, model, reason, tokens, artifactsDir, firstHarnessRun(model, reason, tokens, run))
 	if err != nil {
 		return "", err
 	}
