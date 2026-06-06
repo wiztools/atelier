@@ -170,6 +170,22 @@
   background: #303438;
 }
 
+.history-item.selected {
+  background: #34373a;
+  color: #f3f0e8;
+}
+
+.history-item.selected::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 3px;
+  border-radius: 999px;
+  background: #d5a64f;
+}
+
 .nav-icon {
   width: 22px;
   color: #f3f0e8;

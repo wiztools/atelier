@@ -167,6 +167,7 @@ function App() {
     ? conversationList.slice(0, visibleHistoryCount)
     : conversationList.slice(0, compactHistoryLimit);
   const hasMoreConversations = visibleConversations.length < conversationList.length;
+  const selectedConversationID = mode === 'image' ? imageResult?.conversationId ?? '' : activeConversationID;
 
   function markConversationInFlight(conversationID: string, requestID: string, kind: ConversationKind) {
     requestConversationRef.current[requestID] = {conversationID, kind};
@@ -846,8 +847,9 @@ function App() {
               {conversationList.length ? (
                 visibleConversations.map((conversation) => {
                   const inFlight = inFlightConversations[conversation.id];
+                  const selected = selectedConversationID === conversation.id;
                   return (
-                    <div key={conversation.id} className="history-item">
+                    <div key={conversation.id} className={`history-item${selected ? ' selected' : ''}`}>
                       {editingTitleID === conversation.id ? (
                         <input
                           value={editingTitle}
