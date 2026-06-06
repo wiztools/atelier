@@ -773,6 +773,21 @@ button:disabled {
   flex-wrap: wrap;
 }
 
+.thumb-button {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 5px;
+  overflow: hidden;
+  background: #121415;
+  cursor: zoom-in;
+}
+
+.thumb-button:hover,
+.thumb-button:focus-visible {
+  border-color: #e0c078;
+}
+
 .attachment-strip button {
   height: 54px;
   display: flex;
@@ -787,6 +802,11 @@ button:disabled {
   height: 38px;
   object-fit: cover;
   border-radius: 5px;
+}
+
+.thumb-button img {
+  display: block;
+  border-radius: 0;
 }
 
 .attachment-strip span {
@@ -866,6 +886,49 @@ button:disabled {
   color: #9fcba3;
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+.image-preview-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgba(7, 8, 9, 0.82);
+}
+
+.image-preview-dialog {
+  position: relative;
+  max-width: min(1120px, calc(100vw - 56px));
+  max-height: calc(100vh - 56px);
+  display: grid;
+  place-items: center;
+}
+
+.image-preview-dialog img {
+  max-width: min(1120px, calc(100vw - 56px));
+  max-height: calc(100vh - 56px);
+  border: 1px solid #44494d;
+  border-radius: 8px;
+  background: #0f1112;
+  object-fit: contain;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+}
+
+.image-preview-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 1;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 999px;
+  background: rgba(18, 20, 21, 0.9);
+  color: #f3f0e8;
+  font-size: 24px;
+  line-height: 1;
 }
 
 .raw-output {

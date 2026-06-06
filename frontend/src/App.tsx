@@ -114,6 +114,7 @@ function App() {
   const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth);
   const [resizingSidebar, setResizingSidebar] = useState(false);
   const [view, setView] = useState<View>('app');
+  const [previewImage, setPreviewImage] = useState('');
   const shellRef = useRef<HTMLElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const chatPromptRef = useRef<HTMLTextAreaElement | null>(null);
@@ -223,6 +224,19 @@ function App() {
       window.removeEventListener('mouseup', onMouseUp);
     };
   }, [resizingSidebar]);
+
+  useEffect(() => {
+    if (!previewImage) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setPreviewImage('');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [previewImage]);
 
   useEffect(() => {
     window.localStorage.setItem('atelier.sidebarWidth', String(sidebarWidth));
@@ -756,7 +770,17 @@ function App() {
                   <div className="message-meta">{entry.role}{entry.streaming ? ' streaming' : ''}</div>
                   {entry.images?.length ? (
                     <div className="thumb-row">
-                      {entry.images.map((image) => <img key={image} src={image} alt="" />)}
+                      {entry.images.map((image, index) => (
+                        <button
+                          key={`${entry.id}-image-${index}`}
+                          className="thumb-button"
+                          type="button"
+                          aria-label={`Open attached image ${index + 1}`}
+                          onClick={() => setPreviewImage(image)}
+                        >
+                          <img src={image} alt="" />
+                        </button>
+                      ))}
                     </div>
                   ) : null}
                   {entry.thinking ? <pre className="thinking">{entry.thinking}</pre> : null}
@@ -883,6 +907,22 @@ function App() {
           </>
         )}
       </section>
+      {previewImage ? (
+        <div className="image-preview-overlay" role="presentation" onClick={() => setPreviewImage('')}>
+          <div
+            className="image-preview-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Attached image preview"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button className="image-preview-close" type="button" aria-label="Close image preview" onClick={() => setPreviewImage('')}>
+              ×
+            </button>
+            <img src={previewImage} alt="Attached preview" />
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }
