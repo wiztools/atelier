@@ -26,6 +26,8 @@ export function SaveImage(arg1:main.SaveImageRequest):Promise<string>;
 
 export function SetOllamaBaseURL(arg1:string):Promise<void>;
 
-export function StreamChat(arg1:main.ChatRequest):Promise<string>;
+export function StartImageGeneration(arg1:main.ImageGenerateRequest):Promise<string>;
+
+export function StreamChat(arg1:main.ChatRequest):Promise<main.ChatStreamStart>;
 
 export function UpdateConversationTitle(arg1:string,arg2:string):Promise<main.ConversationSummary>;

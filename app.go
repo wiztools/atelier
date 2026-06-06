@@ -128,14 +128,20 @@ type ChatMessage struct {
 }
 
 type ChatRequest struct {
-	RequestID      string         `json:"requestID,omitempty"`
-	ConversationID string         `json:"conversationId,omitempty"`
+	RequestID      string `json:"requestID,omitempty"`
+	ConversationID string `json:"conversationId,omitempty"`
+	turnStarted    bool
 	BaseURL        string         `json:"baseURL,omitempty"`
 	Model          string         `json:"model"`
 	System         string         `json:"system,omitempty"`
 	Messages       []ChatMessage  `json:"messages"`
 	Think          any            `json:"think,omitempty"`
 	Options        map[string]any `json:"options,omitempty"`
+}
+
+type ChatStreamStart struct {
+	RequestID      string `json:"requestID"`
+	ConversationID string `json:"conversationId"`
 }
 
 type ChatStreamEvent struct {
@@ -175,18 +181,31 @@ type ollamaChatResponse struct {
 }
 
 type ImageGenerateRequest struct {
-	BaseURL string `json:"baseURL,omitempty"`
-	Model   string `json:"model"`
-	Prompt  string `json:"prompt"`
-	Width   int    `json:"width,omitempty"`
-	Height  int    `json:"height,omitempty"`
-	Steps   int    `json:"steps,omitempty"`
+	RequestID      string `json:"requestID,omitempty"`
+	ConversationID string `json:"conversationId,omitempty"`
+	BaseURL        string `json:"baseURL,omitempty"`
+	Model          string `json:"model"`
+	Prompt         string `json:"prompt"`
+	Width          int    `json:"width,omitempty"`
+	Height         int    `json:"height,omitempty"`
+	Steps          int    `json:"steps,omitempty"`
 }
 
 type ImageGenerateResponse struct {
 	Model          string   `json:"model,omitempty"`
 	Text           string   `json:"text,omitempty"`
 	Images         []string `json:"images"`
+	Raw            string   `json:"raw,omitempty"`
+	Error          string   `json:"error,omitempty"`
+	ConversationID string   `json:"conversationId,omitempty"`
+}
+
+type ImageGenerateEvent struct {
+	RequestID      string   `json:"requestID"`
+	Done           bool     `json:"done"`
+	Model          string   `json:"model,omitempty"`
+	Text           string   `json:"text,omitempty"`
+	Images         []string `json:"images,omitempty"`
 	Raw            string   `json:"raw,omitempty"`
 	Error          string   `json:"error,omitempty"`
 	ConversationID string   `json:"conversationId,omitempty"`
@@ -286,18 +305,29 @@ type HarnessRun struct {
 	Status      string        `json:"status"`
 	StartedAt   string        `json:"startedAt"`
 	CompletedAt string        `json:"completedAt,omitempty"`
+	Loop        HarnessLoop   `json:"loop"`
 	Steps       []HarnessStep `json:"steps"`
+}
+
+type HarnessLoop struct {
+	MaxSteps      int    `json:"maxSteps"`
+	MaxWallTimeMS int64  `json:"maxWallTimeMs"`
+	Iterations    int    `json:"iterations"`
+	StopReason    string `json:"stopReason,omitempty"`
 }
 
 type HarnessStep struct {
 	ID          string `json:"id"`
 	Kind        string `json:"kind"`
+	Iteration   int    `json:"iteration,omitempty"`
 	Provider    string `json:"provider"`
 	Model       string `json:"model"`
 	Status      string `json:"status"`
 	StartedAt   string `json:"startedAt"`
 	CompletedAt string `json:"completedAt,omitempty"`
+	Decision    string `json:"decision,omitempty"`
 	DoneReason  string `json:"doneReason,omitempty"`
+	Summary     string `json:"summary,omitempty"`
 	Tokens      int    `json:"tokens,omitempty"`
 }
 
@@ -439,17 +469,74 @@ func (a *App) ListModels(baseURL string) ([]OllamaModel, error) {
 	return models, nil
 }
 
-func (a *App) StreamChat(req ChatRequest) (string, error) {
+func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {
 	if strings.TrimSpace(req.Model) == "" {
-		return "", errors.New("model is required")
+		return nil, errors.New("model is required")
 	}
 	if len(req.Messages) == 0 {
-		return "", errors.New("at least one message is required")
+		return nil, errors.New("at least one message is required")
 	}
 
 	requestID := strings.TrimSpace(req.RequestID)
 	if requestID == "" {
 		requestID = fmt.Sprintf("chat-%d", time.Now().UnixNano())
+	}
+
+	config, err := loadAppConfig()
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureStorageDirs(config.Storage); err != nil {
+		return nil, err
+	}
+	conversationID, err := newHarnessEngine(config, a).StartChatTurn(req)
+	if err != nil {
+		return nil, err
+	}
+	req.ConversationID = conversationID
+	req.turnStarted = true
+
+	streamCtx, cancel := context.WithCancel(context.Background())
+	a.streamsMu.Lock()
+	a.streams[requestID] = cancel
+	a.streamsMu.Unlock()
+
+	go func() {
+		defer func() {
+			a.streamsMu.Lock()
+			delete(a.streams, requestID)
+			a.streamsMu.Unlock()
+		}()
+		newHarnessEngine(config, a).RunChatStream(streamCtx, requestID, req)
+	}()
+
+	return &ChatStreamStart{RequestID: requestID, ConversationID: conversationID}, nil
+}
+
+func (a *App) CancelStream(requestID string) {
+	a.streamsMu.Lock()
+	cancel := a.streams[requestID]
+	a.streamsMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (a *App) GenerateImage(req ImageGenerateRequest) (*ImageGenerateResponse, error) {
+	return a.generateImage(context.Background(), req, "")
+}
+
+func (a *App) StartImageGeneration(req ImageGenerateRequest) (string, error) {
+	if strings.TrimSpace(req.Model) == "" {
+		return "", errors.New("image model is required")
+	}
+	if strings.TrimSpace(req.Prompt) == "" {
+		return "", errors.New("prompt is required")
+	}
+
+	requestID := strings.TrimSpace(req.RequestID)
+	if requestID == "" {
+		requestID = fmt.Sprintf("image-%d", time.Now().UnixNano())
 	}
 
 	streamCtx, cancel := context.WithCancel(context.Background())
@@ -463,29 +550,48 @@ func (a *App) StreamChat(req ChatRequest) (string, error) {
 			delete(a.streams, requestID)
 			a.streamsMu.Unlock()
 		}()
-		a.runChatStream(streamCtx, requestID, req)
+		a.runImageGeneration(streamCtx, requestID, req)
 	}()
 
 	return requestID, nil
 }
 
-func (a *App) CancelStream(requestID string) {
-	a.streamsMu.Lock()
-	cancel := a.streams[requestID]
-	a.streamsMu.Unlock()
-	if cancel != nil {
-		cancel()
+func (a *App) runImageGeneration(ctx context.Context, requestID string, req ImageGenerateRequest) {
+	config, err := loadAppConfig()
+	if err != nil {
+		a.emitImageEvent(ImageGenerateEvent{RequestID: requestID, Error: err.Error(), Done: true})
+		return
 	}
+	if err := ensureStorageDirs(config.Storage); err != nil {
+		a.emitImageEvent(ImageGenerateEvent{RequestID: requestID, Error: err.Error(), Done: true})
+		return
+	}
+
+	conversationID, err := writePendingImageGenerationConversation(config, req)
+	if err != nil {
+		a.emitImageEvent(ImageGenerateEvent{RequestID: requestID, Error: err.Error(), Done: true})
+		return
+	}
+	req.ConversationID = conversationID
+	a.emitImageEvent(ImageGenerateEvent{RequestID: requestID, ConversationID: conversationID})
+
+	result, err := a.generateImage(ctx, req, conversationID)
+	if err != nil {
+		a.emitImageEvent(ImageGenerateEvent{RequestID: requestID, ConversationID: conversationID, Error: err.Error(), Done: true})
+		return
+	}
+	a.emitImageEvent(ImageGenerateEvent{
+		RequestID:      requestID,
+		Done:           true,
+		Model:          result.Model,
+		Text:           result.Text,
+		Images:         result.Images,
+		Raw:            result.Raw,
+		ConversationID: result.ConversationID,
+	})
 }
 
-func (a *App) GenerateImage(req ImageGenerateRequest) (*ImageGenerateResponse, error) {
-	if strings.TrimSpace(req.Model) == "" {
-		return nil, errors.New("image model is required")
-	}
-	if strings.TrimSpace(req.Prompt) == "" {
-		return nil, errors.New("prompt is required")
-	}
-
+func (a *App) generateImage(ctx context.Context, req ImageGenerateRequest, conversationID string) (*ImageGenerateResponse, error) {
 	body := map[string]any{
 		"model":  req.Model,
 		"prompt": req.Prompt,
@@ -501,7 +607,7 @@ func (a *App) GenerateImage(req ImageGenerateRequest) (*ImageGenerateResponse, e
 		body["steps"] = req.Steps
 	}
 
-	resp, err := a.postJSON(context.Background(), a.resolveBaseURL(req.BaseURL)+"/api/generate", body)
+	resp, err := a.postJSON(ctx, a.resolveBaseURL(req.BaseURL)+"/api/generate", body)
 	if err != nil {
 		return nil, err
 	}
@@ -530,8 +636,7 @@ func (a *App) GenerateImage(req ImageGenerateRequest) (*ImageGenerateResponse, e
 	images = append(images, collectImagesFromJSON(raw)...)
 
 	images = dedupeStrings(images)
-	conversationID := ""
-	if len(images) > 0 {
+	if strings.TrimSpace(conversationID) == "" {
 		config, err := loadAppConfig()
 		if err != nil {
 			return nil, err
@@ -543,6 +648,14 @@ func (a *App) GenerateImage(req ImageGenerateRequest) (*ImageGenerateResponse, e
 		if err != nil {
 			return nil, err
 		}
+	} else {
+		config, err := loadAppConfig()
+		if err != nil {
+			return nil, err
+		}
+		if err := appendImageGenerationResult(config, conversationID, req, payload, images, compactRawResponse(raw)); err != nil {
+			return nil, err
+		}
 	}
 
 	return &ImageGenerateResponse{
@@ -552,6 +665,12 @@ func (a *App) GenerateImage(req ImageGenerateRequest) (*ImageGenerateResponse, e
 		Raw:            compactRawResponse(raw),
 		ConversationID: conversationID,
 	}, nil
+}
+
+func (a *App) emitImageEvent(event ImageGenerateEvent) {
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "ollama:image:result", event)
+	}
 }
 
 func (a *App) SaveImage(req SaveImageRequest) (string, error) {
@@ -1015,14 +1134,72 @@ func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, 
 	return conversationID, nil
 }
 
+func writePendingChatConversation(config AppConfig, req ChatRequest) (string, error) {
+	now := time.Now()
+	nowText := now.Format(time.RFC3339)
+	conversationID := randomID("conv")
+	conversationDir := conversationDir(config.Storage, now, conversationID)
+	turnsDir := filepath.Join(conversationDir, "turns")
+	artifactsDir := filepath.Join(conversationDir, "artifacts")
+	if err := os.MkdirAll(turnsDir, 0755); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(artifactsDir, 0755); err != nil {
+		return "", err
+	}
+
+	userPrompt := lastUserPrompt(req.Messages)
+	conversation := HistoryConversation{
+		SchemaVersion: 1,
+		ID:            conversationID,
+		Kind:          "chat",
+		Title:         titleFromPrompt(userPrompt),
+		CreatedAt:     nowText,
+		UpdatedAt:     nowText,
+		Provider: HistoryProvider{
+			ID:      "ollama",
+			BaseURL: config.Providers.Ollama.BaseURL,
+		},
+		Defaults: HistoryDefaults{
+			ChatModel: req.Model,
+			System:    req.System,
+		},
+		Stats: HistoryConversationStats{
+			TurnCount:     1,
+			ArtifactCount: countMessageImages([]ChatMessage{lastUserMessage(req.Messages)}),
+		},
+	}
+	userTurn, err := buildChatUserTurn(conversationID, 1, nowText, req, artifactsDir)
+	if err != nil {
+		return "", err
+	}
+
+	if err := writeJSONFile(filepath.Join(conversationDir, "conversation.json"), conversation); err != nil {
+		return "", err
+	}
+	if err := writeJSONFile(filepath.Join(turnsDir, userTurn.ID+".json"), userTurn); err != nil {
+		return "", err
+	}
+	return conversationID, nil
+}
+
 func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt string, req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int, artifactsDir string, run HarnessRun) (HistoryTurn, HistoryTurn, error) {
-	userContent, err := historyContentForMessage(lastUserMessage(req.Messages), artifactsDir, firstTurnNumber)
+	userTurn, err := buildChatUserTurn(conversationID, firstTurnNumber, createdAt, req, artifactsDir)
 	if err != nil {
 		return HistoryTurn{}, HistoryTurn{}, err
 	}
+	assistantTurn := buildChatAssistantTurn(conversationID, firstTurnNumber+1, createdAt, assistantContent, assistantThinking, model, reason, tokens, run)
+	return userTurn, assistantTurn, nil
+}
+
+func buildChatUserTurn(conversationID string, turnNumber int, createdAt string, req ChatRequest, artifactsDir string) (HistoryTurn, error) {
+	userContent, err := historyContentForMessage(lastUserMessage(req.Messages), artifactsDir, turnNumber)
+	if err != nil {
+		return HistoryTurn{}, err
+	}
 	userTurn := HistoryTurn{
 		SchemaVersion:  1,
-		ID:             fmt.Sprintf("turn_%06d", firstTurnNumber),
+		ID:             fmt.Sprintf("turn_%06d", turnNumber),
 		ConversationID: conversationID,
 		CreatedAt:      createdAt,
 		Kind:           "chat",
@@ -1038,14 +1215,17 @@ func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt str
 	if req.Think != nil {
 		userTurn.Request["think"] = req.Think
 	}
+	return userTurn, nil
+}
 
+func buildChatAssistantTurn(conversationID string, turnNumber int, createdAt string, assistantContent, assistantThinking, model, reason string, tokens int, run HarnessRun) HistoryTurn {
 	assistantContents := []HistoryContent{{Type: "text", Text: assistantContent}}
 	if strings.TrimSpace(assistantThinking) != "" {
 		assistantContents = append(assistantContents, HistoryContent{Type: "thinking", Text: assistantThinking})
 	}
-	assistantTurn := HistoryTurn{
+	return HistoryTurn{
 		SchemaVersion:  1,
-		ID:             fmt.Sprintf("turn_%06d", firstTurnNumber+1),
+		ID:             fmt.Sprintf("turn_%06d", turnNumber),
 		ConversationID: conversationID,
 		CreatedAt:      createdAt,
 		Kind:           "chat",
@@ -1058,7 +1238,6 @@ func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt str
 			"tokens":     tokens,
 		},
 	}
-	return userTurn, assistantTurn, nil
 }
 
 func appendChatConversation(config AppConfig, req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int, run ...HarnessRun) (string, error) {
@@ -1110,6 +1289,89 @@ func appendChatConversation(config AppConfig, req ChatRequest, assistantContent,
 	return conversationID, nil
 }
 
+func appendChatUserTurn(config AppConfig, req ChatRequest) (string, error) {
+	conversationID := strings.TrimSpace(req.ConversationID)
+	conversationPath, err := findConversationPath(config.Storage, conversationID)
+	if err != nil {
+		return "", err
+	}
+
+	var conversation HistoryConversation
+	if err := readJSONFile(conversationPath, &conversation); err != nil {
+		return "", err
+	}
+	if conversation.DeletedAt != "" {
+		return "", fmt.Errorf("conversation %s is deleted", conversationID)
+	}
+	if conversation.Kind != "chat" {
+		return "", fmt.Errorf("conversation %s is not a chat conversation", conversationID)
+	}
+
+	detail, err := getConversation(config.Storage, conversationID)
+	if err != nil {
+		return "", err
+	}
+	nextTurnNumber := len(detail.Turns) + 1
+	nowText := time.Now().Format(time.RFC3339)
+	artifactsDir := filepath.Join(filepath.Dir(conversationPath), "artifacts")
+	userTurn, err := buildChatUserTurn(conversationID, nextTurnNumber, nowText, req, artifactsDir)
+	if err != nil {
+		return "", err
+	}
+	turnsDir := filepath.Join(filepath.Dir(conversationPath), "turns")
+	if err := os.MkdirAll(turnsDir, 0755); err != nil {
+		return "", err
+	}
+
+	conversation.UpdatedAt = nowText
+	conversation.Stats.TurnCount++
+	conversation.Stats.ArtifactCount += countMessageImages([]ChatMessage{lastUserMessage(req.Messages)})
+	if err := writeJSONFile(conversationPath, conversation); err != nil {
+		return "", err
+	}
+	if err := writeJSONFile(filepath.Join(turnsDir, userTurn.ID+".json"), userTurn); err != nil {
+		return "", err
+	}
+	return conversationID, nil
+}
+
+func appendChatAssistantTurn(config AppConfig, conversationID, assistantContent, assistantThinking, model, reason string, tokens int, run HarnessRun) error {
+	conversationPath, err := findConversationPath(config.Storage, conversationID)
+	if err != nil {
+		return err
+	}
+
+	var conversation HistoryConversation
+	if err := readJSONFile(conversationPath, &conversation); err != nil {
+		return err
+	}
+	if conversation.DeletedAt != "" {
+		return fmt.Errorf("conversation %s is deleted", conversationID)
+	}
+	if conversation.Kind != "chat" {
+		return fmt.Errorf("conversation %s is not a chat conversation", conversationID)
+	}
+
+	detail, err := getConversation(config.Storage, conversationID)
+	if err != nil {
+		return err
+	}
+	nextTurnNumber := len(detail.Turns) + 1
+	nowText := time.Now().Format(time.RFC3339)
+	assistantTurn := buildChatAssistantTurn(conversationID, nextTurnNumber, nowText, assistantContent, assistantThinking, model, reason, tokens, run)
+	turnsDir := filepath.Join(filepath.Dir(conversationPath), "turns")
+	if err := os.MkdirAll(turnsDir, 0755); err != nil {
+		return err
+	}
+
+	conversation.UpdatedAt = nowText
+	conversation.Stats.TurnCount++
+	if err := writeJSONFile(conversationPath, conversation); err != nil {
+		return err
+	}
+	return writeJSONFile(filepath.Join(turnsDir, assistantTurn.ID+".json"), assistantTurn)
+}
+
 func writeImageGenerationConversation(config AppConfig, req ImageGenerateRequest, payload ollamaGenerateResponse, images []string, raw string) (string, error) {
 	now := time.Now()
 	nowText := now.Format(time.RFC3339)
@@ -1124,26 +1386,9 @@ func writeImageGenerationConversation(config AppConfig, req ImageGenerateRequest
 		return "", err
 	}
 
-	imageContents := make([]HistoryContent, 0, len(images))
-	for index, image := range images {
-		data, extension, err := decodeImagePayload(image)
-		if err != nil {
-			return "", err
-		}
-		artifactID := fmt.Sprintf("img_%06d", index+1)
-		filename := artifactID + extension
-		artifactPath := filepath.Join(artifactsDir, filename)
-		if err := os.WriteFile(artifactPath, data, 0644); err != nil {
-			return "", err
-		}
-		imageContents = append(imageContents, HistoryContent{
-			Type:       "image",
-			ArtifactID: artifactID,
-			Path:       filepath.ToSlash(filepath.Join("artifacts", filename)),
-			MimeType:   mediaTypeForExtension(extension),
-			Width:      req.Width,
-			Height:     req.Height,
-		})
+	imageContents, err := writeImageArtifacts(artifactsDir, req, images)
+	if err != nil {
+		return "", err
 	}
 
 	conversation := HistoryConversation{
@@ -1168,23 +1413,7 @@ func writeImageGenerationConversation(config AppConfig, req ImageGenerateRequest
 		},
 	}
 
-	userTurn := HistoryTurn{
-		SchemaVersion:  1,
-		ID:             "turn_000001",
-		ConversationID: conversationID,
-		CreatedAt:      nowText,
-		Kind:           "image_generation",
-		Role:           "user",
-		Content: []HistoryContent{
-			{Type: "text", Text: req.Prompt},
-		},
-		Request: map[string]any{
-			"prompt": req.Prompt,
-			"width":  req.Width,
-			"height": req.Height,
-			"steps":  req.Steps,
-		},
-	}
+	userTurn := buildImageGenerationUserTurn(conversationID, "turn_000001", nowText, req)
 
 	assistantTurn := HistoryTurn{
 		SchemaVersion:  1,
@@ -1211,6 +1440,156 @@ func writeImageGenerationConversation(config AppConfig, req ImageGenerateRequest
 		return "", err
 	}
 	return conversationID, nil
+}
+
+func writeImageArtifacts(artifactsDir string, req ImageGenerateRequest, images []string) ([]HistoryContent, error) {
+	if err := os.MkdirAll(artifactsDir, 0755); err != nil {
+		return nil, err
+	}
+	imageContents := make([]HistoryContent, 0, len(images))
+	for index, image := range images {
+		data, extension, err := decodeImagePayload(image)
+		if err != nil {
+			return nil, err
+		}
+		artifactID := fmt.Sprintf("img_%06d", index+1)
+		filename := artifactID + extension
+		artifactPath := filepath.Join(artifactsDir, filename)
+		if err := os.WriteFile(artifactPath, data, 0644); err != nil {
+			return nil, err
+		}
+		imageContents = append(imageContents, HistoryContent{
+			Type:       "image",
+			ArtifactID: artifactID,
+			Path:       filepath.ToSlash(filepath.Join("artifacts", filename)),
+			MimeType:   mediaTypeForExtension(extension),
+			Width:      req.Width,
+			Height:     req.Height,
+		})
+	}
+	return imageContents, nil
+}
+
+func writePendingImageGenerationConversation(config AppConfig, req ImageGenerateRequest) (string, error) {
+	now := time.Now()
+	nowText := now.Format(time.RFC3339)
+	conversationID := randomID("conv")
+	conversationDir := conversationDir(config.Storage, now, conversationID)
+	turnsDir := filepath.Join(conversationDir, "turns")
+	artifactsDir := filepath.Join(conversationDir, "artifacts")
+	if err := os.MkdirAll(turnsDir, 0755); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(artifactsDir, 0755); err != nil {
+		return "", err
+	}
+
+	conversation := HistoryConversation{
+		SchemaVersion: 1,
+		ID:            conversationID,
+		Kind:          "image_generation",
+		Title:         titleFromPrompt(req.Prompt),
+		CreatedAt:     nowText,
+		UpdatedAt:     nowText,
+		Provider: HistoryProvider{
+			ID:      "ollama",
+			BaseURL: config.Providers.Ollama.BaseURL,
+		},
+		Defaults: HistoryDefaults{
+			ChatModel:  config.Providers.Ollama.Models.Chat,
+			ImageModel: req.Model,
+			System:     config.Prompts.System,
+		},
+		Stats: HistoryConversationStats{
+			TurnCount: 1,
+		},
+	}
+	userTurn := buildImageGenerationUserTurn(conversationID, "turn_000001", nowText, req)
+	if err := writeJSONFile(filepath.Join(conversationDir, "conversation.json"), conversation); err != nil {
+		return "", err
+	}
+	if err := writeJSONFile(filepath.Join(turnsDir, userTurn.ID+".json"), userTurn); err != nil {
+		return "", err
+	}
+	return conversationID, nil
+}
+
+func appendImageGenerationResult(config AppConfig, conversationID string, req ImageGenerateRequest, payload ollamaGenerateResponse, images []string, raw string) error {
+	conversationPath, err := findConversationPath(config.Storage, conversationID)
+	if err != nil {
+		return err
+	}
+	var conversation HistoryConversation
+	if err := readJSONFile(conversationPath, &conversation); err != nil {
+		return err
+	}
+	if conversation.DeletedAt != "" {
+		return fmt.Errorf("conversation %s is deleted", conversationID)
+	}
+	if conversation.Kind != "image_generation" {
+		return fmt.Errorf("conversation %s is not an image conversation", conversationID)
+	}
+
+	conversationDir := filepath.Dir(conversationPath)
+	artifactsDir := filepath.Join(conversationDir, "artifacts")
+	imageContents, err := writeImageArtifacts(artifactsDir, req, images)
+	if err != nil {
+		return err
+	}
+	assistantContents := imageContents
+	if strings.TrimSpace(payload.Response) != "" && len(imageContents) == 0 {
+		assistantContents = append(assistantContents, HistoryContent{Type: "text", Text: payload.Response})
+	}
+	nowText := time.Now().Format(time.RFC3339)
+	detail, err := getConversation(config.Storage, conversationID)
+	if err != nil {
+		return err
+	}
+	assistantTurn := HistoryTurn{
+		SchemaVersion:  1,
+		ID:             fmt.Sprintf("turn_%06d", len(detail.Turns)+1),
+		ConversationID: conversationID,
+		CreatedAt:      nowText,
+		Kind:           "image_generation",
+		Role:           "assistant",
+		Model:          req.Model,
+		Content:        assistantContents,
+		ProviderResponse: map[string]any{
+			"done":       payload.Done,
+			"rawCompact": raw,
+		},
+	}
+	conversation.UpdatedAt = nowText
+	conversation.Stats.TurnCount++
+	conversation.Stats.ArtifactCount += len(imageContents)
+	if err := writeJSONFile(conversationPath, conversation); err != nil {
+		return err
+	}
+	turnsDir := filepath.Join(conversationDir, "turns")
+	if err := os.MkdirAll(turnsDir, 0755); err != nil {
+		return err
+	}
+	return writeJSONFile(filepath.Join(turnsDir, assistantTurn.ID+".json"), assistantTurn)
+}
+
+func buildImageGenerationUserTurn(conversationID, turnID, createdAt string, req ImageGenerateRequest) HistoryTurn {
+	return HistoryTurn{
+		SchemaVersion:  1,
+		ID:             turnID,
+		ConversationID: conversationID,
+		CreatedAt:      createdAt,
+		Kind:           "image_generation",
+		Role:           "user",
+		Content: []HistoryContent{
+			{Type: "text", Text: req.Prompt},
+		},
+		Request: map[string]any{
+			"prompt": req.Prompt,
+			"width":  req.Width,
+			"height": req.Height,
+			"steps":  req.Steps,
+		},
+	}
 }
 
 func listConversations(storage ConfigStorage) ([]ConversationSummary, error) {

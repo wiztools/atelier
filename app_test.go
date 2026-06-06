@@ -8,12 +8,27 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return fn(req)
+}
+
+func waitForStreamCleanup(t *testing.T, app *App, requestID string) {
+	t.Helper()
+	for range 100 {
+		app.streamsMu.Lock()
+		_, exists := app.streams[requestID]
+		app.streamsMu.Unlock()
+		if !exists {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("stream %q did not clean up", requestID)
 }
 
 func TestNormalizeBaseURL(t *testing.T) {
@@ -214,6 +229,62 @@ func TestImageGenerationConversationLifecycle(t *testing.T) {
 	}
 }
 
+func TestImageGenerationPendingConversationLifecycle(t *testing.T) {
+	root := t.TempDir()
+	storage := ConfigStorage{
+		Root:      filepath.Join(root, ".atelier"),
+		History:   filepath.Join(root, ".atelier", "history"),
+		Artifacts: filepath.Join(root, ".atelier", "history"),
+	}
+	config := defaultAppConfig()
+	config.Storage = storage
+	if err := ensureStorageDirs(storage); err != nil {
+		t.Fatalf("ensureStorageDirs returned error: %v", err)
+	}
+
+	req := ImageGenerateRequest{Model: "image-model", Prompt: "Paint early", Width: 64, Height: 64, Steps: 2}
+	conversationID, err := writePendingImageGenerationConversation(config, req)
+	if err != nil {
+		t.Fatalf("writePendingImageGenerationConversation returned error: %v", err)
+	}
+	conversations, err := listConversations(storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	if len(conversations) != 1 || conversations[0].ID != conversationID {
+		t.Fatalf("conversations = %+v, want pending image conversation %s", conversations, conversationID)
+	}
+	detail, err := getConversation(storage, conversationID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	if len(detail.Turns) != 1 || detail.Turns[0].Role != "user" {
+		t.Fatalf("turns after pending write = %+v, want one user turn", detail.Turns)
+	}
+
+	err = appendImageGenerationResult(
+		config,
+		conversationID,
+		req,
+		ollamaGenerateResponse{Model: "image-model", Done: true},
+		[]string{"data:image/png;base64,iVBORw0KGgo="},
+		"{}",
+	)
+	if err != nil {
+		t.Fatalf("appendImageGenerationResult returned error: %v", err)
+	}
+	detail, err = getConversation(storage, conversationID)
+	if err != nil {
+		t.Fatalf("getConversation after result returned error: %v", err)
+	}
+	if len(detail.Turns) != 2 || detail.Turns[1].Role != "assistant" {
+		t.Fatalf("turns after result = %+v, want user and assistant", detail.Turns)
+	}
+	if detail.Conversation.Stats.ArtifactCount != 1 {
+		t.Fatalf("artifact count = %d, want 1", detail.Conversation.Stats.ArtifactCount)
+	}
+}
+
 func TestPurgeArchivedConversationsRemovesOnlySoftDeletedFolders(t *testing.T) {
 	root := t.TempDir()
 	storage := ConfigStorage{
@@ -357,6 +428,21 @@ func TestChatConversationLifecycle(t *testing.T) {
 	if harnessRun["mode"] != "chat" || harnessRun["status"] != "completed" {
 		t.Fatalf("harness run = %+v, want completed chat run", harnessRun)
 	}
+	loop, ok := harnessRun["loop"].(map[string]any)
+	if !ok {
+		t.Fatalf("harness run missing loop metadata: %+v", harnessRun)
+	}
+	if loop["maxSteps"] != float64(3) || loop["iterations"] != float64(1) || loop["stopReason"] != "final" {
+		t.Fatalf("harness loop = %+v, want final single-iteration loop", loop)
+	}
+	steps, ok := harnessRun["steps"].([]any)
+	if !ok || len(steps) != 2 {
+		t.Fatalf("harness steps = %+v, want model call and evaluation", harnessRun["steps"])
+	}
+	evaluation, ok := steps[1].(map[string]any)
+	if !ok || evaluation["kind"] != "evaluation" || evaluation["decision"] != "final" {
+		t.Fatalf("evaluation step = %+v, want final evaluation", steps[1])
+	}
 	if len(detail.Turns[0].Content) != 1 || detail.Turns[0].Content[0].Text != "Explain markdown tables" {
 		t.Fatalf("initial user content = %+v, want text prompt", detail.Turns[0].Content)
 	}
@@ -450,6 +536,125 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 	}
 	if got := detail.Turns[1].Content[0].Text; got != "Hello from harness." {
 		t.Fatalf("assistant content = %q, want streamed content", got)
+	}
+	harnessRun, ok := detail.Turns[1].ProviderResponse["harnessRun"].(map[string]any)
+	if !ok {
+		t.Fatalf("assistant provider response missing harness run: %+v", detail.Turns[1].ProviderResponse)
+	}
+	steps, ok := harnessRun["steps"].([]any)
+	if !ok || len(steps) != 2 {
+		t.Fatalf("harness steps = %+v, want model call and evaluation", harnessRun["steps"])
+	}
+}
+
+func TestStreamChatReturnsConversationAfterPendingTurn(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Chat = "chat-model"
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := fmt.Sprintln(`{"model":"chat-model","message":{"role":"assistant","content":"Later."},"done":false}`) +
+			fmt.Sprintln(`{"model":"chat-model","done":true,"done_reason":"stop","eval_count":1}`)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{"Content-Type": []string{"application/x-ndjson"}},
+		}, nil
+	})
+
+	start, err := app.StreamChat(ChatRequest{
+		RequestID: "request-immediate",
+		BaseURL:   "http://ollama.test",
+		Model:     "chat-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Start now"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamChat returned error: %v", err)
+	}
+	if start.RequestID != "request-immediate" {
+		t.Fatalf("request id = %q, want request-immediate", start.RequestID)
+	}
+	if strings.TrimSpace(start.ConversationID) == "" {
+		t.Fatal("StreamChat returned empty conversation id")
+	}
+
+	detail, err := getConversation(config.Storage, start.ConversationID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	if len(detail.Turns) == 0 {
+		t.Fatal("conversation has no pending user turn")
+	}
+	if got := detail.Turns[0].Content[0].Text; got != "Start now" {
+		t.Fatalf("pending user text = %q, want Start now", got)
+	}
+	waitForStreamCleanup(t, app, start.RequestID)
+}
+
+func TestHarnessStartChatTurnRecordsUserBeforeAssistant(t *testing.T) {
+	root := t.TempDir()
+	storage := ConfigStorage{
+		Root:      filepath.Join(root, ".atelier"),
+		History:   filepath.Join(root, ".atelier", "history"),
+		Artifacts: filepath.Join(root, ".atelier", "history"),
+	}
+	config := defaultAppConfig()
+	config.Storage = storage
+	if err := ensureStorageDirs(storage); err != nil {
+		t.Fatalf("ensureStorageDirs returned error: %v", err)
+	}
+
+	engine := newHarnessEngine(config)
+	req := ChatRequest{
+		Model: "chat-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Start immediately"},
+		},
+	}
+	conversationID, err := engine.StartChatTurn(req)
+	if err != nil {
+		t.Fatalf("StartChatTurn returned error: %v", err)
+	}
+	conversations, err := listConversations(storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	if len(conversations) != 1 || conversations[0].ID != conversationID {
+		t.Fatalf("conversations = %+v, want started conversation %s", conversations, conversationID)
+	}
+	detail, err := getConversation(storage, conversationID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	if len(detail.Turns) != 1 || detail.Turns[0].Role != "user" {
+		t.Fatalf("turns after start = %+v, want one user turn", detail.Turns)
+	}
+
+	run := newChatHarnessRun("chat-model", "stop", 2)
+	if err := engine.SaveAssistantTurn(conversationID, "Done later.", "", "chat-model", "stop", 2, run); err != nil {
+		t.Fatalf("SaveAssistantTurn returned error: %v", err)
+	}
+	detail, err = getConversation(storage, conversationID)
+	if err != nil {
+		t.Fatalf("getConversation after assistant returned error: %v", err)
+	}
+	if len(detail.Turns) != 2 || detail.Turns[1].Role != "assistant" {
+		t.Fatalf("turns after assistant = %+v, want user and assistant", detail.Turns)
 	}
 }
 

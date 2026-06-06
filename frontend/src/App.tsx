@@ -6,7 +6,6 @@ import {
   CancelStream,
   CheckOllama,
   DeleteConversation,
-  GenerateImage,
   GetConversation,
   GetConfig,
   ListConversations,
@@ -14,6 +13,7 @@ import {
   PurgeArchivedConversations,
   SaveImage,
   SaveConfig,
+  StartImageGeneration,
   StreamChat,
   UpdateConversationTitle,
 } from '../wailsjs/go/main/App';
@@ -22,6 +22,7 @@ import {EventsOff, EventsOn} from '../wailsjs/runtime/runtime';
 
 type Mode = 'chat' | 'image';
 type View = 'app' | 'settings';
+type ConversationKind = 'chat' | 'image_generation';
 
 type ChatEntry = {
   id: string;
@@ -43,6 +44,29 @@ type ChatChunk = {
   reason?: string;
   tokens?: number;
   conversationId?: string;
+};
+
+type ChatStreamDraft = {
+  content: string;
+  thinking: string;
+  streaming: boolean;
+  error?: string;
+};
+
+type ImageGenerationEvent = {
+  requestID: string;
+  done: boolean;
+  model?: string;
+  text?: string;
+  images?: string[];
+  raw?: string;
+  error?: string;
+  conversationId?: string;
+};
+
+type InFlightConversation = {
+  requestID: string;
+  kind: ConversationKind;
 };
 
 type Attachment = {
@@ -70,6 +94,8 @@ const minSidebarWidth = 240;
 const maxSidebarWidth = 560;
 const defaultImageRatio = '1:1';
 const defaultImagePixels = '0.6';
+const compactHistoryLimit = 5;
+const expandedHistoryBatchSize = 20;
 const ratioPresets: RatioPreset[] = [
   {id: '1:1', label: '1:1 Square', width: 1, height: 1},
   {id: '16:9', label: '16:9 Landscape', width: 16, height: 9},
@@ -96,8 +122,11 @@ function App() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [chat, setChat] = useState<ChatEntry[]>([]);
   const [conversations, setConversations] = useState<main.ConversationSummary[]>([]);
+  const [historyExpanded, setHistoryExpanded] = useState(false);
+  const [visibleHistoryCount, setVisibleHistoryCount] = useState(compactHistoryLimit);
   const [activeConversationID, setActiveConversationID] = useState('');
   const [activeStream, setActiveStream] = useState<string | null>(null);
+  const [inFlightConversations, setInFlightConversations] = useState<Record<string, InFlightConversation>>({});
   const [imagePrompt, setImagePrompt] = useState('');
   const [imageRatio, setImageRatio] = useState(defaultImageRatio);
   const [imagePixels, setImagePixels] = useState(defaultImagePixels);
@@ -122,12 +151,46 @@ function App() {
   const shellRef = useRef<HTMLElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const shouldFollowTranscriptRef = useRef(true);
+  const visibleStreamRef = useRef<string | null>(null);
+  const visibleImageRequestRef = useRef<string | null>(null);
+  const inFlightConversationsRef = useRef<Record<string, InFlightConversation>>({});
+  const requestConversationRef = useRef<Record<string, {conversationID: string; kind: ConversationKind}>>({});
+  const chatStreamDraftsRef = useRef<Record<string, ChatStreamDraft>>({});
   const chatPromptRef = useRef<HTMLTextAreaElement | null>(null);
   const imagePromptRef = useRef<HTMLTextAreaElement | null>(null);
 
   const assistantEntryID = activeStream ? `assistant-${activeStream}` : '';
   const generatedImages = asArray(imageResult?.images);
   const imageDimensions = useMemo(() => computeImageDimensions(imageRatio, imagePixels), [imagePixels, imageRatio]);
+  const conversationList = asArray(conversations);
+  const visibleConversations = historyExpanded
+    ? conversationList.slice(0, visibleHistoryCount)
+    : conversationList.slice(0, compactHistoryLimit);
+  const hasMoreConversations = visibleConversations.length < conversationList.length;
+
+  function markConversationInFlight(conversationID: string, requestID: string, kind: ConversationKind) {
+    requestConversationRef.current[requestID] = {conversationID, kind};
+    const next = {
+      ...inFlightConversationsRef.current,
+      [conversationID]: {requestID, kind},
+    };
+    inFlightConversationsRef.current = next;
+    setInFlightConversations(next);
+  }
+
+  function clearConversationInFlight(requestID: string) {
+    const tracked = requestConversationRef.current[requestID];
+    if (!tracked) {
+      return;
+    }
+    delete requestConversationRef.current[requestID];
+    const next = {...inFlightConversationsRef.current};
+    if (next[tracked.conversationID]?.requestID === requestID) {
+      delete next[tracked.conversationID];
+    }
+    inFlightConversationsRef.current = next;
+    setInFlightConversations(next);
+  }
 
   useEffect(() => {
     loadConfig().catch((error) => {
@@ -180,32 +243,97 @@ function App() {
 
   useEffect(() => {
     const onChunk = (chunk: ChatChunk) => {
+      const isVisibleStream = visibleStreamRef.current === chunk.requestID;
+      if (chunk.conversationId) {
+        markConversationInFlight(chunk.conversationId, chunk.requestID, 'chat');
+      }
+      const draft = chatStreamDraftsRef.current[chunk.requestID] ?? {content: '', thinking: '', streaming: true};
+      chatStreamDraftsRef.current[chunk.requestID] = {
+        content: `${draft.content}${chunk.content ?? ''}`,
+        thinking: `${draft.thinking}${chunk.thinking ?? ''}`,
+        streaming: !chunk.done && !chunk.error,
+        error: chunk.error ?? draft.error,
+      };
       setChat((entries) =>
         entries.map((entry) => {
           if (entry.id !== `assistant-${chunk.requestID}`) {
             return entry;
           }
+          const nextDraft = chatStreamDraftsRef.current[chunk.requestID];
           return {
             ...entry,
-            content: `${entry.content}${chunk.content ?? ''}`,
-            thinking: `${entry.thinking ?? ''}${chunk.thinking ?? ''}`,
-            streaming: !chunk.done && !chunk.error,
-            error: chunk.error,
+            content: nextDraft.content,
+            thinking: nextDraft.thinking,
+            streaming: nextDraft.streaming,
+            error: nextDraft.error,
           };
         }),
       );
       if (chunk.done || chunk.error) {
+        clearConversationInFlight(chunk.requestID);
         setActiveStream((current) => current === chunk.requestID ? null : current);
-        if (chunk.conversationId) {
-          setActiveConversationID(chunk.conversationId);
+        if (isVisibleStream) {
+          visibleStreamRef.current = null;
         }
-        if (!chunk.error) {
-          void refreshConversations();
-        }
+      }
+      if (chunk.conversationId && isVisibleStream) {
+        setActiveConversationID(chunk.conversationId);
+      }
+      if (chunk.conversationId || chunk.done || chunk.error) {
+        void refreshConversations();
       }
     };
     EventsOn('ollama:chat:chunk', onChunk);
     return () => EventsOff('ollama:chat:chunk');
+  }, []);
+
+  useEffect(() => {
+    const onImageResult = (event: ImageGenerationEvent) => {
+      const isVisibleRequest = visibleImageRequestRef.current === event.requestID;
+      if (event.conversationId) {
+        markConversationInFlight(event.conversationId, event.requestID, 'image_generation');
+        void refreshConversations();
+      }
+      if (event.done || event.error) {
+        clearConversationInFlight(event.requestID);
+      }
+      if (!isVisibleRequest) {
+        if (event.done || event.error) {
+          void refreshConversations();
+        }
+        return;
+      }
+      if (event.conversationId) {
+        setImageResult((current) => ({
+          ...(current ?? main.ImageGenerateResponse.createFrom({images: []})),
+          conversationId: event.conversationId,
+          images: asArray(current?.images),
+        }));
+      }
+      if (event.done || event.error) {
+        visibleImageRequestRef.current = null;
+        setImageBusy(false);
+      }
+      if (event.error) {
+        setImageError(event.error);
+        return;
+      }
+      if (event.done) {
+        const nextImages = asArray(event.images);
+        setImageResult(main.ImageGenerateResponse.createFrom({
+          model: event.model,
+          text: event.text,
+          images: nextImages,
+          raw: event.raw,
+          conversationId: event.conversationId,
+        }));
+        if (!nextImages.length && !event.text) {
+          setImageError('Ollama returned a response, but Atelier did not find image data in it.');
+        }
+      }
+    };
+    EventsOn('ollama:image:result', onImageResult);
+    return () => EventsOff('ollama:image:result');
   }, []);
 
   useEffect(() => {
@@ -287,10 +415,23 @@ function App() {
     try {
       const nextConversations = await ListConversations();
       setConversations(asArray(nextConversations));
+      setVisibleHistoryCount((current) => historyExpanded ? Math.max(current, compactHistoryLimit) : compactHistoryLimit);
     } catch (error) {
       setStartupError(formatError(error));
       setConversations([]);
     }
+  }
+
+  function showMoreConversations() {
+    setHistoryExpanded(true);
+    setVisibleHistoryCount((current) => Math.max(current, compactHistoryLimit) + expandedHistoryBatchSize);
+  }
+
+  function handleHistoryScroll(event: React.UIEvent<HTMLDivElement>) {
+    if (!historyExpanded || !hasMoreConversations || !isNearScrollBottom(event.currentTarget, 96)) {
+      return;
+    }
+    setVisibleHistoryCount((current) => Math.min(current + expandedHistoryBatchSize, conversationList.length));
   }
 
   async function refreshOllama(endpoint = baseURL) {
@@ -308,10 +449,10 @@ function App() {
   }
 
   async function resetWorkspace(nextMode: Mode) {
-    if (activeStream) {
-      await CancelStream(activeStream);
-      setActiveStream(null);
-    }
+    visibleStreamRef.current = null;
+    visibleImageRequestRef.current = null;
+    setActiveStream(null);
+    setImageBusy(false);
     setChat([]);
     setPrompt('');
     setAttachments([]);
@@ -350,9 +491,11 @@ function App() {
   }
 
   function startNewImage() {
+    visibleImageRequestRef.current = null;
     setImageResult(null);
     setImageError('');
     setImageSaveStatus('');
+    setImageBusy(false);
     setImagePrompt('');
     setView('app');
     setMode('image');
@@ -417,30 +560,48 @@ function App() {
   }
 
   function hydrateChatConversation(detail: main.ConversationDetail) {
-    if (activeStream) {
-      void CancelStream(activeStream);
-      setActiveStream(null);
-    }
+    const inFlight = inFlightConversationsRef.current[detail.conversation.id];
+    const visibleRequestID = inFlight?.kind === 'chat' ? inFlight.requestID : null;
+    visibleStreamRef.current = visibleRequestID;
+    setActiveStream(visibleRequestID);
     shouldFollowTranscriptRef.current = true;
-    setChat(asArray(detail.turns).map((turn) => ({
+    const entries: ChatEntry[] = asArray(detail.turns).map((turn) => ({
       id: turn.id,
       role: turn.role === 'user' || turn.role === 'system' ? turn.role : 'assistant',
       content: historyText(turn.content, 'text'),
       thinking: historyText(turn.content, 'thinking'),
       images: historyImages(turn.content),
-    })));
+    }));
+    if (visibleRequestID && !entries.some((entry) => entry.id === `assistant-${visibleRequestID}`)) {
+      const draft = chatStreamDraftsRef.current[visibleRequestID];
+      entries.push({
+        id: `assistant-${visibleRequestID}`,
+        role: 'assistant',
+        content: draft?.content ?? '',
+        thinking: draft?.thinking,
+        streaming: draft?.streaming ?? true,
+        error: draft?.error,
+      });
+    }
+    setChat(entries);
     setActiveConversationID(detail.conversation.id);
     setPrompt('');
     setAttachments([]);
+    visibleImageRequestRef.current = null;
+    setImageBusy(false);
     setImageResult(null);
     setImageError('');
     setImageSaveStatus('');
   }
 
   function hydrateImageConversation(detail: main.ConversationDetail) {
+    const inFlight = inFlightConversationsRef.current[detail.conversation.id];
+    const visibleRequestID = inFlight?.kind === 'image_generation' ? inFlight.requestID : null;
     const userTurn = asArray(detail.turns).find((turn) => turn.role === 'user');
     const assistantTurn = asArray(detail.turns).find((turn) => turn.role === 'assistant');
     const images = historyImages(assistantTurn?.content);
+    visibleImageRequestRef.current = visibleRequestID;
+    setImageBusy(Boolean(visibleRequestID));
     setImagePrompt(historyText(userTurn?.content, 'text'));
     setImageResult(main.ImageGenerateResponse.createFrom({
       model: assistantTurn?.model ?? detail.conversation.defaults?.imageModel,
@@ -449,12 +610,12 @@ function App() {
     }));
     setImageError('');
     setImageSaveStatus('');
-    if (!activeStream) {
-      setChat([]);
-      setActiveConversationID('');
-      setPrompt('');
-      setAttachments([]);
-    }
+    visibleStreamRef.current = null;
+    setActiveStream(null);
+    setChat([]);
+    setActiveConversationID('');
+    setPrompt('');
+    setAttachments([]);
   }
 
   async function archiveConversation(conversation: main.ConversationSummary) {
@@ -530,6 +691,8 @@ function App() {
     setPrompt('');
     setAttachments([]);
     shouldFollowTranscriptRef.current = true;
+    visibleStreamRef.current = requestID;
+    chatStreamDraftsRef.current[requestID] = {content: '', thinking: '', streaming: true};
     setActiveStream(requestID);
     setChat((entries) => [
       ...entries,
@@ -538,7 +701,7 @@ function App() {
     ]);
 
     try {
-      await StreamChat(main.ChatRequest.createFrom({
+      const start = await StreamChat(main.ChatRequest.createFrom({
         requestID,
         conversationId: activeConversationID || undefined,
         baseURL,
@@ -546,8 +709,19 @@ function App() {
         system,
         messages: requestMessages,
       }));
+      markConversationInFlight(start.conversationId, start.requestID, 'chat');
+      setActiveConversationID(start.conversationId);
+      void refreshConversations();
     } catch (error) {
+      chatStreamDraftsRef.current[requestID] = {
+        ...(chatStreamDraftsRef.current[requestID] ?? {content: '', thinking: ''}),
+        streaming: false,
+        error: formatError(error),
+      };
       setActiveStream(null);
+      if (visibleStreamRef.current === requestID) {
+        visibleStreamRef.current = null;
+      }
       setChat((entries) =>
         entries.map((entry) =>
           entry.id === `assistant-${requestID}` ? {...entry, streaming: false, error: formatError(error)} : entry,
@@ -573,7 +747,13 @@ function App() {
   async function stopChat() {
     if (activeStream) {
       await CancelStream(activeStream);
+      chatStreamDraftsRef.current[activeStream] = {
+        ...(chatStreamDraftsRef.current[activeStream] ?? {content: '', thinking: ''}),
+        streaming: false,
+        error: 'Stopped',
+      };
       setActiveStream(null);
+      visibleStreamRef.current = null;
       setChat((entries) =>
         entries.map((entry) =>
           entry.id === assistantEntryID ? {...entry, streaming: false, error: 'Stopped'} : entry,
@@ -594,12 +774,15 @@ function App() {
     if (!imageModel || !imagePrompt.trim() || imageBusy) {
       return;
     }
+    const requestID = `image-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setImageBusy(true);
     setImageError('');
     setImageSaveStatus('');
     setImageResult(null);
+    visibleImageRequestRef.current = requestID;
     try {
-      const result = await GenerateImage(main.ImageGenerateRequest.createFrom({
+      await StartImageGeneration(main.ImageGenerateRequest.createFrom({
+        requestID,
         baseURL,
         model: imageModel,
         prompt: imagePrompt.trim(),
@@ -607,14 +790,9 @@ function App() {
         height: imageDimensions.height,
         steps: imageSteps,
       }));
-      setImageResult({...result, images: asArray(result.images)});
-      await refreshConversations();
-      if (!result.images?.length && !result.text) {
-        setImageError('Ollama returned a response, but Atelier did not find image data in it.');
-      }
     } catch (error) {
+      visibleImageRequestRef.current = null;
       setImageError(error instanceof Error ? error.message : String(error));
-    } finally {
       setImageBusy(false);
     }
   }
@@ -663,56 +841,64 @@ function App() {
               </button>
             </nav>
 
-            <div className="history-area">
+            <div className="history-area" onScroll={handleHistoryScroll}>
               <div className="section-label">Chats</div>
-              {asArray(conversations).length ? (
-                asArray(conversations).map((conversation) => (
-                  <div key={conversation.id} className="history-item">
-                    {editingTitleID === conversation.id ? (
-                      <input
-                        value={editingTitle}
-                        onChange={(event) => setEditingTitle(event.target.value)}
-                        onBlur={() => saveConversationTitle(conversation)}
-                        onKeyDown={(event) => handleConversationTitleKeyDown(event, conversation)}
-                        autoFocus
-                      />
-                    ) : (
-                      <>
-                      <button className="history-open" onClick={() => openConversationSummary(conversation)}>
-                        <span>{conversation.title}</span>
-                        <small
-                          className="history-kind"
-                          title={conversation.kind === 'image_generation' ? 'Image' : 'Chat'}
-                          aria-label={conversation.kind === 'image_generation' ? 'Image conversation' : 'Chat conversation'}
-                        >
-                          {conversation.kind === 'image_generation' ? '▧' : '◌'}
-                        </small>
-                      </button>
-                      <div className="history-actions">
-                        <button className="history-icon-button" aria-label={`Edit ${conversation.title}`} title="Edit" onClick={() => startEditingConversationTitle(conversation)}>
-                          ✎
-                        </button>
-                        <button
-                          className="history-icon-button"
-                          aria-label={`More actions for ${conversation.title}`}
-                          title="More"
-                          onClick={() => setOpenHistoryMenuID((current) => current === conversation.id ? '' : conversation.id)}
-                        >
-                          ⋮
-                        </button>
-                        {openHistoryMenuID === conversation.id ? (
-                          <div className="history-menu">
-                            <button onClick={() => archiveConversation(conversation)}>Archive</button>
+              {conversationList.length ? (
+                visibleConversations.map((conversation) => {
+                  const inFlight = inFlightConversations[conversation.id];
+                  return (
+                    <div key={conversation.id} className="history-item">
+                      {editingTitleID === conversation.id ? (
+                        <input
+                          value={editingTitle}
+                          onChange={(event) => setEditingTitle(event.target.value)}
+                          onBlur={() => saveConversationTitle(conversation)}
+                          onKeyDown={(event) => handleConversationTitleKeyDown(event, conversation)}
+                          autoFocus
+                        />
+                      ) : (
+                        <>
+                          <button className="history-open" onClick={() => openConversationSummary(conversation)}>
+                            <span>{conversation.title}</span>
+                            <small
+                              className={`history-kind${inFlight ? ' in-flight' : ''}`}
+                              title={inFlight ? 'Running' : conversation.kind === 'image_generation' ? 'Image' : 'Chat'}
+                              aria-label={inFlight ? 'Conversation running' : conversation.kind === 'image_generation' ? 'Image conversation' : 'Chat conversation'}
+                            >
+                              {inFlight ? <span className="history-spinner" /> : conversation.kind === 'image_generation' ? '▧' : '◌'}
+                            </small>
+                          </button>
+                          <div className="history-actions">
+                            <button className="history-icon-button" aria-label={`Edit ${conversation.title}`} title="Edit" onClick={() => startEditingConversationTitle(conversation)}>
+                              ✎
+                            </button>
+                            <button
+                              className="history-icon-button"
+                              aria-label={`More actions for ${conversation.title}`}
+                              title="More"
+                              onClick={() => setOpenHistoryMenuID((current) => current === conversation.id ? '' : conversation.id)}
+                            >
+                              ⋮
+                            </button>
+                            {openHistoryMenuID === conversation.id ? (
+                              <div className="history-menu">
+                                <button onClick={() => archiveConversation(conversation)}>Archive</button>
+                              </div>
+                            ) : null}
                           </div>
-                        ) : null}
-                      </div>
-                    </>
-                    )}
-                  </div>
-                ))
+                        </>
+                      )}
+                    </div>
+                  );
+                })
               ) : (
                 <div className="history-empty">No conversations yet.</div>
               )}
+              {hasMoreConversations ? (
+                <button className="history-more" onClick={showMoreConversations}>
+                  More
+                </button>
+              ) : null}
             </div>
           </div>
 
@@ -1061,8 +1247,8 @@ function asArray<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : [];
 }
 
-function isNearScrollBottom(element: HTMLElement): boolean {
-  return element.scrollHeight - element.scrollTop - element.clientHeight < 48;
+function isNearScrollBottom(element: HTMLElement, threshold = 48): boolean {
+  return element.scrollHeight - element.scrollTop - element.clientHeight < threshold;
 }
 
 function historyText(contents: main.HistoryContent[] | null | undefined, type: string): string {

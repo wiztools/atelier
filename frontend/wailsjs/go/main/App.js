@@ -50,6 +50,10 @@ export function SetOllamaBaseURL(arg1) {
   return window['go']['main']['App']['SetOllamaBaseURL'](arg1);
 }
 
+export function StartImageGeneration(arg1) {
+  return window['go']['main']['App']['StartImageGeneration'](arg1);
+}
+
 export function StreamChat(arg1) {
   return window['go']['main']['App']['StreamChat'](arg1);
 }

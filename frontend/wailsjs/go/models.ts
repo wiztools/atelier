@@ -262,6 +262,20 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class ChatStreamStart {
+	    requestID: string;
+	    conversationId: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatStreamStart(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.requestID = source["requestID"];
+	        this.conversationId = source["conversationId"];
+	    }
+	}
 	
 	
 	
@@ -501,6 +515,8 @@ export namespace main {
 	
 	
 	export class ImageGenerateRequest {
+	    requestID?: string;
+	    conversationId?: string;
 	    baseURL?: string;
 	    model: string;
 	    prompt: string;
@@ -514,6 +530,8 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.requestID = source["requestID"];
+	        this.conversationId = source["conversationId"];
 	        this.baseURL = source["baseURL"];
 	        this.model = source["model"];
 	        this.prompt = source["prompt"];

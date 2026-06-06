@@ -65,11 +65,13 @@
 }
 
 .sidebar {
+  box-sizing: border-box;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
   gap: 22px;
   padding: 22px;
+  overflow: hidden;
   background: #1d2022;
 }
 
@@ -90,6 +92,7 @@
 .sidebar-main {
   display: flex;
   min-height: 0;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 22px;
 }
@@ -181,6 +184,8 @@
   flex: 1;
   flex-direction: column;
   gap: 8px;
+  overflow: auto;
+  padding-right: 2px;
 }
 
 .section-label {
@@ -238,6 +243,19 @@
   color: #9ea5a3;
   font-size: 14px;
   line-height: 1;
+}
+
+.history-kind.in-flight {
+  color: #d5a64f;
+}
+
+.history-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #3e4548;
+  border-top-color: #d5a64f;
+  border-radius: 999px;
+  animation: spin 0.9s linear infinite;
 }
 
 .history-actions {
@@ -299,6 +317,21 @@
 
 .history-empty {
   padding: 0 4px;
+}
+
+.history-more {
+  width: fit-content;
+  height: 30px;
+  border: 0;
+  padding: 0 4px;
+  background: transparent;
+  color: #9e969d;
+  text-align: left;
+}
+
+.history-more:hover {
+  background: transparent;
+  color: #f3f0e8;
 }
 
 .settings-button {
@@ -428,6 +461,9 @@ button:disabled {
   grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
 }
 
 .toolbar {
@@ -559,7 +595,9 @@ button:disabled {
 
 .chat-panel {
   height: 100%;
+  max-height: calc(100vh - 62px);
   grid-template-rows: minmax(0, 1fr) auto;
+  overflow: hidden;
 }
 
 .transcript {
@@ -750,6 +788,7 @@ button:disabled {
 }
 
 .composer {
+  box-sizing: border-box;
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
