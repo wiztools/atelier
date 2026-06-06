@@ -803,6 +803,95 @@ button:disabled {
   font-weight: 650;
 }
 
+.harness-panel {
+  max-width: 860px;
+  margin: 0 auto 16px;
+  border: 1px solid #303438;
+  border-radius: 7px;
+  background: #191d1f;
+}
+
+.harness-panel summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  color: #d7d1c3;
+  font-size: 12px;
+}
+
+.harness-panel summary::marker {
+  color: #9ea5a3;
+}
+
+.harness-panel summary strong {
+  color: #d5a64f;
+  font-weight: 750;
+}
+
+.harness-panel summary small,
+.harness-meta,
+.harness-step small {
+  color: #9ea5a3;
+}
+
+.harness-meta {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 0 12px 10px;
+  font-size: 11px;
+}
+
+.harness-steps {
+  margin: 0;
+  padding: 0 12px 12px;
+  display: grid;
+  gap: 6px;
+  list-style: none;
+}
+
+.harness-step {
+  border-left: 3px solid #3f474a;
+  padding: 7px 9px;
+  background: #15191b;
+}
+
+.harness-step.completed {
+  border-left-color: #6fa56d;
+}
+
+.harness-step.running {
+  border-left-color: #d5a64f;
+}
+
+.harness-step.failed {
+  border-left-color: #d69a91;
+}
+
+.harness-step div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.harness-step strong {
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.harness-step span {
+  color: #9ea5a3;
+}
+
+.harness-step p {
+  margin: 4px 0 0;
+  color: #d7d1c3;
+  font-size: 12px;
+}
+
 .composer {
   box-sizing: border-box;
   flex: 0 0 auto;
@@ -882,6 +971,52 @@ button:disabled {
 .thumb-button img {
   display: block;
   border-radius: 0;
+}
+
+.chat-image-results {
+  display: grid;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.chat-image-card {
+  width: min(100%, 620px);
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.chat-image-preview {
+  width: 100%;
+  height: auto;
+  padding: 0;
+  border-radius: 8px;
+  background: #101213;
+  cursor: zoom-in;
+  overflow: hidden;
+}
+
+.chat-image-preview:hover,
+.chat-image-preview:focus-visible {
+  border-color: #e0c078;
+}
+
+.chat-image-preview img {
+  display: block;
+  width: 100%;
+  max-height: 520px;
+  object-fit: contain;
+  background: #0f1112;
+}
+
+.chat-image-card figcaption {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.chat-image-card figcaption button {
+  height: 32px;
+  font-size: 12px;
 }
 
 .attachment-strip span {
@@ -1003,6 +1138,21 @@ button:disabled {
   background: rgba(18, 20, 21, 0.9);
   color: #f3f0e8;
   font-size: 24px;
+  line-height: 1;
+}
+
+.image-preview-download {
+  position: absolute;
+  top: 10px;
+  right: 52px;
+  z-index: 1;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 999px;
+  background: rgba(18, 20, 21, 0.9);
+  color: #f3f0e8;
+  font-size: 22px;
   line-height: 1;
 }
 

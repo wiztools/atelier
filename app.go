@@ -144,15 +144,16 @@ type ChatStreamStart struct {
 }
 
 type ChatStreamEvent struct {
-	RequestID      string `json:"requestID"`
-	Content        string `json:"content,omitempty"`
-	Thinking       string `json:"thinking,omitempty"`
-	Done           bool   `json:"done"`
-	Error          string `json:"error,omitempty"`
-	Model          string `json:"model,omitempty"`
-	Reason         string `json:"reason,omitempty"`
-	Tokens         int    `json:"tokens,omitempty"`
-	ConversationID string `json:"conversationId,omitempty"`
+	RequestID      string   `json:"requestID"`
+	Content        string   `json:"content,omitempty"`
+	Thinking       string   `json:"thinking,omitempty"`
+	Images         []string `json:"images,omitempty"`
+	Done           bool     `json:"done"`
+	Error          string   `json:"error,omitempty"`
+	Model          string   `json:"model,omitempty"`
+	Reason         string   `json:"reason,omitempty"`
+	Tokens         int      `json:"tokens,omitempty"`
+	ConversationID string   `json:"conversationId,omitempty"`
 }
 
 type ollamaChatChunk struct {
@@ -299,13 +300,16 @@ type HistoryContent struct {
 }
 
 type HarnessRun struct {
-	ID          string        `json:"id"`
-	Mode        string        `json:"mode"`
-	Status      string        `json:"status"`
-	StartedAt   string        `json:"startedAt"`
-	CompletedAt string        `json:"completedAt,omitempty"`
-	Loop        HarnessLoop   `json:"loop"`
-	Steps       []HarnessStep `json:"steps"`
+	ID             string        `json:"id"`
+	Mode           string        `json:"mode"`
+	Status         string        `json:"status"`
+	StartedAt      string        `json:"startedAt"`
+	CompletedAt    string        `json:"completedAt,omitempty"`
+	DurationMS     int64         `json:"durationMs,omitempty"`
+	RequestID      string        `json:"requestId,omitempty"`
+	ConversationID string        `json:"conversationId,omitempty"`
+	Loop           HarnessLoop   `json:"loop"`
+	Steps          []HarnessStep `json:"steps"`
 }
 
 type HarnessLoop struct {
@@ -324,9 +328,11 @@ type HarnessStep struct {
 	Status      string `json:"status"`
 	StartedAt   string `json:"startedAt"`
 	CompletedAt string `json:"completedAt,omitempty"`
+	DurationMS  int64  `json:"durationMs,omitempty"`
 	Decision    string `json:"decision,omitempty"`
 	DoneReason  string `json:"doneReason,omitempty"`
 	Summary     string `json:"summary,omitempty"`
+	Error       string `json:"error,omitempty"`
 	Tokens      int    `json:"tokens,omitempty"`
 }
 
@@ -1147,6 +1153,49 @@ func appendChatAssistantTurn(config AppConfig, conversationID, assistantContent,
 	return store.writeTurn(loaded.TurnsDir, assistantTurn)
 }
 
+func appendChatAssistantTurnWithImages(config AppConfig, conversationID, assistantContent, model, reason string, images []string, raw string, run HarnessRun, imageReq ImageGenerateRequest) error {
+	store := newHistoryStore(config.Storage)
+	loaded, err := store.loadForAppend(conversationID, "chat", "a chat")
+	if err != nil {
+		return err
+	}
+	nowText := time.Now().Format(time.RFC3339)
+	imageContents, err := writeChatImageArtifacts(loaded.ArtifactsDir, imageReq, images, loaded.NextTurnNumber)
+	if err != nil {
+		return err
+	}
+	contents := []HistoryContent{{Type: "text", Text: assistantContent}}
+	contents = append(contents, imageContents...)
+	assistantTurn := HistoryTurn{
+		SchemaVersion:  1,
+		ID:             fmt.Sprintf("turn_%06d", loaded.NextTurnNumber),
+		ConversationID: conversationID,
+		CreatedAt:      nowText,
+		Kind:           "chat",
+		Role:           "assistant",
+		Model:          model,
+		Content:        contents,
+		ProviderResponse: map[string]any{
+			"doneReason": reason,
+			"harnessRun": run,
+			"tool": map[string]any{
+				"name":       "image_generation",
+				"model":      model,
+				"imageCount": len(imageContents),
+				"rawCompact": raw,
+			},
+		},
+	}
+
+	loaded.Conversation.UpdatedAt = nowText
+	loaded.Conversation.Stats.TurnCount++
+	loaded.Conversation.Stats.ArtifactCount += len(imageContents)
+	if err := store.writeConversation(loaded.Path, loaded.Conversation); err != nil {
+		return err
+	}
+	return store.writeTurn(loaded.TurnsDir, assistantTurn)
+}
+
 func writeImageGenerationConversation(config AppConfig, req ImageGenerateRequest, payload ollamaGenerateResponse, images []string, raw string) (string, error) {
 	now := time.Now()
 	nowText := now.Format(time.RFC3339)
@@ -1217,6 +1266,34 @@ func writeImageArtifacts(artifactsDir string, req ImageGenerateRequest, images [
 			return nil, err
 		}
 		artifactID := fmt.Sprintf("img_%06d", index+1)
+		filename := artifactID + extension
+		artifactPath := filepath.Join(artifactsDir, filename)
+		if err := os.WriteFile(artifactPath, data, 0644); err != nil {
+			return nil, err
+		}
+		imageContents = append(imageContents, HistoryContent{
+			Type:       "image",
+			ArtifactID: artifactID,
+			Path:       filepath.ToSlash(filepath.Join("artifacts", filename)),
+			MimeType:   mediaTypeForExtension(extension),
+			Width:      req.Width,
+			Height:     req.Height,
+		})
+	}
+	return imageContents, nil
+}
+
+func writeChatImageArtifacts(artifactsDir string, req ImageGenerateRequest, images []string, turnNumber int) ([]HistoryContent, error) {
+	if err := os.MkdirAll(artifactsDir, 0755); err != nil {
+		return nil, err
+	}
+	imageContents := make([]HistoryContent, 0, len(images))
+	for index, image := range images {
+		data, extension, err := decodeImagePayload(image)
+		if err != nil {
+			return nil, err
+		}
+		artifactID := fmt.Sprintf("turn_%06d_img_%06d", turnNumber, index+1)
 		filename := artifactID + extension
 		artifactPath := filepath.Join(artifactsDir, filename)
 		if err := os.WriteFile(artifactPath, data, 0644); err != nil {
@@ -1767,6 +1844,13 @@ func dedupeStrings(values []string) []string {
 		deduped = append(deduped, value)
 	}
 	return deduped
+}
+
+func pluralSuffix(count int) string {
+	if count == 1 {
+		return ""
+	}
+	return "s"
 }
 
 func compactRawResponse(raw []byte) string {

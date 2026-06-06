@@ -43,22 +43,40 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	}
 	req.ConversationID = conversationID
 	h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, ConversationID: conversationID})
+	if h.shouldUseImageTool(req) {
+		h.runImageTool(ctx, requestID, conversationID, req)
+		return
+	}
 
 	run := newChatHarnessRun(req.Model, "", 0)
 	run.Status = "running"
 	run.CompletedAt = ""
+	run.DurationMS = 0
+	run.RequestID = requestID
+	run.ConversationID = conversationID
 	run.Loop.StopReason = ""
-	run.Steps = run.Steps[:1]
-	run.Steps[0].Status = "running"
-	run.Steps[0].CompletedAt = ""
+	for index := range run.Steps {
+		run.Steps[index].Status = "pending"
+		run.Steps[index].CompletedAt = ""
+		run.Steps[index].DurationMS = 0
+		run.Steps[index].Decision = ""
+		run.Steps[index].DoneReason = ""
+		run.Steps[index].Error = ""
+		run.Steps[index].Tokens = 0
+	}
+	h.completeStep(&run, "queued", "completed", "", 0, "")
+	h.completeStep(&run, "preparing", "completed", "", 0, "")
+	h.startStep(&run, "model_call")
 	resp, err := h.app.ollamaClient(req.BaseURL).OpenChatStream(ctx, req)
 	if err != nil {
-		h.completeModelStep(&run, "failed", "", 0)
+		h.completeStep(&run, "model_call", "failed", "", 0, err.Error())
 		h.completeRun(&run, "failed", "provider_error")
 		h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
 		return
 	}
 	defer resp.Body.Close()
+	h.completeStep(&run, "model_call", "completed", "", 0, "")
+	h.startStep(&run, "streaming")
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
@@ -75,13 +93,13 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 
 		var chunk ollamaChatChunk
 		if err := json.Unmarshal([]byte(line), &chunk); err != nil {
-			h.completeModelStep(&run, "failed", finalReason, finalTokens)
+			h.completeStep(&run, "streaming", "failed", finalReason, finalTokens, err.Error())
 			h.completeRun(&run, "failed", "decode_error")
 			h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
 			return
 		}
 		if chunk.Error != "" {
-			h.completeModelStep(&run, "failed", finalReason, finalTokens)
+			h.completeStep(&run, "streaming", "failed", finalReason, finalTokens, chunk.Error)
 			h.completeRun(&run, "failed", "provider_error")
 			h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: chunk.Error, Done: true})
 			return
@@ -101,11 +119,15 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 
 		if chunk.Done {
 			var err error
-			h.completeModelStep(&run, "completed", finalReason, finalTokens)
+			h.completeStep(&run, "streaming", "completed", finalReason, finalTokens, "")
 			h.evaluateChatRun(&run, assistantContent.String(), finalReason)
+			h.startStep(&run, "saved")
+			h.completeStep(&run, "saved", "completed", finalReason, finalTokens, "")
 			h.completeRun(&run, "completed", "final")
 			err = h.SaveAssistantTurn(conversationID, assistantContent.String(), assistantThinking.String(), finalModel, finalReason, finalTokens, run)
 			if err != nil {
+				h.completeStep(&run, "saved", "failed", finalReason, finalTokens, err.Error())
+				h.completeRun(&run, "failed", "history_save_error")
 				h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: fmt.Sprintf("history save failed: %v", err), Done: true})
 				return
 			}
@@ -126,14 +148,112 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, context.Canceled) {
-		h.completeModelStep(&run, "failed", finalReason, finalTokens)
+		h.completeStep(&run, "streaming", "failed", finalReason, finalTokens, err.Error())
 		h.completeRun(&run, "failed", "stream_error")
 		h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
 	}
 }
 
+func (h *HarnessEngine) shouldUseImageTool(req ChatRequest) bool {
+	if strings.TrimSpace(h.config.Providers.Ollama.Models.Image) == "" {
+		return false
+	}
+	prompt := strings.ToLower(strings.TrimSpace(lastUserMessage(req.Messages).Content))
+	if prompt == "" {
+		return false
+	}
+	actionWords := []string{"generate", "create", "draw", "paint", "render", "make", "design", "illustrate"}
+	imageWords := []string{"image", "photo", "picture", "illustration", "poster", "logo", "artwork", "wallpaper"}
+	hasAction := false
+	for _, word := range actionWords {
+		if strings.Contains(prompt, word) {
+			hasAction = true
+			break
+		}
+	}
+	if !hasAction {
+		return false
+	}
+	for _, word := range imageWords {
+		if strings.Contains(prompt, word) {
+			return true
+		}
+	}
+	return strings.HasPrefix(prompt, "draw ") || strings.HasPrefix(prompt, "paint ") || strings.HasPrefix(prompt, "render ")
+}
+
+func (h *HarnessEngine) runImageTool(ctx context.Context, requestID, conversationID string, req ChatRequest) {
+	imageModel := strings.TrimSpace(h.config.Providers.Ollama.Models.Image)
+	prompt := strings.TrimSpace(lastUserMessage(req.Messages).Content)
+	run := newImageToolHarnessRun(req.Model, imageModel, requestID, conversationID)
+	h.app.emitChatEvent(ChatStreamEvent{
+		RequestID:      requestID,
+		ConversationID: conversationID,
+		Content:        fmt.Sprintf("Creating image with %s...\n\n", imageModel),
+	})
+
+	imageReq := ImageGenerateRequest{
+		BaseURL: req.BaseURL,
+		Model:   imageModel,
+		Prompt:  prompt,
+		Width:   h.config.Generation.Image.Width,
+		Height:  h.config.Generation.Image.Height,
+		Steps:   h.config.Generation.Image.Steps,
+	}
+
+	h.startStep(&run, "tool_call")
+	payload, raw, err := h.app.ollamaClient(req.BaseURL).GenerateImage(ctx, imageReq)
+	if err != nil {
+		h.completeStep(&run, "tool_call", "failed", "", 0, err.Error())
+		h.completeRun(&run, "failed", "tool_error")
+		h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, ConversationID: conversationID, Error: err.Error(), Done: true})
+		return
+	}
+	images := normalizeImagePayloads(payload.Images)
+	if maybeImage := normalizeImagePayload(payload.Image); maybeImage != "" {
+		images = append(images, maybeImage)
+	}
+	if maybeImage := normalizeImagePayload(payload.Response); maybeImage != "" {
+		images = append(images, maybeImage)
+	}
+	images = append(images, collectImagesFromJSON(raw)...)
+	images = dedupeStrings(images)
+	if len(images) == 0 {
+		errText := "image model returned no image data"
+		h.completeStep(&run, "tool_call", "failed", "", 0, errText)
+		h.completeRun(&run, "failed", "tool_empty")
+		h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, ConversationID: conversationID, Error: errText, Done: true})
+		return
+	}
+	doneReason := "tool_call"
+	h.completeStep(&run, "tool_call", "completed", doneReason, 0, "")
+	h.evaluateImageToolRun(&run, len(images), doneReason)
+	h.startStep(&run, "saved")
+	h.completeStep(&run, "saved", "completed", doneReason, 0, "")
+	h.completeRun(&run, "completed", "final")
+
+	assistantContent := fmt.Sprintf("Generated %d image%s with %s.", len(images), pluralSuffix(len(images)), imageModel)
+	if strings.TrimSpace(payload.Response) != "" && normalizeImagePayload(payload.Response) == "" {
+		assistantContent = strings.TrimSpace(payload.Response)
+	}
+	if err := appendChatAssistantTurnWithImages(h.config, conversationID, assistantContent, imageModel, doneReason, images, compactRawResponse(raw), run, imageReq); err != nil {
+		h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, ConversationID: conversationID, Error: fmt.Sprintf("history save failed: %v", err), Done: true})
+		return
+	}
+	h.app.emitChatEvent(ChatStreamEvent{
+		RequestID:      requestID,
+		ConversationID: conversationID,
+		Content:        assistantContent,
+		Images:         images,
+		Model:          imageModel,
+		Reason:         doneReason,
+		Done:           true,
+	})
+}
+
 func newChatHarnessRun(model, reason string, tokens int) HarnessRun {
 	now := time.Now().Format(time.RFC3339)
+	startedAt := time.Now()
 	run := HarnessRun{
 		ID:          randomID("run"),
 		Mode:        "chat",
@@ -149,6 +269,24 @@ func newChatHarnessRun(model, reason string, tokens int) HarnessRun {
 		Steps: []HarnessStep{
 			{
 				ID:          "step_000001",
+				Kind:        "queued",
+				Iteration:   1,
+				Status:      "completed",
+				StartedAt:   now,
+				CompletedAt: now,
+				Summary:     "turn accepted by harness",
+			},
+			{
+				ID:          "step_000002",
+				Kind:        "preparing",
+				Iteration:   1,
+				Status:      "completed",
+				StartedAt:   now,
+				CompletedAt: now,
+				Summary:     "request normalized and history turn prepared",
+			},
+			{
+				ID:          "step_000003",
 				Kind:        "model_call",
 				Iteration:   1,
 				Provider:    "ollama",
@@ -156,11 +294,23 @@ func newChatHarnessRun(model, reason string, tokens int) HarnessRun {
 				Status:      "completed",
 				StartedAt:   now,
 				CompletedAt: now,
+				Summary:     "provider stream opened",
+			},
+			{
+				ID:          "step_000004",
+				Kind:        "streaming",
+				Iteration:   1,
+				Provider:    "ollama",
+				Model:       model,
+				Status:      "completed",
+				StartedAt:   now,
+				CompletedAt: now,
 				DoneReason:  reason,
+				Summary:     "assistant response streamed to UI",
 				Tokens:      tokens,
 			},
 			{
-				ID:          "step_000002",
+				ID:          "step_000005",
 				Kind:        "evaluation",
 				Iteration:   1,
 				Status:      "completed",
@@ -170,9 +320,81 @@ func newChatHarnessRun(model, reason string, tokens int) HarnessRun {
 				DoneReason:  reason,
 				Summary:     "assistant response is user-visible final output",
 			},
+			{
+				ID:          "step_000006",
+				Kind:        "saved",
+				Iteration:   1,
+				Status:      "completed",
+				StartedAt:   now,
+				CompletedAt: now,
+				Summary:     "assistant turn and harness run stored in history",
+			},
 		},
 	}
+	run.DurationMS = time.Since(startedAt).Milliseconds()
 	return run
+}
+
+func newImageToolHarnessRun(chatModel, imageModel, requestID, conversationID string) HarnessRun {
+	now := time.Now().Format(time.RFC3339)
+	return HarnessRun{
+		ID:             randomID("run"),
+		Mode:           "chat",
+		Status:         "running",
+		StartedAt:      now,
+		RequestID:      requestID,
+		ConversationID: conversationID,
+		Loop: HarnessLoop{
+			MaxSteps:      harnessChatMaxSteps,
+			MaxWallTimeMS: harnessChatMaxWallTime.Milliseconds(),
+			Iterations:    1,
+		},
+		Steps: []HarnessStep{
+			{
+				ID:          "step_000001",
+				Kind:        "queued",
+				Iteration:   1,
+				Status:      "completed",
+				StartedAt:   now,
+				CompletedAt: now,
+				Summary:     "turn accepted by harness",
+			},
+			{
+				ID:          "step_000002",
+				Kind:        "preparing",
+				Iteration:   1,
+				Status:      "completed",
+				StartedAt:   now,
+				CompletedAt: now,
+				Summary:     "request classified as an image generation tool call",
+			},
+			{
+				ID:        "step_000003",
+				Kind:      "tool_call",
+				Iteration: 1,
+				Provider:  "ollama",
+				Model:     imageModel,
+				Status:    "pending",
+				StartedAt: now,
+				Summary:   "configured image model invoked from chat",
+			},
+			{
+				ID:        "step_000004",
+				Kind:      "evaluation",
+				Iteration: 1,
+				Status:    "pending",
+				StartedAt: now,
+			},
+			{
+				ID:        "step_000005",
+				Kind:      "saved",
+				Iteration: 1,
+				Status:    "pending",
+				StartedAt: now,
+				Summary:   "assistant image turn stored in chat history",
+			},
+		},
+	}
 }
 
 func firstHarnessRun(model, reason string, tokens int, runs []HarnessRun) HarnessRun {
@@ -182,42 +404,84 @@ func firstHarnessRun(model, reason string, tokens int, runs []HarnessRun) Harnes
 	return newChatHarnessRun(model, reason, tokens)
 }
 
-func (h *HarnessEngine) completeModelStep(run *HarnessRun, status, reason string, tokens int) {
+func (h *HarnessEngine) startStep(run *HarnessRun, kind string) {
 	now := time.Now().Format(time.RFC3339)
-	if len(run.Steps) == 0 {
+	for index := range run.Steps {
+		if run.Steps[index].Kind != kind {
+			continue
+		}
+		run.Steps[index].Status = "running"
+		run.Steps[index].StartedAt = now
+		run.Steps[index].CompletedAt = ""
+		run.Steps[index].DurationMS = 0
+		run.Steps[index].Error = ""
 		return
 	}
-	run.Steps[0].Status = status
-	run.Steps[0].CompletedAt = now
-	run.Steps[0].DoneReason = reason
-	run.Steps[0].Tokens = tokens
+}
+
+func (h *HarnessEngine) completeStep(run *HarnessRun, kind, status, reason string, tokens int, errorText string) {
+	now := time.Now().Format(time.RFC3339)
+	for index := range run.Steps {
+		if run.Steps[index].Kind != kind {
+			continue
+		}
+		run.Steps[index].Status = status
+		run.Steps[index].CompletedAt = now
+		run.Steps[index].DoneReason = reason
+		run.Steps[index].Tokens = tokens
+		run.Steps[index].Error = errorText
+		if startedAt, err := time.Parse(time.RFC3339, run.Steps[index].StartedAt); err == nil {
+			run.Steps[index].DurationMS = time.Since(startedAt).Milliseconds()
+		}
+		return
+	}
 }
 
 func (h *HarnessEngine) completeRun(run *HarnessRun, status, stopReason string) {
 	run.Status = status
-	run.CompletedAt = time.Now().Format(time.RFC3339)
+	completedAt := time.Now()
+	run.CompletedAt = completedAt.Format(time.RFC3339)
+	if startedAt, err := time.Parse(time.RFC3339, run.StartedAt); err == nil {
+		run.DurationMS = completedAt.Sub(startedAt).Milliseconds()
+	}
 	run.Loop.StopReason = stopReason
 }
 
 func (h *HarnessEngine) evaluateChatRun(run *HarnessRun, assistantContent, doneReason string) {
-	now := time.Now().Format(time.RFC3339)
 	decision := "final"
 	summary := "assistant response is user-visible final output"
 	if strings.TrimSpace(assistantContent) == "" && strings.TrimSpace(doneReason) == "" {
 		decision = "stop"
 		summary = "no assistant content to continue from"
 	}
-	run.Steps = append(run.Steps, HarnessStep{
-		ID:          fmt.Sprintf("step_%06d", len(run.Steps)+1),
-		Kind:        "evaluation",
-		Iteration:   run.Loop.Iterations,
-		Status:      "completed",
-		StartedAt:   now,
-		CompletedAt: now,
-		Decision:    decision,
-		DoneReason:  doneReason,
-		Summary:     summary,
-	})
+	h.startStep(run, "evaluation")
+	for index := range run.Steps {
+		if run.Steps[index].Kind == "evaluation" {
+			run.Steps[index].Decision = decision
+			run.Steps[index].Summary = summary
+			break
+		}
+	}
+	h.completeStep(run, "evaluation", "completed", doneReason, 0, "")
+	run.Loop.StopReason = decision
+}
+
+func (h *HarnessEngine) evaluateImageToolRun(run *HarnessRun, imageCount int, doneReason string) {
+	decision := "final"
+	summary := fmt.Sprintf("image tool generated %d image%s", imageCount, pluralSuffix(imageCount))
+	if imageCount == 0 {
+		decision = "stop"
+		summary = "image tool returned no images"
+	}
+	h.startStep(run, "evaluation")
+	for index := range run.Steps {
+		if run.Steps[index].Kind == "evaluation" {
+			run.Steps[index].Decision = decision
+			run.Steps[index].Summary = summary
+			break
+		}
+	}
+	h.completeStep(run, "evaluation", "completed", doneReason, 0, "")
 	run.Loop.StopReason = decision
 }
 

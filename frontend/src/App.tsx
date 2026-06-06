@@ -30,6 +30,7 @@ type ChatEntry = {
   content: string;
   thinking?: string;
   images?: string[];
+  harnessRun?: HarnessRunView;
   streaming?: boolean;
   error?: string;
 };
@@ -38,6 +39,7 @@ type ChatChunk = {
   requestID: string;
   content?: string;
   thinking?: string;
+  images?: string[];
   done: boolean;
   error?: string;
   model?: string;
@@ -49,6 +51,7 @@ type ChatChunk = {
 type ChatStreamDraft = {
   content: string;
   thinking: string;
+  images: string[];
   streaming: boolean;
   error?: string;
 };
@@ -67,6 +70,41 @@ type ImageGenerationEvent = {
 type InFlightConversation = {
   requestID: string;
   kind: ConversationKind;
+};
+
+type HarnessRunView = {
+  id?: string;
+  mode?: string;
+  status?: string;
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+  requestId?: string;
+  conversationId?: string;
+  loop?: {
+    maxSteps?: number;
+    maxWallTimeMs?: number;
+    iterations?: number;
+    stopReason?: string;
+  };
+  steps?: HarnessStepView[];
+};
+
+type HarnessStepView = {
+  id?: string;
+  kind?: string;
+  iteration?: number;
+  provider?: string;
+  model?: string;
+  status?: string;
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+  decision?: string;
+  doneReason?: string;
+  summary?: string;
+  error?: string;
+  tokens?: number;
 };
 
 type Attachment = {
@@ -168,6 +206,8 @@ function App() {
     : conversationList.slice(0, compactHistoryLimit);
   const hasMoreConversations = visibleConversations.length < conversationList.length;
   const selectedConversationID = mode === 'image' ? imageResult?.conversationId ?? '' : activeConversationID;
+  const latestHarnessRun = [...chat].reverse().find((entry) => entry.role === 'assistant' && entry.harnessRun)?.harnessRun;
+  const visibleHarnessRun = latestHarnessRun ?? (activeStream ? buildRunningHarnessRun(activeStream, activeConversationID, model) : null);
 
   function markConversationInFlight(conversationID: string, requestID: string, kind: ConversationKind) {
     requestConversationRef.current[requestID] = {conversationID, kind};
@@ -248,10 +288,11 @@ function App() {
       if (chunk.conversationId) {
         markConversationInFlight(chunk.conversationId, chunk.requestID, 'chat');
       }
-      const draft = chatStreamDraftsRef.current[chunk.requestID] ?? {content: '', thinking: '', streaming: true};
+      const draft = chatStreamDraftsRef.current[chunk.requestID] ?? {content: '', thinking: '', images: [], streaming: true};
       chatStreamDraftsRef.current[chunk.requestID] = {
         content: `${draft.content}${chunk.content ?? ''}`,
         thinking: `${draft.thinking}${chunk.thinking ?? ''}`,
+        images: chunk.images?.length ? chunk.images : draft.images,
         streaming: !chunk.done && !chunk.error,
         error: chunk.error ?? draft.error,
       };
@@ -265,6 +306,7 @@ function App() {
             ...entry,
             content: nextDraft.content,
             thinking: nextDraft.thinking,
+            images: nextDraft.images,
             streaming: nextDraft.streaming,
             error: nextDraft.error,
           };
@@ -572,6 +614,7 @@ function App() {
       content: historyText(turn.content, 'text'),
       thinking: historyText(turn.content, 'thinking'),
       images: historyImages(turn.content),
+      harnessRun: parseHarnessRun(turn.providerResponse?.harnessRun),
     }));
     if (visibleRequestID && !entries.some((entry) => entry.id === `assistant-${visibleRequestID}`)) {
       const draft = chatStreamDraftsRef.current[visibleRequestID];
@@ -580,6 +623,7 @@ function App() {
         role: 'assistant',
         content: draft?.content ?? '',
         thinking: draft?.thinking,
+        images: draft?.images,
         streaming: draft?.streaming ?? true,
         error: draft?.error,
       });
@@ -693,7 +737,7 @@ function App() {
     setAttachments([]);
     shouldFollowTranscriptRef.current = true;
     visibleStreamRef.current = requestID;
-    chatStreamDraftsRef.current[requestID] = {content: '', thinking: '', streaming: true};
+    chatStreamDraftsRef.current[requestID] = {content: '', thinking: '', images: [], streaming: true};
     setActiveStream(requestID);
     setChat((entries) => [
       ...entries,
@@ -715,7 +759,7 @@ function App() {
       void refreshConversations();
     } catch (error) {
       chatStreamDraftsRef.current[requestID] = {
-        ...(chatStreamDraftsRef.current[requestID] ?? {content: '', thinking: ''}),
+        ...(chatStreamDraftsRef.current[requestID] ?? {content: '', thinking: '', images: []}),
         streaming: false,
         error: formatError(error),
       };
@@ -749,7 +793,7 @@ function App() {
     if (activeStream) {
       await CancelStream(activeStream);
       chatStreamDraftsRef.current[activeStream] = {
-        ...(chatStreamDraftsRef.current[activeStream] ?? {content: '', thinking: ''}),
+        ...(chatStreamDraftsRef.current[activeStream] ?? {content: '', thinking: '', images: []}),
         streaming: false,
         error: 'Stopped',
       };
@@ -1028,6 +1072,7 @@ function App() {
                 shouldFollowTranscriptRef.current = isNearScrollBottom(event.currentTarget);
               }}
             >
+              {visibleHarnessRun ? <HarnessRunPanel run={visibleHarnessRun} /> : null}
               {asArray(chat).length === 0 ? (
                 <div className="empty-state">
                   <h2>Ask a model, attach an image, or stream a long answer.</h2>
@@ -1037,19 +1082,39 @@ function App() {
                 <article key={entry.id} className={`message ${entry.role}`}>
                   <div className="message-meta">{entry.role}{entry.streaming ? ' streaming' : ''}</div>
                   {entry.images?.length ? (
-                    <div className="thumb-row">
-                      {entry.images.map((image, index) => (
-                        <button
-                          key={`${entry.id}-image-${index}`}
-                          className="thumb-button"
-                          type="button"
-                          aria-label={`Open attached image ${index + 1}`}
-                          onClick={() => setPreviewImage(image)}
-                        >
-                          <img src={image} alt="" />
-                        </button>
-                      ))}
-                    </div>
+                    entry.role === 'assistant' ? (
+                      <div className="chat-image-results">
+                        {entry.images.map((image, index) => (
+                          <figure key={`${entry.id}-image-${index}`} className="chat-image-card">
+                            <button
+                              className="chat-image-preview"
+                              type="button"
+                              aria-label={`Open generated image ${index + 1}`}
+                              onClick={() => setPreviewImage(image)}
+                            >
+                              <img src={image} alt="Generated result" />
+                            </button>
+                            <figcaption>
+                              <button type="button" onClick={() => saveGeneratedImage(image, index)}>Download image</button>
+                            </figcaption>
+                          </figure>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="thumb-row">
+                        {entry.images.map((image, index) => (
+                          <button
+                            key={`${entry.id}-image-${index}`}
+                            className="thumb-button"
+                            type="button"
+                            aria-label={`Open attached image ${index + 1}`}
+                            onClick={() => setPreviewImage(image)}
+                          >
+                            <img src={image} alt="" />
+                          </button>
+                        ))}
+                      </div>
+                    )
                   ) : null}
                   {entry.thinking ? <pre className="thinking">{entry.thinking}</pre> : null}
                   {entry.role === 'assistant' || entry.role === 'system' ? (
@@ -1187,6 +1252,9 @@ function App() {
             <button className="image-preview-close" type="button" aria-label="Close image preview" onClick={() => setPreviewImage('')}>
               ×
             </button>
+            <button className="image-preview-download" type="button" aria-label="Download image" title="Download" onClick={() => saveGeneratedImage(previewImage, 0)}>
+              ↓
+            </button>
             <img src={previewImage} alt="Attached preview" />
           </div>
         </div>
@@ -1243,6 +1311,83 @@ function roundToMultiple(value: number, multiple: number): number {
 
 function clampDimension(value: number): number {
   return Math.max(64, Math.min(4096, value));
+}
+
+function HarnessRunPanel({run}: {run: HarnessRunView}) {
+  const steps = asArray(run.steps);
+  const completed = steps.filter((step) => step.status === 'completed').length;
+  const status = run.status ?? 'running';
+  const stopReason = run.loop?.stopReason;
+  return (
+    <details className="harness-panel">
+      <summary>
+        <span>Harness</span>
+        <strong>{status}</strong>
+        <small>{completed}/{steps.length || 6} steps{run.durationMs ? ` · ${formatDuration(run.durationMs)}` : ''}</small>
+      </summary>
+      <div className="harness-meta">
+        {run.loop?.iterations ? <span>{run.loop.iterations} iteration{run.loop.iterations === 1 ? '' : 's'}</span> : null}
+        {stopReason ? <span>stop: {stopReason}</span> : null}
+        {run.requestId ? <span>{run.requestId}</span> : null}
+      </div>
+      <ol className="harness-steps">
+        {steps.map((step, index) => (
+          <li key={step.id ?? `${step.kind}-${index}`} className={`harness-step ${step.status ?? 'pending'}`}>
+            <div>
+              <strong>{formatStepKind(step.kind)}</strong>
+              <span>{step.status ?? 'pending'}</span>
+            </div>
+            <p>{step.error || step.summary || step.decision || step.doneReason || step.model || ''}</p>
+            <small>
+              {step.provider ? `${step.provider} ` : ''}
+              {step.tokens ? `${step.tokens} tokens ` : ''}
+              {step.durationMs ? formatDuration(step.durationMs) : ''}
+            </small>
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
+}
+
+function parseHarnessRun(value: unknown): HarnessRunView | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const run = value as HarnessRunView;
+  return run.status || run.steps?.length ? run : undefined;
+}
+
+function buildRunningHarnessRun(requestID: string, conversationID: string, model: string): HarnessRunView {
+  return {
+    mode: 'chat',
+    status: 'running',
+    requestId: requestID,
+    conversationId: conversationID,
+    loop: {
+      maxSteps: 3,
+      iterations: 1,
+    },
+    steps: [
+      {kind: 'queued', status: 'completed', summary: 'turn accepted by harness'},
+      {kind: 'preparing', status: 'completed', summary: 'request normalized and history turn prepared'},
+      {kind: 'model_call', status: 'completed', provider: 'ollama', model, summary: 'provider stream opened'},
+      {kind: 'streaming', status: 'running', provider: 'ollama', model, summary: 'assistant response streaming to UI'},
+      {kind: 'evaluation', status: 'pending'},
+      {kind: 'saved', status: 'pending'},
+    ],
+  };
+}
+
+function formatStepKind(kind = 'step'): string {
+  return kind.replace(/_/g, ' ');
+}
+
+function formatDuration(durationMs: number): string {
+  if (durationMs < 1000) {
+    return `${durationMs}ms`;
+  }
+  return `${(durationMs / 1000).toFixed(1)}s`;
 }
 
 function asArray<T>(value: T[] | null | undefined): T[] {

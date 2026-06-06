@@ -32,6 +32,28 @@ func waitForStreamCleanup(t *testing.T, app *App, requestID string) {
 	t.Fatalf("stream %q did not clean up", requestID)
 }
 
+func harnessStepByKind(t *testing.T, steps []any, kind string) map[string]any {
+	t.Helper()
+	for _, step := range steps {
+		typed, ok := step.(map[string]any)
+		if ok && typed["kind"] == kind {
+			return typed
+		}
+	}
+	t.Fatalf("harness steps missing %q: %+v", kind, steps)
+	return nil
+}
+
+func historyImagesForTest(contents []HistoryContent) []HistoryContent {
+	images := []HistoryContent{}
+	for _, content := range contents {
+		if content.Type == "image" {
+			images = append(images, content)
+		}
+	}
+	return images
+}
+
 func TestNormalizeBaseURL(t *testing.T) {
 	got, err := normalizeBaseURL("localhost:11434/")
 	if err != nil {
@@ -537,12 +559,12 @@ func TestChatConversationLifecycle(t *testing.T) {
 		t.Fatalf("harness loop = %+v, want final single-iteration loop", loop)
 	}
 	steps, ok := harnessRun["steps"].([]any)
-	if !ok || len(steps) != 2 {
-		t.Fatalf("harness steps = %+v, want model call and evaluation", harnessRun["steps"])
+	if !ok || len(steps) != 6 {
+		t.Fatalf("harness steps = %+v, want full lifecycle timeline", harnessRun["steps"])
 	}
-	evaluation, ok := steps[1].(map[string]any)
-	if !ok || evaluation["kind"] != "evaluation" || evaluation["decision"] != "final" {
-		t.Fatalf("evaluation step = %+v, want final evaluation", steps[1])
+	evaluation := harnessStepByKind(t, steps, "evaluation")
+	if evaluation["decision"] != "final" {
+		t.Fatalf("evaluation step = %+v, want final evaluation", evaluation)
 	}
 	if len(detail.Turns[0].Content) != 1 || detail.Turns[0].Content[0].Text != "Explain markdown tables" {
 		t.Fatalf("initial user content = %+v, want text prompt", detail.Turns[0].Content)
@@ -643,8 +665,86 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 		t.Fatalf("assistant provider response missing harness run: %+v", detail.Turns[1].ProviderResponse)
 	}
 	steps, ok := harnessRun["steps"].([]any)
-	if !ok || len(steps) != 2 {
-		t.Fatalf("harness steps = %+v, want model call and evaluation", harnessRun["steps"])
+	if !ok || len(steps) != 6 {
+		t.Fatalf("harness steps = %+v, want full lifecycle timeline", harnessRun["steps"])
+	}
+	streaming := harnessStepByKind(t, steps, "streaming")
+	if streaming["status"] != "completed" || streaming["tokens"] != float64(3) {
+		t.Fatalf("streaming step = %+v, want completed streaming metadata", streaming)
+	}
+}
+
+func TestHarnessRoutesChatImageRequestToImageTool(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Chat = "chat-model"
+	config.Providers.Ollama.Models.Image = "image-model"
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/generate" {
+			t.Fatalf("unexpected provider path %q, want /api/generate", req.URL.Path)
+		}
+		body := `{"model":"image-model","image":"iVBORw0KGgo=","done":true}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+		}, nil
+	})
+	app.runChatStream(t.Context(), "request-image-tool", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Create an image of a small house"},
+		},
+	})
+
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	if len(conversations) != 1 {
+		t.Fatalf("conversation count = %d, want 1", len(conversations))
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	if len(detail.Turns) != 2 {
+		t.Fatalf("turn count = %d, want user and assistant", len(detail.Turns))
+	}
+	images := historyImagesForTest(detail.Turns[1].Content)
+	if len(images) != 1 {
+		t.Fatalf("assistant image content = %+v, want one image", detail.Turns[1].Content)
+	}
+	tool, ok := detail.Turns[1].ProviderResponse["tool"].(map[string]any)
+	if !ok || tool["name"] != "image_generation" {
+		t.Fatalf("assistant provider tool = %+v, want image_generation", detail.Turns[1].ProviderResponse["tool"])
+	}
+	harnessRun, ok := detail.Turns[1].ProviderResponse["harnessRun"].(map[string]any)
+	if !ok {
+		t.Fatalf("assistant provider response missing harness run: %+v", detail.Turns[1].ProviderResponse)
+	}
+	steps, ok := harnessRun["steps"].([]any)
+	if !ok {
+		t.Fatalf("harness steps = %+v, want timeline", harnessRun["steps"])
+	}
+	toolStep := harnessStepByKind(t, steps, "tool_call")
+	if toolStep["status"] != "completed" || toolStep["model"] != "image-model" {
+		t.Fatalf("tool step = %+v, want completed image-model call", toolStep)
 	}
 }
 
