@@ -120,6 +120,19 @@ type HarnessStepView = {
   summary?: string;
   error?: string;
   tokens?: number;
+  tools?: HarnessToolActivityView[];
+};
+
+type HarnessToolActivityView = {
+  name?: string;
+  status?: string;
+  path?: string;
+  command?: string[];
+  exitCode?: number;
+  stdoutPreview?: string;
+  stderrPreview?: string;
+  durationMs?: number;
+  error?: string;
 };
 
 type Attachment = {
@@ -1487,6 +1500,23 @@ function HarnessRunPanel({run}: {run: HarnessRunView}) {
               {step.tokens ? `${step.tokens} tokens ` : ''}
               {step.durationMs ? formatDuration(step.durationMs) : ''}
             </small>
+            {asArray(step.tools).length ? (
+              <div className="harness-tool-list">
+                {asArray(step.tools).map((tool, toolIndex) => (
+                  <div className={`harness-tool ${tool.status ?? 'pending'}`} key={`${tool.name}-${toolIndex}`}>
+                    <div>
+                      <strong>{formatToolName(tool.name)}</strong>
+                      <span>{tool.status ?? 'pending'}{typeof tool.exitCode === 'number' ? ` · exit ${tool.exitCode}` : ''}{tool.durationMs ? ` · ${formatDuration(tool.durationMs)}` : ''}</span>
+                    </div>
+                    {tool.command?.length ? <code>{tool.command.join(' ')}</code> : null}
+                    {tool.path ? <small>{shortenHomePath(tool.path)}</small> : null}
+                    {tool.stdoutPreview ? <pre><strong>stdout</strong>{'\n'}{tool.stdoutPreview}</pre> : null}
+                    {tool.stderrPreview ? <pre><strong>stderr</strong>{'\n'}{tool.stderrPreview}</pre> : null}
+                    {tool.error ? <p>{tool.error}</p> : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </li>
         ))}
       </ol>
@@ -1525,6 +1555,10 @@ function buildRunningHarnessRun(requestID: string, conversationID: string, model
 
 function formatStepKind(kind = 'step'): string {
   return kind.replace(/_/g, ' ');
+}
+
+function formatToolName(name = 'tool'): string {
+  return name.replace(/_/g, ' ');
 }
 
 function formatDuration(durationMs: number): string {

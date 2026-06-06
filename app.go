@@ -363,20 +363,33 @@ type HarnessLoop struct {
 }
 
 type HarnessStep struct {
-	ID          string `json:"id"`
-	Kind        string `json:"kind"`
-	Iteration   int    `json:"iteration,omitempty"`
-	Provider    string `json:"provider"`
-	Model       string `json:"model"`
-	Status      string `json:"status"`
-	StartedAt   string `json:"startedAt"`
-	CompletedAt string `json:"completedAt,omitempty"`
-	DurationMS  int64  `json:"durationMs,omitempty"`
-	Decision    string `json:"decision,omitempty"`
-	DoneReason  string `json:"doneReason,omitempty"`
-	Summary     string `json:"summary,omitempty"`
-	Error       string `json:"error,omitempty"`
-	Tokens      int    `json:"tokens,omitempty"`
+	ID          string                `json:"id"`
+	Kind        string                `json:"kind"`
+	Iteration   int                   `json:"iteration,omitempty"`
+	Provider    string                `json:"provider"`
+	Model       string                `json:"model"`
+	Status      string                `json:"status"`
+	StartedAt   string                `json:"startedAt"`
+	CompletedAt string                `json:"completedAt,omitempty"`
+	DurationMS  int64                 `json:"durationMs,omitempty"`
+	Decision    string                `json:"decision,omitempty"`
+	DoneReason  string                `json:"doneReason,omitempty"`
+	Summary     string                `json:"summary,omitempty"`
+	Error       string                `json:"error,omitempty"`
+	Tokens      int                   `json:"tokens,omitempty"`
+	Tools       []HarnessToolActivity `json:"tools,omitempty"`
+}
+
+type HarnessToolActivity struct {
+	Name          string   `json:"name"`
+	Status        string   `json:"status"`
+	Path          string   `json:"path,omitempty"`
+	Command       []string `json:"command,omitempty"`
+	ExitCode      int      `json:"exitCode,omitempty"`
+	StdoutPreview string   `json:"stdoutPreview,omitempty"`
+	StderrPreview string   `json:"stderrPreview,omitempty"`
+	DurationMS    int64    `json:"durationMs,omitempty"`
+	Error         string   `json:"error,omitempty"`
 }
 
 func (a *App) GetConfig() (AppConfig, error) {

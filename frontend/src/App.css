@@ -1021,6 +1021,60 @@ button:disabled {
   font-size: 12px;
 }
 
+.harness-tool-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.harness-tool {
+  display: grid;
+  gap: 5px;
+  padding: 7px 8px;
+  border: 1px solid #2c3436;
+  border-radius: 6px;
+  background: #101314;
+}
+
+.harness-tool.completed {
+  border-color: #35563e;
+}
+
+.harness-tool.failed,
+.harness-tool.denied {
+  border-color: #68403d;
+}
+
+.harness-tool > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.harness-tool strong {
+  color: #e0c078;
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.harness-tool code,
+.harness-tool pre {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid #293033;
+  border-radius: 5px;
+  overflow: auto;
+  background: #0b0d0e;
+  color: #d7d1c3;
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.harness-tool pre strong {
+  color: #93b6bd;
+}
+
 .composer {
   box-sizing: border-box;
   flex: 0 0 auto;

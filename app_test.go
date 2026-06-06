@@ -378,6 +378,62 @@ func TestResolveToolPermissionRejectsMissingRequest(t *testing.T) {
 	}
 }
 
+func TestParseHarnessToolPlanAcceptsNoToolDecision(t *testing.T) {
+	plan, errors := parseHarnessToolPlan("```json\n{\"brief\":\"Answer from conversation.\",\"needsTools\":false,\"reason\":\"No filesystem context is needed.\",\"toolCalls\":[]}\n```")
+	if len(errors) > 0 {
+		t.Fatalf("validation errors = %+v", errors)
+	}
+	if plan.NeedsTools {
+		t.Fatal("needsTools = true, want false")
+	}
+	if len(plan.ToolCalls) != 0 {
+		t.Fatalf("toolCalls = %+v, want empty", plan.ToolCalls)
+	}
+}
+
+func TestParseHarnessToolPlanAcceptsToolDecision(t *testing.T) {
+	plan, errors := parseHarnessToolPlan("```json\n{\"brief\":\"Read status.\",\"needsTools\":true,\"reason\":\"Need current file contents.\",\"toolCalls\":[{\"name\":\"read_file\",\"path\":\"status.txt\",\"maxBytes\":20000}]}\n```")
+	if len(errors) > 0 {
+		t.Fatalf("validation errors = %+v", errors)
+	}
+	if !plan.NeedsTools || len(plan.ToolCalls) != 1 {
+		t.Fatalf("plan = %+v, want one tool call", plan)
+	}
+	if plan.ToolCalls[0].Name != "read_file" || plan.ToolCalls[0].Path != "status.txt" {
+		t.Fatalf("tool call = %+v", plan.ToolCalls[0])
+	}
+}
+
+func TestParseHarnessToolPlanRejectsInvalidToolName(t *testing.T) {
+	_, errors := parseHarnessToolPlan("```json\n{\"brief\":\"Do it.\",\"needsTools\":true,\"reason\":\"Need a tool.\",\"toolCalls\":[{\"name\":\"delete_all\",\"path\":\".\"}]}\n```")
+	if !containsSubstring(errors, "name must be one of") {
+		t.Fatalf("validation errors = %+v, want invalid tool name", errors)
+	}
+}
+
+func TestParseHarnessToolPlanRejectsMissingRequiredFields(t *testing.T) {
+	_, errors := parseHarnessToolPlan("```json\n{\"brief\":\"Read it.\",\"needsTools\":true,\"reason\":\"Need file.\",\"toolCalls\":[{\"name\":\"read_file\"}]}\n```")
+	if !containsSubstring(errors, "path is required") {
+		t.Fatalf("validation errors = %+v, want missing path", errors)
+	}
+}
+
+func TestParseHarnessToolPlanRejectsInconsistentToolDecision(t *testing.T) {
+	_, errors := parseHarnessToolPlan("```json\n{\"brief\":\"No tools.\",\"needsTools\":false,\"reason\":\"No tools needed.\",\"toolCalls\":[{\"name\":\"list_files\",\"path\":\".\"}]}\n```")
+	if !containsSubstring(errors, "toolCalls must be empty") {
+		t.Fatalf("validation errors = %+v, want inconsistent needsTools error", errors)
+	}
+}
+
+func containsSubstring(values []string, substring string) bool {
+	for _, value := range values {
+		if strings.Contains(value, substring) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestOllamaClientChecksStatusAndListsModels(t *testing.T) {
 	client := newOllamaClient(&http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -964,6 +1020,7 @@ func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
 
 	app := NewApp()
 	var responseSystem string
+	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Path != "/api/chat" {
 			return &http.Response{
@@ -979,7 +1036,11 @@ func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
 			t.Fatalf("provider request body is not JSON: %v", err)
 		}
 		if payload["stream"] == false {
-			body := "{\"model\":\"harness-model\",\"message\":{\"role\":\"assistant\",\"content\":\"```json\\n{\\\"brief\\\":\\\"Use the status file to answer.\\\",\\\"toolCalls\\\":[{\\\"name\\\":\\\"read_file\\\",\\\"path\\\":\\\"status.txt\\\"}]}\\n```\"},\"done\":true,\"done_reason\":\"stop\",\"eval_count\":2}"
+			prepCalls++
+			body := "{\"model\":\"harness-model\",\"message\":{\"role\":\"assistant\",\"content\":\"```json\\n{\\\"brief\\\":\\\"Use the status file to answer.\\\",\\\"needsTools\\\":true,\\\"reason\\\":\\\"The user asks for project status from the workspace.\\\",\\\"toolCalls\\\":[{\\\"name\\\":\\\"read_file\\\",\\\"path\\\":\\\"status.txt\\\"}]}\\n```\"},\"done\":true,\"done_reason\":\"stop\",\"eval_count\":2}"
+			if prepCalls > 1 {
+				body = "{\"model\":\"harness-model\",\"message\":{\"role\":\"assistant\",\"content\":\"```json\\n{\\\"brief\\\":\\\"Answer that the project status is green based on the status file.\\\",\\\"needsTools\\\":false,\\\"reason\\\":\\\"The status file provided enough context.\\\",\\\"toolCalls\\\":[]}\\n```\"},\"done\":true,\"done_reason\":\"stop\",\"eval_count\":2}"
+			}
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Status:     "200 OK",
@@ -1016,6 +1077,9 @@ func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
 	if !strings.Contains(responseSystem, "Filesystem tool observations") || !strings.Contains(responseSystem, "Project status: green") {
 		t.Fatalf("response system handoff = %q, want filesystem observation", responseSystem)
 	}
+	if prepCalls != 2 {
+		t.Fatalf("harness prep calls = %d, want initial plan plus inspection", prepCalls)
+	}
 
 	conversations, err := listConversations(config.Storage)
 	if err != nil {
@@ -1042,6 +1106,201 @@ func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
 	toolStep := harnessStepByKind(t, steps, "tool_call")
 	if toolStep["status"] != "completed" || toolStep["provider"] != "filesystem" {
 		t.Fatalf("tool step = %+v, want completed filesystem call", toolStep)
+	}
+	activities, ok := toolStep["tools"].([]any)
+	if !ok || len(activities) != 1 {
+		t.Fatalf("tool activities = %+v, want one activity", toolStep["tools"])
+	}
+	activity, ok := activities[0].(map[string]any)
+	if !ok || activity["name"] != "read_file" || activity["status"] != "completed" {
+		t.Fatalf("tool activity = %+v, want completed read_file", activities[0])
+	}
+	if path, _ := activity["path"].(string); !strings.HasSuffix(path, "status.txt") {
+		t.Fatalf("tool activity path = %q, want status.txt", path)
+	}
+}
+
+func TestHarnessCanRequestSecondToolRound(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Tools.Filesystem.Root = filepath.Join(home, "tool-root")
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Chat = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(config.Tools.Filesystem.Root, "notes.txt"), []byte("Second round found this."), 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	prepCalls := 0
+	var responseSystem string
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/chat" {
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("not found"))}, nil
+		}
+		var payload map[string]any
+		data, _ := io.ReadAll(req.Body)
+		if err := json.Unmarshal(data, &payload); err != nil {
+			t.Fatalf("provider request body is not JSON: %v", err)
+		}
+		if payload["stream"] == false {
+			prepCalls++
+			body := "{\"model\":\"harness-model\",\"message\":{\"role\":\"assistant\",\"content\":\"```json\\n{\\\"brief\\\":\\\"List workspace files first.\\\",\\\"needsTools\\\":true,\\\"reason\\\":\\\"Need to discover file names.\\\",\\\"toolCalls\\\":[{\\\"name\\\":\\\"list_files\\\",\\\"path\\\":\\\".\\\"}]}\\n```\"},\"done\":true,\"done_reason\":\"stop\",\"eval_count\":2}"
+			if prepCalls == 2 {
+				body = "{\"model\":\"harness-model\",\"message\":{\"role\":\"assistant\",\"content\":\"```json\\n{\\\"brief\\\":\\\"Read notes.txt before answering.\\\",\\\"needsTools\\\":true,\\\"reason\\\":\\\"The file list revealed notes.txt.\\\",\\\"toolCalls\\\":[{\\\"name\\\":\\\"read_file\\\",\\\"path\\\":\\\"notes.txt\\\"}]}\\n```\"},\"done\":true,\"done_reason\":\"stop\",\"eval_count\":2}"
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+			}, nil
+		}
+		messages := payload["messages"].([]any)
+		systemMessage := messages[0].(map[string]any)
+		responseSystem, _ = systemMessage["content"].(string)
+		body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"Second round answer."},"done":false}`) +
+			fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{"Content-Type": []string{"application/x-ndjson"}},
+		}, nil
+	})
+
+	app.runChatStream(context.Background(), "request-second-round", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Use the workspace notes"},
+		},
+	})
+	if prepCalls != 2 {
+		t.Fatalf("harness prep calls = %d, want capped two iterations", prepCalls)
+	}
+	if !strings.Contains(responseSystem, "Second round found this.") {
+		t.Fatalf("response system handoff = %q, want second round file content", responseSystem)
+	}
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	harnessRun := detail.Turns[1].ProviderResponse["harnessRun"].(map[string]any)
+	loop := harnessRun["loop"].(map[string]any)
+	if loop["iterations"] != float64(2) {
+		t.Fatalf("loop = %+v, want 2 iterations", loop)
+	}
+	toolStep := harnessStepByKind(t, harnessRun["steps"].([]any), "tool_call")
+	activities := toolStep["tools"].([]any)
+	if len(activities) != 2 {
+		t.Fatalf("tool activities = %+v, want list and read", activities)
+	}
+}
+
+func TestHarnessForcesWorkspaceListingWhenModelSkipsTools(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Tools.Filesystem.Root = filepath.Join(home, "tool-root")
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Chat = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	if err := os.MkdirAll(filepath.Join(config.Tools.Filesystem.Root, "actual-dir"), 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(config.Tools.Filesystem.Root, "actual.txt"), []byte("real workspace file"), 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	prepCalls := 0
+	var responseSystem string
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/chat" {
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("not found"))}, nil
+		}
+		var payload map[string]any
+		data, _ := io.ReadAll(req.Body)
+		if err := json.Unmarshal(data, &payload); err != nil {
+			t.Fatalf("provider request body is not JSON: %v", err)
+		}
+		if payload["stream"] == false {
+			prepCalls++
+			body := "{\"model\":\"harness-model\",\"message\":{\"role\":\"assistant\",\"content\":\"```json\\n{\\\"brief\\\":\\\"Answer from general project context.\\\",\\\"needsTools\\\":false,\\\"reason\\\":\\\"No tools are needed.\\\",\\\"toolCalls\\\":[]}\\n```\"},\"done\":true,\"done_reason\":\"stop\",\"eval_count\":2}"
+			if prepCalls == 2 {
+				body = "{\"model\":\"harness-model\",\"message\":{\"role\":\"assistant\",\"content\":\"```json\\n{\\\"brief\\\":\\\"Answer only from the listed workspace entries.\\\",\\\"needsTools\\\":false,\\\"reason\\\":\\\"The workspace listing is sufficient.\\\",\\\"toolCalls\\\":[]}\\n```\"},\"done\":true,\"done_reason\":\"stop\",\"eval_count\":2}"
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+			}, nil
+		}
+		messages := payload["messages"].([]any)
+		systemMessage := messages[0].(map[string]any)
+		responseSystem, _ = systemMessage["content"].(string)
+		body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"actual.txt and actual-dir are present."},"done":false}`) +
+			fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{"Content-Type": []string{"application/x-ndjson"}},
+		}, nil
+	})
+
+	app.runChatStream(context.Background(), "request-workspace-list", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "What is present in the workspace?"},
+		},
+	})
+	if !strings.Contains(responseSystem, "actual.txt") || !strings.Contains(responseSystem, "actual-dir") {
+		t.Fatalf("response system handoff = %q, want real workspace entries", responseSystem)
+	}
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	harnessRun := detail.Turns[1].ProviderResponse["harnessRun"].(map[string]any)
+	toolStep := harnessStepByKind(t, harnessRun["steps"].([]any), "tool_call")
+	activities := toolStep["tools"].([]any)
+	activity := activities[0].(map[string]any)
+	if activity["name"] != "list_files" || activity["status"] != "completed" {
+		t.Fatalf("tool activity = %+v, want completed list_files fallback", activity)
 	}
 }
 
