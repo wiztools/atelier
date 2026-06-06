@@ -761,7 +761,53 @@ button:disabled {
   border-left: 3px solid #5da9b7;
   background: #15191b;
   color: #a9cfd7;
+}
+
+.thinking {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  color: #9bb8bd;
+}
+
+.thinking.markdown-body p,
+.thinking.markdown-body ul,
+.thinking.markdown-body ol,
+.thinking.markdown-body pre,
+.thinking.markdown-body blockquote,
+.thinking.markdown-body table {
+  margin-top: 6px;
+}
+
+.thinking.markdown-body h1,
+.thinking.markdown-body h2,
+.thinking.markdown-body h3,
+.thinking.markdown-body h4 {
+  margin: 8px 0 4px;
+  font-size: 13px;
+}
+
+.image-output pre {
   white-space: pre-wrap;
+}
+
+.thinking-panel {
+  margin-top: 10px;
+}
+
+.thinking-toggle {
+  height: 26px;
+  padding: 0 9px;
+  border-color: #3b3f42;
+  background: transparent;
+  color: #9ea5a3;
+  font-size: 12px;
+}
+
+.thinking-toggle:hover {
+  border-color: #77715f;
+  background: #25292b;
+  color: #f3f0e8;
 }
 
 .error {

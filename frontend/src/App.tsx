@@ -160,6 +160,7 @@ function App() {
   const [prompt, setPrompt] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [chat, setChat] = useState<ChatEntry[]>([]);
+  const [collapsedThinkingIDs, setCollapsedThinkingIDs] = useState<Record<string, boolean>>({});
   const [conversations, setConversations] = useState<main.ConversationSummary[]>([]);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [visibleHistoryCount, setVisibleHistoryCount] = useState(compactHistoryLimit);
@@ -514,6 +515,7 @@ function App() {
     setActiveStream(null);
     setImageBusy(false);
     setChat([]);
+    setCollapsedThinkingIDs({});
     setPrompt('');
     setAttachments([]);
     setActiveConversationID('');
@@ -646,6 +648,7 @@ function App() {
       });
     }
     setChat(entries);
+    setCollapsedThinkingIDs({});
     setActiveConversationID(detail.conversation.id);
     setPrompt('');
     setAttachments([]);
@@ -823,6 +826,13 @@ function App() {
         ),
       );
     }
+  }
+
+  function toggleThinkingCollapsed(entryID: string) {
+    setCollapsedThinkingIDs((current) => ({
+      ...current,
+      [entryID]: !current[entryID],
+    }));
   }
 
   async function addImages(files: FileList | null) {
@@ -1096,57 +1106,78 @@ function App() {
                   <h2>Ask a model, attach an image, or stream a long answer.</h2>
                   <p>Atelier talks to Ollama directly through the local API.</p>
                 </div>
-              ) : asArray(chat).map((entry) => (
-                <article key={entry.id} className={`message ${entry.role}`}>
-                  <div className="message-meta">{entry.role}{entry.streaming ? ' streaming' : ''}</div>
-                  {entry.images?.length ? (
-                    entry.role === 'assistant' ? (
-                      <div className="chat-image-results">
-                        {entry.images.map((image, index) => (
-                          <figure key={`${entry.id}-image-${index}`} className="chat-image-card">
+              ) : asArray(chat).map((entry) => {
+                const thinkingCollapsed = Boolean(entry.thinking && (collapsedThinkingIDs[entry.id] ?? !entry.streaming));
+                return (
+                  <article key={entry.id} className={`message ${entry.role}`}>
+                    <div className="message-meta">{entry.role}{entry.streaming ? ' streaming' : ''}</div>
+                    {entry.images?.length ? (
+                      entry.role === 'assistant' ? (
+                        <div className="chat-image-results">
+                          {entry.images.map((image, index) => (
+                            <figure key={`${entry.id}-image-${index}`} className="chat-image-card">
+                              <button
+                                className="chat-image-preview"
+                                type="button"
+                                aria-label={`Open generated image ${index + 1}`}
+                                onClick={() => setPreviewImage(image)}
+                              >
+                                <img src={image} alt="Generated result" />
+                              </button>
+                              <figcaption>
+                                <button type="button" onClick={() => saveGeneratedImage(image, index)}>Download image</button>
+                              </figcaption>
+                            </figure>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="thumb-row">
+                          {entry.images.map((image, index) => (
                             <button
-                              className="chat-image-preview"
+                              key={`${entry.id}-image-${index}`}
+                              className="thumb-button"
                               type="button"
-                              aria-label={`Open generated image ${index + 1}`}
+                              aria-label={`Open attached image ${index + 1}`}
                               onClick={() => setPreviewImage(image)}
                             >
-                              <img src={image} alt="Generated result" />
+                              <img src={image} alt="" />
                             </button>
-                            <figcaption>
-                              <button type="button" onClick={() => saveGeneratedImage(image, index)}>Download image</button>
-                            </figcaption>
-                          </figure>
-                        ))}
+                          ))}
+                        </div>
+                      )
+                    ) : null}
+                    {entry.thinking ? (
+                      <div className="thinking-panel">
+                        <button
+                          className="thinking-toggle"
+                          type="button"
+                          aria-expanded={!thinkingCollapsed}
+                          onClick={() => toggleThinkingCollapsed(entry.id)}
+                        >
+                          {thinkingCollapsed ? 'Show thinking' : 'Hide thinking'}
+                        </button>
+                        {thinkingCollapsed ? null : (
+                          <div className="thinking markdown-body">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                              {entry.thinking}
+                            </ReactMarkdown>
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
+                    {entry.role === 'assistant' || entry.role === 'system' ? (
+                      <div className="markdown-body">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {entry.content || (entry.streaming ? '...' : '')}
+                        </ReactMarkdown>
                       </div>
                     ) : (
-                      <div className="thumb-row">
-                        {entry.images.map((image, index) => (
-                          <button
-                            key={`${entry.id}-image-${index}`}
-                            className="thumb-button"
-                            type="button"
-                            aria-label={`Open attached image ${index + 1}`}
-                            onClick={() => setPreviewImage(image)}
-                          >
-                            <img src={image} alt="" />
-                          </button>
-                        ))}
-                      </div>
-                    )
-                  ) : null}
-                  {entry.thinking ? <pre className="thinking">{entry.thinking}</pre> : null}
-                  {entry.role === 'assistant' || entry.role === 'system' ? (
-                    <div className="markdown-body">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {entry.content || (entry.streaming ? '...' : '')}
-                      </ReactMarkdown>
-                    </div>
-                  ) : (
-                    <p>{entry.content || (entry.streaming ? '...' : '')}</p>
-                  )}
-                  {entry.error ? <div className="error">{entry.error}</div> : null}
-                </article>
-              ))}
+                      <p>{entry.content || (entry.streaming ? '...' : '')}</p>
+                    )}
+                    {entry.error ? <div className="error">{entry.error}</div> : null}
+                  </article>
+                );
+              })}
             </div>
 
             <div className="composer">
