@@ -204,6 +204,71 @@ func TestImageGenerationConversationLifecycle(t *testing.T) {
 	}
 }
 
+func TestPurgeArchivedConversationsRemovesOnlySoftDeletedFolders(t *testing.T) {
+	root := t.TempDir()
+	storage := ConfigStorage{
+		Root:      filepath.Join(root, ".atelier"),
+		History:   filepath.Join(root, ".atelier", "history"),
+		Artifacts: filepath.Join(root, ".atelier", "history"),
+	}
+	config := defaultAppConfig()
+	config.Storage = storage
+	if err := ensureStorageDirs(storage); err != nil {
+		t.Fatalf("ensureStorageDirs returned error: %v", err)
+	}
+
+	archivedID, err := writeImageGenerationConversation(
+		config,
+		ImageGenerateRequest{Model: "image-model", Prompt: "Archive me", Width: 64, Height: 64, Steps: 2},
+		ollamaGenerateResponse{Model: "image-model", Done: true},
+		[]string{"data:image/png;base64,iVBORw0KGgo="},
+		"{}",
+	)
+	if err != nil {
+		t.Fatalf("write archived conversation returned error: %v", err)
+	}
+	activeID, err := writeImageGenerationConversation(
+		config,
+		ImageGenerateRequest{Model: "image-model", Prompt: "Keep me", Width: 64, Height: 64, Steps: 2},
+		ollamaGenerateResponse{Model: "image-model", Done: true},
+		[]string{"data:image/png;base64,iVBORw0KGgo="},
+		"{}",
+	)
+	if err != nil {
+		t.Fatalf("write active conversation returned error: %v", err)
+	}
+	archivedPath, err := findConversationPath(storage, archivedID)
+	if err != nil {
+		t.Fatalf("find archived conversation returned error: %v", err)
+	}
+	activePath, err := findConversationPath(storage, activeID)
+	if err != nil {
+		t.Fatalf("find active conversation returned error: %v", err)
+	}
+	archivedDir := filepath.Dir(archivedPath)
+	activeDir := filepath.Dir(activePath)
+
+	if err := deleteConversation(storage, archivedID); err != nil {
+		t.Fatalf("deleteConversation returned error: %v", err)
+	}
+	result, err := purgeArchivedConversations(storage)
+	if err != nil {
+		t.Fatalf("purgeArchivedConversations returned error: %v", err)
+	}
+	if result.DeletedConversations != 1 {
+		t.Fatalf("deleted conversations = %d, want 1", result.DeletedConversations)
+	}
+	if result.DeletedAssets != 1 {
+		t.Fatalf("deleted assets = %d, want 1", result.DeletedAssets)
+	}
+	if _, err := os.Stat(archivedDir); !os.IsNotExist(err) {
+		t.Fatalf("archived dir still exists or stat failed differently: %v", err)
+	}
+	if _, err := os.Stat(activeDir); err != nil {
+		t.Fatalf("active dir stat returned error: %v", err)
+	}
+}
+
 func TestChatConversationLifecycle(t *testing.T) {
 	root := t.TempDir()
 	storage := ConfigStorage{

@@ -525,6 +525,26 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.storage-actions {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.storage-actions span {
+  color: #9fcba3;
+  font-size: 12px;
+}
+
+.storage-confirmation {
+  margin-top: 8px;
+  color: #f0a09a;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .two-column {
   display: grid;
   grid-template-columns: 1fr 1fr;

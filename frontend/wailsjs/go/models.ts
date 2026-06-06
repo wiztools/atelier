@@ -582,6 +582,20 @@ export namespace main {
 	        this.error = source["error"];
 	    }
 	}
+	export class PurgeArchivedResult {
+	    deletedConversations: number;
+	    deletedAssets: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PurgeArchivedResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.deletedConversations = source["deletedConversations"];
+	        this.deletedAssets = source["deletedAssets"];
+	    }
+	}
 	export class SaveImageRequest {
 	    image: string;
 	    suggestedName?: string;

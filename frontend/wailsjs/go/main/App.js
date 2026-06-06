@@ -34,6 +34,10 @@ export function ListModels(arg1) {
   return window['go']['main']['App']['ListModels'](arg1);
 }
 
+export function PurgeArchivedConversations() {
+  return window['go']['main']['App']['PurgeArchivedConversations']();
+}
+
 export function SaveConfig(arg1) {
   return window['go']['main']['App']['SaveConfig'](arg1);
 }

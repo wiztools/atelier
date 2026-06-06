@@ -223,6 +223,11 @@ type ConversationDetail struct {
 	Turns        []HistoryTurn       `json:"turns"`
 }
 
+type PurgeArchivedResult struct {
+	DeletedConversations int `json:"deletedConversations"`
+	DeletedAssets        int `json:"deletedAssets"`
+}
+
 type HistoryConversation struct {
 	SchemaVersion int                      `json:"schemaVersion"`
 	ID            string                   `json:"id"`
@@ -334,6 +339,14 @@ func (a *App) DeleteConversation(conversationID string) error {
 		return err
 	}
 	return deleteConversation(config.Storage, conversationID)
+}
+
+func (a *App) PurgeArchivedConversations() (PurgeArchivedResult, error) {
+	config, err := loadAppConfig()
+	if err != nil {
+		return PurgeArchivedResult{}, err
+	}
+	return purgeArchivedConversations(config.Storage)
 }
 
 func (a *App) UpdateConversationTitle(conversationID string, title string) (ConversationSummary, error) {
@@ -1358,6 +1371,54 @@ func deleteConversation(storage ConfigStorage, conversationID string) error {
 		"reason":         "user_deleted",
 	}
 	return writeJSONFile(filepath.Join(filepath.Dir(conversationPath), "tombstone.json"), tombstone)
+}
+
+func purgeArchivedConversations(storage ConfigStorage) (PurgeArchivedResult, error) {
+	root := filepath.Join(storage.History, "conversations")
+	var archivedDirs []string
+	deletedAssets := 0
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || filepath.Base(path) != "conversation.json" {
+			return nil
+		}
+		var conversation HistoryConversation
+		if err := readJSONFile(path, &conversation); err != nil {
+			return err
+		}
+		if conversation.DeletedAt != "" {
+			archivedDirs = append(archivedDirs, filepath.Dir(path))
+			deletedAssets += countFiles(filepath.Join(filepath.Dir(path), "artifacts"))
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return PurgeArchivedResult{}, nil
+		}
+		return PurgeArchivedResult{}, err
+	}
+
+	for _, dir := range archivedDirs {
+		if err := os.RemoveAll(dir); err != nil {
+			return PurgeArchivedResult{}, err
+		}
+	}
+	return PurgeArchivedResult{DeletedConversations: len(archivedDirs), DeletedAssets: deletedAssets}, nil
+}
+
+func countFiles(root string) int {
+	count := 0
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return nil
+		}
+		count++
+		return nil
+	})
+	return count
 }
 
 func updateConversationTitle(storage ConfigStorage, conversationID string, title string) (ConversationSummary, error) {

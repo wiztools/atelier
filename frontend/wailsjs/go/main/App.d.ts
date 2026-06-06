@@ -18,6 +18,8 @@ export function ListConversations():Promise<Array<main.ConversationSummary>>;
 
 export function ListModels(arg1:string):Promise<Array<main.OllamaModel>>;
 
+export function PurgeArchivedConversations():Promise<main.PurgeArchivedResult>;
+
 export function SaveConfig(arg1:main.AppConfig):Promise<void>;
 
 export function SaveImage(arg1:main.SaveImageRequest):Promise<string>;

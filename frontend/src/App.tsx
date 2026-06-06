@@ -11,6 +11,7 @@ import {
   GetConfig,
   ListConversations,
   ListModels,
+  PurgeArchivedConversations,
   SaveImage,
   SaveConfig,
   StreamChat,
@@ -115,6 +116,9 @@ function App() {
   const [resizingSidebar, setResizingSidebar] = useState(false);
   const [view, setView] = useState<View>('app');
   const [previewImage, setPreviewImage] = useState('');
+  const [purgeBusy, setPurgeBusy] = useState(false);
+  const [confirmPurgeArchived, setConfirmPurgeArchived] = useState(false);
+  const [purgeStatus, setPurgeStatus] = useState('');
   const shellRef = useRef<HTMLElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const chatPromptRef = useRef<HTMLTextAreaElement | null>(null);
@@ -322,6 +326,20 @@ function App() {
     }, 0);
   }
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat || event.altKey || event.shiftKey) {
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'n') {
+        event.preventDefault();
+        void resetWorkspace('chat');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [activeStream]);
+
   async function startNewChat() {
     await resetWorkspace('chat');
   }
@@ -441,6 +459,30 @@ function App() {
       }
     } catch (error) {
       setStartupError(formatError(error));
+    }
+  }
+
+  async function purgeArchivedConversations() {
+    if (purgeBusy) {
+      return;
+    }
+    if (!confirmPurgeArchived) {
+      setConfirmPurgeArchived(true);
+      setPurgeStatus('');
+      return;
+    }
+    try {
+      setPurgeBusy(true);
+      setPurgeStatus('');
+      const result = await PurgeArchivedConversations();
+      await refreshConversations();
+      setConfirmPurgeArchived(false);
+      setPurgeStatus(`${result.deletedConversations} archived ${result.deletedConversations === 1 ? 'conversation' : 'conversations'} and ${result.deletedAssets} ${result.deletedAssets === 1 ? 'asset' : 'assets'} deleted.`);
+    } catch (error) {
+      setPurgeStatus('');
+      setStartupError(formatError(error));
+    } finally {
+      setPurgeBusy(false);
     }
   }
 
@@ -721,6 +763,20 @@ function App() {
                     <code>{storageConfig?.history ?? '~/.atelier/history'}</code>
                   </div>
                 </div>
+                <div className="storage-actions">
+                  <button className="danger" onClick={purgeArchivedConversations} disabled={purgeBusy}>
+                    {purgeBusy ? 'Deleting...' : confirmPurgeArchived ? 'Confirm Delete' : 'Delete Archived Conversations'}
+                  </button>
+                  {confirmPurgeArchived && !purgeBusy ? (
+                    <button onClick={() => setConfirmPurgeArchived(false)}>Cancel</button>
+                  ) : null}
+                  {purgeStatus ? <span>{purgeStatus}</span> : null}
+                </div>
+                {confirmPurgeArchived ? (
+                  <div className="storage-confirmation">
+                    This permanently deletes archived conversations and local assets from ~/.atelier/history.
+                  </div>
+                ) : null}
               </section>
 
               <section className="settings-section two-column">
