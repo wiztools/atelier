@@ -208,7 +208,7 @@ function App() {
   const hasMoreConversations = visibleConversations.length < conversationList.length;
   const selectedConversationID = mode === 'image' ? imageResult?.conversationId ?? '' : activeConversationID;
   const latestHarnessRun = [...chat].reverse().find((entry) => entry.role === 'assistant' && entry.harnessRun)?.harnessRun;
-  const visibleHarnessRun = latestHarnessRun ?? (activeStream ? buildRunningHarnessRun(activeStream, activeConversationID, model) : null);
+  const visibleHarnessRun = latestHarnessRun ?? (activeStream ? buildRunningHarnessRun(activeStream, activeConversationID, harnessModel || model) : null);
 
   function markConversationInFlight(conversationID: string, requestID: string, kind: ConversationKind) {
     requestConversationRef.current[requestID] = {conversationID, kind};
@@ -768,6 +768,7 @@ function App() {
         conversationId: activeConversationID || undefined,
         baseURL,
         model,
+        selectedModel: model,
         system,
         messages: requestMessages,
       }));

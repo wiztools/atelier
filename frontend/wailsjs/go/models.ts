@@ -225,6 +225,7 @@ export namespace main {
 	    conversationId?: string;
 	    baseURL?: string;
 	    model: string;
+	    selectedModel?: string;
 	    system?: string;
 	    messages: ChatMessage[];
 	    think?: any;
@@ -240,6 +241,7 @@ export namespace main {
 	        this.conversationId = source["conversationId"];
 	        this.baseURL = source["baseURL"];
 	        this.model = source["model"];
+	        this.selectedModel = source["selectedModel"];
 	        this.system = source["system"];
 	        this.messages = this.convertValues(source["messages"], ChatMessage);
 	        this.think = source["think"];

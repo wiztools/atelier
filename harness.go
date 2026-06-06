@@ -32,6 +32,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	if h.app == nil {
 		return
 	}
+	req = h.chatRequestForHarness(req)
 	conversationID := strings.TrimSpace(req.ConversationID)
 	if !req.turnStarted {
 		var err error
@@ -154,6 +155,18 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	}
 }
 
+func (h *HarnessEngine) chatRequestForHarness(req ChatRequest) ChatRequest {
+	if strings.TrimSpace(req.SelectedModel) == "" {
+		req.SelectedModel = strings.TrimSpace(req.Model)
+	}
+	model := strings.TrimSpace(h.config.Providers.Ollama.Models.Harness)
+	if model == "" {
+		model = strings.TrimSpace(req.Model)
+	}
+	req.Model = model
+	return req
+}
+
 func (h *HarnessEngine) shouldUseImageTool(req ChatRequest) bool {
 	if strings.TrimSpace(h.config.Providers.Ollama.Models.Image) == "" {
 		return false
@@ -183,7 +196,7 @@ func (h *HarnessEngine) shouldUseImageTool(req ChatRequest) bool {
 }
 
 func (h *HarnessEngine) runImageTool(ctx context.Context, requestID, conversationID string, req ChatRequest) {
-	imageModel := strings.TrimSpace(h.config.Providers.Ollama.Models.Image)
+	imageModel := h.imageModelForChatSelection(ctx, req)
 	prompt := strings.TrimSpace(lastUserMessage(req.Messages).Content)
 	run := newImageToolHarnessRun(req.Model, imageModel, requestID, conversationID)
 	h.app.emitChatEvent(ChatStreamEvent{
@@ -249,6 +262,14 @@ func (h *HarnessEngine) runImageTool(ctx context.Context, requestID, conversatio
 		Reason:         doneReason,
 		Done:           true,
 	})
+}
+
+func (h *HarnessEngine) imageModelForChatSelection(ctx context.Context, req ChatRequest) string {
+	selectedModel := strings.TrimSpace(req.SelectedModel)
+	if selectedModel != "" && h.app.ollamaClient(req.BaseURL).IsImageGenerationModel(ctx, selectedModel) {
+		return selectedModel
+	}
+	return strings.TrimSpace(h.config.Providers.Ollama.Models.Image)
 }
 
 func newChatHarnessRun(model, reason string, tokens int) HarnessRun {

@@ -79,20 +79,12 @@ func (client OllamaClient) enrichModelCapabilities(ctx context.Context, model *O
 	if model == nil || strings.TrimSpace(model.Name) == "" {
 		return
 	}
-
-	body := map[string]any{"model": model.Name}
-	resp, err := client.postJSON(ctx, "/api/show", body)
+	show, err := client.ShowModel(ctx, model.Name)
 	if err != nil {
 		model.ImageGeneration = likelyImageGenerationModelName(model.Name)
 		return
 	}
-	defer resp.Body.Close()
 
-	var show ollamaShowResponse
-	if err := json.NewDecoder(resp.Body).Decode(&show); err != nil {
-		model.ImageGeneration = likelyImageGenerationModelName(model.Name)
-		return
-	}
 	if len(show.Capabilities) > 0 {
 		model.Capabilities = show.Capabilities
 	}
@@ -102,9 +94,40 @@ func (client OllamaClient) enrichModelCapabilities(ctx context.Context, model *O
 	if model.Parameter == "" {
 		model.Parameter = show.Details.ParameterSize
 	}
-	model.ImageGeneration = hasImageGenerationCapability(show.Capabilities) ||
+	model.ImageGeneration = show.SupportsImageGeneration(model.Name)
+}
+
+func (client OllamaClient) ShowModel(ctx context.Context, name string) (ollamaShowResponse, error) {
+	body := map[string]any{"model": name}
+	resp, err := client.postJSON(ctx, "/api/show", body)
+	if err != nil {
+		return ollamaShowResponse{}, err
+	}
+	defer resp.Body.Close()
+
+	var show ollamaShowResponse
+	if err := json.NewDecoder(resp.Body).Decode(&show); err != nil {
+		return ollamaShowResponse{}, err
+	}
+	return show, nil
+}
+
+func (client OllamaClient) IsImageGenerationModel(ctx context.Context, name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	show, err := client.ShowModel(ctx, name)
+	if err != nil {
+		return likelyImageGenerationModelName(name)
+	}
+	return show.SupportsImageGeneration(name)
+}
+
+func (show ollamaShowResponse) SupportsImageGeneration(modelName string) bool {
+	return hasImageGenerationCapability(show.Capabilities) ||
 		hasImageGenerationModelInfo(show.ModelInfo) ||
-		likelyImageGenerationModelName(model.Name)
+		likelyImageGenerationModelName(modelName)
 }
 
 func hasImageGenerationCapability(capabilities []string) bool {

@@ -144,6 +144,7 @@ type ChatRequest struct {
 	turnStarted    bool
 	BaseURL        string         `json:"baseURL,omitempty"`
 	Model          string         `json:"model"`
+	SelectedModel  string         `json:"selectedModel,omitempty"`
 	System         string         `json:"system,omitempty"`
 	Messages       []ChatMessage  `json:"messages"`
 	Think          any            `json:"think,omitempty"`
@@ -442,16 +443,8 @@ func (a *App) ListModels(baseURL string) ([]OllamaModel, error) {
 }
 
 func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {
-	if strings.TrimSpace(req.Model) == "" {
-		return nil, errors.New("model is required")
-	}
 	if len(req.Messages) == 0 {
 		return nil, errors.New("at least one message is required")
-	}
-
-	requestID := strings.TrimSpace(req.RequestID)
-	if requestID == "" {
-		requestID = fmt.Sprintf("chat-%d", time.Now().UnixNano())
 	}
 
 	config, err := loadAppConfig()
@@ -461,7 +454,18 @@ func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {
 	if err := ensureStorageDirs(config.Storage); err != nil {
 		return nil, err
 	}
-	conversationID, err := newHarnessEngine(config, a).StartChatTurn(req)
+	engine := newHarnessEngine(config, a)
+	req = engine.chatRequestForHarness(req)
+	if strings.TrimSpace(req.Model) == "" {
+		return nil, errors.New("model is required")
+	}
+
+	requestID := strings.TrimSpace(req.RequestID)
+	if requestID == "" {
+		requestID = fmt.Sprintf("chat-%d", time.Now().UnixNano())
+	}
+
+	conversationID, err := engine.StartChatTurn(req)
 	if err != nil {
 		return nil, err
 	}
@@ -479,7 +483,7 @@ func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {
 			delete(a.streams, requestID)
 			a.streamsMu.Unlock()
 		}()
-		newHarnessEngine(config, a).RunChatStream(streamCtx, requestID, req)
+		engine.RunChatStream(streamCtx, requestID, req)
 	}()
 
 	return &ChatStreamStart{RequestID: requestID, ConversationID: conversationID}, nil
@@ -1073,6 +1077,9 @@ func buildChatUserTurn(conversationID string, turnNumber int, createdAt string, 
 	}
 	if req.Think != nil {
 		userTurn.Request["think"] = req.Think
+	}
+	if selectedModel := strings.TrimSpace(req.SelectedModel); selectedModel != "" && selectedModel != req.Model {
+		userTurn.Request["selectedModel"] = selectedModel
 	}
 	return userTurn, nil
 }
