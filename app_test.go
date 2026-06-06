@@ -132,6 +132,9 @@ func TestMergeAppConfigFillsDefaults(t *testing.T) {
 	if config.Storage.History == "" {
 		t.Fatal("history storage should default")
 	}
+	if config.Providers.Ollama.Models.Harness != config.Providers.Ollama.Models.Chat {
+		t.Fatalf("harness model = %q, want chat default %q", config.Providers.Ollama.Models.Harness, config.Providers.Ollama.Models.Chat)
+	}
 	if config.Prompts.System == "" {
 		t.Fatal("system prompt should default")
 	}
@@ -146,8 +149,9 @@ func TestMergeAppConfigNormalizesOllamaEndpoint(t *testing.T) {
 			Ollama: ConfigOllama{
 				BaseURL: "localhost:11434/",
 				Models: ConfigOllamaModels{
-					Chat:  "chat-model",
-					Image: "image-model",
+					Chat:    "chat-model",
+					Harness: "harness-model",
+					Image:   "image-model",
 				},
 			},
 		},
@@ -164,6 +168,9 @@ func TestMergeAppConfigNormalizesOllamaEndpoint(t *testing.T) {
 	}
 	if config.UI.Mode != "image" {
 		t.Fatalf("mode = %q", config.UI.Mode)
+	}
+	if config.Providers.Ollama.Models.Harness != "harness-model" {
+		t.Fatalf("harness model = %q", config.Providers.Ollama.Models.Harness)
 	}
 }
 
@@ -200,8 +207,29 @@ func TestOllamaClientChecksStatusAndListsModels(t *testing.T) {
 						"modified_at":"2026-01-01T00:00:00Z",
 						"size":123,
 						"details":{"family":"llama","parameter_size":"7B"}
+					},{
+						"name":"x/flux2-klein:4b",
+						"modified_at":"2026-01-02T00:00:00Z",
+						"size":456,
+						"details":{"family":"flux","parameter_size":"4B"}
 					}]}`)),
 					Header: http.Header{"Content-Type": []string{"application/json"}},
+				}, nil
+			case "/api/show":
+				data, _ := io.ReadAll(req.Body)
+				if strings.Contains(string(data), "x/flux2-klein:4b") {
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Status:     "200 OK",
+						Body:       io.NopCloser(strings.NewReader(`{"capabilities":["completion","image-generation"],"model_info":{"architecture":"diffusion"}}`)),
+						Header:     http.Header{"Content-Type": []string{"application/json"}},
+					}, nil
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Body:       io.NopCloser(strings.NewReader(`{"capabilities":["completion","vision"],"model_info":{"gemma3.mm.tokens_per_image":256}}`)),
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
 				}, nil
 			default:
 				return &http.Response{
@@ -223,8 +251,14 @@ func TestOllamaClientChecksStatusAndListsModels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListModels returned error: %v", err)
 	}
-	if len(models) != 1 || models[0].Name != "llava:7b" || models[0].Family != "llama" || models[0].Parameter != "7B" {
+	if len(models) != 2 || models[0].Name != "llava:7b" || models[0].Family != "llama" || models[0].Parameter != "7B" {
 		t.Fatalf("models = %+v, want parsed ollama model details", models)
+	}
+	if models[0].ImageGeneration {
+		t.Fatalf("vision model should not be marked as image generation: %+v", models[0])
+	}
+	if !models[1].ImageGeneration {
+		t.Fatalf("image-generation model should be marked: %+v", models[1])
 	}
 }
 

@@ -62,15 +62,95 @@ func (client OllamaClient) ListModels(ctx context.Context) ([]OllamaModel, error
 
 	models := make([]OllamaModel, 0, len(tags.Models))
 	for _, model := range tags.Models {
-		models = append(models, OllamaModel{
+		item := OllamaModel{
 			Name:       model.Name,
 			ModifiedAt: model.ModifiedAt,
 			Size:       model.Size,
 			Family:     model.Details.Family,
 			Parameter:  model.Details.ParameterSize,
-		})
+		}
+		client.enrichModelCapabilities(ctx, &item)
+		models = append(models, item)
 	}
 	return models, nil
+}
+
+func (client OllamaClient) enrichModelCapabilities(ctx context.Context, model *OllamaModel) {
+	if model == nil || strings.TrimSpace(model.Name) == "" {
+		return
+	}
+
+	body := map[string]any{"model": model.Name}
+	resp, err := client.postJSON(ctx, "/api/show", body)
+	if err != nil {
+		model.ImageGeneration = likelyImageGenerationModelName(model.Name)
+		return
+	}
+	defer resp.Body.Close()
+
+	var show ollamaShowResponse
+	if err := json.NewDecoder(resp.Body).Decode(&show); err != nil {
+		model.ImageGeneration = likelyImageGenerationModelName(model.Name)
+		return
+	}
+	if len(show.Capabilities) > 0 {
+		model.Capabilities = show.Capabilities
+	}
+	if model.Family == "" {
+		model.Family = show.Details.Family
+	}
+	if model.Parameter == "" {
+		model.Parameter = show.Details.ParameterSize
+	}
+	model.ImageGeneration = hasImageGenerationCapability(show.Capabilities) ||
+		hasImageGenerationModelInfo(show.ModelInfo) ||
+		likelyImageGenerationModelName(model.Name)
+}
+
+func hasImageGenerationCapability(capabilities []string) bool {
+	for _, capability := range capabilities {
+		normalized := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(capability), "_", "-"))
+		if normalized == "image-generation" || normalized == "images" || normalized == "image" {
+			return true
+		}
+		if strings.Contains(normalized, "image") && strings.Contains(normalized, "generation") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasImageGenerationModelInfo(modelInfo map[string]any) bool {
+	for key, value := range modelInfo {
+		text := strings.ToLower(key + " " + fmt.Sprint(value))
+		if strings.Contains(text, "diffusion") || strings.Contains(text, "text-to-image") ||
+			strings.Contains(text, "image-generation") || strings.Contains(text, "image_generation") ||
+			strings.Contains(text, "unet") {
+			return true
+		}
+	}
+	return false
+}
+
+func likelyImageGenerationModelName(name string) bool {
+	normalized := strings.ToLower(name)
+	imageModelHints := []string{
+		"flux",
+		"z-image",
+		"qwen-image",
+		"stable-diffusion",
+		"sdxl",
+		"diffusion",
+		"imagen",
+		"sana",
+		"hidream",
+	}
+	for _, hint := range imageModelHints {
+		if strings.Contains(normalized, hint) {
+			return true
+		}
+	}
+	return false
 }
 
 func (client OllamaClient) OpenChatStream(ctx context.Context, req ChatRequest) (*http.Response, error) {

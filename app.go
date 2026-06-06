@@ -71,8 +71,9 @@ type ConfigOllama struct {
 }
 
 type ConfigOllamaModels struct {
-	Chat  string `json:"chat"`
-	Image string `json:"image"`
+	Chat    string `json:"chat"`
+	Harness string `json:"harness"`
+	Image   string `json:"image"`
 }
 
 type ConfigPrompts struct {
@@ -101,11 +102,13 @@ type OllamaStatus struct {
 }
 
 type OllamaModel struct {
-	Name       string `json:"name"`
-	ModifiedAt string `json:"modifiedAt,omitempty"`
-	Size       int64  `json:"size,omitempty"`
-	Family     string `json:"family,omitempty"`
-	Parameter  string `json:"parameter,omitempty"`
+	Name            string   `json:"name"`
+	ModifiedAt      string   `json:"modifiedAt,omitempty"`
+	Size            int64    `json:"size,omitempty"`
+	Family          string   `json:"family,omitempty"`
+	Parameter       string   `json:"parameter,omitempty"`
+	Capabilities    []string `json:"capabilities,omitempty"`
+	ImageGeneration bool     `json:"imageGeneration,omitempty"`
 }
 
 type ollamaTagsResponse struct {
@@ -118,6 +121,15 @@ type ollamaTagsResponse struct {
 			ParameterSize string `json:"parameter_size"`
 		} `json:"details"`
 	} `json:"models"`
+}
+
+type ollamaShowResponse struct {
+	Capabilities []string       `json:"capabilities"`
+	ModelInfo    map[string]any `json:"model_info"`
+	Details      struct {
+		Family        string `json:"family"`
+		ParameterSize string `json:"parameter_size"`
+	} `json:"details"`
 }
 
 type ChatMessage struct {
@@ -827,8 +839,9 @@ func defaultAppConfig() AppConfig {
 			Ollama: ConfigOllama{
 				BaseURL: defaultOllamaBaseURL,
 				Models: ConfigOllamaModels{
-					Chat:  "mistral-small3.1:latest",
-					Image: "x/z-image-turbo:latest",
+					Chat:    "mistral-small3.1:latest",
+					Harness: "mistral-small3.1:latest",
+					Image:   "x/z-image-turbo:latest",
 				},
 			},
 		},
@@ -861,6 +874,9 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	}
 	if strings.TrimSpace(config.Providers.Ollama.Models.Chat) == "" {
 		config.Providers.Ollama.Models.Chat = defaults.Providers.Ollama.Models.Chat
+	}
+	if strings.TrimSpace(config.Providers.Ollama.Models.Harness) == "" {
+		config.Providers.Ollama.Models.Harness = config.Providers.Ollama.Models.Chat
 	}
 	if strings.TrimSpace(config.Providers.Ollama.Models.Image) == "" {
 		config.Providers.Ollama.Models.Image = defaults.Providers.Ollama.Models.Image

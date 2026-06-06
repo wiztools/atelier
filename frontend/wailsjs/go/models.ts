@@ -72,6 +72,7 @@ export namespace main {
 	}
 	export class ConfigOllamaModels {
 	    chat: string;
+	    harness: string;
 	    image: string;
 	
 	    static createFrom(source: any = {}) {
@@ -81,6 +82,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.chat = source["chat"];
+	        this.harness = source["harness"];
 	        this.image = source["image"];
 	    }
 	}
@@ -568,6 +570,8 @@ export namespace main {
 	    size?: number;
 	    family?: string;
 	    parameter?: string;
+	    capabilities?: string[];
+	    imageGeneration?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new OllamaModel(source);
@@ -580,6 +584,8 @@ export namespace main {
 	        this.size = source["size"];
 	        this.family = source["family"];
 	        this.parameter = source["parameter"];
+	        this.capabilities = source["capabilities"];
+	        this.imageGeneration = source["imageGeneration"];
 	    }
 	}
 	export class OllamaStatus {

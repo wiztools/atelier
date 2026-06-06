@@ -67,6 +67,7 @@ The file is versioned and hierarchical so more providers, model profiles, genera
       "baseURL": "http://localhost:11434",
       "models": {
         "chat": "mistral-small3.1:latest",
+        "harness": "mistral-small3.1:latest",
         "image": "x/z-image-turbo:latest"
       }
     }

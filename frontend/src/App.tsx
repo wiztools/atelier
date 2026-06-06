@@ -153,6 +153,7 @@ function App() {
   const [status, setStatus] = useState<main.OllamaStatus | null>(null);
   const [models, setModels] = useState<main.OllamaModel[]>([]);
   const [model, setModel] = useState('');
+  const [harnessModel, setHarnessModel] = useState('');
   const [imageModel, setImageModel] = useState('');
   const [mode, setMode] = useState<Mode>('chat');
   const [system, setSystem] = useState('You are Atelier, a precise local AI collaborator.');
@@ -258,6 +259,7 @@ function App() {
             baseURL,
             models: {
               chat: model,
+              harness: harnessModel,
               image: imageModel,
             },
           },
@@ -280,7 +282,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, imageDimensions.height, imageDimensions.width, imageModel, imageSteps, mode, model, storageConfig, system]);
+  }, [baseURL, configLoaded, harnessModel, imageDimensions.height, imageDimensions.width, imageModel, imageSteps, mode, model, storageConfig, system]);
 
   useEffect(() => {
     const onChunk = (chunk: ChatChunk) => {
@@ -423,13 +425,25 @@ function App() {
   }, [sidebarWidth]);
 
   const modelOptions = useMemo(() => {
-    return Array.from(new Set([...asArray(models).map((item) => item.name), model, imageModel].filter(Boolean)));
-  }, [imageModel, model, models]);
+    return Array.from(new Set([...asArray(models).map((item) => item.name), model, harnessModel, imageModel].filter(Boolean)));
+  }, [harnessModel, imageModel, model, models]);
+  const imageModelOptions = useMemo(() => {
+    const detected = asArray(models).filter((item) => item.imageGeneration).map((item) => item.name).filter(Boolean);
+    return detected.length ? detected : modelOptions;
+  }, [modelOptions, models]);
+
+  useEffect(() => {
+    if (!imageModelOptions.length || imageModelOptions.includes(imageModel)) {
+      return;
+    }
+    setImageModel(imageModelOptions[0]);
+  }, [imageModel, imageModelOptions]);
 
   async function loadConfig() {
     const config = await GetConfig();
     const nextBaseURL = config.providers?.ollama?.baseURL || defaultBaseURL;
     const nextChatModel = config.providers?.ollama?.models?.chat ?? '';
+    const nextHarnessModel = config.providers?.ollama?.models?.harness || nextChatModel;
     const nextImageModel = config.providers?.ollama?.models?.image ?? '';
     const nextSystem = config.prompts?.system || 'You are Atelier, a precise local AI collaborator.';
     const nextImageWidth = config.generation?.image?.width || 768;
@@ -441,6 +455,7 @@ function App() {
     setStorageConfig(config.storage ?? null);
     setBaseURL(nextBaseURL);
     setModel(nextChatModel);
+    setHarnessModel(nextHarnessModel);
     setImageModel(nextImageModel);
     setSystem(nextSystem);
     setImageRatio(nextImagePreset.ratio);
@@ -487,8 +502,10 @@ function App() {
     const nextModels = asArray(await ListModels(endpoint));
     setModels(nextModels);
     const firstModel = nextModels[0]?.name ?? '';
+    const firstImageModel = nextModels.find((item) => item.imageGeneration)?.name ?? firstModel;
     setModel((current) => current || firstModel);
-    setImageModel((current) => current || firstModel);
+    setHarnessModel((current) => current || firstModel);
+    setImageModel((current) => current || firstImageModel);
   }
 
   async function resetWorkspace(nextMode: Mode) {
@@ -983,7 +1000,7 @@ function App() {
             <div className="settings-screen">
               <div className="settings-header">
                 <h2>Settings</h2>
-                <p>Ollama provider, model defaults, and prompt preferences.</p>
+                <p>Ollama provider, harness defaults, and prompt preferences.</p>
               </div>
 
               <section className="settings-section">
@@ -1031,16 +1048,16 @@ function App() {
 
               <section className="settings-section two-column">
                 <div className="field">
-                  <label htmlFor="model">Chat model</label>
-                  <select id="model" value={model} onChange={(event) => setModel(event.target.value)}>
+                  <label htmlFor="harness-model">Harness Model</label>
+                  <select id="harness-model" value={harnessModel} onChange={(event) => setHarnessModel(event.target.value)}>
                     {modelOptions.map((name) => <option key={name}>{name}</option>)}
                   </select>
                 </div>
 
                 <div className="field">
-                  <label htmlFor="image-model">Image model</label>
+                  <label htmlFor="image-model">Default Image Model</label>
                   <select id="image-model" value={imageModel} onChange={(event) => setImageModel(event.target.value)}>
-                    {modelOptions.map((name) => <option key={name}>{name}</option>)}
+                    {imageModelOptions.map((name) => <option key={name}>{name}</option>)}
                   </select>
                 </div>
               </section>
@@ -1154,11 +1171,19 @@ function App() {
                   Attach image
                   <input type="file" accept="image/*" multiple onChange={(event) => addImages(event.target.files)} />
                 </label>
-                {activeStream ? (
-                  <button className="danger" onClick={stopChat}>Stop</button>
-                ) : (
-                  <button className="primary" onClick={submitChat} disabled={!prompt.trim() || !model}>Send</button>
-                )}
+                <div className="composer-submit-row">
+                  <label className="model-inline" htmlFor="chat-model">
+                    <span>Model</span>
+                    <select id="chat-model" value={model} onChange={(event) => setModel(event.target.value)}>
+                      {modelOptions.map((name) => <option key={name}>{name}</option>)}
+                    </select>
+                  </label>
+                  {activeStream ? (
+                    <button className="danger" onClick={stopChat}>Stop</button>
+                  ) : (
+                    <button className="primary" onClick={submitChat} disabled={!prompt.trim() || !model}>Send</button>
+                  )}
+                </div>
               </div>
             </div>
               </div>
@@ -1193,9 +1218,16 @@ function App() {
                 </label>
               </div>
               <div className="dimension-note">{imageDimensions.width} x {imageDimensions.height}</div>
-              <button className="primary" onClick={generateImage} disabled={!imagePrompt.trim() || !imageModel || imageBusy}>
-                {imageBusy ? 'Generating' : 'Generate'}
-              </button>
+              <div className="image-generate-row">
+                <label className="model-inline" htmlFor="image-tab-model">
+                  <select id="image-tab-model" value={imageModel} onChange={(event) => setImageModel(event.target.value)}>
+                    {imageModelOptions.map((name) => <option key={name}>{name}</option>)}
+                  </select>
+                </label>
+                <button className="primary" onClick={generateImage} disabled={!imagePrompt.trim() || !imageModel || imageBusy}>
+                  {imageBusy ? 'Generating' : 'Generate'}
+                </button>
+              </div>
             </div>
             <div className="image-output">
               {imageBusy ? (
