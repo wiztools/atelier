@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -285,6 +286,58 @@ func TestImageGenerationPendingConversationLifecycle(t *testing.T) {
 	}
 }
 
+func TestHistoryAppendRejectsWrongConversationKind(t *testing.T) {
+	root := t.TempDir()
+	storage := ConfigStorage{
+		Root:      filepath.Join(root, ".atelier"),
+		History:   filepath.Join(root, ".atelier", "history"),
+		Artifacts: filepath.Join(root, ".atelier", "history"),
+	}
+	config := defaultAppConfig()
+	config.Storage = storage
+	if err := ensureStorageDirs(storage); err != nil {
+		t.Fatalf("ensureStorageDirs returned error: %v", err)
+	}
+
+	imageConversationID, err := writePendingImageGenerationConversation(
+		config,
+		ImageGenerateRequest{Model: "image-model", Prompt: "Paint early", Width: 64, Height: 64, Steps: 2},
+	)
+	if err != nil {
+		t.Fatalf("writePendingImageGenerationConversation returned error: %v", err)
+	}
+	if _, err := appendChatUserTurn(config, ChatRequest{
+		ConversationID: imageConversationID,
+		Model:          "chat-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "This should stay chat-only"},
+		},
+	}); err == nil || !strings.Contains(err.Error(), "not a chat conversation") {
+		t.Fatalf("appendChatUserTurn error = %v, want wrong-kind chat error", err)
+	}
+
+	chatConversationID, err := writePendingChatConversation(config, ChatRequest{
+		Model: "chat-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Start a chat"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("writePendingChatConversation returned error: %v", err)
+	}
+	err = appendImageGenerationResult(
+		config,
+		chatConversationID,
+		ImageGenerateRequest{Model: "image-model", Prompt: "Paint late", Width: 64, Height: 64, Steps: 2},
+		ollamaGenerateResponse{Model: "image-model", Done: true},
+		[]string{"data:image/png;base64,iVBORw0KGgo="},
+		"{}",
+	)
+	if err == nil || !strings.Contains(err.Error(), "not an image conversation") {
+		t.Fatalf("appendImageGenerationResult error = %v, want wrong-kind image error", err)
+	}
+}
+
 func TestPurgeArchivedConversationsRemovesOnlySoftDeletedFolders(t *testing.T) {
 	root := t.TempDir()
 	storage := ConfigStorage{
@@ -515,7 +568,7 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 			Header:     http.Header{"Content-Type": []string{"application/x-ndjson"}},
 		}, nil
 	})
-	app.runChatStream(t.Context(), "request-1", ChatRequest{
+	app.runChatStream(context.Background(), "request-1", ChatRequest{
 		BaseURL: "http://ollama.test",
 		Model:   "chat-model",
 		Messages: []ChatMessage{

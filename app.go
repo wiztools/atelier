@@ -1084,21 +1084,16 @@ func ensureStorageDirs(storage ConfigStorage) error {
 func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int, title string, run ...HarnessRun) (string, error) {
 	now := time.Now()
 	nowText := now.Format(time.RFC3339)
-	conversationID := randomID("conv")
-	conversationDir := conversationDir(config.Storage, now, conversationID)
-	turnsDir := filepath.Join(conversationDir, "turns")
-	artifactsDir := filepath.Join(conversationDir, "artifacts")
-	if err := os.MkdirAll(turnsDir, 0755); err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(artifactsDir, 0755); err != nil {
+	store := newHistoryStore(config.Storage)
+	workspace, err := store.newWorkspace(now)
+	if err != nil {
 		return "", err
 	}
 
 	userPrompt := lastUserPrompt(req.Messages)
 	conversation := HistoryConversation{
 		SchemaVersion: 1,
-		ID:            conversationID,
+		ID:            workspace.ID,
 		Kind:          "chat",
 		Title:         normalizeConversationTitle(title, userPrompt),
 		CreatedAt:     nowText,
@@ -1117,41 +1112,30 @@ func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, 
 		},
 	}
 
-	userTurn, assistantTurn, err := buildChatTurnPair(conversationID, 1, nowText, req, assistantContent, assistantThinking, model, reason, tokens, artifactsDir, firstHarnessRun(model, reason, tokens, run))
+	userTurn, assistantTurn, err := buildChatTurnPair(workspace.ID, 1, nowText, req, assistantContent, assistantThinking, model, reason, tokens, workspace.ArtifactsDir, firstHarnessRun(model, reason, tokens, run))
 	if err != nil {
 		return "", err
 	}
 
-	if err := writeJSONFile(filepath.Join(conversationDir, "conversation.json"), conversation); err != nil {
+	if err := store.writeSnapshot(workspace, conversation, userTurn, assistantTurn); err != nil {
 		return "", err
 	}
-	if err := writeJSONFile(filepath.Join(turnsDir, userTurn.ID+".json"), userTurn); err != nil {
-		return "", err
-	}
-	if err := writeJSONFile(filepath.Join(turnsDir, assistantTurn.ID+".json"), assistantTurn); err != nil {
-		return "", err
-	}
-	return conversationID, nil
+	return workspace.ID, nil
 }
 
 func writePendingChatConversation(config AppConfig, req ChatRequest) (string, error) {
 	now := time.Now()
 	nowText := now.Format(time.RFC3339)
-	conversationID := randomID("conv")
-	conversationDir := conversationDir(config.Storage, now, conversationID)
-	turnsDir := filepath.Join(conversationDir, "turns")
-	artifactsDir := filepath.Join(conversationDir, "artifacts")
-	if err := os.MkdirAll(turnsDir, 0755); err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(artifactsDir, 0755); err != nil {
+	store := newHistoryStore(config.Storage)
+	workspace, err := store.newWorkspace(now)
+	if err != nil {
 		return "", err
 	}
 
 	userPrompt := lastUserPrompt(req.Messages)
 	conversation := HistoryConversation{
 		SchemaVersion: 1,
-		ID:            conversationID,
+		ID:            workspace.ID,
 		Kind:          "chat",
 		Title:         titleFromPrompt(userPrompt),
 		CreatedAt:     nowText,
@@ -1169,18 +1153,15 @@ func writePendingChatConversation(config AppConfig, req ChatRequest) (string, er
 			ArtifactCount: countMessageImages([]ChatMessage{lastUserMessage(req.Messages)}),
 		},
 	}
-	userTurn, err := buildChatUserTurn(conversationID, 1, nowText, req, artifactsDir)
+	userTurn, err := buildChatUserTurn(workspace.ID, 1, nowText, req, workspace.ArtifactsDir)
 	if err != nil {
 		return "", err
 	}
 
-	if err := writeJSONFile(filepath.Join(conversationDir, "conversation.json"), conversation); err != nil {
+	if err := store.writeSnapshot(workspace, conversation, userTurn); err != nil {
 		return "", err
 	}
-	if err := writeJSONFile(filepath.Join(turnsDir, userTurn.ID+".json"), userTurn); err != nil {
-		return "", err
-	}
-	return conversationID, nil
+	return workspace.ID, nil
 }
 
 func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt string, req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int, artifactsDir string, run HarnessRun) (HistoryTurn, HistoryTurn, error) {
@@ -1242,48 +1223,27 @@ func buildChatAssistantTurn(conversationID string, turnNumber int, createdAt str
 
 func appendChatConversation(config AppConfig, req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int, run ...HarnessRun) (string, error) {
 	conversationID := strings.TrimSpace(req.ConversationID)
-	conversationPath, err := findConversationPath(config.Storage, conversationID)
+	store := newHistoryStore(config.Storage)
+	loaded, err := store.loadForAppend(conversationID, "chat", "a chat")
 	if err != nil {
 		return "", err
 	}
-
-	var conversation HistoryConversation
-	if err := readJSONFile(conversationPath, &conversation); err != nil {
-		return "", err
-	}
-	if conversation.DeletedAt != "" {
-		return "", fmt.Errorf("conversation %s is deleted", conversationID)
-	}
-	if conversation.Kind != "chat" {
-		return "", fmt.Errorf("conversation %s is not a chat conversation", conversationID)
-	}
-
-	detail, err := getConversation(config.Storage, conversationID)
-	if err != nil {
-		return "", err
-	}
-	nextTurnNumber := len(detail.Turns) + 1
 	nowText := time.Now().Format(time.RFC3339)
-	artifactsDir := filepath.Join(filepath.Dir(conversationPath), "artifacts")
-	userTurn, assistantTurn, err := buildChatTurnPair(conversationID, nextTurnNumber, nowText, req, assistantContent, assistantThinking, model, reason, tokens, artifactsDir, firstHarnessRun(model, reason, tokens, run))
+	userTurn, assistantTurn, err := buildChatTurnPair(conversationID, loaded.NextTurnNumber, nowText, req, assistantContent, assistantThinking, model, reason, tokens, loaded.ArtifactsDir, firstHarnessRun(model, reason, tokens, run))
 	if err != nil {
 		return "", err
 	}
-	turnsDir := filepath.Join(filepath.Dir(conversationPath), "turns")
-	if err := os.MkdirAll(turnsDir, 0755); err != nil {
-		return "", err
-	}
 
-	conversation.UpdatedAt = nowText
-	conversation.Stats.TurnCount += 2
-	conversation.Stats.ArtifactCount += countMessageImages([]ChatMessage{lastUserMessage(req.Messages)})
-	if err := writeJSONFile(conversationPath, conversation); err != nil {
+	loaded.Conversation.UpdatedAt = nowText
+	loaded.Conversation.Stats.TurnCount += 2
+	loaded.Conversation.Stats.ArtifactCount += countMessageImages([]ChatMessage{lastUserMessage(req.Messages)})
+	if err := store.writeConversation(loaded.Path, loaded.Conversation); err != nil {
 		return "", err
 	}
-	if err := writeJSONFile(filepath.Join(turnsDir, userTurn.ID+".json"), userTurn); err != nil {
+	if err := store.writeTurn(loaded.TurnsDir, userTurn); err != nil {
 		return "", err
 	}
-	if err := writeJSONFile(filepath.Join(turnsDir, assistantTurn.ID+".json"), assistantTurn); err != nil {
+	if err := store.writeTurn(loaded.TurnsDir, assistantTurn); err != nil {
 		return "", err
 	}
 	return conversationID, nil
@@ -1291,109 +1251,63 @@ func appendChatConversation(config AppConfig, req ChatRequest, assistantContent,
 
 func appendChatUserTurn(config AppConfig, req ChatRequest) (string, error) {
 	conversationID := strings.TrimSpace(req.ConversationID)
-	conversationPath, err := findConversationPath(config.Storage, conversationID)
+	store := newHistoryStore(config.Storage)
+	loaded, err := store.loadForAppend(conversationID, "chat", "a chat")
 	if err != nil {
 		return "", err
 	}
-
-	var conversation HistoryConversation
-	if err := readJSONFile(conversationPath, &conversation); err != nil {
-		return "", err
-	}
-	if conversation.DeletedAt != "" {
-		return "", fmt.Errorf("conversation %s is deleted", conversationID)
-	}
-	if conversation.Kind != "chat" {
-		return "", fmt.Errorf("conversation %s is not a chat conversation", conversationID)
-	}
-
-	detail, err := getConversation(config.Storage, conversationID)
-	if err != nil {
-		return "", err
-	}
-	nextTurnNumber := len(detail.Turns) + 1
 	nowText := time.Now().Format(time.RFC3339)
-	artifactsDir := filepath.Join(filepath.Dir(conversationPath), "artifacts")
-	userTurn, err := buildChatUserTurn(conversationID, nextTurnNumber, nowText, req, artifactsDir)
+	userTurn, err := buildChatUserTurn(conversationID, loaded.NextTurnNumber, nowText, req, loaded.ArtifactsDir)
 	if err != nil {
 		return "", err
 	}
-	turnsDir := filepath.Join(filepath.Dir(conversationPath), "turns")
-	if err := os.MkdirAll(turnsDir, 0755); err != nil {
-		return "", err
-	}
 
-	conversation.UpdatedAt = nowText
-	conversation.Stats.TurnCount++
-	conversation.Stats.ArtifactCount += countMessageImages([]ChatMessage{lastUserMessage(req.Messages)})
-	if err := writeJSONFile(conversationPath, conversation); err != nil {
+	loaded.Conversation.UpdatedAt = nowText
+	loaded.Conversation.Stats.TurnCount++
+	loaded.Conversation.Stats.ArtifactCount += countMessageImages([]ChatMessage{lastUserMessage(req.Messages)})
+	if err := store.writeConversation(loaded.Path, loaded.Conversation); err != nil {
 		return "", err
 	}
-	if err := writeJSONFile(filepath.Join(turnsDir, userTurn.ID+".json"), userTurn); err != nil {
+	if err := store.writeTurn(loaded.TurnsDir, userTurn); err != nil {
 		return "", err
 	}
 	return conversationID, nil
 }
 
 func appendChatAssistantTurn(config AppConfig, conversationID, assistantContent, assistantThinking, model, reason string, tokens int, run HarnessRun) error {
-	conversationPath, err := findConversationPath(config.Storage, conversationID)
+	store := newHistoryStore(config.Storage)
+	loaded, err := store.loadForAppend(conversationID, "chat", "a chat")
 	if err != nil {
 		return err
 	}
-
-	var conversation HistoryConversation
-	if err := readJSONFile(conversationPath, &conversation); err != nil {
-		return err
-	}
-	if conversation.DeletedAt != "" {
-		return fmt.Errorf("conversation %s is deleted", conversationID)
-	}
-	if conversation.Kind != "chat" {
-		return fmt.Errorf("conversation %s is not a chat conversation", conversationID)
-	}
-
-	detail, err := getConversation(config.Storage, conversationID)
-	if err != nil {
-		return err
-	}
-	nextTurnNumber := len(detail.Turns) + 1
 	nowText := time.Now().Format(time.RFC3339)
-	assistantTurn := buildChatAssistantTurn(conversationID, nextTurnNumber, nowText, assistantContent, assistantThinking, model, reason, tokens, run)
-	turnsDir := filepath.Join(filepath.Dir(conversationPath), "turns")
-	if err := os.MkdirAll(turnsDir, 0755); err != nil {
-		return err
-	}
+	assistantTurn := buildChatAssistantTurn(conversationID, loaded.NextTurnNumber, nowText, assistantContent, assistantThinking, model, reason, tokens, run)
 
-	conversation.UpdatedAt = nowText
-	conversation.Stats.TurnCount++
-	if err := writeJSONFile(conversationPath, conversation); err != nil {
+	loaded.Conversation.UpdatedAt = nowText
+	loaded.Conversation.Stats.TurnCount++
+	if err := store.writeConversation(loaded.Path, loaded.Conversation); err != nil {
 		return err
 	}
-	return writeJSONFile(filepath.Join(turnsDir, assistantTurn.ID+".json"), assistantTurn)
+	return store.writeTurn(loaded.TurnsDir, assistantTurn)
 }
 
 func writeImageGenerationConversation(config AppConfig, req ImageGenerateRequest, payload ollamaGenerateResponse, images []string, raw string) (string, error) {
 	now := time.Now()
 	nowText := now.Format(time.RFC3339)
-	conversationID := randomID("conv")
-	conversationDir := conversationDir(config.Storage, now, conversationID)
-	turnsDir := filepath.Join(conversationDir, "turns")
-	artifactsDir := filepath.Join(conversationDir, "artifacts")
-	if err := os.MkdirAll(turnsDir, 0755); err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(artifactsDir, 0755); err != nil {
+	store := newHistoryStore(config.Storage)
+	workspace, err := store.newWorkspace(now)
+	if err != nil {
 		return "", err
 	}
 
-	imageContents, err := writeImageArtifacts(artifactsDir, req, images)
+	imageContents, err := writeImageArtifacts(workspace.ArtifactsDir, req, images)
 	if err != nil {
 		return "", err
 	}
 
 	conversation := HistoryConversation{
 		SchemaVersion: 1,
-		ID:            conversationID,
+		ID:            workspace.ID,
 		Kind:          "image_generation",
 		Title:         titleFromPrompt(req.Prompt),
 		CreatedAt:     nowText,
@@ -1413,12 +1327,12 @@ func writeImageGenerationConversation(config AppConfig, req ImageGenerateRequest
 		},
 	}
 
-	userTurn := buildImageGenerationUserTurn(conversationID, "turn_000001", nowText, req)
+	userTurn := buildImageGenerationUserTurn(workspace.ID, "turn_000001", nowText, req)
 
 	assistantTurn := HistoryTurn{
 		SchemaVersion:  1,
 		ID:             "turn_000002",
-		ConversationID: conversationID,
+		ConversationID: workspace.ID,
 		CreatedAt:      nowText,
 		Kind:           "image_generation",
 		Role:           "assistant",
@@ -1430,16 +1344,10 @@ func writeImageGenerationConversation(config AppConfig, req ImageGenerateRequest
 		},
 	}
 
-	if err := writeJSONFile(filepath.Join(conversationDir, "conversation.json"), conversation); err != nil {
+	if err := store.writeSnapshot(workspace, conversation, userTurn, assistantTurn); err != nil {
 		return "", err
 	}
-	if err := writeJSONFile(filepath.Join(turnsDir, userTurn.ID+".json"), userTurn); err != nil {
-		return "", err
-	}
-	if err := writeJSONFile(filepath.Join(turnsDir, assistantTurn.ID+".json"), assistantTurn); err != nil {
-		return "", err
-	}
-	return conversationID, nil
+	return workspace.ID, nil
 }
 
 func writeImageArtifacts(artifactsDir string, req ImageGenerateRequest, images []string) ([]HistoryContent, error) {
@@ -1473,20 +1381,15 @@ func writeImageArtifacts(artifactsDir string, req ImageGenerateRequest, images [
 func writePendingImageGenerationConversation(config AppConfig, req ImageGenerateRequest) (string, error) {
 	now := time.Now()
 	nowText := now.Format(time.RFC3339)
-	conversationID := randomID("conv")
-	conversationDir := conversationDir(config.Storage, now, conversationID)
-	turnsDir := filepath.Join(conversationDir, "turns")
-	artifactsDir := filepath.Join(conversationDir, "artifacts")
-	if err := os.MkdirAll(turnsDir, 0755); err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(artifactsDir, 0755); err != nil {
+	store := newHistoryStore(config.Storage)
+	workspace, err := store.newWorkspace(now)
+	if err != nil {
 		return "", err
 	}
 
 	conversation := HistoryConversation{
 		SchemaVersion: 1,
-		ID:            conversationID,
+		ID:            workspace.ID,
 		Kind:          "image_generation",
 		Title:         titleFromPrompt(req.Prompt),
 		CreatedAt:     nowText,
@@ -1504,35 +1407,20 @@ func writePendingImageGenerationConversation(config AppConfig, req ImageGenerate
 			TurnCount: 1,
 		},
 	}
-	userTurn := buildImageGenerationUserTurn(conversationID, "turn_000001", nowText, req)
-	if err := writeJSONFile(filepath.Join(conversationDir, "conversation.json"), conversation); err != nil {
+	userTurn := buildImageGenerationUserTurn(workspace.ID, "turn_000001", nowText, req)
+	if err := store.writeSnapshot(workspace, conversation, userTurn); err != nil {
 		return "", err
 	}
-	if err := writeJSONFile(filepath.Join(turnsDir, userTurn.ID+".json"), userTurn); err != nil {
-		return "", err
-	}
-	return conversationID, nil
+	return workspace.ID, nil
 }
 
 func appendImageGenerationResult(config AppConfig, conversationID string, req ImageGenerateRequest, payload ollamaGenerateResponse, images []string, raw string) error {
-	conversationPath, err := findConversationPath(config.Storage, conversationID)
+	store := newHistoryStore(config.Storage)
+	loaded, err := store.loadForAppend(conversationID, "image_generation", "an image")
 	if err != nil {
 		return err
 	}
-	var conversation HistoryConversation
-	if err := readJSONFile(conversationPath, &conversation); err != nil {
-		return err
-	}
-	if conversation.DeletedAt != "" {
-		return fmt.Errorf("conversation %s is deleted", conversationID)
-	}
-	if conversation.Kind != "image_generation" {
-		return fmt.Errorf("conversation %s is not an image conversation", conversationID)
-	}
-
-	conversationDir := filepath.Dir(conversationPath)
-	artifactsDir := filepath.Join(conversationDir, "artifacts")
-	imageContents, err := writeImageArtifacts(artifactsDir, req, images)
+	imageContents, err := writeImageArtifacts(loaded.ArtifactsDir, req, images)
 	if err != nil {
 		return err
 	}
@@ -1541,13 +1429,9 @@ func appendImageGenerationResult(config AppConfig, conversationID string, req Im
 		assistantContents = append(assistantContents, HistoryContent{Type: "text", Text: payload.Response})
 	}
 	nowText := time.Now().Format(time.RFC3339)
-	detail, err := getConversation(config.Storage, conversationID)
-	if err != nil {
-		return err
-	}
 	assistantTurn := HistoryTurn{
 		SchemaVersion:  1,
-		ID:             fmt.Sprintf("turn_%06d", len(detail.Turns)+1),
+		ID:             fmt.Sprintf("turn_%06d", loaded.NextTurnNumber),
 		ConversationID: conversationID,
 		CreatedAt:      nowText,
 		Kind:           "image_generation",
@@ -1559,17 +1443,13 @@ func appendImageGenerationResult(config AppConfig, conversationID string, req Im
 			"rawCompact": raw,
 		},
 	}
-	conversation.UpdatedAt = nowText
-	conversation.Stats.TurnCount++
-	conversation.Stats.ArtifactCount += len(imageContents)
-	if err := writeJSONFile(conversationPath, conversation); err != nil {
+	loaded.Conversation.UpdatedAt = nowText
+	loaded.Conversation.Stats.TurnCount++
+	loaded.Conversation.Stats.ArtifactCount += len(imageContents)
+	if err := store.writeConversation(loaded.Path, loaded.Conversation); err != nil {
 		return err
 	}
-	turnsDir := filepath.Join(conversationDir, "turns")
-	if err := os.MkdirAll(turnsDir, 0755); err != nil {
-		return err
-	}
-	return writeJSONFile(filepath.Join(turnsDir, assistantTurn.ID+".json"), assistantTurn)
+	return store.writeTurn(loaded.TurnsDir, assistantTurn)
 }
 
 func buildImageGenerationUserTurn(conversationID, turnID, createdAt string, req ImageGenerateRequest) HistoryTurn {
@@ -1609,15 +1489,7 @@ func listConversations(storage ConfigStorage) ([]ConversationSummary, error) {
 		if conversation.DeletedAt != "" {
 			return nil
 		}
-		summaries = append(summaries, ConversationSummary{
-			ID:            conversation.ID,
-			Kind:          conversation.Kind,
-			Title:         conversation.Title,
-			CreatedAt:     conversation.CreatedAt,
-			UpdatedAt:     conversation.UpdatedAt,
-			TurnCount:     conversation.Stats.TurnCount,
-			ArtifactCount: conversation.Stats.ArtifactCount,
-		})
+		summaries = append(summaries, conversationSummaryFrom(conversation))
 		return nil
 	})
 	if err != nil {
@@ -1766,15 +1638,7 @@ func updateConversationTitle(storage ConfigStorage, conversationID string, title
 	if err := writeJSONFile(conversationPath, conversation); err != nil {
 		return ConversationSummary{}, err
 	}
-	return ConversationSummary{
-		ID:            conversation.ID,
-		Kind:          conversation.Kind,
-		Title:         conversation.Title,
-		CreatedAt:     conversation.CreatedAt,
-		UpdatedAt:     conversation.UpdatedAt,
-		TurnCount:     conversation.Stats.TurnCount,
-		ArtifactCount: conversation.Stats.ArtifactCount,
-	}, nil
+	return conversationSummaryFrom(conversation), nil
 }
 
 func findConversationPath(storage ConfigStorage, conversationID string) (string, error) {
