@@ -16,6 +16,14 @@ type OllamaClient struct {
 	baseURL    string
 }
 
+type ChatCompletionResult struct {
+	Model      string
+	Content    string
+	Thinking   string
+	Reason     string
+	EvalTokens int
+}
+
 func newOllamaClient(httpClient *http.Client, baseURL string) OllamaClient {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
@@ -192,6 +200,48 @@ func (client OllamaClient) OpenChatStream(ctx context.Context, req ChatRequest) 
 		body["options"] = req.Options
 	}
 	return client.postJSON(ctx, "/api/chat", body)
+}
+
+func (client OllamaClient) CompleteChat(ctx context.Context, req ChatRequest) (ChatCompletionResult, error) {
+	body := map[string]any{
+		"model":    req.Model,
+		"messages": req.Messages,
+		"stream":   false,
+	}
+	if req.System != "" {
+		body["messages"] = append([]ChatMessage{{Role: "system", Content: req.System}}, req.Messages...)
+	}
+	if req.Think != nil {
+		body["think"] = req.Think
+	}
+	if req.Options != nil {
+		body["options"] = req.Options
+	}
+
+	resp, err := client.postJSON(ctx, "/api/chat", body)
+	if err != nil {
+		return ChatCompletionResult{}, err
+	}
+	defer resp.Body.Close()
+
+	var payload ollamaChatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return ChatCompletionResult{}, err
+	}
+	if payload.Error != "" {
+		return ChatCompletionResult{}, errors.New(payload.Error)
+	}
+	content := payload.Message.Content
+	if strings.TrimSpace(content) == "" {
+		content = payload.Response
+	}
+	return ChatCompletionResult{
+		Model:      payload.Model,
+		Content:    content,
+		Thinking:   payload.Message.Thinking,
+		Reason:     payload.DoneReason,
+		EvalTokens: payload.EvalCount,
+	}, nil
 }
 
 func (client OllamaClient) GenerateImage(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, error) {

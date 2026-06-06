@@ -185,12 +185,15 @@ type ollamaChatChunk struct {
 type ollamaChatResponse struct {
 	Model   string `json:"model"`
 	Message struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
+		Role     string `json:"role"`
+		Content  string `json:"content"`
+		Thinking string `json:"thinking"`
 	} `json:"message"`
-	Response string `json:"response"`
-	Done     bool   `json:"done"`
-	Error    string `json:"error"`
+	Response   string `json:"response"`
+	Done       bool   `json:"done"`
+	DoneReason string `json:"done_reason"`
+	EvalCount  int    `json:"eval_count"`
+	Error      string `json:"error"`
 }
 
 type ImageGenerateRequest struct {

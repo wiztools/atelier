@@ -55,6 +55,15 @@ func historyImagesForTest(contents []HistoryContent) []HistoryContent {
 	return images
 }
 
+func historyTextForTest(contents []HistoryContent, contentType string) string {
+	for _, content := range contents {
+		if content.Type == contentType {
+			return content.Text
+		}
+	}
+	return ""
+}
+
 func TestNormalizeBaseURL(t *testing.T) {
 	got, err := normalizeBaseURL("localhost:11434/")
 	if err != nil {
@@ -655,7 +664,7 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 		t.Fatalf("writeAppConfig returned error: %v", err)
 	}
 
-	var requestedModel string
+	var requestedModels []string
 	app := NewApp()
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Path != "/api/chat" {
@@ -671,9 +680,25 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 		if err := json.Unmarshal(data, &payload); err != nil {
 			t.Fatalf("provider request body is not JSON: %v", err)
 		}
-		requestedModel, _ = payload["model"].(string)
-		body := fmt.Sprintln(`{"model":"harness-model","message":{"role":"assistant","content":"Hello from harness."},"done":false}`) +
-			fmt.Sprintln(`{"model":"harness-model","done":true,"done_reason":"stop","eval_count":3}`)
+		requestedModel, _ := payload["model"].(string)
+		requestedModels = append(requestedModels, requestedModel)
+		if payload["stream"] == false {
+			if requestedModel != "harness-model" {
+				t.Fatalf("harness prep model = %q, want harness-model", requestedModel)
+			}
+			body := `{"model":"harness-model","message":{"role":"assistant","content":"Answer directly and warmly."},"done":true,"done_reason":"stop","eval_count":2}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+			}, nil
+		}
+		if requestedModel != "chat-box-model" {
+			t.Fatalf("response stream model = %q, want chat-box-model", requestedModel)
+		}
+		body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"Hello from selected chat model.","thinking":"Final model thought."},"done":false}`) +
+			fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Status:     "200 OK",
@@ -688,8 +713,8 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 			{Role: "user", Content: "Say hello"},
 		},
 	})
-	if requestedModel != "harness-model" {
-		t.Fatalf("provider request model = %q, want harness-model from settings", requestedModel)
+	if strings.Join(requestedModels, ",") != "harness-model,chat-box-model" {
+		t.Fatalf("provider request models = %v, want harness then selected chat model", requestedModels)
 	}
 
 	conversations, err := listConversations(config.Storage)
@@ -703,14 +728,20 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getConversation returned error: %v", err)
 	}
-	if got := detail.Turns[1].Content[0].Text; got != "Hello from harness." {
+	if got := detail.Turns[1].Content[0].Text; got != "Hello from selected chat model." {
 		t.Fatalf("assistant content = %q, want streamed content", got)
 	}
 	if got := detail.Turns[0].Request["model"]; got != "harness-model" {
 		t.Fatalf("user turn request model = %q, want harness-model", got)
 	}
-	if got := detail.Turns[1].Model; got != "harness-model" {
-		t.Fatalf("assistant turn model = %q, want harness-model", got)
+	if got := detail.Turns[0].Request["selectedModel"]; got != "chat-box-model" {
+		t.Fatalf("user turn selected model = %q, want chat-box-model", got)
+	}
+	if got := detail.Turns[1].Model; got != "chat-box-model" {
+		t.Fatalf("assistant turn model = %q, want chat-box-model", got)
+	}
+	if thinking := historyTextForTest(detail.Turns[1].Content, "thinking"); !strings.Contains(thinking, "Harness preparation") || !strings.Contains(thinking, "Final model thought.") {
+		t.Fatalf("assistant thinking = %q, want harness prep and final model thinking", thinking)
 	}
 	harnessRun, ok := detail.Turns[1].ProviderResponse["harnessRun"].(map[string]any)
 	if !ok {
@@ -915,6 +946,19 @@ func TestStreamChatReturnsConversationAfterPendingTurn(t *testing.T) {
 
 	app := NewApp()
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var payload map[string]any
+		data, _ := io.ReadAll(req.Body)
+		if err := json.Unmarshal(data, &payload); err != nil {
+			t.Fatalf("provider request body is not JSON: %v", err)
+		}
+		if payload["stream"] == false {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(`{"model":"chat-model","message":{"role":"assistant","content":"Proceed normally."},"done":true}`)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+			}, nil
+		}
 		body := fmt.Sprintln(`{"model":"chat-model","message":{"role":"assistant","content":"Later."},"done":false}`) +
 			fmt.Sprintln(`{"model":"chat-model","done":true,"done_reason":"stop","eval_count":1}`)
 		return &http.Response{

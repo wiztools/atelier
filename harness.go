@@ -49,7 +49,8 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		return
 	}
 
-	run := newChatHarnessRun(req.Model, "", 0)
+	responseModel := h.responseModelForChatSelection(req)
+	run := newChatHarnessRun(responseModel, "", 0)
 	run.Status = "running"
 	run.CompletedAt = ""
 	run.DurationMS = 0
@@ -66,9 +67,28 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		run.Steps[index].Tokens = 0
 	}
 	h.completeStep(&run, "queued", "completed", "", 0, "")
-	h.completeStep(&run, "preparing", "completed", "", 0, "")
+	h.markStepModel(&run, "preparing", "ollama", req.Model)
+	h.startStep(&run, "preparing")
+	preparation, err := h.prepareChatTurn(ctx, req)
+	if err != nil {
+		h.completeStep(&run, "preparing", "failed", "", 0, err.Error())
+		h.completeRun(&run, "failed", "harness_prepare_error")
+		h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
+		return
+	}
+	preparationThinking := formatHarnessPreparationThinking(preparation)
+	h.completeStep(&run, "preparing", "completed", preparation.Reason, preparation.EvalTokens, "")
+	if preparationThinking != "" {
+		h.app.emitChatEvent(ChatStreamEvent{
+			RequestID:      requestID,
+			Thinking:       preparationThinking,
+			ConversationID: conversationID,
+		})
+	}
+
+	responseReq := h.preparedResponseRequest(req, responseModel, preparation.Content)
 	h.startStep(&run, "model_call")
-	resp, err := h.app.ollamaClient(req.BaseURL).OpenChatStream(ctx, req)
+	resp, err := h.app.ollamaClient(req.BaseURL).OpenChatStream(ctx, responseReq)
 	if err != nil {
 		h.completeStep(&run, "model_call", "failed", "", 0, err.Error())
 		h.completeRun(&run, "failed", "provider_error")
@@ -83,6 +103,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	var assistantContent strings.Builder
 	var assistantThinking strings.Builder
+	assistantThinking.WriteString(preparationThinking)
 	var finalModel string
 	var finalReason string
 	var finalTokens int
@@ -120,6 +141,9 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 
 		if chunk.Done {
 			var err error
+			if strings.TrimSpace(finalModel) == "" {
+				finalModel = responseModel
+			}
 			h.completeStep(&run, "streaming", "completed", finalReason, finalTokens, "")
 			h.evaluateChatRun(&run, assistantContent.String(), finalReason)
 			h.startStep(&run, "saved")
@@ -165,6 +189,67 @@ func (h *HarnessEngine) chatRequestForHarness(req ChatRequest) ChatRequest {
 	}
 	req.Model = model
 	return req
+}
+
+func (h *HarnessEngine) responseModelForChatSelection(req ChatRequest) string {
+	model := strings.TrimSpace(req.SelectedModel)
+	if model == "" {
+		model = strings.TrimSpace(req.Model)
+	}
+	return model
+}
+
+func (h *HarnessEngine) prepareChatTurn(ctx context.Context, req ChatRequest) (ChatCompletionResult, error) {
+	system := strings.TrimSpace(`You are Atelier's private harness model. Prepare a concise markdown brief for the next model that will answer the user.
+Do not answer the user directly. Do not include hidden chain-of-thought. Capture only useful answer guidance: intent, constraints, relevant context, response shape, and cautions.
+Keep it compact.`)
+	if strings.TrimSpace(req.System) != "" {
+		system += "\n\nUser-facing system prompt to preserve:\n" + strings.TrimSpace(req.System)
+	}
+	prepReq := ChatRequest{
+		BaseURL:  req.BaseURL,
+		Model:    req.Model,
+		System:   system,
+		Messages: req.Messages,
+		Options: map[string]any{
+			"temperature": 0,
+			"num_predict": 512,
+		},
+	}
+	return h.app.ollamaClient(req.BaseURL).CompleteChat(ctx, prepReq)
+}
+
+func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel, preparation string) ChatRequest {
+	responseReq := req
+	responseReq.Model = responseModel
+	responseReq.System = appendHarnessPreparationToSystem(req.System, preparation)
+	return responseReq
+}
+
+func appendHarnessPreparationToSystem(system, preparation string) string {
+	preparation = strings.TrimSpace(preparation)
+	if preparation == "" {
+		return system
+	}
+	handoff := "Atelier harness-prepared brief for this turn. Use it as private guidance for the final response; do not quote or mention it unless the user asks about process.\n\n" + preparation
+	if strings.TrimSpace(system) == "" {
+		return handoff
+	}
+	return strings.TrimSpace(system) + "\n\n" + handoff
+}
+
+func formatHarnessPreparationThinking(preparation ChatCompletionResult) string {
+	var parts []string
+	if text := strings.TrimSpace(preparation.Content); text != "" {
+		parts = append(parts, "### Harness preparation\n\n"+text)
+	}
+	if text := strings.TrimSpace(preparation.Thinking); text != "" {
+		parts = append(parts, "### Harness model thinking\n\n"+text)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func (h *HarnessEngine) shouldUseImageTool(req ChatRequest) bool {
@@ -436,6 +521,17 @@ func (h *HarnessEngine) startStep(run *HarnessRun, kind string) {
 		run.Steps[index].CompletedAt = ""
 		run.Steps[index].DurationMS = 0
 		run.Steps[index].Error = ""
+		return
+	}
+}
+
+func (h *HarnessEngine) markStepModel(run *HarnessRun, kind, provider, model string) {
+	for index := range run.Steps {
+		if run.Steps[index].Kind != kind {
+			continue
+		}
+		run.Steps[index].Provider = provider
+		run.Steps[index].Model = model
 		return
 	}
 }
