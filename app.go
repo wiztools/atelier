@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -417,56 +416,11 @@ func (a *App) SetOllamaBaseURL(baseURL string) error {
 }
 
 func (a *App) CheckOllama(baseURL string) OllamaStatus {
-	normalized := a.resolveBaseURL(baseURL)
-	versionURL := normalized + "/api/version"
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, versionURL, nil)
-	if err != nil {
-		return OllamaStatus{Online: false, BaseURL: normalized, Error: err.Error()}
-	}
-
-	resp, err := a.client.Do(req)
-	if err != nil {
-		return OllamaStatus{Online: false, BaseURL: normalized, Error: err.Error()}
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		return OllamaStatus{Online: false, BaseURL: normalized, Error: fmt.Sprintf("Ollama returned %s", resp.Status)}
-	}
-
-	var payload struct {
-		Version string `json:"version"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return OllamaStatus{Online: false, BaseURL: normalized, Error: err.Error()}
-	}
-	return OllamaStatus{Online: true, Version: payload.Version, BaseURL: normalized}
+	return a.ollamaClient(baseURL).Check(context.Background())
 }
 
 func (a *App) ListModels(baseURL string) ([]OllamaModel, error) {
-	normalized := a.resolveBaseURL(baseURL)
-	resp, err := a.getJSON(normalized + "/api/tags")
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var tags ollamaTagsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tags); err != nil {
-		return nil, err
-	}
-
-	models := make([]OllamaModel, 0, len(tags.Models))
-	for _, model := range tags.Models {
-		models = append(models, OllamaModel{
-			Name:       model.Name,
-			ModifiedAt: model.ModifiedAt,
-			Size:       model.Size,
-			Family:     model.Details.Family,
-			Parameter:  model.Details.ParameterSize,
-		})
-	}
-	return models, nil
+	return a.ollamaClient(baseURL).ListModels(context.Background())
 }
 
 func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {
@@ -592,38 +546,9 @@ func (a *App) runImageGeneration(ctx context.Context, requestID string, req Imag
 }
 
 func (a *App) generateImage(ctx context.Context, req ImageGenerateRequest, conversationID string) (*ImageGenerateResponse, error) {
-	body := map[string]any{
-		"model":  req.Model,
-		"prompt": req.Prompt,
-		"stream": false,
-	}
-	if req.Width > 0 {
-		body["width"] = req.Width
-	}
-	if req.Height > 0 {
-		body["height"] = req.Height
-	}
-	if req.Steps > 0 {
-		body["steps"] = req.Steps
-	}
-
-	resp, err := a.postJSON(ctx, a.resolveBaseURL(req.BaseURL)+"/api/generate", body)
+	payload, raw, err := a.ollamaClient(req.BaseURL).GenerateImage(ctx, req)
 	if err != nil {
 		return nil, err
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var payload ollamaGenerateResponse
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return nil, err
-	}
-	if payload.Error != "" {
-		return nil, errors.New(payload.Error)
 	}
 
 	images := normalizeImagePayloads(payload.Images)
@@ -783,41 +708,8 @@ func (a *App) generateConversationTitle(config AppConfig, req ChatRequest, assis
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	titlePrompt := "Generate a concise title for this chat conversation. Return only the title, no quotes, no punctuation wrapper, no explanation. Keep it under 8 words.\n\nUser:\n" +
-		compactString(userPrompt, 1600) +
-		"\n\nAssistant:\n" +
-		compactString(assistantContent, 1600)
-	body := map[string]any{
-		"model":  req.Model,
-		"stream": false,
-		"messages": []ChatMessage{
-			{Role: "system", Content: "You create short, specific conversation titles."},
-			{Role: "user", Content: titlePrompt},
-		},
-		"options": map[string]any{
-			"temperature": 0,
-			"num_predict": 24,
-		},
-	}
-
-	resp, err := a.postJSON(ctx, a.resolveBaseURL(req.BaseURL)+"/api/chat", body)
+	title, err := a.ollamaClient(req.BaseURL).GenerateChatTitle(ctx, req, userPrompt, assistantContent)
 	if err != nil {
-		return fallback
-	}
-	defer resp.Body.Close()
-
-	var payload ollamaChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return fallback
-	}
-	if payload.Error != "" {
-		return fallback
-	}
-	title := cleanGeneratedTitle(payload.Message.Content)
-	if title == "" {
-		title = cleanGeneratedTitle(payload.Response)
-	}
-	if title == "" {
 		return fallback
 	}
 	return title
@@ -829,46 +721,6 @@ func (a *App) emitChatEvent(event ChatStreamEvent) {
 	}
 }
 
-func (a *App) getJSON(endpoint string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := a.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode >= 400 {
-		defer resp.Body.Close()
-		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("ollama returned %s: %s", resp.Status, strings.TrimSpace(string(message)))
-	}
-	return resp, nil
-}
-
-func (a *App) postJSON(ctx context.Context, endpoint string, body map[string]any) (*http.Response, error) {
-	data, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := a.client.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode >= 400 {
-		defer resp.Body.Close()
-		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("ollama returned %s: %s", resp.Status, strings.TrimSpace(string(message)))
-	}
-	return resp, nil
-}
-
 func (a *App) resolveBaseURL(baseURL string) string {
 	normalized, err := normalizeBaseURL(baseURL)
 	if err != nil {
@@ -878,6 +730,10 @@ func (a *App) resolveBaseURL(baseURL string) string {
 		return a.baseURL
 	}
 	return normalized
+}
+
+func (a *App) ollamaClient(baseURL string) OllamaClient {
+	return newOllamaClient(a.client, a.resolveBaseURL(baseURL))
 }
 
 func normalizeBaseURL(baseURL string) (string, error) {

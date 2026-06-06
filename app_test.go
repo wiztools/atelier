@@ -158,6 +158,54 @@ func TestMergeStorageConfigExpandsHome(t *testing.T) {
 	}
 }
 
+func TestOllamaClientChecksStatusAndListsModels(t *testing.T) {
+	client := newOllamaClient(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Path {
+			case "/api/version":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Body:       io.NopCloser(strings.NewReader(`{"version":"1.2.3"}`)),
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+				}, nil
+			case "/api/tags":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Body: io.NopCloser(strings.NewReader(`{"models":[{
+						"name":"llava:7b",
+						"modified_at":"2026-01-01T00:00:00Z",
+						"size":123,
+						"details":{"family":"llama","parameter_size":"7B"}
+					}]}`)),
+					Header: http.Header{"Content-Type": []string{"application/json"}},
+				}, nil
+			default:
+				return &http.Response{
+					StatusCode: http.StatusNotFound,
+					Status:     "404 Not Found",
+					Body:       io.NopCloser(strings.NewReader("not found")),
+					Header:     http.Header{},
+				}, nil
+			}
+		}),
+	}, "http://ollama.test")
+
+	status := client.Check(context.Background())
+	if !status.Online || status.Version != "1.2.3" || status.BaseURL != "http://ollama.test" {
+		t.Fatalf("status = %+v, want online 1.2.3 at test endpoint", status)
+	}
+
+	models, err := client.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels returned error: %v", err)
+	}
+	if len(models) != 1 || models[0].Name != "llava:7b" || models[0].Family != "llama" || models[0].Parameter != "7B" {
+		t.Fatalf("models = %+v, want parsed ollama model details", models)
+	}
+}
+
 func TestEnsureStorageDirs(t *testing.T) {
 	root := t.TempDir()
 	storage := ConfigStorage{

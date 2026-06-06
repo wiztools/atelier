@@ -51,22 +51,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	run.Steps = run.Steps[:1]
 	run.Steps[0].Status = "running"
 	run.Steps[0].CompletedAt = ""
-	body := map[string]any{
-		"model":    req.Model,
-		"messages": req.Messages,
-		"stream":   true,
-	}
-	if req.System != "" {
-		body["messages"] = append([]ChatMessage{{Role: "system", Content: req.System}}, req.Messages...)
-	}
-	if req.Think != nil {
-		body["think"] = req.Think
-	}
-	if req.Options != nil {
-		body["options"] = req.Options
-	}
-
-	resp, err := h.app.postJSON(ctx, h.app.resolveBaseURL(req.BaseURL)+"/api/chat", body)
+	resp, err := h.app.ollamaClient(req.BaseURL).OpenChatStream(ctx, req)
 	if err != nil {
 		h.completeModelStep(&run, "failed", "", 0)
 		h.completeRun(&run, "failed", "provider_error")
