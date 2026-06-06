@@ -416,21 +416,125 @@ You may request at most one more batch of up to 3 filesystem tool calls. If the 
 }
 
 func applyDeterministicToolFallback(req ChatRequest, prepared HarnessPreparedTurn) HarnessPreparedTurn {
-	if len(prepared.ToolCalls) > 0 || !shouldForceWorkspaceList(req) {
+	if len(prepared.ToolCalls) > 0 {
+		return prepared
+	}
+	if fileName, content, ok := forcedWriteFileRequest(req); ok {
+		prepared.NeedsTools = true
+		prepared.Reason = appendHarnessOverride(prepared.Reason, "the user explicitly asked Atelier to create a file, so a write_file tool call is required.")
+		if strings.TrimSpace(prepared.Brief) == "" {
+			prepared.Brief = "Create the requested file in the configured workspace and report the result from the tool output."
+		}
+		prepared.ToolCalls = []HarnessToolCall{{
+			Name:      "write_file",
+			Path:      fileName,
+			Content:   content,
+			Overwrite: true,
+		}}
+		prepared.PlanValidationErrors = nil
+		return prepared
+	}
+	if !shouldForceWorkspaceList(req) {
 		return prepared
 	}
 	prepared.NeedsTools = true
-	prepared.Reason = strings.TrimSpace(prepared.Reason)
-	if prepared.Reason == "" {
-		prepared.Reason = "The user asked about the workspace contents, so Atelier must inspect the configured workspace."
-	} else {
-		prepared.Reason += "\n\nAtelier override: the user asked about workspace contents, so a workspace listing is required."
-	}
+	prepared.Reason = appendHarnessOverride(prepared.Reason, "the user asked about workspace contents, so a workspace listing is required.")
 	if strings.TrimSpace(prepared.Brief) == "" {
 		prepared.Brief = "List the configured workspace, then answer from the actual filesystem results."
 	}
 	prepared.ToolCalls = []HarnessToolCall{{Name: "list_files", Path: "."}}
 	return prepared
+}
+
+func appendHarnessOverride(reason, override string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return "Atelier override: " + override
+	}
+	return reason + "\n\nAtelier override: " + override
+}
+
+func forcedWriteFileRequest(req ChatRequest) (string, string, bool) {
+	prompt := strings.TrimSpace(lastUserMessage(req.Messages).Content)
+	lower := strings.ToLower(prompt)
+	if prompt == "" || !strings.Contains(lower, "file") || !strings.Contains(lower, "workspace") {
+		return "", "", false
+	}
+	if !containsAny(lower, []string{"create", "write", "make"}) {
+		return "", "", false
+	}
+	fileName, ok := extractRequestedFileName(prompt)
+	if !ok {
+		return "", "", false
+	}
+	content, ok := extractRequestedFileContent(prompt)
+	if !ok {
+		return "", "", false
+	}
+	return fileName, content, true
+}
+
+func extractRequestedFileName(prompt string) (string, bool) {
+	lower := strings.ToLower(prompt)
+	markers := []string{"named ", "called "}
+	for _, marker := range markers {
+		index := strings.Index(lower, marker)
+		if index < 0 {
+			continue
+		}
+		rest := strings.TrimSpace(prompt[index+len(marker):])
+		name := firstPromptToken(rest)
+		if name != "" {
+			return strings.Trim(name, `"'.,;:!?`), true
+		}
+	}
+	return "", false
+}
+
+func extractRequestedFileContent(prompt string) (string, bool) {
+	lower := strings.ToLower(prompt)
+	markers := []string{"that says ", "says ", "containing ", "contains ", "with content "}
+	for _, marker := range markers {
+		index := strings.Index(lower, marker)
+		if index < 0 {
+			continue
+		}
+		content := strings.TrimSpace(prompt[index+len(marker):])
+		content = strings.Trim(content, `"'`)
+		content = strings.TrimRight(content, ".")
+		if strings.TrimSpace(content) != "" {
+			return content, true
+		}
+	}
+	return "", false
+}
+
+func firstPromptToken(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	if strings.HasPrefix(text, `"`) || strings.HasPrefix(text, `'`) {
+		quote := text[:1]
+		rest := text[1:]
+		if end := strings.Index(rest, quote); end >= 0 {
+			return rest[:end]
+		}
+	}
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+func containsAny(text string, candidates []string) bool {
+	for _, candidate := range candidates {
+		if strings.Contains(text, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func shouldForceWorkspaceList(req ChatRequest) bool {
