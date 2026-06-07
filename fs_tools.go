@@ -279,6 +279,10 @@ func (t *FilesystemToolLayer) resolvePath(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	realRoot, err := resolveExistingPathForBoundary(root)
+	if err != nil {
+		return "", err
+	}
 	target := strings.TrimSpace(path)
 	if target == "" {
 		target = root
@@ -293,7 +297,11 @@ func (t *FilesystemToolLayer) resolvePath(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !pathWithinRoot(root, target) {
+	realTarget, err := resolveExistingPathForBoundary(target)
+	if err != nil {
+		return "", err
+	}
+	if !pathWithinRoot(realRoot, realTarget) {
 		return "", fmt.Errorf("%q is outside filesystem tool root %q", target, root)
 	}
 	return target, nil
@@ -312,6 +320,36 @@ func pathWithinRoot(root, target string) bool {
 		return false
 	}
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+func resolveExistingPathForBoundary(target string) (string, error) {
+	if realTarget, err := filepath.EvalSymlinks(target); err == nil {
+		return realTarget, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+
+	candidate := target
+	missing := []string{}
+	for {
+		if candidate == "" || candidate == "." {
+			return target, nil
+		}
+		if realCandidate, err := filepath.EvalSymlinks(candidate); err == nil {
+			for index := len(missing) - 1; index >= 0; index-- {
+				realCandidate = filepath.Join(realCandidate, missing[index])
+			}
+			return realCandidate, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			return target, nil
+		}
+		missing = append(missing, filepath.Base(candidate))
+		candidate = parent
+	}
 }
 
 func rejectUnsafeCommand(command string, args []string) error {

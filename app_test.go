@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -342,6 +343,74 @@ func TestFilesystemToolRejectsFileOutsideRoot(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("WriteFile should reject paths outside root")
+	}
+}
+
+func TestFilesystemToolRejectsReadThroughSymlinkOutsideRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink permissions vary on Windows")
+	}
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret"), 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(root, "secret-link.txt")); err != nil {
+		t.Fatalf("Symlink returned error: %v", err)
+	}
+
+	tool := newFilesystemToolLayer(ConfigFilesystemTool{Root: root})
+	_, err := tool.ReadFile(ToolFileReadRequest{Path: "secret-link.txt"})
+	if err == nil {
+		t.Fatal("ReadFile should reject symlinks outside root")
+	}
+}
+
+func TestFilesystemToolRejectsWriteThroughSymlinkOutsideRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink permissions vary on Windows")
+	}
+	root := t.TempDir()
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(secret, []byte("secret"), 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if err := os.Symlink(secret, filepath.Join(root, "secret-link.txt")); err != nil {
+		t.Fatalf("Symlink returned error: %v", err)
+	}
+
+	tool := newFilesystemToolLayer(ConfigFilesystemTool{Root: root})
+	_, err := tool.WriteFile(ToolFileWriteRequest{Path: "secret-link.txt", Content: "changed", Overwrite: true})
+	if err == nil {
+		t.Fatal("WriteFile should reject symlink targets outside root")
+	}
+	content, readErr := os.ReadFile(secret)
+	if readErr != nil {
+		t.Fatalf("ReadFile returned error: %v", readErr)
+	}
+	if string(content) != "secret" {
+		t.Fatalf("outside file = %q, want unchanged", string(content))
+	}
+}
+
+func TestFilesystemToolRejectsWriteUnderSymlinkedDirectoryOutsideRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink permissions vary on Windows")
+	}
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "outside-dir")); err != nil {
+		t.Fatalf("Symlink returned error: %v", err)
+	}
+
+	tool := newFilesystemToolLayer(ConfigFilesystemTool{Root: root})
+	_, err := tool.WriteFile(ToolFileWriteRequest{Path: "outside-dir/new.txt", Content: "nope"})
+	if err == nil {
+		t.Fatal("WriteFile should reject writes under symlinked directories outside root")
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "new.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("outside file was created, stat err = %v", statErr)
 	}
 }
 
