@@ -292,6 +292,73 @@ func TestFilesystemToolTruncatesCommandOutput(t *testing.T) {
 	}
 }
 
+func TestFilesystemToolRejectsCommandOutsideAllowlist(t *testing.T) {
+	tool := newFilesystemToolLayer(ConfigFilesystemTool{Root: t.TempDir()})
+	_, err := tool.RunCommand(context.Background(), ToolCommandRequest{
+		Command: "sh",
+		Args:    []string{"-c", "echo nope"},
+	})
+	if err == nil {
+		t.Fatal("RunCommand should reject commands outside the allowlist")
+	}
+}
+
+func TestFilesystemToolRejectsSpoofedAbsoluteAllowedCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executable path semantics differ on Windows")
+	}
+	root := t.TempDir()
+	fakeEcho := filepath.Join(root, "echo")
+	if err := os.WriteFile(fakeEcho, []byte("#!/bin/sh\necho spoofed\n"), 0755); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	tool := newFilesystemToolLayer(ConfigFilesystemTool{Root: root})
+
+	_, err := tool.RunCommand(context.Background(), ToolCommandRequest{Command: fakeEcho})
+	if err == nil {
+		t.Fatal("RunCommand should reject absolute paths that spoof allowed command names")
+	}
+}
+
+func TestFilesystemToolRejectsCommandAbsolutePathArgOutsideRoot(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	tool := newFilesystemToolLayer(ConfigFilesystemTool{Root: t.TempDir()})
+
+	_, err := tool.RunCommand(context.Background(), ToolCommandRequest{
+		Command: "cat",
+		Args:    []string{outside},
+	})
+	if err == nil {
+		t.Fatal("RunCommand should reject path arguments outside root")
+	}
+}
+
+func TestFilesystemToolRejectsCommandSymlinkArgOutsideRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink permissions vary on Windows")
+	}
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret"), 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(root, "secret-link.txt")); err != nil {
+		t.Fatalf("Symlink returned error: %v", err)
+	}
+	tool := newFilesystemToolLayer(ConfigFilesystemTool{Root: root})
+
+	_, err := tool.RunCommand(context.Background(), ToolCommandRequest{
+		Command: "cat",
+		Args:    []string{"secret-link.txt"},
+	})
+	if err == nil {
+		t.Fatal("RunCommand should reject symlink path arguments outside root")
+	}
+}
+
 func TestFilesystemToolRejectsRecursiveDelete(t *testing.T) {
 	tool := newFilesystemToolLayer(ConfigFilesystemTool{Root: t.TempDir()})
 	_, err := tool.RunCommand(context.Background(), ToolCommandRequest{

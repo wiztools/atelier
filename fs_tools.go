@@ -107,14 +107,14 @@ func (t *FilesystemToolLayer) RunCommand(ctx context.Context, req ToolCommandReq
 	if command == "" {
 		return ToolCommandResult{}, errors.New("command is required")
 	}
-	if err := rejectUnsafeCommand(command, req.Args); err != nil {
-		return ToolCommandResult{}, err
-	}
 	cwd, err := t.resolvePath(req.Cwd)
 	if err != nil {
 		return ToolCommandResult{}, err
 	}
 	if err := os.MkdirAll(cwd, 0755); err != nil {
+		return ToolCommandResult{}, err
+	}
+	if err := t.validateCommandPolicy(command, req.Args, cwd); err != nil {
 		return ToolCommandResult{}, err
 	}
 
@@ -352,20 +352,67 @@ func resolveExistingPathForBoundary(target string) (string, error) {
 	}
 }
 
-func rejectUnsafeCommand(command string, args []string) error {
-	name := strings.ToLower(filepath.Base(command))
+func (t *FilesystemToolLayer) validateCommandPolicy(command string, args []string, cwd string) error {
+	name := normalizedCommandName(command)
+	if !commandAllowed(name, t.config.AllowedCommands) {
+		return fmt.Errorf("%q is not in the filesystem tool command allowlist", name)
+	}
+	if err := validateCommandPath(command, name); err != nil {
+		return err
+	}
+	if err := t.validateCommandArgs(name, args, cwd); err != nil {
+		return err
+	}
+	return rejectDangerousAllowedCommandArgs(name, args)
+}
+
+func normalizedCommandName(command string) string {
+	name := strings.ToLower(filepath.Base(strings.TrimSpace(command)))
 	if runtime.GOOS == "windows" && strings.HasSuffix(name, ".exe") {
 		name = strings.TrimSuffix(name, ".exe")
 	}
-	forbidden := map[string]bool{
-		"halt":     true,
-		"mkfs":     true,
-		"poweroff": true,
-		"reboot":   true,
-		"shutdown": true,
+	return name
+}
+
+func commandAllowed(name string, allowed []string) bool {
+	for _, command := range allowed {
+		if normalizedCommandName(command) == name {
+			return true
+		}
 	}
-	if forbidden[name] {
-		return fmt.Errorf("%q is not allowed by the filesystem tool", name)
+	return false
+}
+
+func validateCommandPath(command, name string) error {
+	if !strings.ContainsAny(command, `/\`) {
+		return nil
+	}
+	resolvedCommand, err := filepath.EvalSymlinks(command)
+	if err != nil {
+		return err
+	}
+	pathCommand, err := exec.LookPath(name)
+	if err != nil {
+		return fmt.Errorf("%q is allowed, but no trusted executable was found on PATH: %w", name, err)
+	}
+	resolvedPathCommand, err := filepath.EvalSymlinks(pathCommand)
+	if err != nil {
+		return err
+	}
+	if resolvedCommand != resolvedPathCommand {
+		return fmt.Errorf("%q resolves to %q, not trusted executable %q", command, resolvedCommand, resolvedPathCommand)
+	}
+	return nil
+}
+
+func rejectDangerousAllowedCommandArgs(name string, args []string) error {
+	if name == "find" {
+		for _, arg := range args {
+			switch strings.TrimSpace(arg) {
+			case "-delete", "-exec", "-execdir":
+				return fmt.Errorf("find argument %q is not allowed by the filesystem tool", arg)
+			}
+		}
 	}
 	if name == "rm" || name == "rmdir" {
 		for _, arg := range args {
@@ -373,6 +420,78 @@ func rejectUnsafeCommand(command string, args []string) error {
 				return errors.New("recursive delete is not allowed by the filesystem tool")
 			}
 		}
+	}
+	return nil
+}
+
+func (t *FilesystemToolLayer) validateCommandArgs(_ string, args []string, cwd string) error {
+	realRoot, err := resolveExistingPathForBoundary(t.root)
+	if err != nil {
+		return err
+	}
+	for _, arg := range args {
+		for _, candidate := range commandArgPathCandidates(arg) {
+			if err := validateCommandArgPathWithinRoot(realRoot, cwd, candidate); err != nil {
+				return err
+			}
+		}
+		if commandArgMayBeBarePath(arg) {
+			target := filepath.Join(cwd, strings.TrimSpace(arg))
+			if _, err := os.Lstat(target); err == nil {
+				if err := validateCommandArgPathWithinRoot(realRoot, cwd, arg); err != nil {
+					return err
+				}
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func commandArgPathCandidates(arg string) []string {
+	arg = strings.TrimSpace(arg)
+	if arg == "" || arg == "-" {
+		return nil
+	}
+	if strings.HasPrefix(arg, "-") {
+		if before, after, ok := strings.Cut(arg, "="); ok && before != "" && looksLikeCommandPath(after) {
+			return []string{after}
+		}
+		return nil
+	}
+	if looksLikeCommandPath(arg) {
+		return []string{arg}
+	}
+	return nil
+}
+
+func looksLikeCommandPath(arg string) bool {
+	return arg == "." || arg == ".." || strings.HasPrefix(arg, "~/") || strings.ContainsAny(arg, `/\`)
+}
+
+func commandArgMayBeBarePath(arg string) bool {
+	arg = strings.TrimSpace(arg)
+	return arg != "" && arg != "-" && !strings.HasPrefix(arg, "-") && !looksLikeCommandPath(arg)
+}
+
+func validateCommandArgPathWithinRoot(realRoot, cwd, candidate string) error {
+	target := candidate
+	if target == "~" || strings.HasPrefix(target, "~/") {
+		target = normalizeStoragePath(target)
+	} else if !filepath.IsAbs(target) {
+		target = filepath.Join(cwd, target)
+	}
+	target, err := filepath.Abs(target)
+	if err != nil {
+		return err
+	}
+	realTarget, err := resolveExistingPathForBoundary(target)
+	if err != nil {
+		return err
+	}
+	if !pathWithinRoot(realRoot, realTarget) {
+		return fmt.Errorf("command argument %q resolves outside filesystem tool root", candidate)
 	}
 	return nil
 }

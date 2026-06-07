@@ -16,6 +16,7 @@ export namespace main {
 	    root: string;
 	    maxOutputBytes: number;
 	    timeoutMs: number;
+	    allowedCommands: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigFilesystemTool(source);
@@ -26,6 +27,7 @@ export namespace main {
 	        this.root = source["root"];
 	        this.maxOutputBytes = source["maxOutputBytes"];
 	        this.timeoutMs = source["timeoutMs"];
+	        this.allowedCommands = source["allowedCommands"];
 	    }
 	}
 	export class ConfigTools {

@@ -99,9 +99,10 @@ type ConfigTools struct {
 }
 
 type ConfigFilesystemTool struct {
-	Root           string `json:"root"`
-	MaxOutputBytes int    `json:"maxOutputBytes"`
-	TimeoutMS      int    `json:"timeoutMs"`
+	Root            string   `json:"root"`
+	MaxOutputBytes  int      `json:"maxOutputBytes"`
+	TimeoutMS       int      `json:"timeoutMs"`
+	AllowedCommands []string `json:"allowedCommands"`
 }
 
 type ConfigUI struct {
@@ -1067,9 +1068,10 @@ func defaultAppConfig() AppConfig {
 		},
 		Tools: ConfigTools{
 			Filesystem: ConfigFilesystemTool{
-				Root:           defaultDocumentsRoot(),
-				MaxOutputBytes: 64 * 1024,
-				TimeoutMS:      30 * 1000,
+				Root:            defaultDocumentsRoot(),
+				MaxOutputBytes:  64 * 1024,
+				TimeoutMS:       30 * 1000,
+				AllowedCommands: defaultFilesystemToolAllowedCommands(),
 			},
 		},
 		UI: ConfigUI{
@@ -1128,7 +1130,25 @@ func mergeToolsConfig(tools ConfigTools, defaults ConfigTools) ConfigTools {
 	if tools.Filesystem.TimeoutMS <= 0 {
 		tools.Filesystem.TimeoutMS = defaults.Filesystem.TimeoutMS
 	}
+	if len(tools.Filesystem.AllowedCommands) == 0 {
+		tools.Filesystem.AllowedCommands = append([]string{}, defaults.Filesystem.AllowedCommands...)
+	}
 	return tools
+}
+
+func defaultFilesystemToolAllowedCommands() []string {
+	return []string{
+		"cat",
+		"echo",
+		"find",
+		"grep",
+		"head",
+		"ls",
+		"pwd",
+		"rg",
+		"tail",
+		"wc",
+	}
 }
 
 func defaultStorageRoot() string {
