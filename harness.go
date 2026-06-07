@@ -810,42 +810,18 @@ func harnessJSONCandidates(content string) []string {
 }
 
 func (h *HarnessEngine) runFilesystemToolCalls(ctx context.Context, requestID, conversationID string, calls []HarnessToolCall) []HarnessToolResult {
-	tool := newFilesystemToolLayer(h.config.Tools.Filesystem)
+	gateway := newToolGateway(h.app, h.config)
 	results := make([]HarnessToolResult, 0, len(calls))
 	for _, call := range calls {
-		results = append(results, h.runFilesystemToolCall(ctx, requestID, conversationID, tool, call))
+		results = append(results, gateway.Execute(ctx, ToolExecutionRequest{
+			Name:           call.Name,
+			Call:           call,
+			RequestID:      requestID,
+			ConversationID: conversationID,
+			Source:         "harness",
+		}))
 	}
 	return results
-}
-
-func (h *HarnessEngine) runFilesystemToolCall(ctx context.Context, requestID, conversationID string, tool *FilesystemToolLayer, call HarnessToolCall) HarnessToolResult {
-	name := strings.TrimSpace(call.Name)
-	if name == "" {
-		name = "run_command"
-	}
-	result := HarnessToolResult{Name: name, Status: "completed"}
-	definition, ok := filesystemToolRegistry().Get(name)
-	if !ok {
-		result.Status = "failed"
-		result.Error = fmt.Sprintf("unknown filesystem tool %q", name)
-		result.Summary = "tool not recognized"
-		return result
-	}
-	if definition.RequiresPermission() && !h.requestFilesystemToolPermission(ctx, requestID, conversationID, definition, call) {
-		return HarnessToolResult{Name: name, Status: "denied", Summary: definition.Title + " was not approved", Error: "permission denied"}
-	}
-	output, summary, err := definition.Execute(ctx, tool, call)
-	result.Result = output
-	result.Summary = summary
-	if err != nil {
-		result.Status = "failed"
-		result.Error = err.Error()
-		result.Summary = name + " failed"
-	} else if toolError := harnessToolOutputError(output); toolError != "" {
-		result.Status = "failed"
-		result.Error = toolError
-	}
-	return result
 }
 
 func (h *HarnessEngine) attachToolActivities(run *HarnessRun, results []HarnessToolResult) {
@@ -866,29 +842,6 @@ func toolActivityFromResult(result HarnessToolResult) HarnessToolActivity {
 		return definition.Activity(result)
 	}
 	return defaultHarnessToolActivity(result)
-}
-
-func (h *HarnessEngine) requestFilesystemToolPermission(ctx context.Context, requestID, conversationID string, definition HarnessToolDefinition, call HarnessToolCall) bool {
-	if h.app == nil {
-		return true
-	}
-	name := strings.TrimSpace(call.Name)
-	if name == "" {
-		name = "run_command"
-	}
-	event := ToolPermissionRequestEvent{}
-	if definition.Permission != nil {
-		event = definition.Permission(call)
-	}
-	if strings.TrimSpace(event.Summary) == "" {
-		event.Summary = definition.Title
-	}
-	event.ID = randomID("permission")
-	event.RequestID = requestID
-	event.ConversationID = conversationID
-	event.ToolName = name
-	event.Action = name
-	return h.app.requestToolPermission(ctx, event)
 }
 
 func harnessToolOutputError(output any) string {

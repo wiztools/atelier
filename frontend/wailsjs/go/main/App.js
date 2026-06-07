@@ -18,6 +18,10 @@ export function DeleteConversation(arg1) {
   return window['go']['main']['App']['DeleteConversation'](arg1);
 }
 
+export function ExecuteTool(arg1) {
+  return window['go']['main']['App']['ExecuteTool'](arg1);
+}
+
 export function GenerateImage(arg1) {
   return window['go']['main']['App']['GenerateImage'](arg1);
 }

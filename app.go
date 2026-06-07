@@ -529,14 +529,32 @@ func (a *App) ResolveToolPermission(permissionID string, approved bool) error {
 }
 
 func (a *App) RunToolCommand(req ToolCommandRequest) (ToolCommandResult, error) {
-	config, err := loadAppConfig()
+	result, err := a.ExecuteTool(ToolExecutionRequest{
+		Name: "run_command",
+		Call: HarnessToolCall{
+			Name:      "run_command",
+			Command:   req.Command,
+			Args:      req.Args,
+			Cwd:       req.Cwd,
+			Env:       req.Env,
+			TimeoutMS: req.TimeoutMS,
+		},
+		Source: "api",
+	})
 	if err != nil {
 		return ToolCommandResult{}, err
 	}
-	if err := ensureStorageDirs(config.Storage); err != nil {
-		return ToolCommandResult{}, err
+	if result.Status == "denied" {
+		return ToolCommandResult{}, errors.New(result.Error)
 	}
-	return newFilesystemToolLayer(config.Tools.Filesystem).RunCommand(context.Background(), req)
+	output, ok := result.Result.(ToolCommandResult)
+	if !ok {
+		return ToolCommandResult{}, fmt.Errorf("run_command returned %T", result.Result)
+	}
+	if result.Status == "failed" && len(output.Command) == 0 {
+		return output, errors.New(result.Error)
+	}
+	return output, nil
 }
 
 func (a *App) ListToolFiles(req ToolFileListRequest) (ToolFileListResult, error) {
@@ -562,14 +580,43 @@ func (a *App) ReadToolFile(req ToolFileReadRequest) (ToolFileReadResult, error) 
 }
 
 func (a *App) WriteToolFile(req ToolFileWriteRequest) (ToolFileWriteResult, error) {
-	config, err := loadAppConfig()
+	result, err := a.ExecuteTool(ToolExecutionRequest{
+		Name: "write_file",
+		Call: HarnessToolCall{
+			Name:      "write_file",
+			Path:      req.Path,
+			Content:   req.Content,
+			Append:    req.Append,
+			Overwrite: req.Overwrite,
+		},
+		Source: "api",
+	})
 	if err != nil {
 		return ToolFileWriteResult{}, err
 	}
-	if err := ensureStorageDirs(config.Storage); err != nil {
-		return ToolFileWriteResult{}, err
+	if result.Status == "denied" {
+		return ToolFileWriteResult{}, errors.New(result.Error)
 	}
-	return newFilesystemToolLayer(config.Tools.Filesystem).WriteFile(req)
+	output, ok := result.Result.(ToolFileWriteResult)
+	if !ok {
+		return ToolFileWriteResult{}, fmt.Errorf("write_file returned %T", result.Result)
+	}
+	if result.Status == "failed" {
+		return output, errors.New(result.Error)
+	}
+	return output, nil
+}
+
+func (a *App) ExecuteTool(req ToolExecutionRequest) (HarnessToolResult, error) {
+	config, err := loadAppConfig()
+	if err != nil {
+		return HarnessToolResult{}, err
+	}
+	if err := ensureStorageDirs(config.Storage); err != nil {
+		return HarnessToolResult{}, err
+	}
+	result := newToolGateway(a, config).Execute(context.Background(), req)
+	return result, nil
 }
 
 func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {

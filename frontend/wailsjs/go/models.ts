@@ -562,6 +562,60 @@ export namespace main {
 	        this.artifactCount = source["artifactCount"];
 	    }
 	}
+	export class HarnessToolCall {
+	    name: string;
+	    command?: string;
+	    args?: string[];
+	    cwd?: string;
+	    env?: Record<string, string>;
+	    timeoutMs?: number;
+	    path?: string;
+	    content?: string;
+	    append?: boolean;
+	    overwrite?: boolean;
+	    maxBytes?: number;
+	    allowBinary?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new HarnessToolCall(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.command = source["command"];
+	        this.args = source["args"];
+	        this.cwd = source["cwd"];
+	        this.env = source["env"];
+	        this.timeoutMs = source["timeoutMs"];
+	        this.path = source["path"];
+	        this.content = source["content"];
+	        this.append = source["append"];
+	        this.overwrite = source["overwrite"];
+	        this.maxBytes = source["maxBytes"];
+	        this.allowBinary = source["allowBinary"];
+	    }
+	}
+	export class HarnessToolResult {
+	    name: string;
+	    status: string;
+	    summary: string;
+	    result?: any;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HarnessToolResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.status = source["status"];
+	        this.summary = source["summary"];
+	        this.result = source["result"];
+	        this.error = source["error"];
+	    }
+	}
 	
 	
 	
@@ -731,6 +785,44 @@ export namespace main {
 	        this.truncated = source["truncated"];
 	        this.error = source["error"];
 	    }
+	}
+	export class ToolExecutionRequest {
+	    name: string;
+	    call: HarnessToolCall;
+	    requestId?: string;
+	    conversationId?: string;
+	    source?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ToolExecutionRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.call = this.convertValues(source["call"], HarnessToolCall);
+	        this.requestId = source["requestId"];
+	        this.conversationId = source["conversationId"];
+	        this.source = source["source"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class ToolFileEntry {
 	    name: string;

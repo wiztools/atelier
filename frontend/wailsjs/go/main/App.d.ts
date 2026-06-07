@@ -10,6 +10,8 @@ export function ChooseToolWorkspace(arg1:string):Promise<string>;
 
 export function DeleteConversation(arg1:string):Promise<void>;
 
+export function ExecuteTool(arg1:main.ToolExecutionRequest):Promise<main.HarnessToolResult>;
+
 export function GenerateImage(arg1:main.ImageGenerateRequest):Promise<main.ImageGenerateResponse>;
 
 export function GetConfig():Promise<main.AppConfig>;

@@ -345,6 +345,71 @@ func TestFilesystemToolRejectsFileOutsideRoot(t *testing.T) {
 	}
 }
 
+func TestToolGatewayDeniesWriteFileBeforeExecution(t *testing.T) {
+	root := t.TempDir()
+	var permissionEvent ToolPermissionRequestEvent
+	gateway := ToolGateway{
+		registry: filesystemToolRegistry(),
+		layer:    newFilesystemToolLayer(ConfigFilesystemTool{Root: root}),
+		permissionRequester: func(_ context.Context, event ToolPermissionRequestEvent) bool {
+			permissionEvent = event
+			return false
+		},
+	}
+
+	result := gateway.Execute(context.Background(), ToolExecutionRequest{
+		Name: "write_file",
+		Call: HarnessToolCall{
+			Name:    "write_file",
+			Path:    "blocked.txt",
+			Content: "nope",
+		},
+		RequestID:      "request-1",
+		ConversationID: "conversation-1",
+		Source:         "test",
+	})
+	if result.Status != "denied" {
+		t.Fatalf("gateway result = %+v, want denied", result)
+	}
+	if permissionEvent.ToolName != "write_file" || permissionEvent.RequestID != "request-1" || permissionEvent.ConversationID != "conversation-1" {
+		t.Fatalf("permission event = %+v, want write_file request metadata", permissionEvent)
+	}
+	if _, err := os.Stat(filepath.Join(root, "blocked.txt")); !os.IsNotExist(err) {
+		t.Fatalf("blocked write touched disk, stat err = %v", err)
+	}
+}
+
+func TestToolGatewayDoesNotRequestPermissionForReadFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "status.txt"), []byte("green"), 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	permissionCalled := false
+	gateway := ToolGateway{
+		registry: filesystemToolRegistry(),
+		layer:    newFilesystemToolLayer(ConfigFilesystemTool{Root: root}),
+		permissionRequester: func(context.Context, ToolPermissionRequestEvent) bool {
+			permissionCalled = true
+			return false
+		},
+	}
+
+	result := gateway.Execute(context.Background(), ToolExecutionRequest{
+		Name: "read_file",
+		Call: HarnessToolCall{Name: "read_file", Path: "status.txt"},
+	})
+	if result.Status != "completed" {
+		t.Fatalf("gateway result = %+v, want completed", result)
+	}
+	if permissionCalled {
+		t.Fatal("read_file should not request permission")
+	}
+	output, ok := result.Result.(ToolFileReadResult)
+	if !ok || output.Content != "green" {
+		t.Fatalf("read result = %+v, want file content", result.Result)
+	}
+}
+
 func TestResolveToolPermissionSignalsDecision(t *testing.T) {
 	app := NewApp()
 	response := make(chan bool, 1)
