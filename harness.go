@@ -309,6 +309,7 @@ func preparedTurnToRound(iteration int, turn HarnessPreparedTurn) HarnessToolRou
 }
 
 func (h *HarnessEngine) prepareChatTurn(ctx context.Context, req ChatRequest) (HarnessPreparedTurn, error) {
+	toolCatalog := filesystemToolRegistry().PromptCatalog()
 	system := strings.TrimSpace(`You are Atelier's private harness model. Prepare a concise markdown brief for the next model that will answer the user.
 Do not answer the user directly. Do not include hidden chain-of-thought. Capture only useful answer guidance: intent, constraints, relevant context, response shape, and cautions.
 Return exactly one fenced JSON object. No prose outside the JSON block.
@@ -321,10 +322,7 @@ Schema:
 }
 If filesystem context would materially improve the answer, set "needsTools": true and include at most 3 tool calls.
 Allowed tool calls:
-- {"name":"list_files","path":"optional relative directory"}
-- {"name":"read_file","path":"relative/path.txt","maxBytes":20000}
-- {"name":"run_command","command":"pwd","args":[],"cwd":"optional relative directory"}
-- {"name":"write_file","path":"relative/path.txt","content":"text","overwrite":false,"append":false}
+` + toolCatalog + `
 When "needsTools" is false, "toolCalls" must be [].
 Prefer read-only calls unless the user clearly asks to modify files. Paths are scoped to Atelier's configured filesystem tool root.`)
 	if strings.TrimSpace(req.System) != "" {
@@ -769,30 +767,14 @@ func validateHarnessToolCall(index int, call HarnessToolCall) []string {
 	if name == "" {
 		return []string{prefix + ".name is required"}
 	}
-	switch name {
-	case "list_files":
-		return nil
-	case "read_file":
-		if strings.TrimSpace(call.Path) == "" {
-			return []string{prefix + ".path is required for read_file"}
-		}
-	case "run_command":
-		if strings.TrimSpace(call.Command) == "" {
-			return []string{prefix + ".command is required for run_command"}
-		}
-	case "write_file":
-		var errors []string
-		if strings.TrimSpace(call.Path) == "" {
-			errors = append(errors, prefix+".path is required for write_file")
-		}
-		if call.Content == "" {
-			errors = append(errors, prefix+".content is required for write_file")
-		}
-		return errors
-	default:
-		return []string{prefix + ".name must be one of list_files, read_file, run_command, write_file"}
+	definition, ok := filesystemToolRegistry().Get(name)
+	if !ok {
+		return []string{prefix + ".name must be one of " + filesystemToolRegistry().NamesCSV()}
 	}
-	return nil
+	if definition.Validate == nil {
+		return nil
+	}
+	return definition.Validate(prefix, call)
 }
 
 func harnessJSONCandidates(content string) []string {
@@ -842,71 +824,26 @@ func (h *HarnessEngine) runFilesystemToolCall(ctx context.Context, requestID, co
 		name = "run_command"
 	}
 	result := HarnessToolResult{Name: name, Status: "completed"}
-	switch name {
-	case "run_command":
-		if !h.requestFilesystemToolPermission(ctx, requestID, conversationID, call) {
-			return HarnessToolResult{Name: name, Status: "denied", Summary: "command was not approved", Error: "permission denied"}
-		}
-		output, err := tool.RunCommand(ctx, ToolCommandRequest{
-			Command:   call.Command,
-			Args:      call.Args,
-			Cwd:       call.Cwd,
-			Env:       call.Env,
-			TimeoutMS: call.TimeoutMS,
-		})
-		result.Result = output
-		result.Summary = fmt.Sprintf("command exited with code %d", output.ExitCode)
-		if err != nil {
-			result.Status = "failed"
-			result.Error = err.Error()
-			result.Summary = "command rejected before execution"
-		} else if output.Error != "" {
-			result.Status = "failed"
-			result.Error = output.Error
-		}
-	case "list_files":
-		output, err := tool.ListFiles(ToolFileListRequest{Path: call.Path})
-		result.Result = output
-		result.Summary = fmt.Sprintf("listed %d entries", len(output.Entries))
-		if err != nil {
-			result.Status = "failed"
-			result.Error = err.Error()
-			result.Summary = "list_files failed"
-		}
-	case "read_file":
-		output, err := tool.ReadFile(ToolFileReadRequest{
-			Path:        call.Path,
-			MaxBytes:    call.MaxBytes,
-			AllowBinary: call.AllowBinary,
-		})
-		result.Result = output
-		result.Summary = fmt.Sprintf("read %d bytes", output.Bytes)
-		if err != nil {
-			result.Status = "failed"
-			result.Error = err.Error()
-			result.Summary = "read_file failed"
-		}
-	case "write_file":
-		if !h.requestFilesystemToolPermission(ctx, requestID, conversationID, call) {
-			return HarnessToolResult{Name: name, Status: "denied", Summary: "file write was not approved", Error: "permission denied"}
-		}
-		output, err := tool.WriteFile(ToolFileWriteRequest{
-			Path:      call.Path,
-			Content:   call.Content,
-			Append:    call.Append,
-			Overwrite: call.Overwrite,
-		})
-		result.Result = output
-		result.Summary = fmt.Sprintf("wrote %d bytes", output.Bytes)
-		if err != nil {
-			result.Status = "failed"
-			result.Error = err.Error()
-			result.Summary = "write_file failed"
-		}
-	default:
+	definition, ok := filesystemToolRegistry().Get(name)
+	if !ok {
 		result.Status = "failed"
 		result.Error = fmt.Sprintf("unknown filesystem tool %q", name)
 		result.Summary = "tool not recognized"
+		return result
+	}
+	if definition.RequiresPermission() && !h.requestFilesystemToolPermission(ctx, requestID, conversationID, definition, call) {
+		return HarnessToolResult{Name: name, Status: "denied", Summary: definition.Title + " was not approved", Error: "permission denied"}
+	}
+	output, summary, err := definition.Execute(ctx, tool, call)
+	result.Result = output
+	result.Summary = summary
+	if err != nil {
+		result.Status = "failed"
+		result.Error = err.Error()
+		result.Summary = name + " failed"
+	} else if toolError := harnessToolOutputError(output); toolError != "" {
+		result.Status = "failed"
+		result.Error = toolError
 	}
 	return result
 }
@@ -925,30 +862,13 @@ func (h *HarnessEngine) attachToolActivities(run *HarnessRun, results []HarnessT
 }
 
 func toolActivityFromResult(result HarnessToolResult) HarnessToolActivity {
-	activity := HarnessToolActivity{
-		Name:   result.Name,
-		Status: result.Status,
-		Error:  result.Error,
+	if definition, ok := filesystemToolRegistry().Get(result.Name); ok && definition.Activity != nil {
+		return definition.Activity(result)
 	}
-	switch typed := result.Result.(type) {
-	case ToolCommandResult:
-		activity.Command = typed.Command
-		activity.Path = typed.Cwd
-		activity.ExitCode = typed.ExitCode
-		activity.StdoutPreview = previewToolContent(typed.Stdout)
-		activity.StderrPreview = previewToolContent(typed.Stderr)
-		activity.DurationMS = typed.DurationMS
-	case ToolFileListResult:
-		activity.Path = typed.Path
-	case ToolFileReadResult:
-		activity.Path = typed.Path
-	case ToolFileWriteResult:
-		activity.Path = typed.Path
-	}
-	return activity
+	return defaultHarnessToolActivity(result)
 }
 
-func (h *HarnessEngine) requestFilesystemToolPermission(ctx context.Context, requestID, conversationID string, call HarnessToolCall) bool {
+func (h *HarnessEngine) requestFilesystemToolPermission(ctx context.Context, requestID, conversationID string, definition HarnessToolDefinition, call HarnessToolCall) bool {
 	if h.app == nil {
 		return true
 	}
@@ -956,30 +876,27 @@ func (h *HarnessEngine) requestFilesystemToolPermission(ctx context.Context, req
 	if name == "" {
 		name = "run_command"
 	}
-	event := ToolPermissionRequestEvent{
-		ID:             randomID("permission"),
-		RequestID:      requestID,
-		ConversationID: conversationID,
-		ToolName:       name,
-		Action:         name,
+	event := ToolPermissionRequestEvent{}
+	if definition.Permission != nil {
+		event = definition.Permission(call)
 	}
-	switch name {
-	case "run_command":
-		event.Command = append([]string{call.Command}, call.Args...)
-		event.Cwd = call.Cwd
-		event.Summary = strings.TrimSpace(strings.Join(event.Command, " "))
-		if event.Summary == "" {
-			event.Summary = "Run command"
-		}
-	case "write_file":
-		event.Path = call.Path
-		event.ContentPreview = previewToolContent(call.Content)
-		event.Summary = "Write file"
-		if strings.TrimSpace(call.Path) != "" {
-			event.Summary = "Write " + call.Path
-		}
+	if strings.TrimSpace(event.Summary) == "" {
+		event.Summary = definition.Title
 	}
+	event.ID = randomID("permission")
+	event.RequestID = requestID
+	event.ConversationID = conversationID
+	event.ToolName = name
+	event.Action = name
 	return h.app.requestToolPermission(ctx, event)
+}
+
+func harnessToolOutputError(output any) string {
+	switch typed := output.(type) {
+	case ToolCommandResult:
+		return typed.Error
+	}
+	return ""
 }
 
 func previewToolContent(content string) string {

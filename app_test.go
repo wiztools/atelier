@@ -425,6 +425,36 @@ func TestParseHarnessToolPlanRejectsInconsistentToolDecision(t *testing.T) {
 	}
 }
 
+func TestFilesystemToolRegistryProjectsPromptAndValidationNames(t *testing.T) {
+	registry := filesystemToolRegistry()
+	catalog := registry.PromptCatalog()
+	names := registry.NamesCSV()
+	for _, definition := range registry.definitions {
+		if !strings.Contains(catalog, definition.Name) {
+			t.Fatalf("prompt catalog = %q, want tool name %q", catalog, definition.Name)
+		}
+		if !strings.Contains(catalog, definition.Example) {
+			t.Fatalf("prompt catalog = %q, want example %q", catalog, definition.Example)
+		}
+		if !strings.Contains(names, definition.Name) {
+			t.Fatalf("names = %q, want tool name %q", names, definition.Name)
+		}
+		if definition.Execute == nil {
+			t.Fatalf("tool %q missing executor", definition.Name)
+		}
+		if definition.RequiresPermission() && definition.Permission == nil {
+			t.Fatalf("tool %q requires permission but has no permission presenter", definition.Name)
+		}
+		if definition.Activity == nil {
+			t.Fatalf("tool %q missing activity projector", definition.Name)
+		}
+	}
+	_, errors := parseHarnessToolPlan("```json\n{\"brief\":\"Do it.\",\"needsTools\":true,\"reason\":\"Need a tool.\",\"toolCalls\":[{\"name\":\"delete_all\",\"path\":\".\"}]}\n```")
+	if !containsSubstring(errors, "name must be one of "+names) {
+		t.Fatalf("validation errors = %+v, want registry names %q", errors, names)
+	}
+}
+
 func containsSubstring(values []string, substring string) bool {
 	for _, value := range values {
 		if strings.Contains(value, substring) {
