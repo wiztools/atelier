@@ -320,11 +320,11 @@ Schema:
   "reason": "why tools are or are not needed",
   "toolCalls": []
 }
-If filesystem context would materially improve the answer, set "needsTools": true and include at most 3 tool calls.
+If workspace context, a user-requested command, or a skill-specified command would materially improve the answer, set "needsTools": true and include at most 3 tool calls.
 Allowed tool calls:
 ` + toolCatalog + `
 When "needsTools" is false, "toolCalls" must be [].
-Prefer read-only calls unless the user clearly asks to modify files. Paths are scoped to Atelier's configured filesystem tool root.`)
+Prefer read-only calls unless the user clearly asks to modify files or run a specific write-capable command. Paths and command working directories are scoped to Atelier's configured filesystem tool root.`)
 	if strings.TrimSpace(req.System) != "" {
 		system += "\n\nUser-facing system prompt to preserve:\n" + strings.TrimSpace(req.System)
 	}

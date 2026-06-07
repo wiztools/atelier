@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -15,15 +16,16 @@ const (
 )
 
 type HarnessToolDefinition struct {
-	Name        string
-	Title       string
-	Description string
-	Example     string
-	Risk        HarnessToolRisk
-	Validate    func(prefix string, call HarnessToolCall) []string
-	Execute     func(ctx context.Context, layer *FilesystemToolLayer, call HarnessToolCall) (any, string, error)
-	Permission  func(call HarnessToolCall) ToolPermissionRequestEvent
-	Activity    func(result HarnessToolResult) HarnessToolActivity
+	Name            string
+	Title           string
+	Description     string
+	Example         string
+	Risk            HarnessToolRisk
+	Validate        func(prefix string, call HarnessToolCall) []string
+	Execute         func(ctx context.Context, layer *FilesystemToolLayer, call HarnessToolCall) (any, string, error)
+	NeedsPermission func(call HarnessToolCall) bool
+	Permission      func(call HarnessToolCall) ToolPermissionRequestEvent
+	Activity        func(result HarnessToolResult) HarnessToolActivity
 }
 
 type HarnessToolRegistry struct {
@@ -82,9 +84,12 @@ func filesystemToolRegistry() HarnessToolRegistry {
 		{
 			Name:        "run_command",
 			Title:       "Run command",
-			Description: "Use this only when a shell command is needed inside the configured workspace.",
-			Example:     `{"name":"run_command","command":"pwd","args":[],"cwd":"optional relative directory"}`,
+			Description: "Use this to run an allowlisted command in the configured workspace when the user or a skill provides a command, or when a command is the direct way to gather workspace evidence such as searching text, listing with filters, counting, or checking status.",
+			Example:     `{"name":"run_command","command":"rg","args":["-n","Atelier","."],"cwd":"optional relative directory"}`,
 			Risk:        HarnessToolRiskExec,
+			NeedsPermission: func(call HarnessToolCall) bool {
+				return !isReadOnlyCommandCall(call)
+			},
 			Validate: func(prefix string, call HarnessToolCall) []string {
 				if strings.TrimSpace(call.Command) == "" {
 					return []string{prefix + ".command is required for run_command"}
@@ -99,11 +104,11 @@ func filesystemToolRegistry() HarnessToolRegistry {
 					Env:       call.Env,
 					TimeoutMS: call.TimeoutMS,
 				})
-				return output, fmt.Sprintf("command exited with code %d", output.ExitCode), err
+				return output, commandResultSummary(output), err
 			},
 			Permission: func(call HarnessToolCall) ToolPermissionRequestEvent {
 				command := append([]string{call.Command}, call.Args...)
-				summary := strings.TrimSpace(strings.Join(command, " "))
+				summary := formatCommandSummary(command)
 				if summary == "" {
 					summary = "Run command"
 				}
@@ -211,10 +216,52 @@ func (definition HarnessToolDefinition) RequiresPermission() bool {
 	return definition.Risk == HarnessToolRiskWrite || definition.Risk == HarnessToolRiskExec
 }
 
+func (definition HarnessToolDefinition) RequiresPermissionFor(call HarnessToolCall) bool {
+	if definition.NeedsPermission != nil {
+		return definition.NeedsPermission(call)
+	}
+	return definition.RequiresPermission()
+}
+
 func defaultHarnessToolActivity(result HarnessToolResult) HarnessToolActivity {
 	return HarnessToolActivity{
 		Name:   result.Name,
 		Status: result.Status,
 		Error:  result.Error,
 	}
+}
+
+func formatCommandSummary(command []string) string {
+	parts := make([]string, 0, len(command))
+	for _, arg := range command {
+		if strings.TrimSpace(arg) == "" {
+			continue
+		}
+		parts = append(parts, strconv.Quote(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+func commandResultSummary(result ToolCommandResult) string {
+	return fmt.Sprintf("command exited with code %d", result.ExitCode)
+}
+
+func isReadOnlyCommandCall(call HarnessToolCall) bool {
+	if len(reqEnvWithoutBlanks(call.Env)) > 0 {
+		return false
+	}
+	name := normalizedCommandName(call.Command)
+	readOnlyCommands := map[string]bool{
+		"cat": true, "echo": true, "find": true, "grep": true, "head": true,
+		"ls": true, "pwd": true, "rg": true, "tail": true, "wc": true,
+	}
+	if !readOnlyCommands[name] {
+		return false
+	}
+	for _, arg := range call.Args {
+		if commandFlagDenied(name, commandFlagName(strings.TrimSpace(arg))) {
+			return false
+		}
+	}
+	return true
 }

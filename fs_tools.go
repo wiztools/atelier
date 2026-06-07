@@ -17,6 +17,7 @@ const (
 	defaultToolTimeoutMS      = 30 * 1000
 	maxToolTimeoutMS          = 5 * 60 * 1000
 	defaultToolMaxOutputBytes = 64 * 1024
+	maxToolOutputBytes        = 512 * 1024
 	maxToolReadBytes          = 512 * 1024
 )
 
@@ -114,7 +115,7 @@ func (t *FilesystemToolLayer) RunCommand(ctx context.Context, req ToolCommandReq
 	if err := os.MkdirAll(cwd, 0755); err != nil {
 		return ToolCommandResult{}, err
 	}
-	if err := t.validateCommandPolicy(command, req.Args, cwd); err != nil {
+	if err := t.validateCommandPolicy(command, req.Args, req.Env, cwd); err != nil {
 		return ToolCommandResult{}, err
 	}
 
@@ -134,7 +135,7 @@ func (t *FilesystemToolLayer) RunCommand(ctx context.Context, req ToolCommandReq
 
 	cmd := exec.CommandContext(runCtx, command, req.Args...)
 	cmd.Dir = cwd
-	cmd.Env = buildToolEnv(req.Env)
+	cmd.Env = buildToolEnv()
 
 	stdout := &limitedBuffer{limit: t.outputLimit()}
 	stderr := &limitedBuffer{limit: t.outputLimit()}
@@ -160,11 +161,12 @@ func (t *FilesystemToolLayer) RunCommand(ctx context.Context, req ToolCommandReq
 		return result, nil
 	}
 	if err != nil {
-		result.Error = err.Error()
 		result.ExitCode = 1
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			result.ExitCode = exitErr.ExitCode()
+		} else {
+			result.Error = err.Error()
 		}
 	}
 	return result, nil
@@ -311,6 +313,9 @@ func (t *FilesystemToolLayer) outputLimit() int {
 	if t.config.MaxOutputBytes <= 0 {
 		return defaultToolMaxOutputBytes
 	}
+	if t.config.MaxOutputBytes > maxToolOutputBytes {
+		return maxToolOutputBytes
+	}
 	return t.config.MaxOutputBytes
 }
 
@@ -352,7 +357,7 @@ func resolveExistingPathForBoundary(target string) (string, error) {
 	}
 }
 
-func (t *FilesystemToolLayer) validateCommandPolicy(command string, args []string, cwd string) error {
+func (t *FilesystemToolLayer) validateCommandPolicy(command string, args []string, env map[string]string, cwd string) error {
 	name := normalizedCommandName(command)
 	if !commandAllowed(name, t.config.AllowedCommands) {
 		return fmt.Errorf("%q is not in the filesystem tool command allowlist", name)
@@ -360,10 +365,16 @@ func (t *FilesystemToolLayer) validateCommandPolicy(command string, args []strin
 	if err := validateCommandPath(command, name); err != nil {
 		return err
 	}
-	if err := t.validateCommandArgs(name, args, cwd); err != nil {
+	if len(reqEnvWithoutBlanks(env)) > 0 {
+		return errors.New("command environment overrides are not allowed by the filesystem tool")
+	}
+	if err := t.validateCommandSpecificArgs(name, args, cwd); err != nil {
 		return err
 	}
-	return rejectDangerousAllowedCommandArgs(name, args)
+	if err := t.validateCommandArgs(args, cwd); err != nil {
+		return err
+	}
+	return nil
 }
 
 func normalizedCommandName(command string) string {
@@ -405,26 +416,82 @@ func validateCommandPath(command, name string) error {
 	return nil
 }
 
-func rejectDangerousAllowedCommandArgs(name string, args []string) error {
-	if name == "find" {
-		for _, arg := range args {
-			switch strings.TrimSpace(arg) {
-			case "-delete", "-exec", "-execdir":
-				return fmt.Errorf("find argument %q is not allowed by the filesystem tool", arg)
-			}
-		}
+func (t *FilesystemToolLayer) validateCommandSpecificArgs(name string, args []string, cwd string) error {
+	realRoot, err := resolveExistingPathForBoundary(t.root)
+	if err != nil {
+		return err
 	}
-	if name == "rm" || name == "rmdir" {
-		for _, arg := range args {
-			if strings.HasPrefix(arg, "-") && strings.Contains(arg, "r") {
-				return errors.New("recursive delete is not allowed by the filesystem tool")
+	for index, arg := range args {
+		trimmed := strings.TrimSpace(arg)
+		flag := commandFlagName(trimmed)
+		if flag == "" {
+			continue
+		}
+		if commandFlagDenied(name, flag) {
+			return fmt.Errorf("%s argument %q is not allowed by the filesystem tool", name, trimmed)
+		}
+		if commandFlagRequiresWorkspacePath(name, flag) {
+			value := ""
+			if _, after, ok := strings.Cut(trimmed, "="); ok {
+				value = after
+			} else if index < len(args)-1 {
+				value = args[index+1]
+			}
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("%s argument %q requires a workspace-scoped path", name, trimmed)
+			}
+			if err := validateCommandArgPathWithinRoot(realRoot, cwd, value); err != nil {
+				return err
 			}
 		}
 	}
 	return nil
 }
 
-func (t *FilesystemToolLayer) validateCommandArgs(_ string, args []string, cwd string) error {
+func commandFlagName(arg string) string {
+	if !strings.HasPrefix(arg, "-") || arg == "-" {
+		return ""
+	}
+	if before, _, ok := strings.Cut(arg, "="); ok {
+		return before
+	}
+	return arg
+}
+
+func commandFlagDenied(name, flag string) bool {
+	denied := map[string]map[string]bool{
+		"find": {
+			"-delete": true, "-exec": true, "-execdir": true, "-ok": true, "-okdir": true,
+			"-fls": true, "-fprint": true, "-fprintf": true,
+		},
+		"grep": {
+			"--include-from": true, "--exclude-from": true,
+		},
+		"rg": {
+			"--pre": true, "--pre-glob": true, "--config": true,
+		},
+		"rm": {
+			"-r": true, "-R": true, "--recursive": true,
+		},
+		"rmdir": {
+			"-r": true, "-R": true, "--recursive": true,
+		},
+	}
+	if (name == "rm" || name == "rmdir") && strings.HasPrefix(flag, "-") && strings.Contains(flag, "r") {
+		return true
+	}
+	return denied[name][flag]
+}
+
+func commandFlagRequiresWorkspacePath(name, flag string) bool {
+	pathFlags := map[string]map[string]bool{
+		"grep": {"-f": true, "--file": true},
+		"rg":   {"-f": true, "--file": true},
+	}
+	return pathFlags[name][flag]
+}
+
+func (t *FilesystemToolLayer) validateCommandArgs(args []string, cwd string) error {
 	realRoot, err := resolveExistingPathForBoundary(t.root)
 	if err != nil {
 		return err
@@ -496,27 +563,30 @@ func validateCommandArgPathWithinRoot(realRoot, cwd, candidate string) error {
 	return nil
 }
 
-func buildToolEnv(env map[string]string) []string {
-	result := os.Environ()
-	for key, value := range env {
-		if validToolEnvKey(key) {
+func buildToolEnv() []string {
+	allowed := map[string]bool{
+		"PATH": true, "HOME": true, "TMPDIR": true, "TMP": true, "TEMP": true,
+		"LANG": true, "LC_ALL": true, "LC_CTYPE": true, "TERM": true, "NO_COLOR": true,
+		"SystemRoot": true, "WINDIR": true, "PATHEXT": true,
+	}
+	result := []string{}
+	for _, item := range os.Environ() {
+		key, value, ok := strings.Cut(item, "=")
+		if ok && allowed[key] {
 			result = append(result, key+"="+value)
 		}
 	}
 	return result
 }
 
-func validToolEnvKey(key string) bool {
-	if key == "" {
-		return false
-	}
-	for index, char := range key {
-		valid := char == '_' || char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z' || index > 0 && char >= '0' && char <= '9'
-		if !valid {
-			return false
+func reqEnvWithoutBlanks(env map[string]string) map[string]string {
+	result := map[string]string{}
+	for key, value := range env {
+		if strings.TrimSpace(key) != "" || strings.TrimSpace(value) != "" {
+			result[key] = value
 		}
 	}
-	return true
+	return result
 }
 
 func (b *limitedBuffer) Write(data []byte) (int, error) {

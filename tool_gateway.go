@@ -52,7 +52,7 @@ func (g ToolGateway) Execute(ctx context.Context, req ToolExecutionRequest) Harn
 		result.Summary = "tool not recognized"
 		return result
 	}
-	if definition.RequiresPermission() && !g.requestPermission(ctx, req, definition, call) {
+	if definition.RequiresPermissionFor(call) && !g.requestPermission(ctx, req, definition, call) {
 		return HarnessToolResult{Name: name, Status: "denied", Summary: definition.Title + " was not approved", Error: "permission denied"}
 	}
 	output, summary, err := definition.Execute(ctx, g.layer, call)

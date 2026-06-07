@@ -552,7 +552,7 @@ func (a *App) RunToolCommand(req ToolCommandRequest) (ToolCommandResult, error) 
 	if !ok {
 		return ToolCommandResult{}, fmt.Errorf("run_command returned %T", result.Result)
 	}
-	if result.Status == "failed" && len(output.Command) == 0 {
+	if result.Status == "failed" {
 		return output, errors.New(result.Error)
 	}
 	return output, nil

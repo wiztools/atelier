@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -292,6 +293,26 @@ func TestFilesystemToolTruncatesCommandOutput(t *testing.T) {
 	}
 }
 
+func TestFilesystemToolTreatsProcessExitAsCommandResult(t *testing.T) {
+	if _, err := exec.LookPath("false"); err != nil {
+		t.Skip("false is not available")
+	}
+	tool := newFilesystemToolLayer(ConfigFilesystemTool{
+		Root:            t.TempDir(),
+		AllowedCommands: []string{"false"},
+	})
+
+	result, err := tool.RunCommand(context.Background(), ToolCommandRequest{
+		Command: "false",
+	})
+	if err != nil {
+		t.Fatalf("RunCommand returned error: %v", err)
+	}
+	if result.ExitCode != 1 || result.Error != "" {
+		t.Fatalf("result = %+v, want process exit code without tool error", result)
+	}
+}
+
 func TestFilesystemToolRejectsCommandOutsideAllowlist(t *testing.T) {
 	tool := newFilesystemToolLayer(ConfigFilesystemTool{Root: t.TempDir()})
 	_, err := tool.RunCommand(context.Background(), ToolCommandRequest{
@@ -367,6 +388,96 @@ func TestFilesystemToolRejectsRecursiveDelete(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("RunCommand should reject recursive delete")
+	}
+}
+
+func TestFilesystemToolRejectsFindExecAndWritePrimaries(t *testing.T) {
+	tool := newFilesystemToolLayer(ConfigFilesystemTool{Root: t.TempDir()})
+	for _, args := range [][]string{
+		{".", "-ok", "echo", "{}", ";"},
+		{".", "-okdir", "echo", "{}", ";"},
+		{".", "-fprint", "out.txt"},
+	} {
+		_, err := tool.RunCommand(context.Background(), ToolCommandRequest{
+			Command: "find",
+			Args:    args,
+		})
+		if err == nil {
+			t.Fatalf("RunCommand should reject find args %v", args)
+		}
+	}
+}
+
+func TestFilesystemToolRejectsRipgrepPreprocessor(t *testing.T) {
+	tool := newFilesystemToolLayer(ConfigFilesystemTool{Root: t.TempDir()})
+	_, err := tool.RunCommand(context.Background(), ToolCommandRequest{
+		Command: "rg",
+		Args:    []string{"--pre", "cat", "needle"},
+	})
+	if err == nil {
+		t.Fatal("RunCommand should reject rg --pre")
+	}
+}
+
+func TestFilesystemToolRejectsCommandEnvOverrides(t *testing.T) {
+	tool := newFilesystemToolLayer(ConfigFilesystemTool{Root: t.TempDir()})
+	_, err := tool.RunCommand(context.Background(), ToolCommandRequest{
+		Command: "pwd",
+		Env:     map[string]string{"RG_CONFIG_PATH": "/tmp/atelier-rg-config"},
+	})
+	if err == nil {
+		t.Fatal("RunCommand should reject env overrides")
+	}
+}
+
+func TestFilesystemToolRejectsPatternFileOutsideRoot(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "patterns.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	tool := newFilesystemToolLayer(ConfigFilesystemTool{Root: t.TempDir()})
+
+	_, err := tool.RunCommand(context.Background(), ToolCommandRequest{
+		Command: "rg",
+		Args:    []string{"-f", outside},
+	})
+	if err == nil {
+		t.Fatal("RunCommand should reject pattern files outside root")
+	}
+}
+
+func TestFilesystemToolClampsCommandOutputLimit(t *testing.T) {
+	tool := newFilesystemToolLayer(ConfigFilesystemTool{
+		Root:           t.TempDir(),
+		MaxOutputBytes: maxToolOutputBytes * 10,
+	})
+	if got := tool.outputLimit(); got != maxToolOutputBytes {
+		t.Fatalf("outputLimit = %d, want cap %d", got, maxToolOutputBytes)
+	}
+}
+
+func TestBuildToolEnvStripsRiskyEnvironment(t *testing.T) {
+	t.Setenv("RG_CONFIG_PATH", "/tmp/atelier-rg-config")
+	t.Setenv("ATELIER_SECRET", "nope")
+	t.Setenv("PATH", "/bin")
+
+	env := strings.Join(buildToolEnv(), "\n")
+	if strings.Contains(env, "RG_CONFIG_PATH=") {
+		t.Fatal("buildToolEnv should strip RG_CONFIG_PATH")
+	}
+	if strings.Contains(env, "ATELIER_SECRET=") {
+		t.Fatal("buildToolEnv should strip arbitrary env vars")
+	}
+	if !strings.Contains(env, "PATH=/bin") {
+		t.Fatal("buildToolEnv should preserve PATH")
+	}
+}
+
+func TestFormatCommandSummaryQuotesArguments(t *testing.T) {
+	got := formatCommandSummary([]string{"echo", "hello atelier", "line\nbreak"})
+	want := `"echo" "hello atelier" "line\nbreak"`
+	if got != want {
+		t.Fatalf("formatCommandSummary = %q, want %q", got, want)
 	}
 }
 
@@ -546,6 +657,121 @@ func TestToolGatewayDoesNotRequestPermissionForReadFile(t *testing.T) {
 	}
 }
 
+func TestToolGatewayDoesNotRequestPermissionForReadOnlyCommand(t *testing.T) {
+	root := t.TempDir()
+	permissionCalled := false
+	gateway := ToolGateway{
+		registry: filesystemToolRegistry(),
+		layer: newFilesystemToolLayer(ConfigFilesystemTool{
+			Root:            root,
+			AllowedCommands: []string{"pwd"},
+		}),
+		permissionRequester: func(context.Context, ToolPermissionRequestEvent) bool {
+			permissionCalled = true
+			return false
+		},
+	}
+
+	result := gateway.Execute(context.Background(), ToolExecutionRequest{
+		Name: "run_command",
+		Call: HarnessToolCall{Name: "run_command", Command: "pwd"},
+	})
+	if result.Status != "completed" {
+		t.Fatalf("gateway result = %+v, want completed", result)
+	}
+	if permissionCalled {
+		t.Fatal("read-only run_command should not request permission")
+	}
+	output, ok := result.Result.(ToolCommandResult)
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("EvalSymlinks returned error: %v", err)
+	}
+	realStdout, err := filepath.EvalSymlinks(strings.TrimSpace(output.Stdout))
+	if err != nil {
+		t.Fatalf("EvalSymlinks returned error: %v", err)
+	}
+	if !ok || output.ExitCode != 0 || realStdout != realRoot {
+		t.Fatalf("command result = %+v, want pwd output", result.Result)
+	}
+}
+
+func TestToolGatewayTreatsProcessExitAsCompletedCommandResult(t *testing.T) {
+	if _, err := exec.LookPath("false"); err != nil {
+		t.Skip("false is not available")
+	}
+	gateway := ToolGateway{
+		registry: filesystemToolRegistry(),
+		layer: newFilesystemToolLayer(ConfigFilesystemTool{
+			Root:            t.TempDir(),
+			AllowedCommands: []string{"false"},
+		}),
+	}
+
+	result := gateway.Execute(context.Background(), ToolExecutionRequest{
+		Name: "run_command",
+		Call: HarnessToolCall{Name: "run_command", Command: "false"},
+	})
+	if result.Status != "completed" || result.Error != "" || result.Summary != "command exited with code 1" {
+		t.Fatalf("gateway result = %+v, want completed command result", result)
+	}
+}
+
+func TestToolGatewayTreatsSpawnFailureAsFailedToolResult(t *testing.T) {
+	gateway := ToolGateway{
+		registry: filesystemToolRegistry(),
+		layer: newFilesystemToolLayer(ConfigFilesystemTool{
+			Root:            t.TempDir(),
+			AllowedCommands: []string{"atelier-command-that-does-not-exist"},
+		}),
+	}
+
+	result := gateway.Execute(context.Background(), ToolExecutionRequest{
+		Name: "run_command",
+		Call: HarnessToolCall{Name: "run_command", Command: "atelier-command-that-does-not-exist"},
+	})
+	if result.Status != "failed" || result.Error == "" {
+		t.Fatalf("gateway result = %+v, want failed spawn error", result)
+	}
+}
+
+func TestRunCommandPermissionClassifierTreatsRipgrepAsReadOnly(t *testing.T) {
+	call := HarnessToolCall{Name: "run_command", Command: "rg", Args: []string{"-n", "Atelier", "."}}
+	if !isReadOnlyCommandCall(call) {
+		t.Fatalf("isReadOnlyCommandCall(%+v) = false, want true", call)
+	}
+	call.Args = []string{"--pre", "cat", "Atelier"}
+	if isReadOnlyCommandCall(call) {
+		t.Fatalf("isReadOnlyCommandCall(%+v) = true, want false", call)
+	}
+}
+
+func TestToolGatewayRequestsPermissionForCustomCommand(t *testing.T) {
+	permissionCalled := false
+	gateway := ToolGateway{
+		registry: filesystemToolRegistry(),
+		layer: newFilesystemToolLayer(ConfigFilesystemTool{
+			Root:            t.TempDir(),
+			AllowedCommands: []string{"git"},
+		}),
+		permissionRequester: func(context.Context, ToolPermissionRequestEvent) bool {
+			permissionCalled = true
+			return false
+		},
+	}
+
+	result := gateway.Execute(context.Background(), ToolExecutionRequest{
+		Name: "run_command",
+		Call: HarnessToolCall{Name: "run_command", Command: "git", Args: []string{"status"}},
+	})
+	if result.Status != "denied" {
+		t.Fatalf("gateway result = %+v, want denied", result)
+	}
+	if !permissionCalled {
+		t.Fatal("custom run_command should request permission")
+	}
+}
+
 func TestResolveToolPermissionSignalsDecision(t *testing.T) {
 	app := NewApp()
 	response := make(chan bool, 1)
@@ -653,6 +879,22 @@ func TestFilesystemToolRegistryProjectsPromptAndValidationNames(t *testing.T) {
 	_, errors := parseHarnessToolPlan("```json\n{\"brief\":\"Do it.\",\"needsTools\":true,\"reason\":\"Need a tool.\",\"toolCalls\":[{\"name\":\"delete_all\",\"path\":\".\"}]}\n```")
 	if !containsSubstring(errors, "name must be one of "+names) {
 		t.Fatalf("validation errors = %+v, want registry names %q", errors, names)
+	}
+}
+
+func TestRunCommandCatalogSupportsRequestedCommands(t *testing.T) {
+	definition, ok := filesystemToolRegistry().Get("run_command")
+	if !ok {
+		t.Fatal("run_command missing from registry")
+	}
+	description := strings.ToLower(definition.Description)
+	for _, want := range []string{"user", "skill", "provides a command"} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("run_command description = %q, want %q", definition.Description, want)
+		}
+	}
+	if !strings.Contains(definition.Example, `"command":"rg"`) {
+		t.Fatalf("run_command example = %q, want search command example", definition.Example)
 	}
 }
 
