@@ -1548,7 +1548,7 @@ function ModelCapabilityLink({
   setOpenID: (id: string) => void;
 }) {
   const selectedModel = asArray(models).find((item) => item.name === modelName);
-  const capabilities = asArray(selectedModel?.capabilities);
+  const capabilityLabels = selectedModel ? modelCapabilityLabels(selectedModel) : [];
   const isOpen = openID === id;
   const panelID = `${id}-capability-panel`;
   return (
@@ -1576,10 +1576,9 @@ function ModelCapabilityLink({
           {selectedModel ? (
             <>
               <div className="capability-chips">
-                {capabilities.length ? capabilities.map((capability) => (
-                  <span key={capability}>{formatCapability(capability)}</span>
+                {capabilityLabels.length ? capabilityLabels.map((capability) => (
+                  <span key={capability}>{capability}</span>
                 )) : <span>Capabilities not reported</span>}
-                {selectedModel.imageGeneration ? <span>Image generation</span> : null}
               </div>
               <dl>
                 {selectedModel.family ? (
@@ -1615,6 +1614,22 @@ function formatCapability(capability: string): string {
   return capability
     .replace(/[-_]+/g, ' ')
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function modelCapabilityLabels(model: main.OllamaModel): string[] {
+  const labels = new Set<string>();
+  for (const capability of asArray(model.capabilities)) {
+    const normalized = capability.toLowerCase().replace(/_/g, '-').trim();
+    if (normalized === 'image' || normalized === 'images' || normalized === 'image-generation') {
+      labels.add('Image generation');
+      continue;
+    }
+    labels.add(formatCapability(capability));
+  }
+  if (model.imageGeneration) {
+    labels.add('Image generation');
+  }
+  return Array.from(labels);
 }
 
 function formatModelSize(size: number): string {
