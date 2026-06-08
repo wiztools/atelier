@@ -1386,6 +1386,21 @@ button:disabled {
   min-width: 0;
 }
 
+.image-action-stack {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.image-attach-button {
+  width: 36px;
+  min-width: 36px;
+  padding: 0;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .image-generate-row .model-inline {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -1531,6 +1546,10 @@ button:disabled {
   .model-inline,
   .image-generate-row .model-inline {
     grid-template-columns: 1fr;
+  }
+
+  .image-action-stack {
+    flex-direction: column;
   }
 
   .sidebar,

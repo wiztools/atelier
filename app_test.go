@@ -2210,3 +2210,36 @@ func TestWriteChatConversationPersistsInputImages(t *testing.T) {
 		t.Fatalf("hydrated image text = %q, want data URL", imageContent.Text)
 	}
 }
+
+func TestGenerateImageSendsAttachedImages(t *testing.T) {
+	client := newOllamaClient(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Path != "/api/generate" {
+				t.Fatalf("unexpected provider path %q", req.URL.Path)
+			}
+			var payload map[string]any
+			data, _ := io.ReadAll(req.Body)
+			if err := json.Unmarshal(data, &payload); err != nil {
+				t.Fatalf("image request body is not JSON: %v", err)
+			}
+			images, ok := payload["images"].([]any)
+			if !ok || len(images) != 2 || images[0] != "source-one" || images[1] != "source-two" {
+				t.Fatalf("image request images = %+v, want attached source images", payload["images"])
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(`{"model":"image-model","image":"iVBORw0KGgo=","done":true}`)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+			}, nil
+		}),
+	}, "http://ollama.test")
+
+	if _, _, err := client.GenerateImage(t.Context(), ImageGenerateRequest{
+		Model:  "image-model",
+		Prompt: "Use these references",
+		Images: []string{"source-one", "source-two"},
+	}); err != nil {
+		t.Fatalf("GenerateImage returned error: %v", err)
+	}
+}

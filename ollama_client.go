@@ -259,6 +259,9 @@ func (client OllamaClient) GenerateImage(ctx context.Context, req ImageGenerateR
 	if req.Steps > 0 {
 		body["steps"] = req.Steps
 	}
+	if len(req.Images) > 0 {
+		body["images"] = req.Images
+	}
 
 	resp, err := client.postJSON(ctx, "/api/generate", body)
 	if err != nil {

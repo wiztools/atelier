@@ -633,6 +633,7 @@ export namespace main {
 	    width?: number;
 	    height?: number;
 	    steps?: number;
+	    images?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ImageGenerateRequest(source);
@@ -648,6 +649,7 @@ export namespace main {
 	        this.width = source["width"];
 	        this.height = source["height"];
 	        this.steps = source["steps"];
+	        this.images = source["images"];
 	    }
 	}
 	export class ImageGenerateResponse {

@@ -952,6 +952,7 @@ function App() {
         width: imageDimensions.width,
         height: imageDimensions.height,
         steps: imageSteps,
+        ...(attachments.length ? {images: attachments.map((item) => item.payload)} : {}),
       }));
     } catch (error) {
       visibleImageRequestRef.current = null;
@@ -1362,6 +1363,16 @@ function App() {
                 onKeyDown={handleImagePromptKeyDown}
                 placeholder="Prompt Atelier..."
               />
+              {asArray(attachments).length ? (
+                <div className="attachment-strip">
+                  {asArray(attachments).map((item) => (
+                    <button key={item.name} onClick={() => setAttachments((items) => items.filter((next) => next.name !== item.name))}>
+                      <img src={item.src} alt="" />
+                      <span>{item.name}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
               <div className="inline-fields">
                 <label>
                   Ratio
@@ -1396,9 +1407,15 @@ function App() {
                     setOpenID={setOpenCapabilityID}
                   />
                 </div>
-                <button className="primary" onClick={generateImage} disabled={!imagePrompt.trim() || !imageModel || imageBusy}>
-                  {imageBusy ? 'Generating' : 'Generate'}
-                </button>
+                <div className="image-action-stack">
+                  <label className="file-button image-attach-button" aria-label="Attach image" title="Attach image">
+                    +
+                    <input type="file" accept="image/*" multiple onChange={(event) => addImages(event.target.files)} />
+                  </label>
+                  <button className="primary" onClick={generateImage} disabled={!imagePrompt.trim() || !imageModel || imageBusy}>
+                    {imageBusy ? 'Generating' : 'Generate'}
+                  </button>
+                </div>
               </div>
             </div>
             <div className="image-output">

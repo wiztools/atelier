@@ -225,14 +225,15 @@ type ollamaChatResponse struct {
 }
 
 type ImageGenerateRequest struct {
-	RequestID      string `json:"requestID,omitempty"`
-	ConversationID string `json:"conversationId,omitempty"`
-	BaseURL        string `json:"baseURL,omitempty"`
-	Model          string `json:"model"`
-	Prompt         string `json:"prompt"`
-	Width          int    `json:"width,omitempty"`
-	Height         int    `json:"height,omitempty"`
-	Steps          int    `json:"steps,omitempty"`
+	RequestID      string   `json:"requestID,omitempty"`
+	ConversationID string   `json:"conversationId,omitempty"`
+	BaseURL        string   `json:"baseURL,omitempty"`
+	Model          string   `json:"model"`
+	Prompt         string   `json:"prompt"`
+	Width          int      `json:"width,omitempty"`
+	Height         int      `json:"height,omitempty"`
+	Steps          int      `json:"steps,omitempty"`
+	Images         []string `json:"images,omitempty"`
 }
 
 type ImageGenerateResponse struct {
@@ -1526,7 +1527,11 @@ func writeImageGenerationConversation(config AppConfig, req ImageGenerateRequest
 		},
 	}
 
-	userTurn := buildImageGenerationUserTurn(workspace.ID, "turn_000001", nowText, req)
+	userContent, err := imageGenerationUserContent(workspace.ArtifactsDir, req)
+	if err != nil {
+		return "", err
+	}
+	userTurn := buildImageGenerationUserTurn(workspace.ID, "turn_000001", nowText, req, userContent)
 
 	assistantTurn := HistoryTurn{
 		SchemaVersion:  1,
@@ -1634,7 +1639,11 @@ func writePendingImageGenerationConversation(config AppConfig, req ImageGenerate
 			TurnCount: 1,
 		},
 	}
-	userTurn := buildImageGenerationUserTurn(workspace.ID, "turn_000001", nowText, req)
+	userContent, err := imageGenerationUserContent(workspace.ArtifactsDir, req)
+	if err != nil {
+		return "", err
+	}
+	userTurn := buildImageGenerationUserTurn(workspace.ID, "turn_000001", nowText, req, userContent)
 	if err := store.writeSnapshot(workspace, conversation, userTurn); err != nil {
 		return "", err
 	}
@@ -1679,7 +1688,15 @@ func appendImageGenerationResult(config AppConfig, conversationID string, req Im
 	return store.writeTurn(loaded.TurnsDir, assistantTurn)
 }
 
-func buildImageGenerationUserTurn(conversationID, turnID, createdAt string, req ImageGenerateRequest) HistoryTurn {
+func imageGenerationUserContent(artifactsDir string, req ImageGenerateRequest) ([]HistoryContent, error) {
+	return historyContentForMessage(ChatMessage{
+		Role:    "user",
+		Content: req.Prompt,
+		Images:  req.Images,
+	}, artifactsDir, 1)
+}
+
+func buildImageGenerationUserTurn(conversationID, turnID, createdAt string, req ImageGenerateRequest, content []HistoryContent) HistoryTurn {
 	return HistoryTurn{
 		SchemaVersion:  1,
 		ID:             turnID,
@@ -1687,14 +1704,13 @@ func buildImageGenerationUserTurn(conversationID, turnID, createdAt string, req 
 		CreatedAt:      createdAt,
 		Kind:           "image_generation",
 		Role:           "user",
-		Content: []HistoryContent{
-			{Type: "text", Text: req.Prompt},
-		},
+		Content:        content,
 		Request: map[string]any{
 			"prompt": req.Prompt,
 			"width":  req.Width,
 			"height": req.Height,
 			"steps":  req.Steps,
+			"images": len(req.Images),
 		},
 	}
 }
