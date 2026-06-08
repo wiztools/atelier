@@ -218,6 +218,7 @@ function App() {
   const [purgeBusy, setPurgeBusy] = useState(false);
   const [confirmPurgeArchived, setConfirmPurgeArchived] = useState(false);
   const [purgeStatus, setPurgeStatus] = useState('');
+  const [openCapabilityID, setOpenCapabilityID] = useState('');
   const shellRef = useRef<HTMLElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const shouldFollowTranscriptRef = useRef(true);
@@ -472,6 +473,29 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem('atelier.sidebarWidth', String(sidebarWidth));
   }, [sidebarWidth]);
+
+  useEffect(() => {
+    if (!openCapabilityID) {
+      return;
+    }
+    const onPointerDown = (event: MouseEvent) => {
+      if (event.target instanceof Element && event.target.closest('.model-capability')) {
+        return;
+      }
+      setOpenCapabilityID('');
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpenCapabilityID('');
+      }
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [openCapabilityID]);
 
   const modelOptions = useMemo(() => {
     return Array.from(new Set([...asArray(models).map((item) => item.name), model, harnessModel, imageModel].filter(Boolean)));
@@ -1156,6 +1180,13 @@ function App() {
                   <select id="harness-model" value={harnessModel} onChange={(event) => setHarnessModel(event.target.value)}>
                     {modelOptions.map((name) => <option key={name}>{name}</option>)}
                   </select>
+                  <ModelCapabilityLink
+                    id="settings-harness"
+                    modelName={harnessModel}
+                    models={models}
+                    openID={openCapabilityID}
+                    setOpenID={setOpenCapabilityID}
+                  />
                 </div>
 
                 <div className="field">
@@ -1163,6 +1194,13 @@ function App() {
                   <select id="image-model" value={imageModel} onChange={(event) => setImageModel(event.target.value)}>
                     {imageModelOptions.map((name) => <option key={name}>{name}</option>)}
                   </select>
+                  <ModelCapabilityLink
+                    id="settings-image"
+                    modelName={imageModel}
+                    models={models}
+                    openID={openCapabilityID}
+                    setOpenID={setOpenCapabilityID}
+                  />
                 </div>
               </section>
 
@@ -1344,11 +1382,20 @@ function App() {
               </div>
               <div className="dimension-note">{imageDimensions.width} x {imageDimensions.height}</div>
               <div className="image-generate-row">
-                <label className="model-inline" htmlFor="image-tab-model">
-                  <select id="image-tab-model" value={imageModel} onChange={(event) => setImageModel(event.target.value)}>
-                    {imageModelOptions.map((name) => <option key={name}>{name}</option>)}
-                  </select>
-                </label>
+                <div className="image-model-control">
+                  <label className="model-inline" htmlFor="image-tab-model">
+                    <select id="image-tab-model" value={imageModel} onChange={(event) => setImageModel(event.target.value)}>
+                      {imageModelOptions.map((name) => <option key={name}>{name}</option>)}
+                    </select>
+                  </label>
+                  <ModelCapabilityLink
+                    id="image-chat"
+                    modelName={imageModel}
+                    models={models}
+                    openID={openCapabilityID}
+                    setOpenID={setOpenCapabilityID}
+                  />
+                </div>
                 <button className="primary" onClick={generateImage} disabled={!imagePrompt.trim() || !imageModel || imageBusy}>
                   {imageBusy ? 'Generating' : 'Generate'}
                 </button>
@@ -1468,6 +1515,103 @@ function roundToMultiple(value: number, multiple: number): number {
 
 function clampDimension(value: number): number {
   return Math.max(64, Math.min(4096, value));
+}
+
+function ModelCapabilityLink({
+  id,
+  modelName,
+  models,
+  openID,
+  setOpenID,
+}: {
+  id: string;
+  modelName: string;
+  models: main.OllamaModel[];
+  openID: string;
+  setOpenID: (id: string) => void;
+}) {
+  const selectedModel = asArray(models).find((item) => item.name === modelName);
+  const capabilities = asArray(selectedModel?.capabilities);
+  const isOpen = openID === id;
+  const panelID = `${id}-capability-panel`;
+  return (
+    <div className="model-capability">
+      <button
+        type="button"
+        className="model-capability-link"
+        aria-expanded={isOpen}
+        aria-controls={panelID}
+        onClick={() => setOpenID(isOpen ? '' : id)}
+      >
+        Capability
+      </button>
+      {isOpen ? (
+        <div id={panelID} className="model-capability-panel" role="dialog" aria-label={`${modelName || 'Selected model'} capabilities`}>
+          <button
+            type="button"
+            className="model-capability-close"
+            aria-label="Close capabilities"
+            onClick={() => setOpenID('')}
+          >
+            ×
+          </button>
+          <div className="model-capability-title">{modelName || 'No model selected'}</div>
+          {selectedModel ? (
+            <>
+              <div className="capability-chips">
+                {capabilities.length ? capabilities.map((capability) => (
+                  <span key={capability}>{formatCapability(capability)}</span>
+                )) : <span>Capabilities not reported</span>}
+                {selectedModel.imageGeneration ? <span>Image generation</span> : null}
+              </div>
+              <dl>
+                {selectedModel.family ? (
+                  <>
+                    <dt>Family</dt>
+                    <dd>{selectedModel.family}</dd>
+                  </>
+                ) : null}
+                {selectedModel.parameter ? (
+                  <>
+                    <dt>Parameters</dt>
+                    <dd>{selectedModel.parameter}</dd>
+                  </>
+                ) : null}
+                {selectedModel.size ? (
+                  <>
+                    <dt>Size</dt>
+                    <dd>{formatModelSize(selectedModel.size)}</dd>
+                  </>
+                ) : null}
+              </dl>
+            </>
+          ) : (
+            <p>This model is not in the current Ollama model list.</p>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function formatCapability(capability: string): string {
+  return capability
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function formatModelSize(size: number): string {
+  if (!Number.isFinite(size) || size <= 0) {
+    return '';
+  }
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = size;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
 }
 
 function HarnessRunPanel({run}: {run: HarnessRunView}) {

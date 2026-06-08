@@ -680,6 +680,119 @@ button:disabled {
   line-height: 1.4;
 }
 
+.model-capability {
+  position: relative;
+  width: 100%;
+  max-width: 360px;
+  min-height: 16px;
+}
+
+.model-capability-link {
+  width: fit-content;
+  height: auto;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  color: #e0c078;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.25;
+  cursor: pointer;
+}
+
+.model-capability-link:hover,
+.model-capability-link:focus-visible {
+  background: transparent;
+  color: #f3f0e8;
+  text-decoration: underline;
+  outline: none;
+}
+
+.model-capability-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  width: 100%;
+  max-width: calc(100vw - 44px);
+  padding: 10px 34px 10px 10px;
+  border: 1px solid #303438;
+  border-radius: 6px;
+  background: #121415;
+  color: #d7d1c3;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.model-capability-close {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  min-height: 0;
+  border: 0;
+  border-radius: 4px;
+  padding: 0;
+  background: transparent;
+  color: #9ea5a3;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.model-capability-close:hover,
+.model-capability-close:focus-visible {
+  background: #25292b;
+  color: #f3f0e8;
+  outline: none;
+}
+
+.model-capability-title {
+  margin-bottom: 8px;
+  color: #f3f0e8;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.capability-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.capability-chips span {
+  padding: 3px 7px;
+  border: 1px solid #3b3f42;
+  border-radius: 999px;
+  color: #d7d1c3;
+}
+
+.model-capability dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 10px;
+  margin: 10px 0 0;
+}
+
+.model-capability dt {
+  color: #9ea5a3;
+  font-weight: 800;
+}
+
+.model-capability dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.model-capability p {
+  margin: 0;
+  color: #9ea5a3;
+}
+
 .two-column {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1264,11 +1377,16 @@ button:disabled {
 }
 
 .image-generate-row {
+  align-items: flex-start;
   justify-content: stretch;
 }
 
-.image-generate-row .model-inline {
+.image-model-control {
   flex: 1 1 auto;
+  min-width: 0;
+}
+
+.image-generate-row .model-inline {
   grid-template-columns: minmax(0, 1fr);
 }
 
