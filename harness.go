@@ -251,6 +251,10 @@ func (h *HarnessEngine) responseModelForChatSelection(req ChatRequest) string {
 	return model
 }
 
+func (h *HarnessEngine) toolRegistry() HarnessToolRegistry {
+	return defaultHarnessToolRegistry(h.config)
+}
+
 func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conversationID string, req ChatRequest, run *HarnessRun) (HarnessPreparedTurn, error) {
 	first, err := h.prepareChatTurn(ctx, req)
 	if err != nil {
@@ -260,7 +264,7 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 	if len(first.ToolCalls) > 0 {
 		insertToolCallStep(run)
 		h.startStep(run, "tool_call")
-		first.ToolResults = h.runFilesystemToolCalls(ctx, requestID, conversationID, first.ToolCalls)
+		first.ToolResults = h.runHarnessToolCalls(ctx, requestID, conversationID, first.ToolCalls)
 		rounds[0].ToolResults = first.ToolResults
 		h.attachToolActivities(run, first.ToolResults)
 		h.completeStep(run, "tool_call", "completed", "tool_call", 0, "")
@@ -277,7 +281,7 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 		if len(inspection.ToolCalls) > 0 {
 			insertToolCallStep(run)
 			h.startStep(run, "tool_call")
-			inspection.ToolResults = h.runFilesystemToolCalls(ctx, requestID, conversationID, inspection.ToolCalls)
+			inspection.ToolResults = h.runHarnessToolCalls(ctx, requestID, conversationID, inspection.ToolCalls)
 			rounds[1].ToolResults = inspection.ToolResults
 			final.ToolResults = append(final.ToolResults, inspection.ToolResults...)
 			h.attachToolActivities(run, final.ToolResults)
@@ -309,7 +313,7 @@ func preparedTurnToRound(iteration int, turn HarnessPreparedTurn) HarnessToolRou
 }
 
 func (h *HarnessEngine) prepareChatTurn(ctx context.Context, req ChatRequest) (HarnessPreparedTurn, error) {
-	toolCatalog := filesystemToolRegistry().PromptCatalog()
+	toolCatalog := h.toolRegistry().PromptCatalog()
 	system := strings.TrimSpace(`You are Atelier's private harness model. Prepare a concise markdown brief for the next model that will answer the user.
 Do not answer the user directly. Do not include hidden chain-of-thought. Capture only useful answer guidance: intent, constraints, relevant context, response shape, and cautions.
 Return exactly one fenced JSON object. No prose outside the JSON block.
@@ -324,7 +328,7 @@ If workspace context, a user-requested command, or a skill-specified command wou
 Allowed tool calls:
 ` + toolCatalog + `
 When "needsTools" is false, "toolCalls" must be [].
-Prefer read-only calls unless the user clearly asks to modify files or run a specific write-capable command. Paths and command working directories are scoped to Atelier's configured filesystem tool root.`)
+Prefer read-only calls unless the user clearly asks to modify files or run a specific write-capable command. Filesystem paths and command working directories are scoped to Atelier's configured filesystem tool root.`)
 	if strings.TrimSpace(req.System) != "" {
 		system += "\n\nUser-facing system prompt to preserve:\n" + strings.TrimSpace(req.System)
 	}
@@ -342,7 +346,7 @@ Prefer read-only calls unless the user clearly asks to modify files or run a spe
 	if err != nil {
 		return HarnessPreparedTurn{}, err
 	}
-	plan, validationErrors := parseHarnessToolPlan(completion.Content)
+	plan, validationErrors := h.parseHarnessToolPlan(completion.Content)
 	brief := strings.TrimSpace(plan.Brief)
 	if brief == "" {
 		brief = strings.TrimSpace(completion.Content)
@@ -364,7 +368,7 @@ Prefer read-only calls unless the user clearly asks to modify files or run a spe
 
 func (h *HarnessEngine) inspectToolResults(ctx context.Context, req ChatRequest, prior HarnessPreparedTurn) (HarnessPreparedTurn, error) {
 	resultsJSON, _ := json.MarshalIndent(prior.ToolResults, "", "  ")
-	system := strings.TrimSpace(`You are Atelier's private harness model. Inspect filesystem tool results and decide whether one final tool round is needed before handing off to the answer model.
+	system := strings.TrimSpace(`You are Atelier's private harness model. Inspect tool results and decide whether one final tool round is needed before handing off to the answer model.
 Do not answer the user directly. Do not include hidden chain-of-thought.
 Return exactly one fenced JSON object. No prose outside the JSON block.
 Schema:
@@ -374,7 +378,7 @@ Schema:
   "reason": "why one more tool round is or is not needed",
   "toolCalls": []
 }
-You may request at most one more batch of up to 3 filesystem tool calls. If the existing results are sufficient, set needsTools false and toolCalls [].`)
+You may request at most one more batch of up to 3 tool calls. If the existing results are sufficient, set needsTools false and toolCalls [].`)
 	messages := append([]ChatMessage{}, req.Messages...)
 	messages = append(messages, ChatMessage{
 		Role:    "assistant",
@@ -394,7 +398,7 @@ You may request at most one more batch of up to 3 filesystem tool calls. If the 
 	if err != nil {
 		return HarnessPreparedTurn{}, err
 	}
-	plan, validationErrors := parseHarnessToolPlan(completion.Content)
+	plan, validationErrors := h.parseHarnessToolPlan(completion.Content)
 	brief := strings.TrimSpace(plan.Brief)
 	if brief == "" {
 		brief = strings.TrimSpace(completion.Content)
@@ -570,7 +574,7 @@ func appendHarnessPreparationToSystem(system string, preparation HarnessPrepared
 	handoffContent := strings.TrimSpace(preparation.Brief)
 	if len(preparation.ToolResults) > 0 {
 		if data, err := json.MarshalIndent(preparation.ToolResults, "", "  "); err == nil {
-			handoffContent = strings.TrimSpace(handoffContent + "\n\nFilesystem tool observations:\n```json\n" + string(data) + "\n```")
+			handoffContent = strings.TrimSpace(handoffContent + "\n\nTool observations:\n```json\n" + string(data) + "\n```")
 		}
 	}
 	if handoffContent == "" {
@@ -668,9 +672,17 @@ func validationErrorsMarkdown(errors []string) string {
 }
 
 func parseHarnessToolPlan(content string) (HarnessToolPlan, []string) {
+	return parseHarnessToolPlanWithRegistry(content, filesystemToolRegistry())
+}
+
+func (h *HarnessEngine) parseHarnessToolPlan(content string) (HarnessToolPlan, []string) {
+	return parseHarnessToolPlanWithRegistry(content, h.toolRegistry())
+}
+
+func parseHarnessToolPlanWithRegistry(content string, registry HarnessToolRegistry) (HarnessToolPlan, []string) {
 	var parseErrors []string
 	for _, candidate := range harnessJSONCandidates(content) {
-		plan, errors := decodeAndValidateHarnessToolPlan(candidate)
+		plan, errors := decodeAndValidateHarnessToolPlan(candidate, registry)
 		if len(errors) == 0 {
 			return plan, nil
 		}
@@ -685,7 +697,7 @@ func parseHarnessToolPlan(content string) (HarnessToolPlan, []string) {
 	return HarnessToolPlan{}, parseErrors
 }
 
-func decodeAndValidateHarnessToolPlan(candidate string) (HarnessToolPlan, []string) {
+func decodeAndValidateHarnessToolPlan(candidate string, registry HarnessToolRegistry) (HarnessToolPlan, []string) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(candidate), &raw); err != nil {
 		return HarnessToolPlan{}, []string{"plan JSON could not be parsed: " + err.Error()}
@@ -712,7 +724,7 @@ func decodeAndValidateHarnessToolPlan(candidate string) (HarnessToolPlan, []stri
 			errors = append(errors, "toolCalls must be an array of tool call objects")
 		}
 	}
-	errors = append(errors, validateHarnessToolPlan(plan)...)
+	errors = append(errors, validateHarnessToolPlan(plan, registry)...)
 	return plan, errors
 }
 
@@ -738,7 +750,7 @@ func validateHarnessPlanKeys(raw map[string]json.RawMessage) []string {
 	return errors
 }
 
-func validateHarnessToolPlan(plan HarnessToolPlan) []string {
+func validateHarnessToolPlan(plan HarnessToolPlan, registry HarnessToolRegistry) []string {
 	var errors []string
 	if strings.TrimSpace(plan.Brief) == "" {
 		errors = append(errors, "brief is required")
@@ -756,20 +768,20 @@ func validateHarnessToolPlan(plan HarnessToolPlan) []string {
 		errors = append(errors, "toolCalls may contain at most 3 calls")
 	}
 	for index, call := range plan.ToolCalls {
-		errors = append(errors, validateHarnessToolCall(index, call)...)
+		errors = append(errors, validateHarnessToolCall(index, call, registry)...)
 	}
 	return errors
 }
 
-func validateHarnessToolCall(index int, call HarnessToolCall) []string {
+func validateHarnessToolCall(index int, call HarnessToolCall, registry HarnessToolRegistry) []string {
 	prefix := fmt.Sprintf("toolCalls[%d]", index)
 	name := strings.TrimSpace(call.Name)
 	if name == "" {
 		return []string{prefix + ".name is required"}
 	}
-	definition, ok := filesystemToolRegistry().Get(name)
+	definition, ok := registry.Get(name)
 	if !ok {
-		return []string{prefix + ".name must be one of " + filesystemToolRegistry().NamesCSV()}
+		return []string{prefix + ".name must be one of " + registry.NamesCSV()}
 	}
 	if definition.Validate == nil {
 		return nil
@@ -809,7 +821,7 @@ func harnessJSONCandidates(content string) []string {
 	return candidates
 }
 
-func (h *HarnessEngine) runFilesystemToolCalls(ctx context.Context, requestID, conversationID string, calls []HarnessToolCall) []HarnessToolResult {
+func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conversationID string, calls []HarnessToolCall) []HarnessToolResult {
 	gateway := newToolGateway(h.app, h.config)
 	results := make([]HarnessToolResult, 0, len(calls))
 	for _, call := range calls {
@@ -827,7 +839,7 @@ func (h *HarnessEngine) runFilesystemToolCalls(ctx context.Context, requestID, c
 func (h *HarnessEngine) attachToolActivities(run *HarnessRun, results []HarnessToolResult) {
 	activities := make([]HarnessToolActivity, 0, len(results))
 	for _, result := range results {
-		activities = append(activities, toolActivityFromResult(result))
+		activities = append(activities, h.toolActivityFromResult(result))
 	}
 	for index := range run.Steps {
 		if run.Steps[index].Kind == "tool_call" {
@@ -837,8 +849,8 @@ func (h *HarnessEngine) attachToolActivities(run *HarnessRun, results []HarnessT
 	}
 }
 
-func toolActivityFromResult(result HarnessToolResult) HarnessToolActivity {
-	if definition, ok := filesystemToolRegistry().Get(result.Name); ok && definition.Activity != nil {
+func (h *HarnessEngine) toolActivityFromResult(result HarnessToolResult) HarnessToolActivity {
+	if definition, ok := h.toolRegistry().Get(result.Name); ok && definition.Activity != nil {
 		return definition.Activity(result)
 	}
 	return defaultHarnessToolActivity(result)
@@ -1132,10 +1144,10 @@ func insertToolCallStep(run *HarnessRun) {
 		ID:        "step_000003_tool",
 		Kind:      "tool_call",
 		Iteration: 1,
-		Provider:  "filesystem",
+		Provider:  "tools",
 		Status:    "pending",
 		StartedAt: now,
-		Summary:   "filesystem tool calls requested by harness preparation",
+		Summary:   "tool calls requested by harness preparation",
 	}
 	insertAt := len(run.Steps)
 	for index, existing := range run.Steps {

@@ -22,10 +22,15 @@ type HarnessToolDefinition struct {
 	Example         string
 	Risk            HarnessToolRisk
 	Validate        func(prefix string, call HarnessToolCall) []string
-	Execute         func(ctx context.Context, layer *FilesystemToolLayer, call HarnessToolCall) (any, string, error)
+	Execute         func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error)
 	NeedsPermission func(call HarnessToolCall) bool
 	Permission      func(call HarnessToolCall) ToolPermissionRequestEvent
 	Activity        func(result HarnessToolResult) HarnessToolActivity
+}
+
+type HarnessToolExecutionContext struct {
+	Config     AppConfig
+	Filesystem *FilesystemToolLayer
 }
 
 type HarnessToolRegistry struct {
@@ -33,7 +38,22 @@ type HarnessToolRegistry struct {
 	byName      map[string]HarnessToolDefinition
 }
 
+func newHarnessToolExecutionContext(config AppConfig) HarnessToolExecutionContext {
+	return HarnessToolExecutionContext{
+		Config:     config,
+		Filesystem: newFilesystemToolLayer(config.Tools.Filesystem),
+	}
+}
+
+func defaultHarnessToolRegistry(config AppConfig) HarnessToolRegistry {
+	return newHarnessToolRegistry(filesystemToolDefinitions())
+}
+
 func filesystemToolRegistry() HarnessToolRegistry {
+	return defaultHarnessToolRegistry(defaultAppConfig())
+}
+
+func filesystemToolDefinitions() []HarnessToolDefinition {
 	definitions := []HarnessToolDefinition{
 		{
 			Name:        "list_files",
@@ -41,8 +61,8 @@ func filesystemToolRegistry() HarnessToolRegistry {
 			Description: "Use this to inspect files and directories in the configured workspace.",
 			Example:     `{"name":"list_files","path":"optional relative directory"}`,
 			Risk:        HarnessToolRiskRead,
-			Execute: func(_ context.Context, layer *FilesystemToolLayer, call HarnessToolCall) (any, string, error) {
-				output, err := layer.ListFiles(ToolFileListRequest{Path: call.Path})
+			Execute: func(_ context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+				output, err := tools.Filesystem.ListFiles(ToolFileListRequest{Path: call.Path})
 				return output, fmt.Sprintf("listed %d entries", len(output.Entries)), err
 			},
 			Activity: func(result HarnessToolResult) HarnessToolActivity {
@@ -65,8 +85,8 @@ func filesystemToolRegistry() HarnessToolRegistry {
 				}
 				return nil
 			},
-			Execute: func(_ context.Context, layer *FilesystemToolLayer, call HarnessToolCall) (any, string, error) {
-				output, err := layer.ReadFile(ToolFileReadRequest{
+			Execute: func(_ context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+				output, err := tools.Filesystem.ReadFile(ToolFileReadRequest{
 					Path:        call.Path,
 					MaxBytes:    call.MaxBytes,
 					AllowBinary: call.AllowBinary,
@@ -96,8 +116,8 @@ func filesystemToolRegistry() HarnessToolRegistry {
 				}
 				return nil
 			},
-			Execute: func(ctx context.Context, layer *FilesystemToolLayer, call HarnessToolCall) (any, string, error) {
-				output, err := layer.RunCommand(ctx, ToolCommandRequest{
+			Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+				output, err := tools.Filesystem.RunCommand(ctx, ToolCommandRequest{
 					Command:   call.Command,
 					Args:      call.Args,
 					Cwd:       call.Cwd,
@@ -147,8 +167,8 @@ func filesystemToolRegistry() HarnessToolRegistry {
 				}
 				return errors
 			},
-			Execute: func(_ context.Context, layer *FilesystemToolLayer, call HarnessToolCall) (any, string, error) {
-				output, err := layer.WriteFile(ToolFileWriteRequest{
+			Execute: func(_ context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+				output, err := tools.Filesystem.WriteFile(ToolFileWriteRequest{
 					Path:      call.Path,
 					Content:   call.Content,
 					Append:    call.Append,
@@ -176,7 +196,7 @@ func filesystemToolRegistry() HarnessToolRegistry {
 			},
 		},
 	}
-	return newHarnessToolRegistry(definitions)
+	return definitions
 }
 
 func newHarnessToolRegistry(definitions []HarnessToolDefinition) HarnessToolRegistry {

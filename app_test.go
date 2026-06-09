@@ -597,7 +597,7 @@ func TestToolGatewayDeniesWriteFileBeforeExecution(t *testing.T) {
 	var permissionEvent ToolPermissionRequestEvent
 	gateway := ToolGateway{
 		registry: filesystemToolRegistry(),
-		layer:    newFilesystemToolLayer(ConfigFilesystemTool{Root: root}),
+		tools:    newHarnessToolExecutionContext(AppConfig{Tools: ConfigTools{Filesystem: ConfigFilesystemTool{Root: root}}}),
 		permissionRequester: func(_ context.Context, event ToolPermissionRequestEvent) bool {
 			permissionEvent = event
 			return false
@@ -634,7 +634,7 @@ func TestToolGatewayDoesNotRequestPermissionForReadFile(t *testing.T) {
 	permissionCalled := false
 	gateway := ToolGateway{
 		registry: filesystemToolRegistry(),
-		layer:    newFilesystemToolLayer(ConfigFilesystemTool{Root: root}),
+		tools:    newHarnessToolExecutionContext(AppConfig{Tools: ConfigTools{Filesystem: ConfigFilesystemTool{Root: root}}}),
 		permissionRequester: func(context.Context, ToolPermissionRequestEvent) bool {
 			permissionCalled = true
 			return false
@@ -662,10 +662,10 @@ func TestToolGatewayDoesNotRequestPermissionForReadOnlyCommand(t *testing.T) {
 	permissionCalled := false
 	gateway := ToolGateway{
 		registry: filesystemToolRegistry(),
-		layer: newFilesystemToolLayer(ConfigFilesystemTool{
+		tools: newHarnessToolExecutionContext(AppConfig{Tools: ConfigTools{Filesystem: ConfigFilesystemTool{
 			Root:            root,
 			AllowedCommands: []string{"pwd"},
-		}),
+		}}}),
 		permissionRequester: func(context.Context, ToolPermissionRequestEvent) bool {
 			permissionCalled = true
 			return false
@@ -702,10 +702,10 @@ func TestToolGatewayTreatsProcessExitAsCompletedCommandResult(t *testing.T) {
 	}
 	gateway := ToolGateway{
 		registry: filesystemToolRegistry(),
-		layer: newFilesystemToolLayer(ConfigFilesystemTool{
+		tools: newHarnessToolExecutionContext(AppConfig{Tools: ConfigTools{Filesystem: ConfigFilesystemTool{
 			Root:            t.TempDir(),
 			AllowedCommands: []string{"false"},
-		}),
+		}}}),
 	}
 
 	result := gateway.Execute(context.Background(), ToolExecutionRequest{
@@ -720,10 +720,10 @@ func TestToolGatewayTreatsProcessExitAsCompletedCommandResult(t *testing.T) {
 func TestToolGatewayTreatsSpawnFailureAsFailedToolResult(t *testing.T) {
 	gateway := ToolGateway{
 		registry: filesystemToolRegistry(),
-		layer: newFilesystemToolLayer(ConfigFilesystemTool{
+		tools: newHarnessToolExecutionContext(AppConfig{Tools: ConfigTools{Filesystem: ConfigFilesystemTool{
 			Root:            t.TempDir(),
 			AllowedCommands: []string{"atelier-command-that-does-not-exist"},
-		}),
+		}}}),
 	}
 
 	result := gateway.Execute(context.Background(), ToolExecutionRequest{
@@ -750,10 +750,10 @@ func TestToolGatewayRequestsPermissionForCustomCommand(t *testing.T) {
 	permissionCalled := false
 	gateway := ToolGateway{
 		registry: filesystemToolRegistry(),
-		layer: newFilesystemToolLayer(ConfigFilesystemTool{
+		tools: newHarnessToolExecutionContext(AppConfig{Tools: ConfigTools{Filesystem: ConfigFilesystemTool{
 			Root:            t.TempDir(),
 			AllowedCommands: []string{"git"},
-		}),
+		}}}),
 		permissionRequester: func(context.Context, ToolPermissionRequestEvent) bool {
 			permissionCalled = true
 			return false
@@ -769,6 +769,40 @@ func TestToolGatewayRequestsPermissionForCustomCommand(t *testing.T) {
 	}
 	if !permissionCalled {
 		t.Fatal("custom run_command should request permission")
+	}
+}
+
+func TestToolGatewayExecutesToolFromSuppliedRegistry(t *testing.T) {
+	gateway := ToolGateway{
+		registry: newHarnessToolRegistry([]HarnessToolDefinition{
+			{
+				Name:        "skill_echo",
+				Title:       "Skill echo",
+				Description: "Test-only skill-backed tool.",
+				Example:     `{"name":"skill_echo","content":"hello"}`,
+				Risk:        HarnessToolRiskRead,
+				Execute: func(_ context.Context, _ HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+					return ToolFileReadResult{Path: "skill", Content: call.Content, Bytes: len(call.Content)}, "echoed skill content", nil
+				},
+				Activity: func(result HarnessToolResult) HarnessToolActivity {
+					activity := defaultHarnessToolActivity(result)
+					activity.Path = "skill"
+					return activity
+				},
+			},
+		}),
+	}
+
+	result := gateway.Execute(context.Background(), ToolExecutionRequest{
+		Name: "skill_echo",
+		Call: HarnessToolCall{Name: "skill_echo", Content: "hello from skill"},
+	})
+	if result.Status != "completed" || result.Summary != "echoed skill content" {
+		t.Fatalf("gateway result = %+v, want completed skill tool", result)
+	}
+	output, ok := result.Result.(ToolFileReadResult)
+	if !ok || output.Content != "hello from skill" {
+		t.Fatalf("skill output = %+v, want echoed content", result.Result)
 	}
 }
 
@@ -879,6 +913,30 @@ func TestFilesystemToolRegistryProjectsPromptAndValidationNames(t *testing.T) {
 	_, errors := parseHarnessToolPlan("```json\n{\"brief\":\"Do it.\",\"needsTools\":true,\"reason\":\"Need a tool.\",\"toolCalls\":[{\"name\":\"delete_all\",\"path\":\".\"}]}\n```")
 	if !containsSubstring(errors, "name must be one of "+names) {
 		t.Fatalf("validation errors = %+v, want registry names %q", errors, names)
+	}
+}
+
+func TestHarnessToolPlanValidationUsesSuppliedRegistry(t *testing.T) {
+	registry := newHarnessToolRegistry([]HarnessToolDefinition{
+		{
+			Name:        "skill_echo",
+			Title:       "Skill echo",
+			Description: "Test-only skill-backed tool.",
+			Example:     `{"name":"skill_echo","content":"hello"}`,
+			Risk:        HarnessToolRiskRead,
+		},
+	})
+	plan, errors := parseHarnessToolPlanWithRegistry("```json\n{\"brief\":\"Use the skill.\",\"needsTools\":true,\"reason\":\"The active skill exposes this tool.\",\"toolCalls\":[{\"name\":\"skill_echo\",\"content\":\"hello\"}]}\n```", registry)
+	if len(errors) > 0 {
+		t.Fatalf("validation errors = %+v, want supplied registry to accept skill_echo", errors)
+	}
+	if len(plan.ToolCalls) != 1 || plan.ToolCalls[0].Name != "skill_echo" {
+		t.Fatalf("plan = %+v, want skill_echo tool call", plan)
+	}
+
+	_, defaultErrors := parseHarnessToolPlan("```json\n{\"brief\":\"Use the skill.\",\"needsTools\":true,\"reason\":\"The default registry does not expose this tool.\",\"toolCalls\":[{\"name\":\"skill_echo\",\"content\":\"hello\"}]}\n```")
+	if !containsSubstring(defaultErrors, "name must be one of") {
+		t.Fatalf("default validation errors = %+v, want default registry rejection", defaultErrors)
 	}
 }
 
@@ -1547,8 +1605,8 @@ func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
 			{Role: "user", Content: "What is the project status?"},
 		},
 	})
-	if !strings.Contains(responseSystem, "Filesystem tool observations") || !strings.Contains(responseSystem, "Project status: green") {
-		t.Fatalf("response system handoff = %q, want filesystem observation", responseSystem)
+	if !strings.Contains(responseSystem, "Tool observations") || !strings.Contains(responseSystem, "Project status: green") {
+		t.Fatalf("response system handoff = %q, want tool observation", responseSystem)
 	}
 	if prepCalls != 2 {
 		t.Fatalf("harness prep calls = %d, want initial plan plus inspection", prepCalls)
@@ -1577,8 +1635,8 @@ func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
 		t.Fatalf("harness steps = %+v, want timeline", harnessRun["steps"])
 	}
 	toolStep := harnessStepByKind(t, steps, "tool_call")
-	if toolStep["status"] != "completed" || toolStep["provider"] != "filesystem" {
-		t.Fatalf("tool step = %+v, want completed filesystem call", toolStep)
+	if toolStep["status"] != "completed" || toolStep["provider"] != "tools" {
+		t.Fatalf("tool step = %+v, want completed tool call", toolStep)
 	}
 	activities, ok := toolStep["tools"].([]any)
 	if !ok || len(activities) != 1 {

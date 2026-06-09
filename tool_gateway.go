@@ -17,15 +17,15 @@ type ToolExecutionRequest struct {
 type ToolGateway struct {
 	app                 *App
 	registry            HarnessToolRegistry
-	layer               *FilesystemToolLayer
+	tools               HarnessToolExecutionContext
 	permissionRequester func(context.Context, ToolPermissionRequestEvent) bool
 }
 
 func newToolGateway(app *App, config AppConfig) ToolGateway {
 	gateway := ToolGateway{
 		app:      app,
-		registry: filesystemToolRegistry(),
-		layer:    newFilesystemToolLayer(config.Tools.Filesystem),
+		registry: defaultHarnessToolRegistry(config),
+		tools:    newHarnessToolExecutionContext(config),
 	}
 	if app != nil {
 		gateway.permissionRequester = app.requestToolPermission
@@ -48,14 +48,14 @@ func (g ToolGateway) Execute(ctx context.Context, req ToolExecutionRequest) Harn
 	definition, ok := g.registry.Get(name)
 	if !ok {
 		result.Status = "failed"
-		result.Error = fmt.Sprintf("unknown filesystem tool %q", name)
+		result.Error = fmt.Sprintf("unknown tool %q", name)
 		result.Summary = "tool not recognized"
 		return result
 	}
 	if definition.RequiresPermissionFor(call) && !g.requestPermission(ctx, req, definition, call) {
 		return HarnessToolResult{Name: name, Status: "denied", Summary: definition.Title + " was not approved", Error: "permission denied"}
 	}
-	output, summary, err := definition.Execute(ctx, g.layer, call)
+	output, summary, err := definition.Execute(ctx, g.tools, call)
 	result.Result = output
 	result.Summary = summary
 	if err != nil {
