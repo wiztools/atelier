@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	defaultToolTimeoutMS      = 30 * 1000
+	defaultToolTimeoutMS      = 3 * 60 * 1000
 	maxToolTimeoutMS          = 5 * 60 * 1000
 	defaultToolMaxOutputBytes = 64 * 1024
 	maxToolOutputBytes        = 512 * 1024
@@ -22,8 +22,9 @@ const (
 )
 
 type FilesystemToolLayer struct {
-	config ConfigFilesystemTool
-	root   string
+	config                  ConfigFilesystemTool
+	root                    string
+	approvedUnlistedCommand string
 }
 
 type ToolCommandRequest struct {
@@ -101,6 +102,12 @@ func newFilesystemToolLayer(config ConfigFilesystemTool) *FilesystemToolLayer {
 	}
 	config.Root = root
 	return &FilesystemToolLayer{config: config, root: root}
+}
+
+func (t *FilesystemToolLayer) withApprovedUnlistedCommand(command string) *FilesystemToolLayer {
+	clone := *t
+	clone.approvedUnlistedCommand = normalizedCommandName(command)
+	return &clone
 }
 
 func (t *FilesystemToolLayer) RunCommand(ctx context.Context, req ToolCommandRequest) (ToolCommandResult, error) {
@@ -359,7 +366,7 @@ func resolveExistingPathForBoundary(target string) (string, error) {
 
 func (t *FilesystemToolLayer) validateCommandPolicy(command string, args []string, env map[string]string, cwd string) error {
 	name := normalizedCommandName(command)
-	if !commandAllowed(name, t.config.AllowedCommands) {
+	if !commandAllowed(name, t.config.AllowedCommands) && name != t.approvedUnlistedCommand {
 		return fmt.Errorf("%q is not in the filesystem tool command allowlist", name)
 	}
 	if err := validateCommandPath(command, name); err != nil {
@@ -371,7 +378,7 @@ func (t *FilesystemToolLayer) validateCommandPolicy(command string, args []strin
 	if err := t.validateCommandSpecificArgs(name, args, cwd); err != nil {
 		return err
 	}
-	if err := t.validateCommandArgs(args, cwd); err != nil {
+	if err := t.validateCommandArgs(name, args, cwd); err != nil {
 		return err
 	}
 	return nil
@@ -491,12 +498,26 @@ func commandFlagRequiresWorkspacePath(name, flag string) bool {
 	return pathFlags[name][flag]
 }
 
-func (t *FilesystemToolLayer) validateCommandArgs(args []string, cwd string) error {
+func commandArgIsNonPathFlagValue(name string, args []string, index int) bool {
+	if index <= 0 || index >= len(args) {
+		return false
+	}
+	previousFlag := commandFlagName(strings.TrimSpace(args[index-1]))
+	return strings.HasPrefix(previousFlag, "--") && !commandFlagRequiresWorkspacePath(name, previousFlag)
+}
+
+func (t *FilesystemToolLayer) validateCommandArgs(name string, args []string, cwd string) error {
 	realRoot, err := resolveExistingPathForBoundary(t.root)
 	if err != nil {
 		return err
 	}
-	for _, arg := range args {
+	for index, arg := range args {
+		if commandArgIsNonPathFlagValue(name, args, index) {
+			continue
+		}
+		if flag := commandFlagName(arg); strings.HasPrefix(flag, "--") && strings.Contains(arg, "=") && !commandFlagRequiresWorkspacePath(name, flag) {
+			continue
+		}
 		for _, candidate := range commandArgPathCandidates(arg) {
 			if err := validateCommandArgPathWithinRoot(realRoot, cwd, candidate); err != nil {
 				return err

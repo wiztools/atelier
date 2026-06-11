@@ -345,16 +345,17 @@ type HistoryContent struct {
 }
 
 type HarnessRun struct {
-	ID             string        `json:"id"`
-	Mode           string        `json:"mode"`
-	Status         string        `json:"status"`
-	StartedAt      string        `json:"startedAt"`
-	CompletedAt    string        `json:"completedAt,omitempty"`
-	DurationMS     int64         `json:"durationMs,omitempty"`
-	RequestID      string        `json:"requestId,omitempty"`
-	ConversationID string        `json:"conversationId,omitempty"`
-	Loop           HarnessLoop   `json:"loop"`
-	Steps          []HarnessStep `json:"steps"`
+	ID             string                `json:"id"`
+	Mode           string                `json:"mode"`
+	Status         string                `json:"status"`
+	StartedAt      string                `json:"startedAt"`
+	CompletedAt    string                `json:"completedAt,omitempty"`
+	DurationMS     int64                 `json:"durationMs,omitempty"`
+	RequestID      string                `json:"requestId,omitempty"`
+	ConversationID string                `json:"conversationId,omitempty"`
+	Loop           HarnessLoop           `json:"loop"`
+	Skill          *HarnessSkillDecision `json:"skill,omitempty"`
+	Steps          []HarnessStep         `json:"steps"`
 }
 
 type HarnessLoop struct {
@@ -1071,7 +1072,7 @@ func defaultAppConfig() AppConfig {
 			Filesystem: ConfigFilesystemTool{
 				Root:            defaultDocumentsRoot(),
 				MaxOutputBytes:  64 * 1024,
-				TimeoutMS:       30 * 1000,
+				TimeoutMS:       defaultToolTimeoutMS,
 				AllowedCommands: defaultFilesystemToolAllowedCommands(),
 			},
 		},
@@ -1361,20 +1362,24 @@ func buildChatAssistantTurn(conversationID string, turnNumber int, createdAt str
 	if strings.TrimSpace(assistantThinking) != "" {
 		assistantContents = append(assistantContents, HistoryContent{Type: "thinking", Text: assistantThinking})
 	}
+	providerResponse := map[string]any{
+		"doneReason": reason,
+		"harnessRun": run,
+		"tokens":     tokens,
+	}
+	if run.Skill != nil {
+		providerResponse["skill"] = run.Skill
+	}
 	return HistoryTurn{
-		SchemaVersion:  1,
-		ID:             fmt.Sprintf("turn_%06d", turnNumber),
-		ConversationID: conversationID,
-		CreatedAt:      createdAt,
-		Kind:           "chat",
-		Role:           "assistant",
-		Model:          model,
-		Content:        assistantContents,
-		ProviderResponse: map[string]any{
-			"doneReason": reason,
-			"harnessRun": run,
-			"tokens":     tokens,
-		},
+		SchemaVersion:    1,
+		ID:               fmt.Sprintf("turn_%06d", turnNumber),
+		ConversationID:   conversationID,
+		CreatedAt:        createdAt,
+		Kind:             "chat",
+		Role:             "assistant",
+		Model:            model,
+		Content:          assistantContents,
+		ProviderResponse: providerResponse,
 	}
 }
 

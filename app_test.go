@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -772,6 +773,78 @@ func TestToolGatewayRequestsPermissionForCustomCommand(t *testing.T) {
 	}
 }
 
+func TestToolGatewayRunsUnlistedCommandWithLongFlagValue(t *testing.T) {
+	root := t.TempDir()
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	commandPath := filepath.Join(bin, "notesctl")
+	if err := os.WriteFile(commandPath, []byte("#!/bin/sh\nprintf 'stored via notesctl\\n'\n"), 0755); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	permissionCalled := false
+	gateway := ToolGateway{
+		registry: filesystemToolRegistry(),
+		tools: newHarnessToolExecutionContext(AppConfig{Tools: ConfigTools{Filesystem: ConfigFilesystemTool{
+			Root:            root,
+			AllowedCommands: []string{"cat"},
+		}}}),
+		permissionRequester: func(context.Context, ToolPermissionRequestEvent) bool {
+			permissionCalled = true
+			return true
+		},
+	}
+
+	result := gateway.Execute(context.Background(), ToolExecutionRequest{
+		Name: "run_command",
+		Call: HarnessToolCall{Name: "run_command", Command: "notesctl", Args: []string{"post", "--content", "A URL like http://example.test/path should not be treated as a local path.", "--wait"}},
+	})
+	if result.Status != "completed" || result.Error != "" {
+		t.Fatalf("gateway result = %+v, want completed unlisted command", result)
+	}
+	if !permissionCalled {
+		t.Fatal("unlisted command should request permission")
+	}
+	output := result.Result.(ToolCommandResult)
+	if strings.TrimSpace(output.Stdout) != "stored via notesctl" {
+		t.Fatalf("command stdout = %q, want fake command output", output.Stdout)
+	}
+}
+
+func TestDefaultCommandToolTimeoutIsThreeMinutes(t *testing.T) {
+	if defaultToolTimeoutMS != 3*60*1000 {
+		t.Fatalf("defaultToolTimeoutMS = %d, want 180000", defaultToolTimeoutMS)
+	}
+	if got := defaultAppConfig().Tools.Filesystem.TimeoutMS; got != defaultToolTimeoutMS {
+		t.Fatalf("default config timeout = %d, want %d", got, defaultToolTimeoutMS)
+	}
+}
+
+func TestToolGatewayDeniesUnlistedCommandWithoutPermission(t *testing.T) {
+	root := t.TempDir()
+	gateway := ToolGateway{
+		registry: filesystemToolRegistry(),
+		tools: newHarnessToolExecutionContext(AppConfig{Tools: ConfigTools{Filesystem: ConfigFilesystemTool{
+			Root:            root,
+			AllowedCommands: []string{"cat"},
+		}}}),
+		permissionRequester: func(context.Context, ToolPermissionRequestEvent) bool {
+			return false
+		},
+	}
+
+	result := gateway.Execute(context.Background(), ToolExecutionRequest{
+		Name: "run_command",
+		Call: HarnessToolCall{Name: "run_command", Command: "notesctl", Args: []string{"post", "--content", "hello", "--wait"}},
+	})
+	if result.Status != "denied" {
+		t.Fatalf("gateway result = %+v, want denied unlisted command", result)
+	}
+}
+
 func TestToolGatewayExecutesToolFromSuppliedRegistry(t *testing.T) {
 	gateway := ToolGateway{
 		registry: newHarnessToolRegistry([]HarnessToolDefinition{
@@ -865,6 +938,67 @@ func TestParseHarnessToolPlanAcceptsToolDecision(t *testing.T) {
 	}
 }
 
+func TestParseHarnessToolPlanRecoversEmbeddedJSONDecision(t *testing.T) {
+	content := `I will call the tool now:
+{
+  "brief": "Execute the selected skill command and report the result.",
+  "needsTools": true,
+  "reason": "The selected skill requires command execution.",
+  "toolCalls": [
+    {
+      "name": "run_command",
+      "command": "notesctl",
+      "args": ["post", "--content", "hello", "--wait"]
+    }
+  ]
+}
+
+Additional planning prose that should be ignored.`
+
+	plan, errors := parseHarnessToolPlan(content)
+	if len(errors) > 0 {
+		t.Fatalf("validation errors = %+v", errors)
+	}
+	if !plan.NeedsTools || len(plan.ToolCalls) != 1 {
+		t.Fatalf("plan = %+v, want one recovered tool call", plan)
+	}
+	if plan.ToolCalls[0].Name != "run_command" || plan.ToolCalls[0].Command != "notesctl" {
+		t.Fatalf("tool call = %+v, want recovered command call", plan.ToolCalls[0])
+	}
+}
+
+func TestInvalidCommandShapedHarnessPlanFailsClosed(t *testing.T) {
+	brief := harnessBriefForPlan(HarnessToolPlan{}, "Plan: Call notesctl post --content hello, then report success.", []string{"plan JSON could not be parsed"})
+	if strings.Contains(brief, "Call notesctl") || strings.Contains(brief, "report success") {
+		t.Fatalf("brief = %q, want sanitized invalid-plan guidance", brief)
+	}
+	if !strings.Contains(brief, "final response model cannot call tools") {
+		t.Fatalf("brief = %q, want final model tool limitation", brief)
+	}
+}
+
+func TestRecoverCommandToolPlanFromHarnessTextUsesPreviousAssistantContent(t *testing.T) {
+	plan, ok := recoverCommandToolPlanFromHarnessText(ChatRequest{Messages: []ChatMessage{
+		{Role: "user", Content: "Tell me about fruit."},
+		{Role: "assistant", Content: "Apples contain fiber and vitamin C."},
+		{Role: "user", Content: "Post this using memorybank."},
+	}}, `Final Tool Call Structure:
+notesctl post --content "..." --title "Apple Benefits" --wait`)
+	if !ok {
+		t.Fatal("recoverCommandToolPlanFromHarnessText did not recover command")
+	}
+	if !plan.NeedsTools || len(plan.ToolCalls) != 1 {
+		t.Fatalf("plan = %+v, want one tool call", plan)
+	}
+	call := plan.ToolCalls[0]
+	if call.Name != "run_command" || call.Command != "notesctl" {
+		t.Fatalf("tool call = %+v, want notesctl run_command", call)
+	}
+	if !containsSubstring(call.Args, "Apples contain fiber and vitamin C.") {
+		t.Fatalf("args = %+v, want previous assistant content replacing placeholder", call.Args)
+	}
+}
+
 func TestParseHarnessToolPlanRejectsInvalidToolName(t *testing.T) {
 	_, errors := parseHarnessToolPlan("```json\n{\"brief\":\"Do it.\",\"needsTools\":true,\"reason\":\"Need a tool.\",\"toolCalls\":[{\"name\":\"delete_all\",\"path\":\".\"}]}\n```")
 	if !containsSubstring(errors, "name must be one of") {
@@ -940,6 +1074,26 @@ func TestHarnessToolPlanValidationUsesSuppliedRegistry(t *testing.T) {
 	}
 }
 
+func TestParseFinalizerToolRequestAcceptsValidatedToolCall(t *testing.T) {
+	request, ok := parseFinalizerToolRequest("```json\n{\"type\":\"tool_request\",\"reason\":\"Need the current status file before answering.\",\"toolCalls\":[{\"name\":\"read_file\",\"path\":\"status.txt\"}]}\n```", filesystemToolRegistry())
+	if !ok {
+		t.Fatal("parseFinalizerToolRequest rejected valid request")
+	}
+	if request.Type != "tool_request" || request.Reason == "" {
+		t.Fatalf("request = %+v, want typed request with reason", request)
+	}
+	if len(request.ToolCalls) != 1 || request.ToolCalls[0].Name != "read_file" || request.ToolCalls[0].Path != "status.txt" {
+		t.Fatalf("toolCalls = %+v, want read_file status.txt", request.ToolCalls)
+	}
+}
+
+func TestParseFinalizerToolRequestRejectsInvalidToolCall(t *testing.T) {
+	_, ok := parseFinalizerToolRequest("```json\n{\"type\":\"tool_request\",\"reason\":\"Need unsafe action.\",\"toolCalls\":[{\"name\":\"delete_all\",\"path\":\".\"}]}\n```", filesystemToolRegistry())
+	if ok {
+		t.Fatal("parseFinalizerToolRequest accepted invalid tool name")
+	}
+}
+
 func TestRunCommandCatalogSupportsRequestedCommands(t *testing.T) {
 	definition, ok := filesystemToolRegistry().Get("run_command")
 	if !ok {
@@ -953,6 +1107,78 @@ func TestRunCommandCatalogSupportsRequestedCommands(t *testing.T) {
 	}
 	if !strings.Contains(definition.Example, `"command":"rg"`) {
 		t.Fatalf("run_command example = %q, want search command example", definition.Example)
+	}
+}
+
+func TestLoadSkillIndexReadsStandardSkillFrontmatter(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "cleanup")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	skillPath := filepath.Join(skillDir, "SKILL.md")
+	if err := os.WriteFile(skillPath, []byte("---\nname: cleanup\ndescription: Use when the user asks to clean or refactor code.\n---\n\n# Cleanup\n\nFull body should not be needed for the index."), 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	index, err := loadSkillIndex([]string{root})
+	if err != nil {
+		t.Fatalf("loadSkillIndex returned error: %v", err)
+	}
+	if len(index) != 1 {
+		t.Fatalf("index = %+v, want one skill", index)
+	}
+	if index[0].Name != "cleanup" || index[0].Description != "Use when the user asks to clean or refactor code." || index[0].Path != skillPath {
+		t.Fatalf("index entry = %+v, want parsed frontmatter", index[0])
+	}
+	loaded, err := loadFullSkill(index[0])
+	if err != nil {
+		t.Fatalf("loadFullSkill returned error: %v", err)
+	}
+	if !strings.Contains(loaded.Body, "Full body should not be needed for the index.") {
+		t.Fatalf("loaded skill body = %q, want full SKILL.md", loaded.Body)
+	}
+}
+
+func TestLoadSkillIndexFollowsSymlinkedSkillDirectories(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink permissions vary on Windows")
+	}
+	root := t.TempDir()
+	targetRoot := t.TempDir()
+	targetSkill := filepath.Join(targetRoot, "memorybank")
+	if err := os.MkdirAll(targetSkill, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	skillPath := filepath.Join(targetSkill, "SKILL.md")
+	if err := os.WriteFile(skillPath, []byte("---\nname: memorybank\ndescription: Store and retrieve notes.\n---\n\n# Memorybank\n"), 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if err := os.Symlink(targetSkill, filepath.Join(root, "memorybank")); err != nil {
+		t.Fatalf("Symlink returned error: %v", err)
+	}
+
+	index, err := loadSkillIndex([]string{root})
+	if err != nil {
+		t.Fatalf("loadSkillIndex returned error: %v", err)
+	}
+	entry, ok := findSkillByName(index, "memorybank")
+	if !ok {
+		t.Fatalf("skill index = %+v, want symlinked memorybank skill", index)
+	}
+	if entry.Path != filepath.Join(root, "memorybank", "SKILL.md") {
+		t.Fatalf("skill path = %q, want symlink path", entry.Path)
+	}
+}
+
+func TestExplicitSkillSelectionMatchesDirectNameMention(t *testing.T) {
+	index := []SkillIndexEntry{{Name: "memorybank", Description: "Store and retrieve notes.", Path: "/tmp/memorybank/SKILL.md"}}
+	entry, reason, ok := explicitSkillSelection(index, "Post the above information to memorybank.")
+	if !ok {
+		t.Fatal("explicitSkillSelection did not match direct skill name mention")
+	}
+	if entry.Name != "memorybank" || !strings.Contains(reason, "mentioned") {
+		t.Fatalf("selection = %+v reason %q, want direct memorybank selection", entry, reason)
 	}
 }
 
@@ -1525,6 +1751,320 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 	}
 }
 
+func TestHarnessSelectsSkillLoadsBodyAndPersistsMetadata(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	skillDir := filepath.Join(home, ".atelier", "skills", "cleanup")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	skillPath := filepath.Join(skillDir, "SKILL.md")
+	skillBody := "---\nname: cleanup\ndescription: Use when the user asks to clean or refactor code.\n---\n\n# Cleanup\n\nSKILL BODY UNIQUE: preserve behavior and run tests first."
+	if err := os.WriteFile(skillPath, []byte(skillBody), 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Chat = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	var prepSystem string
+	var requestedModels []string
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/chat" {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Status:     "404 Not Found",
+				Body:       io.NopCloser(strings.NewReader("not found")),
+				Header:     http.Header{},
+			}, nil
+		}
+		var payload map[string]any
+		data, _ := io.ReadAll(req.Body)
+		if err := json.Unmarshal(data, &payload); err != nil {
+			t.Fatalf("provider request body is not JSON: %v", err)
+		}
+		requestedModel, _ := payload["model"].(string)
+		requestedModels = append(requestedModels, requestedModel)
+		if payload["stream"] == false {
+			messages, _ := payload["messages"].([]any)
+			lastMessage := messages[len(messages)-1].(map[string]any)
+			content, _ := lastMessage["content"].(string)
+			if strings.Contains(content, "Skill index:") {
+				body := "```json\n{\"skillName\":\"cleanup\",\"reason\":\"The user explicitly asked for cleanup guidance.\"}\n```"
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Body:       io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(body) + `},"done":true,"done_reason":"stop","eval_count":2}`)),
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+				}, nil
+			}
+			firstMessage := messages[0].(map[string]any)
+			prepSystem, _ = firstMessage["content"].(string)
+			body := "```json\n{\"brief\":\"Use the selected cleanup skill.\",\"needsTools\":false,\"reason\":\"Skill instructions are enough.\",\"toolCalls\":[]}\n```"
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(body) + `},"done":true,"done_reason":"stop","eval_count":3}`)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+			}, nil
+		}
+		body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"Cleanup plan ready."},"done":false}`) +
+			fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":4}`)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{"Content-Type": []string{"application/x-ndjson"}},
+		}, nil
+	})
+
+	app.runChatStream(context.Background(), "request-skill", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Please cleanup this code"},
+		},
+	})
+	if strings.Join(requestedModels, ",") != "harness-model,chat-box-model" {
+		t.Fatalf("provider request models = %v, want deterministic skill match, harness prep, final model", requestedModels)
+	}
+	if !strings.Contains(prepSystem, "SKILL BODY UNIQUE") {
+		t.Fatalf("prep system = %q, want selected SKILL.md body", prepSystem)
+	}
+
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	skill, ok := detail.Turns[1].ProviderResponse["skill"].(map[string]any)
+	if !ok {
+		t.Fatalf("assistant provider response missing skill metadata: %+v", detail.Turns[1].ProviderResponse)
+	}
+	if skill["name"] != "cleanup" || skill["path"] != skillPath || skill["selected"] != true {
+		t.Fatalf("skill metadata = %+v, want selected cleanup", skill)
+	}
+	harnessRun := detail.Turns[1].ProviderResponse["harnessRun"].(map[string]any)
+	runSkill := harnessRun["skill"].(map[string]any)
+	if runSkill["name"] != "cleanup" {
+		t.Fatalf("harness skill metadata = %+v, want cleanup", runSkill)
+	}
+}
+
+func TestHarnessExecutesSkillCommandInsteadOfDelegatingToFinalModel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	bin := filepath.Join(home, "bin")
+	if err := os.MkdirAll(bin, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	commandLog := filepath.Join(home, "notesctl-args.txt")
+	commandPath := filepath.Join(bin, "notesctl")
+	commandScript := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + strconv.Quote(commandLog) + "\nprintf 'stored/path.md\\n'\n"
+	if err := os.WriteFile(commandPath, []byte(commandScript), 0755); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	skillDir := filepath.Join(home, ".agents", "skills", "memorybank")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: memorybank\ndescription: Store notes using notesctl.\n---\n\nUse notesctl post --content TEXT --wait to store content."), 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Tools.Filesystem.Root = filepath.Join(home, "workspace")
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Chat = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	prepCalls := 0
+	var responseSystem string
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/chat" {
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("not found"))}, nil
+		}
+		var payload map[string]any
+		data, _ := io.ReadAll(req.Body)
+		if err := json.Unmarshal(data, &payload); err != nil {
+			t.Fatalf("provider request body is not JSON: %v", err)
+		}
+		if payload["stream"] == false {
+			prepCalls++
+			if prepCalls == 1 {
+				body := "The user wants to store the previous answer using the selected skill.\n\n1. Identify the action: post content.\n2. Formulate the plan: Use notesctl post --content \"...\" --wait.\n\nStrategizing complete. I will now generate the JSON brief."
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(body) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+			}
+			if prepCalls == 2 {
+				body := "Final Tool Call Structure:\nnotesctl post --content \"...\" --wait"
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(body) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+			}
+			body := "```json\n{\"brief\":\"Report that the selected skill stored the content using the tool output.\",\"needsTools\":false,\"reason\":\"The command result is sufficient.\",\"toolCalls\":[]}\n```"
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(body) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+		}
+		messages := payload["messages"].([]any)
+		responseSystem, _ = messages[0].(map[string]any)["content"].(string)
+		body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"Stored by the selected skill."},"done":false}`) +
+			fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+	})
+
+	app.runChatStream(context.Background(), "request-memorybank", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "What does different sea color mean?"},
+			{Role: "assistant", Content: "Blue can indicate clear shallow water. Green often means algae. Brown often means suspended sediment."},
+			{Role: "user", Content: "Post the above information to memorybank."},
+		},
+	})
+
+	commandArgs, err := os.ReadFile(commandLog)
+	if err != nil {
+		t.Fatalf("expected selected skill command to run: %v", err)
+	}
+	if !strings.Contains(string(commandArgs), "post\n--content\nBlue can indicate clear shallow water.") {
+		t.Fatalf("command args = %q, want post with previous assistant content", string(commandArgs))
+	}
+	if strings.Contains(responseSystem, "Tell the final model to run") {
+		t.Fatalf("response system delegated tool call to final model: %q", responseSystem)
+	}
+	if !strings.Contains(responseSystem, "Tool observations") || !strings.Contains(responseSystem, "stored/path.md") {
+		t.Fatalf("response system = %q, want command tool observation", responseSystem)
+	}
+}
+
+func TestHarnessModelPlansKnowledgedPost(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	bin := filepath.Join(home, "bin")
+	if err := os.MkdirAll(bin, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	commandLog := filepath.Join(home, "kc-args.txt")
+	commandPath := filepath.Join(bin, "kc")
+	commandScript := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + strconv.Quote(commandLog) + "\nprintf 'job id: 12345\\n'\n"
+	if err := os.WriteFile(commandPath, []byte(commandScript), 0755); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	skillDir := filepath.Join(home, ".agents", "skills", "knowledged")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: knowledged\ndescription: Store knowledge using kc.\n---\n\nUse kc post --title TITLE --content CONTENT to store knowledge."), 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Tools.Filesystem.Root = filepath.Join(home, "workspace")
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Chat = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	prepCalls := 0
+	var prepSystem string
+	var nonStreamPrompts []string
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/chat" {
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("not found"))}, nil
+		}
+		var payload map[string]any
+		data, _ := io.ReadAll(req.Body)
+		if err := json.Unmarshal(data, &payload); err != nil {
+			t.Fatalf("provider request body is not JSON: %v", err)
+		}
+		if payload["stream"] == false {
+			prepCalls++
+			messages := payload["messages"].([]any)
+			lastMessage := messages[len(messages)-1].(map[string]any)
+			content, _ := lastMessage["content"].(string)
+			nonStreamPrompts = append(nonStreamPrompts, content)
+			if prepCalls == 1 {
+				firstMessage := messages[0].(map[string]any)
+				prepSystem, _ = firstMessage["content"].(string)
+				if !strings.Contains(prepSystem, "Use kc post") {
+					t.Fatalf("prep system = %q, want active knowledged skill instructions", prepSystem)
+				}
+				body := "```json\n{\"brief\":\"Post the previous assistant response to knowledged with kc and report the result.\",\"needsTools\":true,\"reason\":\"The selected knowledged skill says to use kc post, and the user asked to post the previous answer.\",\"toolCalls\":[{\"name\":\"run_command\",\"command\":\"kc\",\"args\":[\"post\",\"--title\",\"Sapiens: A Brief History of Humankind\",\"--content\",\"Sapiens: A Brief History of Humankind\\nYuval Noah Harari argues that shared myths let humans cooperate at scale.\"]}]}\n```"
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(body) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+			}
+			body := "```json\n{\"brief\":\"Report that knowledged stored the content from the kc output.\",\"needsTools\":false,\"reason\":\"The command result is sufficient.\",\"toolCalls\":[]}\n```"
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(body) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+		}
+		body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"Stored in knowledged."},"done":false}`) +
+			fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+	})
+
+	app.runChatStream(context.Background(), "request-knowledged", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Give me a note about Sapiens."},
+			{Role: "assistant", Content: "Sapiens: A Brief History of Humankind\nYuval Noah Harari argues that shared myths let humans cooperate at scale."},
+			{Role: "user", Content: "Post this to knowledged."},
+		},
+	})
+
+	commandArgs, err := os.ReadFile(commandLog)
+	if err != nil {
+		t.Fatalf("expected knowledged command to run: %v", err)
+	}
+	args := string(commandArgs)
+	if !strings.Contains(args, "post\n--title\nSapiens: A Brief History of Humankind\n--content\nSapiens: A Brief History of Humankind") {
+		t.Fatalf("command args = %q, want kc post with derived title and previous assistant content", args)
+	}
+	if prepCalls != 2 {
+		t.Fatalf("prepCalls = %d, want harness plan and harness inspection", prepCalls)
+	}
+	if len(nonStreamPrompts) != 2 || !strings.Contains(nonStreamPrompts[1], "Prior harness brief") {
+		t.Fatalf("non-stream prompts = %+v, want harness plan then post-tool inspection", nonStreamPrompts)
+	}
+}
+
 func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -1648,6 +2188,368 @@ func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
 	}
 	if path, _ := activity["path"].(string); !strings.HasSuffix(path, "status.txt") {
 		t.Fatalf("tool activity path = %q, want status.txt", path)
+	}
+}
+
+func TestHarnessStopsBeforeFinalModelWhenRequiredToolFails(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Tools.Filesystem.Root = filepath.Join(home, "tool-root")
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Chat = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	streamCalls := 0
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/chat" {
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("not found"))}, nil
+		}
+		var payload map[string]any
+		data, _ := io.ReadAll(req.Body)
+		if err := json.Unmarshal(data, &payload); err != nil {
+			t.Fatalf("provider request body is not JSON: %v", err)
+		}
+		if payload["stream"] == false {
+			body := "```json\n{\"brief\":\"Read the missing status file before answering.\",\"needsTools\":true,\"reason\":\"The answer depends on the actual file content.\",\"toolCalls\":[{\"name\":\"read_file\",\"path\":\"missing-status.txt\"}]}\n```"
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(body) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+		}
+		streamCalls++
+		body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"Everything succeeded."},"done":false}`) +
+			fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+	})
+
+	app.runChatStream(context.Background(), "request-missing-tool", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Read the missing status file and tell me what it says."},
+		},
+	})
+
+	if streamCalls != 0 {
+		t.Fatalf("streamCalls = %d, want final model skipped after required tool failure", streamCalls)
+	}
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	assistant := detail.Turns[1]
+	text := assistant.Content[0].Text
+	if !strings.Contains(text, "couldn't complete") || !strings.Contains(text, "read_file") {
+		t.Fatalf("assistant text = %q, want direct tool failure response", text)
+	}
+	harnessRun := assistant.ProviderResponse["harnessRun"].(map[string]any)
+	if harnessRun["status"] != "failed" {
+		t.Fatalf("harness status = %q, want failed", harnessRun["status"])
+	}
+	loop := harnessRun["loop"].(map[string]any)
+	if loop["stopReason"] != "tool_failed" {
+		t.Fatalf("loop = %+v, want tool_failed stop reason", loop)
+	}
+	toolStep := harnessStepByKind(t, harnessRun["steps"].([]any), "tool_call")
+	if toolStep["status"] != "failed" || toolStep["doneReason"] != "tool_failed" {
+		t.Fatalf("tool step = %+v, want failed tool step", toolStep)
+	}
+	activities := toolStep["tools"].([]any)
+	activity := activities[0].(map[string]any)
+	if activity["name"] != "read_file" || activity["status"] != "failed" {
+		t.Fatalf("tool activity = %+v, want failed read_file", activity)
+	}
+}
+
+func TestHarnessStopsBeforeFinalModelWhenSkillPlanIsInvalid(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	skillDir := filepath.Join(home, ".agents", "skills", "knowledged")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: knowledged\ndescription: Store knowledge using kc.\n---\n\nUse kc post --title TITLE --content CONTENT to store knowledge."), 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Tools.Filesystem.Root = filepath.Join(home, "tool-root")
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Chat = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	prepCalls := 0
+	streamCalls := 0
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/chat" {
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("not found"))}, nil
+		}
+		var payload map[string]any
+		data, _ := io.ReadAll(req.Body)
+		if err := json.Unmarshal(data, &payload); err != nil {
+			t.Fatalf("provider request body is not JSON: %v", err)
+		}
+		if payload["stream"] == false {
+			prepCalls++
+			body := "I should use the knowledged command to post this, but I cannot fit the full JSON plan before the output limit."
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(body) + `},"done":true,"done_reason":"length","eval_count":1024}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+		}
+		streamCalls++
+		body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"Stored successfully."},"done":false}`) +
+			fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+	})
+
+	app.runChatStream(context.Background(), "request-invalid-skill-plan", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Tell me the story behind Nataraja."},
+			{Role: "assistant", Content: "Nataraja represents Shiva's cosmic dance of creation, preservation, and dissolution."},
+			{Role: "user", Content: "Post this to knowledged."},
+		},
+	})
+
+	if prepCalls != 2 {
+		t.Fatalf("prepCalls = %d, want initial invalid plan and repair attempt", prepCalls)
+	}
+	if streamCalls != 0 {
+		t.Fatalf("streamCalls = %d, want final model skipped after invalid skill plan", streamCalls)
+	}
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	assistant := detail.Turns[1]
+	text := assistant.Content[0].Text
+	if !strings.Contains(text, "couldn't complete") || !strings.Contains(text, "valid executable tool plan") {
+		t.Fatalf("assistant text = %q, want invalid-plan failure", text)
+	}
+	harnessRun := assistant.ProviderResponse["harnessRun"].(map[string]any)
+	if harnessRun["status"] != "failed" {
+		t.Fatalf("harness status = %q, want failed", harnessRun["status"])
+	}
+	loop := harnessRun["loop"].(map[string]any)
+	if loop["stopReason"] != "harness_plan_invalid" {
+		t.Fatalf("loop = %+v, want harness_plan_invalid stop reason", loop)
+	}
+}
+
+func TestFinalModelCanRequestHarnessToolRound(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Tools.Filesystem.Root = filepath.Join(home, "tool-root")
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Chat = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(config.Tools.Filesystem.Root, "status.txt"), []byte("Finalizer requested status: amber"), 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	prepCalls := 0
+	streamCalls := 0
+	var retrySystem string
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/chat" {
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("not found"))}, nil
+		}
+		var payload map[string]any
+		data, _ := io.ReadAll(req.Body)
+		if err := json.Unmarshal(data, &payload); err != nil {
+			t.Fatalf("provider request body is not JSON: %v", err)
+		}
+		if payload["stream"] == false {
+			prepCalls++
+			var body string
+			if prepCalls == 1 {
+				body = "```json\n{\"brief\":\"Answer the user's project status question. If the handoff lacks the current status, the final model may request one evidence repair round.\",\"needsTools\":false,\"reason\":\"The final model can decide if the handoff is insufficient.\",\"toolCalls\":[]}\n```"
+			} else {
+				messages := payload["messages"].([]any)
+				lastMessage := messages[len(messages)-1].(map[string]any)
+				content, _ := lastMessage["content"].(string)
+				if !strings.Contains(content, "Final response model tool request") || !strings.Contains(content, "Need the current status file before answering.") {
+					t.Fatalf("finalizer harness planning prompt = %q, want final model request", content)
+				}
+				body = "```json\n{\"brief\":\"Use the status file result to answer the user's project status question.\",\"needsTools\":true,\"reason\":\"The final model identified missing status evidence, and reading status.txt is the approved way to retrieve it.\",\"toolCalls\":[{\"name\":\"read_file\",\"path\":\"status.txt\"}]}\n```"
+			}
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(body) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+		}
+
+		streamCalls++
+		if streamCalls == 1 {
+			body := "```json\n{\"type\":\"tool_request\",\"reason\":\"Need the current status file before answering.\",\"toolCalls\":[]}\n```"
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"chat-box-model","message":{"role":"assistant","content":` + strconv.Quote(body) + `},"done":true,"done_reason":"stop","eval_count":5}`)), Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+		}
+
+		messages := payload["messages"].([]any)
+		systemMessage := messages[0].(map[string]any)
+		retrySystem, _ = systemMessage["content"].(string)
+		body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"The project status is amber."},"done":false}`) +
+			fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":7}`)
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+	})
+
+	app.runChatStream(context.Background(), "request-finalizer-tool", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "What is the project status?"},
+		},
+	})
+
+	if prepCalls != 2 || streamCalls != 2 {
+		t.Fatalf("provider calls prep=%d stream=%d, want initial harness prep, finalizer harness prep, and two final model streams", prepCalls, streamCalls)
+	}
+	if !strings.Contains(retrySystem, "Harness finalizer decision") || !strings.Contains(retrySystem, "Finalizer tool observations") || !strings.Contains(retrySystem, "Finalizer requested status: amber") {
+		t.Fatalf("retry system = %q, want finalizer tool observations", retrySystem)
+	}
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	if got := detail.Turns[1].Content[0].Text; got != "The project status is amber." {
+		t.Fatalf("assistant content = %q, want retry final answer", got)
+	}
+	if strings.Contains(detail.Turns[1].Content[0].Text, "tool_request") {
+		t.Fatalf("assistant content leaked finalizer tool request: %q", detail.Turns[1].Content[0].Text)
+	}
+	thinking := historyTextForTest(detail.Turns[1].Content, "thinking")
+	if !strings.Contains(thinking, "Final model evidence request") || !strings.Contains(thinking, "Finalizer requested status: amber") {
+		t.Fatalf("assistant thinking = %q, want finalizer request and results", thinking)
+	}
+	harnessRun := detail.Turns[1].ProviderResponse["harnessRun"].(map[string]any)
+	steps := harnessRun["steps"].([]any)
+	finalToolStep := harnessStepByKind(t, steps, "final_tool_request")
+	if finalToolStep["status"] != "completed" || finalToolStep["provider"] != "ollama" || finalToolStep["model"] != "harness-model" {
+		t.Fatalf("final tool step = %+v, want completed harness-model planning step", finalToolStep)
+	}
+	activities := finalToolStep["tools"].([]any)
+	activity := activities[0].(map[string]any)
+	if activity["name"] != "read_file" || activity["status"] != "completed" {
+		t.Fatalf("finalizer tool activity = %+v, want completed read_file", activity)
+	}
+}
+
+func TestBlankFinalModelFallsBackToSuccessfulToolResult(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Tools.Filesystem.Root = filepath.Join(home, "tool-root")
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Chat = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(config.Tools.Filesystem.Root, "status.txt"), []byte("Queued as job-123"), 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	prepCalls := 0
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/chat" {
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("not found"))}, nil
+		}
+		var payload map[string]any
+		data, _ := io.ReadAll(req.Body)
+		if err := json.Unmarshal(data, &payload); err != nil {
+			t.Fatalf("provider request body is not JSON: %v", err)
+		}
+		if payload["stream"] == false {
+			prepCalls++
+			if prepCalls == 1 {
+				body := "```json\n{\"brief\":\"Read status, then confirm the result.\",\"needsTools\":true,\"reason\":\"Need the actual status file.\",\"toolCalls\":[{\"name\":\"read_file\",\"path\":\"status.txt\"}]}\n```"
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(body) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+			}
+			body := "```json\n{\"brief\":\"Status file was read successfully; confirm completion.\",\"needsTools\":false,\"reason\":\"Existing result is sufficient.\",\"toolCalls\":[]}\n```"
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(body) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+		}
+		body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","thinking":"I should answer, but only thinking is emitted."},"done":false}`) +
+			fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+	})
+
+	app.runChatStream(context.Background(), "request-blank-final", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Read the status and confirm it."},
+		},
+	})
+
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	got := detail.Turns[1].Content[0].Text
+	if strings.TrimSpace(got) == "" {
+		t.Fatal("assistant content is blank, want deterministic tool-result fallback")
+	}
+	if !strings.Contains(got, "Completed `read_file` successfully") || !strings.Contains(got, "status.txt") {
+		t.Fatalf("assistant content = %q, want successful read_file fallback", got)
 	}
 }
 

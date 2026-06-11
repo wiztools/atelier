@@ -189,6 +189,7 @@ function App() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [chat, setChat] = useState<ChatEntry[]>([]);
   const [collapsedThinkingIDs, setCollapsedThinkingIDs] = useState<Record<string, boolean>>({});
+  const [copiedMessageID, setCopiedMessageID] = useState('');
   const [conversations, setConversations] = useState<main.ConversationSummary[]>([]);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [visibleHistoryCount, setVisibleHistoryCount] = useState(compactHistoryLimit);
@@ -229,6 +230,7 @@ function App() {
   const chatStreamDraftsRef = useRef<Record<string, ChatStreamDraft>>({});
   const chatPromptRef = useRef<HTMLTextAreaElement | null>(null);
   const imagePromptRef = useRef<HTMLTextAreaElement | null>(null);
+  const copyResetRef = useRef<number | null>(null);
 
   const assistantEntryID = activeStream ? `assistant-${activeStream}` : '';
   const generatedImages = asArray(imageResult?.images);
@@ -240,7 +242,7 @@ function App() {
   const hasMoreConversations = visibleConversations.length < conversationList.length;
   const selectedConversationID = mode === 'image' ? imageResult?.conversationId ?? '' : activeConversationID;
   const latestHarnessRun = [...chat].reverse().find((entry) => entry.role === 'assistant' && entry.harnessRun)?.harnessRun;
-  const visibleHarnessRun = latestHarnessRun ?? (activeStream ? buildRunningHarnessRun(activeStream, activeConversationID, harnessModel || model) : null);
+  const visibleHarnessRun = latestHarnessRun ?? (activeStream ? buildRunningHarnessRun(activeStream, activeConversationID, harnessModel || model, model) : null);
 
   function markConversationInFlight(conversationID: string, requestID: string, kind: ConversationKind) {
     requestConversationRef.current[requestID] = {conversationID, kind};
@@ -276,6 +278,14 @@ function App() {
         error: formatError(refreshError),
       }));
     });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (copyResetRef.current) {
+        window.clearTimeout(copyResetRef.current);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -925,6 +935,26 @@ function App() {
     }));
   }
 
+  async function copyAgentResponse(entry: ChatEntry) {
+    if (!entry.content) {
+      return;
+    }
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(entry.content);
+      } else {
+        copyTextWithTextarea(entry.content);
+      }
+      setCopiedMessageID(entry.id);
+      if (copyResetRef.current) {
+        window.clearTimeout(copyResetRef.current);
+      }
+      copyResetRef.current = window.setTimeout(() => setCopiedMessageID(''), 1600);
+    } catch (error) {
+      console.error('copy failed', error);
+    }
+  }
+
   async function addImages(files: FileList | null) {
     if (!files) {
       return;
@@ -1306,6 +1336,19 @@ function App() {
                     ) : (
                       <p>{entry.content || (entry.streaming ? '...' : '')}</p>
                     )}
+                    {entry.role === 'assistant' && entry.content ? (
+                      <div className="message-actions">
+                        <button
+                          className="message-copy-button"
+                          type="button"
+                          aria-label="Copy agent response"
+                          title={copiedMessageID === entry.id ? 'Copied' : 'Copy response'}
+                          onClick={() => copyAgentResponse(entry)}
+                        >
+                          {copiedMessageID === entry.id ? '✓' : '⧉'}
+                        </button>
+                      </div>
+                    ) : null}
                     {entry.error ? <div className="error">{entry.error}</div> : null}
                   </article>
                 );
@@ -1664,17 +1707,23 @@ function HarnessRunPanel({run}: {run: HarnessRunView}) {
         {run.requestId ? <span>{run.requestId}</span> : null}
       </div>
       <ol className="harness-steps">
-        {steps.map((step, index) => (
-          <li key={step.id ?? `${step.kind}-${index}`} className={`harness-step ${step.status ?? 'pending'}`}>
-            <div>
-              <strong>{formatStepKind(step.kind)}</strong>
+        {steps.map((step, index) => {
+          const lane = harnessStepLane(step);
+          return (
+          <li key={step.id ?? `${step.kind}-${index}`} className={`harness-step ${step.status ?? 'pending'} ${lane.className}`}>
+            <div className="harness-step-head">
+              <div>
+                <strong>{formatStepKind(step.kind)}</strong>
+                <em>{lane.label}</em>
+              </div>
               <span>{step.status ?? 'pending'}</span>
             </div>
             <p>{step.error || step.summary || step.decision || step.doneReason || step.model || ''}</p>
-            <small>
-              {step.provider ? `${step.provider} ` : ''}
-              {step.tokens ? `${step.tokens} tokens ` : ''}
-              {step.durationMs ? formatDuration(step.durationMs) : ''}
+            <small className="harness-step-meta">
+              {step.provider ? <span>{step.provider}</span> : null}
+              {step.model ? <span>{step.model}</span> : null}
+              {step.tokens ? <span>{step.tokens} tokens</span> : null}
+              {step.durationMs ? <span>{formatDuration(step.durationMs)}</span> : null}
             </small>
             {asArray(step.tools).length ? (
               <div className="harness-tool-list">
@@ -1694,7 +1743,7 @@ function HarnessRunPanel({run}: {run: HarnessRunView}) {
               </div>
             ) : null}
           </li>
-        ))}
+        )})}
       </ol>
     </details>
   );
@@ -1708,7 +1757,7 @@ function parseHarnessRun(value: unknown): HarnessRunView | undefined {
   return run.status || run.steps?.length ? run : undefined;
 }
 
-function buildRunningHarnessRun(requestID: string, conversationID: string, model: string): HarnessRunView {
+function buildRunningHarnessRun(requestID: string, conversationID: string, harnessModel: string, chatModel: string): HarnessRunView {
   return {
     mode: 'chat',
     status: 'running',
@@ -1720,13 +1769,32 @@ function buildRunningHarnessRun(requestID: string, conversationID: string, model
     },
     steps: [
       {kind: 'queued', status: 'completed', summary: 'turn accepted by harness'},
-      {kind: 'preparing', status: 'completed', summary: 'request normalized and history turn prepared'},
-      {kind: 'model_call', status: 'completed', provider: 'ollama', model, summary: 'provider stream opened'},
-      {kind: 'streaming', status: 'running', provider: 'ollama', model, summary: 'assistant response streaming to UI'},
+      {kind: 'preparing', status: 'completed', provider: 'ollama', model: harnessModel, summary: 'harness model prepared the turn'},
+      {kind: 'model_call', status: 'completed', provider: 'ollama', model: chatModel, summary: 'chat model stream opened'},
+      {kind: 'streaming', status: 'running', provider: 'ollama', model: chatModel, summary: 'chat model response streaming to UI'},
       {kind: 'evaluation', status: 'pending'},
       {kind: 'saved', status: 'pending'},
     ],
   };
+}
+
+function harnessStepLane(step: HarnessStepView): {label: string; className: string} {
+  switch (step.kind) {
+    case 'preparing':
+      return {label: 'Harness model', className: 'harness-lane-model'};
+    case 'tool_call':
+      return {label: 'Harness tools', className: 'harness-lane-tools'};
+    case 'final_tool_request':
+      return {label: 'Chat → harness', className: 'harness-lane-handoff'};
+    case 'model_call':
+    case 'streaming':
+      return {label: 'Chat model', className: 'harness-lane-chat'};
+    case 'evaluation':
+    case 'saved':
+      return {label: 'Harness bookkeeping', className: 'harness-lane-bookkeeping'};
+    default:
+      return {label: 'Harness', className: 'harness-lane-system'};
+  }
 }
 
 function formatStepKind(kind = 'step'): string {
@@ -1773,6 +1841,19 @@ function imagePayloadForOllama(image: string): string {
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function copyTextWithTextarea(text: string) {
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  textarea.style.top = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand('copy');
+  document.body.removeChild(textarea);
 }
 
 function toolPermissionTitle(permission: ToolPermissionEvent): string {

@@ -52,10 +52,15 @@ func (g ToolGateway) Execute(ctx context.Context, req ToolExecutionRequest) Harn
 		result.Summary = "tool not recognized"
 		return result
 	}
-	if definition.RequiresPermissionFor(call) && !g.requestPermission(ctx, req, definition, call) {
+	requiresPermission := definition.RequiresPermissionFor(call) || g.requiresUnlistedCommandPermission(call)
+	if requiresPermission && !g.requestPermission(ctx, req, definition, call) {
 		return HarnessToolResult{Name: name, Status: "denied", Summary: definition.Title + " was not approved", Error: "permission denied"}
 	}
-	output, summary, err := definition.Execute(ctx, g.tools, call)
+	tools := g.tools
+	if g.requiresUnlistedCommandPermission(call) {
+		tools.Filesystem = tools.Filesystem.withApprovedUnlistedCommand(call.Command)
+	}
+	output, summary, err := definition.Execute(ctx, tools, call)
 	result.Result = output
 	result.Summary = summary
 	if err != nil {
@@ -67,6 +72,17 @@ func (g ToolGateway) Execute(ctx context.Context, req ToolExecutionRequest) Harn
 		result.Error = toolError
 	}
 	return result
+}
+
+func (g ToolGateway) requiresUnlistedCommandPermission(call HarnessToolCall) bool {
+	if strings.TrimSpace(call.Name) != "run_command" {
+		return false
+	}
+	if g.tools.Filesystem == nil {
+		return false
+	}
+	name := normalizedCommandName(call.Command)
+	return name != "" && !commandAllowed(name, g.tools.Filesystem.config.AllowedCommands)
 }
 
 func (g ToolGateway) requestPermission(ctx context.Context, req ToolExecutionRequest, definition HarnessToolDefinition, call HarnessToolCall) bool {
