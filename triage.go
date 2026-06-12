@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 )
@@ -36,9 +35,20 @@ func triageResponseSchema() map[string]any {
 func decodeTriageDecision(content string) (HarnessTriageDecision, error) {
 	var decision HarnessTriageDecision
 	if err := json.Unmarshal([]byte(stripJSONFence(content)), &decision); err != nil {
-		return HarnessTriageDecision{}, errors.New("no valid triage decision JSON found")
+		return HarnessTriageDecision{}, fmt.Errorf("triage decision JSON invalid: %w", err)
 	}
 	return decision, nil
+}
+
+// messagesWithoutImages copies messages for text-only side calls such as
+// triage, so image payloads never reach a model that only routes the turn.
+func messagesWithoutImages(messages []ChatMessage) []ChatMessage {
+	stripped := make([]ChatMessage, len(messages))
+	for index, message := range messages {
+		message.Images = nil
+		stripped[index] = message
+	}
+	return stripped
 }
 
 // triageChatTurn asks the chat model whether the turn needs tools. Failures
@@ -51,7 +61,7 @@ func (h *HarnessEngine) triageChatTurn(ctx context.Context, req ChatRequest, cha
 		BaseURL:  req.BaseURL,
 		Model:    chatModel,
 		System:   system,
-		Messages: truncateChatHistory(req.Messages, historyBudgetChars(numCtx, system, triageNumPredict)),
+		Messages: truncateChatHistory(messagesWithoutImages(req.Messages), historyBudgetChars(numCtx, system, triageNumPredict)),
 		Format:   triageResponseSchema(),
 		Options: map[string]any{
 			"temperature": 0,

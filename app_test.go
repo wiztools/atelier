@@ -3199,6 +3199,54 @@ func TestTriageChatTurnFailsSafeToToolPath(t *testing.T) {
 	}
 }
 
+func TestTriageChatTurnStripsImagesFromRequest(t *testing.T) {
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var payload map[string]any
+		data, _ := io.ReadAll(req.Body)
+		_ = json.Unmarshal(data, &payload)
+		messages, _ := payload["messages"].([]any)
+		for _, m := range messages {
+			msg, _ := m.(map[string]any)
+			if images, ok := msg["images"]; ok && images != nil {
+				if imgs, ok := images.([]any); ok && len(imgs) > 0 {
+					t.Fatalf("triage request must not include images, got: %v", images)
+				}
+			}
+		}
+		decision := `{"needsTools":false,"toolTask":"","reason":"general knowledge"}`
+		body := `{"model":"chat-box-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":1}`
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+	})
+	engine := newHarnessEngine(defaultAppConfig(), app)
+	decision, _ := engine.triageChatTurn(context.Background(), ChatRequest{
+		BaseURL:  "http://ollama.test",
+		Messages: []ChatMessage{{Role: "user", Content: "describe this", Images: []string{"data:image/png;base64,AAAA"}}},
+	}, "chat-box-model", nil)
+	if decision.Error != "" {
+		t.Fatalf("decision = %+v, want clean decision with images stripped", decision)
+	}
+}
+
+func TestTriageChatTurnDecodeErrorFailsSafe(t *testing.T) {
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := `{"model":"chat-box-model","message":{"role":"assistant","content":"tools sound useful here"},"done":true,"done_reason":"stop","eval_count":3}`
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+	})
+	engine := newHarnessEngine(defaultAppConfig(), app)
+	decision, completion := engine.triageChatTurn(context.Background(), ChatRequest{
+		BaseURL:  "http://ollama.test",
+		Messages: []ChatMessage{{Role: "user", Content: "anything"}},
+	}, "chat-box-model", nil)
+	if !decision.NeedsTools || decision.Error == "" {
+		t.Fatalf("decision = %+v, want fail-safe with recorded decode error", decision)
+	}
+	if completion.EvalTokens != 3 {
+		t.Fatalf("completion tokens = %d, want telemetry preserved on decode failure", completion.EvalTokens)
+	}
+}
+
 func TestAppendToolEvidenceToSystemUsesFixedNotesOnly(t *testing.T) {
 	if got := appendToolEvidenceToSystem("base prompt", HarnessPreparedTurn{}); got != "base prompt" {
 		t.Fatalf("system with no tool evidence = %q, want untouched base prompt", got)
