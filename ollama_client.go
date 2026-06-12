@@ -120,18 +120,6 @@ func (client OllamaClient) ShowModel(ctx context.Context, name string) (ollamaSh
 	return show, nil
 }
 
-func (client OllamaClient) IsImageGenerationModel(ctx context.Context, name string) bool {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return false
-	}
-	show, err := client.ShowModel(ctx, name)
-	if err != nil {
-		return likelyImageGenerationModelName(name)
-	}
-	return show.SupportsImageGeneration(name)
-}
-
 func (show ollamaShowResponse) SupportsImageGeneration(modelName string) bool {
 	return hasImageGenerationCapability(show.Capabilities) ||
 		hasImageGenerationModelInfo(show.ModelInfo) ||

@@ -11,6 +11,7 @@ The first slice focuses on the gap in Ollama Desktop: image-generation models ca
 - Streams chat from `/api/chat` into the UI through Wails runtime events.
 - Sends base64 image attachments for vision-capable chat models.
 - Calls `/api/generate` for experimental image generation with width, height, and steps.
+- Exposes image generation to chat as a harness `generate_image` tool (registered only when an image model is configured), so the planner model decides when a turn needs an image instead of keyword matching.
 - Normalizes generated base64 image responses into browser-renderable image data URLs.
 - Stores image-generation conversations and generated artifacts under `~/.atelier/history`.
 - Sends an explicit `num_ctx` (configurable, default 8192) on every model call and trims the oldest conversation history to fit the context window instead of letting Ollama truncate silently.

@@ -29,6 +29,9 @@ func newToolGateway(app *App, config AppConfig) ToolGateway {
 	}
 	if app != nil {
 		gateway.permissionRequester = app.toolPermission
+		gateway.tools.GenerateImage = func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, error) {
+			return app.ollamaClient(config.Providers.Ollama.BaseURL).GenerateImage(ctx, req)
+		}
 	}
 	return gateway
 }

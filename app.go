@@ -1469,7 +1469,7 @@ func appendChatAssistantTurn(config AppConfig, conversationID, assistantContent,
 	return store.writeTurn(loaded.TurnsDir, assistantTurn)
 }
 
-func appendChatAssistantTurnWithImages(config AppConfig, conversationID, assistantContent, model, reason string, images []string, raw string, run HarnessRun, imageReq ImageGenerateRequest) error {
+func appendChatAssistantTurnWithImages(config AppConfig, conversationID, assistantContent, assistantThinking, model, reason string, images []string, raw string, run HarnessRun, imageReq ImageGenerateRequest) error {
 	store := newHistoryStore(config.Storage)
 	loaded, err := store.loadForAppend(conversationID, "chat", "a chat")
 	if err != nil {
@@ -1481,6 +1481,9 @@ func appendChatAssistantTurnWithImages(config AppConfig, conversationID, assista
 		return err
 	}
 	contents := []HistoryContent{{Type: "text", Text: assistantContent}}
+	if strings.TrimSpace(assistantThinking) != "" {
+		contents = append(contents, HistoryContent{Type: "thinking", Text: assistantThinking})
+	}
 	contents = append(contents, imageContents...)
 	assistantTurn := HistoryTurn{
 		SchemaVersion:  1,
@@ -1496,7 +1499,7 @@ func appendChatAssistantTurnWithImages(config AppConfig, conversationID, assista
 			"harnessRun": run,
 			"tool": map[string]any{
 				"name":       "image_generation",
-				"model":      model,
+				"model":      imageReq.Model,
 				"imageCount": len(imageContents),
 				"rawCompact": raw,
 			},

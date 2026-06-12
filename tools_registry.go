@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -29,8 +30,19 @@ type HarnessToolDefinition struct {
 }
 
 type HarnessToolExecutionContext struct {
-	Config     AppConfig
-	Filesystem *FilesystemToolLayer
+	Config        AppConfig
+	Filesystem    *FilesystemToolLayer
+	GenerateImage func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, error)
+}
+
+// ToolImageResult carries generated images as data URLs. The Images field is
+// stripped before the result is rendered into a tool message so base64 data
+// never enters a model context; the harness extracts it for the UI and history.
+type ToolImageResult struct {
+	Model  string   `json:"model"`
+	Prompt string   `json:"prompt"`
+	Count  int      `json:"count"`
+	Images []string `json:"images,omitempty"`
 }
 
 type HarnessToolRegistry struct {
@@ -46,7 +58,68 @@ func newHarnessToolExecutionContext(config AppConfig) HarnessToolExecutionContex
 }
 
 func defaultHarnessToolRegistry(config AppConfig) HarnessToolRegistry {
-	return newHarnessToolRegistry(filesystemToolDefinitions())
+	definitions := filesystemToolDefinitions()
+	if strings.TrimSpace(config.Providers.Ollama.Models.Image) != "" {
+		definitions = append(definitions, imageGenerationToolDefinition())
+	}
+	return newHarnessToolRegistry(definitions)
+}
+
+func imageGenerationToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "generate_image",
+		Title:       "Generate image",
+		Description: "Use this when the user asks to create, draw, paint, or render an image. The configured image model generates it and the image is attached to the assistant reply.",
+		Example:     `{"name":"generate_image","content":"a watercolor of a lighthouse at dusk"}`,
+		Risk:        HarnessToolRiskRead,
+		Validate: func(prefix string, call HarnessToolCall) []string {
+			if strings.TrimSpace(call.Content) == "" {
+				return []string{prefix + ".content is required for generate_image (the image prompt)"}
+			}
+			return nil
+		},
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			if tools.GenerateImage == nil {
+				return nil, "image generation unavailable", errors.New("image generation is not available in this context")
+			}
+			model := strings.TrimSpace(tools.Config.Providers.Ollama.Models.Image)
+			if model == "" {
+				return nil, "image generation unavailable", errors.New("no image model is configured")
+			}
+			imageReq := ImageGenerateRequest{
+				Model:  model,
+				Prompt: strings.TrimSpace(call.Content),
+				Width:  tools.Config.Generation.Image.Width,
+				Height: tools.Config.Generation.Image.Height,
+				Steps:  tools.Config.Generation.Image.Steps,
+			}
+			payload, raw, err := tools.GenerateImage(ctx, imageReq)
+			if err != nil {
+				return nil, "image generation failed", err
+			}
+			images := normalizeImagePayloads(payload.Images)
+			if maybeImage := normalizeImagePayload(payload.Image); maybeImage != "" {
+				images = append(images, maybeImage)
+			}
+			if maybeImage := normalizeImagePayload(payload.Response); maybeImage != "" {
+				images = append(images, maybeImage)
+			}
+			images = append(images, collectImagesFromJSON(raw)...)
+			images = dedupeStrings(images)
+			if len(images) == 0 {
+				return nil, "image generation returned no image", errors.New("image model returned no image data")
+			}
+			output := ToolImageResult{Model: model, Prompt: imageReq.Prompt, Count: len(images), Images: images}
+			return output, fmt.Sprintf("generated %d image%s with %s", len(images), pluralSuffix(len(images)), model), nil
+		},
+		Activity: func(result HarnessToolResult) HarnessToolActivity {
+			activity := defaultHarnessToolActivity(result)
+			if typed, ok := result.Result.(ToolImageResult); ok {
+				activity.Command = []string{"ollama", "generate", typed.Model}
+			}
+			return activity
+		},
+	}
 }
 
 func filesystemToolRegistry() HarnessToolRegistry {

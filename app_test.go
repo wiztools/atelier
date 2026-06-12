@@ -2534,7 +2534,7 @@ func TestHarnessCautionsFinalModelAfterRepeatedInvalidPlans(t *testing.T) {
 	}
 }
 
-func TestBlankFinalModelFallsBackToSuccessfulToolResult(t *testing.T) {
+func TestBlankFinalModelProducesHarnessNotice(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -2600,11 +2600,11 @@ func TestBlankFinalModelFallsBackToSuccessfulToolResult(t *testing.T) {
 		t.Fatalf("getConversation returned error: %v", err)
 	}
 	got := detail.Turns[1].Content[0].Text
-	if strings.TrimSpace(got) == "" {
-		t.Fatal("assistant content is blank, want deterministic tool-result fallback")
+	if !strings.Contains(got, "Atelier harness notice: the response model returned no content") {
+		t.Fatalf("assistant content = %q, want harness notice in the harness's own voice", got)
 	}
-	if !strings.Contains(got, "Completed `read_file` successfully") || !strings.Contains(got, "status.txt") {
-		t.Fatalf("assistant content = %q, want successful read_file fallback", got)
+	if !strings.Contains(got, "`read_file` completed") || !strings.Contains(got, "status.txt") {
+		t.Fatalf("assistant content = %q, want read_file outcome in the notice", got)
 	}
 }
 
@@ -2738,7 +2738,7 @@ func TestHarnessCanRequestSecondToolRound(t *testing.T) {
 	}
 }
 
-func TestHarnessRoutesChatImageRequestToImageTool(t *testing.T) {
+func TestHarnessGeneratesImageViaPlannedTool(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -2749,59 +2749,84 @@ func TestHarnessRoutesChatImageRequestToImageTool(t *testing.T) {
 		Artifacts: filepath.Join(home, ".atelier", "history"),
 	}
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
-	config.Providers.Ollama.Models.Chat = "chat-model"
-	config.Providers.Ollama.Models.Harness = "chat-model"
+	config.Providers.Ollama.Models.Chat = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
 	config.Providers.Ollama.Models.Image = "image-model"
 	if err := writeAppConfig(config); err != nil {
 		t.Fatalf("writeAppConfig returned error: %v", err)
 	}
 
 	app := NewApp()
+	prepCalls := 0
+	imageCalls := 0
+	var streamMessages []any
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch req.URL.Path {
-		case "/api/show":
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Status:     "200 OK",
-				Body:       io.NopCloser(strings.NewReader(`{"capabilities":["completion"]}`)),
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-			}, nil
 		case "/api/generate":
+			imageCalls++
 			var payload map[string]any
 			data, _ := io.ReadAll(req.Body)
 			if err := json.Unmarshal(data, &payload); err != nil {
 				t.Fatalf("image request body is not JSON: %v", err)
 			}
 			if payload["model"] != "image-model" {
-				t.Fatalf("image request model = %q, want settings fallback image-model", payload["model"])
+				t.Fatalf("image request model = %q, want configured image-model", payload["model"])
+			}
+			if payload["prompt"] != "a small house with a red roof" {
+				t.Fatalf("image request prompt = %q, want planner tool prompt", payload["prompt"])
 			}
 			body := `{"model":"image-model","image":"iVBORw0KGgo=","done":true}`
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Status:     "200 OK",
-				Body:       io.NopCloser(strings.NewReader(body)),
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-			}, nil
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+		case "/api/chat":
+			var payload map[string]any
+			data, _ := io.ReadAll(req.Body)
+			if err := json.Unmarshal(data, &payload); err != nil {
+				t.Fatalf("provider request body is not JSON: %v", err)
+			}
+			if payload["stream"] == false {
+				prepCalls++
+				body := `{"brief":"Generate the requested image and confirm it briefly.","needsTools":true,"reason":"The user asked for an image, which requires the image tool.","toolCalls":[{"name":"generate_image","content":"a small house with a red roof"}]}`
+				if prepCalls > 1 {
+					body = `{"brief":"The image was generated; confirm it briefly for the user.","needsTools":false,"reason":"The image tool already produced the artifact.","toolCalls":[]}`
+				}
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(body) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+			}
+			streamMessages = payload["messages"].([]any)
+			body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"Here is the small house you asked for."},"done":false}`) +
+				fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
 		default:
-			t.Fatalf("unexpected provider path %q, want /api/generate", req.URL.Path)
+			t.Fatalf("unexpected provider path %q", req.URL.Path)
 		}
 		return nil, nil
 	})
-	app.runChatStream(t.Context(), "request-image-tool", ChatRequest{
-		BaseURL:       "http://ollama.test",
-		Model:         "chat-model",
-		SelectedModel: "chat-model",
+
+	app.runChatStream(context.Background(), "request-image-tool", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
 		Messages: []ChatMessage{
 			{Role: "user", Content: "Create an image of a small house"},
 		},
 	})
 
+	if prepCalls != 2 || imageCalls != 1 {
+		t.Fatalf("provider calls prep=%d image=%d, want planner round, image tool, closing round", prepCalls, imageCalls)
+	}
+	lastStreamMessage := streamMessages[len(streamMessages)-1].(map[string]any)
+	if lastStreamMessage["role"] != "tool" {
+		t.Fatalf("last stream message = %+v, want tool observation", lastStreamMessage)
+	}
+	observation, _ := lastStreamMessage["content"].(string)
+	if !strings.Contains(observation, "generate_image") || !strings.Contains(observation, `"count":1`) {
+		t.Fatalf("tool observation = %q, want image generation summary", observation)
+	}
+	if strings.Contains(observation, "iVBOR") {
+		t.Fatalf("tool observation leaked base64 image data: %q", observation)
+	}
+
 	conversations, err := listConversations(config.Storage)
 	if err != nil {
 		t.Fatalf("listConversations returned error: %v", err)
-	}
-	if len(conversations) != 1 {
-		t.Fatalf("conversation count = %d, want 1", len(conversations))
 	}
 	detail, err := getConversation(config.Storage, conversations[0].ID)
 	if err != nil {
@@ -2810,101 +2835,27 @@ func TestHarnessRoutesChatImageRequestToImageTool(t *testing.T) {
 	if len(detail.Turns) != 2 {
 		t.Fatalf("turn count = %d, want user and assistant", len(detail.Turns))
 	}
-	images := historyImagesForTest(detail.Turns[1].Content)
+	assistant := detail.Turns[1]
+	if got := assistant.Content[0].Text; got != "Here is the small house you asked for." {
+		t.Fatalf("assistant text = %q, want final model confirmation", got)
+	}
+	images := historyImagesForTest(assistant.Content)
 	if len(images) != 1 {
-		t.Fatalf("assistant image content = %+v, want one image", detail.Turns[1].Content)
+		t.Fatalf("assistant image content = %+v, want one image artifact", assistant.Content)
 	}
-	tool, ok := detail.Turns[1].ProviderResponse["tool"].(map[string]any)
-	if !ok || tool["name"] != "image_generation" {
-		t.Fatalf("assistant provider tool = %+v, want image_generation", detail.Turns[1].ProviderResponse["tool"])
+	if assistant.Model != "chat-box-model" {
+		t.Fatalf("assistant turn model = %q, want final chat model", assistant.Model)
 	}
-	harnessRun, ok := detail.Turns[1].ProviderResponse["harnessRun"].(map[string]any)
-	if !ok {
-		t.Fatalf("assistant provider response missing harness run: %+v", detail.Turns[1].ProviderResponse)
+	tool, ok := assistant.ProviderResponse["tool"].(map[string]any)
+	if !ok || tool["name"] != "image_generation" || tool["model"] != "image-model" {
+		t.Fatalf("assistant provider tool = %+v, want image_generation via image-model", assistant.ProviderResponse["tool"])
 	}
-	steps, ok := harnessRun["steps"].([]any)
-	if !ok {
-		t.Fatalf("harness steps = %+v, want timeline", harnessRun["steps"])
-	}
-	toolStep := harnessStepByKind(t, steps, "tool_call")
-	if toolStep["status"] != "completed" || toolStep["model"] != "image-model" {
-		t.Fatalf("tool step = %+v, want completed image-model call", toolStep)
-	}
-}
-
-func TestHarnessRoutesChatImageRequestToSelectedImageCapableModel(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	config := defaultAppConfig()
-	config.Storage = ConfigStorage{
-		Root:      filepath.Join(home, ".atelier"),
-		History:   filepath.Join(home, ".atelier", "history"),
-		Artifacts: filepath.Join(home, ".atelier", "history"),
-	}
-	config.Providers.Ollama.BaseURL = "http://ollama.test"
-	config.Providers.Ollama.Models.Chat = "chat-model"
-	config.Providers.Ollama.Models.Harness = "harness-model"
-	config.Providers.Ollama.Models.Image = "settings-image-model"
-	if err := writeAppConfig(config); err != nil {
-		t.Fatalf("writeAppConfig returned error: %v", err)
-	}
-
-	app := NewApp()
-	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		switch req.URL.Path {
-		case "/api/show":
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Status:     "200 OK",
-				Body:       io.NopCloser(strings.NewReader(`{"capabilities":["completion","image-generation"]}`)),
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-			}, nil
-		case "/api/generate":
-			var payload map[string]any
-			data, _ := io.ReadAll(req.Body)
-			if err := json.Unmarshal(data, &payload); err != nil {
-				t.Fatalf("image request body is not JSON: %v", err)
-			}
-			if payload["model"] != "x/flux2-klein:4b" {
-				t.Fatalf("image request model = %q, want selected image-capable model", payload["model"])
-			}
-			body := `{"model":"x/flux2-klein:4b","image":"iVBORw0KGgo=","done":true}`
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Status:     "200 OK",
-				Body:       io.NopCloser(strings.NewReader(body)),
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-			}, nil
-		default:
-			t.Fatalf("unexpected provider path %q", req.URL.Path)
-		}
-		return nil, nil
-	})
-	app.runChatStream(t.Context(), "request-selected-image-tool", ChatRequest{
-		BaseURL:       "http://ollama.test",
-		Model:         "harness-model",
-		SelectedModel: "x/flux2-klein:4b",
-		Messages: []ChatMessage{
-			{Role: "user", Content: "Create an image of a small house"},
-		},
-	})
-
-	conversations, err := listConversations(config.Storage)
-	if err != nil {
-		t.Fatalf("listConversations returned error: %v", err)
-	}
-	detail, err := getConversation(config.Storage, conversations[0].ID)
-	if err != nil {
-		t.Fatalf("getConversation returned error: %v", err)
-	}
-	harnessRun, ok := detail.Turns[1].ProviderResponse["harnessRun"].(map[string]any)
-	if !ok {
-		t.Fatalf("assistant provider response missing harness run: %+v", detail.Turns[1].ProviderResponse)
-	}
+	harnessRun := assistant.ProviderResponse["harnessRun"].(map[string]any)
 	toolStep := harnessStepByKind(t, harnessRun["steps"].([]any), "tool_call")
-	if toolStep["model"] != "x/flux2-klein:4b" {
-		t.Fatalf("tool step = %+v, want selected image-capable model", toolStep)
+	activities := toolStep["tools"].([]any)
+	activity := activities[0].(map[string]any)
+	if activity["name"] != "generate_image" || activity["status"] != "completed" {
+		t.Fatalf("tool activity = %+v, want completed generate_image", activity)
 	}
 }
 
