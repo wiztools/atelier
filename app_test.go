@@ -2572,7 +2572,7 @@ func TestHarnessCautionsFinalModelAfterRepeatedInvalidPlans(t *testing.T) {
 	}
 	harnessRun := assistant.ProviderResponse["harnessRun"].(map[string]any)
 	if harnessRun["status"] != "completed" {
-		t.Fatalf("harness status = %q, want completed run with caution brief", harnessRun["status"])
+		t.Fatalf("harness status = %q, want completed run with the invalid-plan note", harnessRun["status"])
 	}
 	loop := harnessRun["loop"].(map[string]any)
 	if loop["iterations"] != float64(harnessChatMaxSteps) {
