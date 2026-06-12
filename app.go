@@ -84,9 +84,12 @@ type ConfigOllama struct {
 }
 
 type ConfigOllamaModels struct {
-	Chat    string `json:"chat"`
-	Harness string `json:"harness"`
-	Image   string `json:"image"`
+	Chat  string `json:"chat"`
+	Tools string `json:"tools"`
+	Image string `json:"image"`
+	// LegacyHarness reads the pre-rename "harness" key from configs written
+	// by older builds. mergeAppConfig migrates it into Tools and clears it.
+	LegacyHarness string `json:"harness,omitempty"`
 }
 
 type ConfigPrompts struct {
@@ -1064,9 +1067,9 @@ func defaultAppConfig() AppConfig {
 			Ollama: ConfigOllama{
 				BaseURL: defaultOllamaBaseURL,
 				Models: ConfigOllamaModels{
-					Chat:    "mistral-small3.1:latest",
-					Harness: "mistral-small3.1:latest",
-					Image:   "x/z-image-turbo:latest",
+					Chat:  "mistral-small3.1:latest",
+					Tools: "mistral-small3.1:latest",
+					Image: "x/z-image-turbo:latest",
 				},
 				NumCtx: defaultOllamaNumCtx,
 			},
@@ -1109,8 +1112,12 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	if strings.TrimSpace(config.Providers.Ollama.Models.Chat) == "" {
 		config.Providers.Ollama.Models.Chat = defaults.Providers.Ollama.Models.Chat
 	}
-	if strings.TrimSpace(config.Providers.Ollama.Models.Harness) == "" {
-		config.Providers.Ollama.Models.Harness = config.Providers.Ollama.Models.Chat
+	if strings.TrimSpace(config.Providers.Ollama.Models.Tools) == "" {
+		config.Providers.Ollama.Models.Tools = strings.TrimSpace(config.Providers.Ollama.Models.LegacyHarness)
+	}
+	config.Providers.Ollama.Models.LegacyHarness = ""
+	if strings.TrimSpace(config.Providers.Ollama.Models.Tools) == "" {
+		config.Providers.Ollama.Models.Tools = config.Providers.Ollama.Models.Chat
 	}
 	if strings.TrimSpace(config.Providers.Ollama.Models.Image) == "" {
 		config.Providers.Ollama.Models.Image = defaults.Providers.Ollama.Models.Image

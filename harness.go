@@ -223,7 +223,7 @@ func (h *HarnessEngine) chatRequestForHarness(req ChatRequest) ChatRequest {
 	if strings.TrimSpace(req.SelectedModel) == "" {
 		req.SelectedModel = strings.TrimSpace(req.Model)
 	}
-	model := strings.TrimSpace(h.config.Providers.Ollama.Models.Harness)
+	model := strings.TrimSpace(h.config.Providers.Ollama.Models.Tools)
 	if model == "" {
 		model = strings.TrimSpace(req.Model)
 	}

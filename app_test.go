@@ -145,8 +145,8 @@ func TestMergeAppConfigFillsDefaults(t *testing.T) {
 	if config.Storage.History == "" {
 		t.Fatal("history storage should default")
 	}
-	if config.Providers.Ollama.Models.Harness != config.Providers.Ollama.Models.Chat {
-		t.Fatalf("harness model = %q, want chat default %q", config.Providers.Ollama.Models.Harness, config.Providers.Ollama.Models.Chat)
+	if config.Providers.Ollama.Models.Tools != config.Providers.Ollama.Models.Chat {
+		t.Fatalf("tools model = %q, want chat default %q", config.Providers.Ollama.Models.Tools, config.Providers.Ollama.Models.Chat)
 	}
 	if config.Prompts.System == "" {
 		t.Fatal("system prompt should default")
@@ -168,15 +168,40 @@ func TestMergeAppConfigFillsDefaults(t *testing.T) {
 	}
 }
 
+func TestMergeAppConfigMigratesLegacyHarnessModelKey(t *testing.T) {
+	merged := mergeAppConfig(AppConfig{
+		Providers: ConfigProviders{Ollama: ConfigOllama{
+			Models: ConfigOllamaModels{Chat: "chat-model", LegacyHarness: "old-harness-model"},
+		}},
+	})
+	if merged.Providers.Ollama.Models.Tools != "old-harness-model" {
+		t.Fatalf("tools model = %q, want legacy harness value", merged.Providers.Ollama.Models.Tools)
+	}
+	if merged.Providers.Ollama.Models.LegacyHarness != "" {
+		t.Fatalf("legacy harness key = %q, want cleared after migration", merged.Providers.Ollama.Models.LegacyHarness)
+	}
+}
+
+func TestMergeAppConfigDefaultsToolsModelToChatModel(t *testing.T) {
+	merged := mergeAppConfig(AppConfig{
+		Providers: ConfigProviders{Ollama: ConfigOllama{
+			Models: ConfigOllamaModels{Chat: "chat-model"},
+		}},
+	})
+	if merged.Providers.Ollama.Models.Tools != "chat-model" {
+		t.Fatalf("tools model = %q, want chat model fallback", merged.Providers.Ollama.Models.Tools)
+	}
+}
+
 func TestMergeAppConfigNormalizesOllamaEndpoint(t *testing.T) {
 	config := mergeAppConfig(AppConfig{
 		Providers: ConfigProviders{
 			Ollama: ConfigOllama{
 				BaseURL: "localhost:11434/",
 				Models: ConfigOllamaModels{
-					Chat:    "chat-model",
-					Harness: "harness-model",
-					Image:   "image-model",
+					Chat:  "chat-model",
+					Tools: "harness-model",
+					Image: "image-model",
 				},
 			},
 		},
@@ -194,8 +219,8 @@ func TestMergeAppConfigNormalizesOllamaEndpoint(t *testing.T) {
 	if config.UI.Mode != "image" {
 		t.Fatalf("mode = %q", config.UI.Mode)
 	}
-	if config.Providers.Ollama.Models.Harness != "harness-model" {
-		t.Fatalf("harness model = %q", config.Providers.Ollama.Models.Harness)
+	if config.Providers.Ollama.Models.Tools != "harness-model" {
+		t.Fatalf("tools model = %q", config.Providers.Ollama.Models.Tools)
 	}
 }
 
@@ -1733,7 +1758,7 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 	}
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
 	config.Providers.Ollama.Models.Chat = "chat-box-model"
-	config.Providers.Ollama.Models.Harness = "harness-model"
+	config.Providers.Ollama.Models.Tools = "harness-model"
 	if err := writeAppConfig(config); err != nil {
 		t.Fatalf("writeAppConfig returned error: %v", err)
 	}
@@ -1861,7 +1886,7 @@ func TestHarnessSelectsSkillLoadsBodyAndPersistsMetadata(t *testing.T) {
 	}
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
 	config.Providers.Ollama.Models.Chat = "chat-box-model"
-	config.Providers.Ollama.Models.Harness = "harness-model"
+	config.Providers.Ollama.Models.Tools = "harness-model"
 	if err := writeAppConfig(config); err != nil {
 		t.Fatalf("writeAppConfig returned error: %v", err)
 	}
@@ -1986,7 +2011,7 @@ func TestHarnessExecutesSkillCommandInsteadOfDelegatingToFinalModel(t *testing.T
 	config.Tools.Filesystem.Root = filepath.Join(home, "workspace")
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
 	config.Providers.Ollama.Models.Chat = "chat-box-model"
-	config.Providers.Ollama.Models.Harness = "harness-model"
+	config.Providers.Ollama.Models.Tools = "harness-model"
 	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
 		t.Fatalf("MkdirAll returned error: %v", err)
 	}
@@ -2109,7 +2134,7 @@ func TestHarnessModelPlansKnowledgedPost(t *testing.T) {
 	config.Tools.Filesystem.Root = filepath.Join(home, "workspace")
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
 	config.Providers.Ollama.Models.Chat = "chat-box-model"
-	config.Providers.Ollama.Models.Harness = "harness-model"
+	config.Providers.Ollama.Models.Tools = "harness-model"
 	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
 		t.Fatalf("MkdirAll returned error: %v", err)
 	}
@@ -2201,7 +2226,7 @@ func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
 	config.Tools.Filesystem.Root = filepath.Join(home, "tool-root")
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
 	config.Providers.Ollama.Models.Chat = "chat-box-model"
-	config.Providers.Ollama.Models.Harness = "harness-model"
+	config.Providers.Ollama.Models.Tools = "harness-model"
 	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
 		t.Fatalf("MkdirAll returned error: %v", err)
 	}
@@ -2339,7 +2364,7 @@ func TestHarnessFeedsToolFailureBackToPlanner(t *testing.T) {
 	config.Tools.Filesystem.Root = filepath.Join(home, "tool-root")
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
 	config.Providers.Ollama.Models.Chat = "chat-box-model"
-	config.Providers.Ollama.Models.Harness = "harness-model"
+	config.Providers.Ollama.Models.Tools = "harness-model"
 	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
 		t.Fatalf("MkdirAll returned error: %v", err)
 	}
@@ -2450,7 +2475,7 @@ func TestHarnessCautionsFinalModelAfterRepeatedInvalidPlans(t *testing.T) {
 	config.Tools.Filesystem.Root = filepath.Join(home, "tool-root")
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
 	config.Providers.Ollama.Models.Chat = "chat-box-model"
-	config.Providers.Ollama.Models.Harness = "harness-model"
+	config.Providers.Ollama.Models.Tools = "harness-model"
 	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
 		t.Fatalf("MkdirAll returned error: %v", err)
 	}
@@ -2547,7 +2572,7 @@ func TestBlankFinalModelProducesHarnessNotice(t *testing.T) {
 	config.Tools.Filesystem.Root = filepath.Join(home, "tool-root")
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
 	config.Providers.Ollama.Models.Chat = "chat-box-model"
-	config.Providers.Ollama.Models.Harness = "harness-model"
+	config.Providers.Ollama.Models.Tools = "harness-model"
 	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
 		t.Fatalf("MkdirAll returned error: %v", err)
 	}
@@ -2621,7 +2646,7 @@ func TestHarnessCanRequestSecondToolRound(t *testing.T) {
 	config.Tools.Filesystem.Root = filepath.Join(home, "tool-root")
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
 	config.Providers.Ollama.Models.Chat = "chat-box-model"
-	config.Providers.Ollama.Models.Harness = "harness-model"
+	config.Providers.Ollama.Models.Tools = "harness-model"
 	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
 		t.Fatalf("MkdirAll returned error: %v", err)
 	}
@@ -2750,7 +2775,7 @@ func TestHarnessGeneratesImageViaPlannedTool(t *testing.T) {
 	}
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
 	config.Providers.Ollama.Models.Chat = "chat-box-model"
-	config.Providers.Ollama.Models.Harness = "harness-model"
+	config.Providers.Ollama.Models.Tools = "harness-model"
 	config.Providers.Ollama.Models.Image = "image-model"
 	if err := writeAppConfig(config); err != nil {
 		t.Fatalf("writeAppConfig returned error: %v", err)
@@ -2871,7 +2896,7 @@ func TestStreamChatReturnsConversationAfterPendingTurn(t *testing.T) {
 	}
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
 	config.Providers.Ollama.Models.Chat = "chat-model"
-	config.Providers.Ollama.Models.Harness = "chat-model"
+	config.Providers.Ollama.Models.Tools = "chat-model"
 	if err := writeAppConfig(config); err != nil {
 		t.Fatalf("writeAppConfig returned error: %v", err)
 	}
