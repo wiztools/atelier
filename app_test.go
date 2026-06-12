@@ -154,6 +154,9 @@ func TestMergeAppConfigFillsDefaults(t *testing.T) {
 	if config.Generation.Image.Width != 768 || config.Generation.Image.Steps != 24 {
 		t.Fatalf("image generation defaults = %+v", config.Generation.Image)
 	}
+	if config.Providers.Ollama.NumCtx != defaultOllamaNumCtx {
+		t.Fatalf("numCtx = %d, want default %d", config.Providers.Ollama.NumCtx, defaultOllamaNumCtx)
+	}
 	if config.Tools.Filesystem.Root == "" {
 		t.Fatal("filesystem tool root should default")
 	}
@@ -1020,6 +1023,82 @@ func TestStripJSONFenceHandlesFencedAndBareContent(t *testing.T) {
 	}
 }
 
+func TestTruncateChatHistoryKeepsNewestAndMarksOmission(t *testing.T) {
+	messages := []ChatMessage{
+		{Role: "user", Content: strings.Repeat("a", 400)},
+		{Role: "assistant", Content: strings.Repeat("b", 400)},
+		{Role: "user", Content: strings.Repeat("c", 400)},
+	}
+
+	unchanged := truncateChatHistory(messages, 2000)
+	if len(unchanged) != 3 || strings.Contains(unchanged[0].Content, contextOmittedMarker) {
+		t.Fatalf("under-budget history = %+v, want unchanged", unchanged)
+	}
+
+	truncated := truncateChatHistory(messages, 900)
+	if len(truncated) != 2 {
+		t.Fatalf("truncated history length = %d, want oldest message dropped", len(truncated))
+	}
+	if !strings.HasPrefix(truncated[0].Content, contextOmittedMarker) {
+		t.Fatalf("oldest kept message = %q, want omission marker prefix", truncated[0].Content)
+	}
+	if !strings.HasSuffix(truncated[1].Content, "c") || len(truncated[1].Content) != 400 {
+		t.Fatalf("newest message = %q, want untouched", truncated[1].Content)
+	}
+
+	single := truncateChatHistory([]ChatMessage{{Role: "user", Content: strings.Repeat("d", 5000)}}, 900)
+	if len(single) != 1 || strings.Contains(single[0].Content, contextOmittedMarker) {
+		t.Fatalf("single oversized message = %+v, want kept without marker", single)
+	}
+}
+
+func TestToolResultMessagesCapOversizedResults(t *testing.T) {
+	huge := HarnessToolResult{
+		Name:    "run_command",
+		Status:  "completed",
+		Summary: "command exited with code 0",
+		Result: ToolCommandResult{
+			Command: []string{"rg", "-n", "Atelier"},
+			Stdout:  strings.Repeat("match line\n", 10000),
+		},
+	}
+	small := HarnessToolResult{Name: "read_file", Status: "completed", Summary: "read 5 bytes", Result: ToolFileReadResult{Path: "a.txt", Content: "green", Bytes: 5}}
+
+	messages := toolResultMessages([]HarnessToolResult{huge, small})
+	if len(messages) != 2 || messages[0].Role != "tool" || messages[1].Role != "tool" {
+		t.Fatalf("tool messages = %+v, want two tool messages", messages)
+	}
+	if len(messages[0].Content) > toolResultMessageMaxChars+1024 {
+		t.Fatalf("oversized tool message length = %d, want capped near %d", len(messages[0].Content), toolResultMessageMaxChars)
+	}
+	if !strings.Contains(messages[0].Content, "truncated to fit the model context") {
+		t.Fatalf("oversized tool message = %q, want truncation note", messages[0].Content[:200])
+	}
+	if !strings.Contains(messages[1].Content, "green") {
+		t.Fatalf("small tool message = %q, want full result", messages[1].Content)
+	}
+}
+
+func TestLoadFullSkillTruncatesOversizedBody(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "SKILL.md")
+	body := "---\nname: big\ndescription: Oversized skill.\n---\n\n" + strings.Repeat("instruction line\n", 4096)
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	loaded, err := loadFullSkill(SkillIndexEntry{Name: "big", Description: "Oversized skill.", Path: path})
+	if err != nil {
+		t.Fatalf("loadFullSkill returned error: %v", err)
+	}
+	if len(loaded.Body) > skillBodyReadLimit+256 {
+		t.Fatalf("skill body length = %d, want capped near %d", len(loaded.Body), skillBodyReadLimit)
+	}
+	if !strings.Contains(loaded.Body, "[SKILL.md truncated") {
+		t.Fatal("oversized skill body missing truncation marker")
+	}
+}
+
 func TestParseHarnessToolPlanRejectsInvalidToolName(t *testing.T) {
 	_, errors := parseHarnessToolPlan("```json\n{\"brief\":\"Do it.\",\"needsTools\":true,\"reason\":\"Need a tool.\",\"toolCalls\":[{\"name\":\"delete_all\",\"path\":\".\"}]}\n```")
 	if !containsSubstring(errors, "name must be one of") {
@@ -1677,6 +1756,10 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 		}
 		requestedModel, _ := payload["model"].(string)
 		requestedModels = append(requestedModels, requestedModel)
+		options, _ := payload["options"].(map[string]any)
+		if options == nil || options["num_ctx"] != float64(defaultOllamaNumCtx) {
+			t.Fatalf("request options = %+v, want num_ctx %d on every call", payload["options"], defaultOllamaNumCtx)
+		}
 		if payload["stream"] == false {
 			if requestedModel != "harness-model" {
 				t.Fatalf("harness prep model = %q, want harness-model", requestedModel)
@@ -2379,6 +2462,7 @@ func TestHarnessCautionsFinalModelAfterRepeatedInvalidPlans(t *testing.T) {
 	prepCalls := 0
 	streamCalls := 0
 	var responseSystem string
+	var retryPrompt string
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Path != "/api/chat" {
 			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("not found"))}, nil
@@ -2390,6 +2474,11 @@ func TestHarnessCautionsFinalModelAfterRepeatedInvalidPlans(t *testing.T) {
 		}
 		if payload["stream"] == false {
 			prepCalls++
+			if prepCalls > 1 {
+				messages := payload["messages"].([]any)
+				lastMessage := messages[len(messages)-1].(map[string]any)
+				retryPrompt, _ = lastMessage["content"].(string)
+			}
 			body := "I should use the knowledged command to post this, but I cannot fit the full JSON plan before the output limit."
 			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(body) + `},"done":true,"done_reason":"length","eval_count":1024}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
 		}
@@ -2419,6 +2508,9 @@ func TestHarnessCautionsFinalModelAfterRepeatedInvalidPlans(t *testing.T) {
 	}
 	if !strings.Contains(responseSystem, "could not produce a valid executable tool plan") || !strings.Contains(responseSystem, "must not run commands") {
 		t.Fatalf("response system = %q, want invalid-plan caution brief", responseSystem)
+	}
+	if !strings.Contains(retryPrompt, "hit the output token limit") {
+		t.Fatalf("retry prompt = %q, want truncated-plan feedback", retryPrompt)
 	}
 	conversations, err := listConversations(config.Storage)
 	if err != nil {

@@ -14,6 +14,17 @@ import (
 const (
 	harnessChatMaxSteps    = 3
 	harnessChatMaxWallTime = 2 * time.Minute
+	harnessPlanNumPredict  = 1024
+)
+
+// Context budgeting works in characters with a rough chars-per-token estimate;
+// it only needs to be accurate enough to keep requests inside num_ctx so
+// Ollama never silently truncates from the front of the conversation.
+const (
+	contextCharsPerToken      = 4
+	minHistoryBudgetChars     = 2048
+	toolResultMessageMaxChars = 8 * 1024
+	contextOmittedMarker      = "[Earlier conversation was omitted to fit the model's context window.]"
 )
 
 const harnessInvalidPlanBrief = "The harness could not produce a valid executable tool plan, so no tools ran for the latest plan. The final response model cannot call tools or execute commands, so it must not run commands, paste commands as if executed, or claim any tool action succeeded. If the user asked for a tool action, report plainly that it could not be completed."
@@ -303,6 +314,69 @@ func (h *HarnessEngine) toolRegistry() HarnessToolRegistry {
 	return defaultHarnessToolRegistry(h.config)
 }
 
+func ollamaNumCtx(config AppConfig) int {
+	if config.Providers.Ollama.NumCtx > 0 {
+		return config.Providers.Ollama.NumCtx
+	}
+	return defaultOllamaNumCtx
+}
+
+func (h *HarnessEngine) numCtx() int {
+	return ollamaNumCtx(h.config)
+}
+
+// withNumCtx returns a copy of options with num_ctx set unless the caller
+// already chose one.
+func withNumCtx(options map[string]any, numCtx int) map[string]any {
+	merged := make(map[string]any, len(options)+1)
+	for key, value := range options {
+		merged[key] = value
+	}
+	if _, ok := merged["num_ctx"]; !ok {
+		merged["num_ctx"] = numCtx
+	}
+	return merged
+}
+
+// historyBudgetChars is the character budget left for conversation messages
+// after reserving room for the system prompt and the model's response.
+func historyBudgetChars(numCtx int, system string, reserveTokens int) int {
+	budget := numCtx*contextCharsPerToken - len(system) - reserveTokens*contextCharsPerToken
+	if budget < minHistoryBudgetChars {
+		budget = minHistoryBudgetChars
+	}
+	return budget
+}
+
+// truncateChatHistory drops the oldest messages until the rest fit the budget,
+// marking the cut so the model knows earlier turns are missing. The newest
+// message is always kept, even when it alone exceeds the budget.
+func truncateChatHistory(messages []ChatMessage, budgetChars int) []ChatMessage {
+	total := 0
+	for _, message := range messages {
+		total += len(message.Content)
+	}
+	if len(messages) == 0 || total <= budgetChars {
+		return messages
+	}
+	start := len(messages) - 1
+	used := len(messages[start].Content)
+	for start > 0 && used+len(messages[start-1].Content) <= budgetChars {
+		start--
+		used += len(messages[start].Content)
+	}
+	if start == 0 {
+		return messages
+	}
+	truncated := append([]ChatMessage{}, messages[start:]...)
+	truncated[0] = ChatMessage{
+		Role:    truncated[0].Role,
+		Content: contextOmittedMarker + "\n\n" + truncated[0].Content,
+		Images:  truncated[0].Images,
+	}
+	return truncated
+}
+
 func (h *HarnessEngine) selectSkillForTurn(ctx context.Context, req ChatRequest) (*HarnessSkillDecision, *LoadedSkill) {
 	index, err := loadSkillIndex(defaultSkillRoots())
 	if err != nil {
@@ -339,6 +413,7 @@ Select a skill only when its name or description clearly matches the user's requ
 		Options: map[string]any{
 			"temperature": 0,
 			"num_predict": 160,
+			"num_ctx":     h.numCtx(),
 		},
 	}
 	completion, err := h.app.ollamaClient(req.BaseURL).CompleteChat(ctx, selectionReq)
@@ -406,6 +481,8 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 	run.Skill = skillDecision
 	registry := h.toolRegistry()
 	system := h.plannerSystemPrompt(registry, req, loadedSkill)
+	numCtx := h.numCtx()
+	budget := historyBudgetChars(numCtx, system, harnessPlanNumPredict)
 	messages := append([]ChatMessage{}, req.Messages...)
 	deadline := time.Now().Add(harnessChatMaxWallTime)
 
@@ -415,11 +492,12 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 			BaseURL:  req.BaseURL,
 			Model:    req.Model,
 			System:   system,
-			Messages: messages,
+			Messages: truncateChatHistory(messages, budget),
 			Format:   harnessToolPlanSchema(registry),
 			Options: map[string]any{
 				"temperature": 0,
-				"num_predict": 1024,
+				"num_predict": harnessPlanNumPredict,
+				"num_ctx":     numCtx,
 			},
 		}
 		completion, err := h.app.ollamaClient(req.BaseURL).CompleteChat(ctx, prepReq)
@@ -427,6 +505,9 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 			return HarnessPreparedTurn{}, err
 		}
 		plan, validationErrors := parseHarnessToolPlanWithRegistry(completion.Content, registry)
+		if len(validationErrors) > 0 && strings.TrimSpace(completion.Reason) == "length" {
+			validationErrors = append([]string{"the plan response hit the output token limit and was cut off; return a shorter plan"}, validationErrors...)
+		}
 		round := HarnessToolRound{
 			Iteration:            iteration,
 			Brief:                strings.TrimSpace(plan.Brief),
@@ -545,10 +626,13 @@ func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel s
 	responseReq := req
 	responseReq.Model = responseModel
 	responseReq.System = appendHarnessPreparationToSystem(req.System, preparation)
+	messages := append([]ChatMessage{}, req.Messages...)
 	if len(preparation.ToolResults) > 0 {
-		messages := append([]ChatMessage{}, req.Messages...)
-		responseReq.Messages = append(messages, toolResultMessages(preparation.ToolResults)...)
+		messages = append(messages, toolResultMessages(preparation.ToolResults)...)
 	}
+	numCtx := h.numCtx()
+	responseReq.Messages = truncateChatHistory(messages, historyBudgetChars(numCtx, responseReq.System, numCtx/4))
+	responseReq.Options = withNumCtx(req.Options, numCtx)
 	return responseReq
 }
 
@@ -569,6 +653,8 @@ func appendHarnessPreparationToSystem(system string, preparation HarnessPrepared
 
 // toolResultMessages renders tool results as role:"tool" messages so models
 // receive observations in the message stream rather than the system prompt.
+// Oversized results are cut down for the message only; history and telemetry
+// keep the full result.
 func toolResultMessages(results []HarnessToolResult) []ChatMessage {
 	messages := make([]ChatMessage, 0, len(results))
 	for _, result := range results {
@@ -576,9 +662,31 @@ func toolResultMessages(results []HarnessToolResult) []ChatMessage {
 		if err != nil {
 			content = []byte(fmt.Sprintf(`{"name":%q,"status":"failed","error":"tool result could not be serialized"}`, result.Name))
 		}
+		if len(content) > toolResultMessageMaxChars {
+			content = compactToolResultMessage(result, string(content))
+		}
 		messages = append(messages, ChatMessage{Role: "tool", Content: string(content)})
 	}
 	return messages
+}
+
+func compactToolResultMessage(result HarnessToolResult, fullJSON string) []byte {
+	preview := fullJSON
+	if len(preview) > toolResultMessageMaxChars-512 {
+		preview = preview[:toolResultMessageMaxChars-512] + "..."
+	}
+	compact := HarnessToolResult{
+		Name:    result.Name,
+		Status:  result.Status,
+		Summary: strings.TrimSpace(result.Summary + " (result truncated to fit the model context)"),
+		Result:  preview,
+		Error:   result.Error,
+	}
+	content, err := json.Marshal(compact)
+	if err != nil {
+		return []byte(fmt.Sprintf(`{"name":%q,"status":%q,"summary":"tool result was too large to include"}`, result.Name, result.Status))
+	}
+	return content
 }
 
 func formatHarnessPreparationThinking(preparation HarnessPreparedTurn) string {

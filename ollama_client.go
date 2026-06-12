@@ -295,6 +295,15 @@ func (client OllamaClient) GenerateChatTitle(ctx context.Context, req ChatReques
 		compactString(userPrompt, 1600) +
 		"\n\nAssistant:\n" +
 		compactString(assistantContent, 1600)
+	options := map[string]any{
+		"temperature": 0,
+		"num_predict": 24,
+	}
+	for key, value := range req.Options {
+		if _, exists := options[key]; !exists {
+			options[key] = value
+		}
+	}
 	body := map[string]any{
 		"model":  req.Model,
 		"stream": false,
@@ -302,10 +311,7 @@ func (client OllamaClient) GenerateChatTitle(ctx context.Context, req ChatReques
 			{Role: "system", Content: "You create short, specific conversation titles."},
 			{Role: "user", Content: titlePrompt},
 		},
-		"options": map[string]any{
-			"temperature": 0,
-			"num_predict": 24,
-		},
+		"options": options,
 	}
 
 	resp, err := client.postJSON(ctx, "/api/chat", body)

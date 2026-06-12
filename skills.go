@@ -11,7 +11,10 @@ import (
 	"strings"
 )
 
-const skillIndexReadLimit = 32 * 1024
+const (
+	skillIndexReadLimit = 32 * 1024
+	skillBodyReadLimit  = 32 * 1024
+)
 
 type SkillIndexEntry struct {
 	Name        string `json:"name"`
@@ -138,11 +141,20 @@ func readSkillIndexEntry(path string) (SkillIndexEntry, error) {
 }
 
 func loadFullSkill(entry SkillIndexEntry) (LoadedSkill, error) {
-	data, err := os.ReadFile(entry.Path)
+	file, err := os.Open(entry.Path)
 	if err != nil {
 		return LoadedSkill{}, err
 	}
-	return LoadedSkill{SkillIndexEntry: entry, Body: string(data)}, nil
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, skillBodyReadLimit+1))
+	if err != nil {
+		return LoadedSkill{}, err
+	}
+	body := string(data)
+	if len(data) > skillBodyReadLimit {
+		body = string(data[:skillBodyReadLimit]) + "\n\n[SKILL.md truncated: the file exceeds Atelier's skill size limit.]"
+	}
+	return LoadedSkill{SkillIndexEntry: entry, Body: body}, nil
 }
 
 func parseSkillFrontmatter(content string) map[string]string {

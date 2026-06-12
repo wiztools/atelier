@@ -23,6 +23,11 @@ import (
 
 const defaultOllamaBaseURL = "http://localhost:11434"
 
+// defaultOllamaNumCtx is sent as num_ctx on every chat call so the context
+// window is explicit and identical across calls (Ollama reloads the model
+// when num_ctx changes between requests).
+const defaultOllamaNumCtx = 8192
+
 type App struct {
 	ctx            context.Context
 	client         *http.Client
@@ -75,6 +80,7 @@ type ConfigProviders struct {
 type ConfigOllama struct {
 	BaseURL string             `json:"baseURL"`
 	Models  ConfigOllamaModels `json:"models"`
+	NumCtx  int                `json:"numCtx"`
 }
 
 type ConfigOllamaModels struct {
@@ -914,6 +920,7 @@ func (a *App) generateConversationTitle(config AppConfig, req ChatRequest, assis
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
+	req.Options = withNumCtx(req.Options, ollamaNumCtx(config))
 	title, err := a.ollamaClient(req.BaseURL).GenerateChatTitle(ctx, req, userPrompt, assistantContent)
 	if err != nil {
 		return fallback
@@ -1061,6 +1068,7 @@ func defaultAppConfig() AppConfig {
 					Harness: "mistral-small3.1:latest",
 					Image:   "x/z-image-turbo:latest",
 				},
+				NumCtx: defaultOllamaNumCtx,
 			},
 		},
 		Prompts: ConfigPrompts{
@@ -1106,6 +1114,9 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	}
 	if strings.TrimSpace(config.Providers.Ollama.Models.Image) == "" {
 		config.Providers.Ollama.Models.Image = defaults.Providers.Ollama.Models.Image
+	}
+	if config.Providers.Ollama.NumCtx <= 0 {
+		config.Providers.Ollama.NumCtx = defaults.Providers.Ollama.NumCtx
 	}
 	if strings.TrimSpace(config.Prompts.System) == "" {
 		config.Prompts.System = defaults.Prompts.System

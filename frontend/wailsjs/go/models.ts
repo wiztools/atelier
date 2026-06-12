@@ -137,6 +137,7 @@ export namespace main {
 	export class ConfigOllama {
 	    baseURL: string;
 	    models: ConfigOllamaModels;
+	    numCtx: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigOllama(source);
@@ -146,6 +147,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.baseURL = source["baseURL"];
 	        this.models = this.convertValues(source["models"], ConfigOllamaModels);
+	        this.numCtx = source["numCtx"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

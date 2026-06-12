@@ -13,6 +13,7 @@ The first slice focuses on the gap in Ollama Desktop: image-generation models ca
 - Calls `/api/generate` for experimental image generation with width, height, and steps.
 - Normalizes generated base64 image responses into browser-renderable image data URLs.
 - Stores image-generation conversations and generated artifacts under `~/.atelier/history`.
+- Sends an explicit `num_ctx` (configurable, default 8192) on every model call and trims the oldest conversation history to fit the context window instead of letting Ollama truncate silently.
 
 ## Development
 
@@ -69,7 +70,8 @@ The file is versioned and hierarchical so more providers, model profiles, genera
         "chat": "mistral-small3.1:latest",
         "harness": "mistral-small3.1:latest",
         "image": "x/z-image-turbo:latest"
-      }
+      },
+      "numCtx": 8192
     }
   },
   "prompts": {
