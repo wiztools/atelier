@@ -122,7 +122,6 @@ export namespace main {
 	    chat: string;
 	    tools: string;
 	    image: string;
-	    harness?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigOllamaModels(source);
@@ -133,7 +132,6 @@ export namespace main {
 	        this.chat = source["chat"];
 	        this.tools = source["tools"];
 	        this.image = source["image"];
-	        this.harness = source["harness"];
 	    }
 	}
 	export class ConfigOllama {

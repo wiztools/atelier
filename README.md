@@ -55,7 +55,7 @@ Atelier stores local preferences in:
 ~/.atelier/config.json
 ```
 
-The file is versioned and hierarchical so more providers, model profiles, generation defaults, and UI preferences can be added without flattening the schema. The `models.tools` key (formerly `models.harness`) names the model that plans and executes tools; any existing config using the old `harness` key is migrated automatically on next save.
+The file is versioned and hierarchical so more providers, model profiles, generation defaults, and UI preferences can be added without flattening the schema. The `models.tools` key names the model that plans and executes tools.
 
 ```json
 {

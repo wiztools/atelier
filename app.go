@@ -87,9 +87,6 @@ type ConfigOllamaModels struct {
 	Chat  string `json:"chat"`
 	Tools string `json:"tools"`
 	Image string `json:"image"`
-	// LegacyHarness reads the pre-rename "harness" key from configs written
-	// by older builds. mergeAppConfig migrates it into Tools and clears it.
-	LegacyHarness string `json:"harness,omitempty"`
 }
 
 type ConfigPrompts struct {
@@ -1115,10 +1112,6 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	if strings.TrimSpace(config.Providers.Ollama.Models.Chat) == "" {
 		config.Providers.Ollama.Models.Chat = defaults.Providers.Ollama.Models.Chat
 	}
-	if strings.TrimSpace(config.Providers.Ollama.Models.Tools) == "" {
-		config.Providers.Ollama.Models.Tools = strings.TrimSpace(config.Providers.Ollama.Models.LegacyHarness)
-	}
-	config.Providers.Ollama.Models.LegacyHarness = ""
 	if strings.TrimSpace(config.Providers.Ollama.Models.Tools) == "" {
 		config.Providers.Ollama.Models.Tools = config.Providers.Ollama.Models.Chat
 	}

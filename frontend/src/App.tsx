@@ -526,7 +526,7 @@ function App() {
     const config = await GetConfig();
     const nextBaseURL = config.providers?.ollama?.baseURL || defaultBaseURL;
     const nextChatModel = config.providers?.ollama?.models?.chat ?? '';
-    const nextToolModel = config.providers?.ollama?.models?.tools || config.providers?.ollama?.models?.harness || nextChatModel;
+    const nextToolModel = config.providers?.ollama?.models?.tools || nextChatModel;
     const nextImageModel = config.providers?.ollama?.models?.image ?? '';
     const nextSystem = config.prompts?.system || 'You are Atelier, a precise local AI collaborator.';
     const nextImageWidth = config.generation?.image?.width || 768;
@@ -1783,12 +1783,9 @@ function harnessStepLane(step: HarnessStepView): {label: string; className: stri
     case 'triage':
       return {label: 'Chat model', className: 'harness-lane-chat'};
     case 'planning':
-    case 'preparing':
       return {label: 'Tool model', className: 'harness-lane-model'};
     case 'tool_call':
       return {label: 'Tools', className: 'harness-lane-tools'};
-    case 'final_tool_request':
-      return {label: 'Chat → tools', className: 'harness-lane-handoff'};
     case 'model_call':
     case 'streaming':
       return {label: 'Chat model', className: 'harness-lane-chat'};

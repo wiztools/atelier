@@ -168,35 +168,6 @@ func TestMergeAppConfigFillsDefaults(t *testing.T) {
 	}
 }
 
-func TestMergeAppConfigMigratesLegacyHarnessModelKey(t *testing.T) {
-	merged := mergeAppConfig(AppConfig{
-		Providers: ConfigProviders{Ollama: ConfigOllama{
-			Models: ConfigOllamaModels{Chat: "chat-model", LegacyHarness: "old-harness-model"},
-		}},
-	})
-	if merged.Providers.Ollama.Models.Tools != "old-harness-model" {
-		t.Fatalf("tools model = %q, want legacy harness value", merged.Providers.Ollama.Models.Tools)
-	}
-	if merged.Providers.Ollama.Models.LegacyHarness != "" {
-		t.Fatalf("legacy harness key = %q, want cleared after migration", merged.Providers.Ollama.Models.LegacyHarness)
-	}
-}
-
-func TestMergeAppConfigPrefersToolsOverLegacyHarness(t *testing.T) {
-	merged := mergeAppConfig(AppConfig{
-		Providers: ConfigProviders{Ollama: ConfigOllama{
-			Models: ConfigOllamaModels{
-				Chat:          "chat-model",
-				Tools:         "new-tools-model",
-				LegacyHarness: "old-harness-model",
-			},
-		}},
-	})
-	if merged.Providers.Ollama.Models.Tools != "new-tools-model" {
-		t.Fatalf("tools model = %q, want new-tools-model (tools takes priority over legacy harness)", merged.Providers.Ollama.Models.Tools)
-	}
-}
-
 func TestMergeAppConfigDefaultsToolsModelToChatModel(t *testing.T) {
 	merged := mergeAppConfig(AppConfig{
 		Providers: ConfigProviders{Ollama: ConfigOllama{
