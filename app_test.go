@@ -3125,6 +3125,33 @@ func TestGenerateImageSendsAttachedImages(t *testing.T) {
 	}
 }
 
+func TestDecodeTriageDecisionAcceptsBareAndFencedJSON(t *testing.T) {
+	decision, err := decodeTriageDecision("```json\n{\"needsTools\":true,\"toolTask\":\"Read status.txt\",\"reason\":\"workspace question\"}\n```")
+	if err != nil || !decision.NeedsTools || decision.ToolTask != "Read status.txt" {
+		t.Fatalf("decision = %+v, err = %v, want fenced JSON accepted", decision, err)
+	}
+	decision, err = decodeTriageDecision(`{"needsTools":false,"toolTask":"","reason":"general knowledge"}`)
+	if err != nil || decision.NeedsTools {
+		t.Fatalf("decision = %+v, err = %v, want bare JSON accepted", decision, err)
+	}
+	if _, err = decodeTriageDecision("I think tools are needed."); err == nil {
+		t.Fatal("prose triage response must be rejected")
+	}
+}
+
+func TestTriageSystemPromptListsToolsSkillsAndRoot(t *testing.T) {
+	registry := filesystemToolRegistry()
+	prompt := triageSystemPrompt(registry, []SkillIndexEntry{{Name: "cleanup", Description: "Tidy the workspace"}}, "/tmp/workspace")
+	for _, want := range []string{"read_file", "run_command", "cleanup: Tidy the workspace", "/tmp/workspace", "needsTools"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("triage prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if prompt2 := triageSystemPrompt(registry, nil, "/tmp/workspace"); !strings.Contains(prompt2, "(none)") {
+		t.Fatalf("triage prompt without skills should list (none):\n%s", prompt2)
+	}
+}
+
 func TestAppendToolEvidenceToSystemUsesFixedNotesOnly(t *testing.T) {
 	if got := appendToolEvidenceToSystem("base prompt", HarnessPreparedTurn{}); got != "base prompt" {
 		t.Fatalf("system with no tool evidence = %q, want untouched base prompt", got)
