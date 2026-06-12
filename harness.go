@@ -27,7 +27,12 @@ const (
 	contextOmittedMarker      = "[Earlier conversation was omitted to fit the model's context window.]"
 )
 
-const harnessInvalidPlanBrief = "The harness could not produce a valid executable tool plan, so no tools ran for the latest plan. The final response model cannot call tools or execute commands, so it must not run commands, paste commands as if executed, or claim any tool action succeeded. If the user asked for a tool action, report plainly that it could not be completed."
+// The chat model's system prompt only ever receives these code-authored notes.
+// Planner output (briefs, reasons) is telemetry and thinking, never prompt text,
+// so a weaker tool model can't cap what the chat model is allowed to know.
+const toolEvidenceSystemNote = "Atelier ran workspace tools for this turn. Their observations appear as tool messages at the end of the conversation. Treat them as evidence: report failures honestly and do not claim an action succeeded unless an observation shows it. You cannot call tools yourself; if the user asked for an action that no observation confirms, say plainly that it was not completed."
+
+const invalidPlanSystemNote = "Atelier could not produce a valid tool plan for this turn, so no tools ran. You cannot call tools or execute commands. Do not run commands, paste commands as if executed, or claim any tool action succeeded. If the user asked for a tool action, report plainly that it could not be completed."
 
 type HarnessEngine struct {
 	config AppConfig
@@ -529,9 +534,6 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 			run.Steps[planning].Summary = "plan failed validation; errors fed back to the planner"
 			run.completeStep(planning, "completed", completion.Reason, completion.EvalTokens, "")
 			prepared.Rounds = append(prepared.Rounds, round)
-			prepared.Brief = harnessInvalidPlanBrief
-			prepared.NeedsTools = false
-			prepared.Reason = "The harness plan was invalid, so the final response must not claim any tool action ran."
 			prepared.ToolCalls = nil
 			messages = append(messages,
 				ChatMessage{Role: "assistant", Content: completion.Content},
@@ -633,7 +635,7 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel string, preparation HarnessPreparedTurn) ChatRequest {
 	responseReq := req
 	responseReq.Model = responseModel
-	responseReq.System = appendHarnessPreparationToSystem(req.System, preparation)
+	responseReq.System = appendToolEvidenceToSystem(req.System, preparation)
 	messages := append([]ChatMessage{}, req.Messages...)
 	if len(preparation.ToolResults) > 0 {
 		messages = append(messages, toolResultMessages(preparation.ToolResults)...)
@@ -644,19 +646,20 @@ func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel s
 	return responseReq
 }
 
-func appendHarnessPreparationToSystem(system string, preparation HarnessPreparedTurn) string {
-	brief := strings.TrimSpace(preparation.Brief)
-	if brief == "" && len(preparation.ToolResults) == 0 {
+func appendToolEvidenceToSystem(system string, preparation HarnessPreparedTurn) string {
+	var note string
+	switch {
+	case len(preparation.PlanValidationErrors) > 0:
+		note = invalidPlanSystemNote
+	case len(preparation.ToolResults) > 0:
+		note = toolEvidenceSystemNote
+	default:
 		return system
 	}
-	handoff := "Atelier harness-prepared brief for this turn. Use it as private guidance for the final response; do not quote or mention it unless the user asks about process.\n\n" + brief
-	if len(preparation.ToolResults) > 0 {
-		handoff += "\n\nHarness tool observations for this turn appear as tool messages at the end of the conversation. Treat them as evidence: report failures honestly and do not claim an action succeeded unless an observation shows it. You cannot call tools yourself."
-	}
 	if strings.TrimSpace(system) == "" {
-		return handoff
+		return note
 	}
-	return strings.TrimSpace(system) + "\n\n" + handoff
+	return strings.TrimSpace(system) + "\n\n" + note
 }
 
 // toolResultMessages renders tool results as role:"tool" messages so models

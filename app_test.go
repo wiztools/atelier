@@ -2310,8 +2310,11 @@ func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
 			{Role: "user", Content: "What is the project status?"},
 		},
 	})
-	if !strings.Contains(responseSystem, "tool messages") {
-		t.Fatalf("response system handoff = %q, want pointer to tool observation messages", responseSystem)
+	if !strings.Contains(responseSystem, "observations appear as tool messages") {
+		t.Fatalf("response system handoff = %q, want tool evidence note", responseSystem)
+	}
+	if strings.Contains(responseSystem, "Use the status file to answer") {
+		t.Fatalf("response system contains planner brief: %q", responseSystem)
 	}
 	if strings.Contains(responseSystem, "Project status: green") {
 		t.Fatalf("response system embeds tool output: %q", responseSystem)
@@ -2546,8 +2549,11 @@ func TestHarnessCautionsFinalModelAfterRepeatedInvalidPlans(t *testing.T) {
 	if streamCalls != 1 {
 		t.Fatalf("streamCalls = %d, want final model called with caution brief", streamCalls)
 	}
-	if !strings.Contains(responseSystem, "could not produce a valid executable tool plan") || !strings.Contains(responseSystem, "must not run commands") {
-		t.Fatalf("response system = %q, want invalid-plan caution brief", responseSystem)
+	if !strings.Contains(responseSystem, "no tools ran") {
+		t.Fatalf("response system = %q, want invalid-plan note", responseSystem)
+	}
+	if responseSystem != invalidPlanSystemNote {
+		t.Fatalf("response system = %q, want only the invalid-plan note (no planner brief)", responseSystem)
 	}
 	if !strings.Contains(retryPrompt, "hit the output token limit") {
 		t.Fatalf("retry prompt = %q, want truncated-plan feedback", retryPrompt)
@@ -3116,5 +3122,25 @@ func TestGenerateImageSendsAttachedImages(t *testing.T) {
 		Images: []string{"source-one", "source-two"},
 	}); err != nil {
 		t.Fatalf("GenerateImage returned error: %v", err)
+	}
+}
+
+func TestAppendToolEvidenceToSystemUsesFixedNotesOnly(t *testing.T) {
+	if got := appendToolEvidenceToSystem("base prompt", HarnessPreparedTurn{Brief: "planner-authored brief"}); got != "base prompt" {
+		t.Fatalf("system with no tool evidence = %q, want untouched base prompt", got)
+	}
+	withResults := appendToolEvidenceToSystem("base prompt", HarnessPreparedTurn{
+		Brief:       "planner-authored brief",
+		ToolResults: []HarnessToolResult{{Name: "read_file", Status: "completed"}},
+	})
+	if !strings.Contains(withResults, toolEvidenceSystemNote) {
+		t.Fatalf("system = %q, want tool evidence note appended", withResults)
+	}
+	if strings.Contains(withResults, "planner-authored brief") {
+		t.Fatalf("system = %q, must not contain the planner's brief", withResults)
+	}
+	withInvalidPlan := appendToolEvidenceToSystem("", HarnessPreparedTurn{PlanValidationErrors: []string{"bad plan"}})
+	if withInvalidPlan != invalidPlanSystemNote {
+		t.Fatalf("system = %q, want only the invalid-plan note", withInvalidPlan)
 	}
 }
