@@ -3152,6 +3152,53 @@ func TestTriageSystemPromptListsToolsSkillsAndRoot(t *testing.T) {
 	}
 }
 
+func TestTriageChatTurnParsesDecision(t *testing.T) {
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var payload map[string]any
+		data, _ := io.ReadAll(req.Body)
+		_ = json.Unmarshal(data, &payload)
+		if payload["model"] != "chat-box-model" {
+			t.Fatalf("triage model = %v, want chat-box-model", payload["model"])
+		}
+		if payload["format"] == nil {
+			t.Fatal("triage request missing structured output format")
+		}
+		decision := `{"needsTools":true,"toolTask":"Read status.txt","reason":"workspace question"}`
+		body := `{"model":"chat-box-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+	})
+	engine := newHarnessEngine(defaultAppConfig(), app)
+	decision, completion := engine.triageChatTurn(context.Background(), ChatRequest{
+		BaseURL:  "http://ollama.test",
+		Messages: []ChatMessage{{Role: "user", Content: "What is the project status?"}},
+	}, "chat-box-model", nil)
+	if !decision.NeedsTools || decision.ToolTask != "Read status.txt" || decision.Error != "" {
+		t.Fatalf("decision = %+v, want parsed tool request", decision)
+	}
+	if completion.EvalTokens != 2 {
+		t.Fatalf("completion tokens = %d, want telemetry from provider", completion.EvalTokens)
+	}
+}
+
+func TestTriageChatTurnFailsSafeToToolPath(t *testing.T) {
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusInternalServerError, Status: "500 Internal Server Error", Body: io.NopCloser(strings.NewReader("boom")), Header: http.Header{}}, nil
+	})
+	engine := newHarnessEngine(defaultAppConfig(), app)
+	decision, _ := engine.triageChatTurn(context.Background(), ChatRequest{
+		BaseURL:  "http://ollama.test",
+		Messages: []ChatMessage{{Role: "user", Content: "anything"}},
+	}, "chat-box-model", nil)
+	if !decision.NeedsTools {
+		t.Fatal("triage failure must fail safe to the tool path (planner can still decline tools)")
+	}
+	if decision.Error == "" {
+		t.Fatal("triage failure must record the error for telemetry")
+	}
+}
+
 func TestAppendToolEvidenceToSystemUsesFixedNotesOnly(t *testing.T) {
 	if got := appendToolEvidenceToSystem("base prompt", HarnessPreparedTurn{}); got != "base prompt" {
 		t.Fatalf("system with no tool evidence = %q, want untouched base prompt", got)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,6 +39,35 @@ func decodeTriageDecision(content string) (HarnessTriageDecision, error) {
 		return HarnessTriageDecision{}, errors.New("no valid triage decision JSON found")
 	}
 	return decision, nil
+}
+
+// triageChatTurn asks the chat model whether the turn needs tools. Failures
+// fail safe to the tool path: the planner there can still conclude no tools
+// are needed, so a wrong fallback costs latency, never correctness.
+func (h *HarnessEngine) triageChatTurn(ctx context.Context, req ChatRequest, chatModel string, skillIndex []SkillIndexEntry) (HarnessTriageDecision, ChatCompletionResult) {
+	system := triageSystemPrompt(h.toolRegistry(), skillIndex, h.config.Tools.Filesystem.Root)
+	numCtx := h.numCtx()
+	triageReq := ChatRequest{
+		BaseURL:  req.BaseURL,
+		Model:    chatModel,
+		System:   system,
+		Messages: truncateChatHistory(req.Messages, historyBudgetChars(numCtx, system, triageNumPredict)),
+		Format:   triageResponseSchema(),
+		Options: map[string]any{
+			"temperature": 0,
+			"num_predict": triageNumPredict,
+			"num_ctx":     numCtx,
+		},
+	}
+	completion, err := h.app.ollamaClient(req.BaseURL).CompleteChat(ctx, triageReq)
+	if err != nil {
+		return HarnessTriageDecision{NeedsTools: true, Reason: "triage call failed; deferring to the tool model planner", Error: err.Error()}, ChatCompletionResult{}
+	}
+	decision, err := decodeTriageDecision(completion.Content)
+	if err != nil {
+		return HarnessTriageDecision{NeedsTools: true, Reason: "triage response was not valid JSON; deferring to the tool model planner", Error: err.Error()}, completion
+	}
+	return decision, completion
 }
 
 func triageSystemPrompt(registry HarnessToolRegistry, skillIndex []SkillIndexEntry, workspaceRoot string) string {

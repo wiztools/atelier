@@ -358,17 +358,18 @@ type HistoryContent struct {
 }
 
 type HarnessRun struct {
-	ID             string                `json:"id"`
-	Mode           string                `json:"mode"`
-	Status         string                `json:"status"`
-	StartedAt      string                `json:"startedAt"`
-	CompletedAt    string                `json:"completedAt,omitempty"`
-	DurationMS     int64                 `json:"durationMs,omitempty"`
-	RequestID      string                `json:"requestId,omitempty"`
-	ConversationID string                `json:"conversationId,omitempty"`
-	Loop           HarnessLoop           `json:"loop"`
-	Skill          *HarnessSkillDecision `json:"skill,omitempty"`
-	Steps          []HarnessStep         `json:"steps"`
+	ID             string                 `json:"id"`
+	Mode           string                 `json:"mode"`
+	Status         string                 `json:"status"`
+	StartedAt      string                 `json:"startedAt"`
+	CompletedAt    string                 `json:"completedAt,omitempty"`
+	DurationMS     int64                  `json:"durationMs,omitempty"`
+	RequestID      string                 `json:"requestId,omitempty"`
+	ConversationID string                 `json:"conversationId,omitempty"`
+	Loop           HarnessLoop            `json:"loop"`
+	Skill          *HarnessSkillDecision  `json:"skill,omitempty"`
+	Triage         *HarnessTriageDecision `json:"triage,omitempty"`
+	Steps          []HarnessStep          `json:"steps"`
 }
 
 type HarnessLoop struct {
