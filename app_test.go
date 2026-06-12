@@ -2547,7 +2547,7 @@ func TestHarnessCautionsFinalModelAfterRepeatedInvalidPlans(t *testing.T) {
 		t.Fatalf("prepCalls = %d, want validation feedback retries up to the step cap", prepCalls)
 	}
 	if streamCalls != 1 {
-		t.Fatalf("streamCalls = %d, want final model called with caution brief", streamCalls)
+		t.Fatalf("streamCalls = %d, want final model called once with the invalid-plan note", streamCalls)
 	}
 	if !strings.Contains(responseSystem, "no tools ran") {
 		t.Fatalf("response system = %q, want invalid-plan note", responseSystem)
@@ -3126,21 +3126,24 @@ func TestGenerateImageSendsAttachedImages(t *testing.T) {
 }
 
 func TestAppendToolEvidenceToSystemUsesFixedNotesOnly(t *testing.T) {
-	if got := appendToolEvidenceToSystem("base prompt", HarnessPreparedTurn{Brief: "planner-authored brief"}); got != "base prompt" {
+	if got := appendToolEvidenceToSystem("base prompt", HarnessPreparedTurn{}); got != "base prompt" {
 		t.Fatalf("system with no tool evidence = %q, want untouched base prompt", got)
 	}
 	withResults := appendToolEvidenceToSystem("base prompt", HarnessPreparedTurn{
-		Brief:       "planner-authored brief",
 		ToolResults: []HarnessToolResult{{Name: "read_file", Status: "completed"}},
 	})
 	if !strings.Contains(withResults, toolEvidenceSystemNote) {
 		t.Fatalf("system = %q, want tool evidence note appended", withResults)
 	}
-	if strings.Contains(withResults, "planner-authored brief") {
-		t.Fatalf("system = %q, must not contain the planner's brief", withResults)
-	}
 	withInvalidPlan := appendToolEvidenceToSystem("", HarnessPreparedTurn{PlanValidationErrors: []string{"bad plan"}})
 	if withInvalidPlan != invalidPlanSystemNote {
 		t.Fatalf("system = %q, want only the invalid-plan note", withInvalidPlan)
+	}
+	withBoth := appendToolEvidenceToSystem("base prompt", HarnessPreparedTurn{
+		ToolResults:          []HarnessToolResult{{Name: "read_file", Status: "completed"}},
+		PlanValidationErrors: []string{"bad plan"},
+	})
+	if !strings.Contains(withBoth, invalidPlanAfterToolsSystemNote) {
+		t.Fatalf("system = %q, want mixed tools-ran-but-plan-invalid note", withBoth)
 	}
 }

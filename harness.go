@@ -34,15 +34,14 @@ const toolEvidenceSystemNote = "Atelier ran workspace tools for this turn. Their
 
 const invalidPlanSystemNote = "Atelier could not produce a valid tool plan for this turn, so no tools ran. You cannot call tools or execute commands. Do not run commands, paste commands as if executed, or claim any tool action succeeded. If the user asked for a tool action, report plainly that it could not be completed."
 
+const invalidPlanAfterToolsSystemNote = "Atelier ran workspace tools for this turn, but its latest tool plan was invalid, so the most recently requested action did not run. Tool observations appear as tool messages at the end of the conversation. Treat them as evidence: report failures honestly and do not claim an action succeeded unless an observation shows it. You cannot call tools yourself; if the user asked for an action that no observation confirms, say plainly that it was not completed."
+
 type HarnessEngine struct {
 	config AppConfig
 	app    *App
 }
 
 type HarnessPreparedTurn struct {
-	Brief                string
-	NeedsTools           bool
-	Reason               string
 	Completion           ChatCompletionResult
 	SkillDecision        *HarnessSkillDecision
 	LoadedSkill          *LoadedSkill
@@ -543,9 +542,6 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 		}
 		run.completeStep(planning, "completed", completion.Reason, completion.EvalTokens, "")
 
-		prepared.Brief = strings.TrimSpace(plan.Brief)
-		prepared.NeedsTools = plan.NeedsTools
-		prepared.Reason = strings.TrimSpace(plan.Reason)
 		prepared.ToolCalls = plan.ToolCalls
 		if !plan.NeedsTools || len(plan.ToolCalls) == 0 {
 			prepared.Rounds = append(prepared.Rounds, round)
@@ -649,6 +645,8 @@ func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel s
 func appendToolEvidenceToSystem(system string, preparation HarnessPreparedTurn) string {
 	var note string
 	switch {
+	case len(preparation.PlanValidationErrors) > 0 && len(preparation.ToolResults) > 0:
+		note = invalidPlanAfterToolsSystemNote
 	case len(preparation.PlanValidationErrors) > 0:
 		note = invalidPlanSystemNote
 	case len(preparation.ToolResults) > 0:
