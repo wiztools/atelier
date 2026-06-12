@@ -851,12 +851,64 @@ func decodeAndValidateHarnessToolPlan(candidate string, registry HarnessToolRegi
 		}
 	}
 	if data, ok := raw["toolCalls"]; ok {
-		if err := json.Unmarshal(data, &plan.ToolCalls); err != nil {
-			errors = append(errors, "toolCalls must be an array of tool call objects")
-		}
+		errors = append(errors, decodeHarnessToolCalls(data, &plan.ToolCalls)...)
 	}
 	errors = append(errors, validateHarnessToolPlan(plan, registry)...)
 	return plan, errors
+}
+
+// decodeHarnessToolCalls reports per-element errors when toolCalls is a valid
+// array whose elements fail to decode, so the planner model learns which field
+// was wrong instead of a blanket "must be an array" message.
+func decodeHarnessToolCalls(data json.RawMessage, calls *[]HarnessToolCall) []string {
+	if err := json.Unmarshal(data, calls); err == nil {
+		return nil
+	}
+	var elements []json.RawMessage
+	if json.Unmarshal(data, &elements) != nil {
+		return []string{"toolCalls must be an array of tool call objects"}
+	}
+	var problems []string
+	// json fills the fields it can before reporting a type error, so
+	// partially-decoded calls stay in the plan and downstream validation
+	// keeps the original indexes.
+	decoded := make([]HarnessToolCall, len(elements))
+	for index, element := range elements {
+		if err := json.Unmarshal(element, &decoded[index]); err != nil {
+			problems = append(problems, describeHarnessToolCallDecodeError(index, err))
+		}
+	}
+	*calls = decoded
+	return problems
+}
+
+func describeHarnessToolCallDecodeError(index int, err error) string {
+	prefix := fmt.Sprintf("toolCalls[%d]", index)
+	var typeErr *json.UnmarshalTypeError
+	if !errors.As(err, &typeErr) || typeErr.Field == "" {
+		return prefix + " must be a tool call object"
+	}
+	message := fmt.Sprintf("%s.%s must be %s, got %s", prefix, typeErr.Field, friendlyJSONFieldType(typeErr.Type.String()), typeErr.Value)
+	if typeErr.Field == "args" && typeErr.Value == "object" {
+		message += "; tool parameters like path go directly on the call object, not nested under args"
+	}
+	return message
+}
+
+func friendlyJSONFieldType(goType string) string {
+	switch goType {
+	case "string":
+		return "a string"
+	case "bool":
+		return "a boolean"
+	case "int":
+		return "a number"
+	case "[]string":
+		return "an array of strings"
+	case "map[string]string":
+		return "an object with string values"
+	}
+	return "a " + goType + " value"
 }
 
 func validateHarnessPlanKeys(raw map[string]json.RawMessage) []string {

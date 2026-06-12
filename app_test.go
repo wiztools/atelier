@@ -1146,6 +1146,43 @@ func TestParseHarnessToolPlanRejectsInvalidToolName(t *testing.T) {
 	}
 }
 
+func TestParseHarnessToolPlanReportsPerElementDecodeErrors(t *testing.T) {
+	tests := []struct {
+		name      string
+		plan      string
+		wantError string
+	}{
+		{
+			name:      "args as object",
+			plan:      `{"brief":"Run it.","needsTools":true,"reason":"Need a command.","toolCalls":[{"name":"run_command","command":"ls","args":{"recursive":true}}]}`,
+			wantError: "toolCalls[0].args must be an array of strings",
+		},
+		{
+			name:      "params nested under args",
+			plan:      `{"brief":"List files.","needsTools":true,"reason":"Need a listing.","toolCalls":[{"name":"list_files","args":{"path":""}}]}`,
+			wantError: "tool parameters like path go directly on the call object, not nested under args",
+		},
+		{
+			name:      "element not an object",
+			plan:      `{"brief":"List files.","needsTools":true,"reason":"Need a listing.","toolCalls":["list_files"]}`,
+			wantError: "toolCalls[0] must be a tool call object",
+		},
+		{
+			name:      "toolCalls not an array",
+			plan:      `{"brief":"List files.","needsTools":true,"reason":"Need a listing.","toolCalls":"list_files"}`,
+			wantError: "toolCalls must be an array of tool call objects",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, errors := parseHarnessToolPlan(tt.plan)
+			if !containsSubstring(errors, tt.wantError) {
+				t.Fatalf("validation errors = %+v, want %q", errors, tt.wantError)
+			}
+		})
+	}
+}
+
 func TestParseHarnessToolPlanRejectsMissingRequiredFields(t *testing.T) {
 	_, errors := parseHarnessToolPlan("```json\n{\"brief\":\"Read it.\",\"needsTools\":true,\"reason\":\"Need file.\",\"toolCalls\":[{\"name\":\"read_file\"}]}\n```")
 	if !containsSubstring(errors, "path is required") {
