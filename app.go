@@ -164,6 +164,7 @@ type ChatRequest struct {
 	Messages       []ChatMessage  `json:"messages"`
 	Think          any            `json:"think,omitempty"`
 	Options        map[string]any `json:"options,omitempty"`
+	Format         any            `json:"format,omitempty"`
 }
 
 type ChatStreamStart struct {

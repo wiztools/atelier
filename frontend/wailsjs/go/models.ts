@@ -280,6 +280,7 @@ export namespace main {
 	    messages: ChatMessage[];
 	    think?: any;
 	    options?: Record<string, any>;
+	    format?: any;
 	
 	    static createFrom(source: any = {}) {
 	        return new ChatRequest(source);
@@ -296,6 +297,7 @@ export namespace main {
 	        this.messages = this.convertValues(source["messages"], ChatMessage);
 	        this.think = source["think"];
 	        this.options = source["options"];
+	        this.format = source["format"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

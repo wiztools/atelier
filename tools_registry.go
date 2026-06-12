@@ -212,12 +212,16 @@ func (r HarnessToolRegistry) Get(name string) (HarnessToolDefinition, bool) {
 	return definition, ok
 }
 
-func (r HarnessToolRegistry) NamesCSV() string {
+func (r HarnessToolRegistry) Names() []string {
 	names := make([]string, 0, len(r.definitions))
 	for _, definition := range r.definitions {
 		names = append(names, definition.Name)
 	}
-	return strings.Join(names, ", ")
+	return names
+}
+
+func (r HarnessToolRegistry) NamesCSV() string {
+	return strings.Join(r.Names(), ", ")
 }
 
 func (r HarnessToolRegistry) PromptCatalog() string {
