@@ -199,6 +199,9 @@ func (client OllamaClient) OpenChatStream(ctx context.Context, req ChatRequest) 
 	if req.Options != nil {
 		body["options"] = req.Options
 	}
+	if req.Format != nil {
+		body["format"] = req.Format
+	}
 	return client.postJSON(ctx, "/api/chat", body)
 }
 
@@ -216,6 +219,9 @@ func (client OllamaClient) CompleteChat(ctx context.Context, req ChatRequest) (C
 	}
 	if req.Options != nil {
 		body["options"] = req.Options
+	}
+	if req.Format != nil {
+		body["format"] = req.Format
 	}
 
 	resp, err := client.postJSON(ctx, "/api/chat", body)

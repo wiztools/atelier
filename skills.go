@@ -184,14 +184,24 @@ func findSkillByName(index []SkillIndexEntry, name string) (SkillIndexEntry, boo
 	return SkillIndexEntry{}, false
 }
 
-func decodeSkillSelectionPlan(content string) (skillSelectionPlan, error) {
-	for _, candidate := range harnessJSONCandidates(content) {
-		var plan skillSelectionPlan
-		if err := json.Unmarshal([]byte(candidate), &plan); err == nil {
-			return plan, nil
-		}
+func skillSelectionSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []string{"skillName", "reason"},
+		"properties": map[string]any{
+			"skillName": map[string]any{"type": "string"},
+			"reason":    map[string]any{"type": "string"},
+		},
 	}
-	return skillSelectionPlan{}, errors.New("no valid skill selection JSON found")
+}
+
+func decodeSkillSelectionPlan(content string) (skillSelectionPlan, error) {
+	var plan skillSelectionPlan
+	if err := json.Unmarshal([]byte(stripJSONFence(content)), &plan); err != nil {
+		return skillSelectionPlan{}, errors.New("no valid skill selection JSON found")
+	}
+	return plan, nil
 }
 
 func fileExists(path string) bool {
