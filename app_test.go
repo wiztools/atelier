@@ -1677,12 +1677,12 @@ func TestChatConversationLifecycle(t *testing.T) {
 		t.Fatalf("harness loop = %+v, want final single-iteration loop", loop)
 	}
 	steps, ok := harnessRun["steps"].([]any)
-	if !ok || len(steps) != 6 {
-		t.Fatalf("harness steps = %+v, want full lifecycle timeline", harnessRun["steps"])
+	if !ok || len(steps) != 1 {
+		t.Fatalf("harness steps = %+v, want single honest saved step for a turn without live telemetry", harnessRun["steps"])
 	}
-	evaluation := harnessStepByKind(t, steps, "evaluation")
-	if evaluation["decision"] != "final" {
-		t.Fatalf("evaluation step = %+v, want final evaluation", evaluation)
+	savedStep := harnessStepByKind(t, steps, "saved")
+	if savedStep["status"] != "completed" || savedStep["tokens"] != float64(12) || savedStep["model"] != "chat-model" {
+		t.Fatalf("saved step = %+v, want completed save metadata", savedStep)
 	}
 	if len(detail.Turns[0].Content) != 1 || detail.Turns[0].Content[0].Text != "Explain markdown tables" {
 		t.Fatalf("initial user content = %+v, want text prompt", detail.Turns[0].Content)
@@ -2712,10 +2712,29 @@ func TestHarnessCanRequestSecondToolRound(t *testing.T) {
 	if loop["iterations"] != float64(3) {
 		t.Fatalf("loop = %+v, want 3 iterations", loop)
 	}
-	toolStep := harnessStepByKind(t, harnessRun["steps"].([]any), "tool_call")
-	activities := toolStep["tools"].([]any)
-	if len(activities) != 2 {
-		t.Fatalf("tool activities = %+v, want list and read", activities)
+	var toolSteps []map[string]any
+	for _, raw := range harnessRun["steps"].([]any) {
+		step := raw.(map[string]any)
+		if step["kind"] == "tool_call" {
+			toolSteps = append(toolSteps, step)
+		}
+	}
+	if len(toolSteps) != 2 {
+		t.Fatalf("tool steps = %+v, want one step per tool round", toolSteps)
+	}
+	if toolSteps[0]["iteration"] != float64(1) || toolSteps[1]["iteration"] != float64(2) {
+		t.Fatalf("tool step iterations = %v and %v, want rounds 1 and 2", toolSteps[0]["iteration"], toolSteps[1]["iteration"])
+	}
+	firstActivities := toolSteps[0]["tools"].([]any)
+	secondActivities := toolSteps[1]["tools"].([]any)
+	if len(firstActivities) != 1 || len(secondActivities) != 1 {
+		t.Fatalf("tool activities per round = %d and %d, want one each", len(firstActivities), len(secondActivities))
+	}
+	if name, _ := firstActivities[0].(map[string]any)["name"].(string); name != "list_files" {
+		t.Fatalf("first round activity = %+v, want list_files", firstActivities[0])
+	}
+	if name, _ := secondActivities[0].(map[string]any)["name"].(string); name != "read_file" {
+		t.Fatalf("second round activity = %+v, want read_file", secondActivities[0])
 	}
 }
 
@@ -3001,7 +3020,7 @@ func TestHarnessStartChatTurnRecordsUserBeforeAssistant(t *testing.T) {
 		t.Fatalf("turns after start = %+v, want one user turn", detail.Turns)
 	}
 
-	run := newChatHarnessRun("chat-model", "stop", 2)
+	run := fallbackHarnessRun("chat-model", "stop", 2)
 	if err := engine.SaveAssistantTurn(conversationID, "Done later.", "", "chat-model", "stop", 2, run); err != nil {
 		t.Fatalf("SaveAssistantTurn returned error: %v", err)
 	}

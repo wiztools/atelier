@@ -1780,6 +1780,7 @@ function buildRunningHarnessRun(requestID: string, conversationID: string, harne
 
 function harnessStepLane(step: HarnessStepView): {label: string; className: string} {
   switch (step.kind) {
+    case 'planning':
     case 'preparing':
       return {label: 'Harness model', className: 'harness-lane-model'};
     case 'tool_call':

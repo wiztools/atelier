@@ -906,7 +906,7 @@ func (a *App) writeChatConversation(req ChatRequest, assistantContent, assistant
 	if strings.TrimSpace(req.ConversationID) == "" {
 		title = a.generateConversationTitle(config, req, assistantContent)
 	}
-	run := newChatHarnessRun(req.Model, reason, tokens)
+	run := fallbackHarnessRun(req.Model, reason, tokens)
 	return newHarnessEngine(config).SaveChatTurn(req, assistantContent, assistantThinking, model, reason, tokens, title, run)
 }
 
