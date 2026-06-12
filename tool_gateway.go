@@ -28,7 +28,7 @@ func newToolGateway(app *App, config AppConfig) ToolGateway {
 		tools:    newHarnessToolExecutionContext(config),
 	}
 	if app != nil {
-		gateway.permissionRequester = app.requestToolPermission
+		gateway.permissionRequester = app.toolPermission
 	}
 	return gateway
 }
@@ -40,7 +40,7 @@ func (g ToolGateway) Execute(ctx context.Context, req ToolExecutionRequest) Harn
 		name = strings.TrimSpace(call.Name)
 	}
 	if name == "" {
-		name = "run_command"
+		return HarnessToolResult{Status: "failed", Summary: "tool not recognized", Error: "tool name is required"}
 	}
 	call.Name = name
 
@@ -87,7 +87,8 @@ func (g ToolGateway) requiresUnlistedCommandPermission(call HarnessToolCall) boo
 
 func (g ToolGateway) requestPermission(ctx context.Context, req ToolExecutionRequest, definition HarnessToolDefinition, call HarnessToolCall) bool {
 	if g.permissionRequester == nil {
-		return true
+		// Nobody can approve: fail closed.
+		return false
 	}
 	event := ToolPermissionRequestEvent{}
 	if definition.Permission != nil {

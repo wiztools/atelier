@@ -24,18 +24,19 @@ import (
 const defaultOllamaBaseURL = "http://localhost:11434"
 
 type App struct {
-	ctx           context.Context
-	client        *http.Client
-	baseURL       string
-	configMu      sync.Mutex
-	streams       map[string]context.CancelFunc
-	streamsMu     sync.Mutex
-	permissions   map[string]chan bool
-	permissionsMu sync.Mutex
+	ctx            context.Context
+	client         *http.Client
+	baseURL        string
+	configMu       sync.Mutex
+	streams        map[string]context.CancelFunc
+	streamsMu      sync.Mutex
+	permissions    map[string]chan bool
+	permissionsMu  sync.Mutex
+	toolPermission func(context.Context, ToolPermissionRequestEvent) bool
 }
 
 func NewApp() *App {
-	return &App{
+	app := &App{
 		client: &http.Client{
 			Timeout: 10 * time.Minute,
 		},
@@ -43,6 +44,8 @@ func NewApp() *App {
 		streams:     map[string]context.CancelFunc{},
 		permissions: map[string]chan bool{},
 	}
+	app.toolPermission = app.requestToolPermission
+	return app
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -926,7 +929,8 @@ func (a *App) emitChatEvent(event ChatStreamEvent) {
 
 func (a *App) requestToolPermission(ctx context.Context, event ToolPermissionRequestEvent) bool {
 	if a.ctx == nil {
-		return true
+		// No UI is attached, so nobody can approve: fail closed.
+		return false
 	}
 	if strings.TrimSpace(event.ID) == "" {
 		event.ID = randomID("permission")

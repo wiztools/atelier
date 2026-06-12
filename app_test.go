@@ -707,6 +707,9 @@ func TestToolGatewayTreatsProcessExitAsCompletedCommandResult(t *testing.T) {
 			Root:            t.TempDir(),
 			AllowedCommands: []string{"false"},
 		}}}),
+		permissionRequester: func(context.Context, ToolPermissionRequestEvent) bool {
+			return true
+		},
 	}
 
 	result := gateway.Execute(context.Background(), ToolExecutionRequest{
@@ -725,6 +728,9 @@ func TestToolGatewayTreatsSpawnFailureAsFailedToolResult(t *testing.T) {
 			Root:            t.TempDir(),
 			AllowedCommands: []string{"atelier-command-that-does-not-exist"},
 		}}}),
+		permissionRequester: func(context.Context, ToolPermissionRequestEvent) bool {
+			return true
+		},
 	}
 
 	result := gateway.Execute(context.Background(), ToolExecutionRequest{
@@ -876,6 +882,49 @@ func TestToolGatewayExecutesToolFromSuppliedRegistry(t *testing.T) {
 	output, ok := result.Result.(ToolFileReadResult)
 	if !ok || output.Content != "hello from skill" {
 		t.Fatalf("skill output = %+v, want echoed content", result.Result)
+	}
+}
+
+func TestToolGatewayFailsClosedWithoutPermissionRequester(t *testing.T) {
+	root := t.TempDir()
+	gateway := ToolGateway{
+		registry: filesystemToolRegistry(),
+		tools:    newHarnessToolExecutionContext(AppConfig{Tools: ConfigTools{Filesystem: ConfigFilesystemTool{Root: root}}}),
+	}
+
+	result := gateway.Execute(context.Background(), ToolExecutionRequest{
+		Name: "write_file",
+		Call: HarnessToolCall{Name: "write_file", Path: "blocked.txt", Content: "nope"},
+	})
+	if result.Status != "denied" {
+		t.Fatalf("gateway result = %+v, want denied when no approver is wired", result)
+	}
+	if _, err := os.Stat(filepath.Join(root, "blocked.txt")); !os.IsNotExist(err) {
+		t.Fatalf("blocked write touched disk, stat err = %v", err)
+	}
+}
+
+func TestToolGatewayRejectsEmptyToolName(t *testing.T) {
+	gateway := ToolGateway{
+		registry: filesystemToolRegistry(),
+		tools:    newHarnessToolExecutionContext(AppConfig{Tools: ConfigTools{Filesystem: ConfigFilesystemTool{Root: t.TempDir()}}}),
+		permissionRequester: func(context.Context, ToolPermissionRequestEvent) bool {
+			return true
+		},
+	}
+
+	result := gateway.Execute(context.Background(), ToolExecutionRequest{
+		Call: HarnessToolCall{Command: "rm", Args: []string{"-rf", "."}},
+	})
+	if result.Status != "failed" || result.Error != "tool name is required" {
+		t.Fatalf("gateway result = %+v, want failed empty tool name", result)
+	}
+}
+
+func TestRequestToolPermissionFailsClosedWithoutUI(t *testing.T) {
+	app := NewApp()
+	if app.requestToolPermission(context.Background(), ToolPermissionRequestEvent{Summary: "Run command"}) {
+		t.Fatal("requestToolPermission approved without an attached UI, want fail closed")
 	}
 }
 
@@ -1863,6 +1912,11 @@ func TestHarnessExecutesSkillCommandInsteadOfDelegatingToFinalModel(t *testing.T
 	}
 
 	app := NewApp()
+	var approvedCommands [][]string
+	app.toolPermission = func(_ context.Context, event ToolPermissionRequestEvent) bool {
+		approvedCommands = append(approvedCommands, event.Command)
+		return true
+	}
 	prepCalls := 0
 	var responseSystem string
 	var repairPrompt string
@@ -1915,6 +1969,9 @@ func TestHarnessExecutesSkillCommandInsteadOfDelegatingToFinalModel(t *testing.T
 	}
 	if !strings.Contains(string(commandArgs), "post\n--content\nBlue can indicate clear shallow water.") {
 		t.Fatalf("command args = %q, want post with previous assistant content", string(commandArgs))
+	}
+	if len(approvedCommands) != 1 || approvedCommands[0][0] != "notesctl" {
+		t.Fatalf("approved commands = %+v, want one notesctl permission request", approvedCommands)
 	}
 	if prepCalls != 3 {
 		t.Fatalf("prepCalls = %d, want invalid plan, corrected plan, and closing round", prepCalls)
@@ -1978,6 +2035,9 @@ func TestHarnessModelPlansKnowledgedPost(t *testing.T) {
 	}
 
 	app := NewApp()
+	app.toolPermission = func(context.Context, ToolPermissionRequestEvent) bool {
+		return true
+	}
 	prepCalls := 0
 	var prepSystem string
 	var nonStreamPrompts []string
