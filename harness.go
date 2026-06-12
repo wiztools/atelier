@@ -151,7 +151,11 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		var completion ChatCompletionResult
 		decision, completion = h.triageChatTurn(ctx, req, chatModel, skillIndex)
 		run.Steps[triage].Decision = triageDecisionLabel(decision)
-		run.completeStep(triage, "completed", completion.Reason, completion.EvalTokens, decision.Error)
+		status := "completed"
+		if decision.Error != "" {
+			status = "failed"
+		}
+		run.completeStep(triage, status, completion.Reason, completion.EvalTokens, decision.Error)
 	}
 	run.Triage = &decision
 
@@ -1084,7 +1088,7 @@ func newHarnessRun(requestID, conversationID string) HarnessRun {
 		Loop: HarnessLoop{
 			MaxSteps:      harnessChatMaxSteps,
 			MaxWallTimeMS: harnessChatMaxWallTime.Milliseconds(),
-			Iterations:    1,
+			Iterations:    0,
 		},
 	}
 }

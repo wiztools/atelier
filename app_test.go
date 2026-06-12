@@ -1803,6 +1803,7 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 		if requestedModel == "harness-model" {
 			t.Fatalf("tool model should never run on the direct-answer path, got request for %q", requestedModel)
 		}
+		const wantSystem = "You are Atelier, a precise local AI collaborator."
 		if payload["stream"] == false {
 			if requestedModel != "chat-box-model" {
 				t.Fatalf("triage model = %q, want chat-box-model", requestedModel)
@@ -1822,6 +1823,16 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 		if requestedModel != "chat-box-model" {
 			t.Fatalf("response stream model = %q, want chat-box-model", requestedModel)
 		}
+		// Assert the direct path leaves the system prompt untouched: the Ollama
+		// client prepends req.System as messages[0] with role "system".
+		msgs, _ := payload["messages"].([]any)
+		if len(msgs) == 0 {
+			t.Fatalf("streaming call messages is empty, want at least a system message")
+		}
+		firstMsg, _ := msgs[0].(map[string]any)
+		if firstMsg["role"] != "system" || firstMsg["content"] != wantSystem {
+			t.Fatalf("streaming call messages[0] = %+v, want role=system content=%q", firstMsg, wantSystem)
+		}
 		body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"Hello from selected chat model.","thinking":"Final model thought."},"done":false}`) +
 			fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
 		return &http.Response{
@@ -1834,6 +1845,7 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 	app.runChatStream(context.Background(), "request-1", ChatRequest{
 		BaseURL: "http://ollama.test",
 		Model:   "chat-box-model",
+		System:  "You are Atelier, a precise local AI collaborator.",
 		Messages: []ChatMessage{
 			{Role: "user", Content: "Say hello"},
 		},
@@ -1872,6 +1884,13 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 	triage, ok := harnessRun["triage"].(map[string]any)
 	if !ok || triage["needsTools"] != false {
 		t.Fatalf("harness run triage = %+v, want needsTools false", harnessRun["triage"])
+	}
+	loop, ok := harnessRun["loop"].(map[string]any)
+	if !ok {
+		t.Fatalf("harness run missing loop metadata: %+v", harnessRun)
+	}
+	if loop["iterations"] != float64(0) {
+		t.Fatalf("harness loop iterations = %v, want 0 on direct-answer path (tool planner never ran)", loop["iterations"])
 	}
 	steps, ok := harnessRun["steps"].([]any)
 	if !ok || len(steps) != 6 {
@@ -1986,6 +2005,14 @@ func TestTriageFailureStillRunsToolPlannerAndAnswers(t *testing.T) {
 	}
 	if triage["needsTools"] != true {
 		t.Fatalf("triage needsTools = %v, want fail-safe to the tool path", triage["needsTools"])
+	}
+	steps, ok := harnessRun["steps"].([]any)
+	if !ok {
+		t.Fatalf("harness run missing steps: %+v", harnessRun)
+	}
+	triageStep := harnessStepByKind(t, steps, "triage")
+	if triageStep["status"] != "failed" {
+		t.Fatalf("triage step status = %q, want failed when triage errored", triageStep["status"])
 	}
 }
 
