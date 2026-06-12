@@ -11,7 +11,8 @@ The first slice focuses on the gap in Ollama Desktop: image-generation models ca
 - Streams chat from `/api/chat` into the UI through Wails runtime events.
 - Sends base64 image attachments for vision-capable chat models.
 - Calls `/api/generate` for experimental image generation with width, height, and steps.
-- Exposes image generation to chat as a harness `generate_image` tool (registered only when an image model is configured), so the planner model decides when a turn needs an image instead of keyword matching.
+- Exposes image generation to chat as a `generate_image` tool (registered only when an image model is configured); the tool model plans and executes the image call when needed, so the decision is made by reasoning rather than keyword matching.
+- Chat-model-first turns: the chat model answers directly when no workspace evidence is needed; the tool model plans and executes tools only when the chat model's triage (or an explicitly named skill) asks for them.
 - Normalizes generated base64 image responses into browser-renderable image data URLs.
 - Stores image-generation conversations and generated artifacts under `~/.atelier/history`.
 - Sends an explicit `num_ctx` (configurable, default 8192) on every model call and trims the oldest conversation history to fit the context window instead of letting Ollama truncate silently.
@@ -54,7 +55,7 @@ Atelier stores local preferences in:
 ~/.atelier/config.json
 ```
 
-The file is versioned and hierarchical so more providers, model profiles, generation defaults, and UI preferences can be added without flattening the schema:
+The file is versioned and hierarchical so more providers, model profiles, generation defaults, and UI preferences can be added without flattening the schema. The `models.tools` key (formerly `models.harness`) names the model that plans and executes tools; any existing config using the old `harness` key is migrated automatically on next save.
 
 ```json
 {
@@ -69,7 +70,7 @@ The file is versioned and hierarchical so more providers, model profiles, genera
       "baseURL": "http://localhost:11434",
       "models": {
         "chat": "mistral-small3.1:latest",
-        "harness": "mistral-small3.1:latest",
+        "tools": "mistral-small3.1:latest",
         "image": "x/z-image-turbo:latest"
       },
       "numCtx": 8192
