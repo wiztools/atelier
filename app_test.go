@@ -1800,15 +1800,18 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 		if options == nil || options["num_ctx"] != float64(defaultOllamaNumCtx) {
 			t.Fatalf("request options = %+v, want num_ctx %d on every call", payload["options"], defaultOllamaNumCtx)
 		}
+		if requestedModel == "harness-model" {
+			t.Fatalf("tool model should never run on the direct-answer path, got request for %q", requestedModel)
+		}
 		if payload["stream"] == false {
-			if requestedModel != "harness-model" {
-				t.Fatalf("harness prep model = %q, want harness-model", requestedModel)
+			if requestedModel != "chat-box-model" {
+				t.Fatalf("triage model = %q, want chat-box-model", requestedModel)
 			}
 			if payload["format"] == nil {
-				t.Fatal("harness prep request missing structured output format")
+				t.Fatal("triage request missing structured output format")
 			}
-			plan := `{"brief":"Answer directly and warmly.","needsTools":false,"reason":"No workspace evidence is needed.","toolCalls":[]}`
-			body := `{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(plan) + `},"done":true,"done_reason":"stop","eval_count":2}`
+			decision := `{"needsTools":false,"toolTask":"","reason":"General knowledge answer."}`
+			body := `{"model":"chat-box-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Status:     "200 OK",
@@ -1835,8 +1838,8 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 			{Role: "user", Content: "Say hello"},
 		},
 	})
-	if strings.Join(requestedModels, ",") != "harness-model,chat-box-model" {
-		t.Fatalf("provider request models = %v, want harness then selected chat model", requestedModels)
+	if strings.Join(requestedModels, ",") != "chat-box-model,chat-box-model" {
+		t.Fatalf("provider request models = %v, want triage then chat model stream", requestedModels)
 	}
 
 	conversations, err := listConversations(config.Storage)
@@ -1853,29 +1856,136 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 	if got := detail.Turns[1].Content[0].Text; got != "Hello from selected chat model." {
 		t.Fatalf("assistant content = %q, want streamed content", got)
 	}
-	if got := detail.Turns[0].Request["model"]; got != "harness-model" {
-		t.Fatalf("user turn request model = %q, want harness-model", got)
-	}
-	if got := detail.Turns[0].Request["selectedModel"]; got != "chat-box-model" {
-		t.Fatalf("user turn selected model = %q, want chat-box-model", got)
+	if got := detail.Turns[0].Request["model"]; got != "chat-box-model" {
+		t.Fatalf("user turn request model = %q, want chat-box-model", got)
 	}
 	if got := detail.Turns[1].Model; got != "chat-box-model" {
 		t.Fatalf("assistant turn model = %q, want chat-box-model", got)
 	}
-	if thinking := historyTextForTest(detail.Turns[1].Content, "thinking"); !strings.Contains(thinking, "Harness preparation") || !strings.Contains(thinking, "Final model thought.") {
-		t.Fatalf("assistant thinking = %q, want harness prep and final model thinking", thinking)
+	if thinking := historyTextForTest(detail.Turns[1].Content, "thinking"); !strings.Contains(thinking, "Final model thought.") || strings.Contains(thinking, "Harness preparation") {
+		t.Fatalf("assistant thinking = %q, want final model thinking and no harness prep", thinking)
 	}
 	harnessRun, ok := detail.Turns[1].ProviderResponse["harnessRun"].(map[string]any)
 	if !ok {
 		t.Fatalf("assistant provider response missing harness run: %+v", detail.Turns[1].ProviderResponse)
 	}
+	triage, ok := harnessRun["triage"].(map[string]any)
+	if !ok || triage["needsTools"] != false {
+		t.Fatalf("harness run triage = %+v, want needsTools false", harnessRun["triage"])
+	}
 	steps, ok := harnessRun["steps"].([]any)
 	if !ok || len(steps) != 6 {
 		t.Fatalf("harness steps = %+v, want full lifecycle timeline", harnessRun["steps"])
 	}
+	triageStep := harnessStepByKind(t, steps, "triage")
+	if triageStep["status"] != "completed" || triageStep["model"] != "chat-box-model" {
+		t.Fatalf("triage step = %+v, want completed triage on chat model", triageStep)
+	}
 	streaming := harnessStepByKind(t, steps, "streaming")
 	if streaming["status"] != "completed" || streaming["tokens"] != float64(3) {
 		t.Fatalf("streaming step = %+v, want completed streaming metadata", streaming)
+	}
+}
+
+func TestTriageFailureStillRunsToolPlannerAndAnswers(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Chat = "chat-box-model"
+	config.Providers.Ollama.Models.Tools = "harness-model"
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	var requestedModels []string
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/chat" {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Status:     "404 Not Found",
+				Body:       io.NopCloser(strings.NewReader("not found")),
+				Header:     http.Header{},
+			}, nil
+		}
+		var payload map[string]any
+		data, _ := io.ReadAll(req.Body)
+		if err := json.Unmarshal(data, &payload); err != nil {
+			t.Fatalf("provider request body is not JSON: %v", err)
+		}
+		requestedModel, _ := payload["model"].(string)
+		requestedModels = append(requestedModels, requestedModel)
+		if payload["stream"] == false {
+			if requestedModel == "chat-box-model" {
+				return &http.Response{
+					StatusCode: http.StatusInternalServerError,
+					Status:     "500 Internal Server Error",
+					Body:       io.NopCloser(strings.NewReader(`{"error":"triage model unavailable"}`)),
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+				}, nil
+			}
+			plan := `{"brief":"Answer directly.","needsTools":false,"reason":"No tools needed.","toolCalls":[]}`
+			body := `{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(plan) + `},"done":true,"done_reason":"stop","eval_count":2}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+			}, nil
+		}
+		body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"Answer despite triage failure."},"done":false}`) +
+			fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{"Content-Type": []string{"application/x-ndjson"}},
+		}, nil
+	})
+
+	app.runChatStream(context.Background(), "request-triage-fail", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "What can you do?"},
+		},
+	})
+
+	if strings.Join(requestedModels, ",") != "chat-box-model,harness-model,chat-box-model" {
+		t.Fatalf("provider request models = %v, want triage, planner, then chat stream", requestedModels)
+	}
+
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	if got := detail.Turns[1].Content[0].Text; got != "Answer despite triage failure." {
+		t.Fatalf("assistant content = %q, want streamed answer after fail-safe", got)
+	}
+	harnessRun, ok := detail.Turns[1].ProviderResponse["harnessRun"].(map[string]any)
+	if !ok {
+		t.Fatalf("assistant provider response missing harness run: %+v", detail.Turns[1].ProviderResponse)
+	}
+	triage, ok := harnessRun["triage"].(map[string]any)
+	if !ok {
+		t.Fatalf("harness run missing triage: %+v", harnessRun["triage"])
+	}
+	if errText, _ := triage["error"].(string); strings.TrimSpace(errText) == "" {
+		t.Fatalf("triage error = %q, want recorded triage failure", errText)
+	}
+	if triage["needsTools"] != true {
+		t.Fatalf("triage needsTools = %v, want fail-safe to the tool path", triage["needsTools"])
 	}
 }
 
@@ -1926,17 +2036,14 @@ func TestHarnessSelectsSkillLoadsBodyAndPersistsMetadata(t *testing.T) {
 		requestedModel, _ := payload["model"].(string)
 		requestedModels = append(requestedModels, requestedModel)
 		if payload["stream"] == false {
+			if requestedModel != "harness-model" {
+				t.Fatalf("explicit skill turn should skip triage; got non-stream call for %q", requestedModel)
+			}
 			messages, _ := payload["messages"].([]any)
 			lastMessage := messages[len(messages)-1].(map[string]any)
 			content, _ := lastMessage["content"].(string)
 			if strings.Contains(content, "Skill index:") {
-				body := "```json\n{\"skillName\":\"cleanup\",\"reason\":\"The user explicitly asked for cleanup guidance.\"}\n```"
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Status:     "200 OK",
-					Body:       io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(body) + `},"done":true,"done_reason":"stop","eval_count":2}`)),
-					Header:     http.Header{"Content-Type": []string{"application/json"}},
-				}, nil
+				t.Fatal("explicit skill match should skip the LLM skill selector")
 			}
 			firstMessage := messages[0].(map[string]any)
 			prepSystem, _ = firstMessage["content"].(string)
@@ -1966,7 +2073,7 @@ func TestHarnessSelectsSkillLoadsBodyAndPersistsMetadata(t *testing.T) {
 		},
 	})
 	if strings.Join(requestedModels, ",") != "harness-model,chat-box-model" {
-		t.Fatalf("provider request models = %v, want deterministic skill match, harness prep, final model", requestedModels)
+		t.Fatalf("provider request models = %v, want harness prep, final model", requestedModels)
 	}
 	if !strings.Contains(prepSystem, "SKILL BODY UNIQUE") {
 		t.Fatalf("prep system = %q, want selected SKILL.md body", prepSystem)
@@ -1991,6 +2098,10 @@ func TestHarnessSelectsSkillLoadsBodyAndPersistsMetadata(t *testing.T) {
 	runSkill := harnessRun["skill"].(map[string]any)
 	if runSkill["name"] != "cleanup" {
 		t.Fatalf("harness skill metadata = %+v, want cleanup", runSkill)
+	}
+	triage, ok := harnessRun["triage"].(map[string]any)
+	if !ok || triage["needsTools"] != true || triage["reason"] != "user explicitly referenced a skill" {
+		t.Fatalf("harness run triage = %+v, want explicit-skill reason with needsTools true", harnessRun["triage"])
 	}
 }
 
@@ -2053,7 +2164,11 @@ func TestHarnessExecutesSkillCommandInsteadOfDelegatingToFinalModel(t *testing.T
 		if err := json.Unmarshal(data, &payload); err != nil {
 			t.Fatalf("provider request body is not JSON: %v", err)
 		}
+		requestedModel, _ := payload["model"].(string)
 		if payload["stream"] == false {
+			if requestedModel != "harness-model" {
+				t.Fatalf("explicit skill turn should skip triage; got non-stream call for %q", requestedModel)
+			}
 			prepCalls++
 			if prepCalls == 1 {
 				body := "The user wants to store the previous answer using the selected skill: notesctl post --content \"...\" --wait."
@@ -2115,6 +2230,20 @@ func TestHarnessExecutesSkillCommandInsteadOfDelegatingToFinalModel(t *testing.T
 	if content, _ := lastStreamMessage["content"].(string); !strings.Contains(content, "stored/path.md") {
 		t.Fatalf("tool observation = %q, want command output", content)
 	}
+
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	harnessRun := detail.Turns[len(detail.Turns)-1].ProviderResponse["harnessRun"].(map[string]any)
+	triage, ok := harnessRun["triage"].(map[string]any)
+	if !ok || triage["needsTools"] != true || triage["reason"] != "user explicitly referenced a skill" {
+		t.Fatalf("harness run triage = %+v, want explicit-skill reason with needsTools true", harnessRun["triage"])
+	}
 }
 
 func TestHarnessModelPlansKnowledgedPost(t *testing.T) {
@@ -2174,7 +2303,11 @@ func TestHarnessModelPlansKnowledgedPost(t *testing.T) {
 		if err := json.Unmarshal(data, &payload); err != nil {
 			t.Fatalf("provider request body is not JSON: %v", err)
 		}
+		requestedModel, _ := payload["model"].(string)
 		if payload["stream"] == false {
+			if requestedModel != "harness-model" {
+				t.Fatalf("explicit skill turn should skip triage; got non-stream call for %q", requestedModel)
+			}
 			prepCalls++
 			messages := payload["messages"].([]any)
 			lastMessage := messages[len(messages)-1].(map[string]any)
@@ -2226,6 +2359,20 @@ func TestHarnessModelPlansKnowledgedPost(t *testing.T) {
 	if !strings.Contains(nonStreamPrompts[1], "job id: 12345") {
 		t.Fatalf("second planning prompt = %q, want kc command output as tool observation", nonStreamPrompts[1])
 	}
+
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	harnessRun := detail.Turns[len(detail.Turns)-1].ProviderResponse["harnessRun"].(map[string]any)
+	triage, ok := harnessRun["triage"].(map[string]any)
+	if !ok || triage["needsTools"] != true || triage["reason"] != "user explicitly referenced a skill" {
+		t.Fatalf("harness run triage = %+v, want explicit-skill reason with needsTools true", harnessRun["triage"])
+	}
 }
 
 func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
@@ -2254,6 +2401,7 @@ func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
 
 	app := NewApp()
 	var responseSystem string
+	var plannerSystem string
 	var streamMessages []any
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -2270,8 +2418,25 @@ func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
 		if err := json.Unmarshal(data, &payload); err != nil {
 			t.Fatalf("provider request body is not JSON: %v", err)
 		}
+		requestedModel, _ := payload["model"].(string)
 		if payload["stream"] == false {
+			if requestedModel == "chat-box-model" {
+				decision := `{"needsTools":true,"toolTask":"Read status.txt to answer the status question.","reason":"The status lives in the workspace."}`
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Body:       io.NopCloser(strings.NewReader(`{"model":"chat-box-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)),
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+				}, nil
+			}
 			prepCalls++
+			if messages, ok := payload["messages"].([]any); ok && len(messages) > 0 {
+				if firstMessage, ok := messages[0].(map[string]any); ok {
+					if system, _ := firstMessage["content"].(string); system != "" {
+						plannerSystem = system
+					}
+				}
+			}
 			body := "{\"model\":\"harness-model\",\"message\":{\"role\":\"assistant\",\"content\":\"```json\\n{\\\"brief\\\":\\\"Use the status file to answer.\\\",\\\"needsTools\\\":true,\\\"reason\\\":\\\"The user asks for project status from the workspace.\\\",\\\"toolCalls\\\":[{\\\"name\\\":\\\"read_file\\\",\\\"path\\\":\\\"status.txt\\\"}]}\\n```\"},\"done\":true,\"done_reason\":\"stop\",\"eval_count\":2}"
 			if prepCalls > 1 {
 				body = "{\"model\":\"harness-model\",\"message\":{\"role\":\"assistant\",\"content\":\"```json\\n{\\\"brief\\\":\\\"Answer that the project status is green based on the status file.\\\",\\\"needsTools\\\":false,\\\"reason\\\":\\\"The status file provided enough context.\\\",\\\"toolCalls\\\":[]}\\n```\"},\"done\":true,\"done_reason\":\"stop\",\"eval_count\":2}"
@@ -2328,6 +2493,9 @@ func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
 	}
 	if prepCalls != 2 {
 		t.Fatalf("harness prep calls = %d, want planning round with tools then closing round", prepCalls)
+	}
+	if !strings.Contains(plannerSystem, "Read status.txt to answer the status question.") {
+		t.Fatalf("planner system = %q, want triage tool task seeded", plannerSystem)
 	}
 
 	conversations, err := listConversations(config.Storage)
@@ -2405,7 +2573,12 @@ func TestHarnessFeedsToolFailureBackToPlanner(t *testing.T) {
 		if err := json.Unmarshal(data, &payload); err != nil {
 			t.Fatalf("provider request body is not JSON: %v", err)
 		}
+		requestedModel, _ := payload["model"].(string)
 		if payload["stream"] == false {
+			if requestedModel == "chat-box-model" {
+				decision := `{"needsTools":true,"toolTask":"Read missing-status.txt and report its contents.","reason":"The answer depends on a workspace file."}`
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"chat-box-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+			}
 			prepCalls++
 			if prepCalls == 1 {
 				body := `{"brief":"Read the missing status file before answering.","needsTools":true,"reason":"The answer depends on the actual file content.","toolCalls":[{"name":"read_file","path":"missing-status.txt"}]}`
@@ -2615,7 +2788,12 @@ func TestBlankFinalModelProducesHarnessNotice(t *testing.T) {
 		if err := json.Unmarshal(data, &payload); err != nil {
 			t.Fatalf("provider request body is not JSON: %v", err)
 		}
+		requestedModel, _ := payload["model"].(string)
 		if payload["stream"] == false {
+			if requestedModel == "chat-box-model" {
+				decision := `{"needsTools":true,"toolTask":"Read status.txt and confirm the status.","reason":"Need the actual status file."}`
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"chat-box-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+			}
 			prepCalls++
 			if prepCalls == 1 {
 				body := "```json\n{\"brief\":\"Read status, then confirm the result.\",\"needsTools\":true,\"reason\":\"Need the actual status file.\",\"toolCalls\":[{\"name\":\"read_file\",\"path\":\"status.txt\"}]}\n```"
@@ -2691,7 +2869,12 @@ func TestHarnessCanRequestSecondToolRound(t *testing.T) {
 		if err := json.Unmarshal(data, &payload); err != nil {
 			t.Fatalf("provider request body is not JSON: %v", err)
 		}
+		requestedModel, _ := payload["model"].(string)
 		if payload["stream"] == false {
+			if requestedModel == "chat-box-model" {
+				decision := `{"needsTools":true,"toolTask":"Discover and read the workspace notes.","reason":"The user asked to use workspace notes."}`
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"chat-box-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+			}
 			prepCalls++
 			body := "{\"model\":\"harness-model\",\"message\":{\"role\":\"assistant\",\"content\":\"```json\\n{\\\"brief\\\":\\\"List workspace files first.\\\",\\\"needsTools\\\":true,\\\"reason\\\":\\\"Need to discover file names.\\\",\\\"toolCalls\\\":[{\\\"name\\\":\\\"list_files\\\",\\\"path\\\":\\\".\\\"}]}\\n```\"},\"done\":true,\"done_reason\":\"stop\",\"eval_count\":2}"
 			if prepCalls == 2 {
@@ -2829,7 +3012,12 @@ func TestHarnessGeneratesImageViaPlannedTool(t *testing.T) {
 			if err := json.Unmarshal(data, &payload); err != nil {
 				t.Fatalf("provider request body is not JSON: %v", err)
 			}
+			requestedModel, _ := payload["model"].(string)
 			if payload["stream"] == false {
+				if requestedModel == "chat-box-model" {
+					decision := `{"needsTools":true,"toolTask":"Generate an image of a small house.","reason":"The user asked for an image."}`
+					return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"chat-box-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+				}
 				prepCalls++
 				body := `{"brief":"Generate the requested image and confirm it briefly.","needsTools":true,"reason":"The user asked for an image, which requires the image tool.","toolCalls":[{"name":"generate_image","content":"a small house with a red roof"}]}`
 				if prepCalls > 1 {

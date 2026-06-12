@@ -114,7 +114,9 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	if h.app == nil {
 		return
 	}
-	req = h.chatRequestForHarness(req)
+	if strings.TrimSpace(req.Model) == "" {
+		req.Model = strings.TrimSpace(h.config.Providers.Ollama.Models.Chat)
+	}
 	conversationID := strings.TrimSpace(req.ConversationID)
 	if !req.turnStarted {
 		var err error
@@ -127,26 +129,61 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	req.ConversationID = conversationID
 	h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, ConversationID: conversationID})
 
-	responseModel := h.responseModelForChatSelection(req)
+	chatModel := h.chatModelForRequest(req)
+	toolModel := h.toolModelFor(chatModel)
 	run := newHarnessRun(requestID, conversationID)
 	queued := run.appendStep("queued", 1, "", "", "turn accepted by harness")
 	run.completeStep(queued, "completed", "", 0, "")
-	preparation, err := h.prepareChatTurnLoop(ctx, requestID, conversationID, req, &run)
-	if err != nil {
-		run.complete("failed", "harness_prepare_error")
-		h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
-		return
-	}
-	preparationThinking := formatHarnessPreparationThinking(preparation)
-	if preparationThinking != "" {
-		h.app.emitChatEvent(ChatStreamEvent{
-			RequestID:      requestID,
-			Thinking:       preparationThinking,
-			ConversationID: conversationID,
-		})
+
+	skillIndex, skillIndexErr := loadSkillIndex(defaultSkillRoots())
+	var explicitSkill *SkillIndexEntry
+	explicitReason := ""
+	if skillIndexErr == nil {
+		if entry, reason, ok := explicitSkillSelection(skillIndex, lastUserMessage(req.Messages).Content); ok {
+			explicitSkill = &entry
+			explicitReason = reason
+		}
 	}
 
-	responseReq := h.preparedResponseRequest(req, responseModel, preparation)
+	decision := HarnessTriageDecision{NeedsTools: true, Reason: "user explicitly referenced a skill"}
+	if explicitSkill == nil {
+		triage := run.appendStep("triage", 1, "ollama", chatModel, "chat model deciding whether tools are needed")
+		var completion ChatCompletionResult
+		decision, completion = h.triageChatTurn(ctx, req, chatModel, skillIndex)
+		run.Steps[triage].Decision = triageDecisionLabel(decision)
+		run.completeStep(triage, "completed", completion.Reason, completion.EvalTokens, decision.Error)
+	}
+	run.Triage = &decision
+
+	var preparation HarnessPreparedTurn
+	preparationThinking := ""
+	if decision.NeedsTools {
+		toolReq := req
+		toolReq.Model = toolModel
+		var err error
+		preparation, err = h.prepareChatTurnLoop(ctx, requestID, conversationID, toolReq, harnessTurnContext{
+			SkillIndex:     skillIndex,
+			SkillIndexErr:  skillIndexErr,
+			ExplicitSkill:  explicitSkill,
+			ExplicitReason: explicitReason,
+			ToolTask:       decision.ToolTask,
+		}, &run)
+		if err != nil {
+			run.complete("failed", "harness_prepare_error")
+			h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
+			return
+		}
+		preparationThinking = formatHarnessPreparationThinking(preparation)
+		if preparationThinking != "" {
+			h.app.emitChatEvent(ChatStreamEvent{
+				RequestID:      requestID,
+				Thinking:       preparationThinking,
+				ConversationID: conversationID,
+			})
+		}
+	}
+
+	responseReq := h.preparedResponseRequest(req, chatModel, preparation)
 	result, err := h.runFinalResponseAttempt(ctx, requestID, conversationID, responseReq, &run)
 	if err != nil {
 		run.complete("failed", result.Reason)
@@ -168,7 +205,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		}
 	}
 	if strings.TrimSpace(finalModel) == "" {
-		finalModel = responseModel
+		finalModel = chatModel
 	}
 	images, imageReq := imagesFromToolResults(preparation.ToolResults)
 	h.evaluateChatRun(&run, assistantContent, finalReason)
@@ -223,22 +260,27 @@ func imagesFromToolResults(results []HarnessToolResult) ([]string, ImageGenerate
 	return dedupeStrings(images), imageReq
 }
 
-func (h *HarnessEngine) chatRequestForHarness(req ChatRequest) ChatRequest {
-	if strings.TrimSpace(req.SelectedModel) == "" {
-		req.SelectedModel = strings.TrimSpace(req.Model)
-	}
-	model := strings.TrimSpace(h.config.Providers.Ollama.Models.Tools)
-	if model == "" {
-		model = strings.TrimSpace(req.Model)
-	}
-	req.Model = model
-	return req
-}
-
-func (h *HarnessEngine) responseModelForChatSelection(req ChatRequest) string {
+func (h *HarnessEngine) chatModelForRequest(req ChatRequest) string {
 	model := strings.TrimSpace(req.SelectedModel)
 	if model == "" {
 		model = strings.TrimSpace(req.Model)
+	}
+	return model
+}
+
+func triageDecisionLabel(decision HarnessTriageDecision) string {
+	if decision.NeedsTools {
+		return "tools"
+	}
+	return "direct_answer"
+}
+
+// toolModelFor resolves the planning model for the tool path; an unset config
+// falls back to the chat model so a one-model setup still works.
+func (h *HarnessEngine) toolModelFor(chatModel string) string {
+	model := strings.TrimSpace(h.config.Providers.Ollama.Models.Tools)
+	if model == "" {
+		return chatModel
 	}
 	return model
 }
@@ -385,17 +427,28 @@ func truncateChatHistory(messages []ChatMessage, budgetChars int) []ChatMessage 
 	return truncated
 }
 
-func (h *HarnessEngine) selectSkillForTurn(ctx context.Context, req ChatRequest) (*HarnessSkillDecision, *LoadedSkill) {
-	index, err := loadSkillIndex(defaultSkillRoots())
-	if err != nil {
-		return &HarnessSkillDecision{AvailableCount: 0, Error: err.Error()}, nil
+// harnessTurnContext carries what RunChatStream resolved before entering the
+// tool path: the skill index (loaded once per turn), any explicit skill the
+// user named, and the chat model's triage task for the planner.
+type harnessTurnContext struct {
+	SkillIndex     []SkillIndexEntry
+	SkillIndexErr  error
+	ExplicitSkill  *SkillIndexEntry
+	ExplicitReason string
+	ToolTask       string
+}
+
+func (h *HarnessEngine) selectSkillForTurn(ctx context.Context, req ChatRequest, turn harnessTurnContext) (*HarnessSkillDecision, *LoadedSkill) {
+	if turn.SkillIndexErr != nil {
+		return &HarnessSkillDecision{AvailableCount: 0, Error: turn.SkillIndexErr.Error()}, nil
 	}
+	index := turn.SkillIndex
 	if len(index) == 0 {
 		return nil, nil
 	}
 
-	if entry, reason, ok := explicitSkillSelection(index, lastUserMessage(req.Messages).Content); ok {
-		return h.loadSelectedSkill(entry, reason, len(index))
+	if turn.ExplicitSkill != nil {
+		return h.loadSelectedSkill(*turn.ExplicitSkill, turn.ExplicitReason, len(index))
 	}
 	if h.app == nil {
 		return &HarnessSkillDecision{AvailableCount: len(index), Reason: "skill index loaded; no app client available for selection"}, nil
@@ -484,11 +537,11 @@ func explicitSkillSelection(index []SkillIndexEntry, prompt string) (SkillIndexE
 // result — including failures and denials — is appended back as a tool message
 // for the next planning round. The loop is bounded by harnessChatMaxSteps
 // planning rounds and harnessChatMaxWallTime of wall time.
-func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conversationID string, req ChatRequest, run *HarnessRun) (HarnessPreparedTurn, error) {
-	skillDecision, loadedSkill := h.selectSkillForTurn(ctx, req)
+func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conversationID string, req ChatRequest, turn harnessTurnContext, run *HarnessRun) (HarnessPreparedTurn, error) {
+	skillDecision, loadedSkill := h.selectSkillForTurn(ctx, req, turn)
 	run.Skill = skillDecision
 	registry := h.toolRegistry()
-	system := h.plannerSystemPrompt(registry, req, loadedSkill)
+	system := h.plannerSystemPrompt(registry, req, loadedSkill, turn.ToolTask)
 	numCtx := h.numCtx()
 	budget := historyBudgetChars(numCtx, system, harnessPlanNumPredict)
 	messages := append([]ChatMessage{}, req.Messages...)
@@ -566,11 +619,11 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 	return prepared, nil
 }
 
-func (h *HarnessEngine) plannerSystemPrompt(registry HarnessToolRegistry, req ChatRequest, loadedSkill *LoadedSkill) string {
+func (h *HarnessEngine) plannerSystemPrompt(registry HarnessToolRegistry, req ChatRequest, loadedSkill *LoadedSkill, toolTask string) string {
 	system := strings.TrimSpace(fmt.Sprintf(`You are Atelier's private harness model. You gather evidence for the final model that will answer the user.
 Do not answer the user directly. Do not include hidden chain-of-thought. Respond only with a JSON tool plan matching the response schema:
 {
-  "brief": "concise guidance for the final model",
+  "brief": "concise guidance for the chat model",
   "needsTools": false,
   "reason": "why tools are or are not needed",
   "toolCalls": []
@@ -578,7 +631,7 @@ Do not answer the user directly. Do not include hidden chain-of-thought. Respond
 You plan in rounds, at most %d in total. Each round may request up to 3 tool calls. The harness executes them and returns each result, including failures, as a tool message; read the results and plan the next round.
 When you have enough evidence, or none is needed, set "needsTools" false with empty "toolCalls" and write the brief: intent, constraints, relevant evidence, response shape, and cautions for the final model.
 A failed or denied tool call is information, not a dead end: adapt the plan or tell the final model to report the failure plainly. Never claim an action succeeded unless a tool result shows it.
-The final response model cannot call tools or execute commands. If a user request or active SKILL.md requires a command, include it as a tool call now. Do not put instructions like "run this command" in the brief.
+The chat model that answers the user cannot call tools or execute commands. If a user request or active SKILL.md requires a command, include it as a tool call now. Do not put instructions like "run this command" in the brief.
 Allowed tool calls:
 %s
 When "needsTools" is false, "toolCalls" must be []. Prefer read-only calls unless the user clearly asks to modify files or run a specific write-capable command. Filesystem paths and command working directories are scoped to Atelier's configured filesystem tool root.`, harnessChatMaxSteps, registry.PromptCatalog()))
@@ -587,6 +640,9 @@ When "needsTools" is false, "toolCalls" must be []. Prefer read-only calls unles
 	}
 	if loadedSkill != nil {
 		system += "\n\nActive SKILL.md selected for this turn. Follow these instructions when planning tools and writing the brief, including any workflow or command guidance that applies. Do not quote the skill unless the user asks about process.\n\n" + loadedSkill.Body
+	}
+	if strings.TrimSpace(toolTask) != "" {
+		system += "\n\nThe chat model triaged this turn and requested tool evidence:\n" + strings.TrimSpace(toolTask)
 	}
 	return system
 }

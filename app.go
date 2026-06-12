@@ -649,7 +649,9 @@ func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {
 		return nil, err
 	}
 	engine := newHarnessEngine(config, a)
-	req = engine.chatRequestForHarness(req)
+	if strings.TrimSpace(req.Model) == "" {
+		req.Model = strings.TrimSpace(config.Providers.Ollama.Models.Chat)
+	}
 	if strings.TrimSpace(req.Model) == "" {
 		return nil, errors.New("model is required")
 	}
