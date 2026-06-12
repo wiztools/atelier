@@ -181,7 +181,7 @@ function App() {
   const [status, setStatus] = useState<main.OllamaStatus | null>(null);
   const [models, setModels] = useState<main.OllamaModel[]>([]);
   const [model, setModel] = useState('');
-  const [harnessModel, setHarnessModel] = useState('');
+  const [toolModel, setToolModel] = useState('');
   const [imageModel, setImageModel] = useState('');
   const [mode, setMode] = useState<Mode>('chat');
   const [system, setSystem] = useState('You are Atelier, a precise local AI collaborator.');
@@ -242,7 +242,7 @@ function App() {
   const hasMoreConversations = visibleConversations.length < conversationList.length;
   const selectedConversationID = mode === 'image' ? imageResult?.conversationId ?? '' : activeConversationID;
   const latestHarnessRun = [...chat].reverse().find((entry) => entry.role === 'assistant' && entry.harnessRun)?.harnessRun;
-  const visibleHarnessRun = latestHarnessRun ?? (activeStream ? buildRunningHarnessRun(activeStream, activeConversationID, harnessModel || model, model) : null);
+  const visibleHarnessRun = latestHarnessRun ?? (activeStream ? buildRunningHarnessRun(activeStream, activeConversationID, model) : null);
 
   function markConversationInFlight(conversationID: string, requestID: string, kind: ConversationKind) {
     requestConversationRef.current[requestID] = {conversationID, kind};
@@ -301,7 +301,7 @@ function App() {
             baseURL,
             models: {
               chat: model,
-              harness: harnessModel,
+              tools: toolModel,
               image: imageModel,
             },
           },
@@ -325,7 +325,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, harnessModel, imageDimensions.height, imageDimensions.width, imageModel, imageSteps, mode, model, storageConfig, system, toolConfig]);
+  }, [baseURL, configLoaded, toolModel, imageDimensions.height, imageDimensions.width, imageModel, imageSteps, mode, model, storageConfig, system, toolConfig]);
 
   useEffect(() => {
     const onChunk = (chunk: ChatChunk) => {
@@ -508,8 +508,8 @@ function App() {
   }, [openCapabilityID]);
 
   const modelOptions = useMemo(() => {
-    return Array.from(new Set([...asArray(models).map((item) => item.name), model, harnessModel, imageModel].filter(Boolean)));
-  }, [harnessModel, imageModel, model, models]);
+    return Array.from(new Set([...asArray(models).map((item) => item.name), model, toolModel, imageModel].filter(Boolean)));
+  }, [toolModel, imageModel, model, models]);
   const imageModelOptions = useMemo(() => {
     const detected = asArray(models).filter((item) => item.imageGeneration).map((item) => item.name).filter(Boolean);
     return detected.length ? detected : modelOptions;
@@ -526,7 +526,7 @@ function App() {
     const config = await GetConfig();
     const nextBaseURL = config.providers?.ollama?.baseURL || defaultBaseURL;
     const nextChatModel = config.providers?.ollama?.models?.chat ?? '';
-    const nextHarnessModel = config.providers?.ollama?.models?.harness || nextChatModel;
+    const nextToolModel = config.providers?.ollama?.models?.tools || config.providers?.ollama?.models?.harness || nextChatModel;
     const nextImageModel = config.providers?.ollama?.models?.image ?? '';
     const nextSystem = config.prompts?.system || 'You are Atelier, a precise local AI collaborator.';
     const nextImageWidth = config.generation?.image?.width || 768;
@@ -539,7 +539,7 @@ function App() {
     setToolConfig(config.tools ?? null);
     setBaseURL(nextBaseURL);
     setModel(nextChatModel);
-    setHarnessModel(nextHarnessModel);
+    setToolModel(nextToolModel);
     setImageModel(nextImageModel);
     setSystem(nextSystem);
     setImageRatio(nextImagePreset.ratio);
@@ -605,7 +605,7 @@ function App() {
     const firstModel = nextModels[0]?.name ?? '';
     const firstImageModel = nextModels.find((item) => item.imageGeneration)?.name ?? firstModel;
     setModel((current) => current || firstModel);
-    setHarnessModel((current) => current || firstModel);
+    setToolModel((current) => current || firstModel);
     setImageModel((current) => current || firstImageModel);
   }
 
@@ -1152,7 +1152,7 @@ function App() {
             <div className="settings-screen">
               <div className="settings-header">
                 <h2>Settings</h2>
-                <p>Ollama provider, harness defaults, and prompt preferences.</p>
+                <p>Ollama provider, model defaults, and prompt preferences.</p>
               </div>
 
               <section className="settings-section">
@@ -1207,13 +1207,13 @@ function App() {
 
               <section className="settings-section two-column">
                 <div className="field">
-                  <label htmlFor="harness-model">Harness Model</label>
-                  <select id="harness-model" value={harnessModel} onChange={(event) => setHarnessModel(event.target.value)}>
+                  <label htmlFor="tool-model">Tool Model</label>
+                  <select id="tool-model" value={toolModel} onChange={(event) => setToolModel(event.target.value)}>
                     {modelOptions.map((name) => <option key={name}>{name}</option>)}
                   </select>
                   <ModelCapabilityLink
-                    id="settings-harness"
-                    modelName={harnessModel}
+                    id="settings-tools"
+                    modelName={toolModel}
                     models={models}
                     openID={openCapabilityID}
                     setOpenID={setOpenCapabilityID}
@@ -1757,7 +1757,7 @@ function parseHarnessRun(value: unknown): HarnessRunView | undefined {
   return run.status || run.steps?.length ? run : undefined;
 }
 
-function buildRunningHarnessRun(requestID: string, conversationID: string, harnessModel: string, chatModel: string): HarnessRunView {
+function buildRunningHarnessRun(requestID: string, conversationID: string, chatModel: string): HarnessRunView {
   return {
     mode: 'chat',
     status: 'running',
@@ -1769,7 +1769,7 @@ function buildRunningHarnessRun(requestID: string, conversationID: string, harne
     },
     steps: [
       {kind: 'queued', status: 'completed', summary: 'turn accepted by harness'},
-      {kind: 'preparing', status: 'completed', provider: 'ollama', model: harnessModel, summary: 'harness model prepared the turn'},
+      {kind: 'triage', status: 'completed', provider: 'ollama', model: chatModel, summary: 'chat model triaged the turn'},
       {kind: 'model_call', status: 'completed', provider: 'ollama', model: chatModel, summary: 'chat model stream opened'},
       {kind: 'streaming', status: 'running', provider: 'ollama', model: chatModel, summary: 'chat model response streaming to UI'},
       {kind: 'evaluation', status: 'pending'},
@@ -1780,13 +1780,15 @@ function buildRunningHarnessRun(requestID: string, conversationID: string, harne
 
 function harnessStepLane(step: HarnessStepView): {label: string; className: string} {
   switch (step.kind) {
+    case 'triage':
+      return {label: 'Chat model', className: 'harness-lane-chat'};
     case 'planning':
     case 'preparing':
-      return {label: 'Harness model', className: 'harness-lane-model'};
+      return {label: 'Tool model', className: 'harness-lane-model'};
     case 'tool_call':
-      return {label: 'Harness tools', className: 'harness-lane-tools'};
+      return {label: 'Tools', className: 'harness-lane-tools'};
     case 'final_tool_request':
-      return {label: 'Chat → harness', className: 'harness-lane-handoff'};
+      return {label: 'Chat → tools', className: 'harness-lane-handoff'};
     case 'model_call':
     case 'streaming':
       return {label: 'Chat model', className: 'harness-lane-chat'};

@@ -120,8 +120,9 @@ export namespace main {
 	}
 	export class ConfigOllamaModels {
 	    chat: string;
-	    harness: string;
+	    tools: string;
 	    image: string;
+	    harness?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigOllamaModels(source);
@@ -130,8 +131,9 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.chat = source["chat"];
-	        this.harness = source["harness"];
+	        this.tools = source["tools"];
 	        this.image = source["image"];
+	        this.harness = source["harness"];
 	    }
 	}
 	export class ConfigOllama {
