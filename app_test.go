@@ -3131,7 +3131,7 @@ func TestDecodeTriageDecisionAcceptsBareAndFencedJSON(t *testing.T) {
 		t.Fatalf("decision = %+v, err = %v, want fenced JSON accepted", decision, err)
 	}
 	decision, err = decodeTriageDecision(`{"needsTools":false,"toolTask":"","reason":"general knowledge"}`)
-	if err != nil || decision.NeedsTools {
+	if err != nil || decision.NeedsTools || decision.Reason != "general knowledge" {
 		t.Fatalf("decision = %+v, err = %v, want bare JSON accepted", decision, err)
 	}
 	if _, err = decodeTriageDecision("I think tools are needed."); err == nil {
