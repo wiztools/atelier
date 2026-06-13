@@ -22,10 +22,6 @@ export function ExecuteTool(arg1) {
   return window['go']['main']['App']['ExecuteTool'](arg1);
 }
 
-export function GenerateImage(arg1) {
-  return window['go']['main']['App']['GenerateImage'](arg1);
-}
-
 export function GetConfig() {
   return window['go']['main']['App']['GetConfig']();
 }
@@ -72,10 +68,6 @@ export function SaveImage(arg1) {
 
 export function SetOllamaBaseURL(arg1) {
   return window['go']['main']['App']['SetOllamaBaseURL'](arg1);
-}
-
-export function StartImageGeneration(arg1) {
-  return window['go']['main']['App']['StartImageGeneration'](arg1);
 }
 
 export function StreamChat(arg1) {

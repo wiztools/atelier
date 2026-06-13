@@ -202,8 +202,8 @@ func TestMergeAppConfigNormalizesOllamaEndpoint(t *testing.T) {
 	if config.Providers.Ollama.BaseURL != "http://localhost:11434" {
 		t.Fatalf("baseURL = %q", config.Providers.Ollama.BaseURL)
 	}
-	if config.UI.Mode != "image" {
-		t.Fatalf("mode = %q", config.UI.Mode)
+	if config.UI.Mode != "chat" {
+		t.Fatalf("mode = %q, want chat", config.UI.Mode)
 	}
 	if config.Providers.Ollama.Models.Tools != "harness-model" {
 		t.Fatalf("tools model = %q", config.Providers.Ollama.Models.Tools)
@@ -1419,7 +1419,7 @@ func TestEnsureStorageDirs(t *testing.T) {
 	}
 }
 
-func TestImageGenerationConversationLifecycle(t *testing.T) {
+func TestChatConversationWithGeneratedImagesLifecycle(t *testing.T) {
 	root := t.TempDir()
 	storage := ConfigStorage{
 		Root:      filepath.Join(root, ".atelier"),
@@ -1432,15 +1432,30 @@ func TestImageGenerationConversationLifecycle(t *testing.T) {
 		t.Fatalf("ensureStorageDirs returned error: %v", err)
 	}
 
-	conversationID, err := writeImageGenerationConversation(
+	conversationID, err := writePendingChatConversation(config, ChatRequest{
+		Model: "chat-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Paint a small house"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("writePendingChatConversation returned error: %v", err)
+	}
+
+	err = appendChatAssistantTurnWithImages(
 		config,
-		ImageGenerateRequest{Model: "image-model", Prompt: "Paint a small house", Width: 64, Height: 64, Steps: 2},
-		ollamaGenerateResponse{Model: "image-model", Done: true},
+		conversationID,
+		"Here is the generated image.",
+		"",
+		"chat-model",
+		"stop",
 		[]string{"data:image/png;base64,iVBORw0KGgo="},
 		"{}",
+		fallbackHarnessRun("chat-model", "stop", 0),
+		ImageGenerateRequest{Model: "image-model", Prompt: "Paint a small house", Width: 64, Height: 64, Steps: 2},
 	)
 	if err != nil {
-		t.Fatalf("writeImageGenerationConversation returned error: %v", err)
+		t.Fatalf("appendChatAssistantTurnWithImages returned error: %v", err)
 	}
 
 	conversations, err := listConversations(storage)
@@ -1452,6 +1467,9 @@ func TestImageGenerationConversationLifecycle(t *testing.T) {
 	}
 	if conversations[0].ID != conversationID {
 		t.Fatalf("conversation id = %q, want %q", conversations[0].ID, conversationID)
+	}
+	if conversations[0].Kind != "chat" {
+		t.Fatalf("conversation kind = %q, want chat", conversations[0].Kind)
 	}
 
 	if err := deleteConversation(storage, conversationID); err != nil {
@@ -1466,7 +1484,7 @@ func TestImageGenerationConversationLifecycle(t *testing.T) {
 	}
 }
 
-func TestImageGenerationPendingConversationLifecycle(t *testing.T) {
+func TestChatImageAssistantTurnStoresToolMetadata(t *testing.T) {
 	root := t.TempDir()
 	storage := ConfigStorage{
 		Root:      filepath.Join(root, ".atelier"),
@@ -1479,17 +1497,21 @@ func TestImageGenerationPendingConversationLifecycle(t *testing.T) {
 		t.Fatalf("ensureStorageDirs returned error: %v", err)
 	}
 
-	req := ImageGenerateRequest{Model: "image-model", Prompt: "Paint early", Width: 64, Height: 64, Steps: 2}
-	conversationID, err := writePendingImageGenerationConversation(config, req)
+	conversationID, err := writePendingChatConversation(config, ChatRequest{
+		Model: "chat-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Paint early"},
+		},
+	})
 	if err != nil {
-		t.Fatalf("writePendingImageGenerationConversation returned error: %v", err)
+		t.Fatalf("writePendingChatConversation returned error: %v", err)
 	}
 	conversations, err := listConversations(storage)
 	if err != nil {
 		t.Fatalf("listConversations returned error: %v", err)
 	}
 	if len(conversations) != 1 || conversations[0].ID != conversationID {
-		t.Fatalf("conversations = %+v, want pending image conversation %s", conversations, conversationID)
+		t.Fatalf("conversations = %+v, want pending chat conversation %s", conversations, conversationID)
 	}
 	detail, err := getConversation(storage, conversationID)
 	if err != nil {
@@ -1499,16 +1521,20 @@ func TestImageGenerationPendingConversationLifecycle(t *testing.T) {
 		t.Fatalf("turns after pending write = %+v, want one user turn", detail.Turns)
 	}
 
-	err = appendImageGenerationResult(
+	err = appendChatAssistantTurnWithImages(
 		config,
 		conversationID,
-		req,
-		ollamaGenerateResponse{Model: "image-model", Done: true},
+		"Generated it.",
+		"",
+		"chat-model",
+		"stop",
 		[]string{"data:image/png;base64,iVBORw0KGgo="},
 		"{}",
+		fallbackHarnessRun("chat-model", "stop", 0),
+		ImageGenerateRequest{Model: "image-model", Prompt: "Paint early", Width: 64, Height: 64, Steps: 2},
 	)
 	if err != nil {
-		t.Fatalf("appendImageGenerationResult returned error: %v", err)
+		t.Fatalf("appendChatAssistantTurnWithImages returned error: %v", err)
 	}
 	detail, err = getConversation(storage, conversationID)
 	if err != nil {
@@ -1520,57 +1546,9 @@ func TestImageGenerationPendingConversationLifecycle(t *testing.T) {
 	if detail.Conversation.Stats.ArtifactCount != 1 {
 		t.Fatalf("artifact count = %d, want 1", detail.Conversation.Stats.ArtifactCount)
 	}
-}
-
-func TestHistoryAppendRejectsWrongConversationKind(t *testing.T) {
-	root := t.TempDir()
-	storage := ConfigStorage{
-		Root:      filepath.Join(root, ".atelier"),
-		History:   filepath.Join(root, ".atelier", "history"),
-		Artifacts: filepath.Join(root, ".atelier", "history"),
-	}
-	config := defaultAppConfig()
-	config.Storage = storage
-	if err := ensureStorageDirs(storage); err != nil {
-		t.Fatalf("ensureStorageDirs returned error: %v", err)
-	}
-
-	imageConversationID, err := writePendingImageGenerationConversation(
-		config,
-		ImageGenerateRequest{Model: "image-model", Prompt: "Paint early", Width: 64, Height: 64, Steps: 2},
-	)
-	if err != nil {
-		t.Fatalf("writePendingImageGenerationConversation returned error: %v", err)
-	}
-	if _, err := appendChatUserTurn(config, ChatRequest{
-		ConversationID: imageConversationID,
-		Model:          "chat-model",
-		Messages: []ChatMessage{
-			{Role: "user", Content: "This should stay chat-only"},
-		},
-	}); err == nil || !strings.Contains(err.Error(), "not a chat conversation") {
-		t.Fatalf("appendChatUserTurn error = %v, want wrong-kind chat error", err)
-	}
-
-	chatConversationID, err := writePendingChatConversation(config, ChatRequest{
-		Model: "chat-model",
-		Messages: []ChatMessage{
-			{Role: "user", Content: "Start a chat"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("writePendingChatConversation returned error: %v", err)
-	}
-	err = appendImageGenerationResult(
-		config,
-		chatConversationID,
-		ImageGenerateRequest{Model: "image-model", Prompt: "Paint late", Width: 64, Height: 64, Steps: 2},
-		ollamaGenerateResponse{Model: "image-model", Done: true},
-		[]string{"data:image/png;base64,iVBORw0KGgo="},
-		"{}",
-	)
-	if err == nil || !strings.Contains(err.Error(), "not an image conversation") {
-		t.Fatalf("appendImageGenerationResult error = %v, want wrong-kind image error", err)
+	tool, ok := detail.Turns[1].ProviderResponse["tool"].(map[string]any)
+	if !ok || tool["name"] != "image_generation" || tool["model"] != "image-model" {
+		t.Fatalf("assistant tool metadata = %+v, want image_generation via image-model", detail.Turns[1].ProviderResponse["tool"])
 	}
 }
 
@@ -1587,23 +1565,21 @@ func TestPurgeArchivedConversationsRemovesOnlySoftDeletedFolders(t *testing.T) {
 		t.Fatalf("ensureStorageDirs returned error: %v", err)
 	}
 
-	archivedID, err := writeImageGenerationConversation(
-		config,
-		ImageGenerateRequest{Model: "image-model", Prompt: "Archive me", Width: 64, Height: 64, Steps: 2},
-		ollamaGenerateResponse{Model: "image-model", Done: true},
-		[]string{"data:image/png;base64,iVBORw0KGgo="},
-		"{}",
-	)
+	archivedID, err := writePendingChatConversation(config, ChatRequest{
+		Model: "chat-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Archive me", Images: []string{"data:image/png;base64,iVBORw0KGgo="}},
+		},
+	})
 	if err != nil {
 		t.Fatalf("write archived conversation returned error: %v", err)
 	}
-	activeID, err := writeImageGenerationConversation(
-		config,
-		ImageGenerateRequest{Model: "image-model", Prompt: "Keep me", Width: 64, Height: 64, Steps: 2},
-		ollamaGenerateResponse{Model: "image-model", Done: true},
-		[]string{"data:image/png;base64,iVBORw0KGgo="},
-		"{}",
-	)
+	activeID, err := writePendingChatConversation(config, ChatRequest{
+		Model: "chat-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Keep me", Images: []string{"data:image/png;base64,iVBORw0KGgo="}},
+		},
+	})
 	if err != nil {
 		t.Fatalf("write active conversation returned error: %v", err)
 	}

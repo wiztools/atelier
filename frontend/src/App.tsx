@@ -15,16 +15,14 @@ import {
   ResolveToolPermission,
   SaveImage,
   SaveConfig,
-  StartImageGeneration,
   StreamChat,
   UpdateConversationTitle,
 } from '../wailsjs/go/main/App';
 import {main} from '../wailsjs/go/models';
 import {EventsOff, EventsOn} from '../wailsjs/runtime/runtime';
 
-type Mode = 'chat' | 'image';
 type View = 'app' | 'settings';
-type ConversationKind = 'chat' | 'image_generation';
+type ConversationKind = 'chat';
 
 type ChatEntry = {
   id: string;
@@ -56,17 +54,6 @@ type ChatStreamDraft = {
   images: string[];
   streaming: boolean;
   error?: string;
-};
-
-type ImageGenerationEvent = {
-  requestID: string;
-  done: boolean;
-  model?: string;
-  text?: string;
-  images?: string[];
-  raw?: string;
-  error?: string;
-  conversationId?: string;
 };
 
 type ToolPermissionEvent = {
@@ -141,40 +128,12 @@ type Attachment = {
   payload: string;
 };
 
-type RatioPreset = {
-  id: string;
-  label: string;
-  width: number;
-  height: number;
-};
-
-type PixelPreset = {
-  id: string;
-  label: string;
-  megapixels: number;
-};
-
 const defaultBaseURL = 'http://localhost:11434';
 const defaultSidebarWidth = 320;
 const minSidebarWidth = 240;
 const maxSidebarWidth = 560;
-const defaultImageRatio = '1:1';
-const defaultImagePixels = '0.6';
 const compactHistoryLimit = 10;
 const expandedHistoryBatchSize = 20;
-const ratioPresets: RatioPreset[] = [
-  {id: '1:1', label: '1:1 Square', width: 1, height: 1},
-  {id: '16:9', label: '16:9 Landscape', width: 16, height: 9},
-  {id: '9:16', label: '9:16 Portrait', width: 9, height: 16},
-  {id: '4:3', label: '4:3 Landscape', width: 4, height: 3},
-  {id: '3:4', label: '3:4 Portrait', width: 3, height: 4},
-];
-const pixelPresets: PixelPreset[] = [
-  {id: '0.6', label: '0.6 MP', megapixels: 0.6},
-  {id: '1', label: '1 MP', megapixels: 1},
-  {id: '2', label: '2 MP', megapixels: 2},
-  {id: '4', label: '4 MP', megapixels: 4},
-];
 
 function App() {
   const [baseURL, setBaseURL] = useState(defaultBaseURL);
@@ -183,7 +142,6 @@ function App() {
   const [model, setModel] = useState('');
   const [toolModel, setToolModel] = useState('');
   const [imageModel, setImageModel] = useState('');
-  const [mode, setMode] = useState<Mode>('chat');
   const [system, setSystem] = useState('You are Atelier, a precise local AI collaborator.');
   const [prompt, setPrompt] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -196,14 +154,9 @@ function App() {
   const [activeConversationID, setActiveConversationID] = useState('');
   const [activeStream, setActiveStream] = useState<string | null>(null);
   const [inFlightConversations, setInFlightConversations] = useState<Record<string, InFlightConversation>>({});
-  const [imagePrompt, setImagePrompt] = useState('');
-  const [imageRatio, setImageRatio] = useState(defaultImageRatio);
-  const [imagePixels, setImagePixels] = useState(defaultImagePixels);
+  const [imageWidth, setImageWidth] = useState(768);
+  const [imageHeight, setImageHeight] = useState(768);
   const [imageSteps, setImageSteps] = useState(24);
-  const [imageResult, setImageResult] = useState<main.ImageGenerateResponse | null>(null);
-  const [imageError, setImageError] = useState('');
-  const [imageSaveStatus, setImageSaveStatus] = useState('');
-  const [imageBusy, setImageBusy] = useState(false);
   const [configLoaded, setConfigLoaded] = useState(false);
   const [storageConfig, setStorageConfig] = useState<main.ConfigStorage | null>(null);
   const [toolConfig, setToolConfig] = useState<main.ConfigTools | null>(null);
@@ -224,23 +177,19 @@ function App() {
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const shouldFollowTranscriptRef = useRef(true);
   const visibleStreamRef = useRef<string | null>(null);
-  const visibleImageRequestRef = useRef<string | null>(null);
   const inFlightConversationsRef = useRef<Record<string, InFlightConversation>>({});
   const requestConversationRef = useRef<Record<string, {conversationID: string; kind: ConversationKind}>>({});
   const chatStreamDraftsRef = useRef<Record<string, ChatStreamDraft>>({});
   const chatPromptRef = useRef<HTMLTextAreaElement | null>(null);
-  const imagePromptRef = useRef<HTMLTextAreaElement | null>(null);
   const copyResetRef = useRef<number | null>(null);
 
   const assistantEntryID = activeStream ? `assistant-${activeStream}` : '';
-  const generatedImages = asArray(imageResult?.images);
-  const imageDimensions = useMemo(() => computeImageDimensions(imageRatio, imagePixels), [imagePixels, imageRatio]);
   const conversationList = asArray(conversations);
   const visibleConversations = historyExpanded
     ? conversationList.slice(0, visibleHistoryCount)
     : conversationList.slice(0, compactHistoryLimit);
   const hasMoreConversations = visibleConversations.length < conversationList.length;
-  const selectedConversationID = mode === 'image' ? imageResult?.conversationId ?? '' : activeConversationID;
+  const selectedConversationID = activeConversationID;
   const latestHarnessRun = [...chat].reverse().find((entry) => entry.role === 'assistant' && entry.harnessRun)?.harnessRun;
   const visibleHarnessRun = latestHarnessRun ?? (activeStream ? buildRunningHarnessRun(activeStream, activeConversationID, model) : null);
 
@@ -311,21 +260,21 @@ function App() {
         },
         generation: {
           image: {
-            width: imageDimensions.width,
-            height: imageDimensions.height,
+            width: imageWidth,
+            height: imageHeight,
             steps: imageSteps,
           },
         },
         tools: toolConfig ?? undefined,
         ui: {
-          mode,
+          mode: 'chat',
         },
       })).catch((error) => {
         setStatus((current) => current ? {...current, error: String(error)} : current);
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, toolModel, imageDimensions.height, imageDimensions.width, imageModel, imageSteps, mode, model, storageConfig, system, toolConfig]);
+  }, [baseURL, configLoaded, toolModel, imageHeight, imageModel, imageSteps, imageWidth, model, storageConfig, system, toolConfig]);
 
   useEffect(() => {
     const onChunk = (chunk: ChatChunk) => {
@@ -373,55 +322,6 @@ function App() {
     };
     EventsOn('ollama:chat:chunk', onChunk);
     return () => EventsOff('ollama:chat:chunk');
-  }, []);
-
-  useEffect(() => {
-    const onImageResult = (event: ImageGenerationEvent) => {
-      const isVisibleRequest = visibleImageRequestRef.current === event.requestID;
-      if (event.conversationId) {
-        markConversationInFlight(event.conversationId, event.requestID, 'image_generation');
-        void refreshConversations();
-      }
-      if (event.done || event.error) {
-        clearConversationInFlight(event.requestID);
-      }
-      if (!isVisibleRequest) {
-        if (event.done || event.error) {
-          void refreshConversations();
-        }
-        return;
-      }
-      if (event.conversationId) {
-        setImageResult((current) => ({
-          ...(current ?? main.ImageGenerateResponse.createFrom({images: []})),
-          conversationId: event.conversationId,
-          images: asArray(current?.images),
-        }));
-      }
-      if (event.done || event.error) {
-        visibleImageRequestRef.current = null;
-        setImageBusy(false);
-      }
-      if (event.error) {
-        setImageError(event.error);
-        return;
-      }
-      if (event.done) {
-        const nextImages = asArray(event.images);
-        setImageResult(main.ImageGenerateResponse.createFrom({
-          model: event.model,
-          text: event.text,
-          images: nextImages,
-          raw: event.raw,
-          conversationId: event.conversationId,
-        }));
-        if (!nextImages.length && !event.text) {
-          setImageError('Ollama returned a response, but Atelier did not find image data in it.');
-        }
-      }
-    };
-    EventsOn('ollama:image:result', onImageResult);
-    return () => EventsOff('ollama:image:result');
   }, []);
 
   useEffect(() => {
@@ -532,7 +432,6 @@ function App() {
     const nextImageWidth = config.generation?.image?.width || 768;
     const nextImageHeight = config.generation?.image?.height || nextImageWidth;
     const nextImageSteps = config.generation?.image?.steps || 24;
-    const nextImagePreset = inferImagePreset(nextImageWidth, nextImageHeight);
 
     setStartupError('');
     setStorageConfig(config.storage ?? null);
@@ -542,10 +441,9 @@ function App() {
     setToolModel(nextToolModel);
     setImageModel(nextImageModel);
     setSystem(nextSystem);
-    setImageRatio(nextImagePreset.ratio);
-    setImagePixels(nextImagePreset.pixels);
+    setImageWidth(nextImageWidth);
+    setImageHeight(nextImageHeight);
     setImageSteps(nextImageSteps);
-    setMode(config.ui?.mode === 'image' ? 'image' : 'chat');
     setConfigLoaded(true);
     await Promise.all([
       refreshConversations(),
@@ -609,28 +507,17 @@ function App() {
     setImageModel((current) => current || firstImageModel);
   }
 
-  async function resetWorkspace(nextMode: Mode) {
+  async function resetWorkspace() {
     visibleStreamRef.current = null;
-    visibleImageRequestRef.current = null;
     setActiveStream(null);
-    setImageBusy(false);
     setChat([]);
     setCollapsedThinkingIDs({});
     setPrompt('');
     setAttachments([]);
     setActiveConversationID('');
-    setImageResult(null);
-    setImageError('');
-    setImageSaveStatus('');
-    setImagePrompt('');
     setView('app');
-    setMode(nextMode);
     window.setTimeout(() => {
-      if (nextMode === 'image') {
-        imagePromptRef.current?.focus();
-      } else {
-        chatPromptRef.current?.focus();
-      }
+      chatPromptRef.current?.focus();
     }, 0);
   }
 
@@ -641,7 +528,7 @@ function App() {
       }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'n') {
         event.preventDefault();
-        void resetWorkspace('chat');
+        void resetWorkspace();
       }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -649,34 +536,14 @@ function App() {
   }, [activeStream]);
 
   async function startNewChat() {
-    await resetWorkspace('chat');
-  }
-
-  function startNewImage() {
-    visibleImageRequestRef.current = null;
-    setImageResult(null);
-    setImageError('');
-    setImageSaveStatus('');
-    setImageBusy(false);
-    setImagePrompt('');
-    setView('app');
-    setMode('image');
-    window.setTimeout(() => {
-      imagePromptRef.current?.focus();
-    }, 0);
+    await resetWorkspace();
   }
 
   async function openConversationSummary(conversation: main.ConversationSummary) {
     try {
       const detail = await GetConversation(conversation.id);
       setView('app');
-      if (detail.conversation.kind === 'image_generation') {
-        setMode('image');
-        hydrateImageConversation(detail);
-      } else {
-        setMode('chat');
-        hydrateChatConversation(detail);
-      }
+      hydrateChatConversation(detail);
     } catch (error) {
       setStartupError(formatError(error));
     }
@@ -750,35 +617,6 @@ function App() {
     setChat(entries);
     setCollapsedThinkingIDs({});
     setActiveConversationID(detail.conversation.id);
-    setPrompt('');
-    setAttachments([]);
-    visibleImageRequestRef.current = null;
-    setImageBusy(false);
-    setImageResult(null);
-    setImageError('');
-    setImageSaveStatus('');
-  }
-
-  function hydrateImageConversation(detail: main.ConversationDetail) {
-    const inFlight = inFlightConversationsRef.current[detail.conversation.id];
-    const visibleRequestID = inFlight?.kind === 'image_generation' ? inFlight.requestID : null;
-    const userTurn = asArray(detail.turns).find((turn) => turn.role === 'user');
-    const assistantTurn = asArray(detail.turns).find((turn) => turn.role === 'assistant');
-    const images = historyImages(assistantTurn?.content);
-    visibleImageRequestRef.current = visibleRequestID;
-    setImageBusy(Boolean(visibleRequestID));
-    setImagePrompt(historyText(userTurn?.content, 'text'));
-    setImageResult(main.ImageGenerateResponse.createFrom({
-      model: assistantTurn?.model ?? detail.conversation.defaults?.imageModel,
-      images,
-      conversationId: detail.conversation.id,
-    }));
-    setImageError('');
-    setImageSaveStatus('');
-    visibleStreamRef.current = null;
-    setActiveStream(null);
-    setChat([]);
-    setActiveConversationID('');
     setPrompt('');
     setAttachments([]);
   }
@@ -903,13 +741,6 @@ function App() {
     }
   }
 
-  function handleImagePromptKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault();
-      void generateImage();
-    }
-  }
-
   async function stopChat() {
     if (activeStream) {
       await CancelStream(activeStream);
@@ -963,47 +794,14 @@ function App() {
     setAttachments((items) => [...items, ...next]);
   }
 
-  async function generateImage() {
-    if (!imageModel || !imagePrompt.trim() || imageBusy) {
-      return;
-    }
-    const requestID = `image-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    setImageBusy(true);
-    setImageError('');
-    setImageSaveStatus('');
-    setImageResult(null);
-    visibleImageRequestRef.current = requestID;
-    try {
-      await StartImageGeneration(main.ImageGenerateRequest.createFrom({
-        requestID,
-        baseURL,
-        model: imageModel,
-        prompt: imagePrompt.trim(),
-        width: imageDimensions.width,
-        height: imageDimensions.height,
-        steps: imageSteps,
-        ...(attachments.length ? {images: attachments.map((item) => item.payload)} : {}),
-      }));
-    } catch (error) {
-      visibleImageRequestRef.current = null;
-      setImageError(error instanceof Error ? error.message : String(error));
-      setImageBusy(false);
-    }
-  }
-
   async function saveGeneratedImage(image: string, index: number) {
-    setImageSaveStatus('');
-    setImageError('');
     try {
-      const path = await SaveImage(main.SaveImageRequest.createFrom({
+      await SaveImage(main.SaveImageRequest.createFrom({
         image,
         suggestedName: `atelier-${Date.now()}-${index + 1}`,
       }));
-      if (path) {
-        setImageSaveStatus(`Saved to ${path}`);
-      }
     } catch (error) {
-      setImageError(error instanceof Error ? error.message : String(error));
+      setStartupError(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -1027,11 +825,7 @@ function App() {
             <nav className="side-nav" aria-label="Atelier navigation">
               <button onClick={startNewChat}>
                 <span className="nav-icon">+</span>
-                Chat
-              </button>
-              <button onClick={startNewImage}>
-                <span className="nav-icon">+</span>
-                Image
+                New chat
               </button>
             </nav>
 
@@ -1057,10 +851,10 @@ function App() {
                             <span>{conversation.title}</span>
                             <small
                               className={`history-kind${inFlight ? ' in-flight' : ''}`}
-                              title={inFlight ? 'Running' : conversation.kind === 'image_generation' ? 'Image' : 'Chat'}
-                              aria-label={inFlight ? 'Conversation running' : conversation.kind === 'image_generation' ? 'Image conversation' : 'Chat conversation'}
+                              title={inFlight ? 'Running' : 'Chat'}
+                              aria-label={inFlight ? 'Conversation running' : 'Chat conversation'}
                             >
-                              {inFlight ? <span className="history-spinner" /> : conversation.kind === 'image_generation' ? '▧' : '◌'}
+                              {inFlight ? <span className="history-spinner" /> : '◌'}
                             </small>
                           </button>
                           <div className="history-actions">
@@ -1246,261 +1040,149 @@ function App() {
         ) : (
           <>
             <div className="toolbar">
-              <div className="segmented" role="tablist">
-                <button className={mode === 'chat' ? 'active' : ''} onClick={() => setMode('chat')}>Chat</button>
-                <button className={mode === 'image' ? 'active' : ''} onClick={() => setMode('image')}>Image</button>
-              </div>
               <div className="model-count">{asArray(models).length} local models</div>
             </div>
 
-            {mode === 'chat' ? (
-              <div className="chat-panel">
-            <div
-              className="transcript"
-              ref={transcriptRef}
-              onScroll={(event) => {
-                shouldFollowTranscriptRef.current = isNearScrollBottom(event.currentTarget);
-              }}
-            >
-              {visibleHarnessRun ? <HarnessRunPanel run={visibleHarnessRun} /> : null}
-              {asArray(chat).length === 0 ? (
-                <div className="empty-state">
-                  <h2>Ask a model, attach an image, or stream a long answer.</h2>
-                  <p>Atelier talks to Ollama directly through the local API.</p>
-                </div>
-              ) : asArray(chat).map((entry) => {
-                const thinkingCollapsed = Boolean(entry.thinking && (collapsedThinkingIDs[entry.id] ?? !entry.streaming));
-                return (
-                  <article key={entry.id} className={`message ${entry.role}`}>
-                    <div className="message-meta">{entry.role}{entry.streaming ? ' streaming' : ''}</div>
-                    {entry.images?.length ? (
-                      entry.role === 'assistant' ? (
-                        <div className="chat-image-results">
-                          {entry.images.map((image, index) => (
-                            <figure key={`${entry.id}-image-${index}`} className="chat-image-card">
+            <div className="chat-panel">
+              <div
+                className="transcript"
+                ref={transcriptRef}
+                onScroll={(event) => {
+                  shouldFollowTranscriptRef.current = isNearScrollBottom(event.currentTarget);
+                }}
+              >
+                {visibleHarnessRun ? <HarnessRunPanel run={visibleHarnessRun} /> : null}
+                {asArray(chat).length === 0 ? (
+                  <div className="empty-state">
+                    <h2>Ask a model, attach an image, or stream a long answer.</h2>
+                    <p>Atelier talks to Ollama directly through the local API.</p>
+                  </div>
+                ) : asArray(chat).map((entry) => {
+                  const thinkingCollapsed = Boolean(entry.thinking && (collapsedThinkingIDs[entry.id] ?? !entry.streaming));
+                  return (
+                    <article key={entry.id} className={`message ${entry.role}`}>
+                      <div className="message-meta">{entry.role}{entry.streaming ? ' streaming' : ''}</div>
+                      {entry.images?.length ? (
+                        entry.role === 'assistant' ? (
+                          <div className="chat-image-results">
+                            {entry.images.map((image, index) => (
+                              <figure key={`${entry.id}-image-${index}`} className="chat-image-card">
+                                <button
+                                  className="chat-image-preview"
+                                  type="button"
+                                  aria-label={`Open generated image ${index + 1}`}
+                                  onClick={() => setPreviewImage(image)}
+                                >
+                                  <img src={image} alt="Generated result" />
+                                </button>
+                                <figcaption>
+                                  <button type="button" onClick={() => saveGeneratedImage(image, index)}>Download image</button>
+                                </figcaption>
+                              </figure>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="thumb-row">
+                            {entry.images.map((image, index) => (
                               <button
-                                className="chat-image-preview"
+                                key={`${entry.id}-image-${index}`}
+                                className="thumb-button"
                                 type="button"
-                                aria-label={`Open generated image ${index + 1}`}
+                                aria-label={`Open attached image ${index + 1}`}
                                 onClick={() => setPreviewImage(image)}
                               >
-                                <img src={image} alt="Generated result" />
+                                <img src={image} alt="" />
                               </button>
-                              <figcaption>
-                                <button type="button" onClick={() => saveGeneratedImage(image, index)}>Download image</button>
-                              </figcaption>
-                            </figure>
-                          ))}
+                            ))}
+                          </div>
+                        )
+                      ) : null}
+                      {entry.thinking ? (
+                        <div className="thinking-panel">
+                          <button
+                            className="thinking-toggle"
+                            type="button"
+                            aria-expanded={!thinkingCollapsed}
+                            onClick={() => toggleThinkingCollapsed(entry.id)}
+                          >
+                            {thinkingCollapsed ? 'Show thinking' : 'Hide thinking'}
+                          </button>
+                          {thinkingCollapsed ? null : (
+                            <div className="thinking markdown-body">
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                {entry.thinking}
+                              </ReactMarkdown>
+                            </div>
+                          )}
+                        </div>
+                      ) : null}
+                      {entry.role === 'assistant' || entry.role === 'system' ? (
+                        <div className="markdown-body">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {entry.content || (entry.streaming ? '...' : '')}
+                          </ReactMarkdown>
                         </div>
                       ) : (
-                        <div className="thumb-row">
-                          {entry.images.map((image, index) => (
-                            <button
-                              key={`${entry.id}-image-${index}`}
-                              className="thumb-button"
-                              type="button"
-                              aria-label={`Open attached image ${index + 1}`}
-                              onClick={() => setPreviewImage(image)}
-                            >
-                              <img src={image} alt="" />
-                            </button>
-                          ))}
+                        <p>{entry.content || (entry.streaming ? '...' : '')}</p>
+                      )}
+                      {entry.role === 'assistant' && entry.content ? (
+                        <div className="message-actions">
+                          <button
+                            className="message-copy-button"
+                            type="button"
+                            aria-label="Copy agent response"
+                            title={copiedMessageID === entry.id ? 'Copied' : 'Copy response'}
+                            onClick={() => copyAgentResponse(entry)}
+                          >
+                            {copiedMessageID === entry.id ? '✓' : '⧉'}
+                          </button>
                         </div>
-                      )
-                    ) : null}
-                    {entry.thinking ? (
-                      <div className="thinking-panel">
-                        <button
-                          className="thinking-toggle"
-                          type="button"
-                          aria-expanded={!thinkingCollapsed}
-                          onClick={() => toggleThinkingCollapsed(entry.id)}
-                        >
-                          {thinkingCollapsed ? 'Show thinking' : 'Hide thinking'}
-                        </button>
-                        {thinkingCollapsed ? null : (
-                          <div className="thinking markdown-body">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                              {entry.thinking}
-                            </ReactMarkdown>
-                          </div>
-                        )}
-                      </div>
-                    ) : null}
-                    {entry.role === 'assistant' || entry.role === 'system' ? (
-                      <div className="markdown-body">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                          {entry.content || (entry.streaming ? '...' : '')}
-                        </ReactMarkdown>
-                      </div>
-                    ) : (
-                      <p>{entry.content || (entry.streaming ? '...' : '')}</p>
-                    )}
-                    {entry.role === 'assistant' && entry.content ? (
-                      <div className="message-actions">
-                        <button
-                          className="message-copy-button"
-                          type="button"
-                          aria-label="Copy agent response"
-                          title={copiedMessageID === entry.id ? 'Copied' : 'Copy response'}
-                          onClick={() => copyAgentResponse(entry)}
-                        >
-                          {copiedMessageID === entry.id ? '✓' : '⧉'}
-                        </button>
-                      </div>
-                    ) : null}
-                    {entry.error ? <div className="error">{entry.error}</div> : null}
-                  </article>
-                );
-              })}
-            </div>
+                      ) : null}
+                      {entry.error ? <div className="error">{entry.error}</div> : null}
+                    </article>
+                  );
+                })}
+              </div>
 
-            <div className="composer">
-              {asArray(attachments).length ? (
-                <div className="attachment-strip">
-                  {asArray(attachments).map((item) => (
-                    <button key={item.name} onClick={() => setAttachments((items) => items.filter((next) => next.name !== item.name))}>
-                      <img src={item.src} alt="" />
-                      <span>{item.name}</span>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-              <textarea
-                ref={chatPromptRef}
-                value={prompt}
-                onChange={(event) => setPrompt(event.target.value)}
-                onKeyDown={handleChatPromptKeyDown}
-                placeholder="Prompt Atelier..."
-              />
-              <div className="composer-actions">
-                <label className="file-button">
-                  Attach image
-                  <input type="file" accept="image/*" multiple onChange={(event) => addImages(event.target.files)} />
-                </label>
-                <div className="composer-submit-row">
-                  <label className="model-inline" htmlFor="chat-model">
-                    <span>Model</span>
-                    <select id="chat-model" value={model} onChange={(event) => setModel(event.target.value)}>
-                      {modelOptions.map((name) => <option key={name}>{name}</option>)}
-                    </select>
-                  </label>
-                  {activeStream ? (
-                    <button className="danger" onClick={stopChat}>Stop</button>
-                  ) : (
-                    <button className="primary" onClick={submitChat} disabled={!prompt.trim() || !model}>Send</button>
-                  )}
-                </div>
-              </div>
-            </div>
-              </div>
-            ) : (
-              <div className="image-panel">
-            <div className="image-controls">
-              <label htmlFor="image-prompt">Prompt</label>
-              <textarea
-                ref={imagePromptRef}
-                id="image-prompt"
-                value={imagePrompt}
-                onChange={(event) => setImagePrompt(event.target.value)}
-                onKeyDown={handleImagePromptKeyDown}
-                placeholder="Prompt Atelier..."
-              />
-              {asArray(attachments).length ? (
-                <div className="attachment-strip">
-                  {asArray(attachments).map((item) => (
-                    <button key={item.name} onClick={() => setAttachments((items) => items.filter((next) => next.name !== item.name))}>
-                      <img src={item.src} alt="" />
-                      <span>{item.name}</span>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-              <div className="inline-fields">
-                <label>
-                  Ratio
-                  <select value={imageRatio} onChange={(event) => setImageRatio(event.target.value)}>
-                    {ratioPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
-                  </select>
-                </label>
-                <label>
-                  Pixels
-                  <select value={imagePixels} onChange={(event) => setImagePixels(event.target.value)}>
-                    {pixelPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
-                  </select>
-                </label>
-                <label>
-                  Steps
-                  <input type="number" min={1} max={80} value={imageSteps} onChange={(event) => setImageSteps(Number(event.target.value))} />
-                </label>
-              </div>
-              <div className="dimension-note">{imageDimensions.width} x {imageDimensions.height}</div>
-              <div className="image-generate-row">
-                <div className="image-model-control">
-                  <label className="model-inline" htmlFor="image-tab-model">
-                    <select id="image-tab-model" value={imageModel} onChange={(event) => setImageModel(event.target.value)}>
-                      {imageModelOptions.map((name) => <option key={name}>{name}</option>)}
-                    </select>
-                  </label>
-                  <ModelCapabilityLink
-                    id="image-chat"
-                    modelName={imageModel}
-                    models={models}
-                    openID={openCapabilityID}
-                    setOpenID={setOpenCapabilityID}
-                  />
-                </div>
-                <div className="image-action-stack">
-                  <label className="file-button image-attach-button" aria-label="Attach image" title="Attach image">
-                    +
+              <div className="composer">
+                {asArray(attachments).length ? (
+                  <div className="attachment-strip">
+                    {asArray(attachments).map((item) => (
+                      <button key={item.name} onClick={() => setAttachments((items) => items.filter((next) => next.name !== item.name))}>
+                        <img src={item.src} alt="" />
+                        <span>{item.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+                <textarea
+                  ref={chatPromptRef}
+                  value={prompt}
+                  onChange={(event) => setPrompt(event.target.value)}
+                  onKeyDown={handleChatPromptKeyDown}
+                  placeholder="Prompt Atelier..."
+                />
+                <div className="composer-actions">
+                  <label className="file-button">
+                    Attach image
                     <input type="file" accept="image/*" multiple onChange={(event) => addImages(event.target.files)} />
                   </label>
-                  <button className="primary" onClick={generateImage} disabled={!imagePrompt.trim() || !imageModel || imageBusy}>
-                    {imageBusy ? 'Generating' : 'Generate'}
-                  </button>
+                  <div className="composer-submit-row">
+                    <label className="model-inline" htmlFor="chat-model">
+                      <span>Model</span>
+                      <select id="chat-model" value={model} onChange={(event) => setModel(event.target.value)}>
+                        {modelOptions.map((name) => <option key={name}>{name}</option>)}
+                      </select>
+                    </label>
+                    {activeStream ? (
+                      <button className="danger" onClick={stopChat}>Stop</button>
+                    ) : (
+                      <button className="primary" onClick={submitChat} disabled={!prompt.trim() || !model}>Send</button>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
-            <div className="image-output">
-              {imageBusy ? (
-                <div className="empty-state busy-state">
-                  <div className="spinner" />
-                  <h2>Generating image...</h2>
-                  <p>Large local image models may take a minute on first load.</p>
-                </div>
-              ) : imageError ? (
-                <div className="empty-state error-state">
-                  <h2>Generation failed</h2>
-                  <p>{imageError}</p>
-                  {imageResult?.raw ? <pre>{summarizeRaw(imageResult.raw)}</pre> : null}
-                </div>
-              ) : generatedImages.length ? (
-                <div className="generated-results">
-                  {generatedImages.map((image: string, index: number) => (
-                    <figure key={image} className="generated-image">
-                      <img src={image} alt="Generated result" />
-                      <figcaption>
-                        <button className="primary" onClick={() => saveGeneratedImage(image, index)}>Save image</button>
-                      </figcaption>
-                    </figure>
-                  ))}
-                  {imageSaveStatus ? <div className="save-status">{imageSaveStatus}</div> : null}
-                </div>
-              ) : imageResult?.text ? (
-                <div className="raw-output">
-                  <h2>Ollama returned text</h2>
-                  <pre>{imageResult.text}</pre>
-                  {imageResult.raw ? <pre>{summarizeRaw(imageResult.raw)}</pre> : null}
-                </div>
-              ) : (
-                <div className="empty-state">
-                  <h2>Image generation lands here.</h2>
-                  <p>Use an Ollama image-generation model; Atelier calls `/api/generate` directly.</p>
-                </div>
-              )}
-            </div>
-              </div>
-            )}
           </>
         )}
       </section>
@@ -1527,10 +1209,6 @@ function App() {
   );
 }
 
-function summarizeRaw(raw: string): string {
-  return raw.length > 1200 ? `${raw.slice(0, 1200)}...` : raw;
-}
-
 function loadSidebarWidth(): number {
   const stored = Number(window.localStorage.getItem('atelier.sidebarWidth'));
   return clampSidebarWidth(Number.isFinite(stored) && stored > 0 ? stored : defaultSidebarWidth);
@@ -1538,43 +1216,6 @@ function loadSidebarWidth(): number {
 
 function clampSidebarWidth(width: number, max = maxSidebarWidth): number {
   return Math.round(Math.max(minSidebarWidth, Math.min(Math.max(minSidebarWidth, max), width)));
-}
-
-function computeImageDimensions(ratioID: string, pixelsID: string): {width: number; height: number} {
-  const ratio = ratioPresets.find((preset) => preset.id === ratioID) ?? ratioPresets[0];
-  const pixelPreset = pixelPresets.find((preset) => preset.id === pixelsID) ?? pixelPresets[0];
-  const targetPixels = pixelPreset.megapixels * 1_000_000;
-  const rawHeight = Math.sqrt(targetPixels * ratio.height / ratio.width);
-  const rawWidth = rawHeight * ratio.width / ratio.height;
-  let width = clampDimension(roundToMultiple(rawWidth, 16));
-  let height = clampDimension(roundToMultiple(rawHeight, 16));
-  while (width * height > targetPixels && width > 64 && height > 64) {
-    width = clampDimension(width - 16);
-    height = clampDimension(Math.round(width * ratio.height / ratio.width / 16) * 16);
-  }
-  return {width, height};
-}
-
-function inferImagePreset(width: number, height: number): {ratio: string; pixels: string} {
-  const actualRatio = width / Math.max(height, 1);
-  const ratio = ratioPresets.reduce((best, preset) => {
-    const presetRatio = preset.width / preset.height;
-    const bestRatio = best.width / best.height;
-    return Math.abs(presetRatio - actualRatio) < Math.abs(bestRatio - actualRatio) ? preset : best;
-  }, ratioPresets[0]);
-  const megapixels = width * height / 1_000_000;
-  const pixels = pixelPresets.reduce((best, preset) => {
-    return Math.abs(preset.megapixels - megapixels) < Math.abs(best.megapixels - megapixels) ? preset : best;
-  }, pixelPresets[0]);
-  return {ratio: ratio.id, pixels: pixels.id};
-}
-
-function roundToMultiple(value: number, multiple: number): number {
-  return Math.max(multiple, Math.round(value / multiple) * multiple);
-}
-
-function clampDimension(value: number): number {
-  return Math.max(64, Math.min(4096, value));
 }
 
 function ModelCapabilityLink({

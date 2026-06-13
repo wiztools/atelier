@@ -12,8 +12,6 @@ export function DeleteConversation(arg1:string):Promise<void>;
 
 export function ExecuteTool(arg1:main.ToolExecutionRequest):Promise<main.HarnessToolResult>;
 
-export function GenerateImage(arg1:main.ImageGenerateRequest):Promise<main.ImageGenerateResponse>;
-
 export function GetConfig():Promise<main.AppConfig>;
 
 export function GetConversation(arg1:string):Promise<main.ConversationDetail>;
@@ -37,8 +35,6 @@ export function SaveConfig(arg1:main.AppConfig):Promise<void>;
 export function SaveImage(arg1:main.SaveImageRequest):Promise<string>;
 
 export function SetOllamaBaseURL(arg1:string):Promise<void>;
-
-export function StartImageGeneration(arg1:main.ImageGenerateRequest):Promise<string>;
 
 export function StreamChat(arg1:main.ChatRequest):Promise<main.ChatStreamStart>;
 

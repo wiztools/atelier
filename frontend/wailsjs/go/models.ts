@@ -628,56 +628,6 @@ export namespace main {
 	
 	
 	
-	export class ImageGenerateRequest {
-	    requestID?: string;
-	    conversationId?: string;
-	    baseURL?: string;
-	    model: string;
-	    prompt: string;
-	    width?: number;
-	    height?: number;
-	    steps?: number;
-	    images?: string[];
-	
-	    static createFrom(source: any = {}) {
-	        return new ImageGenerateRequest(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.requestID = source["requestID"];
-	        this.conversationId = source["conversationId"];
-	        this.baseURL = source["baseURL"];
-	        this.model = source["model"];
-	        this.prompt = source["prompt"];
-	        this.width = source["width"];
-	        this.height = source["height"];
-	        this.steps = source["steps"];
-	        this.images = source["images"];
-	    }
-	}
-	export class ImageGenerateResponse {
-	    model?: string;
-	    text?: string;
-	    images: string[];
-	    raw?: string;
-	    error?: string;
-	    conversationId?: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new ImageGenerateResponse(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.model = source["model"];
-	        this.text = source["text"];
-	        this.images = source["images"];
-	        this.raw = source["raw"];
-	        this.error = source["error"];
-	        this.conversationId = source["conversationId"];
-	    }
-	}
 	export class OllamaModel {
 	    name: string;
 	    modifiedAt?: string;
