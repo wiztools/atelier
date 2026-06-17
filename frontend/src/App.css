@@ -71,28 +71,29 @@
   z-index: 20;
   display: grid;
   gap: 10px;
-  width: min(520px, calc(100vw - 36px));
+  width: min(420px, calc(100vw - 36px));
 }
 
 .tool-permission-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 14px;
-  padding: 14px;
+  align-items: start;
+  gap: 12px;
+  padding: 12px;
   border: 1px solid #5c4934;
   border-radius: 8px;
   background: #1d1f20;
   box-shadow: 0 16px 40px rgb(0 0 0 / 36%);
 }
 
-.tool-permission-card > div:first-child {
+.tool-permission-content {
   min-width: 0;
   display: grid;
-  gap: 6px;
+  gap: 4px;
 }
 
 .tool-permission-card strong {
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .tool-permission-card span,
@@ -100,18 +101,47 @@
   color: #b5b1a8;
 }
 
+.tool-permission-card span {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .tool-permission-card code,
 .tool-permission-card pre {
-  max-height: 120px;
+  max-height: 150px;
   margin: 0;
-  padding: 8px 10px;
+  padding: 7px 9px;
   border: 1px solid #303438;
   border-radius: 6px;
   overflow: auto;
   background: #101213;
   color: #e7dcc6;
+  font-size: 11px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.tool-permission-details {
+  margin-top: 4px;
+}
+
+.tool-permission-details summary {
+  width: max-content;
+  cursor: pointer;
+  color: #d5a64f;
+  font-size: 12px;
+}
+
+.tool-permission-details summary::marker {
+  color: #9ea5a3;
+}
+
+.tool-permission-details > div {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
 }
 
 .tool-permission-actions {
@@ -683,6 +713,46 @@ button:disabled {
   color: #f3f0e8;
   text-decoration: underline;
   outline: none;
+}
+
+.model-capability--icon {
+  width: auto;
+  max-width: none;
+  min-height: 0;
+  flex: 0 0 auto;
+}
+
+.model-capability--icon .model-capability-link {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: #9ea5a3;
+}
+
+.model-capability--icon .model-capability-link svg {
+  display: block;
+}
+
+.model-capability--icon .model-capability-link:hover,
+.model-capability--icon .model-capability-link:focus-visible {
+  color: #f3f0e8;
+  text-decoration: none;
+}
+
+.model-capability--icon .model-capability-panel {
+  left: auto;
+  right: 0;
+  width: max-content;
+  min-width: 220px;
+  max-width: calc(100vw - 44px);
+}
+
+/* The composer sits at the bottom of the window, so open the panel upward. */
+.composer-submit-row .model-capability--icon .model-capability-panel {
+  top: auto;
+  bottom: calc(100% + 6px);
 }
 
 .model-capability-panel {
@@ -1297,6 +1367,23 @@ button:disabled {
   font-size: 12px;
   font-weight: 700;
   white-space: nowrap;
+}
+
+.model-inline-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.model-inline select,
+.model-inline-control {
+  width: 100%;
+}
+
+.model-inline-control select {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .model-inline select {

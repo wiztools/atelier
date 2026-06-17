@@ -921,13 +921,39 @@ function App() {
           <div className="tool-permission-panel">
             {toolPermissions.map((permission) => (
               <div className="tool-permission-card" key={permission.id}>
-                <div>
+                <div className="tool-permission-content">
                   <strong>{toolPermissionTitle(permission)}</strong>
-                  <span>{permission.summary}</span>
-                  {permission.command?.length ? <code>{permission.command.join(' ')}</code> : null}
+                  <span>{toolPermissionSummary(permission)}</span>
                   {permission.cwd ? <small>in {shortenHomePath(permission.cwd)}</small> : null}
-                  {permission.path ? <code>{shortenHomePath(permission.path)}</code> : null}
-                  {permission.contentPreview ? <pre>{permission.contentPreview}</pre> : null}
+                  {hasToolPermissionDetails(permission) ? (
+                    <details className="tool-permission-details">
+                      <summary>Details</summary>
+                      {permission.command?.length ? (
+                        <div>
+                          <small>Command</small>
+                          <code>{permission.command.join(' ')}</code>
+                        </div>
+                      ) : null}
+                      {permission.summary && permission.summary !== toolPermissionSummary(permission) ? (
+                        <div>
+                          <small>Summary</small>
+                          <pre>{permission.summary}</pre>
+                        </div>
+                      ) : null}
+                      {permission.path ? (
+                        <div>
+                          <small>Path</small>
+                          <code>{shortenHomePath(permission.path)}</code>
+                        </div>
+                      ) : null}
+                      {permission.contentPreview ? (
+                        <div>
+                          <small>Preview</small>
+                          <pre>{permission.contentPreview}</pre>
+                        </div>
+                      ) : null}
+                    </details>
+                  ) : null}
                 </div>
                 <div className="tool-permission-actions">
                   <button onClick={() => resolveToolPermission(permission.id, false)}>Deny</button>
@@ -1002,30 +1028,36 @@ function App() {
               <section className="settings-section two-column">
                 <div className="field">
                   <label htmlFor="tool-model">Tool Model</label>
-                  <select id="tool-model" value={toolModel} onChange={(event) => setToolModel(event.target.value)}>
-                    {modelOptions.map((name) => <option key={name}>{name}</option>)}
-                  </select>
-                  <ModelCapabilityLink
-                    id="settings-tools"
-                    modelName={toolModel}
-                    models={models}
-                    openID={openCapabilityID}
-                    setOpenID={setOpenCapabilityID}
-                  />
+                  <div className="model-inline-control">
+                    <select id="tool-model" value={toolModel} onChange={(event) => setToolModel(event.target.value)}>
+                      {modelOptions.map((name) => <option key={name}>{name}</option>)}
+                    </select>
+                    <ModelCapabilityLink
+                      id="settings-tools"
+                      modelName={toolModel}
+                      models={models}
+                      openID={openCapabilityID}
+                      setOpenID={setOpenCapabilityID}
+                      variant="icon"
+                    />
+                  </div>
                 </div>
 
                 <div className="field">
                   <label htmlFor="image-model">Default Image Model</label>
-                  <select id="image-model" value={imageModel} onChange={(event) => setImageModel(event.target.value)}>
-                    {imageModelOptions.map((name) => <option key={name}>{name}</option>)}
-                  </select>
-                  <ModelCapabilityLink
-                    id="settings-image"
-                    modelName={imageModel}
-                    models={models}
-                    openID={openCapabilityID}
-                    setOpenID={setOpenCapabilityID}
-                  />
+                  <div className="model-inline-control">
+                    <select id="image-model" value={imageModel} onChange={(event) => setImageModel(event.target.value)}>
+                      {imageModelOptions.map((name) => <option key={name}>{name}</option>)}
+                    </select>
+                    <ModelCapabilityLink
+                      id="settings-image"
+                      modelName={imageModel}
+                      models={models}
+                      openID={openCapabilityID}
+                      setOpenID={setOpenCapabilityID}
+                      variant="icon"
+                    />
+                  </div>
                 </div>
               </section>
 
@@ -1170,9 +1202,19 @@ function App() {
                   <div className="composer-submit-row">
                     <label className="model-inline" htmlFor="chat-model">
                       <span>Model</span>
-                      <select id="chat-model" value={model} onChange={(event) => setModel(event.target.value)}>
-                        {modelOptions.map((name) => <option key={name}>{name}</option>)}
-                      </select>
+                      <div className="model-inline-control">
+                        <select id="chat-model" value={model} onChange={(event) => setModel(event.target.value)}>
+                          {modelOptions.map((name) => <option key={name}>{name}</option>)}
+                        </select>
+                        <ModelCapabilityLink
+                          id="chat-model"
+                          modelName={model}
+                          models={models}
+                          openID={openCapabilityID}
+                          setOpenID={setOpenCapabilityID}
+                          variant="icon"
+                        />
+                      </div>
                     </label>
                     {activeStream ? (
                       <button className="danger" onClick={stopChat}>Stop</button>
@@ -1224,27 +1266,40 @@ function ModelCapabilityLink({
   models,
   openID,
   setOpenID,
+  variant = 'text',
 }: {
   id: string;
   modelName: string;
   models: main.OllamaModel[];
   openID: string;
   setOpenID: (id: string) => void;
+  variant?: 'text' | 'icon';
 }) {
   const selectedModel = asArray(models).find((item) => item.name === modelName);
   const capabilityLabels = selectedModel ? modelCapabilityLabels(selectedModel) : [];
   const isOpen = openID === id;
   const panelID = `${id}-capability-panel`;
+  const isIcon = variant === 'icon';
   return (
-    <div className="model-capability">
+    <div className={isIcon ? 'model-capability model-capability--icon' : 'model-capability'}>
       <button
         type="button"
         className="model-capability-link"
         aria-expanded={isOpen}
         aria-controls={panelID}
+        aria-label={isIcon ? 'Model capability' : undefined}
+        title={isIcon ? 'Model capability' : undefined}
         onClick={() => setOpenID(isOpen ? '' : id)}
       >
-        Capability
+        {isIcon ? (
+          <svg viewBox="0 0 16 16" width="16" height="16" fill="none" aria-hidden="true">
+            <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.4" />
+            <circle cx="8" cy="4.6" r="0.95" fill="currentColor" />
+            <path d="M8 7v4.4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+          </svg>
+        ) : (
+          'Capability'
+        )}
       </button>
       {isOpen ? (
         <div id={panelID} className="model-capability-panel" role="dialog" aria-label={`${modelName || 'Selected model'} capabilities`}>
@@ -1505,6 +1560,25 @@ function toolPermissionTitle(permission: ToolPermissionEvent): string {
     return 'Write file?';
   }
   return 'Allow tool action?';
+}
+
+function toolPermissionSummary(permission: ToolPermissionEvent): string {
+  if (permission.toolName === 'run_command' && permission.command?.length) {
+    return permission.command.slice(0, 2).join(' ');
+  }
+  if (permission.path) {
+    return shortenHomePath(permission.path);
+  }
+  return permission.summary;
+}
+
+function hasToolPermissionDetails(permission: ToolPermissionEvent): boolean {
+  return Boolean(
+    permission.command?.length ||
+    permission.path ||
+    permission.contentPreview ||
+    (permission.summary && permission.summary !== toolPermissionSummary(permission)),
+  );
 }
 
 function shortenHomePath(path: string): string {
