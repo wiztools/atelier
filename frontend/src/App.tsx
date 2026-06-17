@@ -530,6 +530,10 @@ function App() {
         event.preventDefault();
         void resetWorkspace();
       }
+      if ((event.metaKey || event.ctrlKey) && event.key === ',') {
+        event.preventDefault();
+        setView('settings');
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
