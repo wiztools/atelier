@@ -6,6 +6,9 @@
 # Wails build output. Keep build metadata/icons tracked.
 build/bin/
 
+# Local `go build` binary at repo root (the main package compiles to ./atelier)
+/atelier
+
 # Frontend generated artifacts
 node_modules/
 frontend/node_modules/
