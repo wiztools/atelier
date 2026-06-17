@@ -7,10 +7,15 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/menu"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/mac"
 )
 
 //go:embed all:frontend/dist
 var assets embed.FS
+
+// version is injected at link time by release.sh (-ldflags "-X main.version=...").
+// It is shown in the macOS "About Atelier" dialog.
+var version = "dev"
 
 func main() {
 	app := NewApp()
@@ -26,6 +31,12 @@ func main() {
 		Width:  1320,
 		Height: 860,
 		Menu:   appMenu,
+		Mac: &mac.Options{
+			About: &mac.AboutInfo{
+				Title:   "Atelier",
+				Message: "Version " + version,
+			},
+		},
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

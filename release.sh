@@ -211,7 +211,7 @@ echo "==> Building universal macOS app"
 
 WAILS_BUILD_FLAGS=(
     -platform darwin/universal
-    -ldflags "-s -w"
+    -ldflags "-X main.version=${VERSION} -s -w"
     -trimpath
 )
 
