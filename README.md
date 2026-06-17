@@ -1,21 +1,54 @@
 # Atelier
 
-Atelier is a Wails + Go desktop harness for local AI work through Ollama.
+**A local AI agent harness for Ollama.** Atelier wraps any Ollama model in a real agent loop — triage, planning, tool use, and per-action permission gates — so your local models can read files, run commands, and generate images, with nothing leaving your machine. No API keys, no cloud.
 
-The first slice focuses on the gap in Ollama Desktop: image-generation models can be driven directly through the Ollama API while the app also supports streamed chat and multimodal image input.
+It's a desktop app (Go + Wails + React), MIT licensed, and runs entirely against your own Ollama endpoint.
 
-## Current Capabilities
+<!-- TODO: add a hero screenshot showing a tool-use turn or the permission-approval dialog -->
+<!-- ![Atelier](docs/screenshot.png) -->
+
+> Status: early and macOS-first. Cross-platform builds (Windows/Linux) are supported by Wails and on the roadmap. Contributions welcome — see [Contributing](#contributing).
+
+## How the harness works
+
+Every turn runs through an agentic loop rather than a single model call:
+
+- **Chat-model-first triage** — the chat model first decides whether the turn even needs tools (`{needsTools, toolTask, reason}`). Knowledge questions are answered directly; only real work spins up the planner. This inverts the usual "always-tool-first" pattern and keeps simple turns fast.
+- **Bounded planning loop** — when tools are needed, a separate tool model plans and executes actions for up to 3 rounds, within a 2-minute wall-clock budget and at most 3 tool calls per round. Tool results are fed back as `role:"tool"` messages so the planner re-plans on evidence instead of firing once and stopping.
+- **Per-action permission gates** — write and exec actions require explicit approval in the UI. Read-only tools run without prompting.
+- **Evidence-aware responses** — the final response model is told (in code, not by the planner) which tools actually ran and what failed, so it can't silently claim success that didn't happen.
+- **Context management** — an explicit `num_ctx` (default 8192) is sent on every call, and the oldest history is trimmed to fit rather than letting Ollama truncate silently.
+
+### Built-in tools
+
+| Tool | Access | Notes |
+| --- | --- | --- |
+| `list_files` | read-only | Inspect files and directories within the workspace root. |
+| `read_file` | read-only | Read text files, with a configurable size limit. |
+| `run_command` | gated | Allowlisted commands (`cat`, `echo`, `find`, `grep`, `head`, `ls`, `pwd`, `rg`, `tail`, `wc`); write/exec operations require permission. |
+| `generate_image` | read-only | Invokes the configured image model; registered only when an image model is set. |
+
+All file and command operations are scoped to a configurable workspace root (default `~/Documents`).
+
+### Skills
+
+Drop a `SKILL.md` file into `~/.agents/skills/<name>/` or `~/.atelier/skills/<name>/` and the harness can auto-select it and inject its instructions into the planner — domain-specific workflows without hardcoding them.
+
+## Capabilities
 
 - Connects to a configurable Ollama endpoint, defaulting to `http://localhost:11434`.
-- Reads local models from `/api/tags`.
+- Reads local models from `/api/tags` and detects multimodal / image-gen capability via `/api/show`.
 - Streams chat from `/api/chat` into the UI through Wails runtime events.
 - Sends base64 image attachments for vision-capable chat models.
-- Calls `/api/generate` for experimental image generation with width, height, and steps.
-- Exposes image generation to chat as a `generate_image` tool (registered only when an image model is configured); the tool model plans and executes the image call when needed, so the decision is made by reasoning rather than keyword matching.
-- Chat-model-first turns: the chat model answers directly when no workspace evidence is needed; the tool model plans and executes tools only when the chat model's triage (or an explicitly named skill) asks for them.
-- Normalizes generated base64 image responses into browser-renderable image data URLs.
-- Stores image-generation conversations and generated artifacts under `~/.atelier/history`.
-- Sends an explicit `num_ctx` (configurable, default 8192) on every model call and trims the oldest conversation history to fit the context window instead of letting Ollama truncate silently.
+- Calls `/api/generate` for image generation with configurable width, height, and steps, exposed to the harness as the `generate_image` tool.
+- Stores conversations and generated artifacts under `~/.atelier/history`, with full per-turn telemetry (triage decision, plans, tool calls, results).
+
+## Prerequisites
+
+- [Ollama](https://ollama.com) running locally with at least one chat model pulled.
+- [Go 1.24+](https://go.dev/dl/)
+- [Node.js](https://nodejs.org) (for the Vite frontend)
+- [Wails CLI v2](https://wails.io/docs/gettingstarted/installation): `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
 
 ## Development
 
@@ -23,9 +56,9 @@ The first slice focuses on the gap in Ollama Desktop: image-generation models ca
 wails dev
 ```
 
-Wails will run the Vite frontend and the Go desktop backend together. In browser development mode, Wails exposes a dev server at `http://localhost:34115`.
+Wails runs the Vite frontend and the Go desktop backend together. In browser development mode, Wails exposes a dev server at `http://localhost:34115`.
 
-## Verification
+## Build
 
 ```sh
 go test ./...
@@ -39,7 +72,7 @@ The packaged macOS app is produced at:
 build/bin/Atelier.app
 ```
 
-## Ollama Models
+## Ollama models
 
 Recommended local starting points:
 
@@ -103,3 +136,17 @@ On startup, Atelier creates the storage root and history scaffold:
 ```
 
 Image generations are stored as conversation folders with `conversation.json`, turn JSON files, and generated image artifacts.
+
+## Contributing
+
+Atelier is early and single-author — contributions and feedback are welcome. Good areas to jump in:
+
+- Windows/Linux builds and testing (the Wails stack already supports them).
+- New harness tools and `SKILL.md` workflows.
+- Frontend polish and UX.
+
+Open an issue to discuss a change before a large PR, and run `go test ./...` before submitting.
+
+## License
+
+[MIT](LICENSE) © 2026 WizTools.org
