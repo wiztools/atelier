@@ -4,7 +4,7 @@
   "outputfilename": "Atelier",
   "info": {
     "companyName": "WizTools.org",
-    "productVersion": "0.0.1",
+    "productVersion": "0.0.2",
     "copyright": "\u00a9 2026 WizTools.org"
   },
   "frontend:install": "npm install",
