@@ -134,6 +134,17 @@ const minSidebarWidth = 240;
 const maxSidebarWidth = 560;
 const compactHistoryLimit = 10;
 const expandedHistoryBatchSize = 20;
+const defaultImageWidth = 768;
+const defaultImageHeight = 768;
+const defaultImageSteps = 24;
+
+// Coerce a numeric settings input to a positive integer, falling back to the
+// backend default when the field is cleared or otherwise invalid. Mirrors the
+// `<= 0` fallback merge in app.go's mergeAppConfig.
+function positiveIntOrDefault(value: string, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 function App() {
   const [baseURL, setBaseURL] = useState(defaultBaseURL);
@@ -154,9 +165,9 @@ function App() {
   const [activeConversationID, setActiveConversationID] = useState('');
   const [activeStream, setActiveStream] = useState<string | null>(null);
   const [inFlightConversations, setInFlightConversations] = useState<Record<string, InFlightConversation>>({});
-  const [imageWidth, setImageWidth] = useState(768);
-  const [imageHeight, setImageHeight] = useState(768);
-  const [imageSteps, setImageSteps] = useState(24);
+  const [imageWidth, setImageWidth] = useState(defaultImageWidth);
+  const [imageHeight, setImageHeight] = useState(defaultImageHeight);
+  const [imageSteps, setImageSteps] = useState(defaultImageSteps);
   const [configLoaded, setConfigLoaded] = useState(false);
   const [storageConfig, setStorageConfig] = useState<main.ConfigStorage | null>(null);
   const [toolConfig, setToolConfig] = useState<main.ConfigTools | null>(null);
@@ -429,9 +440,9 @@ function App() {
     const nextToolModel = config.providers?.ollama?.models?.tools || nextChatModel;
     const nextImageModel = config.providers?.ollama?.models?.image ?? '';
     const nextSystem = config.prompts?.system || 'You are Atelier, a precise local AI collaborator.';
-    const nextImageWidth = config.generation?.image?.width || 768;
+    const nextImageWidth = config.generation?.image?.width || defaultImageWidth;
     const nextImageHeight = config.generation?.image?.height || nextImageWidth;
-    const nextImageSteps = config.generation?.image?.steps || 24;
+    const nextImageSteps = config.generation?.image?.steps || defaultImageSteps;
 
     setStartupError('');
     setStorageConfig(config.storage ?? null);
@@ -1062,6 +1073,44 @@ function App() {
                       variant="icon"
                     />
                   </div>
+                </div>
+              </section>
+
+              <section className="settings-section three-column">
+                <div className="field">
+                  <label htmlFor="image-width">Image Width</label>
+                  <input
+                    id="image-width"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={imageWidth}
+                    onChange={(event) => setImageWidth(positiveIntOrDefault(event.target.value, defaultImageWidth))}
+                  />
+                </div>
+
+                <div className="field">
+                  <label htmlFor="image-height">Image Height</label>
+                  <input
+                    id="image-height"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={imageHeight}
+                    onChange={(event) => setImageHeight(positiveIntOrDefault(event.target.value, defaultImageHeight))}
+                  />
+                </div>
+
+                <div className="field">
+                  <label htmlFor="image-steps">Image Steps</label>
+                  <input
+                    id="image-steps"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={imageSteps}
+                    onChange={(event) => setImageSteps(positiveIntOrDefault(event.target.value, defaultImageSteps))}
+                  />
                 </div>
               </section>
 

@@ -844,6 +844,12 @@ button:disabled {
   gap: 18px;
 }
 
+.three-column {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 18px;
+}
+
 .chat-panel {
   min-height: 0;
   display: grid;
@@ -1605,7 +1611,8 @@ button:disabled {
     min-height: auto;
   }
 
-  .two-column {
+  .two-column,
+  .three-column {
     grid-template-columns: 1fr;
   }
 }
