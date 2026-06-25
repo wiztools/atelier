@@ -159,6 +159,7 @@ function App() {
   const [chat, setChat] = useState<ChatEntry[]>([]);
   const [collapsedThinkingIDs, setCollapsedThinkingIDs] = useState<Record<string, boolean>>({});
   const [copiedMessageID, setCopiedMessageID] = useState('');
+  const [copiedConversationID, setCopiedConversationID] = useState('');
   const [conversations, setConversations] = useState<main.ConversationSummary[]>([]);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [visibleHistoryCount, setVisibleHistoryCount] = useState(compactHistoryLimit);
@@ -636,6 +637,23 @@ function App() {
     setAttachments([]);
   }
 
+  async function copyConversationID(conversation: main.ConversationSummary) {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(conversation.id);
+      } else {
+        copyTextWithTextarea(conversation.id);
+      }
+      setCopiedConversationID(conversation.id);
+      if (copyResetRef.current) {
+        window.clearTimeout(copyResetRef.current);
+      }
+      copyResetRef.current = window.setTimeout(() => setCopiedConversationID(''), 1600);
+    } catch (error) {
+      console.error('copy failed', error);
+    }
+  }
+
   async function archiveConversation(conversation: main.ConversationSummary) {
     try {
       setOpenHistoryMenuID('');
@@ -886,6 +904,9 @@ function App() {
                             </button>
                             {openHistoryMenuID === conversation.id ? (
                               <div className="history-menu">
+                                <button onClick={() => copyConversationID(conversation)}>
+                                  {copiedConversationID === conversation.id ? '✓ Copied' : 'Copy ID'}
+                                </button>
                                 <button onClick={() => archiveConversation(conversation)}>Archive</button>
                               </div>
                             ) : null}
