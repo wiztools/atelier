@@ -1016,6 +1016,8 @@ func mergeToolsConfig(tools ConfigTools, defaults ConfigTools) ConfigTools {
 func defaultFilesystemToolAllowedCommands() []string {
 	return []string{
 		"cat",
+		"df",
+		"du",
 		"echo",
 		"find",
 		"grep",

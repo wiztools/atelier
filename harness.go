@@ -638,7 +638,7 @@ A failed or denied tool call is information, not a dead end: adapt the plan or t
 The chat model that answers the user cannot call tools or execute commands. If a user request or active SKILL.md requires a command, include it as a tool call now. Do not put instructions like "run this command" in the brief.
 Allowed tool calls:
 %s
-When "needsTools" is false, "toolCalls" must be []. Prefer read-only calls unless the user clearly asks to modify files or run a specific write-capable command. Filesystem paths and command working directories are scoped to Atelier's configured filesystem tool root.`, harnessChatMaxSteps, registry.PromptCatalog()))
+When "needsTools" is false, "toolCalls" must be []. Prefer read-only calls unless the user clearly asks to modify files or run a specific write-capable command. The filesystem tools and run_command operate on real files on this machine; paths and command working directories are confined to (but fully real within) %s.`, harnessChatMaxSteps, registry.PromptCatalog(), workspaceRootPhrase(h.config.Tools.Filesystem)))
 	if strings.TrimSpace(req.System) != "" {
 		system += "\n\nUser-facing system prompt to preserve:\n" + strings.TrimSpace(req.System)
 	}

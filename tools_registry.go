@@ -58,7 +58,7 @@ func newHarnessToolExecutionContext(config AppConfig) HarnessToolExecutionContex
 }
 
 func defaultHarnessToolRegistry(config AppConfig) HarnessToolRegistry {
-	definitions := filesystemToolDefinitions()
+	definitions := filesystemToolDefinitions(config.Tools.Filesystem)
 	if strings.TrimSpace(config.Providers.Ollama.Models.Image) != "" {
 		definitions = append(definitions, imageGenerationToolDefinition())
 	}
@@ -126,12 +126,41 @@ func filesystemToolRegistry() HarnessToolRegistry {
 	return defaultHarnessToolRegistry(defaultAppConfig())
 }
 
-func filesystemToolDefinitions() []HarnessToolDefinition {
+// workspaceRootPhrase describes the filesystem boundary in concrete terms.
+// The tools operate on real files on the host machine, confined to a real
+// directory — not an abstract or simulated "workspace". Naming the actual
+// root keeps a planning model from concluding it cannot observe the machine.
+func workspaceRootPhrase(fsConfig ConfigFilesystemTool) string {
+	if root := strings.TrimSpace(fsConfig.Root); root != "" {
+		return "the Atelier filesystem root (" + root + ")"
+	}
+	return "the Atelier filesystem root"
+}
+
+// runCommandDescription builds the run_command tool description from the live
+// filesystem config so the model is told exactly which commands it may run.
+// The command list is read from the same ConfigFilesystemTool.AllowedCommands
+// that fs_tools.go enforces, so the prompt and the allowlist cannot drift.
+func runCommandDescription(fsConfig ConfigFilesystemTool) string {
+	base := "Use this to run an allowlisted command on this machine. Commands run for real; the working directory is confined to " + workspaceRootPhrase(fsConfig) + " and its subdirectories. Use it when the user or a skill provides a command, or when a command is the direct way to gather evidence such as searching text, listing with filters, counting, or checking status."
+	allowed := make([]string, 0, len(fsConfig.AllowedCommands))
+	for _, cmd := range fsConfig.AllowedCommands {
+		if trimmed := strings.TrimSpace(cmd); trimmed != "" {
+			allowed = append(allowed, trimmed)
+		}
+	}
+	if len(allowed) == 0 {
+		return base + " No commands are currently permitted by the allowlist."
+	}
+	return base + " Allowed commands (nothing else will run): " + strings.Join(allowed, ", ") + "."
+}
+
+func filesystemToolDefinitions(fsConfig ConfigFilesystemTool) []HarnessToolDefinition {
 	definitions := []HarnessToolDefinition{
 		{
 			Name:        "list_files",
 			Title:       "List files",
-			Description: "Use this to inspect files and directories in the configured workspace.",
+			Description: "Use this to inspect real files and directories under " + workspaceRootPhrase(fsConfig) + " on this machine.",
 			Example:     `{"name":"list_files","path":"optional relative directory"}`,
 			Risk:        HarnessToolRiskRead,
 			Execute: func(_ context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
@@ -149,7 +178,7 @@ func filesystemToolDefinitions() []HarnessToolDefinition {
 		{
 			Name:        "read_file",
 			Title:       "Read file",
-			Description: "Use this to read a text file from the configured workspace.",
+			Description: "Use this to read a real text file from under " + workspaceRootPhrase(fsConfig) + " on this machine.",
 			Example:     `{"name":"read_file","path":"relative/path.txt","maxBytes":20000}`,
 			Risk:        HarnessToolRiskRead,
 			Validate: func(prefix string, call HarnessToolCall) []string {
@@ -177,7 +206,7 @@ func filesystemToolDefinitions() []HarnessToolDefinition {
 		{
 			Name:        "run_command",
 			Title:       "Run command",
-			Description: "Use this to run an allowlisted command in the configured workspace when the user or a skill provides a command, or when a command is the direct way to gather workspace evidence such as searching text, listing with filters, counting, or checking status.",
+			Description: runCommandDescription(fsConfig),
 			Example:     `{"name":"run_command","command":"rg","args":["-n","Atelier","."],"cwd":"optional relative directory"}`,
 			Risk:        HarnessToolRiskExec,
 			NeedsPermission: func(call HarnessToolCall) bool {
@@ -227,7 +256,7 @@ func filesystemToolDefinitions() []HarnessToolDefinition {
 		{
 			Name:        "write_file",
 			Title:       "Write file",
-			Description: "Use this only when the user clearly asks to create or modify a workspace file.",
+			Description: "Use this only when the user clearly asks to create or modify a real file under " + workspaceRootPhrase(fsConfig) + " on this machine.",
 			Example:     `{"name":"write_file","path":"relative/path.txt","content":"text","overwrite":false,"append":false}`,
 			Risk:        HarnessToolRiskWrite,
 			Validate: func(prefix string, call HarnessToolCall) []string {
@@ -349,8 +378,9 @@ func isReadOnlyCommandCall(call HarnessToolCall) bool {
 	}
 	name := normalizedCommandName(call.Command)
 	readOnlyCommands := map[string]bool{
-		"cat": true, "echo": true, "find": true, "grep": true, "head": true,
-		"ls": true, "pwd": true, "rg": true, "tail": true, "wc": true,
+		"cat": true, "df": true, "du": true, "echo": true, "find": true,
+		"grep": true, "head": true, "ls": true, "pwd": true, "rg": true,
+		"tail": true, "wc": true,
 	}
 	if !readOnlyCommands[name] {
 		return false
