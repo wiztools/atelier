@@ -150,6 +150,7 @@ function App() {
   const [baseURL, setBaseURL] = useState(defaultBaseURL);
   const [status, setStatus] = useState<main.OllamaStatus | null>(null);
   const [models, setModels] = useState<main.OllamaModel[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
   const [model, setModel] = useState('');
   const [toolModel, setToolModel] = useState('');
   const [imageModel, setImageModel] = useState('');
@@ -504,19 +505,24 @@ function App() {
   }
 
   async function refreshOllama(endpoint = baseURL) {
-    const nextStatus = await CheckOllama(endpoint);
-    setStatus(nextStatus);
-    if (!nextStatus.online) {
-      setModels([]);
-      return;
+    setRefreshing(true);
+    try {
+      const nextStatus = await CheckOllama(endpoint);
+      setStatus(nextStatus);
+      if (!nextStatus.online) {
+        setModels([]);
+        return;
+      }
+      const nextModels = asArray(await ListModels(endpoint));
+      setModels(nextModels);
+      const firstModel = nextModels[0]?.name ?? '';
+      const firstImageModel = nextModels.find((item) => item.imageGeneration)?.name ?? firstModel;
+      setModel((current) => current || firstModel);
+      setToolModel((current) => current || firstModel);
+      setImageModel((current) => current || firstImageModel);
+    } finally {
+      setRefreshing(false);
     }
-    const nextModels = asArray(await ListModels(endpoint));
-    setModels(nextModels);
-    const firstModel = nextModels[0]?.name ?? '';
-    const firstImageModel = nextModels.find((item) => item.imageGeneration)?.name ?? firstModel;
-    setModel((current) => current || firstModel);
-    setToolModel((current) => current || firstModel);
-    setImageModel((current) => current || firstImageModel);
   }
 
   async function resetWorkspace() {
@@ -880,7 +886,7 @@ function App() {
                         />
                       ) : (
                         <>
-                          <button className="history-open" onClick={() => openConversationSummary(conversation)}>
+                          <button className="history-open" onClick={() => openConversationSummary(conversation)} onDoubleClick={(event) => { event.preventDefault(); startEditingConversationTitle(conversation); }}>
                             <span>{conversation.title}</span>
                             <small
                               className={`history-kind${inFlight ? ' in-flight' : ''}`}
@@ -891,9 +897,6 @@ function App() {
                             </small>
                           </button>
                           <div className="history-actions">
-                            <button className="history-icon-button" aria-label={`Edit ${conversation.title}`} title="Edit" onClick={() => startEditingConversationTitle(conversation)}>
-                              ✎
-                            </button>
                             <button
                               className="history-icon-button"
                               aria-label={`More actions for ${conversation.title}`}
@@ -1146,7 +1149,23 @@ function App() {
         ) : (
           <>
             <div className="toolbar">
-              <div className="model-count">{asArray(models).length} local models</div>
+              <div className="toolbar-left">
+                <div className="model-count">{asArray(models).length} local models</div>
+                <button
+                  className={`refresh-icon${refreshing ? ' spinning' : ''}`}
+                  onClick={() => refreshOllama()}
+                  disabled={refreshing}
+                  aria-label="Refresh models"
+                  title="Refresh models"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.7-3" />
+                    <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.7 3" />
+                    <polyline points="21 4 21 9 16 9" />
+                    <polyline points="3 20 3 15 8 15" />
+                  </svg>
+                </button>
+              </div>
             </div>
 
             <div className="chat-panel">
