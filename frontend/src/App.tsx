@@ -152,7 +152,7 @@ function App() {
   const [models, setModels] = useState<main.OllamaModel[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [model, setModel] = useState('');
-  const [toolModel, setToolModel] = useState('');
+  const [harnessModel, setHarnessModel] = useState('');
   const [imageModel, setImageModel] = useState('');
   const [system, setSystem] = useState('You are Atelier, a precise local AI collaborator.');
   const [prompt, setPrompt] = useState('');
@@ -262,8 +262,8 @@ function App() {
           ollama: {
             baseURL,
             models: {
-              chat: model,
-              tools: toolModel,
+              primary: model,
+              harness: harnessModel,
               image: imageModel,
             },
           },
@@ -287,7 +287,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, toolModel, imageHeight, imageModel, imageSteps, imageWidth, model, storageConfig, system, toolConfig]);
+  }, [baseURL, configLoaded, harnessModel, imageHeight, imageModel, imageSteps, imageWidth, model, storageConfig, system, toolConfig]);
 
   useEffect(() => {
     const onChunk = (chunk: ChatChunk) => {
@@ -421,8 +421,8 @@ function App() {
   }, [openCapabilityID]);
 
   const modelOptions = useMemo(() => {
-    return Array.from(new Set([...asArray(models).map((item) => item.name), model, toolModel, imageModel].filter(Boolean)));
-  }, [toolModel, imageModel, model, models]);
+    return Array.from(new Set([...asArray(models).map((item) => item.name), model, harnessModel, imageModel].filter(Boolean)));
+  }, [harnessModel, imageModel, model, models]);
   const imageModelOptions = useMemo(() => {
     const detected = asArray(models).filter((item) => item.imageGeneration).map((item) => item.name).filter(Boolean);
     return detected.length ? detected : modelOptions;
@@ -438,8 +438,8 @@ function App() {
   async function loadConfig() {
     const config = await GetConfig();
     const nextBaseURL = config.providers?.ollama?.baseURL || defaultBaseURL;
-    const nextChatModel = config.providers?.ollama?.models?.chat ?? '';
-    const nextToolModel = config.providers?.ollama?.models?.tools || nextChatModel;
+    const nextPrimaryModel = config.providers?.ollama?.models?.primary ?? '';
+    const nextHarnessModel = config.providers?.ollama?.models?.harness || nextPrimaryModel;
     const nextImageModel = config.providers?.ollama?.models?.image ?? '';
     const nextSystem = config.prompts?.system || 'You are Atelier, a precise local AI collaborator.';
     const nextImageWidth = config.generation?.image?.width || defaultImageWidth;
@@ -450,8 +450,8 @@ function App() {
     setStorageConfig(config.storage ?? null);
     setToolConfig(config.tools ?? null);
     setBaseURL(nextBaseURL);
-    setModel(nextChatModel);
-    setToolModel(nextToolModel);
+    setModel(nextPrimaryModel);
+    setHarnessModel(nextHarnessModel);
     setImageModel(nextImageModel);
     setSystem(nextSystem);
     setImageWidth(nextImageWidth);
@@ -518,7 +518,7 @@ function App() {
       const firstModel = nextModels[0]?.name ?? '';
       const firstImageModel = nextModels.find((item) => item.imageGeneration)?.name ?? firstModel;
       setModel((current) => current || firstModel);
-      setToolModel((current) => current || firstModel);
+      setHarnessModel((current) => current || firstModel);
       setImageModel((current) => current || firstImageModel);
     } finally {
       setRefreshing(false);
@@ -1066,14 +1066,14 @@ function App() {
 
               <section className="settings-section two-column">
                 <div className="field">
-                  <label htmlFor="tool-model">Tool Model</label>
+                  <label htmlFor="harness-model">Harness Model</label>
                   <div className="model-inline-control">
-                    <select id="tool-model" value={toolModel} onChange={(event) => setToolModel(event.target.value)}>
+                    <select id="harness-model" value={harnessModel} onChange={(event) => setHarnessModel(event.target.value)}>
                       {modelOptions.map((name) => <option key={name}>{name}</option>)}
                     </select>
                     <ModelCapabilityLink
                       id="settings-tools"
-                      modelName={toolModel}
+                      modelName={harnessModel}
                       models={models}
                       openID={openCapabilityID}
                       setOpenID={setOpenCapabilityID}
@@ -1293,14 +1293,14 @@ function App() {
                     <input type="file" accept="image/*" multiple onChange={(event) => addImages(event.target.files)} />
                   </label>
                   <div className="composer-submit-row">
-                    <label className="model-inline" htmlFor="chat-model">
+                    <label className="model-inline" htmlFor="primary-model">
                       <span>Model</span>
                       <div className="model-inline-control">
-                        <select id="chat-model" value={model} onChange={(event) => setModel(event.target.value)}>
+                        <select id="primary-model" value={model} onChange={(event) => setModel(event.target.value)}>
                           {modelOptions.map((name) => <option key={name}>{name}</option>)}
                         </select>
                         <ModelCapabilityLink
-                          id="chat-model"
+                          id="primary-model"
                           modelName={model}
                           models={models}
                           openID={openCapabilityID}
@@ -1546,7 +1546,7 @@ function parseHarnessRun(value: unknown): HarnessRunView | undefined {
   return run.status || run.steps?.length ? run : undefined;
 }
 
-function buildRunningHarnessRun(requestID: string, conversationID: string, chatModel: string): HarnessRunView {
+function buildRunningHarnessRun(requestID: string, conversationID: string, primaryModel: string): HarnessRunView {
   return {
     mode: 'chat',
     status: 'running',
@@ -1558,9 +1558,9 @@ function buildRunningHarnessRun(requestID: string, conversationID: string, chatM
     },
     steps: [
       {kind: 'queued', status: 'completed', summary: 'turn accepted by harness'},
-      {kind: 'triage', status: 'completed', provider: 'ollama', model: chatModel, summary: 'chat model triaged the turn'},
-      {kind: 'model_call', status: 'completed', provider: 'ollama', model: chatModel, summary: 'chat model stream opened'},
-      {kind: 'streaming', status: 'running', provider: 'ollama', model: chatModel, summary: 'chat model response streaming to UI'},
+      {kind: 'triage', status: 'completed', provider: 'ollama', model: primaryModel, summary: 'primary model triaged the turn'},
+      {kind: 'model_call', status: 'completed', provider: 'ollama', model: primaryModel, summary: 'primary model stream opened'},
+      {kind: 'streaming', status: 'running', provider: 'ollama', model: primaryModel, summary: 'primary model response streaming to UI'},
       {kind: 'evaluation', status: 'pending'},
       {kind: 'saved', status: 'pending'},
     ],

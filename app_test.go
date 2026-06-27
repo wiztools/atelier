@@ -145,8 +145,8 @@ func TestMergeAppConfigFillsDefaults(t *testing.T) {
 	if config.Storage.History == "" {
 		t.Fatal("history storage should default")
 	}
-	if config.Providers.Ollama.Models.Tools != config.Providers.Ollama.Models.Chat {
-		t.Fatalf("tools model = %q, want chat default %q", config.Providers.Ollama.Models.Tools, config.Providers.Ollama.Models.Chat)
+	if config.Providers.Ollama.Models.Harness != config.Providers.Ollama.Models.Primary {
+		t.Fatalf("tools model = %q, want chat default %q", config.Providers.Ollama.Models.Harness, config.Providers.Ollama.Models.Primary)
 	}
 	if config.Prompts.System == "" {
 		t.Fatal("system prompt should default")
@@ -168,14 +168,14 @@ func TestMergeAppConfigFillsDefaults(t *testing.T) {
 	}
 }
 
-func TestMergeAppConfigDefaultsToolsModelToChatModel(t *testing.T) {
+func TestMergeAppConfigDefaultsHarnessModelToPrimaryModel(t *testing.T) {
 	merged := mergeAppConfig(AppConfig{
 		Providers: ConfigProviders{Ollama: ConfigOllama{
-			Models: ConfigOllamaModels{Chat: "chat-model"},
+			Models: ConfigOllamaModels{Primary: "chat-model"},
 		}},
 	})
-	if merged.Providers.Ollama.Models.Tools != "chat-model" {
-		t.Fatalf("tools model = %q, want chat model fallback", merged.Providers.Ollama.Models.Tools)
+	if merged.Providers.Ollama.Models.Harness != "chat-model" {
+		t.Fatalf("harness model = %q, want primary model fallback", merged.Providers.Ollama.Models.Harness)
 	}
 }
 
@@ -185,8 +185,8 @@ func TestMergeAppConfigNormalizesOllamaEndpoint(t *testing.T) {
 			Ollama: ConfigOllama{
 				BaseURL: "localhost:11434/",
 				Models: ConfigOllamaModels{
-					Chat:  "chat-model",
-					Tools: "harness-model",
+					Primary: "chat-model",
+					Harness: "harness-model",
 					Image: "image-model",
 				},
 			},
@@ -205,8 +205,8 @@ func TestMergeAppConfigNormalizesOllamaEndpoint(t *testing.T) {
 	if config.UI.Mode != "chat" {
 		t.Fatalf("mode = %q, want chat", config.UI.Mode)
 	}
-	if config.Providers.Ollama.Models.Tools != "harness-model" {
-		t.Fatalf("tools model = %q", config.Providers.Ollama.Models.Tools)
+	if config.Providers.Ollama.Models.Harness != "harness-model" {
+		t.Fatalf("tools model = %q", config.Providers.Ollama.Models.Harness)
 	}
 }
 
@@ -1756,8 +1756,8 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 		Artifacts: filepath.Join(home, ".atelier", "history"),
 	}
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
-	config.Providers.Ollama.Models.Chat = "chat-box-model"
-	config.Providers.Ollama.Models.Tools = "harness-model"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
 	if err := writeAppConfig(config); err != nil {
 		t.Fatalf("writeAppConfig returned error: %v", err)
 	}
@@ -1785,30 +1785,27 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 			t.Fatalf("request options = %+v, want num_ctx %d on every call", payload["options"], defaultOllamaNumCtx)
 		}
 		if requestedModel == "harness-model" {
-			t.Fatalf("tool model should never run on the direct-answer path, got request for %q", requestedModel)
+			if payload["stream"] == false {
+				decision := `{"needsTools":false,"responseMode":"text","toolTask":"","reason":"General knowledge answer."}`
+				triageBody := `{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Body:       io.NopCloser(strings.NewReader(triageBody)),
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+				}, nil
+			}
+			t.Fatalf("harness model should not stream on the direct-answer path, got stream request for %q", requestedModel)
 		}
-		const wantSystem = "You are Atelier, a precise local AI collaborator."
 		if payload["stream"] == false {
-			if requestedModel != "chat-box-model" {
-				t.Fatalf("triage model = %q, want chat-box-model", requestedModel)
-			}
-			if payload["format"] == nil {
-				t.Fatal("triage request missing structured output format")
-			}
-			decision := `{"needsTools":false,"toolTask":"","reason":"General knowledge answer."}`
-			body := `{"model":"chat-box-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Status:     "200 OK",
-				Body:       io.NopCloser(strings.NewReader(body)),
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-			}, nil
+			t.Fatalf("unexpected non-stream request for model %q", requestedModel)
 		}
 		if requestedModel != "chat-box-model" {
 			t.Fatalf("response stream model = %q, want chat-box-model", requestedModel)
 		}
 		// Assert the direct path leaves the system prompt untouched: the Ollama
 		// client prepends req.System as messages[0] with role "system".
+		const wantSystem = "You are Atelier, a precise local AI collaborator."
 		msgs, _ := payload["messages"].([]any)
 		if len(msgs) == 0 {
 			t.Fatalf("streaming call messages is empty, want at least a system message")
@@ -1834,8 +1831,8 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 			{Role: "user", Content: "Say hello"},
 		},
 	})
-	if strings.Join(requestedModels, ",") != "chat-box-model,chat-box-model" {
-		t.Fatalf("provider request models = %v, want triage then chat model stream", requestedModels)
+	if strings.Join(requestedModels, ",") != "harness-model,chat-box-model" {
+		t.Fatalf("provider request models = %v, want triage (harness model) then primary model stream", requestedModels)
 	}
 
 	conversations, err := listConversations(config.Storage)
@@ -1881,8 +1878,8 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 		t.Fatalf("harness steps = %+v, want full lifecycle timeline", harnessRun["steps"])
 	}
 	triageStep := harnessStepByKind(t, steps, "triage")
-	if triageStep["status"] != "completed" || triageStep["model"] != "chat-box-model" {
-		t.Fatalf("triage step = %+v, want completed triage on chat model", triageStep)
+	if triageStep["status"] != "completed" || triageStep["model"] != "harness-model" {
+		t.Fatalf("triage step = %+v, want completed triage on harness model", triageStep)
 	}
 	streaming := harnessStepByKind(t, steps, "streaming")
 	if streaming["status"] != "completed" || streaming["tokens"] != float64(3) {
@@ -1901,13 +1898,14 @@ func TestTriageFailureStillRunsToolPlannerAndAnswers(t *testing.T) {
 		Artifacts: filepath.Join(home, ".atelier", "history"),
 	}
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
-	config.Providers.Ollama.Models.Chat = "chat-box-model"
-	config.Providers.Ollama.Models.Tools = "harness-model"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
 	if err := writeAppConfig(config); err != nil {
 		t.Fatalf("writeAppConfig returned error: %v", err)
 	}
 
 	var requestedModels []string
+	nonStreamCount := 0
 	app := NewApp()
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Path != "/api/chat" {
@@ -1926,7 +1924,8 @@ func TestTriageFailureStillRunsToolPlannerAndAnswers(t *testing.T) {
 		requestedModel, _ := payload["model"].(string)
 		requestedModels = append(requestedModels, requestedModel)
 		if payload["stream"] == false {
-			if requestedModel == "chat-box-model" {
+			nonStreamCount++
+			if nonStreamCount == 1 {
 				return &http.Response{
 					StatusCode: http.StatusInternalServerError,
 					Status:     "500 Internal Server Error",
@@ -1961,8 +1960,8 @@ func TestTriageFailureStillRunsToolPlannerAndAnswers(t *testing.T) {
 		},
 	})
 
-	if strings.Join(requestedModels, ",") != "chat-box-model,harness-model,chat-box-model" {
-		t.Fatalf("provider request models = %v, want triage, planner, then chat stream", requestedModels)
+	if strings.Join(requestedModels, ",") != "harness-model,harness-model,chat-box-model" {
+		t.Fatalf("provider request models = %v, want triage (harness model), planner (harness model), then primary stream", requestedModels)
 	}
 
 	conversations, err := listConversations(config.Storage)
@@ -2021,8 +2020,8 @@ func TestHarnessSelectsSkillLoadsBodyAndPersistsMetadata(t *testing.T) {
 		Artifacts: filepath.Join(home, ".atelier", "history"),
 	}
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
-	config.Providers.Ollama.Models.Chat = "chat-box-model"
-	config.Providers.Ollama.Models.Tools = "harness-model"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
 	if err := writeAppConfig(config); err != nil {
 		t.Fatalf("writeAppConfig returned error: %v", err)
 	}
@@ -2111,8 +2110,8 @@ func TestHarnessSelectsSkillLoadsBodyAndPersistsMetadata(t *testing.T) {
 		t.Fatalf("harness skill metadata = %+v, want cleanup", runSkill)
 	}
 	triage, ok := harnessRun["triage"].(map[string]any)
-	if !ok || triage["needsTools"] != true || triage["reason"] != "user explicitly referenced a skill" {
-		t.Fatalf("harness run triage = %+v, want explicit-skill reason with needsTools true", harnessRun["triage"])
+	if !ok || triage["needsTools"] != true || triage["responseMode"] != "text" || triage["reason"] != "user explicitly referenced a skill" {
+		t.Fatalf("harness run triage = %+v, want explicit-skill reason with needsTools true and responseMode text", harnessRun["triage"])
 	}
 }
 
@@ -2147,8 +2146,8 @@ func TestHarnessExecutesSkillCommandInsteadOfDelegatingToFinalModel(t *testing.T
 	}
 	config.Tools.Filesystem.Root = filepath.Join(home, "workspace")
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
-	config.Providers.Ollama.Models.Chat = "chat-box-model"
-	config.Providers.Ollama.Models.Tools = "harness-model"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
 	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
 		t.Fatalf("MkdirAll returned error: %v", err)
 	}
@@ -2288,8 +2287,8 @@ func TestHarnessModelPlansKnowledgedPost(t *testing.T) {
 	}
 	config.Tools.Filesystem.Root = filepath.Join(home, "workspace")
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
-	config.Providers.Ollama.Models.Chat = "chat-box-model"
-	config.Providers.Ollama.Models.Tools = "harness-model"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
 	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
 		t.Fatalf("MkdirAll returned error: %v", err)
 	}
@@ -2398,8 +2397,8 @@ func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
 	}
 	config.Tools.Filesystem.Root = filepath.Join(home, "tool-root")
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
-	config.Providers.Ollama.Models.Chat = "chat-box-model"
-	config.Providers.Ollama.Models.Tools = "harness-model"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
 	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
 		t.Fatalf("MkdirAll returned error: %v", err)
 	}
@@ -2415,6 +2414,7 @@ func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
 	var plannerSystem string
 	var streamMessages []any
 	prepCalls := 0
+	nonStreamCount := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Path != "/api/chat" {
 			return &http.Response{
@@ -2429,14 +2429,14 @@ func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
 		if err := json.Unmarshal(data, &payload); err != nil {
 			t.Fatalf("provider request body is not JSON: %v", err)
 		}
-		requestedModel, _ := payload["model"].(string)
 		if payload["stream"] == false {
-			if requestedModel == "chat-box-model" {
-				decision := `{"needsTools":true,"toolTask":"Read status.txt to answer the status question.","reason":"The status lives in the workspace."}`
+			nonStreamCount++
+			if nonStreamCount == 1 {
+				decision := `{"needsTools":true,"responseMode":"text","toolTask":"Read status.txt to answer the status question.","reason":"The status lives in the workspace."}`
 				return &http.Response{
 					StatusCode: http.StatusOK,
 					Status:     "200 OK",
-					Body:       io.NopCloser(strings.NewReader(`{"model":"chat-box-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)),
+					Body:       io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)),
 					Header:     http.Header{"Content-Type": []string{"application/json"}},
 				}, nil
 			}
@@ -2560,8 +2560,8 @@ func TestHarnessFeedsToolFailureBackToPlanner(t *testing.T) {
 	}
 	config.Tools.Filesystem.Root = filepath.Join(home, "tool-root")
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
-	config.Providers.Ollama.Models.Chat = "chat-box-model"
-	config.Providers.Ollama.Models.Tools = "harness-model"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
 	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
 		t.Fatalf("MkdirAll returned error: %v", err)
 	}
@@ -2572,6 +2572,7 @@ func TestHarnessFeedsToolFailureBackToPlanner(t *testing.T) {
 	app := NewApp()
 	prepCalls := 0
 	streamCalls := 0
+	nonStreamCount := 0
 	var failureObservationPrompt string
 	var failureObservationRole string
 	var streamMessages []any
@@ -2584,11 +2585,11 @@ func TestHarnessFeedsToolFailureBackToPlanner(t *testing.T) {
 		if err := json.Unmarshal(data, &payload); err != nil {
 			t.Fatalf("provider request body is not JSON: %v", err)
 		}
-		requestedModel, _ := payload["model"].(string)
 		if payload["stream"] == false {
-			if requestedModel == "chat-box-model" {
-				decision := `{"needsTools":true,"toolTask":"Read missing-status.txt and report its contents.","reason":"The answer depends on a workspace file."}`
-				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"chat-box-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+			nonStreamCount++
+			if nonStreamCount == 1 {
+				decision := `{"needsTools":true,"responseMode":"text","toolTask":"Read missing-status.txt and report its contents.","reason":"The answer depends on a workspace file."}`
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
 			}
 			prepCalls++
 			if prepCalls == 1 {
@@ -2676,8 +2677,8 @@ func TestHarnessCautionsFinalModelAfterRepeatedInvalidPlans(t *testing.T) {
 	}
 	config.Tools.Filesystem.Root = filepath.Join(home, "tool-root")
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
-	config.Providers.Ollama.Models.Chat = "chat-box-model"
-	config.Providers.Ollama.Models.Tools = "harness-model"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
 	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
 		t.Fatalf("MkdirAll returned error: %v", err)
 	}
@@ -2776,8 +2777,8 @@ func TestBlankFinalModelProducesHarnessNotice(t *testing.T) {
 	}
 	config.Tools.Filesystem.Root = filepath.Join(home, "tool-root")
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
-	config.Providers.Ollama.Models.Chat = "chat-box-model"
-	config.Providers.Ollama.Models.Tools = "harness-model"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
 	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
 		t.Fatalf("MkdirAll returned error: %v", err)
 	}
@@ -2790,6 +2791,7 @@ func TestBlankFinalModelProducesHarnessNotice(t *testing.T) {
 
 	app := NewApp()
 	prepCalls := 0
+	nonStreamCount := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Path != "/api/chat" {
 			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("not found"))}, nil
@@ -2799,11 +2801,11 @@ func TestBlankFinalModelProducesHarnessNotice(t *testing.T) {
 		if err := json.Unmarshal(data, &payload); err != nil {
 			t.Fatalf("provider request body is not JSON: %v", err)
 		}
-		requestedModel, _ := payload["model"].(string)
 		if payload["stream"] == false {
-			if requestedModel == "chat-box-model" {
-				decision := `{"needsTools":true,"toolTask":"Read status.txt and confirm the status.","reason":"Need the actual status file."}`
-				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"chat-box-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+			nonStreamCount++
+			if nonStreamCount == 1 {
+				decision := `{"needsTools":true,"responseMode":"text","toolTask":"Read status.txt and confirm the status.","reason":"Need the actual status file."}`
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
 			}
 			prepCalls++
 			if prepCalls == 1 {
@@ -2855,8 +2857,8 @@ func TestHarnessCanRequestSecondToolRound(t *testing.T) {
 	}
 	config.Tools.Filesystem.Root = filepath.Join(home, "tool-root")
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
-	config.Providers.Ollama.Models.Chat = "chat-box-model"
-	config.Providers.Ollama.Models.Tools = "harness-model"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
 	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
 		t.Fatalf("MkdirAll returned error: %v", err)
 	}
@@ -2869,6 +2871,7 @@ func TestHarnessCanRequestSecondToolRound(t *testing.T) {
 
 	app := NewApp()
 	prepCalls := 0
+	nonStreamCount := 0
 	var responseSystem string
 	var streamMessages []any
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -2880,11 +2883,11 @@ func TestHarnessCanRequestSecondToolRound(t *testing.T) {
 		if err := json.Unmarshal(data, &payload); err != nil {
 			t.Fatalf("provider request body is not JSON: %v", err)
 		}
-		requestedModel, _ := payload["model"].(string)
 		if payload["stream"] == false {
-			if requestedModel == "chat-box-model" {
-				decision := `{"needsTools":true,"toolTask":"Discover and read the workspace notes.","reason":"The user asked to use workspace notes."}`
-				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"chat-box-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+			nonStreamCount++
+			if nonStreamCount == 1 {
+				decision := `{"needsTools":true,"responseMode":"text","toolTask":"Discover and read the workspace notes.","reason":"The user asked to use workspace notes."}`
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
 			}
 			prepCalls++
 			body := "{\"model\":\"harness-model\",\"message\":{\"role\":\"assistant\",\"content\":\"```json\\n{\\\"brief\\\":\\\"List workspace files first.\\\",\\\"needsTools\\\":true,\\\"reason\\\":\\\"Need to discover file names.\\\",\\\"toolCalls\\\":[{\\\"name\\\":\\\"list_files\\\",\\\"path\\\":\\\".\\\"}]}\\n```\"},\"done\":true,\"done_reason\":\"stop\",\"eval_count\":2}"
@@ -2989,8 +2992,8 @@ func TestHarnessGeneratesImageViaPlannedTool(t *testing.T) {
 		Artifacts: filepath.Join(home, ".atelier", "history"),
 	}
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
-	config.Providers.Ollama.Models.Chat = "chat-box-model"
-	config.Providers.Ollama.Models.Tools = "harness-model"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "chat-box-model"
 	config.Providers.Ollama.Models.Image = "image-model"
 	if err := writeAppConfig(config); err != nil {
 		t.Fatalf("writeAppConfig returned error: %v", err)
@@ -2999,6 +3002,7 @@ func TestHarnessGeneratesImageViaPlannedTool(t *testing.T) {
 	app := NewApp()
 	prepCalls := 0
 	imageCalls := 0
+	nonStreamCount := 0
 	var streamMessages []any
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch req.URL.Path {
@@ -3023,11 +3027,11 @@ func TestHarnessGeneratesImageViaPlannedTool(t *testing.T) {
 			if err := json.Unmarshal(data, &payload); err != nil {
 				t.Fatalf("provider request body is not JSON: %v", err)
 			}
-			requestedModel, _ := payload["model"].(string)
 			if payload["stream"] == false {
-				if requestedModel == "chat-box-model" {
-					decision := `{"needsTools":true,"toolTask":"Generate an image of a small house.","reason":"The user asked for an image."}`
-					return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"chat-box-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+				nonStreamCount++
+				if nonStreamCount == 1 {
+					decision := `{"needsTools":true,"responseMode":"image","toolTask":"Generate an image of a small house.","reason":"The user asked for an image."}`
+					return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
 				}
 				prepCalls++
 				body := `{"brief":"Generate the requested image and confirm it briefly.","needsTools":true,"reason":"The user asked for an image, which requires the image tool.","toolCalls":[{"name":"generate_image","content":"a small house with a red roof"}]}`
@@ -3089,7 +3093,7 @@ func TestHarnessGeneratesImageViaPlannedTool(t *testing.T) {
 		t.Fatalf("assistant image content = %+v, want one image artifact", assistant.Content)
 	}
 	if assistant.Model != "chat-box-model" {
-		t.Fatalf("assistant turn model = %q, want final chat model", assistant.Model)
+		t.Fatalf("assistant turn model = %q, want final primary model", assistant.Model)
 	}
 	tool, ok := assistant.ProviderResponse["tool"].(map[string]any)
 	if !ok || tool["name"] != "image_generation" || tool["model"] != "image-model" {
@@ -3115,8 +3119,8 @@ func TestStreamChatReturnsConversationAfterPendingTurn(t *testing.T) {
 		Artifacts: filepath.Join(home, ".atelier", "history"),
 	}
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
-	config.Providers.Ollama.Models.Chat = "chat-model"
-	config.Providers.Ollama.Models.Tools = "chat-model"
+	config.Providers.Ollama.Models.Primary = "chat-model"
+	config.Providers.Ollama.Models.Harness = "chat-model"
 	if err := writeAppConfig(config); err != nil {
 		t.Fatalf("writeAppConfig returned error: %v", err)
 	}
@@ -3286,8 +3290,8 @@ func TestWriteChatConversationPersistsInputImages(t *testing.T) {
 	if imageContent.MimeType != "image/png" {
 		t.Fatalf("image mime type = %q, want image/png", imageContent.MimeType)
 	}
-	if imageContent.Text != pngDataURL {
-		t.Fatalf("hydrated image text = %q, want data URL", imageContent.Text)
+	if !strings.HasPrefix(imageContent.Text, "/atelier-artifact/") {
+		t.Fatalf("hydrated image text = %q, want /atelier-artifact/ URL", imageContent.Text)
 	}
 }
 
@@ -3325,12 +3329,12 @@ func TestGenerateImageSendsAttachedImages(t *testing.T) {
 }
 
 func TestDecodeTriageDecisionAcceptsBareAndFencedJSON(t *testing.T) {
-	decision, err := decodeTriageDecision("```json\n{\"needsTools\":true,\"toolTask\":\"Read status.txt\",\"reason\":\"workspace question\"}\n```")
-	if err != nil || !decision.NeedsTools || decision.ToolTask != "Read status.txt" {
+	decision, err := decodeTriageDecision("```json\n{\"needsTools\":true,\"responseMode\":\"text\",\"toolTask\":\"Read status.txt\",\"reason\":\"workspace question\"}\n```")
+	if err != nil || !decision.NeedsTools || decision.ResponseMode != "text" || decision.ToolTask != "Read status.txt" {
 		t.Fatalf("decision = %+v, err = %v, want fenced JSON accepted", decision, err)
 	}
-	decision, err = decodeTriageDecision(`{"needsTools":false,"toolTask":"","reason":"general knowledge"}`)
-	if err != nil || decision.NeedsTools || decision.Reason != "general knowledge" {
+	decision, err = decodeTriageDecision(`{"needsTools":false,"responseMode":"text","toolTask":"","reason":"general knowledge"}`)
+	if err != nil || decision.NeedsTools || decision.ResponseMode != "text" || decision.Reason != "general knowledge" {
 		t.Fatalf("decision = %+v, err = %v, want bare JSON accepted", decision, err)
 	}
 	if _, err = decodeTriageDecision("I think tools are needed."); err == nil {
@@ -3341,7 +3345,7 @@ func TestDecodeTriageDecisionAcceptsBareAndFencedJSON(t *testing.T) {
 func TestTriageSystemPromptListsToolsSkillsAndRoot(t *testing.T) {
 	registry := filesystemToolRegistry()
 	prompt := triageSystemPrompt(registry, []SkillIndexEntry{{Name: "cleanup", Description: "Tidy the workspace"}}, "/tmp/workspace")
-	for _, want := range []string{"read_file", "run_command", "cleanup: Tidy the workspace", "/tmp/workspace", "needsTools"} {
+	for _, want := range []string{"read_file", "run_command", "cleanup: Tidy the workspace", "/tmp/workspace", "needsTools", "responseMode"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("triage prompt missing %q:\n%s", want, prompt)
 		}
@@ -3363,7 +3367,7 @@ func TestTriageChatTurnParsesDecision(t *testing.T) {
 		if payload["format"] == nil {
 			t.Fatal("triage request missing structured output format")
 		}
-		decision := `{"needsTools":true,"toolTask":"Read status.txt","reason":"workspace question"}`
+		decision := `{"needsTools":true,"responseMode":"text","toolTask":"Read status.txt","reason":"workspace question"}`
 		body := `{"model":"chat-box-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`
 		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
 	})
@@ -3372,8 +3376,8 @@ func TestTriageChatTurnParsesDecision(t *testing.T) {
 		BaseURL:  "http://ollama.test",
 		Messages: []ChatMessage{{Role: "user", Content: "What is the project status?"}},
 	}, "chat-box-model", nil)
-	if !decision.NeedsTools || decision.ToolTask != "Read status.txt" || decision.Error != "" {
-		t.Fatalf("decision = %+v, want parsed tool request", decision)
+	if !decision.NeedsTools || decision.ResponseMode != "text" || decision.ToolTask != "Read status.txt" || decision.Error != "" {
+		t.Fatalf("decision = %+v, want parsed tool request with responseMode text", decision)
 	}
 	if completion.EvalTokens != 2 {
 		t.Fatalf("completion tokens = %d, want telemetry from provider", completion.EvalTokens)
@@ -3413,7 +3417,7 @@ func TestTriageChatTurnStripsImagesFromRequest(t *testing.T) {
 				}
 			}
 		}
-		decision := `{"needsTools":false,"toolTask":"","reason":"general knowledge"}`
+		decision := `{"needsTools":false,"responseMode":"vision","toolTask":"","reason":"general knowledge"}`
 		body := `{"model":"chat-box-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":1}`
 		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
 	})
@@ -3466,5 +3470,214 @@ func TestAppendToolEvidenceToSystemUsesFixedNotesOnly(t *testing.T) {
 	})
 	if !strings.Contains(withBoth, invalidPlanAfterToolsSystemNote) {
 		t.Fatalf("system = %q, want mixed tools-ran-but-plan-invalid note", withBoth)
+	}
+}
+
+// TestImageModelAsChatModelDeliversImagesDespiteResponseError reproduces
+// conv_4777a3e5a8865dc82d56050b: the user selected an image generation model
+// as the primary model (different from the configured image model) and asked
+// for an image. The tool path generates the image with the configured image
+// model, and the harness model writes the text caption because the primary
+// model cannot produce text.
+func TestImageModelAsChatModelDeliversImagesDespiteResponseError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Primary = "x/z-image-turbo"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	config.Providers.Ollama.Models.Image = "flux2-klein"
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	nonStreamCount := 0
+	imageCalls := 0
+	streamCallCount := 0
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/api/generate":
+			imageCalls++
+			var genPayload map[string]any
+			genData, _ := io.ReadAll(req.Body)
+			if err := json.Unmarshal(genData, &genPayload); err != nil {
+				t.Fatalf("image request body is not JSON: %v", err)
+			}
+			if genPayload["model"] != "x/z-image-turbo" {
+				t.Fatalf("image generation model = %q, want x/z-image-turbo (primary model, not default)", genPayload["model"])
+			}
+			body := `{"model":"x/z-image-turbo","image":"iVBORw0KGgo=","done":true}`
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+		case "/api/chat":
+			var payload map[string]any
+			data, _ := io.ReadAll(req.Body)
+			if err := json.Unmarshal(data, &payload); err != nil {
+				t.Fatalf("provider request body is not JSON: %v", err)
+			}
+			if payload["stream"] == false {
+				nonStreamCount++
+				if nonStreamCount == 1 {
+					decision := `{"needsTools":true,"responseMode":"image","toolTask":"Generate the requested image.","reason":"The user asked to create an image."}`
+					return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+				}
+				if nonStreamCount == 2 {
+					plan := `{"brief":"Generate the image and confirm briefly.","needsTools":true,"reason":"Image generation required.","toolCalls":[{"name":"generate_image","content":"a watercolor of a journey"}]}`
+					return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(plan) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+				}
+				plan := `{"brief":"Image generated. Confirm for the user.","needsTools":false,"reason":"Image tool produced the artifact.","toolCalls":[]}`
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(plan) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+			}
+			streamCallCount++
+			if payload["model"] != "harness-model" {
+				t.Fatalf("final response model = %q, want harness-model (primary is image gen, cannot produce text)", payload["model"])
+			}
+			body := fmt.Sprintln(`{"model":"harness-model","message":{"role":"assistant","content":"Here is the image you requested."},"done":false}`) +
+				fmt.Sprintln(`{"model":"harness-model","done":true,"done_reason":"stop","eval_count":3}`)
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+		default:
+			t.Fatalf("unexpected provider path %q", req.URL.Path)
+		}
+		return nil, nil
+	})
+
+	app.runChatStream(context.Background(), "request-image-chat-model", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "x/z-image-turbo",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Create an image to showcase a journey."},
+		},
+	})
+
+	if imageCalls != 1 {
+		t.Fatalf("image calls = %d, want 1 generate_image call", imageCalls)
+	}
+	if streamCallCount != 1 {
+		t.Fatalf("stream calls = %d, want 1 final response stream (using harness model)", streamCallCount)
+	}
+
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	if len(detail.Turns) != 2 {
+		t.Fatalf("turn count = %d, want user and assistant", len(detail.Turns))
+	}
+	assistant := detail.Turns[1]
+	if assistant.Model != "harness-model" {
+		t.Fatalf("assistant model = %q, want harness model (primary is image gen, cannot produce text)", assistant.Model)
+	}
+	images := historyImagesForTest(assistant.Content)
+	if len(images) != 1 {
+		t.Fatalf("assistant image content = %+v, want one image artifact delivered", assistant.Content)
+	}
+}
+
+// TestImageModelAsChatModelDeliversImagesOnStreamError tests the safety net:
+// when both the image model (primary model) and the harness model fail to produce a
+// text response, images from the tool path are still delivered with a harness
+// notice rather than being silently dropped.
+func TestImageModelAsChatModelDeliversImagesOnStreamError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Primary = "x/z-image-turbo"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	config.Providers.Ollama.Models.Image = "flux2-klein"
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	nonStreamCount := 0
+	imageCalls := 0
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/api/generate":
+			imageCalls++
+			var genPayload map[string]any
+			genData, _ := io.ReadAll(req.Body)
+			if err := json.Unmarshal(genData, &genPayload); err != nil {
+				t.Fatalf("image request body is not JSON: %v", err)
+			}
+			if genPayload["model"] != "x/z-image-turbo" {
+				t.Fatalf("image generation model = %q, want x/z-image-turbo (primary model, not default)", genPayload["model"])
+			}
+			body := `{"model":"x/z-image-turbo","image":"iVBORw0KGgo=","done":true}`
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+		case "/api/chat":
+			var payload map[string]any
+			data, _ := io.ReadAll(req.Body)
+			if err := json.Unmarshal(data, &payload); err != nil {
+				t.Fatalf("provider request body is not JSON: %v", err)
+			}
+			if payload["stream"] == false {
+				nonStreamCount++
+				if nonStreamCount == 1 {
+					decision := `{"needsTools":true,"responseMode":"image","toolTask":"Generate the requested image.","reason":"The user asked to create an image."}`
+					return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+				}
+				if nonStreamCount == 2 {
+					plan := `{"brief":"Generate the image.","needsTools":true,"reason":"Image generation required.","toolCalls":[{"name":"generate_image","content":"a watercolor of a journey"}]}`
+					return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(plan) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+				}
+				plan := `{"brief":"Image generated.","needsTools":false,"reason":"Done.","toolCalls":[]}`
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(plan) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+			}
+			// Final response stream fails — harness model is unavailable.
+			return &http.Response{StatusCode: http.StatusInternalServerError, Status: "500 Internal Server Error", Body: io.NopCloser(strings.NewReader(`{"error":"model unavailable"}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+		default:
+			t.Fatalf("unexpected provider path %q", req.URL.Path)
+		}
+		return nil, nil
+	})
+
+	app.runChatStream(context.Background(), "request-image-stream-error", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "x/z-image-turbo",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Create an image to showcase a journey."},
+		},
+	})
+
+	if imageCalls != 1 {
+		t.Fatalf("image calls = %d, want 1 generate_image call", imageCalls)
+	}
+
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	if len(detail.Turns) != 2 {
+		t.Fatalf("turn count = %d, want user and assistant (images must be saved even on stream error)", len(detail.Turns))
+	}
+	assistant := detail.Turns[1]
+	images := historyImagesForTest(assistant.Content)
+	if len(images) != 1 {
+		t.Fatalf("assistant image content = %+v, want one image artifact delivered despite stream error", assistant.Content)
+	}
+	if !strings.Contains(assistant.Content[0].Text, "harness notice") {
+		t.Fatalf("assistant text = %q, want harness notice about the response model failure", assistant.Content[0].Text)
 	}
 }

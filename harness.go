@@ -27,9 +27,9 @@ const (
 	contextOmittedMarker      = "[Earlier conversation was omitted to fit the model's context window.]"
 )
 
-// The chat model's system prompt only ever receives these code-authored notes.
+// The primary model's system prompt only ever receives these code-authored notes.
 // Planner output (briefs, reasons) is telemetry and thinking, never prompt text,
-// so a weaker tool model can't cap what the chat model is allowed to know.
+// so a weaker harness model can't cap what the primary model is allowed to know.
 const toolEvidenceSystemNote = "Atelier ran workspace tools for this turn. Their observations appear as tool messages at the end of the conversation. Treat them as evidence: report failures honestly and do not claim an action succeeded unless an observation shows it. You cannot call tools yourself; if the user asked for an action that no observation confirms, say plainly that it was not completed."
 
 const invalidPlanSystemNote = "Atelier could not produce a valid tool plan for this turn, so no tools ran. You cannot call tools or execute commands. Do not run commands, paste commands as if executed, or claim any tool action succeeded. If the user asked for a tool action, report plainly that it could not be completed."
@@ -79,6 +79,7 @@ type HarnessToolCall struct {
 	TimeoutMS   int               `json:"timeoutMs,omitempty"`
 	Path        string            `json:"path,omitempty"`
 	Content     string            `json:"content,omitempty"`
+	Model       string            `json:"model,omitempty"`
 	Append      bool              `json:"append,omitempty"`
 	Overwrite   bool              `json:"overwrite,omitempty"`
 	MaxBytes    int               `json:"maxBytes,omitempty"`
@@ -115,7 +116,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		return
 	}
 	if strings.TrimSpace(req.Model) == "" {
-		req.Model = strings.TrimSpace(h.config.Providers.Ollama.Models.Chat)
+		req.Model = strings.TrimSpace(h.config.Providers.Ollama.Models.Primary)
 	}
 	conversationID := strings.TrimSpace(req.ConversationID)
 	if !req.turnStarted {
@@ -129,8 +130,8 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	req.ConversationID = conversationID
 	h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, ConversationID: conversationID})
 
-	chatModel := h.chatModelForRequest(req)
-	toolModel := h.toolModelFor(chatModel)
+	primaryModel := h.primaryModelForRequest(req)
+	harnessModel := h.harnessModelFor(primaryModel)
 	run := newHarnessRun(requestID, conversationID)
 	queued := run.appendStep("queued", 1, "", "", "turn accepted by harness")
 	run.completeStep(queued, "completed", "", 0, "")
@@ -145,11 +146,11 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		}
 	}
 
-	decision := HarnessTriageDecision{NeedsTools: true, Reason: "user explicitly referenced a skill"}
+	decision := HarnessTriageDecision{NeedsTools: true, ResponseMode: "text", Reason: "user explicitly referenced a skill"}
 	if explicitSkill == nil {
-		triage := run.appendStep("triage", 1, "ollama", chatModel, "chat model deciding whether tools are needed")
+		triage := run.appendStep("triage", 1, "ollama", harnessModel, "harness model deciding response mode and tools")
 		var completion ChatCompletionResult
-		decision, completion = h.triageChatTurn(ctx, req, chatModel, skillIndex)
+		decision, completion = h.triageChatTurn(ctx, req, harnessModel, skillIndex)
 		run.Steps[triage].Decision = triageDecisionLabel(decision)
 		status := "completed"
 		if decision.Error != "" {
@@ -159,11 +160,17 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	}
 	run.Triage = &decision
 
+	// Image mode requires tools (generate_image). Force it so the planner runs.
+	if decision.ResponseMode == "image" && !decision.NeedsTools {
+		decision.NeedsTools = true
+		decision.ToolTask = "Generate the requested image using the generate_image tool."
+	}
+
 	var preparation HarnessPreparedTurn
 	preparationThinking := ""
 	if decision.NeedsTools {
 		toolReq := req
-		toolReq.Model = toolModel
+		toolReq.Model = harnessModel
 		var err error
 		preparation, err = h.prepareChatTurnLoop(ctx, requestID, conversationID, toolReq, harnessTurnContext{
 			SkillIndex:     skillIndex,
@@ -171,6 +178,8 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			ExplicitSkill:  explicitSkill,
 			ExplicitReason: explicitReason,
 			ToolTask:       decision.ToolTask,
+			PrimaryModel:   primaryModel,
+			ResponseMode:   decision.ResponseMode,
 		}, &run)
 		if err != nil {
 			run.complete("failed", "harness_prepare_error")
@@ -187,12 +196,29 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		}
 	}
 
-	responseReq := h.preparedResponseRequest(req, chatModel, preparation)
+	// Resolve the response model: when the primary model is an image generation
+	// model, it cannot produce text or analyze images, so fall back to the
+	// harness model for the final response.
+	responseModel := h.responseModelFor(decision.ResponseMode, primaryModel, harnessModel)
+	responseReq := h.preparedResponseRequest(req, responseModel, preparation)
 	result, err := h.runFinalResponseAttempt(ctx, requestID, conversationID, responseReq, &run)
+
+	// Even if the text response stream failed, deliver any images the tool
+	// path produced rather than silently dropping them.
+	images, imageReq := imagesFromToolResults(preparation.ToolResults)
 	if err != nil {
-		run.complete("failed", result.Reason)
-		h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
-		return
+		if len(images) > 0 {
+			result = finalResponseAttempt{
+				Content: harnessEmptyResponseNotice(preparation.ToolResults),
+				Model:   responseModel,
+				Reason:  "response_stream_failed_images_delivered",
+			}
+			run.complete("completed", "response_stream_failed_images_delivered")
+		} else {
+			run.complete("failed", result.Reason)
+			h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
+			return
+		}
 	}
 	assistantThinking := preparationThinking + result.Thinking
 	assistantContent := result.Content
@@ -209,9 +235,8 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		}
 	}
 	if strings.TrimSpace(finalModel) == "" {
-		finalModel = chatModel
+		finalModel = responseModel
 	}
-	images, imageReq := imagesFromToolResults(preparation.ToolResults)
 	h.evaluateChatRun(&run, assistantContent, finalReason)
 	// The run is serialized into the saved turn, so the saved step is marked
 	// completed optimistically and flipped to failed if the write errors.
@@ -264,7 +289,7 @@ func imagesFromToolResults(results []HarnessToolResult) ([]string, ImageGenerate
 	return dedupeStrings(images), imageReq
 }
 
-func (h *HarnessEngine) chatModelForRequest(req ChatRequest) string {
+func (h *HarnessEngine) primaryModelForRequest(req ChatRequest) string {
 	model := strings.TrimSpace(req.SelectedModel)
 	if model == "" {
 		model = strings.TrimSpace(req.Model)
@@ -273,20 +298,45 @@ func (h *HarnessEngine) chatModelForRequest(req ChatRequest) string {
 }
 
 func triageDecisionLabel(decision HarnessTriageDecision) string {
-	if decision.NeedsTools {
-		return "tools"
+	mode := decision.ResponseMode
+	if mode == "" {
+		mode = "text"
 	}
-	return "direct_answer"
+	if decision.NeedsTools {
+		return mode + "+tools"
+	}
+	return mode
 }
 
-// toolModelFor resolves the planning model for the tool path; an unset config
-// falls back to the chat model so a one-model setup still works.
-func (h *HarnessEngine) toolModelFor(chatModel string) string {
-	model := strings.TrimSpace(h.config.Providers.Ollama.Models.Tools)
+// harnessModelFor resolves the planning model for the tool path; an unset config
+// falls back to the primary model so a one-model setup still works.
+func (h *HarnessEngine) harnessModelFor(primaryModel string) string {
+	model := strings.TrimSpace(h.config.Providers.Ollama.Models.Harness)
 	if model == "" {
-		return chatModel
+		return primaryModel
 	}
 	return model
+}
+
+// responseModelFor resolves which model should produce the final response,
+// based on the triage response mode and the configured models.
+//
+// For responseMode "image": the image was already generated by the tool path,
+// so the final response is just a text caption. An image generation model
+// cannot produce text, so always use the harness model.
+//
+// For responseMode "text" and "vision": use the primary model, unless it is
+// the configured image generation model (which can't do text or vision), in
+// which case fall back to the harness model.
+func (h *HarnessEngine) responseModelFor(mode, primaryModel, harnessModel string) string {
+	if mode == "image" {
+		return harnessModel
+	}
+	imageModel := strings.TrimSpace(h.config.Providers.Ollama.Models.Image)
+	if imageModel != "" && primaryModel == imageModel {
+		return harnessModel
+	}
+	return primaryModel
 }
 
 func (h *HarnessEngine) runFinalResponseAttempt(ctx context.Context, requestID, conversationID string, req ChatRequest, run *HarnessRun) (finalResponseAttempt, error) {
@@ -433,13 +483,15 @@ func truncateChatHistory(messages []ChatMessage, budgetChars int) []ChatMessage 
 
 // harnessTurnContext carries what RunChatStream resolved before entering the
 // tool path: the skill index (loaded once per turn), any explicit skill the
-// user named, and the chat model's triage task for the planner.
+// user named, and the primary model's triage task for the planner.
 type harnessTurnContext struct {
 	SkillIndex     []SkillIndexEntry
 	SkillIndexErr  error
 	ExplicitSkill  *SkillIndexEntry
 	ExplicitReason string
 	ToolTask       string
+	PrimaryModel   string
+	ResponseMode   string
 }
 
 func (h *HarnessEngine) selectSkillForTurn(ctx context.Context, req ChatRequest, turn harnessTurnContext) (*HarnessSkillDecision, *LoadedSkill) {
@@ -606,7 +658,7 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 		}
 
 		toolStep := run.appendStep("tool_call", iteration, "tools", "", "tool calls requested by harness planning")
-		results := h.runHarnessToolCalls(ctx, requestID, conversationID, plan.ToolCalls)
+		results := h.runHarnessToolCalls(ctx, requestID, conversationID, plan.ToolCalls, turn)
 		round.ToolResults = results
 		prepared.Rounds = append(prepared.Rounds, round)
 		prepared.ToolResults = append(prepared.ToolResults, results...)
@@ -627,7 +679,7 @@ func (h *HarnessEngine) plannerSystemPrompt(registry HarnessToolRegistry, req Ch
 	system := strings.TrimSpace(fmt.Sprintf(`You are Atelier's private harness model. You gather evidence for the final model that will answer the user.
 Do not answer the user directly. Do not include hidden chain-of-thought. Respond only with a JSON tool plan matching the response schema:
 {
-  "brief": "concise guidance for the chat model",
+  "brief": "concise guidance for the primary model",
   "needsTools": false,
   "reason": "why tools are or are not needed",
   "toolCalls": []
@@ -635,7 +687,7 @@ Do not answer the user directly. Do not include hidden chain-of-thought. Respond
 You plan in rounds, at most %d in total. Each round may request up to 3 tool calls. The harness executes them and returns each result, including failures, as a tool message; read the results and plan the next round.
 When you have enough evidence, or none is needed, set "needsTools" false with empty "toolCalls" and write the brief: intent, constraints, relevant evidence, response shape, and cautions for the final model.
 A failed or denied tool call is information, not a dead end: adapt the plan or tell the final model to report the failure plainly. Never claim an action succeeded unless a tool result shows it.
-The chat model that answers the user cannot call tools or execute commands. If a user request or active SKILL.md requires a command, include it as a tool call now. Do not put instructions like "run this command" in the brief.
+The primary model that answers the user cannot call tools or execute commands. If a user request or active SKILL.md requires a command, include it as a tool call now. Do not put instructions like "run this command" in the brief.
 Allowed tool calls:
 %s
 When "needsTools" is false, "toolCalls" must be []. Prefer read-only calls unless the user clearly asks to modify files or run a specific write-capable command. The filesystem tools and run_command operate on real files on this machine; paths and command working directories are confined to (but fully real within) %s.`, harnessChatMaxSteps, registry.PromptCatalog(), workspaceRootPhrase(h.config.Tools.Filesystem)))
@@ -646,7 +698,7 @@ When "needsTools" is false, "toolCalls" must be []. Prefer read-only calls unles
 		system += "\n\nActive SKILL.md selected for this turn. Follow these instructions when planning tools and writing the brief, including any workflow or command guidance that applies. Do not quote the skill unless the user asks about process.\n\n" + loadedSkill.Body
 	}
 	if strings.TrimSpace(toolTask) != "" {
-		system += "\n\nThe chat model triaged this turn and requested tool evidence:\n" + strings.TrimSpace(toolTask)
+		system += "\n\nThe primary model triaged this turn and requested tool evidence:\n" + strings.TrimSpace(toolTask)
 	}
 	return system
 }
@@ -972,10 +1024,21 @@ func validateHarnessToolCall(index int, call HarnessToolCall, registry HarnessTo
 	return definition.Validate(prefix, call)
 }
 
-func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conversationID string, calls []HarnessToolCall) []HarnessToolResult {
+func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conversationID string, calls []HarnessToolCall, turn harnessTurnContext) []HarnessToolResult {
 	gateway := newToolGateway(h.app, h.config)
 	results := make([]HarnessToolResult, 0, len(calls))
 	for _, call := range calls {
+		// When the user selected a model that is not the harness model as the
+		// primary model and the turn is in image mode, use that model for
+		// generate_image instead of the configured default. This lets the user
+		// pick a different image model per turn. When the primary model IS the
+		// harness model (a text model), the configured image model is correct.
+		if call.Name == "generate_image" && turn.ResponseMode == "image" &&
+			turn.PrimaryModel != "" && turn.PrimaryModel != h.config.Providers.Ollama.Models.Harness {
+			if strings.TrimSpace(call.Model) == "" {
+				call.Model = turn.PrimaryModel
+			}
+		}
 		results = append(results, gateway.Execute(ctx, ToolExecutionRequest{
 			Name:           call.Name,
 			Call:           call,

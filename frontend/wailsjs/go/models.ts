@@ -119,8 +119,8 @@ export namespace main {
 	    }
 	}
 	export class ConfigOllamaModels {
-	    chat: string;
-	    tools: string;
+	    primary: string;
+	    harness: string;
 	    image: string;
 	
 	    static createFrom(source: any = {}) {
@@ -129,8 +129,8 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.chat = source["chat"];
-	        this.tools = source["tools"];
+	        this.primary = source["primary"];
+	        this.harness = source["harness"];
 	        this.image = source["image"];
 	    }
 	}
@@ -577,6 +577,7 @@ export namespace main {
 	    timeoutMs?: number;
 	    path?: string;
 	    content?: string;
+	    model?: string;
 	    append?: boolean;
 	    overwrite?: boolean;
 	    maxBytes?: number;
@@ -596,6 +597,7 @@ export namespace main {
 	        this.timeoutMs = source["timeoutMs"];
 	        this.path = source["path"];
 	        this.content = source["content"];
+	        this.model = source["model"];
 	        this.append = source["append"];
 	        this.overwrite = source["overwrite"];
 	        this.maxBytes = source["maxBytes"];

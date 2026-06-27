@@ -82,7 +82,10 @@ func imageGenerationToolDefinition() HarnessToolDefinition {
 			if tools.GenerateImage == nil {
 				return nil, "image generation unavailable", errors.New("image generation is not available in this context")
 			}
-			model := strings.TrimSpace(tools.Config.Providers.Ollama.Models.Image)
+			model := strings.TrimSpace(call.Model)
+			if model == "" {
+				model = strings.TrimSpace(tools.Config.Providers.Ollama.Models.Image)
+			}
 			if model == "" {
 				return nil, "image generation unavailable", errors.New("no image model is configured")
 			}

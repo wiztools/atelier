@@ -84,9 +84,9 @@ type ConfigOllama struct {
 }
 
 type ConfigOllamaModels struct {
-	Chat  string `json:"chat"`
-	Tools string `json:"tools"`
-	Image string `json:"image"`
+	Primary string `json:"primary"`
+	Harness string `json:"harness"`
+	Image   string `json:"image"`
 }
 
 type ConfigPrompts struct {
@@ -627,7 +627,7 @@ func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {
 	}
 	engine := newHarnessEngine(config, a)
 	if strings.TrimSpace(req.Model) == "" {
-		req.Model = strings.TrimSpace(config.Providers.Ollama.Models.Chat)
+		req.Model = strings.TrimSpace(config.Providers.Ollama.Models.Primary)
 	}
 	if strings.TrimSpace(req.Model) == "" {
 		return nil, errors.New("model is required")
@@ -925,9 +925,9 @@ func defaultAppConfig() AppConfig {
 			Ollama: ConfigOllama{
 				BaseURL: defaultOllamaBaseURL,
 				Models: ConfigOllamaModels{
-					Chat:  "mistral-small3.1:latest",
-					Tools: "mistral-small3.1:latest",
-					Image: "x/z-image-turbo:latest",
+					Primary: "mistral-small3.1:latest",
+					Harness: "mistral-small3.1:latest",
+					Image:   "x/z-image-turbo:latest",
 				},
 				NumCtx: defaultOllamaNumCtx,
 			},
@@ -967,11 +967,11 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	} else {
 		config.Providers.Ollama.BaseURL = defaults.Providers.Ollama.BaseURL
 	}
-	if strings.TrimSpace(config.Providers.Ollama.Models.Chat) == "" {
-		config.Providers.Ollama.Models.Chat = defaults.Providers.Ollama.Models.Chat
+	if strings.TrimSpace(config.Providers.Ollama.Models.Primary) == "" {
+		config.Providers.Ollama.Models.Primary = defaults.Providers.Ollama.Models.Primary
 	}
-	if strings.TrimSpace(config.Providers.Ollama.Models.Tools) == "" {
-		config.Providers.Ollama.Models.Tools = config.Providers.Ollama.Models.Chat
+	if strings.TrimSpace(config.Providers.Ollama.Models.Harness) == "" {
+		config.Providers.Ollama.Models.Harness = config.Providers.Ollama.Models.Primary
 	}
 	if strings.TrimSpace(config.Providers.Ollama.Models.Image) == "" {
 		config.Providers.Ollama.Models.Image = defaults.Providers.Ollama.Models.Image
@@ -1633,13 +1633,18 @@ func readJSONFile(path string, target any) error {
 	return json.Unmarshal(data, target)
 }
 
+// hydrateHistoryContent resolves image content items to URLs the frontend can
+// render. Instead of embedding the full base64 data URL (which can be several
+// MB for generated images), it sets a relative URL that the Wails asset
+// handler serves from disk. This avoids pushing large payloads through the
+// JSON IPC boundary.
 func hydrateHistoryContent(conversationDir string, contents []HistoryContent) []HistoryContent {
 	hydrated := make([]HistoryContent, 0, len(contents))
 	for _, content := range contents {
 		if content.Type == "image" && content.Path != "" && !strings.HasPrefix(content.Path, "data:image/") {
-			path := filepath.Join(conversationDir, filepath.FromSlash(content.Path))
-			if data, err := os.ReadFile(path); err == nil && isImageBytes(data) {
-				content.Text = "data:" + content.MimeType + ";base64," + base64.StdEncoding.EncodeToString(data)
+			absPath := filepath.Join(conversationDir, filepath.FromSlash(content.Path))
+			if _, err := os.Stat(absPath); err == nil {
+				content.Text = "/atelier-artifact" + absPath
 			}
 		}
 		hydrated = append(hydrated, content)
