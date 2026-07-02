@@ -880,9 +880,12 @@ func (a *App) SaveOpenRouterAPIKey(apiKey string) error {
 	return saveOpenRouterAPIKey(apiKey)
 }
 
-func (a *App) HasOpenRouterAPIKey() bool {
+func (a *App) HasOpenRouterAPIKey() (bool, error) {
 	key, err := loadOpenRouterAPIKey()
-	return err == nil && strings.TrimSpace(key) != ""
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(key) != "", nil
 }
 
 // resolvedPrimaryModelAndProvider returns which model/provider the primary

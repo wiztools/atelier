@@ -58,6 +58,7 @@ func resolvedProvider(req ChatRequest) string {
 }
 
 var errUnknownProvider = errors.New("unknown provider")
+var errOpenRouterKeyNotConfigured = errors.New("openrouter api key is not configured")
 
 // ProviderRegistry resolves a provider ID to a live ChatProvider.
 type ProviderRegistry struct {
@@ -78,7 +79,7 @@ func (registry ProviderRegistry) Resolve(providerID, baseURL string) (ChatProvid
 			return nil, fmt.Errorf("openrouter api key is not available: %w", err)
 		}
 		if strings.TrimSpace(apiKey) == "" {
-			return nil, errors.New("openrouter api key is not configured")
+			return nil, errOpenRouterKeyNotConfigured
 		}
 		return newOpenRouterProvider(newOpenRouterClient(registry.app.client, apiKey)), nil
 	default:

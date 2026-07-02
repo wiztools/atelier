@@ -3806,19 +3806,39 @@ func TestProviderRegistryRejectsUnknownProvider(t *testing.T) {
 func TestAppSaveAndHasOpenRouterAPIKey(t *testing.T) {
 	keyring.MockInit()
 	app := NewApp()
-	if app.HasOpenRouterAPIKey() {
+	hasKey, err := app.HasOpenRouterAPIKey()
+	if err != nil {
+		t.Fatalf("HasOpenRouterAPIKey returned error: %v", err)
+	}
+	if hasKey {
 		t.Fatal("HasOpenRouterAPIKey() = true before any key is saved")
 	}
 	if err := app.SaveOpenRouterAPIKey("sk-or-test"); err != nil {
 		t.Fatalf("SaveOpenRouterAPIKey returned error: %v", err)
 	}
-	if !app.HasOpenRouterAPIKey() {
+	hasKey, err = app.HasOpenRouterAPIKey()
+	if err != nil {
+		t.Fatalf("HasOpenRouterAPIKey returned error: %v", err)
+	}
+	if !hasKey {
 		t.Fatal("HasOpenRouterAPIKey() = false after saving a key")
 	}
 	if err := app.SaveOpenRouterAPIKey(""); err != nil {
 		t.Fatalf("SaveOpenRouterAPIKey(\"\") returned error: %v", err)
 	}
-	if app.HasOpenRouterAPIKey() {
+	hasKey, err = app.HasOpenRouterAPIKey()
+	if err != nil {
+		t.Fatalf("HasOpenRouterAPIKey returned error: %v", err)
+	}
+	if hasKey {
 		t.Fatal("HasOpenRouterAPIKey() = true after saving an empty key (should clear)")
+	}
+}
+
+func TestProviderRegistryResolveOpenRouterMissingKeyReturnsSentinel(t *testing.T) {
+	keyring.MockInit()
+	app := NewApp()
+	if _, err := newProviderRegistry(app).Resolve("openrouter", ""); !errors.Is(err, errOpenRouterKeyNotConfigured) {
+		t.Fatalf("Resolve error = %v, want errOpenRouterKeyNotConfigured", err)
 	}
 }
