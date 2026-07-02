@@ -467,9 +467,13 @@ function App() {
     };
   }, [openCapabilityID]);
 
+  // modelOptions feeds the Ollama-only lists (primary picker's Ollama branch,
+  // harness dropdown, image-model fallback), so it self-includes the Ollama
+  // primary — never the active `model`, which may be an OpenRouter id and must
+  // not leak into any Ollama option list.
   const modelOptions = useMemo(() => {
-    return Array.from(new Set([...asArray(models).map((item) => item.name), model, harnessModel, imageModel].filter(Boolean)));
-  }, [harnessModel, imageModel, model, models]);
+    return Array.from(new Set([...asArray(models).map((item) => item.name), primaryModels.ollama, harnessModel, imageModel].filter(Boolean)));
+  }, [harnessModel, imageModel, primaryModels.ollama, models]);
   const primaryModelOptions = useMemo(() => {
     if (primaryProvider === 'openrouter') {
       return asArray(openRouterModels)
