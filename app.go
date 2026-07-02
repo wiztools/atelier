@@ -61,6 +61,7 @@ type AppConfig struct {
 	Version    int              `json:"version"`
 	Storage    ConfigStorage    `json:"storage"`
 	Providers  ConfigProviders  `json:"providers"`
+	Models     ConfigModels     `json:"models"`
 	Prompts    ConfigPrompts    `json:"prompts"`
 	Generation ConfigGeneration `json:"generation"`
 	Tools      ConfigTools      `json:"tools"`
@@ -74,7 +75,8 @@ type ConfigStorage struct {
 }
 
 type ConfigProviders struct {
-	Ollama ConfigOllama `json:"ollama"`
+	Ollama     ConfigOllama     `json:"ollama"`
+	OpenRouter ConfigOpenRouter `json:"openrouter"`
 }
 
 type ConfigOllama struct {
@@ -87,6 +89,15 @@ type ConfigOllamaModels struct {
 	Primary string `json:"primary"`
 	Harness string `json:"harness"`
 	Image   string `json:"image"`
+}
+
+type ConfigOpenRouter struct {
+	Enabled bool   `json:"enabled"`
+	Primary string `json:"primary,omitempty"`
+}
+
+type ConfigModels struct {
+	PrimaryProvider string `json:"primaryProvider,omitempty"`
 }
 
 type ConfigPrompts struct {
@@ -841,6 +852,19 @@ func (a *App) ollamaClient(baseURL string) OllamaClient {
 	return newOllamaClient(a.client, a.resolveBaseURL(baseURL))
 }
 
+// resolvedPrimaryModelAndProvider returns which model/provider the primary
+// chat role should use when a request doesn't specify one explicitly.
+func (a *App) resolvedPrimaryModelAndProvider(config AppConfig) (model, provider string) {
+	provider = strings.TrimSpace(config.Models.PrimaryProvider)
+	if provider == "" {
+		provider = "ollama"
+	}
+	if provider == "openrouter" {
+		return strings.TrimSpace(config.Providers.OpenRouter.Primary), provider
+	}
+	return strings.TrimSpace(config.Providers.Ollama.Models.Primary), provider
+}
+
 func normalizeBaseURL(baseURL string) (string, error) {
 	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
@@ -933,6 +957,9 @@ func defaultAppConfig() AppConfig {
 				NumCtx: defaultOllamaNumCtx,
 			},
 		},
+		Models: ConfigModels{
+			PrimaryProvider: "ollama",
+		},
 		Prompts: ConfigPrompts{
 			System: "You are Atelier, a precise local AI collaborator.",
 		},
@@ -979,6 +1006,9 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	}
 	if config.Providers.Ollama.NumCtx <= 0 {
 		config.Providers.Ollama.NumCtx = defaults.Providers.Ollama.NumCtx
+	}
+	if strings.TrimSpace(config.Models.PrimaryProvider) == "" {
+		config.Models.PrimaryProvider = defaults.Models.PrimaryProvider
 	}
 	if strings.TrimSpace(config.Prompts.System) == "" {
 		config.Prompts.System = defaults.Prompts.System

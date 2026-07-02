@@ -168,6 +168,51 @@ func TestMergeAppConfigFillsDefaults(t *testing.T) {
 	}
 }
 
+func TestMergeAppConfigDefaultsPrimaryProviderToOllama(t *testing.T) {
+	merged := mergeAppConfig(AppConfig{})
+	if merged.Models.PrimaryProvider != "ollama" {
+		t.Fatalf("Models.PrimaryProvider = %q, want ollama", merged.Models.PrimaryProvider)
+	}
+	if merged.Providers.OpenRouter.Enabled {
+		t.Fatalf("Providers.OpenRouter.Enabled = true, want false by default")
+	}
+}
+
+func TestMergeAppConfigPreservesExplicitPrimaryProvider(t *testing.T) {
+	merged := mergeAppConfig(AppConfig{
+		Models: ConfigModels{PrimaryProvider: "openrouter"},
+		Providers: ConfigProviders{
+			OpenRouter: ConfigOpenRouter{Enabled: true, Primary: "anthropic/claude-3.5-sonnet"},
+		},
+	})
+	if merged.Models.PrimaryProvider != "openrouter" {
+		t.Fatalf("Models.PrimaryProvider = %q, want openrouter", merged.Models.PrimaryProvider)
+	}
+	if merged.Providers.OpenRouter.Primary != "anthropic/claude-3.5-sonnet" {
+		t.Fatalf("Providers.OpenRouter.Primary = %q, want preserved value", merged.Providers.OpenRouter.Primary)
+	}
+}
+
+func TestResolvedPrimaryModelAndProviderOllama(t *testing.T) {
+	app := NewApp()
+	config := defaultAppConfig()
+	model, provider := app.resolvedPrimaryModelAndProvider(config)
+	if provider != "ollama" || model != config.Providers.Ollama.Models.Primary {
+		t.Fatalf("resolvedPrimaryModelAndProvider = (%q, %q), want (%q, ollama)", model, provider, config.Providers.Ollama.Models.Primary)
+	}
+}
+
+func TestResolvedPrimaryModelAndProviderOpenRouter(t *testing.T) {
+	app := NewApp()
+	config := defaultAppConfig()
+	config.Models.PrimaryProvider = "openrouter"
+	config.Providers.OpenRouter.Primary = "anthropic/claude-3.5-sonnet"
+	model, provider := app.resolvedPrimaryModelAndProvider(config)
+	if provider != "openrouter" || model != "anthropic/claude-3.5-sonnet" {
+		t.Fatalf("resolvedPrimaryModelAndProvider = (%q, %q), want (anthropic/claude-3.5-sonnet, openrouter)", model, provider)
+	}
+}
+
 func TestMergeAppConfigDefaultsHarnessModelToPrimaryModel(t *testing.T) {
 	merged := mergeAppConfig(AppConfig{
 		Providers: ConfigProviders{Ollama: ConfigOllama{
