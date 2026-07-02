@@ -29,11 +29,11 @@ const (
 // The primary model's system prompt only ever receives these code-authored notes.
 // Planner output (briefs, reasons) is telemetry and thinking, never prompt text,
 // so a weaker harness model can't cap what the primary model is allowed to know.
-const toolEvidenceSystemNote = "Atelier ran workspace tools for this turn. Their observations appear as tool messages at the end of the conversation. Treat them as evidence: report failures honestly and do not claim an action succeeded unless an observation shows it. You cannot call tools yourself; if the user asked for an action that no observation confirms, say plainly that it was not completed."
+const toolEvidenceSystemNote = "Atelier ran workspace tools for this turn. Their observations appear at the end of the conversation. Treat them as evidence: report failures honestly and do not claim an action succeeded unless an observation shows it. You cannot call tools yourself; if the user asked for an action that no observation confirms, say plainly that it was not completed."
 
 const invalidPlanSystemNote = "Atelier could not produce a valid tool plan for this turn, so no tools ran. You cannot call tools or execute commands. Do not run commands, paste commands as if executed, or claim any tool action succeeded. If the user asked for a tool action, report plainly that it could not be completed."
 
-const invalidPlanAfterToolsSystemNote = "Atelier ran workspace tools for this turn, but its latest tool plan was invalid, so the most recently requested action did not run. Tool observations appear as tool messages at the end of the conversation. Treat them as evidence: report failures honestly and do not claim an action succeeded unless an observation shows it. You cannot call tools yourself; if the user asked for an action that no observation confirms, say plainly that it was not completed."
+const invalidPlanAfterToolsSystemNote = "Atelier ran workspace tools for this turn, but its latest tool plan was invalid, so the most recently requested action did not run. Tool observations appear at the end of the conversation. Treat them as evidence: report failures honestly and do not claim an action succeeded unless an observation shows it. You cannot call tools yourself; if the user asked for an action that no observation confirms, say plainly that it was not completed."
 
 type HarnessEngine struct {
 	config AppConfig
@@ -760,12 +760,29 @@ func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel, 
 	responseReq.System = appendToolEvidenceToSystem(req.System, preparation)
 	messages := append([]ChatMessage{}, req.Messages...)
 	if len(preparation.ToolResults) > 0 {
-		messages = append(messages, toolResultMessages(preparation.ToolResults)...)
+		messages = append(messages, toolEvidenceUserMessage(preparation.ToolResults))
 	}
 	numCtx := h.numCtx()
 	responseReq.Messages = truncateChatHistory(messages, historyBudgetChars(numCtx, responseReq.System, numCtx/4))
 	responseReq.Options = withNumCtx(req.Options, numCtx)
 	return responseReq
+}
+
+// toolEvidenceUserMessage renders tool results as a single user-role message
+// so that providers enforcing strict role ordering (e.g. Mistral via
+// OpenRouter) never see a bare "tool" role after a "user" role. The primary
+// model is not doing native tool-calling — it receives observations as
+// evidence — so a user message is the semantically correct container.
+func toolEvidenceUserMessage(results []HarnessToolResult) ChatMessage {
+	observations := toolResultMessages(results)
+	parts := make([]string, 0, len(observations))
+	for _, msg := range observations {
+		parts = append(parts, msg.Content)
+	}
+	return ChatMessage{
+		Role:    "user",
+		Content: "[Tool observations]\n" + strings.Join(parts, "\n\n"),
+	}
 }
 
 func appendToolEvidenceToSystem(system string, preparation HarnessPreparedTurn) string {

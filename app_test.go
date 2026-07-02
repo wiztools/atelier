@@ -2373,8 +2373,8 @@ func TestHarnessExecutesSkillCommandInsteadOfDelegatingToFinalModel(t *testing.T
 		t.Fatalf("response system embeds tool output: %q", responseSystem)
 	}
 	lastStreamMessage := streamMessages[len(streamMessages)-1].(map[string]any)
-	if lastStreamMessage["role"] != "tool" {
-		t.Fatalf("last stream message = %+v, want tool observation message", lastStreamMessage)
+	if lastStreamMessage["role"] != "user" {
+		t.Fatalf("last stream message = %+v, want user-role tool evidence message", lastStreamMessage)
 	}
 	if content, _ := lastStreamMessage["content"].(string); !strings.Contains(content, "stored/path.md") {
 		t.Fatalf("tool observation = %q, want command output", content)
@@ -2625,7 +2625,7 @@ func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
 			{Role: "user", Content: "What is the project status?"},
 		},
 	})
-	if !strings.Contains(responseSystem, "observations appear as tool messages") {
+	if !strings.Contains(responseSystem, "observations appear at the end of the conversation") {
 		t.Fatalf("response system handoff = %q, want tool evidence note", responseSystem)
 	}
 	if strings.Contains(responseSystem, "Use the status file to answer") {
@@ -2635,11 +2635,14 @@ func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
 		t.Fatalf("response system embeds tool output: %q", responseSystem)
 	}
 	lastStreamMessage := streamMessages[len(streamMessages)-1].(map[string]any)
-	if lastStreamMessage["role"] != "tool" {
-		t.Fatalf("last stream message = %+v, want tool observation message", lastStreamMessage)
+	if lastStreamMessage["role"] != "user" {
+		t.Fatalf("last stream message = %+v, want user-role tool evidence message", lastStreamMessage)
 	}
 	if content, _ := lastStreamMessage["content"].(string); !strings.Contains(content, "Project status: green") {
 		t.Fatalf("tool observation = %q, want status file content", content)
+	}
+	if !strings.Contains(lastStreamMessage["content"].(string), "[Tool observations]") {
+		t.Fatalf("tool observation message = %q, want [Tool observations] header", lastStreamMessage["content"])
 	}
 	if prepCalls != 2 {
 		t.Fatalf("harness prep calls = %d, want planning round with tools then closing round", prepCalls)
@@ -2767,8 +2770,8 @@ func TestHarnessFeedsToolFailureBackToPlanner(t *testing.T) {
 		t.Fatalf("planner follow-up message role=%q content=%q, want failed tool observation", failureObservationRole, failureObservationPrompt)
 	}
 	lastStreamMessage := streamMessages[len(streamMessages)-1].(map[string]any)
-	if lastStreamMessage["role"] != "tool" {
-		t.Fatalf("last stream message = %+v, want tool observation message", lastStreamMessage)
+	if lastStreamMessage["role"] != "user" {
+		t.Fatalf("last stream message = %+v, want user-role tool evidence message", lastStreamMessage)
 	}
 	if content, _ := lastStreamMessage["content"].(string); !strings.Contains(content, `"status":"failed"`) {
 		t.Fatalf("final model observation = %q, want failed tool result", content)
@@ -3073,8 +3076,8 @@ func TestHarnessCanRequestSecondToolRound(t *testing.T) {
 	observations := ""
 	for _, message := range streamMessages {
 		typed := message.(map[string]any)
-		if typed["role"] == "tool" {
-			content, _ := typed["content"].(string)
+		content, _ := typed["content"].(string)
+		if typed["role"] == "user" && strings.Contains(content, "[Tool observations]") {
 			observations += content
 		}
 	}
@@ -3201,8 +3204,8 @@ func TestHarnessGeneratesImageViaPlannedTool(t *testing.T) {
 		t.Fatalf("provider calls prep=%d image=%d, want planner round, image tool, closing round", prepCalls, imageCalls)
 	}
 	lastStreamMessage := streamMessages[len(streamMessages)-1].(map[string]any)
-	if lastStreamMessage["role"] != "tool" {
-		t.Fatalf("last stream message = %+v, want tool observation", lastStreamMessage)
+	if lastStreamMessage["role"] != "user" {
+		t.Fatalf("last stream message = %+v, want user-role tool evidence", lastStreamMessage)
 	}
 	observation, _ := lastStreamMessage["content"].(string)
 	if !strings.Contains(observation, "generate_image") || !strings.Contains(observation, `"count":1`) {
@@ -3610,6 +3613,53 @@ func TestAppendToolEvidenceToSystemUsesFixedNotesOnly(t *testing.T) {
 	})
 	if !strings.Contains(withBoth, invalidPlanAfterToolsSystemNote) {
 		t.Fatalf("system = %q, want mixed tools-ran-but-plan-invalid note", withBoth)
+	}
+}
+
+// TestPreparedResponseRequestDeliversToolEvidenceAsUserRole reproduces
+// conv_339c14b91d95f8a7ec17c527: the primary model (Mistral via OpenRouter)
+// crashed with "Unexpected role 'tool' after role 'user'" because tool
+// results were appended as bare role:"tool" messages after the user message.
+// The fix renders tool evidence as a single user-role message so strict
+// providers never reject the ordering.
+func TestPreparedResponseRequestDeliversToolEvidenceAsUserRole(t *testing.T) {
+	engine := newHarnessEngine(defaultAppConfig(), nil)
+	req := ChatRequest{
+		Model: "primary-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Post to knowledged."},
+		},
+	}
+	preparation := HarnessPreparedTurn{
+		ToolResults: []HarnessToolResult{
+			{Name: "run_command", Status: "completed", Summary: "command exited with code 0", Result: ToolCommandResult{Command: []string{"kc", "post"}, Stdout: "job id: 12345", ExitCode: 0}},
+		},
+	}
+
+	result := engine.preparedResponseRequest(req, "primary-model", "openrouter", preparation)
+	messages := result.Messages
+
+	// The last message must be user-role, not tool-role.
+	lastMsg := messages[len(messages)-1]
+	if lastMsg.Role != "user" {
+		t.Fatalf("last message role = %q, want 'user' (got messages: %+v)", lastMsg.Role, messages)
+	}
+	// No tool-role message should appear in the request to the primary model.
+	for i, msg := range messages {
+		if msg.Role == "tool" {
+			t.Fatalf("message %d has role 'tool' — primary model request must not contain tool-role messages: %+v", i, messages)
+		}
+	}
+	// The evidence content must be present.
+	if !strings.Contains(lastMsg.Content, "[Tool observations]") {
+		t.Fatalf("last message = %q, want [Tool observations] header", lastMsg.Content)
+	}
+	if !strings.Contains(lastMsg.Content, "job id: 12345") {
+		t.Fatalf("last message = %q, want kc command output", lastMsg.Content)
+	}
+	// The system prompt should carry the tool-evidence note.
+	if !strings.Contains(result.System, toolEvidenceSystemNote) {
+		t.Fatalf("system = %q, want tool evidence system note", result.System)
 	}
 }
 
