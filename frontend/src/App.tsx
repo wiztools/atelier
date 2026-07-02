@@ -462,6 +462,12 @@ function App() {
     setModel(primaryModelOptions[0].value);
   }, [model, primaryModelOptions]);
 
+  useEffect(() => {
+    if (primaryProvider === 'openrouter' && openRouterHasKey && openRouterModels.length === 0 && openRouterStatus !== 'error') {
+      refreshOpenRouterModels();
+    }
+  }, [primaryProvider, openRouterHasKey, openRouterModels.length, openRouterStatus]);
+
   async function loadConfig() {
     const config = await GetConfig();
     const nextBaseURL = config.providers?.ollama?.baseURL || defaultBaseURL;
@@ -488,7 +494,12 @@ function App() {
     await Promise.all([
       refreshConversations(),
       refreshOllama(nextBaseURL),
-      HasOpenRouterAPIKey().then((hasKey) => setOpenRouterHasKey(hasKey)).catch(() => setOpenRouterHasKey(false)),
+      HasOpenRouterAPIKey().then((hasKey) => {
+        setOpenRouterHasKey(hasKey);
+        if (hasKey) {
+          refreshOpenRouterModels();
+        }
+      }).catch(() => setOpenRouterHasKey(false)),
     ]);
   }
 
@@ -561,7 +572,7 @@ function App() {
       setOpenRouterError('');
     } catch (error) {
       setOpenRouterStatus('error');
-      setOpenRouterError(formatError(error));
+      setOpenRouterError(formatOpenRouterError(error));
     }
   }
 
@@ -572,6 +583,20 @@ function App() {
       const hasKey = await HasOpenRouterAPIKey();
       setOpenRouterHasKey(hasKey);
       await refreshOpenRouterModels();
+    } catch (error) {
+      setOpenRouterStatus('error');
+      setOpenRouterError(formatError(error));
+    }
+  }
+
+  async function clearOpenRouterKey() {
+    try {
+      await SaveOpenRouterAPIKey('');
+      setOpenRouterHasKey(false);
+      setOpenRouterModels([]);
+      setOpenRouterStatus('unknown');
+      setOpenRouterError('');
+      setPrimaryProvider((current) => current === 'openrouter' ? 'ollama' : current);
     } catch (error) {
       setOpenRouterStatus('error');
       setOpenRouterError(formatError(error));
@@ -1103,6 +1128,11 @@ function App() {
                     <button type="button" onClick={refreshOpenRouterModels} disabled={!openRouterHasKey}>
                       Check Connection
                     </button>
+                    {openRouterHasKey ? (
+                      <button type="button" onClick={clearOpenRouterKey}>
+                        Clear Key
+                      </button>
+                    ) : null}
                   </div>
                   <div className={openRouterStatus === 'connected' ? 'status online' : 'status offline'}>
                     <span />
@@ -1742,6 +1772,15 @@ function imagePayloadForOllama(image: string): string {
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function formatOpenRouterError(error: unknown): string {
+  const message = formatError(error);
+  const lower = message.toLowerCase();
+  if (lower.includes('authentication failed') || lower.includes('401') || lower.includes('unauthorized')) {
+    return 'Invalid API key — check your OpenRouter key in Settings';
+  }
+  return message;
 }
 
 function copyTextWithTextarea(text: string) {
