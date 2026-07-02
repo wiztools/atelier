@@ -1553,19 +1553,16 @@ function ModelCombobox({
   placeholder?: string;
   ariaLabel?: string;
 }) {
-  const [query, setQuery] = useState(value);
+  // `filter` is null whenever the user isn't actively typing; in that state
+  // the input shows the committed `value` prop DIRECTLY, so a provider switch
+  // (which changes `value`) is reflected immediately with no sync-effect in
+  // between. While focused/typing, `filter` holds the local search text.
+  const [filter, setFilter] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    setQuery(value);
-  }, [value]);
-
-  // Closing without picking an option discards the in-progress filter text
-  // and restores the committed model, so the input never shows a value that
-  // isn't the actual selected model.
-  const closeAndReset = () => {
-    setQuery(value);
+  const close = () => {
+    setFilter(null);
     setOpen(false);
   };
 
@@ -1577,11 +1574,11 @@ function ModelCombobox({
       if (containerRef.current && event.target instanceof Node && containerRef.current.contains(event.target)) {
         return;
       }
-      closeAndReset();
+      close();
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        closeAndReset();
+        close();
       }
     };
     document.addEventListener('mousedown', onPointerDown);
@@ -1590,18 +1587,19 @@ function ModelCombobox({
       document.removeEventListener('mousedown', onPointerDown);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [open, value]);
+  }, [open]);
 
-  const normalizedQuery = query.trim().toLowerCase();
-  const filtered = normalizedQuery
-    ? options.filter((option) => option.label.toLowerCase().includes(normalizedQuery) || option.value.toLowerCase().includes(normalizedQuery))
+  const normalizedFilter = (filter ?? '').trim().toLowerCase();
+  const filtered = normalizedFilter
+    ? options.filter((option) => option.label.toLowerCase().includes(normalizedFilter) || option.value.toLowerCase().includes(normalizedFilter))
     : options;
 
   const selectOption = (option: {value: string; label: string}) => {
     onChange(option.value);
-    setQuery(option.value);
-    setOpen(false);
+    close();
   };
+
+  const displayValue = filter !== null ? filter : value;
 
   return (
     <div className="model-combobox" ref={containerRef}>
@@ -1613,14 +1611,19 @@ function ModelCombobox({
         aria-expanded={open}
         role="combobox"
         placeholder={placeholder}
-        value={query}
-        onFocus={() => setOpen(true)}
+        value={displayValue}
+        onFocus={() => {
+          // Start a fresh filter over the full list; closing without a pick
+          // restores the committed value.
+          setFilter('');
+          setOpen(true);
+        }}
         onChange={(event) => {
           // Typing only updates the local filter text; the parent `model` is
           // committed solely via selectOption. Pushing every keystroke up to
           // the parent would churn the option list and trigger its
           // "snap to a valid model" effect, reverting the input mid-type.
-          setQuery(event.target.value);
+          setFilter(event.target.value);
           setOpen(true);
         }}
         onKeyDown={(event) => {
