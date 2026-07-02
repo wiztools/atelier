@@ -213,6 +213,16 @@ func TestResolvedPrimaryModelAndProviderOpenRouter(t *testing.T) {
 	}
 }
 
+func TestResolvedPrimaryModelAndProviderNormalizesUnknownProvider(t *testing.T) {
+	app := NewApp()
+	config := defaultAppConfig()
+	config.Models.PrimaryProvider = "some-unrecognized-provider"
+	model, provider := app.resolvedPrimaryModelAndProvider(config)
+	if provider != "ollama" || model != config.Providers.Ollama.Models.Primary {
+		t.Fatalf("resolvedPrimaryModelAndProvider = (%q, %q), want (%q, ollama)", model, provider, config.Providers.Ollama.Models.Primary)
+	}
+}
+
 func TestMergeAppConfigDefaultsHarnessModelToPrimaryModel(t *testing.T) {
 	merged := mergeAppConfig(AppConfig{
 		Providers: ConfigProviders{Ollama: ConfigOllama{

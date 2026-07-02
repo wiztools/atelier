@@ -856,7 +856,7 @@ func (a *App) ollamaClient(baseURL string) OllamaClient {
 // chat role should use when a request doesn't specify one explicitly.
 func (a *App) resolvedPrimaryModelAndProvider(config AppConfig) (model, provider string) {
 	provider = strings.TrimSpace(config.Models.PrimaryProvider)
-	if provider == "" {
+	if provider != "openrouter" {
 		provider = "ollama"
 	}
 	if provider == "openrouter" {
