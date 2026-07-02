@@ -167,6 +167,7 @@ type ChatRequest struct {
 	ConversationID string `json:"conversationId,omitempty"`
 	turnStarted    bool
 	BaseURL        string         `json:"baseURL,omitempty"`
+	Provider       string         `json:"provider,omitempty"`
 	Model          string         `json:"model"`
 	SelectedModel  string         `json:"selectedModel,omitempty"`
 	System         string         `json:"system,omitempty"`
