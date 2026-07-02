@@ -1523,6 +1523,14 @@ function ModelCombobox({
     setQuery(value);
   }, [value]);
 
+  // Closing without picking an option discards the in-progress filter text
+  // and restores the committed model, so the input never shows a value that
+  // isn't the actual selected model.
+  const closeAndReset = () => {
+    setQuery(value);
+    setOpen(false);
+  };
+
   useEffect(() => {
     if (!open) {
       return;
@@ -1531,11 +1539,11 @@ function ModelCombobox({
       if (containerRef.current && event.target instanceof Node && containerRef.current.contains(event.target)) {
         return;
       }
-      setOpen(false);
+      closeAndReset();
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setOpen(false);
+        closeAndReset();
       }
     };
     document.addEventListener('mousedown', onPointerDown);
@@ -1544,7 +1552,7 @@ function ModelCombobox({
       document.removeEventListener('mousedown', onPointerDown);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [open]);
+  }, [open, value]);
 
   const normalizedQuery = query.trim().toLowerCase();
   const filtered = normalizedQuery
@@ -1570,9 +1578,18 @@ function ModelCombobox({
         value={query}
         onFocus={() => setOpen(true)}
         onChange={(event) => {
+          // Typing only updates the local filter text; the parent `model` is
+          // committed solely via selectOption. Pushing every keystroke up to
+          // the parent would churn the option list and trigger its
+          // "snap to a valid model" effect, reverting the input mid-type.
           setQuery(event.target.value);
-          onChange(event.target.value);
           setOpen(true);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && open && filtered.length) {
+            event.preventDefault();
+            selectOption(filtered[0]);
+          }
         }}
       />
       {open && filtered.length ? (
