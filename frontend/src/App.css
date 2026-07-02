@@ -1444,12 +1444,14 @@ button:disabled {
   width: 100%;
 }
 
-.model-inline-control select {
+.model-inline-control select,
+.model-inline-control input {
   flex: 1 1 auto;
   min-width: 0;
 }
 
-.model-inline select {
+.model-inline select,
+.model-inline input {
   height: 34px;
 }
 

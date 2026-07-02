@@ -457,11 +457,15 @@ function App() {
   }, [imageModel, imageModelOptions]);
 
   useEffect(() => {
-    if (!primaryModelOptions.length || primaryModelOptions.some((option) => option.value === model)) {
+    // Only re-run when the option list itself changes (provider switch, or
+    // the OpenRouter list finishing a load) — not on every keystroke of
+    // `model`, since the primary-model field is now free-text (filterable)
+    // and is expected to be transiently "invalid" while the user is typing.
+    if (!primaryModelOptions.length) {
       return;
     }
-    setModel(primaryModelOptions[0].value);
-  }, [model, primaryModelOptions]);
+    setModel((current) => (primaryModelOptions.some((option) => option.value === current) ? current : primaryModelOptions[0].value));
+  }, [primaryModelOptions]);
 
   useEffect(() => {
     if (primaryProvider === 'openrouter' && openRouterHasKey && openRouterModels.length === 0 && openRouterStatus !== 'error') {
@@ -1431,14 +1435,19 @@ function App() {
                       <label className="model-inline" htmlFor="primary-model">
                         <span>Model</span>
                         <div className="model-inline-control">
-                          <select
+                          <input
                             id="primary-model"
+                            type="text"
+                            list="primary-model-options"
                             aria-label="Model for next message"
+                            placeholder="Type to filter models..."
+                            autoComplete="off"
                             value={model}
                             onChange={(event) => setModel(event.target.value)}
-                          >
+                          />
+                          <datalist id="primary-model-options">
                             {primaryModelOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                          </select>
+                          </datalist>
                           {primaryProvider === 'ollama' ? (
                             <ModelCapabilityLink
                               id="primary-model"
