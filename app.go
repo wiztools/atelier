@@ -782,7 +782,7 @@ func (a *App) writeChatConversation(req ChatRequest, assistantContent, assistant
 		title = a.generateConversationTitle(config, req, assistantContent)
 	}
 	run := fallbackHarnessRun(req.Model, reason, tokens)
-	return newHarnessEngine(config).SaveChatTurn(req, assistantContent, assistantThinking, model, reason, tokens, title, run)
+	return newHarnessEngine(config).SaveChatTurn(req, assistantContent, assistantThinking, model, resolvedProvider(req), reason, tokens, title, run)
 }
 
 func (a *App) generateConversationTitle(config AppConfig, req ChatRequest, assistantContent string) string {
@@ -1180,7 +1180,7 @@ func ensureStorageDirs(storage ConfigStorage) error {
 	return nil
 }
 
-func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int, title string, run ...HarnessRun) (string, error) {
+func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, assistantThinking, model, provider, reason string, tokens int, title string, run ...HarnessRun) (string, error) {
 	now := time.Now()
 	nowText := now.Format(time.RFC3339)
 	store := newHistoryStore(config.Storage)
@@ -1211,7 +1211,7 @@ func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, 
 		},
 	}
 
-	userTurn, assistantTurn, err := buildChatTurnPair(workspace.ID, 1, nowText, req, assistantContent, assistantThinking, model, reason, tokens, workspace.ArtifactsDir, firstHarnessRun(model, reason, tokens, run))
+	userTurn, assistantTurn, err := buildChatTurnPair(workspace.ID, 1, nowText, req, assistantContent, assistantThinking, model, provider, reason, tokens, workspace.ArtifactsDir, firstHarnessRun(model, reason, tokens, run))
 	if err != nil {
 		return "", err
 	}
@@ -1263,12 +1263,12 @@ func writePendingChatConversation(config AppConfig, req ChatRequest) (string, er
 	return workspace.ID, nil
 }
 
-func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt string, req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int, artifactsDir string, run HarnessRun) (HistoryTurn, HistoryTurn, error) {
+func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt string, req ChatRequest, assistantContent, assistantThinking, model, provider, reason string, tokens int, artifactsDir string, run HarnessRun) (HistoryTurn, HistoryTurn, error) {
 	userTurn, err := buildChatUserTurn(conversationID, firstTurnNumber, createdAt, req, artifactsDir)
 	if err != nil {
 		return HistoryTurn{}, HistoryTurn{}, err
 	}
-	assistantTurn := buildChatAssistantTurn(conversationID, firstTurnNumber+1, createdAt, assistantContent, assistantThinking, model, reason, tokens, run)
+	assistantTurn := buildChatAssistantTurn(conversationID, firstTurnNumber+1, createdAt, assistantContent, assistantThinking, model, provider, reason, tokens, run)
 	return userTurn, assistantTurn, nil
 }
 
@@ -1301,7 +1301,7 @@ func buildChatUserTurn(conversationID string, turnNumber int, createdAt string, 
 	return userTurn, nil
 }
 
-func buildChatAssistantTurn(conversationID string, turnNumber int, createdAt string, assistantContent, assistantThinking, model, reason string, tokens int, run HarnessRun) HistoryTurn {
+func buildChatAssistantTurn(conversationID string, turnNumber int, createdAt string, assistantContent, assistantThinking, model, provider, reason string, tokens int, run HarnessRun) HistoryTurn {
 	assistantContents := []HistoryContent{{Type: "text", Text: assistantContent}}
 	if strings.TrimSpace(assistantThinking) != "" {
 		assistantContents = append(assistantContents, HistoryContent{Type: "thinking", Text: assistantThinking})
@@ -1322,12 +1322,13 @@ func buildChatAssistantTurn(conversationID string, turnNumber int, createdAt str
 		Kind:             "chat",
 		Role:             "assistant",
 		Model:            model,
+		Provider:         provider,
 		Content:          assistantContents,
 		ProviderResponse: providerResponse,
 	}
 }
 
-func appendChatConversation(config AppConfig, req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int, run ...HarnessRun) (string, error) {
+func appendChatConversation(config AppConfig, req ChatRequest, assistantContent, assistantThinking, model, provider, reason string, tokens int, run ...HarnessRun) (string, error) {
 	conversationID := strings.TrimSpace(req.ConversationID)
 	store := newHistoryStore(config.Storage)
 	loaded, err := store.loadForAppend(conversationID, "chat", "a chat")
@@ -1335,7 +1336,7 @@ func appendChatConversation(config AppConfig, req ChatRequest, assistantContent,
 		return "", err
 	}
 	nowText := time.Now().Format(time.RFC3339)
-	userTurn, assistantTurn, err := buildChatTurnPair(conversationID, loaded.NextTurnNumber, nowText, req, assistantContent, assistantThinking, model, reason, tokens, loaded.ArtifactsDir, firstHarnessRun(model, reason, tokens, run))
+	userTurn, assistantTurn, err := buildChatTurnPair(conversationID, loaded.NextTurnNumber, nowText, req, assistantContent, assistantThinking, model, provider, reason, tokens, loaded.ArtifactsDir, firstHarnessRun(model, reason, tokens, run))
 	if err != nil {
 		return "", err
 	}
@@ -1380,14 +1381,14 @@ func appendChatUserTurn(config AppConfig, req ChatRequest) (string, error) {
 	return conversationID, nil
 }
 
-func appendChatAssistantTurn(config AppConfig, conversationID, assistantContent, assistantThinking, model, reason string, tokens int, run HarnessRun) error {
+func appendChatAssistantTurn(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, tokens int, run HarnessRun) error {
 	store := newHistoryStore(config.Storage)
 	loaded, err := store.loadForAppend(conversationID, "chat", "a chat")
 	if err != nil {
 		return err
 	}
 	nowText := time.Now().Format(time.RFC3339)
-	assistantTurn := buildChatAssistantTurn(conversationID, loaded.NextTurnNumber, nowText, assistantContent, assistantThinking, model, reason, tokens, run)
+	assistantTurn := buildChatAssistantTurn(conversationID, loaded.NextTurnNumber, nowText, assistantContent, assistantThinking, model, provider, reason, tokens, run)
 
 	loaded.Conversation.UpdatedAt = nowText
 	loaded.Conversation.Stats.TurnCount++
@@ -1397,7 +1398,7 @@ func appendChatAssistantTurn(config AppConfig, conversationID, assistantContent,
 	return store.writeTurn(loaded.TurnsDir, assistantTurn)
 }
 
-func appendChatAssistantTurnWithImages(config AppConfig, conversationID, assistantContent, assistantThinking, model, reason string, images []string, raw string, run HarnessRun, imageReq ImageGenerateRequest) error {
+func appendChatAssistantTurnWithImages(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, images []string, raw string, run HarnessRun, imageReq ImageGenerateRequest) error {
 	store := newHistoryStore(config.Storage)
 	loaded, err := store.loadForAppend(conversationID, "chat", "a chat")
 	if err != nil {
@@ -1421,6 +1422,7 @@ func appendChatAssistantTurnWithImages(config AppConfig, conversationID, assista
 		Kind:           "chat",
 		Role:           "assistant",
 		Model:          model,
+		Provider:       provider,
 		Content:        contents,
 		ProviderResponse: map[string]any{
 			"doneReason": reason,

@@ -1506,6 +1506,7 @@ func TestChatConversationWithGeneratedImagesLifecycle(t *testing.T) {
 		"Here is the generated image.",
 		"",
 		"chat-model",
+		"ollama",
 		"stop",
 		[]string{"data:image/png;base64,iVBORw0KGgo="},
 		"{}",
@@ -1585,6 +1586,7 @@ func TestChatImageAssistantTurnStoresToolMetadata(t *testing.T) {
 		"Generated it.",
 		"",
 		"chat-model",
+		"ollama",
 		"stop",
 		[]string{"data:image/png;base64,iVBORw0KGgo="},
 		"{}",
@@ -1698,6 +1700,7 @@ func TestChatConversationLifecycle(t *testing.T) {
 		"Here is a table.",
 		"",
 		"chat-model",
+		"ollama",
 		"stop",
 		12,
 		"Markdown Tables",
@@ -1782,6 +1785,7 @@ func TestChatConversationLifecycle(t *testing.T) {
 		"Here is another example.",
 		"",
 		"chat-model",
+		"ollama",
 		"stop",
 		8,
 	)
@@ -3356,7 +3360,7 @@ func TestHarnessStartChatTurnRecordsUserBeforeAssistant(t *testing.T) {
 	}
 
 	run := fallbackHarnessRun("chat-model", "stop", 2)
-	if err := engine.SaveAssistantTurn(conversationID, "Done later.", "", "chat-model", "stop", 2, run); err != nil {
+	if err := engine.SaveAssistantTurn(conversationID, "Done later.", "", "chat-model", "ollama", "stop", 2, run); err != nil {
 		t.Fatalf("SaveAssistantTurn returned error: %v", err)
 	}
 	detail, err = getConversation(storage, conversationID)
@@ -3393,6 +3397,7 @@ func TestWriteChatConversationPersistsInputImages(t *testing.T) {
 		"It is a tiny png.",
 		"",
 		"chat-model",
+		"ollama",
 		"stop",
 		4,
 		"Image Description",

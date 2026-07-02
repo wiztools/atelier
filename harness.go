@@ -250,9 +250,9 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	run.complete("completed", "final")
 	var saveErr error
 	if len(images) > 0 {
-		saveErr = appendChatAssistantTurnWithImages(h.config, conversationID, assistantContent, assistantThinking, finalModel, finalReason, images, "", run, imageReq)
+		saveErr = appendChatAssistantTurnWithImages(h.config, conversationID, assistantContent, assistantThinking, finalModel, responseProvider, finalReason, images, "", run, imageReq)
 	} else {
-		saveErr = h.SaveAssistantTurn(conversationID, assistantContent, assistantThinking, finalModel, finalReason, finalTokens, run)
+		saveErr = h.SaveAssistantTurn(conversationID, assistantContent, assistantThinking, finalModel, responseProvider, finalReason, finalTokens, run)
 	}
 	if saveErr != nil {
 		run.completeStep(saved, "failed", finalReason, finalTokens, saveErr.Error())
@@ -1317,11 +1317,11 @@ func (h *HarnessEngine) evaluateChatRun(run *HarnessRun, assistantContent, doneR
 	run.Loop.StopReason = decision
 }
 
-func (h *HarnessEngine) SaveChatTurn(req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int, title string, run HarnessRun) (string, error) {
+func (h *HarnessEngine) SaveChatTurn(req ChatRequest, assistantContent, assistantThinking, model, provider, reason string, tokens int, title string, run HarnessRun) (string, error) {
 	if strings.TrimSpace(req.ConversationID) == "" {
-		return writeChatConversation(h.config, req, assistantContent, assistantThinking, model, reason, tokens, title, run)
+		return writeChatConversation(h.config, req, assistantContent, assistantThinking, model, provider, reason, tokens, title, run)
 	}
-	return appendChatConversation(h.config, req, assistantContent, assistantThinking, model, reason, tokens, run)
+	return appendChatConversation(h.config, req, assistantContent, assistantThinking, model, provider, reason, tokens, run)
 }
 
 func (h *HarnessEngine) StartChatTurn(req ChatRequest) (string, error) {
@@ -1331,9 +1331,9 @@ func (h *HarnessEngine) StartChatTurn(req ChatRequest) (string, error) {
 	return appendChatUserTurn(h.config, req)
 }
 
-func (h *HarnessEngine) SaveAssistantTurn(conversationID, assistantContent, assistantThinking, model, reason string, tokens int, run HarnessRun) error {
+func (h *HarnessEngine) SaveAssistantTurn(conversationID, assistantContent, assistantThinking, model, provider, reason string, tokens int, run HarnessRun) error {
 	if strings.TrimSpace(assistantContent) == "" && strings.TrimSpace(assistantThinking) == "" {
 		return nil
 	}
-	return appendChatAssistantTurn(h.config, conversationID, assistantContent, assistantThinking, model, reason, tokens, run)
+	return appendChatAssistantTurn(h.config, conversationID, assistantContent, assistantThinking, model, provider, reason, tokens, run)
 }
