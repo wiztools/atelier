@@ -460,7 +460,9 @@ function App() {
   }, [harnessModel, imageModel, model, models]);
   const primaryModelOptions = useMemo(() => {
     if (primaryProvider === 'openrouter') {
-      return asArray(openRouterModels).map((item) => ({value: item.id, label: item.displayName || item.id}));
+      return asArray(openRouterModels)
+        .map((item) => ({value: item.id, label: item.displayName || item.id}))
+        .sort((a, b) => a.label.localeCompare(b.label));
     }
     return modelOptions.map((name) => ({value: name, label: name}));
   }, [modelOptions, openRouterModels, primaryProvider]);
