@@ -88,3 +88,21 @@ func TestOpenRouterClientMapsUnauthorized(t *testing.T) {
 		t.Fatalf("err = %v, want an authentication-failed error", err)
 	}
 }
+
+func TestOpenRouterClientMapsRateLimit(t *testing.T) {
+	client := newOpenRouterClient(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Status:     "429 Too Many Requests",
+				Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"rate limit exceeded"}}`)),
+				Header:     http.Header{},
+			}, nil
+		}),
+	}, "sk-or-test")
+
+	_, err := client.CompleteChat(context.Background(), ChatRequest{Model: "anthropic/claude-3.5-sonnet"})
+	if err == nil || !strings.Contains(err.Error(), "rate limited") {
+		t.Fatalf("err = %v, want a rate-limited error", err)
+	}
+}
