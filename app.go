@@ -854,6 +854,37 @@ func (a *App) ollamaClient(baseURL string) OllamaClient {
 	return newOllamaClient(a.client, a.resolveBaseURL(baseURL))
 }
 
+func (a *App) providerFor(providerID, baseURL string) (ChatProvider, error) {
+	return newProviderRegistry(a).Resolve(providerID, baseURL)
+}
+
+// ListPrimaryModels lists models available for the primary chat role from
+// the given provider. Harness/image model lists still go through the
+// existing Ollama-only ListModels method — this is deliberately separate so
+// the primary-role picker doesn't disturb the harness/image UI's capability
+// detection (image-generation flags, family/parameter metadata), which only
+// OllamaModel carries today.
+func (a *App) ListPrimaryModels(provider, baseURL string) ([]ModelInfo, error) {
+	resolved, err := a.providerFor(provider, baseURL)
+	if err != nil {
+		return nil, err
+	}
+	return resolved.ListModels(context.Background())
+}
+
+func (a *App) SaveOpenRouterAPIKey(apiKey string) error {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return clearOpenRouterAPIKey()
+	}
+	return saveOpenRouterAPIKey(apiKey)
+}
+
+func (a *App) HasOpenRouterAPIKey() bool {
+	key, err := loadOpenRouterAPIKey()
+	return err == nil && strings.TrimSpace(key) != ""
+}
+
 // resolvedPrimaryModelAndProvider returns which model/provider the primary
 // chat role should use when a request doesn't specify one explicitly.
 func (a *App) resolvedPrimaryModelAndProvider(config AppConfig) (model, provider string) {

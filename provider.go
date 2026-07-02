@@ -68,6 +68,20 @@ func newProviderRegistry(app *App) ProviderRegistry {
 	return ProviderRegistry{app: app}
 }
 
-func (registry ProviderRegistry) unknownProviderError(providerID string) (ChatProvider, error) {
-	return nil, fmt.Errorf("%w: %q", errUnknownProvider, providerID)
+func (registry ProviderRegistry) Resolve(providerID, baseURL string) (ChatProvider, error) {
+	switch resolvedProvider(ChatRequest{Provider: providerID}) {
+	case "ollama":
+		return newOllamaProvider(registry.app.ollamaClient(baseURL)), nil
+	case "openrouter":
+		apiKey, err := loadOpenRouterAPIKey()
+		if err != nil {
+			return nil, fmt.Errorf("openrouter api key is not available: %w", err)
+		}
+		if strings.TrimSpace(apiKey) == "" {
+			return nil, errors.New("openrouter api key is not configured")
+		}
+		return newOpenRouterProvider(newOpenRouterClient(registry.app.client, apiKey)), nil
+	default:
+		return nil, fmt.Errorf("%w: %q", errUnknownProvider, providerID)
+	}
 }

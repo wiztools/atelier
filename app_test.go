@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/zalando/go-keyring"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -3764,5 +3767,58 @@ func TestHistoryTurnProviderFieldRoundTripsThroughJSON(t *testing.T) {
 	}
 	if decoded.Provider != "openrouter" {
 		t.Fatalf("decoded.Provider = %q, want openrouter", decoded.Provider)
+	}
+}
+
+func TestProviderRegistryResolvesOllama(t *testing.T) {
+	app := NewApp()
+	provider, err := newProviderRegistry(app).Resolve("ollama", "http://ollama.test")
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if provider.ID() != "ollama" {
+		t.Fatalf("provider.ID() = %q, want ollama", provider.ID())
+	}
+}
+
+func TestProviderRegistryResolvesOpenRouterWithStoredKey(t *testing.T) {
+	keyring.MockInit()
+	if err := saveOpenRouterAPIKey("sk-or-test"); err != nil {
+		t.Fatalf("saveOpenRouterAPIKey returned error: %v", err)
+	}
+	app := NewApp()
+	provider, err := newProviderRegistry(app).Resolve("openrouter", "")
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if provider.ID() != "openrouter" {
+		t.Fatalf("provider.ID() = %q, want openrouter", provider.ID())
+	}
+}
+
+func TestProviderRegistryRejectsUnknownProvider(t *testing.T) {
+	app := NewApp()
+	if _, err := newProviderRegistry(app).Resolve("carrier-pigeon", ""); !errors.Is(err, errUnknownProvider) {
+		t.Fatalf("Resolve error = %v, want errUnknownProvider", err)
+	}
+}
+
+func TestAppSaveAndHasOpenRouterAPIKey(t *testing.T) {
+	keyring.MockInit()
+	app := NewApp()
+	if app.HasOpenRouterAPIKey() {
+		t.Fatal("HasOpenRouterAPIKey() = true before any key is saved")
+	}
+	if err := app.SaveOpenRouterAPIKey("sk-or-test"); err != nil {
+		t.Fatalf("SaveOpenRouterAPIKey returned error: %v", err)
+	}
+	if !app.HasOpenRouterAPIKey() {
+		t.Fatal("HasOpenRouterAPIKey() = false after saving a key")
+	}
+	if err := app.SaveOpenRouterAPIKey(""); err != nil {
+		t.Fatalf("SaveOpenRouterAPIKey(\"\") returned error: %v", err)
+	}
+	if app.HasOpenRouterAPIKey() {
+		t.Fatal("HasOpenRouterAPIKey() = true after saving an empty key (should clear)")
 	}
 }

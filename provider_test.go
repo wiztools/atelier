@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"testing"
 )
 
@@ -77,12 +76,5 @@ func TestResolvedProviderDefaultsToOllama(t *testing.T) {
 				t.Fatalf("resolvedProvider(%+v) = %q, want %q", testCase.req, got, testCase.want)
 			}
 		})
-	}
-}
-
-func TestUnknownProviderIDIsAnError(t *testing.T) {
-	_, err := (ProviderRegistry{}).unknownProviderError("carrier-pigeon")
-	if err == nil || !errors.Is(err, errUnknownProvider) {
-		t.Fatalf("expected errUnknownProvider, got %v", err)
 	}
 }
