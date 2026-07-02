@@ -276,6 +276,7 @@ export namespace main {
 	    requestID?: string;
 	    conversationId?: string;
 	    baseURL?: string;
+	    provider?: string;
 	    model: string;
 	    selectedModel?: string;
 	    system?: string;
@@ -293,6 +294,7 @@ export namespace main {
 	        this.requestID = source["requestID"];
 	        this.conversationId = source["conversationId"];
 	        this.baseURL = source["baseURL"];
+	        this.provider = source["provider"];
 	        this.model = source["model"];
 	        this.selectedModel = source["selectedModel"];
 	        this.system = source["system"];

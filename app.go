@@ -201,6 +201,7 @@ type ChatStreamEvent struct {
 	Done           bool     `json:"done"`
 	Error          string   `json:"error,omitempty"`
 	Model          string   `json:"model,omitempty"`
+	Provider       string   `json:"provider,omitempty"`
 	Reason         string   `json:"reason,omitempty"`
 	Tokens         int      `json:"tokens,omitempty"`
 	ConversationID string   `json:"conversationId,omitempty"`
@@ -330,6 +331,7 @@ type HistoryTurn struct {
 	Kind             string           `json:"kind"`
 	Role             string           `json:"role"`
 	Model            string           `json:"model,omitempty"`
+	Provider         string           `json:"provider,omitempty"`
 	Content          []HistoryContent `json:"content"`
 	Request          map[string]any   `json:"request,omitempty"`
 	ProviderResponse map[string]any   `json:"providerResponse,omitempty"`

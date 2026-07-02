@@ -3736,3 +3736,33 @@ func TestImageModelAsChatModelDeliversImagesOnStreamError(t *testing.T) {
 		t.Fatalf("assistant text = %q, want harness notice about the response model failure", assistant.Content[0].Text)
 	}
 }
+
+func TestChatRequestProviderFieldRoundTripsThroughJSON(t *testing.T) {
+	req := ChatRequest{Model: "anthropic/claude-3.5-sonnet", Provider: "openrouter"}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+	var decoded ChatRequest
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if decoded.Provider != "openrouter" {
+		t.Fatalf("decoded.Provider = %q, want openrouter", decoded.Provider)
+	}
+}
+
+func TestHistoryTurnProviderFieldRoundTripsThroughJSON(t *testing.T) {
+	turn := HistoryTurn{ID: "turn_000002", Provider: "openrouter"}
+	data, err := json.Marshal(turn)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+	var decoded HistoryTurn
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if decoded.Provider != "openrouter" {
+		t.Fatalf("decoded.Provider = %q, want openrouter", decoded.Provider)
+	}
+}
