@@ -443,6 +443,7 @@ function App() {
     }
     return modelOptions.map((name) => ({value: name, label: name}));
   }, [modelOptions, openRouterModels, primaryProvider]);
+  const primaryModelIsValid = primaryModelOptions.some((option) => option.value === model);
   const imageModelOptions = useMemo(() => {
     const detected = asArray(models).filter((item) => item.imageGeneration).map((item) => item.name).filter(Boolean);
     return detected.length ? detected : modelOptions;
@@ -784,7 +785,7 @@ function App() {
 
   async function submitChat() {
     const trimmed = prompt.trim();
-    if (!trimmed || !model || activeStream) {
+    if (!trimmed || !model || activeStream || !primaryModelIsValid) {
       return;
     }
 
@@ -1454,7 +1455,7 @@ function App() {
                     {activeStream ? (
                       <button className="danger" onClick={stopChat}>Stop</button>
                     ) : (
-                      <button className="primary" onClick={submitChat} disabled={!prompt.trim() || !model}>Send</button>
+                      <button className="primary" onClick={submitChat} disabled={!prompt.trim() || !model || !primaryModelIsValid}>Send</button>
                     )}
                   </div>
                 </div>
