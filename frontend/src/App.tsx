@@ -1435,19 +1435,14 @@ function App() {
                       <label className="model-inline" htmlFor="primary-model">
                         <span>Model</span>
                         <div className="model-inline-control">
-                          <input
+                          <ModelCombobox
                             id="primary-model"
-                            type="text"
-                            list="primary-model-options"
-                            aria-label="Model for next message"
+                            ariaLabel="Model for next message"
                             placeholder="Type to filter models..."
-                            autoComplete="off"
                             value={model}
-                            onChange={(event) => setModel(event.target.value)}
+                            onChange={setModel}
+                            options={primaryModelOptions}
                           />
-                          <datalist id="primary-model-options">
-                            {primaryModelOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                          </datalist>
                           {primaryProvider === 'ollama' ? (
                             <ModelCapabilityLink
                               id="primary-model"
@@ -1503,6 +1498,103 @@ function loadSidebarWidth(): number {
 
 function clampSidebarWidth(width: number, max = maxSidebarWidth): number {
   return Math.round(Math.max(minSidebarWidth, Math.min(Math.max(minSidebarWidth, max), width)));
+}
+
+function ModelCombobox({
+  id,
+  value,
+  onChange,
+  options,
+  placeholder,
+  ariaLabel,
+}: {
+  id: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: {value: string; label: string}[];
+  placeholder?: string;
+  ariaLabel?: string;
+}) {
+  const [query, setQuery] = useState(value);
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setQuery(value);
+  }, [value]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const onPointerDown = (event: MouseEvent) => {
+      if (containerRef.current && event.target instanceof Node && containerRef.current.contains(event.target)) {
+        return;
+      }
+      setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open]);
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const filtered = normalizedQuery
+    ? options.filter((option) => option.label.toLowerCase().includes(normalizedQuery) || option.value.toLowerCase().includes(normalizedQuery))
+    : options;
+
+  const selectOption = (option: {value: string; label: string}) => {
+    onChange(option.value);
+    setQuery(option.value);
+    setOpen(false);
+  };
+
+  return (
+    <div className="model-combobox" ref={containerRef}>
+      <input
+        id={id}
+        type="text"
+        autoComplete="off"
+        aria-label={ariaLabel}
+        aria-expanded={open}
+        role="combobox"
+        placeholder={placeholder}
+        value={query}
+        onFocus={() => setOpen(true)}
+        onChange={(event) => {
+          setQuery(event.target.value);
+          onChange(event.target.value);
+          setOpen(true);
+        }}
+      />
+      {open && filtered.length ? (
+        <ul className="model-combobox-list" role="listbox">
+          {filtered.map((option) => (
+            <li key={option.value}>
+              <button
+                type="button"
+                className={option.value === value ? 'active' : undefined}
+                role="option"
+                aria-selected={option.value === value}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => selectOption(option)}
+              >
+                {option.label}
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
 }
 
 function ModelCapabilityLink({
