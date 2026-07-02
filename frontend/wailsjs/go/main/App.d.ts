@@ -16,9 +16,13 @@ export function GetConfig():Promise<main.AppConfig>;
 
 export function GetConversation(arg1:string):Promise<main.ConversationDetail>;
 
+export function HasOpenRouterAPIKey():Promise<boolean>;
+
 export function ListConversations():Promise<Array<main.ConversationSummary>>;
 
 export function ListModels(arg1:string):Promise<Array<main.OllamaModel>>;
+
+export function ListPrimaryModels(arg1:string,arg2:string):Promise<Array<main.ModelInfo>>;
 
 export function ListToolFiles(arg1:main.ToolFileListRequest):Promise<main.ToolFileListResult>;
 
@@ -33,6 +37,8 @@ export function RunToolCommand(arg1:main.ToolCommandRequest):Promise<main.ToolCo
 export function SaveConfig(arg1:main.AppConfig):Promise<void>;
 
 export function SaveImage(arg1:main.SaveImageRequest):Promise<string>;
+
+export function SaveOpenRouterAPIKey(arg1:string):Promise<void>;
 
 export function SetOllamaBaseURL(arg1:string):Promise<void>;
 

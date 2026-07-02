@@ -805,7 +805,7 @@ func (a *App) generateConversationTitle(config AppConfig, req ChatRequest, assis
 
 func (a *App) emitChatEvent(event ChatStreamEvent) {
 	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "ollama:chat:chunk", event)
+		runtime.EventsEmit(a.ctx, "chat:chunk", event)
 	}
 }
 

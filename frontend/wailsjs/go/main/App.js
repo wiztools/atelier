@@ -30,12 +30,20 @@ export function GetConversation(arg1) {
   return window['go']['main']['App']['GetConversation'](arg1);
 }
 
+export function HasOpenRouterAPIKey() {
+  return window['go']['main']['App']['HasOpenRouterAPIKey']();
+}
+
 export function ListConversations() {
   return window['go']['main']['App']['ListConversations']();
 }
 
 export function ListModels(arg1) {
   return window['go']['main']['App']['ListModels'](arg1);
+}
+
+export function ListPrimaryModels(arg1, arg2) {
+  return window['go']['main']['App']['ListPrimaryModels'](arg1, arg2);
 }
 
 export function ListToolFiles(arg1) {
@@ -64,6 +72,10 @@ export function SaveConfig(arg1) {
 
 export function SaveImage(arg1) {
   return window['go']['main']['App']['SaveImage'](arg1);
+}
+
+export function SaveOpenRouterAPIKey(arg1) {
+  return window['go']['main']['App']['SaveOpenRouterAPIKey'](arg1);
 }
 
 export function SetOllamaBaseURL(arg1) {

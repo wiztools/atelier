@@ -9,12 +9,15 @@ import {
   DeleteConversation,
   GetConversation,
   GetConfig,
+  HasOpenRouterAPIKey,
   ListConversations,
   ListModels,
+  ListPrimaryModels,
   PurgeArchivedConversations,
   ResolveToolPermission,
   SaveImage,
   SaveConfig,
+  SaveOpenRouterAPIKey,
   StreamChat,
   UpdateConversationTitle,
 } from '../wailsjs/go/main/App';
@@ -33,6 +36,7 @@ type ChatEntry = {
   harnessRun?: HarnessRunView;
   streaming?: boolean;
   error?: string;
+  provider?: string;
 };
 
 type ChatChunk = {
@@ -43,6 +47,7 @@ type ChatChunk = {
   done: boolean;
   error?: string;
   model?: string;
+  provider?: string;
   reason?: string;
   tokens?: number;
   conversationId?: string;
@@ -54,6 +59,7 @@ type ChatStreamDraft = {
   images: string[];
   streaming: boolean;
   error?: string;
+  provider?: string;
 };
 
 type ToolPermissionEvent = {
@@ -154,6 +160,12 @@ function App() {
   const [model, setModel] = useState('');
   const [harnessModel, setHarnessModel] = useState('');
   const [imageModel, setImageModel] = useState('');
+  const [primaryProvider, setPrimaryProvider] = useState<'ollama' | 'openrouter'>('ollama');
+  const [openRouterModels, setOpenRouterModels] = useState<main.ModelInfo[]>([]);
+  const [openRouterAPIKeyInput, setOpenRouterAPIKeyInput] = useState('');
+  const [openRouterHasKey, setOpenRouterHasKey] = useState(false);
+  const [openRouterStatus, setOpenRouterStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
+  const [openRouterError, setOpenRouterError] = useState('');
   const [system, setSystem] = useState('You are Atelier, a precise local AI collaborator.');
   const [prompt, setPrompt] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -302,6 +314,7 @@ function App() {
         images: chunk.images?.length ? chunk.images : draft.images,
         streaming: !chunk.done && !chunk.error,
         error: chunk.error ?? draft.error,
+        provider: chunk.provider ?? draft.provider,
       };
       setChat((entries) =>
         entries.map((entry) => {
@@ -316,6 +329,7 @@ function App() {
             images: nextDraft.images,
             streaming: nextDraft.streaming,
             error: nextDraft.error,
+            provider: nextDraft.provider ?? entry.provider,
           };
         }),
       );
@@ -333,8 +347,8 @@ function App() {
         void refreshConversations();
       }
     };
-    EventsOn('ollama:chat:chunk', onChunk);
-    return () => EventsOff('ollama:chat:chunk');
+    EventsOn('chat:chunk', onChunk);
+    return () => EventsOff('chat:chunk');
   }, []);
 
   useEffect(() => {
@@ -423,6 +437,12 @@ function App() {
   const modelOptions = useMemo(() => {
     return Array.from(new Set([...asArray(models).map((item) => item.name), model, harnessModel, imageModel].filter(Boolean)));
   }, [harnessModel, imageModel, model, models]);
+  const primaryModelOptions = useMemo(() => {
+    if (primaryProvider === 'openrouter') {
+      return asArray(openRouterModels).map((item) => ({value: item.id, label: item.displayName || item.id}));
+    }
+    return modelOptions.map((name) => ({value: name, label: name}));
+  }, [modelOptions, openRouterModels, primaryProvider]);
   const imageModelOptions = useMemo(() => {
     const detected = asArray(models).filter((item) => item.imageGeneration).map((item) => item.name).filter(Boolean);
     return detected.length ? detected : modelOptions;
@@ -434,6 +454,13 @@ function App() {
     }
     setImageModel(imageModelOptions[0]);
   }, [imageModel, imageModelOptions]);
+
+  useEffect(() => {
+    if (!primaryModelOptions.length || primaryModelOptions.some((option) => option.value === model)) {
+      return;
+    }
+    setModel(primaryModelOptions[0].value);
+  }, [model, primaryModelOptions]);
 
   async function loadConfig() {
     const config = await GetConfig();
@@ -461,6 +488,7 @@ function App() {
     await Promise.all([
       refreshConversations(),
       refreshOllama(nextBaseURL),
+      HasOpenRouterAPIKey().then((hasKey) => setOpenRouterHasKey(hasKey)).catch(() => setOpenRouterHasKey(false)),
     ]);
   }
 
@@ -522,6 +550,31 @@ function App() {
       setImageModel((current) => current || firstImageModel);
     } finally {
       setRefreshing(false);
+    }
+  }
+
+  async function refreshOpenRouterModels() {
+    try {
+      const nextModels = asArray(await ListPrimaryModels('openrouter', ''));
+      setOpenRouterModels(nextModels);
+      setOpenRouterStatus('connected');
+      setOpenRouterError('');
+    } catch (error) {
+      setOpenRouterStatus('error');
+      setOpenRouterError(formatError(error));
+    }
+  }
+
+  async function saveOpenRouterKey() {
+    try {
+      await SaveOpenRouterAPIKey(openRouterAPIKeyInput);
+      setOpenRouterAPIKeyInput('');
+      const hasKey = await HasOpenRouterAPIKey();
+      setOpenRouterHasKey(hasKey);
+      await refreshOpenRouterModels();
+    } catch (error) {
+      setOpenRouterStatus('error');
+      setOpenRouterError(formatError(error));
     }
   }
 
@@ -623,6 +676,7 @@ function App() {
       thinking: historyText(turn.content, 'thinking'),
       images: historyImages(turn.content),
       harnessRun: parseHarnessRun(turn.providerResponse?.harnessRun),
+      provider: turn.provider,
     }));
     if (visibleRequestID && !entries.some((entry) => entry.id === `assistant-${visibleRequestID}`)) {
       const draft = chatStreamDraftsRef.current[visibleRequestID];
@@ -634,6 +688,7 @@ function App() {
         images: draft?.images,
         streaming: draft?.streaming ?? true,
         error: draft?.error,
+        provider: draft?.provider,
       });
     }
     setChat(entries);
@@ -739,7 +794,7 @@ function App() {
     setChat((entries) => [
       ...entries,
       userEntry,
-      {id: `assistant-${requestID}`, role: 'assistant', content: '', streaming: true},
+      {id: `assistant-${requestID}`, role: 'assistant', content: '', streaming: true, provider: primaryProvider},
     ]);
 
     try {
@@ -747,6 +802,7 @@ function App() {
         requestID,
         conversationId: activeConversationID || undefined,
         baseURL,
+        provider: primaryProvider,
         model,
         selectedModel: model,
         system,
@@ -1030,6 +1086,36 @@ function App() {
               </section>
 
               <section className="settings-section">
+                <h3>OpenRouter</h3>
+                <div className="connection">
+                  <label htmlFor="openrouter-key">API Key</label>
+                  <div className="endpoint-row">
+                    <input
+                      id="openrouter-key"
+                      type="password"
+                      placeholder={openRouterHasKey ? 'Key saved — enter a new key to replace it' : 'sk-or-...'}
+                      value={openRouterAPIKeyInput}
+                      onChange={(event) => setOpenRouterAPIKeyInput(event.target.value)}
+                    />
+                    <button type="button" onClick={saveOpenRouterKey} disabled={!openRouterAPIKeyInput}>
+                      Save Key
+                    </button>
+                    <button type="button" onClick={refreshOpenRouterModels} disabled={!openRouterHasKey}>
+                      Check Connection
+                    </button>
+                  </div>
+                  <div className={openRouterStatus === 'connected' ? 'status online' : 'status offline'}>
+                    <span />
+                    {openRouterStatus === 'connected'
+                      ? `Connected — ${openRouterModels.length} models available`
+                      : openRouterStatus === 'error'
+                        ? `OpenRouter: ${openRouterError}`
+                        : 'Not checked'}
+                  </div>
+                </div>
+              </section>
+
+              <section className="settings-section">
                 <h3>Storage</h3>
                 <div className="storage-list">
                   <div>
@@ -1186,7 +1272,10 @@ function App() {
                   const thinkingCollapsed = Boolean(entry.thinking && (collapsedThinkingIDs[entry.id] ?? !entry.streaming));
                   return (
                     <article key={entry.id} className={`message ${entry.role}`}>
-                      <div className="message-meta">{entry.role}{entry.streaming ? ' streaming' : ''}</div>
+                      <div className="message-meta">
+                        {entry.role}{entry.streaming ? ' streaming' : ''}
+                        {entry.provider ? <span className="turn-provider-badge">{entry.provider}</span> : null}
+                      </div>
                       {entry.images?.length ? (
                         entry.role === 'assistant' ? (
                           <div className="chat-image-results">
@@ -1293,22 +1382,45 @@ function App() {
                     <input type="file" accept="image/*" multiple onChange={(event) => addImages(event.target.files)} />
                   </label>
                   <div className="composer-submit-row">
-                    <label className="model-inline" htmlFor="primary-model">
-                      <span>Model</span>
-                      <div className="model-inline-control">
-                        <select id="primary-model" value={model} onChange={(event) => setModel(event.target.value)}>
-                          {modelOptions.map((name) => <option key={name}>{name}</option>)}
-                        </select>
-                        <ModelCapabilityLink
-                          id="primary-model"
-                          modelName={model}
-                          models={models}
-                          openID={openCapabilityID}
-                          setOpenID={setOpenCapabilityID}
-                          variant="icon"
-                        />
-                      </div>
-                    </label>
+                    <div className="composer-model-switch">
+                      <label className="model-inline" htmlFor="primary-provider">
+                        <span>Provider</span>
+                        <div className="model-inline-control">
+                          <select
+                            id="primary-provider"
+                            aria-label="Provider for next message"
+                            value={primaryProvider}
+                            onChange={(event) => setPrimaryProvider(event.target.value as 'ollama' | 'openrouter')}
+                          >
+                            <option value="ollama">Ollama</option>
+                            <option value="openrouter">OpenRouter</option>
+                          </select>
+                        </div>
+                      </label>
+                      <label className="model-inline" htmlFor="primary-model">
+                        <span>Model</span>
+                        <div className="model-inline-control">
+                          <select
+                            id="primary-model"
+                            aria-label="Model for next message"
+                            value={model}
+                            onChange={(event) => setModel(event.target.value)}
+                          >
+                            {primaryModelOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                          </select>
+                          {primaryProvider === 'ollama' ? (
+                            <ModelCapabilityLink
+                              id="primary-model"
+                              modelName={model}
+                              models={models}
+                              openID={openCapabilityID}
+                              setOpenID={setOpenCapabilityID}
+                              variant="icon"
+                            />
+                          ) : null}
+                        </div>
+                      </label>
+                    </div>
                     {activeStream ? (
                       <button className="danger" onClick={stopChat}>Stop</button>
                     ) : (

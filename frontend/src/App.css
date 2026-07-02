@@ -233,6 +233,17 @@
   font-size: 12px;
 }
 
+.turn-provider-badge {
+  margin-left: 8px;
+  padding: 1px 7px;
+  border: 1px solid #3b3f42;
+  border-radius: 10px;
+  color: #9ea5a3;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
 .side-nav {
   display: grid;
   grid-template-columns: 1fr;
@@ -1398,6 +1409,14 @@ button:disabled {
   min-width: 0;
 }
 
+.composer-model-switch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
 .model-inline {
   display: grid;
   grid-template-columns: auto minmax(180px, 280px);
@@ -1627,7 +1646,8 @@ button:disabled {
   }
 
   .composer-actions,
-  .composer-submit-row {
+  .composer-submit-row,
+  .composer-model-switch {
     align-items: stretch;
     flex-direction: column;
   }

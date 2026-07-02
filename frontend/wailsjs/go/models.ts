@@ -118,6 +118,32 @@ export namespace main {
 	        this.system = source["system"];
 	    }
 	}
+	export class ConfigModels {
+	    primaryProvider?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConfigModels(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.primaryProvider = source["primaryProvider"];
+	    }
+	}
+	export class ConfigOpenRouter {
+	    enabled: boolean;
+	    primary?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConfigOpenRouter(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.primary = source["primary"];
+	    }
+	}
 	export class ConfigOllamaModels {
 	    primary: string;
 	    harness: string;
@@ -170,6 +196,7 @@ export namespace main {
 	}
 	export class ConfigProviders {
 	    ollama: ConfigOllama;
+	    openrouter: ConfigOpenRouter;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigProviders(source);
@@ -178,6 +205,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.ollama = this.convertValues(source["ollama"], ConfigOllama);
+	        this.openrouter = this.convertValues(source["openrouter"], ConfigOpenRouter);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -218,6 +246,7 @@ export namespace main {
 	    version: number;
 	    storage: ConfigStorage;
 	    providers: ConfigProviders;
+	    models: ConfigModels;
 	    prompts: ConfigPrompts;
 	    generation: ConfigGeneration;
 	    tools: ConfigTools;
@@ -232,6 +261,7 @@ export namespace main {
 	        this.version = source["version"];
 	        this.storage = this.convertValues(source["storage"], ConfigStorage);
 	        this.providers = this.convertValues(source["providers"], ConfigProviders);
+	        this.models = this.convertValues(source["models"], ConfigModels);
 	        this.prompts = this.convertValues(source["prompts"], ConfigPrompts);
 	        this.generation = this.convertValues(source["generation"], ConfigGeneration);
 	        this.tools = this.convertValues(source["tools"], ConfigTools);
@@ -346,6 +376,8 @@ export namespace main {
 	
 	
 	
+	
+	
 	export class HistoryContent {
 	    type: string;
 	    text?: string;
@@ -378,6 +410,7 @@ export namespace main {
 	    kind: string;
 	    role: string;
 	    model?: string;
+	    provider?: string;
 	    content: HistoryContent[];
 	    request?: Record<string, any>;
 	    providerResponse?: Record<string, any>;
@@ -396,6 +429,7 @@ export namespace main {
 	        this.kind = source["kind"];
 	        this.role = source["role"];
 	        this.model = source["model"];
+	        this.provider = source["provider"];
 	        this.content = this.convertValues(source["content"], HistoryContent);
 	        this.request = source["request"];
 	        this.providerResponse = source["providerResponse"];
@@ -632,6 +666,26 @@ export namespace main {
 	
 	
 	
+	export class ModelInfo {
+	    provider: string;
+	    id: string;
+	    displayName: string;
+	    contextLength?: number;
+	    capabilities?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ModelInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.provider = source["provider"];
+	        this.id = source["id"];
+	        this.displayName = source["displayName"];
+	        this.contextLength = source["contextLength"];
+	        this.capabilities = source["capabilities"];
+	    }
+	}
 	export class OllamaModel {
 	    name: string;
 	    modifiedAt?: string;
