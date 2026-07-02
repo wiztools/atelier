@@ -468,12 +468,15 @@ function App() {
   }, [openCapabilityID]);
 
   // modelOptions feeds the Ollama-only lists (primary picker's Ollama branch,
-  // harness dropdown, image-model fallback), so it self-includes the Ollama
-  // primary — never the active `model`, which may be an OpenRouter id and must
-  // not leak into any Ollama option list.
+  // harness dropdown, image-model fallback). It is built from the fetched
+  // Ollama models plus the configured harness/image models (so those stay
+  // selectable), but deliberately NOT the primary model: if the stored primary
+  // isn't a real Ollama model (e.g. an OpenRouter id that leaked in), it must
+  // fall out of the list so the validation effect below heals it to a real
+  // model instead of letting the bad value self-validate.
   const modelOptions = useMemo(() => {
-    return Array.from(new Set([...asArray(models).map((item) => item.name), primaryModels.ollama, harnessModel, imageModel].filter(Boolean)));
-  }, [harnessModel, imageModel, primaryModels.ollama, models]);
+    return Array.from(new Set([...asArray(models).map((item) => item.name), harnessModel, imageModel].filter(Boolean)));
+  }, [harnessModel, imageModel, models]);
   const primaryModelOptions = useMemo(() => {
     if (primaryProvider === 'openrouter') {
       return asArray(openRouterModels)
