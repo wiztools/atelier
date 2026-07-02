@@ -322,6 +322,18 @@ function App() {
     return () => window.clearTimeout(timeout);
   }, [baseURL, configLoaded, harnessModel, imageHeight, imageModel, imageSteps, imageWidth, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig]);
 
+  // On a fresh launch, put the cursor in the chat box so the user can start
+  // typing immediately. Fires once, when config finishes loading.
+  useEffect(() => {
+    if (!configLoaded || view !== 'app') {
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      chatPromptRef.current?.focus();
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [configLoaded]);
+
   useEffect(() => {
     const onChunk = (chunk: ChatChunk) => {
       const isVisibleStream = visibleStreamRef.current === chunk.requestID;
