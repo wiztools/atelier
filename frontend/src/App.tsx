@@ -157,10 +157,24 @@ function App() {
   const [status, setStatus] = useState<main.OllamaStatus | null>(null);
   const [models, setModels] = useState<main.OllamaModel[]>([]);
   const [refreshing, setRefreshing] = useState(false);
-  const [model, setModel] = useState('');
   const [harnessModel, setHarnessModel] = useState('');
   const [imageModel, setImageModel] = useState('');
   const [primaryProvider, setPrimaryProvider] = useState<'ollama' | 'openrouter'>('ollama');
+  // The primary model is remembered per provider so switching providers
+  // restores that provider's last selection (falling back to the first
+  // available model when the remembered one isn't in the current list).
+  const [primaryModels, setPrimaryModels] = useState<Record<'ollama' | 'openrouter', string>>({ollama: '', openrouter: ''});
+  const model = primaryModels[primaryProvider];
+  const setModel = (next: string | ((current: string) => string)) => {
+    setPrimaryModels((prev) => {
+      const current = prev[primaryProvider];
+      const resolved = typeof next === 'function' ? (next as (c: string) => string)(current) : next;
+      if (resolved === current) {
+        return prev;
+      }
+      return {...prev, [primaryProvider]: resolved};
+    });
+  };
   const [openRouterModels, setOpenRouterModels] = useState<main.ModelInfo[]>([]);
   const [openRouterAPIKeyInput, setOpenRouterAPIKeyInput] = useState('');
   const [openRouterHasKey, setOpenRouterHasKey] = useState(false);
@@ -274,11 +288,18 @@ function App() {
           ollama: {
             baseURL,
             models: {
-              primary: model,
+              primary: primaryModels.ollama,
               harness: harnessModel,
               image: imageModel,
             },
           },
+          openrouter: {
+            enabled: openRouterHasKey,
+            primary: primaryModels.openrouter,
+          },
+        },
+        models: {
+          primaryProvider,
         },
         prompts: {
           system,
@@ -299,7 +320,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, harnessModel, imageHeight, imageModel, imageSteps, imageWidth, model, storageConfig, system, toolConfig]);
+  }, [baseURL, configLoaded, harnessModel, imageHeight, imageModel, imageSteps, imageWidth, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig]);
 
   useEffect(() => {
     const onChunk = (chunk: ChatChunk) => {
@@ -477,6 +498,8 @@ function App() {
     const config = await GetConfig();
     const nextBaseURL = config.providers?.ollama?.baseURL || defaultBaseURL;
     const nextPrimaryModel = config.providers?.ollama?.models?.primary ?? '';
+    const nextOpenRouterModel = config.providers?.openrouter?.primary ?? '';
+    const nextPrimaryProvider = config.models?.primaryProvider === 'openrouter' ? 'openrouter' : 'ollama';
     const nextHarnessModel = config.providers?.ollama?.models?.harness || nextPrimaryModel;
     const nextImageModel = config.providers?.ollama?.models?.image ?? '';
     const nextSystem = config.prompts?.system || 'You are Atelier, a precise local AI collaborator.';
@@ -488,7 +511,8 @@ function App() {
     setStorageConfig(config.storage ?? null);
     setToolConfig(config.tools ?? null);
     setBaseURL(nextBaseURL);
-    setModel(nextPrimaryModel);
+    setPrimaryModels({ollama: nextPrimaryModel, openrouter: nextOpenRouterModel});
+    setPrimaryProvider(nextPrimaryProvider);
     setHarnessModel(nextHarnessModel);
     setImageModel(nextImageModel);
     setSystem(nextSystem);
@@ -561,7 +585,7 @@ function App() {
       setModels(nextModels);
       const firstModel = nextModels[0]?.name ?? '';
       const firstImageModel = nextModels.find((item) => item.imageGeneration)?.name ?? firstModel;
-      setModel((current) => current || firstModel);
+      setPrimaryModels((current) => (current.ollama ? current : {...current, ollama: firstModel}));
       setHarnessModel((current) => current || firstModel);
       setImageModel((current) => current || firstImageModel);
     } finally {
