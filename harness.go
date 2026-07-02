@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -116,7 +115,11 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		return
 	}
 	if strings.TrimSpace(req.Model) == "" {
-		req.Model = strings.TrimSpace(h.config.Providers.Ollama.Models.Primary)
+		defaultModel, defaultProvider := h.app.resolvedPrimaryModelAndProvider(h.config)
+		req.Model = defaultModel
+		if strings.TrimSpace(req.Provider) == "" {
+			req.Provider = defaultProvider
+		}
 	}
 	conversationID := strings.TrimSpace(req.ConversationID)
 	if !req.turnStarted {
@@ -131,6 +134,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, ConversationID: conversationID})
 
 	primaryModel := h.primaryModelForRequest(req)
+	primaryProvider := resolvedProvider(req)
 	harnessModel := h.harnessModelFor(primaryModel)
 	run := newHarnessRun(requestID, conversationID)
 	queued := run.appendStep("queued", 1, "", "", "turn accepted by harness")
@@ -200,7 +204,8 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	// model, it cannot produce text or analyze images, so fall back to the
 	// harness model for the final response.
 	responseModel := h.responseModelFor(decision.ResponseMode, primaryModel, harnessModel)
-	responseReq := h.preparedResponseRequest(req, responseModel, preparation)
+	responseProvider := h.responseProviderFor(decision.ResponseMode, primaryModel, primaryProvider)
+	responseReq := h.preparedResponseRequest(req, responseModel, responseProvider, preparation)
 	result, err := h.runFinalResponseAttempt(ctx, requestID, conversationID, responseReq, &run)
 
 	// Even if the text response stream failed, deliver any images the tool
@@ -339,73 +344,81 @@ func (h *HarnessEngine) responseModelFor(mode, primaryModel, harnessModel string
 	return primaryModel
 }
 
+// responseProviderFor mirrors responseModelFor's fallback logic: whenever
+// the final response falls back to the harness model (image captioning, or
+// primaryModel being the configured Ollama image model), the harness model
+// is always Ollama, so the provider must be "ollama" too.
+func (h *HarnessEngine) responseProviderFor(mode, primaryModel, primaryProvider string) string {
+	if mode == "image" {
+		return "ollama"
+	}
+	imageModel := strings.TrimSpace(h.config.Providers.Ollama.Models.Image)
+	if imageModel != "" && primaryModel == imageModel {
+		return "ollama"
+	}
+	return primaryProvider
+}
+
 func (h *HarnessEngine) runFinalResponseAttempt(ctx context.Context, requestID, conversationID string, req ChatRequest, run *HarnessRun) (finalResponseAttempt, error) {
 	result := finalResponseAttempt{Model: req.Model}
-	modelCall := run.appendStep("model_call", 1, "ollama", req.Model, "provider stream opened")
-	resp, err := h.app.ollamaClient(req.BaseURL).OpenChatStream(ctx, req)
+	providerID := resolvedProvider(req)
+
+	modelCall := run.appendStep("model_call", 1, providerID, req.Model, "provider stream opened")
+	provider, err := h.app.providerFor(providerID, req.BaseURL)
 	if err != nil {
 		run.completeStep(modelCall, "failed", "", 0, err.Error())
 		return result, err
 	}
-	defer resp.Body.Close()
+	events, err := provider.StreamChat(ctx, req)
+	if err != nil {
+		run.completeStep(modelCall, "failed", "", 0, err.Error())
+		return result, err
+	}
 	run.completeStep(modelCall, "completed", "", 0, "")
-	streaming := run.appendStep("streaming", 1, "ollama", req.Model, "assistant response streamed to UI")
+	streaming := run.appendStep("streaming", 1, providerID, req.Model, "assistant response streamed to UI")
 
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	var content strings.Builder
 	var thinking strings.Builder
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
+	for event := range events {
+		if event.Err != nil {
+			run.completeStep(streaming, "failed", result.Reason, result.Tokens, event.Err.Error())
+			return result, event.Err
 		}
 
-		var chunk ollamaChatChunk
-		if err := json.Unmarshal([]byte(line), &chunk); err != nil {
-			run.completeStep(streaming, "failed", result.Reason, result.Tokens, err.Error())
-			return result, err
+		content.WriteString(event.ContentDelta)
+		thinking.WriteString(event.Thinking)
+		if event.Model != "" {
+			result.Model = event.Model
 		}
-		if chunk.Error != "" {
-			run.completeStep(streaming, "failed", result.Reason, result.Tokens, chunk.Error)
-			return result, errors.New(chunk.Error)
+		if event.DoneReason != "" {
+			result.Reason = event.DoneReason
 		}
-
-		content.WriteString(chunk.Message.Content)
-		thinking.WriteString(chunk.Message.Thinking)
-		if chunk.Model != "" {
-			result.Model = chunk.Model
-		}
-		if chunk.DoneReason != "" {
-			result.Reason = chunk.DoneReason
-		}
-		if chunk.EvalCount > 0 {
-			result.Tokens = chunk.EvalCount
+		tokens := 0
+		if event.Usage != nil && event.Usage.CompletionTokens > 0 {
+			result.Tokens = event.Usage.CompletionTokens
+			tokens = event.Usage.CompletionTokens
 		}
 
 		h.app.emitChatEvent(ChatStreamEvent{
 			RequestID:      requestID,
-			Content:        chunk.Message.Content,
-			Thinking:       chunk.Message.Thinking,
-			Model:          chunk.Model,
-			Reason:         chunk.DoneReason,
-			Tokens:         chunk.EvalCount,
+			Content:        event.ContentDelta,
+			Thinking:       event.Thinking,
+			Model:          event.Model,
+			Provider:       providerID,
+			Reason:         event.DoneReason,
+			Tokens:         tokens,
 			ConversationID: conversationID,
 		})
-		if chunk.Message.Content != "" || chunk.Message.Thinking != "" {
+		if event.ContentDelta != "" || event.Thinking != "" {
 			result.Emitted = true
 		}
 
-		if chunk.Done {
+		if event.Done {
 			result.Content = content.String()
 			result.Thinking = thinking.String()
 			run.completeStep(streaming, "completed", result.Reason, result.Tokens, "")
 			return result, nil
 		}
-	}
-	if err := scanner.Err(); err != nil && !errors.Is(err, context.Canceled) {
-		run.completeStep(streaming, "failed", result.Reason, result.Tokens, err.Error())
-		return result, err
 	}
 	result.Reason = "stream_ended"
 	result.Content = content.String()
@@ -740,9 +753,10 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 	}
 }
 
-func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel string, preparation HarnessPreparedTurn) ChatRequest {
+func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel, responseProvider string, preparation HarnessPreparedTurn) ChatRequest {
 	responseReq := req
 	responseReq.Model = responseModel
+	responseReq.Provider = responseProvider
 	responseReq.System = appendToolEvidenceToSystem(req.System, preparation)
 	messages := append([]ChatMessage{}, req.Messages...)
 	if len(preparation.ToolResults) > 0 {

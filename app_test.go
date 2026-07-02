@@ -1945,6 +1945,83 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 	}
 }
 
+func TestHarnessRunChatStreamUsesOpenRouterWhenRequestSpecifiesIt(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	keyring.MockInit()
+	if err := saveOpenRouterAPIKey("sk-or-test"); err != nil {
+		t.Fatalf("saveOpenRouterAPIKey returned error: %v", err)
+	}
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Host {
+		case "ollama.test":
+			// Only the harness triage call should hit Ollama in this test.
+			decision := `{"needsTools":false,"responseMode":"text","toolTask":"","reason":"General knowledge answer."}`
+			triageBody := `{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(triageBody)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+			}, nil
+		case "openrouter.ai":
+			if !strings.HasPrefix(req.URL.Path, "/api/v1/chat/completions") {
+				t.Fatalf("unexpected OpenRouter path %q", req.URL.Path)
+			}
+			body := `data: {"model":"anthropic/claude-3.5-sonnet","choices":[{"delta":{"content":"Hello from OpenRouter."},"finish_reason":"stop"}]}` + "\n" +
+				`data: [DONE]`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     http.Header{},
+			}, nil
+		default:
+			t.Fatalf("unexpected request host %q", req.URL.Host)
+			return nil, nil
+		}
+	})
+
+	app.runChatStream(context.Background(), "request-1", ChatRequest{
+		BaseURL:  "http://ollama.test",
+		Model:    "anthropic/claude-3.5-sonnet",
+		Provider: "openrouter",
+		Messages: []ChatMessage{{Role: "user", Content: "Say hello"}},
+	})
+
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	if len(conversations) != 1 {
+		t.Fatalf("conversation count = %d, want 1", len(conversations))
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	if got := detail.Turns[1].Content[0].Text; got != "Hello from OpenRouter." {
+		t.Fatalf("assistant content = %q, want streamed OpenRouter content", got)
+	}
+	if got := detail.Turns[1].Provider; got != "openrouter" {
+		t.Fatalf("assistant turn provider = %q, want openrouter", got)
+	}
+}
+
 func TestTriageFailureStillRunsToolPlannerAndAnswers(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
