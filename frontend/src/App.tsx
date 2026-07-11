@@ -1227,17 +1227,29 @@ function App() {
                       value={openRouterAPIKeyInput}
                       onChange={(event) => setOpenRouterAPIKeyInput(event.target.value)}
                     />
-                    <button type="button" onClick={saveOpenRouterKey} disabled={!openRouterAPIKeyInput}>
-                      Save Key
+                    <button type="button" className="icon-btn" onClick={saveOpenRouterKey} disabled={!openRouterAPIKeyInput} aria-label="Save key" title="Save key">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                        <polyline points="17 21 17 13 7 13 7 21" />
+                        <polyline points="7 3 7 8 15 8" />
+                      </svg>
                     </button>
-                    <button type="button" onClick={refreshOpenRouterModels} disabled={!openRouterHasKey}>
-                      Check Connection
+                    <button type="button" className={`icon-btn${openRouterStatus === 'connected' ? ' spinning' : ''}`} onClick={refreshOpenRouterModels} disabled={!openRouterHasKey} aria-label="Check connection" title="Check connection">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.7-3" />
+                        <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.7 3" />
+                        <polyline points="21 4 21 9 16 9" />
+                        <polyline points="3 20 3 15 8 15" />
+                      </svg>
                     </button>
                     {openRouterHasKey ? (
-                      <button type="button" onClick={clearOpenRouterKey}>
-                        Clear Key
+                      <button type="button" className="icon-btn" onClick={clearOpenRouterKey} aria-label="Clear key" title="Clear key">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="3 6 5 6 21 6" />
+                          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                        </svg>
                       </button>
-                    ) : null}
+                    ) : <span className="icon-btn-placeholder" aria-hidden="true" />}
                   </div>
                   <div className={openRouterStatus === 'connected' ? 'status online' : 'status offline'}>
                     <span />
@@ -1262,17 +1274,29 @@ function App() {
                       value={falAPIKeyInput}
                       onChange={(event) => setFalAPIKeyInput(event.target.value)}
                     />
-                    <button type="button" onClick={saveFalKey} disabled={!falAPIKeyInput}>
-                      Save Key
+                    <button type="button" className="icon-btn" onClick={saveFalKey} disabled={!falAPIKeyInput} aria-label="Save key" title="Save key">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                        <polyline points="17 21 17 13 7 13 7 21" />
+                        <polyline points="7 3 7 8 15 8" />
+                      </svg>
                     </button>
-                    <button type="button" onClick={checkFalConnection} disabled={!falHasKey}>
-                      Check Connection
+                    <button type="button" className={`icon-btn${falStatus === 'connected' ? ' spinning' : ''}`} onClick={checkFalConnection} disabled={!falHasKey} aria-label="Check connection" title="Check connection">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.7-3" />
+                        <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.7 3" />
+                        <polyline points="21 4 21 9 16 9" />
+                        <polyline points="3 20 3 15 8 15" />
+                      </svg>
                     </button>
                     {falHasKey ? (
-                      <button type="button" onClick={clearFalKey}>
-                        Clear Key
+                      <button type="button" className="icon-btn" onClick={clearFalKey} aria-label="Clear key" title="Clear key">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="3 6 5 6 21 6" />
+                          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                        </svg>
                       </button>
-                    ) : null}
+                    ) : <span className="icon-btn-placeholder" aria-hidden="true" />}
                   </div>
                   <div className={falStatus === 'connected' ? 'status online' : 'status offline'}>
                     <span />

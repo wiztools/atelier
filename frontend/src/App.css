@@ -554,8 +554,49 @@ button:disabled {
 
 .endpoint-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   gap: 8px;
+  align-items: center;
+}
+
+.icon-btn {
+  width: 30px;
+  height: 30px;
+  border: 1px solid #3a3e40;
+  border-radius: 6px;
+  padding: 0;
+  background: #1f2224;
+  cursor: pointer;
+  color: #9ea5a3;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-btn:hover:not(:disabled) {
+  color: #e2e4e3;
+  border-color: #4a4e50;
+  background: #262a2c;
+}
+
+.icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.icon-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.icon-btn.spinning svg {
+  animation: spin 0.9s linear infinite;
+}
+
+.icon-btn-placeholder {
+  width: 30px;
+  height: 30px;
 }
 
 .status {
