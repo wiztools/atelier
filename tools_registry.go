@@ -17,11 +17,15 @@ const (
 )
 
 type HarnessToolDefinition struct {
-	Name            string
-	Title           string
-	Description     string
-	Example         string
-	Risk            HarnessToolRisk
+	Name        string
+	Title       string
+	Description string
+	Example     string
+	Risk        HarnessToolRisk
+	// ParamSchema is the JSON Schema for the tool's arguments, used to declare
+	// the tool to Ollama's native function-calling API. It mirrors the rules
+	// enforced procedurally by Validate, which stays as a runtime backstop.
+	ParamSchema     map[string]any
 	Validate        func(prefix string, call HarnessToolCall) []string
 	Execute         func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error)
 	NeedsPermission func(call HarnessToolCall) bool
@@ -72,6 +76,7 @@ func imageGenerationToolDefinition() HarnessToolDefinition {
 		Description: "Use this when the user asks to create, draw, paint, or render an image. The configured image model generates it and the image is attached to the assistant reply.",
 		Example:     `{"name":"generate_image","content":"a watercolor of a lighthouse at dusk"}`,
 		Risk:        HarnessToolRiskRead,
+		ParamSchema: generateImageParamSchema(),
 		Validate: func(prefix string, call HarnessToolCall) []string {
 			if strings.TrimSpace(call.Content) == "" {
 				return []string{prefix + ".content is required for generate_image (the image prompt)"}
@@ -129,6 +134,107 @@ func filesystemToolRegistry() HarnessToolRegistry {
 	return defaultHarnessToolRegistry(defaultAppConfig())
 }
 
+// jsonSchema helpers describe tool parameters to Ollama's native tool-calling
+// API. They mirror the rules enforced by each tool's Validate func, which stays
+// as a runtime backstop for the format-schema planner path.
+
+func stringParam(description string) map[string]any {
+	return map[string]any{"type": "string", "description": description}
+}
+
+func intParam(description string) map[string]any {
+	return map[string]any{"type": "integer", "description": description}
+}
+
+func boolParam(description string) map[string]any {
+	return map[string]any{"type": "boolean", "description": description}
+}
+
+func listFilesParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"path": stringParam("Optional relative directory under the workspace root to list."),
+		},
+	}
+}
+
+func readFileParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"path":        stringParam("Relative path of a text file under the workspace root."),
+			"maxBytes":    intParam("Optional cap on bytes read."),
+			"allowBinary": boolParam("When true, do not reject binary file content."),
+		},
+		"required": []string{"path"},
+	}
+}
+
+func runCommandParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"command":   stringParam("The allowlisted command to run."),
+			"args":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Arguments to pass to the command."},
+			"cwd":       stringParam("Optional relative working directory under the workspace root."),
+			"timeoutMs": intParam("Optional timeout in milliseconds."),
+			"env":       map[string]any{"type": "object", "description": "Optional environment variables."},
+		},
+		"required": []string{"command"},
+	}
+}
+
+func writeFileParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"path":      stringParam("Relative path of the file to create or modify, under the workspace root."),
+			"content":   stringParam("The text content to write."),
+			"append":    boolParam("When true, append to the file instead of replacing it."),
+			"overwrite": boolParam("When true, overwrite an existing file."),
+		},
+		"required": []string{"path", "content"},
+	}
+}
+
+func generateImageParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"content": stringParam("The image prompt — describe the image to create."),
+			"model":   stringParam("Optional image generation model override."),
+		},
+		"required": []string{"content"},
+	}
+}
+
+// ollamaToolSpecs maps the registry to Ollama's native tools array shape:
+// [{ "type": "function", "function": { "name", "description", "parameters" } }].
+func ollamaToolSpecs(registry HarnessToolRegistry) []map[string]any {
+	specs := make([]map[string]any, 0, len(registry.definitions))
+	for _, definition := range registry.definitions {
+		parameters := definition.ParamSchema
+		if parameters == nil {
+			parameters = map[string]any{"type": "object", "properties": map[string]any{}}
+		}
+		specs = append(specs, map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        definition.Name,
+				"description": definition.Description,
+				"parameters":  parameters,
+			},
+		})
+	}
+	return specs
+}
+
 // workspaceRootPhrase describes the filesystem boundary in concrete terms.
 // The tools operate on real files on the host machine, confined to a real
 // directory — not an abstract or simulated "workspace". Naming the actual
@@ -166,6 +272,7 @@ func filesystemToolDefinitions(fsConfig ConfigFilesystemTool) []HarnessToolDefin
 			Description: "Use this to inspect real files and directories under " + workspaceRootPhrase(fsConfig) + " on this machine.",
 			Example:     `{"name":"list_files","path":"optional relative directory"}`,
 			Risk:        HarnessToolRiskRead,
+			ParamSchema: listFilesParamSchema(),
 			Execute: func(_ context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
 				output, err := tools.Filesystem.ListFiles(ToolFileListRequest{Path: call.Path})
 				return output, fmt.Sprintf("listed %d entries", len(output.Entries)), err
@@ -184,6 +291,7 @@ func filesystemToolDefinitions(fsConfig ConfigFilesystemTool) []HarnessToolDefin
 			Description: "Use this to read a real text file from under " + workspaceRootPhrase(fsConfig) + " on this machine.",
 			Example:     `{"name":"read_file","path":"relative/path.txt","maxBytes":20000}`,
 			Risk:        HarnessToolRiskRead,
+			ParamSchema: readFileParamSchema(),
 			Validate: func(prefix string, call HarnessToolCall) []string {
 				if strings.TrimSpace(call.Path) == "" {
 					return []string{prefix + ".path is required for read_file"}
@@ -212,6 +320,7 @@ func filesystemToolDefinitions(fsConfig ConfigFilesystemTool) []HarnessToolDefin
 			Description: runCommandDescription(fsConfig),
 			Example:     `{"name":"run_command","command":"rg","args":["-n","Atelier","."],"cwd":"optional relative directory"}`,
 			Risk:        HarnessToolRiskExec,
+			ParamSchema: runCommandParamSchema(),
 			NeedsPermission: func(call HarnessToolCall) bool {
 				return !isReadOnlyCommandCall(call)
 			},
@@ -262,6 +371,7 @@ func filesystemToolDefinitions(fsConfig ConfigFilesystemTool) []HarnessToolDefin
 			Description: "Use this only when the user clearly asks to create or modify a real file under " + workspaceRootPhrase(fsConfig) + " on this machine.",
 			Example:     `{"name":"write_file","path":"relative/path.txt","content":"text","overwrite":false,"append":false}`,
 			Risk:        HarnessToolRiskWrite,
+			ParamSchema: writeFileParamSchema(),
 			Validate: func(prefix string, call HarnessToolCall) []string {
 				var errors []string
 				if strings.TrimSpace(call.Path) == "" {

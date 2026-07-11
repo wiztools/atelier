@@ -245,7 +245,7 @@ func TestMergeAppConfigNormalizesOllamaEndpoint(t *testing.T) {
 				Models: ConfigOllamaModels{
 					Primary: "chat-model",
 					Harness: "harness-model",
-					Image: "image-model",
+					Image:   "image-model",
 				},
 			},
 		},
@@ -3148,6 +3148,8 @@ func TestHarnessGeneratesImageViaPlannedTool(t *testing.T) {
 	var streamMessages []any
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch req.URL.Path {
+		case "/api/show":
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"capabilities":[],"model_info":{},"details":{"family":"test","parameter_size":"1B"}}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
 		case "/api/generate":
 			imageCalls++
 			var payload map[string]any
@@ -3693,6 +3695,8 @@ func TestImageModelAsChatModelDeliversImagesDespiteResponseError(t *testing.T) {
 	streamCallCount := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch req.URL.Path {
+		case "/api/show":
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"capabilities":[],"model_info":{},"details":{"family":"test","parameter_size":"1B"}}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
 		case "/api/generate":
 			imageCalls++
 			var genPayload map[string]any
@@ -3800,6 +3804,8 @@ func TestImageModelAsChatModelDeliversImagesOnStreamError(t *testing.T) {
 	imageCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch req.URL.Path {
+		case "/api/show":
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"capabilities":[],"model_info":{},"details":{"family":"test","parameter_size":"1B"}}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
 		case "/api/generate":
 			imageCalls++
 			var genPayload map[string]any
@@ -3972,5 +3978,465 @@ func TestProviderRegistryResolveOpenRouterMissingKeyReturnsSentinel(t *testing.T
 	app := NewApp()
 	if _, err := newProviderRegistry(app).Resolve("openrouter", ""); !errors.Is(err, errOpenRouterKeyNotConfigured) {
 		t.Fatalf("Resolve error = %v, want errOpenRouterKeyNotConfigured", err)
+	}
+}
+
+// TestHasToolsCapability mirrors the hasImageGenerationCapability pattern:
+// tool-capable models advertise "tools" in /api/show's capabilities array.
+func TestHasToolsCapability(t *testing.T) {
+	tests := []struct {
+		name         string
+		capabilities []string
+		want         bool
+	}{
+		{"lowercase tools", []string{"tools"}, true},
+		{"titlecase Tools", []string{"Tools"}, true},
+		{"tools among others", []string{"completion", "tools", "vision"}, true},
+		{"image only", []string{"image-generation"}, false},
+		{"empty", nil, false},
+		{"unrelated", []string{"completion", "vision"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasToolsCapability(tc.capabilities); got != tc.want {
+				t.Fatalf("hasToolsCapability(%+v) = %v, want %v", tc.capabilities, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestOllamaToolSpecs asserts the registry maps to Ollama's native tools array
+// shape, with each spec carrying a name, description, and parameters schema.
+func TestOllamaToolSpecs(t *testing.T) {
+	registry := filesystemToolRegistry()
+	specs := ollamaToolSpecs(registry)
+	if len(specs) == 0 {
+		t.Fatalf("ollamaToolSpecs returned no specs")
+	}
+	if len(specs) != len(registry.definitions) {
+		t.Fatalf("specs count = %d, want %d (one per definition)", len(specs), len(registry.definitions))
+	}
+	for index, spec := range specs {
+		if spec["type"] != "function" {
+			t.Fatalf("specs[%d].type = %v, want \"function\"", index, spec["type"])
+		}
+		fn, ok := spec["function"].(map[string]any)
+		if !ok {
+			t.Fatalf("specs[%d].function is not a map", index)
+		}
+		name, ok := fn["name"].(string)
+		if !ok || strings.TrimSpace(name) == "" {
+			t.Fatalf("specs[%d].function.name missing or empty", index)
+		}
+		definition, exists := registry.Get(name)
+		if !exists {
+			t.Fatalf("specs[%d] name %q not in registry", index, name)
+		}
+		if description, _ := fn["description"].(string); description != definition.Description {
+			t.Fatalf("specs[%d].function.description = %q, want %q", index, description, definition.Description)
+		}
+		parameters, ok := fn["parameters"].(map[string]any)
+		if !ok {
+			t.Fatalf("specs[%d].function.parameters missing or not a map", index)
+		}
+		if parameters["type"] != "object" {
+			t.Fatalf("specs[%d].function.parameters.type = %v, want \"object\"", index, parameters["type"])
+		}
+	}
+}
+
+// TestMapNativeToolCalls covers converting Ollama's native tool_calls into the
+// flat HarnessToolCall shape, including per-call decode errors for malformed
+// arguments — mirroring decodeHarnessToolCalls.
+func TestMapNativeToolCalls(t *testing.T) {
+	t.Run("read_file with path", func(t *testing.T) {
+		var call ollamaToolCall
+		call.Function.Name = "read_file"
+		call.Function.Arguments = json.RawMessage(`{"path":"notes.txt","maxBytes":1024}`)
+		calls, problems := mapNativeToolCalls([]ollamaToolCall{call})
+		if len(problems) != 0 {
+			t.Fatalf("problems = %+v, want none", problems)
+		}
+		if len(calls) != 1 || calls[0].Name != "read_file" || calls[0].Path != "notes.txt" || calls[0].MaxBytes != 1024 {
+			t.Fatalf("calls = %+v, want one read_file{notes.txt,1024}", calls)
+		}
+	})
+
+	t.Run("run_command with args array", func(t *testing.T) {
+		var call ollamaToolCall
+		call.Function.Name = "run_command"
+		call.Function.Arguments = json.RawMessage(`{"command":"rg","args":["-n","foo","."],"cwd":"src"}`)
+		calls, problems := mapNativeToolCalls([]ollamaToolCall{call})
+		if len(problems) != 0 {
+			t.Fatalf("problems = %+v, want none", problems)
+		}
+		if calls[0].Command != "rg" || len(calls[0].Args) != 3 || calls[0].Cwd != "src" {
+			t.Fatalf("calls = %+v, want command=rg args=[-n foo .] cwd=src", calls)
+		}
+	})
+
+	t.Run("malformed arguments reported per call", func(t *testing.T) {
+		var call ollamaToolCall
+		call.Function.Name = "read_file"
+		call.Function.Arguments = json.RawMessage(`{not valid json`)
+		calls, problems := mapNativeToolCalls([]ollamaToolCall{call})
+		if len(calls) != 0 {
+			t.Fatalf("calls = %+v, want none for malformed arguments", calls)
+		}
+		if len(problems) != 1 || !strings.Contains(problems[0], "could not be parsed") {
+			t.Fatalf("problems = %+v, want one parse error", problems)
+		}
+	})
+
+	t.Run("empty", func(t *testing.T) {
+		calls, problems := mapNativeToolCalls(nil)
+		if calls != nil || problems != nil {
+			t.Fatalf("calls=%+v problems=%+v, want nil/nil", calls, problems)
+		}
+	})
+}
+
+// TestHarnessPlansWithNativeToolCalls drives the planner through Ollama's
+// native tool-calling path: /api/show advertises the "tools" capability, and
+// the planner emits message.tool_calls (not a JSON envelope). It mirrors
+// TestHarnessCanRequestSecondToolRound's three-round shape but exercises the
+// native fork: round 1 lists files, round 2 reads notes.txt, round 3 closes
+// with content only.
+func TestHarnessPlansWithNativeToolCalls(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Tools.Filesystem.Root = filepath.Join(home, "tool-root")
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(config.Tools.Filesystem.Root, "notes.txt"), []byte("Native round found this."), 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	prepCalls := 0
+	nonStreamCount := 0
+	var nativePlannerRequests []map[string]any
+	var finalRequestPayload map[string]any
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/api/show":
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"capabilities":["tools"],"model_info":{},"details":{"family":"test","parameter_size":"1B"}}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+		case "/api/chat":
+			var payload map[string]any
+			data, _ := io.ReadAll(req.Body)
+			if err := json.Unmarshal(data, &payload); err != nil {
+				t.Fatalf("provider request body is not JSON: %v", err)
+			}
+			if payload["stream"] == false {
+				nonStreamCount++
+				if nonStreamCount == 1 {
+					decision := `{"needsTools":true,"responseMode":"text","toolTask":"Discover and read the workspace notes.","reason":"The user asked to use workspace notes."}`
+					return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+				}
+				prepCalls++
+				nativePlannerRequests = append(nativePlannerRequests, payload)
+				// Native planner rounds emit message.tool_calls; the closing
+				// round emits only content (the brief) and no tool_calls.
+				var body string
+				switch prepCalls {
+				case 1:
+					body = `{"model":"harness-model","message":{"role":"assistant","content":"Listing workspace files.","tool_calls":[{"function":{"name":"list_files","arguments":{"path":"."}}}]},"done":true,"done_reason":"stop","eval_count":2}`
+				case 2:
+					body = `{"model":"harness-model","message":{"role":"assistant","content":"Reading notes.txt.","tool_calls":[{"function":{"name":"read_file","arguments":{"path":"notes.txt"}}}]},"done":true,"done_reason":"stop","eval_count":2}`
+				default:
+					body = `{"model":"harness-model","message":{"role":"assistant","content":"I have the notes content now."},"done":true,"done_reason":"stop","eval_count":2}`
+				}
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+			}
+			finalRequestPayload = payload
+			responseBody := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"Native round answer."},"done":false}`) +
+				fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(responseBody)), Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+		default:
+			t.Fatalf("unexpected provider path %q", req.URL.Path)
+		}
+		return nil, nil
+	})
+
+	app.runChatStream(context.Background(), "request-native-tools", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Use the workspace notes"},
+		},
+	})
+
+	if prepCalls != 3 {
+		t.Fatalf("harness prep calls = %d, want two tool rounds and a closing round", prepCalls)
+	}
+	// The native planner requests must carry tools and must not carry format.
+	if len(nativePlannerRequests) == 0 {
+		t.Fatalf("no native planner requests captured")
+	}
+	for index, request := range nativePlannerRequests {
+		if request["tools"] == nil {
+			t.Fatalf("native planner request %d carried no tools", index)
+		}
+		if request["format"] != nil {
+			t.Fatalf("native planner request %d carried format, want none", index)
+		}
+	}
+	// The final model never gets tools (Invariant 1).
+	if finalRequestPayload["tools"] != nil {
+		t.Fatalf("final response request carried tools, want tool-free final model")
+	}
+	// Tool observations reach the final model as a user-role message.
+	observations := ""
+	if messages, ok := finalRequestPayload["messages"].([]any); ok {
+		for _, message := range messages {
+			typed, _ := message.(map[string]any)
+			content, _ := typed["content"].(string)
+			if role, _ := typed["role"].(string); role == "user" && strings.Contains(content, "[Tool observations]") {
+				observations += content
+			}
+		}
+	}
+	if !strings.Contains(observations, "Native round found this.") {
+		t.Fatalf("tool observations = %q, want notes.txt content", observations)
+	}
+
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	harnessRun := detail.Turns[1].ProviderResponse["harnessRun"].(map[string]any)
+	loop := harnessRun["loop"].(map[string]any)
+	if loop["iterations"] != float64(3) {
+		t.Fatalf("loop = %+v, want 3 iterations", loop)
+	}
+	var toolSteps []map[string]any
+	for _, raw := range harnessRun["steps"].([]any) {
+		step := raw.(map[string]any)
+		if step["kind"] == "tool_call" {
+			toolSteps = append(toolSteps, step)
+		}
+	}
+	if len(toolSteps) != 2 {
+		t.Fatalf("tool steps = %+v, want one step per tool round", toolSteps)
+	}
+	firstActivities := toolSteps[0]["tools"].([]any)
+	secondActivities := toolSteps[1]["tools"].([]any)
+	if name, _ := firstActivities[0].(map[string]any)["name"].(string); name != "list_files" {
+		t.Fatalf("first round activity = %+v, want list_files", firstActivities[0])
+	}
+	if name, _ := secondActivities[0].(map[string]any)["name"].(string); name != "read_file" {
+		t.Fatalf("second round activity = %+v, want read_file", secondActivities[0])
+	}
+}
+
+// TestNativeToolsFallsBackWhenCapabilityAbsent asserts that when the harness
+// model does not advertise the "tools" capability, the planner uses the
+// format-schema path (format present, tools absent) — identical to today.
+func TestNativeToolsFallsBackWhenCapabilityAbsent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	nonStreamCount := 0
+	var plannerRequest map[string]any
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/api/show":
+			// No "tools" capability: should fall back to the format path.
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"capabilities":["completion"],"model_info":{},"details":{"family":"test","parameter_size":"1B"}}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+		case "/api/chat":
+			var payload map[string]any
+			data, _ := io.ReadAll(req.Body)
+			if err := json.Unmarshal(data, &payload); err != nil {
+				t.Fatalf("provider request body is not JSON: %v", err)
+			}
+			if payload["stream"] == false {
+				nonStreamCount++
+				if nonStreamCount == 1 {
+					decision := `{"needsTools":true,"responseMode":"text","toolTask":"Read status.","reason":"Need the file."}`
+					return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+				}
+				plannerRequest = payload
+				// Format-schema path: a JSON envelope closing out immediately.
+				plan := `{"brief":"No tools needed.","needsTools":false,"reason":"None.","toolCalls":[]}`
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(plan) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+			}
+			responseBody := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"Fallback answer."},"done":false}`) +
+				fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(responseBody)), Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+		default:
+			t.Fatalf("unexpected provider path %q", req.URL.Path)
+		}
+		return nil, nil
+	})
+
+	app.runChatStream(context.Background(), "request-fallback", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "What is the status?"},
+		},
+	})
+
+	if plannerRequest == nil {
+		t.Fatalf("no planner request captured")
+	}
+	if plannerRequest["format"] == nil {
+		t.Fatalf("planner request carried no format, want the format-schema path")
+	}
+	if plannerRequest["tools"] != nil {
+		t.Fatalf("planner request carried tools, want none (capability absent)")
+	}
+}
+
+// TestNativeTruncatedPlanRetriesInsteadOfSilentlySucceeding reproduces the
+// conv_a8fa3aa5 failure: on the native tool-calling path, a planner response
+// that hits the output token limit (done_reason "length") with no surviving
+// tool_calls must be treated as a validation error and retried — not silently
+// concluded as "needs no tools". Without the truncation guard in
+// parseNativePlannerResponse, the loop would exit after one iteration and the
+// tool would never run. This is the native-path analog of
+// TestHarnessCautionsFinalModelAfterRepeatedInvalidPlans.
+func TestNativeTruncatedPlanRetriesInsteadOfSilentlySucceeding(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Tools.Filesystem.Root = filepath.Join(home, "tool-root")
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	planningCalls := 0
+	streamCalls := 0
+	var responseSystem string
+	var nativeRetryFeedback string
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/api/show":
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"capabilities":["tools"],"model_info":{},"details":{"family":"test","parameter_size":"1B"}}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+		case "/api/chat":
+			var payload map[string]any
+			data, _ := io.ReadAll(req.Body)
+			if err := json.Unmarshal(data, &payload); err != nil {
+				t.Fatalf("provider request body is not JSON: %v", err)
+			}
+			if payload["stream"] == false {
+				// Only planner requests carry tools; triage and skill-selection
+				// do not. Count those specifically so the assertion isn't off
+				// by the triage call.
+				if payload["tools"] != nil {
+					planningCalls++
+					// Capture the correction feedback fed back after the first
+					// truncated round (the last message in the next request).
+					if planningCalls > 1 {
+						if messages, ok := payload["messages"].([]any); ok && len(messages) > 0 {
+							lastMessage, _ := messages[len(messages)-1].(map[string]any)
+							nativeRetryFeedback, _ = lastMessage["content"].(string)
+						}
+					}
+					// Every planner round hits the output limit while reasoning,
+					// emitting no tool_calls — the exact failure mode.
+					thinking := "I should post the recipes using run_command with kc post, but I need to fit the whole recipe content into the arguments and that is a lot of tokens, so let me think carefully about how to structure this..."
+					return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(thinking) + `},"done":true,"done_reason":"length","eval_count":1024}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+				}
+				// Triage: no tools needed for this user message would be wrong,
+				// so return a tool-path decision to reach the planner.
+				decision := `{"needsTools":true,"responseMode":"text","toolTask":"Post the recipes using a command.","reason":"The user asked to post."}`
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+			}
+			streamCalls++
+			messages := payload["messages"].([]any)
+			responseSystem, _ = messages[0].(map[string]any)["content"].(string)
+			body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"I couldn't post this because the harness couldn't assemble the command."},"done":false}`) +
+				fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+		default:
+			t.Fatalf("unexpected provider path %q", req.URL.Path)
+		}
+		return nil, nil
+	})
+
+	app.runChatStream(context.Background(), "request-native-truncated", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Post the recipes to knowledged."},
+		},
+	})
+
+	// The loop must retry up to the step cap rather than silently succeeding
+	// after one iteration. Before the fix, planningCalls would be 1.
+	if planningCalls != harnessChatMaxSteps {
+		t.Fatalf("planningCalls = %d, want %d (retries up to the step cap, not silent success after 1)", planningCalls, harnessChatMaxSteps)
+	}
+	if streamCalls != 1 {
+		t.Fatalf("streamCalls = %d, want final model called once with the invalid-plan note", streamCalls)
+	}
+	// The final model must be told no tools ran (honest failure reporting).
+	if !strings.Contains(responseSystem, "no tools ran") {
+		t.Fatalf("response system = %q, want the invalid-plan note", responseSystem)
+	}
+	// The native correction feedback must mention the output limit so the
+	// model is steered toward emitting tool calls first.
+	if !strings.Contains(nativeRetryFeedback, "output token limit") {
+		t.Fatalf("native retry feedback = %q, want truncated-plan guidance", nativeRetryFeedback)
+	}
+
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	harnessRun := detail.Turns[1].ProviderResponse["harnessRun"].(map[string]any)
+	loop := harnessRun["loop"].(map[string]any)
+	if loop["iterations"] != float64(harnessChatMaxSteps) {
+		t.Fatalf("loop iterations = %+v, want %d (retried to the cap)", loop, harnessChatMaxSteps)
 	}
 }

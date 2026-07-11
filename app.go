@@ -168,9 +168,26 @@ type ollamaShowResponse struct {
 }
 
 type ChatMessage struct {
-	Role    string   `json:"role"`
-	Content string   `json:"content"`
-	Images  []string `json:"images,omitempty"`
+	Role      string           `json:"role"`
+	Content   string           `json:"content"`
+	Images    []string         `json:"images,omitempty"`
+	ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
+}
+
+// ollamaToolCall mirrors the function-call shape Ollama returns in
+// message.tool_calls (and accepts in assistant message history). Arguments is
+// kept raw so the planner loop can validate before unmarshalling. The nested
+// function payload is a named type (not an anonymous struct) so the Wails
+// binding generator can mirror it into models.ts.
+type ollamaToolCall struct {
+	Type     string             `json:"type,omitempty"`
+	Function ollamaToolFunction `json:"function"`
+}
+
+// ollamaToolFunction is the function payload of a tool call.
+type ollamaToolFunction struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
 }
 
 type ChatRequest struct {
@@ -186,6 +203,10 @@ type ChatRequest struct {
 	Think          any            `json:"think,omitempty"`
 	Options        map[string]any `json:"options,omitempty"`
 	Format         any            `json:"format,omitempty"`
+	// Tools is only set on planner calls when the harness model supports native
+	// tool-calling. The final-response request (preparedResponseRequest) never
+	// sets it, so the primary model stays tool-free.
+	Tools []map[string]any `json:"tools,omitempty"`
 }
 
 type ChatStreamStart struct {
@@ -224,9 +245,10 @@ type ollamaChatChunk struct {
 	Model   string `json:"model"`
 	Done    bool   `json:"done"`
 	Message struct {
-		Role     string `json:"role"`
-		Content  string `json:"content"`
-		Thinking string `json:"thinking"`
+		Role      string           `json:"role"`
+		Content   string           `json:"content"`
+		Thinking  string           `json:"thinking"`
+		ToolCalls []ollamaToolCall `json:"tool_calls"`
 	} `json:"message"`
 	DoneReason string `json:"done_reason"`
 	EvalCount  int    `json:"eval_count"`
@@ -236,9 +258,10 @@ type ollamaChatChunk struct {
 type ollamaChatResponse struct {
 	Model   string `json:"model"`
 	Message struct {
-		Role     string `json:"role"`
-		Content  string `json:"content"`
-		Thinking string `json:"thinking"`
+		Role      string           `json:"role"`
+		Content   string           `json:"content"`
+		Thinking  string           `json:"thinking"`
+		ToolCalls []ollamaToolCall `json:"tool_calls"`
 	} `json:"message"`
 	Response   string `json:"response"`
 	Done       bool   `json:"done"`

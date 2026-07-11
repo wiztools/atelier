@@ -13,11 +13,11 @@ const triageNumPredict = 256
 // stored on the HarnessRun for telemetry; Error records a triage failure that
 // forced the fail-safe tool path.
 type HarnessTriageDecision struct {
-	NeedsTools  bool   `json:"needsTools"`
+	NeedsTools   bool   `json:"needsTools"`
 	ResponseMode string `json:"responseMode,omitempty"`
-	ToolTask    string `json:"toolTask,omitempty"`
-	Reason      string `json:"reason,omitempty"`
-	Error       string `json:"error,omitempty"`
+	ToolTask     string `json:"toolTask,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+	Error        string `json:"error,omitempty"`
 }
 
 func triageResponseSchema() map[string]any {

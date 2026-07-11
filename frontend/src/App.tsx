@@ -852,12 +852,12 @@ function App() {
           role: entry.role,
           content: entry.content,
           ...(entry.images?.length ? {images: entry.images.map(imagePayloadForOllama).filter(Boolean)} : {}),
-        })),
+        }) as main.ChatMessage),
       {
         role: 'user',
         content: trimmed,
         ...(attachments.length ? {images: attachments.map((item) => item.payload)} : {}),
-      },
+      } as main.ChatMessage,
     ];
 
     setPrompt('');

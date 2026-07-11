@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,7 +14,7 @@ import (
 const (
 	harnessChatMaxSteps    = 3
 	harnessChatMaxWallTime = 2 * time.Minute
-	harnessPlanNumPredict  = 1024
+	harnessPlanNumPredict  = 4096
 )
 
 // Context budgeting works in characters with a rough chars-per-token estimate;
@@ -173,6 +174,10 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	var preparation HarnessPreparedTurn
 	preparationThinking := ""
 	if decision.NeedsTools {
+		// Resolve native tool-calling support. Native tools are an enhancement:
+		// any failure to confirm the capability falls back to the format-schema
+		// planner path, so a wrong fallback costs latency, never correctness.
+		useNativeTools := h.supportsNativeTools(ctx, req.BaseURL, harnessModel)
 		toolReq := req
 		toolReq.Model = harnessModel
 		var err error
@@ -184,6 +189,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			ToolTask:       decision.ToolTask,
 			PrimaryModel:   primaryModel,
 			ResponseMode:   decision.ResponseMode,
+			UseNativeTools: useNativeTools,
 		}, &run)
 		if err != nil {
 			run.complete("failed", "harness_prepare_error")
@@ -321,6 +327,22 @@ func (h *HarnessEngine) harnessModelFor(primaryModel string) string {
 		return primaryModel
 	}
 	return model
+}
+
+// supportsNativeTools reports whether the harness model advertises Ollama's
+// native function-calling capability. Any error or absent capability returns
+// false, falling back to the format-schema planner path. Native tools are an
+// enhancement, never a requirement.
+func (h *HarnessEngine) supportsNativeTools(ctx context.Context, baseURL, model string) bool {
+	model = strings.TrimSpace(model)
+	if model == "" || h.app == nil {
+		return false
+	}
+	show, err := h.app.ollamaClient(baseURL).ShowModel(ctx, model)
+	if err != nil {
+		return false
+	}
+	return hasToolsCapability(show.Capabilities)
 }
 
 // responseModelFor resolves which model should produce the final response,
@@ -496,7 +518,8 @@ func truncateChatHistory(messages []ChatMessage, budgetChars int) []ChatMessage 
 
 // harnessTurnContext carries what RunChatStream resolved before entering the
 // tool path: the skill index (loaded once per turn), any explicit skill the
-// user named, and the primary model's triage task for the planner.
+// user named, the primary model's triage task for the planner, and whether the
+// harness model supports native tool-calling.
 type harnessTurnContext struct {
 	SkillIndex     []SkillIndexEntry
 	SkillIndexErr  error
@@ -505,6 +528,7 @@ type harnessTurnContext struct {
 	ToolTask       string
 	PrimaryModel   string
 	ResponseMode   string
+	UseNativeTools bool
 }
 
 func (h *HarnessEngine) selectSkillForTurn(ctx context.Context, req ChatRequest, turn harnessTurnContext) (*HarnessSkillDecision, *LoadedSkill) {
@@ -610,7 +634,15 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 	skillDecision, loadedSkill := h.selectSkillForTurn(ctx, req, turn)
 	run.Skill = skillDecision
 	registry := h.toolRegistry()
-	system := h.plannerSystemPrompt(registry, req, loadedSkill, turn.ToolTask)
+	// The planner prompt and plan-parsing differ between the two paths, but the
+	// bounded loop, telemetry recording, tool execution, and result feedback
+	// are shared.
+	var system string
+	if turn.UseNativeTools {
+		system = h.plannerSystemPromptNative(registry, req, loadedSkill, turn.ToolTask)
+	} else {
+		system = h.plannerSystemPrompt(registry, req, loadedSkill, turn.ToolTask)
+	}
 	numCtx := h.numCtx()
 	budget := historyBudgetChars(numCtx, system, harnessPlanNumPredict)
 	messages := append([]ChatMessage{}, req.Messages...)
@@ -624,21 +656,34 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 			Model:    req.Model,
 			System:   system,
 			Messages: truncateChatHistory(messages, budget),
-			Format:   harnessToolPlanSchema(registry),
 			Options: map[string]any{
 				"temperature": 0,
 				"num_predict": harnessPlanNumPredict,
 				"num_ctx":     numCtx,
 			},
 		}
+		if turn.UseNativeTools {
+			prepReq.Tools = ollamaToolSpecs(registry)
+		} else {
+			prepReq.Format = harnessToolPlanSchema(registry)
+		}
 		completion, err := h.app.ollamaClient(req.BaseURL).CompleteChat(ctx, prepReq)
 		if err != nil {
 			run.completeStep(planning, "failed", "", 0, err.Error())
 			return HarnessPreparedTurn{}, err
 		}
-		plan, validationErrors := parseHarnessToolPlanWithRegistry(completion.Content, registry)
-		if len(validationErrors) > 0 && strings.TrimSpace(completion.Reason) == "length" {
-			validationErrors = append([]string{"the plan response hit the output token limit and was cut off; return a shorter plan"}, validationErrors...)
+
+		// Parse the planner response into a common plan shape. Both paths
+		// produce {brief, needsTools, reason, toolCalls, validationErrors}.
+		var plan HarnessToolPlan
+		var validationErrors []string
+		if turn.UseNativeTools {
+			plan, validationErrors = parseNativePlannerResponse(completion, registry)
+		} else {
+			plan, validationErrors = parseHarnessToolPlanWithRegistry(completion.Content, registry)
+			if len(validationErrors) > 0 && strings.TrimSpace(completion.Reason) == "length" {
+				validationErrors = append([]string{"the plan response hit the output token limit and was cut off; return a shorter plan"}, validationErrors...)
+			}
 		}
 		round := HarnessToolRound{
 			Iteration:            iteration,
@@ -656,10 +701,7 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 			run.completeStep(planning, "completed", completion.Reason, completion.EvalTokens, "")
 			prepared.Rounds = append(prepared.Rounds, round)
 			prepared.ToolCalls = nil
-			messages = append(messages,
-				ChatMessage{Role: "assistant", Content: completion.Content},
-				ChatMessage{Role: "user", Content: "Your previous response was not a valid tool plan:\n" + validationErrorsMarkdown(validationErrors) + "\n\nReturn a corrected plan that matches the response schema."},
-			)
+			messages = append(messages, h.plannerCorrectionMessages(turn.UseNativeTools, completion, validationErrors)...)
 			continue
 		}
 		run.completeStep(planning, "completed", completion.Reason, completion.EvalTokens, "")
@@ -681,11 +723,106 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 		if time.Now().After(deadline) {
 			break
 		}
-		messages = append(messages, ChatMessage{Role: "assistant", Content: completion.Content})
+		messages = append(messages, h.plannerAssistantMessage(turn.UseNativeTools, completion))
 		messages = append(messages, toolResultMessages(results)...)
 	}
 	run.Loop.Iterations = len(prepared.Rounds)
 	return prepared, nil
+}
+
+// plannerAssistantMessage renders the assistant turn to append back into the
+// planner's message history after a tool round. Native tool-calls must be
+// echoed as tool_calls on the assistant message so Ollama's native loop keeps
+// role ordering valid; the format-schema path echoes only the JSON content.
+func (h *HarnessEngine) plannerAssistantMessage(useNativeTools bool, completion ChatCompletionResult) ChatMessage {
+	if useNativeTools && len(completion.ToolCalls) > 0 {
+		return ChatMessage{Role: "assistant", Content: completion.Content, ToolCalls: completion.ToolCalls}
+	}
+	return ChatMessage{Role: "assistant", Content: completion.Content}
+}
+
+// plannerCorrectionMessages renders the feedback for an invalid plan. The
+// format-schema path uses a user-role correction request (the model emits a
+// corrected JSON plan). The native path reports the failure as a tool-role
+// message — the idiomatic channel for a tool that rejected its arguments — so
+// the model's native tool-calling loop can recover in the next round.
+func (h *HarnessEngine) plannerCorrectionMessages(useNativeTools bool, completion ChatCompletionResult, validationErrors []string) []ChatMessage {
+	if !useNativeTools {
+		return []ChatMessage{
+			{Role: "assistant", Content: completion.Content},
+			{Role: "user", Content: "Your previous response was not a valid tool plan:\n" + validationErrorsMarkdown(validationErrors) + "\n\nReturn a corrected plan that matches the response schema."},
+		}
+	}
+	assistant := ChatMessage{Role: "assistant", Content: completion.Content}
+	if len(completion.ToolCalls) > 0 {
+		assistant.ToolCalls = completion.ToolCalls
+	}
+	failed := HarnessToolResult{
+		Name:    "planner",
+		Status:  "failed",
+		Error:   "the tool plan was rejected: " + strings.Join(validationErrors, "; "),
+		Summary: "plan validation failed",
+	}
+	return []ChatMessage{assistant, ChatMessage{Role: "tool", Content: fmt.Sprintf(`{"name":"planner","status":"failed","error":%q}`, failed.Error)}}
+}
+
+// parseNativePlannerResponse converts a native tool-calling completion into the
+// common plan shape. The model's content becomes the brief (telemetry only),
+// needsTools is inferred from whether any tool calls were emitted, and each
+// call is validated against the registry the same way the format-schema path
+// validates its JSON plan — minus the envelope constraints (required brief/
+// reason, needsTools consistency) that only make sense for the schema envelope.
+func parseNativePlannerResponse(completion ChatCompletionResult, registry HarnessToolRegistry) (HarnessToolPlan, []string) {
+	calls, validationErrors := mapNativeToolCalls(completion.ToolCalls)
+	if len(calls) > 3 {
+		validationErrors = append(validationErrors, "toolCalls may contain at most 3 calls")
+	}
+	for index, call := range calls {
+		validationErrors = append(validationErrors, validateHarnessToolCall(index, call, registry)...)
+	}
+	// Truncation guard: a native response that hit the output limit with no
+	// surviving tool calls is indistinguishable from "decided no tools are
+	// needed", but here it almost always means the model spent its token budget
+	// on thinking and the tool_calls were cut off. Treat that as a validation
+	// error so the loop retries (mirroring the format-schema path's length
+	// handling) instead of silently concluding the turn needs no tools.
+	if strings.TrimSpace(completion.Reason) == "length" && len(calls) == 0 {
+		validationErrors = append([]string{"the tool plan hit the output token limit before any tool call was emitted; emit tool calls first and keep reasoning short"}, validationErrors...)
+	}
+	return HarnessToolPlan{
+		Brief:      completion.Content,
+		NeedsTools: len(calls) > 0,
+		Reason:     "",
+		ToolCalls:  calls,
+	}, validationErrors
+}
+
+// mapNativeToolCalls converts Ollama's native tool_calls into the flat
+// HarnessToolCall shape the gateway expects. Each call's arguments JSON object
+// is unmarshalled directly onto a HarnessToolCall, whose fields match the tool
+// parameter names. A per-call decode error is reported rather than failing the
+// whole round, mirroring decodeHarnessToolCalls.
+func mapNativeToolCalls(calls []ollamaToolCall) ([]HarnessToolCall, []string) {
+	if len(calls) == 0 {
+		return nil, nil
+	}
+	mapped := make([]HarnessToolCall, 0, len(calls))
+	var problems []string
+	for index, call := range calls {
+		name := strings.TrimSpace(call.Function.Name)
+		var harnessCall HarnessToolCall
+		harnessCall.Name = name
+		args := bytes.TrimSpace(call.Function.Arguments)
+		if len(args) > 0 && string(args) != "null" {
+			if err := json.Unmarshal(args, &harnessCall); err != nil {
+				problems = append(problems, fmt.Sprintf("toolCalls[%d].arguments could not be parsed: %v", index, err))
+				continue
+			}
+		}
+		harnessCall.Name = name
+		mapped = append(mapped, harnessCall)
+	}
+	return mapped, problems
 }
 
 func (h *HarnessEngine) plannerSystemPrompt(registry HarnessToolRegistry, req ChatRequest, loadedSkill *LoadedSkill, toolTask string) string {
@@ -709,6 +846,30 @@ When "needsTools" is false, "toolCalls" must be []. Prefer read-only calls unles
 	}
 	if loadedSkill != nil {
 		system += "\n\nActive SKILL.md selected for this turn. Follow these instructions when planning tools and writing the brief, including any workflow or command guidance that applies. Do not quote the skill unless the user asks about process.\n\n" + loadedSkill.Body
+	}
+	if strings.TrimSpace(toolTask) != "" {
+		system += "\n\nThe primary model triaged this turn and requested tool evidence:\n" + strings.TrimSpace(toolTask)
+	}
+	return system
+}
+
+// plannerSystemPromptNative is the native tool-calling variant: it keeps the
+// role, skill, workspace-root, and tool-task guidance, but drops the JSON
+// envelope description and instead instructs the model to call its tools for
+// evidence and, when done, write a one-line plan summary in content with no
+// tool calls. That content becomes the round's brief (telemetry only).
+func (h *HarnessEngine) plannerSystemPromptNative(registry HarnessToolRegistry, req ChatRequest, loadedSkill *LoadedSkill, toolTask string) string {
+	system := strings.TrimSpace(fmt.Sprintf(`You are Atelier's private harness model. You gather evidence for the final model that will answer the user.
+Do not answer the user directly. Do not include hidden chain-of-thought.
+You have tools available. Call them to gather evidence for the final model. You plan in rounds, at most %d in total; each round may request up to 3 tool calls. The harness executes them and returns each result, including failures, as a tool message; read the results and plan the next round.
+When you have enough evidence, or none is needed, make no tool calls and write a one-line summary of your plan in your content: intent, relevant evidence, and cautions for the final model. The final model cannot call tools, so include any required command as a tool call now, not in your summary.
+A failed or denied tool call is information, not a dead end: adapt the plan or tell the final model to report the failure plainly. Never claim an action succeeded unless a tool result shows it.
+The filesystem tools and run_command operate on real files on this machine; paths and command working directories are confined to (but fully real within) %s. Prefer read-only calls unless the user clearly asks to modify files or run a specific write-capable command.`, harnessChatMaxSteps, workspaceRootPhrase(h.config.Tools.Filesystem)))
+	if strings.TrimSpace(req.System) != "" {
+		system += "\n\nUser-facing system prompt to preserve:\n" + strings.TrimSpace(req.System)
+	}
+	if loadedSkill != nil {
+		system += "\n\nActive SKILL.md selected for this turn. Follow these instructions when planning tools and writing the summary, including any workflow or command guidance that applies. Do not quote the skill unless the user asks about process.\n\n" + loadedSkill.Body
 	}
 	if strings.TrimSpace(toolTask) != "" {
 		system += "\n\nThe primary model triaged this turn and requested tool evidence:\n" + strings.TrimSpace(toolTask)

@@ -22,6 +22,7 @@ type ChatCompletionResult struct {
 	Thinking   string
 	Reason     string
 	EvalTokens int
+	ToolCalls  []ollamaToolCall
 }
 
 func newOllamaClient(httpClient *http.Client, baseURL string) OllamaClient {
@@ -139,6 +140,19 @@ func hasImageGenerationCapability(capabilities []string) bool {
 	return false
 }
 
+// hasToolsCapability reports whether a model advertises Ollama's native
+// function-calling capability. Tool-capable models (Qwen2.5, Llama 3.1, etc.)
+// list "tools" in /api/show's capabilities array.
+func hasToolsCapability(capabilities []string) bool {
+	for _, capability := range capabilities {
+		normalized := strings.ToLower(strings.TrimSpace(capability))
+		if normalized == "tools" || normalized == "tool" {
+			return true
+		}
+	}
+	return false
+}
+
 func hasImageGenerationModelInfo(modelInfo map[string]any) bool {
 	for key, value := range modelInfo {
 		text := strings.ToLower(key + " " + fmt.Sprint(value))
@@ -190,6 +204,9 @@ func (client OllamaClient) OpenChatStream(ctx context.Context, req ChatRequest) 
 	if req.Format != nil {
 		body["format"] = req.Format
 	}
+	if len(req.Tools) > 0 {
+		body["tools"] = req.Tools
+	}
 	return client.postJSON(ctx, "/api/chat", body)
 }
 
@@ -210,6 +227,9 @@ func (client OllamaClient) CompleteChat(ctx context.Context, req ChatRequest) (C
 	}
 	if req.Format != nil {
 		body["format"] = req.Format
+	}
+	if len(req.Tools) > 0 {
+		body["tools"] = req.Tools
 	}
 
 	resp, err := client.postJSON(ctx, "/api/chat", body)
@@ -235,6 +255,7 @@ func (client OllamaClient) CompleteChat(ctx context.Context, req ChatRequest) (C
 		Thinking:   payload.Message.Thinking,
 		Reason:     payload.DoneReason,
 		EvalTokens: payload.EvalCount,
+		ToolCalls:  payload.Message.ToolCalls,
 	}, nil
 }
 
