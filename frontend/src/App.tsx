@@ -1466,7 +1466,7 @@ function App() {
                 {asArray(chat).length === 0 ? (
                   <div className="empty-state">
                     <h2>Ask a model, attach an image, or stream a long answer.</h2>
-                    <p>Atelier talks to Ollama directly through the local API.</p>
+                    <p>Your desktop AI workshop — agentic chat and image generation, local or cloud.</p>
                   </div>
                 ) : asArray(chat).map((entry) => {
                   const thinkingCollapsed = Boolean(entry.thinking && (collapsedThinkingIDs[entry.id] ?? !entry.streaming));

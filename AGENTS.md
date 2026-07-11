@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for AI agents working in this repository. Atelier is a **local AI agent harness for Ollama** — a macOS-first desktop app (Go + Wails v2 + React/TypeScript) that wraps any Ollama model in an agentic loop (triage → planning → tool use → final response) with per-action permission gates.
+Guidance for AI agents working in this repository. Atelier is a **desktop AI workshop for agentic chat and image generation, local or cloud** — a macOS-first desktop app (Go + Wails v2 + React/TypeScript) that wraps a model in an agentic loop (triage → planning → tool use → final response) with per-action permission gates. Chat runs against local Ollama or cloud OpenRouter; image generation runs locally (Ollama) or via fal.ai, with cloud keys stored in the OS keychain.
 
 ## Commands
 

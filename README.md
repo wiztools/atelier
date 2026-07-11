@@ -1,8 +1,8 @@
 # Atelier
 
-**A local AI agent harness for Ollama.** Atelier wraps any Ollama model in a real agent loop — triage, planning, tool use, and per-action permission gates — so your local models can read files, run commands, and generate images, with nothing leaving your machine. No API keys, no cloud.
+**Your desktop AI workshop — agentic chat and image generation, local or cloud.** Atelier wraps a model in a real agent loop — triage, planning, tool use, and per-action permission gates — so it can read files, run commands, and generate images. Run chat against local Ollama or cloud OpenRouter, and generate images locally (Ollama) or via fal.ai. Cloud API keys are kept in the OS keychain; local-only stays fully offline.
 
-It's a desktop app (Go + Wails + React), MIT licensed, and runs entirely against your own Ollama endpoint.
+It's a desktop app (Go + Wails + React), MIT licensed, and runs against your own Ollama endpoint or the cloud providers you configure.
 
 <!-- TODO: add a hero screenshot showing a tool-use turn or the permission-approval dialog -->
 <!-- ![Atelier](docs/screenshot.png) -->
