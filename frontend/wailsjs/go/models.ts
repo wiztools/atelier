@@ -120,6 +120,7 @@ export namespace main {
 	}
 	export class ConfigModels {
 	    primaryProvider?: string;
+	    imageProvider?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigModels(source);
@@ -128,6 +129,21 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.primaryProvider = source["primaryProvider"];
+	        this.imageProvider = source["imageProvider"];
+	    }
+	}
+	export class ConfigFal {
+	    enabled: boolean;
+	    model?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConfigFal(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.model = source["model"];
 	    }
 	}
 	export class ConfigOpenRouter {
@@ -197,6 +213,7 @@ export namespace main {
 	export class ConfigProviders {
 	    ollama: ConfigOllama;
 	    openrouter: ConfigOpenRouter;
+	    fal: ConfigFal;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigProviders(source);
@@ -206,6 +223,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.ollama = this.convertValues(source["ollama"], ConfigOllama);
 	        this.openrouter = this.convertValues(source["openrouter"], ConfigOpenRouter);
+	        this.fal = this.convertValues(source["fal"], ConfigFal);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -434,6 +452,7 @@ export namespace main {
 	        this.conversationId = source["conversationId"];
 	    }
 	}
+	
 	
 	
 	

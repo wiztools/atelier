@@ -1225,7 +1225,11 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 		// generate_image instead of the configured default. This lets the user
 		// pick a different image model per turn. When the primary model IS the
 		// harness model (a text model), the configured image model is correct.
+		// This override is Ollama-specific: with fal.ai as the image provider the
+		// primary (chat) model is unrelated to image generation, so leave the
+		// configured fal model in place.
 		if call.Name == "generate_image" && turn.ResponseMode == "image" &&
+			strings.TrimSpace(h.config.Models.ImageProvider) != "fal" &&
 			turn.PrimaryModel != "" && turn.PrimaryModel != h.config.Providers.Ollama.Models.Harness {
 			if strings.TrimSpace(call.Model) == "" {
 				call.Model = turn.PrimaryModel

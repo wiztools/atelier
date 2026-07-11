@@ -77,6 +77,7 @@ type ConfigStorage struct {
 type ConfigProviders struct {
 	Ollama     ConfigOllama     `json:"ollama"`
 	OpenRouter ConfigOpenRouter `json:"openrouter"`
+	Fal        ConfigFal        `json:"fal"`
 }
 
 type ConfigOllama struct {
@@ -96,8 +97,17 @@ type ConfigOpenRouter struct {
 	Primary string `json:"primary,omitempty"`
 }
 
+// ConfigFal configures the fal.ai image-generation backend. The API key lives
+// in the OS keychain (see keychain.go), not in config — Enabled mirrors the
+// key's presence for the frontend, like ConfigOpenRouter.
+type ConfigFal struct {
+	Enabled bool   `json:"enabled"`
+	Model   string `json:"model,omitempty"`
+}
+
 type ConfigModels struct {
 	PrimaryProvider string `json:"primaryProvider,omitempty"`
+	ImageProvider   string `json:"imageProvider,omitempty"`
 }
 
 type ConfigPrompts struct {
@@ -911,6 +921,40 @@ func (a *App) HasOpenRouterAPIKey() (bool, error) {
 	return strings.TrimSpace(key) != "", nil
 }
 
+func (a *App) SaveFalAPIKey(apiKey string) error {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return clearFalAPIKey()
+	}
+	return saveFalAPIKey(apiKey)
+}
+
+func (a *App) HasFalAPIKey() (bool, error) {
+	key, err := loadFalAPIKey()
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(key) != "", nil
+}
+
+// CheckFalConnection validates the stored fal.ai API key with a cheap
+// authenticated ping (no generation). Returns an error describing why the key
+// is rejected, or nil when it resolves. Used by the Settings "Check Connection"
+// button — the OpenRouter equivalent doubles as a model list, but fal's model
+// field is free text, so this only confirms the key works.
+func (a *App) CheckFalConnection() error {
+	key, err := loadFalAPIKey()
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(key) == "" {
+		return errFalKeyNotConfigured
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return newFalClient(a.client, key).VerifyKey(ctx)
+}
+
 // resolvedPrimaryModelAndProvider returns which model/provider the primary
 // chat role should use when a request doesn't specify one explicitly.
 func (a *App) resolvedPrimaryModelAndProvider(config AppConfig) (model, provider string) {
@@ -1018,6 +1062,7 @@ func defaultAppConfig() AppConfig {
 		},
 		Models: ConfigModels{
 			PrimaryProvider: "ollama",
+			ImageProvider:   "ollama",
 		},
 		Prompts: ConfigPrompts{
 			System: "You are Atelier, a precise local AI collaborator.",
@@ -1068,6 +1113,17 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	}
 	if strings.TrimSpace(config.Models.PrimaryProvider) == "" {
 		config.Models.PrimaryProvider = defaults.Models.PrimaryProvider
+	}
+	// ImageProvider selects the generate_image backend. Normalize unknown or
+	// empty values to the Ollama default so the tool path never sees a stray id.
+	switch strings.TrimSpace(config.Models.ImageProvider) {
+	case "ollama", "fal":
+		config.Models.ImageProvider = strings.TrimSpace(config.Models.ImageProvider)
+	default:
+		config.Models.ImageProvider = defaults.Models.ImageProvider
+	}
+	if config.Models.ImageProvider == "fal" && strings.TrimSpace(config.Providers.Fal.Model) == "" {
+		config.Providers.Fal.Model = defaultFalImageModel
 	}
 	if strings.TrimSpace(config.Prompts.System) == "" {
 		config.Prompts.System = defaults.Prompts.System
@@ -1476,7 +1532,10 @@ func writeChatImageArtifacts(artifactsDir string, req ImageGenerateRequest, imag
 	for index, image := range images {
 		data, extension, err := decodeImagePayload(image)
 		if err != nil {
-			return nil, err
+			// Skip entries that aren't decodable image bytes (e.g. a stray http
+			// URL that slipped past the harvest step) rather than aborting the
+			// whole turn save and orphaning any artifacts already written.
+			continue
 		}
 		artifactID := fmt.Sprintf("turn_%06d_img_%06d", turnNumber, index+1)
 		filename := artifactID + extension

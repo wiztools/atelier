@@ -4,11 +4,13 @@ import remarkGfm from 'remark-gfm';
 import './App.css';
 import {
   CancelStream,
+  CheckFalConnection,
   CheckOllama,
   ChooseToolWorkspace,
   DeleteConversation,
   GetConversation,
   GetConfig,
+  HasFalAPIKey,
   HasOpenRouterAPIKey,
   ListConversations,
   ListModels,
@@ -17,6 +19,7 @@ import {
   ResolveToolPermission,
   SaveImage,
   SaveConfig,
+  SaveFalAPIKey,
   SaveOpenRouterAPIKey,
   StreamChat,
   UpdateConversationTitle,
@@ -143,6 +146,7 @@ const expandedHistoryBatchSize = 20;
 const defaultImageWidth = 768;
 const defaultImageHeight = 768;
 const defaultImageSteps = 24;
+const defaultFalImageModel = 'fal-ai/flux/schnell';
 
 // Coerce a numeric settings input to a positive integer, falling back to the
 // backend default when the field is cleared or otherwise invalid. Mirrors the
@@ -180,6 +184,12 @@ function App() {
   const [openRouterHasKey, setOpenRouterHasKey] = useState(false);
   const [openRouterStatus, setOpenRouterStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
   const [openRouterError, setOpenRouterError] = useState('');
+  const [imageProvider, setImageProvider] = useState<'ollama' | 'fal'>('ollama');
+  const [falAPIKeyInput, setFalAPIKeyInput] = useState('');
+  const [falHasKey, setFalHasKey] = useState(false);
+  const [falStatus, setFalStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
+  const [falError, setFalError] = useState('');
+  const [falModel, setFalModel] = useState(defaultFalImageModel);
   const [system, setSystem] = useState('You are Atelier, a precise local AI collaborator.');
   const [prompt, setPrompt] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -297,9 +307,14 @@ function App() {
             enabled: openRouterHasKey,
             primary: primaryModels.openrouter,
           },
+          fal: {
+            enabled: falHasKey,
+            model: falModel,
+          },
         },
         models: {
           primaryProvider,
+          imageProvider,
         },
         prompts: {
           system,
@@ -320,7 +335,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, harnessModel, imageHeight, imageModel, imageSteps, imageWidth, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig]);
+  }, [baseURL, configLoaded, falHasKey, falModel, harnessModel, imageHeight, imageModel, imageProvider, imageSteps, imageWidth, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig]);
 
   // On a fresh launch, put the cursor in the chat box so the user can start
   // typing immediately. Fires once, when config finishes loading.
@@ -527,6 +542,8 @@ function App() {
     const nextImageWidth = config.generation?.image?.width || defaultImageWidth;
     const nextImageHeight = config.generation?.image?.height || nextImageWidth;
     const nextImageSteps = config.generation?.image?.steps || defaultImageSteps;
+    const nextImageProvider = config.models?.imageProvider === 'fal' ? 'fal' : 'ollama';
+    const nextFalModel = config.providers?.fal?.model || defaultFalImageModel;
 
     setStartupError('');
     setStorageConfig(config.storage ?? null);
@@ -540,6 +557,8 @@ function App() {
     setImageWidth(nextImageWidth);
     setImageHeight(nextImageHeight);
     setImageSteps(nextImageSteps);
+    setImageProvider(nextImageProvider);
+    setFalModel(nextFalModel);
     setConfigLoaded(true);
     await Promise.all([
       refreshConversations(),
@@ -550,6 +569,7 @@ function App() {
           refreshOpenRouterModels();
         }
       }).catch(() => setOpenRouterHasKey(false)),
+      HasFalAPIKey().then(setFalHasKey).catch(() => setFalHasKey(false)),
     ]);
   }
 
@@ -650,6 +670,41 @@ function App() {
     } catch (error) {
       setOpenRouterStatus('error');
       setOpenRouterError(formatError(error));
+    }
+  }
+
+  async function saveFalKey() {
+    try {
+      await SaveFalAPIKey(falAPIKeyInput);
+      setFalAPIKeyInput('');
+      setFalHasKey(await HasFalAPIKey());
+      setFalStatus('unknown');
+      setFalError('');
+    } catch (error) {
+      setStatus((current) => current ? {...current, error: String(error)} : current);
+    }
+  }
+
+  async function checkFalConnection() {
+    try {
+      await CheckFalConnection();
+      setFalStatus('connected');
+      setFalError('');
+    } catch (error) {
+      setFalStatus('error');
+      setFalError(formatFalError(error));
+    }
+  }
+
+  async function clearFalKey() {
+    try {
+      await SaveFalAPIKey('');
+      setFalHasKey(false);
+      setFalStatus('unknown');
+      setFalError('');
+      setImageProvider((current) => current === 'fal' ? 'ollama' : current);
+    } catch (error) {
+      setStatus((current) => current ? {...current, error: String(error)} : current);
     }
   }
 
@@ -1196,6 +1251,43 @@ function App() {
               </section>
 
               <section className="settings-section">
+                <h3>fal.ai</h3>
+                <div className="connection">
+                  <label htmlFor="fal-key">API Key</label>
+                  <div className="endpoint-row">
+                    <input
+                      id="fal-key"
+                      type="password"
+                      placeholder={falHasKey ? 'Key saved — enter a new key to replace it' : 'fal-...'}
+                      value={falAPIKeyInput}
+                      onChange={(event) => setFalAPIKeyInput(event.target.value)}
+                    />
+                    <button type="button" onClick={saveFalKey} disabled={!falAPIKeyInput}>
+                      Save Key
+                    </button>
+                    <button type="button" onClick={checkFalConnection} disabled={!falHasKey}>
+                      Check Connection
+                    </button>
+                    {falHasKey ? (
+                      <button type="button" onClick={clearFalKey}>
+                        Clear Key
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className={falStatus === 'connected' ? 'status online' : 'status offline'}>
+                    <span />
+                    {falStatus === 'connected'
+                      ? 'Connected'
+                      : falStatus === 'error'
+                        ? `fal.ai: ${falError}`
+                        : falHasKey
+                          ? 'API key saved — not checked'
+                          : 'No key saved.'}
+                  </div>
+                </div>
+              </section>
+
+              <section className="settings-section">
                 <h3>Storage</h3>
                 <div className="storage-list">
                   <div>
@@ -1249,21 +1341,49 @@ function App() {
                 </div>
 
                 <div className="field">
-                  <label htmlFor="image-model">Default Image Model</label>
-                  <div className="model-inline-control">
-                    <select id="image-model" value={imageModel} onChange={(event) => setImageModel(event.target.value)}>
-                      {imageModelOptions.map((name) => <option key={name}>{name}</option>)}
-                    </select>
-                    <ModelCapabilityLink
-                      id="settings-image"
-                      modelName={imageModel}
-                      models={models}
-                      openID={openCapabilityID}
-                      setOpenID={setOpenCapabilityID}
-                      variant="icon"
-                    />
-                  </div>
+                  <label htmlFor="image-provider">Image Provider</label>
+                  <select
+                    id="image-provider"
+                    value={imageProvider}
+                    onChange={(event) => setImageProvider(event.target.value as 'ollama' | 'fal')}
+                  >
+                    <option value="ollama">Ollama (local)</option>
+                    <option value="fal">fal.ai (cloud)</option>
+                  </select>
                 </div>
+
+                {imageProvider === 'fal' ? (
+                  <div className="field">
+                    <label htmlFor="fal-model">fal.ai Model</label>
+                    <input
+                      id="fal-model"
+                      type="text"
+                      placeholder={defaultFalImageModel}
+                      value={falModel}
+                      onChange={(event) => setFalModel(event.target.value)}
+                    />
+                    {!falHasKey ? (
+                      <span className="hint">Add a fal.ai API key above before generating images.</span>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="field">
+                    <label htmlFor="image-model">Default Image Model</label>
+                    <div className="model-inline-control">
+                      <select id="image-model" value={imageModel} onChange={(event) => setImageModel(event.target.value)}>
+                        {imageModelOptions.map((name) => <option key={name}>{name}</option>)}
+                      </select>
+                      <ModelCapabilityLink
+                        id="settings-image"
+                        modelName={imageModel}
+                        models={models}
+                        openID={openCapabilityID}
+                        setOpenID={setOpenCapabilityID}
+                        variant="icon"
+                      />
+                    </div>
+                  </div>
+                )}
               </section>
 
               <section className="settings-section three-column">
@@ -1946,6 +2066,15 @@ function formatOpenRouterError(error: unknown): string {
   const lower = message.toLowerCase();
   if (lower.includes('authentication failed') || lower.includes('401') || lower.includes('unauthorized')) {
     return 'Invalid API key — check your OpenRouter key in Settings';
+  }
+  return message;
+}
+
+function formatFalError(error: unknown): string {
+  const message = formatError(error);
+  const lower = message.toLowerCase();
+  if (lower.includes('authentication failed') || lower.includes('401') || lower.includes('unauthorized')) {
+    return 'Invalid API key — check your fal.ai key in Settings';
   }
   return message;
 }

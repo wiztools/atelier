@@ -30,6 +30,16 @@ func newToolGateway(app *App, config AppConfig) ToolGateway {
 	if app != nil {
 		gateway.permissionRequester = app.toolPermission
 		gateway.tools.GenerateImage = func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, error) {
+			if strings.TrimSpace(config.Models.ImageProvider) == "fal" {
+				apiKey, err := loadFalAPIKey()
+				if err != nil {
+					return ollamaGenerateResponse{}, nil, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return ollamaGenerateResponse{}, nil, errFalKeyNotConfigured
+				}
+				return newFalClient(app.client, apiKey).GenerateImage(ctx, req)
+			}
 			return app.ollamaClient(config.Providers.Ollama.BaseURL).GenerateImage(ctx, req)
 		}
 	}

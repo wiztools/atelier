@@ -59,6 +59,7 @@ func resolvedProvider(req ChatRequest) string {
 
 var errUnknownProvider = errors.New("unknown provider")
 var errOpenRouterKeyNotConfigured = errors.New("openrouter api key is not configured")
+var errFalKeyNotConfigured = errors.New("fal api key is not configured")
 
 // ProviderRegistry resolves a provider ID to a live ChatProvider.
 type ProviderRegistry struct {

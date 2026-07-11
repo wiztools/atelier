@@ -4,6 +4,8 @@ import {main} from '../models';
 
 export function CancelStream(arg1:string):Promise<void>;
 
+export function CheckFalConnection():Promise<void>;
+
 export function CheckOllama(arg1:string):Promise<main.OllamaStatus>;
 
 export function ChooseToolWorkspace(arg1:string):Promise<string>;
@@ -15,6 +17,8 @@ export function ExecuteTool(arg1:main.ToolExecutionRequest):Promise<main.Harness
 export function GetConfig():Promise<main.AppConfig>;
 
 export function GetConversation(arg1:string):Promise<main.ConversationDetail>;
+
+export function HasFalAPIKey():Promise<boolean>;
 
 export function HasOpenRouterAPIKey():Promise<boolean>;
 
@@ -35,6 +39,8 @@ export function ResolveToolPermission(arg1:string,arg2:boolean):Promise<void>;
 export function RunToolCommand(arg1:main.ToolCommandRequest):Promise<main.ToolCommandResult>;
 
 export function SaveConfig(arg1:main.AppConfig):Promise<void>;
+
+export function SaveFalAPIKey(arg1:string):Promise<void>;
 
 export function SaveImage(arg1:main.SaveImageRequest):Promise<string>;
 

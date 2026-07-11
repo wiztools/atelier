@@ -6,6 +6,10 @@ export function CancelStream(arg1) {
   return window['go']['main']['App']['CancelStream'](arg1);
 }
 
+export function CheckFalConnection() {
+  return window['go']['main']['App']['CheckFalConnection']();
+}
+
 export function CheckOllama(arg1) {
   return window['go']['main']['App']['CheckOllama'](arg1);
 }
@@ -28,6 +32,10 @@ export function GetConfig() {
 
 export function GetConversation(arg1) {
   return window['go']['main']['App']['GetConversation'](arg1);
+}
+
+export function HasFalAPIKey() {
+  return window['go']['main']['App']['HasFalAPIKey']();
 }
 
 export function HasOpenRouterAPIKey() {
@@ -68,6 +76,10 @@ export function RunToolCommand(arg1) {
 
 export function SaveConfig(arg1) {
   return window['go']['main']['App']['SaveConfig'](arg1);
+}
+
+export function SaveFalAPIKey(arg1) {
+  return window['go']['main']['App']['SaveFalAPIKey'](arg1);
 }
 
 export function SaveImage(arg1) {

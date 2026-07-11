@@ -63,10 +63,34 @@ func newHarnessToolExecutionContext(config AppConfig) HarnessToolExecutionContex
 
 func defaultHarnessToolRegistry(config AppConfig) HarnessToolRegistry {
 	definitions := filesystemToolDefinitions(config.Tools.Filesystem)
-	if strings.TrimSpace(config.Providers.Ollama.Models.Image) != "" {
+	if imageGenerationConfigured(config) {
 		definitions = append(definitions, imageGenerationToolDefinition())
 	}
 	return newHarnessToolRegistry(definitions)
+}
+
+// imageGenerationConfigured reports whether any image-generation backend is
+// ready to serve a generate_image call: the Ollama image model is set, or fal.ai
+// is the selected image provider with a model configured.
+func imageGenerationConfigured(config AppConfig) bool {
+	if strings.TrimSpace(config.Providers.Ollama.Models.Image) != "" {
+		return true
+	}
+	return strings.TrimSpace(config.Models.ImageProvider) == "fal" &&
+		strings.TrimSpace(config.Providers.Fal.Model) != ""
+}
+
+// resolveDefaultImageModel returns the image model the generate_image tool
+// should use when the call doesn't override it, taking the configured image
+// provider into account.
+func resolveDefaultImageModel(config AppConfig) string {
+	if strings.TrimSpace(config.Models.ImageProvider) == "fal" {
+		if model := strings.TrimSpace(config.Providers.Fal.Model); model != "" {
+			return model
+		}
+		return defaultFalImageModel
+	}
+	return strings.TrimSpace(config.Providers.Ollama.Models.Image)
 }
 
 func imageGenerationToolDefinition() HarnessToolDefinition {
@@ -89,7 +113,7 @@ func imageGenerationToolDefinition() HarnessToolDefinition {
 			}
 			model := strings.TrimSpace(call.Model)
 			if model == "" {
-				model = strings.TrimSpace(tools.Config.Providers.Ollama.Models.Image)
+				model = resolveDefaultImageModel(tools.Config)
 			}
 			if model == "" {
 				return nil, "image generation unavailable", errors.New("no image model is configured")
@@ -123,7 +147,13 @@ func imageGenerationToolDefinition() HarnessToolDefinition {
 		Activity: func(result HarnessToolResult) HarnessToolActivity {
 			activity := defaultHarnessToolActivity(result)
 			if typed, ok := result.Result.(ToolImageResult); ok {
-				activity.Command = []string{"ollama", "generate", typed.Model}
+				// fal model ids are namespaced under "fal-ai/..."; Ollama tags
+				// never use that prefix (they look like "x/z-image-turbo:latest").
+				provider := "ollama"
+				if strings.HasPrefix(typed.Model, "fal-ai/") {
+					provider = "fal"
+				}
+				activity.Command = []string{provider, "generate", typed.Model}
 			}
 			return activity
 		},

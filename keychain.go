@@ -9,6 +9,8 @@ import (
 const (
 	openRouterKeyringService = "atelier-openrouter-key"
 	openRouterKeyringUser    = "openrouter"
+	falKeyringService        = "atelier-fal-key"
+	falKeyringUser           = "fal"
 )
 
 func saveOpenRouterAPIKey(apiKey string) error {
@@ -30,6 +32,32 @@ func loadOpenRouterAPIKey() (string, error) {
 
 func clearOpenRouterAPIKey() error {
 	err := keyring.Delete(openRouterKeyringService, openRouterKeyringUser)
+	if err != nil && err != keyring.ErrNotFound {
+		return err
+	}
+	return nil
+}
+
+func saveFalAPIKey(apiKey string) error {
+	return keyring.Set(falKeyringService, falKeyringUser, apiKey)
+}
+
+// loadFalAPIKey returns "" with a nil error when no key has been saved yet,
+// mirroring loadOpenRouterAPIKey so callers treat "not configured" and "empty"
+// uniformly.
+func loadFalAPIKey() (string, error) {
+	key, err := keyring.Get(falKeyringService, falKeyringUser)
+	if err != nil {
+		if err == keyring.ErrNotFound {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(key), nil
+}
+
+func clearFalAPIKey() error {
+	err := keyring.Delete(falKeyringService, falKeyringUser)
 	if err != nil && err != keyring.ErrNotFound {
 		return err
 	}
