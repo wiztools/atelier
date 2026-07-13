@@ -103,6 +103,9 @@ type ConfigOpenRouter struct {
 type ConfigFal struct {
 	Enabled bool   `json:"enabled"`
 	Model   string `json:"model,omitempty"`
+	// ImageEditModel is the image-to-image endpoint used when the user attaches a
+	// source image to transform; Model is the text-to-image endpoint.
+	ImageEditModel string `json:"imageEditModel,omitempty"`
 	// VideoModel is the text-to-video endpoint; VideoImageModel is the
 	// image-to-video endpoint used when the user attaches an image to animate.
 	VideoModel      string `json:"videoModel,omitempty"`

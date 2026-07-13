@@ -1130,7 +1130,27 @@ function App() {
     if (!files) {
       return;
     }
-    const next = await Promise.all(Array.from(files).map(readImageFile));
+    const next = await Promise.all(Array.from(files).map((file) => readImageFile(file)));
+    setAttachments((items) => [...items, ...next]);
+  }
+
+  async function handleChatPromptPaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const imageFiles = Array.from(event.clipboardData?.items ?? [])
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null);
+    if (!imageFiles.length) {
+      return;
+    }
+    // Keep the pasted bytes out of the text field and route them to attachments.
+    event.preventDefault();
+    const stamp = Date.now();
+    const next = await Promise.all(
+      imageFiles.map((file, index) => {
+        const extension = file.name.includes('.') ? '' : imageExtensionForType(file.type);
+        return readImageFile(file, `pasted-${stamp}-${index + 1}${file.name ? `-${file.name}` : extension}`);
+      }),
+    );
     setAttachments((items) => [...items, ...next]);
   }
 
@@ -1712,7 +1732,7 @@ function App() {
                 {asArray(chat).length === 0 ? (
                   <div className="empty-state">
                     <h2>Ask a model, attach an image, or stream a long answer.</h2>
-                    <p>Your desktop AI workshop — agentic chat and image generation, local or cloud.</p>
+                    <p>Your desktop AI workshop — agentic chat and image, audio, and video generation, local or cloud.</p>
                   </div>
                 ) : asArray(chat).map((entry) => {
                   const thinkingCollapsed = Boolean(entry.thinking && (collapsedThinkingIDs[entry.id] ?? !entry.streaming));
@@ -1844,6 +1864,7 @@ function App() {
                   value={prompt}
                   onChange={(event) => setPrompt(event.target.value)}
                   onKeyDown={handleChatPromptKeyDown}
+                  onPaste={handleChatPromptPaste}
                   placeholder="Prompt Atelier..."
                 />
                 <div className="composer-actions">
@@ -2453,7 +2474,7 @@ function inferHomePath(path: string): string {
   return path.match(/^\/Users\/[^/]+/)?.[0] ?? path.match(/^\/home\/[^/]+/)?.[0] ?? '';
 }
 
-async function readImageFile(file: File): Promise<Attachment> {
+async function readImageFile(file: File, nameOverride?: string): Promise<Attachment> {
   const dataURL = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
@@ -2462,10 +2483,18 @@ async function readImageFile(file: File): Promise<Attachment> {
   });
 
   return {
-    name: file.name,
+    name: nameOverride ?? file.name,
     src: dataURL,
     payload: imagePayloadForOllama(dataURL),
   };
+}
+
+function imageExtensionForType(type: string): string {
+  const subtype = type.split('/')[1]?.split(';')[0]?.trim();
+  if (!subtype) {
+    return '.png';
+  }
+  return `.${subtype === 'jpeg' ? 'jpg' : subtype}`;
 }
 
 export default App;

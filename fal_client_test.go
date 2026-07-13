@@ -111,6 +111,50 @@ func TestFalClientGenerateImageHappyPath(t *testing.T) {
 	}
 }
 
+// TestFalClientGenerateImageImageToImage verifies that a source image is sent to
+// fal as an image_url data URI (bare base64 is rejected with a 422) and that
+// image_size is omitted so the endpoint derives the output size from the source.
+func TestFalClientGenerateImageImageToImage(t *testing.T) {
+	model := defaultFalImageEditModel
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodPost && req.URL.Path == "/"+model:
+			body, _ := io.ReadAll(req.Body)
+			if !strings.Contains(string(body), `"image_url":"data:image/png;base64,ABC"`) {
+				t.Errorf("submit body missing image_url data URI: %s", body)
+			}
+			if strings.Contains(string(body), `"image_size"`) {
+				t.Errorf("image_size must be omitted for image-to-image: %s", body)
+			}
+			return jsonResp(`{"request_id":"req-i2i"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/status"):
+			return jsonResp(`{"status":"COMPLETED"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/requests/req-i2i"):
+			return jsonResp(`{"images":[{"url":"https://falcdn.example/img.png"}]}`), nil
+		case req.URL.Path == "/img.png":
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(mustDecodeTinyPNG()))),
+				Header: http.Header{"Content-Type": []string{"image/png"}}}, nil
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+			return nil, nil
+		}
+	}))
+
+	resp, _, err := client.GenerateImage(context.Background(), ImageGenerateRequest{
+		Model:  model,
+		Prompt: "an impressionist painting of this",
+		Width:  768,
+		Height: 768,
+		Images: []string{"data:image/png;base64,ABC"},
+	})
+	if err != nil {
+		t.Fatalf("GenerateImage returned error: %v", err)
+	}
+	if len(resp.Images) != 1 {
+		t.Fatalf("expected 1 image, got %d", len(resp.Images))
+	}
+}
+
 func TestFalClientGenerateImageModelFallback(t *testing.T) {
 	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
 		if req.Method == http.MethodPost && req.URL.Path == "/"+defaultFalImageModel {

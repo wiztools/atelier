@@ -151,6 +151,7 @@ export namespace main {
 	export class ConfigFal {
 	    enabled: boolean;
 	    model?: string;
+	    imageEditModel?: string;
 	    videoModel?: string;
 	    videoImageModel?: string;
 	    audioModel?: string;
@@ -163,6 +164,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.enabled = source["enabled"];
 	        this.model = source["model"];
+	        this.imageEditModel = source["imageEditModel"];
 	        this.videoModel = source["videoModel"];
 	        this.videoImageModel = source["videoImageModel"];
 	        this.audioModel = source["audioModel"];

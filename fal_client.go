@@ -19,7 +19,10 @@ const (
 	falQueueBaseURL      = "https://queue.fal.run"
 	falPlatformBaseURL   = "https://api.fal.ai"
 	defaultFalImageModel = "fal-ai/flux/schnell"
-	defaultFalVideoModel = "fal-ai/kling-video/v2/master/text-to-video"
+	// defaultFalImageEditModel is the image-to-image endpoint used to transform an
+	// attached source image — the image-to-image sibling of defaultFalImageModel.
+	defaultFalImageEditModel = "fal-ai/flux/dev/image-to-image"
+	defaultFalVideoModel     = "fal-ai/kling-video/v2/master/text-to-video"
 	// defaultFalVideoImageModel is the image-to-video endpoint used to animate an
 	// attached image — the image-to-video sibling of defaultFalVideoModel.
 	defaultFalVideoImageModel = "fal-ai/kling-video/v2/master/image-to-video"
@@ -131,7 +134,12 @@ func (client FalClient) GenerateImage(ctx context.Context, req ImageGenerateRequ
 		"prompt":     req.Prompt,
 		"num_images": 1,
 	}
-	if req.Width > 0 && req.Height > 0 {
+	// Image-to-image: fal takes the source frame as image_url and derives the
+	// output dimensions from it, so image_size is omitted. Present only when the
+	// caller supplied a source image to transform.
+	if image := falImageURL(firstNonEmpty(req.Images)); image != "" {
+		body["image_url"] = image
+	} else if req.Width > 0 && req.Height > 0 {
 		body["image_size"] = map[string]any{"width": req.Width, "height": req.Height}
 	}
 	if req.Steps > 0 {
@@ -177,6 +185,18 @@ func (client FalClient) GenerateImage(ctx context.Context, req ImageGenerateRequ
 	// (https://...) alongside the data URLs; those URLs then fail to decode at
 	// artifact-write time and the whole turn save aborts with an orphaned file.
 	return response, nil, nil
+}
+
+// firstNonEmpty returns the first entry of values that is non-empty after
+// trimming, or "" when none is. Used to pick a single source image from a
+// request's image slice.
+func firstNonEmpty(values []string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 // falImageURL normalizes an image reference for fal's image_url input. fal

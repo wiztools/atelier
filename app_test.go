@@ -3477,6 +3477,65 @@ func TestGenerateImageSendsAttachedImages(t *testing.T) {
 	}
 }
 
+// TestGenerateImageToolTransformsAttachedImage verifies the generate_image tool
+// switches to image-to-image when the turn has an attached image: it forwards
+// the source frame as the request's image and selects the configured
+// image-to-image model rather than the text-to-image default.
+func TestGenerateImageToolTransformsAttachedImage(t *testing.T) {
+	var captured ImageGenerateRequest
+	tools := HarnessToolExecutionContext{
+		Config:        AppConfig{Models: ConfigModels{ImageProvider: "fal"}},
+		AttachedImage: "data:image/png;base64,ABC",
+		GenerateImage: func(_ context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, error) {
+			captured = req
+			return ollamaGenerateResponse{Image: "data:image/png;base64,iVBORw0KGgo=", Done: true}, nil, nil
+		},
+	}
+
+	def := imageGenerationToolDefinition()
+	result, summary, err := def.Execute(t.Context(), tools, HarnessToolCall{Content: "an impressionist painting of this"})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if len(captured.Images) != 1 || captured.Images[0] != "data:image/png;base64,ABC" {
+		t.Fatalf("captured images = %+v, want the attached source image forwarded", captured.Images)
+	}
+	if captured.Model != defaultFalImageEditModel {
+		t.Errorf("model = %q, want image-to-image default %q", captured.Model, defaultFalImageEditModel)
+	}
+	if !strings.Contains(summary, "transformed the attached image") {
+		t.Errorf("summary = %q, want it to mention transforming the attached image", summary)
+	}
+	if typed, ok := result.(ToolImageResult); !ok || typed.Count != 1 {
+		t.Errorf("result = %+v, want a ToolImageResult with one image", result)
+	}
+}
+
+// TestGenerateImageToolTextToImageWithoutAttachment verifies the text-to-image
+// path is unchanged when no image is attached: no source image is forwarded and
+// the text-to-image model is selected.
+func TestGenerateImageToolTextToImageWithoutAttachment(t *testing.T) {
+	var captured ImageGenerateRequest
+	tools := HarnessToolExecutionContext{
+		Config: AppConfig{Models: ConfigModels{ImageProvider: "fal"}},
+		GenerateImage: func(_ context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, error) {
+			captured = req
+			return ollamaGenerateResponse{Image: "data:image/png;base64,iVBORw0KGgo=", Done: true}, nil, nil
+		},
+	}
+
+	def := imageGenerationToolDefinition()
+	if _, _, err := def.Execute(t.Context(), tools, HarnessToolCall{Content: "a lighthouse at dusk"}); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if len(captured.Images) != 0 {
+		t.Errorf("captured images = %+v, want none for text-to-image", captured.Images)
+	}
+	if captured.Model != defaultFalImageModel {
+		t.Errorf("model = %q, want text-to-image default %q", captured.Model, defaultFalImageModel)
+	}
+}
+
 func TestDecodeTriageDecisionAcceptsBareAndFencedJSON(t *testing.T) {
 	decision, err := decodeTriageDecision("```json\n{\"needsTools\":true,\"responseMode\":\"text\",\"toolTask\":\"Read status.txt\",\"reason\":\"workspace question\"}\n```")
 	if err != nil || !decision.NeedsTools || decision.ResponseMode != "text" || decision.ToolTask != "Read status.txt" {

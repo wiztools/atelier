@@ -140,6 +140,21 @@ func resolveDefaultImageModel(config AppConfig) string {
 	return strings.TrimSpace(config.Providers.Ollama.Models.Image)
 }
 
+// resolveDefaultImageEditModel returns the image-to-image model the
+// generate_image tool uses when the user attached a source image to transform.
+// Mirrors resolveDefaultImageModel: fal exposes image-to-image as a dedicated
+// endpoint, while Ollama reuses its single image model (it accepts source images
+// inline via the request's images field).
+func resolveDefaultImageEditModel(config AppConfig) string {
+	if strings.TrimSpace(config.Models.ImageProvider) == "fal" {
+		if model := strings.TrimSpace(config.Providers.Fal.ImageEditModel); model != "" {
+			return model
+		}
+		return defaultFalImageEditModel
+	}
+	return strings.TrimSpace(config.Providers.Ollama.Models.Image)
+}
+
 // videoGenerationConfigured reports whether the generate_video tool should be
 // offered: a fal video model must be configured. fal is the only video backend
 // (Ollama has no text-to-video models), so there is no provider switch — an
@@ -346,7 +361,7 @@ func imageGenerationToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "generate_image",
 		Title:       "Generate image",
-		Description: "Use this when the user asks to create, draw, paint, or render an image. The configured image model generates it and the image is attached to the assistant reply.",
+		Description: "Use this when the user asks to create, draw, paint, or render an image. Works from a text description, and when the user attached an image, transforms that image in the requested style (image-to-image). The configured image model generates it and the image is attached to the assistant reply.",
 		Example:     `{"name":"generate_image","content":"a watercolor of a lighthouse at dusk"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: generateImageParamSchema(),
@@ -360,9 +375,16 @@ func imageGenerationToolDefinition() HarnessToolDefinition {
 			if tools.GenerateImage == nil {
 				return nil, "image generation unavailable", errors.New("image generation is not available in this context")
 			}
+			// An attached image switches to image-to-image: use the image-to-image
+			// model and pass the source frame to the generator to transform.
+			attachedImage := strings.TrimSpace(tools.AttachedImage)
 			model := strings.TrimSpace(call.Model)
 			if model == "" {
-				model = resolveDefaultImageModel(tools.Config)
+				if attachedImage != "" {
+					model = resolveDefaultImageEditModel(tools.Config)
+				} else {
+					model = resolveDefaultImageModel(tools.Config)
+				}
 			}
 			if model == "" {
 				return nil, "image generation unavailable", errors.New("no image model is configured")
@@ -373,6 +395,9 @@ func imageGenerationToolDefinition() HarnessToolDefinition {
 				Width:  tools.Config.Generation.Image.Width,
 				Height: tools.Config.Generation.Image.Height,
 				Steps:  tools.Config.Generation.Image.Steps,
+			}
+			if attachedImage != "" {
+				imageReq.Images = []string{attachedImage}
 			}
 			payload, raw, err := tools.GenerateImage(ctx, imageReq)
 			if err != nil {
@@ -391,7 +416,11 @@ func imageGenerationToolDefinition() HarnessToolDefinition {
 				return nil, "image generation returned no image", errors.New("image model returned no image data")
 			}
 			output := ToolImageResult{Model: model, Prompt: imageReq.Prompt, Count: len(images), Images: images}
-			return output, fmt.Sprintf("generated %d image%s with %s", len(images), pluralSuffix(len(images)), model), nil
+			summary := fmt.Sprintf("generated %d image%s with %s", len(images), pluralSuffix(len(images)), model)
+			if attachedImage != "" {
+				summary = fmt.Sprintf("transformed the attached image into %d image%s with %s", len(images), pluralSuffix(len(images)), model)
+			}
+			return output, summary, nil
 		},
 		Activity: func(result HarnessToolResult) HarnessToolActivity {
 			activity := defaultHarnessToolActivity(result)
