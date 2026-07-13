@@ -46,6 +46,10 @@ export function ListConversations() {
   return window['go']['main']['App']['ListConversations']();
 }
 
+export function ListFalAudioModels() {
+  return window['go']['main']['App']['ListFalAudioModels']();
+}
+
 export function ListFalModels() {
   return window['go']['main']['App']['ListFalModels']();
 }
@@ -84,6 +88,10 @@ export function ResolveToolPermission(arg1, arg2) {
 
 export function RunToolCommand(arg1) {
   return window['go']['main']['App']['RunToolCommand'](arg1);
+}
+
+export function SaveAudio(arg1) {
+  return window['go']['main']['App']['SaveAudio'](arg1);
 }
 
 export function SaveConfig(arg1) {

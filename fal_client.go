@@ -23,6 +23,9 @@ const (
 	// defaultFalVideoImageModel is the image-to-video endpoint used to animate an
 	// attached image — the image-to-video sibling of defaultFalVideoModel.
 	defaultFalVideoImageModel = "fal-ai/kling-video/v2/master/image-to-video"
+	// defaultFalAudioModel is the text-to-audio endpoint used when none is
+	// configured — a text-to-speech model, the most common "audio response" case.
+	defaultFalAudioModel = "fal-ai/elevenlabs/tts/multilingual-v2"
 	// defaultFalVideoDuration / defaultFalVideoAspectRatio are fal's enum
 	// defaults for text-to-video; kept here so config defaults and the client
 	// agree on a single source of truth.
@@ -33,6 +36,8 @@ const (
 	// falVideoMaxBytes caps a downloaded video. Generated clips are typically a
 	// few MB; this bounds a runaway response without truncating a real result.
 	falVideoMaxBytes = 256 * 1024 * 1024
+	// falAudioMaxBytes caps a downloaded audio clip.
+	falAudioMaxBytes = 128 * 1024 * 1024
 )
 
 // FalClient talks to fal.ai's asynchronous queue API for image generation.
@@ -77,18 +82,29 @@ type falStatusResponse struct {
 
 // falResultResponse is returned by GET {base}/{model}/requests/{id}.
 type falResultResponse struct {
-	Data   json.RawMessage `json:"data,omitempty"`
-	Images []falImage      `json:"images,omitempty"`
-	Video  *falVideoFile   `json:"video,omitempty"`
-	Error  string          `json:"error,omitempty"`
+	Data      json.RawMessage `json:"data,omitempty"`
+	Images    []falImage      `json:"images,omitempty"`
+	Video     *falVideoFile   `json:"video,omitempty"`
+	Audio     *falVideoFile   `json:"audio,omitempty"`
+	AudioFile *falVideoFile   `json:"audio_file,omitempty"`
+	Error     string          `json:"error,omitempty"`
 }
 
-// falVideoFile is the "video" object a text-to-video result returns.
+// falVideoFile is a fal "File" result object (url + metadata). It backs the
+// video and audio result fields, which share the same shape.
 type falVideoFile struct {
 	URL         string `json:"url"`
 	ContentType string `json:"content_type,omitempty"`
 	FileName    string `json:"file_name,omitempty"`
 	FileSize    int64  `json:"file_size,omitempty"`
+}
+
+// GeneratedAudio is a downloaded text-to-audio result. Data holds the raw audio
+// bytes so the caller can write them to disk as a file-path artifact.
+type GeneratedAudio struct {
+	Data      []byte
+	MimeType  string
+	SourceURL string
 }
 
 // GeneratedVideo is a downloaded text-to-video result. Data holds the raw video
@@ -248,6 +264,62 @@ func (client FalClient) GenerateVideo(ctx context.Context, req VideoGenerateRequ
 		return GeneratedVideo{}, err
 	}
 	return GeneratedVideo{Data: data, MimeType: mimeType, SourceURL: videoURL}, nil
+}
+
+// GenerateAudio submits a text-to-audio request to the fal queue, polls until
+// completion, and downloads the resulting clip as raw bytes. It sends the prompt
+// as both "prompt" and "text": music/sound-effect endpoints read "prompt" while
+// text-to-speech endpoints read "text", and fal's audio inputs ignore the extra
+// field. The result is a "audio" (or "audio_file") File object.
+func (client FalClient) GenerateAudio(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error) {
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
+		model = defaultFalAudioModel
+	}
+
+	body := map[string]any{
+		"prompt": req.Prompt,
+		"text":   req.Prompt,
+	}
+
+	submit, err := client.submit(ctx, model, body)
+	if err != nil {
+		return GeneratedAudio{}, err
+	}
+	requestID := strings.TrimSpace(submit.RequestID)
+	if requestID == "" {
+		return GeneratedAudio{}, errors.New("fal submit returned no request id")
+	}
+	statusURL, resultURL := falQueueURLs(submit, model, requestID)
+
+	if err := client.waitForCompletion(ctx, statusURL); err != nil {
+		return GeneratedAudio{}, err
+	}
+
+	result, raw, err := client.fetchResult(ctx, resultURL)
+	if err != nil {
+		return GeneratedAudio{}, err
+	}
+
+	audioURL := ""
+	for _, file := range []*falVideoFile{result.Audio, result.AudioFile} {
+		if file != nil && strings.TrimSpace(file.URL) != "" {
+			audioURL = strings.TrimSpace(file.URL)
+			break
+		}
+	}
+	if audioURL == "" {
+		audioURL = firstFalAudioURL(raw)
+	}
+	if audioURL == "" {
+		return GeneratedAudio{}, errors.New("fal result returned no audio")
+	}
+
+	data, mimeType, err := client.downloadAudio(ctx, audioURL)
+	if err != nil {
+		return GeneratedAudio{}, err
+	}
+	return GeneratedAudio{Data: data, MimeType: mimeType, SourceURL: audioURL}, nil
 }
 
 func (client FalClient) submit(ctx context.Context, model string, body map[string]any) (falSubmitResponse, error) {
@@ -449,6 +521,67 @@ func (client FalClient) downloadVideo(ctx context.Context, videoURL string) ([]b
 	return data, mimeType, nil
 }
 
+// downloadAudio fetches a generated audio URL and returns its raw bytes and MIME
+// type, for the caller to write straight to a file-path artifact.
+func (client FalClient) downloadAudio(ctx context.Context, audioURL string) ([]byte, string, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, audioURL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	resp, err := client.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, "", fmt.Errorf("audio download failed: %s", resp.Status)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, falAudioMaxBytes))
+	if err != nil {
+		return nil, "", err
+	}
+	mimeType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if !isAudioBytes(data) && !strings.HasPrefix(mimeType, "audio/") {
+		return nil, "", errors.New("downloaded fal result is not a supported audio clip")
+	}
+	if !strings.HasPrefix(mimeType, "audio/") {
+		if detected := http.DetectContentType(data); strings.HasPrefix(detected, "audio/") {
+			mimeType = detected
+		} else {
+			mimeType = "audio/mpeg"
+		}
+	}
+	return data, mimeType, nil
+}
+
+// firstFalAudioURL walks the raw fal result for the first http(s) URL that looks
+// like an audio file. Used as a fallback when the top-level audio object is
+// absent or named differently.
+func firstFalAudioURL(raw []byte) string {
+	var payload any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	found := ""
+	walkJSONStrings(payload, func(value string) {
+		if found != "" {
+			return
+		}
+		trimmed := strings.TrimSpace(value)
+		if !strings.HasPrefix(trimmed, "http://") && !strings.HasPrefix(trimmed, "https://") {
+			return
+		}
+		lower := strings.ToLower(trimmed)
+		for _, ext := range []string{".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac", ".opus"} {
+			if strings.Contains(lower, ext) {
+				found = trimmed
+				return
+			}
+		}
+	})
+	return found
+}
+
 // firstFalVideoURL walks the raw fal result for the first http(s) URL that looks
 // like a video file. Used as a fallback when the top-level "video" object is
 // absent (some endpoints nest the result differently).
@@ -560,6 +693,11 @@ const (
 	// falImageToVideoCategory is the /v1/models category filter for
 	// image-to-video endpoints — used to animate an attached image.
 	falImageToVideoCategory = "image-to-video"
+	// falTextToAudioCategory / falTextToSpeechCategory are the /v1/models
+	// category filters for audio-generation endpoints (music/sound effects and
+	// speech, respectively).
+	falTextToAudioCategory  = "text-to-audio"
+	falTextToSpeechCategory = "text-to-speech"
 	// falModelsPageSize is how many models to request per catalog page.
 	falModelsPageSize = 100
 	// falModelsDefaultMax caps how many models ListModels will accumulate so we

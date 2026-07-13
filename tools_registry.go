@@ -43,6 +43,7 @@ type HarnessToolExecutionContext struct {
 	AttachedImage string
 	GenerateImage func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, error)
 	GenerateVideo func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error)
+	GenerateAudio func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error)
 }
 
 // ToolImageResult carries generated images as data URLs. The Images field is
@@ -73,6 +74,22 @@ type ToolVideoFile struct {
 	SourceURL string `json:"sourceUrl,omitempty"`
 }
 
+// ToolAudioResult mirrors ToolVideoResult for generated audio: on-disk temp-file
+// references, not bytes. The Audios slice is stripped before the result becomes
+// a tool message; the harness moves each temp file into the artifacts directory.
+type ToolAudioResult struct {
+	Model  string          `json:"model"`
+	Prompt string          `json:"prompt"`
+	Count  int             `json:"count"`
+	Audios []ToolAudioFile `json:"audios,omitempty"`
+}
+
+type ToolAudioFile struct {
+	TempPath  string `json:"tempPath,omitempty"`
+	MimeType  string `json:"mimeType,omitempty"`
+	SourceURL string `json:"sourceUrl,omitempty"`
+}
+
 type HarnessToolRegistry struct {
 	definitions []HarnessToolDefinition
 	byName      map[string]HarnessToolDefinition
@@ -92,6 +109,9 @@ func defaultHarnessToolRegistry(config AppConfig) HarnessToolRegistry {
 	}
 	if videoGenerationConfigured(config) {
 		definitions = append(definitions, videoGenerationToolDefinition())
+	}
+	if audioGenerationConfigured(config) {
+		definitions = append(definitions, audioGenerationToolDefinition())
 	}
 	return newHarnessToolRegistry(definitions)
 }
@@ -231,6 +251,91 @@ func writeTempVideo(video GeneratedVideo) (string, error) {
 	}
 	defer file.Close()
 	if _, err := file.Write(video.Data); err != nil {
+		os.Remove(file.Name())
+		return "", err
+	}
+	return file.Name(), nil
+}
+
+// audioGenerationConfigured reports whether the generate_audio tool should be
+// offered: a fal audio model must be configured. fal is the only audio backend.
+func audioGenerationConfigured(config AppConfig) bool {
+	return strings.TrimSpace(config.Providers.Fal.AudioModel) != ""
+}
+
+// resolveDefaultAudioModel returns the model the generate_audio tool uses when
+// the call doesn't override it.
+func resolveDefaultAudioModel(config AppConfig) string {
+	if model := strings.TrimSpace(config.Providers.Fal.AudioModel); model != "" {
+		return model
+	}
+	return defaultFalAudioModel
+}
+
+func audioGenerationToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "generate_audio",
+		Title:       "Generate audio",
+		Description: "Use this when the user asks to generate audio: speak or narrate text (text-to-speech), or create music or a sound effect from a description. The configured fal.ai audio model generates it and the clip is attached to the assistant reply.",
+		Example:     `{"name":"generate_audio","content":"a calm lo-fi piano loop with soft rain in the background"}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: generateAudioParamSchema(),
+		Validate: func(prefix string, call HarnessToolCall) []string {
+			if strings.TrimSpace(call.Content) == "" {
+				return []string{prefix + ".content is required for generate_audio (the text or audio prompt)"}
+			}
+			return nil
+		},
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			if tools.GenerateAudio == nil {
+				return nil, "audio generation unavailable", errors.New("audio generation is not available in this context")
+			}
+			model := strings.TrimSpace(call.Model)
+			if model == "" {
+				model = resolveDefaultAudioModel(tools.Config)
+			}
+			if model == "" {
+				return nil, "audio generation unavailable", errors.New("no audio model is configured")
+			}
+			audioReq := AudioGenerateRequest{Model: model, Prompt: strings.TrimSpace(call.Content)}
+			generated, err := tools.GenerateAudio(ctx, audioReq)
+			if err != nil {
+				return nil, "audio generation failed", err
+			}
+			if len(generated.Data) == 0 {
+				return nil, "audio generation returned no audio", errors.New("audio model returned no audio data")
+			}
+			tempPath, err := writeTempAudio(generated)
+			if err != nil {
+				return nil, "audio generation failed", err
+			}
+			output := ToolAudioResult{
+				Model:  model,
+				Prompt: audioReq.Prompt,
+				Count:  1,
+				Audios: []ToolAudioFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
+			}
+			return output, fmt.Sprintf("generated audio with %s", model), nil
+		},
+		Activity: func(result HarnessToolResult) HarnessToolActivity {
+			activity := defaultHarnessToolActivity(result)
+			if typed, ok := result.Result.(ToolAudioResult); ok {
+				activity.Command = []string{"fal", "generate", typed.Model}
+			}
+			return activity
+		},
+	}
+}
+
+// writeTempAudio writes downloaded audio bytes to a temp file and returns its
+// path, mirroring writeTempVideo.
+func writeTempAudio(audio GeneratedAudio) (string, error) {
+	file, err := os.CreateTemp("", "atelier-audio-*"+audioExtensionForMediaType(audio.MimeType))
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	if _, err := file.Write(audio.Data); err != nil {
 		os.Remove(file.Name())
 		return "", err
 	}
@@ -395,6 +500,18 @@ func generateVideoParamSchema() map[string]any {
 		"properties": map[string]any{
 			"content": stringParam("The video prompt — describe the clip to create."),
 			"model":   stringParam("Optional fal.ai video model override."),
+		},
+		"required": []string{"content"},
+	}
+}
+
+func generateAudioParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"content": stringParam("The text to speak, or a description of the music/sound to create."),
+			"model":   stringParam("Optional fal.ai audio model override."),
 		},
 		"required": []string{"content"},
 	}

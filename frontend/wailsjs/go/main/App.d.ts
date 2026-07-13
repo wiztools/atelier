@@ -24,6 +24,8 @@ export function HasOpenRouterAPIKey():Promise<boolean>;
 
 export function ListConversations():Promise<Array<main.ConversationSummary>>;
 
+export function ListFalAudioModels():Promise<Array<main.FalModel>>;
+
 export function ListFalModels():Promise<Array<main.FalModel>>;
 
 export function ListFalVideoImageModels():Promise<Array<main.FalModel>>;
@@ -43,6 +45,8 @@ export function ReadToolFile(arg1:main.ToolFileReadRequest):Promise<main.ToolFil
 export function ResolveToolPermission(arg1:string,arg2:boolean):Promise<void>;
 
 export function RunToolCommand(arg1:main.ToolCommandRequest):Promise<main.ToolCommandResult>;
+
+export function SaveAudio(arg1:main.SaveAudioRequest):Promise<string>;
 
 export function SaveConfig(arg1:main.AppConfig):Promise<void>;
 

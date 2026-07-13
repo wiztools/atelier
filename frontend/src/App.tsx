@@ -16,12 +16,14 @@ import {
   ListFalModels,
   ListFalVideoModels,
   ListFalVideoImageModels,
+  ListFalAudioModels,
   ListModels,
   ListPrimaryModels,
   PurgeArchivedConversations,
   ResolveToolPermission,
   SaveImage,
   SaveVideo,
+  SaveAudio,
   SaveConfig,
   SaveFalAPIKey,
   SaveOpenRouterAPIKey,
@@ -41,6 +43,7 @@ type ChatEntry = {
   thinking?: string;
   images?: string[];
   videos?: string[];
+  audios?: string[];
   harnessRun?: HarnessRunView;
   streaming?: boolean;
   error?: string;
@@ -53,6 +56,7 @@ type ChatChunk = {
   thinking?: string;
   images?: string[];
   videos?: string[];
+  audios?: string[];
   done: boolean;
   error?: string;
   model?: string;
@@ -67,6 +71,7 @@ type ChatStreamDraft = {
   thinking: string;
   images: string[];
   videos: string[];
+  audios: string[];
   streaming: boolean;
   error?: string;
   provider?: string;
@@ -156,6 +161,7 @@ const defaultImageSteps = 24;
 const defaultFalImageModel = 'fal-ai/flux/schnell';
 const defaultFalVideoModel = 'fal-ai/kling-video/v2/master/text-to-video';
 const defaultFalVideoImageModel = 'fal-ai/kling-video/v2/master/image-to-video';
+const defaultFalAudioModel = 'fal-ai/elevenlabs/tts/multilingual-v2';
 const defaultVideoDuration = '5';
 const defaultVideoAspectRatio = '16:9';
 const videoDurationOptions = ['5', '10'];
@@ -208,6 +214,8 @@ function App() {
   const [falVideoModels, setFalVideoModels] = useState<main.FalModel[]>([]);
   const [falVideoImageModel, setFalVideoImageModel] = useState(defaultFalVideoImageModel);
   const [falVideoImageModels, setFalVideoImageModels] = useState<main.FalModel[]>([]);
+  const [falAudioModel, setFalAudioModel] = useState(defaultFalAudioModel);
+  const [falAudioModels, setFalAudioModels] = useState<main.FalModel[]>([]);
   const [videoDuration, setVideoDuration] = useState(defaultVideoDuration);
   const [videoAspectRatio, setVideoAspectRatio] = useState(defaultVideoAspectRatio);
   const [system, setSystem] = useState('You are Atelier, a precise local AI collaborator.');
@@ -332,6 +340,7 @@ function App() {
             model: falModel,
             videoModel: falVideoModel,
             videoImageModel: falVideoImageModel,
+            audioModel: falAudioModel,
           },
         },
         models: {
@@ -361,7 +370,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falVideoModel, falVideoImageModel, harnessModel, imageHeight, imageModel, imageProvider, imageSteps, imageWidth, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falVideoModel, falVideoImageModel, falAudioModel, harnessModel, imageHeight, imageModel, imageProvider, imageSteps, imageWidth, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
 
   // On a fresh launch, put the cursor in the chat box so the user can start
   // typing immediately. Fires once, when config finishes loading.
@@ -381,12 +390,13 @@ function App() {
       if (chunk.conversationId) {
         markConversationInFlight(chunk.conversationId, chunk.requestID, 'chat');
       }
-      const draft = chatStreamDraftsRef.current[chunk.requestID] ?? {content: '', thinking: '', images: [], videos: [], streaming: true};
+      const draft = chatStreamDraftsRef.current[chunk.requestID] ?? {content: '', thinking: '', images: [], videos: [], audios: [], streaming: true};
       chatStreamDraftsRef.current[chunk.requestID] = {
         content: `${draft.content}${chunk.content ?? ''}`,
         thinking: `${draft.thinking}${chunk.thinking ?? ''}`,
         images: chunk.images?.length ? chunk.images : draft.images,
         videos: chunk.videos?.length ? chunk.videos : draft.videos,
+        audios: chunk.audios?.length ? chunk.audios : draft.audios,
         streaming: !chunk.done && !chunk.error,
         error: chunk.error ?? draft.error,
         provider: chunk.provider ?? draft.provider,
@@ -403,6 +413,7 @@ function App() {
             thinking: nextDraft.thinking,
             images: nextDraft.images,
             videos: nextDraft.videos,
+            audios: nextDraft.audios,
             streaming: nextDraft.streaming,
             error: nextDraft.error,
             provider: nextDraft.provider ?? entry.provider,
@@ -551,6 +562,12 @@ function App() {
       .sort((a, b) => a.label.localeCompare(b.label));
   }, [falVideoImageModels]);
 
+  const falAudioModelOptions = useMemo(() => {
+    return asArray(falAudioModels)
+      .map((item) => ({value: item.id, label: item.displayName || item.id}))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [falAudioModels]);
+
   useEffect(() => {
     if (!imageModelOptions.length || imageModelOptions.includes(imageModel)) {
       return;
@@ -591,6 +608,7 @@ function App() {
     const nextFalModel = config.providers?.fal?.model || defaultFalImageModel;
     const nextFalVideoModel = config.providers?.fal?.videoModel || defaultFalVideoModel;
     const nextFalVideoImageModel = config.providers?.fal?.videoImageModel || defaultFalVideoImageModel;
+    const nextFalAudioModel = config.providers?.fal?.audioModel || defaultFalAudioModel;
     const nextVideoDuration = config.generation?.video?.duration || defaultVideoDuration;
     const nextVideoAspectRatio = config.generation?.video?.aspectRatio || defaultVideoAspectRatio;
 
@@ -610,6 +628,7 @@ function App() {
     setFalModel(nextFalModel);
     setFalVideoModel(nextFalVideoModel);
     setFalVideoImageModel(nextFalVideoImageModel);
+    setFalAudioModel(nextFalAudioModel);
     setVideoDuration(nextVideoDuration);
     setVideoAspectRatio(nextVideoAspectRatio);
     setConfigLoaded(true);
@@ -723,6 +742,11 @@ function App() {
     } catch {
       setFalVideoImageModels([]);
     }
+    try {
+      setFalAudioModels(asArray(await ListFalAudioModels()));
+    } catch {
+      setFalAudioModels([]);
+    }
   }
 
   async function saveOpenRouterKey() {
@@ -786,6 +810,7 @@ function App() {
       setFalModels([]);
       setFalVideoModels([]);
       setFalVideoImageModels([]);
+      setFalAudioModels([]);
       setFalStatus('unknown');
       setFalError('');
       setImageProvider((current) => current === 'fal' ? 'ollama' : current);
@@ -892,6 +917,7 @@ function App() {
       thinking: historyText(turn.content, 'thinking'),
       images: historyImages(turn.content),
       videos: historyVideos(turn.content),
+      audios: historyAudios(turn.content),
       harnessRun: parseHarnessRun(turn.providerResponse?.harnessRun),
       provider: turn.provider,
     }));
@@ -904,6 +930,7 @@ function App() {
         thinking: draft?.thinking,
         images: draft?.images,
         videos: draft?.videos,
+        audios: draft?.audios,
         streaming: draft?.streaming ?? true,
         error: draft?.error,
         provider: draft?.provider,
@@ -1007,7 +1034,7 @@ function App() {
     setAttachments([]);
     shouldFollowTranscriptRef.current = true;
     visibleStreamRef.current = requestID;
-    chatStreamDraftsRef.current[requestID] = {content: '', thinking: '', images: [], videos: [], streaming: true};
+    chatStreamDraftsRef.current[requestID] = {content: '', thinking: '', images: [], videos: [], audios: [], streaming: true};
     setActiveStream(requestID);
     setChat((entries) => [
       ...entries,
@@ -1031,7 +1058,7 @@ function App() {
       void refreshConversations();
     } catch (error) {
       chatStreamDraftsRef.current[requestID] = {
-        ...(chatStreamDraftsRef.current[requestID] ?? {content: '', thinking: '', images: [], videos: []}),
+        ...(chatStreamDraftsRef.current[requestID] ?? {content: '', thinking: '', images: [], videos: [], audios: []}),
         streaming: false,
         error: formatError(error),
       };
@@ -1058,7 +1085,7 @@ function App() {
     if (activeStream) {
       await CancelStream(activeStream);
       chatStreamDraftsRef.current[activeStream] = {
-        ...(chatStreamDraftsRef.current[activeStream] ?? {content: '', thinking: '', images: [], videos: []}),
+        ...(chatStreamDraftsRef.current[activeStream] ?? {content: '', thinking: '', images: [], videos: [], audios: []}),
         streaming: false,
         error: 'Stopped',
       };
@@ -1122,6 +1149,17 @@ function App() {
     try {
       await SaveVideo(main.SaveVideoRequest.createFrom({
         path: video,
+        suggestedName: `atelier-${Date.now()}-${index + 1}`,
+      }));
+    } catch (error) {
+      setStartupError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function saveGeneratedAudio(audio: string, index: number) {
+    try {
+      await SaveAudio(main.SaveAudioRequest.createFrom({
+        path: audio,
         suggestedName: `atelier-${Date.now()}-${index + 1}`,
       }));
     } catch (error) {
@@ -1614,6 +1652,25 @@ function App() {
               </section>
 
               <section className="settings-section">
+                <h3>Audio</h3>
+                <div className="field">
+                  <label htmlFor="fal-audio-model">Audio Model (fal.ai)</label>
+                  <ModelCombobox
+                    id="fal-audio-model"
+                    ariaLabel="fal.ai audio model"
+                    placeholder={defaultFalAudioModel}
+                    value={falAudioModel}
+                    onChange={setFalAudioModel}
+                    options={falAudioModelOptions}
+                    allowCustom
+                  />
+                  {!falHasKey ? (
+                    <span className="hint">Add a fal.ai API key above to generate audio.</span>
+                  ) : null}
+                </div>
+              </section>
+
+              <section className="settings-section">
                 <div className="field">
                   <label htmlFor="system">System</label>
                   <textarea id="system" value={system} onChange={(event) => setSystem(event.target.value)} />
@@ -1707,6 +1764,18 @@ function App() {
                               <video src={video} controls preload="metadata" />
                               <figcaption>
                                 <button type="button" onClick={() => saveGeneratedVideo(video, index)}>Download video</button>
+                              </figcaption>
+                            </figure>
+                          ))}
+                        </div>
+                      ) : null}
+                      {entry.audios?.length ? (
+                        <div className="chat-audio-results">
+                          {entry.audios.map((audio, index) => (
+                            <figure key={`${entry.id}-audio-${index}`} className="chat-audio-card">
+                              <audio src={audio} controls preload="metadata" />
+                              <figcaption>
+                                <button type="button" onClick={() => saveGeneratedAudio(audio, index)}>Download audio</button>
                               </figcaption>
                             </figure>
                           ))}
@@ -2283,6 +2352,13 @@ function historyImages(contents: main.HistoryContent[] | null | undefined): stri
 function historyVideos(contents: main.HistoryContent[] | null | undefined): string[] {
   return asArray(contents)
     .filter((content) => content.type === 'video')
+    .map((content) => content.text || content.path || '')
+    .filter(Boolean);
+}
+
+function historyAudios(contents: main.HistoryContent[] | null | undefined): string[] {
+  return asArray(contents)
+    .filter((content) => content.type === 'audio')
     .map((content) => content.text || content.path || '')
     .filter(Boolean);
 }

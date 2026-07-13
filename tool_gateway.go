@@ -52,6 +52,16 @@ func newToolGateway(app *App, config AppConfig) ToolGateway {
 			}
 			return newFalClient(app.client, apiKey).GenerateVideo(ctx, req)
 		}
+		gateway.tools.GenerateAudio = func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error) {
+			apiKey, err := loadFalAPIKey()
+			if err != nil {
+				return GeneratedAudio{}, err
+			}
+			if strings.TrimSpace(apiKey) == "" {
+				return GeneratedAudio{}, errFalKeyNotConfigured
+			}
+			return newFalClient(app.client, apiKey).GenerateAudio(ctx, req)
+		}
 	}
 	return gateway
 }

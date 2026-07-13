@@ -4114,6 +4114,34 @@ func TestVideoGenerationToolGating(t *testing.T) {
 	}
 }
 
+// TestAudioGenerationToolGating confirms generate_audio is registered only when
+// a fal audio model is configured.
+func TestAudioGenerationToolGating(t *testing.T) {
+	base := defaultAppConfig()
+	base.Providers.Fal.AudioModel = ""
+	if audioGenerationConfigured(base) {
+		t.Fatal("audio should not be configured without a fal audio model")
+	}
+	if _, ok := defaultHarnessToolRegistry(base).Get("generate_audio"); ok {
+		t.Fatal("generate_audio should be absent when unconfigured")
+	}
+
+	configured := defaultAppConfig()
+	configured.Providers.Fal.AudioModel = "fal-ai/some/audio-model"
+	if !audioGenerationConfigured(configured) {
+		t.Fatal("audio should be configured with a fal audio model")
+	}
+	if _, ok := defaultHarnessToolRegistry(configured).Get("generate_audio"); !ok {
+		t.Fatal("generate_audio should be registered when configured")
+	}
+	if got := resolveDefaultAudioModel(configured); got != "fal-ai/some/audio-model" {
+		t.Fatalf("resolveDefaultAudioModel = %q, want the configured model", got)
+	}
+	if got := resolveDefaultAudioModel(base); got != defaultFalAudioModel {
+		t.Fatalf("resolveDefaultAudioModel fallback = %q, want %q", got, defaultFalAudioModel)
+	}
+}
+
 // TestMapNativeToolCalls covers converting Ollama's native tool_calls into the
 // flat HarnessToolCall shape, including per-call decode errors for malformed
 // arguments — mirroring decodeHarnessToolCalls.

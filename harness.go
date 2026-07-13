@@ -219,11 +219,13 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	// produced rather than silently dropping it.
 	images, imageReq := imagesFromToolResults(preparation.ToolResults)
 	videos, videoReq := videosFromToolResults(preparation.ToolResults)
-	// Video temp files are moved into the artifacts directory at persist time;
-	// remove any that survive (e.g. a save error) so they don't leak.
+	audios, audioReq := audiosFromToolResults(preparation.ToolResults)
+	// Video/audio temp files are moved into the artifacts directory at persist
+	// time; remove any that survive (e.g. a save error) so they don't leak.
 	defer cleanupVideoTempFiles(videos)
+	defer cleanupAudioTempFiles(audios)
 	if err != nil {
-		if len(images) > 0 || len(videos) > 0 {
+		if len(images) > 0 || len(videos) > 0 || len(audios) > 0 {
 			result = finalResponseAttempt{
 				Content: harnessEmptyResponseNotice(preparation.ToolResults),
 				Model:   responseModel,
@@ -261,11 +263,14 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	run.complete("completed", "final")
 	var saveErr error
 	var videoURLs []string
+	var audioURLs []string
 	switch {
 	case len(videos) > 0:
 		// The video appender also stores any images produced this turn, so a
 		// turn with both media types keeps everything.
 		videoURLs, saveErr = appendChatAssistantTurnWithVideos(h.config, conversationID, assistantContent, assistantThinking, finalModel, responseProvider, finalReason, images, imageReq, videos, videoReq, run)
+	case len(audios) > 0:
+		audioURLs, saveErr = appendChatAssistantTurnWithAudios(h.config, conversationID, assistantContent, assistantThinking, finalModel, responseProvider, finalReason, audios, audioReq, run)
 	case len(images) > 0:
 		saveErr = appendChatAssistantTurnWithImages(h.config, conversationID, assistantContent, assistantThinking, finalModel, responseProvider, finalReason, images, "", run, imageReq)
 	default:
@@ -286,6 +291,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		Content:        terminalContent,
 		Images:         images,
 		Videos:         videoURLs,
+		Audios:         audioURLs,
 		Done:           true,
 		Model:          finalModel,
 		Reason:         finalReason,
@@ -300,6 +306,14 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 func cleanupVideoTempFiles(videos []ToolVideoFile) {
 	for _, video := range videos {
 		if path := strings.TrimSpace(video.TempPath); path != "" {
+			os.Remove(path)
+		}
+	}
+}
+
+func cleanupAudioTempFiles(audios []ToolAudioFile) {
+	for _, audio := range audios {
+		if path := strings.TrimSpace(audio.TempPath); path != "" {
 			os.Remove(path)
 		}
 	}
@@ -341,6 +355,24 @@ func videosFromToolResults(results []HarnessToolResult) ([]ToolVideoFile, VideoG
 		videos = append(videos, typed.Videos...)
 	}
 	return videos, videoReq
+}
+
+// audiosFromToolResults collects audio produced by generate_audio tool calls
+// this turn, plus the request metadata used to store them as artifacts.
+func audiosFromToolResults(results []HarnessToolResult) ([]ToolAudioFile, AudioGenerateRequest) {
+	var audios []ToolAudioFile
+	var audioReq AudioGenerateRequest
+	for _, result := range results {
+		typed, ok := result.Result.(ToolAudioResult)
+		if !ok || result.Status != "completed" {
+			continue
+		}
+		if audioReq.Model == "" {
+			audioReq = AudioGenerateRequest{Model: typed.Model, Prompt: typed.Prompt}
+		}
+		audios = append(audios, typed.Audios...)
+	}
+	return audios, audioReq
 }
 
 // latestUserImage returns the first image attached to the most recent user
@@ -1042,6 +1074,10 @@ func toolResultMessages(results []HarnessToolResult) []ChatMessage {
 		}
 		if typed, ok := result.Result.(ToolVideoResult); ok {
 			typed.Videos = nil
+			messageResult.Result = typed
+		}
+		if typed, ok := result.Result.(ToolAudioResult); ok {
+			typed.Audios = nil
 			messageResult.Result = typed
 		}
 		content, err := json.Marshal(messageResult)

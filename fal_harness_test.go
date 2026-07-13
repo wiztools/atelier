@@ -413,6 +413,117 @@ func TestHarnessAnimatesAttachedImageViaFal(t *testing.T) {
 	}
 }
 
+// TestHarnessGeneratesAudioViaFal runs the full chat turn (triage → planner →
+// generate_audio tool → fal queue → download → final response) and confirms the
+// clip is persisted as a file-path "audio" history artifact.
+func TestHarnessGeneratesAudioViaFal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	keyring.MockInit()
+	if err := saveFalAPIKey("fal-test-key"); err != nil {
+		t.Fatalf("saveFalAPIKey: %v", err)
+	}
+	t.Cleanup(func() { _ = clearFalAPIKey() })
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "chat-box-model"
+	config.Providers.Fal.AudioModel = defaultFalAudioModel
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig: %v", err)
+	}
+
+	app := NewApp()
+	nonStreamCount := 0
+	prepCalls := 0
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Host, "fal.run") {
+			if req.Method == http.MethodPost {
+				return jsonResponse(`{"request_id":"req-aud-1"}`), nil
+			}
+			if strings.HasSuffix(req.URL.Path, "/status") {
+				return jsonResponse(`{"status":"COMPLETED"}`), nil
+			}
+			if strings.HasSuffix(req.URL.Path, "/requests/req-aud-1") {
+				return jsonResponse(`{"audio":{"url":"https://queue.fal.run/generated.mp3","content_type":"audio/mpeg"}}`), nil
+			}
+			return &http.Response{StatusCode: 200, Status: "200 OK",
+				Body:   io.NopCloser(strings.NewReader(string(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x00"), 0xFF, 0xFB, 0x90, 0x00)))),
+				Header: http.Header{"Content-Type": []string{"audio/mpeg"}}}, nil
+		}
+		switch req.URL.Path {
+		case "/api/show":
+			return jsonResponse(`{"capabilities":[],"model_info":{},"details":{"family":"test","parameter_size":"1B"}}`), nil
+		case "/api/chat":
+			payload := chatPayload(t, req)
+			if payload["stream"] == false {
+				nonStreamCount++
+				if nonStreamCount == 1 {
+					return chatCompletion("harness-model", `{"needsTools":true,"responseMode":"audio","toolTask":"Narrate the line.","reason":"The user asked for speech."}`), nil
+				}
+				prepCalls++
+				body := `{"brief":"Narrate the line.","needsTools":true,"reason":"audio","toolCalls":[{"name":"generate_audio","content":"The happiness of your life depends upon the quality of your thoughts."}]}`
+				if prepCalls > 1 {
+					body = `{"brief":"Done.","needsTools":false,"reason":"done","toolCalls":[]}`
+				}
+				return chatCompletion("harness-model", body), nil
+			}
+			body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"Here is the narration."},"done":false}`) +
+				fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+			return &http.Response{StatusCode: 200, Status: "200 OK",
+				Body:   io.NopCloser(strings.NewReader(body)),
+				Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+		default:
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL)
+			return nil, nil
+		}
+	})
+
+	app.runChatStream(context.Background(), "request-fal-audio", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Read this out loud: The happiness of your life depends upon the quality of your thoughts."},
+		},
+	})
+
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations: %v", err)
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation: %v", err)
+	}
+	assistant := detail.Turns[len(detail.Turns)-1]
+	var audio *HistoryContent
+	for i := range assistant.Content {
+		if assistant.Content[i].Type == "audio" {
+			audio = &assistant.Content[i]
+		}
+	}
+	if audio == nil {
+		t.Fatalf("assistant content has no audio artifact: %+v", assistant.Content)
+	}
+	if !strings.HasPrefix(audio.Path, "artifacts/") || !strings.HasSuffix(audio.Path, ".mp3") {
+		t.Errorf("audio path = %q, want artifacts/*.mp3", audio.Path)
+	}
+	if !strings.HasPrefix(audio.Text, "/atelier-artifact/") {
+		t.Errorf("hydrated audio text = %q, want /atelier-artifact/ URL (file missing?)", audio.Text)
+	}
+	tool, ok := assistant.ProviderResponse["tool"].(map[string]any)
+	if !ok || tool["name"] != "audio_generation" {
+		t.Fatalf("assistant provider tool = %+v, want audio_generation", assistant.ProviderResponse["tool"])
+	}
+}
+
 func jsonResponse(body string) *http.Response {
 	return &http.Response{StatusCode: 200, Status: "200 OK",
 		Body:   io.NopCloser(strings.NewReader(body)),

@@ -107,6 +107,8 @@ type ConfigFal struct {
 	// image-to-video endpoint used when the user attaches an image to animate.
 	VideoModel      string `json:"videoModel,omitempty"`
 	VideoImageModel string `json:"videoImageModel,omitempty"`
+	// AudioModel is the text-to-audio endpoint (speech, music, or sound effects).
+	AudioModel string `json:"audioModel,omitempty"`
 }
 
 type ConfigModels struct {
@@ -243,6 +245,7 @@ type ChatStreamEvent struct {
 	Thinking       string   `json:"thinking,omitempty"`
 	Images         []string `json:"images,omitempty"`
 	Videos         []string `json:"videos,omitempty"`
+	Audios         []string `json:"audios,omitempty"`
 	Done           bool     `json:"done"`
 	Error          string   `json:"error,omitempty"`
 	Model          string   `json:"model,omitempty"`
@@ -330,6 +333,20 @@ type SaveImageRequest struct {
 // location. Path is the on-disk artifact path (not a URL); the frontend passes
 // the plain filesystem path the asset handler served the video from.
 type SaveVideoRequest struct {
+	Path          string `json:"path"`
+	SuggestedName string `json:"suggestedName,omitempty"`
+}
+
+// AudioGenerateRequest is the input to a text-to-audio generation. The prompt is
+// the text to synthesize (speech) or describe (music/sound effects).
+type AudioGenerateRequest struct {
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+}
+
+// SaveAudioRequest asks to copy a generated audio artifact to a user-chosen
+// location, mirroring SaveVideoRequest.
+type SaveAudioRequest struct {
 	Path          string `json:"path"`
 	SuggestedName string `json:"suggestedName,omitempty"`
 }
@@ -843,6 +860,56 @@ func (a *App) SaveVideo(req SaveVideoRequest) (string, error) {
 	return path, nil
 }
 
+// SaveAudio copies a generated audio artifact to a user-chosen location,
+// mirroring SaveVideo.
+func (a *App) SaveAudio(req SaveAudioRequest) (string, error) {
+	sourcePath := strings.TrimSpace(req.Path)
+	sourcePath = strings.TrimPrefix(sourcePath, artifactPrefix)
+	if sourcePath == "" {
+		return "", errors.New("audio path is empty")
+	}
+
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	if !isAudioBytes(data) {
+		return "", errors.New("artifact is not a supported audio clip")
+	}
+
+	extension := strings.ToLower(filepath.Ext(sourcePath))
+	if extension == "" {
+		extension = ".mp3"
+	}
+	filename := sanitizeFilename(req.SuggestedName)
+	if filename == "" {
+		filename = "atelier-audio" + extension
+	}
+	if !strings.HasSuffix(strings.ToLower(filename), extension) {
+		filename += extension
+	}
+
+	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "Save generated audio",
+		DefaultFilename: filename,
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Audio Files", Pattern: "*.mp3;*.wav;*.ogg;*.flac;*.m4a;*.aac;*.opus"},
+			{DisplayName: "All Files", Pattern: "*.*"},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	if path == "" {
+		return "", nil
+	}
+
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 func decodeImagePayload(image string) ([]byte, string, error) {
 	image = strings.TrimSpace(image)
 	if image == "" {
@@ -1083,6 +1150,36 @@ func (a *App) ListFalVideoImageModels() ([]FalModel, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return newFalClient(a.client, key).ListModels(ctx, falImageToVideoCategory, 0)
+}
+
+// ListFalAudioModels returns fal's audio-generation catalog for the Settings
+// audio-model picker. It merges the text-to-audio (music/sound effects) and
+// text-to-speech categories, deduped by endpoint id.
+func (a *App) ListFalAudioModels() ([]FalModel, error) {
+	key, err := loadFalAPIKey()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	client := newFalClient(a.client, key)
+
+	merged := []FalModel{}
+	seen := map[string]bool{}
+	for _, category := range []string{falTextToSpeechCategory, falTextToAudioCategory} {
+		models, err := client.ListModels(ctx, category, 0)
+		if err != nil {
+			return nil, err
+		}
+		for _, model := range models {
+			if model.ID == "" || seen[model.ID] {
+				continue
+			}
+			seen[model.ID] = true
+			merged = append(merged, model)
+		}
+	}
+	return merged, nil
 }
 
 // resolvedPrimaryModelAndProvider returns which model/provider the primary
@@ -1767,6 +1864,100 @@ func writeChatVideoArtifacts(artifactsDir string, videos []ToolVideoFile, turnNu
 	return videoContents, videoURLs, nil
 }
 
+// appendChatAssistantTurnWithAudios persists an assistant turn that produced one
+// or more generated audio clips. Audio temp files are moved into the
+// conversation's artifacts directory; the returned URLs are the
+// "/atelier-artifact" links the live UI renders before reload.
+func appendChatAssistantTurnWithAudios(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, audios []ToolAudioFile, audioReq AudioGenerateRequest, run HarnessRun) ([]string, error) {
+	store := newHistoryStore(config.Storage)
+	loaded, err := store.loadForAppend(conversationID, "chat", "a chat")
+	if err != nil {
+		return nil, err
+	}
+	nowText := time.Now().Format(time.RFC3339)
+
+	audioContents, audioURLs, err := writeChatAudioArtifacts(loaded.ArtifactsDir, audios, loaded.NextTurnNumber)
+	if err != nil {
+		return nil, err
+	}
+
+	contents := []HistoryContent{{Type: "text", Text: assistantContent}}
+	if strings.TrimSpace(assistantThinking) != "" {
+		contents = append(contents, HistoryContent{Type: "thinking", Text: assistantThinking})
+	}
+	contents = append(contents, audioContents...)
+	assistantTurn := HistoryTurn{
+		SchemaVersion:  1,
+		ID:             fmt.Sprintf("turn_%06d", loaded.NextTurnNumber),
+		ConversationID: conversationID,
+		CreatedAt:      nowText,
+		Kind:           "chat",
+		Role:           "assistant",
+		Model:          model,
+		Provider:       provider,
+		Content:        contents,
+		ProviderResponse: map[string]any{
+			"doneReason": reason,
+			"harnessRun": run,
+			"tool": map[string]any{
+				"name":       "audio_generation",
+				"model":      audioReq.Model,
+				"audioCount": len(audioContents),
+			},
+		},
+	}
+
+	loaded.Conversation.UpdatedAt = nowText
+	loaded.Conversation.Stats.TurnCount++
+	loaded.Conversation.Stats.ArtifactCount += len(audioContents)
+	if err := store.writeConversation(loaded.Path, loaded.Conversation); err != nil {
+		return nil, err
+	}
+	if err := store.writeTurn(loaded.TurnsDir, assistantTurn); err != nil {
+		return nil, err
+	}
+	return audioURLs, nil
+}
+
+// writeChatAudioArtifacts moves each generated audio's temp file into the
+// artifacts directory as turn_NNNNNN_aud_NNNNNN.<ext> and returns the history
+// content entries plus the "/atelier-artifact" URLs the live UI renders.
+func writeChatAudioArtifacts(artifactsDir string, audios []ToolAudioFile, turnNumber int) ([]HistoryContent, []string, error) {
+	if len(audios) == 0 {
+		return nil, nil, nil
+	}
+	if err := os.MkdirAll(artifactsDir, 0755); err != nil {
+		return nil, nil, err
+	}
+	absArtifactsDir, err := filepath.Abs(artifactsDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	audioContents := make([]HistoryContent, 0, len(audios))
+	audioURLs := make([]string, 0, len(audios))
+	for index, audio := range audios {
+		tempPath := strings.TrimSpace(audio.TempPath)
+		if tempPath == "" {
+			continue
+		}
+		extension := audioExtensionForMediaType(audio.MimeType)
+		artifactID := fmt.Sprintf("turn_%06d_aud_%06d", turnNumber, index+1)
+		filename := artifactID + extension
+		destPath := filepath.Join(absArtifactsDir, filename)
+		if err := moveFile(tempPath, destPath); err != nil {
+			return nil, nil, err
+		}
+		audioContents = append(audioContents, HistoryContent{
+			Type:       "audio",
+			ArtifactID: artifactID,
+			Path:       filepath.ToSlash(filepath.Join("artifacts", filename)),
+			MimeType:   mediaTypeForExtension(extension),
+		})
+		audioURLs = append(audioURLs, artifactPrefix+destPath)
+	}
+	return audioContents, audioURLs, nil
+}
+
 // moveFile relocates src to dst, falling back to a copy-and-delete when the two
 // live on different filesystems (os.Rename fails with a cross-device error).
 func moveFile(src, dst string) error {
@@ -2052,9 +2243,10 @@ func readJSONFile(path string, target any) error {
 func hydrateHistoryContent(conversationDir string, contents []HistoryContent) []HistoryContent {
 	hydrated := make([]HistoryContent, 0, len(contents))
 	for _, content := range contents {
-		// Image and video artifacts are both stored on disk and served by the
-		// asset handler; resolve their relative path to an /atelier-artifact URL.
-		if (content.Type == "image" || content.Type == "video") && content.Path != "" && !strings.HasPrefix(content.Path, "data:") {
+		// Image, video, and audio artifacts are all stored on disk and served by
+		// the asset handler; resolve their relative path to an /atelier-artifact
+		// URL.
+		if (content.Type == "image" || content.Type == "video" || content.Type == "audio") && content.Path != "" && !strings.HasPrefix(content.Path, "data:") {
 			absPath := filepath.Join(conversationDir, filepath.FromSlash(content.Path))
 			if _, err := os.Stat(absPath); err == nil {
 				content.Text = "/atelier-artifact" + absPath
@@ -2338,9 +2530,62 @@ func mediaTypeForExtension(extension string) string {
 		return "video/webm"
 	case ".mov":
 		return "video/quicktime"
+	case ".mp3":
+		return "audio/mpeg"
+	case ".wav":
+		return "audio/wav"
+	case ".ogg", ".opus":
+		return "audio/ogg"
+	case ".flac":
+		return "audio/flac"
+	case ".m4a", ".aac":
+		return "audio/mp4"
 	default:
 		return "image/png"
 	}
+}
+
+// audioExtensionForMediaType maps an audio MIME type to a file extension,
+// defaulting to .mp3 (the format most fal audio endpoints return).
+func audioExtensionForMediaType(mediaType string) string {
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "audio/wav", "audio/x-wav", "audio/wave":
+		return ".wav"
+	case "audio/ogg", "audio/opus":
+		return ".ogg"
+	case "audio/flac", "audio/x-flac":
+		return ".flac"
+	case "audio/mp4", "audio/aac", "audio/x-m4a":
+		return ".m4a"
+	default:
+		return ".mp3"
+	}
+}
+
+// isAudioBytes reports whether data looks like a container an <audio> tag can
+// play: MP3 (ID3 tag or MPEG frame sync), WAV/RIFF, OGG, FLAC, or MP4/M4A
+// (ISO base media "ftyp"). Returns false otherwise so a non-audio download is
+// rejected rather than written as a broken artifact.
+func isAudioBytes(data []byte) bool {
+	if len(data) >= 3 && bytes.Equal(data[:3], []byte("ID3")) {
+		return true
+	}
+	if len(data) >= 2 && data[0] == 0xFF && (data[1]&0xE0) == 0xE0 {
+		return true // MPEG audio frame sync (MP3/AAC-ADTS)
+	}
+	if len(data) >= 12 && bytes.Equal(data[:4], []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WAVE")) {
+		return true
+	}
+	if len(data) >= 4 && bytes.Equal(data[:4], []byte("OggS")) {
+		return true
+	}
+	if len(data) >= 4 && bytes.Equal(data[:4], []byte("fLaC")) {
+		return true
+	}
+	if len(data) >= 12 && bytes.Equal(data[4:8], []byte("ftyp")) {
+		return true // MP4/M4A audio container
+	}
+	return false
 }
 
 // videoExtensionForMediaType maps a video MIME type to a file extension. Unlike

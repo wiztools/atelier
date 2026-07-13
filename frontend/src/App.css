@@ -1681,6 +1681,33 @@ button:disabled {
   font-size: 12px;
 }
 
+.chat-audio-results {
+  display: grid;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.chat-audio-card {
+  width: min(100%, 620px);
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.chat-audio-card audio {
+  width: 100%;
+}
+
+.chat-audio-card figcaption {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.chat-audio-card figcaption button {
+  height: 32px;
+  font-size: 12px;
+}
+
 .attachment-strip span {
   overflow: hidden;
   text-overflow: ellipsis;

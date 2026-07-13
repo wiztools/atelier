@@ -153,6 +153,7 @@ export namespace main {
 	    model?: string;
 	    videoModel?: string;
 	    videoImageModel?: string;
+	    audioModel?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigFal(source);
@@ -164,6 +165,7 @@ export namespace main {
 	        this.model = source["model"];
 	        this.videoModel = source["videoModel"];
 	        this.videoImageModel = source["videoImageModel"];
+	        this.audioModel = source["audioModel"];
 	    }
 	}
 	export class ConfigOpenRouter {
@@ -872,6 +874,20 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.deletedConversations = source["deletedConversations"];
 	        this.deletedAssets = source["deletedAssets"];
+	    }
+	}
+	export class SaveAudioRequest {
+	    path: string;
+	    suggestedName?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SaveAudioRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.suggestedName = source["suggestedName"];
 	    }
 	}
 	export class SaveImageRequest {

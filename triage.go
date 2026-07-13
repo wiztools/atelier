@@ -27,7 +27,7 @@ func triageResponseSchema() map[string]any {
 		"required":             []string{"needsTools", "responseMode", "toolTask", "reason"},
 		"properties": map[string]any{
 			"needsTools":   map[string]any{"type": "boolean"},
-			"responseMode": map[string]any{"type": "string", "enum": []string{"text", "image", "vision", "video"}},
+			"responseMode": map[string]any{"type": "string", "enum": []string{"text", "image", "vision", "video", "audio"}},
 			"toolTask":     map[string]any{"type": "string"},
 			"reason":       map[string]any{"type": "string"},
 		},
@@ -108,10 +108,12 @@ Set responseMode to one of:
 - "image": the user asks to create, draw, paint, or render an image.
 - "vision": the user attached an image and wants it analyzed, described, or understood.
 - "video": the user asks to create, animate, or render a video or short clip.
-Set needsTools true only when answering requires acting on the workspace or a listed capability: reading, listing, searching, or writing files, running a command, generating an image, generating a video, or following one of the listed skills.
+- "audio": the user asks to speak/narrate text, or create music or a sound effect.
+Set needsTools true only when answering requires acting on the workspace or a listed capability: reading, listing, searching, or writing files, running a command, generating an image, generating a video, generating audio, or following one of the listed skills.
 Set needsTools false when your own knowledge is enough: greetings, general knowledge, reasoning, writing, and conversation about content already visible in the chat.
 For responseMode "image", set needsTools true so the harness can run the generate_image tool before the primary model responds.
 For responseMode "video", set needsTools true so the harness can run the generate_video tool before the primary model responds. Only use "video" when the generate_video tool is listed as available.
+For responseMode "audio", set needsTools true so the harness can run the generate_audio tool before the primary model responds. Only use "audio" when the generate_audio tool is listed as available.
 Available tools:
 %s
 Available skills:

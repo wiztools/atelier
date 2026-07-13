@@ -671,6 +671,98 @@ func TestFalClientSubmitFollowsRedirectPreservingPost(t *testing.T) {
 	}
 }
 
+// tinyMP3 is a minimal byte sequence with an ID3 tag header, enough for
+// isAudioBytes to accept it. Not a playable clip; the client only sniffs.
+func tinyMP3() []byte {
+	return append([]byte("ID3\x04\x00\x00\x00\x00\x00\x00"), 0xFF, 0xFB, 0x90, 0x00)
+}
+
+func audioResp(body []byte, contentType string) *http.Response {
+	header := http.Header{}
+	if contentType != "" {
+		header.Set("Content-Type", contentType)
+	}
+	return &http.Response{StatusCode: http.StatusOK, Status: "200 OK",
+		Body: io.NopCloser(strings.NewReader(string(body))), Header: header}
+}
+
+func TestFalClientGenerateAudioHappyPath(t *testing.T) {
+	model := "fal-ai/elevenlabs/tts/multilingual-v2"
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodPost && req.URL.Path == "/"+model:
+			body, _ := io.ReadAll(req.Body)
+			// Sent as both prompt (music/sfx models) and text (TTS models).
+			if !strings.Contains(string(body), `"text":"say hello"`) || !strings.Contains(string(body), `"prompt":"say hello"`) {
+				t.Errorf("submit body missing prompt/text: %s", body)
+			}
+			return jsonResp(`{"request_id":"req-aud"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/status"):
+			return jsonResp(`{"status":"COMPLETED"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/requests/req-aud"):
+			return jsonResp(`{"audio":{"url":"https://v3.fal.media/files/clip.mp3","content_type":"audio/mpeg"}}`), nil
+		case req.URL.Path == "/files/clip.mp3":
+			return audioResp(tinyMP3(), "audio/mpeg"), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+			return nil, nil
+		}
+	}))
+
+	audio, err := client.GenerateAudio(context.Background(), AudioGenerateRequest{Model: model, Prompt: "say hello"})
+	if err != nil {
+		t.Fatalf("GenerateAudio returned error: %v", err)
+	}
+	if len(audio.Data) == 0 {
+		t.Fatal("expected audio bytes")
+	}
+	if audio.MimeType != "audio/mpeg" {
+		t.Errorf("mime = %q, want audio/mpeg", audio.MimeType)
+	}
+}
+
+func TestFalClientGenerateAudioAudioFileField(t *testing.T) {
+	// Some endpoints (e.g. cassetteai) return "audio_file" instead of "audio".
+	model := defaultFalAudioModel
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodPost {
+			return jsonResp(`{"request_id":"req-af"}`), nil
+		}
+		if strings.HasSuffix(req.URL.Path, "/status") {
+			return jsonResp(`{"status":"COMPLETED"}`), nil
+		}
+		if strings.HasSuffix(req.URL.Path, "/requests/req-af") {
+			return jsonResp(`{"audio_file":{"url":"https://v3.fal.media/files/song.mp3"}}`), nil
+		}
+		return audioResp(tinyMP3(), "audio/mpeg"), nil
+	}))
+
+	audio, err := client.GenerateAudio(context.Background(), AudioGenerateRequest{Model: model, Prompt: "a jazzy tune"})
+	if err != nil {
+		t.Fatalf("GenerateAudio returned error: %v", err)
+	}
+	if audio.SourceURL != "https://v3.fal.media/files/song.mp3" {
+		t.Errorf("source url = %q, want the audio_file url", audio.SourceURL)
+	}
+}
+
+func TestFalClientGenerateAudioNoAudio(t *testing.T) {
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodPost {
+			return jsonResp(`{"request_id":"req-empty"}`), nil
+		}
+		if strings.HasSuffix(req.URL.Path, "/status") {
+			return jsonResp(`{"status":"COMPLETED"}`), nil
+		}
+		return jsonResp(`{}`), nil
+	}))
+
+	_, err := client.GenerateAudio(context.Background(), AudioGenerateRequest{Model: defaultFalAudioModel, Prompt: "x"})
+	if err == nil || !strings.Contains(err.Error(), "no audio") {
+		t.Fatalf("expected a no-audio error, got %v", err)
+	}
+}
+
 func TestCollectFalImagesFromJSON(t *testing.T) {
 	raw := []byte(`{"data":{"nested":[{"url":"https://cdn.fal.ai/a.png"},{"url":"https://cdn.fal.ai/b.jpg"}]}}`)
 	images := collectFalImagesFromJSON(raw)
