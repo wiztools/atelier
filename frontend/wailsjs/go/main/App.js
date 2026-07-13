@@ -46,6 +46,18 @@ export function ListConversations() {
   return window['go']['main']['App']['ListConversations']();
 }
 
+export function ListFalModels() {
+  return window['go']['main']['App']['ListFalModels']();
+}
+
+export function ListFalVideoImageModels() {
+  return window['go']['main']['App']['ListFalVideoImageModels']();
+}
+
+export function ListFalVideoModels() {
+  return window['go']['main']['App']['ListFalVideoModels']();
+}
+
 export function ListModels(arg1) {
   return window['go']['main']['App']['ListModels'](arg1);
 }
@@ -88,6 +100,10 @@ export function SaveImage(arg1) {
 
 export function SaveOpenRouterAPIKey(arg1) {
   return window['go']['main']['App']['SaveOpenRouterAPIKey'](arg1);
+}
+
+export function SaveVideo(arg1) {
+  return window['go']['main']['App']['SaveVideo'](arg1);
 }
 
 export function SetOllamaBaseURL(arg1) {

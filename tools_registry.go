@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -34,9 +35,14 @@ type HarnessToolDefinition struct {
 }
 
 type HarnessToolExecutionContext struct {
-	Config        AppConfig
-	Filesystem    *FilesystemToolLayer
+	Config     AppConfig
+	Filesystem *FilesystemToolLayer
+	// AttachedImage is the source frame (a base64 data URL) the user attached to
+	// the current turn, if any. generate_video uses it to animate the image via
+	// an image-to-video model. Empty for the direct/UI tool path.
+	AttachedImage string
 	GenerateImage func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, error)
+	GenerateVideo func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error)
 }
 
 // ToolImageResult carries generated images as data URLs. The Images field is
@@ -47,6 +53,24 @@ type ToolImageResult struct {
 	Prompt string   `json:"prompt"`
 	Count  int      `json:"count"`
 	Images []string `json:"images,omitempty"`
+}
+
+// ToolVideoResult carries generated videos as on-disk temp-file references, not
+// bytes — video is a file-path artifact end to end. The Videos slice is stripped
+// before the result is rendered into a tool message (the temp path is not useful
+// model evidence); the harness moves each temp file into the conversation's
+// artifacts directory when it persists the turn.
+type ToolVideoResult struct {
+	Model  string          `json:"model"`
+	Prompt string          `json:"prompt"`
+	Count  int             `json:"count"`
+	Videos []ToolVideoFile `json:"videos,omitempty"`
+}
+
+type ToolVideoFile struct {
+	TempPath  string `json:"tempPath,omitempty"`
+	MimeType  string `json:"mimeType,omitempty"`
+	SourceURL string `json:"sourceUrl,omitempty"`
 }
 
 type HarnessToolRegistry struct {
@@ -65,6 +89,9 @@ func defaultHarnessToolRegistry(config AppConfig) HarnessToolRegistry {
 	definitions := filesystemToolDefinitions(config.Tools.Filesystem)
 	if imageGenerationConfigured(config) {
 		definitions = append(definitions, imageGenerationToolDefinition())
+	}
+	if videoGenerationConfigured(config) {
+		definitions = append(definitions, videoGenerationToolDefinition())
 	}
 	return newHarnessToolRegistry(definitions)
 }
@@ -91,6 +118,123 @@ func resolveDefaultImageModel(config AppConfig) string {
 		return defaultFalImageModel
 	}
 	return strings.TrimSpace(config.Providers.Ollama.Models.Image)
+}
+
+// videoGenerationConfigured reports whether the generate_video tool should be
+// offered: a fal video model must be configured. fal is the only video backend
+// (Ollama has no text-to-video models), so there is no provider switch — an
+// absent fal key surfaces as a runtime error at generation time, mirroring the
+// fal image path.
+func videoGenerationConfigured(config AppConfig) bool {
+	return strings.TrimSpace(config.Providers.Fal.VideoModel) != "" ||
+		strings.TrimSpace(config.Providers.Fal.VideoImageModel) != ""
+}
+
+// resolveDefaultVideoModel returns the text-to-video model the generate_video
+// tool uses when the call doesn't override it.
+func resolveDefaultVideoModel(config AppConfig) string {
+	if model := strings.TrimSpace(config.Providers.Fal.VideoModel); model != "" {
+		return model
+	}
+	return defaultFalVideoModel
+}
+
+// resolveDefaultVideoImageModel returns the image-to-video model used to animate
+// an attached image.
+func resolveDefaultVideoImageModel(config AppConfig) string {
+	if model := strings.TrimSpace(config.Providers.Fal.VideoImageModel); model != "" {
+		return model
+	}
+	return defaultFalVideoImageModel
+}
+
+func videoGenerationToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "generate_video",
+		Title:       "Generate video",
+		Description: "Use this when the user asks to create, animate, or render a video or short clip. Works from a text description, and when the user attached an image, animates that image (image-to-video). The clip is attached to the assistant reply. Generation runs for a minute or more.",
+		Example:     `{"name":"generate_video","content":"a drone shot flying over a misty pine forest at sunrise"}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: generateVideoParamSchema(),
+		Validate: func(prefix string, call HarnessToolCall) []string {
+			if strings.TrimSpace(call.Content) == "" {
+				return []string{prefix + ".content is required for generate_video (the video prompt)"}
+			}
+			return nil
+		},
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			if tools.GenerateVideo == nil {
+				return nil, "video generation unavailable", errors.New("video generation is not available in this context")
+			}
+			// An attached image switches to image-to-video: use the image-to-video
+			// model and pass the image to fal as the source frame.
+			attachedImage := strings.TrimSpace(tools.AttachedImage)
+			model := strings.TrimSpace(call.Model)
+			if model == "" {
+				if attachedImage != "" {
+					model = resolveDefaultVideoImageModel(tools.Config)
+				} else {
+					model = resolveDefaultVideoModel(tools.Config)
+				}
+			}
+			if model == "" {
+				return nil, "video generation unavailable", errors.New("no video model is configured")
+			}
+			videoReq := VideoGenerateRequest{
+				Model:       model,
+				Prompt:      strings.TrimSpace(call.Content),
+				Duration:    tools.Config.Generation.Video.Duration,
+				AspectRatio: tools.Config.Generation.Video.AspectRatio,
+				Image:       attachedImage,
+			}
+			generated, err := tools.GenerateVideo(ctx, videoReq)
+			if err != nil {
+				return nil, "video generation failed", err
+			}
+			if len(generated.Data) == 0 {
+				return nil, "video generation returned no video", errors.New("video model returned no video data")
+			}
+			tempPath, err := writeTempVideo(generated)
+			if err != nil {
+				return nil, "video generation failed", err
+			}
+			output := ToolVideoResult{
+				Model:  model,
+				Prompt: videoReq.Prompt,
+				Count:  1,
+				Videos: []ToolVideoFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
+			}
+			summary := fmt.Sprintf("generated a video with %s", model)
+			if attachedImage != "" {
+				summary = fmt.Sprintf("animated the attached image into a video with %s", model)
+			}
+			return output, summary, nil
+		},
+		Activity: func(result HarnessToolResult) HarnessToolActivity {
+			activity := defaultHarnessToolActivity(result)
+			if typed, ok := result.Result.(ToolVideoResult); ok {
+				activity.Command = []string{"fal", "generate", typed.Model}
+			}
+			return activity
+		},
+	}
+}
+
+// writeTempVideo writes downloaded video bytes to a temp file and returns its
+// path. The harness moves this file into the conversation's artifacts directory
+// when it persists the turn; carrying a path (not bytes) keeps multi-MB video
+// out of tool-result telemetry and the JSON IPC boundary.
+func writeTempVideo(video GeneratedVideo) (string, error) {
+	file, err := os.CreateTemp("", "atelier-video-*"+videoExtensionForMediaType(video.MimeType))
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	if _, err := file.Write(video.Data); err != nil {
+		os.Remove(file.Name())
+		return "", err
+	}
+	return file.Name(), nil
 }
 
 func imageGenerationToolDefinition() HarnessToolDefinition {
@@ -239,6 +383,18 @@ func generateImageParamSchema() map[string]any {
 		"properties": map[string]any{
 			"content": stringParam("The image prompt — describe the image to create."),
 			"model":   stringParam("Optional image generation model override."),
+		},
+		"required": []string{"content"},
+	}
+}
+
+func generateVideoParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"content": stringParam("The video prompt — describe the clip to create."),
+			"model":   stringParam("Optional fal.ai video model override."),
 		},
 		"required": []string{"content"},
 	}

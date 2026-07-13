@@ -940,6 +940,13 @@ button:disabled {
   gap: 18px;
 }
 
+/* Stacks multiple grid rows (e.g. provider/model over width/height/steps)
+   inside one titled settings section with even vertical spacing. */
+.settings-rows {
+  display: grid;
+  gap: 18px;
+}
+
 .chat-panel {
   min-height: 0;
   display: grid;
@@ -1639,6 +1646,37 @@ button:disabled {
 }
 
 .chat-image-card figcaption button {
+  height: 32px;
+  font-size: 12px;
+}
+
+.chat-video-results {
+  display: grid;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.chat-video-card {
+  width: min(100%, 620px);
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.chat-video-card video {
+  display: block;
+  width: 100%;
+  max-height: 520px;
+  border-radius: 8px;
+  background: #0f1112;
+}
+
+.chat-video-card figcaption {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.chat-video-card figcaption button {
   height: 32px;
   font-size: 12px;
 }

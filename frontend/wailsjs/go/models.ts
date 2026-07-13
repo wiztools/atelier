@@ -60,6 +60,20 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class ConfigVideoGeneration {
+	    duration: string;
+	    aspectRatio: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConfigVideoGeneration(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.duration = source["duration"];
+	        this.aspectRatio = source["aspectRatio"];
+	    }
+	}
 	export class ConfigImageGeneration {
 	    width: number;
 	    height: number;
@@ -78,6 +92,7 @@ export namespace main {
 	}
 	export class ConfigGeneration {
 	    image: ConfigImageGeneration;
+	    video: ConfigVideoGeneration;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigGeneration(source);
@@ -86,6 +101,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.image = this.convertValues(source["image"], ConfigImageGeneration);
+	        this.video = this.convertValues(source["video"], ConfigVideoGeneration);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -135,6 +151,8 @@ export namespace main {
 	export class ConfigFal {
 	    enabled: boolean;
 	    model?: string;
+	    videoModel?: string;
+	    videoImageModel?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigFal(source);
@@ -144,6 +162,8 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.enabled = source["enabled"];
 	        this.model = source["model"];
+	        this.videoModel = source["videoModel"];
+	        this.videoImageModel = source["videoImageModel"];
 	    }
 	}
 	export class ConfigOpenRouter {
@@ -465,6 +485,7 @@ export namespace main {
 	
 	
 	
+	
 	export class HistoryContent {
 	    type: string;
 	    text?: string;
@@ -691,6 +712,30 @@ export namespace main {
 	        this.artifactCount = source["artifactCount"];
 	    }
 	}
+	export class FalModel {
+	    id: string;
+	    displayName: string;
+	    category: string;
+	    description: string;
+	    status: string;
+	    tags: string[];
+	    thumbnailUrl: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new FalModel(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.displayName = source["displayName"];
+	        this.category = source["category"];
+	        this.description = source["description"];
+	        this.status = source["status"];
+	        this.tags = source["tags"];
+	        this.thumbnailUrl = source["thumbnailUrl"];
+	    }
+	}
 	export class HarnessToolCall {
 	    name: string;
 	    command?: string;
@@ -840,6 +885,20 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.image = source["image"];
+	        this.suggestedName = source["suggestedName"];
+	    }
+	}
+	export class SaveVideoRequest {
+	    path: string;
+	    suggestedName?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SaveVideoRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
 	        this.suggestedName = source["suggestedName"];
 	    }
 	}

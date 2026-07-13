@@ -103,6 +103,10 @@ type ConfigOpenRouter struct {
 type ConfigFal struct {
 	Enabled bool   `json:"enabled"`
 	Model   string `json:"model,omitempty"`
+	// VideoModel is the text-to-video endpoint; VideoImageModel is the
+	// image-to-video endpoint used when the user attaches an image to animate.
+	VideoModel      string `json:"videoModel,omitempty"`
+	VideoImageModel string `json:"videoImageModel,omitempty"`
 }
 
 type ConfigModels struct {
@@ -116,12 +120,21 @@ type ConfigPrompts struct {
 
 type ConfigGeneration struct {
 	Image ConfigImageGeneration `json:"image"`
+	Video ConfigVideoGeneration `json:"video"`
 }
 
 type ConfigImageGeneration struct {
 	Width  int `json:"width"`
 	Height int `json:"height"`
 	Steps  int `json:"steps"`
+}
+
+// ConfigVideoGeneration holds the two user-facing text-to-video knobs. Duration
+// and AspectRatio are fal enum strings ("5"/"10", "16:9"/"9:16"/"1:1"); other
+// fal parameters (negative prompt, cfg scale) use the model's own defaults.
+type ConfigVideoGeneration struct {
+	Duration    string `json:"duration"`
+	AspectRatio string `json:"aspectRatio"`
 }
 
 type ConfigTools struct {
@@ -229,6 +242,7 @@ type ChatStreamEvent struct {
 	Content        string   `json:"content,omitempty"`
 	Thinking       string   `json:"thinking,omitempty"`
 	Images         []string `json:"images,omitempty"`
+	Videos         []string `json:"videos,omitempty"`
 	Done           bool     `json:"done"`
 	Error          string   `json:"error,omitempty"`
 	Model          string   `json:"model,omitempty"`
@@ -292,8 +306,31 @@ type ImageGenerateRequest struct {
 	Images         []string `json:"images,omitempty"`
 }
 
+// VideoGenerateRequest is the input to a text-to-video generation. Unlike
+// images, videos take a duration and aspect ratio rather than width/height/steps
+// — these mirror fal's text-to-video schema (see FalClient.GenerateVideo).
+type VideoGenerateRequest struct {
+	Model          string `json:"model"`
+	Prompt         string `json:"prompt"`
+	Duration       string `json:"duration,omitempty"`
+	AspectRatio    string `json:"aspectRatio,omitempty"`
+	NegativePrompt string `json:"negativePrompt,omitempty"`
+	// Image, when set, is the source frame for image-to-video generation — a
+	// URL or a base64 data URI. It maps to fal's image_url input and requires an
+	// image-to-video model.
+	Image string `json:"image,omitempty"`
+}
+
 type SaveImageRequest struct {
 	Image         string `json:"image"`
+	SuggestedName string `json:"suggestedName,omitempty"`
+}
+
+// SaveVideoRequest asks to copy a generated video artifact to a user-chosen
+// location. Path is the on-disk artifact path (not a URL); the frontend passes
+// the plain filesystem path the asset handler served the video from.
+type SaveVideoRequest struct {
+	Path          string `json:"path"`
 	SuggestedName string `json:"suggestedName,omitempty"`
 }
 
@@ -753,6 +790,59 @@ func (a *App) SaveImage(req SaveImageRequest) (string, error) {
 	return path, nil
 }
 
+// SaveVideo copies a generated video artifact to a user-chosen location. The
+// frontend passes the path the asset handler served the video from (either a
+// bare filesystem path or the "/atelier-artifact"-prefixed URL); this strips the
+// prefix, confirms the bytes are a playable video, and streams a Save dialog
+// copy. Returns the chosen path, or "" if the dialog was cancelled.
+func (a *App) SaveVideo(req SaveVideoRequest) (string, error) {
+	sourcePath := strings.TrimSpace(req.Path)
+	sourcePath = strings.TrimPrefix(sourcePath, artifactPrefix)
+	if sourcePath == "" {
+		return "", errors.New("video path is empty")
+	}
+
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	if !isVideoBytes(data) {
+		return "", errors.New("artifact is not a supported video")
+	}
+
+	extension := strings.ToLower(filepath.Ext(sourcePath))
+	if extension == "" {
+		extension = ".mp4"
+	}
+	filename := sanitizeFilename(req.SuggestedName)
+	if filename == "" {
+		filename = "atelier-video" + extension
+	}
+	if !strings.HasSuffix(strings.ToLower(filename), extension) {
+		filename += extension
+	}
+
+	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "Save generated video",
+		DefaultFilename: filename,
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Video Files", Pattern: "*.mp4;*.webm;*.mov;*.m4v"},
+			{DisplayName: "All Files", Pattern: "*.*"},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	if path == "" {
+		return "", nil
+	}
+
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 func decodeImagePayload(image string) ([]byte, string, error) {
 	image = strings.TrimSpace(image)
 	if image == "" {
@@ -955,6 +1045,46 @@ func (a *App) CheckFalConnection() error {
 	return newFalClient(a.client, key).VerifyKey(ctx)
 }
 
+// ListFalModels returns fal's text-to-image catalog for the Settings image-model
+// picker, replacing the free-text fal model field. Unlike the chat primary
+// picker (ListPrimaryModels), fal is not a ChatProvider — this hits fal's
+// /v1/models catalog directly. Requires a stored fal key (the underlying client
+// attaches it to every request), so call it after the key is saved.
+func (a *App) ListFalModels() ([]FalModel, error) {
+	key, err := loadFalAPIKey()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return newFalClient(a.client, key).ListModels(ctx, falTextToImageCategory, 0)
+}
+
+// ListFalVideoModels returns fal's text-to-video catalog for the Settings
+// video-model picker. It mirrors ListFalModels but filters to the text-to-video
+// category; fal is the only video backend (Ollama has no video models).
+func (a *App) ListFalVideoModels() ([]FalModel, error) {
+	key, err := loadFalAPIKey()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return newFalClient(a.client, key).ListModels(ctx, falTextToVideoCategory, 0)
+}
+
+// ListFalVideoImageModels returns fal's image-to-video catalog for the Settings
+// image-to-video model picker (used to animate an attached image).
+func (a *App) ListFalVideoImageModels() ([]FalModel, error) {
+	key, err := loadFalAPIKey()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return newFalClient(a.client, key).ListModels(ctx, falImageToVideoCategory, 0)
+}
+
 // resolvedPrimaryModelAndProvider returns which model/provider the primary
 // chat role should use when a request doesn't specify one explicitly.
 func (a *App) resolvedPrimaryModelAndProvider(config AppConfig) (model, provider string) {
@@ -1073,6 +1203,10 @@ func defaultAppConfig() AppConfig {
 				Height: 768,
 				Steps:  24,
 			},
+			Video: ConfigVideoGeneration{
+				Duration:    defaultFalVideoDuration,
+				AspectRatio: defaultFalVideoAspectRatio,
+			},
 		},
 		Tools: ConfigTools{
 			Filesystem: ConfigFilesystemTool{
@@ -1136,6 +1270,12 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	}
 	if config.Generation.Image.Steps <= 0 {
 		config.Generation.Image.Steps = defaults.Generation.Image.Steps
+	}
+	if strings.TrimSpace(config.Generation.Video.Duration) == "" {
+		config.Generation.Video.Duration = defaults.Generation.Video.Duration
+	}
+	if strings.TrimSpace(config.Generation.Video.AspectRatio) == "" {
+		config.Generation.Video.AspectRatio = defaults.Generation.Video.AspectRatio
 	}
 	config.Tools = mergeToolsConfig(config.Tools, defaults.Tools)
 	config.UI.Mode = defaults.UI.Mode
@@ -1524,6 +1664,126 @@ func appendChatAssistantTurnWithImages(config AppConfig, conversationID, assista
 	return store.writeTurn(loaded.TurnsDir, assistantTurn)
 }
 
+// appendChatAssistantTurnWithVideos persists an assistant turn that produced one
+// or more generated videos (and, in the rare case a turn produced both, any
+// images too). Video temp files are moved into the conversation's artifacts
+// directory; the returned URLs are the "/atelier-artifact" links the live UI
+// renders before the turn is reloaded from history.
+func appendChatAssistantTurnWithVideos(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, images []string, imageReq ImageGenerateRequest, videos []ToolVideoFile, videoReq VideoGenerateRequest, run HarnessRun) ([]string, error) {
+	store := newHistoryStore(config.Storage)
+	loaded, err := store.loadForAppend(conversationID, "chat", "a chat")
+	if err != nil {
+		return nil, err
+	}
+	nowText := time.Now().Format(time.RFC3339)
+
+	imageContents, err := writeChatImageArtifacts(loaded.ArtifactsDir, imageReq, images, loaded.NextTurnNumber)
+	if err != nil {
+		return nil, err
+	}
+	videoContents, videoURLs, err := writeChatVideoArtifacts(loaded.ArtifactsDir, videos, loaded.NextTurnNumber)
+	if err != nil {
+		return nil, err
+	}
+
+	contents := []HistoryContent{{Type: "text", Text: assistantContent}}
+	if strings.TrimSpace(assistantThinking) != "" {
+		contents = append(contents, HistoryContent{Type: "thinking", Text: assistantThinking})
+	}
+	contents = append(contents, imageContents...)
+	contents = append(contents, videoContents...)
+	assistantTurn := HistoryTurn{
+		SchemaVersion:  1,
+		ID:             fmt.Sprintf("turn_%06d", loaded.NextTurnNumber),
+		ConversationID: conversationID,
+		CreatedAt:      nowText,
+		Kind:           "chat",
+		Role:           "assistant",
+		Model:          model,
+		Provider:       provider,
+		Content:        contents,
+		ProviderResponse: map[string]any{
+			"doneReason": reason,
+			"harnessRun": run,
+			"tool": map[string]any{
+				"name":       "video_generation",
+				"model":      videoReq.Model,
+				"videoCount": len(videoContents),
+				"imageCount": len(imageContents),
+			},
+		},
+	}
+
+	loaded.Conversation.UpdatedAt = nowText
+	loaded.Conversation.Stats.TurnCount++
+	loaded.Conversation.Stats.ArtifactCount += len(imageContents) + len(videoContents)
+	if err := store.writeConversation(loaded.Path, loaded.Conversation); err != nil {
+		return nil, err
+	}
+	if err := store.writeTurn(loaded.TurnsDir, assistantTurn); err != nil {
+		return nil, err
+	}
+	return videoURLs, nil
+}
+
+// writeChatVideoArtifacts moves each generated video's temp file into the
+// artifacts directory as turn_NNNNNN_vid_NNNNNN.<ext> and returns the history
+// content entries plus the "/atelier-artifact" URLs the live UI renders. A temp
+// file that can't be resolved to a video is skipped rather than aborting the
+// whole turn save.
+func writeChatVideoArtifacts(artifactsDir string, videos []ToolVideoFile, turnNumber int) ([]HistoryContent, []string, error) {
+	if len(videos) == 0 {
+		return nil, nil, nil
+	}
+	if err := os.MkdirAll(artifactsDir, 0755); err != nil {
+		return nil, nil, err
+	}
+	absArtifactsDir, err := filepath.Abs(artifactsDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	videoContents := make([]HistoryContent, 0, len(videos))
+	videoURLs := make([]string, 0, len(videos))
+	for index, video := range videos {
+		tempPath := strings.TrimSpace(video.TempPath)
+		if tempPath == "" {
+			continue
+		}
+		extension := videoExtensionForMediaType(video.MimeType)
+		artifactID := fmt.Sprintf("turn_%06d_vid_%06d", turnNumber, index+1)
+		filename := artifactID + extension
+		destPath := filepath.Join(absArtifactsDir, filename)
+		if err := moveFile(tempPath, destPath); err != nil {
+			return nil, nil, err
+		}
+		videoContents = append(videoContents, HistoryContent{
+			Type:       "video",
+			ArtifactID: artifactID,
+			Path:       filepath.ToSlash(filepath.Join("artifacts", filename)),
+			MimeType:   mediaTypeForExtension(extension),
+		})
+		videoURLs = append(videoURLs, artifactPrefix+destPath)
+	}
+	return videoContents, videoURLs, nil
+}
+
+// moveFile relocates src to dst, falling back to a copy-and-delete when the two
+// live on different filesystems (os.Rename fails with a cross-device error).
+func moveFile(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(dst, data, 0644); err != nil {
+		return err
+	}
+	os.Remove(src)
+	return nil
+}
+
 func writeChatImageArtifacts(artifactsDir string, req ImageGenerateRequest, images []string, turnNumber int) ([]HistoryContent, error) {
 	if err := os.MkdirAll(artifactsDir, 0755); err != nil {
 		return nil, err
@@ -1792,7 +2052,9 @@ func readJSONFile(path string, target any) error {
 func hydrateHistoryContent(conversationDir string, contents []HistoryContent) []HistoryContent {
 	hydrated := make([]HistoryContent, 0, len(contents))
 	for _, content := range contents {
-		if content.Type == "image" && content.Path != "" && !strings.HasPrefix(content.Path, "data:image/") {
+		// Image and video artifacts are both stored on disk and served by the
+		// asset handler; resolve their relative path to an /atelier-artifact URL.
+		if (content.Type == "image" || content.Type == "video") && content.Path != "" && !strings.HasPrefix(content.Path, "data:") {
 			absPath := filepath.Join(conversationDir, filepath.FromSlash(content.Path))
 			if _, err := os.Stat(absPath); err == nil {
 				content.Text = "/atelier-artifact" + absPath
@@ -2070,9 +2332,43 @@ func mediaTypeForExtension(extension string) string {
 		return "image/webp"
 	case ".gif":
 		return "image/gif"
+	case ".mp4", ".m4v":
+		return "video/mp4"
+	case ".webm":
+		return "video/webm"
+	case ".mov":
+		return "video/quicktime"
 	default:
 		return "image/png"
 	}
+}
+
+// videoExtensionForMediaType maps a video MIME type to a file extension. Unlike
+// extensionForMediaType (image-oriented, defaults to .png), an unrecognized
+// video type falls back to .mp4 — the format every fal video endpoint returns.
+func videoExtensionForMediaType(mediaType string) string {
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "video/webm":
+		return ".webm"
+	case "video/quicktime":
+		return ".mov"
+	default:
+		return ".mp4"
+	}
+}
+
+// isVideoBytes reports whether data looks like a container format a <video> tag
+// can play. It sniffs MP4/MOV (ISO base media, "ftyp" box at offset 4), WebM/
+// Matroska (EBML magic), and returns false otherwise so a stray non-video
+// download is rejected rather than written as a broken artifact.
+func isVideoBytes(data []byte) bool {
+	if len(data) >= 12 && bytes.Equal(data[4:8], []byte("ftyp")) {
+		return true
+	}
+	if len(data) >= 4 && bytes.Equal(data[:4], []byte{0x1a, 0x45, 0xdf, 0xa3}) {
+		return true
+	}
+	return false
 }
 
 func sanitizeFilename(value string) string {

@@ -24,6 +24,12 @@ export function HasOpenRouterAPIKey():Promise<boolean>;
 
 export function ListConversations():Promise<Array<main.ConversationSummary>>;
 
+export function ListFalModels():Promise<Array<main.FalModel>>;
+
+export function ListFalVideoImageModels():Promise<Array<main.FalModel>>;
+
+export function ListFalVideoModels():Promise<Array<main.FalModel>>;
+
 export function ListModels(arg1:string):Promise<Array<main.OllamaModel>>;
 
 export function ListPrimaryModels(arg1:string,arg2:string):Promise<Array<main.ModelInfo>>;
@@ -45,6 +51,8 @@ export function SaveFalAPIKey(arg1:string):Promise<void>;
 export function SaveImage(arg1:main.SaveImageRequest):Promise<string>;
 
 export function SaveOpenRouterAPIKey(arg1:string):Promise<void>;
+
+export function SaveVideo(arg1:main.SaveVideoRequest):Promise<string>;
 
 export function SetOllamaBaseURL(arg1:string):Promise<void>;
 

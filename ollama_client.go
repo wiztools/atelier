@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -186,14 +187,57 @@ func likelyImageGenerationModelName(name string) bool {
 	return false
 }
 
+// sanitizeOllamaImages returns a copy of messages with each image normalized for
+// Ollama's chat API: a data: URL wrapper is stripped and any value that is not
+// valid base64 — a hydrated /atelier-artifact/ history URL, a file path, an http
+// URL — is dropped. Ollama rejects the entire request with 400 "illegal base64
+// data" if a single image is malformed, so this guards every chat turn.
+func sanitizeOllamaImages(messages []ChatMessage) []ChatMessage {
+	cleaned := make([]ChatMessage, len(messages))
+	for i, message := range messages {
+		if len(message.Images) == 0 {
+			cleaned[i] = message
+			continue
+		}
+		images := make([]string, 0, len(message.Images))
+		for _, image := range message.Images {
+			if normalized := normalizeOllamaImage(image); normalized != "" {
+				images = append(images, normalized)
+			}
+		}
+		message.Images = images
+		cleaned[i] = message
+	}
+	return cleaned
+}
+
+func normalizeOllamaImage(image string) string {
+	image = strings.TrimSpace(image)
+	if image == "" {
+		return ""
+	}
+	if strings.HasPrefix(image, "data:") {
+		comma := strings.Index(image, ",")
+		if comma < 0 {
+			return ""
+		}
+		image = image[comma+1:]
+	}
+	if _, err := base64.StdEncoding.DecodeString(image); err != nil {
+		return ""
+	}
+	return image
+}
+
 func (client OllamaClient) OpenChatStream(ctx context.Context, req ChatRequest) (*http.Response, error) {
+	messages := sanitizeOllamaImages(req.Messages)
 	body := map[string]any{
 		"model":    req.Model,
-		"messages": req.Messages,
+		"messages": messages,
 		"stream":   true,
 	}
 	if req.System != "" {
-		body["messages"] = append([]ChatMessage{{Role: "system", Content: req.System}}, req.Messages...)
+		body["messages"] = append([]ChatMessage{{Role: "system", Content: req.System}}, messages...)
 	}
 	if req.Think != nil {
 		body["think"] = req.Think
@@ -211,13 +255,14 @@ func (client OllamaClient) OpenChatStream(ctx context.Context, req ChatRequest) 
 }
 
 func (client OllamaClient) CompleteChat(ctx context.Context, req ChatRequest) (ChatCompletionResult, error) {
+	messages := sanitizeOllamaImages(req.Messages)
 	body := map[string]any{
 		"model":    req.Model,
-		"messages": req.Messages,
+		"messages": messages,
 		"stream":   false,
 	}
 	if req.System != "" {
-		body["messages"] = append([]ChatMessage{{Role: "system", Content: req.System}}, req.Messages...)
+		body["messages"] = append([]ChatMessage{{Role: "system", Content: req.System}}, messages...)
 	}
 	if req.Think != nil {
 		body["think"] = req.Think

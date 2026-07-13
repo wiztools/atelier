@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -17,8 +19,20 @@ const (
 	falQueueBaseURL      = "https://queue.fal.run"
 	falPlatformBaseURL   = "https://api.fal.ai"
 	defaultFalImageModel = "fal-ai/flux/schnell"
+	defaultFalVideoModel = "fal-ai/kling-video/v2/master/text-to-video"
+	// defaultFalVideoImageModel is the image-to-video endpoint used to animate an
+	// attached image — the image-to-video sibling of defaultFalVideoModel.
+	defaultFalVideoImageModel = "fal-ai/kling-video/v2/master/image-to-video"
+	// defaultFalVideoDuration / defaultFalVideoAspectRatio are fal's enum
+	// defaults for text-to-video; kept here so config defaults and the client
+	// agree on a single source of truth.
+	defaultFalVideoDuration    = "5"
+	defaultFalVideoAspectRatio = "16:9"
 	// falPollInterval is the delay between queue status checks.
 	falPollInterval = 1500 * time.Millisecond
+	// falVideoMaxBytes caps a downloaded video. Generated clips are typically a
+	// few MB; this bounds a runaway response without truncating a real result.
+	falVideoMaxBytes = 256 * 1024 * 1024
 )
 
 // FalClient talks to fal.ai's asynchronous queue API for image generation.
@@ -65,7 +79,25 @@ type falStatusResponse struct {
 type falResultResponse struct {
 	Data   json.RawMessage `json:"data,omitempty"`
 	Images []falImage      `json:"images,omitempty"`
+	Video  *falVideoFile   `json:"video,omitempty"`
 	Error  string          `json:"error,omitempty"`
+}
+
+// falVideoFile is the "video" object a text-to-video result returns.
+type falVideoFile struct {
+	URL         string `json:"url"`
+	ContentType string `json:"content_type,omitempty"`
+	FileName    string `json:"file_name,omitempty"`
+	FileSize    int64  `json:"file_size,omitempty"`
+}
+
+// GeneratedVideo is a downloaded text-to-video result. Data holds the raw video
+// bytes so the caller can write them to disk as a file-path artifact — video is
+// never carried as a base64 data URL the way images are.
+type GeneratedVideo struct {
+	Data      []byte
+	MimeType  string
+	SourceURL string
 }
 
 // GenerateImage submits a request to the fal queue, polls until completion, and
@@ -98,12 +130,13 @@ func (client FalClient) GenerateImage(ctx context.Context, req ImageGenerateRequ
 	if requestID == "" {
 		return ollamaGenerateResponse{}, nil, errors.New("fal submit returned no request id")
 	}
+	statusURL, resultURL := falQueueURLs(submit, model, requestID)
 
-	if err := client.waitForCompletion(ctx, model, requestID); err != nil {
+	if err := client.waitForCompletion(ctx, statusURL); err != nil {
 		return ollamaGenerateResponse{}, nil, err
 	}
 
-	result, _, err := client.fetchResult(ctx, model, requestID)
+	result, _, err := client.fetchResult(ctx, resultURL)
 	if err != nil {
 		return ollamaGenerateResponse{}, nil, err
 	}
@@ -130,6 +163,93 @@ func (client FalClient) GenerateImage(ctx context.Context, req ImageGenerateRequ
 	return response, nil, nil
 }
 
+// falImageURL normalizes an image reference for fal's image_url input. fal
+// requires an HTTP(S) URL or a data URI and rejects bare base64 with a 422; the
+// rest of the app carries attached images as bare base64 (the data: prefix is
+// stripped for Ollama), so wrap those in a data URI, sniffing the media type
+// from the decoded bytes. URLs and existing data URIs pass through unchanged.
+func falImageURL(image string) string {
+	image = strings.TrimSpace(image)
+	if image == "" {
+		return ""
+	}
+	if strings.HasPrefix(image, "http://") || strings.HasPrefix(image, "https://") || strings.HasPrefix(image, "data:") {
+		return image
+	}
+	mediaType := "image/png"
+	if data, err := base64.StdEncoding.DecodeString(image); err == nil {
+		if detected := http.DetectContentType(data); strings.HasPrefix(detected, "image/") {
+			mediaType = detected
+		}
+	}
+	return "data:" + mediaType + ";base64," + image
+}
+
+// GenerateVideo submits a text-to-video request to the fal queue, polls until
+// completion, and downloads the resulting clip as raw bytes. Video generation
+// runs for minutes rather than seconds, so callers must pass a context with a
+// suitably long deadline. The queue submit/poll mechanics are identical to
+// GenerateImage; only the request body and result shape differ (a single
+// "video" object rather than an "images" array).
+func (client FalClient) GenerateVideo(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
+		model = defaultFalVideoModel
+	}
+
+	body := map[string]any{"prompt": req.Prompt}
+	if duration := strings.TrimSpace(req.Duration); duration != "" {
+		body["duration"] = duration
+	}
+	if aspect := strings.TrimSpace(req.AspectRatio); aspect != "" {
+		body["aspect_ratio"] = aspect
+	}
+	if negative := strings.TrimSpace(req.NegativePrompt); negative != "" {
+		body["negative_prompt"] = negative
+	}
+	// Image-to-video: fal takes the source frame as image_url. Present only when
+	// the caller supplied an image to animate.
+	if image := falImageURL(req.Image); image != "" {
+		body["image_url"] = image
+	}
+
+	submit, err := client.submit(ctx, model, body)
+	if err != nil {
+		return GeneratedVideo{}, err
+	}
+	requestID := strings.TrimSpace(submit.RequestID)
+	if requestID == "" {
+		return GeneratedVideo{}, errors.New("fal submit returned no request id")
+	}
+	statusURL, resultURL := falQueueURLs(submit, model, requestID)
+
+	if err := client.waitForCompletion(ctx, statusURL); err != nil {
+		return GeneratedVideo{}, err
+	}
+
+	result, raw, err := client.fetchResult(ctx, resultURL)
+	if err != nil {
+		return GeneratedVideo{}, err
+	}
+
+	videoURL := ""
+	if result.Video != nil {
+		videoURL = strings.TrimSpace(result.Video.URL)
+	}
+	if videoURL == "" {
+		videoURL = firstFalVideoURL(raw)
+	}
+	if videoURL == "" {
+		return GeneratedVideo{}, errors.New("fal result returned no video")
+	}
+
+	data, mimeType, err := client.downloadVideo(ctx, videoURL)
+	if err != nil {
+		return GeneratedVideo{}, err
+	}
+	return GeneratedVideo{Data: data, MimeType: mimeType, SourceURL: videoURL}, nil
+}
+
 func (client FalClient) submit(ctx context.Context, model string, body map[string]any) (falSubmitResponse, error) {
 	resp, err := client.do(ctx, falQueueBaseURL, http.MethodPost, "/"+model, body)
 	if err != nil {
@@ -144,14 +264,46 @@ func (client FalClient) submit(ctx context.Context, model string, body map[strin
 	return payload, nil
 }
 
-func (client FalClient) waitForCompletion(ctx context.Context, model, requestID string) error {
-	statusPath := "/" + model + "/requests/" + requestID + "/status"
+// falQueueURLs resolves the status and result URLs for a submitted request. fal
+// returns absolute status_url/response_url in the submit response; use those
+// verbatim. Their path lives under the fal "app" id (the first two segments of
+// the endpoint), NOT the full model id — reconstructing from the full model id
+// yields a path fal answers with 405 Method Not Allowed. Reconstruct from the
+// app path only as a fallback if fal omits the URLs.
+func falQueueURLs(submit falSubmitResponse, model, requestID string) (statusURL, resultURL string) {
+	statusURL = strings.TrimSpace(submit.StatusURL)
+	resultURL = strings.TrimSpace(submit.ResponseURL)
+	if statusURL == "" || resultURL == "" {
+		base := falQueueBaseURL + "/" + falAppPath(model) + "/requests/" + requestID
+		if statusURL == "" {
+			statusURL = base + "/status"
+		}
+		if resultURL == "" {
+			resultURL = base
+		}
+	}
+	return statusURL, resultURL
+}
+
+// falAppPath returns the fal application path — the first two segments of an
+// endpoint id (e.g. "fal-ai/kling-video" from
+// "fal-ai/kling-video/v2/master/image-to-video"). fal's queue status and result
+// routes live under the app path, not the full endpoint id.
+func falAppPath(model string) string {
+	segments := strings.Split(strings.Trim(strings.TrimSpace(model), "/"), "/")
+	if len(segments) <= 2 {
+		return strings.Join(segments, "/")
+	}
+	return strings.Join(segments[:2], "/")
+}
+
+func (client FalClient) waitForCompletion(ctx context.Context, statusURL string) error {
 	for {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("fal image generation cancelled: %w", err)
 		}
 
-		resp, err := client.do(ctx, falQueueBaseURL, http.MethodGet, statusPath, nil)
+		resp, err := client.do(ctx, "", http.MethodGet, statusURL, nil)
 		if err != nil {
 			return err
 		}
@@ -190,9 +342,8 @@ func (client FalClient) waitForCompletion(ctx context.Context, model, requestID 
 	}
 }
 
-func (client FalClient) fetchResult(ctx context.Context, model, requestID string) (falResultResponse, []byte, error) {
-	resultPath := "/" + model + "/requests/" + requestID
-	resp, err := client.do(ctx, falQueueBaseURL, http.MethodGet, resultPath, nil)
+func (client FalClient) fetchResult(ctx context.Context, resultURL string) (falResultResponse, []byte, error) {
+	resp, err := client.do(ctx, "", http.MethodGet, resultURL, nil)
 	if err != nil {
 		return falResultResponse{}, nil, err
 	}
@@ -265,6 +416,67 @@ func (client FalClient) fetchAsDataURL(ctx context.Context, url string) (string,
 	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
+// downloadVideo fetches a generated video URL and returns its raw bytes and MIME
+// type. Unlike images (re-encoded as base64 data URLs), video bytes are handed
+// back for the caller to write straight to a file-path artifact.
+func (client FalClient) downloadVideo(ctx context.Context, videoURL string) ([]byte, string, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, videoURL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	resp, err := client.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, "", fmt.Errorf("video download failed: %s", resp.Status)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, falVideoMaxBytes))
+	if err != nil {
+		return nil, "", err
+	}
+	if !isVideoBytes(data) {
+		return nil, "", errors.New("downloaded fal result is not a supported video")
+	}
+	mimeType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if mimeType == "" || !strings.HasPrefix(mimeType, "video/") {
+		mimeType = http.DetectContentType(data)
+	}
+	if !strings.HasPrefix(mimeType, "video/") {
+		mimeType = "video/mp4"
+	}
+	return data, mimeType, nil
+}
+
+// firstFalVideoURL walks the raw fal result for the first http(s) URL that looks
+// like a video file. Used as a fallback when the top-level "video" object is
+// absent (some endpoints nest the result differently).
+func firstFalVideoURL(raw []byte) string {
+	var payload any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	found := ""
+	walkJSONStrings(payload, func(value string) {
+		if found != "" {
+			return
+		}
+		trimmed := strings.TrimSpace(value)
+		if !strings.HasPrefix(trimmed, "http://") && !strings.HasPrefix(trimmed, "https://") {
+			return
+		}
+		lower := strings.ToLower(trimmed)
+		for _, ext := range []string{".mp4", ".webm", ".mov", ".m4v"} {
+			if strings.Contains(lower, ext) {
+				found = trimmed
+				return
+			}
+		}
+	})
+	return found
+}
+
 // collectFalImagesFromJSON walks the raw fal result and pulls out any string
 // value that looks like an image URL (an http(s) URL ending in an image
 // extension or referenced under an "images"/"image" key). Used as a fallback
@@ -305,32 +517,183 @@ func (client FalClient) VerifyKey(ctx context.Context) error {
 	return nil
 }
 
+// FalModel is one entry from fal's public model catalog (GET /v1/models),
+// flattened into the fields a model picker needs. It is separate from
+// ModelInfo (the ChatProvider abstraction) because fal is image-only and never
+// participates in the chat/harness model roles.
+type FalModel struct {
+	ID           string   `json:"id"`
+	DisplayName  string   `json:"displayName"`
+	Category     string   `json:"category"`
+	Description  string   `json:"description"`
+	Status       string   `json:"status"`
+	Tags         []string `json:"tags"`
+	ThumbnailURL string   `json:"thumbnailUrl"`
+}
+
+// falModelsPage mirrors the paginated /v1/models response. Each entry carries an
+// endpoint id and (optionally) a metadata block — metadata is absent for
+// endpoints without a registry entry, so it is a pointer we null-check.
+type falModelsPage struct {
+	Models []struct {
+		EndpointID string `json:"endpoint_id"`
+		Metadata   *struct {
+			DisplayName  string   `json:"display_name"`
+			Category     string   `json:"category"`
+			Description  string   `json:"description"`
+			Status       string   `json:"status"`
+			Tags         []string `json:"tags"`
+			ThumbnailURL string   `json:"thumbnail_url"`
+		} `json:"metadata"`
+	} `json:"models"`
+	NextCursor *string `json:"next_cursor"`
+	HasMore    bool    `json:"has_more"`
+}
+
+const (
+	// falTextToImageCategory is the /v1/models category filter for text-to-image
+	// endpoints — the ones eligible as an image-generation model.
+	falTextToImageCategory = "text-to-image"
+	// falTextToVideoCategory is the /v1/models category filter for text-to-video
+	// endpoints — the ones eligible as a video-generation model.
+	falTextToVideoCategory = "text-to-video"
+	// falImageToVideoCategory is the /v1/models category filter for
+	// image-to-video endpoints — used to animate an attached image.
+	falImageToVideoCategory = "image-to-video"
+	// falModelsPageSize is how many models to request per catalog page.
+	falModelsPageSize = 100
+	// falModelsDefaultMax caps how many models ListModels will accumulate so we
+	// don't walk the entire (large, growing) catalog on a settings open.
+	falModelsDefaultMax = 200
+)
+
+// ListModels returns fal's public model catalog filtered by category (empty
+// means all categories), walking the paginated /v1/models endpoint until the
+// catalog is exhausted or maxModels entries have been collected. maxModels <= 0
+// applies falModelsDefaultMax. fal allows this endpoint keyless (a key only
+// raises rate limits), but it routes through the shared do() helper, which
+// requires the configured key — matching VerifyKey and the rest of the client.
+func (client FalClient) ListModels(ctx context.Context, category string, maxModels int) ([]FalModel, error) {
+	if maxModels <= 0 {
+		maxModels = falModelsDefaultMax
+	}
+
+	models := make([]FalModel, 0, maxModels)
+	cursor := ""
+	for {
+		query := url.Values{}
+		if trimmed := strings.TrimSpace(category); trimmed != "" {
+			query.Set("category", trimmed)
+		}
+		query.Set("limit", strconv.Itoa(falModelsPageSize))
+		if cursor != "" {
+			query.Set("cursor", cursor)
+		}
+
+		resp, err := client.do(ctx, falPlatformBaseURL, http.MethodGet, "/v1/models?"+query.Encode(), nil)
+		if err != nil {
+			return nil, err
+		}
+		var page falModelsPage
+		decodeErr := json.NewDecoder(resp.Body).Decode(&page)
+		resp.Body.Close()
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+
+		for _, entry := range page.Models {
+			id := strings.TrimSpace(entry.EndpointID)
+			if id == "" {
+				continue
+			}
+			model := FalModel{ID: id, DisplayName: id}
+			if entry.Metadata != nil {
+				if name := strings.TrimSpace(entry.Metadata.DisplayName); name != "" {
+					model.DisplayName = name
+				}
+				model.Category = entry.Metadata.Category
+				model.Description = entry.Metadata.Description
+				model.Status = entry.Metadata.Status
+				model.Tags = entry.Metadata.Tags
+				model.ThumbnailURL = entry.Metadata.ThumbnailURL
+			}
+			models = append(models, model)
+			if len(models) >= maxModels {
+				return models, nil
+			}
+		}
+
+		if !page.HasMore || page.NextCursor == nil || strings.TrimSpace(*page.NextCursor) == "" {
+			return models, nil
+		}
+		cursor = strings.TrimSpace(*page.NextCursor)
+	}
+}
+
+// maxFalRedirects caps how many redirects do() follows while preserving the
+// request method and body. fal can 3xx-redirect a submit to a canonical
+// endpoint; net/http's default client downgrades a redirected POST to a GET
+// (per the 301/302/303 spec), and the queue submit endpoint answers that GET
+// with 405 Method Not Allowed. Following the redirect ourselves with the method
+// and body intact avoids that failure mode.
+const maxFalRedirects = 5
+
 func (client FalClient) do(ctx context.Context, baseURL, method, path string, body map[string]any) (*http.Response, error) {
 	if strings.TrimSpace(client.apiKey) == "" {
 		return nil, errors.New("fal api key is not configured")
 	}
 
-	var reader io.Reader
+	var bodyBytes []byte
 	if body != nil {
 		data, err := json.Marshal(body)
 		if err != nil {
 			return nil, err
 		}
-		reader = bytes.NewReader(data)
-	}
-	httpReq, err := http.NewRequestWithContext(ctx, method, baseURL+path, reader)
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Authorization", "Key "+client.apiKey)
-	if body != nil {
-		httpReq.Header.Set("Content-Type", "application/json")
+		bodyBytes = data
 	}
 
-	resp, err := client.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, err
+	// Follow redirects manually so a redirected POST stays a POST. A copy of the
+	// client whose CheckRedirect returns ErrUseLastResponse hands us the 3xx
+	// response instead of auto-following (and downgrading) it, while still
+	// sharing the underlying Transport and its connection pool.
+	noFollow := *client.httpClient
+	noFollow.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+	target := baseURL + path
+	var resp *http.Response
+	for hop := 0; ; hop++ {
+		var reader io.Reader
+		if bodyBytes != nil {
+			reader = bytes.NewReader(bodyBytes)
+		}
+		httpReq, err := http.NewRequestWithContext(ctx, method, target, reader)
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Authorization", "Key "+client.apiKey)
+		if bodyBytes != nil {
+			httpReq.Header.Set("Content-Type", "application/json")
+		}
+
+		resp, err = noFollow.Do(httpReq)
+		if err != nil {
+			return nil, err
+		}
+		if !isRedirectStatus(resp.StatusCode) {
+			break
+		}
+		location := strings.TrimSpace(resp.Header.Get("Location"))
+		resolved, resolveErr := resp.Request.URL.Parse(location)
+		resp.Body.Close()
+		if location == "" || resolveErr != nil {
+			return nil, fmt.Errorf("fal %s %s returned %s with no usable redirect location", method, target, resp.Status)
+		}
+		if hop >= maxFalRedirects {
+			return nil, fmt.Errorf("fal %s %s exceeded %d redirects", method, target, maxFalRedirects)
+		}
+		target = resolved.String()
 	}
+
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close()
 		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -341,8 +704,19 @@ func (client FalClient) do(ctx context.Context, baseURL, method, path string, bo
 		case http.StatusTooManyRequests:
 			return nil, fmt.Errorf("fal rate limited: %s", trimmed)
 		default:
-			return nil, fmt.Errorf("fal returned %s: %s", resp.Status, trimmed)
+			// Name the method and endpoint: a bare "fal returned 405" is opaque
+			// when several models are in play.
+			return nil, fmt.Errorf("fal %s %s returned %s: %s", method, target, resp.Status, trimmed)
 		}
 	}
 	return resp, nil
+}
+
+func isRedirectStatus(code int) bool {
+	switch code {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	}
+	return false
 }

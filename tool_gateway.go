@@ -42,6 +42,16 @@ func newToolGateway(app *App, config AppConfig) ToolGateway {
 			}
 			return app.ollamaClient(config.Providers.Ollama.BaseURL).GenerateImage(ctx, req)
 		}
+		gateway.tools.GenerateVideo = func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
+			apiKey, err := loadFalAPIKey()
+			if err != nil {
+				return GeneratedVideo{}, err
+			}
+			if strings.TrimSpace(apiKey) == "" {
+				return GeneratedVideo{}, errFalKeyNotConfigured
+			}
+			return newFalClient(app.client, apiKey).GenerateVideo(ctx, req)
+		}
 	}
 	return gateway
 }

@@ -13,11 +13,15 @@ import {
   HasFalAPIKey,
   HasOpenRouterAPIKey,
   ListConversations,
+  ListFalModels,
+  ListFalVideoModels,
+  ListFalVideoImageModels,
   ListModels,
   ListPrimaryModels,
   PurgeArchivedConversations,
   ResolveToolPermission,
   SaveImage,
+  SaveVideo,
   SaveConfig,
   SaveFalAPIKey,
   SaveOpenRouterAPIKey,
@@ -36,6 +40,7 @@ type ChatEntry = {
   content: string;
   thinking?: string;
   images?: string[];
+  videos?: string[];
   harnessRun?: HarnessRunView;
   streaming?: boolean;
   error?: string;
@@ -47,6 +52,7 @@ type ChatChunk = {
   content?: string;
   thinking?: string;
   images?: string[];
+  videos?: string[];
   done: boolean;
   error?: string;
   model?: string;
@@ -60,6 +66,7 @@ type ChatStreamDraft = {
   content: string;
   thinking: string;
   images: string[];
+  videos: string[];
   streaming: boolean;
   error?: string;
   provider?: string;
@@ -147,6 +154,12 @@ const defaultImageWidth = 768;
 const defaultImageHeight = 768;
 const defaultImageSteps = 24;
 const defaultFalImageModel = 'fal-ai/flux/schnell';
+const defaultFalVideoModel = 'fal-ai/kling-video/v2/master/text-to-video';
+const defaultFalVideoImageModel = 'fal-ai/kling-video/v2/master/image-to-video';
+const defaultVideoDuration = '5';
+const defaultVideoAspectRatio = '16:9';
+const videoDurationOptions = ['5', '10'];
+const videoAspectRatioOptions = ['16:9', '9:16', '1:1'];
 
 // Coerce a numeric settings input to a positive integer, falling back to the
 // backend default when the field is cleared or otherwise invalid. Mirrors the
@@ -190,6 +203,13 @@ function App() {
   const [falStatus, setFalStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
   const [falError, setFalError] = useState('');
   const [falModel, setFalModel] = useState(defaultFalImageModel);
+  const [falModels, setFalModels] = useState<main.FalModel[]>([]);
+  const [falVideoModel, setFalVideoModel] = useState(defaultFalVideoModel);
+  const [falVideoModels, setFalVideoModels] = useState<main.FalModel[]>([]);
+  const [falVideoImageModel, setFalVideoImageModel] = useState(defaultFalVideoImageModel);
+  const [falVideoImageModels, setFalVideoImageModels] = useState<main.FalModel[]>([]);
+  const [videoDuration, setVideoDuration] = useState(defaultVideoDuration);
+  const [videoAspectRatio, setVideoAspectRatio] = useState(defaultVideoAspectRatio);
   const [system, setSystem] = useState('You are Atelier, a precise local AI collaborator.');
   const [prompt, setPrompt] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -310,6 +330,8 @@ function App() {
           fal: {
             enabled: falHasKey,
             model: falModel,
+            videoModel: falVideoModel,
+            videoImageModel: falVideoImageModel,
           },
         },
         models: {
@@ -325,6 +347,10 @@ function App() {
             height: imageHeight,
             steps: imageSteps,
           },
+          video: {
+            duration: videoDuration,
+            aspectRatio: videoAspectRatio,
+          },
         },
         tools: toolConfig ?? undefined,
         ui: {
@@ -335,7 +361,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, harnessModel, imageHeight, imageModel, imageProvider, imageSteps, imageWidth, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falVideoModel, falVideoImageModel, harnessModel, imageHeight, imageModel, imageProvider, imageSteps, imageWidth, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
 
   // On a fresh launch, put the cursor in the chat box so the user can start
   // typing immediately. Fires once, when config finishes loading.
@@ -355,11 +381,12 @@ function App() {
       if (chunk.conversationId) {
         markConversationInFlight(chunk.conversationId, chunk.requestID, 'chat');
       }
-      const draft = chatStreamDraftsRef.current[chunk.requestID] ?? {content: '', thinking: '', images: [], streaming: true};
+      const draft = chatStreamDraftsRef.current[chunk.requestID] ?? {content: '', thinking: '', images: [], videos: [], streaming: true};
       chatStreamDraftsRef.current[chunk.requestID] = {
         content: `${draft.content}${chunk.content ?? ''}`,
         thinking: `${draft.thinking}${chunk.thinking ?? ''}`,
         images: chunk.images?.length ? chunk.images : draft.images,
+        videos: chunk.videos?.length ? chunk.videos : draft.videos,
         streaming: !chunk.done && !chunk.error,
         error: chunk.error ?? draft.error,
         provider: chunk.provider ?? draft.provider,
@@ -375,6 +402,7 @@ function App() {
             content: nextDraft.content,
             thinking: nextDraft.thinking,
             images: nextDraft.images,
+            videos: nextDraft.videos,
             streaming: nextDraft.streaming,
             error: nextDraft.error,
             provider: nextDraft.provider ?? entry.provider,
@@ -505,6 +533,23 @@ function App() {
     const detected = asArray(models).filter((item) => item.imageGeneration).map((item) => item.name).filter(Boolean);
     return detected.length ? detected : modelOptions;
   }, [modelOptions, models]);
+  const falModelOptions = useMemo(() => {
+    return asArray(falModels)
+      .map((item) => ({value: item.id, label: item.displayName || item.id}))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [falModels]);
+
+  const falVideoModelOptions = useMemo(() => {
+    return asArray(falVideoModels)
+      .map((item) => ({value: item.id, label: item.displayName || item.id}))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [falVideoModels]);
+
+  const falVideoImageModelOptions = useMemo(() => {
+    return asArray(falVideoImageModels)
+      .map((item) => ({value: item.id, label: item.displayName || item.id}))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [falVideoImageModels]);
 
   useEffect(() => {
     if (!imageModelOptions.length || imageModelOptions.includes(imageModel)) {
@@ -544,6 +589,10 @@ function App() {
     const nextImageSteps = config.generation?.image?.steps || defaultImageSteps;
     const nextImageProvider = config.models?.imageProvider === 'fal' ? 'fal' : 'ollama';
     const nextFalModel = config.providers?.fal?.model || defaultFalImageModel;
+    const nextFalVideoModel = config.providers?.fal?.videoModel || defaultFalVideoModel;
+    const nextFalVideoImageModel = config.providers?.fal?.videoImageModel || defaultFalVideoImageModel;
+    const nextVideoDuration = config.generation?.video?.duration || defaultVideoDuration;
+    const nextVideoAspectRatio = config.generation?.video?.aspectRatio || defaultVideoAspectRatio;
 
     setStartupError('');
     setStorageConfig(config.storage ?? null);
@@ -559,6 +608,10 @@ function App() {
     setImageSteps(nextImageSteps);
     setImageProvider(nextImageProvider);
     setFalModel(nextFalModel);
+    setFalVideoModel(nextFalVideoModel);
+    setFalVideoImageModel(nextFalVideoImageModel);
+    setVideoDuration(nextVideoDuration);
+    setVideoAspectRatio(nextVideoAspectRatio);
     setConfigLoaded(true);
     await Promise.all([
       refreshConversations(),
@@ -569,7 +622,12 @@ function App() {
           refreshOpenRouterModels();
         }
       }).catch(() => setOpenRouterHasKey(false)),
-      HasFalAPIKey().then(setFalHasKey).catch(() => setFalHasKey(false)),
+      HasFalAPIKey().then((hasKey) => {
+        setFalHasKey(hasKey);
+        if (hasKey) {
+          refreshFalModels();
+        }
+      }).catch(() => setFalHasKey(false)),
     ]);
   }
 
@@ -646,6 +704,27 @@ function App() {
     }
   }
 
+  async function refreshFalModels() {
+    // The fal catalog is a discovery aid only — a load failure leaves the field
+    // as free text, so swallow the error rather than surfacing it as a fal
+    // connection error (which would confuse "key works" vs "catalog fetch").
+    try {
+      setFalModels(asArray(await ListFalModels()));
+    } catch {
+      setFalModels([]);
+    }
+    try {
+      setFalVideoModels(asArray(await ListFalVideoModels()));
+    } catch {
+      setFalVideoModels([]);
+    }
+    try {
+      setFalVideoImageModels(asArray(await ListFalVideoImageModels()));
+    } catch {
+      setFalVideoImageModels([]);
+    }
+  }
+
   async function saveOpenRouterKey() {
     try {
       await SaveOpenRouterAPIKey(openRouterAPIKeyInput);
@@ -677,9 +756,13 @@ function App() {
     try {
       await SaveFalAPIKey(falAPIKeyInput);
       setFalAPIKeyInput('');
-      setFalHasKey(await HasFalAPIKey());
+      const hasKey = await HasFalAPIKey();
+      setFalHasKey(hasKey);
       setFalStatus('unknown');
       setFalError('');
+      if (hasKey) {
+        await refreshFalModels();
+      }
     } catch (error) {
       setStatus((current) => current ? {...current, error: String(error)} : current);
     }
@@ -700,6 +783,9 @@ function App() {
     try {
       await SaveFalAPIKey('');
       setFalHasKey(false);
+      setFalModels([]);
+      setFalVideoModels([]);
+      setFalVideoImageModels([]);
       setFalStatus('unknown');
       setFalError('');
       setImageProvider((current) => current === 'fal' ? 'ollama' : current);
@@ -805,6 +891,7 @@ function App() {
       content: historyText(turn.content, 'text'),
       thinking: historyText(turn.content, 'thinking'),
       images: historyImages(turn.content),
+      videos: historyVideos(turn.content),
       harnessRun: parseHarnessRun(turn.providerResponse?.harnessRun),
       provider: turn.provider,
     }));
@@ -816,6 +903,7 @@ function App() {
         content: draft?.content ?? '',
         thinking: draft?.thinking,
         images: draft?.images,
+        videos: draft?.videos,
         streaming: draft?.streaming ?? true,
         error: draft?.error,
         provider: draft?.provider,
@@ -919,7 +1007,7 @@ function App() {
     setAttachments([]);
     shouldFollowTranscriptRef.current = true;
     visibleStreamRef.current = requestID;
-    chatStreamDraftsRef.current[requestID] = {content: '', thinking: '', images: [], streaming: true};
+    chatStreamDraftsRef.current[requestID] = {content: '', thinking: '', images: [], videos: [], streaming: true};
     setActiveStream(requestID);
     setChat((entries) => [
       ...entries,
@@ -943,7 +1031,7 @@ function App() {
       void refreshConversations();
     } catch (error) {
       chatStreamDraftsRef.current[requestID] = {
-        ...(chatStreamDraftsRef.current[requestID] ?? {content: '', thinking: '', images: []}),
+        ...(chatStreamDraftsRef.current[requestID] ?? {content: '', thinking: '', images: [], videos: []}),
         streaming: false,
         error: formatError(error),
       };
@@ -970,7 +1058,7 @@ function App() {
     if (activeStream) {
       await CancelStream(activeStream);
       chatStreamDraftsRef.current[activeStream] = {
-        ...(chatStreamDraftsRef.current[activeStream] ?? {content: '', thinking: '', images: []}),
+        ...(chatStreamDraftsRef.current[activeStream] ?? {content: '', thinking: '', images: [], videos: []}),
         streaming: false,
         error: 'Stopped',
       };
@@ -1023,6 +1111,17 @@ function App() {
     try {
       await SaveImage(main.SaveImageRequest.createFrom({
         image,
+        suggestedName: `atelier-${Date.now()}-${index + 1}`,
+      }));
+    } catch (error) {
+      setStartupError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function saveGeneratedVideo(video: string, index: number) {
+    try {
+      await SaveVideo(main.SaveVideoRequest.createFrom({
+        path: video,
         suggestedName: `atelier-${Date.now()}-${index + 1}`,
       }));
     } catch (error) {
@@ -1346,7 +1445,8 @@ function App() {
                 ) : null}
               </section>
 
-              <section className="settings-section two-column">
+              <section className="settings-section">
+                <h3>Harness</h3>
                 <div className="field">
                   <label htmlFor="harness-model">Harness Model</label>
                   <div className="model-inline-control">
@@ -1363,88 +1463,153 @@ function App() {
                     />
                   </div>
                 </div>
+              </section>
 
-                <div className="field">
-                  <label htmlFor="image-provider">Image Provider</label>
-                  <select
-                    id="image-provider"
-                    value={imageProvider}
-                    onChange={(event) => setImageProvider(event.target.value as 'ollama' | 'fal')}
-                  >
-                    <option value="ollama">Ollama (local)</option>
-                    <option value="fal">fal.ai (cloud)</option>
-                  </select>
-                </div>
-
-                {imageProvider === 'fal' ? (
-                  <div className="field">
-                    <label htmlFor="fal-model">fal.ai Model</label>
-                    <input
-                      id="fal-model"
-                      type="text"
-                      placeholder={defaultFalImageModel}
-                      value={falModel}
-                      onChange={(event) => setFalModel(event.target.value)}
-                    />
-                    {!falHasKey ? (
-                      <span className="hint">Add a fal.ai API key above before generating images.</span>
-                    ) : null}
-                  </div>
-                ) : (
-                  <div className="field">
-                    <label htmlFor="image-model">Default Image Model</label>
-                    <div className="model-inline-control">
-                      <select id="image-model" value={imageModel} onChange={(event) => setImageModel(event.target.value)}>
-                        {imageModelOptions.map((name) => <option key={name}>{name}</option>)}
+              <section className="settings-section">
+                <h3>Image</h3>
+                <div className="settings-rows">
+                  <div className="two-column">
+                    <div className="field">
+                      <label htmlFor="image-provider">Image Provider</label>
+                      <select
+                        id="image-provider"
+                        value={imageProvider}
+                        onChange={(event) => setImageProvider(event.target.value as 'ollama' | 'fal')}
+                      >
+                        <option value="ollama">Ollama (local)</option>
+                        <option value="fal">fal.ai (cloud)</option>
                       </select>
-                      <ModelCapabilityLink
-                        id="settings-image"
-                        modelName={imageModel}
-                        models={models}
-                        openID={openCapabilityID}
-                        setOpenID={setOpenCapabilityID}
-                        variant="icon"
+                    </div>
+
+                    {imageProvider === 'fal' ? (
+                      <div className="field">
+                        <label htmlFor="fal-model">fal.ai Model</label>
+                        <ModelCombobox
+                          id="fal-model"
+                          ariaLabel="fal.ai model"
+                          placeholder={defaultFalImageModel}
+                          value={falModel}
+                          onChange={setFalModel}
+                          options={falModelOptions}
+                          allowCustom
+                        />
+                        {!falHasKey ? (
+                          <span className="hint">Add a fal.ai API key above before generating images.</span>
+                        ) : falModelOptions.length ? null : (
+                          <span className="hint">Type a fal.ai endpoint id — the model list couldn't be loaded.</span>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="field">
+                        <label htmlFor="image-model">Default Image Model</label>
+                        <div className="model-inline-control">
+                          <select id="image-model" value={imageModel} onChange={(event) => setImageModel(event.target.value)}>
+                            {imageModelOptions.map((name) => <option key={name}>{name}</option>)}
+                          </select>
+                          <ModelCapabilityLink
+                            id="settings-image"
+                            modelName={imageModel}
+                            models={models}
+                            openID={openCapabilityID}
+                            setOpenID={setOpenCapabilityID}
+                            variant="icon"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="three-column">
+                    <div className="field">
+                      <label htmlFor="image-width">Image Width</label>
+                      <input
+                        id="image-width"
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={imageWidth}
+                        onChange={(event) => setImageWidth(positiveIntOrDefault(event.target.value, defaultImageWidth))}
+                      />
+                    </div>
+
+                    <div className="field">
+                      <label htmlFor="image-height">Image Height</label>
+                      <input
+                        id="image-height"
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={imageHeight}
+                        onChange={(event) => setImageHeight(positiveIntOrDefault(event.target.value, defaultImageHeight))}
+                      />
+                    </div>
+
+                    <div className="field">
+                      <label htmlFor="image-steps">Image Steps</label>
+                      <input
+                        id="image-steps"
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={imageSteps}
+                        onChange={(event) => setImageSteps(positiveIntOrDefault(event.target.value, defaultImageSteps))}
                       />
                     </div>
                   </div>
-                )}
+                </div>
               </section>
 
-              <section className="settings-section three-column">
-                <div className="field">
-                  <label htmlFor="image-width">Image Width</label>
-                  <input
-                    id="image-width"
-                    type="number"
-                    min="1"
-                    step="1"
-                    value={imageWidth}
-                    onChange={(event) => setImageWidth(positiveIntOrDefault(event.target.value, defaultImageWidth))}
-                  />
-                </div>
+              <section className="settings-section">
+                <h3>Video</h3>
+                <div className="settings-rows">
+                  <div className="two-column">
+                    <div className="field">
+                      <label htmlFor="fal-video-model">Text-to-Video Model (fal.ai)</label>
+                      <ModelCombobox
+                        id="fal-video-model"
+                        ariaLabel="fal.ai text-to-video model"
+                        placeholder={defaultFalVideoModel}
+                        value={falVideoModel}
+                        onChange={setFalVideoModel}
+                        options={falVideoModelOptions}
+                        allowCustom
+                      />
+                      {!falHasKey ? (
+                        <span className="hint">Add a fal.ai API key above to generate videos.</span>
+                      ) : falVideoModelOptions.length ? null : (
+                        <span className="hint">Type a fal.ai text-to-video endpoint id.</span>
+                      )}
+                    </div>
 
-                <div className="field">
-                  <label htmlFor="image-height">Image Height</label>
-                  <input
-                    id="image-height"
-                    type="number"
-                    min="1"
-                    step="1"
-                    value={imageHeight}
-                    onChange={(event) => setImageHeight(positiveIntOrDefault(event.target.value, defaultImageHeight))}
-                  />
-                </div>
+                    <div className="field">
+                      <label htmlFor="fal-video-image-model">Image-to-Video Model (fal.ai)</label>
+                      <ModelCombobox
+                        id="fal-video-image-model"
+                        ariaLabel="fal.ai image-to-video model"
+                        placeholder={defaultFalVideoImageModel}
+                        value={falVideoImageModel}
+                        onChange={setFalVideoImageModel}
+                        options={falVideoImageModelOptions}
+                        allowCustom
+                      />
+                    </div>
+                  </div>
 
-                <div className="field">
-                  <label htmlFor="image-steps">Image Steps</label>
-                  <input
-                    id="image-steps"
-                    type="number"
-                    min="1"
-                    step="1"
-                    value={imageSteps}
-                    onChange={(event) => setImageSteps(positiveIntOrDefault(event.target.value, defaultImageSteps))}
-                  />
+                  <div className="two-column">
+                    <div className="field">
+                      <label htmlFor="video-duration">Video Duration (s)</label>
+                      <select id="video-duration" value={videoDuration} onChange={(event) => setVideoDuration(event.target.value)}>
+                        {videoDurationOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+                      </select>
+                    </div>
+
+                    <div className="field">
+                      <label htmlFor="video-aspect">Video Aspect Ratio</label>
+                      <select id="video-aspect" value={videoAspectRatio} onChange={(event) => setVideoAspectRatio(event.target.value)}>
+                        {videoAspectRatioOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+                      </select>
+                    </div>
+                  </div>
                 </div>
               </section>
 
@@ -1534,6 +1699,18 @@ function App() {
                             ))}
                           </div>
                         )
+                      ) : null}
+                      {entry.videos?.length ? (
+                        <div className="chat-video-results">
+                          {entry.videos.map((video, index) => (
+                            <figure key={`${entry.id}-video-${index}`} className="chat-video-card">
+                              <video src={video} controls preload="metadata" />
+                              <figcaption>
+                                <button type="button" onClick={() => saveGeneratedVideo(video, index)}>Download video</button>
+                              </figcaption>
+                            </figure>
+                          ))}
+                        </div>
                       ) : null}
                       {entry.thinking ? (
                         <div className="thinking-panel">
@@ -1696,6 +1873,7 @@ function ModelCombobox({
   options,
   placeholder,
   ariaLabel,
+  allowCustom = false,
 }: {
   id: string;
   value: string;
@@ -1703,6 +1881,11 @@ function ModelCombobox({
   options: {value: string; label: string}[];
   placeholder?: string;
   ariaLabel?: string;
+  // When true, text typed that matches no option is committed verbatim (on
+  // Enter or click-away) instead of being discarded. Used for fal, whose
+  // catalog is a discovery aid but where an arbitrary endpoint id is still
+  // valid input.
+  allowCustom?: boolean;
 }) {
   // `filter` is null whenever the user isn't actively typing; in that state
   // the input shows the committed `value` prop DIRECTLY, so a provider switch
@@ -1712,7 +1895,22 @@ function ModelCombobox({
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  const close = () => {
+  // commitCustom persists free-typed text (only when allowCustom). It reads the
+  // latest filter via a ref so the document-level listeners below don't need to
+  // re-subscribe on every keystroke.
+  const filterRef = useRef<string | null>(null);
+  filterRef.current = filter;
+  const commitCustom = () => {
+    const typed = (filterRef.current ?? '').trim();
+    if (allowCustom && typed && typed !== value) {
+      onChange(typed);
+    }
+  };
+
+  const close = (commit = false) => {
+    if (commit) {
+      commitCustom();
+    }
     setFilter(null);
     setOpen(false);
   };
@@ -1725,7 +1923,7 @@ function ModelCombobox({
       if (containerRef.current && event.target instanceof Node && containerRef.current.contains(event.target)) {
         return;
       }
-      close();
+      close(true);
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -1778,9 +1976,14 @@ function ModelCombobox({
           setOpen(true);
         }}
         onKeyDown={(event) => {
-          if (event.key === 'Enter' && open && filtered.length) {
-            event.preventDefault();
+          if (event.key !== 'Enter' || !open) {
+            return;
+          }
+          event.preventDefault();
+          if (filtered.length) {
             selectOption(filtered[0]);
+          } else if (allowCustom) {
+            close(true);
           }
         }}
       />
@@ -2077,8 +2280,22 @@ function historyImages(contents: main.HistoryContent[] | null | undefined): stri
     .filter(Boolean);
 }
 
+function historyVideos(contents: main.HistoryContent[] | null | undefined): string[] {
+  return asArray(contents)
+    .filter((content) => content.type === 'video')
+    .map((content) => content.text || content.path || '')
+    .filter(Boolean);
+}
+
 function imagePayloadForOllama(image: string): string {
-  return image.replace(/^data:image\/[a-z+.-]+;base64,/, '');
+  const match = /^data:image\/[a-z+.-]+;base64,(.*)$/i.exec(image);
+  if (match) {
+    return match[1];
+  }
+  // Not an inline data URL — e.g. a hydrated /atelier-artifact/ history URL or a
+  // file path. These are display references, not valid model image payloads, so
+  // drop them rather than sending a string Ollama can't base64-decode.
+  return '';
 }
 
 function formatError(error: unknown): string {

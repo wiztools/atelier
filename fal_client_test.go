@@ -63,7 +63,7 @@ func TestFalClientGenerateImageHappyPath(t *testing.T) {
 				return jsonResp(`{"status":"IN_PROGRESS"}`), nil
 			}
 			return jsonResp(`{"status":"COMPLETED"}`), nil
-		case req.Method == http.MethodGet && req.URL.Path == "/"+model+"/requests/req-123":
+		case req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, "/requests/req-123"):
 			return jsonResp(`{"images":[{"url":"https://falcdn.example/img.png"}]}`), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/img.png":
 			return &http.Response{
@@ -255,6 +255,419 @@ func TestFalClientVerifyKeyRejectsInvalidKey(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "authentication failed") {
 		t.Errorf("expected auth-failed message, got %q", err.Error())
+	}
+}
+
+func TestFalClientListModelsPaginates(t *testing.T) {
+	// Page 1 (real /v1/models shape, trimmed) reports has_more with a cursor;
+	// page 2 closes the catalog. The handler asserts the category filter and
+	// cursor are threaded through correctly.
+	page1 := `{"models":[
+		{"endpoint_id":"fal-ai/flux/schnell","metadata":{"display_name":"FLUX.1 [schnell]","category":"text-to-image","status":"active","tags":[],"thumbnail_url":"https://v3b.fal.media/a.jpg"}},
+		{"endpoint_id":"fal-ai/nano-banana-2","metadata":{"display_name":"Nano Banana 2","category":"text-to-image","status":"active","tags":[]}}
+	],"next_cursor":"Mg","has_more":true}`
+	page2 := `{"models":[
+		{"endpoint_id":"openai/gpt-image-2","metadata":{"display_name":"GPT Image 2 API","category":"text-to-image","status":"active","tags":["openai"]}},
+		{"endpoint_id":"fal-ai/no-metadata"}
+	],"next_cursor":null,"has_more":false}`
+
+	calls := 0
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet || req.URL.Path != "/v1/models" {
+			t.Fatalf("expected GET /v1/models, got %s %s", req.Method, req.URL.Path)
+		}
+		q := req.URL.Query()
+		if got := q.Get("category"); got != falTextToImageCategory {
+			t.Errorf("category = %q, want %q", got, falTextToImageCategory)
+		}
+		calls++
+		switch calls {
+		case 1:
+			if cur := q.Get("cursor"); cur != "" {
+				t.Errorf("first page should have no cursor, got %q", cur)
+			}
+			return jsonResp(page1), nil
+		case 2:
+			if cur := q.Get("cursor"); cur != "Mg" {
+				t.Errorf("second page cursor = %q, want %q", cur, "Mg")
+			}
+			return jsonResp(page2), nil
+		default:
+			t.Fatalf("unexpected third request")
+			return nil, nil
+		}
+	}))
+
+	models, err := client.ListModels(context.Background(), falTextToImageCategory, 0)
+	if err != nil {
+		t.Fatalf("ListModels returned error: %v", err)
+	}
+	if len(models) != 4 {
+		t.Fatalf("expected 4 models across both pages, got %d", len(models))
+	}
+	if models[0].ID != "fal-ai/flux/schnell" || models[0].DisplayName != "FLUX.1 [schnell]" {
+		t.Errorf("first model = %+v, want flux schnell", models[0])
+	}
+	// An entry without metadata falls back to using the endpoint id as its label.
+	last := models[3]
+	if last.ID != "fal-ai/no-metadata" || last.DisplayName != "fal-ai/no-metadata" {
+		t.Errorf("metadata-less model = %+v, want id as display name", last)
+	}
+}
+
+func TestFalClientListModelsRespectsMax(t *testing.T) {
+	// has_more stays true, but maxModels caps accumulation and stops paging.
+	page := `{"models":[
+		{"endpoint_id":"m/1"},{"endpoint_id":"m/2"},{"endpoint_id":"m/3"}
+	],"next_cursor":"next","has_more":true}`
+	calls := 0
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return jsonResp(page), nil
+	}))
+
+	models, err := client.ListModels(context.Background(), "", 2)
+	if err != nil {
+		t.Fatalf("ListModels returned error: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("expected max of 2 models, got %d", len(models))
+	}
+	if calls != 1 {
+		t.Errorf("expected to stop after 1 page, made %d calls", calls)
+	}
+}
+
+// tinyMP4 is a minimal byte sequence with an "ftyp" box at offset 4, enough for
+// isVideoBytes to accept it as an MP4 container. It is not a playable video, but
+// the client only sniffs the header.
+func tinyMP4() []byte {
+	return []byte{
+		0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm',
+		0x00, 0x00, 0x02, 0x00, 'i', 's', 'o', 'm', 'i', 's', 'o', '2',
+	}
+}
+
+func mp4Resp(body []byte, contentType string) *http.Response {
+	header := http.Header{}
+	if contentType != "" {
+		header.Set("Content-Type", contentType)
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Body:       io.NopCloser(strings.NewReader(string(body))),
+		Header:     header,
+	}
+}
+
+func TestFalClientGenerateVideoHappyPath(t *testing.T) {
+	model := "fal-ai/kling-video/v2/master/text-to-video"
+	pollCount := 0
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodPost && req.URL.Path == "/"+model:
+			body, _ := io.ReadAll(req.Body)
+			if !strings.Contains(string(body), `"duration":"5"`) {
+				t.Errorf("submit body missing duration: %s", body)
+			}
+			if !strings.Contains(string(body), `"aspect_ratio":"16:9"`) {
+				t.Errorf("submit body missing aspect_ratio: %s", body)
+			}
+			return jsonResp(`{"request_id":"req-vid"}`), nil
+		case req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, "/status"):
+			pollCount++
+			if pollCount == 1 {
+				return jsonResp(`{"status":"IN_PROGRESS"}`), nil
+			}
+			return jsonResp(`{"status":"COMPLETED"}`), nil
+		case req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, "/requests/req-vid"):
+			return jsonResp(`{"video":{"url":"https://v3.fal.media/files/clip.mp4","content_type":"video/mp4","file_size":24}}`), nil
+		case req.Method == http.MethodGet && req.URL.Path == "/files/clip.mp4":
+			return mp4Resp(tinyMP4(), "video/mp4"), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+			return nil, nil
+		}
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	video, err := client.GenerateVideo(ctx, VideoGenerateRequest{
+		Model:       model,
+		Prompt:      "a drone shot over a forest",
+		Duration:    "5",
+		AspectRatio: "16:9",
+	})
+	if err != nil {
+		t.Fatalf("GenerateVideo returned error: %v", err)
+	}
+	if len(video.Data) == 0 {
+		t.Fatal("expected video bytes, got none")
+	}
+	if video.MimeType != "video/mp4" {
+		t.Errorf("mime = %q, want video/mp4", video.MimeType)
+	}
+	if video.SourceURL != "https://v3.fal.media/files/clip.mp4" {
+		t.Errorf("source url = %q", video.SourceURL)
+	}
+}
+
+func TestFalClientGenerateVideoImageToVideo(t *testing.T) {
+	model := "fal-ai/kling-video/v2/master/image-to-video"
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodPost && req.URL.Path == "/"+model:
+			body, _ := io.ReadAll(req.Body)
+			if !strings.Contains(string(body), `"image_url":"data:image/png;base64,ABC"`) {
+				t.Errorf("submit body missing image_url: %s", body)
+			}
+			return jsonResp(`{"request_id":"req-i2v"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/status"):
+			return jsonResp(`{"status":"COMPLETED"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/requests/req-i2v"):
+			return jsonResp(`{"video":{"url":"https://v3.fal.media/files/clip.mp4"}}`), nil
+		case req.URL.Path == "/files/clip.mp4":
+			return mp4Resp(tinyMP4(), "video/mp4"), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+			return nil, nil
+		}
+	}))
+
+	video, err := client.GenerateVideo(context.Background(), VideoGenerateRequest{
+		Model:  model,
+		Prompt: "make the character talk",
+		Image:  "data:image/png;base64,ABC",
+	})
+	if err != nil {
+		t.Fatalf("GenerateVideo returned error: %v", err)
+	}
+	if len(video.Data) == 0 {
+		t.Fatal("expected video bytes")
+	}
+}
+
+func TestFalClientGenerateVideoModelFallback(t *testing.T) {
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodPost && req.URL.Path == "/"+defaultFalVideoModel {
+			return jsonResp(`{"request_id":"req-fb"}`), nil
+		}
+		if strings.HasSuffix(req.URL.Path, "/status") {
+			return jsonResp(`{"status":"COMPLETED"}`), nil
+		}
+		if strings.HasSuffix(req.URL.Path, "/requests/req-fb") {
+			return jsonResp(`{"video":{"url":"https://v3.fal.media/files/clip.mp4"}}`), nil
+		}
+		if req.URL.Path == "/files/clip.mp4" {
+			return mp4Resp(tinyMP4(), ""), nil
+		}
+		t.Fatalf("unexpected request %s %s", req.Method, req.URL.Path)
+		return nil, nil
+	}))
+
+	video, err := client.GenerateVideo(context.Background(), VideoGenerateRequest{Prompt: "x"})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	// Content-Type absent on the download: the client sniffs the bytes and
+	// falls back to video/mp4.
+	if video.MimeType != "video/mp4" {
+		t.Errorf("mime = %q, want sniffed video/mp4", video.MimeType)
+	}
+}
+
+func TestFalClientGenerateVideoNoVideo(t *testing.T) {
+	model := defaultFalVideoModel
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodPost {
+			return jsonResp(`{"request_id":"req-empty"}`), nil
+		}
+		if strings.HasSuffix(req.URL.Path, "/status") {
+			return jsonResp(`{"status":"COMPLETED"}`), nil
+		}
+		return jsonResp(`{}`), nil
+	}))
+
+	_, err := client.GenerateVideo(context.Background(), VideoGenerateRequest{Model: model})
+	if err == nil || !strings.Contains(err.Error(), "no video") {
+		t.Fatalf("expected a no-video error, got %v", err)
+	}
+}
+
+func TestFalClientGenerateVideoFallbackURL(t *testing.T) {
+	// No top-level "video" object; the mp4 URL is nested. firstFalVideoURL must
+	// still find it.
+	model := defaultFalVideoModel
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodPost {
+			return jsonResp(`{"request_id":"req-nested"}`), nil
+		}
+		if strings.HasSuffix(req.URL.Path, "/status") {
+			return jsonResp(`{"status":"COMPLETED"}`), nil
+		}
+		if strings.HasSuffix(req.URL.Path, "/requests/req-nested") {
+			return jsonResp(`{"data":{"output":{"clip":"https://v3.fal.media/files/nested.mp4"}}}`), nil
+		}
+		if req.URL.Path == "/files/nested.mp4" {
+			return mp4Resp(tinyMP4(), "video/mp4"), nil
+		}
+		t.Fatalf("unexpected request %s %s", req.Method, req.URL.Path)
+		return nil, nil
+	}))
+
+	video, err := client.GenerateVideo(context.Background(), VideoGenerateRequest{Model: model})
+	if err != nil {
+		t.Fatalf("GenerateVideo returned error: %v", err)
+	}
+	if video.SourceURL != "https://v3.fal.media/files/nested.mp4" {
+		t.Errorf("source url = %q, want nested url", video.SourceURL)
+	}
+}
+
+func TestFalClientGenerateVideoRejectsNonVideo(t *testing.T) {
+	// The download returns a PNG, not a video; the client must reject it.
+	model := defaultFalVideoModel
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodPost {
+			return jsonResp(`{"request_id":"req-png"}`), nil
+		}
+		if strings.HasSuffix(req.URL.Path, "/status") {
+			return jsonResp(`{"status":"COMPLETED"}`), nil
+		}
+		if strings.HasSuffix(req.URL.Path, "/requests/req-png") {
+			return jsonResp(`{"video":{"url":"https://v3.fal.media/files/notvideo.mp4"}}`), nil
+		}
+		return mp4Resp(mustDecodeTinyPNG(), "image/png"), nil
+	}))
+
+	_, err := client.GenerateVideo(context.Background(), VideoGenerateRequest{Model: model})
+	if err == nil || !strings.Contains(err.Error(), "not a supported video") {
+		t.Fatalf("expected not-a-video error, got %v", err)
+	}
+}
+
+// TestFalClientUsesSubmitStatusAndResponseURLs is the regression test for
+// conv_346b8787832e3d922a66d673: the submit succeeded but the status poll 405'd
+// because the client reconstructed the status path from the full endpoint id.
+// fal returns status_url/response_url under the app id (fal-ai/kling-video, not
+// the full .../v2/master/image-to-video); the client must use them verbatim.
+func TestFalClientUsesSubmitStatusAndResponseURLs(t *testing.T) {
+	model := "fal-ai/kling-video/v2/master/image-to-video"
+	statusURL := "https://queue.fal.run/fal-ai/kling-video/requests/req-x/status"
+	responseURL := "https://queue.fal.run/fal-ai/kling-video/requests/req-x"
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodPost && req.URL.Path == "/"+model:
+			return jsonResp(`{"request_id":"req-x","status_url":"` + statusURL + `","response_url":"` + responseURL + `"}`), nil
+		case req.URL.Path == "/fal-ai/kling-video/requests/req-x/status":
+			return jsonResp(`{"status":"COMPLETED"}`), nil
+		case req.URL.Path == "/fal-ai/kling-video/requests/req-x":
+			return jsonResp(`{"video":{"url":"https://v3.fal.media/files/clip.mp4"}}`), nil
+		case req.URL.Path == "/files/clip.mp4":
+			return mp4Resp(tinyMP4(), "video/mp4"), nil
+		case strings.Contains(req.URL.Path, "/image-to-video/requests/"):
+			// Reconstructing from the full endpoint id is the bug — fal 405s it.
+			t.Fatalf("client reconstructed the full endpoint path instead of using status_url: %s", req.URL.Path)
+			return nil, nil
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+			return nil, nil
+		}
+	}))
+
+	video, err := client.GenerateVideo(context.Background(), VideoGenerateRequest{Model: model, Prompt: "x", Image: "data:image/png;base64,ABC"})
+	if err != nil {
+		t.Fatalf("GenerateVideo returned error: %v", err)
+	}
+	if len(video.Data) == 0 {
+		t.Fatal("expected video bytes")
+	}
+}
+
+// TestFalImageURL is the regression for conv_784c285332d0d971d62e7a68: bare
+// base64 (what the frontend sends) must be wrapped as a data URI, since fal
+// rejects raw base64 with a 422. URLs and existing data URIs pass through.
+func TestFalImageURL(t *testing.T) {
+	if got := falImageURL(tinyPNG); got != "data:image/png;base64,"+tinyPNG {
+		t.Errorf("bare base64 not wrapped as a png data URI: %q", got[:40])
+	}
+	dataURI := "data:image/jpeg;base64," + tinyPNG
+	if got := falImageURL(dataURI); got != dataURI {
+		t.Errorf("data URI should pass through unchanged, got %q", got)
+	}
+	if got := falImageURL("https://cdn.example/a.png"); got != "https://cdn.example/a.png" {
+		t.Errorf("https URL should pass through unchanged, got %q", got)
+	}
+	if got := falImageURL("   "); got != "" {
+		t.Errorf("empty input should return empty, got %q", got)
+	}
+}
+
+// TestFalAppPath covers the app-path fallback used when fal omits status_url.
+func TestFalAppPath(t *testing.T) {
+	cases := map[string]string{
+		"fal-ai/flux/schnell":                         "fal-ai/flux",
+		"fal-ai/kling-video/v2/master/image-to-video": "fal-ai/kling-video",
+		"bytedance/seedance-2.0/fast/text-to-video":   "bytedance/seedance-2.0",
+		"ideogram/v4": "ideogram/v4",
+	}
+	for model, want := range cases {
+		if got := falAppPath(model); got != want {
+			t.Errorf("falAppPath(%q) = %q, want %q", model, got, want)
+		}
+	}
+}
+
+// TestFalClientSubmitFollowsRedirectPreservingPost reproduces the failure from
+// conv_a89e35615db14bdeec29cfff: fal 3xx-redirects the queue submit to a
+// canonical endpoint. The default net/http client would downgrade the followed
+// POST to a GET, which the submit endpoint answers with 405. do() must follow
+// the redirect with the POST (and body) intact.
+func TestFalClientSubmitFollowsRedirectPreservingPost(t *testing.T) {
+	model := "bytedance/seedance-2.0/fast/text-to-video"
+	canonicalPath := "/fal-ai/bytedance/seedance/v2/fast/text-to-video"
+	sawCanonicalMethod := ""
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.URL.Path == "/"+model && req.Method == http.MethodPost:
+			// Redirect the submit to the canonical endpoint.
+			return &http.Response{
+				StatusCode: http.StatusTemporaryRedirect,
+				Status:     "307 Temporary Redirect",
+				Header:     http.Header{"Location": []string{"https://queue.fal.run" + canonicalPath}},
+				Body:       io.NopCloser(strings.NewReader("")),
+				Request:    req,
+			}, nil
+		case req.URL.Path == canonicalPath:
+			sawCanonicalMethod = req.Method
+			if req.Method != http.MethodPost {
+				// A downgraded GET is exactly the 405 bug being guarded against.
+				return &http.Response{StatusCode: http.StatusMethodNotAllowed, Status: "405 Method Not Allowed",
+					Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+			}
+			return jsonResp(`{"request_id":"req-redir"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/status"):
+			return jsonResp(`{"status":"COMPLETED"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/requests/req-redir"):
+			return jsonResp(`{"video":{"url":"https://v3.fal.media/files/clip.mp4"}}`), nil
+		case req.URL.Path == "/files/clip.mp4":
+			return mp4Resp(tinyMP4(), "video/mp4"), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+			return nil, nil
+		}
+	}))
+
+	video, err := client.GenerateVideo(context.Background(), VideoGenerateRequest{Model: model, Prompt: "x"})
+	if err != nil {
+		t.Fatalf("GenerateVideo returned error: %v", err)
+	}
+	if sawCanonicalMethod != http.MethodPost {
+		t.Fatalf("canonical endpoint saw method %q, want POST (redirect downgraded the submit)", sawCanonicalMethod)
+	}
+	if len(video.Data) == 0 {
+		t.Fatal("expected video bytes after following the redirect")
 	}
 }
 

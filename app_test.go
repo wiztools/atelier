@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -156,6 +157,9 @@ func TestMergeAppConfigFillsDefaults(t *testing.T) {
 	}
 	if config.Generation.Image.Width != 768 || config.Generation.Image.Steps != 24 {
 		t.Fatalf("image generation defaults = %+v", config.Generation.Image)
+	}
+	if config.Generation.Video.Duration != defaultFalVideoDuration || config.Generation.Video.AspectRatio != defaultFalVideoAspectRatio {
+		t.Fatalf("video generation defaults = %+v, want %s / %s", config.Generation.Video, defaultFalVideoDuration, defaultFalVideoAspectRatio)
 	}
 	if config.Providers.Ollama.NumCtx != defaultOllamaNumCtx {
 		t.Fatalf("numCtx = %d, want default %d", config.Providers.Ollama.NumCtx, defaultOllamaNumCtx)
@@ -4042,6 +4046,71 @@ func TestOllamaToolSpecs(t *testing.T) {
 		if parameters["type"] != "object" {
 			t.Fatalf("specs[%d].function.parameters.type = %v, want \"object\"", index, parameters["type"])
 		}
+	}
+}
+
+// TestSanitizeOllamaImages guards against the 400 "illegal base64 data" crash
+// from conv_a89e35615db14bdeec29cfff: a hydrated /atelier-artifact/ history URL
+// (or any non-base64 reference) must be dropped before reaching Ollama, while a
+// data: URL is unwrapped and real base64 is preserved.
+func TestSanitizeOllamaImages(t *testing.T) {
+	valid := base64.StdEncoding.EncodeToString([]byte("not-really-an-image-but-valid-base64"))
+	messages := []ChatMessage{
+		{Role: "user", Content: "look", Images: []string{
+			"/atelier-artifact/Users/me/.atelier/history/x/artifacts/input_000001_000001.png", // the crash payload
+			"data:image/png;base64," + valid,
+			valid,
+			"https://cdn.example/x.png",
+			"   ",
+		}},
+		{Role: "assistant", Content: "no images"},
+	}
+
+	cleaned := sanitizeOllamaImages(messages)
+	if got := cleaned[0].Images; len(got) != 2 {
+		t.Fatalf("expected 2 valid images kept, got %d: %+v", len(got), got)
+	}
+	for _, img := range cleaned[0].Images {
+		if img != valid {
+			t.Errorf("image not normalized to bare base64: %q", img)
+		}
+	}
+	// The original message slice must not be mutated.
+	if len(messages[0].Images) != 5 {
+		t.Errorf("sanitize mutated the caller's messages: %d images", len(messages[0].Images))
+	}
+	// The exact crash string must be rejected.
+	if normalizeOllamaImage("/atelier-artifact/Users/me/artifacts/a.png") != "" {
+		t.Error("an /atelier-artifact/ URL must be dropped, not sent as base64")
+	}
+}
+
+// TestVideoGenerationToolGating confirms the generate_video tool is registered
+// only when a fal video model is configured, and that the default-model and
+// availability helpers behave.
+func TestVideoGenerationToolGating(t *testing.T) {
+	base := defaultAppConfig()
+	base.Providers.Fal.VideoModel = ""
+	if videoGenerationConfigured(base) {
+		t.Fatal("video should not be configured without a fal video model")
+	}
+	if _, ok := defaultHarnessToolRegistry(base).Get("generate_video"); ok {
+		t.Fatal("generate_video should be absent when unconfigured")
+	}
+
+	configured := defaultAppConfig()
+	configured.Providers.Fal.VideoModel = "fal-ai/some/video-model"
+	if !videoGenerationConfigured(configured) {
+		t.Fatal("video should be configured with a fal video model")
+	}
+	if _, ok := defaultHarnessToolRegistry(configured).Get("generate_video"); !ok {
+		t.Fatal("generate_video should be registered when configured")
+	}
+	if got := resolveDefaultVideoModel(configured); got != "fal-ai/some/video-model" {
+		t.Fatalf("resolveDefaultVideoModel = %q, want the configured model", got)
+	}
+	if got := resolveDefaultVideoModel(base); got != defaultFalVideoModel {
+		t.Fatalf("resolveDefaultVideoModel fallback = %q, want %q", got, defaultFalVideoModel)
 	}
 }
 
