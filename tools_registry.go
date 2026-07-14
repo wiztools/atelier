@@ -398,6 +398,19 @@ func imageGenerationToolDefinition() HarnessToolDefinition {
 				Height: tools.Config.Generation.Image.Height,
 				Steps:  tools.Config.Generation.Image.Steps,
 			}
+			// An explicit aspectRatio from the tool call overrides the configured
+			// dimensions. The configured long edge sets the resolution budget;
+			// width/height are derived from the ratio. Image-to-image ignores these
+			// (fal derives dims from the source frame), so this is moot there.
+			if ratio := strings.TrimSpace(call.AspectRatio); ratio != "" {
+				baseLong := imageReq.Width
+				if imageReq.Height > baseLong {
+					baseLong = imageReq.Height
+				}
+				if w, h := imageSizeForAspectRatio(baseLong, ratio); w > 0 && h > 0 {
+					imageReq.Width, imageReq.Height = w, h
+				}
+			}
 			if attachedImage != "" {
 				imageReq.Images = []string{attachedImage}
 			}
@@ -460,6 +473,10 @@ func boolParam(description string) map[string]any {
 	return map[string]any{"type": "boolean", "description": description}
 }
 
+func enumParam(description string, values ...string) map[string]any {
+	return map[string]any{"type": "string", "description": description, "enum": values}
+}
+
 func listFilesParamSchema() map[string]any {
 	return map[string]any{
 		"type":                 "object",
@@ -517,11 +534,56 @@ func generateImageParamSchema() map[string]any {
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
-			"content": stringParam("The image prompt — describe the image to create."),
-			"model":   stringParam("Optional image generation model override."),
+			"content":     stringParam("The image prompt — describe the image to create."),
+			"model":       stringParam("Optional image generation model override."),
+			"aspectRatio": enumParam("Optional — the output image shape. Omit to use the configured default size; ignored when transforming an attached image.", "1:1", "16:9", "9:16", "4:3", "3:4"),
 		},
 		"required": []string{"content"},
 	}
+}
+
+// imageSizeForAspectRatio derives concrete width/height from a named aspect
+// ratio, using baseLong as the long-edge budget. Both edges are rounded to a
+// multiple of 16 (a common constraint for diffusion image models) and floored
+// at 256. An unrecognized ratio returns (0, 0) so the caller keeps the
+// configured default dimensions.
+func imageSizeForAspectRatio(baseLong int, ratio string) (int, int) {
+	if baseLong <= 0 {
+		baseLong = 1024
+	}
+	var wr, hr int
+	switch strings.TrimSpace(ratio) {
+	case "1:1":
+		wr, hr = 1, 1
+	case "16:9":
+		wr, hr = 16, 9
+	case "9:16":
+		wr, hr = 9, 16
+	case "4:3":
+		wr, hr = 4, 3
+	case "3:4":
+		wr, hr = 3, 4
+	default:
+		return 0, 0
+	}
+	longEdge := roundToMultipleOf16(baseLong)
+	shortRatio, longRatio := wr, hr
+	if shortRatio > longRatio {
+		shortRatio, longRatio = longRatio, shortRatio
+	}
+	shortEdge := roundToMultipleOf16(baseLong * shortRatio / longRatio)
+	if wr >= hr {
+		return longEdge, shortEdge
+	}
+	return shortEdge, longEdge
+}
+
+func roundToMultipleOf16(n int) int {
+	rounded := (n + 8) / 16 * 16
+	if rounded < 256 {
+		return 256
+	}
+	return rounded
 }
 
 func generateVideoParamSchema() map[string]any {

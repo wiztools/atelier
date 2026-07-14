@@ -89,6 +89,11 @@ type HarnessToolCall struct {
 	// false — see VideoGenerateRequest.GenerateAudio.
 	NegativePrompt string `json:"negativePrompt,omitempty"`
 	GenerateAudio  *bool  `json:"generateAudio,omitempty"`
+	// AspectRatio is an optional generate_image input naming the output shape
+	// (e.g. "16:9"). When set, the handler derives width/height from it; when
+	// omitted, the configured default dimensions are used. See
+	// generateImageParamSchema and imageSizeForAspectRatio.
+	AspectRatio string `json:"aspectRatio,omitempty"`
 }
 
 type HarnessToolResult struct {

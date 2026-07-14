@@ -756,6 +756,7 @@ export namespace main {
 	    allowBinary?: boolean;
 	    negativePrompt?: string;
 	    generateAudio?: boolean;
+	    aspectRatio?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new HarnessToolCall(source);
@@ -778,6 +779,7 @@ export namespace main {
 	        this.allowBinary = source["allowBinary"];
 	        this.negativePrompt = source["negativePrompt"];
 	        this.generateAudio = source["generateAudio"];
+	        this.aspectRatio = source["aspectRatio"];
 	    }
 	}
 	export class HarnessToolResult {

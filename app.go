@@ -57,6 +57,24 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 }
 
+// beforeClose is wired to Wails' OnBeforeClose hook. It prompts the user to
+// confirm before the window closes; returning true prevents the close.
+func (a *App) beforeClose(ctx context.Context) (prevent bool) {
+	choice, err := runtime.MessageDialog(ctx, runtime.MessageDialogOptions{
+		Type:          runtime.QuestionDialog,
+		Title:         "Quit Atelier?",
+		Message:       "Are you sure you want to quit Atelier?",
+		Buttons:       []string{"Quit", "Cancel"},
+		DefaultButton: "Quit",
+		CancelButton:  "Cancel",
+	})
+	if err != nil {
+		// If the dialog fails for any reason, don't trap the user in the app.
+		return false
+	}
+	return choice != "Quit"
+}
+
 type AppConfig struct {
 	Version    int              `json:"version"`
 	Storage    ConfigStorage    `json:"storage"`
