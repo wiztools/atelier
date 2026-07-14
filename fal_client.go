@@ -243,6 +243,12 @@ func (client FalClient) GenerateVideo(ctx context.Context, req VideoGenerateRequ
 	if negative := strings.TrimSpace(req.NegativePrompt); negative != "" {
 		body["negative_prompt"] = negative
 	}
+	// generate_audio is a per-model boolean (e.g. Veo3, some Kling variants).
+	// Present only when the caller set it explicitly, so models default their own
+	// way when it's unspecified; audio-less endpoints ignore the field.
+	if req.GenerateAudio != nil {
+		body["generate_audio"] = *req.GenerateAudio
+	}
 	// Image-to-video: fal takes the source frame as image_url. Present only when
 	// the caller supplied an image to animate.
 	if image := falImageURL(req.Image); image != "" {

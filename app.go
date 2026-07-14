@@ -325,6 +325,11 @@ type VideoGenerateRequest struct {
 	// URL or a base64 data URI. It maps to fal's image_url input and requires an
 	// image-to-video model.
 	Image string `json:"image,omitempty"`
+	// GenerateAudio maps to fal's generate_audio input on audio-capable video
+	// models. A pointer so "unspecified" (nil, let the model default) stays
+	// distinct from an explicit false (silent clip) — the latter is what "video
+	// without audio" requests. Endpoints that never emit audio ignore it.
+	GenerateAudio *bool `json:"generateAudio,omitempty"`
 }
 
 type SaveImageRequest struct {

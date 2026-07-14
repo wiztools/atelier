@@ -164,7 +164,7 @@ const defaultFalVideoImageModel = 'fal-ai/kling-video/v2/master/image-to-video';
 const defaultFalAudioModel = 'fal-ai/elevenlabs/tts/multilingual-v2';
 const defaultVideoDuration = '5';
 const defaultVideoAspectRatio = '16:9';
-const videoDurationOptions = ['5', '10'];
+const videoDurationOptions = ['5', '10', '15'];
 const videoAspectRatioOptions = ['16:9', '9:16', '1:1'];
 
 // Coerce a numeric settings input to a positive integer, falling back to the
@@ -221,6 +221,8 @@ function App() {
   const [system, setSystem] = useState('You are Atelier, a precise local AI collaborator.');
   const [prompt, setPrompt] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [composerDragging, setComposerDragging] = useState(false);
+  const composerDragDepth = useRef(0);
   const [chat, setChat] = useState<ChatEntry[]>([]);
   const [collapsedThinkingIDs, setCollapsedThinkingIDs] = useState<Record<string, boolean>>({});
   const [copiedMessageID, setCopiedMessageID] = useState('');
@@ -1154,6 +1156,61 @@ function App() {
     setAttachments((items) => [...items, ...next]);
   }
 
+  function composerHasImageDrag(event: React.DragEvent<HTMLDivElement>): boolean {
+    return Array.from(event.dataTransfer?.items ?? []).some(
+      (item) => item.kind === 'file' && item.type.startsWith('image/'),
+    );
+  }
+
+  function handleComposerDragEnter(event: React.DragEvent<HTMLDivElement>) {
+    if (!composerHasImageDrag(event)) {
+      return;
+    }
+    event.preventDefault();
+    composerDragDepth.current += 1;
+    setComposerDragging(true);
+  }
+
+  function handleComposerDragOver(event: React.DragEvent<HTMLDivElement>) {
+    if (!composerHasImageDrag(event)) {
+      return;
+    }
+    // Signal that dropping here is allowed and stop the browser from opening the file.
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  }
+
+  function handleComposerDragLeave(event: React.DragEvent<HTMLDivElement>) {
+    if (composerDragDepth.current === 0) {
+      return;
+    }
+    composerDragDepth.current -= 1;
+    if (composerDragDepth.current === 0) {
+      setComposerDragging(false);
+    }
+  }
+
+  async function handleComposerDrop(event: React.DragEvent<HTMLDivElement>) {
+    composerDragDepth.current = 0;
+    setComposerDragging(false);
+    const imageFiles = Array.from(event.dataTransfer?.files ?? []).filter((file) =>
+      file.type.startsWith('image/'),
+    );
+    if (!imageFiles.length) {
+      return;
+    }
+    // Keep the browser from navigating to the dropped image and route it to attachments.
+    event.preventDefault();
+    const stamp = Date.now();
+    const next = await Promise.all(
+      imageFiles.map((file, index) => {
+        const extension = file.name.includes('.') ? '' : imageExtensionForType(file.type);
+        return readImageFile(file, file.name || `dropped-${stamp}-${index + 1}${extension}`);
+      }),
+    );
+    setAttachments((items) => [...items, ...next]);
+  }
+
   async function saveGeneratedImage(image: string, index: number) {
     try {
       await SaveImage(main.SaveImageRequest.createFrom({
@@ -1848,7 +1905,16 @@ function App() {
                 })}
               </div>
 
-              <div className="composer">
+              <div
+                className={`composer${composerDragging ? ' composer--dragging' : ''}`}
+                onDragEnter={handleComposerDragEnter}
+                onDragOver={handleComposerDragOver}
+                onDragLeave={handleComposerDragLeave}
+                onDrop={handleComposerDrop}
+              >
+                {composerDragging ? (
+                  <div className="composer-drop-overlay">Drop images to attach</div>
+                ) : null}
                 {asArray(attachments).length ? (
                   <div className="attachment-strip">
                     {asArray(attachments).map((item) => (

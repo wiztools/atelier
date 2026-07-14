@@ -754,6 +754,8 @@ export namespace main {
 	    overwrite?: boolean;
 	    maxBytes?: number;
 	    allowBinary?: boolean;
+	    negativePrompt?: string;
+	    generateAudio?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new HarnessToolCall(source);
@@ -774,6 +776,8 @@ export namespace main {
 	        this.overwrite = source["overwrite"];
 	        this.maxBytes = source["maxBytes"];
 	        this.allowBinary = source["allowBinary"];
+	        this.negativePrompt = source["negativePrompt"];
+	        this.generateAudio = source["generateAudio"];
 	    }
 	}
 	export class HarnessToolResult {

@@ -1425,6 +1425,7 @@ button:disabled {
 }
 
 .composer {
+  position: relative;
   box-sizing: border-box;
   flex: 0 0 auto;
   display: flex;
@@ -1433,6 +1434,27 @@ button:disabled {
   padding: 16px 22px 22px;
   border-top: 1px solid #2b2e30;
   background: #181b1d;
+}
+
+.composer--dragging {
+  background: #1c2124;
+}
+
+.composer-drop-overlay {
+  position: absolute;
+  inset: 8px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  border: 2px dashed #4c9a8f;
+  border-radius: 12px;
+  background: rgba(28, 33, 36, 0.82);
+  color: #d6efe9;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
 }
 
 .composer textarea {

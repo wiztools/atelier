@@ -457,6 +457,61 @@ func TestFalClientGenerateVideoHappyPath(t *testing.T) {
 	}
 }
 
+func TestFalClientGenerateVideoNegativePromptAndAudio(t *testing.T) {
+	model := "fal-ai/kling-video/v2/master/text-to-video"
+	falseFlag := false
+	cases := []struct {
+		name         string
+		req          VideoGenerateRequest
+		wantContains []string
+		wantOmits    []string
+	}{
+		{
+			name:         "negative prompt and explicit silent",
+			req:          VideoGenerateRequest{Model: model, Prompt: "x", NegativePrompt: "blurry, text", GenerateAudio: &falseFlag},
+			wantContains: []string{`"negative_prompt":"blurry, text"`, `"generate_audio":false`},
+		},
+		{
+			name:      "unset audio is omitted",
+			req:       VideoGenerateRequest{Model: model, Prompt: "x"},
+			wantOmits: []string{"generate_audio", "negative_prompt"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+				switch {
+				case req.Method == http.MethodPost && req.URL.Path == "/"+model:
+					body, _ := io.ReadAll(req.Body)
+					for _, want := range tc.wantContains {
+						if !strings.Contains(string(body), want) {
+							t.Errorf("submit body missing %s: %s", want, body)
+						}
+					}
+					for _, omit := range tc.wantOmits {
+						if strings.Contains(string(body), omit) {
+							t.Errorf("submit body should omit %s: %s", omit, body)
+						}
+					}
+					return jsonResp(`{"request_id":"req-na"}`), nil
+				case strings.HasSuffix(req.URL.Path, "/status"):
+					return jsonResp(`{"status":"COMPLETED"}`), nil
+				case strings.HasSuffix(req.URL.Path, "/requests/req-na"):
+					return jsonResp(`{"video":{"url":"https://v3.fal.media/files/clip.mp4"}}`), nil
+				case req.URL.Path == "/files/clip.mp4":
+					return mp4Resp(tinyMP4(), "video/mp4"), nil
+				default:
+					t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+					return nil, nil
+				}
+			}))
+			if _, err := client.GenerateVideo(context.Background(), tc.req); err != nil {
+				t.Fatalf("GenerateVideo returned error: %v", err)
+			}
+		})
+	}
+}
+
 func TestFalClientGenerateVideoImageToVideo(t *testing.T) {
 	model := "fal-ai/kling-video/v2/master/image-to-video"
 	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {

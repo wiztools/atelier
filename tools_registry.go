@@ -187,7 +187,7 @@ func videoGenerationToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "generate_video",
 		Title:       "Generate video",
-		Description: "Use this when the user asks to create, animate, or render a video or short clip. Works from a text description, and when the user attached an image, animates that image (image-to-video). The clip is attached to the assistant reply. Generation runs for a minute or more.",
+		Description: "Use this when the user asks to create, animate, or render a video or short clip. Works from a text description, and when the user attached an image, animates that image (image-to-video). The clip is attached to the assistant reply. Generation runs for a minute or more. Pass negativePrompt to steer content away from unwanted elements, and generateAudio:false when the user wants a silent clip.",
 		Example:     `{"name":"generate_video","content":"a drone shot flying over a misty pine forest at sunrise"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: generateVideoParamSchema(),
@@ -216,11 +216,13 @@ func videoGenerationToolDefinition() HarnessToolDefinition {
 				return nil, "video generation unavailable", errors.New("no video model is configured")
 			}
 			videoReq := VideoGenerateRequest{
-				Model:       model,
-				Prompt:      strings.TrimSpace(call.Content),
-				Duration:    tools.Config.Generation.Video.Duration,
-				AspectRatio: tools.Config.Generation.Video.AspectRatio,
-				Image:       attachedImage,
+				Model:          model,
+				Prompt:         strings.TrimSpace(call.Content),
+				Duration:       tools.Config.Generation.Video.Duration,
+				AspectRatio:    tools.Config.Generation.Video.AspectRatio,
+				NegativePrompt: strings.TrimSpace(call.NegativePrompt),
+				Image:          attachedImage,
+				GenerateAudio:  call.GenerateAudio,
 			}
 			generated, err := tools.GenerateVideo(ctx, videoReq)
 			if err != nil {
@@ -527,8 +529,10 @@ func generateVideoParamSchema() map[string]any {
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
-			"content": stringParam("The video prompt — describe the clip to create."),
-			"model":   stringParam("Optional fal.ai video model override."),
+			"content":        stringParam("The video prompt — describe the clip to create."),
+			"model":          stringParam("Optional fal.ai video model override."),
+			"negativePrompt": stringParam("Optional — describe what to keep out of the clip (e.g. \"blurry, text, watermark\")."),
+			"generateAudio":  boolParam("Optional — set false to render a silent clip on models that would otherwise add audio. Ignored by models that never produce audio."),
 		},
 		"required": []string{"content"},
 	}

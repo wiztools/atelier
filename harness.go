@@ -84,6 +84,11 @@ type HarnessToolCall struct {
 	Overwrite   bool              `json:"overwrite,omitempty"`
 	MaxBytes    int               `json:"maxBytes,omitempty"`
 	AllowBinary bool              `json:"allowBinary,omitempty"`
+	// NegativePrompt and GenerateAudio are generate_video inputs. GenerateAudio
+	// is a pointer so an omitted flag (nil) is distinguishable from an explicit
+	// false — see VideoGenerateRequest.GenerateAudio.
+	NegativePrompt string `json:"negativePrompt,omitempty"`
+	GenerateAudio  *bool  `json:"generateAudio,omitempty"`
 }
 
 type HarnessToolResult struct {
