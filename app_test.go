@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/zalando/go-keyring"
 )
@@ -135,6 +136,27 @@ func TestSanitizeFilename(t *testing.T) {
 	got := sanitizeFilename(`bad/name:image?.png`)
 	if got != "bad-name-image-.png" {
 		t.Fatalf("sanitizeFilename = %q", got)
+	}
+}
+
+func TestCompactString(t *testing.T) {
+	if got := compactString("short", 10); got != "short" {
+		t.Fatalf("compactString(short) = %q, want short", got)
+	}
+	if got := compactString("abcdef", 3); got != "abc..." {
+		t.Fatalf("compactString(ascii) = %q, want abc...", got)
+	}
+	// Multibyte runes must be truncated on a rune boundary, not a byte
+	// boundary, so the result stays valid UTF-8. "界" is a 3-byte rune; a
+	// byte-slice at length 4 would split it and produce invalid UTF-8.
+	multibyte := strings.Repeat("界", 10)
+	got := compactString(multibyte, 4)
+	if !utf8.ValidString(got) {
+		t.Fatalf("compactString(multibyte) produced invalid UTF-8: %q", got)
+	}
+	want := strings.Repeat("界", 4) + "..."
+	if got != want {
+		t.Fatalf("compactString(multibyte) = %q, want %q", got, want)
 	}
 }
 

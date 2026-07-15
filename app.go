@@ -538,9 +538,6 @@ func (a *App) GetConfig() (AppConfig, error) {
 	if err != nil {
 		return AppConfig{}, err
 	}
-	if err := writeAppConfig(config); err != nil {
-		return AppConfig{}, err
-	}
 	if err := ensureStorageDirs(config.Storage); err != nil {
 		return AppConfig{}, err
 	}
@@ -1090,12 +1087,21 @@ func (a *App) requestToolPermission(ctx context.Context, event ToolPermissionReq
 func (a *App) resolveBaseURL(baseURL string) string {
 	normalized, err := normalizeBaseURL(baseURL)
 	if err != nil {
-		return a.baseURL
+		return a.cachedBaseURL()
 	}
 	if normalized == "" {
-		return a.baseURL
+		return a.cachedBaseURL()
 	}
 	return normalized
+}
+
+// cachedBaseURL reads the runtime Ollama base URL set by GetConfig, SaveConfig,
+// or SetOllamaBaseURL. Those writers hold configMu; this read takes the same
+// lock so a config save during a concurrent chat stream can't race the field.
+func (a *App) cachedBaseURL() string {
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+	return a.baseURL
 }
 
 func (a *App) ollamaClient(baseURL string) OllamaClient {
@@ -2550,11 +2556,19 @@ func redactLargeImageStrings(value any) {
 	}
 }
 
+// compactString truncates value to at most maxLength runes, appending "..." when
+// it shortens. It works in runes (not bytes) so a multi-byte UTF-8 sequence —
+// common in non-ASCII titles and prompts — is never split, which would leave
+// invalid UTF-8 in history and the model's input.
 func compactString(value string, maxLength int) string {
 	if len(value) <= maxLength {
 		return value
 	}
-	return value[:maxLength] + "..."
+	runes := []rune(value)
+	if len(runes) <= maxLength {
+		return value
+	}
+	return string(runes[:maxLength]) + "..."
 }
 
 func extensionForMediaType(mediaType string) string {

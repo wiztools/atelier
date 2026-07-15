@@ -897,12 +897,12 @@ func isReadOnlyCommandCall(call HarnessToolCall) bool {
 		return false
 	}
 	name := normalizedCommandName(call.Command)
-	readOnlyCommands := map[string]bool{
-		"cat": true, "df": true, "du": true, "echo": true, "find": true,
-		"grep": true, "head": true, "ls": true, "pwd": true, "rg": true,
-		"tail": true, "wc": true,
-	}
-	if !readOnlyCommands[name] {
+	// The read-only set is the default allowlist — every command it ships is
+	// inherently read-only. Reading from one source prevents the two lists from
+	// drifting: a command allowed by default that isn't recognized here would
+	// needlessly prompt for permission. Commands a user adds to their own
+	// configured allowlist are not read-only by default (this can't know that).
+	if !isDefaultReadOnlyCommand(name) {
 		return false
 	}
 	for _, arg := range call.Args {
@@ -911,4 +911,17 @@ func isReadOnlyCommandCall(call HarnessToolCall) bool {
 		}
 	}
 	return true
+}
+
+// isDefaultReadOnlyCommand reports whether name is one of the commands the
+// default allowlist ships with. It is the single source of truth for which
+// commands skip permission gating, so that list and the read-only check
+// cannot drift apart.
+func isDefaultReadOnlyCommand(name string) bool {
+	for _, allowed := range defaultFilesystemToolAllowedCommands() {
+		if normalizedCommandName(allowed) == name {
+			return true
+		}
+	}
+	return false
 }
