@@ -344,53 +344,6 @@ func (client OllamaClient) GenerateImage(ctx context.Context, req ImageGenerateR
 	return payload, raw, nil
 }
 
-func (client OllamaClient) GenerateChatTitle(ctx context.Context, req ChatRequest, userPrompt string, assistantContent string) (string, error) {
-	titlePrompt := "Generate a concise title for this chat conversation. Return only the title, no quotes, no punctuation wrapper, no explanation. Keep it under 8 words.\n\nUser:\n" +
-		compactString(userPrompt, 1600) +
-		"\n\nAssistant:\n" +
-		compactString(assistantContent, 1600)
-	options := map[string]any{
-		"temperature": 0,
-		"num_predict": 24,
-	}
-	for key, value := range req.Options {
-		if _, exists := options[key]; !exists {
-			options[key] = value
-		}
-	}
-	body := map[string]any{
-		"model":  req.Model,
-		"stream": false,
-		"messages": []ChatMessage{
-			{Role: "system", Content: "You create short, specific conversation titles."},
-			{Role: "user", Content: titlePrompt},
-		},
-		"options": options,
-	}
-
-	resp, err := client.postJSON(ctx, "/api/chat", body)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	var payload ollamaChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return "", err
-	}
-	if payload.Error != "" {
-		return "", errors.New(payload.Error)
-	}
-	title := cleanGeneratedTitle(payload.Message.Content)
-	if title == "" {
-		title = cleanGeneratedTitle(payload.Response)
-	}
-	if title == "" {
-		return "", errors.New("empty title")
-	}
-	return title, nil
-}
-
 func (client OllamaClient) getJSON(ctx context.Context, path string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, client.endpoint(path), nil)
 	if err != nil {
