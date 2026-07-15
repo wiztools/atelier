@@ -9,7 +9,7 @@ wails dev                          # Run frontend + Go backend together (dev ser
 go test ./...                      # Run all Go tests
 npm run build --prefix frontend    # Type-check + build the Vite frontend
 wails build                        # Produce build/bin/Atelier.app
-./bld.sh                           # One-shot: gofmt -w *.go && go test && npm build && wails build
+./bld.sh                           # One-shot: gofmt -w *.go && npm build && go test && wails build
 ./release.sh [--dry-run] [--skip-tests] <semver>  # Bump version, build, sign, notarize, tag (macOS)
 ```
 

@@ -4830,3 +4830,109 @@ func TestHarnessProviderUnavailableSurfacesConfigErrors(t *testing.T) {
 		t.Errorf("ollama harness reported unavailable: %v", err)
 	}
 }
+
+// generateConversationTitle used to call OllamaClient.GenerateChatTitle
+// directly with req.Model, which is the *primary* chat model. For an
+// OpenRouter primary provider that sent an OpenRouter model name
+// ("anthropic/claude-3.5-sonnet") to the local Ollama endpoint; the call
+// errored and the title silently degraded to the truncated prompt. Titles must
+// route through the provider layer like every other model call.
+func TestGenerateConversationTitleRoutesToProvider(t *testing.T) {
+	tests := []struct {
+		name      string
+		provider  string
+		model     string
+		wantHost  string
+		wantPath  string
+		respond   func() *http.Response
+		wantTitle string
+	}{
+		{
+			name:      "ollama primary hits the ollama endpoint",
+			provider:  "ollama",
+			model:     "llama3.1",
+			wantHost:  "ollama.test",
+			wantPath:  "/api/chat",
+			respond:   func() *http.Response { return chatCompletion("llama3.1", "Bread Baking Basics") },
+			wantTitle: "Bread Baking Basics",
+		},
+		{
+			name:     "openrouter primary hits the openrouter endpoint",
+			provider: "openrouter",
+			model:    "anthropic/claude-3.5-sonnet",
+			wantHost: "openrouter.ai",
+			wantPath: "/api/v1/chat/completions",
+			respond: func() *http.Response {
+				return jsonResponse(`{"model":"anthropic/claude-3.5-sonnet","choices":[{"message":{"content":"Bread Baking Basics"},"finish_reason":"stop"}]}`)
+			},
+			wantTitle: "Bread Baking Basics",
+		},
+		{
+			name:     "provider error falls back to the prompt",
+			provider: "openrouter",
+			model:    "anthropic/claude-3.5-sonnet",
+			wantHost: "openrouter.ai",
+			wantPath: "/api/v1/chat/completions",
+			respond: func() *http.Response {
+				return jsonResponse(`{"error":{"message":"model not found"}}`)
+			},
+			wantTitle: "How do I bake sourdough bread?",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			keyring.MockInit()
+			if err := saveOpenRouterAPIKey("sk-or-test"); err != nil {
+				t.Fatalf("saveOpenRouterAPIKey: %v", err)
+			}
+			t.Cleanup(func() { _ = clearOpenRouterAPIKey() })
+
+			app := NewApp()
+			calls := 0
+			var gotHost, gotPath, gotModel string
+			app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				calls++
+				gotHost = req.URL.Host
+				gotPath = req.URL.Path
+				body, err := io.ReadAll(req.Body)
+				if err != nil {
+					t.Fatalf("read request body: %v", err)
+				}
+				var payload map[string]any
+				if err := json.Unmarshal(body, &payload); err != nil {
+					t.Fatalf("unmarshal request body: %v", err)
+				}
+				gotModel, _ = payload["model"].(string)
+				return test.respond(), nil
+			})
+
+			config := defaultAppConfig()
+			config.Providers.Ollama.BaseURL = "http://ollama.test"
+			req := ChatRequest{
+				BaseURL:  "http://ollama.test",
+				Provider: test.provider,
+				Model:    test.model,
+				Messages: []ChatMessage{{Role: "user", Content: "How do I bake sourdough bread?"}},
+			}
+
+			got := app.generateConversationTitle(config, req, "Start with a sourdough starter.")
+
+			if calls != 1 {
+				t.Fatalf("title calls = %d, want 1", calls)
+			}
+			if gotHost != test.wantHost {
+				t.Errorf("request host = %q, want %q", gotHost, test.wantHost)
+			}
+			if gotPath != test.wantPath {
+				t.Errorf("request path = %q, want %q", gotPath, test.wantPath)
+			}
+			if gotModel != test.model {
+				t.Errorf("request model = %q, want %q", gotModel, test.model)
+			}
+			if got != test.wantTitle {
+				t.Errorf("title = %q, want %q", got, test.wantTitle)
+			}
+		})
+	}
+}

@@ -9,10 +9,15 @@ build/bin/
 # Local `go build` binary at repo root (the main package compiles to ./atelier)
 /atelier
 
-# Frontend generated artifacts
+# Frontend generated artifacts. frontend/dist is embedded by main.go
+# (//go:embed all:frontend/dist), so the directory must exist for any Go build
+# or test to compile — the tracked .gitkeep satisfies the embed on a fresh
+# clone. The build output itself stays ignored; wails build regenerates it via
+# the frontend:build hook in wails.json.
 node_modules/
 frontend/node_modules/
-frontend/dist/
+frontend/dist/*
+!frontend/dist/.gitkeep
 
 # Logs and local env
 *.log

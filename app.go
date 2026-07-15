@@ -1006,6 +1006,12 @@ func (a *App) writeChatConversation(req ChatRequest, assistantContent, assistant
 	return newHarnessEngine(config).SaveChatTurn(req, assistantContent, assistantThinking, model, resolvedProvider(req), reason, tokens, title, run)
 }
 
+// generateConversationTitle names a new conversation with the primary model,
+// falling back to the truncated prompt whenever the call can't be made or
+// comes back empty. It resolves through the provider layer rather than
+// reaching for ollamaClient: req.Model is the *primary* chat model, so an
+// OpenRouter primary would otherwise send an OpenRouter model name to the
+// local Ollama endpoint and silently degrade every title to the fallback.
 func (a *App) generateConversationTitle(config AppConfig, req ChatRequest, assistantContent string) string {
 	userPrompt := lastUserPrompt(req.Messages)
 	fallback := titleFromPrompt(userPrompt)
@@ -1013,15 +1019,46 @@ func (a *App) generateConversationTitle(config AppConfig, req ChatRequest, assis
 		return fallback
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	req.Options = withNumCtx(req.Options, ollamaNumCtx(config))
-	title, err := a.ollamaClient(req.BaseURL).GenerateChatTitle(ctx, req, userPrompt, assistantContent)
+	provider, err := a.providerFor(resolvedProvider(req), req.BaseURL)
 	if err != nil {
 		return fallback
 	}
-	return title
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	completion, err := provider.CompleteChat(ctx, conversationTitleRequest(config, req, userPrompt, assistantContent))
+	if err != nil {
+		return fallback
+	}
+	return normalizeConversationTitle(completion.Content, userPrompt)
+}
+
+// conversationTitleRequest builds the title call for a finished turn. The
+// options are Ollama tuning knobs; openRouterChatBody drops options entirely,
+// so the same request is valid on either provider.
+func conversationTitleRequest(config AppConfig, req ChatRequest, userPrompt, assistantContent string) ChatRequest {
+	titlePrompt := "Generate a concise title for this chat conversation. Return only the title, no quotes, no punctuation wrapper, no explanation. Keep it under 8 words.\n\nUser:\n" +
+		compactString(userPrompt, 1600) +
+		"\n\nAssistant:\n" +
+		compactString(assistantContent, 1600)
+	options := map[string]any{
+		"temperature": 0,
+		"num_predict": 24,
+	}
+	for key, value := range req.Options {
+		if _, exists := options[key]; !exists {
+			options[key] = value
+		}
+	}
+	return ChatRequest{
+		BaseURL:  req.BaseURL,
+		Provider: resolvedProvider(req),
+		Model:    req.Model,
+		System:   "You create short, specific conversation titles.",
+		Messages: []ChatMessage{{Role: "user", Content: titlePrompt}},
+		Options:  withNumCtx(options, ollamaNumCtx(config)),
+	}
 }
 
 func (a *App) emitChatEvent(event ChatStreamEvent) {
