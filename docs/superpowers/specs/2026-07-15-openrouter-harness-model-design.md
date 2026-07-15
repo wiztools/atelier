@@ -1,7 +1,9 @@
 # Selecting the Harness Model from OpenRouter
 
 **Date:** 2026-07-15
-**Status:** Approved, pending implementation plan
+**Status:** Implemented on `feat/openrouter-harness-model`. The one item deferred
+to implementation — verifying the strict-mode rejected-keyword list against
+OpenRouter's live docs — is still open; see "Structured output on OpenRouter".
 **Revision:** 2 — incorporates
 `2026-07-15-openrouter-harness-model-design-review.md`. Changes from revision 1
 are summarized at the end.
