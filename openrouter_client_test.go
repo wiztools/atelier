@@ -274,3 +274,75 @@ func TestOpenRouterChatBodyMapsPortableSamplingOptions(t *testing.T) {
 		t.Errorf("num_predict leaked to OpenRouter unmapped: %+v", body)
 	}
 }
+
+// TestOpenRouterChatBodyRewritesPlannerToolEvidence reproduces the 400 seen on
+// the first OpenRouter planner turn that needed tools:
+//
+//	tool message has no preceding assistant tool_calls
+//
+// The format-schema planner emits an assistant message with no tool_calls
+// followed by role:"tool" observations. Ollama accepts that; the OpenAI wire
+// format does not.
+func TestOpenRouterChatBodyRewritesPlannerToolEvidence(t *testing.T) {
+	engine := newHarnessEngine(defaultAppConfig())
+	results := []HarnessToolResult{
+		{Name: "list_files", Status: "completed", Result: map[string]any{"files": []string{"a.go"}}},
+	}
+
+	// Exactly what prepareChatTurnLoop appends on the format-schema path.
+	messages := []ChatMessage{{Role: "user", Content: "List all files in my workspace."}}
+	messages = append(messages, engine.plannerAssistantMessage(false, ChatCompletionResult{Content: `{"brief":"list the files"}`}))
+	messages = append(messages, toolResultMessages(results)...)
+
+	body := openRouterChatBody(ChatRequest{Model: "anthropic/claude-3.5-sonnet", Messages: messages}, false)
+
+	sent := body["messages"].([]ChatMessage)
+	for i, msg := range sent {
+		if msg.Role == "tool" {
+			t.Fatalf("message %d kept role %q with no preceding assistant tool_calls — OpenRouter rejects this with 400", i, msg.Role)
+		}
+	}
+	// The observation itself must survive the rewrite, or the planner re-plans blind.
+	last := sent[len(sent)-1]
+	if last.Role != "user" || !strings.Contains(last.Content, "list_files") {
+		t.Fatalf("tool observation lost in rewrite: %+v", last)
+	}
+}
+
+func TestOpenRouterChatBodyKeepsToolMessagesBackedByToolCalls(t *testing.T) {
+	// When the assistant genuinely made native tool calls, role:"tool" is the
+	// correct shape and must survive untouched.
+	body := openRouterChatBody(ChatRequest{
+		Model: "m",
+		Messages: []ChatMessage{
+			{Role: "assistant", ToolCalls: []ollamaToolCall{{Type: "function", Function: ollamaToolFunction{Name: "list_files"}}}},
+			{Role: "tool", Content: `{"name":"list_files","status":"completed"}`},
+		},
+	}, false)
+
+	sent := body["messages"].([]ChatMessage)
+	if sent[1].Role != "tool" {
+		t.Fatalf("tool message backed by tool_calls was rewritten to %q; native tool-calling would break", sent[1].Role)
+	}
+}
+
+func TestOpenRouterChatBodyMergesConsecutiveToolObservations(t *testing.T) {
+	// Converting each observation to its own user message would emit
+	// consecutive user roles, which some providers also reject.
+	body := openRouterChatBody(ChatRequest{
+		Model: "m",
+		Messages: []ChatMessage{
+			{Role: "assistant", Content: "{}"},
+			{Role: "tool", Content: `{"name":"list_files"}`},
+			{Role: "tool", Content: `{"name":"read_file"}`},
+		},
+	}, false)
+
+	sent := body["messages"].([]ChatMessage)
+	if len(sent) != 2 {
+		t.Fatalf("got %d messages, want the two observations merged into one user message: %+v", len(sent), sent)
+	}
+	if !strings.Contains(sent[1].Content, "list_files") || !strings.Contains(sent[1].Content, "read_file") {
+		t.Fatalf("merged message dropped an observation: %q", sent[1].Content)
+	}
+}

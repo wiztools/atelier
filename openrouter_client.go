@@ -174,8 +174,49 @@ func widenToNullable(schema any) any {
 // a name; it is otherwise unused, so one constant serves every harness call.
 const openRouterStructuredOutputName = "atelier_structured_output"
 
+// openRouterMessages renders the harness's canonical message list into shapes
+// the OpenAI wire format accepts.
+//
+// A role:"tool" message is only legal there when the preceding assistant
+// message carries tool_calls. The format-schema planner emits neither — it gets
+// its plan from a response schema, not native tool-calling — so its tool
+// observations arrive unbacked. Ollama accepts them; OpenRouter rejects the
+// request with "tool message has no preceding assistant tool_calls".
+//
+// Render those observations as a user message instead: the same container
+// toolEvidenceUserMessage already uses for the final model, for the same
+// reason. Without native tool-calling they are evidence, not a protocol reply.
+// Consecutive observations merge into one message, since consecutive same-role
+// messages are their own portability hazard. Tool messages that *are* backed by
+// tool_calls pass through untouched.
+func openRouterMessages(messages []ChatMessage) []ChatMessage {
+	rendered := make([]ChatMessage, 0, len(messages))
+	toolCallsOpen := false // the preceding assistant message carried tool_calls
+	mergeInto := -1        // index of the user message consecutive observations join
+
+	for _, msg := range messages {
+		if msg.Role == "tool" {
+			if toolCallsOpen {
+				rendered = append(rendered, msg)
+				continue
+			}
+			if mergeInto >= 0 {
+				rendered[mergeInto].Content += "\n\n" + msg.Content
+				continue
+			}
+			rendered = append(rendered, ChatMessage{Role: "user", Content: toolObservationsPrefix + msg.Content})
+			mergeInto = len(rendered) - 1
+			continue
+		}
+		mergeInto = -1
+		toolCallsOpen = msg.Role == "assistant" && len(msg.ToolCalls) > 0
+		rendered = append(rendered, msg)
+	}
+	return rendered
+}
+
 func openRouterChatBody(req ChatRequest, stream bool) map[string]any {
-	messages := req.Messages
+	messages := openRouterMessages(req.Messages)
 	if req.System != "" {
 		messages = append([]ChatMessage{{Role: "system", Content: req.System}}, messages...)
 	}

@@ -1107,6 +1107,12 @@ func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel, 
 	return responseReq
 }
 
+// toolObservationsPrefix labels tool results carried in a user-role message.
+// Shared with the OpenRouter adapter (openRouterMessages), which rewrites
+// tool-role messages the OpenAI wire format cannot express, so both paths
+// present observations to a model in the same vocabulary.
+const toolObservationsPrefix = "[Tool observations]\n"
+
 // toolEvidenceUserMessage renders tool results as a single user-role message
 // so that providers enforcing strict role ordering (e.g. Mistral via
 // OpenRouter) never see a bare "tool" role after a "user" role. The primary
@@ -1120,7 +1126,7 @@ func toolEvidenceUserMessage(results []HarnessToolResult) ChatMessage {
 	}
 	return ChatMessage{
 		Role:    "user",
-		Content: "[Tool observations]\n" + strings.Join(parts, "\n\n"),
+		Content: toolObservationsPrefix + strings.Join(parts, "\n\n"),
 	}
 }
 
