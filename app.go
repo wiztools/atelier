@@ -511,15 +511,23 @@ type HarnessStep struct {
 }
 
 type HarnessToolActivity struct {
-	Name          string   `json:"name"`
-	Status        string   `json:"status"`
-	Path          string   `json:"path,omitempty"`
-	Command       []string `json:"command,omitempty"`
-	ExitCode      int      `json:"exitCode,omitempty"`
-	StdoutPreview string   `json:"stdoutPreview,omitempty"`
-	StderrPreview string   `json:"stderrPreview,omitempty"`
-	DurationMS    int64    `json:"durationMs,omitempty"`
-	Error         string   `json:"error,omitempty"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	// Call is the planner's emitted inputs for this tool call (the plan's
+	// per-call params: content, model, path, command, duration, negativePrompt,
+	// etc.). Recorded on every tool_call step so the emitted params are
+	// inspectable post-hoc — the result struct carries only what the tool
+	// produced, not what was requested. Zipped onto the activity at the
+	// recording site (harness.go toolActivities), never via HarnessToolResult,
+	// so planner params cannot leak into role:"tool" evidence.
+	Call          HarnessToolCall `json:"call,omitempty"`
+	Path          string          `json:"path,omitempty"`
+	Command       []string        `json:"command,omitempty"`
+	ExitCode      int             `json:"exitCode,omitempty"`
+	StdoutPreview string          `json:"stdoutPreview,omitempty"`
+	StderrPreview string          `json:"stderrPreview,omitempty"`
+	DurationMS    int64           `json:"durationMs,omitempty"`
+	Error         string          `json:"error,omitempty"`
 }
 
 func (a *App) GetConfig() (AppConfig, error) {

@@ -900,7 +900,7 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 		round.ToolResults = results
 		prepared.Rounds = append(prepared.Rounds, round)
 		prepared.ToolResults = append(prepared.ToolResults, results...)
-		run.Steps[toolStep].Tools = h.toolActivities(results)
+		run.Steps[toolStep].Tools = h.toolActivities(results, plan.ToolCalls)
 		run.completeStep(toolStep, "completed", "tool_call", 0, "")
 
 		if time.Now().After(deadline) {
@@ -1446,10 +1446,18 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 	return results
 }
 
-func (h *HarnessEngine) toolActivities(results []HarnessToolResult) []HarnessToolActivity {
+func (h *HarnessEngine) toolActivities(results []HarnessToolResult, calls []HarnessToolCall) []HarnessToolActivity {
 	activities := make([]HarnessToolActivity, 0, len(results))
-	for _, result := range results {
-		activities = append(activities, h.toolActivityFromResult(result))
+	// runHarnessToolCalls emits one result per call, so results and calls are
+	// 1:1. Bound the zip by the shorter slice defensively — a future caller that
+	// splits or drops results should not panic, it should simply leave the
+	// activity's Call at its zero value.
+	for i, result := range results {
+		activity := h.toolActivityFromResult(result)
+		if i < len(calls) {
+			activity.Call = calls[i]
+		}
+		activities = append(activities, activity)
 	}
 	return activities
 }

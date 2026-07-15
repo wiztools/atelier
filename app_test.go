@@ -2692,6 +2692,18 @@ func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
 	if path, _ := activity["path"].(string); !strings.HasSuffix(path, "status.txt") {
 		t.Fatalf("tool activity path = %q, want status.txt", path)
 	}
+	// The planner's emitted call params are recorded on the activity so they're
+	// inspectable post-hoc — the result only carries what the tool produced.
+	call, ok := activity["call"].(map[string]any)
+	if !ok {
+		t.Fatalf("tool activity call = %+v, want the recorded plan call", activity["call"])
+	}
+	if call["name"] != "read_file" {
+		t.Fatalf("tool activity call.name = %q, want read_file", call["name"])
+	}
+	if callPath, _ := call["path"].(string); !strings.HasSuffix(callPath, "status.txt") {
+		t.Fatalf("tool activity call.path = %q, want status.txt", callPath)
+	}
 }
 
 func TestHarnessFeedsToolFailureBackToPlanner(t *testing.T) {
