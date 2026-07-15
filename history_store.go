@@ -77,18 +77,38 @@ func (store HistoryStore) loadForAppend(conversationID, expectedKind, displayKin
 		return loadedConversation{}, fmt.Errorf("conversation %s is not %s conversation", conversationID, displayKind)
 	}
 
-	detail, err := getConversation(store.storage, conversationID)
-	if err != nil {
-		return loadedConversation{}, err
-	}
 	conversationDir := filepath.Dir(conversationPath)
+	turnsDir := filepath.Join(conversationDir, "turns")
 	return loadedConversation{
 		Path:           conversationPath,
-		TurnsDir:       filepath.Join(conversationDir, "turns"),
+		TurnsDir:       turnsDir,
 		ArtifactsDir:   filepath.Join(conversationDir, "artifacts"),
 		Conversation:   conversation,
-		NextTurnNumber: len(detail.Turns) + 1,
+		NextTurnNumber: countTurnFiles(turnsDir) + 1,
 	}, nil
+}
+
+// countTurnFiles returns the number of turn files in a conversation's turns
+// directory. Turn files are always "turn_NNNNNN.json" with a monotonically
+// increasing number, so this count yields the next turn number (1-based).
+//
+// It counts directory entries rather than reading them so the append path
+// does not unmarshal every turn — and unlike the previous approach (which
+// went through getConversation, itself walking the whole conversation tree a
+// second time), this never re-scans history or parses turn bodies just to
+// pick a number. Returns 0 when the directory does not exist yet.
+func countTurnFiles(turnsDir string) int {
+	entries, err := os.ReadDir(turnsDir)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, entry := range entries {
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".json" {
+			count++
+		}
+	}
+	return count
 }
 
 func (store HistoryStore) writeConversation(path string, conversation HistoryConversation) error {
