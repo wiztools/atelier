@@ -564,11 +564,8 @@ func (a *App) SaveConfig(config AppConfig) error {
 }
 
 func (a *App) ListConversations() ([]ConversationSummary, error) {
-	config, err := loadAppConfig()
+	config, err := loadReadyConfig()
 	if err != nil {
-		return nil, err
-	}
-	if err := ensureStorageDirs(config.Storage); err != nil {
 		return nil, err
 	}
 	return listConversations(config.Storage)
@@ -696,22 +693,16 @@ func (a *App) RunToolCommand(req ToolCommandRequest) (ToolCommandResult, error) 
 }
 
 func (a *App) ListToolFiles(req ToolFileListRequest) (ToolFileListResult, error) {
-	config, err := loadAppConfig()
+	config, err := loadReadyConfig()
 	if err != nil {
-		return ToolFileListResult{}, err
-	}
-	if err := ensureStorageDirs(config.Storage); err != nil {
 		return ToolFileListResult{}, err
 	}
 	return newFilesystemToolLayer(config.Tools.Filesystem).ListFiles(req)
 }
 
 func (a *App) ReadToolFile(req ToolFileReadRequest) (ToolFileReadResult, error) {
-	config, err := loadAppConfig()
+	config, err := loadReadyConfig()
 	if err != nil {
-		return ToolFileReadResult{}, err
-	}
-	if err := ensureStorageDirs(config.Storage); err != nil {
 		return ToolFileReadResult{}, err
 	}
 	return newFilesystemToolLayer(config.Tools.Filesystem).ReadFile(req)
@@ -746,11 +737,8 @@ func (a *App) WriteToolFile(req ToolFileWriteRequest) (ToolFileWriteResult, erro
 }
 
 func (a *App) ExecuteTool(req ToolExecutionRequest) (HarnessToolResult, error) {
-	config, err := loadAppConfig()
+	config, err := loadReadyConfig()
 	if err != nil {
-		return HarnessToolResult{}, err
-	}
-	if err := ensureStorageDirs(config.Storage); err != nil {
 		return HarnessToolResult{}, err
 	}
 	result := newToolGateway(a, config).Execute(context.Background(), req)
@@ -762,11 +750,8 @@ func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {
 		return nil, errors.New("at least one message is required")
 	}
 
-	config, err := loadAppConfig()
+	config, err := loadReadyConfig()
 	if err != nil {
-		return nil, err
-	}
-	if err := ensureStorageDirs(config.Storage); err != nil {
 		return nil, err
 	}
 	engine := newHarnessEngine(config, a)
@@ -984,12 +969,8 @@ func decodeImagePayload(image string) ([]byte, string, error) {
 }
 
 func (a *App) runChatStream(ctx context.Context, requestID string, req ChatRequest) {
-	config, err := loadAppConfig()
+	config, err := loadReadyConfig()
 	if err != nil {
-		a.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
-		return
-	}
-	if err := ensureStorageDirs(config.Storage); err != nil {
 		a.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
 		return
 	}
@@ -1000,11 +981,8 @@ func (a *App) writeChatConversation(req ChatRequest, assistantContent, assistant
 	if strings.TrimSpace(assistantContent) == "" && strings.TrimSpace(assistantThinking) == "" {
 		return "", nil
 	}
-	config, err := loadAppConfig()
+	config, err := loadReadyConfig()
 	if err != nil {
-		return "", err
-	}
-	if err := ensureStorageDirs(config.Storage); err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(model) == "" {
@@ -1322,6 +1300,22 @@ func loadAppConfig() (AppConfig, error) {
 		return AppConfig{}, err
 	}
 	return mergeAppConfig(config), nil
+}
+
+// loadReadyConfig loads the merged config and ensures every storage directory
+// it references exists. This is the boilerplate every read-side App method
+// needs before touching history or artifacts, factored out so each caller is a
+// single line instead of the load → ensure → error ritual. Read-only: unlike
+// GetConfig, it never writes config back to disk.
+func loadReadyConfig() (AppConfig, error) {
+	config, err := loadAppConfig()
+	if err != nil {
+		return AppConfig{}, err
+	}
+	if err := ensureStorageDirs(config.Storage); err != nil {
+		return AppConfig{}, err
+	}
+	return config, nil
 }
 
 func writeAppConfig(config AppConfig) error {
@@ -1805,22 +1799,41 @@ func appendChatAssistantTurn(config AppConfig, conversationID, assistantContent,
 	return store.writeTurn(loaded.TurnsDir, assistantTurn)
 }
 
-func appendChatAssistantTurnWithImages(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, images []string, raw string, run HarnessRun, imageReq ImageGenerateRequest) error {
+// chatAssistantTurnMedia is the per-call piece a media-bearing assistant turn
+// needs. build writes that turn's artifacts (images, videos, audios) into
+// artifactsDir using turnNumber, and returns the HistoryContent entries they
+// become, any live-render URLs, and the tool metadata recorded on the saved
+// turn. The shared append helper calls build after loading the conversation,
+// since artifact writing needs the resolved ArtifactsDir and NextTurnNumber.
+type chatAssistantTurnMedia struct {
+	build func(artifactsDir string, turnNumber int) (contents []HistoryContent, urls []string, tool map[string]any, err error)
+}
+
+// appendChatAssistantTurnWithMedia is the shared skeleton for persisting an
+// assistant turn that produced media. It loads the conversation, delegates
+// artifact writing + metadata assembly to media.build, then writes a single
+// assistant turn whose ProviderResponse carries the tool metadata. The three
+// media-specific append functions (images/videos/audios) are thin wrappers
+// that differ only in their build closure; the load, content assembly, stat
+// update, and persistence are identical and live here once.
+func appendChatAssistantTurnWithMedia(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, run HarnessRun, media chatAssistantTurnMedia) ([]string, error) {
 	store := newHistoryStore(config.Storage)
 	loaded, err := store.loadForAppend(conversationID, "chat", "a chat")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	nowText := time.Now().Format(time.RFC3339)
-	imageContents, err := writeChatImageArtifacts(loaded.ArtifactsDir, imageReq, images, loaded.NextTurnNumber)
+
+	mediaContents, urls, tool, err := media.build(loaded.ArtifactsDir, loaded.NextTurnNumber)
 	if err != nil {
-		return err
+		return nil, err
 	}
+
 	contents := []HistoryContent{{Type: "text", Text: assistantContent}}
 	if strings.TrimSpace(assistantThinking) != "" {
 		contents = append(contents, HistoryContent{Type: "thinking", Text: assistantThinking})
 	}
-	contents = append(contents, imageContents...)
+	contents = append(contents, mediaContents...)
 	assistantTurn := HistoryTurn{
 		SchemaVersion:  1,
 		ID:             fmt.Sprintf("turn_%06d", loaded.NextTurnNumber),
@@ -1834,22 +1847,39 @@ func appendChatAssistantTurnWithImages(config AppConfig, conversationID, assista
 		ProviderResponse: map[string]any{
 			"doneReason": reason,
 			"harnessRun": run,
-			"tool": map[string]any{
-				"name":       "image_generation",
-				"model":      imageReq.Model,
-				"imageCount": len(imageContents),
-				"rawCompact": raw,
-			},
+			"tool":       tool,
 		},
 	}
 
 	loaded.Conversation.UpdatedAt = nowText
 	loaded.Conversation.Stats.TurnCount++
-	loaded.Conversation.Stats.ArtifactCount += len(imageContents)
+	loaded.Conversation.Stats.ArtifactCount += len(mediaContents)
 	if err := store.writeConversation(loaded.Path, loaded.Conversation); err != nil {
-		return err
+		return nil, err
 	}
-	return store.writeTurn(loaded.TurnsDir, assistantTurn)
+	if err := store.writeTurn(loaded.TurnsDir, assistantTurn); err != nil {
+		return nil, err
+	}
+	return urls, nil
+}
+
+func appendChatAssistantTurnWithImages(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, images []string, raw string, run HarnessRun, imageReq ImageGenerateRequest) error {
+	_, err := appendChatAssistantTurnWithMedia(config, conversationID, assistantContent, assistantThinking, model, provider, reason, run, chatAssistantTurnMedia{
+		build: func(artifactsDir string, turnNumber int) ([]HistoryContent, []string, map[string]any, error) {
+			imageContents, err := writeChatImageArtifacts(artifactsDir, imageReq, images, turnNumber)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			tool := map[string]any{
+				"name":       "image_generation",
+				"model":      imageReq.Model,
+				"imageCount": len(imageContents),
+				"rawCompact": raw,
+			}
+			return imageContents, nil, tool, nil
+		},
+	})
+	return err
 }
 
 // appendChatAssistantTurnWithVideos persists an assistant turn that produced one
@@ -1858,60 +1888,27 @@ func appendChatAssistantTurnWithImages(config AppConfig, conversationID, assista
 // directory; the returned URLs are the "/atelier-artifact" links the live UI
 // renders before the turn is reloaded from history.
 func appendChatAssistantTurnWithVideos(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, images []string, imageReq ImageGenerateRequest, videos []ToolVideoFile, videoReq VideoGenerateRequest, run HarnessRun) ([]string, error) {
-	store := newHistoryStore(config.Storage)
-	loaded, err := store.loadForAppend(conversationID, "chat", "a chat")
-	if err != nil {
-		return nil, err
-	}
-	nowText := time.Now().Format(time.RFC3339)
-
-	imageContents, err := writeChatImageArtifacts(loaded.ArtifactsDir, imageReq, images, loaded.NextTurnNumber)
-	if err != nil {
-		return nil, err
-	}
-	videoContents, videoURLs, err := writeChatVideoArtifacts(loaded.ArtifactsDir, videos, loaded.NextTurnNumber)
-	if err != nil {
-		return nil, err
-	}
-
-	contents := []HistoryContent{{Type: "text", Text: assistantContent}}
-	if strings.TrimSpace(assistantThinking) != "" {
-		contents = append(contents, HistoryContent{Type: "thinking", Text: assistantThinking})
-	}
-	contents = append(contents, imageContents...)
-	contents = append(contents, videoContents...)
-	assistantTurn := HistoryTurn{
-		SchemaVersion:  1,
-		ID:             fmt.Sprintf("turn_%06d", loaded.NextTurnNumber),
-		ConversationID: conversationID,
-		CreatedAt:      nowText,
-		Kind:           "chat",
-		Role:           "assistant",
-		Model:          model,
-		Provider:       provider,
-		Content:        contents,
-		ProviderResponse: map[string]any{
-			"doneReason": reason,
-			"harnessRun": run,
-			"tool": map[string]any{
+	return appendChatAssistantTurnWithMedia(config, conversationID, assistantContent, assistantThinking, model, provider, reason, run, chatAssistantTurnMedia{
+		build: func(artifactsDir string, turnNumber int) ([]HistoryContent, []string, map[string]any, error) {
+			imageContents, err := writeChatImageArtifacts(artifactsDir, imageReq, images, turnNumber)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			videoContents, videoURLs, err := writeChatVideoArtifacts(artifactsDir, videos, turnNumber)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			contents := append([]HistoryContent{}, imageContents...)
+			contents = append(contents, videoContents...)
+			tool := map[string]any{
 				"name":       "video_generation",
 				"model":      videoReq.Model,
 				"videoCount": len(videoContents),
 				"imageCount": len(imageContents),
-			},
+			}
+			return contents, videoURLs, tool, nil
 		},
-	}
-
-	loaded.Conversation.UpdatedAt = nowText
-	loaded.Conversation.Stats.TurnCount++
-	loaded.Conversation.Stats.ArtifactCount += len(imageContents) + len(videoContents)
-	if err := store.writeConversation(loaded.Path, loaded.Conversation); err != nil {
-		return nil, err
-	}
-	if err := store.writeTurn(loaded.TurnsDir, assistantTurn); err != nil {
-		return nil, err
-	}
-	return videoURLs, nil
+	})
 }
 
 // writeChatVideoArtifacts moves each generated video's temp file into the
@@ -1960,54 +1957,20 @@ func writeChatVideoArtifacts(artifactsDir string, videos []ToolVideoFile, turnNu
 // conversation's artifacts directory; the returned URLs are the
 // "/atelier-artifact" links the live UI renders before reload.
 func appendChatAssistantTurnWithAudios(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, audios []ToolAudioFile, audioReq AudioGenerateRequest, run HarnessRun) ([]string, error) {
-	store := newHistoryStore(config.Storage)
-	loaded, err := store.loadForAppend(conversationID, "chat", "a chat")
-	if err != nil {
-		return nil, err
-	}
-	nowText := time.Now().Format(time.RFC3339)
-
-	audioContents, audioURLs, err := writeChatAudioArtifacts(loaded.ArtifactsDir, audios, loaded.NextTurnNumber)
-	if err != nil {
-		return nil, err
-	}
-
-	contents := []HistoryContent{{Type: "text", Text: assistantContent}}
-	if strings.TrimSpace(assistantThinking) != "" {
-		contents = append(contents, HistoryContent{Type: "thinking", Text: assistantThinking})
-	}
-	contents = append(contents, audioContents...)
-	assistantTurn := HistoryTurn{
-		SchemaVersion:  1,
-		ID:             fmt.Sprintf("turn_%06d", loaded.NextTurnNumber),
-		ConversationID: conversationID,
-		CreatedAt:      nowText,
-		Kind:           "chat",
-		Role:           "assistant",
-		Model:          model,
-		Provider:       provider,
-		Content:        contents,
-		ProviderResponse: map[string]any{
-			"doneReason": reason,
-			"harnessRun": run,
-			"tool": map[string]any{
+	return appendChatAssistantTurnWithMedia(config, conversationID, assistantContent, assistantThinking, model, provider, reason, run, chatAssistantTurnMedia{
+		build: func(artifactsDir string, turnNumber int) ([]HistoryContent, []string, map[string]any, error) {
+			audioContents, audioURLs, err := writeChatAudioArtifacts(artifactsDir, audios, turnNumber)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			tool := map[string]any{
 				"name":       "audio_generation",
 				"model":      audioReq.Model,
 				"audioCount": len(audioContents),
-			},
+			}
+			return audioContents, audioURLs, tool, nil
 		},
-	}
-
-	loaded.Conversation.UpdatedAt = nowText
-	loaded.Conversation.Stats.TurnCount++
-	loaded.Conversation.Stats.ArtifactCount += len(audioContents)
-	if err := store.writeConversation(loaded.Path, loaded.Conversation); err != nil {
-		return nil, err
-	}
-	if err := store.writeTurn(loaded.TurnsDir, assistantTurn); err != nil {
-		return nil, err
-	}
-	return audioURLs, nil
+	})
 }
 
 // writeChatAudioArtifacts moves each generated audio's temp file into the
