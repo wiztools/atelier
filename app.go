@@ -802,34 +802,10 @@ func (a *App) SaveImage(req SaveImageRequest) (string, error) {
 	if err != nil {
 		return "", err
 	}
-
-	filename := sanitizeFilename(req.SuggestedName)
-	if filename == "" {
-		filename = "atelier-image" + extension
-	}
-	if !strings.HasSuffix(strings.ToLower(filename), extension) {
-		filename += extension
-	}
-
-	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
-		Title:           "Save generated image",
-		DefaultFilename: filename,
-		Filters: []runtime.FileFilter{
-			{DisplayName: "Image Files", Pattern: "*.png;*.jpg;*.jpeg;*.webp;*.gif"},
-			{DisplayName: "All Files", Pattern: "*.*"},
-		},
+	return a.saveArtifactDialog(data, req.SuggestedName, "atelier-image", extension, "Save generated image", []runtime.FileFilter{
+		{DisplayName: "Image Files", Pattern: "*.png;*.jpg;*.jpeg;*.webp;*.gif"},
+		{DisplayName: "All Files", Pattern: "*.*"},
 	})
-	if err != nil {
-		return "", err
-	}
-	if path == "" {
-		return "", nil
-	}
-
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return "", err
-	}
-	return path, nil
 }
 
 // SaveVideo copies a generated video artifact to a user-chosen location. The
@@ -856,33 +832,10 @@ func (a *App) SaveVideo(req SaveVideoRequest) (string, error) {
 	if extension == "" {
 		extension = ".mp4"
 	}
-	filename := sanitizeFilename(req.SuggestedName)
-	if filename == "" {
-		filename = "atelier-video" + extension
-	}
-	if !strings.HasSuffix(strings.ToLower(filename), extension) {
-		filename += extension
-	}
-
-	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
-		Title:           "Save generated video",
-		DefaultFilename: filename,
-		Filters: []runtime.FileFilter{
-			{DisplayName: "Video Files", Pattern: "*.mp4;*.webm;*.mov;*.m4v"},
-			{DisplayName: "All Files", Pattern: "*.*"},
-		},
+	return a.saveArtifactDialog(data, req.SuggestedName, "atelier-video", extension, "Save generated video", []runtime.FileFilter{
+		{DisplayName: "Video Files", Pattern: "*.mp4;*.webm;*.mov;*.m4v"},
+		{DisplayName: "All Files", Pattern: "*.*"},
 	})
-	if err != nil {
-		return "", err
-	}
-	if path == "" {
-		return "", nil
-	}
-
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return "", err
-	}
-	return path, nil
 }
 
 // SaveAudio copies a generated audio artifact to a user-chosen location,
@@ -906,21 +859,31 @@ func (a *App) SaveAudio(req SaveAudioRequest) (string, error) {
 	if extension == "" {
 		extension = ".mp3"
 	}
-	filename := sanitizeFilename(req.SuggestedName)
+	return a.saveArtifactDialog(data, req.SuggestedName, "atelier-audio", extension, "Save generated audio", []runtime.FileFilter{
+		{DisplayName: "Audio Files", Pattern: "*.mp3;*.wav;*.ogg;*.flac;*.m4a;*.aac;*.opus"},
+		{DisplayName: "All Files", Pattern: "*.*"},
+	})
+}
+
+// saveArtifactDialog is the shared body for SaveImage/SaveVideo/SaveAudio: it
+// builds a filename (defaultName + extension when the user gave none, ensuring
+// the extension is present), opens a Save dialog with the given title/filters,
+// and writes data to the chosen path. Each caller keeps its own source-loading
+// and byte-sniffing; this owns the filename-guard → dialog → write ritual they
+// all shared. Returns the chosen path, or ("", nil) if the dialog was cancelled.
+func (a *App) saveArtifactDialog(data []byte, suggestedName, defaultName, extension, title string, filters []runtime.FileFilter) (string, error) {
+	filename := sanitizeFilename(suggestedName)
 	if filename == "" {
-		filename = "atelier-audio" + extension
+		filename = defaultName + extension
 	}
 	if !strings.HasSuffix(strings.ToLower(filename), extension) {
 		filename += extension
 	}
 
 	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
-		Title:           "Save generated audio",
+		Title:           title,
 		DefaultFilename: filename,
-		Filters: []runtime.FileFilter{
-			{DisplayName: "Audio Files", Pattern: "*.mp3;*.wav;*.ogg;*.flac;*.m4a;*.aac;*.opus"},
-			{DisplayName: "All Files", Pattern: "*.*"},
-		},
+		Filters:         filters,
 	})
 	if err != nil {
 		return "", err
@@ -928,7 +891,6 @@ func (a *App) SaveAudio(req SaveAudioRequest) (string, error) {
 	if path == "" {
 		return "", nil
 	}
-
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		return "", err
 	}
@@ -1921,9 +1883,28 @@ func appendChatAssistantTurnWithVideos(config AppConfig, conversationID, assista
 // artifacts directory as turn_NNNNNN_vid_NNNNNN.<ext> and returns the history
 // content entries plus the "/atelier-artifact" URLs the live UI renders. A temp
 // file that can't be resolved to a video is skipped rather than aborting the
-// whole turn save.
+// whole turn save. Thin wrapper over the shared media-artifact writer.
 func writeChatVideoArtifacts(artifactsDir string, videos []ToolVideoFile, turnNumber int) ([]HistoryContent, []string, error) {
-	if len(videos) == 0 {
+	files := make([]mediaArtifactEntry, len(videos))
+	for i, v := range videos {
+		files[i] = mediaArtifactEntry{tempPath: v.TempPath, mimeType: v.MimeType}
+	}
+	return writeChatMediaArtifacts(artifactsDir, files, turnNumber, "vid", "video", videoExtensionForMediaType)
+}
+
+// writeChatMediaArtifacts is the shared body for moving generated video/audio
+// temp files into a conversation's artifacts directory. Each file is named
+// turn_NNNNNN_<kindTag>_NNNNNN.<ext>; it returns the HistoryContent entries and
+// the "/atelier-artifact" URLs the live UI renders before reload. A file with
+// no temp path is skipped rather than aborting the whole turn save. The
+// contentType ("video"/"audio") and extensionFn differ per media kind.
+type mediaArtifactEntry struct {
+	tempPath string
+	mimeType string
+}
+
+func writeChatMediaArtifacts(artifactsDir string, files []mediaArtifactEntry, turnNumber int, kindTag, contentType string, extensionFn func(string) string) ([]HistoryContent, []string, error) {
+	if len(files) == 0 {
 		return nil, nil, nil
 	}
 	if err := os.MkdirAll(artifactsDir, 0755); err != nil {
@@ -1933,29 +1914,29 @@ func writeChatVideoArtifacts(artifactsDir string, videos []ToolVideoFile, turnNu
 	if err != nil {
 		return nil, nil, err
 	}
-	videoContents := make([]HistoryContent, 0, len(videos))
-	videoURLs := make([]string, 0, len(videos))
-	for index, video := range videos {
-		tempPath := strings.TrimSpace(video.TempPath)
+	contents := make([]HistoryContent, 0, len(files))
+	urls := make([]string, 0, len(files))
+	for index, file := range files {
+		tempPath := strings.TrimSpace(file.tempPath)
 		if tempPath == "" {
 			continue
 		}
-		extension := videoExtensionForMediaType(video.MimeType)
-		artifactID := fmt.Sprintf("turn_%06d_vid_%06d", turnNumber, index+1)
+		extension := extensionFn(file.mimeType)
+		artifactID := fmt.Sprintf("turn_%06d_%s_%06d", turnNumber, kindTag, index+1)
 		filename := artifactID + extension
 		destPath := filepath.Join(absArtifactsDir, filename)
 		if err := moveFile(tempPath, destPath); err != nil {
 			return nil, nil, err
 		}
-		videoContents = append(videoContents, HistoryContent{
-			Type:       "video",
+		contents = append(contents, HistoryContent{
+			Type:       contentType,
 			ArtifactID: artifactID,
 			Path:       filepath.ToSlash(filepath.Join("artifacts", filename)),
 			MimeType:   mediaTypeForExtension(extension),
 		})
-		videoURLs = append(videoURLs, artifactPrefix+destPath)
+		urls = append(urls, artifactPrefix+destPath)
 	}
-	return videoContents, videoURLs, nil
+	return contents, urls, nil
 }
 
 // appendChatAssistantTurnWithAudios persists an assistant turn that produced one
@@ -1981,41 +1962,14 @@ func appendChatAssistantTurnWithAudios(config AppConfig, conversationID, assista
 
 // writeChatAudioArtifacts moves each generated audio's temp file into the
 // artifacts directory as turn_NNNNNN_aud_NNNNNN.<ext> and returns the history
-// content entries plus the "/atelier-artifact" URLs the live UI renders.
+// content entries plus the "/atelier-artifact" URLs the live UI renders. Thin
+// wrapper over the shared media-artifact writer, mirroring writeChatVideoArtifacts.
 func writeChatAudioArtifacts(artifactsDir string, audios []ToolAudioFile, turnNumber int) ([]HistoryContent, []string, error) {
-	if len(audios) == 0 {
-		return nil, nil, nil
+	files := make([]mediaArtifactEntry, len(audios))
+	for i, a := range audios {
+		files[i] = mediaArtifactEntry{tempPath: a.TempPath, mimeType: a.MimeType}
 	}
-	if err := os.MkdirAll(artifactsDir, 0755); err != nil {
-		return nil, nil, err
-	}
-	absArtifactsDir, err := filepath.Abs(artifactsDir)
-	if err != nil {
-		return nil, nil, err
-	}
-	audioContents := make([]HistoryContent, 0, len(audios))
-	audioURLs := make([]string, 0, len(audios))
-	for index, audio := range audios {
-		tempPath := strings.TrimSpace(audio.TempPath)
-		if tempPath == "" {
-			continue
-		}
-		extension := audioExtensionForMediaType(audio.MimeType)
-		artifactID := fmt.Sprintf("turn_%06d_aud_%06d", turnNumber, index+1)
-		filename := artifactID + extension
-		destPath := filepath.Join(absArtifactsDir, filename)
-		if err := moveFile(tempPath, destPath); err != nil {
-			return nil, nil, err
-		}
-		audioContents = append(audioContents, HistoryContent{
-			Type:       "audio",
-			ArtifactID: artifactID,
-			Path:       filepath.ToSlash(filepath.Join("artifacts", filename)),
-			MimeType:   mediaTypeForExtension(extension),
-		})
-		audioURLs = append(audioURLs, artifactPrefix+destPath)
-	}
-	return audioContents, audioURLs, nil
+	return writeChatMediaArtifacts(artifactsDir, files, turnNumber, "aud", "audio", audioExtensionForMediaType)
 }
 
 // moveFile relocates src to dst, falling back to a copy-and-delete when the two

@@ -90,6 +90,12 @@ type ToolAudioFile struct {
 	SourceURL string `json:"sourceUrl,omitempty"`
 }
 
+// GeneratedVideo and GeneratedAudio are field-identical (Data/MimeType/
+// SourceURL), and ToolVideoFile/ToolAudioFile are too (TempPath/MimeType/
+// SourceURL). The media-writer helpers below take the fields they need as
+// primitives rather than threading the concrete type through, so one helper
+// body serves both media kinds without a per-kind copy.
+
 type HarnessToolRegistry struct {
 	definitions []HarnessToolDefinition
 	byName      map[string]HarnessToolDefinition
@@ -257,21 +263,28 @@ func videoGenerationToolDefinition() HarnessToolDefinition {
 	}
 }
 
-// writeTempVideo writes downloaded video bytes to a temp file and returns its
-// path. The harness moves this file into the conversation's artifacts directory
-// when it persists the turn; carrying a path (not bytes) keeps multi-MB video
-// out of tool-result telemetry and the JSON IPC boundary.
-func writeTempVideo(video GeneratedVideo) (string, error) {
-	file, err := os.CreateTemp("", "atelier-video-*"+videoExtensionForMediaType(video.MimeType))
+// writeTempMediaBytes writes downloaded media bytes to a temp file named
+// prefix+ext and returns its path. The harness moves this file into the
+// conversation's artifacts directory when it persists the turn; carrying a path
+// (not bytes) keeps multi-MB media out of tool-result telemetry and the JSON
+// IPC boundary. Shared by the video and audio temp writers.
+func writeTempMediaBytes(data []byte, prefix, ext string) (string, error) {
+	file, err := os.CreateTemp("", prefix+ext)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
-	if _, err := file.Write(video.Data); err != nil {
+	if _, err := file.Write(data); err != nil {
 		os.Remove(file.Name())
 		return "", err
 	}
 	return file.Name(), nil
+}
+
+// writeTempVideo / writeTempAudio keep each media kind's ext derivation next to
+// its caller while sharing one writer body.
+func writeTempVideo(video GeneratedVideo) (string, error) {
+	return writeTempMediaBytes(video.Data, "atelier-video-*", videoExtensionForMediaType(video.MimeType))
 }
 
 // audioGenerationConfigured reports whether the generate_audio tool should be
@@ -349,19 +362,10 @@ func audioGenerationToolDefinition() HarnessToolDefinition {
 	}
 }
 
-// writeTempAudio writes downloaded audio bytes to a temp file and returns its
-// path, mirroring writeTempVideo.
+// writeTempAudio writes downloaded audio bytes to a temp file, mirroring the
+// video path. Thin wrapper over the shared writer.
 func writeTempAudio(audio GeneratedAudio) (string, error) {
-	file, err := os.CreateTemp("", "atelier-audio-*"+audioExtensionForMediaType(audio.MimeType))
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-	if _, err := file.Write(audio.Data); err != nil {
-		os.Remove(file.Name())
-		return "", err
-	}
-	return file.Name(), nil
+	return writeTempMediaBytes(audio.Data, "atelier-audio-*", audioExtensionForMediaType(audio.MimeType))
 }
 
 func imageGenerationToolDefinition() HarnessToolDefinition {
