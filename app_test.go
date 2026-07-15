@@ -3583,7 +3583,7 @@ func TestTriageChatTurnParsesDecision(t *testing.T) {
 	decision, completion := engine.triageChatTurn(context.Background(), ChatRequest{
 		BaseURL:  "http://ollama.test",
 		Messages: []ChatMessage{{Role: "user", Content: "What is the project status?"}},
-	}, "chat-box-model", nil)
+	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
 	if !decision.NeedsTools || decision.ResponseMode != "text" || decision.ToolTask != "Read status.txt" || decision.Error != "" {
 		t.Fatalf("decision = %+v, want parsed tool request with responseMode text", decision)
 	}
@@ -3601,7 +3601,7 @@ func TestTriageChatTurnFailsSafeToToolPath(t *testing.T) {
 	decision, _ := engine.triageChatTurn(context.Background(), ChatRequest{
 		BaseURL:  "http://ollama.test",
 		Messages: []ChatMessage{{Role: "user", Content: "anything"}},
-	}, "chat-box-model", nil)
+	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
 	if !decision.NeedsTools {
 		t.Fatal("triage failure must fail safe to the tool path (planner can still decline tools)")
 	}
@@ -3633,7 +3633,7 @@ func TestTriageChatTurnStripsImagesFromRequest(t *testing.T) {
 	decision, _ := engine.triageChatTurn(context.Background(), ChatRequest{
 		BaseURL:  "http://ollama.test",
 		Messages: []ChatMessage{{Role: "user", Content: "describe this", Images: []string{"data:image/png;base64,AAAA"}}},
-	}, "chat-box-model", nil)
+	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
 	if decision.Error != "" {
 		t.Fatalf("decision = %+v, want clean decision with images stripped", decision)
 	}
@@ -3649,7 +3649,7 @@ func TestTriageChatTurnDecodeErrorFailsSafe(t *testing.T) {
 	decision, completion := engine.triageChatTurn(context.Background(), ChatRequest{
 		BaseURL:  "http://ollama.test",
 		Messages: []ChatMessage{{Role: "user", Content: "anything"}},
-	}, "chat-box-model", nil)
+	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
 	if !decision.NeedsTools || decision.Error == "" {
 		t.Fatalf("decision = %+v, want fail-safe with recorded decode error", decision)
 	}
@@ -4594,5 +4594,204 @@ func TestNativeTruncatedPlanRetriesInsteadOfSilentlySucceeding(t *testing.T) {
 	loop := harnessRun["loop"].(map[string]any)
 	if loop["iterations"] != float64(harnessChatMaxSteps) {
 		t.Fatalf("loop iterations = %+v, want %d (retried to the cap)", loop, harnessChatMaxSteps)
+	}
+}
+
+func TestMergeAppConfigHarnessProvider(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider string
+		want     string
+	}{
+		// A legacy config.json predates the field entirely; it must keep
+		// behaving exactly as it did before harness provider selection existed.
+		{name: "legacy config defaults to ollama", provider: "", want: "ollama"},
+		{name: "openrouter is preserved", provider: "openrouter", want: "openrouter"},
+		{name: "unknown id normalizes to ollama", provider: "gemini", want: "ollama"},
+		{name: "whitespace is trimmed", provider: "  openrouter  ", want: "openrouter"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			merged := mergeAppConfig(AppConfig{
+				Models: ConfigModels{HarnessProvider: tc.provider},
+			})
+			if merged.Models.HarnessProvider != tc.want {
+				t.Fatalf("HarnessProvider = %q, want %q", merged.Models.HarnessProvider, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveHarnessTarget(t *testing.T) {
+	config := func(harnessProvider, ollamaHarness, openRouterHarness string) AppConfig {
+		return AppConfig{
+			Models: ConfigModels{HarnessProvider: harnessProvider},
+			Providers: ConfigProviders{
+				Ollama:     ConfigOllama{Models: ConfigOllamaModels{Harness: ollamaHarness}},
+				OpenRouter: ConfigOpenRouter{Harness: openRouterHarness},
+			},
+		}
+	}
+
+	cases := []struct {
+		name            string
+		config          AppConfig
+		primaryModel    string
+		primaryProvider string
+		wantModel       string
+		wantProvider    string
+	}{
+		{
+			name:         "openrouter harness",
+			config:       config("openrouter", "local-model", "anthropic/claude-3.5-sonnet"),
+			primaryModel: "primary", primaryProvider: "ollama",
+			wantModel: "anthropic/claude-3.5-sonnet", wantProvider: "openrouter",
+		},
+		{
+			name:         "ollama harness",
+			config:       config("ollama", "local-model", "anthropic/claude-3.5-sonnet"),
+			primaryModel: "primary", primaryProvider: "openrouter",
+			wantModel: "local-model", wantProvider: "ollama",
+		},
+		{
+			// The one-model invariant: an unset harness model follows the
+			// primary model AND its provider, so a cloud-only setup works.
+			name:         "unset openrouter harness follows primary model and provider",
+			config:       config("openrouter", "", ""),
+			primaryModel: "anthropic/claude-3.5-sonnet", primaryProvider: "openrouter",
+			wantModel: "anthropic/claude-3.5-sonnet", wantProvider: "openrouter",
+		},
+		{
+			// The divergence bug this struct exists to prevent: falling back
+			// must not pair the primary model with the harness provider.
+			name:         "unset openrouter harness never sends an ollama model to openrouter",
+			config:       config("openrouter", "", ""),
+			primaryModel: "llama3", primaryProvider: "ollama",
+			wantModel: "llama3", wantProvider: "ollama",
+		},
+		{
+			name:         "unset ollama harness follows primary",
+			config:       config("ollama", "", ""),
+			primaryModel: "llama3", primaryProvider: "ollama",
+			wantModel: "llama3", wantProvider: "ollama",
+		},
+		{
+			name:         "unset provider treated as ollama",
+			config:       config("", "local-model", ""),
+			primaryModel: "primary", primaryProvider: "ollama",
+			wantModel: "local-model", wantProvider: "ollama",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := newHarnessEngine(tc.config).resolveHarnessTarget(tc.primaryModel, tc.primaryProvider)
+			if got.model != tc.wantModel || got.provider != tc.wantProvider {
+				t.Fatalf("resolveHarnessTarget = (%q, %q), want (%q, %q)", got.model, got.provider, tc.wantModel, tc.wantProvider)
+			}
+		})
+	}
+}
+
+// TestTriageChatTurnRoutesToConfiguredHarnessProvider guards the core of
+// harness provider selection: the harness call must reach whichever provider
+// the target names, not a hardcoded Ollama client.
+func TestTriageChatTurnRoutesToConfiguredHarnessProvider(t *testing.T) {
+	keyring.MockInit()
+	if err := saveOpenRouterAPIKey("sk-or-test"); err != nil {
+		t.Fatalf("saveOpenRouterAPIKey returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = clearOpenRouterAPIKey() })
+
+	var gotHost, gotModel string
+	var gotFormat any
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		gotHost = req.URL.Host
+		var payload map[string]any
+		_ = json.NewDecoder(req.Body).Decode(&payload)
+		gotModel, _ = payload["model"].(string)
+		gotFormat = payload["response_format"]
+		decision := `{"needsTools":false,"responseMode":"text","toolTask":"","reason":"chat"}`
+		body := `{"model":"anthropic/claude-3.5-sonnet","choices":[{"message":{"content":` + strconv.Quote(decision) + `},"finish_reason":"stop"}],"usage":{"completion_tokens":3}}`
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+	})
+
+	engine := newHarnessEngine(defaultAppConfig(), app)
+	decision, _ := engine.triageChatTurn(context.Background(), ChatRequest{
+		BaseURL:  "http://ollama.test",
+		Messages: []ChatMessage{{Role: "user", Content: "hello"}},
+	}, harnessTarget{model: "anthropic/claude-3.5-sonnet", provider: "openrouter"}, nil)
+
+	if gotHost != "openrouter.ai" {
+		t.Fatalf("triage reached host %q, want openrouter.ai — the harness is still pinned to Ollama", gotHost)
+	}
+	if gotModel != "anthropic/claude-3.5-sonnet" {
+		t.Errorf("triage model = %q, want the harness model", gotModel)
+	}
+	if gotFormat == nil {
+		t.Error("triage request to OpenRouter carried no response_format; structured output was dropped")
+	}
+	if decision.Error != "" || decision.NeedsTools {
+		t.Errorf("decision = %+v, want the parsed no-tools decision", decision)
+	}
+}
+
+func TestSelectSkillForTurnRoutesToConfiguredHarnessProvider(t *testing.T) {
+	keyring.MockInit()
+	if err := saveOpenRouterAPIKey("sk-or-test"); err != nil {
+		t.Fatalf("saveOpenRouterAPIKey returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = clearOpenRouterAPIKey() })
+
+	var gotHost string
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		gotHost = req.URL.Host
+		plan := `{"skillName":"none","reason":"no skill applies"}`
+		body := `{"model":"m","choices":[{"message":{"content":` + strconv.Quote(plan) + `},"finish_reason":"stop"}],"usage":{"completion_tokens":2}}`
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+	})
+
+	engine := newHarnessEngine(defaultAppConfig(), app)
+	engine.selectSkillForTurn(context.Background(), ChatRequest{
+		BaseURL:  "http://ollama.test",
+		Messages: []ChatMessage{{Role: "user", Content: "hello"}},
+	}, harnessTurnContext{
+		SkillIndex: []SkillIndexEntry{{Name: "demo", Description: "a demo skill"}},
+		Harness:    harnessTarget{model: "anthropic/claude-3.5-sonnet", provider: "openrouter"},
+	})
+
+	if gotHost != "openrouter.ai" {
+		t.Fatalf("skill selection reached host %q, want openrouter.ai — it silently keeps hitting Ollama", gotHost)
+	}
+}
+
+func TestResponseProviderForFollowsHarnessTargetOnFallback(t *testing.T) {
+	config := defaultAppConfig()
+	config.Providers.Ollama.Models.Image = "image-model"
+	engine := newHarnessEngine(config)
+
+	cloud := harnessTarget{model: "anthropic/claude-3.5-sonnet", provider: "openrouter"}
+
+	// Image captions fall back to the harness model, so they must also fall
+	// back to the provider that model lives on.
+	if got := engine.responseProviderFor("image", "image-model", "ollama", cloud); got != "openrouter" {
+		t.Errorf("image caption provider = %q, want openrouter (the harness provider)", got)
+	}
+	if got := engine.responseModelFor("image", "image-model", cloud); got != cloud.model {
+		t.Errorf("image caption model = %q, want the harness model", got)
+	}
+
+	// A text turn on a normal primary model keeps the primary provider.
+	if got := engine.responseProviderFor("text", "chat-model", "ollama", cloud); got != "ollama" {
+		t.Errorf("text provider = %q, want the primary provider ollama", got)
+	}
+
+	// The divergence guard: when the harness target fell back to the primary
+	// model on Ollama, captions must not be sent to OpenRouter.
+	local := harnessTarget{model: "llama3", provider: "ollama"}
+	if got := engine.responseProviderFor("image", "image-model", "ollama", local); got != "ollama" {
+		t.Errorf("caption provider = %q, want ollama to match the resolved harness model", got)
 	}
 }

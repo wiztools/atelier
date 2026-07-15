@@ -113,6 +113,7 @@ type ConfigOllamaModels struct {
 type ConfigOpenRouter struct {
 	Enabled bool   `json:"enabled"`
 	Primary string `json:"primary,omitempty"`
+	Harness string `json:"harness,omitempty"`
 }
 
 // ConfigFal configures the fal.ai image-generation backend. The API key lives
@@ -134,6 +135,10 @@ type ConfigFal struct {
 
 type ConfigModels struct {
 	PrimaryProvider string `json:"primaryProvider,omitempty"`
+	// HarnessProvider selects where the harness model runs (triage, skill
+	// selection, planning). Absent in configs written before harness provider
+	// selection existed, so it normalizes to "ollama" — see mergeAppConfig.
+	HarnessProvider string `json:"harnessProvider,omitempty"`
 	ImageProvider   string `json:"imageProvider,omitempty"`
 }
 
@@ -1315,6 +1320,7 @@ func defaultAppConfig() AppConfig {
 		},
 		Models: ConfigModels{
 			PrimaryProvider: "ollama",
+			HarnessProvider: "ollama",
 			ImageProvider:   "ollama",
 		},
 		Prompts: ConfigPrompts{
@@ -1370,6 +1376,16 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	}
 	if strings.TrimSpace(config.Models.PrimaryProvider) == "" {
 		config.Models.PrimaryProvider = defaults.Models.PrimaryProvider
+	}
+	// HarnessProvider selects where triage, skill selection, and planning run.
+	// Normalize unknown or empty values to the Ollama default: an absent field
+	// means a config written before this setting existed, which must keep its
+	// old behaviour exactly.
+	switch strings.TrimSpace(config.Models.HarnessProvider) {
+	case "ollama", "openrouter":
+		config.Models.HarnessProvider = strings.TrimSpace(config.Models.HarnessProvider)
+	default:
+		config.Models.HarnessProvider = defaults.Models.HarnessProvider
 	}
 	// ImageProvider selects the generate_image backend. Normalize unknown or
 	// empty values to the Ollama default so the tool path never sees a stray id.

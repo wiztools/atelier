@@ -57,12 +57,13 @@ func messagesWithoutImages(messages []ChatMessage) []ChatMessage {
 // response mode the primary model should use. Failures fail safe to the tool
 // path with responseMode "text": the planner there can still conclude no tools
 // are needed, so a wrong fallback costs latency, never correctness.
-func (h *HarnessEngine) triageChatTurn(ctx context.Context, req ChatRequest, model string, skillIndex []SkillIndexEntry) (HarnessTriageDecision, ChatCompletionResult) {
+func (h *HarnessEngine) triageChatTurn(ctx context.Context, req ChatRequest, harness harnessTarget, skillIndex []SkillIndexEntry) (HarnessTriageDecision, ChatCompletionResult) {
 	system := triageSystemPrompt(h.toolRegistry(), skillIndex, h.config.Tools.Filesystem.Root)
 	numCtx := h.numCtx()
 	triageReq := ChatRequest{
 		BaseURL:  req.BaseURL,
-		Model:    model,
+		Model:    harness.model,
+		Provider: harness.provider,
 		System:   system,
 		Messages: truncateChatHistory(messagesWithoutImages(req.Messages), historyBudgetChars(numCtx, system, triageNumPredict)),
 		Format:   triageResponseSchema(),
@@ -72,7 +73,7 @@ func (h *HarnessEngine) triageChatTurn(ctx context.Context, req ChatRequest, mod
 			"num_ctx":     numCtx,
 		},
 	}
-	completion, err := h.app.ollamaClient(req.BaseURL).CompleteChat(ctx, triageReq)
+	completion, err := h.completeWithHarnessModel(ctx, harness, triageReq)
 	if err != nil {
 		return HarnessTriageDecision{NeedsTools: true, ResponseMode: "text", Reason: "triage call failed; deferring to the harness model planner", Error: err.Error()}, ChatCompletionResult{}
 	}
