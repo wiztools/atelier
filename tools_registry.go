@@ -314,7 +314,12 @@ func audioGenerationToolDefinition() HarnessToolDefinition {
 			if model == "" {
 				return nil, "audio generation unavailable", errors.New("no audio model is configured")
 			}
-			audioReq := AudioGenerateRequest{Model: model, Prompt: strings.TrimSpace(call.Content)}
+			audioReq := AudioGenerateRequest{
+				Model:          model,
+				Prompt:         strings.TrimSpace(call.Content),
+				Duration:       strings.TrimSpace(call.Duration),
+				NegativePrompt: strings.TrimSpace(call.NegativePrompt),
+			}
 			generated, err := tools.GenerateAudio(ctx, audioReq)
 			if err != nil {
 				return nil, "audio generation failed", err
@@ -607,6 +612,10 @@ func generateAudioParamSchema() map[string]any {
 		"properties": map[string]any{
 			"content": stringParam("The text to speak, or a description of the music/sound to create."),
 			"model":   stringParam("Optional fal.ai audio model override."),
+			"duration": stringParam("Optional — target clip length for music/sound-effect models (e.g. \"10\"). " +
+				"Ignored by text-to-speech models, whose length follows the spoken text."),
+			"negativePrompt": stringParam("Optional — describe what to keep out of the audio (e.g. \"vocals, percussion\"). " +
+				"Ignored by text-to-speech models."),
 		},
 		"required": []string{"content"},
 	}

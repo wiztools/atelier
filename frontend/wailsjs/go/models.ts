@@ -761,6 +761,7 @@ export namespace main {
 	    negativePrompt?: string;
 	    generateAudio?: boolean;
 	    aspectRatio?: string;
+	    duration?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new HarnessToolCall(source);
@@ -784,6 +785,7 @@ export namespace main {
 	        this.negativePrompt = source["negativePrompt"];
 	        this.generateAudio = source["generateAudio"];
 	        this.aspectRatio = source["aspectRatio"];
+	        this.duration = source["duration"];
 	    }
 	}
 	export class HarnessToolResult {

@@ -307,6 +307,12 @@ func (client FalClient) GenerateAudio(ctx context.Context, req AudioGenerateRequ
 		"prompt": req.Prompt,
 		"text":   req.Prompt,
 	}
+	if duration := strings.TrimSpace(req.Duration); duration != "" {
+		body["duration"] = duration
+	}
+	if negative := strings.TrimSpace(req.NegativePrompt); negative != "" {
+		body["negative_prompt"] = negative
+	}
 
 	submit, err := client.submit(ctx, model, body)
 	if err != nil {

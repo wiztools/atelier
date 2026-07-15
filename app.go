@@ -369,10 +369,14 @@ type SaveVideoRequest struct {
 }
 
 // AudioGenerateRequest is the input to a text-to-audio generation. The prompt is
-// the text to synthesize (speech) or describe (music/sound effects).
+// the text to synthesize (speech) or describe (music/sound effects). Duration and
+// NegativePrompt are forwarded only when set — text-to-speech models ignore them,
+// so callers can leave both empty (see FalClient.GenerateAudio).
 type AudioGenerateRequest struct {
-	Model  string `json:"model"`
-	Prompt string `json:"prompt"`
+	Model          string `json:"model"`
+	Prompt         string `json:"prompt"`
+	Duration       string `json:"duration,omitempty"`
+	NegativePrompt string `json:"negativePrompt,omitempty"`
 }
 
 // SaveAudioRequest asks to copy a generated audio artifact to a user-chosen

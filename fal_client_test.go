@@ -845,6 +845,70 @@ func TestFalClientGenerateAudioAudioFileField(t *testing.T) {
 	}
 }
 
+func TestFalClientGenerateAudioDurationAndNegativePrompt(t *testing.T) {
+	model := "fal-ai/minimax/music-01"
+	cases := []struct {
+		name         string
+		req          AudioGenerateRequest
+		wantContains []string
+		wantOmits    []string
+	}{
+		{
+			name:         "duration and negative prompt forwarded",
+			req:          AudioGenerateRequest{Model: model, Prompt: "calm piano loop", Duration: "10", NegativePrompt: "vocals, percussion"},
+			wantContains: []string{`"duration":"10"`, `"negative_prompt":"vocals, percussion"`},
+		},
+		{
+			name:      "whitespace-only values are treated as unset",
+			req:       AudioGenerateRequest{Model: model, Prompt: "calm piano loop", Duration: "  ", NegativePrompt: "  "},
+			wantOmits: []string{"duration", "negative_prompt"},
+		},
+		{
+			name:      "unset fields are omitted (the text-to-speech default path)",
+			req:       AudioGenerateRequest{Model: model, Prompt: "calm piano loop"},
+			wantOmits: []string{"duration", "negative_prompt"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+				switch {
+				case req.Method == http.MethodPost && req.URL.Path == "/"+model:
+					body, _ := io.ReadAll(req.Body)
+					for _, want := range tc.wantContains {
+						if !strings.Contains(string(body), want) {
+							t.Errorf("submit body missing %s: %s", want, body)
+						}
+					}
+					for _, omit := range tc.wantOmits {
+						if strings.Contains(string(body), omit) {
+							t.Errorf("submit body should omit %s: %s", omit, body)
+						}
+					}
+					return jsonResp(`{"request_id":"req-dn"}`), nil
+				case strings.HasSuffix(req.URL.Path, "/status"):
+					return jsonResp(`{"status":"COMPLETED"}`), nil
+				case strings.HasSuffix(req.URL.Path, "/requests/req-dn"):
+					return jsonResp(`{"audio":{"url":"https://v3.fal.media/files/clip.mp3","content_type":"audio/mpeg"}}`), nil
+				case req.URL.Path == "/files/clip.mp3":
+					return audioResp(tinyMP3(), "audio/mpeg"), nil
+				default:
+					t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+					return nil, nil
+				}
+			}))
+
+			audio, err := client.GenerateAudio(context.Background(), tc.req)
+			if err != nil {
+				t.Fatalf("GenerateAudio returned error: %v", err)
+			}
+			if len(audio.Data) == 0 {
+				t.Fatal("expected audio bytes")
+			}
+		})
+	}
+}
+
 func TestFalClientGenerateAudioNoAudio(t *testing.T) {
 	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
 		if req.Method == http.MethodPost {

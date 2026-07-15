@@ -94,6 +94,11 @@ type HarnessToolCall struct {
 	// omitted, the configured default dimensions are used. See
 	// generateImageParamSchema and imageSizeForAspectRatio.
 	AspectRatio string `json:"aspectRatio,omitempty"`
+	// Duration is an optional generate_audio input naming the target clip length
+	// (a fal enum/seconds string, e.g. "10"). Meaningful for music/sound-effect
+	// models; text-to-speech models ignore it, since their length follows the
+	// spoken text. Forwarded only when set — see generateAudioParamSchema.
+	Duration string `json:"duration,omitempty"`
 }
 
 type HarnessToolResult struct {
