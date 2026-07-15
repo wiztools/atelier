@@ -332,12 +332,12 @@ export namespace main {
 		    return a;
 		}
 	}
-	export class ollamaToolFunction {
+	export class ToolFunction {
 	    name: string;
 	    arguments: number[];
 	
 	    static createFrom(source: any = {}) {
-	        return new ollamaToolFunction(source);
+	        return new ToolFunction(source);
 	    }
 	
 	    constructor(source: any = {}) {
@@ -346,18 +346,18 @@ export namespace main {
 	        this.arguments = source["arguments"];
 	    }
 	}
-	export class ollamaToolCall {
+	export class ToolCall {
 	    type?: string;
-	    function: ollamaToolFunction;
+	    function: ToolFunction;
 	
 	    static createFrom(source: any = {}) {
-	        return new ollamaToolCall(source);
+	        return new ToolCall(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.type = source["type"];
-	        this.function = this.convertValues(source["function"], ollamaToolFunction);
+	        this.function = this.convertValues(source["function"], ToolFunction);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -382,7 +382,7 @@ export namespace main {
 	    role: string;
 	    content: string;
 	    images?: string[];
-	    tool_calls?: ollamaToolCall[];
+	    tool_calls?: ToolCall[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ChatMessage(source);
@@ -393,7 +393,7 @@ export namespace main {
 	        this.role = source["role"];
 	        this.content = source["content"];
 	        this.images = source["images"];
-	        this.tool_calls = this.convertValues(source["tool_calls"], ollamaToolCall);
+	        this.tool_calls = this.convertValues(source["tool_calls"], ToolCall);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -932,6 +932,7 @@ export namespace main {
 	        this.suggestedName = source["suggestedName"];
 	    }
 	}
+	
 	export class ToolCommandRequest {
 	    command: string;
 	    args?: string[];
@@ -1146,7 +1147,6 @@ export namespace main {
 	        this.bytes = source["bytes"];
 	    }
 	}
-	
 
 }
 
