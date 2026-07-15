@@ -315,7 +315,7 @@ func TestOpenRouterChatBodyKeepsToolMessagesBackedByToolCalls(t *testing.T) {
 	body := openRouterChatBody(ChatRequest{
 		Model: "m",
 		Messages: []ChatMessage{
-			{Role: "assistant", ToolCalls: []ollamaToolCall{{Type: "function", Function: ollamaToolFunction{Name: "list_files"}}}},
+			{Role: "assistant", ToolCalls: []ToolCall{{Type: "function", Function: ToolFunction{Name: "list_files"}}}},
 			{Role: "tool", Content: `{"name":"list_files","status":"completed"}`},
 		},
 	}, false)

@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 )
 
 // OllamaProvider adapts OllamaClient to the ChatProvider interface.
@@ -51,24 +49,14 @@ func (provider OllamaProvider) StreamChat(ctx context.Context, req ChatRequest) 
 		defer resp.Body.Close()
 		defer close(events)
 
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" {
-				continue
-			}
-
+		streamLines(resp.Body, events, func(line string) (ChatEvent, bool, error) {
 			var chunk ollamaChatChunk
 			if err := json.Unmarshal([]byte(line), &chunk); err != nil {
-				events <- ChatEvent{Err: err, Done: true}
-				return
+				return ChatEvent{}, false, err
 			}
 			if chunk.Error != "" {
-				events <- ChatEvent{Err: errors.New(chunk.Error), Done: true}
-				return
+				return ChatEvent{}, false, errors.New(chunk.Error)
 			}
-
 			event := ChatEvent{
 				ContentDelta: chunk.Message.Content,
 				Thinking:     chunk.Message.Thinking,
@@ -79,14 +67,8 @@ func (provider OllamaProvider) StreamChat(ctx context.Context, req ChatRequest) 
 			if chunk.EvalCount > 0 {
 				event.Usage = &TokenUsage{CompletionTokens: chunk.EvalCount}
 			}
-			events <- event
-			if chunk.Done {
-				return
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			events <- ChatEvent{Err: err, Done: true}
-		}
+			return event, chunk.Done, nil
+		})
 	}()
 	return events, nil
 }

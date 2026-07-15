@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -39,6 +40,12 @@ const invalidPlanAfterToolsSystemNote = "Atelier ran workspace tools for this tu
 type HarnessEngine struct {
 	config AppConfig
 	app    *App
+	// registry is the tool registry derived from config, built once on first
+	// use. Config is immutable for the engine's lifetime, so rebuilding the
+	// registry (and its param-schema maps) on every planning round and tool
+	// result is wasted work. Guarded by a mutex for the streaming goroutine.
+	registryOnce sync.Once
+	registry     HarnessToolRegistry
 }
 
 type HarnessPreparedTurn struct {
@@ -126,7 +133,11 @@ func newHarnessEngine(config AppConfig, app ...*App) *HarnessEngine {
 	return engine
 }
 
-func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req ChatRequest) {
+// RunChatStream drives one full chat turn through the harness. turnStarted is
+// true when the caller has already persisted the user turn (StreamChat does
+// this before invoking the stream goroutine); false means RunChatStream must
+// start the turn itself (the test helper path).
+func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req ChatRequest, turnStarted bool) {
 	if h.app == nil {
 		return
 	}
@@ -138,7 +149,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		}
 	}
 	conversationID := strings.TrimSpace(req.ConversationID)
-	if !req.turnStarted {
+	if !turnStarted {
 		var err error
 		conversationID, err = h.StartChatTurn(req)
 		if err != nil {
@@ -625,8 +636,15 @@ func (h *HarnessEngine) runFinalResponseAttempt(ctx context.Context, requestID, 
 	return result, nil
 }
 
+// toolRegistry returns the tool registry for this engine's config, building it
+// once and caching it. The registry is a pure function of config, which is
+// immutable for the engine's lifetime, so the param-schema maps are not rebuilt
+// on every planning round and tool-result activity lookup.
 func (h *HarnessEngine) toolRegistry() HarnessToolRegistry {
-	return defaultHarnessToolRegistry(h.config)
+	h.registryOnce.Do(func() {
+		h.registry = defaultHarnessToolRegistry(h.config)
+	})
+	return h.registry
 }
 
 func ollamaNumCtx(config AppConfig) int {
@@ -985,7 +1003,7 @@ func parseNativePlannerResponse(completion ChatCompletionResult, registry Harnes
 // is unmarshalled directly onto a HarnessToolCall, whose fields match the tool
 // parameter names. A per-call decode error is reported rather than failing the
 // whole round, mirroring decodeHarnessToolCalls.
-func mapNativeToolCalls(calls []ollamaToolCall) ([]HarnessToolCall, []string) {
+func mapNativeToolCalls(calls []ToolCall) ([]HarnessToolCall, []string) {
 	if len(calls) == 0 {
 		return nil, nil
 	}
@@ -1186,10 +1204,7 @@ func toolResultMessages(results []HarnessToolResult) []ChatMessage {
 }
 
 func compactToolResultMessage(result HarnessToolResult, fullJSON string) []byte {
-	preview := fullJSON
-	if len(preview) > toolResultMessageMaxChars-512 {
-		preview = preview[:toolResultMessageMaxChars-512] + "..."
-	}
+	preview := truncateRunes(fullJSON, toolResultMessageMaxChars-512)
 	compact := HarnessToolResult{
 		Name:    result.Name,
 		Status:  result.Status,
@@ -1242,10 +1257,6 @@ func validationErrorsMarkdown(errors []string) string {
 		}
 	}
 	return strings.Join(lines, "\n")
-}
-
-func parseHarnessToolPlan(content string) (HarnessToolPlan, []string) {
-	return parseHarnessToolPlanWithRegistry(content, filesystemToolRegistry())
 }
 
 func parseHarnessToolPlanWithRegistry(content string, registry HarnessToolRegistry) (HarnessToolPlan, []string) {
@@ -1414,7 +1425,9 @@ func validateHarnessToolCall(index int, call HarnessToolCall, registry HarnessTo
 }
 
 func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conversationID string, calls []HarnessToolCall, turn harnessTurnContext) []HarnessToolResult {
-	gateway := newToolGateway(h.app, h.config)
+	// Pass the engine's cached registry so the gateway doesn't rebuild the
+	// param-schema maps on every planning round.
+	gateway := newToolGateway(h.app, h.config, h.toolRegistry())
 	// Hand the turn's attached image to the tool context so generate_video can
 	// animate it (image-to-video). Empty for turns without an attachment.
 	gateway.tools.AttachedImage = turn.AttachedImage
@@ -1549,10 +1562,7 @@ func fallbackCommandResultDetail(result ToolCommandResult) string {
 
 func previewInline(text string) string {
 	text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
-	if len(text) <= 220 {
-		return text
-	}
-	return text[:220] + "..."
+	return truncateRunes(text, 220)
 }
 
 func shortenLocalPath(path string) string {
@@ -1590,10 +1600,27 @@ func harnessToolOutputError(output any) string {
 
 func previewToolContent(content string) string {
 	content = strings.TrimSpace(content)
-	if len(content) <= 500 {
-		return content
+	return truncateRunesEllipsis(content, 500, "\n...")
+}
+
+// truncateRunes returns s truncated to at most max runes, appending the given
+// ellipsis when it shortens. It works in runes (not bytes) so a multi-byte
+// UTF-8 sequence is never split, which would leave invalid UTF-8 in tool-result
+// messages and stdout previews shown to models. A non-positive max returns s
+// unchanged.
+func truncateRunes(s string, max int) string {
+	return truncateRunesEllipsis(s, max, "...")
+}
+
+func truncateRunesEllipsis(s string, max int, ellipsis string) string {
+	if max <= 0 || len(s) <= max {
+		return s
 	}
-	return content[:500] + "\n..."
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + ellipsis
 }
 
 func newHarnessRun(requestID, conversationID string) HarnessRun {
@@ -1644,13 +1671,6 @@ func fallbackHarnessRun(model, reason string, tokens int) HarnessRun {
 			},
 		},
 	}
-}
-
-func firstHarnessRun(model, reason string, tokens int, runs []HarnessRun) HarnessRun {
-	if len(runs) > 0 && strings.TrimSpace(runs[0].ID) != "" {
-		return runs[0]
-	}
-	return fallbackHarnessRun(model, reason, tokens)
 }
 
 // appendStep records a step the moment it starts and returns its index for

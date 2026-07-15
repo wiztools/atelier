@@ -1730,6 +1730,7 @@ func TestChatConversationLifecycle(t *testing.T) {
 		"stop",
 		12,
 		"Markdown Tables",
+		fallbackHarnessRun("chat-model", "stop", 12),
 	)
 	if err != nil {
 		t.Fatalf("writeChatConversation returned error: %v", err)
@@ -1814,6 +1815,7 @@ func TestChatConversationLifecycle(t *testing.T) {
 		"ollama",
 		"stop",
 		8,
+		fallbackHarnessRun("chat-model", "stop", 8),
 	)
 	if err != nil {
 		t.Fatalf("appendChatConversation returned error: %v", err)
@@ -3444,6 +3446,7 @@ func TestWriteChatConversationPersistsInputImages(t *testing.T) {
 		"stop",
 		4,
 		"Image Description",
+		fallbackHarnessRun("chat-model", "stop", 4),
 	)
 	if err != nil {
 		t.Fatalf("writeChatConversation returned error: %v", err)
@@ -4240,10 +4243,10 @@ func TestAudioGenerationToolGating(t *testing.T) {
 // arguments — mirroring decodeHarnessToolCalls.
 func TestMapNativeToolCalls(t *testing.T) {
 	t.Run("read_file with path", func(t *testing.T) {
-		var call ollamaToolCall
+		var call ToolCall
 		call.Function.Name = "read_file"
 		call.Function.Arguments = json.RawMessage(`{"path":"notes.txt","maxBytes":1024}`)
-		calls, problems := mapNativeToolCalls([]ollamaToolCall{call})
+		calls, problems := mapNativeToolCalls([]ToolCall{call})
 		if len(problems) != 0 {
 			t.Fatalf("problems = %+v, want none", problems)
 		}
@@ -4253,10 +4256,10 @@ func TestMapNativeToolCalls(t *testing.T) {
 	})
 
 	t.Run("run_command with args array", func(t *testing.T) {
-		var call ollamaToolCall
+		var call ToolCall
 		call.Function.Name = "run_command"
 		call.Function.Arguments = json.RawMessage(`{"command":"rg","args":["-n","foo","."],"cwd":"src"}`)
-		calls, problems := mapNativeToolCalls([]ollamaToolCall{call})
+		calls, problems := mapNativeToolCalls([]ToolCall{call})
 		if len(problems) != 0 {
 			t.Fatalf("problems = %+v, want none", problems)
 		}
@@ -4266,10 +4269,10 @@ func TestMapNativeToolCalls(t *testing.T) {
 	})
 
 	t.Run("malformed arguments reported per call", func(t *testing.T) {
-		var call ollamaToolCall
+		var call ToolCall
 		call.Function.Name = "read_file"
 		call.Function.Arguments = json.RawMessage(`{not valid json`)
-		calls, problems := mapNativeToolCalls([]ollamaToolCall{call})
+		calls, problems := mapNativeToolCalls([]ToolCall{call})
 		if len(calls) != 0 {
 			t.Fatalf("calls = %+v, want none for malformed arguments", calls)
 		}

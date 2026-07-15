@@ -21,12 +21,17 @@ type ToolGateway struct {
 	permissionRequester func(context.Context, ToolPermissionRequestEvent) bool
 }
 
-func newToolGateway(app *App, config AppConfig) ToolGateway {
-	gateway := ToolGateway{
-		app:      app,
-		registry: defaultHarnessToolRegistry(config),
-		tools:    newHarnessToolExecutionContext(config),
+func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry) ToolGateway {
+	gw := ToolGateway{
+		app:   app,
+		tools: newHarnessToolExecutionContext(config),
 	}
+	if len(registry) > 0 {
+		gw.registry = registry[0]
+	} else {
+		gw.registry = defaultHarnessToolRegistry(config)
+	}
+	gateway := gw
 	if app != nil {
 		gateway.permissionRequester = app.toolPermission
 		gateway.tools.GenerateImage = func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, error) {

@@ -23,7 +23,7 @@ type ChatCompletionResult struct {
 	Thinking   string
 	Reason     string
 	EvalTokens int
-	ToolCalls  []ollamaToolCall
+	ToolCalls  []ToolCall
 }
 
 func newOllamaClient(httpClient *http.Client, baseURL string) OllamaClient {
@@ -211,6 +211,13 @@ func sanitizeOllamaImages(messages []ChatMessage) []ChatMessage {
 	return cleaned
 }
 
+// normalizeOllamaImage returns the bare base64 payload Ollama's chat API
+// expects: it strips a data: URL wrapper and validates the remainder decodes,
+// dropping anything else. This is deliberately distinct from the broad
+// normalizeImagePayload (app.go), which accepts URLs, markdown, and bare
+// base64 to harvest images from provider results; this Ollama adapter helper
+// only produces Ollama's required wire shape. Ollama rejects the whole request
+// with 400 "illegal base64 data" if a single image is malformed.
 func normalizeOllamaImage(image string) string {
 	image = strings.TrimSpace(image)
 	if image == "" {

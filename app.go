@@ -55,6 +55,14 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	// Create the storage directories once at launch from the current config so
+	// the first chat/tool/history operation doesn't pay for it. The per-call
+	// ensureStorageDirs in loadReadyConfig stays as a no-op-ish backstop for a
+	// SaveConfig that changed the storage root mid-session.
+	if config, err := loadAppConfig(); err == nil {
+		_ = ensureStorageDirs(config.Storage)
+		a.baseURL = config.Providers.Ollama.BaseURL
+	}
 }
 
 // beforeClose is wired to Wails' OnBeforeClose hook. It prompts the user to
@@ -219,32 +227,32 @@ type ollamaShowResponse struct {
 }
 
 type ChatMessage struct {
-	Role      string           `json:"role"`
-	Content   string           `json:"content"`
-	Images    []string         `json:"images,omitempty"`
-	ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
+	Role      string     `json:"role"`
+	Content   string     `json:"content"`
+	Images    []string   `json:"images,omitempty"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
-// ollamaToolCall mirrors the function-call shape Ollama returns in
-// message.tool_calls (and accepts in assistant message history). Arguments is
-// kept raw so the planner loop can validate before unmarshalling. The nested
-// function payload is a named type (not an anonymous struct) so the Wails
-// binding generator can mirror it into models.ts.
-type ollamaToolCall struct {
-	Type     string             `json:"type,omitempty"`
-	Function ollamaToolFunction `json:"function"`
+// ToolCall mirrors the function-call shape a provider returns in
+// message.tool_calls (and accepts in assistant message history). Both Ollama
+// and OpenRouter use this shape, despite the Ollama-originated field name on
+// the wire. Arguments is kept raw so the planner loop can validate before
+// unmarshalling. The nested function payload is a named type (not an anonymous
+// struct) so the Wails binding generator can mirror it into models.ts.
+type ToolCall struct {
+	Type     string       `json:"type,omitempty"`
+	Function ToolFunction `json:"function"`
 }
 
-// ollamaToolFunction is the function payload of a tool call.
-type ollamaToolFunction struct {
+// ToolFunction is the function payload of a tool call.
+type ToolFunction struct {
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
 }
 
 type ChatRequest struct {
-	RequestID      string `json:"requestID,omitempty"`
-	ConversationID string `json:"conversationId,omitempty"`
-	turnStarted    bool
+	RequestID      string         `json:"requestID,omitempty"`
+	ConversationID string         `json:"conversationId,omitempty"`
 	BaseURL        string         `json:"baseURL,omitempty"`
 	Provider       string         `json:"provider,omitempty"`
 	Model          string         `json:"model"`
@@ -298,10 +306,10 @@ type ollamaChatChunk struct {
 	Model   string `json:"model"`
 	Done    bool   `json:"done"`
 	Message struct {
-		Role      string           `json:"role"`
-		Content   string           `json:"content"`
-		Thinking  string           `json:"thinking"`
-		ToolCalls []ollamaToolCall `json:"tool_calls"`
+		Role      string     `json:"role"`
+		Content   string     `json:"content"`
+		Thinking  string     `json:"thinking"`
+		ToolCalls []ToolCall `json:"tool_calls"`
 	} `json:"message"`
 	DoneReason string `json:"done_reason"`
 	EvalCount  int    `json:"eval_count"`
@@ -311,10 +319,10 @@ type ollamaChatChunk struct {
 type ollamaChatResponse struct {
 	Model   string `json:"model"`
 	Message struct {
-		Role      string           `json:"role"`
-		Content   string           `json:"content"`
-		Thinking  string           `json:"thinking"`
-		ToolCalls []ollamaToolCall `json:"tool_calls"`
+		Role      string     `json:"role"`
+		Content   string     `json:"content"`
+		Thinking  string     `json:"thinking"`
+		ToolCalls []ToolCall `json:"tool_calls"`
 	} `json:"message"`
 	Response   string `json:"response"`
 	Done       bool   `json:"done"`
@@ -769,7 +777,6 @@ func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {
 		return nil, err
 	}
 	req.ConversationID = conversationID
-	req.turnStarted = true
 
 	streamCtx, cancel := context.WithCancel(context.Background())
 	a.streamsMu.Lock()
@@ -782,7 +789,7 @@ func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {
 			delete(a.streams, requestID)
 			a.streamsMu.Unlock()
 		}()
-		engine.RunChatStream(streamCtx, requestID, req)
+		engine.RunChatStream(streamCtx, requestID, req, true)
 	}()
 
 	return &ChatStreamStart{RequestID: requestID, ConversationID: conversationID}, nil
@@ -925,15 +932,6 @@ func decodeImagePayload(image string) ([]byte, string, error) {
 		return nil, "", errors.New("payload is not a supported image")
 	}
 	return data, extension, nil
-}
-
-func (a *App) runChatStream(ctx context.Context, requestID string, req ChatRequest) {
-	config, err := loadReadyConfig()
-	if err != nil {
-		a.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
-		return
-	}
-	newHarnessEngine(config, a).RunChatStream(ctx, requestID, req)
 }
 
 func (a *App) writeChatConversation(req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int) (string, error) {
@@ -1549,7 +1547,7 @@ func ensureStorageDirs(storage ConfigStorage) error {
 	return nil
 }
 
-func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, assistantThinking, model, provider, reason string, tokens int, title string, run ...HarnessRun) (string, error) {
+func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, assistantThinking, model, provider, reason string, tokens int, title string, run HarnessRun) (string, error) {
 	now := time.Now()
 	nowText := now.Format(time.RFC3339)
 	store := newHistoryStore(config.Storage)
@@ -1580,7 +1578,7 @@ func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, 
 		},
 	}
 
-	userTurn, assistantTurn, err := buildChatTurnPair(workspace.ID, 1, nowText, req, assistantContent, assistantThinking, model, provider, reason, tokens, workspace.ArtifactsDir, firstHarnessRun(model, reason, tokens, run))
+	userTurn, assistantTurn, err := buildChatTurnPair(workspace.ID, 1, nowText, req, assistantContent, assistantThinking, model, provider, reason, tokens, workspace.ArtifactsDir, run)
 	if err != nil {
 		return "", err
 	}
@@ -1697,7 +1695,7 @@ func buildChatAssistantTurn(conversationID string, turnNumber int, createdAt str
 	}
 }
 
-func appendChatConversation(config AppConfig, req ChatRequest, assistantContent, assistantThinking, model, provider, reason string, tokens int, run ...HarnessRun) (string, error) {
+func appendChatConversation(config AppConfig, req ChatRequest, assistantContent, assistantThinking, model, provider, reason string, tokens int, run HarnessRun) (string, error) {
 	conversationID := strings.TrimSpace(req.ConversationID)
 	store := newHistoryStore(config.Storage)
 	loaded, err := store.loadForAppend(conversationID, "chat", "a chat")
@@ -1705,7 +1703,7 @@ func appendChatConversation(config AppConfig, req ChatRequest, assistantContent,
 		return "", err
 	}
 	nowText := time.Now().Format(time.RFC3339)
-	userTurn, assistantTurn, err := buildChatTurnPair(conversationID, loaded.NextTurnNumber, nowText, req, assistantContent, assistantThinking, model, provider, reason, tokens, loaded.ArtifactsDir, firstHarnessRun(model, reason, tokens, run))
+	userTurn, assistantTurn, err := buildChatTurnPair(conversationID, loaded.NextTurnNumber, nowText, req, assistantContent, assistantThinking, model, provider, reason, tokens, loaded.ArtifactsDir, run)
 	if err != nil {
 		return "", err
 	}
