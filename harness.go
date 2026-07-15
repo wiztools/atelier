@@ -151,6 +151,14 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	queued := run.appendStep("queued", 1, "", "", "turn accepted by harness")
 	run.completeStep(queued, "completed", "", 0, "")
 
+	// A misconfigured harness provider fails every call for the same reason, so
+	// report it now rather than degrading through triage and the planner first.
+	if err := h.harnessProviderUnavailable(harness, req.BaseURL); err != nil {
+		run.complete("failed", "harness_provider_unavailable")
+		h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
+		return
+	}
+
 	skillIndex, skillIndexErr := loadSkillIndex(defaultSkillRoots())
 	var explicitSkill *SkillIndexEntry
 	explicitReason := ""
@@ -434,6 +442,21 @@ func (h *HarnessEngine) completeWithHarnessModel(ctx context.Context, harness ha
 		return ChatCompletionResult{}, err
 	}
 	return provider.CompleteChat(ctx, req)
+}
+
+// harnessProviderUnavailable reports a harness provider that cannot be reached
+// for a configuration reason — an OpenRouter harness with no API key, say.
+//
+// Such a failure is deterministic: it will never succeed on retry. The harness
+// fail-safe rails (triage defers to the planner, an invalid plan feeds back a
+// correction) exist for probabilistic model failures, and running a whole turn
+// through them to arrive at a config error wastes the turn and tells the user
+// nothing. Surface it once, up front, instead.
+func (h *HarnessEngine) harnessProviderUnavailable(harness harnessTarget, baseURL string) error {
+	if _, err := h.app.providerFor(harness.provider, baseURL); err != nil {
+		return fmt.Errorf("harness model %q cannot run on %s: %w", harness.model, harness.provider, err)
+	}
+	return nil
 }
 
 // harnessTarget is where the harness model runs. Model and provider travel

@@ -4795,3 +4795,38 @@ func TestResponseProviderForFollowsHarnessTargetOnFallback(t *testing.T) {
 		t.Errorf("caption provider = %q, want ollama to match the resolved harness model", got)
 	}
 }
+
+// TestHarnessProviderUnavailableSurfacesConfigErrors guards against the silent
+// degrade: a missing key is deterministic and will never succeed on retry, so
+// it must not be left to the fail-safe rails built for flaky model output.
+func TestHarnessProviderUnavailableSurfacesConfigErrors(t *testing.T) {
+	keyring.MockInit()
+	t.Cleanup(func() { _ = clearOpenRouterAPIKey() })
+
+	app := NewApp()
+	engine := newHarnessEngine(defaultAppConfig(), app)
+
+	if err := clearOpenRouterAPIKey(); err != nil {
+		t.Fatalf("clearOpenRouterAPIKey returned error: %v", err)
+	}
+	err := engine.harnessProviderUnavailable(harnessTarget{model: "m", provider: "openrouter"}, "")
+	if err == nil {
+		t.Fatal("no error for an OpenRouter harness with no key; the turn would silently degrade")
+	}
+	if !strings.Contains(err.Error(), "harness") {
+		t.Errorf("error %q does not mention the harness; the user cannot tell which model is misconfigured", err)
+	}
+
+	if err := saveOpenRouterAPIKey("sk-or-test"); err != nil {
+		t.Fatalf("saveOpenRouterAPIKey returned error: %v", err)
+	}
+	if err := engine.harnessProviderUnavailable(harnessTarget{model: "m", provider: "openrouter"}, ""); err != nil {
+		t.Errorf("configured OpenRouter harness reported unavailable: %v", err)
+	}
+
+	// Ollama is reachable-by-assumption: it has no key to check, and a dead
+	// endpoint is a runtime failure the existing rails already handle.
+	if err := engine.harnessProviderUnavailable(harnessTarget{model: "m", provider: "ollama"}, "http://ollama.test"); err != nil {
+		t.Errorf("ollama harness reported unavailable: %v", err)
+	}
+}

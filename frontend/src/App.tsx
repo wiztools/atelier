@@ -180,7 +180,22 @@ function App() {
   const [status, setStatus] = useState<main.OllamaStatus | null>(null);
   const [models, setModels] = useState<main.OllamaModel[]>([]);
   const [refreshing, setRefreshing] = useState(false);
-  const [harnessModel, setHarnessModel] = useState('');
+  const [harnessProvider, setHarnessProvider] = useState<'ollama' | 'openrouter'>('ollama');
+  // The harness model is remembered per provider, mirroring primaryModels, so
+  // switching providers restores that provider's last selection instead of
+  // stranding an Ollama model name under OpenRouter.
+  const [harnessModels, setHarnessModels] = useState<Record<'ollama' | 'openrouter', string>>({ollama: '', openrouter: ''});
+  const harnessModel = harnessModels[harnessProvider];
+  const setHarnessModel = (next: string | ((current: string) => string)) => {
+    setHarnessModels((prev) => {
+      const current = prev[harnessProvider];
+      const resolved = typeof next === 'function' ? (next as (c: string) => string)(current) : next;
+      if (resolved === current) {
+        return prev;
+      }
+      return {...prev, [harnessProvider]: resolved};
+    });
+  };
   const [imageModel, setImageModel] = useState('');
   const [primaryProvider, setPrimaryProvider] = useState<'ollama' | 'openrouter'>('ollama');
   // The primary model is remembered per provider so switching providers
@@ -329,13 +344,14 @@ function App() {
             baseURL,
             models: {
               primary: primaryModels.ollama,
-              harness: harnessModel,
+              harness: harnessModels.ollama,
               image: imageModel,
             },
           },
           openrouter: {
             enabled: openRouterHasKey,
             primary: primaryModels.openrouter,
+            harness: harnessModels.openrouter,
           },
           fal: {
             enabled: falHasKey,
@@ -347,6 +363,7 @@ function App() {
         },
         models: {
           primaryProvider,
+          harnessProvider,
           imageProvider,
         },
         prompts: {
@@ -372,7 +389,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falVideoModel, falVideoImageModel, falAudioModel, harnessModel, imageHeight, imageModel, imageProvider, imageSteps, imageWidth, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falVideoModel, falVideoImageModel, falAudioModel, harnessModels, harnessProvider, imageHeight, imageModel, imageProvider, imageSteps, imageWidth, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
 
   // On a fresh launch, put the cursor in the chat box so the user can start
   // typing immediately. Fires once, when config finishes loading.
@@ -531,8 +548,8 @@ function App() {
   // fall out of the list so the validation effect below heals it to a real
   // model instead of letting the bad value self-validate.
   const modelOptions = useMemo(() => {
-    return Array.from(new Set([...asArray(models).map((item) => item.name), harnessModel, imageModel].filter(Boolean)));
-  }, [harnessModel, imageModel, models]);
+    return Array.from(new Set([...asArray(models).map((item) => item.name), harnessModels.ollama, imageModel].filter(Boolean)));
+  }, [harnessModels.ollama, imageModel, models]);
   const primaryModelOptions = useMemo(() => {
     if (primaryProvider === 'openrouter') {
       return asArray(openRouterModels)
@@ -542,6 +559,14 @@ function App() {
     return modelOptions.map((name) => ({value: name, label: name}));
   }, [modelOptions, openRouterModels, primaryProvider]);
   const primaryModelIsValid = primaryModelOptions.some((option) => option.value === model);
+  const harnessModelOptions = useMemo(() => {
+    if (harnessProvider === 'openrouter') {
+      return asArray(openRouterModels)
+        .map((item) => ({value: item.id, label: item.displayName || item.id}))
+        .sort((a, b) => a.label.localeCompare(b.label));
+    }
+    return modelOptions.map((name) => ({value: name, label: name}));
+  }, [harnessProvider, modelOptions, openRouterModels]);
   const imageModelOptions = useMemo(() => {
     const detected = asArray(models).filter((item) => item.imageGeneration).map((item) => item.name).filter(Boolean);
     return detected.length ? detected : modelOptions;
@@ -589,10 +614,11 @@ function App() {
   }, [primaryModelOptions]);
 
   useEffect(() => {
-    if (primaryProvider === 'openrouter' && openRouterHasKey && openRouterModels.length === 0 && openRouterStatus !== 'error') {
+    const needsCatalog = primaryProvider === 'openrouter' || harnessProvider === 'openrouter';
+    if (needsCatalog && openRouterHasKey && openRouterModels.length === 0 && openRouterStatus !== 'error') {
       refreshOpenRouterModels();
     }
-  }, [primaryProvider, openRouterHasKey, openRouterModels.length, openRouterStatus]);
+  }, [primaryProvider, harnessProvider, openRouterHasKey, openRouterModels.length, openRouterStatus]);
 
   async function loadConfig() {
     const config = await GetConfig();
@@ -601,6 +627,8 @@ function App() {
     const nextOpenRouterModel = config.providers?.openrouter?.primary ?? '';
     const nextPrimaryProvider = config.models?.primaryProvider === 'openrouter' ? 'openrouter' : 'ollama';
     const nextHarnessModel = config.providers?.ollama?.models?.harness || nextPrimaryModel;
+    const nextOpenRouterHarness = config.providers?.openrouter?.harness ?? '';
+    const nextHarnessProvider = config.models?.harnessProvider === 'openrouter' ? 'openrouter' : 'ollama';
     const nextImageModel = config.providers?.ollama?.models?.image ?? '';
     const nextSystem = config.prompts?.system || 'You are Atelier, a precise local AI collaborator.';
     const nextImageWidth = config.generation?.image?.width || defaultImageWidth;
@@ -620,7 +648,8 @@ function App() {
     setBaseURL(nextBaseURL);
     setPrimaryModels({ollama: nextPrimaryModel, openrouter: nextOpenRouterModel});
     setPrimaryProvider(nextPrimaryProvider);
-    setHarnessModel(nextHarnessModel);
+    setHarnessModels({ollama: nextHarnessModel, openrouter: nextOpenRouterHarness});
+    setHarnessProvider(nextHarnessProvider);
     setImageModel(nextImageModel);
     setSystem(nextSystem);
     setImageWidth(nextImageWidth);
@@ -706,7 +735,10 @@ function App() {
       const firstModel = nextModels[0]?.name ?? '';
       const firstImageModel = nextModels.find((item) => item.imageGeneration)?.name ?? firstModel;
       setPrimaryModels((current) => (current.ollama ? current : {...current, ollama: firstModel}));
-      setHarnessModel((current) => current || firstModel);
+      // Target the Ollama slot explicitly: this default comes from the Ollama
+      // catalog and must not land in the OpenRouter slot when that provider is
+      // the active one.
+      setHarnessModels((current) => (current.ollama ? current : {...current, ollama: firstModel}));
       setImageModel((current) => current || firstImageModel);
     } finally {
       setRefreshing(false);
@@ -772,6 +804,9 @@ function App() {
       setOpenRouterStatus('unknown');
       setOpenRouterError('');
       setPrimaryProvider((current) => current === 'openrouter' ? 'ollama' : current);
+      // The harness cannot reach OpenRouter without a key either, and an
+      // unreachable harness now fails the turn up front rather than degrading.
+      setHarnessProvider((current) => current === 'openrouter' ? 'ollama' : current);
     } catch (error) {
       setOpenRouterStatus('error');
       setOpenRouterError(formatError(error));
@@ -1562,20 +1597,48 @@ function App() {
 
               <section className="settings-section">
                 <h3>Harness</h3>
-                <div className="field">
-                  <label htmlFor="harness-model">Harness Model</label>
-                  <div className="model-inline-control">
-                    <select id="harness-model" value={harnessModel} onChange={(event) => setHarnessModel(event.target.value)}>
-                      {modelOptions.map((name) => <option key={name}>{name}</option>)}
-                    </select>
-                    <ModelCapabilityLink
-                      id="settings-tools"
-                      modelName={harnessModel}
-                      models={models}
-                      openID={openCapabilityID}
-                      setOpenID={setOpenCapabilityID}
-                      variant="icon"
-                    />
+                <div className="settings-rows">
+                  <div className="two-column">
+                    <div className="field">
+                      <label htmlFor="harness-provider">Harness Provider</label>
+                      <select
+                        id="harness-provider"
+                        value={harnessProvider}
+                        onChange={(event) => setHarnessProvider(event.target.value as 'ollama' | 'openrouter')}
+                      >
+                        <option value="ollama">Ollama</option>
+                        <option value="openrouter" disabled={!openRouterHasKey}>OpenRouter</option>
+                      </select>
+                    </div>
+                    <div className="field">
+                      <label htmlFor="harness-model">Harness Model</label>
+                      <div className="model-inline-control">
+                        {harnessProvider === 'openrouter' ? (
+                          <ModelCombobox
+                            id="harness-model"
+                            ariaLabel="Harness model"
+                            placeholder="Type to filter models..."
+                            value={harnessModel}
+                            onChange={setHarnessModel}
+                            options={harnessModelOptions}
+                          />
+                        ) : (
+                          <>
+                            <select id="harness-model" value={harnessModel} onChange={(event) => setHarnessModel(event.target.value)}>
+                              {harnessModelOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                            </select>
+                            <ModelCapabilityLink
+                              id="settings-tools"
+                              modelName={harnessModel}
+                              models={models}
+                              openID={openCapabilityID}
+                              setOpenID={setOpenCapabilityID}
+                              variant="icon"
+                            />
+                          </>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </div>
               </section>

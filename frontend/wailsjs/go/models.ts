@@ -136,6 +136,7 @@ export namespace main {
 	}
 	export class ConfigModels {
 	    primaryProvider?: string;
+	    harnessProvider?: string;
 	    imageProvider?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -145,6 +146,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.primaryProvider = source["primaryProvider"];
+	        this.harnessProvider = source["harnessProvider"];
 	        this.imageProvider = source["imageProvider"];
 	    }
 	}
@@ -173,6 +175,7 @@ export namespace main {
 	export class ConfigOpenRouter {
 	    enabled: boolean;
 	    primary?: string;
+	    harness?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigOpenRouter(source);
@@ -182,6 +185,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.enabled = source["enabled"];
 	        this.primary = source["primary"];
+	        this.harness = source["harness"];
 	    }
 	}
 	export class ConfigOllamaModels {
