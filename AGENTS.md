@@ -29,7 +29,7 @@ Everything is **one flat Go package (`main`) at the repo root**. There are no su
 | `triage.go` | First-pass routing: the harness model decides `needsTools` + `responseMode` (`text`/`image`/`vision`) before anything else runs. |
 | `provider.go` | The `ChatProvider` interface (`ListModels`/`StreamChat`/`CompleteChat`) and `ProviderRegistry` that resolves `"ollama"` or `"openrouter"`. |
 | `ollama_client.go` / `ollama_provider.go` | Ollama HTTP client (tags, show, chat stream, generate) and its `ChatProvider` adapter. |
-| `openrouter_client.go` / `openrouter_provider.go` | OpenRouter HTTP client and `ChatProvider` adapter. |
+| `openrouter_client.go` / `openrouter_provider.go` | OpenRouter HTTP client and `ChatProvider` adapter. `strictJSONSchema` derives an OpenAI strict-mode variant of the harness's Ollama-shaped `Format` schema (strip rejected keywords like `maxItems`, promote every property into `required`, widen optionals to nullable unions); Ollama still receives the original. |
 | `tools_registry.go` | Tool definitions (`list_files`, `read_file`, `write_file`, `run_command`, `generate_image`) and the JSON schema sent to Ollama for grammar-constrained plan output. |
 | `fs_tools.go` | `FilesystemToolLayer` — real file ops and command execution confined to a workspace root, with the command allowlist and path-boundary enforcement. |
 | `tool_gateway.go` | `ToolGateway` — permission gating and tool execution, used by both the harness and the direct API methods. |
@@ -44,7 +44,7 @@ Frontend: `frontend/src/App.tsx` is the entire UI (single component, ~React 18 +
 A chat turn flows through `App.StreamChat` → `HarnessEngine.RunChatStream`:
 
 1. **Start** — persist the user turn to history, assign a `conversationID`.
-2. **Triage** (`triage.go`) — the *harness model* decides `{needsTools, responseMode, toolTask, reason}` with a structured-output JSON schema. Failures **fail safe** to the tool path (`needsTools=true`, `responseMode="text"`) — a wrong fallback costs latency, never correctness.
+2. **Triage** (`triage.go`) — the *harness model* decides `{needsTools, responseMode, toolTask, reason}` with a structured-output JSON schema. Failures **fail safe** to the tool path (`needsTools=true`, `responseMode="text"`) — a wrong fallback costs latency, never correctness. An unreachable harness *provider* (e.g. OpenRouter with no key) is a config error, not a model failure: `harnessProviderUnavailable` reports it before triage rather than burning the turn on the fail-safe rails.
 3. **Planning loop** (`prepareChatTurnLoop`) — only when tools are needed. Up to `harnessChatMaxSteps` (3) rounds, bounded by `harnessChatMaxWallTime` (2 min), at most 3 tool calls per round. The planner emits a JSON plan validated against the tool schema; invalid plans are fed back to the planner as corrections rather than aborting.
 4. **Tool execution** (`ToolGateway`) — read-only tools run unattended; `write`/`exec` tools require UI approval via `atelier:tool-permission` events (2-minute timeout, fail-closed).
 5. **Final response** — a *different* model (the primary/chat model) streams the user-facing answer. It receives tool observations as **evidence**, never as instructions, and is told (via code-authored system notes in `harness.go`) what actually ran and what failed so it cannot claim success that didn't happen.
@@ -53,10 +53,12 @@ A chat turn flows through `App.StreamChat` → `HarnessEngine.RunChatStream`:
 
 - **Planner output is telemetry, never prompt text.** The primary model's system prompt only ever receives code-authored notes (`toolEvidenceSystemNote`, etc.). A brief/reason from a weaker harness model must not cap what the primary model is allowed to know.
 - **Tool evidence is delivered as `role:"tool"` messages to the planner** (so it re-plans on evidence), but as a **single `role:"user"` message to the final model** (`toolEvidenceUserMessage`). This is deliberate: the primary model isn't doing native tool-calling, and some providers (Mistral via OpenRouter) reject a bare `tool` role after a `user` role.
+- **`role:"tool"` is the harness's canonical evidence shape; adapters translate it.** The OpenAI wire format only accepts a tool message when the preceding assistant message carries `tool_calls`, which the format-schema planner never emits. Ollama is lenient; OpenRouter returns `400 tool message has no preceding assistant tool_calls`. `openRouterMessages` rewrites unbacked tool messages into a `role:"user"` observation (shared `toolObservationsPrefix`). Keep this in the **adapter**, not the harness — the harness must not learn which providers are strict.
 - **`num_ctx` is sent explicitly on every call** (`defaultOllamaNumCtx = 8192`). History is trimmed to fit (`truncateChatHistory`) rather than letting Ollama silently truncate from the front; the oldest dropped message gets a `[Earlier conversation was omitted...]` marker.
 - **Image base64 never enters model context.** Generated images are stripped from tool-result messages before they reach any model; the harness extracts them separately for the UI and history.
-- **An image-generation model cannot produce text/vision.** `responseModelFor` falls back to the harness model for image captions, and `responseProviderFor` forces `"ollama"` in that case (the harness model is always Ollama).
-- **Harness model defaults to the primary model** when unset — a one-model setup must still work.
+- **An image-generation model cannot produce text/vision.** `responseModelFor` falls back to the harness model for image captions, and `responseProviderFor` falls back to that model's provider. Both take the resolved `harnessTarget` rather than reading config: an unset harness model resolves to the *primary* model on the *primary* provider, so a raw `Models.HarnessProvider` read would pair that model with the wrong endpoint.
+- **The harness model runs on either provider.** `resolveHarnessTarget` returns model and provider as one `harnessTarget`; never resolve them separately. All three harness calls — triage, skill selection (`selectSkillForTurn`), and planning — go through `completeWithHarnessModel`, never `ollamaClient` directly. `supportsNativeTools` is Ollama-only capability detection, so a non-Ollama harness plans via the format schema.
+- **Harness model defaults to the primary model *and* its provider** when unset — a one-model setup must still work, including a cloud-only one with no local Ollama.
 
 ## Conventions
 

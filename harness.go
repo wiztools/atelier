@@ -146,10 +146,18 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 
 	primaryModel := h.primaryModelForRequest(req)
 	primaryProvider := resolvedProvider(req)
-	harnessModel := h.harnessModelFor(primaryModel)
+	harness := h.resolveHarnessTarget(primaryModel, primaryProvider)
 	run := newHarnessRun(requestID, conversationID)
 	queued := run.appendStep("queued", 1, "", "", "turn accepted by harness")
 	run.completeStep(queued, "completed", "", 0, "")
+
+	// A misconfigured harness provider fails every call for the same reason, so
+	// report it now rather than degrading through triage and the planner first.
+	if err := h.harnessProviderUnavailable(harness, req.BaseURL); err != nil {
+		run.complete("failed", "harness_provider_unavailable")
+		h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
+		return
+	}
 
 	skillIndex, skillIndexErr := loadSkillIndex(defaultSkillRoots())
 	var explicitSkill *SkillIndexEntry
@@ -163,9 +171,9 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 
 	decision := HarnessTriageDecision{NeedsTools: true, ResponseMode: "text", Reason: "user explicitly referenced a skill"}
 	if explicitSkill == nil {
-		triage := run.appendStep("triage", 1, "ollama", harnessModel, "harness model deciding response mode and tools")
+		triage := run.appendStep("triage", 1, harness.provider, harness.model, "harness model deciding response mode and tools")
 		var completion ChatCompletionResult
-		decision, completion = h.triageChatTurn(ctx, req, harnessModel, skillIndex)
+		decision, completion = h.triageChatTurn(ctx, req, harness, skillIndex)
 		run.Steps[triage].Decision = triageDecisionLabel(decision)
 		status := "completed"
 		if decision.Error != "" {
@@ -187,9 +195,10 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		// Resolve native tool-calling support. Native tools are an enhancement:
 		// any failure to confirm the capability falls back to the format-schema
 		// planner path, so a wrong fallback costs latency, never correctness.
-		useNativeTools := h.supportsNativeTools(ctx, req.BaseURL, harnessModel)
+		useNativeTools := h.supportsNativeTools(ctx, req.BaseURL, harness)
 		toolReq := req
-		toolReq.Model = harnessModel
+		toolReq.Model = harness.model
+		toolReq.Provider = harness.provider
 		var err error
 		preparation, err = h.prepareChatTurnLoop(ctx, requestID, conversationID, toolReq, harnessTurnContext{
 			SkillIndex:     skillIndex,
@@ -200,6 +209,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			PrimaryModel:   primaryModel,
 			ResponseMode:   decision.ResponseMode,
 			UseNativeTools: useNativeTools,
+			Harness:        harness,
 			AttachedImage:  latestUserImage(req.Messages),
 		}, &run)
 		if err != nil {
@@ -220,8 +230,8 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	// Resolve the response model: when the primary model is an image generation
 	// model, it cannot produce text or analyze images, so fall back to the
 	// harness model for the final response.
-	responseModel := h.responseModelFor(decision.ResponseMode, primaryModel, harnessModel)
-	responseProvider := h.responseProviderFor(decision.ResponseMode, primaryModel, primaryProvider)
+	responseModel := h.responseModelFor(decision.ResponseMode, primaryModel, harness)
+	responseProvider := h.responseProviderFor(decision.ResponseMode, primaryModel, primaryProvider, harness)
 	responseReq := h.preparedResponseRequest(req, responseModel, responseProvider, preparation)
 	result, err := h.runFinalResponseAttempt(ctx, requestID, conversationID, responseReq, &run)
 
@@ -422,23 +432,73 @@ func triageDecisionLabel(decision HarnessTriageDecision) string {
 	return mode
 }
 
-// harnessModelFor resolves the planning model for the tool path; an unset config
-// falls back to the primary model so a one-model setup still works.
-func (h *HarnessEngine) harnessModelFor(primaryModel string) string {
-	model := strings.TrimSpace(h.config.Providers.Ollama.Models.Harness)
-	if model == "" {
-		return primaryModel
+// completeWithHarnessModel runs one harness call (triage, skill selection, or
+// planning) against whichever provider the harness model lives on. All three go
+// through the ChatProvider registry rather than reaching for an Ollama client
+// directly, so the harness model is not pinned to a single backend.
+func (h *HarnessEngine) completeWithHarnessModel(ctx context.Context, harness harnessTarget, req ChatRequest) (ChatCompletionResult, error) {
+	provider, err := h.app.providerFor(harness.provider, req.BaseURL)
+	if err != nil {
+		return ChatCompletionResult{}, err
 	}
-	return model
+	return provider.CompleteChat(ctx, req)
+}
+
+// harnessProviderUnavailable reports a harness provider that cannot be reached
+// for a configuration reason — an OpenRouter harness with no API key, say.
+//
+// Such a failure is deterministic: it will never succeed on retry. The harness
+// fail-safe rails (triage defers to the planner, an invalid plan feeds back a
+// correction) exist for probabilistic model failures, and running a whole turn
+// through them to arrive at a config error wastes the turn and tells the user
+// nothing. Surface it once, up front, instead.
+func (h *HarnessEngine) harnessProviderUnavailable(harness harnessTarget, baseURL string) error {
+	if _, err := h.app.providerFor(harness.provider, baseURL); err != nil {
+		return fmt.Errorf("harness model %q cannot run on %s: %w", harness.model, harness.provider, err)
+	}
+	return nil
+}
+
+// harnessTarget is where the harness model runs. Model and provider travel
+// together so they cannot be resolved separately and drift — pairing one
+// provider's model name with another provider's endpoint is a silent 404.
+type harnessTarget struct {
+	model    string
+	provider string
+}
+
+// resolveHarnessTarget resolves the model and provider for the three harness
+// calls (triage, skill selection, planning). An unset harness model falls back
+// to the primary model on the primary provider, so a one-model setup still
+// works — including a cloud-only one, which an Ollama-pinned fallback could not
+// express.
+func (h *HarnessEngine) resolveHarnessTarget(primaryModel, primaryProvider string) harnessTarget {
+	fallback := harnessTarget{model: primaryModel, provider: primaryProvider}
+
+	// mergeAppConfig normalizes this to "ollama" or "openrouter", but resolve
+	// defensively: engines are also constructed straight from test configs.
+	if strings.TrimSpace(h.config.Models.HarnessProvider) == "openrouter" {
+		if model := strings.TrimSpace(h.config.Providers.OpenRouter.Harness); model != "" {
+			return harnessTarget{model: model, provider: "openrouter"}
+		}
+		return fallback
+	}
+	if model := strings.TrimSpace(h.config.Providers.Ollama.Models.Harness); model != "" {
+		return harnessTarget{model: model, provider: "ollama"}
+	}
+	return fallback
 }
 
 // supportsNativeTools reports whether the harness model advertises Ollama's
 // native function-calling capability. Any error or absent capability returns
 // false, falling back to the format-schema planner path. Native tools are an
 // enhancement, never a requirement.
-func (h *HarnessEngine) supportsNativeTools(ctx context.Context, baseURL, model string) bool {
-	model = strings.TrimSpace(model)
-	if model == "" || h.app == nil {
+//
+// Capability detection is Ollama-specific (ShowModel), so a harness model on
+// any other provider reports false and plans via the format schema.
+func (h *HarnessEngine) supportsNativeTools(ctx context.Context, baseURL string, harness harnessTarget) bool {
+	model := strings.TrimSpace(harness.model)
+	if model == "" || harness.provider != "ollama" || h.app == nil {
 		return false
 	}
 	show, err := h.app.ollamaClient(baseURL).ShowModel(ctx, model)
@@ -458,30 +518,38 @@ func (h *HarnessEngine) supportsNativeTools(ctx context.Context, baseURL, model 
 // For responseMode "text" and "vision": use the primary model, unless it is
 // the configured image generation model (which can't do text or vision), in
 // which case fall back to the harness model.
-func (h *HarnessEngine) responseModelFor(mode, primaryModel, harnessModel string) string {
-	if mode == "image" {
-		return harnessModel
-	}
-	imageModel := strings.TrimSpace(h.config.Providers.Ollama.Models.Image)
-	if imageModel != "" && primaryModel == imageModel {
-		return harnessModel
+func (h *HarnessEngine) responseModelFor(mode, primaryModel string, harness harnessTarget) string {
+	if h.respondsWithHarnessModel(mode, primaryModel) {
+		return harness.model
 	}
 	return primaryModel
 }
 
-// responseProviderFor mirrors responseModelFor's fallback logic: whenever
-// the final response falls back to the harness model (image captioning, or
-// primaryModel being the configured Ollama image model), the harness model
-// is always Ollama, so the provider must be "ollama" too.
-func (h *HarnessEngine) responseProviderFor(mode, primaryModel, primaryProvider string) string {
-	if mode == "image" {
-		return "ollama"
-	}
-	imageModel := strings.TrimSpace(h.config.Providers.Ollama.Models.Image)
-	if imageModel != "" && primaryModel == imageModel {
-		return "ollama"
+// responseProviderFor mirrors responseModelFor's fallback logic: whenever the
+// final response falls back to the harness model (image captioning, or
+// primaryModel being the configured Ollama image model), it must also fall back
+// to the provider that model actually lives on.
+//
+// It takes the resolved harnessTarget rather than reading HarnessProvider from
+// config: the two can differ. An unset harness model resolves to the primary
+// model on the primary provider, and a raw config read would pair that model
+// with the configured harness provider instead — a wrong-model 404.
+func (h *HarnessEngine) responseProviderFor(mode, primaryModel, primaryProvider string, harness harnessTarget) string {
+	if h.respondsWithHarnessModel(mode, primaryModel) {
+		return harness.provider
 	}
 	return primaryProvider
+}
+
+// respondsWithHarnessModel reports whether the final response must fall back to
+// the harness model. Image mode captions an already-generated image, and an
+// image generation model can produce neither text nor vision.
+func (h *HarnessEngine) respondsWithHarnessModel(mode, primaryModel string) bool {
+	if mode == "image" {
+		return true
+	}
+	imageModel := strings.TrimSpace(h.config.Providers.Ollama.Models.Image)
+	return imageModel != "" && primaryModel == imageModel
 }
 
 func (h *HarnessEngine) runFinalResponseAttempt(ctx context.Context, requestID, conversationID string, req ChatRequest, run *HarnessRun) (finalResponseAttempt, error) {
@@ -632,6 +700,9 @@ type harnessTurnContext struct {
 	PrimaryModel   string
 	ResponseMode   string
 	UseNativeTools bool
+	// Harness is the resolved model+provider for the skill-selection and
+	// planning calls, carried as a unit so neither can drift from the other.
+	Harness harnessTarget
 	// AttachedImage is the source frame (base64 data URL) the user attached to
 	// this turn, if any — used by generate_video for image-to-video.
 	AttachedImage string
@@ -676,7 +747,7 @@ Select a skill only when its name or description clearly matches the user's requ
 			"num_ctx":     h.numCtx(),
 		},
 	}
-	completion, err := h.app.ollamaClient(req.BaseURL).CompleteChat(ctx, selectionReq)
+	completion, err := h.completeWithHarnessModel(ctx, turn.Harness, selectionReq)
 	if err != nil {
 		return &HarnessSkillDecision{AvailableCount: len(index), Error: err.Error()}, nil
 	}
@@ -756,10 +827,11 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 
 	prepared := HarnessPreparedTurn{SkillDecision: skillDecision, LoadedSkill: loadedSkill}
 	for iteration := 1; iteration <= harnessChatMaxSteps; iteration++ {
-		planning := run.appendStep("planning", iteration, "ollama", req.Model, fmt.Sprintf("harness planning round %d", iteration))
+		planning := run.appendStep("planning", iteration, turn.Harness.provider, req.Model, fmt.Sprintf("harness planning round %d", iteration))
 		prepReq := ChatRequest{
 			BaseURL:  req.BaseURL,
 			Model:    req.Model,
+			Provider: turn.Harness.provider,
 			System:   system,
 			Messages: truncateChatHistory(messages, budget),
 			Options: map[string]any{
@@ -773,7 +845,7 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 		} else {
 			prepReq.Format = harnessToolPlanSchema(registry)
 		}
-		completion, err := h.app.ollamaClient(req.BaseURL).CompleteChat(ctx, prepReq)
+		completion, err := h.completeWithHarnessModel(ctx, turn.Harness, prepReq)
 		if err != nil {
 			run.completeStep(planning, "failed", "", 0, err.Error())
 			return HarnessPreparedTurn{}, err
@@ -1035,6 +1107,12 @@ func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel, 
 	return responseReq
 }
 
+// toolObservationsPrefix labels tool results carried in a user-role message.
+// Shared with the OpenRouter adapter (openRouterMessages), which rewrites
+// tool-role messages the OpenAI wire format cannot express, so both paths
+// present observations to a model in the same vocabulary.
+const toolObservationsPrefix = "[Tool observations]\n"
+
 // toolEvidenceUserMessage renders tool results as a single user-role message
 // so that providers enforcing strict role ordering (e.g. Mistral via
 // OpenRouter) never see a bare "tool" role after a "user" role. The primary
@@ -1048,7 +1126,7 @@ func toolEvidenceUserMessage(results []HarnessToolResult) ChatMessage {
 	}
 	return ChatMessage{
 		Role:    "user",
-		Content: "[Tool observations]\n" + strings.Join(parts, "\n\n"),
+		Content: toolObservationsPrefix + strings.Join(parts, "\n\n"),
 	}
 }
 
