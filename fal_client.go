@@ -18,6 +18,7 @@ import (
 const (
 	falQueueBaseURL      = "https://queue.fal.run"
 	falPlatformBaseURL   = "https://api.fal.ai"
+	falOpenAPIBaseURL    = "https://fal.ai"
 	defaultFalImageModel = "fal-ai/flux/schnell"
 	// defaultFalImageEditModel is the image-to-image endpoint used to transform an
 	// attached source image — the image-to-image sibling of defaultFalImageModel.
@@ -57,6 +58,18 @@ func newFalClient(httpClient *http.Client, apiKey string) FalClient {
 		httpClient = http.DefaultClient
 	}
 	return FalClient{httpClient: httpClient, apiKey: strings.TrimSpace(apiKey)}
+}
+
+// fetchOpenAPISchema returns the raw OpenAPI JSON describing a fal endpoint's
+// input schema. This is a public endpoint; no Authorization is required.
+func (client FalClient) fetchOpenAPISchema(ctx context.Context, model string) ([]byte, error) {
+	path := "/api/openapi/queue/openapi.json?endpoint_id=" + url.QueryEscape(strings.TrimSpace(model))
+	resp, err := client.do(ctx, falOpenAPIBaseURL, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
 }
 
 // falImage is a single image entry in a fal result payload.
@@ -108,6 +121,10 @@ type GeneratedAudio struct {
 	Data      []byte
 	MimeType  string
 	SourceURL string
+	// Notices holds deterministic, user-facing caveats produced while resolving
+	// the request against the model's schema (e.g. a requested loop the model
+	// cannot honor). Surfaced verbatim in the chat reply.
+	Notices []string
 }
 
 // GeneratedVideo is a downloaded text-to-video result. Data holds the raw video
@@ -297,21 +314,16 @@ func (client FalClient) GenerateVideo(ctx context.Context, req VideoGenerateRequ
 // as both "prompt" and "text": music/sound-effect endpoints read "prompt" while
 // text-to-speech endpoints read "text", and fal's audio inputs ignore the extra
 // field. The result is a "audio" (or "audio_file") File object.
-func (client FalClient) GenerateAudio(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error) {
-	model := strings.TrimSpace(req.Model)
+// GenerateAudio submits an already-native fal request body (built by
+// resolveAudioBody against the model's schema) and downloads the result. It is a
+// thin transport: it does not know about canonical params or notices.
+func (client FalClient) GenerateAudio(ctx context.Context, model string, body map[string]any) (GeneratedAudio, error) {
+	model = strings.TrimSpace(model)
 	if model == "" {
 		model = defaultFalAudioModel
 	}
-
-	body := map[string]any{
-		"prompt": req.Prompt,
-		"text":   req.Prompt,
-	}
-	if duration := strings.TrimSpace(req.Duration); duration != "" {
-		body["duration"] = duration
-	}
-	if negative := strings.TrimSpace(req.NegativePrompt); negative != "" {
-		body["negative_prompt"] = negative
+	if body == nil {
+		body = map[string]any{}
 	}
 
 	submit, err := client.submit(ctx, model, body)

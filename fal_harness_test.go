@@ -444,6 +444,9 @@ func TestHarnessGeneratesAudioViaFal(t *testing.T) {
 	nonStreamCount := 0
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/api/openapi/") {
+			return jsonResponse(`{"components":{"schemas":{"TtsInput":{"type":"object","required":["text"],"properties":{"text":{"type":"string"},"voice":{"type":"string","default":"Rachel"}}}}}}`), nil
+		}
 		if strings.Contains(req.URL.Host, "fal.run") {
 			if req.Method == http.MethodPost {
 				return jsonResponse(`{"request_id":"req-aud-1"}`), nil
@@ -521,6 +524,107 @@ func TestHarnessGeneratesAudioViaFal(t *testing.T) {
 	tool, ok := assistant.ProviderResponse["tool"].(map[string]any)
 	if !ok || tool["name"] != "audio_generation" {
 		t.Fatalf("assistant provider tool = %+v, want audio_generation", assistant.ProviderResponse["tool"])
+	}
+}
+
+// TestHarnessAppendsLoopNoticeForUnsupportedModel drives a "looping sound"
+// request against a text-to-speech model that has no loop parameter, and
+// confirms the deterministic caveat is appended to the persisted assistant turn
+// (Route B), not silently dropped.
+func TestHarnessAppendsLoopNoticeForUnsupportedModel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	keyring.MockInit()
+	if err := saveFalAPIKey("fal-test-key"); err != nil {
+		t.Fatalf("saveFalAPIKey: %v", err)
+	}
+	t.Cleanup(func() { _ = clearFalAPIKey() })
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "chat-box-model"
+	config.Providers.Fal.AudioModel = defaultFalAudioModel // TTS: no loop support
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig: %v", err)
+	}
+
+	app := NewApp()
+	nonStreamCount := 0
+	prepCalls := 0
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/api/openapi/") {
+			// TTS schema — text + voice only, no loop parameter.
+			return jsonResponse(`{"components":{"schemas":{"TtsInput":{"type":"object","required":["text"],"properties":{"text":{"type":"string"},"voice":{"type":"string","default":"Rachel"}}}}}}`), nil
+		}
+		if strings.Contains(req.URL.Host, "fal.run") {
+			if req.Method == http.MethodPost {
+				return jsonResponse(`{"request_id":"req-loop-1"}`), nil
+			}
+			if strings.HasSuffix(req.URL.Path, "/status") {
+				return jsonResponse(`{"status":"COMPLETED"}`), nil
+			}
+			if strings.HasSuffix(req.URL.Path, "/requests/req-loop-1") {
+				return jsonResponse(`{"audio":{"url":"https://queue.fal.run/generated.mp3","content_type":"audio/mpeg"}}`), nil
+			}
+			return &http.Response{StatusCode: 200, Status: "200 OK",
+				Body:   io.NopCloser(strings.NewReader(string(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x00"), 0xFF, 0xFB, 0x90, 0x00)))),
+				Header: http.Header{"Content-Type": []string{"audio/mpeg"}}}, nil
+		}
+		switch req.URL.Path {
+		case "/api/show":
+			return jsonResponse(`{"capabilities":[],"model_info":{},"details":{"family":"test","parameter_size":"1B"}}`), nil
+		case "/api/chat":
+			payload := chatPayload(t, req)
+			if payload["stream"] == false {
+				nonStreamCount++
+				if nonStreamCount == 1 {
+					return chatCompletion("harness-model", `{"needsTools":true,"responseMode":"audio","toolTask":"Make a looping ambient sound.","reason":"The user asked for a loop."}`), nil
+				}
+				prepCalls++
+				body := `{"brief":"Make a looping ambient sound.","needsTools":true,"reason":"audio","toolCalls":[{"name":"generate_audio","content":"gentle ambient rain","loop":true}]}`
+				if prepCalls > 1 {
+					body = `{"brief":"Done.","needsTools":false,"reason":"done","toolCalls":[]}`
+				}
+				return chatCompletion("harness-model", body), nil
+			}
+			body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"Here is your ambient sound."},"done":false}`) +
+				fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+			return &http.Response{StatusCode: 200, Status: "200 OK",
+				Body:   io.NopCloser(strings.NewReader(body)),
+				Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+		default:
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL)
+			return nil, nil
+		}
+	})
+
+	app.runChatStream(context.Background(), "request-loop-notice", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Make a looping ambient rain sound."},
+		},
+	})
+
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations: %v", err)
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation: %v", err)
+	}
+	assistant := detail.Turns[len(detail.Turns)-1]
+	raw, _ := json.Marshal(assistant)
+	if !strings.Contains(string(raw), "loop") || !strings.Contains(string(raw), "⚠️") {
+		t.Fatalf("expected a loop caveat in the saved assistant turn, got: %s", raw)
 	}
 }
 

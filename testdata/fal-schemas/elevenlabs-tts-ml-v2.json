@@ -1,0 +1,16 @@
+{
+  "components": {
+    "schemas": {
+      "ElevenlabsTtsMultilingualV2Input": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": { "type": "string" },
+          "voice": { "type": "string", "default": "Rachel" },
+          "stability": { "type": "number", "default": 0.5 },
+          "similarity_boost": { "type": "number", "default": 0.75 }
+        }
+      }
+    }
+  }
+}

@@ -57,6 +57,8 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			}
 			return newFalClient(app.client, apiKey).GenerateVideo(ctx, req)
 		}
+		schemaCache := newFalSchemaCache(app.client, config.Storage.Root)
+		audioOverrides := loadFalOverrides(config.Storage.Root)
 		gateway.tools.GenerateAudio = func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error) {
 			apiKey, err := loadFalAPIKey()
 			if err != nil {
@@ -65,7 +67,11 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			if strings.TrimSpace(apiKey) == "" {
 				return GeneratedAudio{}, errFalKeyNotConfigured
 			}
-			return newFalClient(app.client, apiKey).GenerateAudio(ctx, req)
+			schema := schemaCache.Get(ctx, req.Model)
+			body, notices := resolveAudioBody(schema, req, audioOverrides)
+			generated, err := newFalClient(app.client, apiKey).GenerateAudio(ctx, req.Model, body)
+			generated.Notices = notices
+			return generated, err
 		}
 	}
 	return gateway
@@ -101,6 +107,9 @@ func (g ToolGateway) Execute(ctx context.Context, req ToolExecutionRequest) Harn
 	output, summary, err := definition.Execute(ctx, tools, call)
 	result.Result = output
 	result.Summary = summary
+	if np, ok := output.(NoticeProvider); ok {
+		result.Notices = np.ToolNotices()
+	}
 	if err != nil {
 		result.Status = "failed"
 		result.Error = err.Error()

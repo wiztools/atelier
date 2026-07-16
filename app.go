@@ -385,6 +385,11 @@ type AudioGenerateRequest struct {
 	Prompt         string `json:"prompt"`
 	Duration       string `json:"duration,omitempty"`
 	NegativePrompt string `json:"negativePrompt,omitempty"`
+	// Loop requests a seamless, gapless loop (sound-effect models). Voice selects
+	// a text-to-speech voice. Both are resolved against the target model's schema
+	// and dropped-with-notice when the model has no matching parameter.
+	Loop  bool   `json:"loop,omitempty"`
+	Voice string `json:"voice,omitempty"`
 }
 
 // SaveAudioRequest asks to copy a generated audio artifact to a user-chosen
