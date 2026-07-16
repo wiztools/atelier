@@ -31,7 +31,7 @@ const (
 // The primary model's system prompt only ever receives these code-authored notes.
 // Planner output (briefs, reasons) is telemetry and thinking, never prompt text,
 // so a weaker harness model can't cap what the primary model is allowed to know.
-const toolEvidenceSystemNote = "Atelier ran workspace tools for this turn. Their observations appear at the end of the conversation. Treat them as evidence: report failures honestly and do not claim an action succeeded unless an observation shows it. You cannot call tools yourself; if the user asked for an action that no observation confirms, say plainly that it was not completed."
+const toolEvidenceSystemNote = "Atelier ran workspace tools for this turn. Their observations appear at the end of the conversation. Treat them as evidence: report failures honestly and do not claim an action succeeded unless an observation shows it. You cannot call tools yourself; if the user asked for an action that no observation confirms, say plainly that it was not completed. A tool observation's \"notices\" field holds authoritative caveats that are shown to the user verbatim; account for their meaning (never claim a dropped capability succeeded) but do not quote them."
 
 const invalidPlanSystemNote = "Atelier could not produce a valid tool plan for this turn, so no tools ran. You cannot call tools or execute commands. Do not run commands, paste commands as if executed, or claim any tool action succeeded. If the user asked for a tool action, report plainly that it could not be completed."
 
@@ -295,6 +295,17 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			finalReason = "empty_response_notice"
 		}
 	}
+	// Deterministic tool caveats (e.g. a requested loop the model can't honor)
+	// are appended verbatim so the user always sees them, regardless of whether
+	// the model chose to mention them in its prose.
+	toolNotices := collectToolNotices(preparation.ToolResults)
+	if toolNotices != "" {
+		if strings.TrimSpace(assistantContent) != "" {
+			assistantContent += "\n\n" + toolNotices
+		} else {
+			assistantContent = toolNotices
+		}
+	}
 	if strings.TrimSpace(finalModel) == "" {
 		finalModel = responseModel
 	}
@@ -327,7 +338,12 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	}
 	terminalContent := assistantContent
 	if finalContentEmitted {
+		// The model's streamed prose already reached the UI; only the appended
+		// notice block (if any) still needs to be delivered live.
 		terminalContent = ""
+		if toolNotices != "" {
+			terminalContent = "\n\n" + toolNotices
+		}
 	}
 	h.app.emitChatEvent(ChatStreamEvent{
 		RequestID:      requestID,
@@ -341,6 +357,20 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		Tokens:         finalTokens,
 		ConversationID: conversationID,
 	})
+}
+
+// collectToolNotices gathers deterministic, user-facing caveats across all tool
+// results, formatted as blockquote lines for appending to the chat reply.
+func collectToolNotices(results []HarnessToolResult) string {
+	var lines []string
+	for _, r := range results {
+		for _, n := range r.Notices {
+			if s := strings.TrimSpace(n); s != "" {
+				lines = append(lines, "> ⚠️ "+s)
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // cleanupVideoTempFiles removes any generated-video temp files that still exist.
