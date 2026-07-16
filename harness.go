@@ -106,14 +106,21 @@ type HarnessToolCall struct {
 	// models; text-to-speech models ignore it, since their length follows the
 	// spoken text. Forwarded only when set — see generateAudioParamSchema.
 	Duration string `json:"duration,omitempty"`
+	// Loop and Voice are optional generate_audio inputs. Loop requests a
+	// seamless loop (sound-effect models); Voice selects a text-to-speech voice.
+	// Both are resolved against the model's schema and dropped-with-notice when
+	// the configured model has no matching parameter.
+	Loop  bool   `json:"loop,omitempty"`
+	Voice string `json:"voice,omitempty"`
 }
 
 type HarnessToolResult struct {
-	Name    string `json:"name"`
-	Status  string `json:"status"`
-	Summary string `json:"summary"`
-	Result  any    `json:"result,omitempty"`
-	Error   string `json:"error,omitempty"`
+	Name    string   `json:"name"`
+	Status  string   `json:"status"`
+	Summary string   `json:"summary"`
+	Result  any      `json:"result,omitempty"`
+	Error   string   `json:"error,omitempty"`
+	Notices []string `json:"notices,omitempty"`
 }
 
 type finalResponseAttempt struct {

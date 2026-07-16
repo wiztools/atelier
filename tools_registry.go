@@ -78,11 +78,20 @@ type ToolVideoFile struct {
 // references, not bytes. The Audios slice is stripped before the result becomes
 // a tool message; the harness moves each temp file into the artifacts directory.
 type ToolAudioResult struct {
-	Model  string          `json:"model"`
-	Prompt string          `json:"prompt"`
-	Count  int             `json:"count"`
-	Audios []ToolAudioFile `json:"audios,omitempty"`
+	Model   string          `json:"model"`
+	Prompt  string          `json:"prompt"`
+	Count   int             `json:"count"`
+	Audios  []ToolAudioFile `json:"audios,omitempty"`
+	Notices []string        `json:"notices,omitempty"`
 }
+
+// ToolNotices reports deterministic, user-facing caveats produced while
+// generating the audio (e.g. a requested loop the model can't honor).
+func (r ToolAudioResult) ToolNotices() []string { return r.Notices }
+
+// NoticeProvider lets a tool's output carry deterministic user-facing caveats
+// that the harness surfaces verbatim in the chat reply.
+type NoticeProvider interface{ ToolNotices() []string }
 
 type ToolAudioFile struct {
 	TempPath  string `json:"tempPath,omitempty"`
@@ -332,6 +341,8 @@ func audioGenerationToolDefinition() HarnessToolDefinition {
 				Prompt:         strings.TrimSpace(call.Content),
 				Duration:       strings.TrimSpace(call.Duration),
 				NegativePrompt: strings.TrimSpace(call.NegativePrompt),
+				Loop:           call.Loop,
+				Voice:          strings.TrimSpace(call.Voice),
 			}
 			generated, err := tools.GenerateAudio(ctx, audioReq)
 			if err != nil {
@@ -345,10 +356,11 @@ func audioGenerationToolDefinition() HarnessToolDefinition {
 				return nil, "audio generation failed", err
 			}
 			output := ToolAudioResult{
-				Model:  model,
-				Prompt: audioReq.Prompt,
-				Count:  1,
-				Audios: []ToolAudioFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
+				Model:   model,
+				Prompt:  audioReq.Prompt,
+				Count:   1,
+				Audios:  []ToolAudioFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
+				Notices: generated.Notices,
 			}
 			return output, fmt.Sprintf("generated audio with %s", model), nil
 		},
@@ -620,6 +632,10 @@ func generateAudioParamSchema() map[string]any {
 				"Ignored by text-to-speech models, whose length follows the spoken text."),
 			"negativePrompt": stringParam("Optional — describe what to keep out of the audio (e.g. \"vocals, percussion\"). " +
 				"Ignored by text-to-speech models."),
+			"loop": boolParam("Optional — set true for a seamless, gapless loop (ambient beds, backgrounds). " +
+				"Only some sound-effect models support it; ignored otherwise with a note to the user."),
+			"voice": stringParam("Optional — the voice for text-to-speech (e.g. \"Rachel\"). " +
+				"Only text-to-speech models support it; ignored otherwise with a note to the user."),
 		},
 		"required": []string{"content"},
 	}

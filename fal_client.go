@@ -314,21 +314,16 @@ func (client FalClient) GenerateVideo(ctx context.Context, req VideoGenerateRequ
 // as both "prompt" and "text": music/sound-effect endpoints read "prompt" while
 // text-to-speech endpoints read "text", and fal's audio inputs ignore the extra
 // field. The result is a "audio" (or "audio_file") File object.
-func (client FalClient) GenerateAudio(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error) {
-	model := strings.TrimSpace(req.Model)
+// GenerateAudio submits an already-native fal request body (built by
+// resolveAudioBody against the model's schema) and downloads the result. It is a
+// thin transport: it does not know about canonical params or notices.
+func (client FalClient) GenerateAudio(ctx context.Context, model string, body map[string]any) (GeneratedAudio, error) {
+	model = strings.TrimSpace(model)
 	if model == "" {
 		model = defaultFalAudioModel
 	}
-
-	body := map[string]any{
-		"prompt": req.Prompt,
-		"text":   req.Prompt,
-	}
-	if duration := strings.TrimSpace(req.Duration); duration != "" {
-		body["duration"] = duration
-	}
-	if negative := strings.TrimSpace(req.NegativePrompt); negative != "" {
-		body["negative_prompt"] = negative
+	if body == nil {
+		body = map[string]any{}
 	}
 
 	submit, err := client.submit(ctx, model, body)
