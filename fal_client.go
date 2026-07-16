@@ -121,6 +121,10 @@ type GeneratedAudio struct {
 	Data      []byte
 	MimeType  string
 	SourceURL string
+	// Notices holds deterministic, user-facing caveats produced while resolving
+	// the request against the model's schema (e.g. a requested loop the model
+	// cannot honor). Surfaced verbatim in the chat reply.
+	Notices []string
 }
 
 // GeneratedVideo is a downloaded text-to-video result. Data holds the raw video
