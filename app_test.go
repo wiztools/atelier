@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -120,6 +121,31 @@ func TestDecodeImagePayload(t *testing.T) {
 	}
 	if len(data) != 8 {
 		t.Fatalf("decoded data length = %d, want 8", len(data))
+	}
+	if extension != ".png" {
+		t.Fatalf("extension = %q, want .png", extension)
+	}
+}
+
+// TestDecodeImagePayloadArtifactURL guards the Download-image path for
+// conversations loaded from history: hydrateHistoryContent rewrites images to
+// "/atelier-artifact/<abs-path>" URLs, and SaveImage must resolve those to the
+// file on disk instead of trying to base64-decode the URL string (which failed
+// with "illegal base64 data at input byte 8").
+func TestDecodeImagePayloadArtifactURL(t *testing.T) {
+	pngBytes := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0x00, 0x01}
+	dir := t.TempDir()
+	imgPath := filepath.Join(dir, "generated.png")
+	if err := os.WriteFile(imgPath, pngBytes, 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	data, extension, err := decodeImagePayload(artifactPrefix + imgPath)
+	if err != nil {
+		t.Fatalf("decodeImagePayload(artifact URL) returned error: %v", err)
+	}
+	if !bytes.Equal(data, pngBytes) {
+		t.Fatalf("decoded bytes = %v, want %v", data, pngBytes)
 	}
 	if extension != ".png" {
 		t.Fatalf("extension = %q, want .png", extension)

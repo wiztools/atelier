@@ -915,6 +915,24 @@ func decodeImagePayload(image string) ([]byte, string, error) {
 		return nil, "", errors.New("image data is empty")
 	}
 
+	// A conversation loaded from history renders its images as "/atelier-artifact"
+	// URLs served from disk rather than inline data URLs (hydrateHistoryContent),
+	// so resolve those back to bytes on disk — mirroring SaveVideo/SaveAudio.
+	if sourcePath := strings.TrimPrefix(image, artifactPrefix); sourcePath != image {
+		data, err := os.ReadFile(sourcePath)
+		if err != nil {
+			return nil, "", err
+		}
+		if !isImageBytes(data) {
+			return nil, "", errors.New("artifact is not a supported image")
+		}
+		extension := strings.ToLower(filepath.Ext(sourcePath))
+		if extension == "" {
+			extension = ".png"
+		}
+		return data, extension, nil
+	}
+
 	extension := ".png"
 	if strings.HasPrefix(image, "data:image/") {
 		headerEnd := strings.Index(image, ",")
