@@ -3,10 +3,15 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/zalando/go-keyring"
 )
 
 func TestParseModelInputSchemaNesting(t *testing.T) {
@@ -106,5 +111,38 @@ func TestSchemaCacheCorruptFileIsMiss(t *testing.T) {
 	}
 	if fetches != 1 {
 		t.Fatalf("expected corrupt file to force one fetch, got %d", fetches)
+	}
+}
+
+// TestSchemaCacheFetchUsesConfiguredKey guards the regression where
+// newFalSchemaCache built a keyless FalClient, so do()'s empty-key guard
+// rejected every schema fetch before any network call — silently forcing the
+// resolver's generic fallback and dropping loop/voice/duration on every request.
+func TestSchemaCacheFetchUsesConfiguredKey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	keyring.MockInit()
+	if err := saveFalAPIKey("fal-test-key"); err != nil {
+		t.Fatalf("saveFalAPIKey: %v", err)
+	}
+	t.Cleanup(func() { _ = clearFalAPIKey() })
+
+	var gotAuth string
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		gotAuth = req.Header.Get("Authorization")
+		return &http.Response{StatusCode: 200, Status: "200 OK",
+			Body:   io.NopCloser(strings.NewReader(`{"components":{"schemas":{"SfxInput":{"type":"object","required":["text"],"properties":{"text":{"type":"string"},"loop":{"type":"boolean"}}}}}}`)),
+			Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+	})}
+
+	cache := newFalSchemaCache(httpClient, t.TempDir())
+	schema := cache.Get(context.Background(), "fal-ai/elevenlabs/sound-effects/v2")
+	if schema == nil {
+		t.Fatal("expected a schema; fetch must succeed when a fal key is configured")
+	}
+	if _, ok := schema.property("loop"); !ok {
+		t.Fatal("expected loop property parsed from the fetched schema")
+	}
+	if gotAuth != "Key fal-test-key" {
+		t.Fatalf("expected request to carry the configured key, got Authorization=%q", gotAuth)
 	}
 }

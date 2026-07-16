@@ -144,3 +144,25 @@ func TestResolveSchemaUnavailableGeneric(t *testing.T) {
 		t.Fatalf("expected schema-unavailable notice, got %v", notices)
 	}
 }
+
+// TestResolveAgainstRealSFXSchema resolves against the actual captured
+// fal-ai/elevenlabs/sound-effects/v2 OpenAPI schema (committed fixture), which
+// declares duration_seconds as anyOf[number,null] rather than a plain number —
+// exercising the real shape the app fetches at runtime.
+func TestResolveAgainstRealSFXSchema(t *testing.T) {
+	body, notices := resolveAudioBody(loadSchema(t, "sfx-v2-real"),
+		AudioGenerateRequest{Model: "fal-ai/elevenlabs/sound-effects/v2", Prompt: "soft wind moving desert sand", Duration: "12", Loop: true},
+		builtinFalOverrides())
+	if body["text"] != "soft wind moving desert sand" {
+		t.Fatalf("expected text mapped, got %v", body["text"])
+	}
+	if body["loop"] != true {
+		t.Fatalf("expected loop=true from real schema, got %v", body["loop"])
+	}
+	if body["duration_seconds"] != 12.0 {
+		t.Fatalf("expected duration_seconds=12 from anyOf field, got %v", body["duration_seconds"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("expected no notices for a fully-supported request, got %v", notices)
+	}
+}

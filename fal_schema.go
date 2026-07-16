@@ -213,13 +213,19 @@ type SchemaCache struct {
 }
 
 func newFalSchemaCache(httpClient *http.Client, storageRoot string) *SchemaCache {
-	client := FalClient{httpClient: httpClient} // fetch needs no API key (public openapi)
 	return &SchemaCache{
 		dir: filepath.Join(storageRoot, "schema-cache"),
 		ttl: 7 * 24 * time.Hour,
 		now: time.Now,
 		fetch: func(ctx context.Context, model string) ([]byte, error) {
-			return client.fetchOpenAPISchema(ctx, model)
+			// The OpenAPI endpoint is public, but the shared do() helper requires
+			// a key, so load it the same way the generation calls do. A missing
+			// key surfaces as an unavailable schema (generic body + notice).
+			apiKey, err := loadFalAPIKey()
+			if err != nil {
+				return nil, err
+			}
+			return newFalClient(httpClient, apiKey).fetchOpenAPISchema(ctx, model)
 		},
 	}
 }
