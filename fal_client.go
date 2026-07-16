@@ -18,6 +18,7 @@ import (
 const (
 	falQueueBaseURL      = "https://queue.fal.run"
 	falPlatformBaseURL   = "https://api.fal.ai"
+	falOpenAPIBaseURL    = "https://fal.ai"
 	defaultFalImageModel = "fal-ai/flux/schnell"
 	// defaultFalImageEditModel is the image-to-image endpoint used to transform an
 	// attached source image — the image-to-image sibling of defaultFalImageModel.
@@ -57,6 +58,18 @@ func newFalClient(httpClient *http.Client, apiKey string) FalClient {
 		httpClient = http.DefaultClient
 	}
 	return FalClient{httpClient: httpClient, apiKey: strings.TrimSpace(apiKey)}
+}
+
+// fetchOpenAPISchema returns the raw OpenAPI JSON describing a fal endpoint's
+// input schema. This is a public endpoint; no Authorization is required.
+func (client FalClient) fetchOpenAPISchema(ctx context.Context, model string) ([]byte, error) {
+	path := "/api/openapi/queue/openapi.json?endpoint_id=" + url.QueryEscape(strings.TrimSpace(model))
+	resp, err := client.do(ctx, falOpenAPIBaseURL, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
 }
 
 // falImage is a single image entry in a fal result payload.

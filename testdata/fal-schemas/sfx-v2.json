@@ -1,0 +1,21 @@
+{
+  "components": {
+    "schemas": {
+      "ElevenlabsSoundEffectsV2Input": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": { "type": "string" },
+          "duration_seconds": { "type": "number" },
+          "prompt_influence": { "type": "number", "default": 0.3 },
+          "output_format": {
+            "type": "string",
+            "enum": ["mp3_22050_32", "mp3_44100_128", "mp3_44100_192", "pcm_44100"],
+            "default": "mp3_44100_128"
+          },
+          "loop": { "type": "boolean", "default": false }
+        }
+      }
+    }
+  }
+}

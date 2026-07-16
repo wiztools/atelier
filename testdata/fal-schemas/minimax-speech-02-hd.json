@@ -1,0 +1,24 @@
+{
+  "components": {
+    "schemas": {
+      "MinimaxSpeech02HdInput": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": { "type": "string" },
+          "voice_setting": {
+            "type": "object",
+            "default": { "voice_id": "Wise_Woman", "speed": 1, "pitch": 0, "vol": 1 },
+            "properties": {
+              "voice_id": { "type": "string", "default": "Wise_Woman" },
+              "speed": { "type": "number", "default": 1 },
+              "pitch": { "type": "integer", "default": 0 },
+              "vol": { "type": "number", "default": 1 }
+            }
+          },
+          "output_format": { "type": "string", "enum": ["url", "hex"], "default": "hex" }
+        }
+      }
+    }
+  }
+}
