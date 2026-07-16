@@ -762,6 +762,8 @@ export namespace main {
 	    generateAudio?: boolean;
 	    aspectRatio?: string;
 	    duration?: string;
+	    loop?: boolean;
+	    voice?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new HarnessToolCall(source);
@@ -786,6 +788,8 @@ export namespace main {
 	        this.generateAudio = source["generateAudio"];
 	        this.aspectRatio = source["aspectRatio"];
 	        this.duration = source["duration"];
+	        this.loop = source["loop"];
+	        this.voice = source["voice"];
 	    }
 	}
 	export class HarnessToolResult {
@@ -794,6 +798,7 @@ export namespace main {
 	    summary: string;
 	    result?: any;
 	    error?: string;
+	    notices?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new HarnessToolResult(source);
@@ -806,6 +811,7 @@ export namespace main {
 	        this.summary = source["summary"];
 	        this.result = source["result"];
 	        this.error = source["error"];
+	        this.notices = source["notices"];
 	    }
 	}
 	
