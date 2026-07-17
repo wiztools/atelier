@@ -2095,6 +2095,9 @@ func listConversations(storage ConfigStorage) ([]ConversationSummary, error) {
 
 	// Shortlist the newest candidates by mtime, then parse only those.
 	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].mtime.Equal(candidates[j].mtime) {
+			return candidates[i].path < candidates[j].path
+		}
 		return candidates[i].mtime.After(candidates[j].mtime)
 	})
 	if len(candidates) > listCandidateOverfetch {
@@ -2118,6 +2121,9 @@ func listConversations(storage ConfigStorage) ([]ConversationSummary, error) {
 	// Exact ordering by UpdatedAt (RFC3339 strings sort chronologically), then
 	// apply the hard cap.
 	sort.Slice(summaries, func(i, j int) bool {
+		if summaries[i].UpdatedAt == summaries[j].UpdatedAt {
+			return summaries[i].ID < summaries[j].ID
+		}
 		return summaries[i].UpdatedAt > summaries[j].UpdatedAt
 	})
 	if len(summaries) > maxConversationList {

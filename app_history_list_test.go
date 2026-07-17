@@ -142,6 +142,65 @@ func TestListConversationsShortlistsBeyondOverfetch(t *testing.T) {
 	}
 }
 
+func TestListConversationsOrdersByUpdatedAtNotMtime(t *testing.T) {
+	historyDir := filepath.Join(t.TempDir(), "history")
+	base := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	// updatedAt order (desc): x, y, z. mtime order (desc): y, z, x — deliberately different.
+	seedListConversation(t, historyDir, "x", base.Add(10*time.Minute).Format(time.RFC3339), base.Add(1*time.Minute))
+	seedListConversation(t, historyDir, "y", base.Add(5*time.Minute).Format(time.RFC3339), base.Add(10*time.Minute))
+	seedListConversation(t, historyDir, "z", base.Add(1*time.Minute).Format(time.RFC3339), base.Add(5*time.Minute))
+
+	got, err := listConversations(ConfigStorage{History: historyDir})
+	if err != nil {
+		t.Fatalf("listConversations: %v", err)
+	}
+	gotIDs := make([]string, 0, len(got))
+	for _, s := range got {
+		gotIDs = append(gotIDs, s.ID)
+	}
+	want := []string{"x", "y", "z"}
+	if !reflect.DeepEqual(gotIDs, want) {
+		t.Fatalf("final order must follow UpdatedAt not mtime: want %v, got %v", want, gotIDs)
+	}
+}
+
+// seedDeletedNoTombstone writes a soft-deleted conversation.json (DeletedAt
+// set) WITHOUT the sibling tombstone.json, exercising the post-parse
+// DeletedAt re-check for legacy records.
+func seedDeletedNoTombstone(t *testing.T, historyDir, id, updatedAt string, mtime time.Time) {
+	t.Helper()
+	dir := filepath.Join(historyDir, "conversations", id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	conv := HistoryConversation{
+		SchemaVersion: 1, ID: id, Kind: "chat", Title: "conv " + id,
+		CreatedAt: updatedAt, UpdatedAt: updatedAt, DeletedAt: updatedAt,
+	}
+	path := filepath.Join(dir, "conversation.json")
+	if err := writeJSONFile(path, conv); err != nil {
+		t.Fatalf("write conversation.json: %v", err)
+	}
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+}
+
+func TestListConversationsExcludesDeletedWithoutTombstone(t *testing.T) {
+	historyDir := filepath.Join(t.TempDir(), "history")
+	base := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	seedListConversation(t, historyDir, "keep", base.Add(1*time.Minute).Format(time.RFC3339), base.Add(1*time.Minute))
+	seedDeletedNoTombstone(t, historyDir, "legacy-gone", base.Add(5*time.Minute).Format(time.RFC3339), base.Add(5*time.Minute))
+
+	got, err := listConversations(ConfigStorage{History: historyDir})
+	if err != nil {
+		t.Fatalf("listConversations: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "keep" {
+		t.Fatalf("want [keep], got %+v", got)
+	}
+}
+
 func TestListConversationsExcludesDeleted(t *testing.T) {
 	historyDir := filepath.Join(t.TempDir(), "history")
 	base := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
