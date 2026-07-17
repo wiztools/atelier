@@ -2041,9 +2041,30 @@ func writeChatImageArtifacts(artifactsDir string, req ImageGenerateRequest, imag
 	return imageContents, nil
 }
 
+const (
+	// maxConversationList is the hard cap on how many conversations the sidebar
+	// list returns. We intentionally never page beyond the most recent 100.
+	maxConversationList = 100
+	// listCandidateOverfetch is how many conversation.json files we shortlist by
+	// file mtime (a cheap, no-parse proxy for recency) before parsing. The 50
+	// slots of slack above maxConversationList absorb minor mtime/UpdatedAt skew
+	// so the exact UpdatedAt re-sort below is not starved.
+	listCandidateOverfetch = 150
+)
+
+type conversationCandidate struct {
+	path  string
+	mtime time.Time
+}
+
+// listConversations returns the most-recently-updated conversations, capped at
+// maxConversationList. It avoids parsing every conversation.json on disk: it
+// walks the tree collecting only (path, mtime) per conversation, shortlists the
+// newest listCandidateOverfetch by mtime, parses just those, then orders the
+// survivors by the exact UpdatedAt field and applies the cap.
 func listConversations(storage ConfigStorage) ([]ConversationSummary, error) {
 	root := filepath.Join(storage.History, "conversations")
-	summaries := []ConversationSummary{}
+	candidates := []conversationCandidate{}
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -2051,14 +2072,18 @@ func listConversations(storage ConfigStorage) ([]ConversationSummary, error) {
 		if entry.IsDir() || filepath.Base(path) != "conversation.json" {
 			return nil
 		}
-		var conversation HistoryConversation
-		if err := readJSONFile(path, &conversation); err != nil {
-			return err
-		}
-		if conversation.DeletedAt != "" {
+		// Skip soft-deleted conversations without parsing: deleteConversation
+		// always writes a sibling tombstone.json. This keeps freshly-deleted
+		// conversations (whose mtime is bumped to "now") from crowding real
+		// entries out of the mtime shortlist below.
+		if _, statErr := os.Stat(filepath.Join(filepath.Dir(path), "tombstone.json")); statErr == nil {
 			return nil
 		}
-		summaries = append(summaries, conversationSummaryFrom(conversation))
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return infoErr
+		}
+		candidates = append(candidates, conversationCandidate{path: path, mtime: info.ModTime()})
 		return nil
 	})
 	if err != nil {
@@ -2067,9 +2092,43 @@ func listConversations(storage ConfigStorage) ([]ConversationSummary, error) {
 		}
 		return nil, err
 	}
+
+	// Shortlist the newest candidates by mtime, then parse only those.
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].mtime.Equal(candidates[j].mtime) {
+			return candidates[i].path < candidates[j].path
+		}
+		return candidates[i].mtime.After(candidates[j].mtime)
+	})
+	if len(candidates) > listCandidateOverfetch {
+		candidates = candidates[:listCandidateOverfetch]
+	}
+
+	summaries := make([]ConversationSummary, 0, len(candidates))
+	for _, candidate := range candidates {
+		var conversation HistoryConversation
+		if err := readJSONFile(candidate.path, &conversation); err != nil {
+			return nil, err
+		}
+		// Belt-and-suspenders: a conversation may carry DeletedAt without a
+		// tombstone (e.g. legacy records), so re-check after parsing.
+		if conversation.DeletedAt != "" {
+			continue
+		}
+		summaries = append(summaries, conversationSummaryFrom(conversation))
+	}
+
+	// Exact ordering by UpdatedAt (RFC3339 strings sort chronologically), then
+	// apply the hard cap.
 	sort.Slice(summaries, func(i, j int) bool {
+		if summaries[i].UpdatedAt == summaries[j].UpdatedAt {
+			return summaries[i].ID < summaries[j].ID
+		}
 		return summaries[i].UpdatedAt > summaries[j].UpdatedAt
 	})
+	if len(summaries) > maxConversationList {
+		summaries = summaries[:maxConversationList]
+	}
 	return summaries, nil
 }
 
