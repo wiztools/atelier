@@ -1667,10 +1667,21 @@ button:disabled {
 }
 
 .file-button input {
+  /* The input must exist in the DOM so the <label> can forward clicks to it,
+     but it must NOT lay out its own box — `inset: 0` previously let it stretch
+     beyond the visible icon and create dead clickable flanks (including into
+     the gap between controls). Clip it to a 1px box tucked in the corner with
+     zero opacity; the label's native activation handles the rest and is
+     bounded to the label's own 30x30 box. */
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
   opacity: 0;
+  overflow: hidden;
   cursor: pointer;
+  pointer-events: none;
 }
 
 .attachment-strip,
