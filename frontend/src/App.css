@@ -1545,7 +1545,9 @@ button:disabled {
 .composer-model-switch {
   display: flex;
   align-items: center;
-  gap: 10px;
+  /* Tightened from 10px to 6px to match .model-inline's internal gap, keeping
+     Provider and Model visually grouped. */
+  gap: 6px;
   min-width: 0;
   flex: 1 1 auto;
 }
@@ -1553,14 +1555,18 @@ button:disabled {
 .model-inline {
   display: grid;
   grid-template-columns: auto minmax(180px, 280px);
-  gap: 10px;
+  /* Tightened from 10px to 6px so Provider+Model sit closer together in the
+     composer's actions row alongside the workspace chip and attach button. */
+  gap: 6px;
   align-items: center;
   min-width: 0;
 }
 
 .model-inline span {
   color: #9ea5a3;
-  font-size: 12px;
+  /* Dropped from 12px to 11px to match the workspace chip's path text and
+     reduce the visual weight of the labels. */
+  font-size: 11px;
   font-weight: 700;
   white-space: nowrap;
 }
