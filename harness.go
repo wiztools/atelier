@@ -182,7 +182,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		return
 	}
 
-	skillIndex, skillIndexErr := loadSkillIndex(defaultSkillRoots())
+	skillIndex, skillIndexErr := loadSkillIndex(skillRootsFor(h.config.Tools.Filesystem.Root))
 	var explicitSkill *SkillIndexEntry
 	explicitReason := ""
 	if skillIndexErr == nil {

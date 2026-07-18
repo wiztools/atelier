@@ -776,7 +776,9 @@ button:disabled {
   align-items: center;
   gap: 5px;
   max-width: 240px;
-  padding: 5px 9px;
+  /* Match the attach-image button's height so the two controls form a pair. */
+  height: 30px;
+  padding: 0 9px;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(255, 255, 255, 0.04);
@@ -1643,6 +1645,25 @@ button:disabled {
   display: inline-grid;
   place-items: center;
   position: relative;
+  /* Icon-only: size the label to exactly the icon plus a small hit area so
+     there is NO dead flank space that opens the file dialog. A <label>
+     activates its input on click anywhere inside its box, so the box must
+     not exceed the visible icon by more than the padding below. Fixed
+     width/height prevent flex/grid from stretching it. */
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.file-button:hover {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.07);
 }
 
 .file-button input {

@@ -17,6 +17,10 @@ import (
 // end-to-end tests. The returned root is created on disk.
 func workspaceTestConfig(t *testing.T, home string) (AppConfig, string) {
 	t.Helper()
+	// Redirect $HOME so configPath() / normalizeStoragePath() resolve under the
+	// temp dir instead of the real ~/.atelier. Without this, writeAppConfig or
+	// any loadReadyConfig call in these tests would mutate the real config.
+	t.Setenv("HOME", home)
 	root := filepath.Join(home, "tool-root")
 	config := defaultAppConfig()
 	config.Storage = ConfigStorage{

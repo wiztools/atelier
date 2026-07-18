@@ -43,10 +43,25 @@ type skillSelectionPlan struct {
 }
 
 func defaultSkillRoots() []string {
+	// Ordered highest-priority-first: when two roots define a skill of the
+	// same name, loadSkillIndex keeps the first one it sees, so this order
+	// decides shadowing precedence.
 	return []string{
-		normalizeStoragePath("~/.agents/skills"),
 		normalizeStoragePath("~/.atelier/skills"),
+		normalizeStoragePath("~/.agents/skills"),
 	}
+}
+
+// skillRootsFor returns the skill search roots for a turn. The conversation
+// workspace's .agents/skills directory is searched first and shadows
+// same-named global skills; empty workspace falls back to global roots only.
+func skillRootsFor(workspace string) []string {
+	roots := defaultSkillRoots()
+	ws := normalizeStoragePath(workspace)
+	if ws == "" {
+		return roots
+	}
+	return append([]string{filepath.Join(ws, ".agents", "skills")}, roots...)
 }
 
 func loadSkillIndex(roots []string) ([]SkillIndexEntry, error) {
@@ -72,7 +87,10 @@ func loadSkillIndex(roots []string) ([]SkillIndexEntry, error) {
 				scanErrors = append(scanErrors, err.Error())
 				continue
 			}
-			key := strings.ToLower(item.Name) + "\x00" + item.Path
+			// Name-only dedup: roots are scanned highest-priority-first, so the
+			// first root to define a name wins and shadows any later same-named
+			// skill (workspace > ~/.atelier/skills > ~/.agents/skills).
+			key := strings.ToLower(item.Name)
 			if seen[key] {
 				continue
 			}
@@ -81,9 +99,6 @@ func loadSkillIndex(roots []string) ([]SkillIndexEntry, error) {
 		}
 	}
 	sort.Slice(index, func(i, j int) bool {
-		if strings.EqualFold(index[i].Name, index[j].Name) {
-			return index[i].Path < index[j].Path
-		}
 		return strings.ToLower(index[i].Name) < strings.ToLower(index[j].Name)
 	})
 	if len(scanErrors) > 0 && len(index) == 0 {
