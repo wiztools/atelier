@@ -246,6 +246,10 @@ function App() {
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [visibleHistoryCount, setVisibleHistoryCount] = useState(compactHistoryLimit);
   const [activeConversationID, setActiveConversationID] = useState('');
+  // draftWorkspace holds the per-conversation workspace selected for a NEW
+  // chat before its first message locks it as immutable on the record. Empty
+  // means "inherit the configured default." Reset whenever a new chat starts.
+  const [draftWorkspace, setDraftWorkspace] = useState('');
   const [activeStream, setActiveStream] = useState<string | null>(null);
   const [inFlightConversations, setInFlightConversations] = useState<Record<string, InFlightConversation>>({});
   const [imageWidth, setImageWidth] = useState(defaultImageWidth);
@@ -714,6 +718,41 @@ function App() {
     }
   }
 
+  // chooseDraftWorkspace is the per-conversation picker for a NEW chat. It
+  // reuses the same native dialog as the Settings default picker, but writes
+  // the result into draftWorkspace (the per-conversation override) rather than
+  // the global toolConfig. After the first send the workspace is immutable and
+  // this handler is no longer reachable from the UI.
+  async function chooseDraftWorkspace() {
+    try {
+      const seed = draftWorkspace || (toolConfig?.filesystem?.root ?? '');
+      const selected = await ChooseToolWorkspace(seed);
+      if (!selected) {
+        return;
+      }
+      setDraftWorkspace(selected);
+    } catch (error) {
+      setStartupError(formatError(error));
+    }
+  }
+
+  // activeConversationWorkspace is the immutable workspace of the conversation
+  // currently in view, looked up from the conversation list. Empty for a new
+  // chat (where draftWorkspace takes over) or for legacy conversations without
+  // one (the UI falls back to the configured default).
+  const activeConversationWorkspace = activeConversationID
+    ? conversations.find((item) => item.id === activeConversationID)?.workspace ?? ''
+    : '';
+
+  // displayedWorkspace is what the composer chip shows: the active
+  // conversation's immutable root for an existing chat, the draft selection
+  // (or the default) for a new chat. Always falls back to the configured
+  // default root so the user is never left guessing where a message will run.
+  const defaultWorkspaceRoot = toolConfig?.filesystem?.root ?? '~/Documents';
+  const displayedWorkspace = activeConversationID
+    ? (activeConversationWorkspace || defaultWorkspaceRoot)
+    : (draftWorkspace || defaultWorkspaceRoot);
+
   function handleHistoryScroll(event: React.UIEvent<HTMLDivElement>) {
     if (!historyExpanded || !hasMoreConversations || !isNearScrollBottom(event.currentTarget, 96)) {
       return;
@@ -864,6 +903,7 @@ function App() {
     setPrompt('');
     setAttachments([]);
     setActiveConversationID('');
+    setDraftWorkspace('');
     setView('app');
     window.setTimeout(() => {
       chatPromptRef.current?.focus();
@@ -1089,6 +1129,9 @@ function App() {
         selectedModel: model,
         system,
         messages: requestMessages,
+        // Only sent for a new chat (turn 1). The backend ignores it for an
+        // existing conversation — the record's immutable workspace wins.
+        ...(activeConversationID ? {} : {workspace: draftWorkspace || undefined}),
       }));
       markConversationInFlight(start.conversationId, start.requestID, 'chat');
       setActiveConversationID(start.conversationId);
@@ -1572,10 +1615,13 @@ function App() {
                     <code>{shortenHomePath(storageConfig?.history ?? '~/.atelier/history')}</code>
                   </div>
                   <div>
-                    <span>Workspace</span>
+                    <span>Default workspace</span>
                     <div className="workspace-picker">
                       <code>{shortenHomePath(toolConfig?.filesystem?.root ?? '~/Documents')}</code>
                       <button onClick={chooseToolWorkspace}>Choose</button>
+                    </div>
+                    <div className="storage-hint">
+                      Used when a new conversation doesn't pick its own folder. Each conversation's workspace is locked at creation.
                     </div>
                   </div>
                 </div>
@@ -1997,10 +2043,39 @@ function App() {
                   placeholder="Prompt Atelier..."
                 />
                 <div className="composer-actions">
-                  <label className="file-button">
-                    Attach image
-                    <input type="file" accept="image/*" multiple onChange={(event) => addImages(event.target.files)} />
-                  </label>
+                  <div className="composer-actions-left">
+                    <button
+                      type="button"
+                      className="composer-workspace-chip"
+                      // The workspace is immutable once a conversation exists.
+                      // For a new chat, clicking opens the folder picker to
+                      // choose the per-conversation root before the first send.
+                      disabled={Boolean(activeConversationID) || Boolean(activeStream)}
+                      onClick={chooseDraftWorkspace}
+                      aria-label={activeConversationID
+                        ? `Workspace locked to ${displayedWorkspace}`
+                        : 'Choose workspace for this conversation'}
+                      title={activeConversationID
+                        ? `Workspace locked to ${displayedWorkspace}`
+                        : 'Choose workspace for this conversation'}
+                    >
+                      <svg className="workspace-chip-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                      </svg>
+                      <code>{shortenHomePath(displayedWorkspace)}</code>
+                    </button>
+                    <label className="file-button" aria-label="Attach image" title="Attach image">
+                      {/* Inline icon keeps the composer row compact — the text
+                          label was pushing the submit row onto a new line at
+                          narrow widths. The title/aria-label preserve meaning. */}
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                        <circle cx="8.5" cy="8.5" r="1.5" />
+                        <path d="M21 15l-5-5L5 21" />
+                      </svg>
+                      <input type="file" accept="image/*" multiple onChange={(event) => addImages(event.target.files)} />
+                    </label>
+                  </div>
                   <div className="composer-submit-row">
                     <div className="composer-model-switch">
                       <label className="model-inline" htmlFor="primary-provider">

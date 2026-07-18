@@ -266,6 +266,12 @@ type ChatRequest struct {
 	// tool-calling. The final-response request (preparedResponseRequest) never
 	// sets it, so the primary model stays tool-free.
 	Tools []map[string]any `json:"tools,omitempty"`
+	// Workspace selects the filesystem-tool root for a NEW conversation
+	// (ConversationID empty). It is read once at creation and persisted onto
+	// the conversation record, after which it is immutable. For an existing
+	// conversation (turn 2+) this field is ignored — the record's Workspace
+	// wins. Empty falls back to the configured default root.
+	Workspace string `json:"workspace,omitempty"`
 }
 
 type ChatStreamStart struct {
@@ -417,6 +423,10 @@ type ConversationSummary struct {
 	DeletedAt     string `json:"deletedAt,omitempty"`
 	TurnCount     int    `json:"turnCount"`
 	ArtifactCount int    `json:"artifactCount"`
+	// Workspace is the immutable filesystem-tool root this conversation runs
+	// against. Empty for legacy conversations created before per-conversation
+	// workspaces; the UI falls back to the configured default root.
+	Workspace string `json:"workspace,omitempty"`
 }
 
 type ConversationDetail struct {
@@ -440,6 +450,10 @@ type HistoryConversation struct {
 	Provider      HistoryProvider          `json:"provider"`
 	Defaults      HistoryDefaults          `json:"defaults"`
 	Stats         HistoryConversationStats `json:"stats"`
+	// Workspace is the immutable filesystem-tool root this conversation runs
+	// against. Set at creation and never changed. SchemaVersion 2+ guarantees
+	// this is populated; SchemaVersion 1 records are backfilled on resume.
+	Workspace string `json:"workspace,omitempty"`
 }
 
 type HistoryProvider struct {
@@ -764,6 +778,18 @@ func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Resolve the conversation's immutable workspace and make it the engine's
+	// filesystem-tool root before construction. The registry (cached per
+	// engine), the filesystem layer, and the harness/triage prompts all read it
+	// through h.config, so this single override scopes the whole turn. See
+	// resolveTurnWorkspace for the turn-1-vs-turn-2+ rules.
+	workspaceRoot, err := resolveTurnWorkspace(config, req)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(workspaceRoot) != "" {
+		config.Tools.Filesystem.Root = workspaceRoot
+	}
 	engine := newHarnessEngine(config, a)
 	if strings.TrimSpace(req.Model) == "" {
 		req.Model = strings.TrimSpace(config.Providers.Ollama.Models.Primary)
@@ -964,6 +990,15 @@ func (a *App) writeChatConversation(req ChatRequest, assistantContent, assistant
 	config, err := loadReadyConfig()
 	if err != nil {
 		return "", err
+	}
+	// Apply the same per-conversation workspace override as StreamChat so this
+	// non-streaming write path is consistent (see resolveTurnWorkspace).
+	workspaceRoot, err := resolveTurnWorkspace(config, req)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(workspaceRoot) != "" {
+		config.Tools.Filesystem.Root = workspaceRoot
 	}
 	if strings.TrimSpace(model) == "" {
 		model = req.Model
@@ -1307,6 +1342,61 @@ func loadReadyConfig() (AppConfig, error) {
 	return config, nil
 }
 
+// currentConversationSchemaVersion is bumped whenever HistoryConversation gains
+// a field or changes shape. loadForAppend backfills older records up to it.
+const currentConversationSchemaVersion = 2
+
+// resolveTurnWorkspace returns the filesystem-tool root a chat turn must run
+// against. The workspace is IMMUTABLE per conversation:
+//
+//   - Turn 1 (no ConversationID): the request's Workspace wins if set, else
+//     the configured default root. The resolved value is what gets persisted
+//     onto the new conversation record by writePendingChatConversation.
+//   - Turn 2+ (ConversationID set): the value already on the record wins. The
+//     request's Workspace is ignored. Legacy SchemaVersion 1 records are
+//     backfilled to the configured default.
+//
+// The caller overrides config.Tools.Filesystem.Root with this value before
+// constructing the HarnessEngine, so the registry (cached per engine), the
+// filesystem tool layer, the triage prompt, and the planner prompt all see the
+// conversation's root through h.config — one override point, no per-callsite
+// branching. Returns the empty string only if both the request and the
+// configured default are empty, in which case the filesystem layer falls back
+// to defaultAppConfig() at resolve time (see fs_tools.go resolvePath).
+func resolveTurnWorkspace(config AppConfig, req ChatRequest) (string, error) {
+	if strings.TrimSpace(req.ConversationID) == "" {
+		if ws := strings.TrimSpace(req.Workspace); ws != "" {
+			return ws, nil
+		}
+		return config.Tools.Filesystem.Root, nil
+	}
+	return readConversationWorkspace(config.Storage, req.ConversationID, config.Tools.Filesystem.Root)
+}
+
+// readConversationWorkspace loads a conversation record solely to read its
+// workspace root. Legacy SchemaVersion 1 records (no Workspace) are backfilled
+// to defaultWorkspace so a conversation resumed for the first time after the
+// per-conversation-workspace upgrade resolves consistently. This does a second
+// read of conversation.json that loadForAppend will read again during the
+// append; both are small JSON reads at turn-start, not per-round.
+func readConversationWorkspace(storage ConfigStorage, conversationID, defaultWorkspace string) (string, error) {
+	path, err := findConversationPath(storage, conversationID)
+	if err != nil {
+		return "", err
+	}
+	var conversation HistoryConversation
+	if err := readJSONFile(path, &conversation); err != nil {
+		return "", err
+	}
+	if conversation.SchemaVersion < 2 && strings.TrimSpace(conversation.Workspace) == "" {
+		return defaultWorkspace, nil
+	}
+	if ws := strings.TrimSpace(conversation.Workspace); ws != "" {
+		return ws, nil
+	}
+	return defaultWorkspace, nil
+}
+
 func writeAppConfig(config AppConfig) error {
 	path, err := configPath()
 	if err != nil {
@@ -1496,12 +1586,10 @@ func defaultStorageRoot() string {
 }
 
 func defaultDocumentsRoot() string {
-	if path := strings.TrimSpace(os.Getenv("XDG_DOCUMENTS_DIR")); path != "" {
-		path = strings.Trim(path, `"`)
-		path = strings.ReplaceAll(path, "$HOME", userHomeFallback())
-		return normalizeStoragePath(path)
-	}
-	return filepath.Join(userHomeFallback(), "Documents")
+	// ~/Documents is the default workspace root for new conversations. It's
+	// user-editable in Settings; this is just the seed value, intentionally
+	// not influenced by XDG_DOCUMENTS_DIR so the default is predictable.
+	return normalizeStoragePath(filepath.Join(userHomeFallback(), "Documents"))
 }
 
 func userHomeFallback() string {
@@ -1581,7 +1669,7 @@ func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, 
 
 	userPrompt := lastUserPrompt(req.Messages)
 	conversation := HistoryConversation{
-		SchemaVersion: 1,
+		SchemaVersion: currentConversationSchemaVersion,
 		ID:            workspace.ID,
 		Kind:          "chat",
 		Title:         normalizeConversationTitle(title, userPrompt),
@@ -1599,6 +1687,7 @@ func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, 
 			TurnCount:     2,
 			ArtifactCount: countMessageImages([]ChatMessage{lastUserMessage(req.Messages)}),
 		},
+		Workspace: config.Tools.Filesystem.Root,
 	}
 
 	userTurn, assistantTurn, err := buildChatTurnPair(workspace.ID, 1, nowText, req, assistantContent, assistantThinking, model, provider, reason, tokens, workspace.ArtifactsDir, run)
@@ -1623,7 +1712,7 @@ func writePendingChatConversation(config AppConfig, req ChatRequest) (string, er
 
 	userPrompt := lastUserPrompt(req.Messages)
 	conversation := HistoryConversation{
-		SchemaVersion: 1,
+		SchemaVersion: currentConversationSchemaVersion,
 		ID:            workspace.ID,
 		Kind:          "chat",
 		Title:         titleFromPrompt(userPrompt),
@@ -1641,6 +1730,7 @@ func writePendingChatConversation(config AppConfig, req ChatRequest) (string, er
 			TurnCount:     1,
 			ArtifactCount: countMessageImages([]ChatMessage{lastUserMessage(req.Messages)}),
 		},
+		Workspace: config.Tools.Filesystem.Root,
 	}
 	userTurn, err := buildChatUserTurn(workspace.ID, 1, nowText, req, workspace.ArtifactsDir)
 	if err != nil {
@@ -1721,7 +1811,7 @@ func buildChatAssistantTurn(conversationID string, turnNumber int, createdAt str
 func appendChatConversation(config AppConfig, req ChatRequest, assistantContent, assistantThinking, model, provider, reason string, tokens int, run HarnessRun) (string, error) {
 	conversationID := strings.TrimSpace(req.ConversationID)
 	store := newHistoryStore(config.Storage)
-	loaded, err := store.loadForAppend(conversationID, "chat", "a chat")
+	loaded, err := store.loadForAppend(conversationID, "chat", "a chat", config.Tools.Filesystem.Root)
 	if err != nil {
 		return "", err
 	}
@@ -1749,7 +1839,7 @@ func appendChatConversation(config AppConfig, req ChatRequest, assistantContent,
 func appendChatUserTurn(config AppConfig, req ChatRequest) (string, error) {
 	conversationID := strings.TrimSpace(req.ConversationID)
 	store := newHistoryStore(config.Storage)
-	loaded, err := store.loadForAppend(conversationID, "chat", "a chat")
+	loaded, err := store.loadForAppend(conversationID, "chat", "a chat", config.Tools.Filesystem.Root)
 	if err != nil {
 		return "", err
 	}
@@ -1773,7 +1863,7 @@ func appendChatUserTurn(config AppConfig, req ChatRequest) (string, error) {
 
 func appendChatAssistantTurn(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, tokens int, run HarnessRun) error {
 	store := newHistoryStore(config.Storage)
-	loaded, err := store.loadForAppend(conversationID, "chat", "a chat")
+	loaded, err := store.loadForAppend(conversationID, "chat", "a chat", config.Tools.Filesystem.Root)
 	if err != nil {
 		return err
 	}
@@ -1807,7 +1897,7 @@ type chatAssistantTurnMedia struct {
 // update, and persistence are identical and live here once.
 func appendChatAssistantTurnWithMedia(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, run HarnessRun, media chatAssistantTurnMedia) ([]string, error) {
 	store := newHistoryStore(config.Storage)
-	loaded, err := store.loadForAppend(conversationID, "chat", "a chat")
+	loaded, err := store.loadForAppend(conversationID, "chat", "a chat", config.Tools.Filesystem.Root)
 	if err != nil {
 		return nil, err
 	}

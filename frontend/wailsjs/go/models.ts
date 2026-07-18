@@ -427,6 +427,7 @@ export namespace main {
 	    options?: Record<string, any>;
 	    format?: any;
 	    tools?: any[];
+	    workspace?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ChatRequest(source);
@@ -446,6 +447,7 @@ export namespace main {
 	        this.options = source["options"];
 	        this.format = source["format"];
 	        this.tools = source["tools"];
+	        this.workspace = source["workspace"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -625,6 +627,7 @@ export namespace main {
 	    provider: HistoryProvider;
 	    defaults: HistoryDefaults;
 	    stats: HistoryConversationStats;
+	    workspace?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new HistoryConversation(source);
@@ -642,6 +645,7 @@ export namespace main {
 	        this.provider = this.convertValues(source["provider"], HistoryProvider);
 	        this.defaults = this.convertValues(source["defaults"], HistoryDefaults);
 	        this.stats = this.convertValues(source["stats"], HistoryConversationStats);
+	        this.workspace = source["workspace"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -703,6 +707,7 @@ export namespace main {
 	    deletedAt?: string;
 	    turnCount: number;
 	    artifactCount: number;
+	    workspace?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConversationSummary(source);
@@ -718,6 +723,7 @@ export namespace main {
 	        this.deletedAt = source["deletedAt"];
 	        this.turnCount = source["turnCount"];
 	        this.artifactCount = source["artifactCount"];
+	        this.workspace = source["workspace"];
 	    }
 	}
 	export class FalModel {

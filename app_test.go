@@ -337,7 +337,9 @@ func TestDefaultDocumentsRootUsesHomeDocuments(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", "")
-	t.Setenv("XDG_DOCUMENTS_DIR", "")
+	// ~/Documents is the default regardless of XDG_DOCUMENTS_DIR: the default
+	// workspace is intentionally predictable and not environment-driven.
+	t.Setenv("XDG_DOCUMENTS_DIR", filepath.Join(home, "should-be-ignored"))
 
 	if got := defaultDocumentsRoot(); got != filepath.Join(home, "Documents") {
 		t.Fatalf("defaultDocumentsRoot = %q, want home Documents", got)
@@ -345,16 +347,6 @@ func TestDefaultDocumentsRootUsesHomeDocuments(t *testing.T) {
 	config := mergeAppConfig(AppConfig{})
 	if config.Tools.Filesystem.Root != filepath.Join(home, "Documents") {
 		t.Fatalf("filesystem root = %q, want Documents default", config.Tools.Filesystem.Root)
-	}
-}
-
-func TestDefaultDocumentsRootUsesXDGDocumentsDir(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_DOCUMENTS_DIR", "$HOME/Docs")
-
-	if got := defaultDocumentsRoot(); got != filepath.Join(home, "Docs") {
-		t.Fatalf("defaultDocumentsRoot = %q, want XDG documents dir", got)
 	}
 }
 

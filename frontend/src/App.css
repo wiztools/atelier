@@ -755,6 +755,59 @@ button:disabled {
   font-size: 13px;
 }
 
+.storage-hint {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  color: #9ea5a3;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* Per-conversation workspace chip in the composer. Sits beside the model
+   switcher. Editable (opens the folder picker) for a new chat, disabled and
+   label-only once the conversation exists — the workspace is immutable. */
+/* Per-conversation workspace chip. Lives at the start of the composer
+   actions row, before the attach-image button. A folder icon precedes the
+   path so no text label is needed. Editable (opens the folder picker) for a
+   new chat, disabled once the conversation exists — the workspace is
+   immutable. */
+.composer-workspace-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 240px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.composer-workspace-chip:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.composer-workspace-chip:disabled {
+  cursor: default;
+  opacity: 0.85;
+}
+
+.workspace-chip-icon {
+  flex: 0 0 auto;
+  color: #9ea5a3;
+}
+
+.composer-workspace-chip code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
 .storage-actions {
   margin-top: 14px;
   display: flex;
@@ -1469,6 +1522,16 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+/* Left side of the composer actions: workspace chip + attach-image button
+   grouped together; the submit/model row sits on the right via the parent's
+   space-between. */
+.composer-actions-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .composer-submit-row {

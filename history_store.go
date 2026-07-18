@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -60,7 +61,7 @@ func (store HistoryStore) writeSnapshot(workspace conversationWorkspace, convers
 	return nil
 }
 
-func (store HistoryStore) loadForAppend(conversationID, expectedKind, displayKind string) (loadedConversation, error) {
+func (store HistoryStore) loadForAppend(conversationID, expectedKind, displayKind, defaultWorkspace string) (loadedConversation, error) {
 	conversationPath, err := findConversationPath(store.storage, conversationID)
 	if err != nil {
 		return loadedConversation{}, err
@@ -75,6 +76,17 @@ func (store HistoryStore) loadForAppend(conversationID, expectedKind, displayKin
 	}
 	if conversation.Kind != expectedKind {
 		return loadedConversation{}, fmt.Errorf("conversation %s is not %s conversation", conversationID, displayKind)
+	}
+	// Backfill per-conversation workspace onto legacy SchemaVersion 1 records.
+	// The conversation's workspace is immutable once set; legacy records never
+	// had one, so they adopt the caller's defaultWorkspace (the resolved root
+	// for this turn) and are bumped to SchemaVersion 2. The next writeConversation
+	// in the append path persists the upgrade.
+	if conversation.SchemaVersion < 2 {
+		if strings.TrimSpace(conversation.Workspace) == "" {
+			conversation.Workspace = defaultWorkspace
+		}
+		conversation.SchemaVersion = 2
 	}
 
 	conversationDir := filepath.Dir(conversationPath)
@@ -131,5 +143,6 @@ func conversationSummaryFrom(conversation HistoryConversation) ConversationSumma
 		UpdatedAt:     conversation.UpdatedAt,
 		TurnCount:     conversation.Stats.TurnCount,
 		ArtifactCount: conversation.Stats.ArtifactCount,
+		Workspace:     conversation.Workspace,
 	}
 }
