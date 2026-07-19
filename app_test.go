@@ -3713,6 +3713,78 @@ func TestTriageChatTurnDecodeErrorFailsSafe(t *testing.T) {
 	}
 }
 
+// TestTriageChatTurnFailsSafeToVisionWhenImageAttached covers the regression
+// behind conv_e403a9baf550bb82b28daf82: when triage fails (either the provider
+// call errors or the JSON is unparseable — e.g. truncated by num_predict), the
+// fail-safe must lean toward "vision" if the latest user turn carries an image.
+// Defaulting to "text" strips the only signal that would have kept the primary
+// model's attention on the attachment.
+func TestTriageChatTurnFailsSafeToVisionWhenImageAttached(t *testing.T) {
+	withImage := ChatRequest{
+		BaseURL:  "http://ollama.test",
+		Messages: []ChatMessage{{Role: "user", Content: "describe this", Images: []string{"data:image/png;base64,AAAA"}}},
+	}
+	textOnly := ChatRequest{
+		BaseURL:  "http://ollama.test",
+		Messages: []ChatMessage{{Role: "user", Content: "anything"}},
+	}
+
+	t.Run("decode failure with image routes to vision", func(t *testing.T) {
+		app := NewApp()
+		app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			// Truncated JSON, the exact failure mode in conv_e403a9baf550bb82b28daf82.
+			body := `{"model":"chat-box-model","message":{"role":"assistant","content":"{\"needsTools\":true,\"respon"},"done":true,"done_reason":"length","eval_count":256}`
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+		})
+		engine := newHarnessEngine(defaultAppConfig(), app)
+		decision, _ := engine.triageChatTurn(context.Background(), withImage, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
+		if !decision.NeedsTools {
+			t.Fatal("fail-safe must keep needsTools true so the planner can still run")
+		}
+		if decision.ResponseMode != "vision" {
+			t.Fatalf("responseMode = %q, want vision when an image is attached", decision.ResponseMode)
+		}
+		if decision.Error == "" {
+			t.Fatal("fail-safe must still record the underlying decode error for telemetry")
+		}
+	})
+
+	t.Run("decode failure without image stays text", func(t *testing.T) {
+		app := NewApp()
+		app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body := `{"model":"chat-box-model","message":{"role":"assistant","content":"{\"needsTools\":true,\"respon"},"done":true,"done_reason":"length","eval_count":256}`
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+		})
+		engine := newHarnessEngine(defaultAppConfig(), app)
+		decision, _ := engine.triageChatTurn(context.Background(), textOnly, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
+		if !decision.NeedsTools || decision.ResponseMode != "text" {
+			t.Fatalf("decision = %+v, want text fail-safe when no image is attached", decision)
+		}
+	})
+
+	t.Run("provider failure with image routes to vision", func(t *testing.T) {
+		app := NewApp()
+		app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusInternalServerError, Status: "500 Internal Server Error", Body: io.NopCloser(strings.NewReader("boom")), Header: http.Header{}}, nil
+		})
+		engine := newHarnessEngine(defaultAppConfig(), app)
+		decision, _ := engine.triageChatTurn(context.Background(), withImage, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
+		if !decision.NeedsTools || decision.ResponseMode != "vision" {
+			t.Fatalf("decision = %+v, want vision fail-safe when the triage call fails and an image is attached", decision)
+		}
+	})
+}
+
+func TestTriageNumPredictBudgetsJSONCompletion(t *testing.T) {
+	// Regression for conv_e403a9baf550bb82b28daf82: triage there ended with
+	// done_reason "length" at 256 tokens and an "unexpected end of JSON input"
+	// decode error. The budget must be large enough for the four-field decision
+	// on a wordy harness model.
+	if triageNumPredict < 512 {
+		t.Fatalf("triageNumPredict = %d, want >= 512 so a wordy harness model can finish the decision JSON", triageNumPredict)
+	}
+}
+
 func TestAppendToolEvidenceToSystemUsesFixedNotesOnly(t *testing.T) {
 	if got := appendToolEvidenceToSystem("base prompt", HarnessPreparedTurn{}); got != "base prompt" {
 		t.Fatalf("system with no tool evidence = %q, want untouched base prompt", got)

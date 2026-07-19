@@ -7,7 +7,11 @@ import (
 	"strings"
 )
 
-const triageNumPredict = 256
+// triageNumPredict caps the harness model's triage output. It must be large
+// enough for the four-field JSON to complete on a wordy model — a length-trim
+// here drops the only chance to set responseMode, and the fail-safe lands on
+// "text" even when the user attached an image that warranted "vision".
+const triageNumPredict = 1024
 
 // HarnessTriageDecision is the harness model's routing decision for a turn. It is
 // stored on the HarnessRun for telemetry; Error records a triage failure that
@@ -55,8 +59,11 @@ func messagesWithoutImages(messages []ChatMessage) []ChatMessage {
 
 // triageChatTurn asks the harness model whether the turn needs tools and what
 // response mode the primary model should use. Failures fail safe to the tool
-// path with responseMode "text": the planner there can still conclude no tools
-// are needed, so a wrong fallback costs latency, never correctness.
+// path: the planner there can still conclude no tools are needed, so a wrong
+// fallback costs latency, never correctness. The response mode for the fail-
+// safe leans toward "vision" when the latest user turn carries an image, so a
+// triage decode failure (e.g. output truncated by num_predict) can't strip the
+// only signal that would have kept the primary model's attention on the image.
 func (h *HarnessEngine) triageChatTurn(ctx context.Context, req ChatRequest, harness harnessTarget, skillIndex []SkillIndexEntry) (HarnessTriageDecision, ChatCompletionResult) {
 	system := triageSystemPrompt(h.toolRegistry(), skillIndex, h.config.Tools.Filesystem.Root)
 	numCtx := h.numCtx()
@@ -75,16 +82,29 @@ func (h *HarnessEngine) triageChatTurn(ctx context.Context, req ChatRequest, har
 	}
 	completion, err := h.completeWithHarnessModel(ctx, harness, triageReq)
 	if err != nil {
-		return HarnessTriageDecision{NeedsTools: true, ResponseMode: "text", Reason: "triage call failed; deferring to the harness model planner", Error: err.Error()}, ChatCompletionResult{}
+		return triageFailSafe(req, "triage call failed; deferring to the harness model planner", err.Error()), ChatCompletionResult{}
 	}
 	decision, err := decodeTriageDecision(completion.Content)
 	if err != nil {
-		return HarnessTriageDecision{NeedsTools: true, ResponseMode: "text", Reason: "triage response was not valid JSON; deferring to the harness model planner", Error: err.Error()}, completion
+		return triageFailSafe(req, "triage response was not valid JSON; deferring to the harness model planner", err.Error()), completion
 	}
 	if decision.ResponseMode == "" {
 		decision.ResponseMode = "text"
 	}
 	return decision, completion
+}
+
+// triageFailSafe builds the fail-safe decision for a triage failure: needsTools
+// true (the planner can still decline) and responseMode "vision" when the user
+// attached an image, otherwise "text". An attached image is the strongest
+// signal that the user wanted the image understood; defaulting that case to
+// "text" sends the primary model off to look at filesystem evidence instead.
+func triageFailSafe(req ChatRequest, reason, errMsg string) HarnessTriageDecision {
+	mode := "text"
+	if latestUserImage(req.Messages) != "" {
+		mode = "vision"
+	}
+	return HarnessTriageDecision{NeedsTools: true, ResponseMode: mode, Reason: reason, Error: errMsg}
 }
 
 func triageSystemPrompt(registry HarnessToolRegistry, skillIndex []SkillIndexEntry, workspaceRoot string) string {
