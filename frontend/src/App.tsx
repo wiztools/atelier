@@ -1335,7 +1335,7 @@ function App() {
               <div className="mark">A</div>
               <div>
                 <h1>Atelier</h1>
-                <p>AI harness</p>
+                <p>AI Workshop</p>
               </div>
             </div>
 
