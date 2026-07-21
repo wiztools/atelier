@@ -54,6 +54,10 @@ export function ListFalModels() {
   return window['go']['main']['App']['ListFalModels']();
 }
 
+export function ListFalTranscribeModels() {
+  return window['go']['main']['App']['ListFalTranscribeModels']();
+}
+
 export function ListFalUpscaleModels() {
   return window['go']['main']['App']['ListFalUpscaleModels']();
 }

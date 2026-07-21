@@ -157,6 +157,7 @@ export namespace main {
 	    videoModel?: string;
 	    videoImageModel?: string;
 	    audioModel?: string;
+	    transcribeModel?: string;
 	    upscaleModel?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -171,6 +172,7 @@ export namespace main {
 	        this.videoModel = source["videoModel"];
 	        this.videoImageModel = source["videoImageModel"];
 	        this.audioModel = source["audioModel"];
+	        this.transcribeModel = source["transcribeModel"];
 	        this.upscaleModel = source["upscaleModel"];
 	    }
 	}
@@ -775,6 +777,8 @@ export namespace main {
 	    loop?: boolean;
 	    voice?: string;
 	    scale?: string;
+	    task?: string;
+	    language?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new HarnessToolCall(source);
@@ -802,6 +806,8 @@ export namespace main {
 	        this.loop = source["loop"];
 	        this.voice = source["voice"];
 	        this.scale = source["scale"];
+	        this.task = source["task"];
+	        this.language = source["language"];
 	    }
 	}
 	export class HarnessToolResult {

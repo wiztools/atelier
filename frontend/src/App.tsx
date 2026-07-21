@@ -17,6 +17,7 @@ import {
   ListFalVideoModels,
   ListFalVideoImageModels,
   ListFalAudioModels,
+  ListFalTranscribeModels,
   ListFalUpscaleModels,
   ListModels,
   ListPrimaryModels,
@@ -169,6 +170,7 @@ const defaultFalImageModel = 'fal-ai/flux/schnell';
 const defaultFalVideoModel = 'fal-ai/kling-video/v2/master/text-to-video';
 const defaultFalVideoImageModel = 'fal-ai/kling-video/v2/master/image-to-video';
 const defaultFalAudioModel = 'fal-ai/elevenlabs/tts/multilingual-v2';
+const defaultFalTranscribeModel = 'fal-ai/wizper';
 const defaultFalUpscaleModel = 'fal-ai/esrgan';
 const defaultVideoDuration = '5';
 const defaultVideoAspectRatio = '16:9';
@@ -239,6 +241,8 @@ function App() {
   const [falVideoImageModels, setFalVideoImageModels] = useState<main.FalModel[]>([]);
   const [falAudioModel, setFalAudioModel] = useState(defaultFalAudioModel);
   const [falAudioModels, setFalAudioModels] = useState<main.FalModel[]>([]);
+  const [falTranscribeModel, setFalTranscribeModel] = useState(defaultFalTranscribeModel);
+  const [falTranscribeModels, setFalTranscribeModels] = useState<main.FalModel[]>([]);
   const [falUpscaleModel, setFalUpscaleModel] = useState(defaultFalUpscaleModel);
   const [falUpscaleModels, setFalUpscaleModels] = useState<main.FalModel[]>([]);
   const [videoDuration, setVideoDuration] = useState(defaultVideoDuration);
@@ -373,6 +377,7 @@ function App() {
             videoModel: falVideoModel,
             videoImageModel: falVideoImageModel,
             audioModel: falAudioModel,
+            transcribeModel: falTranscribeModel,
             upscaleModel: falUpscaleModel,
           },
         },
@@ -404,7 +409,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falVideoModel, falVideoImageModel, falAudioModel, falUpscaleModel, harnessModels, harnessProvider, imageHeight, imageModel, imageProvider, imageSteps, imageWidth, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falVideoModel, falVideoImageModel, falAudioModel, falTranscribeModel, falUpscaleModel, harnessModels, harnessProvider, imageHeight, imageModel, imageProvider, imageSteps, imageWidth, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
 
   // On a fresh launch, put the cursor in the chat box so the user can start
   // typing immediately. Fires once, when config finishes loading.
@@ -610,6 +615,12 @@ function App() {
       .sort((a, b) => a.label.localeCompare(b.label));
   }, [falAudioModels]);
 
+  const falTranscribeModelOptions = useMemo(() => {
+    return asArray(falTranscribeModels)
+      .map((item) => ({value: item.id, label: item.displayName || item.id}))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [falTranscribeModels]);
+
   const falUpscaleModelOptions = useMemo(() => {
     return asArray(falUpscaleModels)
       .map((item) => ({value: item.id, label: item.displayName || item.id}))
@@ -660,6 +671,7 @@ function App() {
     const nextFalVideoModel = config.providers?.fal?.videoModel || defaultFalVideoModel;
     const nextFalVideoImageModel = config.providers?.fal?.videoImageModel || defaultFalVideoImageModel;
     const nextFalAudioModel = config.providers?.fal?.audioModel || defaultFalAudioModel;
+    const nextFalTranscribeModel = config.providers?.fal?.transcribeModel || defaultFalTranscribeModel;
     const nextFalUpscaleModel = config.providers?.fal?.upscaleModel || defaultFalUpscaleModel;
     const nextVideoDuration = config.generation?.video?.duration || defaultVideoDuration;
     const nextVideoAspectRatio = config.generation?.video?.aspectRatio || defaultVideoAspectRatio;
@@ -682,6 +694,7 @@ function App() {
     setFalVideoModel(nextFalVideoModel);
     setFalVideoImageModel(nextFalVideoImageModel);
     setFalAudioModel(nextFalAudioModel);
+    setFalTranscribeModel(nextFalTranscribeModel);
     setFalUpscaleModel(nextFalUpscaleModel);
     setVideoDuration(nextVideoDuration);
     setVideoAspectRatio(nextVideoAspectRatio);
@@ -840,6 +853,11 @@ function App() {
       setFalAudioModels([]);
     }
     try {
+      setFalTranscribeModels(asArray(await ListFalTranscribeModels()));
+    } catch {
+      setFalTranscribeModels([]);
+    }
+    try {
       setFalUpscaleModels(asArray(await ListFalUpscaleModels()));
     } catch {
       setFalUpscaleModels([]);
@@ -911,6 +929,7 @@ function App() {
       setFalVideoModels([]);
       setFalVideoImageModels([]);
       setFalAudioModels([]);
+      setFalTranscribeModels([]);
       setFalStatus('unknown');
       setFalError('');
       setImageProvider((current) => current === 'fal' ? 'ollama' : current);
@@ -1937,6 +1956,25 @@ function App() {
               </section>
 
               <section className="settings-section">
+                <h3>Transcription</h3>
+                <div className="field">
+                  <label htmlFor="fal-transcribe-model">Transcription Model (fal.ai)</label>
+                  <ModelCombobox
+                    id="fal-transcribe-model"
+                    ariaLabel="fal.ai transcription model"
+                    placeholder={defaultFalTranscribeModel}
+                    value={falTranscribeModel}
+                    onChange={setFalTranscribeModel}
+                    options={falTranscribeModelOptions}
+                    allowCustom
+                  />
+                  {!falHasKey ? (
+                    <span className="hint">Add a fal.ai API key above to transcribe audio.</span>
+                  ) : null}
+                </div>
+              </section>
+
+              <section className="settings-section">
                 <h3>Upscale</h3>
                 <div className="field">
                   <label htmlFor="fal-upscale-model">Upscale Model (fal.ai)</label>
@@ -2063,7 +2101,7 @@ function App() {
                           ))}
                         </div>
                       ) : null}
-                      {entry.audios?.length ? (
+                      {entry.role === 'assistant' && entry.audios?.length ? (
                         <div className="chat-audio-results">
                           {entry.audios.map((audio, index) => (
                             <figure key={`${entry.id}-audio-${index}`} className="chat-audio-card">

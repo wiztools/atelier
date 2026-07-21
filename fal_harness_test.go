@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -636,6 +637,124 @@ func jsonResponse(body string) *http.Response {
 
 func chatCompletion(model, content string) *http.Response {
 	return jsonResponse(`{"model":"` + model + `","message":{"role":"assistant","content":` + strconv.Quote(content) + `},"done":true,"done_reason":"stop","eval_count":2}`)
+}
+
+// TestHarnessTranscribesAudioViaFal drives a turn that attaches an audio clip
+// and asks for a transcription. The planner runs transcribe_audio against
+// fal-ai/wizper, whose result (the transcript) flows as tool evidence into the
+// primary model's reply. Covers the AttachedAudio plumbing and the
+// provider-agnostic audio path (runs on an Ollama primary model — the guard
+// that used to reject this was removed so transcribe works on any provider).
+func TestHarnessTranscribesAudioViaFal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	keyring.MockInit()
+	if err := saveFalAPIKey("fal-test-key"); err != nil {
+		t.Fatalf("saveFalAPIKey: %v", err)
+	}
+	t.Cleanup(func() { _ = clearFalAPIKey() })
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "chat-box-model"
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig: %v", err)
+	}
+
+	// A minimal WAV data URL the user "attached".
+	wav := base64.StdEncoding.EncodeToString(append([]byte("RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x40\x1f\x00\x00\x40\x1f\x00\x00\x01\x00\x08\x00data\x00\x00\x00\x00"), 0x00))
+	attachedAudio := "data:audio/wav;base64," + wav
+
+	var sawTranscribeSubmit bool
+	app := NewApp()
+	nonStreamCount := 0
+	prepCalls := 0
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Host, "fal.run") {
+			if req.Method == http.MethodPost && req.URL.Path == "/"+defaultFalTranscribeModel {
+				sawTranscribeSubmit = true
+				return jsonResponse(`{"request_id":"req-tr-1"}`), nil
+			}
+			if strings.HasSuffix(req.URL.Path, "/status") {
+				return jsonResponse(`{"status":"COMPLETED"}`), nil
+			}
+			if strings.HasSuffix(req.URL.Path, "/requests/req-tr-1") {
+				return jsonResponse(`{"text":"hello world, this is the transcript"}`), nil
+			}
+			t.Fatalf("unexpected fal request: %s %s", req.Method, req.URL)
+			return nil, nil
+		}
+		switch req.URL.Path {
+		case "/api/show":
+			return jsonResponse(`{"capabilities":[],"model_info":{},"details":{"family":"test","parameter_size":"1B"}}`), nil
+		case "/api/chat":
+			payload := chatPayload(t, req)
+			if payload["stream"] == false {
+				nonStreamCount++
+				if nonStreamCount == 1 {
+					return chatCompletion("chat-box-model", `{"needsTools":true,"responseMode":"text","toolTask":"Transcribe the attached audio.","reason":"The user asked for a transcription."}`), nil
+				}
+				prepCalls++
+				body := `{"brief":"Transcribe the clip.","needsTools":true,"reason":"transcribe","toolCalls":[{"name":"transcribe_audio"}]}`
+				if prepCalls > 1 {
+					body = `{"brief":"Done.","needsTools":false,"reason":"done","toolCalls":[]}`
+				}
+				return chatCompletion("chat-box-model", body), nil
+			}
+			body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"Transcript: hello world, this is the transcript"},"done":false}`) +
+				fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+			return &http.Response{StatusCode: 200, Status: "200 OK",
+				Body:   io.NopCloser(strings.NewReader(body)),
+				Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+		default:
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL)
+			return nil, nil
+		}
+	})
+
+	app.runChatStream(context.Background(), "request-fal-transcribe", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{{
+			Role:    "user",
+			Content: "Transcribe this clip.",
+			Audios:  []string{attachedAudio},
+		}},
+	})
+
+	if !sawTranscribeSubmit {
+		t.Fatal("transcribe_audio never submitted to fal — the tool did not run")
+	}
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations: %v", err)
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation: %v", err)
+	}
+	// The user turn must have persisted the audio attachment as an artifact, so a
+	// later retry / cross-turn transcription can re-read it.
+	var userAudio *HistoryContent
+	for i := range detail.Turns[0].Content {
+		if detail.Turns[0].Content[i].Type == "audio" {
+			userAudio = &detail.Turns[0].Content[i]
+		}
+	}
+	if userAudio == nil {
+		t.Fatalf("user turn did not persist the audio attachment: %+v", detail.Turns[0].Content)
+	}
+	assistant := detail.Turns[len(detail.Turns)-1]
+	if !strings.Contains(assistant.Content[0].Text, "hello world, this is the transcript") {
+		t.Errorf("assistant reply = %q, want it to include the transcript", assistant.Content[0].Text)
+	}
 }
 
 func chatPayload(t *testing.T, req *http.Request) map[string]any {

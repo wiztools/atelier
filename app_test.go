@@ -2072,16 +2072,25 @@ func TestHarnessRunChatStreamUsesOpenRouterWhenRequestSpecifiesIt(t *testing.T) 
 	}
 }
 
-// TestRunChatStreamRejectsAudioOnOllama covers the OpenRouter-only audio guard.
-// Ollama has no audio input API (ollama/ollama#11798 is unmerged), so attaching
-// audio on an Ollama primary model must fail the turn with an actionable error
-// before any chat-completions call is made — audio would otherwise be silently
-// dropped. The user turn is still persisted so the user can switch provider and
-// retry. Any HTTP request to /chat/completions or /api/chat after triage is a
-// failure: the guard must fire first.
-func TestRunChatStreamRejectsAudioOnOllama(t *testing.T) {
+// TestRunChatStreamAllowsAudioOnOllamaForTranscription covers the softened
+// audio-input policy: attached audio is a tool-consumable resource on any
+// provider (the planner may run transcribe_audio via fal, or on OpenRouter send
+// it as chat input). The previous hard reject — "audio input needs an
+// OpenRouter model" — was removed so an Ollama primary model with a fal key can
+// still transcribe. Here no fal key is configured, so the planner declines
+// tools and the turn completes normally rather than failing: the audio is
+// simply dropped at the Ollama adapter (it doesn't recognize the Audios field),
+// matching how images-on-OpenRouter behaved before the vision fix. The user
+// turn's audio attachment is still persisted so a later fal-keyed retry can
+// re-read it.
+func TestRunChatStreamAllowsAudioOnOllamaForTranscription(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	keyring.MockInit()
+	t.Cleanup(func() { _ = clearFalAPIKey() })
+	// No fal key configured: transcribe_audio is not registered, so the planner
+	// can't pick it and the turn routes to the primary text model.
+
 	config := defaultAppConfig()
 	config.Storage = ConfigStorage{
 		Root:      filepath.Join(home, ".atelier"),
@@ -2089,30 +2098,38 @@ func TestRunChatStreamRejectsAudioOnOllama(t *testing.T) {
 		Artifacts: filepath.Join(home, ".atelier", "history"),
 	}
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
 	config.Providers.Ollama.Models.Harness = "harness-model"
 	if err := writeAppConfig(config); err != nil {
 		t.Fatalf("writeAppConfig returned error: %v", err)
 	}
 
-	providerCalled := false
 	app := NewApp()
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		// Triage hits the harness model on Ollama and is unavoidable; everything
-		// else (a primary-model stream, an OpenRouter call) means the guard
-		// failed to fire and the audio was about to be silently dropped.
-		if req.URL.Host == "ollama.test" && strings.HasSuffix(req.URL.Path, "/api/chat") {
-			decision := `{"needsTools":false,"responseMode":"text","toolTask":"","reason":"general knowledge"}`
-			body := `{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`
-			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+		switch req.URL.Path {
+		case "/api/show":
+			return jsonResponse(`{"capabilities":[],"model_info":{},"details":{"family":"test","parameter_size":"1B"}}`), nil
+		case "/api/chat":
+			payload := chatPayload(t, req)
+			if payload["stream"] == false {
+				// Triage + planner both decline tools (no transcribe tool registered).
+				decision := `{"needsTools":false,"responseMode":"text","toolTask":"","reason":"general knowledge"}`
+				return jsonResponse(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`), nil
+			}
+			body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"I can't hear audio on this setup."},"done":false}`) +
+				fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+			return &http.Response{StatusCode: 200, Status: "200 OK",
+				Body:   io.NopCloser(strings.NewReader(body)),
+				Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+		default:
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL)
+			return nil, nil
 		}
-		providerCalled = true
-		t.Fatalf("unexpected request to %s — audio guard should have failed the turn before any primary-model call", req.URL)
-		return nil, nil
 	})
 
 	app.runChatStream(context.Background(), "request-audio-ollama", ChatRequest{
 		BaseURL:  "http://ollama.test",
-		Model:    "some-ollama-model",
+		Model:    "chat-box-model",
 		Provider: "ollama",
 		Messages: []ChatMessage{{
 			Role:    "user",
@@ -2121,27 +2138,23 @@ func TestRunChatStreamRejectsAudioOnOllama(t *testing.T) {
 		}},
 	})
 
-	if providerCalled {
-		t.Fatal("a primary-model provider call was made; the audio guard must fail the turn first")
-	}
-	// The user turn is persisted (so the user can switch provider and retry),
-	// but no assistant turn follows it.
+	// The turn completed with both a user and an assistant turn — no hard reject.
 	conversations, err := listConversations(config.Storage)
 	if err != nil {
 		t.Fatalf("listConversations returned error: %v", err)
 	}
 	if len(conversations) != 1 {
-		t.Fatalf("conversation count = %d, want 1 (the user turn should be persisted)", len(conversations))
+		t.Fatalf("conversation count = %d, want 1", len(conversations))
 	}
 	detail, err := getConversation(config.Storage, conversations[0].ID)
 	if err != nil {
 		t.Fatalf("getConversation returned error: %v", err)
 	}
-	if len(detail.Turns) != 1 || detail.Turns[0].Role != "user" {
-		t.Fatalf("turns = %+v, want exactly one user turn (no assistant follow-up)", detail.Turns)
+	if len(detail.Turns) != 2 {
+		t.Fatalf("turns = %d, want 2 (user + assistant — the audio turn must not hard-fail)", len(detail.Turns))
 	}
 	// The user turn's audio attachment must be persisted as an artifact so a
-	// post-switch retry can re-read it.
+	// later fal-keyed retry can re-read it.
 	audioContent := false
 	for _, c := range detail.Turns[0].Content {
 		if c.Type == "audio" {
@@ -4807,6 +4820,42 @@ func TestAudioGenerationToolGating(t *testing.T) {
 	}
 	if got := resolveDefaultAudioModel(base); got != defaultFalAudioModel {
 		t.Fatalf("resolveDefaultAudioModel fallback = %q, want %q", got, defaultFalAudioModel)
+	}
+}
+
+// TestTranscribeAudioToolGating confirms transcribe_audio is registered only
+// when a fal.ai key is present. Unlike generate_audio/video, no model needs to
+// be configured first — the default (fal-ai/wizper) always applies, so the gate
+// is purely the fal key, mirroring imageUpscaleConfigured.
+func TestTranscribeAudioToolGating(t *testing.T) {
+	keyring.MockInit()
+	t.Cleanup(func() { _ = clearFalAPIKey() })
+
+	base := defaultAppConfig()
+	if transcribeAudioConfigured(base) {
+		t.Fatal("transcribe should not be configured without a fal key")
+	}
+	if _, ok := defaultHarnessToolRegistry(base).Get("transcribe_audio"); ok {
+		t.Fatal("transcribe_audio should be absent without a fal key")
+	}
+
+	if err := saveFalAPIKey("fal-test-key"); err != nil {
+		t.Fatalf("saveFalAPIKey: %v", err)
+	}
+	configured := defaultAppConfig()
+	if !transcribeAudioConfigured(configured) {
+		t.Fatal("transcribe should be configured with a fal key (default model always applies)")
+	}
+	if _, ok := defaultHarnessToolRegistry(configured).Get("transcribe_audio"); !ok {
+		t.Fatal("transcribe_audio should be registered when a fal key is present")
+	}
+	// A configured override wins over the default; absence falls back to wizper.
+	configured.Providers.Fal.TranscribeModel = "fal-ai/other/whisper"
+	if got := resolveDefaultTranscribeModel(configured); got != "fal-ai/other/whisper" {
+		t.Fatalf("resolveDefaultTranscribeModel = %q, want the configured override", got)
+	}
+	if got := resolveDefaultTranscribeModel(base); got != defaultFalTranscribeModel {
+		t.Fatalf("resolveDefaultTranscribeModel fallback = %q, want %q", got, defaultFalTranscribeModel)
 	}
 }
 

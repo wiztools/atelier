@@ -139,6 +139,9 @@ type ConfigFal struct {
 	VideoImageModel string `json:"videoImageModel,omitempty"`
 	// AudioModel is the text-to-audio endpoint (speech, music, or sound effects).
 	AudioModel string `json:"audioModel,omitempty"`
+	// TranscribeModel is the speech-to-text endpoint used by transcribe_audio
+	// (fal-ai/wizper by default). fal-only; Ollama has no transcription API.
+	TranscribeModel string `json:"transcribeModel,omitempty"`
 	// UpscaleModel is the image upscaler endpoint (fal-only; Ollama has none).
 	UpscaleModel string `json:"upscaleModel,omitempty"`
 }
@@ -1084,6 +1087,38 @@ func readArtifactAsDataURL(storage ConfigStorage, conversationID string, content
 	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
+// readAudioArtifactAsDataURL resolves a persisted audio artifact (referenced by
+// relative Path in a HistoryContent entry) to its bytes on disk and re-encodes
+// them as a base64 data URL — the shape AttachedAudio consumers (fal's
+// transcribe_audio) expect. Sibling of readArtifactAsDataURL for the audio
+// path: used by the harness to re-hydrate a prior turn's attached audio when
+// the current turn has no attachment, so transcribe_audio works across turns
+// without forcing the user to re-attach on every message.
+func readAudioArtifactAsDataURL(storage ConfigStorage, conversationID string, content HistoryContent) (string, error) {
+	conversationPath, err := findConversationPath(storage, conversationID)
+	if err != nil {
+		return "", err
+	}
+	absPath := filepath.Join(filepath.Dir(conversationPath), filepath.FromSlash(content.Path))
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return "", err
+	}
+	if !isAudioBytes(data) {
+		return "", fmt.Errorf("artifact %s is not a supported audio file", content.Path)
+	}
+	mediaType := strings.TrimSpace(content.MimeType)
+	if mediaType == "" {
+		mediaType = http.DetectContentType(data)
+	}
+	if !strings.HasPrefix(mediaType, "audio/") {
+		// DetectContentType can return "application/octet-stream" for some
+		// audio containers; fall back to mpeg so the data URL is well-formed.
+		mediaType = "audio/mpeg"
+	}
+	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+}
+
 func (a *App) writeChatConversation(req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int) (string, error) {
 	if strings.TrimSpace(assistantContent) == "" && strings.TrimSpace(assistantThinking) == "" {
 		return "", nil
@@ -1403,6 +1438,20 @@ func (a *App) ListFalAudioModels() ([]FalModel, error) {
 		}
 	}
 	return merged, nil
+}
+
+// ListFalTranscribeModels returns fal's speech-to-text catalog for the Settings
+// transcription-model picker. Single category (speech-to-text), unlike audio's
+// two-category merge.
+func (a *App) ListFalTranscribeModels() ([]FalModel, error) {
+	key, err := loadFalAPIKey()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	client := newFalClient(a.client, key)
+	return client.ListModels(ctx, falSpeechToTextCategory, 0)
 }
 
 // resolvedPrimaryModelAndProvider returns which model/provider the primary

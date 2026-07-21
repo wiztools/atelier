@@ -115,6 +115,11 @@ type HarnessToolCall struct {
 	// Scale is an optional upscale_image input naming the upscale factor
 	// ("2x" or "4x"). Omit for the default 2x. See imageUpscaleParamSchema.
 	Scale string `json:"scale,omitempty"`
+	// Task and Language are optional transcribe_audio inputs. Task selects
+	// "transcribe" (default) or "translate"; Language is an optional hint
+	// (empty lets the model auto-detect). See transcribeAudioParamSchema.
+	Task     string `json:"task,omitempty"`
+	Language string `json:"language,omitempty"`
 }
 
 type HarnessToolResult struct {
@@ -185,22 +190,13 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		return
 	}
 
-	// Audio input is OpenRouter-only: Ollama has no audio input API (it is an
-	// open, unmerged proposal — ollama/ollama#11798), and the OpenRouter adapter
-	// is the sole place ChatMessage.Audios becomes input_audio content parts. On
-	// any other provider the audio would be silently dropped, so fail the turn
-	// with an actionable message instead. The user turn is already persisted
-	// (StartChatTurn above), so switching provider and retrying re-reads the
-	// audio attachment from history.
-	if latestUserAudio(req.Messages) && primaryProvider != "openrouter" {
-		run.complete("failed", "audio_provider_unavailable")
-		h.app.emitChatEvent(ChatStreamEvent{
-			RequestID: requestID,
-			Error:     "Audio input needs an OpenRouter model (e.g. openai/gpt-4o). Switch your primary model to OpenRouter and try again.",
-			Done:      true,
-		})
-		return
-	}
+	// Attached audio is a tool-consumable resource on any provider, exactly like
+	// an attached image: the planner may run transcribe_audio (fal-ai/wizper,
+	// provider-independent) to turn it into text evidence, or — on OpenRouter —
+	// send it as chat input via an input_audio content part. There is no
+	// provider guard here: Ollama's lack of a native audio input API only
+	// matters if the planner chooses not to transcribe, in which case the
+	// Ollama adapter simply drops the Audios field (it doesn't recognize it).
 
 	skillIndex, skillIndexErr := loadSkillIndex(skillRootsFor(h.config.Tools.Filesystem.Root))
 	var explicitSkill *SkillIndexEntry
@@ -254,6 +250,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			UseNativeTools: useNativeTools,
 			Harness:        harness,
 			AttachedImage:  latestAttachedImageForTurn(req, h.config.Storage),
+			AttachedAudio:  latestAttachedAudioForTurn(req, h.config.Storage),
 		}, &run)
 		if err != nil {
 			run.complete("failed", "harness_prepare_error")
@@ -486,25 +483,22 @@ func latestUserImage(messages []ChatMessage) string {
 	return ""
 }
 
-// latestUserAudio reports whether the most recent user message carries any
-// audio attachment. Unlike latestUserImage it returns a bool rather than the
-// payload: audio input is OpenRouter-only (Ollama has no audio input API), so
-// the only consumer today is the provider pre-flight guard that rejects an
-// audio turn on a non-OpenRouter provider before it runs. The OpenRouter
-// adapter reads ChatMessage.Audios directly when building input_audio parts.
-func latestUserAudio(messages []ChatMessage) bool {
+// latestUserAudioURL returns the first audio attachment on the most recent user
+// message (a data URL), or "" if the current turn has none. It is the audio
+// sibling of latestUserImage and the source clip transcribe_audio consumes.
+func latestUserAudioURL(messages []ChatMessage) string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role != "user" {
 			continue
 		}
 		for _, audio := range messages[i].Audios {
 			if trimmed := strings.TrimSpace(audio); trimmed != "" {
-				return true
+				return trimmed
 			}
 		}
-		return false
+		return ""
 	}
-	return false
+	return ""
 }
 
 // latestAttachedImageForTurn returns the image attached to the current turn if
@@ -544,6 +538,46 @@ func latestAttachedImageForTurn(req ChatRequest, storage ConfigStorage) string {
 			dataURL, err := readArtifactAsDataURL(storage, req.ConversationID, content)
 			if err != nil {
 				return "" // don't try older images — one read failure is enough to bail
+			}
+			return dataURL
+		}
+	}
+	return ""
+}
+
+// latestAttachedAudioForTurn is the audio sibling of latestAttachedImageForTurn:
+// it returns the current turn's audio attachment (a data URL) if present, else
+// falls back to the most recent user-attached audio in conversation history.
+// The fallback lets transcribe_audio operate across turns without forcing the
+// user to re-attach on every message. History audio is persisted as artifacts
+// on disk; they're re-read and re-encoded as a data URL to match the shape
+// AttachedAudio consumers (fal) expect. Errors are swallowed so a stale history
+// file can't break the current turn — the caller falls back to the empty-
+// AttachedAudio path and transcribe_audio surfaces its "attach an audio clip"
+// error.
+func latestAttachedAudioForTurn(req ChatRequest, storage ConfigStorage) string {
+	if audio := latestUserAudioURL(req.Messages); audio != "" {
+		return audio
+	}
+	if strings.TrimSpace(req.ConversationID) == "" {
+		return ""
+	}
+	detail, err := getConversation(storage, req.ConversationID)
+	if err != nil {
+		return ""
+	}
+	for i := len(detail.Turns) - 1; i >= 0; i-- {
+		turn := detail.Turns[i]
+		if turn.Role != "user" {
+			continue
+		}
+		for _, content := range turn.Content {
+			if content.Type != "audio" || strings.TrimSpace(content.Path) == "" {
+				continue
+			}
+			dataURL, err := readAudioArtifactAsDataURL(storage, req.ConversationID, content)
+			if err != nil {
+				return ""
 			}
 			return dataURL
 		}
@@ -852,6 +886,9 @@ type harnessTurnContext struct {
 	// AttachedImage is the source frame (base64 data URL) the user attached to
 	// this turn, if any — used by generate_video for image-to-video.
 	AttachedImage string
+	// AttachedAudio is the audio clip (data URL) the user attached to this turn,
+	// if any — used by transcribe_audio. Provider-agnostic, like AttachedImage.
+	AttachedAudio string
 }
 
 func (h *HarnessEngine) selectSkillForTurn(ctx context.Context, req ChatRequest, turn harnessTurnContext) (*HarnessSkillDecision, *LoadedSkill) {
@@ -1551,9 +1588,11 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 	// Pass the engine's cached registry so the gateway doesn't rebuild the
 	// param-schema maps on every planning round.
 	gateway := newToolGateway(h.app, h.config, h.toolRegistry())
-	// Hand the turn's attached image to the tool context so generate_video can
-	// animate it (image-to-video). Empty for turns without an attachment.
+	// Hand the turn's attached image and audio to the tool context so generate_video
+	// can animate the image (image-to-video) and transcribe_audio can transcribe the
+	// audio. Empty for turns without the corresponding attachment.
 	gateway.tools.AttachedImage = turn.AttachedImage
+	gateway.tools.AttachedAudio = turn.AttachedAudio
 	results := make([]HarnessToolResult, 0, len(calls))
 	for _, call := range calls {
 		// When the user selected a model that is not the harness model as the

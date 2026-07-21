@@ -41,10 +41,16 @@ type HarnessToolExecutionContext struct {
 	// the current turn, if any. generate_video uses it to animate the image via
 	// an image-to-video model. Empty for the direct/UI tool path.
 	AttachedImage string
-	GenerateImage func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, error)
-	GenerateVideo func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error)
-	GenerateAudio func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error)
-	UpscaleImage  func(ctx context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, error)
+	// AttachedAudio is the audio clip (a data URL) the user attached to the
+	// current turn, if any. transcribe_audio consumes it via fal's Whisper/Wizper.
+	// Like AttachedImage it is provider-agnostic: the planner decides whether to
+	// transcribe it (any provider) or, on OpenRouter, send it as chat input.
+	AttachedAudio   string
+	GenerateImage   func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, error)
+	GenerateVideo   func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error)
+	GenerateAudio   func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error)
+	TranscribeAudio func(ctx context.Context, model, audioURL, task, language string) (GeneratedTranscript, error)
+	UpscaleImage    func(ctx context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, error)
 }
 
 // ToolImageResult carries generated images as data URLs. The Images field is
@@ -86,9 +92,23 @@ type ToolAudioResult struct {
 	Notices []string        `json:"notices,omitempty"`
 }
 
+// ToolTranscribeResult carries the transcript of an audio clip. Unlike the
+// media results it holds plain text (the transcript), which rides the standard
+// role:"tool" evidence path verbatim — no media slice to strip. Notices carries
+// deterministic caveats surfaced via NoticeProvider, matching ToolAudioResult.
+type ToolTranscribeResult struct {
+	Model      string   `json:"model"`
+	Transcript string   `json:"transcript"`
+	Notices    []string `json:"notices,omitempty"`
+}
+
 // ToolNotices reports deterministic, user-facing caveats produced while
 // generating the audio (e.g. a requested loop the model can't honor).
 func (r ToolAudioResult) ToolNotices() []string { return r.Notices }
+
+// ToolNotices reports deterministic, user-facing caveats produced while
+// transcribing (e.g. an auto-detected language the user may want to confirm).
+func (r ToolTranscribeResult) ToolNotices() []string { return r.Notices }
 
 // NoticeProvider lets a tool's output carry deterministic user-facing caveats
 // that the harness surfaces verbatim in the chat reply.
@@ -128,6 +148,9 @@ func defaultHarnessToolRegistry(config AppConfig) HarnessToolRegistry {
 	}
 	if audioGenerationConfigured(config) {
 		definitions = append(definitions, audioGenerationToolDefinition())
+	}
+	if transcribeAudioConfigured(config) {
+		definitions = append(definitions, transcribeAudioToolDefinition())
 	}
 	if imageUpscaleConfigured(config) {
 		definitions = append(definitions, imageUpscaleToolDefinition())
@@ -356,6 +379,23 @@ func resolveDefaultAudioModel(config AppConfig) string {
 	return defaultFalAudioModel
 }
 
+// transcribeAudioConfigured reports whether the transcribe_audio tool should be
+// offered: fal is the only transcription backend, and the default model
+// (fal-ai/wizper) always applies, so the gate is purely the fal key — unlike
+// generate_audio/video, no model needs to be configured first.
+func transcribeAudioConfigured(config AppConfig) bool {
+	return falKeyConfigured()
+}
+
+// resolveDefaultTranscribeModel returns the speech-to-text model the
+// transcribe_audio tool uses when the call doesn't override it.
+func resolveDefaultTranscribeModel(config AppConfig) string {
+	if model := strings.TrimSpace(config.Providers.Fal.TranscribeModel); model != "" {
+		return model
+	}
+	return defaultFalTranscribeModel
+}
+
 func audioGenerationToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "generate_audio",
@@ -423,6 +463,74 @@ func audioGenerationToolDefinition() HarnessToolDefinition {
 // video path. Thin wrapper over the shared writer.
 func writeTempAudio(audio GeneratedAudio) (string, error) {
 	return writeTempMediaBytes(audio.Data, "atelier-audio-*", audioExtensionForMediaType(audio.MimeType))
+}
+
+// transcribeAudioToolDefinition exposes the transcribe_audio tool. It consumes
+// the user's attached audio clip (AttachedAudio) and returns the transcript via
+// fal's speech-to-text endpoint (fal-ai/wizper by default). The transcript flows
+// as normal tool evidence — the primary model weaves it into its reply. Requires
+// an attached audio clip, mirroring how upscale_image requires an attached image.
+func transcribeAudioToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "transcribe_audio",
+		Title:       "Transcribe audio",
+		Description: "Use this when the user asks to transcribe, caption, or get a text version of an attached audio clip (a voice memo, recording, interview, etc.). Requires an attached audio clip. Runs the configured fal.ai speech-to-text model and returns the transcript as evidence. Set task to \"translate\" to translate the audio's speech to English text instead of transcribing it.",
+		Example:     `{"name":"transcribe_audio"}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: transcribeAudioParamSchema(),
+		Validate: func(prefix string, call HarnessToolCall) []string {
+			return nil
+		},
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			if tools.TranscribeAudio == nil {
+				return nil, "audio transcription unavailable", errors.New("audio transcription is not available in this context")
+			}
+			attachedAudio := strings.TrimSpace(tools.AttachedAudio)
+			if attachedAudio == "" {
+				return nil, "audio transcription requires an attached audio clip", errors.New("transcribe_audio requires an attached audio clip — ask the user to attach one first")
+			}
+			model := strings.TrimSpace(call.Model)
+			if model == "" {
+				model = resolveDefaultTranscribeModel(tools.Config)
+			}
+			transcript, err := tools.TranscribeAudio(ctx, model, attachedAudio, strings.TrimSpace(call.Task), strings.TrimSpace(call.Language))
+			if err != nil {
+				return nil, "audio transcription failed", err
+			}
+			output := ToolTranscribeResult{
+				Model:      model,
+				Transcript: transcript.Text,
+				Notices:    transcript.Notices,
+			}
+			return output, fmt.Sprintf("transcribed audio with %s", model), nil
+		},
+		Activity: func(result HarnessToolResult) HarnessToolActivity {
+			activity := defaultHarnessToolActivity(result)
+			if typed, ok := result.Result.(ToolTranscribeResult); ok {
+				activity.Command = []string{"fal", "transcribe", typed.Model}
+			}
+			return activity
+		},
+	}
+}
+
+// transcribeAudioParamSchema describes transcribe_audio's optional inputs. There
+// is no "content" param — the audio comes from the user's attachment, not a
+// prompt. task and language are the only fal-ai/wizper inputs the planner can
+// steer; both are optional with sensible defaults.
+func transcribeAudioParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"model": stringParam("Optional fal.ai speech-to-text model override."),
+			"task": stringParam("Optional — \"transcribe\" (default) to transcribe the audio in its " +
+				"original language, or \"translate\" to translate the speech to English text."),
+			"language": stringParam("Optional — the spoken language as a two-letter code (e.g. \"fr\") " +
+				"to guide transcription. Omit to let the model auto-detect."),
+		},
+		"required": []string{},
+	}
 }
 
 func imageGenerationToolDefinition() HarnessToolDefinition {

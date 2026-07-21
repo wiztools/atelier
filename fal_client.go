@@ -30,6 +30,10 @@ const (
 	// defaultFalAudioModel is the text-to-audio endpoint used when none is
 	// configured — a text-to-speech model, the most common "audio response" case.
 	defaultFalAudioModel = "fal-ai/elevenlabs/tts/multilingual-v2"
+	// defaultFalTranscribeModel is the speech-to-text endpoint used when none is
+	// configured — fal's optimized Whisper v3 edition. Accepts audio_url as a
+	// hosted URL or an inline data URI, so no fal storage upload is needed.
+	defaultFalTranscribeModel = "fal-ai/wizper"
 	// defaultFalUpscaleModel is the image upscaler endpoint used when none is
 	// configured — a simple, cheap ESRGAN-based upscaler that takes image_url +
 	// scale. fal is the only upscale backend (Ollama has no upscaler).
@@ -128,6 +132,16 @@ type GeneratedAudio struct {
 	// Notices holds deterministic, user-facing caveats produced while resolving
 	// the request against the model's schema (e.g. a requested loop the model
 	// cannot honor). Surfaced verbatim in the chat reply.
+	Notices []string
+}
+
+// GeneratedTranscript is a speech-to-text result: the transcribed text of an
+// audio clip. Unlike GeneratedAudio there are no bytes to download — wizper
+// returns the transcript inline in the result payload's "text" field.
+type GeneratedTranscript struct {
+	Text string
+	// Notices holds deterministic, user-facing caveats (e.g. an auto-detected
+	// language). Surfaced verbatim in the chat reply.
 	Notices []string
 }
 
@@ -297,6 +311,29 @@ func falImageURL(image string) string {
 	return "data:" + mediaType + ";base64," + image
 }
 
+// falAudioURL normalizes an audio reference for fal's audio_url input, mirroring
+// falImageURL. fal-ai/wizper accepts a hosted URL or a data URI and rejects bare
+// base64; the harness carries attached audio as data URLs (which are already
+// data: URIs), so this is mostly a pass-through with bare-base64 wrapping as a
+// fallback. http.DetectContentType can't reliably distinguish audio subtypes, so
+// a bare base64 payload is wrapped as audio/mpeg (the most portable default).
+func falAudioURL(audio string) string {
+	audio = strings.TrimSpace(audio)
+	if audio == "" {
+		return ""
+	}
+	if strings.HasPrefix(audio, "http://") || strings.HasPrefix(audio, "https://") || strings.HasPrefix(audio, "data:") {
+		return audio
+	}
+	mediaType := "audio/mpeg"
+	if data, err := base64.StdEncoding.DecodeString(audio); err == nil {
+		if detected := http.DetectContentType(data); strings.HasPrefix(detected, "audio/") {
+			mediaType = detected
+		}
+	}
+	return "data:" + mediaType + ";base64," + audio
+}
+
 // GenerateVideo submits a text-to-video request to the fal queue, polls until
 // completion, and downloads the resulting clip as raw bytes. Video generation
 // runs for minutes rather than seconds, so callers must pass a context with a
@@ -423,6 +460,80 @@ func (client FalClient) GenerateAudio(ctx context.Context, model string, body ma
 		return GeneratedAudio{}, err
 	}
 	return GeneratedAudio{Data: data, MimeType: mimeType, SourceURL: audioURL}, nil
+}
+
+// TranscribeAudio submits an audio clip to fal's speech-to-text endpoint
+// (fal-ai/wizper by default), polls until completion, and returns the
+// transcript text. fal-ai/wizper accepts audio_url as a hosted URL or an inline
+// data URI (see falAudioURL), so no fal storage upload is needed. The transcript
+// lives in the result payload's top-level "text" field. task is "transcribe" or
+// "translate" (empty defaults to "transcribe"); language is an optional hint
+// (empty lets the model auto-detect).
+func (client FalClient) TranscribeAudio(ctx context.Context, model, audioURL, task, language string) (GeneratedTranscript, error) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = defaultFalTranscribeModel
+	}
+	task = strings.TrimSpace(task)
+	if task == "" {
+		task = "transcribe"
+	}
+	body := map[string]any{
+		"audio_url": falAudioURL(audioURL),
+		"task":      task,
+	}
+	if hint := strings.TrimSpace(language); hint != "" {
+		body["language"] = hint
+	}
+
+	submit, err := client.submit(ctx, model, body)
+	if err != nil {
+		return GeneratedTranscript{}, err
+	}
+	requestID := strings.TrimSpace(submit.RequestID)
+	if requestID == "" {
+		return GeneratedTranscript{}, errors.New("fal submit returned no request id")
+	}
+	statusURL, resultURL := falQueueURLs(submit, model, requestID)
+
+	if err := client.waitForCompletion(ctx, statusURL); err != nil {
+		return GeneratedTranscript{}, err
+	}
+
+	result, raw, err := client.fetchResult(ctx, resultURL)
+	if err != nil {
+		return GeneratedTranscript{}, err
+	}
+
+	text := ""
+	if len(result.Data) > 0 {
+		var payload struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(result.Data, &payload); err == nil {
+			text = strings.TrimSpace(payload.Text)
+		}
+	}
+	if text == "" {
+		text = firstFalTranscriptText(raw)
+	}
+	if text == "" {
+		return GeneratedTranscript{}, errors.New("fal transcription returned no text")
+	}
+	return GeneratedTranscript{Text: text}, nil
+}
+
+// firstFalTranscriptText walks the raw fal result for a "text" string field, as
+// a fallback when the structured Data payload is absent or shaped differently.
+func firstFalTranscriptText(raw []byte) string {
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	if text, ok := payload["text"].(string); ok {
+		return strings.TrimSpace(text)
+	}
+	return ""
 }
 
 func (client FalClient) submit(ctx context.Context, model string, body map[string]any) (falSubmitResponse, error) {
@@ -801,6 +912,10 @@ const (
 	// speech, respectively).
 	falTextToAudioCategory  = "text-to-audio"
 	falTextToSpeechCategory = "text-to-speech"
+	// falSpeechToTextCategory is the /v1/models category filter for
+	// speech-to-text (transcription) endpoints — fal-ai/wizper and friends.
+	// ListFalTranscribeModels is the only consumer.
+	falSpeechToTextCategory = "speech-to-text"
 	// falImageUpscalingCategory is not a dedicated /v1/models category — fal
 	// files upscalers under the broader image-to-image bucket alongside
 	// inpainting, background removal, and other image-editing endpoints. We

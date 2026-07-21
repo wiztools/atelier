@@ -83,6 +83,16 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			generated.Notices = notices
 			return generated, err
 		}
+		gateway.tools.TranscribeAudio = func(ctx context.Context, model, audioURL, task, language string) (GeneratedTranscript, error) {
+			apiKey, err := loadFalAPIKey()
+			if err != nil {
+				return GeneratedTranscript{}, err
+			}
+			if strings.TrimSpace(apiKey) == "" {
+				return GeneratedTranscript{}, errFalKeyNotConfigured
+			}
+			return newFalClient(app.client, apiKey).TranscribeAudio(ctx, model, audioURL, task, language)
+		}
 	}
 	return gateway
 }

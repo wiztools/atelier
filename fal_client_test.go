@@ -905,3 +905,146 @@ func TestCollectFalImagesFromJSON(t *testing.T) {
 		t.Fatalf("expected 2 images, got %d", len(images))
 	}
 }
+
+// TestFalAudioURL mirrors TestFalImageURL for the audio path: bare base64 is
+// wrapped as a data URI (audio/mpeg default since DetectContentType can't
+// reliably subtype audio), and data URIs / http(s) URLs / empty pass through.
+func TestFalAudioURL(t *testing.T) {
+	bare := base64.StdEncoding.EncodeToString(tinyMP3())
+	if got := falAudioURL(bare); got != "data:audio/mpeg;base64,"+bare {
+		t.Errorf("bare base64 not wrapped as an audio data URI: %q", got[:min(40, len(got))])
+	}
+	dataURI := "data:audio/wav;base64," + bare
+	if got := falAudioURL(dataURI); got != dataURI {
+		t.Errorf("data URI should pass through unchanged, got %q", got)
+	}
+	if got := falAudioURL("https://cdn.example/clip.mp3"); got != "https://cdn.example/clip.mp3" {
+		t.Errorf("https URL should pass through unchanged, got %q", got)
+	}
+	if got := falAudioURL("   "); got != "" {
+		t.Errorf("empty input should return empty, got %q", got)
+	}
+}
+
+// TestFalClientTranscribeAudioSubmitsWizperBody asserts the submit goes to the
+// wizper endpoint with audio_url as a data URI and the default task. The model
+// is verified against the configured default so the test does not drift if the
+// const changes.
+func TestFalClientTranscribeAudioSubmitsWizperBody(t *testing.T) {
+	model := defaultFalTranscribeModel
+	var submitBody string
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodPost && req.URL.Path == "/"+model:
+			body, _ := io.ReadAll(req.Body)
+			submitBody = string(body)
+			return jsonResp(`{"request_id":"req-tr"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/status"):
+			return jsonResp(`{"status":"COMPLETED"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/requests/req-tr"):
+			return jsonResp(`{"text":"hello world"}`), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+			return nil, nil
+		}
+	}))
+
+	transcript, err := client.TranscribeAudio(context.Background(), "", "data:audio/wav;base64,AAAA", "", "")
+	if err != nil {
+		t.Fatalf("TranscribeAudio returned error: %v", err)
+	}
+	if transcript.Text != "hello world" {
+		t.Errorf("transcript = %q, want \"hello world\"", transcript.Text)
+	}
+	if !strings.Contains(submitBody, `"audio_url":"data:audio/wav;base64,AAAA"`) {
+		t.Errorf("submit body did not carry audio_url as the data URI: %s", submitBody)
+	}
+	if !strings.Contains(submitBody, `"task":"transcribe"`) {
+		t.Errorf("submit body did not default task to transcribe: %s", submitBody)
+	}
+}
+
+// TestFalClientTranscribeAudioForwardsTaskAndLanguage asserts an explicit task
+// (translate) and language hint are forwarded on the submit body rather than
+// overwritten with the defaults.
+func TestFalClientTranscribeAudioForwardsTaskAndLanguage(t *testing.T) {
+	model := defaultFalTranscribeModel
+	var submitBody string
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodPost && req.URL.Path == "/"+model:
+			body, _ := io.ReadAll(req.Body)
+			submitBody = string(body)
+			return jsonResp(`{"request_id":"req-tr2"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/status"):
+			return jsonResp(`{"status":"COMPLETED"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/requests/req-tr2"):
+			return jsonResp(`{"text":"bonjour le monde"}`), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+			return nil, nil
+		}
+	}))
+
+	if _, err := client.TranscribeAudio(context.Background(), model, "data:audio/mpeg;base64,AAAA", "translate", "fr"); err != nil {
+		t.Fatalf("TranscribeAudio returned error: %v", err)
+	}
+	if !strings.Contains(submitBody, `"task":"translate"`) {
+		t.Errorf("task not forwarded: %s", submitBody)
+	}
+	if !strings.Contains(submitBody, `"language":"fr"`) {
+		t.Errorf("language not forwarded: %s", submitBody)
+	}
+}
+
+// TestFalClientTranscribeAudioNoText covers the error path: a result with no
+// "text" field surfaces a clear error rather than an empty transcript.
+func TestFalClientTranscribeAudioNoText(t *testing.T) {
+	model := defaultFalTranscribeModel
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodPost && req.URL.Path == "/"+model:
+			return jsonResp(`{"request_id":"req-empty"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/status"):
+			return jsonResp(`{"status":"COMPLETED"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/requests/req-empty"):
+			return jsonResp(`{"chunks":[]}`), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+			return nil, nil
+		}
+	}))
+
+	_, err := client.TranscribeAudio(context.Background(), model, "data:audio/mpeg;base64,AAAA", "", "")
+	if err == nil || !strings.Contains(err.Error(), "no text") {
+		t.Fatalf("expected a no-text error, got %v", err)
+	}
+}
+
+// TestFalClientTranscribeAudioUnmarshalDataText covers the structured-data path:
+// when the result wraps the transcript under a "data" object (fal's usual shape),
+// TranscribeAudio still extracts the text.
+func TestFalClientTranscribeAudioUnmarshalDataText(t *testing.T) {
+	model := defaultFalTranscribeModel
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodPost && req.URL.Path == "/"+model:
+			return jsonResp(`{"request_id":"req-data"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/status"):
+			return jsonResp(`{"status":"COMPLETED"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/requests/req-data"):
+			return jsonResp(`{"data":{"text":"nested transcript"}}`), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+			return nil, nil
+		}
+	}))
+
+	transcript, err := client.TranscribeAudio(context.Background(), model, "data:audio/mpeg;base64,AAAA", "", "")
+	if err != nil {
+		t.Fatalf("TranscribeAudio returned error: %v", err)
+	}
+	if transcript.Text != "nested transcript" {
+		t.Errorf("transcript = %q, want \"nested transcript\"", transcript.Text)
+	}
+}
