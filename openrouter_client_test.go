@@ -481,3 +481,114 @@ func TestOpenRouterWireMessagesPreservesToolCallsOnAssistant(t *testing.T) {
 		t.Fatalf("tool_calls = %+v, want one list_files call", calls)
 	}
 }
+
+// A minimal valid WAV (RIFF/WAVE, mono 8kHz, zero-length data) whose bytes pass
+// isAudioBytes; small enough to inline as a base64 literal.
+const oneWAVBase64 = "UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA="
+
+// TestOpenRouterChatBodyEmitsInputAudioContentParts covers audio input: an
+// attached audio (data:audio/wav;base64,...) must render as an OpenAI
+// input_audio content part with the format split off from the data URL.
+func TestOpenRouterChatBodyEmitsInputAudioContentParts(t *testing.T) {
+	dataURL := "data:audio/wav;base64," + oneWAVBase64
+	body := openRouterChatBody(ChatRequest{
+		Model: "openai/gpt-4o",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "transcribe this", Audios: []string{dataURL}},
+		},
+	}, false)
+
+	msg := body["messages"].([]map[string]any)[0]
+	if _, hasAudiosKey := msg["audios"]; hasAudiosKey {
+		t.Errorf("top-level audios key leaked to OpenRouter: %+v", msg)
+	}
+	parts, ok := msg["content"].([]map[string]any)
+	if !ok {
+		t.Fatalf("content = %T, want a content-parts array — audio must ride a content part", msg["content"])
+	}
+	if len(parts) != 2 {
+		t.Fatalf("got %d parts, want [text, input_audio]: %+v", len(parts), parts)
+	}
+	if parts[0]["type"] != "text" || parts[0]["text"] != "transcribe this" {
+		t.Errorf("text part = %+v, want {type:text text:\"transcribe this\"}", parts[0])
+	}
+	if parts[1]["type"] != "input_audio" {
+		t.Fatalf("audio part type = %v, want input_audio", parts[1]["type"])
+	}
+	inputAudio, ok := parts[1]["input_audio"].(map[string]any)
+	if !ok {
+		t.Fatalf("input_audio = %T, want a map", parts[1]["input_audio"])
+	}
+	if data, _ := inputAudio["data"].(string); data != oneWAVBase64 {
+		t.Errorf("input_audio.data = %q, want the bare base64 payload", data)
+	}
+	if format, _ := inputAudio["format"].(string); format != "wav" {
+		t.Errorf("input_audio.format = %q, want wav (derived from audio/wav)", format)
+	}
+}
+
+// TestOpenRouterInputAudioMapsMpegToMp3 covers the OpenAI format-name quirk:
+// MIME audio/mpeg must become format "mp3", not "mpeg".
+func TestOpenRouterInputAudioMapsMpegToMp3(t *testing.T) {
+	dataURL := "data:audio/mpeg;base64," + oneWAVBase64
+	body := openRouterChatBody(ChatRequest{
+		Model:    "openai/gpt-4o",
+		Messages: []ChatMessage{{Role: "user", Audios: []string{dataURL}}},
+	}, false)
+
+	parts := body["messages"].([]map[string]any)[0]["content"].([]map[string]any)
+	inputAudio := parts[0]["input_audio"].(map[string]any)
+	if format, _ := inputAudio["format"].(string); format != "mp3" {
+		t.Errorf("format = %q, want mp3 for audio/mpeg", format)
+	}
+}
+
+// TestOpenRouterChatBodyDropsMalformedAudios covers fail-closed for audio: a
+// non-data-URL, non-base64 entry is dropped, and a message whose audios all
+// drop reverts to plain string content.
+func TestOpenRouterChatBodyDropsMalformedAudios(t *testing.T) {
+	body := openRouterChatBody(ChatRequest{
+		Model: "openai/gpt-4o",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "hi", Audios: []string{"/atelier-artifact/clip.wav", "not-base64!!!"}},
+		},
+	}, false)
+
+	msg := body["messages"].([]map[string]any)[0]
+	if parts, ok := msg["content"].([]map[string]any); ok {
+		t.Fatalf("malformed-only audios produced a content-parts array %+v; want plain string content", parts)
+	}
+	if content, _ := msg["content"].(string); content != "hi" {
+		t.Errorf("content = %q, want \"hi\" reverted to plain string content", content)
+	}
+}
+
+// TestOpenRouterChatBodyEmitsImagesAndAudiosTogether covers a mixed-attachment
+// message: text, then image_url parts, then input_audio parts, in that order.
+func TestOpenRouterChatBodyEmitsImagesAndAudiosTogether(t *testing.T) {
+	imageURL := "data:image/png;base64," + onePNGPixelBase64
+	audioURL := "data:audio/wav;base64," + oneWAVBase64
+	body := openRouterChatBody(ChatRequest{
+		Model: "openai/gpt-4o",
+		Messages: []ChatMessage{{
+			Role:    "user",
+			Content: "look and listen",
+			Images:  []string{imageURL},
+			Audios:  []string{audioURL},
+		}},
+	}, false)
+
+	parts := body["messages"].([]map[string]any)[0]["content"].([]map[string]any)
+	if len(parts) != 3 {
+		t.Fatalf("got %d parts, want [text, image_url, input_audio]: %+v", len(parts), parts)
+	}
+	if parts[0]["type"] != "text" {
+		t.Errorf("part 0 = %v, want text", parts[0]["type"])
+	}
+	if parts[1]["type"] != "image_url" {
+		t.Errorf("part 1 = %v, want image_url", parts[1]["type"])
+	}
+	if parts[2]["type"] != "input_audio" {
+		t.Errorf("part 2 = %v, want input_audio", parts[2]["type"])
+	}
+}

@@ -253,23 +253,79 @@ func openRouterImageURL(image string) string {
 	return "data:" + http.DetectContentType(decoded) + ";base64," + image
 }
 
+// openRouterInputAudio normalizes a single ChatMessage.Audios entry into the
+// (data, format) pair the OpenAI input_audio content part requires. OpenRouter
+// documents the shape as {"type":"input_audio","input_audio":{"data":<base64>,
+// "format":"wav"|"mp3"}}. Unlike images, the format is a required sibling field
+// rather than embedded in a data URL, so the helper splits them apart.
+//
+// The frontend always sends data:audio/<fmt>;base64,... data URLs (the audio
+// attach path keeps the wrapper, unlike Ollama-bound images which strip it).
+// The <fmt> in the MIME becomes the input_audio format. A bare-base64 entry
+// (no data: prefix) is accepted with format "mp3" — the most portable default —
+// since http.DetectContentType cannot reliably distinguish audio subtypes from
+// raw bytes. Anything malformed returns ok=false so the caller drops it rather
+// than poisoning the request.
+func openRouterInputAudio(audio string) (data, format string, ok bool) {
+	audio = strings.TrimSpace(audio)
+	if audio == "" {
+		return "", "", false
+	}
+	if strings.HasPrefix(audio, "data:") {
+		comma := strings.Index(audio, ",")
+		if comma < 0 {
+			return "", "", false
+		}
+		mediaType := audio[len("data:"):comma]
+		if semicolon := strings.Index(mediaType, ";"); semicolon >= 0 {
+			mediaType = mediaType[:semicolon]
+		}
+		// mediaType is e.g. "audio/wav" -> format "wav"; "audio/mpeg" -> "mp3".
+		format = audioFormatForMediaType(mediaType)
+		payload := audio[comma+1:]
+		if _, err := base64.StdEncoding.DecodeString(payload); err != nil {
+			return "", "", false
+		}
+		return payload, format, true
+	}
+	if _, err := base64.StdEncoding.DecodeString(audio); err != nil {
+		return "", "", false
+	}
+	return audio, "mp3", true
+}
+
+// audioFormatForMediaType maps an audio MIME subtype to the OpenAI input_audio
+// format string. OpenRouter accepts "mp3" and "wav" as first-class formats;
+// other subtypes are normalized to the closest supported one so a request
+// carrying, say, audio/ogg still ships a valid format rather than being
+// rejected. Unknown MIMEs default to "mp3".
+func audioFormatForMediaType(mediaType string) string {
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "audio/wav", "audio/wave", "audio/x-wav":
+		return "wav"
+	case "audio/mpeg", "audio/mp3":
+		return "mp3"
+	default:
+		return "mp3"
+	}
+}
+
 // openRouterWireMessages renders the harness's canonical message list into the
 // OpenAI chat-completions wire shape. It is the sole place a ChatMessage's
-// Images field becomes OpenAI content parts: a message carrying images is
-// serialized as content:[{type:"text",...},{type:"image_url",...},...],
-// matching OpenRouter's documented multimodal format.
+// Images and Audios fields become OpenAI content parts: a message carrying
+// either is serialized as content:[{type:"text",...},{type:"image_url",...},
+// {type:"input_audio",...}], matching OpenRouter's documented multimodal format.
 //
-// Messages without images stay byte-identical to before — {role, content} with
-// string content — so the tool-evidence rewrite (openRouterMessages), native
-// tool-calling history (assistant messages carrying tool_calls), and the
-// strict-schema planner path all serialize exactly as they did. Only the
-// image-attachment case changes: today it is silently dropped (OpenRouter does
-// not recognize a top-level "images" key), after this it is a real content part
-// the model can see.
+// Messages without images or audios stay byte-identical to before — {role,
+// content} with string content — so the tool-evidence rewrite
+// (openRouterMessages), native tool-calling history (assistant messages
+// carrying tool_calls), and the strict-schema planner path all serialize
+// exactly as they did.
 //
-// Malformed image entries (openRouterImageURL returns "") are dropped; if every
-// image on a message drops, the message reverts to plain string content so we
-// never emit an empty content array.
+// Malformed media entries (openRouterImageURL / openRouterInputAudio return
+// ok=false) are dropped; if every image AND audio on a message drops, the
+// message reverts to plain string content so we never emit an empty content
+// array.
 func openRouterWireMessages(messages []ChatMessage) []map[string]any {
 	rendered := make([]map[string]any, 0, len(messages))
 	for _, msg := range messages {
@@ -279,8 +335,18 @@ func openRouterWireMessages(messages []ChatMessage) []map[string]any {
 				imageURLs = append(imageURLs, url)
 			}
 		}
+		type audioPart struct {
+			data, format string
+		}
+		audios := make([]audioPart, 0, len(msg.Audios))
+		for _, audio := range msg.Audios {
+			data, format, ok := openRouterInputAudio(audio)
+			if ok {
+				audios = append(audios, audioPart{data: data, format: format})
+			}
+		}
 
-		if len(imageURLs) == 0 {
+		if len(imageURLs) == 0 && len(audios) == 0 {
 			entry := map[string]any{"role": msg.Role, "content": msg.Content}
 			if len(msg.ToolCalls) > 0 {
 				entry["tool_calls"] = msg.ToolCalls
@@ -289,7 +355,7 @@ func openRouterWireMessages(messages []ChatMessage) []map[string]any {
 			continue
 		}
 
-		parts := make([]map[string]any, 0, len(imageURLs)+1)
+		parts := make([]map[string]any, 0, len(imageURLs)+len(audios)+1)
 		if msg.Content != "" {
 			parts = append(parts, map[string]any{"type": "text", "text": msg.Content})
 		}
@@ -297,6 +363,15 @@ func openRouterWireMessages(messages []ChatMessage) []map[string]any {
 			parts = append(parts, map[string]any{
 				"type":      "image_url",
 				"image_url": map[string]any{"url": url},
+			})
+		}
+		for _, audio := range audios {
+			parts = append(parts, map[string]any{
+				"type": "input_audio",
+				"input_audio": map[string]any{
+					"data":   audio.data,
+					"format": audio.format,
+				},
 			})
 		}
 		entry := map[string]any{"role": msg.Role, "content": parts}

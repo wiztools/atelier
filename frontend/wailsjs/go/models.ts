@@ -384,6 +384,7 @@ export namespace main {
 	    role: string;
 	    content: string;
 	    images?: string[];
+	    audios?: string[];
 	    tool_calls?: ToolCall[];
 	
 	    static createFrom(source: any = {}) {
@@ -395,6 +396,7 @@ export namespace main {
 	        this.role = source["role"];
 	        this.content = source["content"];
 	        this.images = source["images"];
+	        this.audios = source["audios"];
 	        this.tool_calls = this.convertValues(source["tool_calls"], ToolCall);
 	    }
 	

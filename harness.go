@@ -185,6 +185,23 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		return
 	}
 
+	// Audio input is OpenRouter-only: Ollama has no audio input API (it is an
+	// open, unmerged proposal — ollama/ollama#11798), and the OpenRouter adapter
+	// is the sole place ChatMessage.Audios becomes input_audio content parts. On
+	// any other provider the audio would be silently dropped, so fail the turn
+	// with an actionable message instead. The user turn is already persisted
+	// (StartChatTurn above), so switching provider and retrying re-reads the
+	// audio attachment from history.
+	if latestUserAudio(req.Messages) && primaryProvider != "openrouter" {
+		run.complete("failed", "audio_provider_unavailable")
+		h.app.emitChatEvent(ChatStreamEvent{
+			RequestID: requestID,
+			Error:     "Audio input needs an OpenRouter model (e.g. openai/gpt-4o). Switch your primary model to OpenRouter and try again.",
+			Done:      true,
+		})
+		return
+	}
+
 	skillIndex, skillIndexErr := loadSkillIndex(skillRootsFor(h.config.Tools.Filesystem.Root))
 	var explicitSkill *SkillIndexEntry
 	explicitReason := ""
@@ -467,6 +484,27 @@ func latestUserImage(messages []ChatMessage) string {
 		return ""
 	}
 	return ""
+}
+
+// latestUserAudio reports whether the most recent user message carries any
+// audio attachment. Unlike latestUserImage it returns a bool rather than the
+// payload: audio input is OpenRouter-only (Ollama has no audio input API), so
+// the only consumer today is the provider pre-flight guard that rejects an
+// audio turn on a non-OpenRouter provider before it runs. The OpenRouter
+// adapter reads ChatMessage.Audios directly when building input_audio parts.
+func latestUserAudio(messages []ChatMessage) bool {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "user" {
+			continue
+		}
+		for _, audio := range messages[i].Audios {
+			if trimmed := strings.TrimSpace(audio); trimmed != "" {
+				return true
+			}
+		}
+		return false
+	}
+	return false
 }
 
 // latestAttachedImageForTurn returns the image attached to the current turn if
@@ -790,6 +828,7 @@ func truncateChatHistory(messages []ChatMessage, budgetChars int) []ChatMessage 
 		Role:    truncated[0].Role,
 		Content: contextOmittedMarker + "\n\n" + truncated[0].Content,
 		Images:  truncated[0].Images,
+		Audios:  truncated[0].Audios,
 	}
 	return truncated
 }

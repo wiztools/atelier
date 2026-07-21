@@ -2072,6 +2072,87 @@ func TestHarnessRunChatStreamUsesOpenRouterWhenRequestSpecifiesIt(t *testing.T) 
 	}
 }
 
+// TestRunChatStreamRejectsAudioOnOllama covers the OpenRouter-only audio guard.
+// Ollama has no audio input API (ollama/ollama#11798 is unmerged), so attaching
+// audio on an Ollama primary model must fail the turn with an actionable error
+// before any chat-completions call is made — audio would otherwise be silently
+// dropped. The user turn is still persisted so the user can switch provider and
+// retry. Any HTTP request to /chat/completions or /api/chat after triage is a
+// failure: the guard must fire first.
+func TestRunChatStreamRejectsAudioOnOllama(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	providerCalled := false
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		// Triage hits the harness model on Ollama and is unavoidable; everything
+		// else (a primary-model stream, an OpenRouter call) means the guard
+		// failed to fire and the audio was about to be silently dropped.
+		if req.URL.Host == "ollama.test" && strings.HasSuffix(req.URL.Path, "/api/chat") {
+			decision := `{"needsTools":false,"responseMode":"text","toolTask":"","reason":"general knowledge"}`
+			body := `{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+		}
+		providerCalled = true
+		t.Fatalf("unexpected request to %s — audio guard should have failed the turn before any primary-model call", req.URL)
+		return nil, nil
+	})
+
+	app.runChatStream(context.Background(), "request-audio-ollama", ChatRequest{
+		BaseURL:  "http://ollama.test",
+		Model:    "some-ollama-model",
+		Provider: "ollama",
+		Messages: []ChatMessage{{
+			Role:    "user",
+			Content: "transcribe this clip",
+			Audios:  []string{"data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA="},
+		}},
+	})
+
+	if providerCalled {
+		t.Fatal("a primary-model provider call was made; the audio guard must fail the turn first")
+	}
+	// The user turn is persisted (so the user can switch provider and retry),
+	// but no assistant turn follows it.
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	if len(conversations) != 1 {
+		t.Fatalf("conversation count = %d, want 1 (the user turn should be persisted)", len(conversations))
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	if len(detail.Turns) != 1 || detail.Turns[0].Role != "user" {
+		t.Fatalf("turns = %+v, want exactly one user turn (no assistant follow-up)", detail.Turns)
+	}
+	// The user turn's audio attachment must be persisted as an artifact so a
+	// post-switch retry can re-read it.
+	audioContent := false
+	for _, c := range detail.Turns[0].Content {
+		if c.Type == "audio" {
+			audioContent = true
+		}
+	}
+	if !audioContent {
+		t.Fatalf("user turn did not persist an audio artifact: %+v", detail.Turns[0].Content)
+	}
+}
+
 func TestTriageFailureStillRunsToolPlannerAndAnswers(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -3591,6 +3672,62 @@ func TestReadArtifactAsDataURL(t *testing.T) {
 	}
 }
 
+// TestHistoryContentForMessagePersistsAudio covers the audio input persistence
+// path: a user message carrying a data:audio/wav data URL must write a .wav
+// artifact and emit a HistoryContent{Type:"audio"} entry whose Path resolves
+// back to the original bytes via decodeAudioPayload. This is the round-trip a
+// post-switch retry relies on to re-read an audio attachment from history.
+func TestHistoryContentForMessagePersistsAudio(t *testing.T) {
+	wavBytes := []byte("RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x40\x1f\x00\x00\x40\x1f\x00\x00\x01\x00\x08\x00data\x00\x00\x00\x00")
+	if !isAudioBytes(wavBytes) {
+		t.Fatalf("wavBytes must look like audio to isAudioBytes for this test to be meaningful")
+	}
+	dataURL := "data:audio/wav;base64," + base64.StdEncoding.EncodeToString(wavBytes)
+
+	artifactsDir := t.TempDir()
+	contents, err := historyContentForMessage(ChatMessage{
+		Role:    "user",
+		Content: "transcribe this",
+		Audios:  []string{dataURL},
+	}, artifactsDir, 1)
+	if err != nil {
+		t.Fatalf("historyContentForMessage returned error: %v", err)
+	}
+
+	var audioEntry HistoryContent
+	for _, c := range contents {
+		if c.Type == "audio" {
+			audioEntry = c
+		}
+	}
+	if audioEntry.Path == "" {
+		t.Fatalf("no audio content entry persisted: %+v", contents)
+	}
+	if !strings.HasSuffix(audioEntry.Path, ".wav") {
+		t.Errorf("audio artifact path = %q, want a .wav extension", audioEntry.Path)
+	}
+
+	// The written artifact must exist on disk and decode back to the original bytes.
+	absPath := filepath.Join(artifactsDir, filepath.Base(audioEntry.Path))
+	written, err := os.ReadFile(absPath)
+	if err != nil {
+		t.Fatalf("audio artifact was not written: %v", err)
+	}
+	if !bytes.Equal(written, wavBytes) {
+		t.Fatalf("written bytes (%d) do not match the input WAV (%d)", len(written), len(wavBytes))
+	}
+	decoded, ext, err := decodeAudioPayload(dataURL)
+	if err != nil {
+		t.Fatalf("decodeAudioPayload(dataURL) returned error: %v", err)
+	}
+	if ext != ".wav" {
+		t.Errorf("decodeAudioPayload extension = %q, want .wav", ext)
+	}
+	if !bytes.Equal(decoded, wavBytes) {
+		t.Fatalf("decodeAudioPayload bytes do not match the input WAV")
+	}
+}
+
 // TestReadArtifactAsDataURLMissingFile confirms a missing artifact surfaces an
 // error rather than panicking — the harness swallows this and falls back to the
 // empty-AttachedImage path.
@@ -3980,6 +4117,13 @@ func TestTriageChatTurnStripsImagesFromRequest(t *testing.T) {
 					t.Fatalf("triage request must not include images, got: %v", images)
 				}
 			}
+			// Audio bytes must be stripped for the same reason as images: the
+			// routing model doesn't need them and would otherwise carry dead weight.
+			if audios, ok := msg["audios"]; ok && audios != nil {
+				if arr, ok := audios.([]any); ok && len(arr) > 0 {
+					t.Fatalf("triage request must not include audios, got: %v", audios)
+				}
+			}
 		}
 		decision := `{"needsTools":false,"responseMode":"vision","toolTask":"","reason":"general knowledge"}`
 		body := `{"model":"chat-box-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":1}`
@@ -3987,11 +4131,16 @@ func TestTriageChatTurnStripsImagesFromRequest(t *testing.T) {
 	})
 	engine := newHarnessEngine(defaultAppConfig(), app)
 	decision, _ := engine.triageChatTurn(context.Background(), ChatRequest{
-		BaseURL:  "http://ollama.test",
-		Messages: []ChatMessage{{Role: "user", Content: "describe this", Images: []string{"data:image/png;base64,AAAA"}}},
+		BaseURL: "http://ollama.test",
+		Messages: []ChatMessage{{
+			Role:    "user",
+			Content: "describe this",
+			Images:  []string{"data:image/png;base64,AAAA"},
+			Audios:  []string{"data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA="},
+		}},
 	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
 	if decision.Error != "" {
-		t.Fatalf("decision = %+v, want clean decision with images stripped", decision)
+		t.Fatalf("decision = %+v, want clean decision with media stripped", decision)
 	}
 }
 

@@ -148,6 +148,12 @@ type Attachment = {
   name: string;
   src: string;
   payload: string;
+  // 'image' attachments strip the data: prefix into payload (Ollama's base64
+  // shape); 'audio' attachments keep the full data URL as payload, since the
+  // OpenRouter input_audio part needs the bytes + a format derived from the
+  // data:audio/<fmt>; prefix. The kind drives chip rendering and request
+  // building in submitChat.
+  kind: 'image' | 'audio';
 };
 
 const defaultBaseURL = 'http://localhost:11434';
@@ -1153,21 +1159,28 @@ function App() {
       id: `user-${Date.now()}`,
       role: 'user',
       content: trimmed,
-      images: attachments.map((item) => item.src),
+      images: attachments.filter((item) => item.kind === 'image').map((item) => item.src),
+      audios: attachments.filter((item) => item.kind === 'audio').map((item) => item.src),
     };
     const requestID = `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const audioAttachments = attachments.filter((item) => item.kind === 'audio').map((item) => item.payload).filter(Boolean);
+    const imageAttachments = attachments.filter((item) => item.kind === 'image').map((item) => item.payload).filter(Boolean);
     const requestMessages: main.ChatMessage[] = [
       ...chat
-        .filter((entry) => entry.role !== 'system' && (entry.content || entry.images?.length))
+        .filter((entry) => entry.role !== 'system' && (entry.content || entry.images?.length || entry.audios?.length))
         .map((entry) => ({
           role: entry.role,
           content: entry.content,
           ...(entry.images?.length ? {images: entry.images.map(imagePayloadForOllama).filter(Boolean)} : {}),
+          // Hydrated history audios are /atelier-artifact/ display URLs; only
+          // inline data: URLs are valid payloads, so filter like images.
+          ...(entry.audios?.length ? {audios: entry.audios.filter((audio) => audio.startsWith('data:'))} : {}),
         }) as main.ChatMessage),
       {
         role: 'user',
         content: trimmed,
-        ...(attachments.length ? {images: attachments.map((item) => item.payload)} : {}),
+        ...(imageAttachments.length ? {images: imageAttachments} : {}),
+        ...(audioAttachments.length ? {audios: audioAttachments} : {}),
       } as main.ChatMessage,
     ];
 
@@ -1204,11 +1217,12 @@ function App() {
       return;
     }
     const requestMessages: main.ChatMessage[] = historyForRequest
-      .filter((entry) => entry.role !== 'system' && (entry.content || entry.images?.length))
+      .filter((entry) => entry.role !== 'system' && (entry.content || entry.images?.length || entry.audios?.length))
       .map((entry) => ({
         role: entry.role,
         content: entry.content,
         ...(entry.images?.length ? {images: entry.images.map(imagePayloadForOllama).filter(Boolean)} : {}),
+        ...(entry.audios?.length ? {audios: entry.audios.filter((audio) => audio.startsWith('data:'))} : {}),
       }) as main.ChatMessage);
     const requestID = `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     shouldFollowTranscriptRef.current = true;
@@ -1272,42 +1286,42 @@ function App() {
     }
   }
 
-  async function addImages(files: FileList | null) {
+  async function addFiles(files: FileList | null) {
     if (!files) {
       return;
     }
-    const next = await Promise.all(Array.from(files).map((file) => readImageFile(file)));
+    const next = await Promise.all(Array.from(files).map((file) => readFileAsAttachment(file)));
     setAttachments((items) => [...items, ...next]);
   }
 
   async function handleChatPromptPaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
-    const imageFiles = Array.from(event.clipboardData?.items ?? [])
-      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+    const mediaFiles = Array.from(event.clipboardData?.items ?? [])
+      .filter((item) => item.kind === 'file' && (item.type.startsWith('image/') || item.type.startsWith('audio/')))
       .map((item) => item.getAsFile())
       .filter((file): file is File => file !== null);
-    if (!imageFiles.length) {
+    if (!mediaFiles.length) {
       return;
     }
     // Keep the pasted bytes out of the text field and route them to attachments.
     event.preventDefault();
     const stamp = Date.now();
     const next = await Promise.all(
-      imageFiles.map((file, index) => {
-        const extension = file.name.includes('.') ? '' : imageExtensionForType(file.type);
-        return readImageFile(file, `pasted-${stamp}-${index + 1}${file.name ? `-${file.name}` : extension}`);
+      mediaFiles.map((file, index) => {
+        const extension = file.name.includes('.') ? '' : mediaExtensionForType(file.type);
+        return readFileAsAttachment(file, `pasted-${stamp}-${index + 1}${file.name ? `-${file.name}` : extension}`);
       }),
     );
     setAttachments((items) => [...items, ...next]);
   }
 
-  function composerHasImageDrag(event: React.DragEvent<HTMLDivElement>): boolean {
+  function composerHasMediaDrag(event: React.DragEvent<HTMLDivElement>): boolean {
     return Array.from(event.dataTransfer?.items ?? []).some(
-      (item) => item.kind === 'file' && item.type.startsWith('image/'),
+      (item) => item.kind === 'file' && (item.type.startsWith('image/') || item.type.startsWith('audio/')),
     );
   }
 
   function handleComposerDragEnter(event: React.DragEvent<HTMLDivElement>) {
-    if (!composerHasImageDrag(event)) {
+    if (!composerHasMediaDrag(event)) {
       return;
     }
     event.preventDefault();
@@ -1316,7 +1330,7 @@ function App() {
   }
 
   function handleComposerDragOver(event: React.DragEvent<HTMLDivElement>) {
-    if (!composerHasImageDrag(event)) {
+    if (!composerHasMediaDrag(event)) {
       return;
     }
     // Signal that dropping here is allowed and stop the browser from opening the file.
@@ -1337,19 +1351,19 @@ function App() {
   async function handleComposerDrop(event: React.DragEvent<HTMLDivElement>) {
     composerDragDepth.current = 0;
     setComposerDragging(false);
-    const imageFiles = Array.from(event.dataTransfer?.files ?? []).filter((file) =>
-      file.type.startsWith('image/'),
+    const mediaFiles = Array.from(event.dataTransfer?.files ?? []).filter(
+      (file) => file.type.startsWith('image/') || file.type.startsWith('audio/'),
     );
-    if (!imageFiles.length) {
+    if (!mediaFiles.length) {
       return;
     }
-    // Keep the browser from navigating to the dropped image and route it to attachments.
+    // Keep the browser from navigating to the dropped file and route it to attachments.
     event.preventDefault();
     const stamp = Date.now();
     const next = await Promise.all(
-      imageFiles.map((file, index) => {
-        const extension = file.name.includes('.') ? '' : imageExtensionForType(file.type);
-        return readImageFile(file, file.name || `dropped-${stamp}-${index + 1}${extension}`);
+      mediaFiles.map((file, index) => {
+        const extension = file.name.includes('.') ? '' : mediaExtensionForType(file.type);
+        return readFileAsAttachment(file, file.name || `dropped-${stamp}-${index + 1}${extension}`);
       }),
     );
     setAttachments((items) => [...items, ...next]);
@@ -2030,6 +2044,13 @@ function App() {
                           </div>
                         )
                       ) : null}
+                      {entry.role === 'user' && entry.audios?.length ? (
+                        <div className="chat-user-audios">
+                          {entry.audios.map((audio, index) => (
+                            <audio key={`${entry.id}-audio-${index}`} src={audio} controls preload="metadata" />
+                          ))}
+                        </div>
+                      ) : null}
                       {entry.videos?.length ? (
                         <div className="chat-video-results">
                           {entry.videos.map((video, index) => (
@@ -2129,7 +2150,16 @@ function App() {
                   <div className="attachment-strip">
                     {asArray(attachments).map((item) => (
                       <button key={item.name} onClick={() => setAttachments((items) => items.filter((next) => next.name !== item.name))}>
-                        <img src={item.src} alt="" />
+                        {item.kind === 'audio' ? (
+                          <span className="attachment-audio-chip" aria-hidden="true">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+                              <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" />
+                            </svg>
+                          </span>
+                        ) : (
+                          <img src={item.src} alt="" />
+                        )}
                         <span>{item.name}</span>
                       </button>
                     ))}
@@ -2165,16 +2195,16 @@ function App() {
                       </svg>
                       <code>{shortenHomePath(displayedWorkspace)}</code>
                     </button>
-                    <label className="file-button" aria-label="Attach image" title="Attach image">
+                    <label className="file-button" aria-label="Attach file" title="Attach file">
                       {/* Inline icon keeps the composer row compact — the text
                           label was pushing the submit row onto a new line at
-                          narrow widths. The title/aria-label preserve meaning. */}
+                          narrow widths. The title/aria-label preserve meaning.
+                          A paperclip reads as generic attach (image or audio)
+                          rather than implying image-only. */}
                       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-                        <circle cx="8.5" cy="8.5" r="1.5" />
-                        <path d="M21 15l-5-5L5 21" />
+                        <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
                       </svg>
-                      <input type="file" accept="image/*" multiple onChange={(event) => addImages(event.target.files)} />
+                      <input type="file" accept="image/*,audio/*" multiple onChange={(event) => addFiles(event.target.files)} />
                     </label>
                   </div>
                   <div className="composer-submit-row">
@@ -2791,7 +2821,40 @@ async function readImageFile(file: File, nameOverride?: string): Promise<Attachm
     name: nameOverride ?? file.name,
     src: dataURL,
     payload: imagePayloadForOllama(dataURL),
+    kind: 'image',
   };
+}
+
+// readAudioFile mirrors readImageFile but keeps the full data URL as the
+// payload — unlike Ollama-bound images, the OpenRouter input_audio part needs
+// the data:audio/<fmt>;base64,... wrapper so openRouterInputAudio can split off
+// the format. Audio input is OpenRouter-only; the harness rejects an audio turn
+// on any other provider before it runs.
+async function readAudioFile(file: File, nameOverride?: string): Promise<Attachment> {
+  const dataURL = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+
+  return {
+    name: nameOverride ?? file.name,
+    src: dataURL,
+    payload: dataURL,
+    kind: 'audio',
+  };
+}
+
+// readFileAsAttachment dispatches on MIME type to the right reader. Audio files
+// route to readAudioFile; everything else (images today, and an unknown type the
+// OS picker let through) routes to readImageFile, which produced the historical
+// behavior.
+async function readFileAsAttachment(file: File, nameOverride?: string): Promise<Attachment> {
+  if (file.type.startsWith('audio/')) {
+    return readAudioFile(file, nameOverride);
+  }
+  return readImageFile(file, nameOverride);
 }
 
 function imageExtensionForType(type: string): string {
@@ -2800,6 +2863,36 @@ function imageExtensionForType(type: string): string {
     return '.png';
   }
   return `.${subtype === 'jpeg' ? 'jpg' : subtype}`;
+}
+
+function audioExtensionForType(type: string): string {
+  const subtype = type.split('/')[1]?.split(';')[0]?.trim().toLowerCase();
+  switch (subtype) {
+    case 'wav':
+    case 'wave':
+    case 'x-wav':
+      return '.wav';
+    case 'ogg':
+    case 'opus':
+      return '.ogg';
+    case 'flac':
+      return '.flac';
+    case 'mp4':
+    case 'aac':
+    case 'x-m4a':
+      return '.m4a';
+    default:
+      return '.mp3';
+  }
+}
+
+// mediaExtensionForType picks a fallback extension for a synthesized filename
+// (pasted/dropped media that has no name), branching on the MIME category.
+function mediaExtensionForType(type: string): string {
+  if (type.startsWith('audio/')) {
+    return audioExtensionForType(type);
+  }
+  return imageExtensionForType(type);
 }
 
 export default App;

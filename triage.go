@@ -46,12 +46,15 @@ func decodeTriageDecision(content string) (HarnessTriageDecision, error) {
 	return decision, nil
 }
 
-// messagesWithoutImages copies messages for text-only side calls such as
-// triage, so image payloads never reach a model that only routes the turn.
-func messagesWithoutImages(messages []ChatMessage) []ChatMessage {
+// messagesWithoutMedia copies messages for text-only side calls such as
+// triage, so image and audio payloads never reach a model that only routes the
+// turn. Audio bytes are stripped for the same reason images are: a routing
+// model doesn't need them, and they would bloat the triage request for nothing.
+func messagesWithoutMedia(messages []ChatMessage) []ChatMessage {
 	stripped := make([]ChatMessage, len(messages))
 	for index, message := range messages {
 		message.Images = nil
+		message.Audios = nil
 		stripped[index] = message
 	}
 	return stripped
@@ -72,7 +75,7 @@ func (h *HarnessEngine) triageChatTurn(ctx context.Context, req ChatRequest, har
 		Model:    harness.model,
 		Provider: harness.provider,
 		System:   system,
-		Messages: truncateChatHistory(messagesWithoutImages(req.Messages), historyBudgetChars(numCtx, system, triageNumPredict)),
+		Messages: truncateChatHistory(messagesWithoutMedia(req.Messages), historyBudgetChars(numCtx, system, triageNumPredict)),
 		Format:   triageResponseSchema(),
 		Options: map[string]any{
 			"temperature": 0,

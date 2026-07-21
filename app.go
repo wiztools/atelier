@@ -229,9 +229,15 @@ type ollamaShowResponse struct {
 }
 
 type ChatMessage struct {
-	Role      string     `json:"role"`
-	Content   string     `json:"content"`
-	Images    []string   `json:"images,omitempty"`
+	Role    string   `json:"role"`
+	Content string   `json:"content"`
+	Images  []string `json:"images,omitempty"`
+	// Audios carries user-attached audio as data URLs (data:audio/<fmt>;base64,...),
+	// parallel to Images. Audio input is OpenRouter-only — the harness rejects an
+	// audio attachment on any other provider before the turn runs (Ollama has no
+	// audio input API). Like Images, the bytes are stripped before triage and the
+	// OpenRouter adapter is the sole place they become input_audio content parts.
+	Audios    []string   `json:"audios,omitempty"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
@@ -990,6 +996,62 @@ func decodeImagePayload(image string) ([]byte, string, error) {
 	}
 	if !isImageBytes(data) {
 		return nil, "", errors.New("payload is not a supported image")
+	}
+	return data, extension, nil
+}
+
+// decodeAudioPayload mirrors decodeImagePayload for user-attached audio. It
+// accepts a data:audio/<fmt>;base64,... data URL (what the frontend always
+// sends) or a hydrated /atelier-artifact/ path (referencing a persisted audio
+// artifact), and returns the raw bytes plus a file extension. Bytes are
+// validated with isAudioBytes so a non-audio payload is rejected rather than
+// written as a broken artifact. Unlike images there is no bare-base64 fallback:
+// audio input is OpenRouter-only and openRouterInputAudio handles its own
+// normalization at the adapter boundary.
+func decodeAudioPayload(audio string) ([]byte, string, error) {
+	audio = strings.TrimSpace(audio)
+	if audio == "" {
+		return nil, "", errors.New("audio data is empty")
+	}
+
+	// A conversation reloaded from history references audio artifacts via the
+	// /atelier-artifact/ URL prefix (hydrateHistoryContent); resolve those back
+	// to bytes on disk, mirroring decodeImagePayload / SaveAudio.
+	if sourcePath := strings.TrimPrefix(audio, artifactPrefix); sourcePath != audio {
+		data, err := os.ReadFile(sourcePath)
+		if err != nil {
+			return nil, "", err
+		}
+		if !isAudioBytes(data) {
+			return nil, "", errors.New("artifact is not a supported audio file")
+		}
+		extension := strings.ToLower(filepath.Ext(sourcePath))
+		if extension == "" {
+			extension = ".mp3"
+		}
+		return data, extension, nil
+	}
+
+	extension := ".mp3"
+	if strings.HasPrefix(audio, "data:audio/") {
+		headerEnd := strings.Index(audio, ",")
+		if headerEnd < 0 {
+			return nil, "", errors.New("audio data URL is missing payload")
+		}
+		mediaType := audio[len("data:"):headerEnd]
+		if semicolon := strings.Index(mediaType, ";"); semicolon >= 0 {
+			mediaType = mediaType[:semicolon]
+		}
+		extension = audioExtensionForMediaType(mediaType)
+		audio = audio[headerEnd+1:]
+	}
+
+	data, err := base64.StdEncoding.DecodeString(audio)
+	if err != nil {
+		return nil, "", err
+	}
+	if !isAudioBytes(data) {
+		return nil, "", errors.New("payload is not a supported audio file")
 	}
 	return data, extension, nil
 }
@@ -1764,7 +1826,7 @@ func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, 
 		},
 		Stats: HistoryConversationStats{
 			TurnCount:     2,
-			ArtifactCount: countMessageImages([]ChatMessage{lastUserMessage(req.Messages)}),
+			ArtifactCount: countMessageAttachments([]ChatMessage{lastUserMessage(req.Messages)}),
 		},
 		Workspace: config.Tools.Filesystem.Root,
 	}
@@ -1807,7 +1869,7 @@ func writePendingChatConversation(config AppConfig, req ChatRequest) (string, er
 		},
 		Stats: HistoryConversationStats{
 			TurnCount:     1,
-			ArtifactCount: countMessageImages([]ChatMessage{lastUserMessage(req.Messages)}),
+			ArtifactCount: countMessageAttachments([]ChatMessage{lastUserMessage(req.Messages)}),
 		},
 		Workspace: config.Tools.Filesystem.Root,
 	}
@@ -1902,7 +1964,7 @@ func appendChatConversation(config AppConfig, req ChatRequest, assistantContent,
 
 	loaded.Conversation.UpdatedAt = nowText
 	loaded.Conversation.Stats.TurnCount += 2
-	loaded.Conversation.Stats.ArtifactCount += countMessageImages([]ChatMessage{lastUserMessage(req.Messages)})
+	loaded.Conversation.Stats.ArtifactCount += countMessageAttachments([]ChatMessage{lastUserMessage(req.Messages)})
 	if err := store.writeConversation(loaded.Path, loaded.Conversation); err != nil {
 		return "", err
 	}
@@ -1930,7 +1992,7 @@ func appendChatUserTurn(config AppConfig, req ChatRequest) (string, error) {
 
 	loaded.Conversation.UpdatedAt = nowText
 	loaded.Conversation.Stats.TurnCount++
-	loaded.Conversation.Stats.ArtifactCount += countMessageImages([]ChatMessage{lastUserMessage(req.Messages)})
+	loaded.Conversation.Stats.ArtifactCount += countMessageAttachments([]ChatMessage{lastUserMessage(req.Messages)})
 	if err := store.writeConversation(loaded.Path, loaded.Conversation); err != nil {
 		return "", err
 	}
@@ -2577,7 +2639,7 @@ func historyContentForMessage(message ChatMessage, artifactsDir string, turnNumb
 	if strings.TrimSpace(message.Content) != "" {
 		contents = append(contents, HistoryContent{Type: "text", Text: message.Content})
 	}
-	if len(message.Images) > 0 {
+	if len(message.Images) > 0 || len(message.Audios) > 0 {
 		if err := os.MkdirAll(artifactsDir, 0755); err != nil {
 			return nil, err
 		}
@@ -2600,16 +2662,38 @@ func historyContentForMessage(message ChatMessage, artifactsDir string, turnNumb
 			MimeType:   mediaTypeForExtension(extension),
 		})
 	}
+	for index, audio := range message.Audios {
+		data, extension, err := decodeAudioPayload(audio)
+		if err != nil {
+			return nil, err
+		}
+		artifactID := fmt.Sprintf("input_audio_%06d_%06d", turnNumber, index+1)
+		filename := artifactID + extension
+		artifactPath := filepath.Join(artifactsDir, filename)
+		if err := os.WriteFile(artifactPath, data, 0644); err != nil {
+			return nil, err
+		}
+		contents = append(contents, HistoryContent{
+			Type:       "audio",
+			ArtifactID: artifactID,
+			Path:       filepath.ToSlash(filepath.Join("artifacts", filename)),
+			MimeType:   mediaTypeForExtension(extension),
+		})
+	}
 	if len(contents) == 0 {
 		return []HistoryContent{{Type: "text", Text: ""}}, nil
 	}
 	return contents, nil
 }
 
-func countMessageImages(messages []ChatMessage) int {
+// countMessageAttachments counts image and audio attachments across messages
+// for conversation artifact stats. Audio is included so the artifact count
+// reflects user-attached media, not just images.
+func countMessageAttachments(messages []ChatMessage) int {
 	count := 0
 	for _, message := range messages {
 		count += len(message.Images)
+		count += len(message.Audios)
 	}
 	return count
 }
