@@ -994,6 +994,34 @@ func decodeImagePayload(image string) ([]byte, string, error) {
 	return data, extension, nil
 }
 
+// readArtifactAsDataURL resolves a persisted image artifact (referenced by
+// relative Path in a HistoryContent entry) to its bytes on disk and re-encodes
+// them as a base64 data URL — the shape AttachedImage consumers (fal/Ollama)
+// expect. Used by the harness to re-hydrate a prior turn's attached image when
+// the current turn has no attachment, so image-dependent tools (upscale_image,
+// image-to-image, image-to-video) work across turns without forcing the user
+// to re-attach on every message. Path resolution mirrors hydrateHistoryContent;
+// bytes are read directly rather than going through getConversation's hydration.
+func readArtifactAsDataURL(storage ConfigStorage, conversationID string, content HistoryContent) (string, error) {
+	conversationPath, err := findConversationPath(storage, conversationID)
+	if err != nil {
+		return "", err
+	}
+	absPath := filepath.Join(filepath.Dir(conversationPath), filepath.FromSlash(content.Path))
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return "", err
+	}
+	if !isImageBytes(data) {
+		return "", fmt.Errorf("artifact %s is not a supported image", content.Path)
+	}
+	mediaType := strings.TrimSpace(content.MimeType)
+	if mediaType == "" {
+		mediaType = http.DetectContentType(data)
+	}
+	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+}
+
 func (a *App) writeChatConversation(req ChatRequest, assistantContent, assistantThinking, model, reason string, tokens int) (string, error) {
 	if strings.TrimSpace(assistantContent) == "" && strings.TrimSpace(assistantThinking) == "" {
 		return "", nil

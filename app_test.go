@@ -3499,6 +3499,161 @@ func TestWriteChatConversationPersistsInputImages(t *testing.T) {
 	}
 }
 
+// minimalPNG is a 1×1 PNG used by readArtifactAsDataURL tests. The data URL
+// form decodes to these exact bytes.
+var minimalPNG = []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+	0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+	0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89,
+	0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x60, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01, 0xE2, 0x21, 0xBC, 0x33,
+	0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82}
+
+// writeConversationWithUserImage persists a conversation whose first turn is a
+// user message with an attached PNG, returning the storage and conversationID
+// for follow-up assertions. Shared by the readArtifactAsDataURL and
+// latestAttachedImageForTurn tests.
+func writeConversationWithUserImage(t *testing.T) (ConfigStorage, string) {
+	t.Helper()
+	root := t.TempDir()
+	storage := ConfigStorage{
+		Root:      filepath.Join(root, ".atelier"),
+		History:   filepath.Join(root, ".atelier", "history"),
+		Artifacts: filepath.Join(root, ".atelier", "history"),
+	}
+	config := defaultAppConfig()
+	config.Storage = storage
+	if err := ensureStorageDirs(storage); err != nil {
+		t.Fatalf("ensureStorageDirs returned error: %v", err)
+	}
+	pngDataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(minimalPNG)
+	conversationID, err := writeChatConversation(
+		config,
+		ChatRequest{
+			Model: "chat-model",
+			Messages: []ChatMessage{
+				{Role: "user", Content: "Here's an image", Images: []string{pngDataURL}},
+			},
+		},
+		"Got it.",
+		"",
+		"chat-model",
+		"ollama",
+		"stop",
+		4,
+		"Image Test",
+		fallbackHarnessRun("chat-model", "stop", 4),
+	)
+	if err != nil {
+		t.Fatalf("writeChatConversation returned error: %v", err)
+	}
+	return storage, conversationID
+}
+
+// TestReadArtifactAsDataURL covers resolving a persisted input-image artifact
+// back to a data URL — the re-hydration path used when a tool runs on a turn
+// whose image was attached in an earlier turn. Round-trips through
+// decodeImagePayload to confirm the bytes survive.
+func TestReadArtifactAsDataURL(t *testing.T) {
+	storage, conversationID := writeConversationWithUserImage(t)
+	detail, err := getConversation(storage, conversationID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	if len(detail.Turns) == 0 || len(detail.Turns[0].Content) < 2 {
+		t.Fatalf("turns = %+v, want a user turn with text+image", detail.Turns)
+	}
+	// getConversation hydrates the Text field to an /atelier-artifact URL but
+	// leaves Path as the original relative artifact path — that's what the
+	// helper reads. Pick the image content entry.
+	var imageContent HistoryContent
+	for _, c := range detail.Turns[0].Content {
+		if c.Type == "image" {
+			imageContent = c
+			break
+		}
+	}
+	if imageContent.Path == "" {
+		t.Fatalf("no image content with a Path in user turn: %+v", detail.Turns[0].Content)
+	}
+	dataURL, err := readArtifactAsDataURL(storage, conversationID, imageContent)
+	if err != nil {
+		t.Fatalf("readArtifactAsDataURL returned error: %v", err)
+	}
+	if !strings.HasPrefix(dataURL, "data:image/png;base64,") {
+		t.Fatalf("dataURL = %q, want a png data URL", dataURL)
+	}
+	// Round-trip: the produced data URL must decode back to the original bytes.
+	data, _, err := decodeImagePayload(dataURL)
+	if err != nil {
+		t.Fatalf("decodeImagePayload(dataURL) returned error: %v", err)
+	}
+	if !bytes.Equal(data, minimalPNG) {
+		t.Fatalf("round-trip bytes do not match the original PNG (got %d bytes, want %d)", len(data), len(minimalPNG))
+	}
+}
+
+// TestReadArtifactAsDataURLMissingFile confirms a missing artifact surfaces an
+// error rather than panicking — the harness swallows this and falls back to the
+// empty-AttachedImage path.
+func TestReadArtifactAsDataURLMissingFile(t *testing.T) {
+	storage, conversationID := writeConversationWithUserImage(t)
+	// A content entry pointing at a nonexistent artifact path.
+	content := HistoryContent{Type: "image", Path: "artifacts/does-not-exist.png", MimeType: "image/png"}
+	if _, err := readArtifactAsDataURL(storage, conversationID, content); err == nil {
+		t.Fatal("readArtifactAsDataURL with missing file returned nil error, want an error")
+	}
+}
+
+// TestLatestAttachedImageForTurn covers the three branches: current-turn image
+// wins, history fallback when current turn has none, and empty when neither.
+func TestLatestAttachedImageForTurn(t *testing.T) {
+	storage, conversationID := writeConversationWithUserImage(t)
+
+	// Branch 1: a current-turn attachment is returned directly, no history read.
+	currentImage := "data:image/png;base64,AAAA"
+	req := ChatRequest{
+		ConversationID: conversationID,
+		Messages: []ChatMessage{
+			{Role: "user", Content: "now upscale it again", Images: []string{currentImage}},
+		},
+	}
+	if got := latestAttachedImageForTurn(req, storage); got != currentImage {
+		t.Errorf("current-turn branch: got %q, want the current attachment %q", got, currentImage)
+	}
+
+	// Branch 2: no current attachment — falls back to the most recent
+	// user-image in history (the PNG written by writeConversationWithUserImage).
+	req = ChatRequest{
+		ConversationID: conversationID,
+		Messages: []ChatMessage{
+			{Role: "user", Content: "upscale it 2x"}, // no Images
+		},
+	}
+	got := latestAttachedImageForTurn(req, storage)
+	if got == "" {
+		t.Fatal("history-fallback branch: got empty, want the re-hydrated data URL")
+	}
+	if !strings.HasPrefix(got, "data:image/png;base64,") {
+		t.Errorf("history-fallback branch: got %q, want a png data URL", got)
+	}
+
+	// Branch 3: no current attachment and no user-image in history → empty.
+	// Use a fresh conversationID with no turns on disk.
+	req = ChatRequest{
+		ConversationID: "conv_nonexistent_for_fallback",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "upscale it 2x"},
+		},
+	}
+	if got := latestAttachedImageForTurn(req, storage); got != "" {
+		t.Errorf("empty-history branch: got %q, want empty", got)
+	}
+
+	// Branch 4: empty ConversationID → empty (no history to consult).
+	if got := latestAttachedImageForTurn(ChatRequest{}, storage); got != "" {
+		t.Errorf("empty-conversationID branch: got %q, want empty", got)
+	}
+}
+
 func TestGenerateImageSendsAttachedImages(t *testing.T) {
 	client := newOllamaClient(&http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -3677,15 +3832,32 @@ func TestUpscaleImageToolHonorsModelOverride(t *testing.T) {
 	}
 }
 
-// TestImageUpscaleConfiguredAndResolver covers the gating (available whenever
-// fal is the image provider) and the resolver's configured→default fallback.
+// TestImageUpscaleConfiguredAndResolver covers the gating (available whenever a
+// fal.ai key is configured, regardless of the image provider) and the resolver's
+// configured→default fallback.
 func TestImageUpscaleConfiguredAndResolver(t *testing.T) {
+	keyring.MockInit()
+	if err := saveFalAPIKey("fal-test-key"); err != nil {
+		t.Fatalf("saveFalAPIKey: %v", err)
+	}
+	t.Cleanup(func() { _ = clearFalAPIKey() })
+
+	// With a key present the tool is offered — independent of image provider.
 	if !imageUpscaleConfigured(AppConfig{Models: ConfigModels{ImageProvider: "fal"}}) {
-		t.Error("imageUpscaleConfigured(fal) = false, want true")
+		t.Error("imageUpscaleConfigured(fal, with key) = false, want true")
 	}
-	if imageUpscaleConfigured(AppConfig{Models: ConfigModels{ImageProvider: "ollama"}}) {
-		t.Error("imageUpscaleConfigured(ollama) = true, want false")
+	if !imageUpscaleConfigured(AppConfig{Models: ConfigModels{ImageProvider: "ollama"}}) {
+		t.Error("imageUpscaleConfigured(ollama, with key) = false, want true")
 	}
+
+	// With the key cleared the tool is not offered, again regardless of provider.
+	if err := clearFalAPIKey(); err != nil {
+		t.Fatalf("clearFalAPIKey: %v", err)
+	}
+	if imageUpscaleConfigured(AppConfig{Models: ConfigModels{ImageProvider: "fal"}}) {
+		t.Error("imageUpscaleConfigured(fal, no key) = true, want false")
+	}
+
 	if got := resolveDefaultImageUpscaleModel(AppConfig{}); got != defaultFalUpscaleModel {
 		t.Errorf("resolveDefaultImageUpscaleModel(empty) = %q, want %q", got, defaultFalUpscaleModel)
 	}
@@ -4401,9 +4573,12 @@ func TestSanitizeOllamaImages(t *testing.T) {
 }
 
 // TestVideoGenerationToolGating confirms the generate_video tool is registered
-// only when a fal video model is configured, and that the default-model and
-// availability helpers behave.
+// only when a fal video model is configured AND a fal.ai key is present, and
+// that the default-model and availability helpers behave.
 func TestVideoGenerationToolGating(t *testing.T) {
+	keyring.MockInit()
+	t.Cleanup(func() { _ = clearFalAPIKey() })
+
 	base := defaultAppConfig()
 	base.Providers.Fal.VideoModel = ""
 	if videoGenerationConfigured(base) {
@@ -4413,10 +4588,23 @@ func TestVideoGenerationToolGating(t *testing.T) {
 		t.Fatal("generate_video should be absent when unconfigured")
 	}
 
+	// Model set but no key → still not configured (would only fail at call time).
+	noKey := defaultAppConfig()
+	noKey.Providers.Fal.VideoModel = "fal-ai/some/video-model"
+	if videoGenerationConfigured(noKey) {
+		t.Fatal("video should not be configured without a fal key")
+	}
+	if _, ok := defaultHarnessToolRegistry(noKey).Get("generate_video"); ok {
+		t.Fatal("generate_video should be absent without a fal key")
+	}
+
+	if err := saveFalAPIKey("fal-test-key"); err != nil {
+		t.Fatalf("saveFalAPIKey: %v", err)
+	}
 	configured := defaultAppConfig()
 	configured.Providers.Fal.VideoModel = "fal-ai/some/video-model"
 	if !videoGenerationConfigured(configured) {
-		t.Fatal("video should be configured with a fal video model")
+		t.Fatal("video should be configured with a fal video model and key")
 	}
 	if _, ok := defaultHarnessToolRegistry(configured).Get("generate_video"); !ok {
 		t.Fatal("generate_video should be registered when configured")
@@ -4430,8 +4618,11 @@ func TestVideoGenerationToolGating(t *testing.T) {
 }
 
 // TestAudioGenerationToolGating confirms generate_audio is registered only when
-// a fal audio model is configured.
+// a fal audio model is configured AND a fal.ai key is present.
 func TestAudioGenerationToolGating(t *testing.T) {
+	keyring.MockInit()
+	t.Cleanup(func() { _ = clearFalAPIKey() })
+
 	base := defaultAppConfig()
 	base.Providers.Fal.AudioModel = ""
 	if audioGenerationConfigured(base) {
@@ -4441,10 +4632,23 @@ func TestAudioGenerationToolGating(t *testing.T) {
 		t.Fatal("generate_audio should be absent when unconfigured")
 	}
 
+	// Model set but no key → still not configured (would only fail at call time).
+	noKey := defaultAppConfig()
+	noKey.Providers.Fal.AudioModel = "fal-ai/some/audio-model"
+	if audioGenerationConfigured(noKey) {
+		t.Fatal("audio should not be configured without a fal key")
+	}
+	if _, ok := defaultHarnessToolRegistry(noKey).Get("generate_audio"); ok {
+		t.Fatal("generate_audio should be absent without a fal key")
+	}
+
+	if err := saveFalAPIKey("fal-test-key"); err != nil {
+		t.Fatalf("saveFalAPIKey: %v", err)
+	}
 	configured := defaultAppConfig()
 	configured.Providers.Fal.AudioModel = "fal-ai/some/audio-model"
 	if !audioGenerationConfigured(configured) {
-		t.Fatal("audio should be configured with a fal audio model")
+		t.Fatal("audio should be configured with a fal audio model and key")
 	}
 	if _, ok := defaultHarnessToolRegistry(configured).Get("generate_audio"); !ok {
 		t.Fatal("generate_audio should be registered when configured")

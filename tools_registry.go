@@ -174,13 +174,27 @@ func resolveDefaultImageEditModel(config AppConfig) string {
 	return strings.TrimSpace(config.Providers.Ollama.Models.Image)
 }
 
+// falKeyConfigured reports whether a fal.ai API key is present in the keychain.
+// Used by the fal-only tool gates (upscale, video, audio) so a tool is offered
+// only when it can actually run — without this, a keyless user sees the tool
+// offered and it fails at call time with errFalKeyNotConfigured. The key is read
+// from the keychain rather than the stale Fal.Enabled config flag (which is only
+// populated when the frontend re-persists config), so the gate reflects the
+// moment a key is saved. The registry is built once per stream, so this is one
+// keychain read per turn per gate.
+func falKeyConfigured() bool {
+	key, err := loadFalAPIKey()
+	return err == nil && strings.TrimSpace(key) != ""
+}
+
 // imageUpscaleConfigured reports whether the upscale_image tool should be
-// offered: fal is the only upscale backend (Ollama has no upscaler), so the
-// tool is available whenever fal is the selected image provider. The model
-// itself defaults at call time via resolveDefaultImageUpscaleModel, so an
-// explicit UpscaleModel in config is not required.
+// offered: fal is the only upscale backend (Ollama has none). The tool is
+// available whenever a fal.ai API key is configured, regardless of which
+// provider is selected for image generation — upscaling is fal-only and
+// independent of generate_image's backend, so an Ollama-configured conversation
+// can still upscale via fal.
 func imageUpscaleConfigured(config AppConfig) bool {
-	return strings.TrimSpace(config.Models.ImageProvider) == "fal"
+	return falKeyConfigured()
 }
 
 // resolveDefaultImageUpscaleModel returns the upscaler endpoint the upscale_image
@@ -194,13 +208,16 @@ func resolveDefaultImageUpscaleModel(config AppConfig) string {
 }
 
 // videoGenerationConfigured reports whether the generate_video tool should be
-// offered: a fal video model must be configured. fal is the only video backend
-// (Ollama has no text-to-video models), so there is no provider switch — an
-// absent fal key surfaces as a runtime error at generation time, mirroring the
-// fal image path.
+// offered: a fal video model must be configured AND a fal.ai key must be
+// present. fal is the only video backend (Ollama has no text-to-video models).
+// The key check avoids offering a tool that is guaranteed to fail at call time
+// with errFalKeyNotConfigured.
 func videoGenerationConfigured(config AppConfig) bool {
-	return strings.TrimSpace(config.Providers.Fal.VideoModel) != "" ||
-		strings.TrimSpace(config.Providers.Fal.VideoImageModel) != ""
+	if strings.TrimSpace(config.Providers.Fal.VideoModel) == "" &&
+		strings.TrimSpace(config.Providers.Fal.VideoImageModel) == "" {
+		return false
+	}
+	return falKeyConfigured()
 }
 
 // resolveDefaultVideoModel returns the text-to-video model the generate_video
@@ -320,9 +337,14 @@ func writeTempVideo(video GeneratedVideo) (string, error) {
 }
 
 // audioGenerationConfigured reports whether the generate_audio tool should be
-// offered: a fal audio model must be configured. fal is the only audio backend.
+// offered: a fal audio model must be configured AND a fal.ai key must be
+// present. fal is the only audio backend. The key check avoids offering a tool
+// that is guaranteed to fail at call time with errFalKeyNotConfigured.
 func audioGenerationConfigured(config AppConfig) bool {
-	return strings.TrimSpace(config.Providers.Fal.AudioModel) != ""
+	if strings.TrimSpace(config.Providers.Fal.AudioModel) == "" {
+		return false
+	}
+	return falKeyConfigured()
 }
 
 // resolveDefaultAudioModel returns the model the generate_audio tool uses when

@@ -236,7 +236,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			ResponseMode:   decision.ResponseMode,
 			UseNativeTools: useNativeTools,
 			Harness:        harness,
-			AttachedImage:  latestUserImage(req.Messages),
+			AttachedImage:  latestAttachedImageForTurn(req, h.config.Storage),
 		}, &run)
 		if err != nil {
 			run.complete("failed", "harness_prepare_error")
@@ -465,6 +465,50 @@ func latestUserImage(messages []ChatMessage) string {
 			}
 		}
 		return ""
+	}
+	return ""
+}
+
+// latestAttachedImageForTurn returns the image attached to the current turn if
+// present (a base64 data URL), else falls back to the most recent user-attached
+// image in conversation history. The fallback lets image-dependent tools
+// (upscale_image, image-to-image, image-to-video) operate across turns without
+// forcing the user to re-attach on every message — "the image I attached" is
+// expected to persist across a conversation. History images are persisted as
+// artifacts on disk; they're re-read and re-encoded as a data URL to match the
+// shape AttachedImage consumers expect. Returns "" if there is no current
+// attachment and no user-image in history (e.g. turn 1 of a brand-new
+// conversation, or a conversation with no images). Errors reading history are
+// swallowed: a stale history file must not break the current turn — the caller
+// falls back to the empty-AttachedImage path and the tool surfaces its usual
+// "attach an image" error.
+func latestAttachedImageForTurn(req ChatRequest, storage ConfigStorage) string {
+	if image := latestUserImage(req.Messages); image != "" {
+		return image
+	}
+	if strings.TrimSpace(req.ConversationID) == "" {
+		return ""
+	}
+	detail, err := getConversation(storage, req.ConversationID)
+	if err != nil {
+		return ""
+	}
+	// Walk backwards to find the most recent user turn with an image content entry.
+	for i := len(detail.Turns) - 1; i >= 0; i-- {
+		turn := detail.Turns[i]
+		if turn.Role != "user" {
+			continue
+		}
+		for _, content := range turn.Content {
+			if content.Type != "image" || strings.TrimSpace(content.Path) == "" {
+				continue
+			}
+			dataURL, err := readArtifactAsDataURL(storage, req.ConversationID, content)
+			if err != nil {
+				return "" // don't try older images — one read failure is enough to bail
+			}
+			return dataURL
+		}
 	}
 	return ""
 }
