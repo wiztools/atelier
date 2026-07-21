@@ -296,15 +296,18 @@ func TestOpenRouterChatBodyRewritesPlannerToolEvidence(t *testing.T) {
 
 	body := openRouterChatBody(ChatRequest{Model: "anthropic/claude-3.5-sonnet", Messages: messages}, false)
 
-	sent := body["messages"].([]ChatMessage)
+	sent := body["messages"].([]map[string]any)
 	for i, msg := range sent {
-		if msg.Role == "tool" {
-			t.Fatalf("message %d kept role %q with no preceding assistant tool_calls — OpenRouter rejects this with 400", i, msg.Role)
+		if msg["role"] == "tool" {
+			t.Fatalf("message %d kept role %q with no preceding assistant tool_calls — OpenRouter rejects this with 400", i, msg["role"])
 		}
 	}
 	// The observation itself must survive the rewrite, or the planner re-plans blind.
 	last := sent[len(sent)-1]
-	if last.Role != "user" || !strings.Contains(last.Content, "list_files") {
+	if last["role"] != "user" {
+		t.Fatalf("last message role = %v, want user", last["role"])
+	}
+	if content, _ := last["content"].(string); !strings.Contains(content, "list_files") {
 		t.Fatalf("tool observation lost in rewrite: %+v", last)
 	}
 }
@@ -320,9 +323,9 @@ func TestOpenRouterChatBodyKeepsToolMessagesBackedByToolCalls(t *testing.T) {
 		},
 	}, false)
 
-	sent := body["messages"].([]ChatMessage)
-	if sent[1].Role != "tool" {
-		t.Fatalf("tool message backed by tool_calls was rewritten to %q; native tool-calling would break", sent[1].Role)
+	sent := body["messages"].([]map[string]any)
+	if sent[1]["role"] != "tool" {
+		t.Fatalf("tool message backed by tool_calls was rewritten to %v; native tool-calling would break", sent[1]["role"])
 	}
 }
 
@@ -338,11 +341,143 @@ func TestOpenRouterChatBodyMergesConsecutiveToolObservations(t *testing.T) {
 		},
 	}, false)
 
-	sent := body["messages"].([]ChatMessage)
+	sent := body["messages"].([]map[string]any)
 	if len(sent) != 2 {
 		t.Fatalf("got %d messages, want the two observations merged into one user message: %+v", len(sent), sent)
 	}
-	if !strings.Contains(sent[1].Content, "list_files") || !strings.Contains(sent[1].Content, "read_file") {
-		t.Fatalf("merged message dropped an observation: %q", sent[1].Content)
+	merged, _ := sent[1]["content"].(string)
+	if !strings.Contains(merged, "list_files") || !strings.Contains(merged, "read_file") {
+		t.Fatalf("merged message dropped an observation: %q", merged)
+	}
+}
+
+// A 1x1 PNG: the smallest valid image payload the frontend could attach,
+// used to exercise the image_url content-part path without depending on a
+// fixture file.
+const onePNGPixelBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
+// TestOpenRouterChatBodyEmitsImageURLContentParts covers the central fix: an
+// attached image must reach OpenRouter as an OpenAI image_url content part,
+// not the Ollama-shaped top-level "images" key OpenRouter silently ignores.
+func TestOpenRouterChatBodyEmitsImageURLContentParts(t *testing.T) {
+	dataURL := "data:image/png;base64," + onePNGPixelBase64
+	body := openRouterChatBody(ChatRequest{
+		Model: "openai/gpt-4o",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "describe this", Images: []string{dataURL}},
+		},
+	}, false)
+
+	sent := body["messages"].([]map[string]any)
+	if len(sent) != 1 {
+		t.Fatalf("got %d messages, want 1: %+v", len(sent), sent)
+	}
+	msg := sent[0]
+	if msg["role"] != "user" {
+		t.Fatalf("role = %v, want user", msg["role"])
+	}
+	if _, hasImagesKey := msg["images"]; hasImagesKey {
+		t.Errorf("Ollama-shaped top-level images key leaked to OpenRouter: %+v", msg)
+	}
+	parts, ok := msg["content"].([]map[string]any)
+	if !ok {
+		t.Fatalf("content = %T, want a content-parts array — the image must ride a content part", msg["content"])
+	}
+	if len(parts) != 2 {
+		t.Fatalf("got %d parts, want [text, image_url]: %+v", len(parts), parts)
+	}
+	if parts[0]["type"] != "text" || parts[0]["text"] != "describe this" {
+		t.Errorf("text part = %+v, want {type:text text:\"describe this\"}", parts[0])
+	}
+	if parts[1]["type"] != "image_url" {
+		t.Fatalf("image part type = %v, want image_url", parts[1]["type"])
+	}
+	imageURL, ok := parts[1]["image_url"].(map[string]any)
+	if !ok {
+		t.Fatalf("image_url = %T, want a map", parts[1]["image_url"])
+	}
+	if url, _ := imageURL["url"].(string); url != dataURL {
+		t.Errorf("image_url.url = %q, want the data URL passed through", url)
+	}
+}
+
+// TestOpenRouterChatBodyWrapsBareBase64AsDataURL covers what the frontend
+// actually sends: a bare base64 string (no data: prefix). OpenRouter needs a
+// fully-formed data URL inside image_url, so the renderer must wrap and sniff.
+func TestOpenRouterChatBodyWrapsBareBase64AsDataURL(t *testing.T) {
+	body := openRouterChatBody(ChatRequest{
+		Model: "openai/gpt-4o",
+		Messages: []ChatMessage{
+			{Role: "user", Images: []string{onePNGPixelBase64}},
+		},
+	}, false)
+
+	msg := body["messages"].([]map[string]any)[0]
+	parts, ok := msg["content"].([]map[string]any)
+	if !ok {
+		t.Fatalf("content = %T, want a content-parts array", msg["content"])
+	}
+	if len(parts) != 1 || parts[0]["type"] != "image_url" {
+		t.Fatalf("parts = %+v, want a single image_url part", parts)
+	}
+	url, _ := parts[0]["image_url"].(map[string]any)["url"].(string)
+	// No text content was provided, so only the image part should appear, and the
+	// bare base64 must be wrapped with a sniffed image/png MIME type.
+	if !strings.HasPrefix(url, "data:image/png;base64,") {
+		t.Errorf("url = %q, want a data:image/png;base64,... URL", url)
+	}
+	if !strings.HasSuffix(url, onePNGPixelBase64) {
+		t.Errorf("url = %q, want the original base64 payload preserved", url)
+	}
+}
+
+// TestOpenRouterChatBodyDropsMalformedImages covers the fail-closed posture: a
+// malformed image entry (here, a hydrated /atelier-artifact/ history URL) is
+// dropped rather than poisoning the request, and a message whose images all
+// drop reverts to plain string content so we never emit an empty content array.
+func TestOpenRouterChatBodyDropsMalformedImages(t *testing.T) {
+	body := openRouterChatBody(ChatRequest{
+		Model: "openai/gpt-4o",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "hi", Images: []string{"/atelier-artifact/does/not/exist.png"}},
+		},
+	}, false)
+
+	msg := body["messages"].([]map[string]any)[0]
+	if parts, ok := msg["content"].([]map[string]any); ok {
+		t.Fatalf("malformed-only image list produced a content-parts array %+v; want plain string content", parts)
+	}
+	if content, _ := msg["content"].(string); content != "hi" {
+		t.Errorf("content = %q, want \"hi\" reverted to plain string content", content)
+	}
+	if _, hasImagesKey := msg["images"]; hasImagesKey {
+		t.Errorf("images key leaked: %+v", msg)
+	}
+}
+
+// TestOpenRouterWireMessagesPreservesToolCallsOnAssistant guards the native
+// tool-calling history path: an assistant message carrying tool_calls must
+// still serialize them through the new content-parts renderer.
+func TestOpenRouterWireMessagesPreservesToolCallsOnAssistant(t *testing.T) {
+	rendered := openRouterWireMessages([]ChatMessage{
+		{
+			Role:      "assistant",
+			Content:   "",
+			ToolCalls: []ToolCall{{Type: "function", Function: ToolFunction{Name: "list_files"}}},
+		},
+	})
+	if len(rendered) != 1 {
+		t.Fatalf("got %d messages, want 1: %+v", len(rendered), rendered)
+	}
+	msg := rendered[0]
+	if msg["role"] != "assistant" {
+		t.Fatalf("role = %v, want assistant", msg["role"])
+	}
+	calls, ok := msg["tool_calls"].([]ToolCall)
+	if !ok {
+		t.Fatalf("tool_calls = %T, want []ToolCall preserved through the renderer", msg["tool_calls"])
+	}
+	if len(calls) != 1 || calls[0].Function.Name != "list_files" {
+		t.Fatalf("tool_calls = %+v, want one list_files call", calls)
 	}
 }

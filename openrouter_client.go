@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -215,14 +216,107 @@ func openRouterMessages(messages []ChatMessage) []ChatMessage {
 	return rendered
 }
 
+// openRouterImageURL normalizes a single ChatMessage.Images entry into the
+// data URL the OpenAI image_url content part requires. The frontend sends bare
+// base64 and data URLs interchangeably (the prior-turn re-injection path in
+// latestAttachedImageForTurn also produces data URLs), so both are accepted:
+//
+//   - a data: URL is returned as-is after validating its payload decodes;
+//   - bare base64 is wrapped as data:<sniffed-mime>;base64,<original> using
+//     http.DetectContentType on the decoded bytes;
+//   - anything else — an /atelier-artifact/ history URL, an http(s) URL, a file
+//     path, garbage — returns "" so a single malformed entry cannot poison the
+//     whole request. This mirrors sanitizeOllamaImages' fail-closed posture.
+//
+// This is deliberately distinct from normalizeOllamaImage, which strips the
+// data: wrapper to give Ollama its bare-base64 wire shape; OpenRouter needs the
+// opposite — a fully-formed data URL inside an image_url content part.
+func openRouterImageURL(image string) string {
+	image = strings.TrimSpace(image)
+	if image == "" {
+		return ""
+	}
+	if strings.HasPrefix(image, "data:") {
+		payload := image
+		if comma := strings.Index(image, ","); comma >= 0 {
+			payload = image[comma+1:]
+		}
+		if _, err := base64.StdEncoding.DecodeString(payload); err != nil {
+			return ""
+		}
+		return image
+	}
+	decoded, err := base64.StdEncoding.DecodeString(image)
+	if err != nil {
+		return ""
+	}
+	return "data:" + http.DetectContentType(decoded) + ";base64," + image
+}
+
+// openRouterWireMessages renders the harness's canonical message list into the
+// OpenAI chat-completions wire shape. It is the sole place a ChatMessage's
+// Images field becomes OpenAI content parts: a message carrying images is
+// serialized as content:[{type:"text",...},{type:"image_url",...},...],
+// matching OpenRouter's documented multimodal format.
+//
+// Messages without images stay byte-identical to before — {role, content} with
+// string content — so the tool-evidence rewrite (openRouterMessages), native
+// tool-calling history (assistant messages carrying tool_calls), and the
+// strict-schema planner path all serialize exactly as they did. Only the
+// image-attachment case changes: today it is silently dropped (OpenRouter does
+// not recognize a top-level "images" key), after this it is a real content part
+// the model can see.
+//
+// Malformed image entries (openRouterImageURL returns "") are dropped; if every
+// image on a message drops, the message reverts to plain string content so we
+// never emit an empty content array.
+func openRouterWireMessages(messages []ChatMessage) []map[string]any {
+	rendered := make([]map[string]any, 0, len(messages))
+	for _, msg := range messages {
+		imageURLs := make([]string, 0, len(msg.Images))
+		for _, image := range msg.Images {
+			if url := openRouterImageURL(image); url != "" {
+				imageURLs = append(imageURLs, url)
+			}
+		}
+
+		if len(imageURLs) == 0 {
+			entry := map[string]any{"role": msg.Role, "content": msg.Content}
+			if len(msg.ToolCalls) > 0 {
+				entry["tool_calls"] = msg.ToolCalls
+			}
+			rendered = append(rendered, entry)
+			continue
+		}
+
+		parts := make([]map[string]any, 0, len(imageURLs)+1)
+		if msg.Content != "" {
+			parts = append(parts, map[string]any{"type": "text", "text": msg.Content})
+		}
+		for _, url := range imageURLs {
+			parts = append(parts, map[string]any{
+				"type":      "image_url",
+				"image_url": map[string]any{"url": url},
+			})
+		}
+		entry := map[string]any{"role": msg.Role, "content": parts}
+		if len(msg.ToolCalls) > 0 {
+			entry["tool_calls"] = msg.ToolCalls
+		}
+		rendered = append(rendered, entry)
+	}
+	return rendered
+}
+
 func openRouterChatBody(req ChatRequest, stream bool) map[string]any {
 	messages := openRouterMessages(req.Messages)
 	if req.System != "" {
 		messages = append([]ChatMessage{{Role: "system", Content: req.System}}, messages...)
 	}
+	rendered := openRouterWireMessages(messages)
 	body := map[string]any{
 		"model":    req.Model,
-		"messages": messages,
+		"messages": rendered,
 		"stream":   stream,
 	}
 
