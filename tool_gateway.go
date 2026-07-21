@@ -34,18 +34,27 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 	gateway := gw
 	if app != nil {
 		gateway.permissionRequester = app.toolPermission
-		gateway.tools.GenerateImage = func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, error) {
+		// schemaCache is category-agnostic (keyed by model id, used by both
+		// resolveAudioBody and resolveImageBody); falOverrides carries the
+		// per-model escape-hatch map for every category (audio, image, ...).
+		schemaCache := newFalSchemaCache(app.client, config.Storage.Root)
+		falOverrides := loadFalOverrides(config.Storage.Root)
+		gateway.tools.GenerateImage = func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, []string, error) {
 			if strings.TrimSpace(config.Models.ImageProvider) == "fal" {
 				apiKey, err := loadFalAPIKey()
 				if err != nil {
-					return ollamaGenerateResponse{}, nil, err
+					return ollamaGenerateResponse{}, nil, nil, err
 				}
 				if strings.TrimSpace(apiKey) == "" {
-					return ollamaGenerateResponse{}, nil, errFalKeyNotConfigured
+					return ollamaGenerateResponse{}, nil, nil, errFalKeyNotConfigured
 				}
-				return newFalClient(app.client, apiKey).GenerateImage(ctx, req)
+				schema := schemaCache.Get(ctx, req.Model)
+				body, notices := resolveImageBody(schema, req, falOverrides)
+				resp, raw, err := newFalClient(app.client, apiKey).GenerateImage(ctx, req.Model, body)
+				return resp, raw, notices, err
 			}
-			return app.ollamaClient(config.Providers.Ollama.BaseURL).GenerateImage(ctx, req)
+			resp, raw, err := app.ollamaClient(config.Providers.Ollama.BaseURL).GenerateImage(ctx, req)
+			return resp, raw, nil, err
 		}
 		gateway.tools.GenerateVideo = func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
 			apiKey, err := loadFalAPIKey()
@@ -67,8 +76,6 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			}
 			return newFalClient(app.client, apiKey).UpscaleImage(ctx, req)
 		}
-		schemaCache := newFalSchemaCache(app.client, config.Storage.Root)
-		audioOverrides := loadFalOverrides(config.Storage.Root)
 		gateway.tools.GenerateAudio = func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error) {
 			apiKey, err := loadFalAPIKey()
 			if err != nil {
@@ -78,7 +85,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				return GeneratedAudio{}, errFalKeyNotConfigured
 			}
 			schema := schemaCache.Get(ctx, req.Model)
-			body, notices := resolveAudioBody(schema, req, audioOverrides)
+			body, notices := resolveAudioBody(schema, req, falOverrides)
 			generated, err := newFalClient(app.client, apiKey).GenerateAudio(ctx, req.Model, body)
 			generated.Notices = notices
 			return generated, err

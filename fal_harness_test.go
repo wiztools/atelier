@@ -65,6 +65,11 @@ func TestHarnessGeneratesImageViaFal(t *testing.T) {
 	prepCalls := 0
 	nonStreamCount := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/api/openapi/") {
+			// Minimal flux/schnell text-to-image schema so resolveImageBody can
+			// map the canonical request onto fal's native field names.
+			return jsonResponse(`{"components":{"schemas":{"FluxSchnellInput":{"type":"object","required":["prompt"],"properties":{"prompt":{"type":"string"},"image_size":{"type":"object","properties":{"width":{"type":"integer"},"height":{"type":"integer"}}},"num_images":{"type":"integer","default":1}}}}}}`), nil
+		}
 		if strings.Contains(req.URL.Host, "fal.run") {
 			falCalls++
 			if req.Method == http.MethodPost {

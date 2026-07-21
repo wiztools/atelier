@@ -16,6 +16,7 @@ type schemaKind int
 const (
 	schemaScalar schemaKind = iota
 	schemaObject
+	schemaArray
 )
 
 // SchemaProperty is a simplified view of one OpenAPI input property. One level
@@ -27,6 +28,7 @@ type SchemaProperty struct {
 	Enum    []string
 	Default any
 	Nested  map[string]SchemaProperty // populated when Kind == schemaObject
+	Items   *SchemaProperty           // populated when Kind == schemaArray (may be nil)
 }
 
 // ModelInputSchema is the parsed input model for one fal endpoint.
@@ -68,6 +70,7 @@ type openAPIProp struct {
 	Enum       []any                      `json:"enum"`
 	Default    json.RawMessage            `json:"default"`
 	Properties map[string]json.RawMessage `json:"properties"`
+	Items      json.RawMessage            `json:"items"`
 }
 
 type openAPIModel struct {
@@ -117,6 +120,16 @@ func toSchemaProperty(name string, raw json.RawMessage) SchemaProperty {
 		if err := json.Unmarshal(p.Default, &d); err == nil {
 			sp.Default = d
 		}
+	}
+	// Arrays (e.g. fal-ai/nano-banana/edit's image_urls) get their own kind so
+	// the resolver can wrap a scalar value into a slice at body-build time.
+	if p.Type == "array" {
+		sp.Kind = schemaArray
+		if len(p.Items) > 0 {
+			item := toSchemaProperty(name, p.Items)
+			sp.Items = &item
+		}
+		return sp
 	}
 	if p.Type == "object" || len(p.Properties) > 0 {
 		sp.Kind = schemaObject

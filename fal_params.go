@@ -34,6 +34,7 @@ func (o Overrides) lookup(category, model, canon string) (string, bool) {
 func builtinFalOverrides() Overrides {
 	return Overrides{byCategory: map[string]map[string]map[string]string{
 		"audio": {},
+		"image": {},
 	}}
 }
 
@@ -75,6 +76,19 @@ var audioSynonyms = map[string][]string{
 	"negativePrompt": {"negative_prompt"},
 }
 
+// imageSynonyms lists, per canonical param, the native key names to look for in
+// an image model's schema. `sourceImage` is the cross-model abstraction for the
+// frame a user attached to transform: flux/dev/image-to-image declares
+// `image_url` (scalar), nano-banana-pro declares `image_urls` (array). The
+// resolver wraps to a slice when the matched property is schemaArray.
+var imageSynonyms = map[string][]string{
+	"prompt":            {"prompt"},
+	"sourceImage":       {"image_url", "image_urls"},
+	"imageSize":         {"image_size", "size"},
+	"numImages":         {"num_images"},
+	"numInferenceSteps": {"num_inference_steps"},
+}
+
 type canonicalValue struct {
 	canon   string
 	value   any
@@ -106,7 +120,7 @@ func resolveAudioBody(schema *ModelInputSchema, req AudioGenerateRequest, ov Ove
 	var notices []string
 
 	// prompt always maps; hard requirement.
-	if path, _, ok := findNative(schema, ov, req.Model, "prompt"); ok {
+	if path, _, ok := findNative(schema, ov, "audio", req.Model, "prompt"); ok {
 		setBodyPath(schema, body, path, prompt)
 	} else {
 		body["prompt"], body["text"] = prompt, prompt
@@ -116,7 +130,7 @@ func resolveAudioBody(schema *ModelInputSchema, req AudioGenerateRequest, ov Ove
 		if !item.present {
 			continue
 		}
-		path, prop, ok := findNative(schema, ov, req.Model, item.canon)
+		path, prop, ok := findNative(schema, ov, "audio", req.Model, item.canon)
 		if !ok {
 			label := canonLabel(item.canon)
 			notices = append(notices, fmt.Sprintf(
@@ -134,10 +148,95 @@ func resolveAudioBody(schema *ModelInputSchema, req AudioGenerateRequest, ov Ove
 	return body, notices
 }
 
+// resolveImageBody maps a canonical ImageGenerateRequest onto the model's native
+// input schema, returning the fal body and user-facing notices for anything
+// dropped. A nil schema (unavailable) yields the legacy hardcoded body
+// ({prompt, num_images, image_url?|image_size?, num_inference_steps?}) plus a
+// notice. This is the image sibling of resolveAudioBody; the only image-specific
+// rule is that a source-image field whose schema kind is schemaArray
+// (e.g. nano-banana-pro's image_urls) wraps the single URL into a slice.
+func resolveImageBody(schema *ModelInputSchema, req ImageGenerateRequest, ov Overrides) (map[string]any, []string) {
+	prompt := strings.TrimSpace(req.Prompt)
+	// fal requires an HTTP(S) URL or a data URI and rejects bare base64 with a
+	// 422; the rest of the app carries attached images as bare base64 (the
+	// data: prefix is stripped for Ollama), so normalize here. This was the
+	// GenerateImage client's job before the resolver refactor; it moves here
+	// because the resolver now owns body construction.
+	sourceImage := falImageURL(firstNonEmpty(req.Images))
+	if schema == nil {
+		body := map[string]any{
+			"prompt":     prompt,
+			"num_images": 1,
+		}
+		if sourceImage != "" {
+			body["image_url"] = sourceImage
+		} else if req.Width > 0 && req.Height > 0 {
+			body["image_size"] = map[string]any{"width": req.Width, "height": req.Height}
+		}
+		if req.Steps > 0 {
+			body["num_inference_steps"] = req.Steps
+		}
+		return body, []string{"Couldn't load the model's parameter schema; generated with defaults and may have dropped an unsupported image input."}
+	}
+
+	body := map[string]any{}
+	var notices []string
+
+	if path, prop, ok := findNative(schema, ov, "image", req.Model, "prompt"); ok {
+		setBodyPath(schema, body, path, coerceImageValue(prop, prompt))
+	} else {
+		body["prompt"] = prompt
+	}
+	if path, prop, ok := findNative(schema, ov, "image", req.Model, "numImages"); ok {
+		setBodyPath(schema, body, path, coerceImageValue(prop, 1))
+	} else {
+		body["num_images"] = 1
+	}
+
+	// Image-to-image takes the source frame; image_size is omitted (fal derives
+	// dims from the source). Text-to-image takes the configured dimensions.
+	if sourceImage != "" {
+		if path, prop, ok := findNative(schema, ov, "image", req.Model, "sourceImage"); ok {
+			setBodyPath(schema, body, path, coerceImageValue(prop, sourceImage))
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no source-image input; the attached image was ignored.",
+				req.Model))
+		}
+	} else if req.Width > 0 && req.Height > 0 {
+		if path, _, ok := findNative(schema, ov, "image", req.Model, "imageSize"); ok {
+			setBodyPath(schema, body, path, map[string]any{"width": req.Width, "height": req.Height})
+		} else {
+			body["image_size"] = map[string]any{"width": req.Width, "height": req.Height}
+		}
+	}
+
+	if req.Steps > 0 {
+		if path, prop, ok := findNative(schema, ov, "image", req.Model, "numInferenceSteps"); ok {
+			setBodyPath(schema, body, path, coerceImageValue(prop, req.Steps))
+		} else {
+			body["num_inference_steps"] = req.Steps
+		}
+	}
+	return body, notices
+}
+
+// coerceImageValue adapts a canonical image value to the native property's type:
+// a schemaArray property (e.g. nano-banana-pro's image_urls) wraps a scalar into
+// a single-element slice. Scalars pass through unchanged. Unlike audio's
+// coerceValue there's no enum or unit conversion in the image path today.
+func coerceImageValue(prop SchemaProperty, value any) any {
+	if prop.Kind == schemaArray {
+		return []any{value}
+	}
+	return value
+}
+
 // findNative resolves canon → native dot-path via override, top-level scan, then
 // one-level nested scan. Returns the matched leaf property for coercion.
-func findNative(schema *ModelInputSchema, ov Overrides, model, canon string) (string, SchemaProperty, bool) {
-	if native, ok := ov.lookup("audio", model, canon); ok {
+// category selects the synonym table and override namespace ("audio" or "image").
+func findNative(schema *ModelInputSchema, ov Overrides, category, model, canon string) (string, SchemaProperty, bool) {
+	if native, ok := ov.lookup(category, model, canon); ok {
 		if native == "" {
 			return "", SchemaProperty{}, false // explicitly unsupported
 		}
@@ -146,7 +245,7 @@ func findNative(schema *ModelInputSchema, ov Overrides, model, canon string) (st
 		}
 		return native, SchemaProperty{Name: native, Kind: schemaScalar}, true
 	}
-	syns := audioSynonyms[canon]
+	syns := synonymsFor(category, canon)
 	for _, name := range syns {
 		if prop, ok := schema.property(name); ok {
 			return name, prop, true
@@ -160,6 +259,18 @@ func findNative(schema *ModelInputSchema, ov Overrides, model, canon string) (st
 		}
 	}
 	return "", SchemaProperty{}, false
+}
+
+// synonymsFor returns the native-name candidates for (category, canon), or nil
+// when the pair isn't in any synonym table.
+func synonymsFor(category, canon string) []string {
+	switch category {
+	case "audio":
+		return audioSynonyms[canon]
+	case "image":
+		return imageSynonyms[canon]
+	}
+	return nil
 }
 
 func propAtPath(schema *ModelInputSchema, path string) (SchemaProperty, bool) {

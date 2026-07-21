@@ -154,31 +154,19 @@ type GeneratedVideo struct {
 	SourceURL string
 }
 
-// GenerateImage submits a request to the fal queue, polls until completion, and
-// returns a synthetic ollamaGenerateResponse whose Images field carries the
-// generated images as base64 data URLs. The raw fal JSON is also returned so
+// GenerateImage submits an already-native fal request body (built by
+// resolveImageBody against the model's schema) and downloads the result. It is a
+// thin transport: it does not know about canonical params, source-image field
+// names (image_url vs image_urls), or notices. The raw fal JSON is returned so
 // the tool's existing harvest logic (collectImagesFromJSON) can scavenge any
 // image fields in unexpected locations.
-func (client FalClient) GenerateImage(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, error) {
-	model := strings.TrimSpace(req.Model)
+func (client FalClient) GenerateImage(ctx context.Context, model string, body map[string]any) (ollamaGenerateResponse, []byte, error) {
+	model = strings.TrimSpace(model)
 	if model == "" {
 		model = defaultFalImageModel
 	}
-
-	body := map[string]any{
-		"prompt":     req.Prompt,
-		"num_images": 1,
-	}
-	// Image-to-image: fal takes the source frame as image_url and derives the
-	// output dimensions from it, so image_size is omitted. Present only when the
-	// caller supplied a source image to transform.
-	if image := falImageURL(firstNonEmpty(req.Images)); image != "" {
-		body["image_url"] = image
-	} else if req.Width > 0 && req.Height > 0 {
-		body["image_size"] = map[string]any{"width": req.Width, "height": req.Height}
-	}
-	if req.Steps > 0 {
-		body["num_inference_steps"] = req.Steps
+	if body == nil {
+		body = map[string]any{}
 	}
 
 	submit, err := client.submit(ctx, model, body)

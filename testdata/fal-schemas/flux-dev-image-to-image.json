@@ -1,0 +1,22 @@
+{
+  "components": {
+    "schemas": {
+      "FluxDevImageToImageInput": {
+        "type": "object",
+        "required": ["image_url", "prompt"],
+        "properties": {
+          "image_url": {
+            "type": "string",
+            "title": "Image URL",
+            "description": "The URL of the image to generate an image from."
+          },
+          "prompt": { "type": "string" },
+          "num_inference_steps": { "type": "integer", "minimum": 10, "maximum": 50, "default": 40 },
+          "guidance_scale": { "type": "number", "default": 3.5 },
+          "num_images": { "type": "integer", "default": 1 },
+          "strength": { "type": "number", "default": 0.8 }
+        }
+      }
+    }
+  }
+}

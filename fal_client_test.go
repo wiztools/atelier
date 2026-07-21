@@ -80,12 +80,11 @@ func TestFalClientGenerateImageHappyPath(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	resp, raw, err := client.GenerateImage(ctx, ImageGenerateRequest{
-		Model:  model,
-		Prompt: "a lighthouse at dusk",
-		Width:  768,
-		Height: 768,
-		Steps:  4,
+	resp, raw, err := client.GenerateImage(ctx, model, map[string]any{
+		"prompt":              "a lighthouse at dusk",
+		"num_images":          1,
+		"image_size":          map[string]any{"width": 768, "height": 768},
+		"num_inference_steps": 4,
 	})
 	if err != nil {
 		t.Fatalf("GenerateImage returned error: %v", err)
@@ -111,9 +110,10 @@ func TestFalClientGenerateImageHappyPath(t *testing.T) {
 	}
 }
 
-// TestFalClientGenerateImageImageToImage verifies that a source image is sent to
-// fal as an image_url data URI (bare base64 is rejected with a 422) and that
-// image_size is omitted so the endpoint derives the output size from the source.
+// TestFalClientGenerateImageImageToImage verifies the transport forwards a
+// pre-built image-to-image body (carrying image_url, omitting image_size) to fal
+// and downloads the result. The body itself is built by resolveImageBody (tested
+// in fal_params_test.go); this test only exercises the submit/poll/download path.
 func TestFalClientGenerateImageImageToImage(t *testing.T) {
 	model := defaultFalImageEditModel
 	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
@@ -140,12 +140,10 @@ func TestFalClientGenerateImageImageToImage(t *testing.T) {
 		}
 	}))
 
-	resp, _, err := client.GenerateImage(context.Background(), ImageGenerateRequest{
-		Model:  model,
-		Prompt: "an impressionist painting of this",
-		Width:  768,
-		Height: 768,
-		Images: []string{"data:image/png;base64,ABC"},
+	resp, _, err := client.GenerateImage(context.Background(), model, map[string]any{
+		"prompt":     "an impressionist painting of this",
+		"num_images": 1,
+		"image_url":  "data:image/png;base64,ABC",
 	})
 	if err != nil {
 		t.Fatalf("GenerateImage returned error: %v", err)
@@ -174,7 +172,7 @@ func TestFalClientGenerateImageModelFallback(t *testing.T) {
 		return nil, nil
 	}))
 
-	resp, _, err := client.GenerateImage(context.Background(), ImageGenerateRequest{Prompt: "x"})
+	resp, _, err := client.GenerateImage(context.Background(), "", map[string]any{"prompt": "x"})
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
@@ -193,7 +191,7 @@ func TestFalClientGenerateImageSubmitError(t *testing.T) {
 		}, nil
 	}))
 
-	_, _, err := client.GenerateImage(context.Background(), ImageGenerateRequest{Model: "fal-ai/flux/schnell"})
+	_, _, err := client.GenerateImage(context.Background(), "fal-ai/flux/schnell", map[string]any{"prompt": "x"})
 	if err == nil {
 		t.Fatal("expected an authentication error, got nil")
 	}
@@ -215,7 +213,7 @@ func TestFalClientGenerateImageFailedStatus(t *testing.T) {
 		return nil, nil
 	}))
 
-	_, _, err := client.GenerateImage(context.Background(), ImageGenerateRequest{Model: model})
+	_, _, err := client.GenerateImage(context.Background(), model, map[string]any{"prompt": "x"})
 	if err == nil || !strings.Contains(err.Error(), "model crashed") {
 		t.Fatalf("expected failed-status error, got %v", err)
 	}
@@ -233,7 +231,7 @@ func TestFalClientGenerateImagePollTimeout(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, _, err := client.GenerateImage(ctx, ImageGenerateRequest{Model: model})
+	_, _, err := client.GenerateImage(ctx, model, map[string]any{"prompt": "x"})
 	if err == nil {
 		t.Fatal("expected a cancellation error, got nil")
 	}
@@ -251,7 +249,7 @@ func TestFalClientGenerateImageNoImages(t *testing.T) {
 		return jsonResp(`{}`), nil
 	}))
 
-	_, _, err := client.GenerateImage(context.Background(), ImageGenerateRequest{Model: model})
+	_, _, err := client.GenerateImage(context.Background(), model, map[string]any{"prompt": "x"})
 	if err == nil {
 		t.Fatal("expected a no-images error, got nil")
 	}
@@ -259,7 +257,7 @@ func TestFalClientGenerateImageNoImages(t *testing.T) {
 
 func TestFalClientRequiresAPIKey(t *testing.T) {
 	client := newFalClient(&http.Client{}, "")
-	_, _, err := client.GenerateImage(context.Background(), ImageGenerateRequest{Model: "fal-ai/flux/schnell"})
+	_, _, err := client.GenerateImage(context.Background(), "fal-ai/flux/schnell", map[string]any{"prompt": "x"})
 	if err == nil {
 		t.Fatal("expected a key error, got nil")
 	}

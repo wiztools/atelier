@@ -44,6 +44,38 @@ func minimaxFetch(ctx context.Context, model string) ([]byte, error) {
 	return os.ReadFile(filepath.Join("testdata", "fal-schemas", "minimax-speech-02-hd.json"))
 }
 
+// TestParseModelInputSchemaArray verifies arrays (e.g. nano-banana/edit's
+// image_urls) parse to Kind == schemaArray so resolveImageBody can wrap a
+// scalar source-image value into a single-element slice. Without this the
+// resolver cannot tell image_url (string) from image_urls (array).
+func TestParseModelInputSchemaArray(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "fal-schemas", "nano-banana-edit.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	schema, err := parseModelInputSchema(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	urls, ok := schema.property("image_urls")
+	if !ok {
+		t.Fatalf("expected image_urls property, got ok=%v", ok)
+	}
+	if urls.Kind != schemaArray {
+		t.Fatalf("image_urls.Kind = %v, want schemaArray", urls.Kind)
+	}
+	if urls.Items == nil {
+		t.Fatalf("expected Items to be populated for array, got nil")
+	}
+	if urls.Items.Kind != schemaScalar {
+		t.Fatalf("image_urls.Items.Kind = %v, want schemaScalar (string elements)", urls.Items.Kind)
+	}
+	// Sanity: the scalar sibling stays scalar.
+	if prompt, _ := schema.property("prompt"); prompt.Kind != schemaScalar {
+		t.Errorf("prompt.Kind = %v, want schemaScalar", prompt.Kind)
+	}
+}
+
 func TestSchemaCacheFreshHitNoFetch(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Unix(1000, 0)

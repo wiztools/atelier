@@ -46,7 +46,7 @@ type HarnessToolExecutionContext struct {
 	// Like AttachedImage it is provider-agnostic: the planner decides whether to
 	// transcribe it (any provider) or, on OpenRouter, send it as chat input.
 	AttachedAudio   string
-	GenerateImage   func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, error)
+	GenerateImage   func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, []string, error)
 	GenerateVideo   func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error)
 	GenerateAudio   func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error)
 	TranscribeAudio func(ctx context.Context, model, audioURL, task, language string) (GeneratedTranscript, error)
@@ -57,10 +57,11 @@ type HarnessToolExecutionContext struct {
 // stripped before the result is rendered into a tool message so base64 data
 // never enters a model context; the harness extracts it for the UI and history.
 type ToolImageResult struct {
-	Model  string   `json:"model"`
-	Prompt string   `json:"prompt"`
-	Count  int      `json:"count"`
-	Images []string `json:"images,omitempty"`
+	Model   string   `json:"model"`
+	Prompt  string   `json:"prompt"`
+	Count   int      `json:"count"`
+	Images  []string `json:"images,omitempty"`
+	Notices []string `json:"notices,omitempty"`
 }
 
 // ToolVideoResult carries generated videos as on-disk temp-file references, not
@@ -105,6 +106,11 @@ type ToolTranscribeResult struct {
 // ToolNotices reports deterministic, user-facing caveats produced while
 // generating the audio (e.g. a requested loop the model can't honor).
 func (r ToolAudioResult) ToolNotices() []string { return r.Notices }
+
+// ToolNotices reports deterministic, user-facing caveats produced while
+// resolving the image body (e.g. a model with no source-image input when the
+// user attached an image, or an unavailable schema).
+func (r ToolImageResult) ToolNotices() []string { return r.Notices }
 
 // ToolNotices reports deterministic, user-facing caveats produced while
 // transcribing (e.g. an auto-detected language the user may want to confirm).
@@ -588,7 +594,7 @@ func imageGenerationToolDefinition() HarnessToolDefinition {
 			if attachedImage != "" {
 				imageReq.Images = []string{attachedImage}
 			}
-			payload, raw, err := tools.GenerateImage(ctx, imageReq)
+			payload, raw, notices, err := tools.GenerateImage(ctx, imageReq)
 			if err != nil {
 				return nil, "image generation failed", err
 			}
@@ -604,7 +610,7 @@ func imageGenerationToolDefinition() HarnessToolDefinition {
 			if len(images) == 0 {
 				return nil, "image generation returned no image", errors.New("image model returned no image data")
 			}
-			output := ToolImageResult{Model: model, Prompt: imageReq.Prompt, Count: len(images), Images: images}
+			output := ToolImageResult{Model: model, Prompt: imageReq.Prompt, Count: len(images), Images: images, Notices: notices}
 			summary := fmt.Sprintf("generated %d image%s with %s", len(images), pluralSuffix(len(images)), model)
 			if attachedImage != "" {
 				summary = fmt.Sprintf("transformed the attached image into %d image%s with %s", len(images), pluralSuffix(len(images)), model)

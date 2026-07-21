@@ -1410,6 +1410,32 @@ func isFalUpscaleModel(model FalModel) bool {
 	return false
 }
 
+// ListFalImageEditModels returns fal's image-editing catalog for the Settings
+// image-to-image-model picker — the endpoints eligible to transform an attached
+// source image. fal files these under the same broad image-to-image bucket as
+// upscalers (inpainting, background removal, style transfer, etc.), so we fetch
+// that category and keep everything that is NOT an upscaler — the inverse of
+// ListFalUpscaleModels. The two listers share falImageUpscalingCategory.
+func (a *App) ListFalImageEditModels() ([]FalModel, error) {
+	key, err := loadFalAPIKey()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	models, err := newFalClient(a.client, key).ListModels(ctx, falImageUpscalingCategory, 0)
+	if err != nil {
+		return nil, err
+	}
+	edits := make([]FalModel, 0, len(models))
+	for _, model := range models {
+		if !isFalUpscaleModel(model) {
+			edits = append(edits, model)
+		}
+	}
+	return edits, nil
+}
+
 // ListFalAudioModels returns fal's audio-generation catalog for the Settings
 // audio-model picker. It merges the text-to-audio (music/sound effects) and
 // text-to-speech categories, deduped by endpoint id.

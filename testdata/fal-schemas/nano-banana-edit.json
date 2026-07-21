@@ -1,0 +1,26 @@
+{
+  "components": {
+    "schemas": {
+      "NanoBananaEditInput": {
+        "type": "object",
+        "x-fal-order-properties": ["prompt", "image_urls", "num_images", "aspect_ratio", "output_format", "seed", "sync_mode", "safety_tolerance", "limit_generations"],
+        "required": ["image_urls", "prompt"],
+        "properties": {
+          "prompt": { "type": "string" },
+          "image_urls": {
+            "type": "array",
+            "items": { "type": "string" },
+            "title": "Image URLs",
+            "description": "The URLs of the images to transform."
+          },
+          "num_images": { "type": "integer", "default": 1, "minimum": 1, "maximum": 4 },
+          "aspect_ratio": { "type": "string", "default": "1:1" },
+          "output_format": { "type": "string", "enum": ["jpeg", "png", "webp"], "default": "png" },
+          "seed": { "type": "integer" },
+          "sync_mode": { "type": "boolean", "default": false },
+          "safety_tolerance": { "type": "string", "enum": ["1", "2", "3", "4", "5", "6"], "default": "4" }
+        }
+      }
+    }
+  }
+}

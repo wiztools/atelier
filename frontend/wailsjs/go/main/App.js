@@ -50,6 +50,10 @@ export function ListFalAudioModels() {
   return window['go']['main']['App']['ListFalAudioModels']();
 }
 
+export function ListFalImageEditModels() {
+  return window['go']['main']['App']['ListFalImageEditModels']();
+}
+
 export function ListFalModels() {
   return window['go']['main']['App']['ListFalModels']();
 }

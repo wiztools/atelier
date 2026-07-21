@@ -3846,9 +3846,9 @@ func TestGenerateImageToolTransformsAttachedImage(t *testing.T) {
 	tools := HarnessToolExecutionContext{
 		Config:        AppConfig{Models: ConfigModels{ImageProvider: "fal"}},
 		AttachedImage: "data:image/png;base64,ABC",
-		GenerateImage: func(_ context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, error) {
+		GenerateImage: func(_ context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, []string, error) {
 			captured = req
-			return ollamaGenerateResponse{Image: "data:image/png;base64,iVBORw0KGgo=", Done: true}, nil, nil
+			return ollamaGenerateResponse{Image: "data:image/png;base64,iVBORw0KGgo=", Done: true}, nil, nil, nil
 		},
 	}
 
@@ -3878,9 +3878,9 @@ func TestGenerateImageToolTextToImageWithoutAttachment(t *testing.T) {
 	var captured ImageGenerateRequest
 	tools := HarnessToolExecutionContext{
 		Config: AppConfig{Models: ConfigModels{ImageProvider: "fal"}},
-		GenerateImage: func(_ context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, error) {
+		GenerateImage: func(_ context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, []string, error) {
 			captured = req
-			return ollamaGenerateResponse{Image: "data:image/png;base64,iVBORw0KGgo=", Done: true}, nil, nil
+			return ollamaGenerateResponse{Image: "data:image/png;base64,iVBORw0KGgo=", Done: true}, nil, nil, nil
 		},
 	}
 
@@ -4039,6 +4039,69 @@ func TestIsFalUpscaleModel(t *testing.T) {
 				t.Errorf("isFalUpscaleModel(%+v) = %v, want %v", tc.model, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestResolveDefaultImageEditModel mirrors TestImageUpscaleConfiguredAndResolver:
+// when the image provider is fal and ImageEditModel is unset, the resolver falls
+// back to defaultFalImageEditModel; when set, it returns the configured value.
+// For a non-fal provider the resolver defers to the Ollama image model (Ollama
+// reuses its single image model for image-to-image).
+func TestResolveDefaultImageEditModel(t *testing.T) {
+	// Empty config (no fal provider) → Ollama image model, which is empty here.
+	if got := resolveDefaultImageEditModel(AppConfig{}); got != "" {
+		t.Errorf("resolveDefaultImageEditModel(empty) = %q, want empty (Ollama image model)", got)
+	}
+	// fal provider, no ImageEditModel set → hardcoded default.
+	if got := resolveDefaultImageEditModel(AppConfig{Models: ConfigModels{ImageProvider: "fal"}}); got != defaultFalImageEditModel {
+		t.Errorf("resolveDefaultImageEditModel(fal, unset) = %q, want %q", got, defaultFalImageEditModel)
+	}
+	// fal provider with an explicit ImageEditModel → that value wins.
+	want := "fal-ai/nano-banana-pro"
+	if got := resolveDefaultImageEditModel(AppConfig{
+		Models:    ConfigModels{ImageProvider: "fal"},
+		Providers: ConfigProviders{Fal: ConfigFal{ImageEditModel: want}},
+	}); got != want {
+		t.Errorf("resolveDefaultImageEditModel(configured) = %q, want %q", got, want)
+	}
+	// Non-fal provider → Ollama image model wins, ImageEditModel is ignored.
+	if got := resolveDefaultImageEditModel(AppConfig{
+		Models:    ConfigModels{ImageProvider: "ollama"},
+		Providers: ConfigProviders{Ollama: ConfigOllama{Models: ConfigOllamaModels{Image: "x/s-image:latest"}}},
+	}); got != "x/s-image:latest" {
+		t.Errorf("resolveDefaultImageEditModel(ollama) = %q, want Ollama image model", got)
+	}
+}
+
+// TestListFalImageEditModelsFilter verifies the non-upscale filter that
+// ListFalImageEditModels applies to fal's broad image-to-image category — the
+// inverse of ListFalUpscaleModels. Both listers share falImageUpscalingCategory
+// and the isFalUpscaleModel predicate; this test pins the inverse selection so
+// the picker shows flux/dev/image-to-image, background removal, inpainting, etc.
+// without the upscalers. The full HTTP path is exercised via ListModels in
+// fal_client_test.go; here we cover the App-level selection.
+func TestListFalImageEditModelsFilter(t *testing.T) {
+	catalog := []FalModel{
+		{ID: "fal-ai/flux/dev/image-to-image", Tags: []string{"image-editing"}},
+		{ID: "fal-ai/clarity-upscaler"},
+		{ID: "fal-ai/birefnet/v2", Tags: []string{"background removal"}},
+		{ID: "fal-ai/esrgan", Tags: []string{"upscaling"}},
+		{ID: "fal-ai/some-inpainter", Tags: []string{"inpainting"}},
+	}
+	var got []string
+	for _, m := range catalog {
+		if !isFalUpscaleModel(m) {
+			got = append(got, m.ID)
+		}
+	}
+	want := []string{"fal-ai/flux/dev/image-to-image", "fal-ai/birefnet/v2", "fal-ai/some-inpainter"}
+	if len(got) != len(want) {
+		t.Fatalf("filtered ids = %v, want %v (upscalers excluded)", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("filtered ids[%d] = %q, want %q", i, got[i], want[i])
+		}
 	}
 }
 

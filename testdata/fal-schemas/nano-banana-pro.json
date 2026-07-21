@@ -1,0 +1,23 @@
+{
+  "components": {
+    "schemas": {
+      "NanoBananaProInput": {
+        "type": "object",
+        "x-fal-order-properties": ["prompt", "num_images", "seed", "aspect_ratio", "output_format", "safety_tolerance", "sync_mode", "system_prompt", "resolution", "limit_generations", "enable_web_search"],
+        "required": ["prompt"],
+        "properties": {
+          "prompt": { "type": "string" },
+          "num_images": { "type": "integer", "default": 1, "minimum": 1, "maximum": 4 },
+          "seed": { "type": "integer" },
+          "aspect_ratio": { "type": "string", "default": "1:1" },
+          "output_format": { "type": "string", "enum": ["jpeg", "png", "webp"], "default": "png" },
+          "safety_tolerance": { "type": "string", "enum": ["1", "2", "3", "4", "5", "6"], "default": "4" },
+          "sync_mode": { "type": "boolean", "default": false },
+          "system_prompt": { "type": "string" },
+          "resolution": { "type": "string", "enum": ["1K", "2K", "4K"], "default": "1K" },
+          "enable_web_search": { "type": "boolean", "default": false }
+        }
+      }
+    }
+  }
+}

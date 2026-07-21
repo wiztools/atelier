@@ -14,6 +14,7 @@ import {
   HasOpenRouterAPIKey,
   ListConversations,
   ListFalModels,
+  ListFalImageEditModels,
   ListFalVideoModels,
   ListFalVideoImageModels,
   ListFalAudioModels,
@@ -167,6 +168,7 @@ const defaultImageWidth = 768;
 const defaultImageHeight = 768;
 const defaultImageSteps = 24;
 const defaultFalImageModel = 'fal-ai/flux/schnell';
+const defaultFalImageEditModel = 'fal-ai/flux/dev/image-to-image';
 const defaultFalVideoModel = 'fal-ai/kling-video/v2/master/text-to-video';
 const defaultFalVideoImageModel = 'fal-ai/kling-video/v2/master/image-to-video';
 const defaultFalAudioModel = 'fal-ai/elevenlabs/tts/multilingual-v2';
@@ -235,6 +237,8 @@ function App() {
   const [falError, setFalError] = useState('');
   const [falModel, setFalModel] = useState(defaultFalImageModel);
   const [falModels, setFalModels] = useState<main.FalModel[]>([]);
+  const [falImageEditModel, setFalImageEditModel] = useState(defaultFalImageEditModel);
+  const [falImageEditModels, setFalImageEditModels] = useState<main.FalModel[]>([]);
   const [falVideoModel, setFalVideoModel] = useState(defaultFalVideoModel);
   const [falVideoModels, setFalVideoModels] = useState<main.FalModel[]>([]);
   const [falVideoImageModel, setFalVideoImageModel] = useState(defaultFalVideoImageModel);
@@ -374,6 +378,7 @@ function App() {
           fal: {
             enabled: falHasKey,
             model: falModel,
+            imageEditModel: falImageEditModel,
             videoModel: falVideoModel,
             videoImageModel: falVideoImageModel,
             audioModel: falAudioModel,
@@ -409,7 +414,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falVideoModel, falVideoImageModel, falAudioModel, falTranscribeModel, falUpscaleModel, harnessModels, harnessProvider, imageHeight, imageModel, imageProvider, imageSteps, imageWidth, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falAudioModel, falTranscribeModel, falUpscaleModel, harnessModels, harnessProvider, imageHeight, imageModel, imageProvider, imageSteps, imageWidth, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
 
   // On a fresh launch, put the cursor in the chat box so the user can start
   // typing immediately. Fires once, when config finishes loading.
@@ -593,6 +598,8 @@ function App() {
   }, [modelOptions, models]);
   const falModelOptions = useMemo(() => falModelOptionList(falModels), [falModels]);
 
+  const falImageEditModelOptions = useMemo(() => falModelOptionList(falImageEditModels), [falImageEditModels]);
+
   const falVideoModelOptions = useMemo(() => falModelOptionList(falVideoModels), [falVideoModels]);
 
   const falVideoImageModelOptions = useMemo(() => falModelOptionList(falVideoImageModels), [falVideoImageModels]);
@@ -644,6 +651,7 @@ function App() {
     const nextImageSteps = config.generation?.image?.steps || defaultImageSteps;
     const nextImageProvider = config.models?.imageProvider === 'fal' ? 'fal' : 'ollama';
     const nextFalModel = config.providers?.fal?.model || defaultFalImageModel;
+    const nextFalImageEditModel = config.providers?.fal?.imageEditModel || defaultFalImageEditModel;
     const nextFalVideoModel = config.providers?.fal?.videoModel || defaultFalVideoModel;
     const nextFalVideoImageModel = config.providers?.fal?.videoImageModel || defaultFalVideoImageModel;
     const nextFalAudioModel = config.providers?.fal?.audioModel || defaultFalAudioModel;
@@ -667,6 +675,7 @@ function App() {
     setImageSteps(nextImageSteps);
     setImageProvider(nextImageProvider);
     setFalModel(nextFalModel);
+    setFalImageEditModel(nextFalImageEditModel);
     setFalVideoModel(nextFalVideoModel);
     setFalVideoImageModel(nextFalVideoImageModel);
     setFalAudioModel(nextFalAudioModel);
@@ -812,6 +821,11 @@ function App() {
       setFalModels(asArray(await ListFalModels()));
     } catch {
       setFalModels([]);
+    }
+    try {
+      setFalImageEditModels(asArray(await ListFalImageEditModels()));
+    } catch {
+      setFalImageEditModels([]);
     }
     try {
       setFalVideoModels(asArray(await ListFalVideoModels()));
@@ -1817,6 +1831,21 @@ function App() {
                       </div>
                     )}
                   </div>
+
+                  {imageProvider === 'fal' ? (
+                    <div className="field">
+                      <label htmlFor="fal-image-edit-model">Image-to-Image Model (fal.ai)</label>
+                      <ModelCombobox
+                        id="fal-image-edit-model"
+                        ariaLabel="fal.ai image-to-image model"
+                        placeholder={defaultFalImageEditModel}
+                        value={falImageEditModel}
+                        onChange={setFalImageEditModel}
+                        options={falImageEditModelOptions}
+                        allowCustom
+                      />
+                    </div>
+                  ) : null}
 
                   <div className="three-column">
                     <div className="field">

@@ -166,3 +166,216 @@ func TestResolveAgainstRealSFXSchema(t *testing.T) {
 		t.Fatalf("expected no notices for a fully-supported request, got %v", notices)
 	}
 }
+
+// TestResolveImageBodyFlux verifies the image-to-image resolver maps a canonical
+// request onto flux/dev/image-to-image's scalar image_url field. This is the
+// classic image-to-image shape and the prior hardcoded behavior; the resolver
+// must reproduce it exactly.
+func TestResolveImageBodyFlux(t *testing.T) {
+	body, notices := resolveImageBody(loadSchema(t, "flux-dev-image-to-image"),
+		ImageGenerateRequest{
+			Model:  "fal-ai/flux/dev/image-to-image",
+			Prompt: "cartoon character reference sheet",
+			Steps:  24,
+			Images: []string{"data:image/png;base64,ABC"},
+		},
+		builtinFalOverrides())
+	if body["prompt"] != "cartoon character reference sheet" {
+		t.Fatalf("prompt = %v, want the request prompt", body["prompt"])
+	}
+	// image_url is a SCALAR on flux → forwarded as a string, not wrapped.
+	if got, ok := body["image_url"].(string); !ok || got != "data:image/png;base64,ABC" {
+		t.Fatalf("image_url = %+v, want the source string", body["image_url"])
+	}
+	if _, present := body["image_urls"]; present {
+		t.Fatalf("image_urls must not be set on flux; got %v", body["image_urls"])
+	}
+	if _, present := body["image_size"]; present {
+		t.Fatalf("image_size must be omitted for image-to-image; got %v", body["image_size"])
+	}
+	if body["num_inference_steps"] != 24 {
+		t.Fatalf("num_inference_steps = %v, want 24", body["num_inference_steps"])
+	}
+	if body["num_images"] != 1 {
+		t.Fatalf("num_images = %v, want 1", body["num_images"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("expected no notices for flux image-to-image, got %v", notices)
+	}
+}
+
+// TestResolveImageBodyNanoBananaEdit verifies the resolver wraps a scalar source
+// image into a slice when the model's schema declares the field as an array —
+// fal-ai/nano-banana/edit's image_urls is `array of string`. This is the case
+// that produced the 422 in the wild: sending image_url (scalar) to an endpoint
+// that requires image_urls (array).
+func TestResolveImageBodyNanoBananaEdit(t *testing.T) {
+	body, notices := resolveImageBody(loadSchema(t, "nano-banana-edit"),
+		ImageGenerateRequest{
+			Model:  "fal-ai/nano-banana/edit",
+			Prompt: "cartoon character reference sheet",
+			Images: []string{"data:image/png;base64,ABC"},
+		},
+		builtinFalOverrides())
+	urls, ok := body["image_urls"].([]any)
+	if !ok {
+		t.Fatalf("image_urls = %+v (%T), want []any slice", body["image_urls"], body["image_urls"])
+	}
+	if len(urls) != 1 || urls[0] != "data:image/png;base64,ABC" {
+		t.Fatalf("image_urls = %+v, want single-element slice with the source", urls)
+	}
+	if _, present := body["image_url"]; present {
+		t.Fatalf("image_url must not be set on nano-banana/edit; got %v", body["image_url"])
+	}
+	if body["num_images"] != 1 {
+		t.Fatalf("num_images = %v, want 1", body["num_images"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("expected no notices for nano-banana/edit, got %v", notices)
+	}
+}
+
+// TestResolveImageBodyNoSourceImageInput verifies the resolver degrades cleanly
+// when a model has NO source-image field at all (e.g. fal-ai/nano-banana-pro,
+// which is text-to-image only). Rather than fabricate an image_url/image_urls
+// that fal will reject with a 422, the resolver emits a text-to-image body and
+// surfaces a notice so the user understands their attachment was ignored.
+func TestResolveImageBodyNoSourceImageInput(t *testing.T) {
+	body, notices := resolveImageBody(loadSchema(t, "nano-banana-pro"),
+		ImageGenerateRequest{
+			Model:  "fal-ai/nano-banana-pro",
+			Prompt: "cartoon character reference sheet",
+			Images: []string{"data:image/png;base64,ABC"},
+		},
+		builtinFalOverrides())
+	if _, present := body["image_url"]; present {
+		t.Fatalf("image_url must not be set when the model has no source-image field; got %v", body["image_url"])
+	}
+	if _, present := body["image_urls"]; present {
+		t.Fatalf("image_urls must not be set when the model has no source-image field; got %v", body["image_urls"])
+	}
+	if body["prompt"] != "cartoon character reference sheet" {
+		t.Fatalf("prompt = %v, want the request prompt", body["prompt"])
+	}
+	if body["num_images"] != 1 {
+		t.Fatalf("num_images = %v, want 1", body["num_images"])
+	}
+	if len(notices) != 1 {
+		t.Fatalf("expected one notice about the ignored attachment, got %v", notices)
+	}
+	if !strings.Contains(notices[0], "no source-image input") {
+		t.Fatalf("notice = %q, want it to mention the missing source-image input", notices[0])
+	}
+}
+
+// TestResolveImageBodyTextToImage verifies the text-to-image path: no source
+// image attached → image_size is set from the configured dimensions and no
+// source-image field appears in the body.
+func TestResolveImageBodyTextToImage(t *testing.T) {
+	body, notices := resolveImageBody(loadSchema(t, "flux-dev-image-to-image"),
+		ImageGenerateRequest{
+			Model:  "fal-ai/flux/schnell",
+			Prompt: "a lighthouse at dusk",
+			Width:  768,
+			Height: 768,
+		},
+		builtinFalOverrides())
+	if _, present := body["image_url"]; present {
+		t.Fatalf("image_url must not be set on text-to-image; got %v", body["image_url"])
+	}
+	size, ok := body["image_size"].(map[string]any)
+	if !ok {
+		t.Fatalf("image_size = %+v (%T), want {width,height} map", body["image_size"], body["image_size"])
+	}
+	if size["width"] != 768 || size["height"] != 768 {
+		t.Fatalf("image_size = %+v, want 768x768", size)
+	}
+	if len(notices) != 0 {
+		t.Fatalf("expected no notices for text-to-image, got %v", notices)
+	}
+}
+
+// TestResolveImageBodyNormalizesBareBase64 pins the regression from
+// conv_e8ea99de04b547a516394be1: the resolver must wrap bare base64 (the shape
+// AttachedImage arrives in — the frontend strips the data: prefix for Ollama)
+// into a data URI before sending it to fal. fal rejects bare base64 with a 422.
+// Both the scalar (image_url) and array (image_urls) paths must normalize.
+func TestResolveImageBodyNormalizesBareBase64(t *testing.T) {
+	// A real 1x1 PNG: base64 starts with iVBORw0KGgo, no data: prefix.
+	const barePNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
+	t.Run("scalar image_url", func(t *testing.T) {
+		body, _ := resolveImageBody(loadSchema(t, "flux-dev-image-to-image"),
+			ImageGenerateRequest{
+				Model:  "fal-ai/flux/dev/image-to-image",
+				Prompt: "transform this",
+				Images: []string{barePNG},
+			},
+			builtinFalOverrides())
+		got, ok := body["image_url"].(string)
+		if !ok {
+			t.Fatalf("image_url = %+v (%T), want string", body["image_url"], body["image_url"])
+		}
+		if !strings.HasPrefix(got, "data:image/png;base64,") {
+			t.Fatalf("image_url = %q, want a data:image/png;base64, URI (bare base64 is rejected by fal)", got[:min(40, len(got))])
+		}
+		if !strings.HasSuffix(got, barePNG) {
+			t.Fatalf("image_url payload changed during normalization: %q", got)
+		}
+	})
+
+	t.Run("array image_urls", func(t *testing.T) {
+		body, _ := resolveImageBody(loadSchema(t, "nano-banana-edit"),
+			ImageGenerateRequest{
+				Model:  "fal-ai/nano-banana/edit",
+				Prompt: "transform this",
+				Images: []string{barePNG},
+			},
+			builtinFalOverrides())
+		urls, ok := body["image_urls"].([]any)
+		if !ok || len(urls) != 1 {
+			t.Fatalf("image_urls = %+v, want single-element slice", body["image_urls"])
+		}
+		got, ok := urls[0].(string)
+		if !ok {
+			t.Fatalf("image_urls[0] = %+v (%T), want string", urls[0], urls[0])
+		}
+		if !strings.HasPrefix(got, "data:image/png;base64,") {
+			t.Fatalf("image_urls[0] = %q, want a data:image/png;base64, URI", got[:min(40, len(got))])
+		}
+	})
+}
+
+// TestResolveImageBodyNoSchema verifies the nil-schema fallback: when the fal
+// OpenAPI doc can't be fetched (offline, unknown endpoint), the resolver emits
+// the legacy hardcoded body (prompt, num_images, image_url|image_size,
+// num_inference_steps) and a single notice. This preserves today's behavior so a
+// schema outage never breaks image generation outright.
+func TestResolveImageBodyNoSchema(t *testing.T) {
+	body, notices := resolveImageBody(nil,
+		ImageGenerateRequest{
+			Model:  "fal-ai/flux/dev/image-to-image",
+			Prompt: "an impressionist painting",
+			Steps:  4,
+			Images: []string{"data:image/png;base64,ABC"},
+		},
+		builtinFalOverrides())
+	if body["prompt"] != "an impressionist painting" {
+		t.Fatalf("prompt = %v", body["prompt"])
+	}
+	if body["image_url"] != "data:image/png;base64,ABC" {
+		t.Fatalf("image_url = %v, want the source string (legacy fallback)", body["image_url"])
+	}
+	if body["num_inference_steps"] != 4 {
+		t.Fatalf("num_inference_steps = %v, want 4", body["num_inference_steps"])
+	}
+	if body["num_images"] != 1 {
+		t.Fatalf("num_images = %v, want 1", body["num_images"])
+	}
+	if len(notices) != 1 {
+		t.Fatalf("expected one schema-unavailable notice, got %v", notices)
+	}
+	if !strings.Contains(notices[0], "Couldn't load") {
+		t.Fatalf("notice = %q, want it to mention the unavailable schema", notices[0])
+	}
+}
