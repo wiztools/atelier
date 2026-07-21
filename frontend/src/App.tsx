@@ -591,41 +591,17 @@ function App() {
     const detected = asArray(models).filter((item) => item.imageGeneration).map((item) => item.name).filter(Boolean);
     return detected.length ? detected : modelOptions;
   }, [modelOptions, models]);
-  const falModelOptions = useMemo(() => {
-    return asArray(falModels)
-      .map((item) => ({value: item.id, label: item.displayName || item.id}))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [falModels]);
+  const falModelOptions = useMemo(() => falModelOptionList(falModels), [falModels]);
 
-  const falVideoModelOptions = useMemo(() => {
-    return asArray(falVideoModels)
-      .map((item) => ({value: item.id, label: item.displayName || item.id}))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [falVideoModels]);
+  const falVideoModelOptions = useMemo(() => falModelOptionList(falVideoModels), [falVideoModels]);
 
-  const falVideoImageModelOptions = useMemo(() => {
-    return asArray(falVideoImageModels)
-      .map((item) => ({value: item.id, label: item.displayName || item.id}))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [falVideoImageModels]);
+  const falVideoImageModelOptions = useMemo(() => falModelOptionList(falVideoImageModels), [falVideoImageModels]);
 
-  const falAudioModelOptions = useMemo(() => {
-    return asArray(falAudioModels)
-      .map((item) => ({value: item.id, label: item.displayName || item.id}))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [falAudioModels]);
+  const falAudioModelOptions = useMemo(() => falModelOptionList(falAudioModels), [falAudioModels]);
 
-  const falTranscribeModelOptions = useMemo(() => {
-    return asArray(falTranscribeModels)
-      .map((item) => ({value: item.id, label: item.displayName || item.id}))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [falTranscribeModels]);
+  const falTranscribeModelOptions = useMemo(() => falModelOptionList(falTranscribeModels), [falTranscribeModels]);
 
-  const falUpscaleModelOptions = useMemo(() => {
-    return asArray(falUpscaleModels)
-      .map((item) => ({value: item.id, label: item.displayName || item.id}))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [falUpscaleModels]);
+  const falUpscaleModelOptions = useMemo(() => falModelOptionList(falUpscaleModels), [falUpscaleModels]);
 
   useEffect(() => {
     if (!imageModelOptions.length || imageModelOptions.includes(imageModel)) {
@@ -2722,6 +2698,63 @@ function formatDuration(durationMs: number): string {
 
 function asArray<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : [];
+}
+
+// falModelOptionList builds sorted combobox options for a fal model catalog.
+// fal's catalog reuses one display name across endpoint variants — e.g.
+// fal-ai/speech-to-text, .../turbo, .../stream, and .../turbo/stream all carry
+// the display name "Speech-to-Text", making them indistinguishable in a
+// dropdown. To disambiguate without guessing fal's org/name split (ambiguous
+// from the id alone), we only annotate when a display name is shared by more
+// than one endpoint: each colliding entry gets its distinguishing id tail
+// (everything after the shared prefix) appended. Non-colliding entries keep
+// their clean display name.
+function falModelOptionList(models: main.FalModel[] | null | undefined): {value: string; label: string}[] {
+  const items = asArray(models).map((item) => ({id: item.id || '', base: item.displayName || item.id || ''}));
+  // Group by display name to find collisions.
+  const counts: Record<string, number> = {};
+  for (const item of items) {
+    const key = item.base.toLowerCase();
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  return items
+    .map((item) => {
+      let label = item.base;
+      if ((counts[item.base.toLowerCase()] ?? 0) > 1) {
+        // Find the longest id prefix shared by every colliding endpoint, then
+        // append whatever follows it as the distinguishing tail.
+        const colliders = items.filter((other) => other.base.toLowerCase() === item.base.toLowerCase()).map((other) => other.id);
+        const tail = idTailAfterSharedPrefix(item.id, colliders);
+        if (tail) {
+          label = `${item.base} (${tail})`;
+        }
+      }
+      return {value: item.id, label};
+    })
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+// idTailAfterSharedPrefix returns the portion of id that follows the longest
+// slash-delimited prefix shared by all the given ids. For the speech-to-text
+// collision (fal-ai/speech-to-text, .../turbo, .../stream, .../turbo/stream)
+// the shared prefix is "fal-ai/speech-to-text", so the tails are "", "turbo",
+// "stream", "turbo/stream" — and an empty tail collapses back to the base name.
+function idTailAfterSharedPrefix(id: string, ids: string[]): string {
+  if (ids.length === 0) {
+    return '';
+  }
+  const splitIds = ids.map((other) => other.split('/').filter(Boolean));
+  const thisSegments = id.split('/').filter(Boolean);
+  let shared = 0;
+  const minLen = Math.min(...splitIds.map((segments) => segments.length));
+  for (let i = 0; i < minLen; i++) {
+    if (splitIds.every((segments) => segments[i] === thisSegments[i])) {
+      shared = i + 1;
+    } else {
+      break;
+    }
+  }
+  return thisSegments.slice(shared).join('/');
 }
 
 function isNearScrollBottom(element: HTMLElement, threshold = 48): boolean {
