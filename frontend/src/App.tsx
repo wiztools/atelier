@@ -17,6 +17,7 @@ import {
   ListFalVideoModels,
   ListFalVideoImageModels,
   ListFalAudioModels,
+  ListFalUpscaleModels,
   ListModels,
   ListPrimaryModels,
   PurgeArchivedConversations,
@@ -162,6 +163,7 @@ const defaultFalImageModel = 'fal-ai/flux/schnell';
 const defaultFalVideoModel = 'fal-ai/kling-video/v2/master/text-to-video';
 const defaultFalVideoImageModel = 'fal-ai/kling-video/v2/master/image-to-video';
 const defaultFalAudioModel = 'fal-ai/elevenlabs/tts/multilingual-v2';
+const defaultFalUpscaleModel = 'fal-ai/esrgan';
 const defaultVideoDuration = '5';
 const defaultVideoAspectRatio = '16:9';
 const videoDurationOptions = ['5', '10', '15'];
@@ -231,6 +233,8 @@ function App() {
   const [falVideoImageModels, setFalVideoImageModels] = useState<main.FalModel[]>([]);
   const [falAudioModel, setFalAudioModel] = useState(defaultFalAudioModel);
   const [falAudioModels, setFalAudioModels] = useState<main.FalModel[]>([]);
+  const [falUpscaleModel, setFalUpscaleModel] = useState(defaultFalUpscaleModel);
+  const [falUpscaleModels, setFalUpscaleModels] = useState<main.FalModel[]>([]);
   const [videoDuration, setVideoDuration] = useState(defaultVideoDuration);
   const [videoAspectRatio, setVideoAspectRatio] = useState(defaultVideoAspectRatio);
   const [system, setSystem] = useState('You are Atelier, a precise local AI collaborator.');
@@ -363,6 +367,7 @@ function App() {
             videoModel: falVideoModel,
             videoImageModel: falVideoImageModel,
             audioModel: falAudioModel,
+            upscaleModel: falUpscaleModel,
           },
         },
         models: {
@@ -393,7 +398,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falVideoModel, falVideoImageModel, falAudioModel, harnessModels, harnessProvider, imageHeight, imageModel, imageProvider, imageSteps, imageWidth, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falVideoModel, falVideoImageModel, falAudioModel, falUpscaleModel, harnessModels, harnessProvider, imageHeight, imageModel, imageProvider, imageSteps, imageWidth, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
 
   // On a fresh launch, put the cursor in the chat box so the user can start
   // typing immediately. Fires once, when config finishes loading.
@@ -599,6 +604,12 @@ function App() {
       .sort((a, b) => a.label.localeCompare(b.label));
   }, [falAudioModels]);
 
+  const falUpscaleModelOptions = useMemo(() => {
+    return asArray(falUpscaleModels)
+      .map((item) => ({value: item.id, label: item.displayName || item.id}))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [falUpscaleModels]);
+
   useEffect(() => {
     if (!imageModelOptions.length || imageModelOptions.includes(imageModel)) {
       return;
@@ -643,6 +654,7 @@ function App() {
     const nextFalVideoModel = config.providers?.fal?.videoModel || defaultFalVideoModel;
     const nextFalVideoImageModel = config.providers?.fal?.videoImageModel || defaultFalVideoImageModel;
     const nextFalAudioModel = config.providers?.fal?.audioModel || defaultFalAudioModel;
+    const nextFalUpscaleModel = config.providers?.fal?.upscaleModel || defaultFalUpscaleModel;
     const nextVideoDuration = config.generation?.video?.duration || defaultVideoDuration;
     const nextVideoAspectRatio = config.generation?.video?.aspectRatio || defaultVideoAspectRatio;
 
@@ -664,6 +676,7 @@ function App() {
     setFalVideoModel(nextFalVideoModel);
     setFalVideoImageModel(nextFalVideoImageModel);
     setFalAudioModel(nextFalAudioModel);
+    setFalUpscaleModel(nextFalUpscaleModel);
     setVideoDuration(nextVideoDuration);
     setVideoAspectRatio(nextVideoAspectRatio);
     setConfigLoaded(true);
@@ -819,6 +832,11 @@ function App() {
       setFalAudioModels(asArray(await ListFalAudioModels()));
     } catch {
       setFalAudioModels([]);
+    }
+    try {
+      setFalUpscaleModels(asArray(await ListFalUpscaleModels()));
+    } catch {
+      setFalUpscaleModels([]);
     }
   }
 
@@ -1079,6 +1097,52 @@ function App() {
   }
 
 
+  // executeChatStream is the shared core of a chat turn: it wires up the
+  // streaming-state refs, opens the StreamChat call, and on failure marks the
+  // matching assistant entry with the error. Callers are responsible for
+  // pushing/replacing the user + assistant entries in `chat` and building
+  // requestMessages before calling this — submitChat for a fresh send,
+  // retryFailedTurn for a retry. Extracted so both paths share one error path.
+  async function executeChatStream(opts: {requestID: string; requestMessages: main.ChatMessage[]}) {
+    const {requestID} = opts;
+    visibleStreamRef.current = requestID;
+    chatStreamDraftsRef.current[requestID] = {content: '', thinking: '', images: [], videos: [], audios: [], streaming: true};
+    setActiveStream(requestID);
+    try {
+      const start = await StreamChat(main.ChatRequest.createFrom({
+        requestID,
+        conversationId: activeConversationID || undefined,
+        baseURL,
+        provider: primaryProvider,
+        model,
+        selectedModel: model,
+        system,
+        messages: opts.requestMessages,
+        // Only sent for a new chat (turn 1). The backend ignores it for an
+        // existing conversation — the record's immutable workspace wins.
+        ...(activeConversationID ? {} : {workspace: draftWorkspace || undefined}),
+      }));
+      markConversationInFlight(start.conversationId, start.requestID, 'chat');
+      setActiveConversationID(start.conversationId);
+      void refreshConversations();
+    } catch (error) {
+      chatStreamDraftsRef.current[requestID] = {
+        ...(chatStreamDraftsRef.current[requestID] ?? {content: '', thinking: '', images: [], videos: [], audios: []}),
+        streaming: false,
+        error: formatError(error),
+      };
+      setActiveStream(null);
+      if (visibleStreamRef.current === requestID) {
+        visibleStreamRef.current = null;
+      }
+      setChat((entries) =>
+        entries.map((entry) =>
+          entry.id === `assistant-${requestID}` ? {...entry, streaming: false, error: formatError(error)} : entry,
+        ),
+      );
+    }
+  }
+
   async function submitChat() {
     const trimmed = prompt.trim();
     if (!trimmed || !model || activeStream || !primaryModelIsValid) {
@@ -1110,48 +1174,50 @@ function App() {
     setPrompt('');
     setAttachments([]);
     shouldFollowTranscriptRef.current = true;
-    visibleStreamRef.current = requestID;
-    chatStreamDraftsRef.current[requestID] = {content: '', thinking: '', images: [], videos: [], audios: [], streaming: true};
-    setActiveStream(requestID);
     setChat((entries) => [
       ...entries,
       userEntry,
       {id: `assistant-${requestID}`, role: 'assistant', content: '', streaming: true, provider: primaryProvider},
     ]);
+    await executeChatStream({requestID, requestMessages});
+  }
 
-    try {
-      const start = await StreamChat(main.ChatRequest.createFrom({
-        requestID,
-        conversationId: activeConversationID || undefined,
-        baseURL,
-        provider: primaryProvider,
-        model,
-        selectedModel: model,
-        system,
-        messages: requestMessages,
-        // Only sent for a new chat (turn 1). The backend ignores it for an
-        // existing conversation — the record's immutable workspace wins.
-        ...(activeConversationID ? {} : {workspace: draftWorkspace || undefined}),
-      }));
-      markConversationInFlight(start.conversationId, start.requestID, 'chat');
-      setActiveConversationID(start.conversationId);
-      void refreshConversations();
-    } catch (error) {
-      chatStreamDraftsRef.current[requestID] = {
-        ...(chatStreamDraftsRef.current[requestID] ?? {content: '', thinking: '', images: [], videos: [], audios: []}),
-        streaming: false,
-        error: formatError(error),
-      };
-      setActiveStream(null);
-      if (visibleStreamRef.current === requestID) {
-        visibleStreamRef.current = null;
-      }
-      setChat((entries) =>
-        entries.map((entry) =>
-          entry.id === `assistant-${requestID}` ? {...entry, streaming: false, error: formatError(error)} : entry,
-        ),
-      );
+  // retryFailedTurn resends the user message preceding a failed assistant entry,
+  // replacing the failed entry in place with a fresh streaming placeholder. Used
+  // by the Retry button shown next to an error. The preceding user entry stays in
+  // the transcript; no duplicate is pushed — cleaner than re-typing the message,
+  // which would show the user message twice. Note: StartChatTurn on the backend
+  // will append a fresh user turn to disk, same as a retyped message; failed
+  // turns are never persisted, so on reload the failed entry is gone.
+  async function retryFailedTurn(failedAssistantId: string) {
+    if (!model || activeStream || !primaryModelIsValid) {
+      return;
     }
+    const failedIdx = chat.findIndex((entry) => entry.id === failedAssistantId);
+    if (failedIdx < 0) {
+      return;
+    }
+    // Build request messages from everything before the failed assistant entry.
+    // The preceding user message is included; the empty failed entry is not.
+    const historyForRequest = chat.slice(0, failedIdx);
+    if (!historyForRequest.some((entry) => entry.role === 'user')) {
+      return;
+    }
+    const requestMessages: main.ChatMessage[] = historyForRequest
+      .filter((entry) => entry.role !== 'system' && (entry.content || entry.images?.length))
+      .map((entry) => ({
+        role: entry.role,
+        content: entry.content,
+        ...(entry.images?.length ? {images: entry.images.map(imagePayloadForOllama).filter(Boolean)} : {}),
+      }) as main.ChatMessage);
+    const requestID = `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    shouldFollowTranscriptRef.current = true;
+    setChat((entries) => entries.map((entry) =>
+      entry.id === failedAssistantId
+        ? {id: `assistant-${requestID}`, role: 'assistant', content: '', streaming: true, provider: primaryProvider}
+        : entry,
+    ));
+    await executeChatStream({requestID, requestMessages});
   }
 
   function handleChatPromptKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -1857,6 +1923,27 @@ function App() {
               </section>
 
               <section className="settings-section">
+                <h3>Upscale</h3>
+                <div className="field">
+                  <label htmlFor="fal-upscale-model">Upscale Model (fal.ai)</label>
+                  <ModelCombobox
+                    id="fal-upscale-model"
+                    ariaLabel="fal.ai upscale model"
+                    placeholder={defaultFalUpscaleModel}
+                    value={falUpscaleModel}
+                    onChange={setFalUpscaleModel}
+                    options={falUpscaleModelOptions}
+                    allowCustom
+                  />
+                  {!falHasKey ? (
+                    <span className="hint">Add a fal.ai API key above to upscale images.</span>
+                  ) : falUpscaleModelOptions.length ? null : (
+                    <span className="hint">Type a fal.ai endpoint id — the model list couldn't be loaded.</span>
+                  )}
+                </div>
+              </section>
+
+              <section className="settings-section">
                 <div className="field">
                   <label htmlFor="system">System</label>
                   <textarea id="system" value={system} onChange={(event) => setSystem(event.target.value)} />
@@ -2005,6 +2092,20 @@ function App() {
                             onClick={() => copyAgentResponse(entry)}
                           >
                             {copiedMessageID === entry.id ? '✓' : '⧉'}
+                          </button>
+                        </div>
+                      ) : null}
+                      {entry.error ? (
+                        <div className="message-actions">
+                          <button
+                            className="message-retry-button"
+                            type="button"
+                            disabled={Boolean(activeStream)}
+                            aria-label="Retry last turn"
+                            title="Retry last turn"
+                            onClick={() => retryFailedTurn(entry.id)}
+                          >
+                            ↻ Retry
                           </button>
                         </div>
                       ) : null}

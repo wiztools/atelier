@@ -44,6 +44,7 @@ type HarnessToolExecutionContext struct {
 	GenerateImage func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, error)
 	GenerateVideo func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error)
 	GenerateAudio func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error)
+	UpscaleImage  func(ctx context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, error)
 }
 
 // ToolImageResult carries generated images as data URLs. The Images field is
@@ -128,6 +129,9 @@ func defaultHarnessToolRegistry(config AppConfig) HarnessToolRegistry {
 	if audioGenerationConfigured(config) {
 		definitions = append(definitions, audioGenerationToolDefinition())
 	}
+	if imageUpscaleConfigured(config) {
+		definitions = append(definitions, imageUpscaleToolDefinition())
+	}
 	return newHarnessToolRegistry(definitions)
 }
 
@@ -168,6 +172,25 @@ func resolveDefaultImageEditModel(config AppConfig) string {
 		return defaultFalImageEditModel
 	}
 	return strings.TrimSpace(config.Providers.Ollama.Models.Image)
+}
+
+// imageUpscaleConfigured reports whether the upscale_image tool should be
+// offered: fal is the only upscale backend (Ollama has no upscaler), so the
+// tool is available whenever fal is the selected image provider. The model
+// itself defaults at call time via resolveDefaultImageUpscaleModel, so an
+// explicit UpscaleModel in config is not required.
+func imageUpscaleConfigured(config AppConfig) bool {
+	return strings.TrimSpace(config.Models.ImageProvider) == "fal"
+}
+
+// resolveDefaultImageUpscaleModel returns the upscaler endpoint the upscale_image
+// tool uses when the call doesn't override it. fal-only; falls back to the
+// const default when the user hasn't picked one in Settings.
+func resolveDefaultImageUpscaleModel(config AppConfig) string {
+	if model := strings.TrimSpace(config.Providers.Fal.UpscaleModel); model != "" {
+		return model
+	}
+	return defaultFalUpscaleModel
 }
 
 // videoGenerationConfigured reports whether the generate_video tool should be
@@ -560,6 +583,85 @@ func generateImageParamSchema() map[string]any {
 			"aspectRatio": enumParam("Optional — the output image shape. Omit to use the configured default size; ignored when transforming an attached image.", "1:1", "16:9", "9:16", "4:3", "3:4"),
 		},
 		"required": []string{"content"},
+	}
+}
+
+// imageUpscaleToolDefinition exposes the upscale_image tool. It takes an
+// attached image and returns a higher-resolution version via the configured
+// fal upscaler. fal-only (no Ollama path); the attached-image requirement is
+// enforced in Execute because Validate only sees the call, not tools.
+func imageUpscaleToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "upscale_image",
+		Title:       "Upscale image",
+		Description: "Use this when the user asks to upscale, increase the resolution of, or make a higher-resolution version of an attached image. Requires an attached image. fal.ai only — runs unattended like image generation.",
+		Example:     `{"name":"upscale_image","scale":"2x"}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: imageUpscaleParamSchema(),
+		Validate: func(prefix string, call HarnessToolCall) []string {
+			return nil
+		},
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			if tools.UpscaleImage == nil {
+				return nil, "image upscaling unavailable", errors.New("image upscaling is not available in this context")
+			}
+			attachedImage := strings.TrimSpace(tools.AttachedImage)
+			if attachedImage == "" {
+				return nil, "image upscaling requires an attached image", errors.New("upscale_image requires an attached image — ask the user to attach one first")
+			}
+			model := strings.TrimSpace(call.Model)
+			if model == "" {
+				model = resolveDefaultImageUpscaleModel(tools.Config)
+			}
+			if model == "" {
+				return nil, "image upscaling unavailable", errors.New("no upscale model is configured")
+			}
+			scale := 2.0
+			if strings.TrimSpace(call.Scale) == "4x" {
+				scale = 4.0
+			}
+			payload, err := tools.UpscaleImage(ctx, ImageUpscaleRequest{
+				Model: model,
+				Image: attachedImage,
+				Scale: scale,
+			})
+			if err != nil {
+				return nil, "image upscaling failed", err
+			}
+			images := normalizeImagePayloads(payload.Images)
+			if maybeImage := normalizeImagePayload(payload.Image); maybeImage != "" {
+				images = append(images, maybeImage)
+			}
+			if maybeImage := normalizeImagePayload(payload.Response); maybeImage != "" {
+				images = append(images, maybeImage)
+			}
+			images = dedupeStrings(images)
+			if len(images) == 0 {
+				return nil, "image upscaling returned no image", errors.New("upscale model returned no image data")
+			}
+			output := ToolImageResult{Model: model, Count: len(images), Images: images}
+			summary := fmt.Sprintf("upscaled the attached image to %dx with %s", int(scale), model)
+			return output, summary, nil
+		},
+		Activity: func(result HarnessToolResult) HarnessToolActivity {
+			activity := defaultHarnessToolActivity(result)
+			if typed, ok := result.Result.(ToolImageResult); ok {
+				activity.Command = []string{"fal", "upscale", typed.Model}
+			}
+			return activity
+		},
+	}
+}
+
+func imageUpscaleParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"scale": enumParam("Optional — the upscale factor. Omit for 2x.", "2x", "4x"),
+			"model": stringParam("Optional upscale model override."),
+		},
+		"required": []string{},
 	}
 }
 

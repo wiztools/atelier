@@ -30,6 +30,10 @@ const (
 	// defaultFalAudioModel is the text-to-audio endpoint used when none is
 	// configured — a text-to-speech model, the most common "audio response" case.
 	defaultFalAudioModel = "fal-ai/elevenlabs/tts/multilingual-v2"
+	// defaultFalUpscaleModel is the image upscaler endpoint used when none is
+	// configured — a simple, cheap ESRGAN-based upscaler that takes image_url +
+	// scale. fal is the only upscale backend (Ollama has no upscaler).
+	defaultFalUpscaleModel = "fal-ai/esrgan"
 	// defaultFalVideoDuration / defaultFalVideoAspectRatio are fal's enum
 	// defaults for text-to-video; kept here so config defaults and the client
 	// agree on a single source of truth.
@@ -202,6 +206,61 @@ func (client FalClient) GenerateImage(ctx context.Context, req ImageGenerateRequ
 	// (https://...) alongside the data URLs; those URLs then fail to decode at
 	// artifact-write time and the whole turn save aborts with an orphaned file.
 	return response, nil, nil
+}
+
+// UpscaleImage submits an attached image to the configured fal upscaler
+// endpoint, polls until completion, and returns the upscaled image as a base64
+// data URL packed into a synthetic ollamaGenerateResponse — the same shape
+// GenerateImage produces, so the tool's result normalization is reused. fal is
+// the only upscale backend; there is no Ollama path.
+func (client FalClient) UpscaleImage(ctx context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, error) {
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
+		model = defaultFalUpscaleModel
+	}
+
+	scale := req.Scale
+	if scale <= 0 {
+		scale = 2
+	}
+	body := map[string]any{
+		"image_url": falImageURL(req.Image),
+		"scale":     scale,
+	}
+
+	submit, err := client.submit(ctx, model, body)
+	if err != nil {
+		return ollamaGenerateResponse{}, err
+	}
+	requestID := strings.TrimSpace(submit.RequestID)
+	if requestID == "" {
+		return ollamaGenerateResponse{}, errors.New("fal submit returned no request id")
+	}
+	statusURL, resultURL := falQueueURLs(submit, model, requestID)
+
+	if err := client.waitForCompletion(ctx, statusURL); err != nil {
+		return ollamaGenerateResponse{}, err
+	}
+
+	result, _, err := client.fetchResult(ctx, resultURL)
+	if err != nil {
+		return ollamaGenerateResponse{}, err
+	}
+
+	dataURLs, err := client.downloadImages(ctx, result.Images)
+	if err != nil {
+		return ollamaGenerateResponse{}, err
+	}
+	if len(dataURLs) == 0 {
+		return ollamaGenerateResponse{}, errors.New("fal upscale returned no images")
+	}
+
+	return ollamaGenerateResponse{
+		Model:  model,
+		Image:  dataURLs[0],
+		Images: dataURLs,
+		Done:   true,
+	}, nil
 }
 
 // firstNonEmpty returns the first entry of values that is non-empty after
@@ -742,6 +801,13 @@ const (
 	// speech, respectively).
 	falTextToAudioCategory  = "text-to-audio"
 	falTextToSpeechCategory = "text-to-speech"
+	// falImageUpscalingCategory is not a dedicated /v1/models category — fal
+	// files upscalers under the broader image-to-image bucket alongside
+	// inpainting, background removal, and other image-editing endpoints. We
+	// fetch that category and post-filter by id/tags so the Settings picker
+	// shows only upscalers. Kept as a named constant for clarity at the call
+	// site; ListFalUpscaleModels is the only consumer.
+	falImageUpscalingCategory = "image-to-image"
 	// falModelsPageSize is how many models to request per catalog page.
 	falModelsPageSize = 100
 	// falModelsDefaultMax caps how many models ListModels will accumulate so we

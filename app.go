@@ -139,6 +139,8 @@ type ConfigFal struct {
 	VideoImageModel string `json:"videoImageModel,omitempty"`
 	// AudioModel is the text-to-audio endpoint (speech, music, or sound effects).
 	AudioModel string `json:"audioModel,omitempty"`
+	// UpscaleModel is the image upscaler endpoint (fal-only; Ollama has none).
+	UpscaleModel string `json:"upscaleModel,omitempty"`
 }
 
 type ConfigModels struct {
@@ -347,6 +349,15 @@ type ImageGenerateRequest struct {
 	Height         int      `json:"height,omitempty"`
 	Steps          int      `json:"steps,omitempty"`
 	Images         []string `json:"images,omitempty"`
+}
+
+// ImageUpscaleRequest is the input to fal's image upscaler. Scale is a float
+// matching fal's native `scale` param (2 or 4); the model-facing tool surface
+// uses a "2x"/"4x" enum that Execute converts. fal is the only upscale backend.
+type ImageUpscaleRequest struct {
+	Model string  `json:"model"`
+	Image string  `json:"image"`
+	Scale float64 `json:"scale,omitempty"`
 }
 
 // VideoGenerateRequest is the input to a text-to-video generation. Unlike
@@ -1232,6 +1243,46 @@ func (a *App) ListFalVideoImageModels() ([]FalModel, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return newFalClient(a.client, key).ListModels(ctx, falImageToVideoCategory, 0)
+}
+
+// ListFalUpscaleModels returns fal's image-upscaler catalog for the Settings
+// upscale-model picker. fal is the only upscale backend (Ollama has none). fal
+// files upscalers under the broader image-to-image category (alongside
+// inpainting, background removal, etc.), so we fetch that and keep only the
+// models whose id or tags mention upscaling.
+func (a *App) ListFalUpscaleModels() ([]FalModel, error) {
+	key, err := loadFalAPIKey()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	models, err := newFalClient(a.client, key).ListModels(ctx, falImageUpscalingCategory, 0)
+	if err != nil {
+		return nil, err
+	}
+	upscale := make([]FalModel, 0, len(models))
+	for _, model := range models {
+		if isFalUpscaleModel(model) {
+			upscale = append(upscale, model)
+		}
+	}
+	return upscale, nil
+}
+
+// isFalUpscaleModel reports whether a fal catalog entry is an image upscaler,
+// by id or tag. fal tags upscalers inconsistently ("upscaling" vs "upscale",
+// sometimes neither), so the id is checked too.
+func isFalUpscaleModel(model FalModel) bool {
+	if strings.Contains(strings.ToLower(model.ID), "upscal") {
+		return true
+	}
+	for _, tag := range model.Tags {
+		if strings.Contains(strings.ToLower(tag), "upscal") {
+			return true
+		}
+	}
+	return false
 }
 
 // ListFalAudioModels returns fal's audio-generation catalog for the Settings

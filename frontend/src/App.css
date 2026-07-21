@@ -1066,6 +1066,29 @@ button:disabled {
   color: #ffffff;
 }
 
+.message-retry-button {
+  padding: 4px 10px;
+  border: 1px solid #3f484b;
+  border-radius: 6px;
+  background: #242a2d;
+  color: #cfd5d3;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.message-retry-button:hover:not(:disabled),
+.message-retry-button:focus-visible:not(:disabled) {
+  border-color: #6f8589;
+  background: #2d3639;
+  color: #ffffff;
+}
+
+.message-retry-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .message p {
   margin: 8px 0 0;
   white-space: pre-wrap;

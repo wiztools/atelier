@@ -28,6 +28,8 @@ export function ListFalAudioModels():Promise<Array<main.FalModel>>;
 
 export function ListFalModels():Promise<Array<main.FalModel>>;
 
+export function ListFalUpscaleModels():Promise<Array<main.FalModel>>;
+
 export function ListFalVideoImageModels():Promise<Array<main.FalModel>>;
 
 export function ListFalVideoModels():Promise<Array<main.FalModel>>;

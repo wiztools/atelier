@@ -3591,6 +3591,135 @@ func TestGenerateImageToolTextToImageWithoutAttachment(t *testing.T) {
 	}
 }
 
+// TestUpscaleImageToolRequiresAttachedImage verifies the tool errors when no
+// source image is attached, since there is nothing to upscale.
+func TestUpscaleImageToolRequiresAttachedImage(t *testing.T) {
+	tools := HarnessToolExecutionContext{
+		Config: AppConfig{Models: ConfigModels{ImageProvider: "fal"}},
+		UpscaleImage: func(context.Context, ImageUpscaleRequest) (ollamaGenerateResponse, error) {
+			t.Fatal("UpscaleImage must not be called without an attached image")
+			return ollamaGenerateResponse{}, nil
+		},
+	}
+	def := imageUpscaleToolDefinition()
+	_, _, err := def.Execute(t.Context(), tools, HarnessToolCall{Scale: "2x"})
+	if err == nil || !strings.Contains(err.Error(), "attached image") {
+		t.Fatalf("err = %v, want an error mentioning an attached image is required", err)
+	}
+}
+
+// TestUpscaleImageToolDefaultsAndScaleMapping checks the default model, the
+// 2x default, the 4x override, the forwarded source image, and the result shape.
+func TestUpscaleImageToolDefaultsAndScaleMapping(t *testing.T) {
+	tests := []struct {
+		name       string
+		scale      string
+		wantScale  float64
+		wantSuffix string
+	}{
+		{"default is 2x", "", 2.0, "2x with"},
+		{"explicit 2x", "2x", 2.0, "2x with"},
+		{"explicit 4x", "4x", 4.0, "4x with"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var captured ImageUpscaleRequest
+			tools := HarnessToolExecutionContext{
+				Config:        AppConfig{Models: ConfigModels{ImageProvider: "fal"}},
+				AttachedImage: "data:image/png;base64,ABC",
+				UpscaleImage: func(_ context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, error) {
+					captured = req
+					return ollamaGenerateResponse{Image: "data:image/png;base64,iVBORw0KGgo=", Done: true}, nil
+				},
+			}
+			def := imageUpscaleToolDefinition()
+			result, summary, err := def.Execute(t.Context(), tools, HarnessToolCall{Scale: tc.scale})
+			if err != nil {
+				t.Fatalf("Execute returned error: %v", err)
+			}
+			if captured.Image != "data:image/png;base64,ABC" {
+				t.Errorf("captured image = %q, want the attached source forwarded", captured.Image)
+			}
+			if captured.Model != defaultFalUpscaleModel {
+				t.Errorf("model = %q, want upscale default %q", captured.Model, defaultFalUpscaleModel)
+			}
+			if captured.Scale != tc.wantScale {
+				t.Errorf("scale = %v, want %v", captured.Scale, tc.wantScale)
+			}
+			if !strings.Contains(summary, tc.wantSuffix) {
+				t.Errorf("summary = %q, want it to mention %q", summary, tc.wantSuffix)
+			}
+			if typed, ok := result.(ToolImageResult); !ok || typed.Count != 1 {
+				t.Errorf("result = %+v, want a ToolImageResult with one image", result)
+			}
+		})
+	}
+}
+
+// TestUpscaleImageToolHonorsModelOverride verifies a call-supplied model wins
+// over the configured/default upscale model.
+func TestUpscaleImageToolHonorsModelOverride(t *testing.T) {
+	var captured ImageUpscaleRequest
+	tools := HarnessToolExecutionContext{
+		Config:        AppConfig{Models: ConfigModels{ImageProvider: "fal"}, Providers: ConfigProviders{Fal: ConfigFal{UpscaleModel: "fal-ai/clarity-upscaler"}}},
+		AttachedImage: "data:image/png;base64,ABC",
+		UpscaleImage: func(_ context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, error) {
+			captured = req
+			return ollamaGenerateResponse{Image: "data:image/png;base64,iVBORw0KGgo=", Done: true}, nil
+		},
+	}
+	def := imageUpscaleToolDefinition()
+	if _, _, err := def.Execute(t.Context(), tools, HarnessToolCall{Model: "fal-ai/creative-upscaler"}); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if captured.Model != "fal-ai/creative-upscaler" {
+		t.Errorf("model = %q, want the call override", captured.Model)
+	}
+}
+
+// TestImageUpscaleConfiguredAndResolver covers the gating (available whenever
+// fal is the image provider) and the resolver's configured→default fallback.
+func TestImageUpscaleConfiguredAndResolver(t *testing.T) {
+	if !imageUpscaleConfigured(AppConfig{Models: ConfigModels{ImageProvider: "fal"}}) {
+		t.Error("imageUpscaleConfigured(fal) = false, want true")
+	}
+	if imageUpscaleConfigured(AppConfig{Models: ConfigModels{ImageProvider: "ollama"}}) {
+		t.Error("imageUpscaleConfigured(ollama) = true, want false")
+	}
+	if got := resolveDefaultImageUpscaleModel(AppConfig{}); got != defaultFalUpscaleModel {
+		t.Errorf("resolveDefaultImageUpscaleModel(empty) = %q, want %q", got, defaultFalUpscaleModel)
+	}
+	if got := resolveDefaultImageUpscaleModel(AppConfig{Providers: ConfigProviders{Fal: ConfigFal{UpscaleModel: "fal-ai/clarity-upscaler"}}}); got != "fal-ai/clarity-upscaler" {
+		t.Errorf("resolveDefaultImageUpscaleModel(configured) = %q, want fal-ai/clarity-upscaler", got)
+	}
+}
+
+// TestIsFalUpscaleModel covers the id/tag filter that narrows fal's broad
+// image-to-image category down to upscalers. fal tags inconsistently, so the
+// id is the reliable signal — both must be checked.
+func TestIsFalUpscaleModel(t *testing.T) {
+	cases := []struct {
+		name  string
+		model FalModel
+		want  bool
+	}{
+		{"id with upscaling", FalModel{ID: "fal-ai/clarity-upscaler"}, true},
+		{"id with upscale", FalModel{ID: "fal-ai/seedvr/upscale/image"}, true},
+		{"tag upscaling", FalModel{ID: "fal-ai/esrgan", Tags: []string{"upscaling", "high-res"}}, true},
+		{"tag upscale", FalModel{ID: "fal-ai/x", Tags: []string{"upscale", "image-to-image"}}, true},
+		{"non-upscale image edit", FalModel{ID: "fal-ai/flux/dev/image-to-image", Tags: []string{"image-editing"}}, false},
+		{"background removal", FalModel{ID: "fal-ai/birefnet/v2", Tags: []string{"background removal", "segmentation"}}, false},
+		{"inpainting", FalModel{ID: "fal-ai/some-inpainter", Tags: []string{"inpainting"}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isFalUpscaleModel(tc.model); got != tc.want {
+				t.Errorf("isFalUpscaleModel(%+v) = %v, want %v", tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDecodeTriageDecisionAcceptsBareAndFencedJSON(t *testing.T) {
 	decision, err := decodeTriageDecision("```json\n{\"needsTools\":true,\"responseMode\":\"text\",\"toolTask\":\"Read status.txt\",\"reason\":\"workspace question\"}\n```")
 	if err != nil || !decision.NeedsTools || decision.ResponseMode != "text" || decision.ToolTask != "Read status.txt" {

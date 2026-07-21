@@ -157,6 +157,7 @@ export namespace main {
 	    videoModel?: string;
 	    videoImageModel?: string;
 	    audioModel?: string;
+	    upscaleModel?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigFal(source);
@@ -170,6 +171,7 @@ export namespace main {
 	        this.videoModel = source["videoModel"];
 	        this.videoImageModel = source["videoImageModel"];
 	        this.audioModel = source["audioModel"];
+	        this.upscaleModel = source["upscaleModel"];
 	    }
 	}
 	export class ConfigOpenRouter {
@@ -770,6 +772,7 @@ export namespace main {
 	    duration?: string;
 	    loop?: boolean;
 	    voice?: string;
+	    scale?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new HarnessToolCall(source);
@@ -796,6 +799,7 @@ export namespace main {
 	        this.duration = source["duration"];
 	        this.loop = source["loop"];
 	        this.voice = source["voice"];
+	        this.scale = source["scale"];
 	    }
 	}
 	export class HarnessToolResult {

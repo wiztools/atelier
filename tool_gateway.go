@@ -57,6 +57,16 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			}
 			return newFalClient(app.client, apiKey).GenerateVideo(ctx, req)
 		}
+		gateway.tools.UpscaleImage = func(ctx context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, error) {
+			apiKey, err := loadFalAPIKey()
+			if err != nil {
+				return ollamaGenerateResponse{}, err
+			}
+			if strings.TrimSpace(apiKey) == "" {
+				return ollamaGenerateResponse{}, errFalKeyNotConfigured
+			}
+			return newFalClient(app.client, apiKey).UpscaleImage(ctx, req)
+		}
 		schemaCache := newFalSchemaCache(app.client, config.Storage.Root)
 		audioOverrides := loadFalOverrides(config.Storage.Root)
 		gateway.tools.GenerateAudio = func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error) {

@@ -112,6 +112,9 @@ type HarnessToolCall struct {
 	// the configured model has no matching parameter.
 	Loop  bool   `json:"loop,omitempty"`
 	Voice string `json:"voice,omitempty"`
+	// Scale is an optional upscale_image input naming the upscale factor
+	// ("2x" or "4x"). Omit for the default 2x. See imageUpscaleParamSchema.
+	Scale string `json:"scale,omitempty"`
 }
 
 type HarnessToolResult struct {
