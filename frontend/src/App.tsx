@@ -163,6 +163,16 @@ type Attachment = {
   kind: 'image' | 'audio' | 'video';
 };
 
+// A per-conversation composer snapshot, held in memory for the session so
+// switching conversations or pressing Cmd+N restores what was being typed.
+// Attachments are already base64 data URLs at attach time (see readImageFile),
+// so a draft is just serializable state keyed by conversationID. The empty
+// string key belongs to the not-yet-saved "new chat" composer.
+type ComposerDraft = {
+  prompt: string;
+  attachments: Attachment[];
+};
+
 const defaultBaseURL = 'http://localhost:11434';
 const defaultSidebarWidth = 320;
 const minSidebarWidth = 240;
@@ -312,6 +322,14 @@ function App() {
   const requestConversationRef = useRef<Record<string, {conversationID: string; kind: ConversationKind}>>({});
   const chatStreamDraftsRef = useRef<Record<string, ChatStreamDraft>>({});
   const chatPromptRef = useRef<HTMLTextAreaElement | null>(null);
+  // Per-conversation composer drafts, keyed by conversationID ('' = new chat).
+  // Mirror refs keep the latest prompt/attachments/activeConversationID so the
+  // Cmd+N keydown listener (whose closure goes stale between activeStream
+  // changes) reads current values rather than captured ones.
+  const composerDraftsRef = useRef<Record<string, ComposerDraft>>({});
+  const promptRef = useRef('');
+  const attachmentsRef = useRef<Attachment[]>([]);
+  const activeConversationIDRef = useRef('');
   const copyResetRef = useRef<number | null>(null);
 
   const assistantEntryID = activeStream ? `assistant-${activeStream}` : '';
@@ -732,14 +750,16 @@ function App() {
     ]);
   }
 
-  async function refreshConversations() {
+  async function refreshConversations(): Promise<main.ConversationSummary[]> {
     try {
       const nextConversations = await ListConversations();
       setConversations(asArray(nextConversations));
       setVisibleHistoryCount((current) => historyExpanded ? Math.max(current, compactHistoryLimit) : compactHistoryLimit);
+      return asArray(nextConversations);
     } catch (error) {
       setStartupError(formatError(error));
       setConversations([]);
+      return [];
     }
   }
 
@@ -976,13 +996,49 @@ function App() {
     }
   }
 
+  // Keep the mirror refs in sync so navigation handlers (and the stale Cmd+N
+  // keydown closure) always read the latest composer/active-conversation state.
+  useEffect(() => {
+    promptRef.current = prompt;
+  }, [prompt]);
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
+  useEffect(() => {
+    activeConversationIDRef.current = activeConversationID;
+  }, [activeConversationID]);
+
+  // Snapshot the current composer (prompt + attachments) under the conversation
+  // being left, so it can be restored when returning. Empty drafts are deleted
+  // to keep the store bounded and avoid resurrecting blank composes.
+  function stashCurrentDraft() {
+    const id = activeConversationIDRef.current;
+    const next: ComposerDraft = {
+      prompt: promptRef.current,
+      attachments: attachmentsRef.current,
+    };
+    if (!next.prompt.trim() && next.attachments.length === 0) {
+      delete composerDraftsRef.current[id];
+    } else {
+      composerDraftsRef.current[id] = next;
+    }
+  }
+
+  // Load the composer from the store for the conversation being entered, or
+  // clear it if no draft exists for that key.
+  function restoreDraftFor(conversationID: string) {
+    const draft = composerDraftsRef.current[conversationID];
+    setPrompt(draft?.prompt ?? '');
+    setAttachments(draft?.attachments ?? []);
+  }
+
   async function resetWorkspace() {
+    stashCurrentDraft();
     visibleStreamRef.current = null;
     setActiveStream(null);
     setChat([]);
     setCollapsedThinkingIDs({});
-    setPrompt('');
-    setAttachments([]);
+    restoreDraftFor('');
     setActiveConversationID('');
     setDraftWorkspace('');
     setView('app');
@@ -1063,6 +1119,7 @@ function App() {
   }
 
   function hydrateChatConversation(detail: main.ConversationDetail) {
+    stashCurrentDraft();
     const inFlight = inFlightConversationsRef.current[detail.conversation.id];
     const visibleRequestID = inFlight?.kind === 'chat' ? inFlight.requestID : null;
     visibleStreamRef.current = visibleRequestID;
@@ -1097,8 +1154,7 @@ function App() {
     setChat(entries);
     setCollapsedThinkingIDs({});
     setActiveConversationID(detail.conversation.id);
-    setPrompt('');
-    setAttachments([]);
+    restoreDraftFor(detail.conversation.id);
   }
 
   async function copyConversationID(conversation: main.ConversationSummary) {
@@ -1122,6 +1178,7 @@ function App() {
     try {
       setOpenHistoryMenuID('');
       await DeleteConversation(conversation.id);
+      delete composerDraftsRef.current[conversation.id];
       setConversations((items) => asArray(items).filter((item) => item.id !== conversation.id));
       if (editingTitleID === conversation.id) {
         cancelEditingConversationTitle();
@@ -1148,7 +1205,15 @@ function App() {
       setPurgeBusy(true);
       setPurgeStatus('');
       const result = await PurgeArchivedConversations();
-      await refreshConversations();
+      const remaining = await refreshConversations();
+      // Drop any session drafts for conversations that no longer exist, but
+      // always keep the '' new-chat key.
+      const liveIDs = new Set(remaining.map((item) => item.id));
+      for (const id of Object.keys(composerDraftsRef.current)) {
+        if (id !== '' && !liveIDs.has(id)) {
+          delete composerDraftsRef.current[id];
+        }
+      }
       setConfirmPurgeArchived(false);
       setPurgeStatus(`${result.deletedConversations} archived ${result.deletedConversations === 1 ? 'conversation' : 'conversations'} and ${result.deletedAssets} ${result.deletedAssets === 1 ? 'asset' : 'assets'} deleted.`);
     } catch (error) {
@@ -1247,6 +1312,9 @@ function App() {
 
     setPrompt('');
     setAttachments([]);
+    // The composer contents are being sent, not stashed — drop any stored draft
+    // for the current key ('' for a brand-new chat) so it isn't resurrected.
+    delete composerDraftsRef.current[activeConversationIDRef.current];
     shouldFollowTranscriptRef.current = true;
     setChat((entries) => [
       ...entries,
