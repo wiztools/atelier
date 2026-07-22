@@ -1,0 +1,15 @@
+{
+  "components": {
+    "schemas": {
+      "KlingLipsyncAudioToVideoInput": {
+        "type": "object",
+        "x-fal-order-properties": ["audio_url", "image_url"],
+        "required": ["audio_url", "image_url"],
+        "properties": {
+          "audio_url": { "type": "string", "description": "The URL of the driving audio." },
+          "image_url": { "type": "string", "description": "The URL of the face image to animate." }
+        }
+      }
+    }
+  }
+}

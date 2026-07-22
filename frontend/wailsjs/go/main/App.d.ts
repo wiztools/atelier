@@ -28,11 +28,17 @@ export function ListFalAudioModels():Promise<Array<main.FalModel>>;
 
 export function ListFalImageEditModels():Promise<Array<main.FalModel>>;
 
+export function ListFalLipsyncImageModels():Promise<Array<main.FalModel>>;
+
+export function ListFalLipsyncVideoModels():Promise<Array<main.FalModel>>;
+
 export function ListFalModels():Promise<Array<main.FalModel>>;
 
 export function ListFalTranscribeModels():Promise<Array<main.FalModel>>;
 
 export function ListFalUpscaleModels():Promise<Array<main.FalModel>>;
+
+export function ListFalVideoExtendModels():Promise<Array<main.FalModel>>;
 
 export function ListFalVideoImageModels():Promise<Array<main.FalModel>>;
 

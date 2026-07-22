@@ -379,3 +379,232 @@ func TestResolveImageBodyNoSchema(t *testing.T) {
 		t.Fatalf("notice = %q, want it to mention the unavailable schema", notices[0])
 	}
 }
+
+// TestResolveVideoBodyVeoTextToVideo maps the canonical text-to-video params onto
+// Veo 3.1's schema fields. duration and aspect_ratio are enums on Veo; the
+// resolver passes the caller's string through unchanged.
+func TestResolveVideoBodyVeoTextToVideo(t *testing.T) {
+	audio := true
+	body, notices := resolveVideoBody(loadSchema(t, "veo3.1"),
+		VideoGenerateRequest{
+			Model:          "fal-ai/veo3.1",
+			Prompt:         "a drone shot over a misty pine forest at sunrise",
+			Duration:       "8s",
+			AspectRatio:    "16:9",
+			NegativePrompt: "blurry, text",
+			GenerateAudio:  &audio,
+		},
+		builtinFalOverrides())
+	if body["prompt"] != "a drone shot over a misty pine forest at sunrise" {
+		t.Fatalf("prompt = %v", body["prompt"])
+	}
+	if body["duration"] != "8s" {
+		t.Fatalf("duration = %v, want 8s", body["duration"])
+	}
+	if body["aspect_ratio"] != "16:9" {
+		t.Fatalf("aspect_ratio = %v, want 16:9", body["aspect_ratio"])
+	}
+	if body["negative_prompt"] != "blurry, text" {
+		t.Fatalf("negative_prompt = %v", body["negative_prompt"])
+	}
+	if body["generate_audio"] != true {
+		t.Fatalf("generate_audio = %v, want true", body["generate_audio"])
+	}
+	// No source media attached — neither video_url nor image_url should appear.
+	if _, present := body["video_url"]; present {
+		t.Fatalf("video_url must not be set for text-to-video; got %v", body["video_url"])
+	}
+	if _, present := body["image_url"]; present {
+		t.Fatalf("image_url must not be set for text-to-video; got %v", body["image_url"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("expected no notices for Veo text-to-video, got %v", notices)
+	}
+}
+
+// TestResolveVideoBodyVeoExtend verifies the extend path: an attached video maps
+// onto the model's video_url field, and an attached image is ignored in favor of
+// the video (extend takes precedence over image-to-video).
+func TestResolveVideoBodyVeoExtend(t *testing.T) {
+	body, notices := resolveVideoBody(loadSchema(t, "veo3.1-extend-video"),
+		VideoGenerateRequest{
+			Model:  "fal-ai/veo3.1/extend-video",
+			Prompt: "the camera continues panning across the valley",
+			Video:  "data:video/mp4;base64,AAA",
+			Image:  "data:image/png;base64,BBB",
+		},
+		builtinFalOverrides())
+	if body["prompt"] != "the camera continues panning across the valley" {
+		t.Fatalf("prompt = %v", body["prompt"])
+	}
+	if got, ok := body["video_url"].(string); !ok || !strings.HasPrefix(got, "data:video/") {
+		t.Fatalf("video_url = %v, want the attached video data URI", body["video_url"])
+	}
+	// image_url must NOT appear: extend wins over image-to-video when both are set.
+	if _, present := body["image_url"]; present {
+		t.Fatalf("image_url must not be set when extending a video; got %v", body["image_url"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("expected no notices for Veo extend, got %v", notices)
+	}
+}
+
+// TestResolveVideoBodyKlingImageToVideo verifies image-to-video: an attached
+// image maps onto the model's scalar image_url field.
+func TestResolveVideoBodyKlingImageToVideo(t *testing.T) {
+	body, notices := resolveVideoBody(loadSchema(t, "kling-image-to-video"),
+		VideoGenerateRequest{
+			Model:  "fal-ai/kling-video/v2/master/image-to-video",
+			Prompt: "make the character walk forward",
+			Image:  "data:image/png;base64,ABC",
+		},
+		builtinFalOverrides())
+	if body["prompt"] != "make the character walk forward" {
+		t.Fatalf("prompt = %v", body["prompt"])
+	}
+	if got, ok := body["image_url"].(string); !ok || !strings.HasPrefix(got, "data:image/") {
+		t.Fatalf("image_url = %v, want the attached image data URI", body["image_url"])
+	}
+	if _, present := body["video_url"]; present {
+		t.Fatalf("video_url must not be set for image-to-video; got %v", body["video_url"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("expected no notices for Kling image-to-video, got %v", notices)
+	}
+}
+
+// TestResolveVideoBodyNoSchema verifies the nil-schema legacy fallback reproduces
+// the body GenerateVideo used to build itself, plus a schema-unavailable notice.
+func TestResolveVideoBodyNoSchema(t *testing.T) {
+	silent := false
+	body, notices := resolveVideoBody(nil,
+		VideoGenerateRequest{
+			Model:          "fal-ai/kling-video/v2/master/text-to-video",
+			Prompt:         "a calm ocean at dawn",
+			Duration:       "5",
+			AspectRatio:    "16:9",
+			NegativePrompt: "text",
+			GenerateAudio:  &silent,
+			Image:          "data:image/png;base64,ABC",
+		},
+		builtinFalOverrides())
+	if body["prompt"] != "a calm ocean at dawn" {
+		t.Fatalf("prompt = %v", body["prompt"])
+	}
+	if body["duration"] != "5" {
+		t.Fatalf("duration = %v, want 5 (legacy fallback)", body["duration"])
+	}
+	if body["aspect_ratio"] != "16:9" {
+		t.Fatalf("aspect_ratio = %v (legacy fallback)", body["aspect_ratio"])
+	}
+	if body["negative_prompt"] != "text" {
+		t.Fatalf("negative_prompt = %v (legacy fallback)", body["negative_prompt"])
+	}
+	if body["generate_audio"] != false {
+		t.Fatalf("generate_audio = %v, want false (legacy fallback)", body["generate_audio"])
+	}
+	if got, ok := body["image_url"].(string); !ok || !strings.HasPrefix(got, "data:image/") {
+		t.Fatalf("image_url = %v, want the source string (legacy fallback)", body["image_url"])
+	}
+	if len(notices) != 1 {
+		t.Fatalf("expected one schema-unavailable notice, got %v", notices)
+	}
+	if !strings.Contains(notices[0], "Couldn't load") {
+		t.Fatalf("notice = %q, want it to mention the unavailable schema", notices[0])
+	}
+}
+
+// TestResolveVideoBodyNoSourceInput verifies that a model lacking a source-video
+// field degrades cleanly with a notice when the user attached a video to extend.
+func TestResolveVideoBodyNoSourceInput(t *testing.T) {
+	body, notices := resolveVideoBody(loadSchema(t, "veo3.1"),
+		VideoGenerateRequest{
+			Model:  "fal-ai/veo3.1",
+			Prompt: "extend this clip",
+			Video:  "data:video/mp4;base64,AAA",
+		},
+		builtinFalOverrides())
+	// veo3.1 (text-to-video) has no video_url field — the video is dropped.
+	if _, present := body["video_url"]; present {
+		t.Fatalf("video_url must not be set on a model with no source-video input; got %v", body["video_url"])
+	}
+	if len(notices) != 1 {
+		t.Fatalf("expected one source-video-ignored notice, got %v", notices)
+	}
+	if !strings.Contains(notices[0], "source-video") {
+		t.Fatalf("notice = %q, want it to mention the ignored source video", notices[0])
+	}
+}
+
+// TestResolveLipsyncBodyAudioToVideo verifies the audio-to-video path: the
+// driving audio maps onto audio_url and the face image onto image_url.
+func TestResolveLipsyncBodyAudioToVideo(t *testing.T) {
+	body, notices := resolveLipsyncBody(loadSchema(t, "kling-lipsync-audio-to-video"),
+		LipsyncGenerateRequest{
+			Model: "fal-ai/kling-video/lipsync/audio-to-video",
+			Audio: "data:audio/mpeg;base64,AAA",
+			Image: "data:image/png;base64,BBB",
+		},
+		builtinFalOverrides())
+	if got, ok := body["audio_url"].(string); !ok || !strings.HasPrefix(got, "data:audio/") {
+		t.Fatalf("audio_url = %v, want the driving audio data URI", body["audio_url"])
+	}
+	if got, ok := body["image_url"].(string); !ok || !strings.HasPrefix(got, "data:image/") {
+		t.Fatalf("image_url = %v, want the face image data URI", body["image_url"])
+	}
+	if _, present := body["video_url"]; present {
+		t.Fatalf("video_url must not be set for audio-to-video; got %v", body["video_url"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("expected no notices for Kling audio-to-video, got %v", notices)
+	}
+}
+
+// TestResolveLipsyncBodyVideoToVideo verifies the video-to-video path: the
+// driving audio maps onto audio_url and the face video onto video_url.
+func TestResolveLipsyncBodyVideoToVideo(t *testing.T) {
+	body, notices := resolveLipsyncBody(loadSchema(t, "sync-lipsync-v2-pro"),
+		LipsyncGenerateRequest{
+			Model: "fal-ai/sync-lipsync/v2/pro",
+			Audio: "data:audio/mpeg;base64,AAA",
+			Video: "data:video/mp4;base64,CCC",
+		},
+		builtinFalOverrides())
+	if got, ok := body["audio_url"].(string); !ok || !strings.HasPrefix(got, "data:audio/") {
+		t.Fatalf("audio_url = %v, want the driving audio data URI", body["audio_url"])
+	}
+	if got, ok := body["video_url"].(string); !ok || !strings.HasPrefix(got, "data:video/") {
+		t.Fatalf("video_url = %v, want the face video data URI", body["video_url"])
+	}
+	if _, present := body["image_url"]; present {
+		t.Fatalf("image_url must not be set for video-to-video; got %v", body["image_url"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("expected no notices for sync-lipsync video-to-video, got %v", notices)
+	}
+}
+
+// TestResolveLipsyncBodyNoSchema verifies the nil-schema generic fallback maps
+// the audio + whichever face source is present, plus a schema-unavailable
+// notice.
+func TestResolveLipsyncBodyNoSchema(t *testing.T) {
+	body, notices := resolveLipsyncBody(nil,
+		LipsyncGenerateRequest{
+			Model: "fal-ai/sync-lipsync/v2/pro",
+			Audio: "data:audio/mpeg;base64,AAA",
+			Video: "data:video/mp4;base64,CCC",
+		},
+		builtinFalOverrides())
+	if got, ok := body["audio_url"].(string); !ok || !strings.HasPrefix(got, "data:audio/") {
+		t.Fatalf("audio_url = %v, want the driving audio data URI", body["audio_url"])
+	}
+	if got, ok := body["video_url"].(string); !ok || !strings.HasPrefix(got, "data:video/") {
+		t.Fatalf("video_url = %v, want the face video data URI", body["video_url"])
+	}
+	if len(notices) != 1 {
+		t.Fatalf("expected one schema-unavailable notice, got %v", notices)
+	}
+	if !strings.Contains(notices[0], "Couldn't load") {
+		t.Fatalf("notice = %q, want it to mention the unavailable schema", notices[0])
+	}
+}

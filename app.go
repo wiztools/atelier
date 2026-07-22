@@ -134,9 +134,12 @@ type ConfigFal struct {
 	// source image to transform; Model is the text-to-image endpoint.
 	ImageEditModel string `json:"imageEditModel,omitempty"`
 	// VideoModel is the text-to-video endpoint; VideoImageModel is the
-	// image-to-video endpoint used when the user attaches an image to animate.
-	VideoModel      string `json:"videoModel,omitempty"`
-	VideoImageModel string `json:"videoImageModel,omitempty"`
+	// image-to-video endpoint used when the user attaches an image to animate;
+	// VideoExtendModel is the video-extend endpoint used when the user attaches a
+	// video to continue (Veo extend).
+	VideoModel       string `json:"videoModel,omitempty"`
+	VideoImageModel  string `json:"videoImageModel,omitempty"`
+	VideoExtendModel string `json:"videoExtendModel,omitempty"`
 	// AudioModel is the text-to-audio endpoint (speech, music, or sound effects).
 	AudioModel string `json:"audioModel,omitempty"`
 	// TranscribeModel is the speech-to-text endpoint used by transcribe_audio
@@ -144,6 +147,12 @@ type ConfigFal struct {
 	TranscribeModel string `json:"transcribeModel,omitempty"`
 	// UpscaleModel is the image upscaler endpoint (fal-only; Ollama has none).
 	UpscaleModel string `json:"upscaleModel,omitempty"`
+	// LipsyncImageModel is the audio-to-video lip sync endpoint used when the
+	// user attaches an audio clip plus an image (a talking head).
+	// LipsyncVideoModel is the video-to-video lip sync endpoint used when the
+	// user attaches an audio clip plus a video (re-lip-sync an existing clip).
+	LipsyncImageModel string `json:"lipsyncImageModel,omitempty"`
+	LipsyncVideoModel string `json:"lipsyncVideoModel,omitempty"`
 }
 
 type ConfigModels struct {
@@ -240,7 +249,14 @@ type ChatMessage struct {
 	// audio attachment on any other provider before the turn runs (Ollama has no
 	// audio input API). Like Images, the bytes are stripped before triage and the
 	// OpenRouter adapter is the sole place they become input_audio content parts.
-	Audios    []string   `json:"audios,omitempty"`
+	Audios []string `json:"audios,omitempty"`
+	// Videos carries user-attached video as data URLs (data:video/<fmt>;base64,...),
+	// parallel to Audios. Unlike audio, video input is tool-only — it never
+	// reaches a chat model: messagesWithoutMedia strips the bytes before triage
+	// (and therefore before any model call), and no provider adapter emits a
+	// video content part. Tools consume it via AttachedVideo (Veo extend, lip
+	// sync). Bytes are validated with isVideoBytes before being persisted.
+	Videos    []string   `json:"videos,omitempty"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
@@ -369,9 +385,11 @@ type ImageUpscaleRequest struct {
 	Scale float64 `json:"scale,omitempty"`
 }
 
-// VideoGenerateRequest is the input to a text-to-video generation. Unlike
-// images, videos take a duration and aspect ratio rather than width/height/steps
-// — these mirror fal's text-to-video schema (see FalClient.GenerateVideo).
+// VideoGenerateRequest is the input to a video generation (text-to-video,
+// image-to-video, or video extend). The canonical params here are mapped onto
+// the model's native fields by resolveVideoBody; the transport (FalClient.
+// GenerateVideo) receives only the resolved body. Image is the source frame for
+// image-to-video; Video is the source clip for a Veo extend endpoint.
 type VideoGenerateRequest struct {
 	Model          string `json:"model"`
 	Prompt         string `json:"prompt"`
@@ -382,11 +400,32 @@ type VideoGenerateRequest struct {
 	// URL or a base64 data URI. It maps to fal's image_url input and requires an
 	// image-to-video model.
 	Image string `json:"image,omitempty"`
+	// Video, when set, is the source clip a Veo extend endpoint continues — a
+	// URL or a base64 data URI. It maps to fal's video_url input and requires an
+	// extend-capable model (e.g. fal-ai/veo3.1/extend-video).
+	Video string `json:"video,omitempty"`
 	// GenerateAudio maps to fal's generate_audio input on audio-capable video
 	// models. A pointer so "unspecified" (nil, let the model default) stays
 	// distinct from an explicit false (silent clip) — the latter is what "video
 	// without audio" requests. Endpoints that never emit audio ignore it.
 	GenerateAudio *bool `json:"generateAudio,omitempty"`
+}
+
+// LipsyncGenerateRequest is the input to a lip sync generation. An audio clip
+// drives a face: either an image (audio-to-video, a talking head) or an existing
+// video (video-to-video, re-lip-synced). The mode is determined by which source
+// is set — exactly one of Image or Video. resolveLipsyncBody maps these onto the
+// model's native audio_url/image_url/video_url fields.
+type LipsyncGenerateRequest struct {
+	Model string `json:"model"`
+	// Audio is the driving audio track — required. A URL or base64 data URI.
+	Audio string `json:"audio,omitempty"`
+	// Image is the face source for audio-to-video lip sync. Set for audio-to-video
+	// mode (a talking head). Mutually exclusive with Video.
+	Image string `json:"image,omitempty"`
+	// Video is the face source for video-to-video lip sync. Set for video-to-video
+	// mode (re-lip-sync an existing clip). Mutually exclusive with Image.
+	Video string `json:"video,omitempty"`
 }
 
 type SaveImageRequest struct {
@@ -1059,6 +1098,62 @@ func decodeAudioPayload(audio string) ([]byte, string, error) {
 	return data, extension, nil
 }
 
+// decodeVideoPayload mirrors decodeAudioPayload for user-attached video. It
+// accepts a data:video/<fmt>;base64,... data URL (what the frontend always
+// sends) or a hydrated /atelier-artifact/ path (referencing a persisted video
+// artifact), and returns the raw bytes plus a file extension. Bytes are
+// validated with isVideoBytes so a non-video payload is rejected rather than
+// written as a broken artifact. Like audio, there is no bare-base64 fallback:
+// video input is tool-only and the harness resolves AttachedVideo from the data
+// URL the frontend sends (or a re-encoded artifact on history fallback).
+func decodeVideoPayload(video string) ([]byte, string, error) {
+	video = strings.TrimSpace(video)
+	if video == "" {
+		return nil, "", errors.New("video data is empty")
+	}
+
+	// A conversation reloaded from history references video artifacts via the
+	// /atelier-artifact/ URL prefix (hydrateHistoryContent); resolve those back
+	// to bytes on disk, mirroring decodeAudioPayload.
+	if sourcePath := strings.TrimPrefix(video, artifactPrefix); sourcePath != video {
+		data, err := os.ReadFile(sourcePath)
+		if err != nil {
+			return nil, "", err
+		}
+		if !isVideoBytes(data) {
+			return nil, "", errors.New("artifact is not a supported video file")
+		}
+		extension := strings.ToLower(filepath.Ext(sourcePath))
+		if extension == "" {
+			extension = ".mp4"
+		}
+		return data, extension, nil
+	}
+
+	extension := ".mp4"
+	if strings.HasPrefix(video, "data:video/") {
+		headerEnd := strings.Index(video, ",")
+		if headerEnd < 0 {
+			return nil, "", errors.New("video data URL is missing payload")
+		}
+		mediaType := video[len("data:"):headerEnd]
+		if semicolon := strings.Index(mediaType, ";"); semicolon >= 0 {
+			mediaType = mediaType[:semicolon]
+		}
+		extension = videoExtensionForMediaType(mediaType)
+		video = video[headerEnd+1:]
+	}
+
+	data, err := base64.StdEncoding.DecodeString(video)
+	if err != nil {
+		return nil, "", err
+	}
+	if !isVideoBytes(data) {
+		return nil, "", errors.New("payload is not a supported video file")
+	}
+	return data, extension, nil
+}
+
 // readArtifactAsDataURL resolves a persisted image artifact (referenced by
 // relative Path in a HistoryContent entry) to its bytes on disk and re-encodes
 // them as a base64 data URL — the shape AttachedImage consumers (fal/Ollama)
@@ -1434,6 +1529,126 @@ func (a *App) ListFalImageEditModels() ([]FalModel, error) {
 		}
 	}
 	return edits, nil
+}
+
+// isFalLipsyncModel reports whether a fal catalog entry is a lip-sync endpoint,
+// by id or tag. fal tags these inconsistently ("lipsync" vs "lip sync", and some
+// carry only one), so both the id and every tag are checked. Mirrors
+// isFalUpscaleModel's defensive matching.
+func isFalLipsyncModel(model FalModel) bool {
+	if strings.Contains(strings.ToLower(model.ID), "lipsync") || strings.Contains(strings.ToLower(model.ID), "lip-sync") {
+		return true
+	}
+	for _, tag := range model.Tags {
+		lower := strings.ToLower(tag)
+		if strings.Contains(lower, "lipsync") || strings.Contains(lower, "lip sync") {
+			return true
+		}
+	}
+	return false
+}
+
+// ListFalLipsyncImageModels returns fal's audio-to-video lip sync catalog for
+// the Settings audio-to-video-model picker — endpoints that drive a face image
+// with an audio clip (a talking head). fal files these across the audio-to-video
+// and image-to-video categories (kling lipsync/audio-to-video is tagged
+// text-to-video but sync-lipsync/v3/image-to-video and musetalk are
+// image-to-video), so both are fetched, merged, deduped by endpoint id, and kept
+// only when isFalLipsyncModel matches. The category split mirrors how
+// ListFalAudioModels merges two categories; the filter mirrors
+// ListFalUpscaleModels.
+func (a *App) ListFalLipsyncImageModels() ([]FalModel, error) {
+	key, err := loadFalAPIKey()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	client := newFalClient(a.client, key)
+
+	merged := []FalModel{}
+	seen := map[string]bool{}
+	for _, category := range []string{falAudioToVideoCategory, falImageToVideoCategory} {
+		models, err := client.ListModels(ctx, category, 0)
+		if err != nil {
+			return nil, err
+		}
+		for _, model := range models {
+			if model.ID == "" || seen[model.ID] || !isFalLipsyncModel(model) {
+				continue
+			}
+			seen[model.ID] = true
+			merged = append(merged, model)
+		}
+	}
+	return merged, nil
+}
+
+// ListFalLipsyncVideoModels returns fal's video-to-video lip sync catalog for
+// the Settings video-to-video-model picker — endpoints that re-lip-sync an
+// existing video with an audio clip (sync-lipsync, latentsync, veed, heygen,
+// pixverse). fal files these under the video-to-video category, fetched and kept
+// only when isFalLipsyncModel matches.
+func (a *App) ListFalLipsyncVideoModels() ([]FalModel, error) {
+	key, err := loadFalAPIKey()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	models, err := newFalClient(a.client, key).ListModels(ctx, falVideoToVideoCategory, 0)
+	if err != nil {
+		return nil, err
+	}
+	lipsync := make([]FalModel, 0, len(models))
+	for _, model := range models {
+		if isFalLipsyncModel(model) {
+			lipsync = append(lipsync, model)
+		}
+	}
+	return lipsync, nil
+}
+
+// isFalVideoExtendModel reports whether a fal catalog entry is a video-extend
+// endpoint — one that continues an existing clip into a longer one (Veo extend,
+// ltx extend, pixverse extend, etc.). fal files these under the broad
+// video-to-video category alongside lip-sync and other transforms, so the id and
+// tags are checked for "extend". Mirrors isFalLipsyncModel / isFalUpscaleModel.
+func isFalVideoExtendModel(model FalModel) bool {
+	if strings.Contains(strings.ToLower(model.ID), "extend") {
+		return true
+	}
+	for _, tag := range model.Tags {
+		if strings.Contains(strings.ToLower(tag), "extend") {
+			return true
+		}
+	}
+	return false
+}
+
+// ListFalVideoExtendModels returns fal's video-extend catalog for the Settings
+// video-extend-model picker — endpoints that continue an attached video clip
+// into a longer one. fal files these under the video-to-video category, fetched
+// and kept only when isFalVideoExtendModel matches. Shares its category with
+// ListFalLipsyncVideoModels; the two filters (extend vs lipsync) partition it.
+func (a *App) ListFalVideoExtendModels() ([]FalModel, error) {
+	key, err := loadFalAPIKey()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	models, err := newFalClient(a.client, key).ListModels(ctx, falVideoToVideoCategory, 0)
+	if err != nil {
+		return nil, err
+	}
+	extend := make([]FalModel, 0, len(models))
+	for _, model := range models {
+		if isFalVideoExtendModel(model) {
+			extend = append(extend, model)
+		}
+	}
+	return extend, nil
 }
 
 // ListFalAudioModels returns fal's audio-generation catalog for the Settings
@@ -2709,12 +2924,44 @@ func lastUserPrompt(messages []ChatMessage) string {
 	return lastUserMessage(messages).Content
 }
 
+// readVideoArtifactAsDataURL resolves a persisted video artifact (referenced by
+// relative Path in a HistoryContent entry) to its bytes on disk and re-encodes
+// them as a base64 data URL — the shape AttachedVideo consumers (Veo extend,
+// lip sync) expect. Sibling of readAudioArtifactAsDataURL: used by the harness
+// to re-hydrate a prior turn's attached video when the current turn has no
+// attachment, so video-dependent tools work across turns without forcing the
+// user to re-attach on every message.
+func readVideoArtifactAsDataURL(storage ConfigStorage, conversationID string, content HistoryContent) (string, error) {
+	conversationPath, err := findConversationPath(storage, conversationID)
+	if err != nil {
+		return "", err
+	}
+	absPath := filepath.Join(filepath.Dir(conversationPath), filepath.FromSlash(content.Path))
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return "", err
+	}
+	if !isVideoBytes(data) {
+		return "", fmt.Errorf("artifact %s is not a supported video file", content.Path)
+	}
+	mediaType := strings.TrimSpace(content.MimeType)
+	if mediaType == "" {
+		mediaType = http.DetectContentType(data)
+	}
+	if !strings.HasPrefix(mediaType, "video/") {
+		// DetectContentType can return "application/octet-stream" for some
+		// video containers; fall back to mp4 so the data URL is well-formed.
+		mediaType = "video/mp4"
+	}
+	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+}
+
 func historyContentForMessage(message ChatMessage, artifactsDir string, turnNumber int) ([]HistoryContent, error) {
 	contents := []HistoryContent{}
 	if strings.TrimSpace(message.Content) != "" {
 		contents = append(contents, HistoryContent{Type: "text", Text: message.Content})
 	}
-	if len(message.Images) > 0 || len(message.Audios) > 0 {
+	if len(message.Images) > 0 || len(message.Audios) > 0 || len(message.Videos) > 0 {
 		if err := os.MkdirAll(artifactsDir, 0755); err != nil {
 			return nil, err
 		}
@@ -2755,20 +3002,39 @@ func historyContentForMessage(message ChatMessage, artifactsDir string, turnNumb
 			MimeType:   mediaTypeForExtension(extension),
 		})
 	}
+	for index, video := range message.Videos {
+		data, extension, err := decodeVideoPayload(video)
+		if err != nil {
+			return nil, err
+		}
+		artifactID := fmt.Sprintf("input_video_%06d_%06d", turnNumber, index+1)
+		filename := artifactID + extension
+		artifactPath := filepath.Join(artifactsDir, filename)
+		if err := os.WriteFile(artifactPath, data, 0644); err != nil {
+			return nil, err
+		}
+		contents = append(contents, HistoryContent{
+			Type:       "video",
+			ArtifactID: artifactID,
+			Path:       filepath.ToSlash(filepath.Join("artifacts", filename)),
+			MimeType:   mediaTypeForExtension(extension),
+		})
+	}
 	if len(contents) == 0 {
 		return []HistoryContent{{Type: "text", Text: ""}}, nil
 	}
 	return contents, nil
 }
 
-// countMessageAttachments counts image and audio attachments across messages
-// for conversation artifact stats. Audio is included so the artifact count
-// reflects user-attached media, not just images.
+// countMessageAttachments counts image, audio, and video attachments across
+// messages for conversation artifact stats. Audio and video are included so
+// the artifact count reflects user-attached media, not just images.
 func countMessageAttachments(messages []ChatMessage) int {
 	count := 0
 	for _, message := range messages {
 		count += len(message.Images)
 		count += len(message.Audios)
+		count += len(message.Videos)
 	}
 	return count
 }

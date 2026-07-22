@@ -54,6 +54,14 @@ export function ListFalImageEditModels() {
   return window['go']['main']['App']['ListFalImageEditModels']();
 }
 
+export function ListFalLipsyncImageModels() {
+  return window['go']['main']['App']['ListFalLipsyncImageModels']();
+}
+
+export function ListFalLipsyncVideoModels() {
+  return window['go']['main']['App']['ListFalLipsyncVideoModels']();
+}
+
 export function ListFalModels() {
   return window['go']['main']['App']['ListFalModels']();
 }
@@ -64,6 +72,10 @@ export function ListFalTranscribeModels() {
 
 export function ListFalUpscaleModels() {
   return window['go']['main']['App']['ListFalUpscaleModels']();
+}
+
+export function ListFalVideoExtendModels() {
+  return window['go']['main']['App']['ListFalVideoExtendModels']();
 }
 
 export function ListFalVideoImageModels() {

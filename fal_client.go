@@ -27,6 +27,9 @@ const (
 	// defaultFalVideoImageModel is the image-to-video endpoint used to animate an
 	// attached image — the image-to-video sibling of defaultFalVideoModel.
 	defaultFalVideoImageModel = "fal-ai/kling-video/v2/master/image-to-video"
+	// defaultFalVideoExtendModel is the video-extend endpoint used to continue an
+	// attached clip (Google Veo via fal). Veo extend chains a clip up to ~30s.
+	defaultFalVideoExtendModel = "fal-ai/veo3.1/extend-video"
 	// defaultFalAudioModel is the text-to-audio endpoint used when none is
 	// configured — a text-to-speech model, the most common "audio response" case.
 	defaultFalAudioModel = "fal-ai/elevenlabs/tts/multilingual-v2"
@@ -38,6 +41,15 @@ const (
 	// configured — a simple, cheap ESRGAN-based upscaler that takes image_url +
 	// scale. fal is the only upscale backend (Ollama has no upscaler).
 	defaultFalUpscaleModel = "fal-ai/esrgan"
+	// defaultFalLipsyncImageModel is the audio-to-video lip sync endpoint used
+	// when the user attaches an audio clip plus an image — drives a face into a
+	// talking-head video. Kling's lipsync/audio-to-video is the default for
+	// quality + commercial-use licensing.
+	defaultFalLipsyncImageModel = "fal-ai/kling-video/lipsync/audio-to-video"
+	// defaultFalLipsyncVideoModel is the video-to-video lip sync endpoint used
+	// when the user attaches an audio clip plus a video — re-lip-syncs an
+	// existing clip. sync-lipsync v2/pro preserves facial detail well.
+	defaultFalLipsyncVideoModel = "fal-ai/sync-lipsync/v2/pro"
 	// defaultFalVideoDuration / defaultFalVideoAspectRatio are fal's enum
 	// defaults for text-to-video; kept here so config defaults and the client
 	// agree on a single source of truth.
@@ -152,6 +164,11 @@ type GeneratedVideo struct {
 	Data      []byte
 	MimeType  string
 	SourceURL string
+	// Notices holds deterministic, user-facing caveats produced while resolving
+	// the request against the model's schema (e.g. a model with no source-video
+	// input when the user attached a video to extend). Surfaced verbatim in the
+	// chat reply. Mirrors GeneratedAudio.Notices.
+	Notices []string
 }
 
 // GenerateImage submits an already-native fal request body (built by
@@ -322,38 +339,46 @@ func falAudioURL(audio string) string {
 	return "data:" + mediaType + ";base64," + audio
 }
 
-// GenerateVideo submits a text-to-video request to the fal queue, polls until
-// completion, and downloads the resulting clip as raw bytes. Video generation
-// runs for minutes rather than seconds, so callers must pass a context with a
-// suitably long deadline. The queue submit/poll mechanics are identical to
-// GenerateImage; only the request body and result shape differ (a single
-// "video" object rather than an "images" array).
-func (client FalClient) GenerateVideo(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
-	model := strings.TrimSpace(req.Model)
+// falVideoURL normalizes a video reference for fal's video_url input, mirroring
+// falImageURL/falAudioURL. fal accepts a hosted URL or a data URI and rejects
+// bare base64; the harness carries attached video as data URLs (already data:
+// URIs), so this is mostly a pass-through with bare-base64 wrapping as a
+// fallback. http.DetectContentType can't reliably distinguish video subtypes, so
+// a bare base64 payload is wrapped as video/mp4 (the most portable default).
+func falVideoURL(video string) string {
+	video = strings.TrimSpace(video)
+	if video == "" {
+		return ""
+	}
+	if strings.HasPrefix(video, "http://") || strings.HasPrefix(video, "https://") || strings.HasPrefix(video, "data:") {
+		return video
+	}
+	mediaType := "video/mp4"
+	if data, err := base64.StdEncoding.DecodeString(video); err == nil {
+		if detected := http.DetectContentType(data); strings.HasPrefix(detected, "video/") {
+			mediaType = detected
+		}
+	}
+	return "data:" + mediaType + ";base64," + video
+}
+
+// GenerateVideo submits an already-native fal request body (built by
+// resolveVideoBody against the model's schema) to the fal queue, polls until
+// completion, and downloads the resulting clip as raw bytes. It is a thin
+// transport, mirroring GenerateAudio: the canonical params (prompt, duration,
+// aspect ratio, source image/video, generate_audio) are mapped onto the model's
+// native fields by resolveVideoBody before this is called. The queue submit/poll
+// mechanics are identical to GenerateImage/GenerateAudio; only the result shape
+// differs (a single "video" object rather than an "images" array or audio file).
+// Video generation runs for minutes rather than seconds, so callers must pass a
+// context with a suitably long deadline.
+func (client FalClient) GenerateVideo(ctx context.Context, model string, body map[string]any) (GeneratedVideo, error) {
+	model = strings.TrimSpace(model)
 	if model == "" {
 		model = defaultFalVideoModel
 	}
-
-	body := map[string]any{"prompt": req.Prompt}
-	if duration := strings.TrimSpace(req.Duration); duration != "" {
-		body["duration"] = duration
-	}
-	if aspect := strings.TrimSpace(req.AspectRatio); aspect != "" {
-		body["aspect_ratio"] = aspect
-	}
-	if negative := strings.TrimSpace(req.NegativePrompt); negative != "" {
-		body["negative_prompt"] = negative
-	}
-	// generate_audio is a per-model boolean (e.g. Veo3, some Kling variants).
-	// Present only when the caller set it explicitly, so models default their own
-	// way when it's unspecified; audio-less endpoints ignore the field.
-	if req.GenerateAudio != nil {
-		body["generate_audio"] = *req.GenerateAudio
-	}
-	// Image-to-video: fal takes the source frame as image_url. Present only when
-	// the caller supplied an image to animate.
-	if image := falImageURL(req.Image); image != "" {
-		body["image_url"] = image
+	if body == nil {
+		body = map[string]any{}
 	}
 
 	submit, err := client.submit(ctx, model, body)
@@ -895,6 +920,14 @@ const (
 	// falImageToVideoCategory is the /v1/models category filter for
 	// image-to-video endpoints — used to animate an attached image.
 	falImageToVideoCategory = "image-to-video"
+	// falAudioToVideoCategory is the /v1/models category filter for audio-to-video
+	// endpoints — used by the audio-to-video lip sync lister (an audio clip drives
+	// a face image into a talking-head video, e.g. kling lipsync/audio-to-video).
+	falAudioToVideoCategory = "audio-to-video"
+	// falVideoToVideoCategory is the /v1/models category filter for video-to-video
+	// endpoints — used by the video-to-video lip sync lister (an audio clip
+	// re-lip-syncs an existing video, e.g. sync-lipsync, latentsync).
+	falVideoToVideoCategory = "video-to-video"
 	// falTextToAudioCategory / falTextToSpeechCategory are the /v1/models
 	// category filters for audio-generation endpoints (music/sound effects and
 	// speech, respectively).

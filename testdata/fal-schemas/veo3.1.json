@@ -1,0 +1,19 @@
+{
+  "components": {
+    "schemas": {
+      "Veo31Input": {
+        "type": "object",
+        "x-fal-order-properties": ["prompt", "negative_prompt", "aspect_ratio", "duration", "generate_audio", "seed"],
+        "required": ["prompt"],
+        "properties": {
+          "prompt": { "type": "string", "description": "The prompt to generate a video from." },
+          "negative_prompt": { "type": "string", "description": "A negative prompt — describe what to keep out of the video." },
+          "aspect_ratio": { "type": "string", "enum": ["16:9", "9:16", "1:1"], "default": "16:9" },
+          "duration": { "type": "string", "enum": ["4s", "6s", "8s"], "default": "8s" },
+          "generate_audio": { "type": "boolean", "default": false },
+          "seed": { "type": "integer" }
+        }
+      }
+    }
+  }
+}

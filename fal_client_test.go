@@ -435,11 +435,11 @@ func TestFalClientGenerateVideoHappyPath(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	video, err := client.GenerateVideo(ctx, VideoGenerateRequest{
-		Model:       model,
-		Prompt:      "a drone shot over a forest",
-		Duration:    "5",
-		AspectRatio: "16:9",
+	// GenerateVideo is now a thin transport; resolveVideoBody builds the body.
+	video, err := client.GenerateVideo(ctx, model, map[string]any{
+		"prompt":       "a drone shot over a forest",
+		"duration":     "5",
+		"aspect_ratio": "16:9",
 	})
 	if err != nil {
 		t.Fatalf("GenerateVideo returned error: %v", err)
@@ -456,22 +456,26 @@ func TestFalClientGenerateVideoHappyPath(t *testing.T) {
 }
 
 func TestFalClientGenerateVideoNegativePromptAndAudio(t *testing.T) {
+	// Body construction (negative_prompt, generate_audio) is resolveVideoBody's
+	// job now; this transport test verifies GenerateVideo forwards whatever body
+	// it's given verbatim and omits nothing. The resolveVideoBody tests in
+	// fal_params_test.go cover the canonical→native mapping.
 	model := "fal-ai/kling-video/v2/master/text-to-video"
 	falseFlag := false
 	cases := []struct {
 		name         string
-		req          VideoGenerateRequest
+		body         map[string]any
 		wantContains []string
 		wantOmits    []string
 	}{
 		{
 			name:         "negative prompt and explicit silent",
-			req:          VideoGenerateRequest{Model: model, Prompt: "x", NegativePrompt: "blurry, text", GenerateAudio: &falseFlag},
+			body:         map[string]any{"prompt": "x", "negative_prompt": "blurry, text", "generate_audio": falseFlag},
 			wantContains: []string{`"negative_prompt":"blurry, text"`, `"generate_audio":false`},
 		},
 		{
 			name:      "unset audio is omitted",
-			req:       VideoGenerateRequest{Model: model, Prompt: "x"},
+			body:      map[string]any{"prompt": "x"},
 			wantOmits: []string{"generate_audio", "negative_prompt"},
 		},
 	}
@@ -503,7 +507,7 @@ func TestFalClientGenerateVideoNegativePromptAndAudio(t *testing.T) {
 					return nil, nil
 				}
 			}))
-			if _, err := client.GenerateVideo(context.Background(), tc.req); err != nil {
+			if _, err := client.GenerateVideo(context.Background(), model, tc.body); err != nil {
 				t.Fatalf("GenerateVideo returned error: %v", err)
 			}
 		})
@@ -532,10 +536,9 @@ func TestFalClientGenerateVideoImageToVideo(t *testing.T) {
 		}
 	}))
 
-	video, err := client.GenerateVideo(context.Background(), VideoGenerateRequest{
-		Model:  model,
-		Prompt: "make the character talk",
-		Image:  "data:image/png;base64,ABC",
+	video, err := client.GenerateVideo(context.Background(), model, map[string]any{
+		"prompt":    "make the character talk",
+		"image_url": "data:image/png;base64,ABC",
 	})
 	if err != nil {
 		t.Fatalf("GenerateVideo returned error: %v", err)
@@ -563,7 +566,7 @@ func TestFalClientGenerateVideoModelFallback(t *testing.T) {
 		return nil, nil
 	}))
 
-	video, err := client.GenerateVideo(context.Background(), VideoGenerateRequest{Prompt: "x"})
+	video, err := client.GenerateVideo(context.Background(), "", map[string]any{"prompt": "x"})
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
@@ -586,7 +589,7 @@ func TestFalClientGenerateVideoNoVideo(t *testing.T) {
 		return jsonResp(`{}`), nil
 	}))
 
-	_, err := client.GenerateVideo(context.Background(), VideoGenerateRequest{Model: model})
+	_, err := client.GenerateVideo(context.Background(), model, map[string]any{})
 	if err == nil || !strings.Contains(err.Error(), "no video") {
 		t.Fatalf("expected a no-video error, got %v", err)
 	}
@@ -613,7 +616,7 @@ func TestFalClientGenerateVideoFallbackURL(t *testing.T) {
 		return nil, nil
 	}))
 
-	video, err := client.GenerateVideo(context.Background(), VideoGenerateRequest{Model: model})
+	video, err := client.GenerateVideo(context.Background(), model, map[string]any{})
 	if err != nil {
 		t.Fatalf("GenerateVideo returned error: %v", err)
 	}
@@ -638,7 +641,7 @@ func TestFalClientGenerateVideoRejectsNonVideo(t *testing.T) {
 		return mp4Resp(mustDecodeTinyPNG(), "image/png"), nil
 	}))
 
-	_, err := client.GenerateVideo(context.Background(), VideoGenerateRequest{Model: model})
+	_, err := client.GenerateVideo(context.Background(), model, map[string]any{})
 	if err == nil || !strings.Contains(err.Error(), "not a supported video") {
 		t.Fatalf("expected not-a-video error, got %v", err)
 	}
@@ -673,7 +676,10 @@ func TestFalClientUsesSubmitStatusAndResponseURLs(t *testing.T) {
 		}
 	}))
 
-	video, err := client.GenerateVideo(context.Background(), VideoGenerateRequest{Model: model, Prompt: "x", Image: "data:image/png;base64,ABC"})
+	video, err := client.GenerateVideo(context.Background(), model, map[string]any{
+		"prompt":    "x",
+		"image_url": "data:image/png;base64,ABC",
+	})
 	if err != nil {
 		t.Fatalf("GenerateVideo returned error: %v", err)
 	}
@@ -756,7 +762,7 @@ func TestFalClientSubmitFollowsRedirectPreservingPost(t *testing.T) {
 		}
 	}))
 
-	video, err := client.GenerateVideo(context.Background(), VideoGenerateRequest{Model: model, Prompt: "x"})
+	video, err := client.GenerateVideo(context.Background(), model, map[string]any{"prompt": "x"})
 	if err != nil {
 		t.Fatalf("GenerateVideo returned error: %v", err)
 	}

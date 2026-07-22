@@ -33,8 +33,10 @@ func (o Overrides) lookup(category, model, canon string) (string, bool) {
 // today; entries are added as such models are discovered.
 func builtinFalOverrides() Overrides {
 	return Overrides{byCategory: map[string]map[string]map[string]string{
-		"audio": {},
-		"image": {},
+		"audio":   {},
+		"image":   {},
+		"video":   {},
+		"lipsync": {},
 	}}
 }
 
@@ -87,6 +89,31 @@ var imageSynonyms = map[string][]string{
 	"imageSize":         {"image_size", "size"},
 	"numImages":         {"num_images"},
 	"numInferenceSteps": {"num_inference_steps"},
+}
+
+// videoSynonyms lists, per canonical param, the native key names to look for in
+// a video model's schema. `sourceImage` is the image-to-video frame; `sourceVideo`
+// is the clip a Veo extend endpoint continues. aspectRatio covers Veo's
+// "aspect_ratio" and any camelCase variant; duration is model-dependent (Veo
+// wants "8s" strings, Kling wants numbers — coerceVideoValue handles both).
+var videoSynonyms = map[string][]string{
+	"prompt":         {"prompt"},
+	"duration":       {"duration"},
+	"aspectRatio":    {"aspect_ratio", "aspectRatio", "size"},
+	"negativePrompt": {"negative_prompt"},
+	"sourceImage":    {"image_url", "image_urls"},
+	"sourceVideo":    {"video_url"},
+	"generateAudio":  {"generate_audio"},
+}
+
+// lipsyncSynonyms lists, per canonical param, the native key names to look for
+// in a lip sync model's schema. sourceAudio is the driving audio track;
+// sourceImage is the face for audio-to-video; sourceVideo is the clip for
+// video-to-video.
+var lipsyncSynonyms = map[string][]string{
+	"sourceAudio": {"audio_url", "audio_file_url", "audio"},
+	"sourceImage": {"image_url", "image_urls"},
+	"sourceVideo": {"video_url"},
 }
 
 type canonicalValue struct {
@@ -232,9 +259,198 @@ func coerceImageValue(prop SchemaProperty, value any) any {
 	return value
 }
 
+// resolveVideoBody maps a canonical VideoGenerateRequest onto the model's native
+// input schema, returning the fal body and user-facing notices for anything
+// dropped. It is the video sibling of resolveImageBody. A nil schema
+// (unavailable) yields the legacy hardcoded body — the fields GenerateVideo used
+// to build itself before the resolver refactor — plus a notice, so fal models
+// without a published schema keep working.
+//
+// Source media is resolved in priority order: an attached Video (extend) wins,
+// then an attached Image (image-to-video); both are absent for text-to-video.
+// fal requires an HTTP(S) URL or a data URI and rejects bare base64 with a 422,
+// so falImageURL/falVideoURL normalize each. A media field the selected model
+// lacks is dropped with a notice rather than sent.
+func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Overrides) (map[string]any, []string) {
+	prompt := strings.TrimSpace(req.Prompt)
+	sourceImage := falImageURL(strings.TrimSpace(req.Image))
+	sourceVideo := falVideoURL(strings.TrimSpace(req.Video))
+	if schema == nil {
+		body := map[string]any{"prompt": prompt}
+		if duration := strings.TrimSpace(req.Duration); duration != "" {
+			body["duration"] = duration
+		}
+		if aspect := strings.TrimSpace(req.AspectRatio); aspect != "" {
+			body["aspect_ratio"] = aspect
+		}
+		if negative := strings.TrimSpace(req.NegativePrompt); negative != "" {
+			body["negative_prompt"] = negative
+		}
+		if req.GenerateAudio != nil {
+			body["generate_audio"] = *req.GenerateAudio
+		}
+		if sourceVideo != "" {
+			body["video_url"] = sourceVideo
+		} else if sourceImage != "" {
+			body["image_url"] = sourceImage
+		}
+		return body, []string{"Couldn't load the model's parameter schema; generated with defaults and may have dropped an unsupported video input."}
+	}
+
+	body := map[string]any{}
+	var notices []string
+
+	if path, prop, ok := findNative(schema, ov, "video", req.Model, "prompt"); ok {
+		setBodyPath(schema, body, path, coerceVideoValue(prop, prompt))
+	} else {
+		body["prompt"] = prompt
+	}
+
+	if duration := strings.TrimSpace(req.Duration); duration != "" {
+		if path, prop, ok := findNative(schema, ov, "video", req.Model, "duration"); ok {
+			setBodyPath(schema, body, path, coerceVideoValue(prop, duration))
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no duration control; ignoring the requested duration.",
+				req.Model))
+		}
+	}
+	if aspect := strings.TrimSpace(req.AspectRatio); aspect != "" {
+		if path, prop, ok := findNative(schema, ov, "video", req.Model, "aspectRatio"); ok {
+			setBodyPath(schema, body, path, coerceVideoValue(prop, aspect))
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no aspect-ratio control; ignoring the requested aspect ratio.",
+				req.Model))
+		}
+	}
+	if negative := strings.TrimSpace(req.NegativePrompt); negative != "" {
+		if path, prop, ok := findNative(schema, ov, "video", req.Model, "negativePrompt"); ok {
+			setBodyPath(schema, body, path, coerceVideoValue(prop, negative))
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no negative-prompt control; ignoring the requested negative prompt.",
+				req.Model))
+		}
+	}
+	if req.GenerateAudio != nil {
+		if path, prop, ok := findNative(schema, ov, "video", req.Model, "generateAudio"); ok {
+			setBodyPath(schema, body, path, coerceVideoValue(prop, *req.GenerateAudio))
+		}
+		// Models without a generate_audio field silently ignore it — no notice,
+		// matching the "endpoints that never emit audio ignore it" contract on
+		// VideoGenerateRequest.GenerateAudio.
+	}
+
+	// Source media: extend (video) takes precedence over image-to-video.
+	switch {
+	case sourceVideo != "":
+		if path, prop, ok := findNative(schema, ov, "video", req.Model, "sourceVideo"); ok {
+			setBodyPath(schema, body, path, coerceVideoValue(prop, sourceVideo))
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no source-video input; the attached video was ignored.",
+				req.Model))
+		}
+	case sourceImage != "":
+		if path, prop, ok := findNative(schema, ov, "video", req.Model, "sourceImage"); ok {
+			setBodyPath(schema, body, path, coerceVideoValue(prop, sourceImage))
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no source-image input; the attached image was ignored.",
+				req.Model))
+		}
+	}
+	return body, notices
+}
+
+// coerceVideoValue adapts a canonical video value to the native property's type.
+// It is the video sibling of coerceImageValue: a schemaArray property (e.g. a
+// model declaring image_urls rather than image_url) wraps a scalar into a slice.
+// Strings and bools pass through unchanged; enum-valued properties are checked
+// against their allowed values, dropping an invalid one with a notice rather
+// than sending a value fal will reject. Unlike audio's coerceValue there is no
+// unit conversion (duration stays in the caller's form; Veo takes "8s" strings,
+// Kling takes numbers, and the caller configures whichever its model expects).
+func coerceVideoValue(prop SchemaProperty, value any) any {
+	if prop.Kind == schemaArray {
+		return []any{value}
+	}
+	if len(prop.Enum) > 0 {
+		s := fmt.Sprintf("%v", value)
+		if !contains(prop.Enum, s) {
+			return value // caller surfaces the mismatch via a notice if it cares
+		}
+	}
+	return value
+}
+
+// resolveLipsyncBody maps a LipsyncGenerateRequest onto the model's native input
+// schema, returning the fal body and user-facing notices. The driving audio is
+// always required; the face source is either an image (audio-to-video) or a
+// video (video-to-video) — the tool guarantees exactly one is set before this
+// runs. fal requires HTTP(S) URLs or data URIs (it rejects bare base64 with a
+// 422), so falAudioURL/falImageURL/falVideoURL normalize each. A nil schema
+// yields a generic body with the audio + whichever source is present, plus a
+// notice. A media field the selected model lacks is dropped with a notice.
+func resolveLipsyncBody(schema *ModelInputSchema, req LipsyncGenerateRequest, ov Overrides) (map[string]any, []string) {
+	audio := falAudioURL(strings.TrimSpace(req.Audio))
+	image := falImageURL(strings.TrimSpace(req.Image))
+	video := falVideoURL(strings.TrimSpace(req.Video))
+
+	if schema == nil {
+		body := map[string]any{}
+		if audio != "" {
+			body["audio_url"] = audio
+		}
+		if video != "" {
+			body["video_url"] = video
+		} else if image != "" {
+			body["image_url"] = image
+		}
+		return body, []string{"Couldn't load the model's parameter schema; generated with defaults and may have dropped an unsupported input."}
+	}
+
+	body := map[string]any{}
+	var notices []string
+
+	if audio != "" {
+		if path, prop, ok := findNative(schema, ov, "lipsync", req.Model, "sourceAudio"); ok {
+			setBodyPath(schema, body, path, coerceVideoValue(prop, audio))
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no audio input; the attached audio was ignored.",
+				req.Model))
+		}
+	}
+
+	// The face source: video wins over image (the tool sets exactly one, but
+	// resolve defensively in case both are present).
+	switch {
+	case video != "":
+		if path, prop, ok := findNative(schema, ov, "lipsync", req.Model, "sourceVideo"); ok {
+			setBodyPath(schema, body, path, coerceVideoValue(prop, video))
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no source-video input; the attached video was ignored.",
+				req.Model))
+		}
+	case image != "":
+		if path, prop, ok := findNative(schema, ov, "lipsync", req.Model, "sourceImage"); ok {
+			setBodyPath(schema, body, path, coerceVideoValue(prop, image))
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no source-image input; the attached image was ignored.",
+				req.Model))
+		}
+	}
+	return body, notices
+}
+
 // findNative resolves canon → native dot-path via override, top-level scan, then
 // one-level nested scan. Returns the matched leaf property for coercion.
-// category selects the synonym table and override namespace ("audio" or "image").
+// category selects the synonym table and override namespace ("audio", "image",
+// "video", or "lipsync").
 func findNative(schema *ModelInputSchema, ov Overrides, category, model, canon string) (string, SchemaProperty, bool) {
 	if native, ok := ov.lookup(category, model, canon); ok {
 		if native == "" {
@@ -269,6 +485,10 @@ func synonymsFor(category, canon string) []string {
 		return audioSynonyms[canon]
 	case "image":
 		return imageSynonyms[canon]
+	case "video":
+		return videoSynonyms[canon]
+	case "lipsync":
+		return lipsyncSynonyms[canon]
 	}
 	return nil
 }

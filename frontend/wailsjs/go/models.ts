@@ -156,9 +156,12 @@ export namespace main {
 	    imageEditModel?: string;
 	    videoModel?: string;
 	    videoImageModel?: string;
+	    videoExtendModel?: string;
 	    audioModel?: string;
 	    transcribeModel?: string;
 	    upscaleModel?: string;
+	    lipsyncImageModel?: string;
+	    lipsyncVideoModel?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigFal(source);
@@ -171,9 +174,12 @@ export namespace main {
 	        this.imageEditModel = source["imageEditModel"];
 	        this.videoModel = source["videoModel"];
 	        this.videoImageModel = source["videoImageModel"];
+	        this.videoExtendModel = source["videoExtendModel"];
 	        this.audioModel = source["audioModel"];
 	        this.transcribeModel = source["transcribeModel"];
 	        this.upscaleModel = source["upscaleModel"];
+	        this.lipsyncImageModel = source["lipsyncImageModel"];
+	        this.lipsyncVideoModel = source["lipsyncVideoModel"];
 	    }
 	}
 	export class ConfigOpenRouter {
@@ -387,6 +393,7 @@ export namespace main {
 	    content: string;
 	    images?: string[];
 	    audios?: string[];
+	    videos?: string[];
 	    tool_calls?: ToolCall[];
 	
 	    static createFrom(source: any = {}) {
@@ -399,6 +406,7 @@ export namespace main {
 	        this.content = source["content"];
 	        this.images = source["images"];
 	        this.audios = source["audios"];
+	        this.videos = source["videos"];
 	        this.tool_calls = this.convertValues(source["tool_calls"], ToolCall);
 	    }
 	

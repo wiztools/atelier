@@ -17,9 +17,12 @@ import {
   ListFalImageEditModels,
   ListFalVideoModels,
   ListFalVideoImageModels,
+  ListFalVideoExtendModels,
   ListFalAudioModels,
   ListFalTranscribeModels,
   ListFalUpscaleModels,
+  ListFalLipsyncImageModels,
+  ListFalLipsyncVideoModels,
   ListModels,
   ListPrimaryModels,
   PurgeArchivedConversations,
@@ -37,6 +40,7 @@ import {main} from '../wailsjs/go/models';
 import {EventsOff, EventsOn} from '../wailsjs/runtime/runtime';
 
 type View = 'app' | 'settings';
+type SettingsTab = 'providers' | 'models' | 'others';
 type ConversationKind = 'chat';
 
 type ChatEntry = {
@@ -151,11 +155,12 @@ type Attachment = {
   src: string;
   payload: string;
   // 'image' attachments strip the data: prefix into payload (Ollama's base64
-  // shape); 'audio' attachments keep the full data URL as payload, since the
-  // OpenRouter input_audio part needs the bytes + a format derived from the
-  // data:audio/<fmt>; prefix. The kind drives chip rendering and request
-  // building in submitChat.
-  kind: 'image' | 'audio';
+  // shape); 'audio' and 'video' attachments keep the full data URL as payload,
+  // since the OpenRouter input_audio part needs the bytes + a format derived
+  // from the data:audio/<fmt>; prefix, and video input is tool-only so the
+  // backend keeps the full data URL for AttachedVideo consumers. The kind
+  // drives chip rendering and request building in submitChat.
+  kind: 'image' | 'audio' | 'video';
 };
 
 const defaultBaseURL = 'http://localhost:11434';
@@ -171,8 +176,11 @@ const defaultFalImageModel = 'fal-ai/flux/schnell';
 const defaultFalImageEditModel = 'fal-ai/flux/dev/image-to-image';
 const defaultFalVideoModel = 'fal-ai/kling-video/v2/master/text-to-video';
 const defaultFalVideoImageModel = 'fal-ai/kling-video/v2/master/image-to-video';
+const defaultFalVideoExtendModel = 'fal-ai/veo3.1/extend-video';
 const defaultFalAudioModel = 'fal-ai/elevenlabs/tts/multilingual-v2';
 const defaultFalTranscribeModel = 'fal-ai/wizper';
+const defaultFalLipsyncImageModel = 'fal-ai/kling-video/lipsync/audio-to-video';
+const defaultFalLipsyncVideoModel = 'fal-ai/sync-lipsync/v2/pro';
 const defaultFalUpscaleModel = 'fal-ai/esrgan';
 const defaultVideoDuration = '5';
 const defaultVideoAspectRatio = '16:9';
@@ -243,10 +251,16 @@ function App() {
   const [falVideoModels, setFalVideoModels] = useState<main.FalModel[]>([]);
   const [falVideoImageModel, setFalVideoImageModel] = useState(defaultFalVideoImageModel);
   const [falVideoImageModels, setFalVideoImageModels] = useState<main.FalModel[]>([]);
+  const [falVideoExtendModel, setFalVideoExtendModel] = useState(defaultFalVideoExtendModel);
+  const [falVideoExtendModels, setFalVideoExtendModels] = useState<main.FalModel[]>([]);
   const [falAudioModel, setFalAudioModel] = useState(defaultFalAudioModel);
   const [falAudioModels, setFalAudioModels] = useState<main.FalModel[]>([]);
   const [falTranscribeModel, setFalTranscribeModel] = useState(defaultFalTranscribeModel);
   const [falTranscribeModels, setFalTranscribeModels] = useState<main.FalModel[]>([]);
+  const [falLipsyncImageModel, setFalLipsyncImageModel] = useState(defaultFalLipsyncImageModel);
+  const [falLipsyncVideoModel, setFalLipsyncVideoModel] = useState(defaultFalLipsyncVideoModel);
+  const [falLipsyncImageModels, setFalLipsyncImageModels] = useState<main.FalModel[]>([]);
+  const [falLipsyncVideoModels, setFalLipsyncVideoModels] = useState<main.FalModel[]>([]);
   const [falUpscaleModel, setFalUpscaleModel] = useState(defaultFalUpscaleModel);
   const [falUpscaleModels, setFalUpscaleModels] = useState<main.FalModel[]>([]);
   const [videoDuration, setVideoDuration] = useState(defaultVideoDuration);
@@ -284,6 +298,7 @@ function App() {
   const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth);
   const [resizingSidebar, setResizingSidebar] = useState(false);
   const [view, setView] = useState<View>('app');
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('providers');
   const [previewImage, setPreviewImage] = useState('');
   const [purgeBusy, setPurgeBusy] = useState(false);
   const [confirmPurgeArchived, setConfirmPurgeArchived] = useState(false);
@@ -381,9 +396,12 @@ function App() {
             imageEditModel: falImageEditModel,
             videoModel: falVideoModel,
             videoImageModel: falVideoImageModel,
+            videoExtendModel: falVideoExtendModel,
             audioModel: falAudioModel,
             transcribeModel: falTranscribeModel,
             upscaleModel: falUpscaleModel,
+            lipsyncImageModel: falLipsyncImageModel,
+            lipsyncVideoModel: falLipsyncVideoModel,
           },
         },
         models: {
@@ -414,7 +432,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falAudioModel, falTranscribeModel, falUpscaleModel, harnessModels, harnessProvider, imageHeight, imageModel, imageProvider, imageSteps, imageWidth, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falAudioModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, harnessModels, harnessProvider, imageHeight, imageModel, imageProvider, imageSteps, imageWidth, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
 
   // On a fresh launch, put the cursor in the chat box so the user can start
   // typing immediately. Fires once, when config finishes loading.
@@ -604,11 +622,17 @@ function App() {
 
   const falVideoImageModelOptions = useMemo(() => falModelOptionList(falVideoImageModels), [falVideoImageModels]);
 
+  const falVideoExtendModelOptions = useMemo(() => falModelOptionList(falVideoExtendModels), [falVideoExtendModels]);
+
   const falAudioModelOptions = useMemo(() => falModelOptionList(falAudioModels), [falAudioModels]);
 
   const falTranscribeModelOptions = useMemo(() => falModelOptionList(falTranscribeModels), [falTranscribeModels]);
 
   const falUpscaleModelOptions = useMemo(() => falModelOptionList(falUpscaleModels), [falUpscaleModels]);
+
+  const falLipsyncImageModelOptions = useMemo(() => falModelOptionList(falLipsyncImageModels), [falLipsyncImageModels]);
+
+  const falLipsyncVideoModelOptions = useMemo(() => falModelOptionList(falLipsyncVideoModels), [falLipsyncVideoModels]);
 
   useEffect(() => {
     if (!imageModelOptions.length || imageModelOptions.includes(imageModel)) {
@@ -652,10 +676,13 @@ function App() {
     const nextImageProvider = config.models?.imageProvider === 'fal' ? 'fal' : 'ollama';
     const nextFalModel = config.providers?.fal?.model || defaultFalImageModel;
     const nextFalImageEditModel = config.providers?.fal?.imageEditModel || defaultFalImageEditModel;
-    const nextFalVideoModel = config.providers?.fal?.videoModel || defaultFalVideoModel;
-    const nextFalVideoImageModel = config.providers?.fal?.videoImageModel || defaultFalVideoImageModel;
-    const nextFalAudioModel = config.providers?.fal?.audioModel || defaultFalAudioModel;
-    const nextFalTranscribeModel = config.providers?.fal?.transcribeModel || defaultFalTranscribeModel;
+	const nextFalVideoModel = config.providers?.fal?.videoModel || defaultFalVideoModel;
+	const nextFalVideoImageModel = config.providers?.fal?.videoImageModel || defaultFalVideoImageModel;
+	const nextFalVideoExtendModel = config.providers?.fal?.videoExtendModel || defaultFalVideoExtendModel;
+	const nextFalAudioModel = config.providers?.fal?.audioModel || defaultFalAudioModel;
+	const nextFalTranscribeModel = config.providers?.fal?.transcribeModel || defaultFalTranscribeModel;
+	const nextFalLipsyncImageModel = config.providers?.fal?.lipsyncImageModel || defaultFalLipsyncImageModel;
+	const nextFalLipsyncVideoModel = config.providers?.fal?.lipsyncVideoModel || defaultFalLipsyncVideoModel;
     const nextFalUpscaleModel = config.providers?.fal?.upscaleModel || defaultFalUpscaleModel;
     const nextVideoDuration = config.generation?.video?.duration || defaultVideoDuration;
     const nextVideoAspectRatio = config.generation?.video?.aspectRatio || defaultVideoAspectRatio;
@@ -678,8 +705,11 @@ function App() {
     setFalImageEditModel(nextFalImageEditModel);
     setFalVideoModel(nextFalVideoModel);
     setFalVideoImageModel(nextFalVideoImageModel);
+    setFalVideoExtendModel(nextFalVideoExtendModel);
     setFalAudioModel(nextFalAudioModel);
     setFalTranscribeModel(nextFalTranscribeModel);
+    setFalLipsyncImageModel(nextFalLipsyncImageModel);
+    setFalLipsyncVideoModel(nextFalLipsyncVideoModel);
     setFalUpscaleModel(nextFalUpscaleModel);
     setVideoDuration(nextVideoDuration);
     setVideoAspectRatio(nextVideoAspectRatio);
@@ -838,6 +868,11 @@ function App() {
       setFalVideoImageModels([]);
     }
     try {
+      setFalVideoExtendModels(asArray(await ListFalVideoExtendModels()));
+    } catch {
+      setFalVideoExtendModels([]);
+    }
+    try {
       setFalAudioModels(asArray(await ListFalAudioModels()));
     } catch {
       setFalAudioModels([]);
@@ -851,6 +886,16 @@ function App() {
       setFalUpscaleModels(asArray(await ListFalUpscaleModels()));
     } catch {
       setFalUpscaleModels([]);
+    }
+    try {
+      setFalLipsyncImageModels(asArray(await ListFalLipsyncImageModels()));
+    } catch {
+      setFalLipsyncImageModels([]);
+    }
+    try {
+      setFalLipsyncVideoModels(asArray(await ListFalLipsyncVideoModels()));
+    } catch {
+      setFalLipsyncVideoModels([]);
     }
   }
 
@@ -918,8 +963,11 @@ function App() {
       setFalModels([]);
       setFalVideoModels([]);
       setFalVideoImageModels([]);
+      setFalVideoExtendModels([]);
       setFalAudioModels([]);
       setFalTranscribeModels([]);
+      setFalLipsyncImageModels([]);
+      setFalLipsyncVideoModels([]);
       setFalStatus('unknown');
       setFalError('');
       setImageProvider((current) => current === 'fal' ? 'ollama' : current);
@@ -1170,26 +1218,30 @@ function App() {
       content: trimmed,
       images: attachments.filter((item) => item.kind === 'image').map((item) => item.src),
       audios: attachments.filter((item) => item.kind === 'audio').map((item) => item.src),
+      videos: attachments.filter((item) => item.kind === 'video').map((item) => item.src),
     };
     const requestID = `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const audioAttachments = attachments.filter((item) => item.kind === 'audio').map((item) => item.payload).filter(Boolean);
     const imageAttachments = attachments.filter((item) => item.kind === 'image').map((item) => item.payload).filter(Boolean);
+    const videoAttachments = attachments.filter((item) => item.kind === 'video').map((item) => item.payload).filter(Boolean);
     const requestMessages: main.ChatMessage[] = [
       ...chat
-        .filter((entry) => entry.role !== 'system' && (entry.content || entry.images?.length || entry.audios?.length))
+        .filter((entry) => entry.role !== 'system' && (entry.content || entry.images?.length || entry.audios?.length || entry.videos?.length))
         .map((entry) => ({
           role: entry.role,
           content: entry.content,
           ...(entry.images?.length ? {images: entry.images.map(imagePayloadForOllama).filter(Boolean)} : {}),
-          // Hydrated history audios are /atelier-artifact/ display URLs; only
-          // inline data: URLs are valid payloads, so filter like images.
+          // Hydrated history audios/videos are /atelier-artifact/ display URLs;
+          // only inline data: URLs are valid payloads, so filter like images.
           ...(entry.audios?.length ? {audios: entry.audios.filter((audio) => audio.startsWith('data:'))} : {}),
+          ...(entry.videos?.length ? {videos: entry.videos.filter((video) => video.startsWith('data:'))} : {}),
         }) as main.ChatMessage),
       {
         role: 'user',
         content: trimmed,
         ...(imageAttachments.length ? {images: imageAttachments} : {}),
         ...(audioAttachments.length ? {audios: audioAttachments} : {}),
+        ...(videoAttachments.length ? {videos: videoAttachments} : {}),
       } as main.ChatMessage,
     ];
 
@@ -1226,12 +1278,13 @@ function App() {
       return;
     }
     const requestMessages: main.ChatMessage[] = historyForRequest
-      .filter((entry) => entry.role !== 'system' && (entry.content || entry.images?.length || entry.audios?.length))
+      .filter((entry) => entry.role !== 'system' && (entry.content || entry.images?.length || entry.audios?.length || entry.videos?.length))
       .map((entry) => ({
         role: entry.role,
         content: entry.content,
         ...(entry.images?.length ? {images: entry.images.map(imagePayloadForOllama).filter(Boolean)} : {}),
         ...(entry.audios?.length ? {audios: entry.audios.filter((audio) => audio.startsWith('data:'))} : {}),
+        ...(entry.videos?.length ? {videos: entry.videos.filter((video) => video.startsWith('data:'))} : {}),
       }) as main.ChatMessage);
     const requestID = `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     shouldFollowTranscriptRef.current = true;
@@ -1305,7 +1358,7 @@ function App() {
 
   async function handleChatPromptPaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
     const mediaFiles = Array.from(event.clipboardData?.items ?? [])
-      .filter((item) => item.kind === 'file' && (item.type.startsWith('image/') || item.type.startsWith('audio/')))
+      .filter((item) => item.kind === 'file' && (item.type.startsWith('image/') || item.type.startsWith('audio/') || item.type.startsWith('video/')))
       .map((item) => item.getAsFile())
       .filter((file): file is File => file !== null);
     if (!mediaFiles.length) {
@@ -1325,7 +1378,7 @@ function App() {
 
   function composerHasMediaDrag(event: React.DragEvent<HTMLDivElement>): boolean {
     return Array.from(event.dataTransfer?.items ?? []).some(
-      (item) => item.kind === 'file' && (item.type.startsWith('image/') || item.type.startsWith('audio/')),
+      (item) => item.kind === 'file' && (item.type.startsWith('image/') || item.type.startsWith('audio/') || item.type.startsWith('video/')),
     );
   }
 
@@ -1361,7 +1414,7 @@ function App() {
     composerDragDepth.current = 0;
     setComposerDragging(false);
     const mediaFiles = Array.from(event.dataTransfer?.files ?? []).filter(
-      (file) => file.type.startsWith('image/') || file.type.startsWith('audio/'),
+      (file) => file.type.startsWith('image/') || file.type.startsWith('audio/') || file.type.startsWith('video/'),
     );
     if (!mediaFiles.length) {
       return;
@@ -1581,6 +1634,32 @@ function App() {
                 <p>Ollama provider, model defaults, and prompt preferences.</p>
               </div>
 
+              <div className="settings-tabs" role="tablist">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={settingsTab === 'providers'}
+                  className={settingsTab === 'providers' ? 'active' : ''}
+                  onClick={() => setSettingsTab('providers')}
+                >Providers</button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={settingsTab === 'models'}
+                  className={settingsTab === 'models' ? 'active' : ''}
+                  onClick={() => setSettingsTab('models')}
+                >Models</button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={settingsTab === 'others'}
+                  className={settingsTab === 'others' ? 'active' : ''}
+                  onClick={() => setSettingsTab('others')}
+                >Others</button>
+              </div>
+
+              {settingsTab === 'providers' ? (
+              <>
               <section className="settings-section">
                 <h3>Provider</h3>
                 <div className="connection">
@@ -1691,7 +1770,10 @@ function App() {
                   </div>
                 </div>
               </section>
+              </>
+              ) : null}
 
+              {settingsTab === 'others' ? (
               <section className="settings-section">
                 <h3>Storage</h3>
                 <div className="storage-list">
@@ -1729,7 +1811,10 @@ function App() {
                   </div>
                 ) : null}
               </section>
+              ) : null}
 
+              {settingsTab === 'models' ? (
+              <>
               <section className="settings-section">
                 <h3>Harness</h3>
                 <div className="settings-rows">
@@ -1923,6 +2008,19 @@ function App() {
                     </div>
                   </div>
 
+                  <div className="field">
+                    <label htmlFor="fal-video-extend-model">Video-Extend Model (fal.ai)</label>
+                    <ModelCombobox
+                      id="fal-video-extend-model"
+                      ariaLabel="fal.ai video-extend model"
+                      placeholder={defaultFalVideoExtendModel}
+                      value={falVideoExtendModel}
+                      onChange={setFalVideoExtendModel}
+                      options={falVideoExtendModelOptions}
+                      allowCustom
+                    />
+                  </div>
+
                   <div className="two-column">
                     <div className="field">
                       <label htmlFor="video-duration">Video Duration (s)</label>
@@ -1980,6 +2078,42 @@ function App() {
               </section>
 
               <section className="settings-section">
+                <h3>Lip Sync</h3>
+                <div className="settings-rows">
+                  <div className="two-column">
+                    <div className="field">
+                      <label htmlFor="fal-lipsync-image-model">Audio-to-Video Model (fal.ai)</label>
+                      <ModelCombobox
+                        id="fal-lipsync-image-model"
+                        ariaLabel="fal.ai audio-to-video lip sync model"
+                        placeholder={defaultFalLipsyncImageModel}
+                        value={falLipsyncImageModel}
+                        onChange={setFalLipsyncImageModel}
+                        options={falLipsyncImageModelOptions}
+                        allowCustom
+                      />
+                    </div>
+
+                    <div className="field">
+                      <label htmlFor="fal-lipsync-video-model">Video-to-Video Model (fal.ai)</label>
+                      <ModelCombobox
+                        id="fal-lipsync-video-model"
+                        ariaLabel="fal.ai video-to-video lip sync model"
+                        placeholder={defaultFalLipsyncVideoModel}
+                        value={falLipsyncVideoModel}
+                        onChange={setFalLipsyncVideoModel}
+                        options={falLipsyncVideoModelOptions}
+                        allowCustom
+                      />
+                    </div>
+                  </div>
+                  {!falHasKey ? (
+                    <span className="hint">Add a fal.ai API key above to use lip sync.</span>
+                  ) : null}
+                </div>
+              </section>
+
+              <section className="settings-section">
                 <h3>Upscale</h3>
                 <div className="field">
                   <label htmlFor="fal-upscale-model">Upscale Model (fal.ai)</label>
@@ -1999,13 +2133,17 @@ function App() {
                   )}
                 </div>
               </section>
+              </>
+              ) : null}
 
+              {settingsTab === 'others' ? (
               <section className="settings-section">
                 <div className="field">
                   <label htmlFor="system">System</label>
                   <textarea id="system" value={system} onChange={(event) => setSystem(event.target.value)} />
                 </div>
               </section>
+              ) : null}
             </div>
           </>
         ) : (
@@ -2094,7 +2232,14 @@ function App() {
                           ))}
                         </div>
                       ) : null}
-                      {entry.videos?.length ? (
+                      {entry.role === 'user' && entry.videos?.length ? (
+                        <div className="chat-user-videos">
+                          {entry.videos.map((video, index) => (
+                            <video key={`${entry.id}-video-${index}`} src={video} controls preload="metadata" />
+                          ))}
+                        </div>
+                      ) : null}
+                      {entry.role === 'assistant' && entry.videos?.length ? (
                         <div className="chat-video-results">
                           {entry.videos.map((video, index) => (
                             <figure key={`${entry.id}-video-${index}`} className="chat-video-card">
@@ -2187,7 +2332,7 @@ function App() {
                 onDrop={handleComposerDrop}
               >
                 {composerDragging ? (
-                  <div className="composer-drop-overlay">Drop images to attach</div>
+                  <div className="composer-drop-overlay">Drop media to attach</div>
                 ) : null}
                 {asArray(attachments).length ? (
                   <div className="attachment-strip">
@@ -2198,6 +2343,13 @@ function App() {
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                               <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
                               <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" />
+                            </svg>
+                          </span>
+                        ) : item.kind === 'video' ? (
+                          <span className="attachment-video-chip" aria-hidden="true">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="m22 8-6 4 6 4V8Z" />
+                              <rect width="14" height="12" x="2" y="6" rx="2" ry="2" />
                             </svg>
                           </span>
                         ) : (
@@ -2247,7 +2399,7 @@ function App() {
                       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
                       </svg>
-                      <input type="file" accept="image/*,audio/*" multiple onChange={(event) => addFiles(event.target.files)} />
+                      <input type="file" accept="image/*,audio/*,video/*" multiple onChange={(event) => addFiles(event.target.files)} />
                     </label>
                   </div>
                   <div className="composer-submit-row">
@@ -2946,13 +3098,36 @@ async function readAudioFile(file: File, nameOverride?: string): Promise<Attachm
   };
 }
 
+// readVideoFile mirrors readAudioFile: it keeps the full data URL as the
+// payload, since video input is tool-only and the backend resolves
+// AttachedVideo from the data URL the frontend sends (decodeVideoPayload /
+// readVideoArtifactAsDataURL).
+async function readVideoFile(file: File, nameOverride?: string): Promise<Attachment> {
+  const dataURL = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+
+  return {
+    name: nameOverride ?? file.name,
+    src: dataURL,
+    payload: dataURL,
+    kind: 'video',
+  };
+}
+
 // readFileAsAttachment dispatches on MIME type to the right reader. Audio files
-// route to readAudioFile; everything else (images today, and an unknown type the
-// OS picker let through) routes to readImageFile, which produced the historical
-// behavior.
+// route to readAudioFile, video files to readVideoFile; everything else (images
+// today, and an unknown type the OS picker let through) routes to readImageFile,
+// which produced the historical behavior.
 async function readFileAsAttachment(file: File, nameOverride?: string): Promise<Attachment> {
   if (file.type.startsWith('audio/')) {
     return readAudioFile(file, nameOverride);
+  }
+  if (file.type.startsWith('video/')) {
+    return readVideoFile(file, nameOverride);
   }
   return readImageFile(file, nameOverride);
 }
@@ -2986,11 +3161,26 @@ function audioExtensionForType(type: string): string {
   }
 }
 
+function videoExtensionForType(type: string): string {
+  const subtype = type.split('/')[1]?.split(';')[0]?.trim().toLowerCase();
+  switch (subtype) {
+    case 'webm':
+      return '.webm';
+    case 'quicktime':
+      return '.mov';
+    default:
+      return '.mp4';
+  }
+}
+
 // mediaExtensionForType picks a fallback extension for a synthesized filename
 // (pasted/dropped media that has no name), branching on the MIME category.
 function mediaExtensionForType(type: string): string {
   if (type.startsWith('audio/')) {
     return audioExtensionForType(type);
+  }
+  if (type.startsWith('video/')) {
+    return videoExtensionForType(type);
   }
   return imageExtensionForType(type);
 }

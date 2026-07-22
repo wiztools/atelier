@@ -47,14 +47,18 @@ func decodeTriageDecision(content string) (HarnessTriageDecision, error) {
 }
 
 // messagesWithoutMedia copies messages for text-only side calls such as
-// triage, so image and audio payloads never reach a model that only routes the
-// turn. Audio bytes are stripped for the same reason images are: a routing
-// model doesn't need them, and they would bloat the triage request for nothing.
+// triage, so image, audio, and video payloads never reach a model that only
+// routes the turn. Audio and video bytes are stripped for the same reason
+// images are: a routing model doesn't need them, and they would bloat the
+// triage request for nothing. Stripping video here is also what enforces the
+// tool-path-only contract on video input — no adapter emits a video content
+// part, so video never reaches a chat model.
 func messagesWithoutMedia(messages []ChatMessage) []ChatMessage {
 	stripped := make([]ChatMessage, len(messages))
 	for index, message := range messages {
 		message.Images = nil
 		message.Audios = nil
+		message.Videos = nil
 		stripped[index] = message
 	}
 	return stripped

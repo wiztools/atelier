@@ -1,0 +1,16 @@
+{
+  "components": {
+    "schemas": {
+      "SyncLipsyncV2ProInput": {
+        "type": "object",
+        "x-fal-order-properties": ["video_url", "audio_url", "max_duration"],
+        "required": ["video_url", "audio_url"],
+        "properties": {
+          "video_url": { "type": "string", "description": "The URL of the video to lip sync." },
+          "audio_url": { "type": "string", "description": "The URL of the driving audio." },
+          "max_duration": { "type": "number", "default": 60 }
+        }
+      }
+    }
+  }
+}

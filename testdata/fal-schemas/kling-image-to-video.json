@@ -1,0 +1,18 @@
+{
+  "components": {
+    "schemas": {
+      "KlingImageToVideoInput": {
+        "type": "object",
+        "x-fal-order-properties": ["prompt", "image_url", "duration", "aspect_ratio", "negative_prompt"],
+        "required": ["prompt", "image_url"],
+        "properties": {
+          "prompt": { "type": "string" },
+          "image_url": { "type": "string", "description": "The URL of the image to animate." },
+          "duration": { "type": "string", "enum": ["5", "10"], "default": "5" },
+          "aspect_ratio": { "type": "string", "enum": ["16:9", "9:16", "1:1"], "default": "16:9" },
+          "negative_prompt": { "type": "string" }
+        }
+      }
+    }
+  }
+}

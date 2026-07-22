@@ -251,6 +251,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			Harness:        harness,
 			AttachedImage:  latestAttachedImageForTurn(req, h.config.Storage),
 			AttachedAudio:  latestAttachedAudioForTurn(req, h.config.Storage),
+			AttachedVideo:  latestAttachedVideoForTurn(req, h.config.Storage),
 		}, &run)
 		if err != nil {
 			run.complete("failed", "harness_prepare_error")
@@ -501,6 +502,25 @@ func latestUserAudioURL(messages []ChatMessage) string {
 	return ""
 }
 
+// latestUserVideoURL returns the first video attachment on the most recent user
+// message (a data URL), or "" if the current turn has none. It is the video
+// sibling of latestUserAudioURL and the source clip Veo extend / video-to-video
+// lip sync consume.
+func latestUserVideoURL(messages []ChatMessage) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "user" {
+			continue
+		}
+		for _, video := range messages[i].Videos {
+			if trimmed := strings.TrimSpace(video); trimmed != "" {
+				return trimmed
+			}
+		}
+		return ""
+	}
+	return ""
+}
+
 // latestAttachedImageForTurn returns the image attached to the current turn if
 // present (a base64 data URL), else falls back to the most recent user-attached
 // image in conversation history. The fallback lets image-dependent tools
@@ -576,6 +596,46 @@ func latestAttachedAudioForTurn(req ChatRequest, storage ConfigStorage) string {
 				continue
 			}
 			dataURL, err := readAudioArtifactAsDataURL(storage, req.ConversationID, content)
+			if err != nil {
+				return ""
+			}
+			return dataURL
+		}
+	}
+	return ""
+}
+
+// latestAttachedVideoForTurn is the video sibling of latestAttachedAudioForTurn:
+// it returns the current turn's video attachment (a data URL) if present, else
+// falls back to the most recent user-attached video in conversation history.
+// The fallback lets video-dependent tools (Veo extend, video-to-video lip sync)
+// operate across turns without forcing the user to re-attach on every message.
+// History video is persisted as artifacts on disk; they're re-read and
+// re-encoded as a data URL to match the shape AttachedVideo consumers (fal)
+// expect. Errors are swallowed so a stale history file can't break the current
+// turn — the caller falls back to the empty-AttachedVideo path and the tool
+// surfaces its "attach a video" error.
+func latestAttachedVideoForTurn(req ChatRequest, storage ConfigStorage) string {
+	if video := latestUserVideoURL(req.Messages); video != "" {
+		return video
+	}
+	if strings.TrimSpace(req.ConversationID) == "" {
+		return ""
+	}
+	detail, err := getConversation(storage, req.ConversationID)
+	if err != nil {
+		return ""
+	}
+	for i := len(detail.Turns) - 1; i >= 0; i-- {
+		turn := detail.Turns[i]
+		if turn.Role != "user" {
+			continue
+		}
+		for _, content := range turn.Content {
+			if content.Type != "video" || strings.TrimSpace(content.Path) == "" {
+				continue
+			}
+			dataURL, err := readVideoArtifactAsDataURL(storage, req.ConversationID, content)
 			if err != nil {
 				return ""
 			}
@@ -863,6 +923,7 @@ func truncateChatHistory(messages []ChatMessage, budgetChars int) []ChatMessage 
 		Content: contextOmittedMarker + "\n\n" + truncated[0].Content,
 		Images:  truncated[0].Images,
 		Audios:  truncated[0].Audios,
+		Videos:  truncated[0].Videos,
 	}
 	return truncated
 }
@@ -889,6 +950,10 @@ type harnessTurnContext struct {
 	// AttachedAudio is the audio clip (data URL) the user attached to this turn,
 	// if any — used by transcribe_audio. Provider-agnostic, like AttachedImage.
 	AttachedAudio string
+	// AttachedVideo is the video clip (data URL) the user attached to this turn,
+	// if any — used by generate_video (Veo extend) and the lip sync tool. Tool-
+	// only: unlike audio it never reaches a chat model.
+	AttachedVideo string
 }
 
 func (h *HarnessEngine) selectSkillForTurn(ctx context.Context, req ChatRequest, turn harnessTurnContext) (*HarnessSkillDecision, *LoadedSkill) {
@@ -1593,6 +1658,7 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 	// audio. Empty for turns without the corresponding attachment.
 	gateway.tools.AttachedImage = turn.AttachedImage
 	gateway.tools.AttachedAudio = turn.AttachedAudio
+	gateway.tools.AttachedVideo = turn.AttachedVideo
 	results := make([]HarnessToolResult, 0, len(calls))
 	for _, call := range calls {
 		// When the user selected a model that is not the harness model as the

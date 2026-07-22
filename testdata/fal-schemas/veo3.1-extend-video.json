@@ -1,0 +1,16 @@
+{
+  "components": {
+    "schemas": {
+      "Veo31ExtendVideoInput": {
+        "type": "object",
+        "x-fal-order-properties": ["prompt", "video_url", "aspect_ratio"],
+        "required": ["prompt", "video_url"],
+        "properties": {
+          "prompt": { "type": "string", "description": "The prompt describing how to extend the video." },
+          "video_url": { "type": "string", "description": "The URL of the video to extend." },
+          "aspect_ratio": { "type": "string", "enum": ["16:9", "9:16", "1:1"], "default": "16:9" }
+        }
+      }
+    }
+  }
+}

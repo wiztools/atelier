@@ -193,6 +193,11 @@ func TestHarnessGeneratesVideoViaFal(t *testing.T) {
 	nonStreamCount := 0
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/api/openapi/") {
+			// Minimal kling text-to-video schema so resolveVideoBody can map the
+			// canonical params onto native fields.
+			return jsonResponse(`{"components":{"schemas":{"KlingVideoInput":{"type":"object","required":["prompt"],"properties":{"prompt":{"type":"string"},"duration":{"type":"string"},"aspect_ratio":{"type":"string"},"negative_prompt":{"type":"string"},"generate_audio":{"type":"boolean"}}}}}}`), nil
+		}
 		if strings.Contains(req.URL.Host, "fal.run") {
 			falCalls++
 			if req.Method == http.MethodPost {
@@ -334,6 +339,11 @@ func TestHarnessAnimatesAttachedImageViaFal(t *testing.T) {
 	nonStreamCount := 0
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/api/openapi/") {
+			// Minimal kling image-to-video schema so resolveVideoBody can map the
+			// canonical source-image param onto image_url.
+			return jsonResponse(`{"components":{"schemas":{"KlingImageToVideoInput":{"type":"object","required":["prompt","image_url"],"properties":{"prompt":{"type":"string"},"image_url":{"type":"string"},"duration":{"type":"string"},"aspect_ratio":{"type":"string"}}}}}}`), nil
+		}
 		if strings.Contains(req.URL.Host, "fal.run") {
 			if req.Method == http.MethodPost {
 				submittedModelPath = req.URL.Path

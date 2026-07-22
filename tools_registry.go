@@ -45,10 +45,19 @@ type HarnessToolExecutionContext struct {
 	// current turn, if any. transcribe_audio consumes it via fal's Whisper/Wizper.
 	// Like AttachedImage it is provider-agnostic: the planner decides whether to
 	// transcribe it (any provider) or, on OpenRouter, send it as chat input.
-	AttachedAudio   string
-	GenerateImage   func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, []string, error)
-	GenerateVideo   func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error)
-	GenerateAudio   func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error)
+	AttachedAudio string
+	// AttachedVideo is the video clip (a data URL) the user attached to the
+	// current turn, if any. generate_video uses it as the source clip for Veo
+	// extend, and the lip sync tool uses it (with AttachedAudio) for video-to-
+	// video lip sync. Tool-only: it never reaches a chat model.
+	AttachedVideo string
+	GenerateImage func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, []string, error)
+	GenerateVideo func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error)
+	GenerateAudio func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error)
+	// GenerateLipsync runs a lip sync generation — an audio clip drives a face
+	// (image for audio-to-video, video for video-to-video). It returns a video
+	// (same transport as GenerateVideo) plus resolver notices.
+	GenerateLipsync func(ctx context.Context, req LipsyncGenerateRequest) (GeneratedVideo, error)
 	TranscribeAudio func(ctx context.Context, model, audioURL, task, language string) (GeneratedTranscript, error)
 	UpscaleImage    func(ctx context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, error)
 }
@@ -68,12 +77,14 @@ type ToolImageResult struct {
 // bytes — video is a file-path artifact end to end. The Videos slice is stripped
 // before the result is rendered into a tool message (the temp path is not useful
 // model evidence); the harness moves each temp file into the conversation's
-// artifacts directory when it persists the turn.
+// artifacts directory when it persists the turn. Notices carries deterministic
+// caveats surfaced via NoticeProvider, matching ToolImageResult/ToolAudioResult.
 type ToolVideoResult struct {
-	Model  string          `json:"model"`
-	Prompt string          `json:"prompt"`
-	Count  int             `json:"count"`
-	Videos []ToolVideoFile `json:"videos,omitempty"`
+	Model   string          `json:"model"`
+	Prompt  string          `json:"prompt"`
+	Count   int             `json:"count"`
+	Videos  []ToolVideoFile `json:"videos,omitempty"`
+	Notices []string        `json:"notices,omitempty"`
 }
 
 type ToolVideoFile struct {
@@ -106,6 +117,11 @@ type ToolTranscribeResult struct {
 // ToolNotices reports deterministic, user-facing caveats produced while
 // generating the audio (e.g. a requested loop the model can't honor).
 func (r ToolAudioResult) ToolNotices() []string { return r.Notices }
+
+// ToolNotices reports deterministic, user-facing caveats produced while
+// resolving the video body (e.g. a model with no source-video input when the
+// user attached a video to extend, or an unavailable schema).
+func (r ToolVideoResult) ToolNotices() []string { return r.Notices }
 
 // ToolNotices reports deterministic, user-facing caveats produced while
 // resolving the image body (e.g. a model with no source-image input when the
@@ -157,6 +173,9 @@ func defaultHarnessToolRegistry(config AppConfig) HarnessToolRegistry {
 	}
 	if transcribeAudioConfigured(config) {
 		definitions = append(definitions, transcribeAudioToolDefinition())
+	}
+	if lipsyncConfigured(config) {
+		definitions = append(definitions, lipsyncToolDefinition())
 	}
 	if imageUpscaleConfigured(config) {
 		definitions = append(definitions, imageUpscaleToolDefinition())
@@ -267,11 +286,22 @@ func resolveDefaultVideoImageModel(config AppConfig) string {
 	return defaultFalVideoImageModel
 }
 
+// resolveDefaultVideoExtendModel returns the video-extend model used to continue
+// an attached video clip (Veo extend). Unlike the text/image video models there
+// is no dedicated fal listing category for extend endpoints, so the default is a
+// known-good endpoint and the user can override it in config.
+func resolveDefaultVideoExtendModel(config AppConfig) string {
+	if model := strings.TrimSpace(config.Providers.Fal.VideoExtendModel); model != "" {
+		return model
+	}
+	return defaultFalVideoExtendModel
+}
+
 func videoGenerationToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "generate_video",
 		Title:       "Generate video",
-		Description: "Use this when the user asks to create, animate, or render a video or short clip. Works from a text description, and when the user attached an image, animates that image (image-to-video). The clip is attached to the assistant reply. Generation runs for a minute or more. Pass negativePrompt to steer content away from unwanted elements, and generateAudio:false when the user wants a silent clip.",
+		Description: "Use this when the user asks to create, animate, extend, or render a video or short clip. Works from a text description; when the user attached an image, animates that image (image-to-video); when the user attached a video, extends it into a longer clip (Veo extend). The clip is attached to the assistant reply. Generation runs for a minute or more. Pass negativePrompt to steer content away from unwanted elements, and generateAudio:false when the user wants a silent clip.",
 		Example:     `{"name":"generate_video","content":"a drone shot flying over a misty pine forest at sunrise"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: generateVideoParamSchema(),
@@ -285,14 +315,21 @@ func videoGenerationToolDefinition() HarnessToolDefinition {
 			if tools.GenerateVideo == nil {
 				return nil, "video generation unavailable", errors.New("video generation is not available in this context")
 			}
-			// An attached image switches to image-to-video: use the image-to-video
-			// model and pass the image to fal as the source frame.
+			// Attached media picks the generation mode and model, in priority order:
+			// an attached video switches to a Veo extend endpoint (continues the
+			// clip), an attached image switches to image-to-video (animates the
+			// frame), otherwise text-to-video. The planner may still override the
+			// model per call.
 			attachedImage := strings.TrimSpace(tools.AttachedImage)
+			attachedVideo := strings.TrimSpace(tools.AttachedVideo)
 			model := strings.TrimSpace(call.Model)
 			if model == "" {
-				if attachedImage != "" {
+				switch {
+				case attachedVideo != "":
+					model = resolveDefaultVideoExtendModel(tools.Config)
+				case attachedImage != "":
 					model = resolveDefaultVideoImageModel(tools.Config)
-				} else {
+				default:
 					model = resolveDefaultVideoModel(tools.Config)
 				}
 			}
@@ -306,6 +343,7 @@ func videoGenerationToolDefinition() HarnessToolDefinition {
 				AspectRatio:    tools.Config.Generation.Video.AspectRatio,
 				NegativePrompt: strings.TrimSpace(call.NegativePrompt),
 				Image:          attachedImage,
+				Video:          attachedVideo,
 				GenerateAudio:  call.GenerateAudio,
 			}
 			generated, err := tools.GenerateVideo(ctx, videoReq)
@@ -320,13 +358,16 @@ func videoGenerationToolDefinition() HarnessToolDefinition {
 				return nil, "video generation failed", err
 			}
 			output := ToolVideoResult{
-				Model:  model,
-				Prompt: videoReq.Prompt,
-				Count:  1,
-				Videos: []ToolVideoFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
+				Model:   model,
+				Prompt:  videoReq.Prompt,
+				Count:   1,
+				Videos:  []ToolVideoFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
+				Notices: generated.Notices,
 			}
 			summary := fmt.Sprintf("generated a video with %s", model)
-			if attachedImage != "" {
+			if attachedVideo != "" {
+				summary = fmt.Sprintf("extended the attached video into a longer clip with %s", model)
+			} else if attachedImage != "" {
 				summary = fmt.Sprintf("animated the attached image into a video with %s", model)
 			}
 			return output, summary, nil
@@ -400,6 +441,32 @@ func resolveDefaultTranscribeModel(config AppConfig) string {
 		return model
 	}
 	return defaultFalTranscribeModel
+}
+
+// lipsyncConfigured reports whether the lip_sync tool should be offered: fal is
+// the only lip sync backend, and the default models always apply (the audio-to-
+// video and video-to-video endpoints are known-good), so the gate is purely the
+// fal key — like transcribe_audio, no model needs to be configured first.
+func lipsyncConfigured(config AppConfig) bool {
+	return falKeyConfigured()
+}
+
+// resolveDefaultLipsyncImageModel returns the audio-to-video lip sync model
+// used when the user attaches an audio clip plus an image (a talking head).
+func resolveDefaultLipsyncImageModel(config AppConfig) string {
+	if model := strings.TrimSpace(config.Providers.Fal.LipsyncImageModel); model != "" {
+		return model
+	}
+	return defaultFalLipsyncImageModel
+}
+
+// resolveDefaultLipsyncVideoModel returns the video-to-video lip sync model
+// used when the user attaches an audio clip plus a video (re-lip-sync a clip).
+func resolveDefaultLipsyncVideoModel(config AppConfig) string {
+	if model := strings.TrimSpace(config.Providers.Fal.LipsyncVideoModel); model != "" {
+		return model
+	}
+	return defaultFalLipsyncVideoModel
 }
 
 func audioGenerationToolDefinition() HarnessToolDefinition {
@@ -534,6 +601,97 @@ func transcribeAudioParamSchema() map[string]any {
 				"original language, or \"translate\" to translate the speech to English text."),
 			"language": stringParam("Optional — the spoken language as a two-letter code (e.g. \"fr\") " +
 				"to guide transcription. Omit to let the model auto-detect."),
+		},
+		"required": []string{},
+	}
+}
+
+// lipsyncToolDefinition exposes the lip_sync tool. It consumes an attached audio
+// clip plus an attached face (image or video) and produces a lip-synced video.
+// The mode is determined by which face attachment is present: image → audio-to-
+// video (a talking head), video → video-to-video (re-lip-sync an existing clip).
+// The result is a video, so it rides the existing ToolVideoResult → artifact
+// pipeline (videosFromToolResults / writeChatVideoArtifacts) — no new
+// persistence code. Mirrors transcribe_audio's attachment-guard pattern.
+func lipsyncToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "lip_sync",
+		Title:       "Lip sync video",
+		Description: "Use this when the user asks to lip sync, dub, or sync audio to a face. Requires an attached audio clip AND an attached face: an image produces a talking-head video (audio-to-video), a video re-lip-syncs the existing clip (video-to-video). The synced video is attached to the assistant reply. Generation runs for a minute or more.",
+		Example:     `{"name":"lip_sync"}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: lipsyncParamSchema(),
+		Validate: func(prefix string, call HarnessToolCall) []string {
+			return nil
+		},
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			if tools.GenerateLipsync == nil {
+				return nil, "lip sync unavailable", errors.New("lip sync is not available in this context")
+			}
+			attachedAudio := strings.TrimSpace(tools.AttachedAudio)
+			if attachedAudio == "" {
+				return nil, "lip sync requires an attached audio clip", errors.New("lip_sync requires an attached audio clip — ask the user to attach one first")
+			}
+			attachedImage := strings.TrimSpace(tools.AttachedImage)
+			attachedVideo := strings.TrimSpace(tools.AttachedVideo)
+			if attachedImage == "" && attachedVideo == "" {
+				return nil, "lip sync requires an attached face", errors.New("lip_sync requires an attached image or video to lip sync — ask the user to attach a face alongside the audio")
+			}
+			model := strings.TrimSpace(call.Model)
+			if model == "" {
+				// Pick the mode by which face is attached: video → video-to-video,
+				// image → audio-to-video. A video takes precedence if both are set.
+				if attachedVideo != "" {
+					model = resolveDefaultLipsyncVideoModel(tools.Config)
+				} else {
+					model = resolveDefaultLipsyncImageModel(tools.Config)
+				}
+			}
+			lipsyncReq := LipsyncGenerateRequest{
+				Model: model,
+				Audio: attachedAudio,
+				Image: attachedImage,
+				Video: attachedVideo,
+			}
+			generated, err := tools.GenerateLipsync(ctx, lipsyncReq)
+			if err != nil {
+				return nil, "lip sync failed", err
+			}
+			if len(generated.Data) == 0 {
+				return nil, "lip sync returned no video", errors.New("lip sync model returned no video data")
+			}
+			tempPath, err := writeTempVideo(generated)
+			if err != nil {
+				return nil, "lip sync failed", err
+			}
+			output := ToolVideoResult{
+				Model:   model,
+				Count:   1,
+				Videos:  []ToolVideoFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
+				Notices: generated.Notices,
+			}
+			summary := fmt.Sprintf("lip-synced the attached audio to a %s with %s", map[bool]string{true: "video", false: "image"}[attachedVideo != ""], model)
+			return output, summary, nil
+		},
+		Activity: func(result HarnessToolResult) HarnessToolActivity {
+			activity := defaultHarnessToolActivity(result)
+			if typed, ok := result.Result.(ToolVideoResult); ok {
+				activity.Command = []string{"fal", "lipsync", typed.Model}
+			}
+			return activity
+		},
+	}
+}
+
+// lipsyncParamSchema describes lip_sync's inputs. There is no "content" param —
+// the audio and face come from the user's attachments, not a prompt. model is
+// the only knob the planner can steer; everything else is attachment-driven.
+func lipsyncParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"model": stringParam("Optional fal.ai lip sync model override."),
 		},
 		"required": []string{},
 	}

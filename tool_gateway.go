@@ -64,7 +64,26 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			if strings.TrimSpace(apiKey) == "" {
 				return GeneratedVideo{}, errFalKeyNotConfigured
 			}
-			return newFalClient(app.client, apiKey).GenerateVideo(ctx, req)
+			schema := schemaCache.Get(ctx, req.Model)
+			body, notices := resolveVideoBody(schema, req, falOverrides)
+			generated, err := newFalClient(app.client, apiKey).GenerateVideo(ctx, req.Model, body)
+			generated.Notices = notices
+			return generated, err
+		}
+		gateway.tools.GenerateLipsync = func(ctx context.Context, req LipsyncGenerateRequest) (GeneratedVideo, error) {
+			apiKey, err := loadFalAPIKey()
+			if err != nil {
+				return GeneratedVideo{}, err
+			}
+			if strings.TrimSpace(apiKey) == "" {
+				return GeneratedVideo{}, errFalKeyNotConfigured
+			}
+			schema := schemaCache.Get(ctx, req.Model)
+			body, notices := resolveLipsyncBody(schema, req, falOverrides)
+			// Lip sync returns a video, so it reuses the GenerateVideo transport.
+			generated, err := newFalClient(app.client, apiKey).GenerateVideo(ctx, req.Model, body)
+			generated.Notices = notices
+			return generated, err
 		}
 		gateway.tools.UpscaleImage = func(ctx context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, error) {
 			apiKey, err := loadFalAPIKey()
