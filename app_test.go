@@ -203,7 +203,7 @@ func TestMergeAppConfigFillsDefaults(t *testing.T) {
 	if config.Prompts.System == "" {
 		t.Fatal("system prompt should default")
 	}
-	if config.Generation.Image.Width != 768 || config.Generation.Image.Steps != 24 {
+	if config.Generation.Image.AspectRatio != defaultImageAspectRatio || config.Generation.Image.SizePreset != defaultImageSizePreset || config.Generation.Image.Steps != 24 {
 		t.Fatalf("image generation defaults = %+v", config.Generation.Image)
 	}
 	if config.Generation.Video.Duration != defaultFalVideoDuration || config.Generation.Video.AspectRatio != defaultFalVideoAspectRatio {
@@ -317,6 +317,140 @@ func TestMergeAppConfigNormalizesOllamaEndpoint(t *testing.T) {
 	}
 	if config.Providers.Ollama.Models.Harness != "harness-model" {
 		t.Fatalf("tools model = %q", config.Providers.Ollama.Models.Harness)
+	}
+}
+
+// TestLegacyImageSizePreset covers the one-time migration of legacy config.json
+// width/height values onto the closest SizePreset tier by long edge.
+func TestLegacyImageSizePreset(t *testing.T) {
+	cases := []struct {
+		name       string
+		width      int
+		height     int
+		wantPreset string
+	}{
+		{"empty stays empty", 0, 0, ""},
+		{"only width set", 1024, 0, "draft"},
+		{"only height set", 0, 1024, "draft"},
+		{"draft boundary", 1024, 1024, "draft"},
+		{"just above draft", 1025, 1025, "standard"},
+		{"standard boundary", 1536, 864, "standard"},
+		{"high boundary", 2000, 1000, "high"},
+		{"high boundary exact", 2048, 2048, "high"},
+		{"high+ above high", 2560, 1440, "high+"},
+		{"high+ far above", 4096, 4096, "high+"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := legacyImageSizePreset(tc.width, tc.height); got != tc.wantPreset {
+				t.Errorf("legacyImageSizePreset(%d, %d) = %q, want %q", tc.width, tc.height, got, tc.wantPreset)
+			}
+		})
+	}
+}
+
+// TestMergeAppConfigMigratesLegacyImagePixels confirms mergeAppConfig folds
+// legacy width/height into SizePreset, leaves an explicit SizePreset alone, and
+// defaults both fields when neither is present.
+func TestMergeAppConfigMigratesLegacyImagePixels(t *testing.T) {
+	// Legacy config with pixel dimensions but no preset/ratio → migrated.
+	migrated := mergeAppConfig(AppConfig{Generation: ConfigGeneration{
+		Image: ConfigImageGeneration{Width: 2048, Height: 1024, Steps: 8},
+	}})
+	if migrated.Generation.Image.SizePreset != "high" {
+		t.Errorf("legacy width/height migration: SizePreset = %q, want high", migrated.Generation.Image.SizePreset)
+	}
+	if migrated.Generation.Image.AspectRatio != defaultImageAspectRatio {
+		t.Errorf("legacy ratio fallback: AspectRatio = %q, want %q", migrated.Generation.Image.AspectRatio, defaultImageAspectRatio)
+	}
+	if migrated.Generation.Image.Steps != 8 {
+		t.Errorf("explicit steps clobbered: Steps = %d, want 8", migrated.Generation.Image.Steps)
+	}
+
+	// An explicit preset is honored and not clobbered by legacy width/height.
+	kept := mergeAppConfig(AppConfig{Generation: ConfigGeneration{
+		Image: ConfigImageGeneration{SizePreset: "draft", AspectRatio: "16:9", Width: 4096, Height: 4096},
+	}})
+	if kept.Generation.Image.SizePreset != "draft" {
+		t.Errorf("explicit preset clobbered: SizePreset = %q, want draft", kept.Generation.Image.SizePreset)
+	}
+	if kept.Generation.Image.AspectRatio != "16:9" {
+		t.Errorf("explicit ratio clobbered: AspectRatio = %q, want 16:9", kept.Generation.Image.AspectRatio)
+	}
+
+	// Empty image config → all defaults applied.
+	empty := mergeAppConfig(AppConfig{})
+	if empty.Generation.Image.SizePreset != defaultImageSizePreset || empty.Generation.Image.AspectRatio != defaultImageAspectRatio || empty.Generation.Image.Steps != 24 {
+		t.Errorf("empty image defaults = %+v", empty.Generation.Image)
+	}
+}
+
+// TestImageSizePresetLongEdge covers the preset → long-edge budget mapping.
+// An unknown preset falls back to the standard long edge.
+func TestImageSizePresetLongEdge(t *testing.T) {
+	cases := []struct {
+		preset   string
+		wantLong int
+	}{
+		{"draft", 1024},
+		{"standard", 1536},
+		{"high", 2048},
+		{"high+", 2560},
+		{"", 1536},      // empty → standard fallback
+		{"bogus", 1536}, // unknown → standard fallback
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("%q", tc.preset), func(t *testing.T) {
+			if got := imageSizePresetLongEdge(tc.preset); got != tc.wantLong {
+				t.Errorf("imageSizePresetLongEdge(%q) = %d, want %d", tc.preset, got, tc.wantLong)
+			}
+		})
+	}
+}
+
+// TestImageSizeForPresetAndRatio covers the composition of preset + ratio into
+// concrete pixels. Spot-checks a few combos and the unknown-ratio fallback.
+func TestImageSizeForPresetAndRatio(t *testing.T) {
+	// standard (1536) at 1:1 → 1536×1536 (already a multiple of 16).
+	w, h := imageSizeForPresetAndRatio("standard", "1:1")
+	if w != 1536 || h != 1536 {
+		t.Errorf("(standard,1:1) = %dx%d, want 1536x1536", w, h)
+	}
+	// draft (1024) at 16:9 → long edge 1024, short edge ~576 (multiple of 16).
+	w, h = imageSizeForPresetAndRatio("draft", "16:9")
+	if w <= h || w != 1024 {
+		t.Errorf("(draft,16:9) = %dx%d, want landscape with long edge 1024", w, h)
+	}
+	if h%16 != 0 {
+		t.Errorf("(draft,16:9) short edge %d not a multiple of 16", h)
+	}
+	// 21:9 cinematic — landscape, long edge wins.
+	w, h = imageSizeForPresetAndRatio("high+", "21:9")
+	if w <= h {
+		t.Errorf("(high+,21:9) = %dx%d, want landscape (cinematic ultrawide)", w, h)
+	}
+	if w != 2560 {
+		t.Errorf("(high+,21:9) long edge = %d, want 2560", w)
+	}
+	// 3:2 photographic — landscape.
+	w, h = imageSizeForPresetAndRatio("high", "3:2")
+	if w <= h {
+		t.Errorf("(high,3:2) = %dx%d, want landscape (3:2)", w, h)
+	}
+	// 2:3 portrait.
+	w, h = imageSizeForPresetAndRatio("high", "2:3")
+	if w >= h {
+		t.Errorf("(high,2:3) = %dx%d, want portrait (2:3)", w, h)
+	}
+	// Unknown ratio → square at the preset long edge (never a zero dimension).
+	w, h = imageSizeForPresetAndRatio("standard", "totally-bogus")
+	if w != 1536 || h != 1536 {
+		t.Errorf("(standard,bogus) = %dx%d, want 1536x1536 fallback", w, h)
+	}
+	// Empty ratio → configured default (1:1) applied, not a crash.
+	w, h = imageSizeForPresetAndRatio("standard", "")
+	if w != 1536 || h != 1536 {
+		t.Errorf("(standard,empty) = %dx%d, want 1536x1536", w, h)
 	}
 }
 
@@ -4626,6 +4760,104 @@ func TestImageModelAsChatModelDeliversImagesDespiteResponseError(t *testing.T) {
 	images := historyImagesForTest(assistant.Content)
 	if len(images) != 1 {
 		t.Fatalf("assistant image content = %+v, want one image artifact delivered", assistant.Content)
+	}
+}
+
+// TestImageGenerationIgnoresCrossProviderChatModel reproduces
+// conv_db3e63445e7d37d4874d838d: the chat provider is OpenRouter and the image
+// provider is Ollama. The harness model (Ollama) triages the turn as image mode
+// and plans a generate_image call. The primary (chat) model is an OpenRouter
+// text model unrelated to image generation, so the generate_image tool must use
+// the configured Ollama image model — not send the OpenRouter chat model id to
+// Ollama's image endpoint (which 404s).
+func TestImageGenerationIgnoresCrossProviderChatModel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Primary = "gemma4:e4b-mlx"
+	config.Providers.Ollama.Models.Harness = "gemma4:e4b-mlx"
+	config.Providers.Ollama.Models.Image = "x/flux2-klein:4b"
+	// Mixed-provider setup: chat on OpenRouter, images on Ollama.
+	config.Models.PrimaryProvider = "openrouter"
+	config.Models.ImageProvider = "ollama"
+	config.Providers.OpenRouter.Enabled = true
+	config.Providers.OpenRouter.Primary = "mistralai/mistral-large-2512"
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	nonStreamCount := 0
+	imageCalls := 0
+	streamCallCount := 0
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/api/show":
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"capabilities":[],"model_info":{},"details":{"family":"test","parameter_size":"1B"}}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+		case "/api/generate":
+			imageCalls++
+			var genPayload map[string]any
+			genData, _ := io.ReadAll(req.Body)
+			if err := json.Unmarshal(genData, &genPayload); err != nil {
+				t.Fatalf("image request body is not JSON: %v", err)
+			}
+			if got := genPayload["model"]; got != "x/flux2-klein:4b" {
+				t.Fatalf("image generation model = %q, want x/flux2-klein:4b (configured Ollama image model, not the OpenRouter chat model)", got)
+			}
+			body := `{"model":"x/flux2-klein:4b","image":"iVBORw0KGgo=","done":true}`
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+		case "/api/chat":
+			var payload map[string]any
+			data, _ := io.ReadAll(req.Body)
+			if err := json.Unmarshal(data, &payload); err != nil {
+				t.Fatalf("provider request body is not JSON: %v", err)
+			}
+			if payload["stream"] == false {
+				nonStreamCount++
+				if nonStreamCount == 1 {
+					decision := `{"needsTools":true,"responseMode":"image","toolTask":"Generate the requested image.","reason":"The user asked to create an image."}`
+					return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"gemma4:e4b-mlx","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+				}
+				if nonStreamCount == 2 {
+					plan := `{"brief":"Generate the image.","needsTools":true,"reason":"Image generation required.","toolCalls":[{"name":"generate_image","content":"death facing an old frail man","aspectRatio":"16:9"}]}`
+					return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"gemma4:e4b-mlx","message":{"role":"assistant","content":` + strconv.Quote(plan) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+				}
+				plan := `{"brief":"Image generated.","needsTools":false,"reason":"Image tool produced the artifact.","toolCalls":[]}`
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"gemma4:e4b-mlx","message":{"role":"assistant","content":` + strconv.Quote(plan) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+			}
+			streamCallCount++
+			body := fmt.Sprintln(`{"model":"gemma4:e4b-mlx","message":{"role":"assistant","content":"Here is the image you requested."},"done":false}`) +
+				fmt.Sprintln(`{"model":"gemma4:e4b-mlx","done":true,"done_reason":"stop","eval_count":3}`)
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+		default:
+			t.Fatalf("unexpected provider path %q", req.URL.Path)
+		}
+		return nil, nil
+	})
+
+	app.runChatStream(context.Background(), "request-image-cross-provider", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "mistralai/mistral-large-2512",
+		// Chat goes to OpenRouter; the request pins the harness provider to
+		// Ollama where gemma4 lives.
+		Provider: "openrouter",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Create an image of death facing an old frail man in 16x9 dimension."},
+		},
+	})
+
+	if imageCalls != 1 {
+		t.Fatalf("image calls = %d, want 1 generate_image call", imageCalls)
+	}
+	if streamCallCount != 1 {
+		t.Fatalf("stream calls = %d, want 1 final response stream", streamCallCount)
 	}
 }
 

@@ -75,9 +75,11 @@ export namespace main {
 	    }
 	}
 	export class ConfigImageGeneration {
-	    width: number;
-	    height: number;
+	    aspectRatio?: string;
+	    sizePreset?: string;
 	    steps: number;
+	    width?: number;
+	    height?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigImageGeneration(source);
@@ -85,9 +87,11 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.aspectRatio = source["aspectRatio"];
+	        this.sizePreset = source["sizePreset"];
+	        this.steps = source["steps"];
 	        this.width = source["width"];
 	        this.height = source["height"];
-	        this.steps = source["steps"];
 	    }
 	}
 	export class ConfigGeneration {

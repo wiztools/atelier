@@ -174,9 +174,14 @@ type ConfigGeneration struct {
 }
 
 type ConfigImageGeneration struct {
-	Width  int `json:"width"`
-	Height int `json:"height"`
-	Steps  int `json:"steps"`
+	AspectRatio string `json:"aspectRatio,omitempty"`
+	SizePreset  string `json:"sizePreset,omitempty"`
+	Steps       int    `json:"steps"`
+	// Width/Height are legacy fields, retained so mergeAppConfig can migrate
+	// pre-preset config.json values into SizePreset. New configs leave them
+	// unset; pixels are derived from AspectRatio + SizePreset at call time.
+	Width  int `json:"width,omitempty"`
+	Height int `json:"height,omitempty"`
 }
 
 // ConfigVideoGeneration holds the two user-facing text-to-video knobs. Duration
@@ -1790,6 +1795,15 @@ func loadReadyConfig() (AppConfig, error) {
 // a field or changes shape. loadForAppend backfills older records up to it.
 const currentConversationSchemaVersion = 2
 
+// defaultImageAspectRatio / defaultImageSizePreset are the defaults for the
+// image-generation Settings dropdowns. Pixels are derived from these at call
+// time (see imageSizeForPresetAndRatio in tools_registry.go), so config carries
+// the user's choices rather than raw pixel values.
+const (
+	defaultImageAspectRatio = "1:1"
+	defaultImageSizePreset  = "standard"
+)
+
 // resolveTurnWorkspace returns the filesystem-tool root a chat turn must run
 // against. The workspace is IMMUTABLE per conversation:
 //
@@ -1894,9 +1908,9 @@ func defaultAppConfig() AppConfig {
 		},
 		Generation: ConfigGeneration{
 			Image: ConfigImageGeneration{
-				Width:  768,
-				Height: 768,
-				Steps:  24,
+				AspectRatio: defaultImageAspectRatio,
+				SizePreset:  defaultImageSizePreset,
+				Steps:       24,
 			},
 			Video: ConfigVideoGeneration{
 				Duration:    defaultFalVideoDuration,
@@ -1967,11 +1981,17 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	if strings.TrimSpace(config.Prompts.System) == "" {
 		config.Prompts.System = defaults.Prompts.System
 	}
-	if config.Generation.Image.Width <= 0 {
-		config.Generation.Image.Width = defaults.Generation.Image.Width
+	if strings.TrimSpace(config.Generation.Image.AspectRatio) == "" {
+		config.Generation.Image.AspectRatio = defaults.Generation.Image.AspectRatio
 	}
-	if config.Generation.Image.Height <= 0 {
-		config.Generation.Image.Height = defaults.Generation.Image.Height
+	if strings.TrimSpace(config.Generation.Image.SizePreset) == "" {
+		// One-time migration: legacy config.json carried width/height in pixels.
+		// Fold the old long edge into the closest preset tier.
+		if migrated := legacyImageSizePreset(config.Generation.Image.Width, config.Generation.Image.Height); migrated != "" {
+			config.Generation.Image.SizePreset = migrated
+		} else {
+			config.Generation.Image.SizePreset = defaults.Generation.Image.SizePreset
+		}
 	}
 	if config.Generation.Image.Steps <= 0 {
 		config.Generation.Image.Steps = defaults.Generation.Image.Steps
@@ -1985,6 +2005,30 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	config.Tools = mergeToolsConfig(config.Tools, defaults.Tools)
 	config.UI.Mode = defaults.UI.Mode
 	return config
+}
+
+// legacyImageSizePreset maps a legacy config.json width/height pair (raw pixels)
+// onto the closest SizePreset tier by long edge. Returns "" when neither
+// dimension is set (0/missing), so the caller falls back to the default preset.
+// Used once during mergeAppConfig to migrate pre-preset configs.
+func legacyImageSizePreset(width, height int) string {
+	longEdge := width
+	if height > longEdge {
+		longEdge = height
+	}
+	if longEdge <= 0 {
+		return ""
+	}
+	switch {
+	case longEdge <= 1024:
+		return "draft"
+	case longEdge <= 1536:
+		return "standard"
+	case longEdge <= 2048:
+		return "high"
+	default:
+		return "high+"
+	}
 }
 
 func mergeToolsConfig(tools ConfigTools, defaults ConfigTools) ConfigTools {

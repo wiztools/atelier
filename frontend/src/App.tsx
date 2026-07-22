@@ -179,9 +179,17 @@ const minSidebarWidth = 240;
 const maxSidebarWidth = 560;
 const compactHistoryLimit = 10;
 const expandedHistoryBatchSize = 20;
-const defaultImageWidth = 768;
-const defaultImageHeight = 768;
+const defaultImageAspectRatio = '1:1';
+const defaultImageSizePreset = 'standard';
 const defaultImageSteps = 24;
+const imageAspectRatioOptions = ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '21:9'];
+type ImageSizePreset = {value: string; label: string; longEdge: number};
+const imageSizePresetOptions: ImageSizePreset[] = [
+  {value: 'draft', label: 'Draft', longEdge: 1024},
+  {value: 'standard', label: 'Standard', longEdge: 1536},
+  {value: 'high', label: 'High', longEdge: 2048},
+  {value: 'high+', label: 'High+', longEdge: 2560},
+];
 const defaultFalImageModel = 'fal-ai/flux/schnell';
 const defaultFalImageEditModel = 'fal-ai/flux/dev/image-to-image';
 const defaultFalVideoModel = 'fal-ai/kling-video/v2/master/text-to-video';
@@ -294,8 +302,8 @@ function App() {
   const [draftWorkspace, setDraftWorkspace] = useState('');
   const [activeStream, setActiveStream] = useState<string | null>(null);
   const [inFlightConversations, setInFlightConversations] = useState<Record<string, InFlightConversation>>({});
-  const [imageWidth, setImageWidth] = useState(defaultImageWidth);
-  const [imageHeight, setImageHeight] = useState(defaultImageHeight);
+  const [imageAspectRatio, setImageAspectRatio] = useState(defaultImageAspectRatio);
+  const [imageSizePreset, setImageSizePreset] = useState(defaultImageSizePreset);
   const [imageSteps, setImageSteps] = useState(defaultImageSteps);
   const [configLoaded, setConfigLoaded] = useState(false);
   const [storageConfig, setStorageConfig] = useState<main.ConfigStorage | null>(null);
@@ -432,8 +440,8 @@ function App() {
         },
         generation: {
           image: {
-            width: imageWidth,
-            height: imageHeight,
+            aspectRatio: imageAspectRatio,
+            sizePreset: imageSizePreset,
             steps: imageSteps,
           },
           video: {
@@ -450,7 +458,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falAudioModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, harnessModels, harnessProvider, imageHeight, imageModel, imageProvider, imageSteps, imageWidth, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falAudioModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
 
   // On a fresh launch, put the cursor in the chat box so the user can start
   // typing immediately. Fires once, when config finishes loading.
@@ -652,6 +660,36 @@ function App() {
 
   const falLipsyncVideoModelOptions = useMemo(() => falModelOptionList(falLipsyncVideoModels), [falLipsyncVideoModels]);
 
+  // imageSizeOptions derives one labeled option per Size preset, annotated with
+  // the concrete pixels the backend will receive for the selected aspect ratio
+  // (e.g. "Standard (1536×864)"). Mirrors the Go imageSizeForAspectRatio math
+  // (round to multiple of 16, floor 256) so the dropdown labels stay in sync
+  // with imageSizeForPresetAndRatio in tools_registry.go. Re-derived when the
+  // aspect ratio changes; each preset's long edge differs, so every option
+  // updates together.
+  const imageSizeOptions = useMemo(() => {
+    const parts = imageAspectRatio.split(':').map((value) => Number(value));
+    const valid = parts.length === 2 && parts.every((value) => Number.isFinite(value) && value > 0);
+    let wr = valid ? parts[0] : 1;
+    let hr = valid ? parts[1] : 1;
+    const roundTo16 = (n: number) => {
+      const rounded = Math.round(n / 16) * 16;
+      return rounded < 256 ? 256 : rounded;
+    };
+    return imageSizePresetOptions.map((preset) => {
+      const baseLong = preset.longEdge;
+      const longEdge = roundTo16(baseLong);
+      let shortRatio = wr;
+      let longRatio = hr;
+      if (shortRatio > longRatio) {
+        [shortRatio, longRatio] = [longRatio, shortRatio];
+      }
+      const shortEdge = roundTo16((baseLong * shortRatio) / longRatio);
+      const dims = wr >= hr ? {width: longEdge, height: shortEdge} : {width: shortEdge, height: longEdge};
+      return {value: preset.value, label: `${preset.label} (${dims.width}×${dims.height})`};
+    });
+  }, [imageAspectRatio]);
+
   useEffect(() => {
     if (!imageModelOptions.length || imageModelOptions.includes(imageModel)) {
       return;
@@ -688,8 +726,8 @@ function App() {
     const nextHarnessProvider = config.models?.harnessProvider === 'openrouter' ? 'openrouter' : 'ollama';
     const nextImageModel = config.providers?.ollama?.models?.image ?? '';
     const nextSystem = config.prompts?.system || 'You are Atelier, a precise local AI collaborator.';
-    const nextImageWidth = config.generation?.image?.width || defaultImageWidth;
-    const nextImageHeight = config.generation?.image?.height || nextImageWidth;
+    const nextImageAspectRatio = config.generation?.image?.aspectRatio || defaultImageAspectRatio;
+    const nextImageSizePreset = config.generation?.image?.sizePreset || defaultImageSizePreset;
     const nextImageSteps = config.generation?.image?.steps || defaultImageSteps;
     const nextImageProvider = config.models?.imageProvider === 'fal' ? 'fal' : 'ollama';
     const nextFalModel = config.providers?.fal?.model || defaultFalImageModel;
@@ -715,8 +753,8 @@ function App() {
     setHarnessProvider(nextHarnessProvider);
     setImageModel(nextImageModel);
     setSystem(nextSystem);
-    setImageWidth(nextImageWidth);
-    setImageHeight(nextImageHeight);
+    setImageAspectRatio(nextImageAspectRatio);
+    setImageSizePreset(nextImageSizePreset);
     setImageSteps(nextImageSteps);
     setImageProvider(nextImageProvider);
     setFalModel(nextFalModel);
@@ -2002,27 +2040,17 @@ function App() {
 
                   <div className="three-column">
                     <div className="field">
-                      <label htmlFor="image-width">Image Width</label>
-                      <input
-                        id="image-width"
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={imageWidth}
-                        onChange={(event) => setImageWidth(positiveIntOrDefault(event.target.value, defaultImageWidth))}
-                      />
+                      <label htmlFor="image-aspect">Aspect Ratio</label>
+                      <select id="image-aspect" value={imageAspectRatio} onChange={(event) => setImageAspectRatio(event.target.value)}>
+                        {imageAspectRatioOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+                      </select>
                     </div>
 
                     <div className="field">
-                      <label htmlFor="image-height">Image Height</label>
-                      <input
-                        id="image-height"
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={imageHeight}
-                        onChange={(event) => setImageHeight(positiveIntOrDefault(event.target.value, defaultImageHeight))}
-                      />
+                      <label htmlFor="image-size">Size</label>
+                      <select id="image-size" value={imageSizePreset} onChange={(event) => setImageSizePreset(event.target.value)}>
+                        {imageSizeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                      </select>
                     </div>
 
                     <div className="field">

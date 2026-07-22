@@ -240,18 +240,19 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		toolReq.Provider = harness.provider
 		var err error
 		preparation, err = h.prepareChatTurnLoop(ctx, requestID, conversationID, toolReq, harnessTurnContext{
-			SkillIndex:     skillIndex,
-			SkillIndexErr:  skillIndexErr,
-			ExplicitSkill:  explicitSkill,
-			ExplicitReason: explicitReason,
-			ToolTask:       decision.ToolTask,
-			PrimaryModel:   primaryModel,
-			ResponseMode:   decision.ResponseMode,
-			UseNativeTools: useNativeTools,
-			Harness:        harness,
-			AttachedImage:  latestAttachedImageForTurn(req, h.config.Storage),
-			AttachedAudio:  latestAttachedAudioForTurn(req, h.config.Storage),
-			AttachedVideo:  latestAttachedVideoForTurn(req, h.config.Storage),
+			SkillIndex:      skillIndex,
+			SkillIndexErr:   skillIndexErr,
+			ExplicitSkill:   explicitSkill,
+			ExplicitReason:  explicitReason,
+			ToolTask:        decision.ToolTask,
+			PrimaryModel:    primaryModel,
+			PrimaryProvider: primaryProvider,
+			ResponseMode:    decision.ResponseMode,
+			UseNativeTools:  useNativeTools,
+			Harness:         harness,
+			AttachedImage:   latestAttachedImageForTurn(req, h.config.Storage),
+			AttachedAudio:   latestAttachedAudioForTurn(req, h.config.Storage),
+			AttachedVideo:   latestAttachedVideoForTurn(req, h.config.Storage),
 		}, &run)
 		if err != nil {
 			run.complete("failed", "harness_prepare_error")
@@ -950,14 +951,15 @@ func truncateChatHistory(messages []ChatMessage, budgetChars int) []ChatMessage 
 // user named, the primary model's triage task for the planner, and whether the
 // harness model supports native tool-calling.
 type harnessTurnContext struct {
-	SkillIndex     []SkillIndexEntry
-	SkillIndexErr  error
-	ExplicitSkill  *SkillIndexEntry
-	ExplicitReason string
-	ToolTask       string
-	PrimaryModel   string
-	ResponseMode   string
-	UseNativeTools bool
+	SkillIndex      []SkillIndexEntry
+	SkillIndexErr   error
+	ExplicitSkill   *SkillIndexEntry
+	ExplicitReason  string
+	ToolTask        string
+	PrimaryModel    string
+	PrimaryProvider string
+	ResponseMode    string
+	UseNativeTools  bool
 	// Harness is the resolved model+provider for the skill-selection and
 	// planning calls, carried as a unit so neither can drift from the other.
 	Harness harnessTarget
@@ -1724,11 +1726,18 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 		// generate_image instead of the configured default. This lets the user
 		// pick a different image model per turn. When the primary model IS the
 		// harness model (a text model), the configured image model is correct.
-		// This override is Ollama-specific: with fal.ai as the image provider the
-		// primary (chat) model is unrelated to image generation, so leave the
-		// configured fal model in place.
+		// This override only applies when the primary model lives on the same
+		// provider as the image backend: a single-provider (all-Ollama) setup
+		// where the user picked a different Ollama model for the turn. When the
+		// chat provider differs from the image provider (e.g. OpenRouter chat
+		// with Ollama images), the primary model is unrelated to image
+		// generation — sending it to the image endpoint is a wrong-model 404.
+		// fal.ai as the image provider is likewise excluded: the primary (chat)
+		// model is unrelated to fal's image endpoints.
+		imageProvider := strings.TrimSpace(h.config.Models.ImageProvider)
+		primaryOnImageProvider := turn.PrimaryProvider != "" && turn.PrimaryProvider == imageProvider
 		if call.Name == "generate_image" && turn.ResponseMode == "image" &&
-			strings.TrimSpace(h.config.Models.ImageProvider) != "fal" &&
+			imageProvider != "fal" && primaryOnImageProvider &&
 			turn.PrimaryModel != "" && turn.PrimaryModel != h.config.Providers.Ollama.Models.Harness {
 			if strings.TrimSpace(call.Model) == "" {
 				call.Model = turn.PrimaryModel

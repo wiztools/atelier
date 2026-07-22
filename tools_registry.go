@@ -729,25 +729,22 @@ func imageGenerationToolDefinition() HarnessToolDefinition {
 			if model == "" {
 				return nil, "image generation unavailable", errors.New("no image model is configured")
 			}
+			// Derive pixels from the configured size preset + aspect ratio. An
+			// explicit aspectRatio on the tool call overrides the configured one;
+			// the configured long edge (preset) always sets the resolution budget.
+			// Image-to-image ignores these (fal derives dims from the source frame),
+			// so the derivation is moot there.
+			ratio := strings.TrimSpace(call.AspectRatio)
+			if ratio == "" {
+				ratio = strings.TrimSpace(tools.Config.Generation.Image.AspectRatio)
+			}
+			width, height := imageSizeForPresetAndRatio(tools.Config.Generation.Image.SizePreset, ratio)
 			imageReq := ImageGenerateRequest{
 				Model:  model,
 				Prompt: strings.TrimSpace(call.Content),
-				Width:  tools.Config.Generation.Image.Width,
-				Height: tools.Config.Generation.Image.Height,
+				Width:  width,
+				Height: height,
 				Steps:  tools.Config.Generation.Image.Steps,
-			}
-			// An explicit aspectRatio from the tool call overrides the configured
-			// dimensions. The configured long edge sets the resolution budget;
-			// width/height are derived from the ratio. Image-to-image ignores these
-			// (fal derives dims from the source frame), so this is moot there.
-			if ratio := strings.TrimSpace(call.AspectRatio); ratio != "" {
-				baseLong := imageReq.Width
-				if imageReq.Height > baseLong {
-					baseLong = imageReq.Height
-				}
-				if w, h := imageSizeForAspectRatio(baseLong, ratio); w > 0 && h > 0 {
-					imageReq.Width, imageReq.Height = w, h
-				}
 			}
 			if attachedImage != "" {
 				imageReq.Images = []string{attachedImage}
@@ -874,7 +871,7 @@ func generateImageParamSchema() map[string]any {
 		"properties": map[string]any{
 			"content":     stringParam("The image prompt — describe the image to create."),
 			"model":       stringParam("Optional image generation model override."),
-			"aspectRatio": enumParam("Optional — the output image shape. Omit to use the configured default size; ignored when transforming an attached image.", "1:1", "16:9", "9:16", "4:3", "3:4"),
+			"aspectRatio": enumParam("Optional — the output image shape. Omit to use the configured default; ignored when transforming an attached image.", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"),
 		},
 		"required": []string{"content"},
 	}
@@ -980,6 +977,12 @@ func imageSizeForAspectRatio(baseLong int, ratio string) (int, int) {
 		wr, hr = 4, 3
 	case "3:4":
 		wr, hr = 3, 4
+	case "3:2":
+		wr, hr = 3, 2
+	case "2:3":
+		wr, hr = 2, 3
+	case "21:9":
+		wr, hr = 21, 9
 	default:
 		return 0, 0
 	}
@@ -1001,6 +1004,43 @@ func roundToMultipleOf16(n int) int {
 		return 256
 	}
 	return rounded
+}
+
+// imageSizePresetLongEdge returns the long-edge pixel budget for a named size
+// preset. These are vetted values (the Settings Size dropdown lists them) so
+// neither the model nor the user can request an out-of-budget generation by
+// accident. An unknown preset falls back to the standard long edge, matching
+// defaultImageSizePreset.
+func imageSizePresetLongEdge(preset string) int {
+	switch strings.TrimSpace(preset) {
+	case "draft":
+		return 1024
+	case "standard":
+		return 1536
+	case "high":
+		return 2048
+	case "high+":
+		return 2560
+	default:
+		return 1536
+	}
+}
+
+// imageSizeForPresetAndRatio derives concrete width/height from a size preset
+// (long-edge budget) and an aspect ratio, composing imageSizeForAspectRatio.
+// An unknown ratio falls back to a square at the preset's long edge so a bad
+// value never produces a zero-dimension request.
+func imageSizeForPresetAndRatio(preset, ratio string) (int, int) {
+	baseLong := imageSizePresetLongEdge(preset)
+	ratio = strings.TrimSpace(ratio)
+	if ratio == "" {
+		ratio = defaultImageAspectRatio
+	}
+	width, height := imageSizeForAspectRatio(baseLong, ratio)
+	if width == 0 || height == 0 {
+		return baseLong, baseLong
+	}
+	return width, height
 }
 
 func generateVideoParamSchema() map[string]any {
