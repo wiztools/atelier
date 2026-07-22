@@ -2029,6 +2029,14 @@ func TestHarnessRunChatStreamUsesOpenRouterWhenRequestSpecifiesIt(t *testing.T) 
 				Header:     http.Header{"Content-Type": []string{"application/json"}},
 			}, nil
 		case "openrouter.ai":
+			// The capability lookup (ModelCapabilities) fetches /api/v1/models to
+			// decide whether the response model accepts user-attached media. Return
+			// a text-only model so the lookup resolves cleanly.
+			if req.URL.Path == "/api/v1/models" {
+				body := `{"data":[{"id":"anthropic/claude-3.5-sonnet","name":"Claude","context_length":200000,"architecture":{"input_modalities":["text","image"]},"supported_parameters":["tools"]}]}`
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK",
+					Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+			}
 			if !strings.HasPrefix(req.URL.Path, "/api/v1/chat/completions") {
 				t.Fatalf("unexpected OpenRouter path %q", req.URL.Path)
 			}
@@ -4220,6 +4228,65 @@ func TestTriageChatTurnStripsImagesFromRequest(t *testing.T) {
 	}
 }
 
+// TestAttachmentNoteBuildsCorrectSummary verifies the bracketed attachment
+// summary is built from message media counts, covering the singular/plural
+// forms and the no-media (empty) case.
+func TestAttachmentNoteBuildsCorrectSummary(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  ChatMessage
+		want string
+	}{
+		{"audio+video (the lip sync case)", ChatMessage{Audios: []string{"x"}, Videos: []string{"y"}}, "[Attachments: 1 audio clip, 1 video]"},
+		{"single image", ChatMessage{Images: []string{"x"}}, "[Attachments: 1 image]"},
+		{"multiple images", ChatMessage{Images: []string{"x", "y", "z"}}, "[Attachments: 3 images]"},
+		{"text only", ChatMessage{Content: "hello"}, ""},
+		{"empty", ChatMessage{}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := attachmentNote(tc.msg); got != tc.want {
+				t.Fatalf("attachmentNote = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMessagesWithAttachmentNotesAnnotatesLatestUserOnly verifies the annotation
+// is prepended to the latest user message only (not historical turns, not
+// assistant turns), and that the media bytes are stripped. This is the fix for
+// conv_603a4d0: without the note, triage couldn't see the lip sync attachments
+// and decided no tools were needed.
+func TestMessagesWithAttachmentNotesAnnotatesLatestUserOnly(t *testing.T) {
+	messages := []ChatMessage{
+		{Role: "user", Content: "older turn", Images: []string{"data:image/png;base64,AAA"}}, // historical — no note
+		{Role: "assistant", Content: "sure"},                                                 // not a user turn
+		{Role: "user", Content: "Lipsync the audio to the video.", Audios: []string{"a"}, Videos: []string{"v"}},
+	}
+	result := messagesWithAttachmentNotes(messages)
+
+	// Latest user message (index 2) gets the note and loses the bytes.
+	latest := result[2]
+	if !strings.HasPrefix(latest.Content, "[Attachments: 1 audio clip, 1 video]") {
+		t.Fatalf("latest user content = %q, want it to start with the attachment note", latest.Content)
+	}
+	if !strings.Contains(latest.Content, "Lipsync the audio to the video.") {
+		t.Fatalf("latest user content = %q, original text must survive after the note", latest.Content)
+	}
+	if len(latest.Audios) > 0 || len(latest.Videos) > 0 {
+		t.Fatalf("latest user media must be stripped, got audios=%d videos=%d", len(latest.Audios), len(latest.Videos))
+	}
+
+	// Historical user message (index 0) keeps its text but loses bytes — no note.
+	older := result[0]
+	if older.Content != "older turn" {
+		t.Fatalf("older user content = %q, must be unchanged (no annotation)", older.Content)
+	}
+	if len(older.Images) > 0 {
+		t.Fatalf("older user images must be stripped, got %d", len(older.Images))
+	}
+}
+
 func TestTriageChatTurnDecodeErrorFailsSafe(t *testing.T) {
 	app := NewApp()
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -4378,6 +4445,75 @@ func TestPreparedResponseRequestDeliversToolEvidenceAsUserRole(t *testing.T) {
 	// The system prompt should carry the tool-evidence note.
 	if !strings.Contains(result.System, toolEvidenceSystemNote) {
 		t.Fatalf("system = %q, want tool evidence system note", result.System)
+	}
+}
+
+// TestPreparedResponseRequestStripsMediaForNonAudioModel verifies that
+// stripUnsupportedMedia removes audio/video bytes the response model cannot
+// accept. Without this, a non-audio primary model (e.g. mistral-large on
+// OpenRouter, input_modalities text+image+file) rejects the request with "No
+// endpoints found that support input audio". This is the regression test for the
+// lip sync failure in conv_957f490a. The capability decision is now data-driven
+// (architecture.input_modalities) rather than the old "strip when tools ran"
+// heuristic, so the test exercises the capability helper directly.
+func TestPreparedResponseRequestStripsMediaForNonAudioModel(t *testing.T) {
+	// mistral-large: text+image+file, no audio or video.
+	model := openRouterModel{
+		ID:           "mistralai/mistral-large-2512",
+		Architecture: openRouterArchitecture{InputModalities: []string{"text", "image", "file"}},
+	}
+	if model.acceptsInputModality("audio") {
+		t.Fatal("mistral-large should not accept audio input")
+	}
+	if model.acceptsInputModality("video") {
+		t.Fatal("mistral-large should not accept video input")
+	}
+	if !model.acceptsInputModality("image") {
+		t.Fatal("mistral-large should accept image input")
+	}
+}
+
+// TestPreparedResponseRequestKeepsMediaForAudioModel verifies a model whose
+// input_modalities include audio keeps the bytes — the audio-comprehension
+// feature relies on this. The capability lookup must not strip media a model
+// explicitly supports.
+func TestPreparedResponseRequestKeepsMediaForAudioModel(t *testing.T) {
+	// gemini-3.6-flash: text+image+video+file+audio.
+	model := openRouterModel{
+		ID:           "google/gemini-3.6-flash",
+		Architecture: openRouterArchitecture{InputModalities: []string{"text", "image", "video", "file", "audio"}},
+	}
+	if !model.acceptsInputModality("audio") {
+		t.Fatal("gemini-3.6-flash should accept audio input")
+	}
+	if !model.acceptsInputModality("video") {
+		t.Fatal("gemini-3.6-flash should accept video input")
+	}
+}
+
+// TestPreparedResponseRequestKeepsMediaWhenNoApp verifies that with no app
+// wired (e.g. a unit test, or a path where capability lookup is unavailable),
+// media is left intact — the permissive fallback. A possible 404 is preferred
+// over silently dropping media a model could have handled.
+func TestPreparedResponseRequestKeepsMediaWhenNoApp(t *testing.T) {
+	engine := newHarnessEngine(defaultAppConfig(), nil) // nil app → no capability lookup
+	req := ChatRequest{
+		Model: "primary-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Describe this clip.", Audios: []string{"data:audio/mpeg;base64,AAA"}},
+		},
+	}
+	preparation := HarnessPreparedTurn{}
+
+	result := engine.preparedResponseRequest(req, "primary-model", "openrouter", preparation)
+	found := false
+	for _, msg := range result.Messages {
+		if len(msg.Audios) > 0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("audio bytes were stripped with no app — permissive fallback must leave media intact")
 	}
 }
 

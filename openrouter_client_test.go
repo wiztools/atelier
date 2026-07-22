@@ -36,6 +36,68 @@ func TestOpenRouterClientListModels(t *testing.T) {
 	}
 }
 
+// TestOpenRouterListModelsParsesCapabilities verifies the model list derives
+// capability flags from architecture.input_modalities and supported_parameters,
+// so the harness can decide whether to forward audio/video and whether the model
+// supports native tool-calling — replacing the hardcoded multimodality
+// assumptions. mistral-large (text+image+file, no audio) and gemini-3.6-flash
+// (full multimodal incl. audio) are the two real-world anchors.
+func TestOpenRouterListModelsParsesCapabilities(t *testing.T) {
+	client := newOpenRouterClient(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body := `{"data":[
+				{"id":"mistralai/mistral-large-2512","name":"Mistral Large","context_length":262144,
+				 "architecture":{"modality":"text+image+file->text","input_modalities":["text","image","file"]},
+				 "supported_parameters":["tools","temperature"]},
+				{"id":"google/gemini-3.6-flash","name":"Gemini","context_length":1000000,
+				 "architecture":{"modality":"text+image+video+file+audio->text","input_modalities":["text","image","video","file","audio"]},
+				 "supported_parameters":["temperature"]}
+			]}`
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK",
+				Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+		}),
+	}, "sk-or-test")
+
+	models, err := client.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels returned error: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("want 2 models, got %d", len(models))
+	}
+	// mistral-large: tools + image, but NOT audio/video.
+	mistral := models[0]
+	if !containsString(mistral.Capabilities, "tools") {
+		t.Errorf("mistral capabilities = %v, want tools", mistral.Capabilities)
+	}
+	if !containsString(mistral.Capabilities, "image") {
+		t.Errorf("mistral capabilities = %v, want image", mistral.Capabilities)
+	}
+	if containsString(mistral.Capabilities, "audio") {
+		t.Errorf("mistral capabilities = %v, must not include audio", mistral.Capabilities)
+	}
+	// gemini: audio + video + image, but no tools.
+	gemini := models[1]
+	if !containsString(gemini.Capabilities, "audio") {
+		t.Errorf("gemini capabilities = %v, want audio", gemini.Capabilities)
+	}
+	if !containsString(gemini.Capabilities, "video") {
+		t.Errorf("gemini capabilities = %v, want video", gemini.Capabilities)
+	}
+	if containsString(gemini.Capabilities, "tools") {
+		t.Errorf("gemini capabilities = %v, must not include tools", gemini.Capabilities)
+	}
+}
+
+func containsString(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestOpenRouterClientCompleteChat(t *testing.T) {
 	client := newOpenRouterClient(&http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {

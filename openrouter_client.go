@@ -31,6 +31,28 @@ type openRouterModel struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Context int    `json:"context_length"`
+	// Architecture carries the modality metadata OpenRouter publishes per model.
+	// InputModalities is e.g. ["text","image","file"] (mistral-large) or
+	// ["text","image","video","file","audio"] (gemini). This drives capability
+	// detection — whether a model accepts input_audio/input_video — so the
+	// harness can forward media only to models that support it instead of
+	// relying on hardcoded multimodality assumptions.
+	Architecture openRouterArchitecture `json:"architecture"`
+	// SupportedParameters lists OpenAI-style parameters the model honors, e.g.
+	// ["tools","tool_choice","temperature",...]. Containing "tools" is the
+	// OpenRouter analogue of Ollama's "tools" capability — it lets an
+	// OpenRouter harness model plan via native tool-calling instead of the
+	// format-schema fallback.
+	SupportedParameters []string `json:"supported_parameters"`
+}
+
+// openRouterArchitecture mirrors the architecture object in OpenRouter's
+// /models response. Modality is the legacy "text->text"/"text+image->text"
+// shorthand; InputModalities is the structured array (preferred when present).
+type openRouterArchitecture struct {
+	Modality         string   `json:"modality"`
+	InputModalities  []string `json:"input_modalities"`
+	OutputModalities []string `json:"output_modalities"`
 }
 
 type openRouterModelsResponse struct {
@@ -52,13 +74,98 @@ func (client OpenRouterClient) ListModels(ctx context.Context) ([]ModelInfo, err
 	models := make([]ModelInfo, 0, len(payload.Data))
 	for _, model := range payload.Data {
 		models = append(models, ModelInfo{
-			Provider:    "openrouter",
-			ID:          model.ID,
-			DisplayName: model.Name,
-			ContextLen:  model.Context,
+			Provider:     "openrouter",
+			ID:           model.ID,
+			DisplayName:  model.Name,
+			ContextLen:   model.Context,
+			Capabilities: openRouterCapabilities(model),
 		})
 	}
 	return models, nil
+}
+
+// openRouterCapabilities derives the capability list the harness consults from
+// the parsed model metadata: "tools" when SupportedParameters advertises it,
+// and "audio"/"video"/"image" when Architecture.InputModalities includes them.
+// Mirrors how enrichModelCapabilities populates Capabilities for Ollama models
+// (ollama_client.go) — same field, same vocabulary, so callers need not branch
+// on provider.
+func openRouterCapabilities(model openRouterModel) []string {
+	var caps []string
+	for _, param := range model.SupportedParameters {
+		if strings.EqualFold(strings.TrimSpace(param), "tools") {
+			caps = append(caps, "tools")
+			break
+		}
+	}
+	for _, modality := range model.Architecture.InputModalities {
+		switch strings.ToLower(strings.TrimSpace(modality)) {
+		case "audio":
+			caps = append(caps, "audio")
+		case "video":
+			caps = append(caps, "video")
+		case "image":
+			caps = append(caps, "image")
+		}
+	}
+	return caps
+}
+
+// acceptsInputModality reports whether the model declares the given input
+// modality (e.g. "audio", "video", "image") in its architecture. The check is
+// case-insensitive and trims whitespace. When InputModalities is empty (older
+// catalog entries), it falls back to scanning the legacy Modality shorthand
+// ("text+image+audio->text") so a sparse catalog entry still degrades cleanly.
+func (model openRouterModel) acceptsInputModality(modality string) bool {
+	want := strings.ToLower(strings.TrimSpace(modality))
+	for _, m := range model.Architecture.InputModalities {
+		if strings.ToLower(strings.TrimSpace(m)) == want {
+			return true
+		}
+	}
+	if len(model.Architecture.InputModalities) == 0 {
+		return strings.Contains(strings.ToLower(model.Architecture.Modality), want)
+	}
+	return false
+}
+
+// supportsTools reports whether the model advertises native function-calling
+// via supported_parameters containing "tools" — the OpenRouter analogue of
+// Ollama's "tools" capability in /api/show.
+func (model openRouterModel) supportsTools() bool {
+	for _, param := range model.SupportedParameters {
+		if strings.EqualFold(strings.TrimSpace(param), "tools") {
+			return true
+		}
+	}
+	return false
+}
+
+// ModelCapabilities returns the parsed metadata for a single OpenRouter model,
+// for runtime capability checks (does this model accept input audio? does it
+// support native tools?). It walks /models and finds the entry — there is no
+// per-model endpoint, so this is one paginated call. Mirrors OllamaClient.
+// ShowModel in purpose: a single-model capability lookup called once per turn.
+func (client OpenRouterClient) ModelCapabilities(ctx context.Context, modelID string) (openRouterModel, error) {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return openRouterModel{}, errors.New("model id is empty")
+	}
+	resp, err := client.do(ctx, http.MethodGet, "/models", nil)
+	if err != nil {
+		return openRouterModel{}, err
+	}
+	defer resp.Body.Close()
+	var payload openRouterModelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return openRouterModel{}, err
+	}
+	for _, model := range payload.Data {
+		if model.ID == modelID {
+			return model, nil
+		}
+	}
+	return openRouterModel{}, fmt.Errorf("openrouter model %q not found in catalog", modelID)
 }
 
 // strictJSONSchemaRejectedKeywords are JSON Schema keywords that OpenAI-style

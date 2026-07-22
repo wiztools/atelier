@@ -1357,6 +1357,19 @@ func (a *App) ollamaClient(baseURL string) OllamaClient {
 	return newOllamaClient(a.client, a.resolveBaseURL(baseURL))
 }
 
+// openRouterClient builds an OpenRouterClient from the saved API key, mirroring
+// ollamaClient's role as a direct client accessor for harness capability checks
+// (ModelCapabilities). Returns ok=false when no key is configured so callers can
+// skip capability detection without a key-load error — matching how Resolve
+// treats an absent key as a config state rather than a hard failure.
+func (a *App) openRouterClient() (OpenRouterClient, bool) {
+	apiKey, err := loadOpenRouterAPIKey()
+	if err != nil || strings.TrimSpace(apiKey) == "" {
+		return OpenRouterClient{}, false
+	}
+	return newOpenRouterClient(a.client, apiKey), true
+}
+
 func (a *App) providerFor(providerID, baseURL string) (ChatProvider, error) {
 	return newProviderRegistry(a).Resolve(providerID, baseURL)
 }

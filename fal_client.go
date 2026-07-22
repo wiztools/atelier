@@ -62,6 +62,17 @@ const (
 	falVideoMaxBytes = 256 * 1024 * 1024
 	// falAudioMaxBytes caps a downloaded audio clip.
 	falAudioMaxBytes = 128 * 1024 * 1024
+	// falInlineMediaMaxBytes is the size above which embedded media (base64 data
+	// URIs) is uploaded to fal's CDN storage before submission. fal's queue
+	// endpoint rejects request bodies it considers too large (a multi-MB video
+	// sent inline as base64 returns 422 "Request is too large"), so media above
+	// this threshold is uploaded once and the hosted URL is passed instead. 1 MB
+	// is comfortably under fal's limit while covering typical images and short
+	// audio clips inline; larger video/audio goes through storage.
+	falInlineMediaMaxBytes = 1024 * 1024
+	// falStorageTokenURL is fal's CDN token endpoint. A POST with the fal API key
+	// returns a short-lived bearer token + the CDN base URL for file uploads.
+	falStorageTokenURL = "https://rest.fal.ai/storage/auth/token?storage_type=fal-cdn-v3"
 )
 
 // FalClient talks to fal.ai's asynchronous queue API for image generation.
@@ -71,6 +82,13 @@ const (
 type FalClient struct {
 	httpClient *http.Client
 	apiKey     string
+	// cdnToken caches a fal CDN upload token until its expiry, so repeated media
+	// uploads in one turn (e.g. lip sync sends both audio and video) reuse one
+	// token rather than re-authenticating per file. fal tokens last ~30 days, so
+	// the cache is conservative; on any auth failure the caller re-fetches.
+	cdnToken     string
+	cdnBaseURL   string
+	cdnTokenType string
 }
 
 func newFalClient(httpClient *http.Client, apiKey string) FalClient {
@@ -292,6 +310,165 @@ func firstNonEmpty(values []string) string {
 		}
 	}
 	return ""
+}
+
+// falCDNTokenResponse mirrors the response from fal's CDN token endpoint.
+type falCDNTokenResponse struct {
+	Token     string `json:"token"`
+	TokenType string `json:"token_type"`
+	BaseURL   string `json:"base_url"`
+}
+
+// cdnUploadToken returns a cached fal CDN upload token, fetching a fresh one
+// when the cache is empty. The token authorizes file uploads to fal's CDN
+// (POST {base_url}/files/upload); the base URL is per-token and returned
+// alongside it. Errors propagate so the caller can fall back to inline data.
+func (client FalClient) cdnUploadToken(ctx context.Context) (token, tokenType, baseURL string, err error) {
+	if client.cdnToken != "" && client.cdnBaseURL != "" {
+		return client.cdnToken, client.cdnTokenType, client.cdnBaseURL, nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, falStorageTokenURL, strings.NewReader("{}"))
+	if err != nil {
+		return "", "", "", err
+	}
+	req.Header.Set("Authorization", "Key "+client.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		return "", "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", "", "", fmt.Errorf("fal CDN token request returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var parsed falCDNTokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return "", "", "", err
+	}
+	if strings.TrimSpace(parsed.Token) == "" || strings.TrimSpace(parsed.BaseURL) == "" {
+		return "", "", "", errors.New("fal CDN token response missing token or base_url")
+	}
+	tokenType = strings.TrimSpace(parsed.TokenType)
+	if tokenType == "" {
+		tokenType = "Bearer"
+	}
+	return parsed.Token, tokenType, parsed.BaseURL, nil
+}
+
+// uploadToCDN uploads raw media bytes to fal's CDN storage and returns the
+// hosted access URL. The URL is what fal model endpoints expect for large media
+// inputs that would exceed the inline base64 size limit. mimeType is sent as
+// the Content-Type and used to name the file; filename is optional metadata.
+func (client FalClient) uploadToCDN(ctx context.Context, data []byte, mimeType, filename string) (string, error) {
+	token, tokenType, baseURL, err := client.cdnUploadToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	uploadURL := strings.TrimRight(baseURL, "/") + "/files/upload"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, bytes.NewReader(data))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", tokenType+" "+token)
+	req.Header.Set("Content-Type", mimeType)
+	// Set a short server-side expiry so uploaded media cleans itself up. These
+	// files are ephemeral — they exist only to pass into a model endpoint that
+	// runs seconds later — so a 1-hour window is generous (covers retries across
+	// planning rounds) while preventing indefinite accumulation on the CDN.
+	req.Header.Set("X-Fal-Object-Lifecycle-Preference", `{"expiration_duration_seconds":3600}`)
+	if filename != "" {
+		req.Header.Set("X-Fal-File-Name", filename)
+	}
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("fal CDN upload returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var result struct {
+		AccessURL string `json:"access_url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(result.AccessURL) == "" {
+		return "", errors.New("fal CDN upload returned no access_url")
+	}
+	return result.AccessURL, nil
+}
+
+// resolveMediaURL normalizes a media reference for fal, uploading it to fal's
+// CDN storage when the decoded payload exceeds the inline limit. Small payloads
+// stay inline as data URIs (no upload round-trip); large ones — typically
+// attached video and long audio — get a hosted URL so fal's queue endpoint
+// doesn't reject the request with 422 "Request is too large". Already-hosted
+// URLs (http/https) and small data URIs pass through unchanged. On any upload
+// failure the original data URI is returned (so the request still goes through,
+// possibly failing at fal with the original 422 rather than an opaque upload
+// error). defaultMediaType is the fallback when the payload's MIME can't be
+// detected (e.g. bare base64 without a data: prefix).
+func (client FalClient) resolveMediaURL(ctx context.Context, reference, defaultMediaType, filename string) (string, error) {
+	reference = strings.TrimSpace(reference)
+	if reference == "" {
+		return "", nil
+	}
+	// Already-hosted URLs pass straight through — nothing to upload.
+	if strings.HasPrefix(reference, "http://") || strings.HasPrefix(reference, "https://") {
+		return reference, nil
+	}
+
+	// Extract the raw bytes + media type from either a data URI or bare base64.
+	var data []byte
+	var mediaType string
+	if strings.HasPrefix(reference, "data:") {
+		comma := strings.Index(reference, ",")
+		if comma < 0 {
+			return reference, nil // malformed data URI — let fal reject it
+		}
+		header := reference[len("data:"):comma]
+		mediaType = header
+		if semicolon := strings.Index(header, ";"); semicolon >= 0 {
+			mediaType = header[:semicolon]
+		}
+		if mediaType == "" || mediaType == "base64" {
+			mediaType = defaultMediaType
+		}
+		var err error
+		data, err = base64.StdEncoding.DecodeString(reference[comma+1:])
+		if err != nil {
+			return reference, nil // undecodable — pass through, let fal reject
+		}
+	} else {
+		// Bare base64 (the shape images arrive in after Ollama stripping).
+		decoded, err := base64.StdEncoding.DecodeString(reference)
+		if err != nil {
+			return reference, nil
+		}
+		data = decoded
+		mediaType = defaultMediaType
+		if detected := http.DetectContentType(data); strings.HasPrefix(detected, strings.SplitN(defaultMediaType, "/", 2)[0]+"/") {
+			mediaType = detected
+		}
+	}
+
+	// Small enough to send inline — wrap as a data URI (the existing behavior).
+	if len(data) <= falInlineMediaMaxBytes {
+		return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+	}
+
+	// Oversized — upload to fal's CDN and return the hosted URL.
+	accessURL, err := client.uploadToCDN(ctx, data, mediaType, filename)
+	if err != nil {
+		// Upload failed — fall back to the inline data URI. The request will
+		// likely 422 at fal, but that error is more actionable than an opaque
+		// upload failure, and a transient CDN issue shouldn't block the turn.
+		return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+	}
+	return accessURL, nil
 }
 
 // falImageURL normalizes an image reference for fal's image_url input. fal

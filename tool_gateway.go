@@ -48,9 +48,17 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				if strings.TrimSpace(apiKey) == "" {
 					return ollamaGenerateResponse{}, nil, nil, errFalKeyNotConfigured
 				}
+				client := newFalClient(app.client, apiKey)
+				// Pre-resolve attached source images: oversized payloads upload to
+				// fal's CDN so the queue submit stays under the inline size limit.
+				for i, img := range req.Images {
+					if resolved, err := client.resolveMediaURL(ctx, img, "image/png", ""); err == nil && resolved != "" {
+						req.Images[i] = resolved
+					}
+				}
 				schema := schemaCache.Get(ctx, req.Model)
 				body, notices := resolveImageBody(schema, req, falOverrides)
-				resp, raw, err := newFalClient(app.client, apiKey).GenerateImage(ctx, req.Model, body)
+				resp, raw, err := client.GenerateImage(ctx, req.Model, body)
 				return resp, raw, notices, err
 			}
 			resp, raw, err := app.ollamaClient(config.Providers.Ollama.BaseURL).GenerateImage(ctx, req)
@@ -64,9 +72,19 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			if strings.TrimSpace(apiKey) == "" {
 				return GeneratedVideo{}, errFalKeyNotConfigured
 			}
+			client := newFalClient(app.client, apiKey)
+			// Pre-resolve attached source media: an attached video for extend or an
+			// image for image-to-video. Oversized payloads upload to fal's CDN so
+			// the queue submit stays under the inline size limit.
+			if resolved, err := client.resolveMediaURL(ctx, req.Video, "video/mp4", "source-video.mp4"); err == nil {
+				req.Video = resolved
+			}
+			if resolved, err := client.resolveMediaURL(ctx, req.Image, "image/png", "source-image.png"); err == nil {
+				req.Image = resolved
+			}
 			schema := schemaCache.Get(ctx, req.Model)
 			body, notices := resolveVideoBody(schema, req, falOverrides)
-			generated, err := newFalClient(app.client, apiKey).GenerateVideo(ctx, req.Model, body)
+			generated, err := client.GenerateVideo(ctx, req.Model, body)
 			generated.Notices = notices
 			return generated, err
 		}
@@ -78,10 +96,24 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			if strings.TrimSpace(apiKey) == "" {
 				return GeneratedVideo{}, errFalKeyNotConfigured
 			}
+			client := newFalClient(app.client, apiKey)
+			// Pre-resolve all three media references: the driving audio and the face
+			// source (image or video). Oversized payloads upload to fal's CDN so the
+			// queue submit stays under the inline size limit. A 2.6 MB attached video
+			// would otherwise 422.
+			if resolved, err := client.resolveMediaURL(ctx, req.Audio, "audio/mpeg", "audio.mp3"); err == nil {
+				req.Audio = resolved
+			}
+			if resolved, err := client.resolveMediaURL(ctx, req.Video, "video/mp4", "face-video.mp4"); err == nil {
+				req.Video = resolved
+			}
+			if resolved, err := client.resolveMediaURL(ctx, req.Image, "image/png", "face-image.png"); err == nil {
+				req.Image = resolved
+			}
 			schema := schemaCache.Get(ctx, req.Model)
 			body, notices := resolveLipsyncBody(schema, req, falOverrides)
 			// Lip sync returns a video, so it reuses the GenerateVideo transport.
-			generated, err := newFalClient(app.client, apiKey).GenerateVideo(ctx, req.Model, body)
+			generated, err := client.GenerateVideo(ctx, req.Model, body)
 			generated.Notices = notices
 			return generated, err
 		}
@@ -103,9 +135,10 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			if strings.TrimSpace(apiKey) == "" {
 				return GeneratedAudio{}, errFalKeyNotConfigured
 			}
+			client := newFalClient(app.client, apiKey)
 			schema := schemaCache.Get(ctx, req.Model)
 			body, notices := resolveAudioBody(schema, req, falOverrides)
-			generated, err := newFalClient(app.client, apiKey).GenerateAudio(ctx, req.Model, body)
+			generated, err := client.GenerateAudio(ctx, req.Model, body)
 			generated.Notices = notices
 			return generated, err
 		}
@@ -117,7 +150,13 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			if strings.TrimSpace(apiKey) == "" {
 				return GeneratedTranscript{}, errFalKeyNotConfigured
 			}
-			return newFalClient(app.client, apiKey).TranscribeAudio(ctx, model, audioURL, task, language)
+			client := newFalClient(app.client, apiKey)
+			// Pre-resolve the audio clip: a long voice memo can exceed fal's inline
+			// size limit, so upload it to CDN first when oversized.
+			if resolved, err := client.resolveMediaURL(ctx, audioURL, "audio/mpeg", "audio.mp3"); err == nil {
+				audioURL = resolved
+			}
+			return client.TranscribeAudio(ctx, model, audioURL, task, language)
 		}
 	}
 	return gateway

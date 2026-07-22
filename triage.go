@@ -64,6 +64,61 @@ func messagesWithoutMedia(messages []ChatMessage) []ChatMessage {
 	return stripped
 }
 
+// messagesWithAttachmentNotes is the triage variant of messagesWithoutMedia:
+// it strips the media bytes (so megabytes never reach the routing model) but
+// leaves a compact text note on the latest user message describing what was
+// attached. Without this, triage sees only bare text and can reason itself out
+// of running an attachment-dependent tool — e.g. deciding lip_sync isn't needed
+// because it "requires an audio clip and a video" that triage couldn't see were
+// attached. Only the latest user turn is annotated: routing cares about what the
+// user just sent, and annotating every historical message adds noise.
+func messagesWithAttachmentNotes(messages []ChatMessage) []ChatMessage {
+	// Build the note from the ORIGINAL latest user message (before stripping),
+	// since attachmentNote reads the media counts the strip would nil out.
+	var note string
+	latestUser := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			latestUser = i
+			note = attachmentNote(messages[i])
+			break
+		}
+	}
+	stripped := messagesWithoutMedia(messages)
+	if note != "" && latestUser >= 0 {
+		stripped[latestUser].Content = note + "\n" + stripped[latestUser].Content
+	}
+	return stripped
+}
+
+// attachmentNote builds the bracketed attachment summary prepended to a user
+// message for triage, e.g. "[Attachments: 1 audio clip, 1 video]". Returns an
+// empty string when the message carries no media (so no note is added and
+// today's behavior is unchanged for text-only turns).
+func attachmentNote(message ChatMessage) string {
+	var parts []string
+	if n := len(message.Images); n > 0 {
+		parts = append(parts, pluralize(n, "image"))
+	}
+	if n := len(message.Audios); n > 0 {
+		parts = append(parts, pluralize(n, "audio clip"))
+	}
+	if n := len(message.Videos); n > 0 {
+		parts = append(parts, pluralize(n, "video"))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "[Attachments: " + strings.Join(parts, ", ") + "]"
+}
+
+func pluralize(count int, noun string) string {
+	if count == 1 {
+		return fmt.Sprintf("1 %s", noun)
+	}
+	return fmt.Sprintf("%d %ss", count, noun)
+}
+
 // triageChatTurn asks the harness model whether the turn needs tools and what
 // response mode the primary model should use. Failures fail safe to the tool
 // path: the planner there can still conclude no tools are needed, so a wrong
@@ -79,7 +134,7 @@ func (h *HarnessEngine) triageChatTurn(ctx context.Context, req ChatRequest, har
 		Model:    harness.model,
 		Provider: harness.provider,
 		System:   system,
-		Messages: truncateChatHistory(messagesWithoutMedia(req.Messages), historyBudgetChars(numCtx, system, triageNumPredict)),
+		Messages: truncateChatHistory(messagesWithAttachmentNotes(req.Messages), historyBudgetChars(numCtx, system, triageNumPredict)),
 		Format:   triageResponseSchema(),
 		Options: map[string]any{
 			"temperature": 0,
@@ -137,6 +192,7 @@ Set responseMode to one of:
 - "vision": the user attached an image and wants it analyzed, described, or understood.
 - "video": the user asks to create, animate, or render a video or short clip.
 - "audio": the user asks to speak/narrate text, or create music or a sound effect.
+When the latest user message begins with "[Attachments: ...]", the user attached that media to the turn — treat it as available to tools that require it (e.g. lip_sync needs an audio clip plus a face image or video, transcribe_audio needs an audio clip, generate_video can animate an attached image or extend an attached video).
 Set needsTools true only when answering requires acting on the workspace or a listed capability: reading, listing, searching, or writing files, running a command, generating an image, generating a video, generating audio, or following one of the listed skills.
 Set needsTools false when your own knowledge is enough: greetings, general knowledge, reasoning, writing, and conversation about content already visible in the chat.
 For responseMode "image", set needsTools true so the harness can run the generate_image tool before the primary model responds.

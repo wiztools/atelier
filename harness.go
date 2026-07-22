@@ -721,23 +721,40 @@ func (h *HarnessEngine) resolveHarnessTarget(primaryModel, primaryProvider strin
 	return fallback
 }
 
-// supportsNativeTools reports whether the harness model advertises Ollama's
-// native function-calling capability. Any error or absent capability returns
-// false, falling back to the format-schema planner path. Native tools are an
-// enhancement, never a requirement.
+// supportsNativeTools reports whether the harness model advertises native
+// function-calling. Any error or absent capability returns false, falling back
+// to the format-schema planner path. Native tools are an enhancement, never a
+// requirement.
 //
-// Capability detection is Ollama-specific (ShowModel), so a harness model on
-// any other provider reports false and plans via the format schema.
+// Capability detection is provider-specific: Ollama via /api/show's
+// capabilities array, OpenRouter via supported_parameters containing "tools".
+// A harness model on any other provider reports false and plans via the format
+// schema. Both lookups are single network calls, made once per turn.
 func (h *HarnessEngine) supportsNativeTools(ctx context.Context, baseURL string, harness harnessTarget) bool {
 	model := strings.TrimSpace(harness.model)
-	if model == "" || harness.provider != "ollama" || h.app == nil {
+	if model == "" || h.app == nil {
 		return false
 	}
-	show, err := h.app.ollamaClient(baseURL).ShowModel(ctx, model)
-	if err != nil {
+	switch harness.provider {
+	case "ollama":
+		show, err := h.app.ollamaClient(baseURL).ShowModel(ctx, model)
+		if err != nil {
+			return false
+		}
+		return hasToolsCapability(show.Capabilities)
+	case "openrouter":
+		client, ok := h.app.openRouterClient()
+		if !ok {
+			return false
+		}
+		caps, err := client.ModelCapabilities(ctx, model)
+		if err != nil {
+			return false
+		}
+		return caps.supportsTools()
+	default:
 		return false
 	}
-	return hasToolsCapability(show.Capabilities)
 }
 
 // responseModelFor resolves which model should produce the final response,
@@ -1346,6 +1363,15 @@ func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel, 
 	responseReq.Provider = responseProvider
 	responseReq.System = appendToolEvidenceToSystem(req.System, preparation)
 	messages := append([]ChatMessage{}, req.Messages...)
+	// Strip user-attached media the response model cannot accept, so a request
+	// is never rejected with a modality 404 (e.g. sending input_audio to
+	// mistral-large, whose input_modalities are text+image+file). The check is
+	// capability-based for OpenRouter (architecture.input_modalities) and
+	// permissive for Ollama (which silently drops media it can't handle) and for
+	// an unknown provider/model (avoid breaking a working path on a lookup miss).
+	// Images are left intact unless explicitly unsupported: nearly all chat models
+	// are multimodal, and an unnecessary strip would break vision.
+	h.stripUnsupportedMedia(messages, responseModel, responseProvider)
 	if len(preparation.ToolResults) > 0 {
 		messages = append(messages, toolEvidenceUserMessage(preparation.ToolResults))
 	}
@@ -1353,6 +1379,38 @@ func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel, 
 	responseReq.Messages = truncateChatHistory(messages, historyBudgetChars(numCtx, responseReq.System, numCtx/4))
 	responseReq.Options = withNumCtx(req.Options, numCtx)
 	return responseReq
+}
+
+// stripUnsupportedMedia removes user-attached audio and video bytes from
+// messages in place when the response model's published input modalities do not
+// include them. It is a no-op when the model accepts the modality, when the
+// provider isn't OpenRouter (Ollama drops unknown fields silently), or when the
+// capability lookup fails (permissive — prefer a possible 404 over dropping
+// media a model could have handled). Images are never stripped here: vision
+// support is near-universal among chat models, and a false-negative strip would
+// silently break image-input turns.
+func (h *HarnessEngine) stripUnsupportedMedia(messages []ChatMessage, model, provider string) {
+	if provider != "openrouter" || h.app == nil {
+		return
+	}
+	client, ok := h.app.openRouterClient()
+	if !ok {
+		return
+	}
+	caps, err := client.ModelCapabilities(context.Background(), strings.TrimSpace(model))
+	if err != nil {
+		return // lookup miss — leave media intact (permissive)
+	}
+	if !caps.acceptsInputModality("audio") {
+		for i := range messages {
+			messages[i].Audios = nil
+		}
+	}
+	if !caps.acceptsInputModality("video") {
+		for i := range messages {
+			messages[i].Videos = nil
+		}
+	}
 }
 
 // toolObservationsPrefix labels tool results carried in a user-role message.

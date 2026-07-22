@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"io"
@@ -704,6 +705,110 @@ func TestFalImageURL(t *testing.T) {
 	}
 	if got := falImageURL("   "); got != "" {
 		t.Errorf("empty input should return empty, got %q", got)
+	}
+}
+
+// TestResolveMediaURLPassesThroughHostedURL verifies http(s) URLs are returned
+// unchanged — no upload round-trip for already-hosted media.
+func TestResolveMediaURLPassesThroughHostedURL(t *testing.T) {
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("no HTTP calls expected for a hosted URL: %s %s", req.Method, req.URL)
+		return nil, nil
+	}))
+	got, err := client.resolveMediaURL(context.Background(), "https://v3.fal.media/files/abc/clip.mp4", "video/mp4", "x.mp4")
+	if err != nil || got != "https://v3.fal.media/files/abc/clip.mp4" {
+		t.Fatalf("resolveMediaURL(hosted) = %q, %v — want pass-through", got, err)
+	}
+}
+
+// TestResolveMediaURLSmallStaysInline verifies small payloads (under the
+// threshold) stay inline as data URIs — no CDN upload, no HTTP calls.
+func TestResolveMediaURLSmallStaysInline(t *testing.T) {
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("no HTTP calls expected for small media: %s %s", req.Method, req.URL)
+		return nil, nil
+	}))
+	// A tiny PNG as bare base64 — well under the 1 MB threshold.
+	got, err := client.resolveMediaURL(context.Background(), tinyPNG, "image/png", "img.png")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(got, "data:image/png;base64,") {
+		t.Fatalf("expected inline data URI, got %q", got[:min(40, len(got))])
+	}
+}
+
+// TestResolveMediaURLLargeUploadsToCDN verifies a payload above the threshold
+// triggers the two-step CDN upload (token + file POST) and returns the hosted
+// access_url. This is the path that fixes the lip-sync 422 from conv_d461.
+func TestResolveMediaURLLargeUploadsToCDN(t *testing.T) {
+	// Build a payload over the 1 MB threshold (4-byte WebM magic × 300k ≈ 1.2 MB).
+	largeData := bytes.Repeat([]byte{0x1a, 0x45, 0xdf, 0xa3}, 300000)
+	largeB64 := base64.StdEncoding.EncodeToString(largeData)
+	reference := "data:video/webm;base64," + largeB64
+
+	tokenIssued := false
+	fileUploaded := false
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case strings.Contains(req.URL.String(), "storage/auth/token"):
+			tokenIssued = true
+			return jsonResp(`{"token":"cdn-test-token","token_type":"Bearer","base_url":"https://v3.test.fal.media"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/files/upload"):
+			fileUploaded = true
+			if auth := req.Header.Get("Authorization"); auth != "Bearer cdn-test-token" {
+				t.Errorf("upload auth = %q, want Bearer cdn-test-token", auth)
+			}
+			if lifecycle := req.Header.Get("X-Fal-Object-Lifecycle-Preference"); !strings.Contains(lifecycle, "expiration_duration_seconds") {
+				t.Errorf("upload lifecycle = %q, want it to set expiration_duration_seconds", lifecycle)
+			}
+			return jsonResp(`{"access_url":"https://v3.test.fal.media/files/abc/large.webm","uploaded":true}`), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL)
+			return nil, nil
+		}
+	}))
+
+	got, err := client.resolveMediaURL(context.Background(), reference, "video/webm", "large.webm")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "https://v3.test.fal.media/files/abc/large.webm" {
+		t.Fatalf("resolveMediaURL(large) = %q, want the CDN access_url", got)
+	}
+	if !tokenIssued {
+		t.Error("expected a CDN token request")
+	}
+	if !fileUploaded {
+		t.Error("expected a file upload request")
+	}
+}
+
+// TestResolveMediaURLUploadFailureFallsBackToInline verifies that when the CDN
+// upload fails, the media is still sent inline (data URI) rather than dropping
+// it — the request may still 422 at fal, but that's a more actionable error
+// than an opaque upload failure, and a transient CDN issue shouldn't block.
+func TestResolveMediaURLUploadFailureFallsBackToInline(t *testing.T) {
+	largeData := bytes.Repeat([]byte{0x1a, 0x45, 0xdf, 0xa3}, 300000) // ~1.2 MB
+	largeB64 := base64.StdEncoding.EncodeToString(largeData)
+	reference := "data:video/webm;base64," + largeB64
+
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		// Token succeeds but the upload fails.
+		if strings.Contains(req.URL.String(), "storage/auth/token") {
+			return jsonResp(`{"token":"t","token_type":"Bearer","base_url":"https://v3.test.fal.media"}`), nil
+		}
+		return &http.Response{StatusCode: 500, Status: "500 Internal Server Error",
+			Body: io.NopCloser(strings.NewReader(`{"detail":"cdn down"}`)), Header: http.Header{}}, nil
+	}))
+
+	got, err := client.resolveMediaURL(context.Background(), reference, "video/webm", "large.webm")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Must fall back to inline, not return empty or the access_url.
+	if !strings.HasPrefix(got, "data:video/webm;base64,") {
+		t.Fatalf("expected inline data URI fallback on upload failure, got %q", got[:min(40, len(got))])
 	}
 }
 
