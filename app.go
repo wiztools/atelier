@@ -2977,6 +2977,20 @@ func lastUserMessage(messages []ChatMessage) ChatMessage {
 	return messages[len(messages)-1]
 }
 
+// lastUserMessageIndex returns the index of the most recent user message, or -1
+// if there is none. It is the index-returning counterpart to lastUserMessage
+// for callers that need to mutate the message in place (e.g. attaching an
+// image resolved from history onto the last user message before the final
+// response).
+func lastUserMessageIndex(messages []ChatMessage) int {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return i
+		}
+	}
+	return -1
+}
+
 func lastUserPrompt(messages []ChatMessage) string {
 	return lastUserMessage(messages).Content
 }

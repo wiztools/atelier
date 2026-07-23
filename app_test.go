@@ -3946,6 +3946,179 @@ func TestLatestAttachedImageForTurn(t *testing.T) {
 	}
 }
 
+// writeConversationWithAssistantImage persists a conversation whose second
+// turn is an assistant message carrying a model-generated PNG, returning the
+// storage and conversationID for follow-up assertions. This mirrors how
+// appendChatAssistantTurnWithImages writes a generated image onto an assistant
+// turn in production, so the on-disk artifact shape is identical to a real
+// image-generation turn. Used to verify the cross-turn fallback picks up
+// generated images (which live on assistant turns), not just user-attached
+// ones.
+func writeConversationWithAssistantImage(t *testing.T) (ConfigStorage, string) {
+	t.Helper()
+	root := t.TempDir()
+	storage := ConfigStorage{
+		Root:      filepath.Join(root, ".atelier"),
+		History:   filepath.Join(root, ".atelier", "history"),
+		Artifacts: filepath.Join(root, ".atelier", "history"),
+	}
+	config := defaultAppConfig()
+	config.Storage = storage
+	if err := ensureStorageDirs(storage); err != nil {
+		t.Fatalf("ensureStorageDirs returned error: %v", err)
+	}
+	pngDataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(minimalPNG)
+	conversationID, err := writeChatConversation(
+		config,
+		ChatRequest{
+			Model: "chat-model",
+			Messages: []ChatMessage{
+				{Role: "user", Content: "Generate an image of a fox"},
+			},
+		},
+		"Here is the image.",
+		"",
+		"chat-model",
+		"ollama",
+		"stop",
+		4,
+		"Image Test",
+		fallbackHarnessRun("chat-model", "stop", 4),
+	)
+	if err != nil {
+		t.Fatalf("writeChatConversation returned error: %v", err)
+	}
+	// Append a generated image onto an assistant turn, exactly as the harness
+	// does after a successful generate_image tool call.
+	if err := appendChatAssistantTurnWithImages(
+		config, conversationID,
+		"Here is the image of the fox you asked for.", "",
+		"image-model", "ollama", "stop",
+		[]string{pngDataURL}, "",
+		fallbackHarnessRun("image-model", "stop", 4),
+		ImageGenerateRequest{Model: "image-model", Prompt: "a fox"},
+	); err != nil {
+		t.Fatalf("appendChatAssistantTurnWithImages returned error: %v", err)
+	}
+	return storage, conversationID
+}
+
+// TestLatestAttachedImageIncludesAssistantTurn is the core regression test for
+// reusing a generated image in a follow-up turn: with no current-turn
+// attachment and an image on an assistant turn in history (the shape a
+// generate_image turn produces), the fallback must return the re-hydrated data
+// URL. Before broadening the walk to assistant turns, this returned "".
+func TestLatestAttachedImageIncludesAssistantTurn(t *testing.T) {
+	storage, conversationID := writeConversationWithAssistantImage(t)
+
+	// No current-turn attachment — the fallback must walk history and find the
+	// generated image on the assistant turn.
+	req := ChatRequest{
+		ConversationID: conversationID,
+		Messages: []ChatMessage{
+			{Role: "user", Content: "make a video of it"}, // no Images
+		},
+	}
+	got := latestAttachedImageForTurn(req, storage)
+	if got == "" {
+		t.Fatal("got empty, want the re-hydrated data URL for the assistant-turn (generated) image")
+	}
+	if !strings.HasPrefix(got, "data:image/png;base64,") {
+		t.Errorf("got %q, want a png data URL", got)
+	}
+	// Round-trip: the re-hydrated bytes must match the generated image.
+	decoded, _, err := decodeImagePayload(got)
+	if err != nil {
+		t.Fatalf("decodeImagePayload returned error: %v", err)
+	}
+	if !bytes.Equal(decoded, minimalPNG) {
+		t.Errorf("re-hydrated image bytes do not match the generated minimalPNG")
+	}
+}
+
+// TestLatestAttachedImageRecencyPrecedence confirms the newest image wins when
+// both a user-attached and a generated image exist. Build history where a
+// user-attached image is followed by a generated (assistant-turn) image: the
+// generated image is newer, so it must shadow the user image. The walk is
+// newest-first and role-agnostic.
+func TestLatestAttachedImageRecencyPrecedence(t *testing.T) {
+	root := t.TempDir()
+	storage := ConfigStorage{
+		Root:      filepath.Join(root, ".atelier"),
+		History:   filepath.Join(root, ".atelier", "history"),
+		Artifacts: filepath.Join(root, ".atelier", "history"),
+	}
+	config := defaultAppConfig()
+	config.Storage = storage
+	if err := ensureStorageDirs(storage); err != nil {
+		t.Fatalf("ensureStorageDirs returned error: %v", err)
+	}
+
+	// Turn 1+2: a user-attached image (user turn) then an assistant text reply.
+	// writeChatConversation writes both turns.
+	userImageDataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(minimalPNG)
+	conversationID, err := writeChatConversation(
+		config,
+		ChatRequest{
+			Model: "chat-model",
+			Messages: []ChatMessage{
+				{Role: "user", Content: "Here's my photo", Images: []string{userImageDataURL}},
+			},
+		},
+		"Got it.",
+		"",
+		"chat-model", "ollama", "stop", 4, "Image Test",
+		fallbackHarnessRun("chat-model", "stop", 4),
+	)
+	if err != nil {
+		t.Fatalf("writeChatConversation returned error: %v", err)
+	}
+
+	// Turn 3: an assistant turn carrying a NEWER generated image. A distinct
+	// byte sequence makes the two images distinguishable after re-hydration.
+	generatedPNG := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+		0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x08, 0x06, 0x00, 0x00, 0x00, 0xF4, 0x78, 0xD4, 0xFA,
+		0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4,
+		0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82}
+	if !isImageBytes(generatedPNG) {
+		t.Fatalf("generatedPNG must look like an image to isImageBytes for this test to be meaningful")
+	}
+	generatedDataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(generatedPNG)
+	if err := appendChatAssistantTurnWithImages(
+		config, conversationID,
+		"Generated a new image.", "",
+		"image-model", "ollama", "stop",
+		[]string{generatedDataURL}, "",
+		fallbackHarnessRun("image-model", "stop", 4),
+		ImageGenerateRequest{Model: "image-model", Prompt: "something newer"},
+	); err != nil {
+		t.Fatalf("appendChatAssistantTurnWithImages returned error: %v", err)
+	}
+
+	// Follow-up turn with no attachment. The newest image (the generated one on
+	// the assistant turn) must win over the older user-attached image.
+	req := ChatRequest{
+		ConversationID: conversationID,
+		Messages: []ChatMessage{
+			{Role: "user", Content: "make a video of it"},
+		},
+	}
+	got := latestAttachedImageForTurn(req, storage)
+	if got == "" {
+		t.Fatal("got empty, want the re-hydrated data URL")
+	}
+	// The returned data URL must decode to the generated (newer) PNG, not the
+	// user-attached one.
+	decoded, _, err := decodeImagePayload(got)
+	if err != nil {
+		t.Fatalf("decodeImagePayload returned error: %v", err)
+	}
+	if !bytes.Equal(decoded, generatedPNG) {
+		t.Errorf("returned image does not match the newer generated image — recency precedence broken")
+	}
+}
+
 func TestGenerateImageSendsAttachedImages(t *testing.T) {
 	client := newOllamaClient(&http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -4555,7 +4728,7 @@ func TestPreparedResponseRequestDeliversToolEvidenceAsUserRole(t *testing.T) {
 		},
 	}
 
-	result := engine.preparedResponseRequest(req, "primary-model", "openrouter", preparation)
+	result := engine.preparedResponseRequest(req, "primary-model", "openrouter", preparation, "")
 	messages := result.Messages
 
 	// The last message must be user-role, not tool-role.
@@ -4639,7 +4812,7 @@ func TestPreparedResponseRequestKeepsMediaWhenNoApp(t *testing.T) {
 	}
 	preparation := HarnessPreparedTurn{}
 
-	result := engine.preparedResponseRequest(req, "primary-model", "openrouter", preparation)
+	result := engine.preparedResponseRequest(req, "primary-model", "openrouter", preparation, "")
 	found := false
 	for _, msg := range result.Messages {
 		if len(msg.Audios) > 0 {
@@ -4648,6 +4821,79 @@ func TestPreparedResponseRequestKeepsMediaWhenNoApp(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("audio bytes were stripped with no app — permissive fallback must leave media intact")
+	}
+}
+
+// TestPreparedResponseRequestInjectsHistoryImage verifies that a turn's
+// resolved source image (current attachment or a generated image from history)
+// is attached to the last user message so a vision-capable primary model can
+// answer questions about a previously generated image — e.g. "describe the
+// image you just generated". Covers: injection when the last user message has
+// no image, no duplication when it already carries one, and a no-op when no
+// image was resolved.
+func TestPreparedResponseRequestInjectsHistoryImage(t *testing.T) {
+	engine := newHarnessEngine(defaultAppConfig(), nil) // nil app → permissive strip (images always kept)
+	resolvedImage := "data:image/png;base64,AAAA"
+
+	// Branch 1: last user message has no image → resolved image is injected.
+	req := ChatRequest{
+		Model: "primary-model",
+		Messages: []ChatMessage{
+			{Role: "assistant", Content: "Here is the fox you asked for."},
+			{Role: "user", Content: "describe the image you just generated"},
+		},
+	}
+	result := engine.preparedResponseRequest(req, "primary-model", "openrouter", HarnessPreparedTurn{}, resolvedImage)
+	lastUser := -1
+	for i := len(result.Messages) - 1; i >= 0; i-- {
+		if result.Messages[i].Role == "user" {
+			lastUser = i
+			break
+		}
+	}
+	if lastUser < 0 {
+		t.Fatal("no user message in result")
+	}
+	if len(result.Messages[lastUser].Images) != 1 || result.Messages[lastUser].Images[0] != resolvedImage {
+		t.Errorf("injection branch: last user Images = %+v, want [%q]", result.Messages[lastUser].Images, resolvedImage)
+	}
+
+	// Branch 2: last user message already has an image → resolved image is NOT
+	// duplicated onto it.
+	currentImage := "data:image/png;base64,CURRENT"
+	req = ChatRequest{
+		Model: "primary-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "describe this", Images: []string{currentImage}},
+		},
+	}
+	result = engine.preparedResponseRequest(req, "primary-model", "openrouter", HarnessPreparedTurn{}, resolvedImage)
+	lastUser = -1
+	for i := len(result.Messages) - 1; i >= 0; i-- {
+		if result.Messages[i].Role == "user" {
+			lastUser = i
+			break
+		}
+	}
+	if lastUser < 0 {
+		t.Fatal("no user message in result")
+	}
+	if len(result.Messages[lastUser].Images) != 1 || result.Messages[lastUser].Images[0] != currentImage {
+		t.Errorf("no-duplicate branch: last user Images = %+v, want exactly [%q] (resolved image must not be appended)", result.Messages[lastUser].Images, currentImage)
+	}
+
+	// Branch 3: no resolved image → no injection, last user message unchanged.
+	req = ChatRequest{
+		Model: "primary-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "describe it"},
+		},
+	}
+	result = engine.preparedResponseRequest(req, "primary-model", "openrouter", HarnessPreparedTurn{}, "")
+	for _, msg := range result.Messages {
+		if msg.Role == "user" && len(msg.Images) != 0 {
+			t.Errorf("empty-image branch: user message unexpectedly got images %+v", msg.Images)
+		}
 	}
 }
 
