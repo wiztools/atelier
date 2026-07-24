@@ -537,15 +537,21 @@ func TestResolveVideoBodyNoSourceInput(t *testing.T) {
 }
 
 // TestResolveLipsyncBodyAudioToVideo verifies the audio-to-video path: the
-// driving audio maps onto audio_url and the face image onto image_url.
+// driving audio maps onto audio_url and the face image onto image_url. Uses the
+// real image-capable endpoint sync-lipsync/v3/image-to-video (required:
+// image_url, audio_url). The Kling lipsync/audio-to-video endpoint is NOT
+// image-capable despite its name — see TestResolveLipsyncBodyImageOnVideoOnlyModel.
 func TestResolveLipsyncBodyAudioToVideo(t *testing.T) {
-	body, notices := resolveLipsyncBody(loadSchema(t, "kling-lipsync-audio-to-video"),
+	body, notices, err := resolveLipsyncBody(loadSchema(t, "sync-lipsync-v3-image-to-video"),
 		LipsyncGenerateRequest{
-			Model: "fal-ai/kling-video/lipsync/audio-to-video",
+			Model: "fal-ai/sync-lipsync/v3/image-to-video",
 			Audio: "data:audio/mpeg;base64,AAA",
 			Image: "data:image/png;base64,BBB",
 		},
 		builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("resolveLipsyncBody returned error for image-capable model: %v", err)
+	}
 	if got, ok := body["audio_url"].(string); !ok || !strings.HasPrefix(got, "data:audio/") {
 		t.Fatalf("audio_url = %v, want the driving audio data URI", body["audio_url"])
 	}
@@ -556,20 +562,64 @@ func TestResolveLipsyncBodyAudioToVideo(t *testing.T) {
 		t.Fatalf("video_url must not be set for audio-to-video; got %v", body["video_url"])
 	}
 	if len(notices) != 0 {
-		t.Fatalf("expected no notices for Kling audio-to-video, got %v", notices)
+		t.Fatalf("expected no notices for image-capable audio-to-video, got %v", notices)
+	}
+}
+
+// TestResolveLipsyncBodyImageOnVideoOnlyModel is the regression test for
+// conv_ff1caffa123d39a9fd98f2ac: an audio+image turn was routed to Kling's
+// lipsync/audio-to-video endpoint, which despite its name is video-only
+// (required: video_url, audio_url — no image input). Previously the image was
+// dropped with a notice and the request 422'd downstream with a confusing
+// "video_url: Field required". Now the unmapped face source is a hard error
+// with an actionable message naming the mismatch.
+func TestResolveLipsyncBodyImageOnVideoOnlyModel(t *testing.T) {
+	_, _, err := resolveLipsyncBody(loadSchema(t, "kling-lipsync-audio-to-video"),
+		LipsyncGenerateRequest{
+			Model: "fal-ai/kling-video/lipsync/audio-to-video",
+			Audio: "data:audio/mpeg;base64,AAA",
+			Image: "data:image/png;base64,BBB",
+		},
+		builtinFalOverrides())
+	if err == nil {
+		t.Fatalf("expected a hard error when an image is sent to a video-only lip sync model, got nil")
+	}
+	if !strings.Contains(err.Error(), "no image input") {
+		t.Fatalf("error = %q, want it to explain the model has no image input", err.Error())
+	}
+}
+
+// TestResolveLipsyncBodyVideoOnImageOnlyModel is the symmetric guard: sending a
+// video face source to an image-only model is likewise a hard error.
+func TestResolveLipsyncBodyVideoOnImageOnlyModel(t *testing.T) {
+	_, _, err := resolveLipsyncBody(loadSchema(t, "sync-lipsync-v3-image-to-video"),
+		LipsyncGenerateRequest{
+			Model: "fal-ai/sync-lipsync/v3/image-to-video",
+			Audio: "data:audio/mpeg;base64,AAA",
+			Video: "data:video/mp4;base64,CCC",
+		},
+		builtinFalOverrides())
+	if err == nil {
+		t.Fatalf("expected a hard error when a video is sent to an image-only lip sync model, got nil")
+	}
+	if !strings.Contains(err.Error(), "no video input") {
+		t.Fatalf("error = %q, want it to explain the model has no video input", err.Error())
 	}
 }
 
 // TestResolveLipsyncBodyVideoToVideo verifies the video-to-video path: the
 // driving audio maps onto audio_url and the face video onto video_url.
 func TestResolveLipsyncBodyVideoToVideo(t *testing.T) {
-	body, notices := resolveLipsyncBody(loadSchema(t, "sync-lipsync-v2-pro"),
+	body, notices, err := resolveLipsyncBody(loadSchema(t, "sync-lipsync-v2-pro"),
 		LipsyncGenerateRequest{
 			Model: "fal-ai/sync-lipsync/v2/pro",
 			Audio: "data:audio/mpeg;base64,AAA",
 			Video: "data:video/mp4;base64,CCC",
 		},
 		builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("resolveLipsyncBody returned error for video-capable model: %v", err)
+	}
 	if got, ok := body["audio_url"].(string); !ok || !strings.HasPrefix(got, "data:audio/") {
 		t.Fatalf("audio_url = %v, want the driving audio data URI", body["audio_url"])
 	}
@@ -588,13 +638,16 @@ func TestResolveLipsyncBodyVideoToVideo(t *testing.T) {
 // the audio + whichever face source is present, plus a schema-unavailable
 // notice.
 func TestResolveLipsyncBodyNoSchema(t *testing.T) {
-	body, notices := resolveLipsyncBody(nil,
+	body, notices, err := resolveLipsyncBody(nil,
 		LipsyncGenerateRequest{
 			Model: "fal-ai/sync-lipsync/v2/pro",
 			Audio: "data:audio/mpeg;base64,AAA",
 			Video: "data:video/mp4;base64,CCC",
 		},
 		builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("nil-schema fallback returned error: %v", err)
+	}
 	if got, ok := body["audio_url"].(string); !ok || !strings.HasPrefix(got, "data:audio/") {
 		t.Fatalf("audio_url = %v, want the driving audio data URI", body["audio_url"])
 	}

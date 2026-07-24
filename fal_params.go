@@ -392,8 +392,16 @@ func coerceVideoValue(prop SchemaProperty, value any) any {
 // runs. fal requires HTTP(S) URLs or data URIs (it rejects bare base64 with a
 // 422), so falAudioURL/falImageURL/falVideoURL normalize each. A nil schema
 // yields a generic body with the audio + whichever source is present, plus a
-// notice. A media field the selected model lacks is dropped with a notice.
-func resolveLipsyncBody(schema *ModelInputSchema, req LipsyncGenerateRequest, ov Overrides) (map[string]any, []string) {
+// notice.
+//
+// The face source is the tool's entire purpose, so an unmapped face input is a
+// fatal error, not a graceful drop: without it the model can't do lip sync and
+// the request would 422 downstream with a confusing "field required" message
+// (see conv_ff1caffa123d39a9fd98f2ac, where a video-only Kling endpoint was
+// selected for an audio+image turn and the dropped image became a 422). The
+// audio input, by contrast, stays a notice — some endpoints can drive a face
+// from text, so a missing audio field is degradable.
+func resolveLipsyncBody(schema *ModelInputSchema, req LipsyncGenerateRequest, ov Overrides) (map[string]any, []string, error) {
 	audio := falAudioURL(strings.TrimSpace(req.Audio))
 	image := falImageURL(strings.TrimSpace(req.Image))
 	video := falVideoURL(strings.TrimSpace(req.Video))
@@ -408,7 +416,7 @@ func resolveLipsyncBody(schema *ModelInputSchema, req LipsyncGenerateRequest, ov
 		} else if image != "" {
 			body["image_url"] = image
 		}
-		return body, []string{"Couldn't load the model's parameter schema; generated with defaults and may have dropped an unsupported input."}
+		return body, []string{"Couldn't load the model's parameter schema; generated with defaults and may have dropped an unsupported input."}, nil
 	}
 
 	body := map[string]any{}
@@ -425,26 +433,29 @@ func resolveLipsyncBody(schema *ModelInputSchema, req LipsyncGenerateRequest, ov
 	}
 
 	// The face source: video wins over image (the tool sets exactly one, but
-	// resolve defensively in case both are present).
+	// resolve defensively in case both are present). A face input the model
+	// cannot accept is fatal — the tool cannot produce a lip sync without a
+	// face, and sending the request anyway yields a downstream 422 that reads
+	// as a confusing "field required" rather than a model-mismatch.
 	switch {
 	case video != "":
 		if path, prop, ok := findNative(schema, ov, "lipsync", req.Model, "sourceVideo"); ok {
 			setBodyPath(schema, body, path, coerceVideoValue(prop, video))
 		} else {
-			notices = append(notices, fmt.Sprintf(
-				"The selected model %q has no source-video input; the attached video was ignored.",
-				req.Model))
+			return nil, notices, fmt.Errorf(
+				"the lip sync model %q has no video input — it cannot lip-sync an attached video; attach an image instead or pick a video-capable model in Settings",
+				req.Model)
 		}
 	case image != "":
 		if path, prop, ok := findNative(schema, ov, "lipsync", req.Model, "sourceImage"); ok {
 			setBodyPath(schema, body, path, coerceVideoValue(prop, image))
 		} else {
-			notices = append(notices, fmt.Sprintf(
-				"The selected model %q has no source-image input; the attached image was ignored.",
-				req.Model))
+			return nil, notices, fmt.Errorf(
+				"the lip sync model %q has no image input — it cannot lip-sync an attached image; attach a video instead or pick an image-capable model in Settings",
+				req.Model)
 		}
 	}
-	return body, notices
+	return body, notices, nil
 }
 
 // findNative resolves canon → native dot-path via override, top-level scan, then

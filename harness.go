@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -1094,7 +1095,14 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 	}
 	numCtx := h.numCtx()
 	budget := historyBudgetChars(numCtx, system, harnessPlanNumPredict)
-	messages := append([]ChatMessage{}, req.Messages...)
+	// Annotate the latest user message with its attachment summary, the same
+	// transform triage uses. Without this the planner sees only the bare text
+	// (media bytes never enter model context by design) and can reason itself
+	// out of calling an attachment-dependent tool — e.g. deciding lip_sync's
+	// required audio+video "weren't provided" even though the user attached
+	// both. See conv_dc0c0433ceb1b84826cec959: triage routed to lip_sync, but
+	// the planner made no call because it couldn't see the attachments.
+	messages := messagesWithAttachmentNotes(req.Messages)
 	deadline := time.Now().Add(harnessChatMaxWallTime)
 
 	prepared := HarnessPreparedTurn{SkillDecision: skillDecision, LoadedSkill: loadedSkill}
@@ -1500,6 +1508,13 @@ func toolResultMessages(results []HarnessToolResult) []ChatMessage {
 			typed.Audios = nil
 			messageResult.Result = typed
 		}
+		// Sanitize before marshaling: a failed media tool can carry a raw
+		// downstream error that embeds a megabyte of base64 (e.g. fal echoing
+		// back the submitted data URI in a 422). Left intact it both bloats the
+		// model's context and invites the final model to over-read the raw
+		// field name as a user instruction (conv_ff1caffa123d39a9fd98f2ac:
+		// "video_url: Field required" became "you need to attach a video").
+		messageResult.Error = sanitizeToolErrorForModel(result.Error)
 		content, err := json.Marshal(messageResult)
 		if err != nil {
 			content = []byte(fmt.Sprintf(`{"name":%q,"status":"failed","error":"tool result could not be serialized"}`, result.Name))
@@ -1510,6 +1525,30 @@ func toolResultMessages(results []HarnessToolResult) []ChatMessage {
 		messages = append(messages, ChatMessage{Role: "tool", Content: string(content)})
 	}
 	return messages
+}
+
+// toolErrorMaxChars caps a tool error string before it enters model context.
+// Downstream errors (fal, HTTP) are diagnostic, not instructions — the model
+// only needs enough to report the failure honestly, not a full request echo.
+const toolErrorMaxChars = 600
+
+// dataURIPattern matches inline data URIs (data:<mime>;base64,...) so they can
+// be collapsed before a tool error reaches the model. fal echoes submitted
+// media back inside its error bodies, so an unsanitized error can carry the
+// entire attached media payload as base64.
+var dataURIPattern = regexp.MustCompile(`data:[a-zA-Z0-9.+-]+/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+`)
+
+// sanitizeToolErrorForModel strips inline data URIs from a tool error and caps
+// its length, returning a model-safe diagnostic. The original error is still
+// recorded verbatim on the harness step (HarnessStep.Error) for debugging; this
+// only governs what the final model sees as evidence.
+func sanitizeToolErrorForModel(errorText string) string {
+	errorText = strings.TrimSpace(errorText)
+	if errorText == "" {
+		return ""
+	}
+	errorText = dataURIPattern.ReplaceAllString(errorText, "<inline-media-omitted>")
+	return truncateRunes(errorText, toolErrorMaxChars)
 }
 
 func compactToolResultMessage(result HarnessToolResult, fullJSON string) []byte {
@@ -1833,7 +1872,11 @@ func harnessEmptyResponseNotice(results []HarnessToolResult) string {
 
 func toolResultErrorDetail(result HarnessToolResult) string {
 	if errorText := strings.TrimSpace(result.Error); errorText != "" {
-		return errorText
+		// This surfaces in user-facing fallback notices (harnessEmptyResponseNotice),
+		// so apply the same media-stripping/length cap as the model-facing path —
+		// a failed media tool can carry a megabyte of base64 in its error. The raw
+		// error is preserved on the harness step (HarnessStep.Error) for debugging.
+		return sanitizeToolErrorForModel(errorText)
 	}
 	if summary := strings.TrimSpace(result.Summary); summary != "" {
 		return summary

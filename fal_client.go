@@ -43,9 +43,13 @@ const (
 	defaultFalUpscaleModel = "fal-ai/esrgan"
 	// defaultFalLipsyncImageModel is the audio-to-video lip sync endpoint used
 	// when the user attaches an audio clip plus an image — drives a face into a
-	// talking-head video. Kling's lipsync/audio-to-video is the default for
-	// quality + commercial-use licensing.
-	defaultFalLipsyncImageModel = "fal-ai/kling-video/lipsync/audio-to-video"
+	// talking-head video. sync-lipsync v3 image-to-video is the endpoint that
+	// actually accepts an image_url face source (required: image_url, audio_url).
+	// Do NOT use kling-video/lipsync/audio-to-video here: despite its name it is a
+	// video-to-video endpoint (required: video_url, audio_url) with no image
+	// input — selecting it for an audio+image turn drops the image and 422s. See
+	// conv_ff1caffa123d39a9fd98f2ac.
+	defaultFalLipsyncImageModel = "fal-ai/sync-lipsync/v3/image-to-video"
 	// defaultFalLipsyncVideoModel is the video-to-video lip sync endpoint used
 	// when the user attaches an audio clip plus a video — re-lip-syncs an
 	// existing clip. sync-lipsync v2/pro preserves facial detail well.

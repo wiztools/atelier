@@ -1,0 +1,15 @@
+{
+  "components": {
+    "schemas": {
+      "SyncLipsyncV3ImageToVideoInput": {
+        "type": "object",
+        "x-fal-order-properties": ["image_url", "audio_url"],
+        "required": ["image_url", "audio_url"],
+        "properties": {
+          "image_url": { "type": "string", "description": "The URL of the face image to animate into a talking head." },
+          "audio_url": { "type": "string", "description": "The URL of the driving audio." }
+        }
+      }
+    }
+  }
+}

@@ -1326,6 +1326,81 @@ func TestToolResultMessagesCapOversizedResults(t *testing.T) {
 	}
 }
 
+// TestToolResultMessagesStripDataURIFromError is the regression test for
+// conv_ff1caffa123d39a9fd98f2ac: fal's 422 echoed the entire submitted audio as
+// a base64 data URI inside the error body, which (a) dumped megabytes into the
+// model's context and (b) let the final model over-read the raw "video_url:
+// Field required" as a user instruction to "attach a video". The error fed to
+// the model must have the inline media collapsed to a placeholder and be
+// length-capped. The original error is still recorded verbatim on the harness
+// step for debugging — this only governs model-facing evidence.
+func TestToolResultMessagesStripDataURIFromError(t *testing.T) {
+	// The shape of the actual fal 422 from the conversation: a required-field
+	// error with the full submitted audio echoed in "input".
+	rawError := `fal GET https://queue.fal.run/fal-ai/kling-video/requests/abc returned 422 Unprocessable Entity: {"detail":[{"type":"missing","loc":["body","video_url"],"msg":"Field required","input":{"audio_url":"data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjYwLjE2LjEwMQ"}}]}`
+	failed := HarnessToolResult{
+		Name:    "lip_sync",
+		Status:  "failed",
+		Summary: "lip sync failed",
+		Error:   rawError,
+	}
+
+	messages := toolResultMessages([]HarnessToolResult{failed})
+	if len(messages) != 1 {
+		t.Fatalf("tool messages = %+v, want one", messages)
+	}
+	content := messages[0].Content
+	if strings.Contains(content, "base64,SUQzB") {
+		t.Fatalf("tool error leaked the inline media payload into model context: %q", truncateRunes(content, 200))
+	}
+	// json.Marshal HTML-escapes the angle brackets, so the placeholder surfaces
+	// as the escaped form inside the JSON string.
+	if !strings.Contains(content, "inline-media-omitted") {
+		t.Fatalf("tool error = %q, want the data URI replaced with a placeholder", content)
+	}
+	// The diagnostic signal survives: the model can still report a 422 occurred.
+	if !strings.Contains(content, "422") {
+		t.Fatalf("tool error = %q, want the HTTP status preserved for an honest failure report", content)
+	}
+	if len(content) > toolErrorMaxChars+1024 {
+		t.Fatalf("tool error length = %d, want capped near %d", len(content), toolErrorMaxChars)
+	}
+}
+
+// TestSanitizeToolErrorForModel covers the sanitizer directly: data URIs
+// collapse, empty stays empty, and over-long errors truncate.
+func TestSanitizeToolErrorForModel(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want func(string) bool
+	}{
+		{"empty", "", func(got string) bool { return got == "" }},
+		{"data uri collapsed", "boom data:audio/mpeg;base64,AAAA end", func(got string) bool {
+			return !strings.Contains(got, "AAAA") && strings.Contains(got, "<inline-media-omitted>")
+		}},
+		{"multiple data uris", "a:data:image/png;base64,ZZZ b:data:video/mp4;base64,YYY", func(got string) bool {
+			return strings.Count(got, "<inline-media-omitted>") == 2 && !strings.Contains(got, "ZZZ") && !strings.Contains(got, "YYY")
+		}},
+		{"plain error preserved", "fal returned 504 Gateway Timeout", func(got string) bool {
+			return got == "fal returned 504 Gateway Timeout"
+		}},
+		{"length capped", strings.Repeat("x", toolErrorMaxChars*4), func(got string) bool {
+			// truncateRunes appends a "..." ellipsis beyond the cap, so allow a
+			// few runes of slack.
+			return len([]rune(got)) <= toolErrorMaxChars+len("...")
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitizeToolErrorForModel(tc.in)
+			if !tc.want(got) {
+				t.Fatalf("sanitizeToolErrorForModel(%q) = %q", tc.in, got)
+			}
+		})
+	}
+}
+
 func TestLoadFullSkillTruncatesOversizedBody(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "SKILL.md")
@@ -2981,6 +3056,126 @@ func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
 	}
 	if callPath, _ := call["path"].(string); !strings.HasSuffix(callPath, "status.txt") {
 		t.Fatalf("tool activity call.path = %q, want status.txt", callPath)
+	}
+}
+
+// TestHarnessPlannerSeesAttachmentNote is the regression test for
+// conv_dc0c0433ceb1b84826cec959: triage routed a "lip sync the audio to the
+// video" turn to lip_sync (it saw the attachments via messagesWithAttachmentNotes),
+// but the planner received the bare user text with no attachment note and so
+// concluded the required audio+video "weren't provided" — making no tool call.
+// The fix annotates the planner's latest user message with the same note. This
+// test asserts the note reaches the planner request, not the lip_sync outcome
+// itself (that would require mocking fal.ai); the attachment visibility is the
+// exact gap that caused the missed call.
+func TestHarnessPlannerSeesAttachmentNote(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Tools.Filesystem.Root = filepath.Join(home, "tool-root")
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	// Minimal container magic bytes so StartChatTurn's isAudioBytes/isVideoBytes
+	// validation accepts the attachments and persists the turn. A WAV header for
+	// audio and an MP4 "ftyp" box for video — exactly what those sniffers look for.
+	wav := base64.StdEncoding.EncodeToString(append([]byte("RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x40\x1f\x00\x00\x40\x1f\x00\x00\x01\x00\x08\x00data\x00\x00\x00\x00"), 0x00))
+	mp4 := base64.StdEncoding.EncodeToString([]byte("\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42\x00\x00\x00\x00"))
+	attachedAudio := "data:audio/wav;base64," + wav
+	attachedVideo := "data:video/mp4;base64," + mp4
+
+	app := NewApp()
+	var plannerUserContent string
+	nonStreamCount := 0
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/chat" {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Status:     "404 Not Found",
+				Body:       io.NopCloser(strings.NewReader("not found")),
+				Header:     http.Header{},
+			}, nil
+		}
+		var payload map[string]any
+		data, _ := io.ReadAll(req.Body)
+		if err := json.Unmarshal(data, &payload); err != nil {
+			t.Fatalf("provider request body is not JSON: %v", err)
+		}
+		if payload["stream"] == false {
+			nonStreamCount++
+			if nonStreamCount == 1 {
+				// Triage: route to a tool task, mirroring the lip_sync decision.
+				decision := `{"needsTools":true,"responseMode":"video","toolTask":"lip_sync the attached audio to the attached video","reason":"The user wants to lip-sync an attached audio clip to a video."}`
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Body:       io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)),
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+				}, nil
+			}
+			// Planning round 1: capture the latest user message the planner saw,
+			// then close the loop with no tool calls. The point is to inspect
+			// what the planner received, not to drive a real lip_sync.
+			if messages, ok := payload["messages"].([]any); ok {
+				for i := len(messages) - 1; i >= 0; i-- {
+					m, ok := messages[i].(map[string]any)
+					if !ok || m["role"] != "user" {
+						continue
+					}
+					if content, _ := m["content"].(string); content != "" {
+						plannerUserContent = content
+					}
+					break
+				}
+			}
+			plan := `{"brief":"Proceed with lip_sync using the attached audio and video.","needsTools":false,"reason":"Attachments are present; final model can confirm.","toolCalls":[]}`
+			body := `{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(plan) + `},"done":true,"done_reason":"stop","eval_count":2}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+			}, nil
+		}
+		body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"ok"},"done":false}`) +
+			fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{"Content-Type": []string{"application/x-ndjson"}},
+		}, nil
+	})
+
+	app.runChatStream(context.Background(), "request-attachments", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Lipsync the audio to the video.", Audios: []string{attachedAudio}, Videos: []string{attachedVideo}},
+		},
+	})
+
+	if plannerUserContent == "" {
+		t.Fatalf("planner never received a user message; nonStreamCount=%d", nonStreamCount)
+	}
+	if !strings.HasPrefix(plannerUserContent, "[Attachments: 1 audio clip, 1 video]") {
+		t.Fatalf("planner user content = %q, want it to start with the attachment note", plannerUserContent)
+	}
+	if !strings.Contains(plannerUserContent, "Lipsync the audio to the video.") {
+		t.Fatalf("planner user content = %q, original text must survive after the note", plannerUserContent)
 	}
 }
 

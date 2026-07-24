@@ -1,13 +1,13 @@
 {
   "components": {
     "schemas": {
-      "KlingLipsyncAudioToVideoInput": {
+      "KlingVideoLipsyncAudioToVideoInput": {
         "type": "object",
-        "x-fal-order-properties": ["audio_url", "image_url"],
-        "required": ["audio_url", "image_url"],
+        "x-fal-order-properties": ["video_url", "audio_url"],
+        "required": ["video_url", "audio_url"],
         "properties": {
-          "audio_url": { "type": "string", "description": "The URL of the driving audio." },
-          "image_url": { "type": "string", "description": "The URL of the face image to animate." }
+          "video_url": { "type": "string", "description": "The URL of the source video whose lips to re-sync." },
+          "audio_url": { "type": "string", "description": "The URL of the driving audio." }
         }
       }
     }
