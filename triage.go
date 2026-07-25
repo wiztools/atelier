@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -38,12 +39,62 @@ func triageResponseSchema() map[string]any {
 	}
 }
 
+// decodeTriageDecision parses the harness model's triage JSON. It is lenient
+// about mis-typed scalar fields the way the planner parser is: a toolTask (or
+// reason/responseMode) emitted as an object/array/number/bool is coerced to its
+// JSON text representation rather than failing the whole parse. A triage parse
+// failure is catastrophic — it drops the responseMode and routing guidance the
+// rest of the harness depends on (see conv_4fcc40eb3398a9bb21cb7d00, where an
+// object-valued toolTask crashed triage and silently disabled the
+// narration-routing hint). Coercion keeps a structurally-sound decision usable;
+// needsTools still must be a boolean since the rest of the harness branches on
+// its exact value, and a top-level JSON parse error still fails as before.
 func decodeTriageDecision(content string) (HarnessTriageDecision, error) {
-	var decision HarnessTriageDecision
-	if err := json.Unmarshal([]byte(stripJSONFence(content)), &decision); err != nil {
+	candidate := stripJSONFence(content)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(candidate), &raw); err != nil {
 		return HarnessTriageDecision{}, fmt.Errorf("triage decision JSON invalid: %w", err)
 	}
+	var decision HarnessTriageDecision
+	// needsTools is the one field that must decode as a boolean — the harness
+	// branches on its exact value, so a mis-typed flag is a real error rather
+	// than a coercible scalar.
+	if data, ok := raw["needsTools"]; ok {
+		if err := json.Unmarshal(data, &decision.NeedsTools); err != nil {
+			return HarnessTriageDecision{}, fmt.Errorf("triage decision JSON invalid: %w", err)
+		}
+	}
+	decision.ResponseMode = coerceJSONString(raw["responseMode"])
+	decision.ToolTask = coerceJSONString(raw["toolTask"])
+	decision.Reason = coerceJSONString(raw["reason"])
 	return decision, nil
+}
+
+// coerceJSONString decodes a JSON value into a string, tolerating non-string
+// scalars and containers the way the planner parser tolerates mis-typed fields.
+// A plain string is unquoted; any other valid JSON value (object, array,
+// number, bool, null) is rendered as its compact JSON text. An empty or
+// unparseable RawMessage yields "". This keeps a structurally-sound triage
+// decision usable when a small model wraps a string field in an object.
+func coerceJSONString(data json.RawMessage) string {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return ""
+	}
+	var asString string
+	if err := json.Unmarshal(data, &asString); err == nil {
+		return asString
+	}
+	// Not a string — re-render the raw value as compact JSON text so an object
+	// or array becomes a readable (if ugly) string rather than sinking the parse.
+	var generic any
+	if err := json.Unmarshal(data, &generic); err != nil {
+		return ""
+	}
+	rendered, err := json.Marshal(generic)
+	if err != nil {
+		return ""
+	}
+	return string(rendered)
 }
 
 // messagesWithoutMedia copies messages for text-only side calls such as
@@ -178,6 +229,17 @@ func triageSystemPrompt(registry HarnessToolRegistry, skillIndex []SkillIndexEnt
 		}
 		skills = strings.Join(lines, "\n")
 	}
+	// narrationRouting is a capability-conditional nudge: only when the
+	// configured video model can produce audio itself (encoded in the
+	// generate_video description by VideoAudioCapable) do we steer narration-
+	// over-video requests to a single generate_video call. When the video model
+	// has no audio capability this stays empty and the generate_audio +
+	// lip_sync chain remains the correct path (made functional by the harness
+	// forward-feeding generated media within a turn).
+	narrationRouting := ""
+	if registry.VideoAudioCapable() {
+		narrationRouting = "\nWhen the user wants speech, narration, or a voice over a video, route to generate_video alone — the configured video model can produce the audio in the same call. Do not chain generate_audio + lip_sync for this. Reserve lip_sync for dubbing or re-syncing an existing attached audio clip to a face."
+	}
 	return strings.TrimSpace(fmt.Sprintf(`You are Atelier's harness model. You decide how the primary model should respond to the latest user turn and whether workspace tools are needed first.
 You will not write the user-visible answer. Right now respond only with a JSON object matching the response schema:
 {
@@ -192,7 +254,7 @@ Set responseMode to one of:
 - "vision": the user attached an image and wants it analyzed, described, or understood.
 - "video": the user asks to create, animate, or render a video or short clip.
 - "audio": the user asks to speak/narrate text, or create music or a sound effect.
-When the latest user message begins with "[Attachments: ...]", the user attached that media to the turn — treat it as available to tools that require it (e.g. lip_sync needs an audio clip plus a face image or video, transcribe_audio needs an audio clip, generate_video can animate an attached image or extend an attached video).
+When the latest user message begins with "[Attachments: ...]", the user attached that media to the turn — treat it as available to tools that require it (e.g. lip_sync needs an audio clip plus a face image or video, transcribe_audio needs an audio clip, generate_video can animate an attached image or extend an attached video).%s
 Set needsTools true only when answering requires acting on the workspace or a listed capability: reading, listing, searching, or writing files, running a command, generating an image, generating a video, generating audio, or following one of the listed skills.
 Set needsTools false when your own knowledge is enough: greetings, general knowledge, reasoning, writing, and conversation about content already visible in the chat.
 For responseMode "image", set needsTools true so the harness can run the generate_image tool before the primary model responds.
@@ -202,5 +264,5 @@ Available tools:
 %s
 Available skills:
 %s
-Workspace root: %s`, registry.PromptCatalog(), skills, workspaceRoot))
+Workspace root: %s`, narrationRouting, registry.PromptCatalog(), skills, workspaceRoot))
 }

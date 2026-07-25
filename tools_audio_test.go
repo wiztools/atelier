@@ -14,7 +14,7 @@ func TestGenerateAudioSurfacesNotices(t *testing.T) {
 			return GeneratedAudio{Data: []byte("x"), MimeType: "audio/mpeg", Notices: []string{"loop ignored"}}, nil
 		},
 	}
-	def := audioGenerationToolDefinition()
+	def := audioGenerationToolDefinition(false)
 	out, _, err := def.Execute(context.Background(), tools, HarnessToolCall{Content: "rain", Loop: true, Model: "m"})
 	if err != nil {
 		t.Fatalf("Execute error: %v", err)

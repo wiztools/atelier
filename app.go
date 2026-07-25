@@ -3056,6 +3056,64 @@ func readVideoArtifactAsDataURL(storage ConfigStorage, conversationID string, co
 	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
+// tempAudioFileAsDataURL reads a freshly-generated audio temp file (the
+// TempPath/MimeType on a ToolAudioFile produced by generate_audio) and
+// re-encodes it as a base64 data URL — the shape AttachedAudio consumers
+// (transcribe_audio, lip_sync) expect. Sibling of readAudioArtifactAsDataURL
+// for the in-turn path: the file is a temp file written by writeTempAudio, not
+// a persisted conversation artifact, so there is no conversation-path
+// resolution. A missing/unreadable or non-audio file returns ("", nil): an
+// error here must not fail the tool batch — the caller simply leaves
+// AttachedAudio empty and the downstream tool surfaces its own attachment
+// error, matching today's behavior.
+func tempAudioFileAsDataURL(tempPath, mimeType string) (string, error) {
+	path := strings.TrimSpace(tempPath)
+	if path == "" {
+		return "", nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", nil // unreadable temp file — not fatal, see comment above
+	}
+	if !isAudioBytes(data) {
+		return "", nil
+	}
+	mediaType := strings.TrimSpace(mimeType)
+	if mediaType == "" {
+		mediaType = http.DetectContentType(data)
+	}
+	if !strings.HasPrefix(mediaType, "audio/") {
+		mediaType = "audio/mpeg"
+	}
+	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+}
+
+// tempVideoFileAsDataURL is the video sibling of tempAudioFileAsDataURL: reads
+// a freshly-generated video temp file and re-encodes it as a data URL for
+// AttachedVideo consumers (Veo extend, video-to-video lip sync). Same
+// swallow-error contract: a bad temp file yields ("", nil), not a failure.
+func tempVideoFileAsDataURL(tempPath, mimeType string) (string, error) {
+	path := strings.TrimSpace(tempPath)
+	if path == "" {
+		return "", nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", nil
+	}
+	if !isVideoBytes(data) {
+		return "", nil
+	}
+	mediaType := strings.TrimSpace(mimeType)
+	if mediaType == "" {
+		mediaType = http.DetectContentType(data)
+	}
+	if !strings.HasPrefix(mediaType, "video/") {
+		mediaType = "video/mp4"
+	}
+	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+}
+
 func historyContentForMessage(message ChatMessage, artifactsDir string, turnNumber int) ([]HistoryContent, error) {
 	contents := []HistoryContent{}
 	if strings.TrimSpace(message.Content) != "" {

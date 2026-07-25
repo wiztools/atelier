@@ -1203,6 +1203,13 @@ func (client FalClient) ListModels(ctx context.Context, category string, maxMode
 // and body intact avoids that failure mode.
 const maxFalRedirects = 5
 
+// maxFalTransientRetries is the number of times do() will re-issue a request
+// after a transient 5xx response. A single retry covers the common case in
+// conv_4fcc40eb3398a9bb21cb7d00 — a fal result-fetch 500 "downstream_service_error"
+// that succeeds on the immediate next attempt — without compounding load during
+// a real fal outage. 4xx and network errors are never retried.
+const maxFalTransientRetries = 1
+
 func (client FalClient) do(ctx context.Context, baseURL, method, path string, body map[string]any) (*http.Response, error) {
 	if strings.TrimSpace(client.apiKey) == "" {
 		return nil, errors.New("fal api key is not configured")
@@ -1225,38 +1232,26 @@ func (client FalClient) do(ctx context.Context, baseURL, method, path string, bo
 	noFollow.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 	target := baseURL + path
+	// A transient 5xx (downstream_service_error and similar) gets one retry
+	// before the error surfaces. The original target/body are re-issued so a
+	// consumed 500 response body doesn't block the retry. Non-transient errors
+	// (4xx, network errors, redirect exhaustion) return immediately.
 	var resp *http.Response
-	for hop := 0; ; hop++ {
-		var reader io.Reader
-		if bodyBytes != nil {
-			reader = bytes.NewReader(bodyBytes)
-		}
-		httpReq, err := http.NewRequestWithContext(ctx, method, target, reader)
+	var finalTarget string
+	var retryable bool
+	for attempt := 0; ; attempt++ {
+		got, finalT, err := client.doOnce(ctx, &noFollow, method, target, path, bodyBytes)
 		if err != nil {
 			return nil, err
 		}
-		httpReq.Header.Set("Authorization", "Key "+client.apiKey)
-		if bodyBytes != nil {
-			httpReq.Header.Set("Content-Type", "application/json")
-		}
-
-		resp, err = noFollow.Do(httpReq)
-		if err != nil {
-			return nil, err
-		}
-		if !isRedirectStatus(resp.StatusCode) {
+		resp = got
+		finalTarget = finalT
+		retryable = isFalTransientStatus(resp.StatusCode) && attempt < maxFalTransientRetries
+		if !retryable {
 			break
 		}
-		location := strings.TrimSpace(resp.Header.Get("Location"))
-		resolved, resolveErr := resp.Request.URL.Parse(location)
+		// Drain before retry so the connection can be reused.
 		resp.Body.Close()
-		if location == "" || resolveErr != nil {
-			return nil, fmt.Errorf("fal %s %s returned %s with no usable redirect location", method, target, resp.Status)
-		}
-		if hop >= maxFalRedirects {
-			return nil, fmt.Errorf("fal %s %s exceeded %d redirects", method, target, maxFalRedirects)
-		}
-		target = resolved.String()
 	}
 
 	if resp.StatusCode >= 400 {
@@ -1271,10 +1266,66 @@ func (client FalClient) do(ctx context.Context, baseURL, method, path string, bo
 		default:
 			// Name the method and endpoint: a bare "fal returned 405" is opaque
 			// when several models are in play.
-			return nil, fmt.Errorf("fal %s %s returned %s: %s", method, target, resp.Status, trimmed)
+			return nil, fmt.Errorf("fal %s %s returned %s: %s", method, finalTarget, resp.Status, trimmed)
 		}
 	}
 	return resp, nil
+}
+
+// doOnce issues a single request (following redirects) and returns the final
+// response plus the final (post-redirect) target. It is the per-attempt core of
+// do(); the retry loop lives in the caller. bodyBytes is the already-marshaled
+// request body, re-readable via bytes.NewReader on each attempt; the original
+// path is kept only for clearer redirect-exhaustion error messages.
+func (client FalClient) doOnce(ctx context.Context, noFollow *http.Client, method, target, path string, bodyBytes []byte) (*http.Response, string, error) {
+	var resp *http.Response
+	for hop := 0; ; hop++ {
+		var reader io.Reader
+		if bodyBytes != nil {
+			reader = bytes.NewReader(bodyBytes)
+		}
+		httpReq, err := http.NewRequestWithContext(ctx, method, target, reader)
+		if err != nil {
+			return nil, "", err
+		}
+		httpReq.Header.Set("Authorization", "Key "+client.apiKey)
+		if bodyBytes != nil {
+			httpReq.Header.Set("Content-Type", "application/json")
+		}
+
+		resp, err = noFollow.Do(httpReq)
+		if err != nil {
+			return nil, "", err
+		}
+		if !isRedirectStatus(resp.StatusCode) {
+			break
+		}
+		location := strings.TrimSpace(resp.Header.Get("Location"))
+		resolved, resolveErr := resp.Request.URL.Parse(location)
+		resp.Body.Close()
+		if location == "" || resolveErr != nil {
+			return nil, "", fmt.Errorf("fal %s %s returned %s with no usable redirect location", method, target, resp.Status)
+		}
+		if hop >= maxFalRedirects {
+			return nil, "", fmt.Errorf("fal %s %s exceeded %d redirects", method, target, maxFalRedirects)
+		}
+		target = resolved.String()
+	}
+	return resp, target, nil
+}
+
+// isFalTransientStatus reports whether a fal HTTP status is worth retrying. fal
+// surfaces upstream provider failures as 500 "downstream_service_error" (see
+// conv_4fcc40eb3398a9bb21cb7d00) and occasional 502/503/504 from its own edge;
+// all are transient. 429 is excluded here because it already has a dedicated
+// rate-limit message, and 4xx are excluded because they are deterministic
+// (auth, validation) and would just fail again.
+func isFalTransientStatus(code int) bool {
+	switch code {
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
 }
 
 func isRedirectStatus(code int) bool {

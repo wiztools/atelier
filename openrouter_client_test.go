@@ -291,7 +291,7 @@ func TestOpenRouterChatBodyDerivesStrictVariantOfPlanSchema(t *testing.T) {
 	// The planner schema carries maxItems and partial required, both of which
 	// strict mode rejects. The body must send the derived variant, not the raw
 	// schema the harness authored for Ollama.
-	raw := harnessToolPlanSchema(defaultHarnessToolRegistry(defaultAppConfig()))
+	raw := harnessToolPlanSchema(defaultHarnessToolRegistry(context.Background(), defaultAppConfig(), nil))
 	body := openRouterChatBody(ChatRequest{Model: "m", Format: raw}, false)
 
 	sent := body["response_format"].(map[string]any)["json_schema"].(map[string]any)["schema"].(map[string]any)

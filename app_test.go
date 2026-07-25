@@ -5663,7 +5663,7 @@ func TestVideoGenerationToolGating(t *testing.T) {
 	if videoGenerationConfigured(base) {
 		t.Fatal("video should not be configured without a fal video model")
 	}
-	if _, ok := defaultHarnessToolRegistry(base).Get("generate_video"); ok {
+	if _, ok := defaultHarnessToolRegistry(context.Background(), base, nil).Get("generate_video"); ok {
 		t.Fatal("generate_video should be absent when unconfigured")
 	}
 
@@ -5673,7 +5673,7 @@ func TestVideoGenerationToolGating(t *testing.T) {
 	if videoGenerationConfigured(noKey) {
 		t.Fatal("video should not be configured without a fal key")
 	}
-	if _, ok := defaultHarnessToolRegistry(noKey).Get("generate_video"); ok {
+	if _, ok := defaultHarnessToolRegistry(context.Background(), noKey, nil).Get("generate_video"); ok {
 		t.Fatal("generate_video should be absent without a fal key")
 	}
 
@@ -5685,7 +5685,7 @@ func TestVideoGenerationToolGating(t *testing.T) {
 	if !videoGenerationConfigured(configured) {
 		t.Fatal("video should be configured with a fal video model and key")
 	}
-	if _, ok := defaultHarnessToolRegistry(configured).Get("generate_video"); !ok {
+	if _, ok := defaultHarnessToolRegistry(context.Background(), configured, nil).Get("generate_video"); !ok {
 		t.Fatal("generate_video should be registered when configured")
 	}
 	if got := resolveDefaultVideoModel(configured); got != "fal-ai/some/video-model" {
@@ -5707,7 +5707,7 @@ func TestAudioGenerationToolGating(t *testing.T) {
 	if audioGenerationConfigured(base) {
 		t.Fatal("audio should not be configured without a fal audio model")
 	}
-	if _, ok := defaultHarnessToolRegistry(base).Get("generate_audio"); ok {
+	if _, ok := defaultHarnessToolRegistry(context.Background(), base, nil).Get("generate_audio"); ok {
 		t.Fatal("generate_audio should be absent when unconfigured")
 	}
 
@@ -5717,7 +5717,7 @@ func TestAudioGenerationToolGating(t *testing.T) {
 	if audioGenerationConfigured(noKey) {
 		t.Fatal("audio should not be configured without a fal key")
 	}
-	if _, ok := defaultHarnessToolRegistry(noKey).Get("generate_audio"); ok {
+	if _, ok := defaultHarnessToolRegistry(context.Background(), noKey, nil).Get("generate_audio"); ok {
 		t.Fatal("generate_audio should be absent without a fal key")
 	}
 
@@ -5729,7 +5729,7 @@ func TestAudioGenerationToolGating(t *testing.T) {
 	if !audioGenerationConfigured(configured) {
 		t.Fatal("audio should be configured with a fal audio model and key")
 	}
-	if _, ok := defaultHarnessToolRegistry(configured).Get("generate_audio"); !ok {
+	if _, ok := defaultHarnessToolRegistry(context.Background(), configured, nil).Get("generate_audio"); !ok {
 		t.Fatal("generate_audio should be registered when configured")
 	}
 	if got := resolveDefaultAudioModel(configured); got != "fal-ai/some/audio-model" {
@@ -5752,7 +5752,7 @@ func TestTranscribeAudioToolGating(t *testing.T) {
 	if transcribeAudioConfigured(base) {
 		t.Fatal("transcribe should not be configured without a fal key")
 	}
-	if _, ok := defaultHarnessToolRegistry(base).Get("transcribe_audio"); ok {
+	if _, ok := defaultHarnessToolRegistry(context.Background(), base, nil).Get("transcribe_audio"); ok {
 		t.Fatal("transcribe_audio should be absent without a fal key")
 	}
 
@@ -5763,7 +5763,7 @@ func TestTranscribeAudioToolGating(t *testing.T) {
 	if !transcribeAudioConfigured(configured) {
 		t.Fatal("transcribe should be configured with a fal key (default model always applies)")
 	}
-	if _, ok := defaultHarnessToolRegistry(configured).Get("transcribe_audio"); !ok {
+	if _, ok := defaultHarnessToolRegistry(context.Background(), configured, nil).Get("transcribe_audio"); !ok {
 		t.Fatal("transcribe_audio should be registered when a fal key is present")
 	}
 	// A configured override wins over the default; absence falls back to wizper.

@@ -162,27 +162,72 @@ func newHarnessToolExecutionContext(config AppConfig) HarnessToolExecutionContex
 	}
 }
 
-func defaultHarnessToolRegistry(config AppConfig) HarnessToolRegistry {
+// defaultHarnessToolRegistry builds the per-turn tool catalog. ctx and app are
+// used only for capability introspection (videoModelSupportsAudio) — a nil app
+// or failed schema lookup degrades gracefully to the generic tool wording, so
+// callers without an App (tests, the gateway's rebuild path) pass nil safely.
+// The registry is built once per engine via sync.Once, so the schema reads happen
+// at most once per stream against the disk-backed cache (7-day TTL).
+func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App) HarnessToolRegistry {
 	definitions := filesystemToolDefinitions(config.Tools.Filesystem)
 	if imageGenerationConfigured(config) {
 		definitions = append(definitions, imageGenerationToolDefinition())
 	}
+	videoAudioCapable := false
 	if videoGenerationConfigured(config) {
-		definitions = append(definitions, videoGenerationToolDefinition())
+		videoAudioCapable = videoModelSupportsAudio(ctx, config, app)
+		definitions = append(definitions, videoGenerationToolDefinition(videoAudioCapable))
 	}
 	if audioGenerationConfigured(config) {
-		definitions = append(definitions, audioGenerationToolDefinition())
+		definitions = append(definitions, audioGenerationToolDefinition(videoAudioCapable))
 	}
 	if transcribeAudioConfigured(config) {
 		definitions = append(definitions, transcribeAudioToolDefinition())
 	}
 	if lipsyncConfigured(config) {
-		definitions = append(definitions, lipsyncToolDefinition())
+		definitions = append(definitions, lipsyncToolDefinition(videoAudioCapable))
 	}
 	if imageUpscaleConfigured(config) {
 		definitions = append(definitions, imageUpscaleToolDefinition())
 	}
 	return newHarnessToolRegistry(definitions)
+}
+
+// videoModelSupportsAudio reports whether any configured video model exposes a
+// native generate_audio input — i.e. the model can render a video with
+// synchronized audio (speech, music, ambient) from the prompt alone, no
+// separate generate_audio + lip_sync chain needed. The check mirrors the
+// runtime resolver (findNative "video" "generateAudio") so the planner's tool
+// description and the execution-time body building cannot disagree about a
+// model's audio capability.
+//
+// A nil app, an unavailable schema (offline, fetch failed), or a nil schema
+// all report false: the description then stays generic and the planner falls
+// back to today's behavior. findNative is nil-schema-safe (returns false), so
+// the override path still works even when the network is unreachable. The
+// lookup is gated by videoGenerationConfigured upstream, so this only runs when
+// a fal key is present; the OpenAPI endpoint is public but the shared fetch
+// path loads the key the same way generation calls do.
+func videoModelSupportsAudio(ctx context.Context, config AppConfig, app *App) bool {
+	if app == nil || app.client == nil {
+		return false
+	}
+	cache := newFalSchemaCache(app.client, config.Storage.Root)
+	overrides := loadFalOverrides(config.Storage.Root)
+	for _, model := range []string{
+		resolveDefaultVideoModel(config),
+		resolveDefaultVideoImageModel(config),
+		resolveDefaultVideoExtendModel(config),
+	} {
+		if strings.TrimSpace(model) == "" {
+			continue
+		}
+		schema := cache.Get(ctx, model)
+		if _, _, ok := findNative(schema, overrides, "video", model, "generateAudio"); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // imageGenerationConfigured reports whether any image-generation backend is
@@ -299,11 +344,25 @@ func resolveDefaultVideoExtendModel(config AppConfig) string {
 	return defaultFalVideoExtendModel
 }
 
-func videoGenerationToolDefinition() HarnessToolDefinition {
+// videoGenerationDescription assembles the generate_video tool description.
+// audioCapable is the resolved capability of the configured video models
+// (videoModelSupportsAudio); when true the description steers the planner toward
+// a single generate_video call for narration rather than a generate_audio +
+// lip_sync chain. The wording is generic — it never names the specific model —
+// so it survives a model swap without rewording.
+func videoGenerationDescription(audioCapable bool) string {
+	base := "Use this when the user asks to create, animate, extend, or render a video or short clip. Works from a text description; when the user attached an image, animates that image (image-to-video); when the user attached a video, extends it into a longer clip (Veo extend). The clip is attached to the assistant reply. Generation runs for a minute or more. Pass negativePrompt to steer content away from unwanted elements, and generateAudio:false when the user wants a silent clip."
+	if audioCapable {
+		return base + " This video model can also generate synchronized audio (speech, music, ambient sound) from the prompt. For narration, a voice-over, or a speaking character, prefer a single generate_video call with the spoken text in the prompt over chaining generate_audio + lip_sync."
+	}
+	return base
+}
+
+func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "generate_video",
 		Title:       "Generate video",
-		Description: "Use this when the user asks to create, animate, extend, or render a video or short clip. Works from a text description; when the user attached an image, animates that image (image-to-video); when the user attached a video, extends it into a longer clip (Veo extend). The clip is attached to the assistant reply. Generation runs for a minute or more. Pass negativePrompt to steer content away from unwanted elements, and generateAudio:false when the user wants a silent clip.",
+		Description: videoGenerationDescription(audioCapable),
 		Example:     `{"name":"generate_video","content":"a drone shot flying over a misty pine forest at sunrise"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: generateVideoParamSchema(),
@@ -474,11 +533,24 @@ func resolveDefaultLipsyncVideoModel(config AppConfig) string {
 	return defaultFalLipsyncVideoModel
 }
 
-func audioGenerationToolDefinition() HarnessToolDefinition {
+// audioGenerationDescription assembles the generate_audio tool description.
+// videoAudioCapable reflects whether the configured video model can produce
+// audio on its own; when it cannot, the description tells the planner that
+// generated audio carries forward to a later lip_sync in the same turn — the
+// correct path for putting speech behind a video on a non-audio video model.
+func audioGenerationDescription(videoAudioCapable bool) string {
+	base := "Use this when the user asks to generate audio: speak or narrate text (text-to-speech), or create music or a sound effect from a description. The configured fal.ai audio model generates it and the clip is attached to the assistant reply."
+	if !videoAudioCapable {
+		return base + " To put generated speech behind a video, call generate_audio first then lip_sync in the same turn — the generated audio carries forward to lip_sync automatically."
+	}
+	return base
+}
+
+func audioGenerationToolDefinition(videoAudioCapable bool) HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "generate_audio",
 		Title:       "Generate audio",
-		Description: "Use this when the user asks to generate audio: speak or narrate text (text-to-speech), or create music or a sound effect from a description. The configured fal.ai audio model generates it and the clip is attached to the assistant reply.",
+		Description: audioGenerationDescription(videoAudioCapable),
 		Example:     `{"name":"generate_audio","content":"a calm lo-fi piano loop with soft rain in the background"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: generateAudioParamSchema(),
@@ -611,6 +683,19 @@ func transcribeAudioParamSchema() map[string]any {
 	}
 }
 
+// lipsyncDescription assembles the lip_sync tool description. When the
+// configured video model cannot produce audio itself, the description notes
+// that lip_sync can consume audio generated earlier in the same turn — the
+// correct path for a non-audio video model. The attachment requirement stands
+// either way: lip_sync always needs an audio clip plus a face.
+func lipsyncDescription(videoAudioCapable bool) string {
+	base := "Use this when the user asks to lip sync, dub, or sync audio to a face. Requires an attached audio clip AND an attached face: an image produces a talking-head video (audio-to-video), a video re-lip-syncs the existing clip (video-to-video). The synced video is attached to the assistant reply. Generation runs for a minute or more."
+	if !videoAudioCapable {
+		return base + " The audio clip may be one the user attached or one generate_audio produced earlier in this turn — generated audio carries forward automatically."
+	}
+	return base
+}
+
 // lipsyncToolDefinition exposes the lip_sync tool. It consumes an attached audio
 // clip plus an attached face (image or video) and produces a lip-synced video.
 // The mode is determined by which face attachment is present: image → audio-to-
@@ -618,11 +703,11 @@ func transcribeAudioParamSchema() map[string]any {
 // The result is a video, so it rides the existing ToolVideoResult → artifact
 // pipeline (videosFromToolResults / writeChatVideoArtifacts) — no new
 // persistence code. Mirrors transcribe_audio's attachment-guard pattern.
-func lipsyncToolDefinition() HarnessToolDefinition {
+func lipsyncToolDefinition(videoAudioCapable bool) HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "lip_sync",
 		Title:       "Lip sync video",
-		Description: "Use this when the user asks to lip sync, dub, or sync audio to a face. Requires an attached audio clip AND an attached face: an image produces a talking-head video (audio-to-video), a video re-lip-syncs the existing clip (video-to-video). The synced video is attached to the assistant reply. Generation runs for a minute or more.",
+		Description: lipsyncDescription(videoAudioCapable),
 		Example:     `{"name":"lip_sync"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: lipsyncParamSchema(),
@@ -803,7 +888,7 @@ func imageGenerationToolDefinition() HarnessToolDefinition {
 }
 
 func filesystemToolRegistry() HarnessToolRegistry {
-	return defaultHarnessToolRegistry(defaultAppConfig())
+	return defaultHarnessToolRegistry(context.Background(), defaultAppConfig(), nil)
 }
 
 // jsonSchema helpers describe tool parameters to Ollama's native tool-calling
@@ -1331,6 +1416,25 @@ func (r HarnessToolRegistry) PromptCatalog() string {
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// videoAudioCapabilityMarker is the phrase videoGenerationDescription appends
+// when the configured video model can produce audio. VideoAudioCapable probes
+// for it rather than re-reading config so the registry stays the single source
+// of truth for capability — the description and this predicate derive from the
+// same flag set at build time and cannot drift.
+const videoAudioCapabilityMarker = "can also generate synchronized audio"
+
+// VideoAudioCapable reports whether the generate_video tool's description
+// advertises native audio capability. It returns false when generate_video is
+// not in the registry. Used by triage to bias narration requests toward a
+// single generate_video call instead of a generate_audio + lip_sync chain.
+func (r HarnessToolRegistry) VideoAudioCapable() bool {
+	def, ok := r.Get("generate_video")
+	if !ok {
+		return false
+	}
+	return strings.Contains(def.Description, videoAudioCapabilityMarker)
 }
 
 func (definition HarnessToolDefinition) RequiresPermission() bool {

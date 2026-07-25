@@ -29,7 +29,10 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 	if len(registry) > 0 {
 		gw.registry = registry[0]
 	} else {
-		gw.registry = defaultHarnessToolRegistry(config)
+		// The gateway rebuild path is rare (only when a caller doesn't pass a
+		// cached registry); use Background like the engine's toolRegistry() so a
+		// cancelled request context can't poison a registry that may outlive it.
+		gw.registry = defaultHarnessToolRegistry(context.Background(), config, app)
 	}
 	gateway := gw
 	if app != nil {

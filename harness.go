@@ -892,7 +892,13 @@ func (h *HarnessEngine) runFinalResponseAttempt(ctx context.Context, requestID, 
 // on every planning round and tool-result activity lookup.
 func (h *HarnessEngine) toolRegistry() HarnessToolRegistry {
 	h.registryOnce.Do(func() {
-		h.registry = defaultHarnessToolRegistry(h.config)
+		// context.Background() is correct here: the registry is built once per
+		// engine (sync.Once), and the only network work is the disk-backed
+		// schema cache lookup for video audio capability (warm = no network,
+		// cold = one public OpenAPI fetch per model id). A real request context
+		// isn't in scope at first access; a background ctx keeps a cancelled
+		// request from poisoning the cached registry for the engine's lifetime.
+		h.registry = defaultHarnessToolRegistry(context.Background(), h.config, h.app)
 	})
 	return h.registry
 }
@@ -1182,12 +1188,28 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 		}
 
 		toolStep := run.appendStep("tool_call", iteration, "tools", "", "tool calls requested by harness planning")
-		results := h.runHarnessToolCalls(ctx, requestID, conversationID, plan.ToolCalls, turn)
+		batch := h.runHarnessToolCalls(ctx, requestID, conversationID, plan.ToolCalls, turn)
+		results := batch.Results
 		round.ToolResults = results
 		prepared.Rounds = append(prepared.Rounds, round)
 		prepared.ToolResults = append(prepared.ToolResults, results...)
 		run.Steps[toolStep].Tools = h.toolActivities(results, plan.ToolCalls)
 		run.completeStep(toolStep, "completed", "tool_call", 0, "")
+		// Forward-feed Part B: fold this round's generated media into the turn
+		// so the next round's runHarnessToolCalls inherits it. User-attached
+		// media on the original turn takes precedence — generated media only
+		// fills an empty slot, so an attached clip is never shadowed. This
+		// makes generate_audio (round 1) → lip_sync (round 2) work, the exact
+		// composition that failed in conv_047accca33610598408b8cf8.
+		if strings.TrimSpace(turn.AttachedAudio) == "" {
+			turn.AttachedAudio = batch.GeneratedAudio
+		}
+		if strings.TrimSpace(turn.AttachedVideo) == "" {
+			turn.AttachedVideo = batch.GeneratedVideo
+		}
+		if len(turn.AttachedImages) == 0 {
+			turn.AttachedImages = batch.GeneratedImages
+		}
 
 		if time.Now().After(deadline) {
 			break
@@ -1783,7 +1805,21 @@ func validateHarnessToolCall(index int, call HarnessToolCall, registry HarnessTo
 	return definition.Validate(prefix, call)
 }
 
-func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conversationID string, calls []HarnessToolCall, turn harnessTurnContext) []HarnessToolResult {
+// harnessToolBatchResult bundles a round's tool results with any media the
+// calls generated that should carry forward to later calls in the same turn.
+// The fields mirror harnessTurnContext's attachment slots so the planning loop
+// can fold them back into the turn before the next round (Part B of the
+// generated-media forward-feed). Only media generated THIS round is reported
+// here; the caller merges it with the turn's existing attachments respecting
+// user-attachment precedence.
+type harnessToolBatchResult struct {
+	Results         []HarnessToolResult
+	GeneratedAudio  string
+	GeneratedVideo  string
+	GeneratedImages []string
+}
+
+func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conversationID string, calls []HarnessToolCall, turn harnessTurnContext) harnessToolBatchResult {
 	// Pass the engine's cached registry so the gateway doesn't rebuild the
 	// param-schema maps on every planning round.
 	gateway := newToolGateway(h.app, h.config, h.toolRegistry())
@@ -1794,7 +1830,7 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 	gateway.tools.AttachedImages = turn.AttachedImages
 	gateway.tools.AttachedAudio = turn.AttachedAudio
 	gateway.tools.AttachedVideo = turn.AttachedVideo
-	results := make([]HarnessToolResult, 0, len(calls))
+	batch := harnessToolBatchResult{Results: make([]HarnessToolResult, 0, len(calls))}
 	for _, call := range calls {
 		// When the user selected a model that is not the harness model as the
 		// primary model and the turn is in image mode, use that model for
@@ -1818,15 +1854,107 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 				call.Model = turn.PrimaryModel
 			}
 		}
-		results = append(results, gateway.Execute(ctx, ToolExecutionRequest{
+		result := gateway.Execute(ctx, ToolExecutionRequest{
 			Name:           call.Name,
 			Call:           call,
 			RequestID:      requestID,
 			ConversationID: conversationID,
 			Source:         "harness",
-		}))
+		})
+		results := []HarnessToolResult{result}
+		batch.Results = append(batch.Results, result)
+		// Forward-feed Part A: a media-generating call seeds the attachment
+		// slots for the NEXT call in this same batch, so a planner can chain
+		// generate_audio → lip_sync in one round. We only fill empty slots — a
+		// user-attached clip (set above from turn.Attached*) or an earlier
+		// call's output takes precedence over a later call's. Generated media
+		// lives in the tool execution context only; it never reaches a model
+		// message (image base64 stays out of context; audio/video ride the
+		// attachment field straight to the consuming tool).
+		if generated := forwardableMediaFromResults(results); generated != nil {
+			if batch.GeneratedAudio == "" {
+				batch.GeneratedAudio = generated.Audio
+			}
+			if batch.GeneratedVideo == "" {
+				batch.GeneratedVideo = generated.Video
+			}
+			if len(batch.GeneratedImages) == 0 {
+				batch.GeneratedImages = generated.Images
+			}
+			if strings.TrimSpace(gateway.tools.AttachedAudio) == "" && generated.Audio != "" {
+				gateway.tools.AttachedAudio = generated.Audio
+			}
+			if strings.TrimSpace(gateway.tools.AttachedVideo) == "" && generated.Video != "" {
+				gateway.tools.AttachedVideo = generated.Video
+			}
+			if len(gateway.tools.AttachedImages) == 0 && len(generated.Images) > 0 {
+				gateway.tools.AttachedImages = generated.Images
+			}
+		}
 	}
-	return results
+	return batch
+}
+
+// forwardableMedia collects media a tool result produced that is eligible to
+// carry forward to a later tool call in the same turn (the generate_audio →
+// lip_sync composition, or generate_video → a Veo extend / video-to-video lip
+// sync, or generate_image → image-to-video). Each field is the data URL the
+// corresponding Attached* slot expects.
+type forwardableMedia struct {
+	Audio  string
+	Video  string
+	Images []string
+}
+
+// forwardableMediaFromResults extracts the most recent forwardable media from a
+// batch of tool results. It walks newest-first so a later call's output shadows
+// an earlier one within the same batch (matching latestAttached*ForTurn's
+// newest-first precedence). Only completed results contribute; a failed
+// generate_audio contributes no audio, so lip_sync surfaces its usual
+// attachment error rather than consuming partial output. Audio and video are
+// read from their temp files and re-encoded as data URLs (tempAudioFileAsDataURL
+// / tempVideoFileAsDataURL); images are already data URLs in ToolImageResult.
+// Returns nil when no result produced any forwardable media.
+func forwardableMediaFromResults(results []HarnessToolResult) *forwardableMedia {
+	var media forwardableMedia
+	found := false
+	for i := len(results) - 1; i >= 0; i-- {
+		result := results[i]
+		if result.Status != "completed" {
+			continue
+		}
+		switch typed := result.Result.(type) {
+		case ToolAudioResult:
+			if media.Audio == "" {
+				for _, file := range typed.Audios {
+					if dataURL, _ := tempAudioFileAsDataURL(file.TempPath, file.MimeType); dataURL != "" {
+						media.Audio = dataURL
+						found = true
+						break
+					}
+				}
+			}
+		case ToolVideoResult:
+			if media.Video == "" {
+				for _, file := range typed.Videos {
+					if dataURL, _ := tempVideoFileAsDataURL(file.TempPath, file.MimeType); dataURL != "" {
+						media.Video = dataURL
+						found = true
+						break
+					}
+				}
+			}
+		case ToolImageResult:
+			if len(media.Images) == 0 && len(typed.Images) > 0 {
+				media.Images = append([]string(nil), typed.Images...)
+				found = true
+			}
+		}
+	}
+	if !found {
+		return nil
+	}
+	return &media
 }
 
 func (h *HarnessEngine) toolActivities(results []HarnessToolResult, calls []HarnessToolCall) []HarnessToolActivity {
