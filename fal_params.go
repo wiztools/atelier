@@ -379,7 +379,18 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 
 	if duration := strings.TrimSpace(req.Duration); duration != "" {
 		if path, prop, ok := findNative(schema, ov, "video", req.Model, "duration"); ok {
-			setBodyPath(schema, body, path, coerceVideoValue(prop, duration))
+			// Guard against values the model's duration enum doesn't accept before
+			// sending — "auto" is Seedance-only, while Kling accepts just ["5","10"]
+			// and other models have their own fixed sets. Passing an out-of-enum
+			// value through would 422 at fal. Drop it with a notice so the request
+			// still runs (the model picks its own default) rather than failing.
+			if !valueAllowedByEnum(prop, duration) {
+				notices = append(notices, fmt.Sprintf(
+					"The selected model %q does not accept duration %q; ignoring it and letting the model choose.",
+					req.Model, duration))
+			} else {
+				setBodyPath(schema, body, path, coerceVideoValue(prop, duration))
+			}
 		} else {
 			notices = append(notices, fmt.Sprintf(
 				"The selected model %q has no duration control; ignoring the requested duration.",
@@ -470,6 +481,20 @@ func coerceVideoValue(prop SchemaProperty, value any) any {
 		}
 	}
 	return value
+}
+
+// valueAllowedByEnum reports whether value is accepted by prop's enum constraint.
+// A property with no enum accepts anything; an enum-constrained property (like
+// a video model's duration: Seedance allows "auto" plus "4".."15", Kling allows
+// only "5"/"10") accepts only its listed values. Used to gate enum-sensitive
+// fields before sending so an out-of-enum value is dropped with a notice rather
+// than 422ing at fal. The value is stringified to match how enums are parsed
+// from the schema (string literals).
+func valueAllowedByEnum(prop SchemaProperty, value string) bool {
+	if len(prop.Enum) == 0 {
+		return true
+	}
+	return contains(prop.Enum, value)
 }
 
 // resolveLipsyncBody maps a LipsyncGenerateRequest onto the model's native input

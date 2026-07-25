@@ -202,7 +202,11 @@ const defaultFalLipsyncVideoModel = 'fal-ai/sync-lipsync/v2/pro';
 const defaultFalUpscaleModel = 'fal-ai/esrgan';
 const defaultVideoDuration = '5';
 const defaultVideoAspectRatio = '16:9';
-const videoDurationOptions = ['5', '10', '15'];
+// 'auto' lets the video model size the clip to the prompt (Seedance supports it;
+// other models drop it with a notice via the backend enum-guard). Labels map the
+// raw values to friendlier option text — 'auto' reads better than a bare token.
+const videoDurationOptions = ['auto', '5', '10', '15'];
+const videoDurationLabels: Record<string, string> = { auto: 'Auto' };
 const videoAspectRatioOptions = ['16:9', '9:16', '1:1'];
 
 // Coerce a numeric settings input to a positive integer, falling back to the
@@ -2119,9 +2123,9 @@ function App() {
 
                   <div className="two-column">
                     <div className="field">
-                      <label htmlFor="video-duration">Video Duration (s)</label>
+                      <label htmlFor="video-duration">Video Duration</label>
                       <select id="video-duration" value={videoDuration} onChange={(event) => setVideoDuration(event.target.value)}>
-                        {videoDurationOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+                        {videoDurationOptions.map((value) => <option key={value} value={value}>{videoDurationLabels[value] ?? value}</option>)}
                       </select>
                     </div>
 
