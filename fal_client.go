@@ -416,6 +416,28 @@ func (client FalClient) uploadToCDN(ctx context.Context, data []byte, mimeType, 
 // error). defaultMediaType is the fallback when the payload's MIME can't be
 // detected (e.g. bare base64 without a data: prefix).
 func (client FalClient) resolveMediaURL(ctx context.Context, reference, defaultMediaType, filename string) (string, error) {
+	return client.resolveMediaURLWith(ctx, reference, defaultMediaType, filename, false)
+}
+
+// resolveMediaURLHosted is the force-host variant: it uploads every data-URI /
+// bare-base64 payload to fal's CDN regardless of size, returning the hosted URL.
+// Already-hosted http(s) URLs pass through. This exists because some fal
+// endpoints reject inline data URIs at the downstream layer even when fal's own
+// queue accepts them — sync-lipsync v3 returns 500 "downstream_service_error"
+// on a data:image/...;base64 image_url (see conv_b54423f43ab17a060948e74f and
+// neighbors), while Seedance happily accepts the same inline payload. Hosting
+// the media sidesteps the downstream rejection. On upload failure the original
+// data URI is returned so the request still goes through (the same fail-soft
+// contract as resolveMediaURL); the caller surfaces fal's error verbatim.
+func (client FalClient) resolveMediaURLHosted(ctx context.Context, reference, defaultMediaType, filename string) (string, error) {
+	return client.resolveMediaURLWith(ctx, reference, defaultMediaType, filename, true)
+}
+
+// resolveMediaURLWith is the shared body for resolveMediaURL (threshold-gated
+// upload) and resolveMediaURLHosted (always upload). forceHost skips the inline
+// threshold so every payload is uploaded, used by endpoints whose downstream
+// rejects data URIs.
+func (client FalClient) resolveMediaURLWith(ctx context.Context, reference, defaultMediaType, filename string, forceHost bool) (string, error) {
 	reference = strings.TrimSpace(reference)
 	if reference == "" {
 		return "", nil
@@ -460,11 +482,12 @@ func (client FalClient) resolveMediaURL(ctx context.Context, reference, defaultM
 	}
 
 	// Small enough to send inline — wrap as a data URI (the existing behavior).
-	if len(data) <= falInlineMediaMaxBytes {
+	// forceHost skips this branch so the payload is uploaded regardless of size.
+	if !forceHost && len(data) <= falInlineMediaMaxBytes {
 		return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 	}
 
-	// Oversized — upload to fal's CDN and return the hosted URL.
+	// Oversized (or forced) — upload to fal's CDN and return the hosted URL.
 	accessURL, err := client.uploadToCDN(ctx, data, mediaType, filename)
 	if err != nil {
 		// Upload failed — fall back to the inline data URI. The request will

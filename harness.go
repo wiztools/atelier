@@ -1316,6 +1316,25 @@ func mapNativeToolCalls(calls []ToolCall) ([]HarnessToolCall, []string) {
 	return mapped, problems
 }
 
+// plannerMediaRoutingGuidance is the capability-conditional paragraph appended
+// to both planner prompt variants. It mirrors the triage narration-routing hint
+// (triage.go) but is addressed to the planner — the model that actually selects
+// tools. The triage hint alone is insufficient because toolTask is non-binding
+// guidance a weak planner can override (see conv_b54423f43ab17a060948e74f:
+// triage routed to generate_video, the planner ran generate_audio + lip_sync
+// anyway). Restating the rule at the planning layer, where the tool choice is
+// made, closes that gap. It also tells the planner to fall back to the
+// audio-capable generate_video path if a lip_sync call fails, so a single tool
+// failure does not sink the turn when an alternative exists. Empty when the
+// configured video model cannot produce audio — in that case the
+// generate_audio + lip_sync chain is the correct path and no rule is needed.
+func plannerMediaRoutingGuidance(registry HarnessToolRegistry) string {
+	if !registry.VideoAudioCapable() {
+		return ""
+	}
+	return "\nMedia routing: when the user wants speech, narration, a voice-over, or a speaking character in a video, call generate_video ONCE with the spoken text in the prompt — the configured video model generates the audio in the same call. Do NOT chain generate_audio + lip_sync for narration; lip_sync is only for dubbing or re-syncing an existing attached audio clip to a face. If a lip_sync call fails, retry the narration as a single generate_video call before reporting failure."
+}
+
 func (h *HarnessEngine) plannerSystemPrompt(registry HarnessToolRegistry, req ChatRequest, loadedSkill *LoadedSkill, toolTask string) string {
 	system := strings.TrimSpace(fmt.Sprintf(`You are Atelier's private harness model. You gather evidence for the final model that will answer the user.
 Do not answer the user directly. Do not include hidden chain-of-thought. Respond only with a JSON tool plan matching the response schema:
@@ -1331,7 +1350,7 @@ A failed or denied tool call is information, not a dead end: adapt the plan or t
 The primary model that answers the user cannot call tools or execute commands. If a user request or active SKILL.md requires a command, include it as a tool call now. Do not put instructions like "run this command" in the brief.
 Allowed tool calls:
 %s
-When "needsTools" is false, "toolCalls" must be []. Prefer read-only calls unless the user clearly asks to modify files or run a specific write-capable command. The filesystem tools and run_command operate on real files on this machine; paths and command working directories are confined to (but fully real within) %s.`, harnessChatMaxSteps, registry.PromptCatalog(), workspaceRootPhrase(h.config.Tools.Filesystem)))
+When "needsTools" is false, "toolCalls" must be []. Prefer read-only calls unless the user clearly asks to modify files or run a specific write-capable command. The filesystem tools and run_command operate on real files on this machine; paths and command working directories are confined to (but fully real within) %s.%s`, harnessChatMaxSteps, registry.PromptCatalog(), workspaceRootPhrase(h.config.Tools.Filesystem), plannerMediaRoutingGuidance(registry)))
 	if strings.TrimSpace(req.System) != "" {
 		system += "\n\nUser-facing system prompt to preserve:\n" + strings.TrimSpace(req.System)
 	}
@@ -1355,7 +1374,7 @@ Do not answer the user directly. Do not include hidden chain-of-thought.
 You have tools available. Call them to gather evidence for the final model. You plan in rounds, at most %d in total; each round may request up to 3 tool calls. The harness executes them and returns each result, including failures, as a tool message; read the results and plan the next round.
 When you have enough evidence, or none is needed, make no tool calls and write a one-line summary of your plan in your content: intent, relevant evidence, and cautions for the final model. The final model cannot call tools, so include any required command as a tool call now, not in your summary.
 A failed or denied tool call is information, not a dead end: adapt the plan or tell the final model to report the failure plainly. Never claim an action succeeded unless a tool result shows it.
-The filesystem tools and run_command operate on real files on this machine; paths and command working directories are confined to (but fully real within) %s. Prefer read-only calls unless the user clearly asks to modify files or run a specific write-capable command.`, harnessChatMaxSteps, workspaceRootPhrase(h.config.Tools.Filesystem)))
+The filesystem tools and run_command operate on real files on this machine; paths and command working directories are confined to (but fully real within) %s. Prefer read-only calls unless the user clearly asks to modify files or run a specific write-capable command.%s`, harnessChatMaxSteps, workspaceRootPhrase(h.config.Tools.Filesystem), plannerMediaRoutingGuidance(registry)))
 	if strings.TrimSpace(req.System) != "" {
 		system += "\n\nUser-facing system prompt to preserve:\n" + strings.TrimSpace(req.System)
 	}

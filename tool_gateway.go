@@ -114,17 +114,22 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				return GeneratedVideo{}, errFalKeyNotConfigured
 			}
 			client := newFalClient(app.client, apiKey)
-			// Pre-resolve all three media references: the driving audio and the face
-			// source (image or video). Oversized payloads upload to fal's CDN so the
-			// queue submit stays under the inline size limit. A 2.6 MB attached video
-			// would otherwise 422.
-			if resolved, err := client.resolveMediaURL(ctx, req.Audio, "audio/mpeg", "audio.mp3"); err == nil {
+			// Pre-resolve all three media references with the force-host variant:
+			// the driving audio and the face source (image or video). sync-lipsync
+			// v3 rejects inline data URIs at the downstream layer (500
+			// "downstream_service_error" on a data:image/...;base64 image_url — see
+			// conv_b54423f43ab17a060948e74f), even though fal's own queue accepts
+			// them and Seedance consumes the same inline payload fine. Hosting every
+			// media reference sidesteps the downstream rejection; resolveMediaURLHosted
+			// uploads regardless of size and falls back to an inline data URI on
+			// upload failure so the request still goes through.
+			if resolved, err := client.resolveMediaURLHosted(ctx, req.Audio, "audio/mpeg", "audio.mp3"); err == nil {
 				req.Audio = resolved
 			}
-			if resolved, err := client.resolveMediaURL(ctx, req.Video, "video/mp4", "face-video.mp4"); err == nil {
+			if resolved, err := client.resolveMediaURLHosted(ctx, req.Video, "video/mp4", "face-video.mp4"); err == nil {
 				req.Video = resolved
 			}
-			if resolved, err := client.resolveMediaURL(ctx, req.Image, "image/png", "face-image.png"); err == nil {
+			if resolved, err := client.resolveMediaURLHosted(ctx, req.Image, "image/png", "face-image.png"); err == nil {
 				req.Image = resolved
 			}
 			schema := schemaCache.Get(ctx, req.Model)
