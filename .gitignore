@@ -16,6 +16,9 @@ build/bin/
 # the frontend:build hook in wails.json.
 node_modules/
 frontend/node_modules/
+# Wails-managed hash of frontend/package.json; regenerated on every build, so
+# tracking it only creates noise (and a dirty tree after each release).
+frontend/package.json.md5
 frontend/dist/*
 !frontend/dist/.gitkeep
 

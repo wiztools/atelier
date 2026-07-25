@@ -185,6 +185,13 @@ PY
 echo "    wails.json productVersion -> $VERSION"
 echo "    frontend/package.json version -> $VERSION"
 
+# Sync package-lock.json so npm doesn't rewrite it during the later build step
+# (which would leave the working tree dirty post-release). --package-lock-only
+# updates the lockfile's root version to match package.json without touching
+# node_modules.
+(cd frontend && npm install --package-lock-only --silent)
+echo "    frontend/package-lock.json version -> $VERSION"
+
 # ---------- Run tests ----------
 if [[ "$SKIP_TESTS" != true ]]; then
     echo "==> Running tests"
@@ -199,7 +206,7 @@ fi
 # ---------- Commit and tag ----------
 if [[ "$DRY_RUN" != true ]]; then
     echo "==> Committing version bump"
-    git add wails.json frontend/package.json
+    git add wails.json frontend/package.json frontend/package-lock.json
     git commit -m "chore(release): bump version to v${VERSION}"
 
     echo "==> Tagging release"
