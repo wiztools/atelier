@@ -172,7 +172,7 @@ func TestResolveAgainstRealSFXSchema(t *testing.T) {
 // classic image-to-image shape and the prior hardcoded behavior; the resolver
 // must reproduce it exactly.
 func TestResolveImageBodyFlux(t *testing.T) {
-	body, notices := resolveImageBody(loadSchema(t, "flux-dev-image-to-image"),
+	body, notices, _ := resolveImageBody(loadSchema(t, "flux-dev-image-to-image"),
 		ImageGenerateRequest{
 			Model:  "fal-ai/flux/dev/image-to-image",
 			Prompt: "cartoon character reference sheet",
@@ -210,7 +210,7 @@ func TestResolveImageBodyFlux(t *testing.T) {
 // that produced the 422 in the wild: sending image_url (scalar) to an endpoint
 // that requires image_urls (array).
 func TestResolveImageBodyNanoBananaEdit(t *testing.T) {
-	body, notices := resolveImageBody(loadSchema(t, "nano-banana-edit"),
+	body, notices, _ := resolveImageBody(loadSchema(t, "nano-banana-edit"),
 		ImageGenerateRequest{
 			Model:  "fal-ai/nano-banana/edit",
 			Prompt: "cartoon character reference sheet",
@@ -241,7 +241,7 @@ func TestResolveImageBodyNanoBananaEdit(t *testing.T) {
 // that fal will reject with a 422, the resolver emits a text-to-image body and
 // surfaces a notice so the user understands their attachment was ignored.
 func TestResolveImageBodyNoSourceImageInput(t *testing.T) {
-	body, notices := resolveImageBody(loadSchema(t, "nano-banana-pro"),
+	body, notices, _ := resolveImageBody(loadSchema(t, "nano-banana-pro"),
 		ImageGenerateRequest{
 			Model:  "fal-ai/nano-banana-pro",
 			Prompt: "cartoon character reference sheet",
@@ -272,7 +272,7 @@ func TestResolveImageBodyNoSourceImageInput(t *testing.T) {
 // image attached → image_size is set from the configured dimensions and no
 // source-image field appears in the body.
 func TestResolveImageBodyTextToImage(t *testing.T) {
-	body, notices := resolveImageBody(loadSchema(t, "flux-dev-image-to-image"),
+	body, notices, _ := resolveImageBody(loadSchema(t, "flux-dev-image-to-image"),
 		ImageGenerateRequest{
 			Model:  "fal-ai/flux/schnell",
 			Prompt: "a lighthouse at dusk",
@@ -305,7 +305,7 @@ func TestResolveImageBodyNormalizesBareBase64(t *testing.T) {
 	const barePNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 
 	t.Run("scalar image_url", func(t *testing.T) {
-		body, _ := resolveImageBody(loadSchema(t, "flux-dev-image-to-image"),
+		body, _, _ := resolveImageBody(loadSchema(t, "flux-dev-image-to-image"),
 			ImageGenerateRequest{
 				Model:  "fal-ai/flux/dev/image-to-image",
 				Prompt: "transform this",
@@ -325,7 +325,7 @@ func TestResolveImageBodyNormalizesBareBase64(t *testing.T) {
 	})
 
 	t.Run("array image_urls", func(t *testing.T) {
-		body, _ := resolveImageBody(loadSchema(t, "nano-banana-edit"),
+		body, _, _ := resolveImageBody(loadSchema(t, "nano-banana-edit"),
 			ImageGenerateRequest{
 				Model:  "fal-ai/nano-banana/edit",
 				Prompt: "transform this",
@@ -352,7 +352,7 @@ func TestResolveImageBodyNormalizesBareBase64(t *testing.T) {
 // num_inference_steps) and a single notice. This preserves today's behavior so a
 // schema outage never breaks image generation outright.
 func TestResolveImageBodyNoSchema(t *testing.T) {
-	body, notices := resolveImageBody(nil,
+	body, notices, _ := resolveImageBody(nil,
 		ImageGenerateRequest{
 			Model:  "fal-ai/flux/dev/image-to-image",
 			Prompt: "an impressionist painting",
@@ -385,7 +385,7 @@ func TestResolveImageBodyNoSchema(t *testing.T) {
 // resolver passes the caller's string through unchanged.
 func TestResolveVideoBodyVeoTextToVideo(t *testing.T) {
 	audio := true
-	body, notices := resolveVideoBody(loadSchema(t, "veo3.1"),
+	body, notices, _ := resolveVideoBody(loadSchema(t, "veo3.1"),
 		VideoGenerateRequest{
 			Model:          "fal-ai/veo3.1",
 			Prompt:         "a drone shot over a misty pine forest at sunrise",
@@ -426,7 +426,7 @@ func TestResolveVideoBodyVeoTextToVideo(t *testing.T) {
 // onto the model's video_url field, and an attached image is ignored in favor of
 // the video (extend takes precedence over image-to-video).
 func TestResolveVideoBodyVeoExtend(t *testing.T) {
-	body, notices := resolveVideoBody(loadSchema(t, "veo3.1-extend-video"),
+	body, notices, _ := resolveVideoBody(loadSchema(t, "veo3.1-extend-video"),
 		VideoGenerateRequest{
 			Model:  "fal-ai/veo3.1/extend-video",
 			Prompt: "the camera continues panning across the valley",
@@ -452,7 +452,7 @@ func TestResolveVideoBodyVeoExtend(t *testing.T) {
 // TestResolveVideoBodyKlingImageToVideo verifies image-to-video: an attached
 // image maps onto the model's scalar image_url field.
 func TestResolveVideoBodyKlingImageToVideo(t *testing.T) {
-	body, notices := resolveVideoBody(loadSchema(t, "kling-image-to-video"),
+	body, notices, _ := resolveVideoBody(loadSchema(t, "kling-image-to-video"),
 		VideoGenerateRequest{
 			Model:  "fal-ai/kling-video/v2/master/image-to-video",
 			Prompt: "make the character walk forward",
@@ -477,7 +477,7 @@ func TestResolveVideoBodyKlingImageToVideo(t *testing.T) {
 // the body GenerateVideo used to build itself, plus a schema-unavailable notice.
 func TestResolveVideoBodyNoSchema(t *testing.T) {
 	silent := false
-	body, notices := resolveVideoBody(nil,
+	body, notices, _ := resolveVideoBody(nil,
 		VideoGenerateRequest{
 			Model:          "fal-ai/kling-video/v2/master/text-to-video",
 			Prompt:         "a calm ocean at dawn",
@@ -517,7 +517,7 @@ func TestResolveVideoBodyNoSchema(t *testing.T) {
 // TestResolveVideoBodyNoSourceInput verifies that a model lacking a source-video
 // field degrades cleanly with a notice when the user attached a video to extend.
 func TestResolveVideoBodyNoSourceInput(t *testing.T) {
-	body, notices := resolveVideoBody(loadSchema(t, "veo3.1"),
+	body, notices, _ := resolveVideoBody(loadSchema(t, "veo3.1"),
 		VideoGenerateRequest{
 			Model:  "fal-ai/veo3.1",
 			Prompt: "extend this clip",
@@ -533,6 +533,200 @@ func TestResolveVideoBodyNoSourceInput(t *testing.T) {
 	}
 	if !strings.Contains(notices[0], "source-video") {
 		t.Fatalf("notice = %q, want it to mention the ignored source video", notices[0])
+	}
+}
+
+// multiImageVideoSchema is a synthesized schema with an array-typed image_urls
+// source field (the shape of seedance reference-to-video). It stands in for a
+// real fal fixture: no captured reference-to-video OpenAPI doc exists in the
+// testdata tree yet, so build the schema inline the way the music-length and
+// nano-banana tests do.
+func multiImageVideoSchema(maxItems int) *ModelInputSchema {
+	prop := SchemaProperty{Name: "image_urls", Kind: schemaArray, MaxItems: maxItems, Items: &SchemaProperty{Name: "image_urls", Kind: schemaScalar}}
+	return &ModelInputSchema{
+		Properties: map[string]SchemaProperty{
+			"prompt":     {Name: "prompt", Kind: schemaScalar},
+			"image_urls": prop,
+		},
+		order: []string{"prompt", "image_urls"},
+	}
+}
+
+// scalarImageVideoSchema is a synthesized schema with a scalar image_url field
+// (the shape of a single-frame image-to-video endpoint like seedance
+// image-to-video). Multiple attached images against it must hard-error.
+func scalarImageVideoSchema() *ModelInputSchema {
+	return &ModelInputSchema{
+		Properties: map[string]SchemaProperty{
+			"prompt":    {Name: "prompt", Kind: schemaScalar},
+			"image_url": {Name: "image_url", Kind: schemaScalar},
+		},
+		order: []string{"prompt", "image_url"},
+	}
+}
+
+// TestResolveVideoBodyMultiImageArray verifies that multiple attached images
+// fan out onto an array-typed image_urls field for a reference-to-video model.
+// All three URLs must reach the body in the user's attach order.
+func TestResolveVideoBodyMultiImageArray(t *testing.T) {
+	body, notices, err := resolveVideoBody(multiImageVideoSchema(0),
+		VideoGenerateRequest{
+			Model:  "bytedance/seedance-2.0/reference-to-video",
+			Prompt: "blend @Image1 and @Image2",
+			Images: []string{"data:image/png;base64,AAA", "data:image/png;base64,BBB", "data:image/png;base64,CCC"},
+		},
+		builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("expected no error for array multi-image, got %v", err)
+	}
+	urls, ok := body["image_urls"].([]any)
+	if !ok {
+		t.Fatalf("image_urls = %v (type %T), want []any", body["image_urls"], body["image_urls"])
+	}
+	if len(urls) != 3 {
+		t.Fatalf("expected 3 image_urls, got %d (%v)", len(urls), urls)
+	}
+	// Order preserved.
+	for i, want := range []string{"data:image/png;base64,AAA", "data:image/png;base64,BBB", "data:image/png;base64,CCC"} {
+		if urls[i] != want {
+			t.Errorf("image_urls[%d] = %v, want %q", i, urls[i], want)
+		}
+	}
+	if len(notices) != 0 {
+		t.Fatalf("expected no notices for multi-image array path, got %v", notices)
+	}
+}
+
+// TestResolveVideoBodySingleImageArrayStillWorks is a regression guard: a single
+// image into an array field still produces a one-element slice (the original
+// behavior of coerceVideoValue wrapping a scalar), now via coerceImages.
+func TestResolveVideoBodySingleImageArrayStillWorks(t *testing.T) {
+	body, _, err := resolveVideoBody(multiImageVideoSchema(0),
+		VideoGenerateRequest{
+			Model:  "bytedance/seedance-2.0/reference-to-video",
+			Prompt: "animate this",
+			Images: []string{"data:image/png;base64,AAA"},
+		},
+		builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	urls, ok := body["image_urls"].([]any)
+	if !ok || len(urls) != 1 || urls[0] != "data:image/png;base64,AAA" {
+		t.Fatalf("image_urls = %v, want a one-element slice with the data URI", body["image_urls"])
+	}
+}
+
+// TestResolveVideoBodyScalarRejectsMultipleImages verifies the hard-error
+// guardrail: a scalar-image model (e.g. seedance image-to-video) with multiple
+// attached images must fail the call rather than silently drop the extras. The
+// error must name the model and the attached count so the user knows what to fix.
+func TestResolveVideoBodyScalarRejectsMultipleImages(t *testing.T) {
+	_, _, err := resolveVideoBody(scalarImageVideoSchema(),
+		VideoGenerateRequest{
+			Model:  "bytedance/seedance-2.0/image-to-video",
+			Prompt: "blend these",
+			Images: []string{"data:image/png;base64,AAA", "data:image/png;base64,BBB", "data:image/png;base64,CCC"},
+		},
+		builtinFalOverrides())
+	if err == nil {
+		t.Fatal("expected a hard error for multi-image into a scalar model, got nil")
+	}
+	if !strings.Contains(err.Error(), "single image") {
+		t.Errorf("error = %q, want it to mention 'single image'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "bytedance/seedance-2.0/image-to-video") {
+		t.Errorf("error = %q, want it to name the model", err.Error())
+	}
+	if !strings.Contains(err.Error(), "3 were attached") {
+		t.Errorf("error = %q, want it to name the attached count", err.Error())
+	}
+}
+
+// TestResolveVideoBodyMaxItemsExceeded verifies the maxItems guardrail: an array
+// model declaring maxItems:2 must reject 3 attached images. The cap value must
+// appear in the error so the user knows the limit.
+func TestResolveVideoBodyMaxItemsExceeded(t *testing.T) {
+	_, _, err := resolveVideoBody(multiImageVideoSchema(2),
+		VideoGenerateRequest{
+			Model:  "bytedance/seedance-2.0/reference-to-video",
+			Prompt: "blend these",
+			Images: []string{"data:image/png;base64,AAA", "data:image/png;base64,BBB", "data:image/png;base64,CCC"},
+		},
+		builtinFalOverrides())
+	if err == nil {
+		t.Fatal("expected a hard error for exceeding maxItems, got nil")
+	}
+	if !strings.Contains(err.Error(), "at most 2") {
+		t.Errorf("error = %q, want it to name the maxItems cap (2)", err.Error())
+	}
+	if !strings.Contains(err.Error(), "3 were attached") {
+		t.Errorf("error = %q, want it to name the attached count", err.Error())
+	}
+}
+
+// TestResolveVideoBodyNoSchemaRejectsMultipleImages verifies the nil-schema
+// legacy fallback also rejects multi-image — it only knows a scalar image_url,
+// so silently dropping extras there would hide the capability mismatch too.
+func TestResolveVideoBodyNoSchemaRejectsMultipleImages(t *testing.T) {
+	_, _, err := resolveVideoBody(nil,
+		VideoGenerateRequest{
+			Model:  "unknown-model",
+			Prompt: "blend these",
+			Images: []string{"data:image/png;base64,AAA", "data:image/png;base64,BBB"},
+		},
+		builtinFalOverrides())
+	if err == nil {
+		t.Fatal("expected a hard error for multi-image with no schema, got nil")
+	}
+	if !strings.Contains(err.Error(), "at most one image") || !strings.Contains(err.Error(), "2 were attached") {
+		t.Errorf("error = %q, want it to mention 'at most one image' and the count", err.Error())
+	}
+}
+
+// TestResolveImageBodyMultiImageArray is the image-edit sibling of
+// TestResolveVideoBodyMultiImageArray: multiple attached images fan out onto an
+// array-typed image_urls field (e.g. nano-banana/edit multi-reference edit).
+func TestResolveImageBodyMultiImageArray(t *testing.T) {
+	body, _, err := resolveImageBody(loadSchema(t, "nano-banana-edit"),
+		ImageGenerateRequest{
+			Model:  "fal-ai/nano-banana/edit",
+			Prompt: "blend @Image1 and @Image2",
+			Images: []string{"data:image/png;base64,AAA", "data:image/png;base64,BBB"},
+		},
+		builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("expected no error for array multi-image edit, got %v", err)
+	}
+	urls, ok := body["image_urls"].([]any)
+	if !ok || len(urls) != 2 {
+		t.Fatalf("image_urls = %v, want a 2-element slice", body["image_urls"])
+	}
+	// Order preserved.
+	for i, want := range []string{"data:image/png;base64,AAA", "data:image/png;base64,BBB"} {
+		if urls[i] != want {
+			t.Errorf("image_urls[%d] = %v, want %q", i, urls[i], want)
+		}
+	}
+}
+
+// TestResolveImageBodyScalarRejectsMultipleImages verifies the image-edit
+// hard-error guardrail: a scalar-image edit model with multiple attached images
+// fails the call. Uses the flux-dev image-to-image schema whose source field is
+// a scalar image_url.
+func TestResolveImageBodyScalarRejectsMultipleImages(t *testing.T) {
+	_, _, err := resolveImageBody(loadSchema(t, "flux-dev-image-to-image"),
+		ImageGenerateRequest{
+			Model:  "fal-ai/flux/dev/image-to-image",
+			Prompt: "blend these",
+			Images: []string{"data:image/png;base64,AAA", "data:image/png;base64,BBB"},
+		},
+		builtinFalOverrides())
+	if err == nil {
+		t.Fatal("expected a hard error for multi-image into a scalar edit model, got nil")
+	}
+	if !strings.Contains(err.Error(), "single image") || !strings.Contains(err.Error(), "2 were attached") {
+		t.Errorf("error = %q, want it to mention single image and the count", err.Error())
 	}
 }
 

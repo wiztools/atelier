@@ -163,7 +163,7 @@ func (h *HarnessEngine) triageChatTurn(ctx context.Context, req ChatRequest, har
 // "text" sends the primary model off to look at filesystem evidence instead.
 func triageFailSafe(req ChatRequest, reason, errMsg string) HarnessTriageDecision {
 	mode := "text"
-	if latestUserImage(req.Messages) != "" {
+	if len(latestUserImages(req.Messages)) > 0 {
 		mode = "vision"
 	}
 	return HarnessTriageDecision{NeedsTools: true, ResponseMode: mode, Reason: reason, Error: errMsg}

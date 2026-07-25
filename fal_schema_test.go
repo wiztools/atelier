@@ -76,6 +76,37 @@ func TestParseModelInputSchemaArray(t *testing.T) {
 	}
 }
 
+// TestParseModelInputSchemaMaxItems verifies maxItems is captured on array
+// properties so resolveVideoBody/resolveImageBody can reject requests that
+// exceed a model's declared image cap. Properties without maxItems parse as 0
+// (unset/unknown) — the guardrail treats 0 as "no cap declared".
+func TestParseModelInputSchemaMaxItems(t *testing.T) {
+	doc := `{"components":{"schemas":{"XInput":{"type":"object","properties":{
+		"image_urls":{"type":"array","items":{"type":"string"},"maxItems":9},
+		"unbounded_urls":{"type":"array","items":{"type":"string"}},
+		"prompt":{"type":"string"}
+	}}}}}`
+	schema, err := parseModelInputSchema([]byte(doc))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	capped, ok := schema.property("image_urls")
+	if !ok {
+		t.Fatal("expected image_urls property")
+	}
+	if capped.MaxItems != 9 {
+		t.Errorf("image_urls.MaxItems = %d, want 9", capped.MaxItems)
+	}
+	unbounded, _ := schema.property("unbounded_urls")
+	if unbounded.MaxItems != 0 {
+		t.Errorf("unbounded_urls.MaxItems = %d, want 0 (unset)", unbounded.MaxItems)
+	}
+	// Non-array properties don't carry maxItems.
+	if prompt, _ := schema.property("prompt"); prompt.MaxItems != 0 {
+		t.Errorf("prompt.MaxItems = %d, want 0 on a scalar", prompt.MaxItems)
+	}
+}
+
 func TestSchemaCacheFreshHitNoFetch(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Unix(1000, 0)

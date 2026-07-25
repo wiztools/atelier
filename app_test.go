@@ -4090,6 +4090,51 @@ func TestReadArtifactAsDataURLMissingFile(t *testing.T) {
 	}
 }
 
+// TestLatestUserImagesReturnsAllAttachments is the regression guard for the
+// multi-image plumbing: the most recent user message's images must ALL be
+// returned in attach order, not just the first. Before widening to a slice,
+// latestUserImage returned only the first and silently dropped the rest — the
+// upstream collapse that prevented multi-image video/edit entirely.
+func TestLatestUserImagesReturnsAllAttachments(t *testing.T) {
+	messages := []ChatMessage{
+		{Role: "assistant", Content: "earlier turn"},
+		{Role: "user", Content: "old turn", Images: []string{"data:image/png;base64,OLD"}},
+		{Role: "assistant", Content: "reply"},
+		{Role: "user", Content: "blend these", Images: []string{
+			"data:image/png;base64,AAA",
+			"data:image/png;base64,BBB",
+			"data:image/png;base64,CCC",
+		}},
+	}
+	got := latestUserImages(messages)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 images from the most recent user message, got %d (%v)", len(got), got)
+	}
+	want := []string{"data:image/png;base64,AAA", "data:image/png;base64,BBB", "data:image/png;base64,CCC"}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("images[%d] = %q, want %q (attach order must be preserved)", i, got[i], w)
+		}
+	}
+}
+
+// TestLatestUserImagesEmptyAndWhitespace verifies that empty/whitespace image
+// entries are filtered out and that a turn with no images returns nil.
+func TestLatestUserImagesEmptyAndWhitespace(t *testing.T) {
+	if got := latestUserImages(nil); got != nil {
+		t.Errorf("nil messages: got %v, want nil", got)
+	}
+	if got := latestUserImages([]ChatMessage{{Role: "user", Content: "no images"}}); got != nil {
+		t.Errorf("no-images turn: got %v, want nil", got)
+	}
+	got := latestUserImages([]ChatMessage{{
+		Role: "user", Images: []string{"  ", "", "data:image/png;base64,AAA"},
+	}})
+	if len(got) != 1 || got[0] != "data:image/png;base64,AAA" {
+		t.Errorf("filtered: got %v, want just the one non-empty image", got)
+	}
+}
+
 // TestLatestAttachedImageForTurn covers the three branches: current-turn image
 // wins, history fallback when current turn has none, and empty when neither.
 func TestLatestAttachedImageForTurn(t *testing.T) {
@@ -4103,8 +4148,8 @@ func TestLatestAttachedImageForTurn(t *testing.T) {
 			{Role: "user", Content: "now upscale it again", Images: []string{currentImage}},
 		},
 	}
-	if got := latestAttachedImageForTurn(req, storage); got != currentImage {
-		t.Errorf("current-turn branch: got %q, want the current attachment %q", got, currentImage)
+	if got := latestAttachedImagesForTurn(req, storage); len(got) != 1 || got[0] != currentImage {
+		t.Errorf("current-turn branch: got %v, want [%q]", got, currentImage)
 	}
 
 	// Branch 2: no current attachment — falls back to the most recent
@@ -4115,12 +4160,12 @@ func TestLatestAttachedImageForTurn(t *testing.T) {
 			{Role: "user", Content: "upscale it 2x"}, // no Images
 		},
 	}
-	got := latestAttachedImageForTurn(req, storage)
-	if got == "" {
+	got := latestAttachedImagesForTurn(req, storage)
+	if len(got) == 0 {
 		t.Fatal("history-fallback branch: got empty, want the re-hydrated data URL")
 	}
-	if !strings.HasPrefix(got, "data:image/png;base64,") {
-		t.Errorf("history-fallback branch: got %q, want a png data URL", got)
+	if !strings.HasPrefix(got[0], "data:image/png;base64,") {
+		t.Errorf("history-fallback branch: got %q, want a png data URL", got[0])
 	}
 
 	// Branch 3: no current attachment and no user-image in history → empty.
@@ -4131,13 +4176,13 @@ func TestLatestAttachedImageForTurn(t *testing.T) {
 			{Role: "user", Content: "upscale it 2x"},
 		},
 	}
-	if got := latestAttachedImageForTurn(req, storage); got != "" {
-		t.Errorf("empty-history branch: got %q, want empty", got)
+	if got := latestAttachedImagesForTurn(req, storage); len(got) != 0 {
+		t.Errorf("empty-history branch: got %v, want empty", got)
 	}
 
 	// Branch 4: empty ConversationID → empty (no history to consult).
-	if got := latestAttachedImageForTurn(ChatRequest{}, storage); got != "" {
-		t.Errorf("empty-conversationID branch: got %q, want empty", got)
+	if got := latestAttachedImagesForTurn(ChatRequest{}, storage); len(got) != 0 {
+		t.Errorf("empty-conversationID branch: got %v, want empty", got)
 	}
 }
 
@@ -4214,15 +4259,15 @@ func TestLatestAttachedImageIncludesAssistantTurn(t *testing.T) {
 			{Role: "user", Content: "make a video of it"}, // no Images
 		},
 	}
-	got := latestAttachedImageForTurn(req, storage)
-	if got == "" {
+	got := latestAttachedImagesForTurn(req, storage)
+	if len(got) == 0 {
 		t.Fatal("got empty, want the re-hydrated data URL for the assistant-turn (generated) image")
 	}
-	if !strings.HasPrefix(got, "data:image/png;base64,") {
-		t.Errorf("got %q, want a png data URL", got)
+	if !strings.HasPrefix(got[0], "data:image/png;base64,") {
+		t.Errorf("got %q, want a png data URL", got[0])
 	}
 	// Round-trip: the re-hydrated bytes must match the generated image.
-	decoded, _, err := decodeImagePayload(got)
+	decoded, _, err := decodeImagePayload(got[0])
 	if err != nil {
 		t.Fatalf("decodeImagePayload returned error: %v", err)
 	}
@@ -4299,13 +4344,13 @@ func TestLatestAttachedImageRecencyPrecedence(t *testing.T) {
 			{Role: "user", Content: "make a video of it"},
 		},
 	}
-	got := latestAttachedImageForTurn(req, storage)
-	if got == "" {
+	got := latestAttachedImagesForTurn(req, storage)
+	if len(got) == 0 {
 		t.Fatal("got empty, want the re-hydrated data URL")
 	}
 	// The returned data URL must decode to the generated (newer) PNG, not the
 	// user-attached one.
-	decoded, _, err := decodeImagePayload(got)
+	decoded, _, err := decodeImagePayload(got[0])
 	if err != nil {
 		t.Fatalf("decodeImagePayload returned error: %v", err)
 	}
@@ -4354,8 +4399,8 @@ func TestGenerateImageSendsAttachedImages(t *testing.T) {
 func TestGenerateImageToolTransformsAttachedImage(t *testing.T) {
 	var captured ImageGenerateRequest
 	tools := HarnessToolExecutionContext{
-		Config:        AppConfig{Models: ConfigModels{ImageProvider: "fal"}},
-		AttachedImage: "data:image/png;base64,ABC",
+		Config:         AppConfig{Models: ConfigModels{ImageProvider: "fal"}},
+		AttachedImages: []string{"data:image/png;base64,ABC"},
 		GenerateImage: func(_ context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, []string, error) {
 			captured = req
 			return ollamaGenerateResponse{Image: "data:image/png;base64,iVBORw0KGgo=", Done: true}, nil, nil, nil
@@ -4440,8 +4485,8 @@ func TestUpscaleImageToolDefaultsAndScaleMapping(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var captured ImageUpscaleRequest
 			tools := HarnessToolExecutionContext{
-				Config:        AppConfig{Models: ConfigModels{ImageProvider: "fal"}},
-				AttachedImage: "data:image/png;base64,ABC",
+				Config:         AppConfig{Models: ConfigModels{ImageProvider: "fal"}},
+				AttachedImages: []string{"data:image/png;base64,ABC"},
 				UpscaleImage: func(_ context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, error) {
 					captured = req
 					return ollamaGenerateResponse{Image: "data:image/png;base64,iVBORw0KGgo=", Done: true}, nil
@@ -4476,8 +4521,8 @@ func TestUpscaleImageToolDefaultsAndScaleMapping(t *testing.T) {
 func TestUpscaleImageToolHonorsModelOverride(t *testing.T) {
 	var captured ImageUpscaleRequest
 	tools := HarnessToolExecutionContext{
-		Config:        AppConfig{Models: ConfigModels{ImageProvider: "fal"}, Providers: ConfigProviders{Fal: ConfigFal{UpscaleModel: "fal-ai/clarity-upscaler"}}},
-		AttachedImage: "data:image/png;base64,ABC",
+		Config:         AppConfig{Models: ConfigModels{ImageProvider: "fal"}, Providers: ConfigProviders{Fal: ConfigFal{UpscaleModel: "fal-ai/clarity-upscaler"}}},
+		AttachedImages: []string{"data:image/png;base64,ABC"},
 		UpscaleImage: func(_ context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, error) {
 			captured = req
 			return ollamaGenerateResponse{Image: "data:image/png;base64,iVBORw0KGgo=", Done: true}, nil

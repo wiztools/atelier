@@ -37,10 +37,12 @@ type HarnessToolDefinition struct {
 type HarnessToolExecutionContext struct {
 	Config     AppConfig
 	Filesystem *FilesystemToolLayer
-	// AttachedImage is the source frame (a base64 data URL) the user attached to
-	// the current turn, if any. generate_video uses it to animate the image via
-	// an image-to-video model. Empty for the direct/UI tool path.
-	AttachedImage string
+	// AttachedImages are the source frames (base64 data URLs) the user attached
+	// to the current turn, if any. generate_video uses them to animate or
+	// reference-combine via an image-to-video or reference-to-video model; a
+	// multi-image request against a single-image model fails the call. Empty for
+	// the direct/UI tool path.
+	AttachedImages []string
 	// AttachedAudio is the audio clip (a data URL) the user attached to the
 	// current turn, if any. transcribe_audio consumes it via fal's Whisper/Wizper.
 	// Like AttachedImage it is provider-agnostic: the planner decides whether to
@@ -318,16 +320,17 @@ func videoGenerationToolDefinition() HarnessToolDefinition {
 			// Attached media picks the generation mode and model, in priority order:
 			// an attached video switches to a Veo extend endpoint (continues the
 			// clip), an attached image switches to image-to-video (animates the
-			// frame), otherwise text-to-video. The planner may still override the
-			// model per call.
-			attachedImage := strings.TrimSpace(tools.AttachedImage)
+			// frame; multiple images switch to reference-to-video when the model
+			// supports it), otherwise text-to-video. The planner may still
+			// override the model per call.
+			attachedImages := tools.AttachedImages
 			attachedVideo := strings.TrimSpace(tools.AttachedVideo)
 			model := strings.TrimSpace(call.Model)
 			if model == "" {
 				switch {
 				case attachedVideo != "":
 					model = resolveDefaultVideoExtendModel(tools.Config)
-				case attachedImage != "":
+				case len(attachedImages) > 0:
 					model = resolveDefaultVideoImageModel(tools.Config)
 				default:
 					model = resolveDefaultVideoModel(tools.Config)
@@ -342,7 +345,7 @@ func videoGenerationToolDefinition() HarnessToolDefinition {
 				Duration:       tools.Config.Generation.Video.Duration,
 				AspectRatio:    tools.Config.Generation.Video.AspectRatio,
 				NegativePrompt: strings.TrimSpace(call.NegativePrompt),
-				Image:          attachedImage,
+				Images:         attachedImages,
 				Video:          attachedVideo,
 				GenerateAudio:  call.GenerateAudio,
 			}
@@ -367,7 +370,9 @@ func videoGenerationToolDefinition() HarnessToolDefinition {
 			summary := fmt.Sprintf("generated a video with %s", model)
 			if attachedVideo != "" {
 				summary = fmt.Sprintf("extended the attached video into a longer clip with %s", model)
-			} else if attachedImage != "" {
+			} else if imageCount := len(attachedImages); imageCount > 1 {
+				summary = fmt.Sprintf("combined %d attached images into a video with %s", imageCount, model)
+			} else if imageCount == 1 {
 				summary = fmt.Sprintf("animated the attached image into a video with %s", model)
 			}
 			return output, summary, nil
@@ -632,7 +637,13 @@ func lipsyncToolDefinition() HarnessToolDefinition {
 			if attachedAudio == "" {
 				return nil, "lip sync requires an attached audio clip", errors.New("lip_sync requires an attached audio clip — ask the user to attach one first")
 			}
-			attachedImage := strings.TrimSpace(tools.AttachedImage)
+			// sync-lipsync v3 takes a single face source (image or video), so
+			// only the first attached image is used even when several are
+			// attached; multi-image faces aren't part of this tool.
+			attachedImage := ""
+			if len(tools.AttachedImages) > 0 {
+				attachedImage = strings.TrimSpace(tools.AttachedImages[0])
+			}
 			attachedVideo := strings.TrimSpace(tools.AttachedVideo)
 			if attachedImage == "" && attachedVideo == "" {
 				return nil, "lip sync requires an attached face", errors.New("lip_sync requires an attached image or video to lip sync — ask the user to attach a face alongside the audio")
@@ -715,12 +726,13 @@ func imageGenerationToolDefinition() HarnessToolDefinition {
 			if tools.GenerateImage == nil {
 				return nil, "image generation unavailable", errors.New("image generation is not available in this context")
 			}
-			// An attached image switches to image-to-image: use the image-to-image
-			// model and pass the source frame to the generator to transform.
-			attachedImage := strings.TrimSpace(tools.AttachedImage)
+			// Attached images switch to image-to-image (or multi-reference edit
+			// for models that declare an array source field): use the image-to-image
+			// model and pass the source frames to the generator to transform.
+			attachedImages := tools.AttachedImages
 			model := strings.TrimSpace(call.Model)
 			if model == "" {
-				if attachedImage != "" {
+				if len(attachedImages) > 0 {
 					model = resolveDefaultImageEditModel(tools.Config)
 				} else {
 					model = resolveDefaultImageModel(tools.Config)
@@ -746,8 +758,8 @@ func imageGenerationToolDefinition() HarnessToolDefinition {
 				Height: height,
 				Steps:  tools.Config.Generation.Image.Steps,
 			}
-			if attachedImage != "" {
-				imageReq.Images = []string{attachedImage}
+			if len(attachedImages) > 0 {
+				imageReq.Images = attachedImages
 			}
 			payload, raw, notices, err := tools.GenerateImage(ctx, imageReq)
 			if err != nil {
@@ -767,7 +779,9 @@ func imageGenerationToolDefinition() HarnessToolDefinition {
 			}
 			output := ToolImageResult{Model: model, Prompt: imageReq.Prompt, Count: len(images), Images: images, Notices: notices}
 			summary := fmt.Sprintf("generated %d image%s with %s", len(images), pluralSuffix(len(images)), model)
-			if attachedImage != "" {
+			if imageCount := len(attachedImages); imageCount > 1 {
+				summary = fmt.Sprintf("combined %d attached images into %d image%s with %s", imageCount, len(images), pluralSuffix(len(images)), model)
+			} else if imageCount == 1 {
 				summary = fmt.Sprintf("transformed the attached image into %d image%s with %s", len(images), pluralSuffix(len(images)), model)
 			}
 			return output, summary, nil
@@ -896,7 +910,12 @@ func imageUpscaleToolDefinition() HarnessToolDefinition {
 			if tools.UpscaleImage == nil {
 				return nil, "image upscaling unavailable", errors.New("image upscaling is not available in this context")
 			}
-			attachedImage := strings.TrimSpace(tools.AttachedImage)
+			// Upscaling is single-image: take the first attached image. The rest,
+			// if any, are ignored — upscaling a montage isn't meaningful.
+			attachedImage := ""
+			if len(tools.AttachedImages) > 0 {
+				attachedImage = strings.TrimSpace(tools.AttachedImages[0])
+			}
 			if attachedImage == "" {
 				return nil, "image upscaling requires an attached image", errors.New("upscale_image requires an attached image — ask the user to attach one first")
 			}

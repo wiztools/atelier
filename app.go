@@ -391,20 +391,28 @@ type ImageUpscaleRequest struct {
 }
 
 // VideoGenerateRequest is the input to a video generation (text-to-video,
-// image-to-video, or video extend). The canonical params here are mapped onto
-// the model's native fields by resolveVideoBody; the transport (FalClient.
-// GenerateVideo) receives only the resolved body. Image is the source frame for
-// image-to-video; Video is the source clip for a Veo extend endpoint.
+// image-to-video, multi-image reference-to-video, or video extend). The
+// canonical params here are mapped onto the model's native fields by
+// resolveVideoBody; the transport (FalClient.GenerateVideo) receives only the
+// resolved body. Images is the source frame(s) for image-to-video or
+// reference-to-video; Video is the source clip for a Veo extend endpoint.
 type VideoGenerateRequest struct {
 	Model          string `json:"model"`
 	Prompt         string `json:"prompt"`
 	Duration       string `json:"duration,omitempty"`
 	AspectRatio    string `json:"aspectRatio,omitempty"`
 	NegativePrompt string `json:"negativePrompt,omitempty"`
-	// Image, when set, is the source frame for image-to-video generation — a
-	// URL or a base64 data URI. It maps to fal's image_url input and requires an
-	// image-to-video model.
+	// Image, when set, is a single source frame for image-to-video generation —
+	// a URL or a base64 data URI. It maps to fal's image_url input and requires
+	// an image-to-video model. Legacy scalar field; Images is preferred. The two
+	// are unified by SourceImages().
 	Image string `json:"image,omitempty"`
+	// Images, when set, are the source frames for image-to-video or
+	// reference-to-video generation — URLs or base64 data URIs. They map to
+	// fal's image_url (single) or image_urls (array) input depending on the
+	// model's schema. A multi-image request against a scalar-image model fails
+	// the tool call with a clear error (see resolveVideoBody).
+	Images []string `json:"images,omitempty"`
 	// Video, when set, is the source clip a Veo extend endpoint continues — a
 	// URL or a base64 data URI. It maps to fal's video_url input and requires an
 	// extend-capable model (e.g. fal-ai/veo3.1/extend-video).
@@ -414,6 +422,27 @@ type VideoGenerateRequest struct {
 	// distinct from an explicit false (silent clip) — the latter is what "video
 	// without audio" requests. Endpoints that never emit audio ignore it.
 	GenerateAudio *bool `json:"generateAudio,omitempty"`
+}
+
+// SourceImages returns the non-empty source images for the request, preferring
+// Images (the slice) and falling back to the legacy scalar Image. This is the
+// single read point for source images — resolvers and the gateway loop over it
+// instead of reading the two fields directly, so the slice plumbing stays in
+// one place.
+func (req VideoGenerateRequest) SourceImages() []string {
+	var raw []string
+	if len(req.Images) > 0 {
+		raw = req.Images
+	} else if s := strings.TrimSpace(req.Image); s != "" {
+		raw = []string{s}
+	}
+	out := make([]string, 0, len(raw))
+	for _, img := range raw {
+		if s := strings.TrimSpace(img); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // LipsyncGenerateRequest is the input to a lip sync generation. An audio clip

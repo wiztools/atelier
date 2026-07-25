@@ -176,34 +176,49 @@ func resolveAudioBody(schema *ModelInputSchema, req AudioGenerateRequest, ov Ove
 }
 
 // resolveImageBody maps a canonical ImageGenerateRequest onto the model's native
-// input schema, returning the fal body and user-facing notices for anything
-// dropped. A nil schema (unavailable) yields the legacy hardcoded body
-// ({prompt, num_images, image_url?|image_size?, num_inference_steps?}) plus a
-// notice. This is the image sibling of resolveAudioBody; the only image-specific
-// rule is that a source-image field whose schema kind is schemaArray
-// (e.g. nano-banana-pro's image_urls) wraps the single URL into a slice.
-func resolveImageBody(schema *ModelInputSchema, req ImageGenerateRequest, ov Overrides) (map[string]any, []string) {
+// input schema, returning the fal body, user-facing notices for anything
+// dropped, and an error for a hard capability mismatch (multi-image into a
+// single-image edit model). A nil schema (unavailable) yields the legacy
+// hardcoded body ({prompt, num_images, image_url?|image_size?,
+// num_inference_steps?}) plus a notice. This is the image sibling of
+// resolveVideoBody; the image-specific rules are (1) a source-image field whose
+// schema kind is schemaArray (e.g. nano-banana-pro's image_urls) takes the whole
+// slice, and (2) multiple images into a scalar-image model is a hard error.
+func resolveImageBody(schema *ModelInputSchema, req ImageGenerateRequest, ov Overrides) (map[string]any, []string, error) {
 	prompt := strings.TrimSpace(req.Prompt)
 	// fal requires an HTTP(S) URL or a data URI and rejects bare base64 with a
 	// 422; the rest of the app carries attached images as bare base64 (the
 	// data: prefix is stripped for Ollama), so normalize here. This was the
 	// GenerateImage client's job before the resolver refactor; it moves here
 	// because the resolver now owns body construction.
-	sourceImage := falImageURL(firstNonEmpty(req.Images))
+	sourceImages := make([]string, 0, len(req.Images))
+	for _, img := range req.Images {
+		if u := falImageURL(strings.TrimSpace(img)); u != "" {
+			sourceImages = append(sourceImages, u)
+		}
+	}
 	if schema == nil {
+		// The legacy fallback only knows a scalar image_url; multiple images
+		// can't be expressed without a schema to map them onto, so fail rather
+		// than silently drop the extras.
+		if len(sourceImages) > 1 {
+			return nil, nil, fmt.Errorf(
+				"model %q could not be queried for its parameter schema and accepts at most one image; %d were attached. Configure a multi-image edit model (e.g. one whose schema declares image_urls).",
+				req.Model, len(sourceImages))
+		}
 		body := map[string]any{
 			"prompt":     prompt,
 			"num_images": 1,
 		}
-		if sourceImage != "" {
-			body["image_url"] = sourceImage
+		if len(sourceImages) == 1 {
+			body["image_url"] = sourceImages[0]
 		} else if req.Width > 0 && req.Height > 0 {
 			body["image_size"] = map[string]any{"width": req.Width, "height": req.Height}
 		}
 		if req.Steps > 0 {
 			body["num_inference_steps"] = req.Steps
 		}
-		return body, []string{"Couldn't load the model's parameter schema; generated with defaults and may have dropped an unsupported image input."}
+		return body, []string{"Couldn't load the model's parameter schema; generated with defaults and may have dropped an unsupported image input."}, nil
 	}
 
 	body := map[string]any{}
@@ -220,15 +235,30 @@ func resolveImageBody(schema *ModelInputSchema, req ImageGenerateRequest, ov Ove
 		body["num_images"] = 1
 	}
 
-	// Image-to-image takes the source frame; image_size is omitted (fal derives
-	// dims from the source). Text-to-image takes the configured dimensions.
-	if sourceImage != "" {
-		if path, prop, ok := findNative(schema, ov, "image", req.Model, "sourceImage"); ok {
-			setBodyPath(schema, body, path, coerceImageValue(prop, sourceImage))
-		} else {
+	// Image-to-image takes the source frame(s); image_size is omitted (fal
+	// derives dims from the source). Text-to-image takes the configured
+	// dimensions.
+	if len(sourceImages) > 0 {
+		path, prop, ok := findNative(schema, ov, "image", req.Model, "sourceImage")
+		if !ok {
 			notices = append(notices, fmt.Sprintf(
-				"The selected model %q has no source-image input; the attached image was ignored.",
+				"The selected model %q has no source-image input; the attached image(s) were ignored.",
 				req.Model))
+		} else {
+			// Guardrail: multiple images into a scalar-image model is a hard
+			// error — silently dropping the rest would hide a real capability
+			// mismatch.
+			if prop.Kind != schemaArray && len(sourceImages) > 1 {
+				return nil, notices, fmt.Errorf(
+					"model %q accepts a single image; %d were attached. Use a multi-image edit model (one whose schema declares image_urls).",
+					req.Model, len(sourceImages))
+			}
+			if prop.Kind == schemaArray && prop.MaxItems > 0 && len(sourceImages) > prop.MaxItems {
+				return nil, notices, fmt.Errorf(
+					"model %q accepts at most %d image(s); %d were attached. Attach fewer images or switch to a model with a higher image cap.",
+					req.Model, prop.MaxItems, len(sourceImages))
+			}
+			setBodyPath(schema, body, path, coerceImages(prop, sourceImages))
 		}
 	} else if req.Width > 0 && req.Height > 0 {
 		if path, _, ok := findNative(schema, ov, "image", req.Model, "imageSize"); ok {
@@ -245,7 +275,7 @@ func resolveImageBody(schema *ModelInputSchema, req ImageGenerateRequest, ov Ove
 			body["num_inference_steps"] = req.Steps
 		}
 	}
-	return body, notices
+	return body, notices, nil
 }
 
 // coerceImageValue adapts a canonical image value to the native property's type:
@@ -259,23 +289,64 @@ func coerceImageValue(prop SchemaProperty, value any) any {
 	return value
 }
 
+// coerceImages adapts a slice of source images to the native property's type
+// for multi-image requests (image-to-video reference, multi-image edit). It is
+// the slice sibling of coerceImageValue/coerceVideoValue: a schemaArray
+// property (e.g. seedance reference-to-video's image_urls) takes the whole
+// slice; a scalar property (e.g. image-to-video's image_url) takes only the
+// first — the caller's guardrail already rejected multi-image-into-scalar
+// before reaching here, so the truncation is a defensive backstop, not the
+// primary behavior.
+func coerceImages(prop SchemaProperty, images []string) any {
+	if len(images) == 0 {
+		return nil
+	}
+	if prop.Kind == schemaArray {
+		out := make([]any, 0, len(images))
+		for _, img := range images {
+			out = append(out, img)
+		}
+		return out
+	}
+	return images[0]
+}
+
 // resolveVideoBody maps a canonical VideoGenerateRequest onto the model's native
-// input schema, returning the fal body and user-facing notices for anything
-// dropped. It is the video sibling of resolveImageBody. A nil schema
+// input schema, returning the fal body, user-facing notices for anything
+// dropped, and an error for a hard capability mismatch (multi-image into a
+// single-image model). It is the video sibling of resolveImageBody. A nil schema
 // (unavailable) yields the legacy hardcoded body — the fields GenerateVideo used
 // to build itself before the resolver refactor — plus a notice, so fal models
 // without a published schema keep working.
 //
 // Source media is resolved in priority order: an attached Video (extend) wins,
-// then an attached Image (image-to-video); both are absent for text-to-video.
-// fal requires an HTTP(S) URL or a data URI and rejects bare base64 with a 422,
-// so falImageURL/falVideoURL normalize each. A media field the selected model
-// lacks is dropped with a notice rather than sent.
-func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Overrides) (map[string]any, []string) {
+// then one or more attached Images (image-to-video or multi-image reference-to-
+// video); all are absent for text-to-video. fal requires an HTTP(S) URL or a
+// data URI and rejects bare base64 with a 422, so falImageURL/falVideoURL
+// normalize each. A media field the selected model lacks is dropped with a
+// notice rather than sent. Multiple images into a model whose source-image
+// field is scalar (or into the no-schema legacy path, which only knows a single
+// image_url) is a hard error — the caller fails the tool call so the user
+// knows to switch models rather than silently losing all but one image.
+func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Overrides) (map[string]any, []string, error) {
 	prompt := strings.TrimSpace(req.Prompt)
-	sourceImage := falImageURL(strings.TrimSpace(req.Image))
+	// SourceImages() unifies the new Images slice and the legacy scalar Image.
+	sourceImages := make([]string, 0, 4)
+	for _, img := range req.SourceImages() {
+		if u := falImageURL(strings.TrimSpace(img)); u != "" {
+			sourceImages = append(sourceImages, u)
+		}
+	}
 	sourceVideo := falVideoURL(strings.TrimSpace(req.Video))
 	if schema == nil {
+		// The legacy fallback only knows a scalar image_url; multiple images
+		// can't be expressed without a schema to map them onto, so fail rather
+		// than silently drop the extras.
+		if len(sourceImages) > 1 {
+			return nil, nil, fmt.Errorf(
+				"model %q could not be queried for its parameter schema and accepts at most one image; %d were attached. Configure a multi-image video model (e.g. bytedance/seedance-2.0/reference-to-video).",
+				req.Model, len(sourceImages))
+		}
 		body := map[string]any{"prompt": prompt}
 		if duration := strings.TrimSpace(req.Duration); duration != "" {
 			body["duration"] = duration
@@ -291,10 +362,10 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 		}
 		if sourceVideo != "" {
 			body["video_url"] = sourceVideo
-		} else if sourceImage != "" {
-			body["image_url"] = sourceImage
+		} else if len(sourceImages) == 1 {
+			body["image_url"] = sourceImages[0]
 		}
-		return body, []string{"Couldn't load the model's parameter schema; generated with defaults and may have dropped an unsupported video input."}
+		return body, []string{"Couldn't load the model's parameter schema; generated with defaults and may have dropped an unsupported video input."}, nil
 	}
 
 	body := map[string]any{}
@@ -352,16 +423,32 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 				"The selected model %q has no source-video input; the attached video was ignored.",
 				req.Model))
 		}
-	case sourceImage != "":
-		if path, prop, ok := findNative(schema, ov, "video", req.Model, "sourceImage"); ok {
-			setBodyPath(schema, body, path, coerceVideoValue(prop, sourceImage))
-		} else {
+	case len(sourceImages) > 0:
+		path, prop, ok := findNative(schema, ov, "video", req.Model, "sourceImage")
+		if !ok {
 			notices = append(notices, fmt.Sprintf(
-				"The selected model %q has no source-image input; the attached image was ignored.",
+				"The selected model %q has no source-image input; the attached image(s) were ignored.",
 				req.Model))
+			break
 		}
+		// Guardrail: multiple images into a scalar-image model is a hard error.
+		// The model only accepts one frame; silently dropping the rest would
+		// hide a real capability mismatch. The error names the model so the
+		// user knows what to change.
+		if prop.Kind != schemaArray && len(sourceImages) > 1 {
+			return nil, notices, fmt.Errorf(
+				"model %q accepts a single image; %d were attached. Use a multi-image model (e.g. bytedance/seedance-2.0/reference-to-video).",
+				req.Model, len(sourceImages))
+		}
+		// Guardrail: a model declaring maxItems rejects requests above the cap.
+		if prop.Kind == schemaArray && prop.MaxItems > 0 && len(sourceImages) > prop.MaxItems {
+			return nil, notices, fmt.Errorf(
+				"model %q accepts at most %d image(s); %d were attached. Attach fewer images or switch to a model with a higher image cap.",
+				req.Model, prop.MaxItems, len(sourceImages))
+		}
+		setBodyPath(schema, body, path, coerceImages(prop, sourceImages))
 	}
-	return body, notices
+	return body, notices, nil
 }
 
 // coerceVideoValue adapts a canonical video value to the native property's type.

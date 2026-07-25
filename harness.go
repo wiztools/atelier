@@ -184,7 +184,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	// final response so a vision-capable primary model can see a previously
 	// generated image when the user asks about it. Resolved here rather than
 	// inline at each call site so both consume the same value.
-	attachedImage := latestAttachedImageForTurn(req, h.config.Storage)
+	attachedImages := latestAttachedImagesForTurn(req, h.config.Storage)
 	run := newHarnessRun(requestID, conversationID)
 	queued := run.appendStep("queued", 1, "", "", "turn accepted by harness")
 	run.completeStep(queued, "completed", "", 0, "")
@@ -257,7 +257,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			ResponseMode:    decision.ResponseMode,
 			UseNativeTools:  useNativeTools,
 			Harness:         harness,
-			AttachedImage:   attachedImage,
+			AttachedImages:  attachedImages,
 			AttachedAudio:   latestAttachedAudioForTurn(req, h.config.Storage),
 			AttachedVideo:   latestAttachedVideoForTurn(req, h.config.Storage),
 		}, &run)
@@ -281,7 +281,13 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	// harness model for the final response.
 	responseModel := h.responseModelFor(decision.ResponseMode, primaryModel, harness)
 	responseProvider := h.responseProviderFor(decision.ResponseMode, primaryProvider, primaryProvider, harness)
-	responseReq := h.preparedResponseRequest(req, responseModel, responseProvider, preparation, attachedImage)
+	// Vision chat injects at most the first attached image — multi-image
+	// vision isn't the ask, and some chat models reject more than one.
+	attachedImageForVision := ""
+	if len(attachedImages) > 0 {
+		attachedImageForVision = attachedImages[0]
+	}
+	responseReq := h.preparedResponseRequest(req, responseModel, responseProvider, preparation, attachedImageForVision)
 	result, err := h.runFinalResponseAttempt(ctx, requestID, conversationID, responseReq, &run)
 
 	// Even if the text response stream failed, deliver any media the tool path
@@ -474,27 +480,30 @@ func audiosFromToolResults(results []HarnessToolResult) ([]ToolAudioFile, AudioG
 	return audios, audioReq
 }
 
-// latestUserImage returns the first image attached to the most recent user
-// message (a base64 data URL), or "" if the current turn has no attachment. It
-// is the source frame generate_video animates for image-to-video.
-func latestUserImage(messages []ChatMessage) string {
+// latestUserImages returns all non-empty images attached to the most recent
+// user message (base64 data URLs), or nil if the current turn has none. They
+// are the source frames generate_video consumes for image-to-video or multi-
+// image reference-to-video. The walk is newest-first at the message level and
+// in-order within the message, preserving the user's attach order.
+func latestUserImages(messages []ChatMessage) []string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role != "user" {
 			continue
 		}
+		var out []string
 		for _, image := range messages[i].Images {
 			if trimmed := strings.TrimSpace(image); trimmed != "" {
-				return trimmed
+				out = append(out, trimmed)
 			}
 		}
-		return ""
+		return out
 	}
-	return ""
+	return nil
 }
 
 // latestUserAudioURL returns the first audio attachment on the most recent user
 // message (a data URL), or "" if the current turn has none. It is the audio
-// sibling of latestUserImage and the source clip transcribe_audio consumes.
+// sibling of latestUserImages and the source clip transcribe_audio consumes.
 func latestUserAudioURL(messages []ChatMessage) string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role != "user" {
@@ -529,33 +538,34 @@ func latestUserVideoURL(messages []ChatMessage) string {
 	return ""
 }
 
-// latestAttachedImageForTurn returns the image attached to the current turn if
-// present (a base64 data URL), else falls back to the most recent image in
-// conversation history, whether user-attached or model-generated. The fallback
-// lets image-dependent tools (upscale_image, image-to-image, image-to-video)
-// operate across turns without forcing the user to re-attach on every message —
-// "the image" is expected to persist across a conversation, including an image
-// the model just produced (e.g. generate an image, then "make a video of it"
-// in the next turn). History images are persisted as artifacts on disk on both
-// user and assistant turns; they're re-read and re-encoded as a data URL to
-// match the shape AttachedImage consumers expect. The walk is newest-first and
-// role-agnostic, so a later-generated image correctly shadows an earlier
-// user-attached one — the most recent image wins. Returns "" if there is no
-// current attachment and no image in history (e.g. turn 1 of a brand-new
-// conversation, or a conversation with no images). Errors reading history are
-// swallowed: a stale history file must not break the current turn — the caller
-// falls back to the empty-AttachedImage path and the tool surfaces its usual
-// "attach an image" error.
-func latestAttachedImageForTurn(req ChatRequest, storage ConfigStorage) string {
-	if image := latestUserImage(req.Messages); image != "" {
-		return image
+// latestAttachedImagesForTurn returns the images attached to the current turn
+// if any are present (base64 data URLs), else falls back to a single-element
+// slice with the most recent image in conversation history, whether user-
+// attached or model-generated. The fallback lets image-dependent tools
+// (upscale_image, image-to-image, image-to-video) operate across turns without
+// forcing the user to re-attach on every message — "the image" is expected to
+// persist across a conversation, including an image the model just produced
+// (e.g. generate an image, then "make a video of it" in the next turn). The
+// history fallback returns at most one image: multi-image state across turns
+// isn't meaningful (history artifacts are single images), and image-dependent
+// tools that aren't multi-image-aware (upscale, image-to-image edit) still get
+// their one source frame. The walk is newest-first and role-agnostic, so a
+// later-generated image correctly shadows an earlier user-attached one. Returns
+// nil if there is no current attachment and no image in history (e.g. turn 1 of
+// a brand-new conversation, or a conversation with no images). Errors reading
+// history are swallowed: a stale history file must not break the current turn —
+// the caller falls back to the empty-AttachedImages path and the tool surfaces
+// its usual "attach an image" error.
+func latestAttachedImagesForTurn(req ChatRequest, storage ConfigStorage) []string {
+	if images := latestUserImages(req.Messages); len(images) > 0 {
+		return images
 	}
 	if strings.TrimSpace(req.ConversationID) == "" {
-		return ""
+		return nil
 	}
 	detail, err := getConversation(storage, req.ConversationID)
 	if err != nil {
-		return ""
+		return nil
 	}
 	// Walk backwards to find the most recent turn (any role) with an image
 	// content entry. Both user-attached and model-generated images land as
@@ -568,12 +578,12 @@ func latestAttachedImageForTurn(req ChatRequest, storage ConfigStorage) string {
 			}
 			dataURL, err := readArtifactAsDataURL(storage, req.ConversationID, content)
 			if err != nil {
-				return "" // don't try older images — one read failure is enough to bail
+				return nil // don't try older images — one read failure is enough to bail
 			}
-			return dataURL
+			return []string{dataURL}
 		}
 	}
-	return ""
+	return nil
 }
 
 // latestAttachedAudioForTurn is the audio sibling of latestAttachedImageForTurn:
@@ -969,9 +979,10 @@ type harnessTurnContext struct {
 	// Harness is the resolved model+provider for the skill-selection and
 	// planning calls, carried as a unit so neither can drift from the other.
 	Harness harnessTarget
-	// AttachedImage is the source frame (base64 data URL) the user attached to
-	// this turn, if any — used by generate_video for image-to-video.
-	AttachedImage string
+	// AttachedImages are the source frames (base64 data URLs) the user attached
+	// to this turn, if any — used by generate_video for image-to-video or multi-
+	// image reference-to-video. May be empty.
+	AttachedImages []string
 	// AttachedAudio is the audio clip (data URL) the user attached to this turn,
 	// if any — used by transcribe_audio. Provider-agnostic, like AttachedImage.
 	AttachedAudio string
@@ -1776,10 +1787,11 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 	// Pass the engine's cached registry so the gateway doesn't rebuild the
 	// param-schema maps on every planning round.
 	gateway := newToolGateway(h.app, h.config, h.toolRegistry())
-	// Hand the turn's attached image and audio to the tool context so generate_video
-	// can animate the image (image-to-video) and transcribe_audio can transcribe the
-	// audio. Empty for turns without the corresponding attachment.
-	gateway.tools.AttachedImage = turn.AttachedImage
+	// Hand the turn's attached images and audio to the tool context so generate_video
+	// can animate or reference-combine the images (image-to-video / reference-to-
+	// video) and transcribe_audio can transcribe the audio. Empty for turns without
+	// the corresponding attachment.
+	gateway.tools.AttachedImages = turn.AttachedImages
 	gateway.tools.AttachedAudio = turn.AttachedAudio
 	gateway.tools.AttachedVideo = turn.AttachedVideo
 	results := make([]HarnessToolResult, 0, len(calls))

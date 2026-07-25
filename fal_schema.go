@@ -23,12 +23,13 @@ const (
 // of object nesting is captured in Nested; Default holds the property's default
 // (used to seed nested-object merges so sibling defaults survive).
 type SchemaProperty struct {
-	Name    string
-	Kind    schemaKind
-	Enum    []string
-	Default any
-	Nested  map[string]SchemaProperty // populated when Kind == schemaObject
-	Items   *SchemaProperty           // populated when Kind == schemaArray (may be nil)
+	Name     string
+	Kind     schemaKind
+	Enum     []string
+	Default  any
+	Nested   map[string]SchemaProperty // populated when Kind == schemaObject
+	Items    *SchemaProperty           // populated when Kind == schemaArray (may be nil)
+	MaxItems int                       // populated when Kind == schemaArray; 0 = unset
 }
 
 // ModelInputSchema is the parsed input model for one fal endpoint.
@@ -71,6 +72,7 @@ type openAPIProp struct {
 	Default    json.RawMessage            `json:"default"`
 	Properties map[string]json.RawMessage `json:"properties"`
 	Items      json.RawMessage            `json:"items"`
+	MaxItems   int                        `json:"maxItems"`
 }
 
 type openAPIModel struct {
@@ -123,8 +125,11 @@ func toSchemaProperty(name string, raw json.RawMessage) SchemaProperty {
 	}
 	// Arrays (e.g. fal-ai/nano-banana/edit's image_urls) get their own kind so
 	// the resolver can wrap a scalar value into a slice at body-build time.
+	// MaxItems is captured so a multi-image guardrail can reject requests that
+	// exceed the model's declared cap; 0 means the model didn't declare one.
 	if p.Type == "array" {
 		sp.Kind = schemaArray
+		sp.MaxItems = p.MaxItems
 		if len(p.Items) > 0 {
 			item := toSchemaProperty(name, p.Items)
 			sp.Items = &item

@@ -57,9 +57,12 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 					}
 				}
 				schema := schemaCache.Get(ctx, req.Model)
-				body, notices := resolveImageBody(schema, req, falOverrides)
-				resp, raw, err := client.GenerateImage(ctx, req.Model, body)
-				return resp, raw, notices, err
+				body, notices, err := resolveImageBody(schema, req, falOverrides)
+				if err != nil {
+					return ollamaGenerateResponse{}, nil, nil, err
+				}
+				resp, raw, genErr := client.GenerateImage(ctx, req.Model, body)
+				return resp, raw, notices, genErr
 			}
 			resp, raw, err := app.ollamaClient(config.Providers.Ollama.BaseURL).GenerateImage(ctx, req)
 			return resp, raw, nil, err
@@ -73,20 +76,31 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				return GeneratedVideo{}, errFalKeyNotConfigured
 			}
 			client := newFalClient(app.client, apiKey)
-			// Pre-resolve attached source media: an attached video for extend or an
-			// image for image-to-video. Oversized payloads upload to fal's CDN so
-			// the queue submit stays under the inline size limit.
+			// Pre-resolve attached source media: an attached video for extend or one
+			// or more images for image-to-video / reference-to-video. Oversized
+			// payloads upload to fal's CDN so the queue submit stays under the inline
+			// size limit.
 			if resolved, err := client.resolveMediaURL(ctx, req.Video, "video/mp4", "source-video.mp4"); err == nil {
 				req.Video = resolved
 			}
+			for i, img := range req.Images {
+				if resolved, err := client.resolveMediaURL(ctx, img, "image/png", fmt.Sprintf("source-image-%d.png", i)); err == nil && resolved != "" {
+					req.Images[i] = resolved
+				}
+			}
+			// Legacy scalar Image still flows through SourceImages(); resolve it too
+			// for callers that populate the old field.
 			if resolved, err := client.resolveMediaURL(ctx, req.Image, "image/png", "source-image.png"); err == nil {
 				req.Image = resolved
 			}
 			schema := schemaCache.Get(ctx, req.Model)
-			body, notices := resolveVideoBody(schema, req, falOverrides)
-			generated, err := client.GenerateVideo(ctx, req.Model, body)
+			body, notices, err := resolveVideoBody(schema, req, falOverrides)
+			if err != nil {
+				return GeneratedVideo{}, err
+			}
+			generated, genErr := client.GenerateVideo(ctx, req.Model, body)
 			generated.Notices = notices
-			return generated, err
+			return generated, genErr
 		}
 		gateway.tools.GenerateLipsync = func(ctx context.Context, req LipsyncGenerateRequest) (GeneratedVideo, error) {
 			apiKey, err := loadFalAPIKey()
