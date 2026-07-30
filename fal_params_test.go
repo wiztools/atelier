@@ -595,6 +595,93 @@ func TestResolveVideoBodyKlingImageToVideo(t *testing.T) {
 	}
 }
 
+// imageVideoWithAspectSchema is like scalarImageVideoSchema but also declares an
+// aspect_ratio field, so the image-to-video aspect-ratio gate can be exercised
+// against the schema-driven branch (findNative "video" "aspectRatio").
+func imageVideoWithAspectSchema() *ModelInputSchema {
+	return &ModelInputSchema{
+		Properties: map[string]SchemaProperty{
+			"prompt":       {Name: "prompt", Kind: schemaScalar},
+			"image_url":    {Name: "image_url", Kind: schemaScalar},
+			"aspect_ratio": {Name: "aspect_ratio", Kind: schemaScalar},
+		},
+		order: []string{"prompt", "image_url", "aspect_ratio"},
+	}
+}
+
+// TestResolveVideoBodyImageToVideoDropsDefaultRatio verifies the fix for
+// conv_26cc3f515d6d645b316763cb: an attached image without an explicitly
+// requested ratio must NOT send aspect_ratio, so the model inherits the source
+// frame's orientation instead of getting a config default (e.g. "16:9") stamped
+// onto a portrait image. Both the schema-driven and legacy nil-schema paths
+// follow the same gate.
+func TestResolveVideoBodyImageToVideoDropsDefaultRatio(t *testing.T) {
+	t.Run("schema-driven", func(t *testing.T) {
+		body, _, _ := resolveVideoBody(imageVideoWithAspectSchema(),
+			VideoGenerateRequest{
+				Model:       "fal-ai/kling-video/v2/master/image-to-video",
+				Prompt:      "animate",
+				Image:       "data:image/png;base64,ABC",
+				AspectRatio: "16:9", // config-filled, NOT explicit
+			},
+			builtinFalOverrides())
+		if _, present := body["aspect_ratio"]; present {
+			t.Fatalf("aspect_ratio must be dropped for image-to-video without an explicit ratio; got %v", body["aspect_ratio"])
+		}
+		if _, present := body["image_url"]; !present {
+			t.Fatalf("image_url must still be sent for image-to-video")
+		}
+	})
+	t.Run("legacy nil-schema", func(t *testing.T) {
+		body, _, _ := resolveVideoBody(nil,
+			VideoGenerateRequest{
+				Model:       "fal-ai/kling-video/v2/master/image-to-video",
+				Prompt:      "animate",
+				Image:       "data:image/png;base64,ABC",
+				AspectRatio: "16:9", // config-filled, NOT explicit
+			},
+			builtinFalOverrides())
+		if _, present := body["aspect_ratio"]; present {
+			t.Fatalf("aspect_ratio must be dropped for legacy image-to-video without an explicit ratio; got %v", body["aspect_ratio"])
+		}
+	})
+}
+
+// TestResolveVideoBodyImageToVideoExplicitRatio verifies that an explicit
+// (planner-set) aspect ratio overrides the source frame and IS sent for
+// image-to-video. This is the "make this 16:9 even though the image is 9:16"
+// case: the user asked, so we honor it.
+func TestResolveVideoBodyImageToVideoExplicitRatio(t *testing.T) {
+	t.Run("schema-driven", func(t *testing.T) {
+		body, _, _ := resolveVideoBody(imageVideoWithAspectSchema(),
+			VideoGenerateRequest{
+				Model:               "fal-ai/kling-video/v2/master/image-to-video",
+				Prompt:              "animate",
+				Image:               "data:image/png;base64,ABC",
+				AspectRatio:         "16:9",
+				AspectRatioExplicit: true,
+			},
+			builtinFalOverrides())
+		if body["aspect_ratio"] != "16:9" {
+			t.Fatalf("explicit aspect_ratio must be sent for image-to-video; got %v", body["aspect_ratio"])
+		}
+	})
+	t.Run("legacy nil-schema", func(t *testing.T) {
+		body, _, _ := resolveVideoBody(nil,
+			VideoGenerateRequest{
+				Model:               "fal-ai/kling-video/v2/master/image-to-video",
+				Prompt:              "animate",
+				Image:               "data:image/png;base64,ABC",
+				AspectRatio:         "16:9",
+				AspectRatioExplicit: true,
+			},
+			builtinFalOverrides())
+		if body["aspect_ratio"] != "16:9" {
+			t.Fatalf("explicit aspect_ratio must be sent for legacy image-to-video; got %v", body["aspect_ratio"])
+		}
+	})
+}
+
 // TestResolveVideoBodyNoSchema verifies the nil-schema legacy fallback reproduces
 // the body GenerateVideo used to build itself, plus a schema-unavailable notice.
 func TestResolveVideoBodyNoSchema(t *testing.T) {
@@ -616,8 +703,11 @@ func TestResolveVideoBodyNoSchema(t *testing.T) {
 	if body["duration"] != "5" {
 		t.Fatalf("duration = %v, want 5 (legacy fallback)", body["duration"])
 	}
-	if body["aspect_ratio"] != "16:9" {
-		t.Fatalf("aspect_ratio = %v (legacy fallback)", body["aspect_ratio"])
+	// This is image-to-video (an Image is attached) without an explicit ratio,
+	// so aspect_ratio is dropped and the model inherits the frame's orientation
+	// — the legacy fallback follows the same gate as the schema-driven branch.
+	if _, present := body["aspect_ratio"]; present {
+		t.Fatalf("aspect_ratio must be dropped for image-to-video without an explicit ratio (legacy fallback); got %v", body["aspect_ratio"])
 	}
 	if body["negative_prompt"] != "text" {
 		t.Fatalf("negative_prompt = %v (legacy fallback)", body["negative_prompt"])

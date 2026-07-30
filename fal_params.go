@@ -425,7 +425,12 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 			body["duration"] = duration
 		}
 		if aspect := strings.TrimSpace(req.AspectRatio); aspect != "" {
-			body["aspect_ratio"] = aspect
+			// Same gate as the schema-driven branch: for image-to-video, only
+			// send aspect_ratio when the planner explicitly set it; otherwise
+			// let the model inherit the source frame's orientation.
+			if len(sourceImages) == 0 || req.AspectRatioExplicit {
+				body["aspect_ratio"] = aspect
+			}
 		}
 		if negative := strings.TrimSpace(req.NegativePrompt); negative != "" {
 			body["negative_prompt"] = negative
@@ -471,7 +476,19 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 		}
 	}
 	if aspect := strings.TrimSpace(req.AspectRatio); aspect != "" {
-		if path, prop, ok := findNative(schema, ov, "video", req.Model, "aspectRatio"); ok {
+		// Image-to-video models derive orientation from the source frame, so an
+		// aspect_ratio derived from config (or a detected source ratio echoed
+		// back) is both redundant and a footgun — it conflicts with the frame
+		// and can force a re-orient (see conv_26cc3f515d6d645b316763cb: a 9:16
+		// portrait image came back 16:9 because the config default was sent).
+		// Only send aspect_ratio for image-to-video when it was explicitly
+		// requested by the planner, which legitimately overrides the frame.
+		// Text-to-video always sends it (the configured default is the only
+		// signal there). This mirrors resolveImageBody's parity rule for
+		// image-to-image (fal_params.go:248-290).
+		if len(sourceImages) > 0 && !req.AspectRatioExplicit {
+			// skip — inherit the source frame's orientation
+		} else if path, prop, ok := findNative(schema, ov, "video", req.Model, "aspectRatio"); ok {
 			setBodyPath(schema, body, path, coerceVideoValue(prop, aspect))
 		} else {
 			notices = append(notices, fmt.Sprintf(

@@ -398,15 +398,33 @@ func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 			if model == "" {
 				return nil, "video generation unavailable", errors.New("no video model is configured")
 			}
+			// Aspect-ratio precedence for video mirrors the image tool's rule
+			// (tools_registry.go generate_image): an explicit aspectRatio on the
+			// tool call wins over everything. With no explicit ratio, image-to-
+			// video inherits the source frame's orientation rather than getting
+			// the configured default stamped on it — a 9:16 portrait image used
+			// to come back 16:9 because the config default ("16:9") was sent
+			// unconditionally (see conv_26cc3f515d6d645b316763cb). Video-extend
+			// (attachedVideo) and text-to-video fall through to the configured
+			// default, as detection only applies to a source image.
+			ratio := strings.TrimSpace(call.AspectRatio)
+			explicit := ratio != ""
+			if ratio == "" && len(attachedImages) > 0 && attachedVideo == "" {
+				ratio = aspectRatioFromImage(attachedImages[0])
+			}
+			if ratio == "" {
+				ratio = tools.Config.Generation.Video.AspectRatio
+			}
 			videoReq := VideoGenerateRequest{
-				Model:          model,
-				Prompt:         strings.TrimSpace(call.Content),
-				Duration:       tools.Config.Generation.Video.Duration,
-				AspectRatio:    tools.Config.Generation.Video.AspectRatio,
-				NegativePrompt: strings.TrimSpace(call.NegativePrompt),
-				Images:         attachedImages,
-				Video:          attachedVideo,
-				GenerateAudio:  call.GenerateAudio,
+				Model:               model,
+				Prompt:              strings.TrimSpace(call.Content),
+				Duration:            tools.Config.Generation.Video.Duration,
+				AspectRatio:         ratio,
+				AspectRatioExplicit: explicit,
+				NegativePrompt:      strings.TrimSpace(call.NegativePrompt),
+				Images:              attachedImages,
+				Video:               attachedVideo,
+				GenerateAudio:       call.GenerateAudio,
 			}
 			generated, err := tools.GenerateVideo(ctx, videoReq)
 			if err != nil {
@@ -1156,6 +1174,7 @@ func generateVideoParamSchema() map[string]any {
 			"content":        stringParam("The video prompt — describe the clip to create."),
 			"model":          stringParam("Optional fal.ai video model override."),
 			"negativePrompt": stringParam("Optional — describe what to keep out of the clip (e.g. \"blurry, text, watermark\")."),
+			"aspectRatio":    enumParam("Optional — the output video shape. An explicit ratio overrides everything, including an attached image's orientation. Omit to inherit the attached image's orientation (image-to-video) or the configured default (text-to-video).", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"),
 			"generateAudio":  boolParam("Optional — set false to render a silent clip on models that would otherwise add audio. Ignored by models that never produce audio."),
 		},
 		"required": []string{"content"},

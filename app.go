@@ -404,11 +404,19 @@ type ImageUpscaleRequest struct {
 // resolved body. Images is the source frame(s) for image-to-video or
 // reference-to-video; Video is the source clip for a Veo extend endpoint.
 type VideoGenerateRequest struct {
-	Model          string `json:"model"`
-	Prompt         string `json:"prompt"`
-	Duration       string `json:"duration,omitempty"`
-	AspectRatio    string `json:"aspectRatio,omitempty"`
-	NegativePrompt string `json:"negativePrompt,omitempty"`
+	Model       string `json:"model"`
+	Prompt      string `json:"prompt"`
+	Duration    string `json:"duration,omitempty"`
+	AspectRatio string `json:"aspectRatio,omitempty"`
+	// AspectRatioExplicit is true only when AspectRatio was set by the planner
+	// (an explicit request in the prompt), not filled from config or derived
+	// from a source image. resolveVideoBody uses it to decide whether to send
+	// aspect_ratio for image-to-video: an explicit ratio overrides the source
+	// frame's orientation (and is sent), while a config/detected default is
+	// dropped so the model inherits the frame. Tagged json:"-" — it is an
+	// internal signal, never serialized or surfaced to the frontend.
+	AspectRatioExplicit bool   `json:"-"`
+	NegativePrompt      string `json:"negativePrompt,omitempty"`
 	// Image, when set, is a single source frame for image-to-video generation —
 	// a URL or a base64 data URI. It maps to fal's image_url input and requires
 	// an image-to-video model. Legacy scalar field; Images is preferred. The two
