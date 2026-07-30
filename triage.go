@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -53,7 +54,19 @@ func decodeTriageDecision(content string) (HarnessTriageDecision, error) {
 	candidate := stripJSONFence(content)
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(candidate), &raw); err != nil {
-		return HarnessTriageDecision{}, fmt.Errorf("triage decision JSON invalid: %w", err)
+		// A truncation-tolerant fallback: when the model exhausted its output
+		// budget mid-JSON (the verbose toolTask field is the usual victim), the
+		// whole object fails to parse and triage fail-safes to text mode — which
+		// drops responseMode "image"/"video"/"audio" and sinks the entire turn
+		// (the planner then correctly concludes it can't generate media). The
+		// routing-critical fields (needsTools, responseMode) almost always appear
+		// before the truncation point, so salvage them by regex rather than
+		// discarding the whole decision. See conv_2d1be19a.
+		if salvaged, ok := salvageTriageFromTruncation(candidate); ok {
+			raw = salvaged
+		} else {
+			return HarnessTriageDecision{}, fmt.Errorf("triage decision JSON invalid: %w", err)
+		}
 	}
 	var decision HarnessTriageDecision
 	// needsTools is the one field that must decode as a boolean — the harness
@@ -68,6 +81,31 @@ func decodeTriageDecision(content string) (HarnessTriageDecision, error) {
 	decision.ToolTask = coerceJSONString(raw["toolTask"])
 	decision.Reason = coerceJSONString(raw["reason"])
 	return decision, nil
+}
+
+// salvageTriageFromTruncation extracts the routing-critical triage fields from
+// a JSON object that was truncated before it closed (the model hit its output
+// token limit). It returns the salvaged fields as a RawMessage map and true when
+// at least needsTools or responseMode could be recovered; otherwise (false, nil)
+// so the caller falls through to the hard parse error. Only complete, well-formed
+// field values are kept — a value cut off mid-string is dropped, never guessed.
+func salvageTriageFromTruncation(candidate string) (map[string]json.RawMessage, bool) {
+	salvaged := map[string]json.RawMessage{}
+	// Match "needsTools": <bool> and "responseMode": "<mode>" with complete
+	// values. The mode enum is constrained so a partial value (e.g. "im") is not
+	// matched as a false positive.
+	needsRe := regexp.MustCompile(`"?needsTools"?\s*:\s*(true|false)`)
+	if m := needsRe.FindStringSubmatch(candidate); m != nil {
+		salvaged["needsTools"] = json.RawMessage(m[1])
+	}
+	modeRe := regexp.MustCompile(`"?responseMode"?\s*:\s*"(text|image|vision|video|audio)"`)
+	if m := modeRe.FindStringSubmatch(candidate); m != nil {
+		salvaged["responseMode"] = json.RawMessage(`"` + m[1] + `"`)
+	}
+	if len(salvaged) == 0 {
+		return nil, false
+	}
+	return salvaged, true
 }
 
 // coerceJSONString decodes a JSON value into a string, tolerating non-string
@@ -202,7 +240,14 @@ func (h *HarnessEngine) triageChatTurn(ctx context.Context, req ChatRequest, har
 		return triageFailSafe(req, "triage response was not valid JSON; deferring to the harness model planner", err.Error()), completion
 	}
 	if decision.ResponseMode == "" {
+		// An empty mode usually means truncation salvage recovered needsTools
+		// but not responseMode. Lean the same way the hard fail-safe does: an
+		// attached image is the strongest signal the user wanted it seen, so
+		// default to vision rather than text.
 		decision.ResponseMode = "text"
+		if len(latestUserImages(req.Messages)) > 0 {
+			decision.ResponseMode = "vision"
+		}
 	}
 	return decision, completion
 }

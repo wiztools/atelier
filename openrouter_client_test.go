@@ -151,6 +151,58 @@ func TestOpenRouterClientMapsUnauthorized(t *testing.T) {
 	}
 }
 
+// TestOpenRouterClientUpstreamFinishReasonError reproduces conv_d404742b:
+// OpenRouter returns HTTP 200 with choices[0].finish_reason:"error" when the
+// upstream provider rejected the request after it was accepted (e.g. a model
+// that doesn't honor a strict json_schema). The provider's explanation rides
+// in the choice content. The adapter must surface this as a Go error carrying
+// that detail — not a successful-looking completion with Reason:"error" that
+// the harness would treat as an empty plan and silently move past.
+func TestOpenRouterClientUpstreamFinishReasonError(t *testing.T) {
+	client := newOpenRouterClient(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body := `{"model":"google/gemini-3.5-flash","choices":[{"message":{"content":"upstream rejected strict json_schema"},"finish_reason":"error"}],"usage":{"completion_tokens":0}}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     http.Header{},
+			}, nil
+		}),
+	}, "sk-or-test")
+
+	_, err := client.CompleteChat(context.Background(), ChatRequest{Model: "google/gemini-3.5-flash"})
+	if err == nil {
+		t.Fatal("expected an error for finish_reason:error, got nil — the harness would treat this as a completed-but-empty plan")
+	}
+	if !strings.Contains(err.Error(), "upstream rejected strict json_schema") {
+		t.Fatalf("err = %q, want the upstream message from the choice content surfaced", err.Error())
+	}
+}
+
+// TestOpenRouterClientUpstreamFinishReasonErrorWithoutDetail covers the
+// fail-safe message when the provider returned finish_reason:"error" but no
+// explanatory content: the adapter must still return a non-empty Go error so
+// the harness step is marked failed rather than dropped.
+func TestOpenRouterClientUpstreamFinishReasonErrorWithoutDetail(t *testing.T) {
+	client := newOpenRouterClient(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body := `{"model":"google/gemini-3.5-flash","choices":[{"message":{"content":""},"finish_reason":"error"}],"usage":{"completion_tokens":0}}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     http.Header{},
+			}, nil
+		}),
+	}, "sk-or-test")
+
+	_, err := client.CompleteChat(context.Background(), ChatRequest{Model: "google/gemini-3.5-flash"})
+	if err == nil || err.Error() == "" {
+		t.Fatalf("err = %v, want a non-empty error for a detail-less finish_reason:error", err)
+	}
+}
+
 func TestOpenRouterClientMapsRateLimit(t *testing.T) {
 	client := newOpenRouterClient(&http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {

@@ -2720,8 +2720,10 @@ func TestHarnessExecutesSkillCommandInsteadOfDelegatingToFinalModel(t *testing.T
 	if prepCalls != 3 {
 		t.Fatalf("prepCalls = %d, want invalid plan, corrected plan, and closing round", prepCalls)
 	}
-	if !strings.Contains(repairPrompt, "not a valid tool plan") {
-		t.Fatalf("repair prompt = %q, want validation feedback for the planner", repairPrompt)
+	// The planner emitted prose, not JSON, so the correction is the format-
+	// emphatic message demanding only the JSON object.
+	if !strings.Contains(repairPrompt, "was not JSON") {
+		t.Fatalf("repair prompt = %q, want the format-emphatic correction for a non-JSON response", repairPrompt)
 	}
 	if strings.Contains(responseSystem, "Tell the final model to run") {
 		t.Fatalf("response system delegated tool call to final model: %q", responseSystem)
@@ -3126,19 +3128,25 @@ func TestHarnessPlannerSeesAttachmentNote(t *testing.T) {
 					Header:     http.Header{"Content-Type": []string{"application/json"}},
 				}, nil
 			}
-			// Planning round 1: capture the latest user message the planner saw,
-			// then close the loop with no tool calls. The point is to inspect
-			// what the planner received, not to drive a real lip_sync.
-			if messages, ok := payload["messages"].([]any); ok {
-				for i := len(messages) - 1; i >= 0; i-- {
-					m, ok := messages[i].(map[string]any)
-					if !ok || m["role"] != "user" {
-						continue
+			// Planning round 1: capture the latest user message the planner saw.
+			// The point is to inspect what the planner received, not to drive a
+			// real lip_sync. The plan declines tools, so for a video-mode turn the
+			// loop now feeds that back as a correction (a media turn routed to
+			// tools must not be declined outright) and retries — capture only on
+			// the first planning call so the assertion targets the attachment note,
+			// not the subsequent correction message.
+			if nonStreamCount == 2 {
+				if messages, ok := payload["messages"].([]any); ok {
+					for i := len(messages) - 1; i >= 0; i-- {
+						m, ok := messages[i].(map[string]any)
+						if !ok || m["role"] != "user" {
+							continue
+						}
+						if content, _ := m["content"].(string); content != "" {
+							plannerUserContent = content
+						}
+						break
 					}
-					if content, _ := m["content"].(string); content != "" {
-						plannerUserContent = content
-					}
-					break
 				}
 			}
 			plan := `{"brief":"Proceed with lip_sync using the attached audio and video.","needsTools":false,"reason":"Attachments are present; final model can confirm.","toolCalls":[]}`
@@ -3738,6 +3746,245 @@ func TestHarnessGeneratesImageViaPlannedTool(t *testing.T) {
 	activity := activities[0].(map[string]any)
 	if activity["name"] != "generate_image" || activity["status"] != "completed" {
 		t.Fatalf("tool activity = %+v, want completed generate_image", activity)
+	}
+}
+
+// TestGenerationModeRequiresToolCall is the unit guard for conv_7832ea8b: a
+// generation-mode turn (image/video/audio) triaged to tools must not be
+// declined outright by the planner. A plan with no tool call is a correction,
+// not a valid "no tools needed" outcome — but only before any tool has run.
+func TestGenerationModeRequiresToolCall(t *testing.T) {
+	emptyPlan := HarnessToolPlan{NeedsTools: false, ToolCalls: nil}
+	for _, mode := range []string{"image", "video", "audio"} {
+		if msg := generationModeRequiresToolCall(mode, emptyPlan, nil); msg == "" {
+			t.Errorf("responseMode=%q with no tool calls and no prior results must yield a correction", mode)
+		}
+	}
+	// Non-generation modes are unaffected: the planner may legitimately decline.
+	if msg := generationModeRequiresToolCall("text", emptyPlan, nil); msg != "" {
+		t.Errorf("text mode must not be forced to emit a tool call: %q", msg)
+	}
+	// A plan that already includes a call needs no correction.
+	planWithCall := HarnessToolPlan{NeedsTools: true, ToolCalls: []HarnessToolCall{{Name: "generate_image"}}}
+	if msg := generationModeRequiresToolCall("image", planWithCall, nil); msg != "" {
+		t.Errorf("image plan with a call must not be corrected: %q", msg)
+	}
+	// Once a tool has produced output this turn, the planner may close the loop.
+	prior := []HarnessToolResult{{Name: "generate_image", Status: "completed"}}
+	if msg := generationModeRequiresToolCall("image", emptyPlan, prior); msg != "" {
+		t.Errorf("image turn with prior results must allow the planner to close: %q", msg)
+	}
+}
+
+// TestPlannerCorrectionPromptForNonJSON is the guard for conv_85c18bae: when the
+// planner emitted code/call syntax (tool_code, print(...)) instead of JSON, the
+// correction must be emphatic about format — naming the forbidden dialects and
+// demanding only the JSON object. A vague "not a valid plan" left a weak model
+// free to repeat the dialect for three rounds.
+func TestPlannerCorrectionPromptForNonJSON(t *testing.T) {
+	parseErrs := []string{"plan JSON could not be parsed: invalid character 'T' looking for beginning of value"}
+	prompt := plannerCorrectionPrompt(parseErrs)
+	for _, want := range []string{"was not JSON", "Do NOT emit code", "ONLY the JSON object", "toolCalls"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("correction for non-JSON plan missing %q: %q", want, prompt)
+		}
+	}
+}
+
+// TestPlannerCorrectionPromptTruncationTakesPrecedence covers the conflict
+// resolution: a response that hit the output limit AND wasn't JSON gets the
+// truncation message (the more actionable cause), not the format-emphatic one.
+func TestPlannerCorrectionPromptTruncationTakesPrecedence(t *testing.T) {
+	errs := []string{
+		"the plan response hit the output token limit and was cut off; return a shorter plan",
+		"plan JSON could not be parsed: unexpected end of JSON input",
+	}
+	prompt := plannerCorrectionPrompt(errs)
+	if !strings.Contains(prompt, "not a valid tool plan") {
+		t.Errorf("truncated response must use the standard correction: %q", prompt)
+	}
+	if !strings.Contains(prompt, "shorter plan") {
+		t.Errorf("truncated response correction must mention the shorter-plan remedy: %q", prompt)
+	}
+	// It must not lead with the non-JSON format demand when truncation is present.
+	if strings.HasPrefix(strings.TrimSpace(prompt), "Your previous response was not JSON") {
+		t.Errorf("truncation must take precedence over the format-emphatic message: %q", prompt)
+	}
+}
+
+// TestPlannerCorrectionPromptForFieldErrors covers the normal case: a valid JSON
+// object with wrong/missing fields gets the standard validation feedback.
+func TestPlannerCorrectionPromptForFieldErrors(t *testing.T) {
+	errs := []string{"brief is required", "toolCalls must include at least one call when needsTools is true"}
+	prompt := plannerCorrectionPrompt(errs)
+	if !strings.Contains(prompt, "not a valid tool plan") {
+		t.Errorf("field-error correction must use the standard message: %q", prompt)
+	}
+	if !strings.Contains(prompt, "brief is required") {
+		t.Errorf("field-error correction must list the specific errors: %q", prompt)
+	}
+}
+
+// imageGenerationTestRegistry builds a registry whose catalog includes
+// generate_image, so dialect-recovery tests can exercise that tool name.
+func imageGenerationTestRegistry() HarnessToolRegistry {
+	config := defaultAppConfig()
+	config.Providers.Ollama.Models.Image = "image-model"
+	return defaultHarnessToolRegistry(context.Background(), config, nil)
+}
+
+// TestParseRecoversGeminiToolCodeDialect reproduces conv_f1afe11a: Gemini via
+// OpenRouter persists in its native "code execution" dialect — a JSON array of
+// {"tool_code": "print(atelier_tools.generate_image(prompt='...', aspect_ratio='16:9'))"}
+// — instead of the {brief,needsTools,reason,toolCalls} schema, ignoring the
+// json_schema and correction messages. The parser must recover the calls from
+// that dialect rather than failing the turn.
+func TestParseRecoversGeminiToolCodeDialect(t *testing.T) {
+	registry := imageGenerationTestRegistry()
+	// Verbatim shape from conv_f1afe11a (atelier_tools prefix, Python kwargs).
+	content := `[{"tool_code": "print(atelier_tools.generate_image(prompt='a tomb at dawn', negative_prompt='text, watermark', aspect_ratio='16:9', seed=1234))"}]`
+	plan, errs := parseHarnessToolPlanWithRegistry(content, registry)
+	if len(errs) != 0 {
+		t.Fatalf("expected clean recovery from tool_code dialect, got errors: %v", errs)
+	}
+	if len(plan.ToolCalls) != 1 {
+		t.Fatalf("toolCalls = %d, want 1 recovered call", len(plan.ToolCalls))
+	}
+	call := plan.ToolCalls[0]
+	if call.Name != "generate_image" {
+		t.Errorf("name = %q, want generate_image", call.Name)
+	}
+	if call.Content != "a tomb at dawn" {
+		t.Errorf("content = %q, want the prompt mapped from the 'prompt' kwarg", call.Content)
+	}
+	if call.NegativePrompt != "text, watermark" {
+		t.Errorf("negativePrompt = %q, want mapped from 'negative_prompt'", call.NegativePrompt)
+	}
+	if call.AspectRatio != "16:9" {
+		t.Errorf("aspectRatio = %q, want mapped from 'aspect_ratio'", call.AspectRatio)
+	}
+}
+
+// TestParseRecoversMultipleToolCodeCalls covers the two-image case: the dialect
+// can carry more than one call, and both must be recovered in order. Both
+// Python-style (aspect_ratio) and JSON-style (aspectRatio) kwargs appear.
+func TestParseRecoversMultipleToolCodeCalls(t *testing.T) {
+	registry := imageGenerationTestRegistry()
+	content := "print(generate_image(prompt='first', aspect_ratio='16:9'))\n" +
+		"print(generate_image(prompt='second', aspectRatio='9:16'))"
+	plan, errs := parseHarnessToolPlanWithRegistry(content, registry)
+	if len(errs) != 0 {
+		t.Fatalf("expected clean recovery, got errors: %v", errs)
+	}
+	if len(plan.ToolCalls) != 2 {
+		t.Fatalf("toolCalls = %d, want 2 recovered calls", len(plan.ToolCalls))
+	}
+	if plan.ToolCalls[0].AspectRatio != "16:9" || plan.ToolCalls[1].AspectRatio != "9:16" {
+		t.Errorf("aspectRatios = %q / %q, want 16:9 then 9:16", plan.ToolCalls[0].AspectRatio, plan.ToolCalls[1].AspectRatio)
+	}
+	if plan.ToolCalls[0].Content != "first" || plan.ToolCalls[1].Content != "second" {
+		t.Errorf("contents = %q / %q, want first/second", plan.ToolCalls[0].Content, plan.ToolCalls[1].Content)
+	}
+}
+
+// TestParseIgnoresNonToolCallsInDialect ensures the recovery only picks up names
+// that are real tools. A bare print(...) or len(...) in prose must not become a
+// spurious tool call, and content with no tool call falls through to the normal
+// parse-failure path.
+func TestParseIgnoresNonToolCallsInDialect(t *testing.T) {
+	registry := imageGenerationTestRegistry()
+	// "print" and "len" are not tools; recovery finds nothing.
+	plan, errs := parseHarnessToolPlanWithRegistry("print(len('x'))", registry)
+	if len(plan.ToolCalls) != 0 {
+		t.Fatalf("non-tool calls must not be recovered: %+v", plan.ToolCalls)
+	}
+	if len(errs) == 0 {
+		t.Fatalf("content with no recoverable tool call must fall through to a parse error")
+	}
+}
+
+// TestHarnessRetriesWhenPlannerDeclinesImageTools reproduces conv_7832ea8b: an
+// image-mode turn where the planner returns needsTools:false on round 1. The
+// harness must feed that back as a correction and retry, not silently break with
+// zero output. On retry the planner emits the generate_image call.
+func TestHarnessRetriesWhenPlannerDeclinesImageTools(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "chat-box-model"
+	config.Providers.Ollama.Models.Image = "image-model"
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	planningRounds := 0
+	imageCalls := 0
+	nonStreamCount := 0
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/api/show":
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"capabilities":[],"model_info":{},"details":{"family":"test","parameter_size":"1B"}}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+		case "/api/generate":
+			imageCalls++
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"image-model","image":"iVBORw0KGgo=","done":true}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+		case "/api/chat":
+			var payload map[string]any
+			data, _ := io.ReadAll(req.Body)
+			if err := json.Unmarshal(data, &payload); err != nil {
+				t.Fatalf("provider request body is not JSON: %v", err)
+			}
+			if payload["stream"] == false {
+				nonStreamCount++
+				if nonStreamCount == 1 {
+					decision := `{"needsTools":true,"responseMode":"image","toolTask":"Generate an image of a cat.","reason":"The user asked for an image."}`
+					return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+				}
+				planningRounds++
+				// Round 1: decline tools (the conv_7832ea8b defect). Round 2,
+				// after the correction, emit the generate_image call. Round 3,
+				// once the image exists, close the loop.
+				var plan string
+				switch planningRounds {
+				case 1:
+					plan = `{"brief":"No tools needed.","needsTools":false,"reason":"The model can describe the image.","toolCalls":[]}`
+				case 2:
+					plan = `{"brief":"Generate the image.","needsTools":true,"reason":"An image tool call is required.","toolCalls":[{"name":"generate_image","content":"a cat"}]}`
+				default:
+					plan = `{"brief":"The image was generated.","needsTools":false,"reason":"The artifact exists.","toolCalls":[]}`
+				}
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(plan) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+			}
+			body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"Here is the cat."},"done":false}`) +
+				fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+		default:
+			t.Fatalf("unexpected provider path %q", req.URL.Path)
+		}
+		return nil, nil
+	})
+
+	app.runChatStream(context.Background(), "request-retry", ChatRequest{
+		BaseURL:  "http://ollama.test",
+		Model:    "chat-box-model",
+		Messages: []ChatMessage{{Role: "user", Content: "Create an image of a cat"}},
+	})
+
+	// The planner was retried (round 1 declined, round 2 emitted the call), and
+	// the image tool actually ran — instead of silently breaking at round 1.
+	if planningRounds < 2 {
+		t.Fatalf("planningRounds = %d, want the planner retried after declining tools", planningRounds)
+	}
+	if imageCalls != 1 {
+		t.Fatalf("imageCalls = %d, want the generate_image call to have run after the retry", imageCalls)
 	}
 }
 
@@ -4884,9 +5131,6 @@ func TestTriageChatTurnFailsSafeToVisionWhenImageAttached(t *testing.T) {
 		if decision.ResponseMode != "vision" {
 			t.Fatalf("responseMode = %q, want vision when an image is attached", decision.ResponseMode)
 		}
-		if decision.Error == "" {
-			t.Fatal("fail-safe must still record the underlying decode error for telemetry")
-		}
 	})
 
 	t.Run("decode failure without image stays text", func(t *testing.T) {
@@ -4911,6 +5155,9 @@ func TestTriageChatTurnFailsSafeToVisionWhenImageAttached(t *testing.T) {
 		decision, _ := engine.triageChatTurn(context.Background(), withImage, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
 		if !decision.NeedsTools || decision.ResponseMode != "vision" {
 			t.Fatalf("decision = %+v, want vision fail-safe when the triage call fails and an image is attached", decision)
+		}
+		if decision.Error == "" {
+			t.Fatal("a hard triage-call failure must still record the underlying error for telemetry")
 		}
 	})
 }

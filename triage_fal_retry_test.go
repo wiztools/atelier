@@ -66,17 +66,37 @@ func TestDecodeTriageDecisionCoercesEachNonStringType(t *testing.T) {
 }
 
 // TestDecodeTriageDecisionStillRequiresValidJSON asserts a top-level parse
-// failure (prose, truncated JSON) still fails — coercion only applies to
-// structurally-sound JSON with a mis-typed field, not to garbage.
+// failure (prose, empty) still fails — coercion only applies to structurally-
+// sound JSON with a mis-typed field, not to garbage. A truncated object whose
+// routing fields are complete is salvaged (see TestDecodeTriageSalvagesTruncated).
 func TestDecodeTriageDecisionStillRequiresValidJSON(t *testing.T) {
 	for _, bad := range []string{
 		"not json at all",
-		`{"needsTools":true,`, // truncated
 		``,
 	} {
 		if _, err := decodeTriageDecision(bad); err == nil {
 			t.Fatalf("expected parse error for %q", bad)
 		}
+	}
+}
+
+// TestDecodeTriageSalvagesTruncated covers the conv_2d1be19a fix: when triage
+// exhausted its output budget mid-JSON (the verbose toolTask is the usual
+// victim), the routing-critical fields that appeared before the truncation are
+// salvaged rather than discarding the whole decision and fail-safeing to text —
+// which would drop responseMode "image"/"video"/"audio" and sink the turn.
+func TestDecodeTriageSalvagesTruncated(t *testing.T) {
+	// Truncated mid-toolTask: needsTools and responseMode are complete.
+	truncated := `{"needsTools":true,"reason":"generate two images","responseMode":"image","toolTask":"The user wants to generate two images,`
+	decision, err := decodeTriageDecision(truncated)
+	if err != nil {
+		t.Fatalf("truncated JSON with complete routing fields should be salvaged, got error: %v", err)
+	}
+	if !decision.NeedsTools {
+		t.Errorf("needsTools = false, want true salvaged before truncation")
+	}
+	if decision.ResponseMode != "image" {
+		t.Errorf("responseMode = %q, want image salvaged before truncation", decision.ResponseMode)
 	}
 }
 

@@ -212,8 +212,18 @@ func resolveImageBody(schema *ModelInputSchema, req ImageGenerateRequest, ov Ove
 		}
 		if len(sourceImages) == 1 {
 			body["image_url"] = sourceImages[0]
+			// Edit models commonly accept image_size alongside the source frame;
+			// send the aspect-ratio preset so an output-orientation request on a
+			// differently-shaped source isn't silently dropped.
+			if preset := falImageSizePreset(req.AspectRatio); preset != "" {
+				body["image_size"] = preset
+			}
 		} else if req.Width > 0 && req.Height > 0 {
-			body["image_size"] = map[string]any{"width": req.Width, "height": req.Height}
+			if preset := falImageSizePreset(req.AspectRatio); preset != "" {
+				body["image_size"] = preset
+			} else {
+				body["image_size"] = map[string]any{"width": req.Width, "height": req.Height}
+			}
 		}
 		if req.Steps > 0 {
 			body["num_inference_steps"] = req.Steps
@@ -235,8 +245,13 @@ func resolveImageBody(schema *ModelInputSchema, req ImageGenerateRequest, ov Ove
 		body["num_images"] = 1
 	}
 
-	// Image-to-image takes the source frame(s); image_size is omitted (fal
-	// derives dims from the source). Text-to-image takes the configured
+	// Image-to-image takes the source frame(s). Many edit models (e.g. seedream
+	// edit) also accept an explicit image_size alongside the source image, so an
+	// aspect-ratio preset is sent when the schema supports it — otherwise the
+	// output inherits the source's orientation and a "make this 9:16" request on
+	// a landscape source silently stays landscape (see conv_711ebd5f). For models
+	// that derive dims purely from the source, no image_size input exists and the
+	// preset is correctly omitted. Text-to-image always takes the configured
 	// dimensions.
 	if len(sourceImages) > 0 {
 		path, prop, ok := findNative(schema, ov, "image", req.Model, "sourceImage")
@@ -260,12 +275,18 @@ func resolveImageBody(schema *ModelInputSchema, req ImageGenerateRequest, ov Ove
 			}
 			setBodyPath(schema, body, path, coerceImages(prop, sourceImages))
 		}
-	} else if req.Width > 0 && req.Height > 0 {
-		if path, _, ok := findNative(schema, ov, "image", req.Model, "imageSize"); ok {
-			setBodyPath(schema, body, path, map[string]any{"width": req.Width, "height": req.Height})
-		} else {
-			body["image_size"] = map[string]any{"width": req.Width, "height": req.Height}
+		// Send the aspect-ratio preset when the edit model accepts image_size.
+		// Only the preset enum is sent here — never raw width/height, since the
+		// source frame sets the resolution and a pixel object could conflict.
+		if preset := falImageSizePreset(req.AspectRatio); preset != "" {
+			if sizePath, sizeProp, hasSize := findNative(schema, ov, "image", req.Model, "imageSize"); hasSize {
+				if len(sizeProp.Enum) == 0 || valueAllowedByEnum(sizeProp, preset) {
+					setBodyPath(schema, body, sizePath, preset)
+				}
+			}
 		}
+	} else if req.Width > 0 && req.Height > 0 {
+		sendImageSize(schema, ov, body, req)
 	}
 
 	if req.Steps > 0 {
@@ -276,6 +297,58 @@ func resolveImageBody(schema *ModelInputSchema, req ImageGenerateRequest, ov Ove
 		}
 	}
 	return body, notices, nil
+}
+
+// sendImageSize writes the image_size field onto the fal request body, choosing
+// between an aspect-ratio preset enum string and a {width,height} object.
+//
+// Some fal image models (notably seedream) accept an aspect-ratio preset enum on
+// image_size ("landscape_16_9", "portrait_16_9", ...) and either ignore or
+// reject a {width,height} object below their minimum pixel area. The derived
+// short-edge dims for a portrait ratio routinely fall under that floor, so the
+// model falls back to a default landscape size and the requested aspect ratio is
+// lost — see conv_b02dc16f: a 9:16 request returned a 2736x1536 landscape image.
+// When the requested ratio maps to a known preset, prefer the enum the model
+// honors; otherwise send the pixel object (the original behavior).
+func sendImageSize(schema *ModelInputSchema, ov Overrides, body map[string]any, req ImageGenerateRequest) {
+	preset := falImageSizePreset(req.AspectRatio)
+	path, prop, hasSize := findNative(schema, ov, "image", req.Model, "imageSize")
+	if preset != "" && (!hasSize || valueAllowedByEnum(prop, preset) || len(prop.Enum) == 0) {
+		// The property either has no enum constraint (seedream's anyOf leaves
+		// Enum empty in our parsed view) or explicitly accepts the preset —
+		// either way the preset is safe to send.
+		if hasSize {
+			setBodyPath(schema, body, path, preset)
+		} else {
+			body["image_size"] = preset
+		}
+		return
+	}
+	pixels := map[string]any{"width": req.Width, "height": req.Height}
+	if hasSize {
+		setBodyPath(schema, body, path, pixels)
+	} else {
+		body["image_size"] = pixels
+	}
+}
+
+// falImageSizePreset maps a named aspect ratio to fal's image_size preset enum
+// where one exists. Returns "" for ratios with no preset (1:1 maps to
+// "square_hd"); callers fall back to the pixel object.
+func falImageSizePreset(ratio string) string {
+	switch strings.TrimSpace(ratio) {
+	case "1:1":
+		return "square_hd"
+	case "16:9":
+		return "landscape_16_9"
+	case "9:16":
+		return "portrait_16_9"
+	case "4:3":
+		return "landscape_4_3"
+	case "3:4":
+		return "portrait_4_3"
+	}
+	return ""
 }
 
 // coerceImageValue adapts a canonical image value to the native property's type:

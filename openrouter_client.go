@@ -580,6 +580,22 @@ func (client OpenRouterClient) CompleteChat(ctx context.Context, req ChatRequest
 		return ChatCompletionResult{}, errors.New("openrouter returned no choices")
 	}
 	choice := payload.Choices[0]
+	// OpenRouter can return HTTP 200 with choices[0].finish_reason:"error"
+	// when the upstream provider (Google, Anthropic, ...) rejected the request
+	// after OpenRouter accepted it — e.g. a model that doesn't honor a strict
+	// json_schema. The provider's explanation rides in the choice content.
+	// Surfacing this as a Go error (rather than a successful-looking completion
+	// carrying Reason:"error") lets the harness mark the step failed with the
+	// real cause instead of silently moving on. See conv_d404742b: a planner
+	// call came back finish_reason:"error" and the harness treated it as a
+	// completed-but-empty plan, producing zero images and no diagnostics.
+	if choice.FinishReason == "error" {
+		msg := strings.TrimSpace(choice.Message.Content)
+		if msg == "" {
+			msg = "openrouter upstream provider returned an error (finish_reason: error) with no detail"
+		}
+		return ChatCompletionResult{}, errors.New(msg)
+	}
 	return ChatCompletionResult{
 		Model:      payload.Model,
 		Content:    choice.Message.Content,

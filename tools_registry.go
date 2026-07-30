@@ -837,11 +837,12 @@ func imageGenerationToolDefinition() HarnessToolDefinition {
 			}
 			width, height := imageSizeForPresetAndRatio(tools.Config.Generation.Image.SizePreset, ratio)
 			imageReq := ImageGenerateRequest{
-				Model:  model,
-				Prompt: strings.TrimSpace(call.Content),
-				Width:  width,
-				Height: height,
-				Steps:  tools.Config.Generation.Image.Steps,
+				Model:       model,
+				Prompt:      strings.TrimSpace(call.Content),
+				Width:       width,
+				Height:      height,
+				AspectRatio: ratio,
+				Steps:       tools.Config.Generation.Image.Steps,
 			}
 			if len(attachedImages) > 0 {
 				imageReq.Images = attachedImages

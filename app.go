@@ -370,15 +370,22 @@ type ollamaChatResponse struct {
 }
 
 type ImageGenerateRequest struct {
-	RequestID      string   `json:"requestID,omitempty"`
-	ConversationID string   `json:"conversationId,omitempty"`
-	BaseURL        string   `json:"baseURL,omitempty"`
-	Model          string   `json:"model"`
-	Prompt         string   `json:"prompt"`
-	Width          int      `json:"width,omitempty"`
-	Height         int      `json:"height,omitempty"`
-	Steps          int      `json:"steps,omitempty"`
-	Images         []string `json:"images,omitempty"`
+	RequestID      string `json:"requestID,omitempty"`
+	ConversationID string `json:"conversationId,omitempty"`
+	BaseURL        string `json:"baseURL,omitempty"`
+	Model          string `json:"model"`
+	Prompt         string `json:"prompt"`
+	Width          int    `json:"width,omitempty"`
+	Height         int    `json:"height,omitempty"`
+	// AspectRatio is the named output shape (e.g. "16:9", "9:16") the caller
+	// requested. Width/Height are derived from it, but some fal image models
+	// (notably seedream) only honor aspect ratio via a preset enum string
+	// ("landscape_16_9", "portrait_16_9") on their image_size param, and reject
+	// or ignore width/height objects below a minimum pixel area. Carrying the
+	// ratio lets resolveImageBody send the enum the model actually respects.
+	AspectRatio string   `json:"aspectRatio,omitempty"`
+	Steps       int      `json:"steps,omitempty"`
+	Images      []string `json:"images,omitempty"`
 }
 
 // ImageUpscaleRequest is the input to fal's image upscaler. Scale is a float

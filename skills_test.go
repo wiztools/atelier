@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -113,5 +114,85 @@ func TestLoadSkillIndexSkipsMissingWorkspaceSkillDir(t *testing.T) {
 		t.Fatalf("index = %+v, want global lonely skill to survive missing workspace root", index)
 	} else if entry.Path != filepath.Join(global, "lonely", "SKILL.md") {
 		t.Fatalf("entry.Path = %q, want global skill path", entry.Path)
+	}
+}
+
+// TestSkillGuidesPlannerSuppressesBodyForGenerationModes is the core guard for
+// conv_473c1357: the skill selector picked `mediabunny` (a browser audio/video
+// metadata library) for an image-generation turn, its body was injected into the
+// planner, and the planner then decided no tool call was needed — producing
+// zero images. Generation is a built-in tool, not a workflow a SKILL.md guides,
+// so a model-selected skill body must not steer the planner in those modes.
+func TestSkillGuidesPlannerSuppressesBodyForGenerationModes(t *testing.T) {
+	skill := &LoadedSkill{SkillIndexEntry: SkillIndexEntry{Name: "mediabunny"}, Body: "workflow guidance"}
+	for _, mode := range []string{"image", "video", "audio"} {
+		if skillGuidesPlanner(skill, mode, false) {
+			t.Errorf("responseMode=%q: model-selected skill body must be suppressed for generation modes", mode)
+		}
+	}
+	// A skill explicitly named by the user overrides the routing — it always
+	// guides the planner, even in a generation mode, because the user asked.
+	if !skillGuidesPlanner(skill, "image", true) {
+		t.Errorf("user-requested skill must guide the planner even in image mode")
+	}
+}
+
+// TestSkillGuidesPlannerAllowsBodyForTextAndVision covers the non-generation
+// modes, where skills remain valuable: they guide run_command/write_file
+// workflows the planner executes.
+func TestSkillGuidesPlannerAllowsBodyForTextAndVision(t *testing.T) {
+	skill := &LoadedSkill{SkillIndexEntry: SkillIndexEntry{Name: "remotion-render"}, Body: "render steps"}
+	for _, mode := range []string{"text", "vision", ""} {
+		if !skillGuidesPlanner(skill, mode, false) {
+			t.Errorf("responseMode=%q: skill body must guide the planner in non-generation modes", mode)
+		}
+	}
+	if skillGuidesPlanner(nil, "text", false) {
+		t.Errorf("nil skill must not guide the planner")
+	}
+}
+
+// TestPlannerPromptOmitsSkillBodyForImageMode is the end-to-end guard: when
+// triage routed to image mode, a selected skill's body must not appear in the
+// planner prompt (both the JSON-schema and native paths), so it cannot derail
+// the planner into needsTools:false.
+func TestPlannerPromptOmitsSkillBodyForImageMode(t *testing.T) {
+	engine := newHarnessEngine(defaultAppConfig())
+	registry := defaultHarnessToolRegistry(context.Background(), defaultAppConfig(), nil)
+	skill := &LoadedSkill{
+		SkillIndexEntry: SkillIndexEntry{Name: "mediabunny"},
+		Body:            "UNIQUE_SKILL_BODY_MARKER_42",
+	}
+	req := ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "generate an image"}}}
+
+	for name, prompt := range map[string]string{
+		"json":   engine.plannerSystemPrompt(registry, req, skill, "", "image", false),
+		"native": engine.plannerSystemPromptNative(registry, req, skill, "", "image", false),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if strings.Contains(prompt, "UNIQUE_SKILL_BODY_MARKER_42") {
+				t.Fatalf("%s planner prompt injected the skill body in image mode — it can only confuse a generation-tool turn", name)
+			}
+			if strings.Contains(prompt, "Active SKILL.md selected for this turn") {
+				t.Fatalf("%s planner prompt still carries the skill-injection preamble in image mode", name)
+			}
+		})
+	}
+}
+
+// TestPlannerPromptKeepsUserRequestedSkillBodyInImageMode covers the override:
+// a skill the user explicitly named is injected even in a generation mode,
+// because the user asked for it.
+func TestPlannerPromptKeepsUserRequestedSkillBodyInImageMode(t *testing.T) {
+	engine := newHarnessEngine(defaultAppConfig())
+	registry := defaultHarnessToolRegistry(context.Background(), defaultAppConfig(), nil)
+	skill := &LoadedSkill{
+		SkillIndexEntry: SkillIndexEntry{Name: "remotion-create"},
+		Body:            "USER_REQUESTED_MARKER_7",
+	}
+	req := ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "/remotion-create a video"}}}
+	prompt := engine.plannerSystemPrompt(registry, req, skill, "", "image", true)
+	if !strings.Contains(prompt, "USER_REQUESTED_MARKER_7") {
+		t.Fatalf("user-requested skill body must be injected even in image mode")
 	}
 }

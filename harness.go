@@ -1099,6 +1099,21 @@ func explicitSkillSelection(index []SkillIndexEntry, prompt string) (SkillIndexE
 // planning rounds and harnessChatMaxWallTime of wall time.
 func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conversationID string, req ChatRequest, turn harnessTurnContext, run *HarnessRun) (HarnessPreparedTurn, error) {
 	skillDecision, loadedSkill := h.selectSkillForTurn(ctx, req, turn)
+	// A skill selected for a generation turn (image/video/audio) is workflow
+	// guidance that cannot help a built-in generation tool call and can derail
+	// the planner (conv_473c1357). Its body is suppressed for the planner
+	// prompt in that case, but the selection is still recorded above so the
+	// choice is visible in telemetry. Annotate the reason so the suppression is
+	// diagnosable rather than silent.
+	if skillDecision != nil && skillDecision.Selected && loadedSkill != nil &&
+		!skillGuidesPlanner(loadedSkill, turn.ResponseMode, turn.ExplicitSkill != nil) {
+		note := fmt.Sprintf("skill body suppressed for %q mode: generation is a built-in tool, not a workflow", turn.ResponseMode)
+		if reason := strings.TrimSpace(skillDecision.Reason); reason != "" {
+			skillDecision.Reason = reason + " [" + note + "]"
+		} else {
+			skillDecision.Reason = note
+		}
+	}
 	run.Skill = skillDecision
 	registry := h.toolRegistry()
 	// The planner prompt and plan-parsing differ between the two paths, but the
@@ -1106,9 +1121,9 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 	// are shared.
 	var system string
 	if turn.UseNativeTools {
-		system = h.plannerSystemPromptNative(registry, req, loadedSkill, turn.ToolTask)
+		system = h.plannerSystemPromptNative(registry, req, loadedSkill, turn.ToolTask, turn.ResponseMode, turn.ExplicitSkill != nil)
 	} else {
-		system = h.plannerSystemPrompt(registry, req, loadedSkill, turn.ToolTask)
+		system = h.plannerSystemPrompt(registry, req, loadedSkill, turn.ToolTask, turn.ResponseMode, turn.ExplicitSkill != nil)
 	}
 	numCtx := h.numCtx()
 	budget := historyBudgetChars(numCtx, system, harnessPlanNumPredict)
@@ -1159,6 +1174,20 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 			if len(validationErrors) > 0 && strings.TrimSpace(completion.Reason) == "length" {
 				validationErrors = append([]string{"the plan response hit the output token limit and was cut off; return a shorter plan"}, validationErrors...)
 			}
+		}
+		// Generation modes (image/video/audio) are built-in tool tasks: triage
+		// only routes to them when a generate_image/generate_video/generate_audio
+		// call is the whole point. A planner plan that sets needsTools false or
+		// emits no tool calls in these modes is contradicting the routing, not
+		// legitimately declining tools — feeding it back as a correction (like
+		// any other validation error) gives the planner a chance to emit the
+		// required call instead of silently breaking the loop with zero output.
+		// This only applies before any tool has run: once a generation tool has
+		// produced output, the planner may legitimately close the loop. See
+		// conv_7832ea8b: the planner returned needsTools:false for an image turn,
+		// the loop broke, and no image was generated.
+		if msg := generationModeRequiresToolCall(turn.ResponseMode, plan, prepared.ToolResults); msg != "" {
+			validationErrors = append(validationErrors, msg)
 		}
 		round := HarnessToolRound{
 			Iteration:            iteration,
@@ -1232,6 +1261,62 @@ func (h *HarnessEngine) plannerAssistantMessage(useNativeTools bool, completion 
 	return ChatMessage{Role: "assistant", Content: completion.Content}
 }
 
+// planParseFailed reports whether the validation errors include a JSON parse
+// failure — i.e. the planner's response was not a JSON object at all (it
+// emitted code/call syntax, prose, or another dialect). This is distinct from a
+// well-formed JSON object that simply has wrong/missing fields.
+func planParseFailed(validationErrors []string) bool {
+	for _, e := range validationErrors {
+		if strings.HasPrefix(e, "plan JSON could not be parsed") {
+			return true
+		}
+	}
+	return false
+}
+
+// plannerCorrectionPrompt renders the format-schema correction a planner round
+// receives when its plan was invalid. When the response was not JSON at all
+// (the model emitted tool_code / print() / call syntax, often seeded by a
+// toolTask written as call syntax), the correction is emphatic about format:
+// name the observed wrong dialects and demand only the JSON object. A vague
+// "not a valid plan" leaves a weak model free to repeat the same dialect, so
+// the parse-failure path forbids it explicitly. See conv_85c18bae: the planner
+// emitted `tool_code` + `print(generate_image(...))` for three rounds despite
+// corrections, because the correction never said "no code, only JSON".
+//
+// A truncation indicator (the response hit the output token limit) takes
+// precedence over the format message: a truncated response may have started as
+// valid JSON and simply run out of tokens, so "return a shorter plan" is the
+// more actionable cause and is already prepended to the errors by the caller.
+func plannerCorrectionPrompt(validationErrors []string) string {
+	if planTruncated(validationErrors) {
+		return "Your previous response was not a valid tool plan:\n" + validationErrorsMarkdown(validationErrors) +
+			"\n\nReturn a corrected, shorter plan that fits within the output limit and matches the response schema."
+	}
+	if planParseFailed(validationErrors) {
+		return "Your previous response was not JSON, so no tool plan could be read. " +
+			"Do NOT emit code, tool_code, print(...), function-call syntax, markdown, or prose. " +
+			"Respond with ONLY the JSON object matching the response schema " +
+			"({\"brief\":..., \"needsTools\":..., \"reason\":..., \"toolCalls\":[{...}]}), " +
+			"with each requested call as an element of the \"toolCalls\" array. " +
+			"For example: {\"brief\":\"generate the image\",\"needsTools\":true,\"reason\":\"...\",\"toolCalls\":[{\"name\":\"generate_image\",\"content\":\"...\"}]}"
+	}
+	return "Your previous response was not a valid tool plan:\n" + validationErrorsMarkdown(validationErrors) +
+		"\n\nReturn a corrected plan that matches the response schema."
+}
+
+// planTruncated reports whether the validation errors carry the truncation
+// indicator the planning loop prepends when the response hit the output token
+// limit (done_reason "length").
+func planTruncated(validationErrors []string) bool {
+	for _, e := range validationErrors {
+		if strings.HasPrefix(e, "the plan response hit the output token limit") {
+			return true
+		}
+	}
+	return false
+}
+
 // plannerCorrectionMessages renders the feedback for an invalid plan. The
 // format-schema path uses a user-role correction request (the model emits a
 // corrected JSON plan). The native path reports the failure as a tool-role
@@ -1241,7 +1326,7 @@ func (h *HarnessEngine) plannerCorrectionMessages(useNativeTools bool, completio
 	if !useNativeTools {
 		return []ChatMessage{
 			{Role: "assistant", Content: completion.Content},
-			{Role: "user", Content: "Your previous response was not a valid tool plan:\n" + validationErrorsMarkdown(validationErrors) + "\n\nReturn a corrected plan that matches the response schema."},
+			{Role: "user", Content: plannerCorrectionPrompt(validationErrors)},
 		}
 	}
 	assistant := ChatMessage{Role: "assistant", Content: completion.Content}
@@ -1265,6 +1350,20 @@ func (h *HarnessEngine) plannerCorrectionMessages(useNativeTools bool, completio
 // reason, needsTools consistency) that only make sense for the schema envelope.
 func parseNativePlannerResponse(completion ChatCompletionResult, registry HarnessToolRegistry) (HarnessToolPlan, []string) {
 	calls, validationErrors := mapNativeToolCalls(completion.ToolCalls)
+	// Dialect recovery: when a model that nominally supports native tools
+	// nonetheless emits zero tool_calls — because it wrote its calls in the
+	// content as a "code execution" dialect (Gemini's ```tool_code /
+	// print(default_api.generate_image(...))```) instead of populating the
+	// tool_calls field — recover them from the content. Without this the native
+	// path sees "no tools needed" and the turn produces nothing. See
+	// conv_f1afe11a / conv_4a956051: gemini-2.5-flash (which advertises the
+	// "tools" capability, so the harness uses native tool-calling) emitted
+	// tool_code in content for every planning round.
+	if len(calls) == 0 {
+		if recovered := toolCodeDialectToToolCalls(completion.Content, registry); len(recovered) > 0 {
+			calls = recovered
+		}
+	}
 	if len(calls) > 3 {
 		validationErrors = append(validationErrors, "toolCalls may contain at most 3 calls")
 	}
@@ -1335,7 +1434,74 @@ func plannerMediaRoutingGuidance(registry HarnessToolRegistry) string {
 	return "\nMedia routing: when the user wants speech, narration, a voice-over, or a speaking character in a video, call generate_video ONCE with the spoken text in the prompt — the configured video model generates the audio in the same call. Do NOT chain generate_audio + lip_sync for narration; lip_sync is only for dubbing or re-syncing an existing attached audio clip to a face. If a lip_sync call fails, retry the narration as a single generate_video call before reporting failure."
 }
 
-func (h *HarnessEngine) plannerSystemPrompt(registry HarnessToolRegistry, req ChatRequest, loadedSkill *LoadedSkill, toolTask string) string {
+// skillGuidesPlanner decides whether a selected SKILL.md's body should steer the
+// planner. A skill is workflow guidance for command/filesystem tasks the planner
+// executes via run_command/write_file/read_file. When triage routed the turn to
+// a generation mode (image/video/audio), the entire task is a single built-in
+// tool call (generate_image/generate_video/generate_audio) — a SKILL.md cannot
+// help and can only confuse the planner, since its workflow steps are
+// irrelevant to generation. See conv_473c1357: the skill selector picked
+// `mediabunny` (a browser audio/video metadata library) for an image-generation
+// turn; its body was injected into the planner, which then decided no tool call
+// was needed and produced zero images. Suppressing the body for generation modes
+// keeps the planner on the tool path while still recording that a skill was
+// considered. A skill explicitly named by the user (userRequested) always guides
+// the planner — the user overrode the routing on purpose.
+func skillGuidesPlanner(skill *LoadedSkill, responseMode string, userRequested bool) bool {
+	if skill == nil {
+		return false
+	}
+	if userRequested {
+		return true
+	}
+	return !isGenerationMode(responseMode)
+}
+
+// isGenerationMode reports whether responseMode names a built-in media
+// generation task (image/video/audio). These are first-class tool calls, not
+// workflows, and are the single source of truth for the mode set the planner
+// treats specially (skill-body suppression, mandatory-tool-call validation).
+func isGenerationMode(responseMode string) bool {
+	switch responseMode {
+	case "image", "video", "audio":
+		return true
+	default:
+		return false
+	}
+}
+
+// generationModeRequiresToolCall returns a non-empty correction message when the
+// turn was routed to a generation mode (image/video/audio) but the planner's
+// plan would produce no tool call (needsTools false, or empty toolCalls) AND no
+// tool has succeeded yet this turn. It returns "" for non-generation modes, for
+// plans that include a call, and once a generation tool has already produced
+// output (the planner may then legitimately close the loop). The message is
+// appended to the plan's validation errors so the planning loop feeds it back to
+// the planner as a correction rather than silently breaking with zero output.
+//
+// It requires *a* tool call, not specifically a generate_* call: video mode can
+// be satisfied by generate_video OR lip_sync, and audio mode by generate_audio
+// OR transcribe_audio. The point is only that a media-mode turn triaged to tools
+// must not be declined outright before anything has run — the planner
+// contradicting that routing is a defect. See conv_7832ea8b: the planner
+// returned needsTools:false for an image turn, the loop broke, and no image was
+// generated.
+func generationModeRequiresToolCall(responseMode string, plan HarnessToolPlan, priorResults []HarnessToolResult) string {
+	if !isGenerationMode(responseMode) {
+		return ""
+	}
+	if len(plan.ToolCalls) > 0 {
+		return ""
+	}
+	// A generation tool already ran and (presumably) produced the artifact this
+	// turn; the planner may now legitimately conclude no further call is needed.
+	if len(priorResults) > 0 {
+		return ""
+	}
+	return fmt.Sprintf("responseMode %q was routed to tools, but the plan emits no tool call. A media turn cannot be completed without a tool call (e.g. generate_image/generate_video/generate_audio, lip_sync, or transcribe_audio). Set needsTools true and emit the relevant call.", responseMode)
+}
+
+func (h *HarnessEngine) plannerSystemPrompt(registry HarnessToolRegistry, req ChatRequest, loadedSkill *LoadedSkill, toolTask, responseMode string, userRequested bool) string {
 	system := strings.TrimSpace(fmt.Sprintf(`You are Atelier's private harness model. You gather evidence for the final model that will answer the user.
 Do not answer the user directly. Do not include hidden chain-of-thought. Respond only with a JSON tool plan matching the response schema:
 {
@@ -1354,7 +1520,7 @@ When "needsTools" is false, "toolCalls" must be []. Prefer read-only calls unles
 	if strings.TrimSpace(req.System) != "" {
 		system += "\n\nUser-facing system prompt to preserve:\n" + strings.TrimSpace(req.System)
 	}
-	if loadedSkill != nil {
+	if skillGuidesPlanner(loadedSkill, responseMode, userRequested) {
 		system += "\n\nActive SKILL.md selected for this turn. Follow these instructions when planning tools and writing the brief, including any workflow or command guidance that applies. Do not quote the skill unless the user asks about process.\n\n" + loadedSkill.Body
 	}
 	if strings.TrimSpace(toolTask) != "" {
@@ -1368,7 +1534,7 @@ When "needsTools" is false, "toolCalls" must be []. Prefer read-only calls unles
 // envelope description and instead instructs the model to call its tools for
 // evidence and, when done, write a one-line plan summary in content with no
 // tool calls. That content becomes the round's brief (telemetry only).
-func (h *HarnessEngine) plannerSystemPromptNative(registry HarnessToolRegistry, req ChatRequest, loadedSkill *LoadedSkill, toolTask string) string {
+func (h *HarnessEngine) plannerSystemPromptNative(registry HarnessToolRegistry, req ChatRequest, loadedSkill *LoadedSkill, toolTask, responseMode string, userRequested bool) string {
 	system := strings.TrimSpace(fmt.Sprintf(`You are Atelier's private harness model. You gather evidence for the final model that will answer the user.
 Do not answer the user directly. Do not include hidden chain-of-thought.
 You have tools available. Call them to gather evidence for the final model. You plan in rounds, at most %d in total; each round may request up to 3 tool calls. The harness executes them and returns each result, including failures, as a tool message; read the results and plan the next round.
@@ -1378,7 +1544,7 @@ The filesystem tools and run_command operate on real files on this machine; path
 	if strings.TrimSpace(req.System) != "" {
 		system += "\n\nUser-facing system prompt to preserve:\n" + strings.TrimSpace(req.System)
 	}
-	if loadedSkill != nil {
+	if skillGuidesPlanner(loadedSkill, responseMode, userRequested) {
 		system += "\n\nActive SKILL.md selected for this turn. Follow these instructions when planning tools and writing the summary, including any workflow or command guidance that applies. Do not quote the skill unless the user asks about process.\n\n" + loadedSkill.Body
 	}
 	if strings.TrimSpace(toolTask) != "" {
@@ -1680,9 +1846,143 @@ func stripJSONFence(content string) string {
 	return strings.TrimSpace(withoutOpen)
 }
 
+// toolCodeDialectToToolCalls extracts tool calls from the "code execution"
+// dialect some models emit instead of the JSON plan schema — notably Gemini via
+// OpenRouter. The dialect appears as a JSON array of
+// {"tool_code": "print(atelier_tools.generate_image(prompt='...', aspect_ratio='16:9'))"}
+// or as bare print(generate_image(...)) in prose. Only calls naming a tool in the
+// registry are recovered; unknown names (print, len, etc.) are ignored. Returns
+// nil when no recoverable calls are found, so the caller falls through to the
+// normal parse-failure path. See conv_f1afe11a.
+func toolCodeDialectToToolCalls(content string, registry HarnessToolRegistry) []HarnessToolCall {
+	// Match an identifier immediately before "(" — the tool name in the dialect.
+	// A namespace prefix (atelier_tools., default_api.) is naturally skipped
+	// because the regex anchors the name to the "(", and the prefix is followed
+	// by "." not "(". Case-insensitive so Generate_Image(...) is tolerated too.
+	callRe := regexp.MustCompile(`(?im)([A-Za-z_]+)\s*\(`)
+	indices := callRe.FindAllStringSubmatchIndex(content, -1)
+	if len(indices) == 0 {
+		return nil
+	}
+	var calls []HarnessToolCall
+	for _, idx := range indices {
+		name := content[idx[2]:idx[3]]
+		if _, ok := registry.Get(name); !ok {
+			continue
+		}
+		// idx[1] is the position just past "(", i.e. the start of the args.
+		argsEnd := matchParen(content, idx[1]-1)
+		if argsEnd < 0 {
+			continue
+		}
+		call := HarnessToolCall{Name: name}
+		applyKwargs(&call, content[idx[1]:argsEnd])
+		calls = append(calls, call)
+	}
+	return calls
+}
+
+// matchParen returns the index of the ")" that closes the "(" at openIdx,
+// honoring single/double-quoted strings and nested parentheses. Returns -1 if no
+// match is found (unbalanced).
+func matchParen(s string, openIdx int) int {
+	depth := 0
+	inSingle, inDouble := false, false
+	for i := openIdx; i < len(s); i++ {
+		switch {
+		case inSingle:
+			if s[i] == '\'' {
+				inSingle = false
+			}
+		case inDouble:
+			if s[i] == '"' {
+				inDouble = false
+			}
+		case s[i] == '\'':
+			inSingle = true
+		case s[i] == '"':
+			inDouble = true
+		case s[i] == '(':
+			depth++
+		case s[i] == ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+var kwargPattern = regexp.MustCompile(`([A-Za-z_]+)\s*=\s*('([^']*)'|"([^"]*)"|([0-9.]+)|(true|false|null))`)
+
+// applyKwargs parses key=value pairs from a call's argument string (Python-style
+// kwargs) and maps them onto the HarnessToolCall fields. Both the JSON field
+// names (content, aspectRatio) and Python-style names (prompt, aspect_ratio) are
+// accepted, since observed dialects use both. Unrecognized keys are ignored.
+func applyKwargs(call *HarnessToolCall, args string) {
+	for _, m := range kwargPattern.FindAllStringSubmatch(args, -1) {
+		raw := m[3]
+		if raw == "" {
+			raw = m[4]
+		}
+		switch m[1] {
+		case "content", "prompt":
+			call.Content = raw
+		case "negative_prompt", "negativePrompt":
+			call.NegativePrompt = raw
+		case "aspect_ratio", "aspectRatio":
+			call.AspectRatio = raw
+		case "duration":
+			call.Duration = raw
+		case "voice":
+			call.Voice = raw
+		case "language":
+			call.Language = raw
+		case "task":
+			call.Task = raw
+		case "scale":
+			call.Scale = raw
+		case "command":
+			call.Command = raw
+		case "path":
+			call.Path = raw
+		case "model":
+			call.Model = raw
+		case "cwd":
+			call.Cwd = raw
+		case "loop":
+			call.Loop = raw == "true"
+		case "append":
+			call.Append = raw == "true"
+		case "overwrite":
+			call.Overwrite = raw == "true"
+		case "allow_binary", "allowBinary":
+			call.AllowBinary = raw == "true"
+		}
+	}
+}
+
 func decodeAndValidateHarnessToolPlan(candidate string, registry HarnessToolRegistry) (HarnessToolPlan, []string) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(candidate), &raw); err != nil {
+		// JSON parse failed. Some models (notably Gemini via OpenRouter) persist
+		// in their native "code execution" dialect — a JSON array of
+		// {"tool_code": "print(atelier_tools.generate_image(prompt='...', aspect_ratio='16:9'))"}
+		// or bare print(generate_image(...)) — regardless of the strict
+		// json_schema and the correction messages. Rather than fail the turn,
+		// recover by extracting the calls from that dialect into the harness's
+		// toolCalls shape. See conv_f1afe11a: gemini-2.5-flash emitted tool_code
+		// for all three planning rounds and produced zero images.
+		if calls := toolCodeDialectToToolCalls(candidate, registry); len(calls) > 0 {
+			plan := HarnessToolPlan{
+				Brief:      "recovered from tool_code dialect",
+				NeedsTools: true,
+				Reason:     "planner emitted tool_code dialect; calls recovered",
+				ToolCalls:  calls,
+			}
+			return plan, validateHarnessToolPlan(plan, registry)
+		}
 		return HarnessToolPlan{}, []string{"plan JSON could not be parsed: " + err.Error()}
 	}
 	errors := validateHarnessPlanKeys(raw)

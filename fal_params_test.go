@@ -295,6 +295,128 @@ func TestResolveImageBodyTextToImage(t *testing.T) {
 	}
 }
 
+// TestResolveImageBodySendsAspectPresetEnum is the fix for conv_b02dc16f:
+// seedream ignores a {width,height} object below its minimum pixel area and
+// falls back to a default landscape size, so a 9:16 request produced a landscape
+// image. When the requested ratio maps to a fal preset, the enum string is sent
+// instead — both on the schema path and the no-schema legacy path.
+func TestResolveImageBodySendsAspectPresetEnum(t *testing.T) {
+	t.Run("no schema sends preset string", func(t *testing.T) {
+		body, _, _ := resolveImageBody(nil, ImageGenerateRequest{
+			Model:  "bytedance/seedream/v5/pro/text-to-image",
+			Prompt: "x", Width: 576, Height: 1024, AspectRatio: "9:16",
+		}, builtinFalOverrides())
+		if got, ok := body["image_size"].(string); !ok || got != "portrait_16_9" {
+			t.Fatalf("image_size = %+v, want portrait_16_9 preset string", body["image_size"])
+		}
+	})
+	t.Run("no schema with unmapped ratio sends pixels", func(t *testing.T) {
+		body, _, _ := resolveImageBody(nil, ImageGenerateRequest{
+			Model: "m", Prompt: "x", Width: 1000, Height: 500, AspectRatio: "21:9",
+		}, builtinFalOverrides())
+		size, ok := body["image_size"].(map[string]any)
+		if !ok {
+			t.Fatalf("image_size = %+v, want {width,height} for an unmapped ratio", body["image_size"])
+		}
+		if size["width"] != 1000 || size["height"] != 500 {
+			t.Fatalf("image_size = %+v, want the pixel object", size)
+		}
+	})
+	t.Run("schema with empty enum sends preset string", func(t *testing.T) {
+		// seedream's anyOf leaves Enum empty in our parsed view; the preset is
+		// still safe to send because there is no enum constraint to violate.
+		schema := &ModelInputSchema{
+			Properties: map[string]SchemaProperty{"image_size": {Name: "image_size", Kind: schemaScalar}},
+			order:      []string{"image_size"},
+		}
+		body, _, _ := resolveImageBody(schema, ImageGenerateRequest{
+			Model:  "bytedance/seedream/v5/pro/text-to-image",
+			Prompt: "x", Width: 1024, Height: 576, AspectRatio: "16:9",
+		}, builtinFalOverrides())
+		if got := body["image_size"]; got != "landscape_16_9" {
+			t.Fatalf("image_size = %+v, want landscape_16_9 preset string", got)
+		}
+	})
+	t.Run("schema enum rejecting preset falls back to pixels", func(t *testing.T) {
+		// A model whose image_size enum does NOT include the preset must fall
+		// back to the pixel object rather than sending a value fal would reject.
+		schema := &ModelInputSchema{
+			Properties: map[string]SchemaProperty{"image_size": {Name: "image_size", Kind: schemaScalar, Enum: []string{"only_this_one"}}},
+			order:      []string{"image_size"},
+		}
+		body, _, _ := resolveImageBody(schema, ImageGenerateRequest{
+			Model: "m", Prompt: "x", Width: 1024, Height: 576, AspectRatio: "16:9",
+		}, builtinFalOverrides())
+		size, ok := body["image_size"].(map[string]any)
+		if !ok {
+			t.Fatalf("image_size = %+v, want pixel fallback when enum excludes the preset", body["image_size"])
+		}
+		if size["width"] != 1024 || size["height"] != 576 {
+			t.Fatalf("image_size = %+v, want the requested pixel object", size)
+		}
+	})
+	// conv_711ebd5f: an image-to-image edit (source image attached) with a
+	// requested aspect ratio must still send the preset. Without this, fal
+	// inherited the source's landscape orientation and a "9:16" request on a
+	// landscape source produced a landscape output.
+	t.Run("edit with source image sends preset", func(t *testing.T) {
+		schema := &ModelInputSchema{
+			Properties: map[string]SchemaProperty{
+				"image_urls": {Name: "image_urls", Kind: schemaArray},
+				"image_size": {Name: "image_size", Kind: schemaScalar},
+			},
+			order: []string{"image_urls", "image_size"},
+		}
+		body, _, _ := resolveImageBody(schema, ImageGenerateRequest{
+			Model:  "bytedance/seedream/v5/pro/edit",
+			Prompt: "zoom out, more sky", Width: 576, Height: 1024, AspectRatio: "9:16",
+			Images: []string{"data:image/png;base64,iVBORw0KGgo="},
+		}, builtinFalOverrides())
+		if got := body["image_size"]; got != "portrait_16_9" {
+			t.Fatalf("image_size = %+v, want portrait_16_9 preset on the edit path", got)
+		}
+		if _, ok := body["image_urls"]; !ok {
+			t.Fatalf("image_urls must still be set alongside the preset: %+v", body)
+		}
+	})
+	t.Run("edit model without image_size input omits it", func(t *testing.T) {
+		// A model that derives dims purely from the source (no image_size input)
+		// must not get an image_size — it would be an unknown field. Only the
+		// preset is ever sent, and only when the schema accepts image_size.
+		schema := &ModelInputSchema{
+			Properties: map[string]SchemaProperty{
+				"image_url": {Name: "image_url", Kind: schemaScalar},
+			},
+			order: []string{"image_url"},
+		}
+		body, _, _ := resolveImageBody(schema, ImageGenerateRequest{
+			Model:  "some/source-only-edit",
+			Prompt: "zoom out", Width: 576, Height: 1024, AspectRatio: "9:16",
+			Images: []string{"data:image/png;base64,iVBORw0KGgo="},
+		}, builtinFalOverrides())
+		if _, present := body["image_size"]; present {
+			t.Fatalf("image_size must be omitted when the model has no image_size input: %+v", body)
+		}
+	})
+}
+
+func TestFalImageSizePreset(t *testing.T) {
+	cases := map[string]string{
+		"1:1":  "square_hd",
+		"16:9": "landscape_16_9",
+		"9:16": "portrait_16_9",
+		"4:3":  "landscape_4_3",
+		"3:4":  "portrait_4_3",
+		"21:9": "", // no preset; callers fall back to pixels
+		"":     "",
+	}
+	for ratio, want := range cases {
+		if got := falImageSizePreset(ratio); got != want {
+			t.Errorf("falImageSizePreset(%q) = %q, want %q", ratio, got, want)
+		}
+	}
+}
+
 // TestResolveImageBodyNormalizesBareBase64 pins the regression from
 // conv_e8ea99de04b547a516394be1: the resolver must wrap bare base64 (the shape
 // AttachedImage arrives in — the frontend strips the data: prefix for Ollama)

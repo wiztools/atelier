@@ -103,8 +103,8 @@ func TestPlannerMediaRoutingGuidancePresentWhenCapable(t *testing.T) {
 	req := ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "narrate this"}}}
 
 	for name, prompt := range map[string]string{
-		"json":   engine.plannerSystemPrompt(registry, req, nil, ""),
-		"native": engine.plannerSystemPromptNative(registry, req, nil, ""),
+		"json":   engine.plannerSystemPrompt(registry, req, nil, "", "", false),
+		"native": engine.plannerSystemPromptNative(registry, req, nil, "", "", false),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if !strings.Contains(prompt, "call generate_video ONCE") {
@@ -126,8 +126,8 @@ func TestPlannerMediaRoutingGuidanceAbsentWhenNotCapable(t *testing.T) {
 	req := ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "narrate this"}}}
 
 	for name, prompt := range map[string]string{
-		"json":   engine.plannerSystemPrompt(registry, req, nil, ""),
-		"native": engine.plannerSystemPromptNative(registry, req, nil, ""),
+		"json":   engine.plannerSystemPrompt(registry, req, nil, "", "", false),
+		"native": engine.plannerSystemPromptNative(registry, req, nil, "", "", false),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if strings.Contains(prompt, "call generate_video ONCE") {
@@ -144,7 +144,7 @@ func TestPlannerMediaRoutingGuidanceIncludesFallbackRule(t *testing.T) {
 	engine := newHarnessEngine(defaultAppConfig())
 	registry := newPlannerRegistry(true)
 	req := ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "narrate this"}}}
-	prompt := engine.plannerSystemPrompt(registry, req, nil, "")
+	prompt := engine.plannerSystemPrompt(registry, req, nil, "", "", false)
 	if !strings.Contains(prompt, "If a lip_sync call fails") {
 		t.Fatalf("planner guidance should include the lip_sync-failure fallback rule")
 	}
