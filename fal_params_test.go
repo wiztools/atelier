@@ -544,6 +544,54 @@ func TestResolveVideoBodyVeoTextToVideo(t *testing.T) {
 	}
 }
 
+// TestResolveVideoBodySilentRequestOnModelWithoutToggle reproduces the
+// conv_e30f67cc834d4e98e1a49631 regression: a user asks for "no audio"
+// (generateAudio:false) against a model that emits synchronized audio by
+// default yet exposes no generate_audio input — alibaba/happy-horse is the
+// real-world case. The resolver must not silently drop the flag (that lets
+// audio through after the user explicitly declined it); it emits a notice so
+// the failure is visible, and leaves generate_audio out of the body since the
+// endpoint has no such field to set.
+func TestResolveVideoBodySilentRequestOnModelWithoutToggle(t *testing.T) {
+	silent := false
+	body, notices, _ := resolveVideoBody(loadSchema(t, "happy-horse-image-to-video"),
+		VideoGenerateRequest{
+			Model:         "alibaba/happy-horse/v1.1/image-to-video",
+			Prompt:        "a parent stands still while a child walks toward the light",
+			GenerateAudio: &silent,
+			Image:         "data:image/png;base64,ABC",
+		},
+		builtinFalOverrides())
+	if _, present := body["generate_audio"]; present {
+		t.Fatalf("generate_audio must not be set; the model has no such field. got %v", body["generate_audio"])
+	}
+	if len(notices) != 1 {
+		t.Fatalf("expected one notice (silent request cannot be honored), got %v", notices)
+	}
+	if !strings.Contains(notices[0], "audio by default") || !strings.Contains(notices[0], "cannot be honored") {
+		t.Fatalf("notice = %q, want it to say audio is on by default and the silent request cannot be honored", notices[0])
+	}
+}
+
+// A nil GenerateAudio (let the model default) must stay notice-free even when
+// the model has no generate_audio toggle: there is no user request being
+// violated, so the default-audio behavior is not a failure to surface.
+func TestResolveVideoBodyDefaultAudioOnModelWithoutToggleNoNotice(t *testing.T) {
+	body, notices, _ := resolveVideoBody(loadSchema(t, "happy-horse-image-to-video"),
+		VideoGenerateRequest{
+			Model:  "alibaba/happy-horse/v1.1/image-to-video",
+			Prompt: "a calm lake at dawn",
+			Image:  "data:image/png;base64,ABC",
+		},
+		builtinFalOverrides())
+	if _, present := body["generate_audio"]; present {
+		t.Fatalf("generate_audio must not be set; the model has no such field. got %v", body["generate_audio"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("expected no notices for an unspecified audio flag, got %v", notices)
+	}
+}
+
 // TestResolveVideoBodyVeoExtend verifies the extend path: an attached video maps
 // onto the model's video_url field, and an attached image is ignored in favor of
 // the video (extend takes precedence over image-to-video).

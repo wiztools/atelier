@@ -533,10 +533,19 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 	if req.GenerateAudio != nil {
 		if path, prop, ok := findNative(schema, ov, "video", req.Model, "generateAudio"); ok {
 			setBodyPath(schema, body, path, coerceVideoValue(prop, *req.GenerateAudio))
+		} else if !*req.GenerateAudio {
+			// An explicit silent request (generateAudio:false) against a model
+			// with no generate_audio toggle cannot be honored. The absence of a
+			// toggle does NOT mean the model is silent — some endpoints emit
+			// synchronized audio by default (e.g. alibaba/happy-horse, which
+			// does joint audio-video generation) yet expose no way to disable
+			// it. Silent dropping here would let audio through after the user
+			// explicitly asked for none, so surface a notice instead. A true
+			// (or nil) value is left to the model's default — no notice needed.
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q generates audio by default and exposes no generate_audio input; an explicit silent request cannot be honored, so the video will contain audio.",
+				req.Model))
 		}
-		// Models without a generate_audio field silently ignore it — no notice,
-		// matching the "endpoints that never emit audio ignore it" contract on
-		// VideoGenerateRequest.GenerateAudio.
 	}
 
 	// Source media: extend (video) takes precedence over image-to-video.

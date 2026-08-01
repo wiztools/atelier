@@ -441,7 +441,11 @@ type VideoGenerateRequest struct {
 	// GenerateAudio maps to fal's generate_audio input on audio-capable video
 	// models. A pointer so "unspecified" (nil, let the model default) stays
 	// distinct from an explicit false (silent clip) — the latter is what "video
-	// without audio" requests. Endpoints that never emit audio ignore it.
+	// without audio" requests. The absence of a generate_audio field does not
+	// mean the model is silent: some endpoints emit synchronized audio by
+	// default yet expose no toggle. When the caller asks for silence and the
+	// model has no generate_audio input, the resolver can't comply and emits a
+	// notice instead of silently dropping the request (see resolveVideoBody).
 	GenerateAudio *bool `json:"generateAudio,omitempty"`
 }
 
