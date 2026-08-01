@@ -494,7 +494,21 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 			// skip — inherit the source frame's orientation
 		} else if path, prop, ok := findNative(schema, ov, "video", req.Model, "aspectRatio"); ok {
 			setBodyPath(schema, body, path, coerceVideoValue(prop, aspect))
+		} else if len(sourceImages) > 0 {
+			// Image-to-video with an explicit ratio, but the model has no
+			// aspect_ratio input. Its output ratio is NOT uncontrolled — it is
+			// inherited from the source frame — so "no aspect-ratio control" is
+			// wrong here. The model could honor the request through the frame's
+			// shape; Atelier doesn't reshape the image, so say that honestly
+			// rather than claiming the ratio was ignored. (See
+			// conv_e30f67cc834d4e98e1a49631, where this notice misstated a
+			// happy-horse image-to-video request.)
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q derives the output aspect ratio from the source image and has no aspect_ratio input, so the explicit %q request is only honored if the source image already matches; Atelier did not reshape the image.",
+				req.Model, aspect))
 		} else {
+			// Text-to-video with no aspect_ratio input: the ratio genuinely
+			// can't be carried — the model picks its own default orientation.
 			notices = append(notices, fmt.Sprintf(
 				"The selected model %q has no aspect-ratio control; ignoring the requested aspect ratio.",
 				req.Model))

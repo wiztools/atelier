@@ -1175,7 +1175,7 @@ func generateVideoParamSchema() map[string]any {
 			"content":        stringParam("The video prompt — describe the clip to create."),
 			"model":          stringParam("Optional fal.ai video model override."),
 			"negativePrompt": stringParam("Optional — describe what to keep out of the clip (e.g. \"blurry, text, watermark\")."),
-			"aspectRatio":    enumParam("Optional — the output video shape. An explicit ratio overrides everything, including an attached image's orientation. Omit to inherit the attached image's orientation (image-to-video) or the configured default (text-to-video).", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"),
+			"aspectRatio":    enumParam("Optional — the output video shape. When the model exposes an aspect_ratio input this is sent directly; otherwise image-to-video models inherit the ratio from the source image, so the explicit ratio is only honored if that image already matches (the image is not reshaped). Omit to inherit the attached image's orientation (image-to-video) or the configured default (text-to-video).", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"),
 			"resolution":     stringParam("Optional — the output video resolution tier (e.g. \"480p\", \"720p\", \"1080p\", \"4k\"). Tiers vary by model, so an unsupported value is ignored with a notice and the model's default is used. Omit to let the model choose."),
 			"generateAudio":  boolParam("Optional — set false to render a silent clip on models that would otherwise add audio. Some models generate audio by default yet expose no way to disable it; on those, a false value cannot be honored and the user is notified."),
 		},

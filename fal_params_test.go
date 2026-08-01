@@ -643,6 +643,66 @@ func TestResolveVideoBodyKlingImageToVideo(t *testing.T) {
 	}
 }
 
+// TestResolveVideoBodyImageToVideoExplicitRatioNoToggle reproduces
+// conv_e30f67cc834d4e98e1a49631: an explicit aspect ratio on an image-to-video
+// model that has no aspect_ratio input (alibaba/happy-horse). The model derives
+// orientation from the source frame, so the old notice ("has no aspect-ratio
+// control; ignoring the requested aspect ratio") was false on both counts. The
+// resolver now says honestly that the ratio is only honored if the source image
+// already matches, and that the image was not reshaped. aspect_ratio must not
+// appear in the body (the model has no such field) and image_url is still sent.
+func TestResolveVideoBodyImageToVideoExplicitRatioNoToggle(t *testing.T) {
+	body, notices, _ := resolveVideoBody(loadSchema(t, "happy-horse-image-to-video"),
+		VideoGenerateRequest{
+			Model:               "alibaba/happy-horse/v1.1/image-to-video",
+			Prompt:              "a parent stands still while a child walks toward the light",
+			Image:               "data:image/png;base64,ABC",
+			AspectRatio:         "9:16",
+			AspectRatioExplicit: true,
+		},
+		builtinFalOverrides())
+	if _, present := body["aspect_ratio"]; present {
+		t.Fatalf("aspect_ratio must not be set; the model has no such field. got %v", body["aspect_ratio"])
+	}
+	if got, ok := body["image_url"].(string); !ok || !strings.HasPrefix(got, "data:image/") {
+		t.Fatalf("image_url = %v, want the attached image data URI", body["image_url"])
+	}
+	if len(notices) != 1 {
+		t.Fatalf("expected one notice (explicit ratio not honored via the frame), got %v", notices)
+	}
+	if strings.Contains(notices[0], "no aspect-ratio control") {
+		t.Fatalf("notice must not claim 'no aspect-ratio control' for an image-to-video model. got %q", notices[0])
+	}
+	if !strings.Contains(notices[0], "derives the output aspect ratio from the source image") ||
+		!strings.Contains(notices[0], "did not reshape the image") ||
+		!strings.Contains(notices[0], "9:16") {
+		t.Fatalf("notice = %q, want it to say the model derives ratio from the source image, mention 9:16, and that the image was not reshaped", notices[0])
+	}
+}
+
+// TestResolveVideoBodyTextToVideoNoAspectRatioKeepsOldNotice confirms the
+// text-to-video path still uses the accurate "no aspect-ratio control" notice
+// when there is no source image to inherit from — there the ratio genuinely
+// can't be carried, unlike the image-to-video case above.
+func TestResolveVideoBodyTextToVideoNoAspectRatioKeepsOldNotice(t *testing.T) {
+	body, notices, _ := resolveVideoBody(loadSchema(t, "happy-horse-image-to-video"),
+		VideoGenerateRequest{
+			Model:       "alibaba/happy-horse/v1.1/image-to-video",
+			Prompt:      "a calm ocean at dawn",
+			AspectRatio: "16:9", // no Image attached → text-to-video path
+		},
+		builtinFalOverrides())
+	if _, present := body["aspect_ratio"]; present {
+		t.Fatalf("aspect_ratio must not be set; the model has no such field. got %v", body["aspect_ratio"])
+	}
+	if len(notices) != 1 {
+		t.Fatalf("expected one notice, got %v", notices)
+	}
+	if !strings.Contains(notices[0], "no aspect-ratio control") {
+		t.Fatalf("text-to-video notice should still say 'no aspect-ratio control'. got %q", notices[0])
+	}
+}
+
 // imageVideoWithAspectSchema is like scalarImageVideoSchema but also declares an
 // aspect_ratio field, so the image-to-video aspect-ratio gate can be exercised
 // against the schema-driven branch (findNative "video" "aspectRatio").
