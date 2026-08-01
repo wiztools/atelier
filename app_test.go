@@ -3865,6 +3865,25 @@ func TestParseRecoversGeminiToolCodeDialect(t *testing.T) {
 	}
 }
 
+// TestApplyKwargsMapsResolution covers the resolution kwarg in the Gemini
+// tool_code dialect. applyKwargs is the pure mapper that turns Python-style
+// kwargs (e.g. resolution='1080p') into HarnessToolCall fields; resolution is
+// planner-only, so this dialect is one of the two paths it flows through (the
+// other being native tool-calling). Tested directly rather than through the
+// dialect-recovery wrapper so it doesn't depend on generate_video being a
+// registered (key-gated) tool — the wrapper's name-resolution is already
+// exercised by TestParseRecoversGeminiToolCodeDialect above.
+func TestApplyKwargsMapsResolution(t *testing.T) {
+	var call HarnessToolCall
+	applyKwargs(&call, "prompt='a city at night', resolution='1080p'")
+	if call.Content != "a city at night" {
+		t.Errorf("content = %q, want mapped from 'prompt'", call.Content)
+	}
+	if call.Resolution != "1080p" {
+		t.Errorf("resolution = %q, want mapped from 'resolution' kwarg", call.Resolution)
+	}
+}
+
 // TestParseRecoversMultipleToolCodeCalls covers the two-image case: the dialect
 // can carry more than one call, and both must be recovered in order. Both
 // Python-style (aspect_ratio) and JSON-style (aspectRatio) kwargs appear.

@@ -107,6 +107,12 @@ type HarnessToolCall struct {
 	// models; text-to-speech models ignore it, since their length follows the
 	// spoken text. Forwarded only when set — see generateAudioParamSchema.
 	Duration string `json:"duration,omitempty"`
+	// Resolution is an optional generate_video input naming the output resolution
+	// tier (a fal enum string, e.g. "720p", "1080p", "4k"). Tiers vary by model —
+	// resolveVideoBody drops a tier the selected model's enum doesn't list with a
+	// notice rather than 422ing at fal. Omit to let the model use its own default.
+	// Forwarded only when set — see generateVideoParamSchema.
+	Resolution string `json:"resolution,omitempty"`
 	// Loop and Voice are optional generate_audio inputs. Loop requests a
 	// seamless loop (sound-effect models); Voice selects a text-to-speech voice.
 	// Both are resolved against the model's schema and dropped-with-notice when
@@ -1935,6 +1941,8 @@ func applyKwargs(call *HarnessToolCall, args string) {
 			call.AspectRatio = raw
 		case "duration":
 			call.Duration = raw
+		case "resolution":
+			call.Resolution = raw
 		case "voice":
 			call.Voice = raw
 		case "language":

@@ -18,6 +18,7 @@ import {
   ListFalVideoModels,
   ListFalVideoImageModels,
   ListFalVideoExtendModels,
+  ListFalVideoDurations,
   ListFalAudioModels,
   ListFalTranscribeModels,
   ListFalUpscaleModels,
@@ -203,9 +204,12 @@ const defaultFalUpscaleModel = 'fal-ai/esrgan';
 const defaultVideoDuration = '5';
 const defaultVideoAspectRatio = '16:9';
 // 'auto' lets the video model size the clip to the prompt (Seedance supports it;
-// other models drop it with a notice via the backend enum-guard). Labels map the
-// raw values to friendlier option text — 'auto' reads better than a bare token.
-const videoDurationOptions = ['auto', '5', '10', '15'];
+// other models drop it with a notice via the backend enum-guard). These are the
+// generic fallback options shown when a model's published schema can't be
+// loaded (offline / no key); each picker fetches its own model-specific set via
+// ListFalVideoDurations. Labels map raw values to friendlier option text —
+// 'auto' reads better than a bare token.
+const defaultVideoDurationOptions = ['auto', '5', '10', '15'];
 const videoDurationLabels: Record<string, string> = { auto: 'Auto' };
 const videoAspectRatioOptions = ['16:9', '9:16', '1:1'];
 
@@ -285,7 +289,19 @@ function App() {
   const [falLipsyncVideoModels, setFalLipsyncVideoModels] = useState<main.FalModel[]>([]);
   const [falUpscaleModel, setFalUpscaleModel] = useState(defaultFalUpscaleModel);
   const [falUpscaleModels, setFalUpscaleModels] = useState<main.FalModel[]>([]);
+  // Each video picker owns its duration options + value, driven by its model's
+  // published schema (ListFalVideoDurations). videoDuration (text-to-video) is
+  // the canonical value persisted to config.generation.video.duration — the
+  // backend reads one shared duration for all three video paths
+  // (tools_registry.go), and resolveVideoBody drops values invalid for the
+  // actually-selected model with a notice, so the image/extend pickers are a
+  // per-model discovery/preview aid that stays correct where the value is valid.
   const [videoDuration, setVideoDuration] = useState(defaultVideoDuration);
+  const [videoDurationImage, setVideoDurationImage] = useState(defaultVideoDuration);
+  const [videoDurationExtend, setVideoDurationExtend] = useState(defaultVideoDuration);
+  const [videoDurationOptions, setVideoDurationOptions] = useState<string[]>(defaultVideoDurationOptions);
+  const [videoDurationImageOptions, setVideoDurationImageOptions] = useState<string[]>(defaultVideoDurationOptions);
+  const [videoDurationExtendOptions, setVideoDurationExtendOptions] = useState<string[]>(defaultVideoDurationOptions);
   const [videoAspectRatio, setVideoAspectRatio] = useState(defaultVideoAspectRatio);
   const [system, setSystem] = useState('You are Atelier, a precise local AI collaborator.');
   const [prompt, setPrompt] = useState('');
@@ -701,6 +717,58 @@ function App() {
     setImageModel(imageModelOptions[0]);
   }, [imageModel, imageModelOptions]);
 
+  // Each video picker fetches the duration values its selected model accepts
+  // (ListFalVideoDurations → the model's published schema enum), then reconciles
+  // the picker's current value into that set — so switching models never leaves
+  // a duration selected that the model would 422 on (e.g. Seedance-only "auto"
+  // on an integer-only model; see conv_4feb919a). The fetch refires only on
+  // model change; the value reconcile reads the latest state inside the setter.
+  // An empty/error result falls back to the generic option set.
+  useEffect(() => {
+    let cancelled = false;
+    ListFalVideoDurations(falVideoModel)
+      .then((durations) => {
+        if (cancelled) return;
+        const opts = durations && durations.length ? durations : defaultVideoDurationOptions;
+        setVideoDurationOptions(opts);
+        setVideoDuration((current) => (opts.includes(current) ? current : opts[0] ?? defaultVideoDuration));
+      })
+      .catch(() => setVideoDurationOptions(defaultVideoDurationOptions));
+    return () => {
+      cancelled = true;
+    };
+  }, [falVideoModel]);
+
+  useEffect(() => {
+    let cancelled = false;
+    ListFalVideoDurations(falVideoImageModel)
+      .then((durations) => {
+        if (cancelled) return;
+        const opts = durations && durations.length ? durations : defaultVideoDurationOptions;
+        setVideoDurationImageOptions(opts);
+        setVideoDurationImage((current) => (opts.includes(current) ? current : opts[0] ?? defaultVideoDuration));
+      })
+      .catch(() => setVideoDurationImageOptions(defaultVideoDurationOptions));
+    return () => {
+      cancelled = true;
+    };
+  }, [falVideoImageModel]);
+
+  useEffect(() => {
+    let cancelled = false;
+    ListFalVideoDurations(falVideoExtendModel)
+      .then((durations) => {
+        if (cancelled) return;
+        const opts = durations && durations.length ? durations : defaultVideoDurationOptions;
+        setVideoDurationExtendOptions(opts);
+        setVideoDurationExtend((current) => (opts.includes(current) ? current : opts[0] ?? defaultVideoDuration));
+      })
+      .catch(() => setVideoDurationExtendOptions(defaultVideoDurationOptions));
+    return () => {
+      cancelled = true;
+    };
+  }, [falVideoExtendModel]);
+
   useEffect(() => {
     // Only re-run when the option list itself changes (provider switch, or
     // the OpenRouter list finishing a load) — not on every keystroke of
@@ -772,6 +840,11 @@ function App() {
     setFalLipsyncVideoModel(nextFalLipsyncVideoModel);
     setFalUpscaleModel(nextFalUpscaleModel);
     setVideoDuration(nextVideoDuration);
+    // The backend persists one shared video duration; seed the image/extend
+    // pickers from it too. Their per-picker effects correct to a value valid
+    // for the selected model once its options load.
+    setVideoDurationImage(nextVideoDuration);
+    setVideoDurationExtend(nextVideoDuration);
     setVideoAspectRatio(nextVideoAspectRatio);
     setConfigLoaded(true);
     await Promise.all([
@@ -2075,6 +2148,15 @@ function App() {
               <section className="settings-section">
                 <h3>Video</h3>
                 <div className="settings-rows">
+                  {/*
+                    Each video picker is paired with its own duration dropdown,
+                    whose options come from the selected model's published schema
+                    (ListFalVideoDurations). Splitting per-picker means a model
+                    that only accepts integers never offers Seedance-only "auto".
+                    Only the text-to-video duration persists to config; the image
+                    and extend pickers are a per-model preview that stays valid
+                    where the value is acceptable to their model.
+                  */}
                   <div className="two-column">
                     <div className="field">
                       <label htmlFor="fal-video-model">Text-to-Video Model (fal.ai)</label>
@@ -2095,6 +2177,15 @@ function App() {
                     </div>
 
                     <div className="field">
+                      <label htmlFor="video-duration">Text-to-Video Duration</label>
+                      <select id="video-duration" value={videoDuration} onChange={(event) => setVideoDuration(event.target.value)}>
+                        {videoDurationOptions.map((value) => <option key={value} value={value}>{videoDurationLabels[value] ?? value}</option>)}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="two-column">
+                    <div className="field">
                       <label htmlFor="fal-video-image-model">Image-to-Video Model (fal.ai)</label>
                       <ModelCombobox
                         id="fal-video-image-model"
@@ -2106,35 +2197,42 @@ function App() {
                         allowCustom
                       />
                     </div>
-                  </div>
 
-                  <div className="field">
-                    <label htmlFor="fal-video-extend-model">Video-Extend Model (fal.ai)</label>
-                    <ModelCombobox
-                      id="fal-video-extend-model"
-                      ariaLabel="fal.ai video-extend model"
-                      placeholder={defaultFalVideoExtendModel}
-                      value={falVideoExtendModel}
-                      onChange={setFalVideoExtendModel}
-                      options={falVideoExtendModelOptions}
-                      allowCustom
-                    />
+                    <div className="field">
+                      <label htmlFor="video-duration-image">Image-to-Video Duration</label>
+                      <select id="video-duration-image" value={videoDurationImage} onChange={(event) => setVideoDurationImage(event.target.value)}>
+                        {videoDurationImageOptions.map((value) => <option key={value} value={value}>{videoDurationLabels[value] ?? value}</option>)}
+                      </select>
+                    </div>
                   </div>
 
                   <div className="two-column">
                     <div className="field">
-                      <label htmlFor="video-duration">Video Duration</label>
-                      <select id="video-duration" value={videoDuration} onChange={(event) => setVideoDuration(event.target.value)}>
-                        {videoDurationOptions.map((value) => <option key={value} value={value}>{videoDurationLabels[value] ?? value}</option>)}
-                      </select>
+                      <label htmlFor="fal-video-extend-model">Video-Extend Model (fal.ai)</label>
+                      <ModelCombobox
+                        id="fal-video-extend-model"
+                        ariaLabel="fal.ai video-extend model"
+                        placeholder={defaultFalVideoExtendModel}
+                        value={falVideoExtendModel}
+                        onChange={setFalVideoExtendModel}
+                        options={falVideoExtendModelOptions}
+                        allowCustom
+                      />
                     </div>
 
                     <div className="field">
-                      <label htmlFor="video-aspect">Video Aspect Ratio</label>
-                      <select id="video-aspect" value={videoAspectRatio} onChange={(event) => setVideoAspectRatio(event.target.value)}>
-                        {videoAspectRatioOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+                      <label htmlFor="video-duration-extend">Video-Extend Duration</label>
+                      <select id="video-duration-extend" value={videoDurationExtend} onChange={(event) => setVideoDurationExtend(event.target.value)}>
+                        {videoDurationExtendOptions.map((value) => <option key={value} value={value}>{videoDurationLabels[value] ?? value}</option>)}
                       </select>
                     </div>
+                  </div>
+
+                  <div className="field">
+                    <label htmlFor="video-aspect">Video Aspect Ratio</label>
+                    <select id="video-aspect" value={videoAspectRatio} onChange={(event) => setVideoAspectRatio(event.target.value)}>
+                      {videoAspectRatioOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+                    </select>
                   </div>
                 </div>
               </section>

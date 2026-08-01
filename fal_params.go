@@ -100,6 +100,7 @@ var videoSynonyms = map[string][]string{
 	"prompt":         {"prompt"},
 	"duration":       {"duration"},
 	"aspectRatio":    {"aspect_ratio", "aspectRatio", "size"},
+	"resolution":     {"resolution"},
 	"negativePrompt": {"negative_prompt"},
 	"sourceImage":    {"image_url", "image_urls"},
 	"sourceVideo":    {"video_url"},
@@ -435,6 +436,9 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 		if negative := strings.TrimSpace(req.NegativePrompt); negative != "" {
 			body["negative_prompt"] = negative
 		}
+		if res := strings.TrimSpace(req.Resolution); res != "" {
+			body["resolution"] = res
+		}
 		if req.GenerateAudio != nil {
 			body["generate_audio"] = *req.GenerateAudio
 		}
@@ -505,6 +509,27 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 				req.Model))
 		}
 	}
+	if res := strings.TrimSpace(req.Resolution); res != "" {
+		// Resolution tiers are model-dependent: Seedance accepts
+		// 480p/720p/1080p/4k, happy-horse only 720p/1080p. Guard against values
+		// the model's enum doesn't list before sending — passing an out-of-enum
+		// tier through would 422 at fal. Drop it with a notice so the request
+		// still runs (the model picks its own default), mirroring how duration is
+		// handled above.
+		if path, prop, ok := findNative(schema, ov, "video", req.Model, "resolution"); ok {
+			if !valueAllowedByEnum(prop, res) {
+				notices = append(notices, fmt.Sprintf(
+					"The selected model %q does not accept resolution %q; ignoring it and letting the model choose.",
+					req.Model, res))
+			} else {
+				setBodyPath(schema, body, path, coerceVideoValue(prop, res))
+			}
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no resolution control; ignoring the requested resolution.",
+				req.Model))
+		}
+	}
 	if req.GenerateAudio != nil {
 		if path, prop, ok := findNative(schema, ov, "video", req.Model, "generateAudio"); ok {
 			setBodyPath(schema, body, path, coerceVideoValue(prop, *req.GenerateAudio))
@@ -563,6 +588,23 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 func coerceVideoValue(prop SchemaProperty, value any) any {
 	if prop.Kind == schemaArray {
 		return []any{value}
+	}
+	// Type-driven numeric coercion: a canonical duration arrives as a string
+	// (from config/UI), but a model whose schema declares the field as integer
+	// or number must receive a JSON number, not a string — happy-horse 422'd on
+	// "10" because it expects integer 10 (conv_4feb919a). String-typed fields
+	// (Veo "8s", Kling "5", Seedance "auto") are untouched. A non-numeric value
+	// against a numeric field is returned as-is; the caller's enum guard drops
+	// it with a notice rather than sending a malformed number.
+	if prop.Type == "integer" || prop.Type == "number" {
+		s := strings.TrimSpace(fmt.Sprintf("%v", value))
+		if n, err := strconv.ParseFloat(s, 64); err == nil {
+			if prop.Type == "integer" {
+				return int(n)
+			}
+			return n
+		}
+		return value
 	}
 	if len(prop.Enum) > 0 {
 		s := fmt.Sprintf("%v", value)

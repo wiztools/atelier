@@ -786,6 +786,7 @@ export namespace main {
 	    generateAudio?: boolean;
 	    aspectRatio?: string;
 	    duration?: string;
+	    resolution?: string;
 	    loop?: boolean;
 	    voice?: string;
 	    scale?: string;
@@ -815,6 +816,7 @@ export namespace main {
 	        this.generateAudio = source["generateAudio"];
 	        this.aspectRatio = source["aspectRatio"];
 	        this.duration = source["duration"];
+	        this.resolution = source["resolution"];
 	        this.loop = source["loop"];
 	        this.voice = source["voice"];
 	        this.scale = source["scale"];

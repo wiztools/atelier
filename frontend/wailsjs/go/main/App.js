@@ -74,6 +74,10 @@ export function ListFalUpscaleModels() {
   return window['go']['main']['App']['ListFalUpscaleModels']();
 }
 
+export function ListFalVideoDurations(arg1) {
+  return window['go']['main']['App']['ListFalVideoDurations'](arg1);
+}
+
 export function ListFalVideoExtendModels() {
   return window['go']['main']['App']['ListFalVideoExtendModels']();
 }

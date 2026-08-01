@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,8 +24,15 @@ const (
 // of object nesting is captured in Nested; Default holds the property's default
 // (used to seed nested-object merges so sibling defaults survive).
 type SchemaProperty struct {
-	Name     string
-	Kind     schemaKind
+	Name string
+	Kind schemaKind
+	// Type is the raw OpenAPI scalar type ("string", "integer", "number",
+	// "boolean") for scalars; the resolver uses it to coerce the canonical
+	// (always-string) duration into the type fal's schema declares — an integer
+	// duration must be sent as a JSON number, not a string (see conv_4feb919a:
+	// happy-horse 422'd on "10" because it expects integer 10). Empty for the
+	// array/object kinds, which carry their structure in Items/Nested instead.
+	Type     string
 	Enum     []string
 	Default  any
 	Nested   map[string]SchemaProperty // populated when Kind == schemaObject
@@ -116,7 +124,7 @@ func parseModelInputSchema(raw []byte) (*ModelInputSchema, error) {
 func toSchemaProperty(name string, raw json.RawMessage) SchemaProperty {
 	var p openAPIProp
 	_ = json.Unmarshal(raw, &p)
-	sp := SchemaProperty{Name: name, Kind: schemaScalar, Enum: enumStrings(p.Enum)}
+	sp := SchemaProperty{Name: name, Kind: schemaScalar, Type: p.Type, Enum: enumStrings(p.Enum)}
 	if len(p.Default) > 0 {
 		var d any
 		if err := json.Unmarshal(p.Default, &d); err == nil {
@@ -146,15 +154,21 @@ func toSchemaProperty(name string, raw json.RawMessage) SchemaProperty {
 	return sp
 }
 
+// enumStrings renders an OpenAPI enum (which may be strings OR numbers — fal's
+// happy-horse declares duration as an integer enum [3..15]) into string form.
+// Stringifying with %v rather than a type-assertion matters: encoding/json
+// decodes JSON numbers into []any as float64, so v.(string) would silently drop
+// every numeric enum value, leaving the enum empty and bypassing the
+// valueAllowedByEnum guard. "%v" renders both "5" (from string) and "5" (from
+// float64 5.0) identically, so callers compare against the canonical string
+// form uniformly.
 func enumStrings(vals []any) []string {
 	if len(vals) == 0 {
 		return nil
 	}
 	out := make([]string, 0, len(vals))
 	for _, v := range vals {
-		if s, ok := v.(string); ok {
-			out = append(out, s)
-		}
+		out = append(out, fmt.Sprintf("%v", v))
 	}
 	return out
 }
@@ -302,4 +316,28 @@ func (c *SchemaCache) write(path string, raw []byte) {
 
 func sanitizeModelID(model string) string {
 	return strings.NewReplacer("/", "_", ":", "_", " ", "_").Replace(model)
+}
+
+// videoDurationOptions returns the duration values the given fal video model
+// accepts, drawn from its published input schema's duration enum (e.g.
+// ["auto","4",...,"15"] for Seedance, ["5","10"] for Kling). It mirrors the
+// lookup resolveVideoBody performs at submit time, so the Settings duration
+// picker can show exactly the values the selected model won't 422 on.
+//
+// Returns nil when the schema is unavailable (offline, fetch failed, no key)
+// or the model has no duration control — callers fall back to a generic option
+// set rather than blocking the UI. Nil-safe throughout: a nil schema, nil app,
+// or empty model all yield nil. findNative is nil-schema-safe (returns false).
+func videoDurationOptions(ctx context.Context, client *http.Client, storageRoot, model string) []string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return nil
+	}
+	cache := newFalSchemaCache(client, storageRoot)
+	overrides := loadFalOverrides(storageRoot)
+	schema := cache.Get(ctx, model)
+	if _, prop, ok := findNative(schema, overrides, "video", model, "duration"); ok {
+		return prop.Enum
+	}
+	return nil
 }

@@ -1,0 +1,101 @@
+{
+  "components": {
+    "schemas": {
+      "HappyHorseImageToVideoInput": {
+        "properties": {
+          "enable_safety_checker": {
+            "description": "Enable content moderation for input and output.",
+            "default": true,
+            "title": "Enable Safety Checker",
+            "type": "boolean"
+          },
+          "duration": {
+            "description": "Output video duration in seconds (3-15).",
+            "default": 5,
+            "enum": [
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15
+            ],
+            "title": "Duration",
+            "examples": [
+              5,
+              10,
+              15
+            ],
+            "type": "integer"
+          },
+          "resolution": {
+            "description": "Output video resolution tier.",
+            "default": "1080p",
+            "enum": [
+              "720p",
+              "1080p"
+            ],
+            "title": "Resolution",
+            "type": "string"
+          },
+          "image_url": {
+            "description": "URL of the first frame image. Formats: JPEG, JPG, PNG, BMP, WEBP. Dimensions must be at least 300px. Aspect ratio must be between 1:2.5 and 2.5:1. Max 10 MB.",
+            "examples": [
+              "https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20250925/wpimhv/rap.png"
+            ],
+            "title": "Image Url",
+            "type": "string"
+          },
+          "prompt": {
+            "description": "Optional text prompt guiding the animation. Max 2500 characters.",
+            "examples": [
+              "Bring the scene in the image to life."
+            ],
+            "title": "Prompt",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "seed": {
+            "description": "Random seed for reproducibility (0-2147483647).",
+            "title": "Seed",
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "description": "Input for Happy Horse image-to-video generation (first frame only).",
+        "title": "HappyHorseImageToVideoInput",
+        "x-fal-order-properties": [
+          "image_url",
+          "prompt",
+          "resolution",
+          "duration",
+          "seed",
+          "enable_safety_checker"
+        ],
+        "required": [
+          "image_url"
+        ],
+        "type": "object"
+      }
+    }
+  }
+}

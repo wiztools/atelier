@@ -417,6 +417,12 @@ type VideoGenerateRequest struct {
 	// internal signal, never serialized or surfaced to the frontend.
 	AspectRatioExplicit bool   `json:"-"`
 	NegativePrompt      string `json:"negativePrompt,omitempty"`
+	// Resolution is an optional output resolution tier (a fal enum string, e.g.
+	// "720p", "1080p", "4k"). Tiers vary by model; resolveVideoBody drops a tier
+	// the selected model's enum doesn't list with a notice rather than 422ing at
+	// fal. Omit to let the model use its own default. Planner-only, like
+	// NegativePrompt — there is no persisted config default for it.
+	Resolution string `json:"resolution,omitempty"`
 	// Image, when set, is a single source frame for image-to-video generation —
 	// a URL or a base64 data URI. It maps to fal's image_url input and requires
 	// an image-to-video model. Legacy scalar field; Images is preferred. The two
@@ -1513,6 +1519,29 @@ func (a *App) ListFalVideoModels() ([]FalModel, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return newFalClient(a.client, key).ListModels(ctx, falTextToVideoCategory, 0)
+}
+
+// ListFalVideoDurations returns the duration values the given fal video model
+// accepts (e.g. ["auto","4",...,"15"] for Seedance, ["5","10"] for Kling), read
+// from the model's published input schema. Used by the Settings duration
+// pickers so each model only offers durations it won't 422 on — the failure in
+// conv_4feb919a came from offering Seedance-only "auto" to a model that wanted
+// an integer. Returns an empty slice (not an error) when the schema is
+// unavailable — offline, no key, or a model with no duration control — so the
+// UI falls back to a generic option set. The OpenAPI endpoint is public, but
+// the fetch path loads the key the same way generation calls do.
+func (a *App) ListFalVideoDurations(model string) ([]string, error) {
+	config, err := loadAppConfig()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	opts := videoDurationOptions(ctx, a.client, config.Storage.Root, model)
+	if opts == nil {
+		return []string{}, nil
+	}
+	return opts, nil
 }
 
 // ListFalVideoImageModels returns fal's image-to-video catalog for the Settings
