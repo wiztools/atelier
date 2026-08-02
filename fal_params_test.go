@@ -619,6 +619,94 @@ func TestResolveVideoBodyVeoExtend(t *testing.T) {
 	}
 }
 
+// extendVideoNoAspectSchema is a synthesized schema with a scalar video_url
+// field and no aspect_ratio input — the shape of an extend endpoint that
+// derives the output ratio from the source clip (e.g.
+// xai/grok-imagine-video/extend-video). Built inline because no captured
+// OpenAPI doc for such a model exists in the testdata tree yet.
+func extendVideoNoAspectSchema() *ModelInputSchema {
+	return &ModelInputSchema{
+		Properties: map[string]SchemaProperty{
+			"prompt":    {Name: "prompt", Kind: schemaScalar},
+			"video_url": {Name: "video_url", Kind: schemaScalar},
+		},
+		order: []string{"prompt", "video_url"},
+	}
+}
+
+// TestResolveVideoBodyExtendExplicitRatioNoToggle reproduces
+// conv_484449cf8fe4a13c1ffa6bb4: an explicit aspect ratio on an extend model
+// that has no aspect_ratio input (xai/grok-imagine-video/extend-video). The
+// model derives orientation from the source clip, so the text-to-video notice
+// ("has no aspect-ratio control; ignoring the requested aspect ratio") was
+// false — extend inherits the source video's ratio, exactly like image-to-
+// video inherits the source frame. The resolver now says honestly that the
+// ratio is only honored if the source video already matches, and that the
+// video was not reshaped. aspect_ratio must not appear in the body (the model
+// has no such field) and video_url is still sent.
+func TestResolveVideoBodyExtendExplicitRatioNoToggle(t *testing.T) {
+	body, notices, _ := resolveVideoBody(extendVideoNoAspectSchema(),
+		VideoGenerateRequest{
+			Model:               "xai/grok-imagine-video/extend-video",
+			Prompt:              "continue the flight over the canyon",
+			Video:               "data:video/mp4;base64,AAA",
+			AspectRatio:         "9:16",
+			AspectRatioExplicit: true,
+		},
+		builtinFalOverrides())
+	if _, present := body["aspect_ratio"]; present {
+		t.Fatalf("aspect_ratio must not be set; the model has no such field. got %v", body["aspect_ratio"])
+	}
+	if got, ok := body["video_url"].(string); !ok || !strings.HasPrefix(got, "data:video/") {
+		t.Fatalf("video_url = %v, want the attached video data URI", body["video_url"])
+	}
+	if len(notices) != 1 {
+		t.Fatalf("expected one notice (explicit ratio not honored via the source clip), got %v", notices)
+	}
+	if strings.Contains(notices[0], "no aspect-ratio control") {
+		t.Fatalf("notice must not claim 'no aspect-ratio control' for an extend model. got %q", notices[0])
+	}
+	if !strings.Contains(notices[0], "derives the output aspect ratio from the source video") ||
+		!strings.Contains(notices[0], "did not reshape the video") ||
+		!strings.Contains(notices[0], "9:16") {
+		t.Fatalf("notice = %q, want it to say the model derives ratio from the source video, mention 9:16, and that the video was not reshaped", notices[0])
+	}
+}
+
+// TestResolveVideoBodyExtendDropsDefaultRatio is the extend counterpart to
+// TestResolveVideoBodyImageToVideoDropsDefaultRatio: an attached video
+// without an explicitly requested ratio must NOT send aspect_ratio, so the
+// model inherits the source clip's orientation instead of getting a config
+// default stamped onto it. Verifies the gate treats sourceVideo the same as
+// sourceImages.
+func TestResolveVideoBodyExtendDropsDefaultRatio(t *testing.T) {
+	schema := &ModelInputSchema{
+		Properties: map[string]SchemaProperty{
+			"prompt":       {Name: "prompt", Kind: schemaScalar},
+			"video_url":    {Name: "video_url", Kind: schemaScalar},
+			"aspect_ratio": {Name: "aspect_ratio", Kind: schemaScalar},
+		},
+		order: []string{"prompt", "video_url", "aspect_ratio"},
+	}
+	body, notices, _ := resolveVideoBody(schema,
+		VideoGenerateRequest{
+			Model:       "fal-ai/veo3.1/extend-video",
+			Prompt:      "extend the shot",
+			Video:       "data:video/mp4;base64,AAA",
+			AspectRatio: "16:9", // AspectRatioExplicit is false → config default
+		},
+		builtinFalOverrides())
+	if _, present := body["aspect_ratio"]; present {
+		t.Fatalf("aspect_ratio must not be sent for an extend with an inherited ratio; got %v", body["aspect_ratio"])
+	}
+	if got, ok := body["video_url"].(string); !ok || !strings.HasPrefix(got, "data:video/") {
+		t.Fatalf("video_url = %v, want the attached video data URI", body["video_url"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("expected no notices for extend with default ratio, got %v", notices)
+	}
+}
+
 // TestResolveVideoBodyKlingImageToVideo verifies image-to-video: an attached
 // image maps onto the model's scalar image_url field.
 func TestResolveVideoBodyKlingImageToVideo(t *testing.T) {
