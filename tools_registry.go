@@ -415,10 +415,19 @@ func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 			if ratio == "" {
 				ratio = tools.Config.Generation.Video.AspectRatio
 			}
+			// Duration precedence mirrors aspectRatio: an explicit duration on the
+			// call wins; otherwise the configured default applies. For an extend
+			// (attachedVideo), the value is the length of the extension, not the
+			// total clip — resolveVideoBody surfaces that distinction to the user
+			// via a notice so the planner's intent isn't misread as total length.
+			duration := strings.TrimSpace(call.Duration)
+			if duration == "" {
+				duration = tools.Config.Generation.Video.Duration
+			}
 			videoReq := VideoGenerateRequest{
 				Model:               model,
 				Prompt:              strings.TrimSpace(call.Content),
-				Duration:            tools.Config.Generation.Video.Duration,
+				Duration:            duration,
 				AspectRatio:         ratio,
 				AspectRatioExplicit: explicit,
 				NegativePrompt:      strings.TrimSpace(call.NegativePrompt),
@@ -1176,6 +1185,7 @@ func generateVideoParamSchema() map[string]any {
 			"model":          stringParam("Optional fal.ai video model override."),
 			"negativePrompt": stringParam("Optional — describe what to keep out of the clip (e.g. \"blurry, text, watermark\")."),
 			"aspectRatio":    enumParam("Optional — the output video shape. When the model exposes an aspect_ratio input this is sent directly; otherwise image-to-video models inherit the ratio from the source image, so the explicit ratio is only honored if that image already matches (the image is not reshaped). Omit to inherit the attached image's orientation (image-to-video) or the configured default (text-to-video).", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"),
+			"duration":       stringParam("Optional — the target clip length in seconds (e.g. \"5\", \"8\"). Forwarded only when the model exposes a duration input; an unsupported value is dropped with a notice and the model's default is used. For an extend (an attached video) the value is the length of the *extension*, not the total output length — so \"5\" adds 5s to the source clip. Omit to use the configured default length (or the model's default when extending)."),
 			"resolution":     stringParam("Optional — the output video resolution tier (e.g. \"480p\", \"720p\", \"1080p\", \"4k\"). Tiers vary by model, so an unsupported value is ignored with a notice and the model's default is used. Omit to let the model choose."),
 			"generateAudio":  boolParam("Optional — set false to render a silent clip on models that would otherwise add audio. Some models generate audio by default yet expose no way to disable it; on those, a false value cannot be honored and the user is notified."),
 		},

@@ -634,6 +634,85 @@ func extendVideoNoAspectSchema() *ModelInputSchema {
 	}
 }
 
+// extendVideoWithDurationSchema is a synthesized schema with a scalar video_url
+// and an integer duration field — the shape of grok-imagine-video/extend-video,
+// whose duration is documented as "length of the extension in seconds"
+// (default 6, range 2-10). Built inline because no captured OpenAPI doc for the
+// grok extend endpoint exists in the testdata tree yet.
+func extendVideoWithDurationSchema() *ModelInputSchema {
+	return &ModelInputSchema{
+		Properties: map[string]SchemaProperty{
+			"prompt":    {Name: "prompt", Kind: schemaScalar},
+			"video_url": {Name: "video_url", Kind: schemaScalar},
+			"duration":  {Name: "duration", Kind: schemaScalar, Type: "integer"},
+		},
+		order: []string{"prompt", "video_url", "duration"},
+	}
+}
+
+// TestResolveVideoBodyExtendDurationSentNoSemanticsNotice reproduces
+// conv_484449cf8fe4a13c1ffa6bb4: the planner had no duration field for video, so
+// "extend another 5s" sent no duration and fal applied its default. Now the
+// video tool exposes duration, and against an extend model with an integer-
+// typed duration input the value is forwarded as an integer. The extension-
+// length semantics (duration = length appended, not total clip) are documented
+// in the param schema rather than surfaced as a runtime notice, so a successful
+// send must produce NO notice.
+func TestResolveVideoBodyExtendDurationSentNoSemanticsNotice(t *testing.T) {
+	body, notices, _ := resolveVideoBody(extendVideoWithDurationSchema(),
+		VideoGenerateRequest{
+			Model:    "xai/grok-imagine-video/extend-video",
+			Prompt:   "continue the flight over the canyon",
+			Video:    "data:video/mp4;base64,AAA",
+			Duration: "5",
+		},
+		builtinFalOverrides())
+	// duration is sent as an integer (the schema types it integer), not "5".
+	if got, ok := body["duration"]; !ok {
+		t.Fatalf("duration must be sent; the model has a duration input. got body %v", body)
+	} else if got != 5 {
+		t.Fatalf("duration = %v (%T), want integer 5 (schema types it integer)", got, got)
+	}
+	if got, ok := body["video_url"].(string); !ok || !strings.HasPrefix(got, "data:video/") {
+		t.Fatalf("video_url = %v, want the attached video data URI", body["video_url"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("a successful duration send must not emit a notice; semantics live in the param description. got %v", notices)
+	}
+}
+
+// TestResolveVideoBodyExtendDurationOutOfEnumDropped verifies an out-of-enum
+// duration on an extend is dropped with only the duration-dropped notice (no
+// extension-length notice piles on). Uses an enum-constrained duration that
+// rejects "5".
+func TestResolveVideoBodyExtendDurationOutOfEnumDropped(t *testing.T) {
+	schema := &ModelInputSchema{
+		Properties: map[string]SchemaProperty{
+			"prompt":    {Name: "prompt", Kind: schemaScalar},
+			"video_url": {Name: "video_url", Kind: schemaScalar},
+			"duration":  {Name: "duration", Kind: schemaScalar, Enum: []string{"6", "8", "10"}},
+		},
+		order: []string{"prompt", "video_url", "duration"},
+	}
+	body, notices, _ := resolveVideoBody(schema,
+		VideoGenerateRequest{
+			Model:    "xai/grok-imagine-video/extend-video",
+			Prompt:   "continue the flight",
+			Video:    "data:video/mp4;base64,AAA",
+			Duration: "5", // not in the enum
+		},
+		builtinFalOverrides())
+	if _, present := body["duration"]; present {
+		t.Fatalf("duration must be dropped (out of enum), got %v", body["duration"])
+	}
+	if len(notices) != 1 {
+		t.Fatalf("expected only the duration-dropped notice, got %v", notices)
+	}
+	if !strings.Contains(notices[0], "does not accept duration") {
+		t.Fatalf("notice = %q, want the duration-dropped notice", notices[0])
+	}
+}
+
 // TestResolveVideoBodyExtendExplicitRatioNoToggle reproduces
 // conv_484449cf8fe4a13c1ffa6bb4: an explicit aspect ratio on an extend model
 // that has no aspect_ratio input (xai/grok-imagine-video/extend-video). The

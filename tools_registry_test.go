@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestImageSizeForAspectRatio checks that named aspect ratios derive concrete
 // width/height from the configured long-edge budget, rounded to a multiple of
@@ -40,5 +43,29 @@ func TestImageSizeForAspectRatio(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestGenerateVideoParamSchemaExposesDuration is the regression for
+// conv_484449cf8fe4a13c1ffa6bb4: a request to "extend another 5s" produced a
+// ~10s clip because the planner had no duration field to express the 5, so it
+// landed only in the prompt text and fal applied its default. The video tool
+// must expose a `duration` param (mirroring the audio tool) so the planner can
+// carry an explicit clip length / extension length, and its description must
+// flag the extend-vs-total distinction (otherwise a "5s" extend reads as total
+// length and the same confusion recurs).
+func TestGenerateVideoParamSchemaExposesDuration(t *testing.T) {
+	schema := generateVideoParamSchema()
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected properties map, got %T", schema["properties"])
+	}
+	prop, ok := props["duration"].(map[string]any)
+	if !ok {
+		t.Fatalf("generate_video param schema must expose a `duration` property; got %v", props)
+	}
+	desc, _ := prop["description"].(string)
+	if !strings.Contains(desc, "extension") || !strings.Contains(desc, "total") {
+		t.Fatalf("duration description must distinguish extension length from total clip length for extend. got %q", desc)
 	}
 }
