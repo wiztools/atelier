@@ -9,8 +9,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/menu"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
-	"github.com/wailsapp/wails/v2/pkg/options/mac"
-)
+	"github.com/wailsapp/wails/v2/pkg/options/mac")
 
 //go:embed all:frontend/dist
 var assets embed.FS
@@ -59,6 +58,14 @@ func main() {
 			About: &mac.AboutInfo{
 				Title:   "Atelier",
 				Message: "Version " + version,
+			},
+			// FullscreenEnabled turns on WKWebView's elementFullscreenEnabled,
+			// which gates HTML5 fullscreen — without it the native fullscreen
+			// button on the <video controls> bar is a no-op (Wails leaves it
+			// off by default). Required so generated/attached videos can go
+			// fullscreen from their own control bar. macOS 12.3+ only.
+			Preferences: &mac.Preferences{
+				FullscreenEnabled: mac.Enabled,
 			},
 		},
 		AssetServer: &assetserver.Options{
