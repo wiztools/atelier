@@ -296,8 +296,28 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	if len(attachedImages) > 0 {
 		attachedImageForVision = attachedImages[0]
 	}
-	responseReq := h.preparedResponseRequest(req, responseModel, responseProvider, preparation, attachedImageForVision)
-	result, err := h.runFinalResponseAttempt(ctx, requestID, conversationID, responseReq, &run)
+	// A generation-mode turn (image/video/audio) that exhausted the planner
+	// without ever emitting a valid tool call produces no media. A chat model
+	// cannot stand in for the missing artifact, and a weak one may hallucinate
+	// executable-looking content (e.g. a dalle.text2im JSON stub, see
+	// conv_930b7b065de90e53087acd24); bypass the final model and emit a
+	// deterministic harness-voiced notice instead. This only fires when no tool
+	// ran at all — once media exists, the normal caption path takes over. The
+	// reason propagates via result.Reason onto the saved turn and evaluation
+	// step (run.Loop.StopReason is set to "final" downstream, like every
+	// completed turn).
+	var result finalResponseAttempt
+	var err error
+	if isGenerationMode(decision.ResponseMode) && len(preparation.ToolResults) == 0 && len(preparation.PlanValidationErrors) > 0 {
+		result = finalResponseAttempt{
+			Content: generationPlanningExhaustedNotice(decision.ResponseMode),
+			Model:   responseModel,
+			Reason:  "generation_planning_exhausted",
+		}
+	} else {
+		responseReq := h.preparedResponseRequest(req, responseModel, responseProvider, preparation, attachedImageForVision)
+		result, err = h.runFinalResponseAttempt(ctx, requestID, conversationID, responseReq, &run)
+	}
 
 	// Even if the text response stream failed, deliver any media the tool path
 	// produced rather than silently dropping it.
@@ -2338,6 +2358,36 @@ func harnessEmptyResponseNotice(results []HarnessToolResult) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// generationMediaType names the user-facing artifact kind for a built-in
+// generation mode. It returns "" for non-generation modes.
+func generationMediaType(responseMode string) string {
+	switch responseMode {
+	case "image":
+		return "image"
+	case "video":
+		return "video"
+	case "audio":
+		return "audio clip"
+	default:
+		return ""
+	}
+}
+
+// generationPlanningExhaustedNotice speaks in the harness's own voice when a
+// generation-mode turn (image/video/audio) exhausted the planning loop without
+// ever emitting a valid tool call, so no media was produced. A chat model
+// cannot usefully stand in for the missing artifact, and a weak one may
+// hallucinate executable-looking content (e.g. a dalle.text2im JSON stub, see
+// conv_930b7b065de90e53087acd24); instead of streaming the final model, the
+// harness emits this deterministic notice and skips the model call entirely.
+func generationPlanningExhaustedNotice(responseMode string) string {
+	media := generationMediaType(responseMode)
+	if media == "" {
+		media = "media"
+	}
+	return fmt.Sprintf("Atelier harness notice: the planner could not produce a valid tool plan for this %s request after %d attempts, so no %s was generated. Please retry; if it keeps failing, try a different or more capable harness model.", media, harnessChatMaxSteps, media)
 }
 
 func toolResultErrorDetail(result HarnessToolResult) string {

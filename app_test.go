@@ -3404,6 +3404,119 @@ func TestHarnessCautionsFinalModelAfterRepeatedInvalidPlans(t *testing.T) {
 	}
 }
 
+// TestGenerationPlanningExhaustedReplacesFinalModel reproduces
+// conv_930b7b065de90e53087acd24: an image-mode turn where the planner emitted
+// malformed (non-JSON) tool-call syntax for every planning round, exhausting
+// the loop without ever running a tool. Previously the harness fell through to
+// the final chat model, which hallucinated a dalle.text2im JSON stub. Now the
+// harness bypasses the final model and emits a deterministic notice instead.
+func TestGenerationPlanningExhaustedReplacesFinalModel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Tools.Filesystem.Root = filepath.Join(home, "tool-root")
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	prepCalls := 0
+	streamCalls := 0
+	imageCalls := 0
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/api/show":
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"capabilities":[],"model_info":{},"details":{"family":"test","parameter_size":"1B"}}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+		case "/api/generate":
+			imageCalls++
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"image-model","image":"iVBORw0KGgo=","done":true}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+		case "/api/chat":
+			var payload map[string]any
+			data, _ := io.ReadAll(req.Body)
+			if err := json.Unmarshal(data, &payload); err != nil {
+				t.Fatalf("provider request body is not JSON: %v", err)
+			}
+			if payload["stream"] == false {
+				prepCalls++
+				if prepCalls == 1 {
+					decision := `{"needsTools":true,"responseMode":"image","toolTask":"Generate the requested image.","reason":"The user asked to create an image."}`
+					return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+				}
+				// Every planning round emits malformed tool-call syntax
+				// (ReAct-style pseudo-XML) instead of the JSON plan schema,
+				// mirroring the failing model in conv_930b7b065de90e53087acd24.
+				body := `<|tool_call|>call:generate_image{prompt: "a sunset"}<|tool_call|>`
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(body) + `},"done":true,"done_reason":"stop","eval_count":10}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+			}
+			streamCalls++
+			body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"{\"action\":\"dalle.text2im\"}"},"done":false}`) +
+				fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+		default:
+			t.Fatalf("unexpected provider path %q", req.URL.Path)
+		}
+		return nil, nil
+	})
+
+	app.runChatStream(context.Background(), "request-image-planning-exhausted", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Create an image of a sunset."},
+		},
+	})
+
+	if want := harnessChatMaxSteps + 1; prepCalls != want {
+		t.Fatalf("prepCalls = %d, want %d (triage + %d malformed planning rounds)", prepCalls, want, harnessChatMaxSteps)
+	}
+	if streamCalls != 0 {
+		t.Fatalf("streamCalls = %d, want 0: the final chat model must be bypassed when a generation turn exhausts planning with no tool output", streamCalls)
+	}
+	if imageCalls != 0 {
+		t.Fatalf("imageCalls = %d, want 0: no generate_image tool should run when the plan never validates", imageCalls)
+	}
+
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	assistant := detail.Turns[1]
+	text := assistant.Content[0].Text
+	if !strings.Contains(text, "no image was generated") {
+		t.Fatalf("assistant text = %q, want the deterministic generation-planning-exhausted notice", text)
+	}
+	if strings.Contains(text, "dalle.text2im") {
+		t.Fatalf("assistant text = %q, must not contain hallucinated model output", text)
+	}
+	// No media artifact should be persisted.
+	if len(historyImagesForTest(assistant.Content)) != 0 {
+		t.Fatalf("assistant content = %+v, want no image artifact", assistant.Content)
+	}
+	harnessRun := assistant.ProviderResponse["harnessRun"].(map[string]any)
+	if harnessRun["status"] != "completed" {
+		t.Fatalf("harness status = %q, want completed", harnessRun["status"])
+	}
+	if got := assistant.ProviderResponse["doneReason"]; got != "generation_planning_exhausted" {
+		t.Fatalf("assistant doneReason = %v, want generation_planning_exhausted", got)
+	}
+}
+
 func TestBlankFinalModelProducesHarnessNotice(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -3773,6 +3886,29 @@ func TestGenerationModeRequiresToolCall(t *testing.T) {
 	prior := []HarnessToolResult{{Name: "generate_image", Status: "completed"}}
 	if msg := generationModeRequiresToolCall("image", emptyPlan, prior); msg != "" {
 		t.Errorf("image turn with prior results must allow the planner to close: %q", msg)
+	}
+}
+
+func TestGenerationPlanningExhaustedNotice(t *testing.T) {
+	// Each generation mode names its media type and states nothing was generated.
+	cases := map[string]string{
+		"image": "image",
+		"video": "video",
+		"audio": "audio clip",
+	}
+	for mode, media := range cases {
+		got := generationPlanningExhaustedNotice(mode)
+		if !strings.Contains(got, media) {
+			t.Errorf("responseMode=%q: notice %q must name the media type %q", mode, got, media)
+		}
+		if !strings.Contains(got, "no "+media+" was generated") {
+			t.Errorf("responseMode=%q: notice %q must state no %s was generated", mode, got, media)
+		}
+	}
+	// A non-generation mode falls back to a generic "media" label rather than
+	// crashing, so the helper is safe to call with any responseMode.
+	if got := generationPlanningExhaustedNotice("text"); !strings.Contains(got, "media") {
+		t.Errorf("text mode notice %q should fall back to a generic media label", got)
 	}
 }
 
