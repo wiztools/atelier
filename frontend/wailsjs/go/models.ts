@@ -787,6 +787,7 @@ export namespace main {
 	    aspectRatio?: string;
 	    duration?: string;
 	    resolution?: string;
+	    fps?: string;
 	    loop?: boolean;
 	    voice?: string;
 	    scale?: string;
@@ -817,6 +818,7 @@ export namespace main {
 	        this.aspectRatio = source["aspectRatio"];
 	        this.duration = source["duration"];
 	        this.resolution = source["resolution"];
+	        this.fps = source["fps"];
 	        this.loop = source["loop"];
 	        this.voice = source["voice"];
 	        this.scale = source["scale"];

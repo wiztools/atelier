@@ -101,6 +101,7 @@ var videoSynonyms = map[string][]string{
 	"duration":       {"duration"},
 	"aspectRatio":    {"aspect_ratio", "aspectRatio", "size"},
 	"resolution":     {"resolution"},
+	"fps":            {"fps", "frame_rate", "frameRate", "framerate"},
 	"negativePrompt": {"negative_prompt"},
 	"sourceImage":    {"image_url", "image_urls"},
 	"sourceVideo":    {"video_url"},
@@ -439,6 +440,9 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 		if res := strings.TrimSpace(req.Resolution); res != "" {
 			body["resolution"] = res
 		}
+		if fps := strings.TrimSpace(req.FPS); fps != "" {
+			body["fps"] = fps
+		}
 		if req.GenerateAudio != nil {
 			body["generate_audio"] = *req.GenerateAudio
 		}
@@ -554,6 +558,28 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 		} else {
 			notices = append(notices, fmt.Sprintf(
 				"The selected model %q has no resolution control; ignoring the requested resolution.",
+				req.Model))
+		}
+	}
+	if fps := strings.TrimSpace(req.FPS); fps != "" {
+		// Frame rate is model-dependent: most video models have no fps input at
+		// all, and those that do expose it as either a free integer or a fixed
+		// enum (e.g. ["24","30","60"]). Guard against both before sending — an
+		// out-of-enum value would 422 at fal. Drop it with a notice so the
+		// request still runs (the model picks its own default), mirroring how
+		// resolution and duration are handled above. coerceVideoValue handles
+		// integer-typed fps inputs (the common case) by parsing the string.
+		if path, prop, ok := findNative(schema, ov, "video", req.Model, "fps"); ok {
+			if !valueAllowedByEnum(prop, fps) {
+				notices = append(notices, fmt.Sprintf(
+					"The selected model %q does not accept frame rate %q; ignoring it and letting the model choose.",
+					req.Model, fps))
+			} else {
+				setBodyPath(schema, body, path, coerceVideoValue(prop, fps))
+			}
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no frame-rate control; ignoring the requested frame rate.",
 				req.Model))
 		}
 	}

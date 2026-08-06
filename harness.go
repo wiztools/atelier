@@ -116,6 +116,14 @@ type HarnessToolCall struct {
 	// notice rather than 422ing at fal. Omit to let the model use its own default.
 	// Forwarded only when set — see generateVideoParamSchema.
 	Resolution string `json:"resolution,omitempty"`
+	// FPS is an optional generate_video input naming the output frame rate
+	// (e.g. "24", "30", "60"). Some video models expose an fps/frame_rate input;
+	// resolveVideoBody drops a value the selected model doesn't accept (no such
+	// input, or an enum that doesn't list it) with a notice rather than 422ing at
+	// fal. Omit to let the model use its own default. Planner-only, like
+	// Resolution — there is no persisted config default. Forwarded only when set
+	// — see generateVideoParamSchema.
+	FPS string `json:"fps,omitempty"`
 	// Loop and Voice are optional generate_audio inputs. Loop requests a
 	// seamless loop (sound-effect models); Voice selects a text-to-speech voice.
 	// Both are resolved against the model's schema and dropped-with-notice when

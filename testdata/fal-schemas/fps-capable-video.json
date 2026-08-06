@@ -1,0 +1,38 @@
+{
+  "components": {
+    "schemas": {
+      "FpsCapableVideoInput": {
+        "properties": {
+          "prompt": {
+            "description": "Text prompt guiding the video generation.",
+            "title": "Prompt",
+            "type": "string"
+          },
+          "fps": {
+            "description": "Output video frame rate in frames per second.",
+            "default": 30,
+            "enum": [
+              24,
+              30,
+              60
+            ],
+            "title": "Fps",
+            "type": "integer"
+          },
+          "resolution": {
+            "description": "Output video resolution tier.",
+            "default": "1080p",
+            "enum": [
+              "720p",
+              "1080p"
+            ],
+            "title": "Resolution",
+            "type": "string"
+          }
+        },
+        "title": "FpsCapableVideoInput",
+        "type": "object"
+      }
+    }
+  }
+}

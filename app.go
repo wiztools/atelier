@@ -403,6 +403,8 @@ type ImageUpscaleRequest struct {
 // resolveVideoBody; the transport (FalClient.GenerateVideo) receives only the
 // resolved body. Images is the source frame(s) for image-to-video or
 // reference-to-video; Video is the source clip for a Veo extend endpoint.
+// Resolution and FPS are planner-only knobs (no persisted config default) —
+// they are dropped with a notice when the selected model has no matching input.
 type VideoGenerateRequest struct {
 	Model       string `json:"model"`
 	Prompt      string `json:"prompt"`
@@ -423,6 +425,13 @@ type VideoGenerateRequest struct {
 	// fal. Omit to let the model use its own default. Planner-only, like
 	// NegativePrompt — there is no persisted config default for it.
 	Resolution string `json:"resolution,omitempty"`
+	// FPS is an optional output frame rate (e.g. "24", "30", "60"). Some video
+	// models expose an fps/frame_rate input; resolveVideoBody drops a value the
+	// selected model doesn't accept (no such input, or an enum that doesn't list
+	// it) with a notice rather than 422ing at fal. Omit to let the model use its
+	// own default. Planner-only, like Resolution — there is no persisted config
+	// default for it.
+	FPS string `json:"fps,omitempty"`
 	// Image, when set, is a single source frame for image-to-video generation —
 	// a URL or a base64 data URI. It maps to fal's image_url input and requires
 	// an image-to-video model. Legacy scalar field; Images is preferred. The two
