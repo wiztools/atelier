@@ -2959,13 +2959,14 @@ func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
 		}
 		messages, ok := payload["messages"].([]any)
 		if !ok || len(messages) == 0 {
-			t.Fatalf("stream request messages = %+v, want system handoff", payload["messages"])
+			t.Fatalf("stream request messages = %+v, want handoff", payload["messages"])
 		}
-		systemMessage, ok := messages[0].(map[string]any)
-		if !ok || systemMessage["role"] != "system" {
-			t.Fatalf("first message = %+v, want system handoff", messages[0])
+		// A system message is optional: with no user-facing system prompt and
+		// the per-turn note now in the message stream, the request may begin
+		// directly with the user turn. Capture it only if present.
+		if firstMsg, ok := messages[0].(map[string]any); ok && firstMsg["role"] == "system" {
+			responseSystem, _ = firstMsg["content"].(string)
 		}
-		responseSystem, _ = systemMessage["content"].(string)
 		streamMessages = messages
 		body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"The project is green."},"done":false}`) +
 			fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
@@ -2984,8 +2985,12 @@ func TestHarnessExecutesFilesystemToolBeforeSelectedModel(t *testing.T) {
 			{Role: "user", Content: "What is the project status?"},
 		},
 	})
-	if !strings.Contains(responseSystem, "observations appear at the end of the conversation") {
-		t.Fatalf("response system handoff = %q, want tool evidence note", responseSystem)
+	// The tool-evidence note rides in the message stream (prepended to the
+	// evidence user message), not the system prompt.
+	lastStreamMsg, _ := streamMessages[len(streamMessages)-1].(map[string]any)
+	lastStreamContent, _ := lastStreamMsg["content"].(string)
+	if !strings.Contains(lastStreamContent, "observations appear at the end of the conversation") {
+		t.Fatalf("last stream message = %q, want tool evidence note", lastStreamContent)
 	}
 	if strings.Contains(responseSystem, "Use the status file to answer") {
 		t.Fatalf("response system contains planner brief: %q", responseSystem)
@@ -3328,7 +3333,7 @@ func TestHarnessCautionsFinalModelAfterRepeatedInvalidPlans(t *testing.T) {
 	app := NewApp()
 	prepCalls := 0
 	streamCalls := 0
-	var responseSystem string
+	var responseMessages []map[string]any
 	var retryPrompt string
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Path != "/api/chat" {
@@ -3350,8 +3355,11 @@ func TestHarnessCautionsFinalModelAfterRepeatedInvalidPlans(t *testing.T) {
 			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(body) + `},"done":true,"done_reason":"length","eval_count":1024}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
 		}
 		streamCalls++
-		messages := payload["messages"].([]any)
-		responseSystem, _ = messages[0].(map[string]any)["content"].(string)
+		rawMessages := payload["messages"].([]any)
+		responseMessages = make([]map[string]any, len(rawMessages))
+		for i, m := range rawMessages {
+			responseMessages[i] = m.(map[string]any)
+		}
 		body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"I couldn't post this to knowledged because the harness could not prepare the command."},"done":false}`) +
 			fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
 		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
@@ -3373,11 +3381,16 @@ func TestHarnessCautionsFinalModelAfterRepeatedInvalidPlans(t *testing.T) {
 	if streamCalls != 1 {
 		t.Fatalf("streamCalls = %d, want final model called once with the invalid-plan note", streamCalls)
 	}
-	if !strings.Contains(responseSystem, "no tools ran") {
-		t.Fatalf("response system = %q, want invalid-plan note", responseSystem)
+	// The invalid-plan note rides in the message stream (a trailing user
+	// message), NOT in the system prompt — mutating message #0 per-turn would
+	// invalidate the prefix cache.
+	lastMsg := responseMessages[len(responseMessages)-1]
+	if lastMsg["role"] != "user" {
+		t.Fatalf("last message role = %v, want 'user' (note carrier)", lastMsg["role"])
 	}
-	if responseSystem != invalidPlanSystemNote {
-		t.Fatalf("response system = %q, want only the invalid-plan note (no planner brief)", responseSystem)
+	lastContent, _ := lastMsg["content"].(string)
+	if lastContent != invalidPlanSystemNote {
+		t.Fatalf("last message = %q, want only the invalid-plan note (no planner brief)", lastContent)
 	}
 	if !strings.Contains(retryPrompt, "hit the output token limit") {
 		t.Fatalf("retry prompt = %q, want truncated-plan feedback", retryPrompt)
@@ -5327,26 +5340,26 @@ func TestTriageNumPredictBudgetsJSONCompletion(t *testing.T) {
 	}
 }
 
-func TestAppendToolEvidenceToSystemUsesFixedNotesOnly(t *testing.T) {
-	if got := appendToolEvidenceToSystem("base prompt", HarnessPreparedTurn{}); got != "base prompt" {
-		t.Fatalf("system with no tool evidence = %q, want untouched base prompt", got)
+func TestToolEvidenceNoteUsesFixedNotesOnly(t *testing.T) {
+	if got := toolEvidenceNote(HarnessPreparedTurn{}); got != "" {
+		t.Fatalf("note with no tool evidence = %q, want empty", got)
 	}
-	withResults := appendToolEvidenceToSystem("base prompt", HarnessPreparedTurn{
+	withResults := toolEvidenceNote(HarnessPreparedTurn{
 		ToolResults: []HarnessToolResult{{Name: "read_file", Status: "completed"}},
 	})
-	if !strings.Contains(withResults, toolEvidenceSystemNote) {
-		t.Fatalf("system = %q, want tool evidence note appended", withResults)
+	if withResults != toolEvidenceSystemNote {
+		t.Fatalf("note = %q, want tool evidence note", withResults)
 	}
-	withInvalidPlan := appendToolEvidenceToSystem("", HarnessPreparedTurn{PlanValidationErrors: []string{"bad plan"}})
+	withInvalidPlan := toolEvidenceNote(HarnessPreparedTurn{PlanValidationErrors: []string{"bad plan"}})
 	if withInvalidPlan != invalidPlanSystemNote {
-		t.Fatalf("system = %q, want only the invalid-plan note", withInvalidPlan)
+		t.Fatalf("note = %q, want only the invalid-plan note", withInvalidPlan)
 	}
-	withBoth := appendToolEvidenceToSystem("base prompt", HarnessPreparedTurn{
+	withBoth := toolEvidenceNote(HarnessPreparedTurn{
 		ToolResults:          []HarnessToolResult{{Name: "read_file", Status: "completed"}},
 		PlanValidationErrors: []string{"bad plan"},
 	})
-	if !strings.Contains(withBoth, invalidPlanAfterToolsSystemNote) {
-		t.Fatalf("system = %q, want mixed tools-ran-but-plan-invalid note", withBoth)
+	if withBoth != invalidPlanAfterToolsSystemNote {
+		t.Fatalf("note = %q, want mixed tools-ran-but-plan-invalid note", withBoth)
 	}
 }
 
@@ -5370,7 +5383,7 @@ func TestPreparedResponseRequestDeliversToolEvidenceAsUserRole(t *testing.T) {
 		},
 	}
 
-	result := engine.preparedResponseRequest(req, "primary-model", "openrouter", preparation, "")
+	result := engine.preparedResponseRequest(req, "primary-model", "openrouter", preparation, nil)
 	messages := result.Messages
 
 	// The last message must be user-role, not tool-role.
@@ -5391,9 +5404,14 @@ func TestPreparedResponseRequestDeliversToolEvidenceAsUserRole(t *testing.T) {
 	if !strings.Contains(lastMsg.Content, "job id: 12345") {
 		t.Fatalf("last message = %q, want kc command output", lastMsg.Content)
 	}
-	// The system prompt should carry the tool-evidence note.
-	if !strings.Contains(result.System, toolEvidenceSystemNote) {
-		t.Fatalf("system = %q, want tool evidence system note", result.System)
+	// The tool-evidence note rides in the message stream (prepended to the
+	// evidence user message), NOT in the system prompt — mutating message #0
+	// per-turn would invalidate the prefix cache.
+	if strings.Contains(result.System, toolEvidenceSystemNote) {
+		t.Fatalf("system prompt = %q, must NOT carry the per-turn note (cache invariant)", result.System)
+	}
+	if !strings.Contains(lastMsg.Content, toolEvidenceSystemNote) {
+		t.Fatalf("last message = %q, want tool evidence note prepended", lastMsg.Content)
 	}
 }
 
@@ -5454,7 +5472,7 @@ func TestPreparedResponseRequestKeepsMediaWhenNoApp(t *testing.T) {
 	}
 	preparation := HarnessPreparedTurn{}
 
-	result := engine.preparedResponseRequest(req, "primary-model", "openrouter", preparation, "")
+	result := engine.preparedResponseRequest(req, "primary-model", "openrouter", preparation, nil)
 	found := false
 	for _, msg := range result.Messages {
 		if len(msg.Audios) > 0 {
@@ -5485,7 +5503,7 @@ func TestPreparedResponseRequestInjectsHistoryImage(t *testing.T) {
 			{Role: "user", Content: "describe the image you just generated"},
 		},
 	}
-	result := engine.preparedResponseRequest(req, "primary-model", "openrouter", HarnessPreparedTurn{}, resolvedImage)
+	result := engine.preparedResponseRequest(req, "primary-model", "openrouter", HarnessPreparedTurn{}, []string{resolvedImage})
 	lastUser := -1
 	for i := len(result.Messages) - 1; i >= 0; i-- {
 		if result.Messages[i].Role == "user" {
@@ -5509,7 +5527,7 @@ func TestPreparedResponseRequestInjectsHistoryImage(t *testing.T) {
 			{Role: "user", Content: "describe this", Images: []string{currentImage}},
 		},
 	}
-	result = engine.preparedResponseRequest(req, "primary-model", "openrouter", HarnessPreparedTurn{}, resolvedImage)
+	result = engine.preparedResponseRequest(req, "primary-model", "openrouter", HarnessPreparedTurn{}, []string{resolvedImage})
 	lastUser = -1
 	for i := len(result.Messages) - 1; i >= 0; i-- {
 		if result.Messages[i].Role == "user" {
@@ -5531,11 +5549,38 @@ func TestPreparedResponseRequestInjectsHistoryImage(t *testing.T) {
 			{Role: "user", Content: "describe it"},
 		},
 	}
-	result = engine.preparedResponseRequest(req, "primary-model", "openrouter", HarnessPreparedTurn{}, "")
+	result = engine.preparedResponseRequest(req, "primary-model", "openrouter", HarnessPreparedTurn{}, nil)
 	for _, msg := range result.Messages {
 		if msg.Role == "user" && len(msg.Images) != 0 {
 			t.Errorf("empty-image branch: user message unexpectedly got images %+v", msg.Images)
 		}
+	}
+
+	// Branch 4: multiple resolved images → all are injected in order (the
+	// vision cap was relaxed so users can reference several at once, e.g.
+	// "compare @a.png and @b.png"). Nothing is dropped to [0].
+	firstImage := "data:image/png;base64,FIRST"
+	secondImage := "data:image/png;base64,SECOND"
+	req = ChatRequest{
+		Model: "primary-model",
+		Messages: []ChatMessage{
+			{Role: "assistant", Content: "Here are the images."},
+			{Role: "user", Content: "compare the two images"},
+		},
+	}
+	result = engine.preparedResponseRequest(req, "primary-model", "openrouter", HarnessPreparedTurn{}, []string{firstImage, secondImage})
+	lastUser = -1
+	for i := len(result.Messages) - 1; i >= 0; i-- {
+		if result.Messages[i].Role == "user" {
+			lastUser = i
+			break
+		}
+	}
+	if lastUser < 0 {
+		t.Fatal("no user message in result")
+	}
+	if got := result.Messages[lastUser].Images; len(got) != 2 || got[0] != firstImage || got[1] != secondImage {
+		t.Errorf("multi-image branch: last user Images = %+v, want [%q, %q] in order", got, firstImage, secondImage)
 	}
 }
 
@@ -6485,7 +6530,7 @@ func TestNativeTruncatedPlanRetriesInsteadOfSilentlySucceeding(t *testing.T) {
 	app := NewApp()
 	planningCalls := 0
 	streamCalls := 0
-	var responseSystem string
+	var responseMessages []map[string]any
 	var nativeRetryFeedback string
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch req.URL.Path {
@@ -6522,8 +6567,11 @@ func TestNativeTruncatedPlanRetriesInsteadOfSilentlySucceeding(t *testing.T) {
 				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
 			}
 			streamCalls++
-			messages := payload["messages"].([]any)
-			responseSystem, _ = messages[0].(map[string]any)["content"].(string)
+			rawMessages := payload["messages"].([]any)
+			responseMessages = make([]map[string]any, len(rawMessages))
+			for i, m := range rawMessages {
+				responseMessages[i] = m.(map[string]any)
+			}
 			body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"I couldn't post this because the harness couldn't assemble the command."},"done":false}`) +
 				fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
 			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
@@ -6550,8 +6598,13 @@ func TestNativeTruncatedPlanRetriesInsteadOfSilentlySucceeding(t *testing.T) {
 		t.Fatalf("streamCalls = %d, want final model called once with the invalid-plan note", streamCalls)
 	}
 	// The final model must be told no tools ran (honest failure reporting).
-	if !strings.Contains(responseSystem, "no tools ran") {
-		t.Fatalf("response system = %q, want the invalid-plan note", responseSystem)
+	// The note rides in the message stream (a trailing user message), not the
+	// system prompt — mutating message #0 per-turn would invalidate the prefix
+	// cache.
+	lastResponseMsg := responseMessages[len(responseMessages)-1]
+	lastResponseContent, _ := lastResponseMsg["content"].(string)
+	if !strings.Contains(lastResponseContent, "no tools ran") {
+		t.Fatalf("last response message = %q, want the invalid-plan note", lastResponseContent)
 	}
 	// The native correction feedback must mention the output limit so the
 	// model is steered toward emitting tool calls first.

@@ -308,6 +308,14 @@ function App() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [composerDragging, setComposerDragging] = useState(false);
   const composerDragDepth = useRef(0);
+  // @-mention autocomplete state. mentionOpen/mentionIndex drive renders;
+  // mentionStateRef holds the active {@-position, query} for the keydown and
+  // accept handlers to read synchronously (avoiding stale-closure reads of
+  // prompt/selection during rapid typing).
+  const [mentionOpen, setMentionOpen] = useState(false);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const mentionStateRef = useRef<{ at: number; query: string } | null>(null);
+  const composerRef = useRef<HTMLDivElement | null>(null);
   const [chat, setChat] = useState<ChatEntry[]>([]);
   const [collapsedThinkingIDs, setCollapsedThinkingIDs] = useState<Record<string, boolean>>({});
   const [copiedMessageID, setCopiedMessageID] = useState('');
@@ -628,6 +636,24 @@ function App() {
       document.removeEventListener('keydown', onKeyDown);
     };
   }, [openCapabilityID]);
+
+  // Close the @-mention menu on outside click or document-level Escape. The
+  // textarea's own Escape handling (above) closes it too; this covers clicks
+  // elsewhere in the window. Clicks inside the composer are ignored so picking
+  // an item doesn't immediately dismiss via the same gesture.
+  useEffect(() => {
+    if (!mentionOpen) {
+      return;
+    }
+    const onPointerDown = (event: MouseEvent) => {
+      if (composerRef.current && event.target instanceof Node && composerRef.current.contains(event.target)) {
+        return;
+      }
+      closeMention();
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [mentionOpen]);
 
   // modelOptions feeds the Ollama-only lists (primary picker's Ollama branch,
   // harness dropdown, image-model fallback). It is built from the fetched
@@ -1479,8 +1505,90 @@ function App() {
     await executeChatStream({requestID, requestMessages});
   }
 
+  // Latest filtered mention candidates, mirrored into a ref so the keydown and
+  // accept handlers read the same list that the rendered menu shows without
+  // racing against React state updates during rapid typing.
+  const [mentionMatchesState, setMentionMatchesState] = useState<Attachment[]>([]);
+  const mentionMatchesRef = useRef<Attachment[]>([]);
+  mentionMatchesRef.current = mentionMatchesState;
+
+  function handleChatPromptChange(event: React.ChangeEvent<HTMLTextAreaElement>) {
+    const value = event.target.value;
+    const caret = event.target.selectionStart ?? value.length;
+    setPrompt(value);
+    const match = detectMentionAt(value, caret);
+    mentionStateRef.current = match;
+    if (match) {
+      const matches = mentionMatches(match.query, attachmentsRef.current);
+      setMentionMatchesState(matches);
+      setMentionIndex(0);
+      setMentionOpen(matches.length > 0);
+    } else {
+      setMentionOpen(false);
+    }
+  }
+
+  function closeMention() {
+    setMentionOpen(false);
+    mentionStateRef.current = null;
+  }
+
+  // acceptMention replaces the open @-token with @<name> (trailing space) and
+  // places the caret after it. Called from Enter/Tab/Click. No-op if the menu
+  // is closed or the index is out of range.
+  function acceptMention(index: number) {
+    const matches = mentionMatchesRef.current;
+    const match = mentionStateRef.current;
+    if (!match || index < 0 || index >= matches.length) {
+      closeMention();
+      return;
+    }
+    const name = matches[index].name;
+    const before = prompt.slice(0, match.at);
+    const afterCaret = prompt.slice(match.at + 1 + match.query.length);
+    const next = `${before}@${name} ${afterCaret}`;
+    setPrompt(next);
+    closeMention();
+    // Restore focus and caret after React re-renders the new value.
+    const caret = (before + `@${name} `).length;
+    requestAnimationFrame(() => {
+      const el = chatPromptRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(caret, caret);
+      }
+    });
+  }
+
   function handleChatPromptKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (mentionOpen) {
+      const matches = mentionMatchesRef.current;
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setMentionIndex((index) => (matches.length ? (index + 1) % matches.length : 0));
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setMentionIndex((index) => (matches.length ? (index - 1 + matches.length) % matches.length : 0));
+        return;
+      }
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        acceptMention(mentionIndex);
+        return;
+      }
+      if (event.key === 'Tab' && !event.shiftKey) {
+        event.preventDefault();
+        acceptMention(mentionIndex);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeMention();
+        return;
+      }
+    } else if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       void submitChat();
     }
@@ -1536,7 +1644,23 @@ function App() {
       return;
     }
     const next = await Promise.all(Array.from(files).map((file) => readFileAsAttachment(file)));
-    setAttachments((items) => [...items, ...next]);
+    appendAttachments(next);
+  }
+
+  // appendAttachments merges new attachments into the list, renaming any whose
+  // name collides with an existing (or another incoming) attachment so every
+  // name is unique. Names are the key @-mentions resolve against and back the
+  // React key for attachment chips, so uniqueness must hold.
+  function appendAttachments(incoming: Attachment[]) {
+    setAttachments((items) => {
+      const used = items.map((item) => item.name);
+      const renamed = incoming.map((item) => {
+        const name = uniqueAttachmentName(item.name, used);
+        used.push(name);
+        return name === item.name ? item : { ...item, name };
+      });
+      return [...items, ...renamed];
+    });
   }
 
   async function handleChatPromptPaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
@@ -1556,7 +1680,7 @@ function App() {
         return readFileAsAttachment(file, `pasted-${stamp}-${index + 1}${file.name ? `-${file.name}` : extension}`);
       }),
     );
-    setAttachments((items) => [...items, ...next]);
+    appendAttachments(next);
   }
 
   function composerHasMediaDrag(event: React.DragEvent<HTMLDivElement>): boolean {
@@ -1611,7 +1735,7 @@ function App() {
         return readFileAsAttachment(file, file.name || `dropped-${stamp}-${index + 1}${extension}`);
       }),
     );
-    setAttachments((items) => [...items, ...next]);
+    appendAttachments(next);
   }
 
   async function saveGeneratedImage(image: string, index: number) {
@@ -2523,6 +2647,7 @@ function App() {
               </div>
 
               <div
+                ref={composerRef}
                 className={`composer${composerDragging ? ' composer--dragging' : ''}`}
                 onDragEnter={handleComposerDragEnter}
                 onDragOver={handleComposerDragOver}
@@ -2558,10 +2683,38 @@ function App() {
                     ))}
                   </div>
                 ) : null}
+                {mentionOpen && mentionMatchesState.length ? (
+                  <ul className="mention-list" role="listbox">
+                    {mentionMatchesState.map((item, index) => (
+                      <li key={item.name} role="option" aria-selected={index === mentionIndex}>
+                        <button
+                          type="button"
+                          className={index === mentionIndex ? 'mention-item active' : 'mention-item'}
+                          onMouseDown={(event) => {
+                            // mousedown (not click) fires before the textarea
+                            // loses focus, so the accept caret-restore works.
+                            event.preventDefault();
+                            acceptMention(index);
+                          }}
+                          onMouseEnter={() => setMentionIndex(index)}
+                        >
+                          {item.kind === 'image' ? (
+                            <img src={item.src} alt="" className="mention-thumb" />
+                          ) : (
+                            <span className="mention-icon" aria-hidden="true">
+                              {item.kind === 'audio' ? '♪' : '▶'}
+                            </span>
+                          )}
+                          <span className="mention-name">{item.name}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
                 <textarea
                   ref={chatPromptRef}
                   value={prompt}
-                  onChange={(event) => setPrompt(event.target.value)}
+                  onChange={handleChatPromptChange}
                   onKeyDown={handleChatPromptKeyDown}
                   onPaste={handleChatPromptPaste}
                   placeholder="Prompt Atelier..."
@@ -3328,6 +3481,71 @@ async function readFileAsAttachment(file: File, nameOverride?: string): Promise<
     return readVideoFile(file, nameOverride);
   }
   return readImageFile(file, nameOverride);
+}
+
+// uniqueAttachmentName returns a name that does not collide with any existing
+// name, appending " (2)", " (3)", … before the extension as needed. Attachment
+// names are the key @-mentions match against, and they back the React key for
+// attachment chips, so duplicates would both break @ resolution and collide in
+// the chip list. Pure/module-level so it can be unit-tested in isolation.
+function uniqueAttachmentName(requested: string, existing: string[]): string {
+  if (!requested) {
+    requested = 'attachment';
+  }
+  if (!existing.includes(requested)) {
+    return requested;
+  }
+  const taken = new Set(existing);
+  const dot = requested.lastIndexOf('.');
+  const stem = dot > 0 ? requested.slice(0, dot) : requested;
+  const ext = dot > 0 ? requested.slice(dot) : '';
+  for (let counter = 2; ; counter++) {
+    const candidate = `${stem} (${counter})${ext}`;
+    if (!taken.has(candidate)) {
+      return candidate;
+    }
+  }
+}
+
+// MentionMatch describes an open @-token at the caret: `at` is the index of the
+// '@', `query` is the text typed after it (no whitespace allowed mid-token).
+type MentionMatch = { at: number; query: string };
+
+// detectMentionAt finds an open @-mention token ending at the caret. A token is
+// valid only when '@' sits at the start of text or right after whitespace (so
+// "foo@bar" is not a mention), and contains no whitespace after the '@'. Returns
+// null when no token is active. Pure/module-level for unit testing.
+function detectMentionAt(text: string, caret: number): MentionMatch | null {
+  if (caret <= 0) {
+    return null;
+  }
+  const slice = text.slice(0, caret);
+  const at = slice.lastIndexOf('@');
+  if (at < 0) {
+    return null;
+  }
+  // The '@' must start a token: begin-of-text or preceded by whitespace.
+  if (at > 0 && !/\s/.test(text[at - 1])) {
+    return null;
+  }
+  const query = slice.slice(at + 1);
+  // The token ends at the first whitespace; if any is present, the mention is
+  // no longer open at the caret.
+  if (/\s/.test(query)) {
+    return null;
+  }
+  return { at, query };
+}
+
+// mentionMatches returns the attachments whose name contains the query as a
+// case-insensitive substring, preserving attachment order. An empty query lists
+// every attachment (the menu is most useful right after typing '@').
+function mentionMatches(query: string, items: Attachment[]): Attachment[] {
+  const q = query.trim().toLowerCase();
+  if (!q) {
+    return items;
+  }
+  return items.filter((item) => item.name.toLowerCase().includes(q));
 }
 
 function imageExtensionForType(type: string): string {

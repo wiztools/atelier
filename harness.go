@@ -32,6 +32,11 @@ const (
 // The primary model's system prompt only ever receives these code-authored notes.
 // Planner output (briefs, reasons) is telemetry and thinking, never prompt text,
 // so a weaker harness model can't cap what the primary model is allowed to know.
+//
+// The *Note constants below are delivered in the message stream (prepended to
+// the tool-evidence user message, or as a trailing user message when no tools
+// ran), never appended to the system prompt: a per-turn change in message #0
+// would invalidate the entire prefix cache. See toolEvidenceNote.
 const toolEvidenceSystemNote = "Atelier ran workspace tools for this turn. Their observations appear at the end of the conversation. Treat them as evidence: report failures honestly and do not claim an action succeeded unless an observation shows it. You cannot call tools yourself; if the user asked for an action that no observation confirms, say plainly that it was not completed. A tool observation's \"notices\" field holds authoritative caveats that are shown to the user verbatim; account for their meaning (never claim a dropped capability succeeded) but do not quote them."
 
 const invalidPlanSystemNote = "Atelier could not produce a valid tool plan for this turn, so no tools ran. You cannot call tools or execute commands. Do not run commands, paste commands as if executed, or claim any tool action succeeded. If the user asked for a tool action, report plainly that it could not be completed."
@@ -298,12 +303,12 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	// harness model for the final response.
 	responseModel := h.responseModelFor(decision.ResponseMode, primaryModel, harness)
 	responseProvider := h.responseProviderFor(decision.ResponseMode, primaryProvider, primaryProvider, harness)
-	// Vision chat injects at most the first attached image — multi-image
-	// vision isn't the ask, and some chat models reject more than one.
-	attachedImageForVision := ""
-	if len(attachedImages) > 0 {
-		attachedImageForVision = attachedImages[0]
-	}
+	// Vision chat forwards every attached image so users can reference several
+	// at once (e.g. "compare @a.png and @b.png"). Some chat models reject more
+	// than one image; those surface a provider error on multi-image turns rather
+	// than silently dropping the extras. This mirrors the tool path, which
+	// already passes the full slice to generate_image (tools_registry.go).
+	attachedImagesForVision := attachedImages
 	// A generation-mode turn (image/video/audio) that exhausted the planner
 	// without ever emitting a valid tool call produces no media. A chat model
 	// cannot stand in for the missing artifact, and a weak one may hallucinate
@@ -323,7 +328,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			Reason:  "generation_planning_exhausted",
 		}
 	} else {
-		responseReq := h.preparedResponseRequest(req, responseModel, responseProvider, preparation, attachedImageForVision)
+		responseReq := h.preparedResponseRequest(req, responseModel, responseProvider, preparation, attachedImagesForVision)
 		result, err = h.runFinalResponseAttempt(ctx, requestID, conversationID, responseReq, &run)
 	}
 
@@ -1636,20 +1641,23 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 // just generated"). It is injected as an Images entry on the last user message
 // to match the shape adapters expect, and before stripUnsupportedMedia so the
 // same capability logic that governs user-attached images governs it.
-func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel, responseProvider string, preparation HarnessPreparedTurn, attachedImage string) ChatRequest {
+func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel, responseProvider string, preparation HarnessPreparedTurn, attachedImages []string) ChatRequest {
 	responseReq := req
 	responseReq.Model = responseModel
 	responseReq.Provider = responseProvider
-	responseReq.System = appendToolEvidenceToSystem(req.System, preparation)
+	responseReq.System = req.System
 	messages := append([]ChatMessage{}, req.Messages...)
-	// If the turn resolved a source image from history (e.g. a model-generated
-	// image from an earlier turn) but the last user message has none, attach it
-	// so a vision-capable response model can answer questions about it. A
-	// genuinely-attached current-turn image already rides on the last user
-	// message, so the len()==0 guard avoids duplicating it.
-	if attachedImage = strings.TrimSpace(attachedImage); attachedImage != "" {
-		if i := lastUserMessageIndex(messages); i >= 0 && len(messages[i].Images) == 0 {
-			messages[i].Images = append(messages[i].Images, attachedImage)
+	// If the turn resolved source images from history (e.g. a model-generated
+	// image from an earlier turn) but the last user message has none, attach
+	// them so a vision-capable response model can answer questions about them.
+	// A genuinely-attached current-turn image already rides on the last user
+	// message, so the len()==0 guard avoids duplicating it. All images are
+	// forwarded; nothing is dropped to [0].
+	if i := lastUserMessageIndex(messages); i >= 0 && len(messages[i].Images) == 0 {
+		for _, img := range attachedImages {
+			if img = strings.TrimSpace(img); img != "" {
+				messages[i].Images = append(messages[i].Images, img)
+			}
 		}
 	}
 	// Strip user-attached media the response model cannot accept, so a request
@@ -1661,8 +1669,20 @@ func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel, 
 	// Images are left intact unless explicitly unsupported: nearly all chat models
 	// are multimodal, and an unnecessary strip would break vision.
 	h.stripUnsupportedMedia(messages, responseModel, responseProvider)
+	// The tool-evidence note is delivered in the message stream rather than
+	// appended to the system prompt: a per-turn note in message #0 would
+	// invalidate the entire prefix cache on every tooled turn. The evidence
+	// message is the natural carrier; when tools ran but the plan was invalid,
+	// or no tools ran at all, the note still needs to reach the model, so it
+	// gets its own trailing user message in those cases.
+	note := toolEvidenceNote(preparation)
 	if len(preparation.ToolResults) > 0 {
 		messages = append(messages, toolEvidenceUserMessage(preparation.ToolResults))
+		if note != "" {
+			messages[len(messages)-1].Content = note + "\n\n" + messages[len(messages)-1].Content
+		}
+	} else if note != "" {
+		messages = append(messages, ChatMessage{Role: "user", Content: note})
 	}
 	numCtx := h.numCtx()
 	responseReq.Messages = truncateChatHistory(messages, historyBudgetChars(numCtx, responseReq.System, numCtx/4))
@@ -1725,22 +1745,23 @@ func toolEvidenceUserMessage(results []HarnessToolResult) ChatMessage {
 	}
 }
 
-func appendToolEvidenceToSystem(system string, preparation HarnessPreparedTurn) string {
-	var note string
+// toolEvidenceNote returns the per-turn note describing what the harness did
+// (ran tools, produced an invalid plan, or both). It is delivered in the
+// message stream — prepended to the tool-evidence user message when tools ran,
+// or as its own trailing user message otherwise — never appended to the system
+// prompt, because a per-turn change in message #0 invalidates the entire
+// prefix cache.
+func toolEvidenceNote(preparation HarnessPreparedTurn) string {
 	switch {
 	case len(preparation.PlanValidationErrors) > 0 && len(preparation.ToolResults) > 0:
-		note = invalidPlanAfterToolsSystemNote
+		return invalidPlanAfterToolsSystemNote
 	case len(preparation.PlanValidationErrors) > 0:
-		note = invalidPlanSystemNote
+		return invalidPlanSystemNote
 	case len(preparation.ToolResults) > 0:
-		note = toolEvidenceSystemNote
+		return toolEvidenceSystemNote
 	default:
-		return system
+		return ""
 	}
-	if strings.TrimSpace(system) == "" {
-		return note
-	}
-	return strings.TrimSpace(system) + "\n\n" + note
 }
 
 // toolResultMessages renders tool results as role:"tool" messages so models
