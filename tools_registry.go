@@ -855,12 +855,20 @@ func imageGenerationToolDefinition() HarnessToolDefinition {
 			if model == "" {
 				return nil, "image generation unavailable", errors.New("no image model is configured")
 			}
-			// Derive pixels from the configured size preset + aspect ratio. An
-			// explicit aspectRatio on the tool call overrides the configured one;
-			// the configured long edge (preset) always sets the resolution budget.
-			// Image-to-image ignores these (fal derives dims from the source frame),
-			// so the derivation is moot there.
+			// Aspect-ratio precedence: an explicit aspectRatio on the tool call
+			// wins over everything. With no explicit ratio and exactly one source
+			// image, the output inherits that frame's orientation rather than
+			// getting the configured default stamped on — a portrait source used
+			// to come back landscape because the config default ("16:9") was sent
+			// to edit models that honor image_size (see
+			// conv_65bc186e6035c885660b369c). With zero or multiple attached
+			// images there is no authoritative frame (text-to-image has none;
+			// multi-image edit is a composite of references), so the configured
+			// default applies. This mirrors generate_video's rule below.
 			ratio := strings.TrimSpace(call.AspectRatio)
+			if ratio == "" && len(attachedImages) == 1 {
+				ratio = aspectRatioFromImage(attachedImages[0])
+			}
 			if ratio == "" {
 				ratio = strings.TrimSpace(tools.Config.Generation.Image.AspectRatio)
 			}
@@ -1000,7 +1008,7 @@ func generateImageParamSchema() map[string]any {
 		"properties": map[string]any{
 			"content":     stringParam("The image prompt — describe the image to create."),
 			"model":       stringParam("Optional image generation model override."),
-			"aspectRatio": enumParam("Optional — the output image shape. Omit to use the configured default; ignored when transforming an attached image.", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"),
+			"aspectRatio": enumParam("Optional — the output image shape. Omit to inherit a single attached image's orientation, else use the configured default.", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"),
 		},
 		"required": []string{"content"},
 	}
