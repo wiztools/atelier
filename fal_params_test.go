@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,11 +29,11 @@ func TestLoadFalOverridesMergesUserOverBuiltin(t *testing.T) {
 		t.Fatal(err)
 	}
 	ov := loadFalOverrides(dir)
-	if got, ok := ov.lookup("audio", "fal-ai/minimax/speech-02-hd", "voice"); !ok || got != "" {
-		t.Fatalf("expected explicit-unsupported voice override, got %q ok=%v", got, ok)
+	if got, ok := ov.lookup("audio", "fal-ai/minimax/speech-02-hd", "voice"); !ok || got.Path != "" {
+		t.Fatalf("expected explicit-unsupported voice override, got %+v ok=%v", got, ok)
 	}
-	if got, _ := ov.lookup("audio", "acme/tts", "voice"); got != "speaker_id" {
-		t.Fatalf("expected user voice remap, got %q", got)
+	if got, _ := ov.lookup("audio", "acme/tts", "voice"); got.Path != "speaker_id" {
+		t.Fatalf("expected user voice remap, got %+v", got)
 	}
 }
 
@@ -110,6 +112,132 @@ func TestResolveVoiceUnsupportedViaOverride(t *testing.T) {
 		AudioGenerateRequest{Model: "fal-ai/elevenlabs/tts/multilingual-v2", Prompt: "hi", Voice: "Rachel"}, ov)
 	if len(notices) != 1 || !strings.Contains(notices[0], "voice") {
 		t.Fatalf("expected voice dropped by override, got %v", notices)
+	}
+}
+
+// TestLoadFalOverridesAcceptsObjectEntry verifies the object-valued override
+// form: {"path","kind","items","maxItems"}. This is the shape that lets an
+// override force array semantics for a model whose published schema disagrees
+// with its runtime (the escape hatch added for conv_3232dd3836e50aa6402d8f51).
+// The legacy bare-string form is covered by TestLoadFalOverridesMergesUserOverBuiltin
+// above.
+func TestLoadFalOverridesAcceptsObjectEntry(t *testing.T) {
+	dir := t.TempDir()
+	user := `{"video":{"acme/drift":{"sourceImage":{"path":"image_urls","kind":"array","items":"string","maxItems":9}}}}`
+	if err := os.WriteFile(filepath.Join(dir, "fal-overrides.json"), []byte(user), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ov := loadFalOverrides(dir)
+	got, ok := ov.lookup("video", "acme/drift", "sourceImage")
+	if !ok {
+		t.Fatal("expected object override to be present")
+	}
+	if got.Path != "image_urls" {
+		t.Fatalf("Path = %q, want \"image_urls\"", got.Path)
+	}
+	if got.Kind != "array" {
+		t.Fatalf("Kind = %q, want \"array\"", got.Kind)
+	}
+	if got.Items != "string" {
+		t.Fatalf("Items = %q, want \"string\"", got.Items)
+	}
+	if got.MaxItems != 9 {
+		t.Fatalf("MaxItems = %d, want 9", got.MaxItems)
+	}
+}
+
+// TestLoadFalOverridesBackwardCompatibleWithStringEntry pins the contract that
+// an existing fal-overrides.json written in the legacy bare-string form (the
+// only form before the object form was added) still parses unchanged into an
+// overrideEntry whose Path is the string and Kind is empty (i.e. infer from
+// schema). A user's deployed config must not break across this change.
+func TestLoadFalOverridesBackwardCompatibleWithStringEntry(t *testing.T) {
+	dir := t.TempDir()
+	user := `{"audio":{"acme/tts":{"voice":"speaker_id"},"acme/skip":{"voice":""}}}`
+	if err := os.WriteFile(filepath.Join(dir, "fal-overrides.json"), []byte(user), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ov := loadFalOverrides(dir)
+	remap, ok := ov.lookup("audio", "acme/tts", "voice")
+	if !ok {
+		t.Fatal("expected legacy string override to parse")
+	}
+	if remap.Path != "speaker_id" || remap.Kind != "" {
+		t.Fatalf("legacy string override = %+v, want {Path:\"speaker_id\" Kind:\"\"}", remap)
+	}
+	disabled, ok := ov.lookup("audio", "acme/skip", "voice")
+	if !ok || disabled.Path != "" {
+		t.Fatalf("legacy empty-string disable = %+v, want {Path:\"\"}", disabled)
+	}
+}
+
+// TestFindNativeOverrideForcesArrayKind is the unit test for the fabrication
+// branch in findNative: when an override names a field NOT present in the
+// schema but carries Kind:"array", the returned SchemaProperty must be
+// schemaArray so the existing array coercion and multi-image guardrails apply
+// unchanged. coerceImages is then exercised to prove the end-to-end shape.
+func TestFindNativeOverrideForcesArrayKind(t *testing.T) {
+	// Schema declares only a scalar image_url — no image_urls field at all.
+	schema := &ModelInputSchema{
+		Properties: map[string]SchemaProperty{
+			"prompt":    {Name: "prompt", Kind: schemaScalar},
+			"image_url": {Name: "image_url", Kind: schemaScalar, Type: "string"},
+		},
+		order: []string{"prompt", "image_url"},
+	}
+	ov := Overrides{byCategory: map[string]map[string]map[string]overrideEntry{
+		"video": {
+			"acme/drift": {
+				"sourceImage": {Path: "image_urls", Kind: "array", Items: "string"},
+			},
+		},
+	}}
+
+	path, prop, ok := findNative(schema, ov, "video", "acme/drift", "sourceImage")
+	if !ok {
+		t.Fatal("expected findNative to honor the override")
+	}
+	if path != "image_urls" {
+		t.Fatalf("path = %q, want \"image_urls\"", path)
+	}
+	if prop.Kind != schemaArray {
+		t.Fatalf("prop.Kind = %v, want schemaArray (forced by override)", prop.Kind)
+	}
+	if prop.Items == nil || prop.Items.Type != "string" {
+		t.Fatalf("prop.Items = %+v, want string element type", prop.Items)
+	}
+	// The downstream coercion already gates on Kind == schemaArray — prove the
+	// fabricated property produces the one-element slice the runtime requires.
+	got := coerceImages(prop, []string{"data:image/png;base64,ABC"})
+	slice, ok := got.([]any)
+	if !ok {
+		t.Fatalf("coerceImages = %+v (%T), want []any", got, got)
+	}
+	if len(slice) != 1 || slice[0] != "data:image/png;base64,ABC" {
+		t.Fatalf("slice = %+v, want single-element slice with the data URI", slice)
+	}
+}
+
+// TestFindNativeOverrideScalarFabricationDefault confirms an override WITHOUT a
+// Kind hint still fabricates a scalar property (the pre-override behavior). This
+// guards against a regression where every fabricated override accidentally
+// becomes an array.
+func TestFindNativeOverrideScalarFabricationDefault(t *testing.T) {
+	schema := &ModelInputSchema{
+		Properties: map[string]SchemaProperty{
+			"prompt": {Name: "prompt", Kind: schemaScalar},
+		},
+		order: []string{"prompt"},
+	}
+	ov := Overrides{byCategory: map[string]map[string]map[string]overrideEntry{
+		"video": {"acme/custom": {"sourceImage": {Path: "image_url"}}},
+	}}
+	_, prop, ok := findNative(schema, ov, "video", "acme/custom", "sourceImage")
+	if !ok {
+		t.Fatal("expected findNative to honor the override")
+	}
+	if prop.Kind != schemaScalar {
+		t.Fatalf("prop.Kind = %v, want schemaScalar when no Kind hint is given", prop.Kind)
 	}
 }
 
@@ -786,8 +914,12 @@ func TestResolveVideoBodyExtendDropsDefaultRatio(t *testing.T) {
 	}
 }
 
-// TestResolveVideoBodyKlingImageToVideo verifies image-to-video: an attached
-// image maps onto the model's scalar image_url field.
+// TestResolveVideoBodyKlingImageToVideo verifies the builtin override that
+// compensates for fal's schema/runtime drift on Kling image-to-video: the
+// published schema declares a scalar image_url, but the runtime rejects it with
+// 422 demanding image_urls (a list). The builtin override forces the source
+// image onto image_urls as a one-element slice, so an image-to-video turn
+// succeeds instead of 422ing. See conv_3232dd3836e50aa6402d8f51.
 func TestResolveVideoBodyKlingImageToVideo(t *testing.T) {
 	body, notices, _ := resolveVideoBody(loadSchema(t, "kling-image-to-video"),
 		VideoGenerateRequest{
@@ -799,14 +931,72 @@ func TestResolveVideoBodyKlingImageToVideo(t *testing.T) {
 	if body["prompt"] != "make the character walk forward" {
 		t.Fatalf("prompt = %v", body["prompt"])
 	}
-	if got, ok := body["image_url"].(string); !ok || !strings.HasPrefix(got, "data:image/") {
-		t.Fatalf("image_url = %v, want the attached image data URI", body["image_url"])
+	urls, ok := body["image_urls"].([]any)
+	if !ok {
+		t.Fatalf("image_urls = %+v (%T), want a one-element []any slice (runtime requires a list)", body["image_urls"], body["image_urls"])
+	}
+	if len(urls) != 1 || !strings.HasPrefix(fmt.Sprint(urls[0]), "data:image/") {
+		t.Fatalf("image_urls = %+v, want single-element slice with the attached image data URI", urls)
+	}
+	if _, present := body["image_url"]; present {
+		t.Fatalf("image_url must not be set; the override routes the source onto image_urls. got %v", body["image_url"])
 	}
 	if _, present := body["video_url"]; present {
 		t.Fatalf("video_url must not be set for image-to-video; got %v", body["video_url"])
 	}
 	if len(notices) != 0 {
 		t.Fatalf("expected no notices for Kling image-to-video, got %v", notices)
+	}
+}
+
+// TestResolveVideoBodyKlingO3ProImageUrlsArray is the end-to-end regression for
+// conv_9bbf4d6894859debe3430fdb: the Kling o3/pro reference-to-video model
+// declares image_urls as anyOf:[{type:array, items:{...}}, {type:null}], which
+// the schema parser used to read as an empty scalar — so resolveVideoBody
+// concluded "has no source-image input" and silently dropped the user's image,
+// producing a text-only video. Now that the parser unwraps the nullable array
+// union, image_urls is schemaArray and the source lands as a one-element list.
+// Skips when the live schema cache is absent (CI without a fal key).
+func TestResolveVideoBodyKlingO3ProImageUrlsArray(t *testing.T) {
+	path := filepath.Join(os.Getenv("HOME"), ".atelier", "schema-cache", "fal-ai_kling-video_o3_pro_reference-to-video.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("live schema cache not present at %s; skipping end-to-end resolver test", path)
+	}
+	var cached struct {
+		Raw json.RawMessage `json:"raw"`
+	}
+	if err := json.Unmarshal(raw, &cached); err != nil {
+		t.Fatalf("decode cache wrapper: %v", err)
+	}
+	schema, err := parseModelInputSchema(cached.Raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	body, notices, err := resolveVideoBody(schema,
+		VideoGenerateRequest{
+			Model:  "fal-ai/kling-video/o3/pro/reference-to-video",
+			Prompt: "A statue standing still as gentle waves hit it.",
+			Images: []string{"data:image/png;base64,iVBORw0KGgo="},
+		},
+		builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	urls, ok := body["image_urls"].([]any)
+	if !ok {
+		t.Fatalf("image_urls = %+v (%T), want a one-element []any list (the runtime requires a list)", body["image_urls"], body["image_urls"])
+	}
+	if len(urls) != 1 || !strings.HasPrefix(fmt.Sprint(urls[0]), "data:image/") {
+		t.Fatalf("image_urls = %+v, want single-element slice with the attached image data URI", urls)
+	}
+	if _, present := body["image_url"]; present {
+		t.Fatalf("image_url (scalar) must not be set; the source routes onto image_urls. got %v", body["image_url"])
+	}
+	for _, n := range notices {
+		if strings.Contains(n, "no source-image input") {
+			t.Fatalf("must not report 'no source-image input' now that image_urls parses as an array; got notice %q", n)
+		}
 	}
 }
 
@@ -903,8 +1093,12 @@ func TestResolveVideoBodyImageToVideoDropsDefaultRatio(t *testing.T) {
 		if _, present := body["aspect_ratio"]; present {
 			t.Fatalf("aspect_ratio must be dropped for image-to-video without an explicit ratio; got %v", body["aspect_ratio"])
 		}
-		if _, present := body["image_url"]; !present {
-			t.Fatalf("image_url must still be sent for image-to-video")
+		// The Kling model id triggers the builtin image_urls override (the schema
+		// declares scalar image_url but the runtime demands a list), so the source
+		// lands on image_urls, not image_url. The aspect-ratio gate under test is
+		// independent of which field carries the image.
+		if _, present := body["image_urls"]; !present {
+			t.Fatalf("image_urls must still be sent for image-to-video (builtin override routes the source onto the list field)")
 		}
 	})
 	t.Run("legacy nil-schema", func(t *testing.T) {
@@ -1101,6 +1295,51 @@ func TestResolveVideoBodySingleImageArrayStillWorks(t *testing.T) {
 	urls, ok := body["image_urls"].([]any)
 	if !ok || len(urls) != 1 || urls[0] != "data:image/png;base64,AAA" {
 		t.Fatalf("image_urls = %v, want a one-element slice with the data URI", body["image_urls"])
+	}
+}
+
+// TestResolveVideoBodyOverrideArrayAcceptsMultipleImages is the multi-image
+// counterpart to the Kling builtin override: when an override forces Kind:"array"
+// for a model whose schema declares a scalar image_url, multiple attached images
+// must fan out onto the override's image_urls field rather than tripping the
+// scalar multi-image guardrail. This proves the fabricated schemaArray property
+// flows through the same code path as a real schema-declared array.
+func TestResolveVideoBodyOverrideArrayAcceptsMultipleImages(t *testing.T) {
+	// Schema declares a scalar image_url (the drift shape); the override routes
+	// sourceImage onto image_urls as an array.
+	schema := &ModelInputSchema{
+		Properties: map[string]SchemaProperty{
+			"prompt":    {Name: "prompt", Kind: schemaScalar},
+			"image_url": {Name: "image_url", Kind: schemaScalar, Type: "string"},
+		},
+		order: []string{"prompt", "image_url"},
+	}
+	ov := Overrides{byCategory: map[string]map[string]map[string]overrideEntry{
+		"video": {
+			"acme/drift": {
+				"sourceImage": {Path: "image_urls", Kind: "array", Items: "string"},
+			},
+		},
+	}}
+	body, _, err := resolveVideoBody(schema,
+		VideoGenerateRequest{
+			Model:  "acme/drift",
+			Prompt: "blend two references",
+			Images: []string{"data:image/png;base64,AAA", "data:image/png;base64,BBB"},
+		},
+		ov)
+	if err != nil {
+		t.Fatalf("expected multi-image into an override-forced array to succeed, got %v", err)
+	}
+	urls, ok := body["image_urls"].([]any)
+	if !ok {
+		t.Fatalf("image_urls = %v (%T), want []any", body["image_urls"], body["image_urls"])
+	}
+	if len(urls) != 2 || urls[0] != "data:image/png;base64,AAA" || urls[1] != "data:image/png;base64,BBB" {
+		t.Fatalf("image_urls = %+v, want both images in attach order", urls)
+	}
+	if _, present := body["image_url"]; present {
+		t.Fatalf("image_url must not be set; the override routes onto image_urls. got %v", body["image_url"])
 	}
 }
 

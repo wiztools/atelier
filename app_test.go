@@ -1367,6 +1367,50 @@ func TestToolResultMessagesStripDataURIFromError(t *testing.T) {
 	}
 }
 
+// TestHarnessThinkingNoteStripsDataURIFromToolError is the regression for the
+// second leak path in conv_3232dd3836e50aa6402d8f51: the role:"tool" message
+// path was already sanitized (TestToolResultMessagesStripDataURIFromError
+// above), but formatHarnessPreparationThinking re-marshaled round.ToolResults
+// verbatim into the "Tool results N" section of the model-facing thinking note
+// — so the full base64 image survived into the primary model's context via the
+// thinking block. The note must sanitize each result's error the same way the
+// tool-message path does, while the raw error stays on run.Steps[].Tools for
+// debugging telemetry.
+func TestHarnessThinkingNoteStripsDataURIFromToolError(t *testing.T) {
+	// The shape of the actual fal 422 from the conversation: a list-type error
+	// on image_urls with the full submitted image echoed in "input".
+	rawError := `fal GET https://queue.fal.run/fal-ai/kling-video/requests/abc returned 422 Unprocessable Entity: {"detail":[{"type":"list_type","loc":["body","image_urls"],"msg":"Input should be a valid list","input":"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAA"}]}`
+	preparation := HarnessPreparedTurn{
+		Rounds: []HarnessToolRound{{
+			Iteration: 1,
+			ToolResults: []HarnessToolResult{{
+				Name:    "generate_video",
+				Status:  "failed",
+				Summary: "generate_video failed",
+				Error:   rawError,
+			}},
+		}},
+	}
+	note := formatHarnessPreparationThinking(preparation)
+	// The base64 payload must not survive into the model-facing note.
+	if strings.Contains(note, "base64,/9j/") || strings.Contains(note, "/9j/4AAQSkZJRg") {
+		t.Fatalf("thinking note leaked the inline image payload into model context: %q", truncateRunes(note, 200))
+	}
+	// The data URI is collapsed to the same placeholder the tool-message path uses.
+	if !strings.Contains(note, "inline-media-omitted") {
+		t.Fatalf("thinking note = %q, want the data URI replaced with a placeholder", truncateRunes(note, 200))
+	}
+	// The diagnostic signal survives: the model can still report a 422 on image_urls.
+	if !strings.Contains(note, "422") || !strings.Contains(note, "image_urls") {
+		t.Fatalf("thinking note = %q, want 422 and image_urls preserved for an honest failure report", truncateRunes(note, 200))
+	}
+	// The raw error on the input fixture is untouched — telemetry keeps the verbatim
+	// error for debugging (this is the contract from TestToolResultMessagesStripDataURIFromError).
+	if preparation.Rounds[0].ToolResults[0].Error != rawError {
+		t.Fatalf("sanitization must not mutate the source ToolResults (telemetry contract); the round's raw error was changed")
+	}
+}
+
 // TestSanitizeToolErrorForModel covers the sanitizer directly: data URIs
 // collapse, empty stays empty, and over-long errors truncate.
 func TestSanitizeToolErrorForModel(t *testing.T) {

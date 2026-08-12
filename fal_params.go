@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,63 +10,129 @@ import (
 	"strings"
 )
 
-// Overrides maps category → model-id → canonical → native path. A native path of
-// "" means the canonical param is explicitly unsupported (drop-with-notice).
-// Missing entries fall through to schema heuristics.
+// Overrides maps category → model-id → canonical → overrideEntry. An entry's
+// Path is the native field name (or dot-path) to write to; an empty Path means
+// the canonical param is explicitly unsupported (drop-with-notice). Kind, when
+// set, forces the property's schemaKind independently of what the model's
+// published schema declares — this is the escape hatch for endpoints whose
+// runtime has drifted from their own OpenAPI schema (e.g. Kling image-to-video,
+// whose schema declares a scalar image_url but whose runtime rejects anything
+// but an image_urls array). Missing entries fall through to schema heuristics.
 type Overrides struct {
-	byCategory map[string]map[string]map[string]string
+	byCategory map[string]map[string]map[string]overrideEntry
 }
 
-func (o Overrides) lookup(category, model, canon string) (string, bool) {
+// overrideEntry is the leaf value of an Overrides tree. Path is the native
+// field name or dot-path; Kind is the OpenAPI-style type string ("array",
+// "string", "integer", ...) used only when the field isn't found in the schema
+// (see findNative's fabrication branch); Items is the element type for a forced
+// array; MaxItems caps a forced array. A bare string override (the legacy
+// on-disk form) unmarshals into {Path: <string>}.
+type overrideEntry struct {
+	Path     string
+	Kind     string
+	Items    string
+	MaxItems int
+}
+
+func (o Overrides) lookup(category, model, canon string) (overrideEntry, bool) {
 	models, ok := o.byCategory[category]
 	if !ok {
-		return "", false
+		return overrideEntry{}, false
 	}
 	params, ok := models[model]
 	if !ok {
-		return "", false
+		return overrideEntry{}, false
 	}
-	native, ok := params[canon]
-	return native, ok
+	entry, ok := params[canon]
+	return entry, ok
 }
 
-// builtinFalOverrides holds defaults for models the heuristics get wrong. Empty
-// today; entries are added as such models are discovered.
+// builtinFalOverrides holds defaults for models the heuristics get wrong —
+// primarily endpoints whose published OpenAPI schema disagrees with their
+// runtime. Entries are added as such drift is discovered.
 func builtinFalOverrides() Overrides {
-	return Overrides{byCategory: map[string]map[string]map[string]string{
-		"audio":   {},
-		"image":   {},
-		"video":   {},
+	return Overrides{byCategory: map[string]map[string]map[string]overrideEntry{
+		"audio": {},
+		"image": {},
+		// fal-ai/kling-video/v2/master/image-to-video: the published schema
+		// declares image_url (a single string), but the runtime rejects it with
+		// 422 "image_urls: Input should be a valid list" and demands an array.
+		// Force the source image onto image_urls as a one-element list. When fal
+		// fixes the schema this entry can be removed and pure-schema behavior
+		// resumes. See conv_3232dd3836e50aa6402d8f51.
+		"video": {
+			"fal-ai/kling-video/v2/master/image-to-video": {
+				"sourceImage": {Path: "image_urls", Kind: "array", Items: "string"},
+			},
+		},
 		"lipsync": {},
 	}}
 }
 
 // loadFalOverrides reads <storageRoot>/fal-overrides.json and merges it OVER the
-// built-in defaults. A missing or malformed file yields the built-ins.
+// built-in defaults. A missing or malformed file yields the built-ins. Each leaf
+// value accepts two shapes: a legacy bare string (the native field name, or ""
+// to disable) or an object {"path","kind","items","maxItems"} that can also
+// force the property's schemaKind — see overrideEntry.
 func loadFalOverrides(storageRoot string) Overrides {
 	ov := builtinFalOverrides()
 	data, err := os.ReadFile(filepath.Join(storageRoot, "fal-overrides.json"))
 	if err != nil {
 		return ov
 	}
-	var parsed map[string]map[string]map[string]string
+	// Decode leaves as raw JSON so a bare string and an object both parse.
+	var parsed map[string]map[string]map[string]json.RawMessage
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		return ov // malformed → built-ins
 	}
 	for category, models := range parsed {
 		if ov.byCategory[category] == nil {
-			ov.byCategory[category] = map[string]map[string]string{}
+			ov.byCategory[category] = map[string]map[string]overrideEntry{}
 		}
 		for model, params := range models {
 			if ov.byCategory[category][model] == nil {
-				ov.byCategory[category][model] = map[string]string{}
+				ov.byCategory[category][model] = map[string]overrideEntry{}
 			}
-			for canon, native := range params {
-				ov.byCategory[category][model][canon] = native
+			for canon, raw := range params {
+				entry, ok := parseOverrideEntry(raw)
+				if !ok {
+					continue // unparseable leaf → skip, keep builtin/default
+				}
+				ov.byCategory[category][model][canon] = entry
 			}
 		}
 	}
 	return ov
+}
+
+// parseOverrideEntry decodes one override leaf, accepting either a bare JSON
+// string (legacy: the native path, or "" to disable) or an object with
+// {path, kind, items, maxItems}. Returns ok=false when the leaf is neither.
+func parseOverrideEntry(raw json.RawMessage) (overrideEntry, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return overrideEntry{}, false
+	}
+	// Object form: {"path": "...", "kind": "array", ...}
+	if trimmed[0] == '{' {
+		var obj struct {
+			Path     string `json:"path"`
+			Kind     string `json:"kind"`
+			Items    string `json:"items"`
+			MaxItems int    `json:"maxItems"`
+		}
+		if err := json.Unmarshal(trimmed, &obj); err != nil {
+			return overrideEntry{}, false
+		}
+		return overrideEntry{Path: obj.Path, Kind: obj.Kind, Items: obj.Items, MaxItems: obj.MaxItems}, true
+	}
+	// Legacy bare-string form: the native path (or "" to disable).
+	var s string
+	if err := json.Unmarshal(trimmed, &s); err != nil {
+		return overrideEntry{}, false
+	}
+	return overrideEntry{Path: s}, true
 }
 
 // audioSynonyms lists, per canonical param, the native key names to look for in
@@ -768,15 +835,23 @@ func resolveLipsyncBody(schema *ModelInputSchema, req LipsyncGenerateRequest, ov
 // one-level nested scan. Returns the matched leaf property for coercion.
 // category selects the synonym table and override namespace ("audio", "image",
 // "video", or "lipsync").
+//
+// When an override names a field the schema does not declare, the returned
+// property is fabricated from the override's Kind hint (defaulting to scalar):
+// an override with Kind:"array" yields a schemaArray property so the existing
+// array coercion/guardrails downstream apply unchanged. This is how an override
+// compensates for a model whose runtime disagrees with its published schema
+// (e.g. Kling image-to-video demanding image_urls as a list while its schema
+// declares a scalar image_url).
 func findNative(schema *ModelInputSchema, ov Overrides, category, model, canon string) (string, SchemaProperty, bool) {
-	if native, ok := ov.lookup(category, model, canon); ok {
-		if native == "" {
+	if entry, ok := ov.lookup(category, model, canon); ok {
+		if entry.Path == "" {
 			return "", SchemaProperty{}, false // explicitly unsupported
 		}
-		if prop, ok := propAtPath(schema, native); ok {
-			return native, prop, true
+		if prop, ok := propAtPath(schema, entry.Path); ok {
+			return entry.Path, prop, true
 		}
-		return native, SchemaProperty{Name: native, Kind: schemaScalar}, true
+		return entry.Path, fabricateOverrideProperty(entry), true
 	}
 	syns := synonymsFor(category, canon)
 	for _, name := range syns {
@@ -792,6 +867,29 @@ func findNative(schema *ModelInputSchema, ov Overrides, category, model, canon s
 		}
 	}
 	return "", SchemaProperty{}, false
+}
+
+// fabricateOverrideProperty builds a SchemaProperty for an override path that
+// isn't present in the model's schema, using the override's Kind hint. An
+// "array" kind yields schemaArray (with string elements unless Items overrides),
+// so the existing array coercion and multi-image guardrails apply as if the
+// schema had declared it. Any other/empty kind yields a plain scalar — the
+// pre-override behavior.
+func fabricateOverrideProperty(entry overrideEntry) SchemaProperty {
+	if entry.Kind == "array" {
+		itemsType := entry.Items
+		if itemsType == "" {
+			itemsType = "string"
+		}
+		return SchemaProperty{
+			Name:     entry.Path,
+			Kind:     schemaArray,
+			Type:     "array",
+			Items:    &SchemaProperty{Name: entry.Path, Kind: schemaScalar, Type: itemsType},
+			MaxItems: entry.MaxItems,
+		}
+	}
+	return SchemaProperty{Name: entry.Path, Kind: schemaScalar, Type: entry.Kind}
 }
 
 // synonymsFor returns the native-name candidates for (category, canon), or nil

@@ -1862,7 +1862,20 @@ func formatHarnessPreparationThinking(preparation HarnessPreparedTurn) string {
 			}
 		}
 		if len(round.ToolResults) > 0 {
-			if data, err := json.MarshalIndent(round.ToolResults, "", "  "); err == nil {
+			// Sanitize each result's error before it enters the model-facing
+			// thinking note. round.ToolResults carries the verbatim error (kept
+			// for harness telemetry on run.Steps[].Tools), but a failed media
+			// tool's downstream error can embed a megabyte of base64 — e.g. fal
+			// echoing the submitted data URI back in a 422 (conv_3232dd3836e50aa6
+			// 402d8f51). The role:"tool" message path already sanitizes
+			// (harness.go ~line 1793); this closes the parallel leak through the
+			// thinking note, which re-marshals the raw results verbatim.
+			sanitized := make([]HarnessToolResult, len(round.ToolResults))
+			for i, r := range round.ToolResults {
+				sanitized[i] = r
+				sanitized[i].Error = sanitizeToolErrorForModel(r.Error)
+			}
+			if data, err := json.MarshalIndent(sanitized, "", "  "); err == nil {
 				parts = append(parts, fmt.Sprintf("### Tool results %d\n\n```json\n%s\n```", round.Iteration, string(data)))
 			}
 		}

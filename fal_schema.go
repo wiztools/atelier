@@ -81,6 +81,8 @@ type openAPIProp struct {
 	Properties map[string]json.RawMessage `json:"properties"`
 	Items      json.RawMessage            `json:"items"`
 	MaxItems   int                        `json:"maxItems"`
+	AnyOf      []json.RawMessage          `json:"anyOf"`
+	OneOf      []json.RawMessage          `json:"oneOf"`
 }
 
 type openAPIModel struct {
@@ -94,11 +96,35 @@ func parseModelInputSchema(raw []byte) (*ModelInputSchema, error) {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, err
 	}
+	// Find the primary *Input schema. Some fal OpenAPI docs declare more than
+	// one (e.g. Kling o3/pro reference-to-video also declares
+	// KlingV3ComboElementInput for a nested element shape). A plain map scan +
+	// first-match break is nondeterministic across map iteration order, which
+	// caused conv_9bbf4d6894859debe3430fdb to intermittently select the helper
+	// schema (no image_urls) and drop the attached image. Pick the *Input with
+	// the most properties — the top-level request input carries all the
+	// user-facing fields, while nested element/item sub-schemas are smaller —
+	// and tie-break by name for stability.
 	var inputRaw json.RawMessage
+	var inputName string
+	var inputPropCount int
 	for name, body := range doc.Components.Schemas {
-		if strings.HasSuffix(name, "Input") {
+		if !strings.HasSuffix(name, "Input") {
+			continue
+		}
+		// Count top-level properties without a full recursive parse: decode just
+		// the property map's length. Cheap and order-independent.
+		var probe struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		}
+		n := 0
+		if json.Unmarshal(body, &probe) == nil {
+			n = len(probe.Properties)
+		}
+		if n > inputPropCount || (n == inputPropCount && (inputName == "" || name < inputName)) {
 			inputRaw = body
-			break
+			inputName = name
+			inputPropCount = n
 		}
 	}
 	if len(inputRaw) == 0 {
@@ -124,6 +150,17 @@ func parseModelInputSchema(raw []byte) (*ModelInputSchema, error) {
 func toSchemaProperty(name string, raw json.RawMessage) SchemaProperty {
 	var p openAPIProp
 	_ = json.Unmarshal(raw, &p)
+	// Unwrap anyOf/oneOf before parsing. fal declares optional fields as
+	// anyOf:[{<concrete type>}, {type:"null"}] (nullable unions); without this
+	// unwrap, the property has no top-level "type" and parses as an empty
+	// scalar, losing its array-ness/items/enum. See conv_9bbf4d6894859debe3430fdb
+	// (Kling o3/pro image_urls dropped the attached image this way). Recursion
+	// terminates because the chosen branch has a concrete type.
+	if p.Type == "" {
+		if branch := unwrapUnion(p); branch != nil {
+			return toSchemaProperty(name, branch)
+		}
+	}
 	sp := SchemaProperty{Name: name, Kind: schemaScalar, Type: p.Type, Enum: enumStrings(p.Enum)}
 	if len(p.Default) > 0 {
 		var d any
@@ -152,6 +189,42 @@ func toSchemaProperty(name string, raw json.RawMessage) SchemaProperty {
 		}
 	}
 	return sp
+}
+
+// unwrapUnion picks the concrete branch from an anyOf/oneOf union on p so the
+// property's real type/array-ness/items/enum survive parsing. Returns nil when
+// p has no union or no branch qualifies, so callers behave as before.
+//
+// fal declares optional fields two ways, both handled here:
+//
+//  1. Nullable union (the common shape): anyOf:[{<concrete type>}, {type:"null"}].
+//     Example: image_urls: anyOf:[{type:array, items:{type:string}}, {type:null}].
+//  2. Multi-type union: anyOf:[{$ref:...}, {type:"string", enum:[...]}] (e.g.
+//     seedream's image_size). No null branch; the $ref branch can't be resolved
+//     without ref-following, so the enum-string branch is the usable one.
+//
+// In both shapes the right branch is the first carrying a concrete top-level
+// "type" other than "null" — null-type and $ref-only (type-less) branches are
+// skipped. Every fal union surveyed (17 live schemas + test fixtures) has at
+// least one such branch.
+func unwrapUnion(p openAPIProp) json.RawMessage {
+	branches := p.AnyOf
+	if len(branches) == 0 {
+		branches = p.OneOf
+	}
+	for _, branch := range branches {
+		var sub openAPIProp
+		if json.Unmarshal(branch, &sub) != nil {
+			continue
+		}
+		// Skip branches with no concrete type: the nullable {type:"null"} marker
+		// and $ref-only branches both qualify (a $ref adds no top-level type).
+		if sub.Type == "" || sub.Type == "null" {
+			continue
+		}
+		return branch
+	}
+	return nil
 }
 
 // enumStrings renders an OpenAPI enum (which may be strings OR numbers — fal's

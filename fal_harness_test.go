@@ -303,10 +303,13 @@ func TestHarnessGeneratesVideoViaFal(t *testing.T) {
 }
 
 // TestHarnessAnimatesAttachedImageViaFal is the regression test for
-// conv_a89e35615db14bdeec29cfff ("Animate this image..."). When the user
-// attaches an image, generate_video must switch to image-to-video: use the
-// image-to-video model and pass the attached frame to fal as image_url, rather
-// than silently dropping the image and running text-to-video.
+// conv_a89e35615db14bdeec29cfff ("Animate this image...") and the schema/runtime
+// drift fix for conv_3232dd3836e50aa6402d8f51. When the user attaches an image,
+// generate_video must switch to image-to-video: use the image-to-video model and
+// pass the attached frame to fal. Kling's published schema declares a scalar
+// image_url, but its runtime rejects it with 422 demanding image_urls (a list),
+// so the builtin override routes the source onto image_urls as a one-element
+// list — never silently dropping the image and running text-to-video.
 func TestHarnessAnimatesAttachedImageViaFal(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -340,8 +343,11 @@ func TestHarnessAnimatesAttachedImageViaFal(t *testing.T) {
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if strings.Contains(req.URL.Path, "/api/openapi/") {
-			// Minimal kling image-to-video schema so resolveVideoBody can map the
-			// canonical source-image param onto image_url.
+			// Minimal kling image-to-video schema so resolveVideoBody can run.
+			// The schema declares a scalar image_url, but the builtin override
+			// (builtinFalOverrides) compensates for fal's schema/runtime drift
+			// by routing the source onto image_urls as a list — the runtime
+			// rejects image_url with 422 "Input should be a valid list".
 			return jsonResponse(`{"components":{"schemas":{"KlingImageToVideoInput":{"type":"object","required":["prompt","image_url"],"properties":{"prompt":{"type":"string"},"image_url":{"type":"string"},"duration":{"type":"string"},"aspect_ratio":{"type":"string"}}}}}}`), nil
 		}
 		if strings.Contains(req.URL.Host, "fal.run") {
@@ -349,8 +355,9 @@ func TestHarnessAnimatesAttachedImageViaFal(t *testing.T) {
 				submittedModelPath = req.URL.Path
 				body, _ := io.ReadAll(req.Body)
 				// fal rejects bare base64 with a 422; the frontend sends bare
-				// base64, so the client must wrap it as a data URI.
-				sawImageURL = strings.Contains(string(body), `"image_url":"data:image/`)
+				// base64, so the client must wrap it as a data URI. The override
+				// routes the source onto image_urls (a one-element list).
+				sawImageURL = strings.Contains(string(body), `"image_urls":["data:image/`)
 				return jsonResponse(`{"request_id":"req-i2v-1"}`), nil
 			}
 			if strings.HasSuffix(req.URL.Path, "/status") {
@@ -403,7 +410,7 @@ func TestHarnessAnimatesAttachedImageViaFal(t *testing.T) {
 	})
 
 	if !sawImageURL {
-		t.Fatal("fal submit did not include image_url as a data URI — bare base64 is rejected by fal with 422")
+		t.Fatal("fal submit did not include image_urls as a one-element data-URI list — the runtime rejects a bare image_url string with 422")
 	}
 	if submittedModelPath != "/"+defaultFalVideoImageModel {
 		t.Fatalf("submitted to %q, want the image-to-video model %q", submittedModelPath, "/"+defaultFalVideoImageModel)
