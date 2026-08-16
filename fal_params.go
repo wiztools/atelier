@@ -150,10 +150,21 @@ var audioSynonyms = map[string][]string{
 // frame a user attached to transform: flux/dev/image-to-image declares
 // `image_url` (scalar), nano-banana-pro declares `image_urls` (array). The
 // resolver wraps to a slice when the matched property is schemaArray.
+//
+// Two canonicals carry an output shape: `imageSize` for models that take a
+// pixel-size or a fal preset enum on `image_size`/`size` (seedream), and
+// `aspectRatio` for models that take a raw ratio string on `aspect_ratio`
+// (nano-banana-2/edit, whose enum lists "9:16", "16:9", ...). They are
+// separate canonicals because the field names and value spaces don't overlap:
+// resolveImageBody tries `aspectRatio` first and falls back to `imageSize`. We
+// deliberately keep "size" off `aspectRatio` here even though the video table
+// includes it — on image models "size" means pixel-size, so listing it under
+// both canonicals would be ambiguous.
 var imageSynonyms = map[string][]string{
 	"prompt":            {"prompt"},
 	"sourceImage":       {"image_url", "image_urls"},
 	"imageSize":         {"image_size", "size"},
+	"aspectRatio":       {"aspect_ratio", "aspectRatio"},
 	"numImages":         {"num_images"},
 	"numInferenceSteps": {"num_inference_steps"},
 }
@@ -314,13 +325,17 @@ func resolveImageBody(schema *ModelInputSchema, req ImageGenerateRequest, ov Ove
 		body["num_images"] = 1
 	}
 
-	// Image-to-image takes the source frame(s). Many edit models (e.g. seedream
-	// edit) also accept an explicit image_size alongside the source image, so an
-	// aspect-ratio preset is sent when the schema supports it — otherwise the
-	// output inherits the source's orientation and a "make this 9:16" request on
-	// a landscape source silently stays landscape (see conv_711ebd5f). For models
-	// that derive dims purely from the source, no image_size input exists and the
-	// preset is correctly omitted. Text-to-image always takes the configured
+	// Image-to-image takes the source frame(s). An output-orientation request
+	// ("make this 9:16") must override the source's inherited orientation —
+	// otherwise a landscape source silently stays landscape (see conv_711ebd5f,
+	// and conv_369b3099eed8483b7b6a14bf where the ratio was dropped entirely).
+	// Edit models expose this in one of two ways, tried in order: a raw
+	// aspect_ratio string enum (nano-banana-2/edit, nano-banana/edit), or an
+	// image_size preset enum alongside the source frame (seedream edit). Only
+	// the preset is ever sent on image_size — never raw width/height, since the
+	// source frame sets the resolution and a pixel object could conflict. For
+	// models that derive dims purely from the source (no field of either name),
+	// both are correctly omitted. Text-to-image always takes the configured
 	// dimensions.
 	if len(sourceImages) > 0 {
 		path, prop, ok := findNative(schema, ov, "image", req.Model, "sourceImage")
@@ -344,13 +359,16 @@ func resolveImageBody(schema *ModelInputSchema, req ImageGenerateRequest, ov Ove
 			}
 			setBodyPath(schema, body, path, coerceImages(prop, sourceImages))
 		}
-		// Send the aspect-ratio preset when the edit model accepts image_size.
-		// Only the preset enum is sent here — never raw width/height, since the
-		// source frame sets the resolution and a pixel object could conflict.
-		if preset := falImageSizePreset(req.AspectRatio); preset != "" {
-			if sizePath, sizeProp, hasSize := findNative(schema, ov, "image", req.Model, "imageSize"); hasSize {
-				if len(sizeProp.Enum) == 0 || valueAllowedByEnum(sizeProp, preset) {
-					setBodyPath(schema, body, sizePath, preset)
+		// Forward the requested ratio onto the model's native ratio field. Try
+		// aspect_ratio (raw "9:16" enum) first; if the model has no aspect_ratio
+		// input, fall back to the image_size preset. The two field names don't
+		// overlap on any known model, so at most one fires.
+		if !sendImageAspectRatio(schema, ov, body, req) {
+			if preset := falImageSizePreset(req.AspectRatio); preset != "" {
+				if sizePath, sizeProp, hasSize := findNative(schema, ov, "image", req.Model, "imageSize"); hasSize {
+					if len(sizeProp.Enum) == 0 || valueAllowedByEnum(sizeProp, preset) {
+						setBodyPath(schema, body, sizePath, preset)
+					}
 				}
 			}
 		}
@@ -368,8 +386,45 @@ func resolveImageBody(schema *ModelInputSchema, req ImageGenerateRequest, ov Ove
 	return body, notices, nil
 }
 
+// sendImageAspectRatio writes the raw aspect-ratio string (e.g. "9:16") onto the
+// model's native aspect_ratio field, enum-gated, and reports whether it placed a
+// value. It is the ratio-native sibling of sendImageSize: many modern edit
+// models (nano-banana-2/edit, nano-banana/edit) expose aspect_ratio as a string
+// enum ("auto","16:9","9:16",...) rather than a pixel image_size, and send the
+// raw ratio — never a fal preset like "portrait_16_9", which those enums don't
+// list. A requested ratio the model's enum doesn't accept is dropped (the model
+// picks its own default) rather than sent — passing it through would 422 at fal.
+//
+// Returns false (without writing) when the model has no aspect_ratio input, so
+// the caller falls back to sendImageSize's image_size path. This is the fix for
+// conv_369b3099eed8483b7b6a14bf: a 9:16 request on nano-banana-2/edit came back
+// landscape because the ratio was routed only through image_size, which that
+// model doesn't have — see resolveImageBody's sourced branch.
+func sendImageAspectRatio(schema *ModelInputSchema, ov Overrides, body map[string]any, req ImageGenerateRequest) bool {
+	aspect := strings.TrimSpace(req.AspectRatio)
+	if aspect == "" {
+		return false
+	}
+	path, prop, ok := findNative(schema, ov, "image", req.Model, "aspectRatio")
+	if !ok {
+		return false
+	}
+	if len(prop.Enum) > 0 && !valueAllowedByEnum(prop, aspect) {
+		return false
+	}
+	setBodyPath(schema, body, path, aspect)
+	return true
+}
+
 // sendImageSize writes the image_size field onto the fal request body, choosing
 // between an aspect-ratio preset enum string and a {width,height} object.
+//
+// The model's native ratio field is tried first via sendImageAspectRatio — a
+// text-to-image model that exposes aspect_ratio (e.g. nano-banana-2) takes the
+// raw "9:16" string there and has no image_size input at all, so routing it
+// through image_size would silently drop the ratio (the image-edit sibling of
+// conv_369b3099eed8483b7b6a14bf). Only when the model has no aspect_ratio input
+// does this fall through to the image_size path below.
 //
 // Some fal image models (notably seedream) accept an aspect-ratio preset enum on
 // image_size ("landscape_16_9", "portrait_16_9", ...) and either ignore or
@@ -380,6 +435,9 @@ func resolveImageBody(schema *ModelInputSchema, req ImageGenerateRequest, ov Ove
 // When the requested ratio maps to a known preset, prefer the enum the model
 // honors; otherwise send the pixel object (the original behavior).
 func sendImageSize(schema *ModelInputSchema, ov Overrides, body map[string]any, req ImageGenerateRequest) {
+	if sendImageAspectRatio(schema, ov, body, req) {
+		return
+	}
 	preset := falImageSizePreset(req.AspectRatio)
 	path, prop, hasSize := findNative(schema, ov, "image", req.Model, "imageSize")
 	if preset != "" && (!hasSize || valueAllowedByEnum(prop, preset) || len(prop.Enum) == 0) {

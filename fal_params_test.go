@@ -507,10 +507,11 @@ func TestResolveImageBodySendsAspectPresetEnum(t *testing.T) {
 			t.Fatalf("image_urls must still be set alongside the preset: %+v", body)
 		}
 	})
-	t.Run("edit model without image_size input omits it", func(t *testing.T) {
-		// A model that derives dims purely from the source (no image_size input)
-		// must not get an image_size — it would be an unknown field. Only the
-		// preset is ever sent, and only when the schema accepts image_size.
+	t.Run("edit model with no ratio input omits both", func(t *testing.T) {
+		// A model that derives dims purely from the source (neither image_size
+		// nor aspect_ratio) must not get either field — they would be unknown
+		// fields. Only the preset is ever sent on image_size, and only the raw
+		// ratio on aspect_ratio, and only when the schema declares the field.
 		schema := &ModelInputSchema{
 			Properties: map[string]SchemaProperty{
 				"image_url": {Name: "image_url", Kind: schemaScalar},
@@ -524,6 +525,128 @@ func TestResolveImageBodySendsAspectPresetEnum(t *testing.T) {
 		}, builtinFalOverrides())
 		if _, present := body["image_size"]; present {
 			t.Fatalf("image_size must be omitted when the model has no image_size input: %+v", body)
+		}
+		if _, present := body["aspect_ratio"]; present {
+			t.Fatalf("aspect_ratio must be omitted when the model has no aspect_ratio input: %+v", body)
+		}
+	})
+}
+
+// TestResolveImageBodySendsAspectRatio is the regression for
+// conv_369b3099eed8483b7b6a14bf: a "create a 9:16 image" request on
+// fal-ai/nano-banana-2/edit (a sourced image edit) came back 1365x768 landscape.
+// The planner emitted aspectRatio:"9:16" correctly, but the resolver could only
+// forward the ratio through image_size — which that model doesn't have — so the
+// ratio was dropped and fal fell back to its "auto" default, inheriting the
+// source's landscape orientation. The model exposes aspect_ratio as a string
+// enum (which lists "9:16"); the fix sends the raw ratio there. This is the
+// image sibling of how the video resolver already handles aspect_ratio.
+func TestResolveImageBodySendsAspectRatio(t *testing.T) {
+	const barePNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
+	t.Run("nano-banana-2/edit sourced edit sends raw ratio", func(t *testing.T) {
+		// The exact conv_369b3099 scenario: landscape source + explicit 9:16.
+		body, _, err := resolveImageBody(loadSchema(t, "nano-banana-2-edit"),
+			ImageGenerateRequest{
+				Model:       "fal-ai/nano-banana-2/edit",
+				Prompt:      "The statue from the given image, set in a sea environment.",
+				AspectRatio: "9:16",
+				Images:      []string{"data:image/png;base64," + barePNG},
+			},
+			builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := body["aspect_ratio"]; got != "9:16" {
+			t.Fatalf("aspect_ratio = %+v, want the raw \"9:16\" string the model's enum accepts", body["aspect_ratio"])
+		}
+		// image_size must NOT be sent — the model has no such field, and the
+		// preset string ("portrait_16_9") isn't in its aspect_ratio enum anyway.
+		if _, present := body["image_size"]; present {
+			t.Fatalf("image_size must be omitted on a model with aspect_ratio: %+v", body)
+		}
+		// The source frame still rides on the model's image_urls array input.
+		urls, ok := body["image_urls"].([]any)
+		if !ok || len(urls) != 1 {
+			t.Fatalf("image_urls = %+v, want single-element slice alongside the ratio", body["image_urls"])
+		}
+	})
+
+	t.Run("nano-banana/edit (plain string field) sends raw ratio", func(t *testing.T) {
+		// The older nano-banana/edit fixture's aspect_ratio is a bare string
+		// with no enum, so valueAllowedByEnum short-circuits true (no
+		// constraint). The raw ratio is still placed.
+		body, _, err := resolveImageBody(loadSchema(t, "nano-banana-edit"),
+			ImageGenerateRequest{
+				Model:       "fal-ai/nano-banana/edit",
+				Prompt:      "transform this",
+				AspectRatio: "9:16",
+				Images:      []string{"data:image/png;base64," + barePNG},
+			},
+			builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := body["aspect_ratio"]; got != "9:16" {
+			t.Fatalf("aspect_ratio = %+v, want \"9:16\" on the no-enum string field", body["aspect_ratio"])
+		}
+		if _, present := body["image_size"]; present {
+			t.Fatalf("image_size must be omitted when aspect_ratio was placed: %+v", body)
+		}
+	})
+
+	t.Run("text-to-image on aspect_ratio model sends raw ratio", func(t *testing.T) {
+		// No Images → text-to-image path through sendImageSize, which must also
+		// prefer aspect_ratio over image_size when the model has the former.
+		body, _, err := resolveImageBody(loadSchema(t, "nano-banana-2-edit"),
+			ImageGenerateRequest{
+				Model:       "fal-ai/nano-banana-2/edit",
+				Prompt:      "a tall portrait",
+				AspectRatio: "16:9",
+				Width:       1024,
+				Height:      576,
+			},
+			builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := body["aspect_ratio"]; got != "16:9" {
+			t.Fatalf("aspect_ratio = %+v, want \"16:9\" on the text-to-image path", body["aspect_ratio"])
+		}
+		if _, present := body["image_size"]; present {
+			t.Fatalf("image_size must be omitted when aspect_ratio was placed: %+v", body)
+		}
+	})
+
+	t.Run("ratio outside the enum is dropped, falls back to image_size preset", func(t *testing.T) {
+		// A model that declares BOTH aspect_ratio (with an enum excluding the
+		// requested ratio) and image_size (preset enum) must fall through to
+		// the image_size preset when the ratio isn't enum-allowed — mirroring
+		// the duration/resolution/fps discipline on the video path. Request 9:16
+		// (excluded from this aspect_ratio enum) but mapped to the
+		// portrait_16_9 preset that image_size's enum accepts.
+		schema := &ModelInputSchema{
+			Properties: map[string]SchemaProperty{
+				"aspect_ratio": {Name: "aspect_ratio", Kind: schemaScalar, Enum: []string{"1:1", "16:9"}},
+				"image_size":   {Name: "image_size", Kind: schemaScalar, Enum: []string{"square_hd", "landscape_16_9", "portrait_16_9"}},
+			},
+			order: []string{"aspect_ratio", "image_size"},
+		}
+		body, _, err := resolveImageBody(schema, ImageGenerateRequest{
+			Model:       "hybrid/edit",
+			Prompt:      "x",
+			AspectRatio: "9:16", // not in aspect_ratio enum
+			Width:       576,
+			Height:      1024,
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if _, present := body["aspect_ratio"]; present {
+			t.Fatalf("aspect_ratio must be dropped when the ratio is outside its enum: %+v", body)
+		}
+		if got := body["image_size"]; got != "portrait_16_9" {
+			t.Fatalf("image_size = %+v, want the portrait_16_9 preset fallback", got)
 		}
 	})
 }

@@ -1,0 +1,106 @@
+{
+  "components": {
+    "schemas": {
+      "NanoBanana2EditInput": {
+        "type": "object",
+        "x-fal-order-properties": [
+          "prompt",
+          "image_urls",
+          "aspect_ratio",
+          "num_images",
+          "resolution",
+          "seed",
+          "sync_mode",
+          "safety_tolerance"
+        ],
+        "required": [
+          "prompt"
+        ],
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "minLength": 3,
+            "description": "The prompt for image editing."
+          },
+          "image_urls": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Image URLs",
+            "description": "The URLs of the images to use for image-to-image generation or image editing."
+          },
+          "num_images": {
+            "default": 1,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4,
+            "title": "Number of Images"
+          },
+          "aspect_ratio": {
+            "default": "auto",
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["auto", "21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16", "4:1", "1:4", "8:1", "1:8"]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The aspect ratio of the generated image. Supports extreme ratios: 4:1, 1:4, 8:1, 1:8.",
+            "title": "Aspect Ratio"
+          },
+          "resolution": {
+            "default": "1K",
+            "type": "string",
+            "enum": ["0.5K", "1K", "2K", "4K"],
+            "title": "Resolution"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed"
+          },
+          "sync_mode": {
+            "default": false,
+            "type": "boolean"
+          },
+          "safety_tolerance": {
+            "default": "4",
+            "type": "string",
+            "enum": ["1", "2", "3", "4", "5", "6"]
+          }
+        }
+      },
+      "NanoBanana2EditOutput": {
+        "type": "object",
+        "properties": {
+          "images": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "url"
+              ]
+            }
+          }
+        },
+        "required": [
+          "images"
+        ]
+      }
+    }
+  }
+}
