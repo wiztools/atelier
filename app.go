@@ -522,10 +522,14 @@ type AudioGenerateRequest struct {
 	Duration       string `json:"duration,omitempty"`
 	NegativePrompt string `json:"negativePrompt,omitempty"`
 	// Loop requests a seamless, gapless loop (sound-effect models). Voice selects
-	// a text-to-speech voice. Both are resolved against the target model's schema
-	// and dropped-with-notice when the model has no matching parameter.
+	// a text-to-speech voice. Style names the genre/mood for music models with a
+	// style control (fal-ai/diffrhythm's required style_prompt, e.g. "jazz") —
+	// it keeps the prompt pure lyrics/description. All three are resolved
+	// against the target model's schema and dropped-with-notice when the model
+	// has no matching parameter.
 	Loop  bool   `json:"loop,omitempty"`
 	Voice string `json:"voice,omitempty"`
+	Style string `json:"style,omitempty"`
 }
 
 // SaveAudioRequest asks to copy a generated audio artifact to a user-chosen

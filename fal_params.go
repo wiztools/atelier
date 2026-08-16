@@ -138,11 +138,20 @@ func parseOverrideEntry(raw json.RawMessage) (overrideEntry, bool) {
 // audioSynonyms lists, per canonical param, the native key names to look for in
 // a model's schema (scanned in order, top-level then one-level nested).
 var audioSynonyms = map[string][]string{
-	"prompt":         {"prompt", "text"},
+	// "lyrics" covers lyrics-driven music models (fal-ai/diffrhythm) whose only
+	// prompt-bearing input is the required lyrics field — see
+	// conv_8be630557ba60c15daba8388, which 422ed with "body.lyrics Field
+	// required" when the generic prompt/text fallback was sent instead.
+	"prompt":         {"prompt", "text", "lyrics"},
 	"duration":       {"duration_seconds", "duration", "music_length_ms"},
 	"loop":           {"loop"},
 	"voice":          {"voice", "voice_id", "voice_name", "speaker", "speaker_id"},
 	"negativePrompt": {"negative_prompt"},
+	// "style_prompt" is required in practice by lyrics-driven music models
+	// (fal-ai/diffrhythm: "Either style prompt or reference audio URL must be
+	// provided" — a cross-field rule its schema can't express), so the planner
+	// gets a canonical style param to fill (conv_3c7d38ba07af8ea2ba60573b).
+	"style": {"style_prompt", "style", "genre"},
 }
 
 // imageSynonyms lists, per canonical param, the native key names to look for in
@@ -210,6 +219,7 @@ func canonicalAudioValues(req AudioGenerateRequest) []canonicalValue {
 		{"loop", req.Loop, req.Loop},
 		{"voice", strings.TrimSpace(req.Voice), strings.TrimSpace(req.Voice) != ""},
 		{"negativePrompt", strings.TrimSpace(req.NegativePrompt), strings.TrimSpace(req.NegativePrompt) != ""},
+		{"style", strings.TrimSpace(req.Style), strings.TrimSpace(req.Style) != ""},
 	}
 }
 

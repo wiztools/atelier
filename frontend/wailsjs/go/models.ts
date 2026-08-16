@@ -792,6 +792,7 @@ export namespace main {
 	    fps?: string;
 	    loop?: boolean;
 	    voice?: string;
+	    style?: string;
 	    scale?: string;
 	    task?: string;
 	    language?: string;
@@ -823,6 +824,7 @@ export namespace main {
 	        this.fps = source["fps"];
 	        this.loop = source["loop"];
 	        this.voice = source["voice"];
+	        this.style = source["style"];
 	        this.scale = source["scale"];
 	        this.task = source["task"];
 	        this.language = source["language"];

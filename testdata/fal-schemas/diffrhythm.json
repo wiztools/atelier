@@ -1,0 +1,35 @@
+{
+  "components": {
+    "schemas": {
+      "DiffrhythmInput": {
+        "type": "object",
+        "required": ["lyrics"],
+        "properties": {
+          "lyrics": {
+            "type": "string",
+            "description": "The lyrics to use for the music generation. Timestamped lines ([00:10.00]...) sync sections to the timeline.",
+            "title": "Lyrics"
+          },
+          "style_prompt": {
+            "type": "string",
+            "default": "pop",
+            "description": "The style prompt to use for the music generation.",
+            "title": "Style Prompt"
+          },
+          "music_duration": {
+            "type": "string",
+            "enum": ["95s", "285s"],
+            "default": "95s",
+            "description": "The duration of the music to generate.",
+            "title": "Music Duration"
+          },
+          "reference_audio_url": {
+            "type": "string",
+            "description": "The URL of the reference audio to use for the music generation.",
+            "title": "Reference Audio Url"
+          }
+        }
+      }
+    }
+  }
+}

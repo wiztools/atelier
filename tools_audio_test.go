@@ -44,6 +44,9 @@ func TestGenerateSoundSurfacesNotices(t *testing.T) {
 			if req.Duration != "10" || !req.Loop || req.NegativePrompt != "vocals" {
 				t.Errorf("sound tool should forward duration/loop/negativePrompt, got %+v", req)
 			}
+			if req.Style != "jazz" {
+				t.Errorf("sound tool should forward style, got %q", req.Style)
+			}
 			if req.Voice != "" {
 				t.Errorf("sound tool should not set voice, got %q", req.Voice)
 			}
@@ -51,7 +54,7 @@ func TestGenerateSoundSurfacesNotices(t *testing.T) {
 		},
 	}
 	def := soundEffectsGenerationToolDefinition()
-	out, _, err := def.Execute(context.Background(), tools, HarnessToolCall{Content: "rain", Duration: "10", Loop: true, NegativePrompt: "vocals", Model: "m"})
+	out, _, err := def.Execute(context.Background(), tools, HarnessToolCall{Content: "rain", Duration: "10", Loop: true, NegativePrompt: "vocals", Style: "jazz", Model: "m"})
 	if err != nil {
 		t.Fatalf("Execute error: %v", err)
 	}

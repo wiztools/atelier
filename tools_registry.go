@@ -602,7 +602,7 @@ func speechGenerationDescription(videoAudioCapable bool) string {
 // description. It takes no videoAudioCapable hint: lip_sync is a face tool, so
 // the generate_speech + lip_sync chain never applies to music or sound effects.
 func soundEffectsGenerationDescription() string {
-	return "Use this when the user asks to create music, ambience, or a sound effect from a description. The configured fal.ai sound-effects model generates the clip and it is attached to the assistant reply."
+	return "Use this when the user asks to create music, ambience, or a sound effect from a description. The configured fal.ai sound-effects model generates the clip and it is attached to the assistant reply. When the request names a genre or mood, pass it as style and keep content as the pure lyrics or sound description."
 }
 
 // audioGenerationExecute is the shared Execute body for generate_speech and
@@ -699,6 +699,7 @@ func soundEffectsGenerationToolDefinition() HarnessToolDefinition {
 				Duration:       strings.TrimSpace(call.Duration),
 				NegativePrompt: strings.TrimSpace(call.NegativePrompt),
 				Loop:           call.Loop,
+				Style:          strings.TrimSpace(call.Style),
 			}, resolveDefaultSoundEffectsModel)
 		},
 		Activity: audioGenerationActivity,
@@ -1297,6 +1298,8 @@ func generateSoundParamSchema() map[string]any {
 				"Ignored by models without a negative-prompt control."),
 			"loop": boolParam("Optional — set true for a seamless, gapless loop (ambient beds, backgrounds). " +
 				"Only some models support it; ignored otherwise with a note to the user."),
+			"style": stringParam("Optional — the genre or mood of the music (e.g. \"jazz\", \"lo-fi\", \"orchestral\"). " +
+				"Keep content as the pure lyrics or sound description and put the style here; some music models require a style."),
 		},
 		"required": []string{"content"},
 	}

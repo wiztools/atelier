@@ -131,11 +131,14 @@ type HarnessToolCall struct {
 	// — see generateVideoParamSchema.
 	FPS string `json:"fps,omitempty"`
 	// Loop is an optional generate_sound input requesting a seamless loop; Voice
-	// is an optional generate_speech input selecting the speaking voice. Both
-	// are resolved against the model's schema and dropped-with-notice when
-	// the configured model has no matching parameter.
+	// is an optional generate_speech input selecting the speaking voice; Style
+	// is an optional generate_sound input naming the genre/mood (e.g. "jazz")
+	// for music models with a style control — it keeps content as pure
+	// lyrics/description. All three are resolved against the model's schema and
+	// dropped-with-notice when the configured model has no matching parameter.
 	Loop  bool   `json:"loop,omitempty"`
 	Voice string `json:"voice,omitempty"`
+	Style string `json:"style,omitempty"`
 	// Scale is an optional upscale_image input naming the upscale factor
 	// ("2x" or "4x"). Omit for the default 2x. See imageUpscaleParamSchema.
 	Scale string `json:"scale,omitempty"`

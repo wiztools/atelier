@@ -66,6 +66,57 @@ func TestResolveSFXLoopAndDuration(t *testing.T) {
 	}
 }
 
+// TestResolveDiffrhythmPromptToLyrics pins the lyrics-driven music-model shape:
+// fal-ai/diffrhythm has no prompt/text input — its required field is lyrics —
+// so the prompt synonym must map the canonical prompt onto it. Before this
+// mapping, the generic prompt/text fallback 422ed with "body.lyrics Field
+// required" (conv_8be630557ba60c15daba8388).
+func TestResolveDiffrhythmPromptToLyrics(t *testing.T) {
+	const prompt = "Jazz style music from: Lives of great men all remind us"
+	body, notices := resolveAudioBody(loadSchema(t, "diffrhythm"),
+		AudioGenerateRequest{Model: "fal-ai/diffrhythm", Prompt: prompt},
+		builtinFalOverrides())
+	if body["lyrics"] != prompt {
+		t.Fatalf("expected lyrics=%q, got %v (body: %v)", prompt, body["lyrics"], body)
+	}
+	if _, ok := body["prompt"]; ok {
+		t.Fatalf("diffrhythm has no prompt input; must not send one (body: %v)", body)
+	}
+	if len(notices) != 0 {
+		t.Fatalf("expected no notices, got %v", notices)
+	}
+}
+
+// TestResolveDiffrhythmStylePrompt pins the style companion to the lyrics
+// mapping: diffrhythm requires style_prompt or reference_audio_url in practice
+// (a cross-field rule its schema can't express —
+// conv_3c7d38ba07af8ea2ba60573b 422ed on it), so a canonical style must land on
+// style_prompt while the prompt stays pure lyrics. A model with no style field
+// (the TTS shape) drops it with a notice instead.
+func TestResolveDiffrhythmStylePrompt(t *testing.T) {
+	const lyrics = "Lives of great men all remind us / We can make our lives sublime"
+	body, notices := resolveAudioBody(loadSchema(t, "diffrhythm"),
+		AudioGenerateRequest{Model: "fal-ai/diffrhythm", Prompt: lyrics, Style: "jazz"},
+		builtinFalOverrides())
+	if body["lyrics"] != lyrics {
+		t.Fatalf("expected lyrics=%q, got %v (body: %v)", lyrics, body["lyrics"], body)
+	}
+	if body["style_prompt"] != "jazz" {
+		t.Fatalf("expected style_prompt=jazz, got %v (body: %v)", body["style_prompt"], body)
+	}
+	if len(notices) != 0 {
+		t.Fatalf("expected no notices, got %v", notices)
+	}
+
+	// No style control on the model → drop with a notice, not a 422.
+	_, notices = resolveAudioBody(loadSchema(t, "elevenlabs-tts-ml-v2"),
+		AudioGenerateRequest{Model: "fal-ai/elevenlabs/tts/multilingual-v2", Prompt: "rain", Style: "jazz"},
+		builtinFalOverrides())
+	if len(notices) != 1 || !strings.Contains(notices[0], "no style control") {
+		t.Fatalf("expected one style drop notice, got %v", notices)
+	}
+}
+
 func TestResolveVoiceNestedMerge(t *testing.T) {
 	body, notices := resolveAudioBody(loadSchema(t, "minimax-speech-02-hd"),
 		AudioGenerateRequest{Model: "fal-ai/minimax/speech-02-hd", Prompt: "hello", Voice: "Grandma"},
