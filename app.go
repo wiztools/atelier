@@ -140,8 +140,11 @@ type ConfigFal struct {
 	VideoModel       string `json:"videoModel,omitempty"`
 	VideoImageModel  string `json:"videoImageModel,omitempty"`
 	VideoExtendModel string `json:"videoExtendModel,omitempty"`
-	// AudioModel is the text-to-audio endpoint (speech, music, or sound effects).
-	AudioModel string `json:"audioModel,omitempty"`
+	// AudioModel is the text-to-speech endpoint used by the generate_speech
+	// tool; SoundEffectsModel is the text-to-audio endpoint (music and sound
+	// effects) used by the generate_sound tool.
+	AudioModel        string `json:"audioModel,omitempty"`
+	SoundEffectsModel string `json:"soundEffectsModel,omitempty"`
 	// TranscribeModel is the speech-to-text endpoint used by transcribe_audio
 	// (fal-ai/wizper by default). fal-only; Ollama has no transcription API.
 	TranscribeModel string `json:"transcribeModel,omitempty"`
@@ -1755,10 +1758,9 @@ func (a *App) ListFalVideoExtendModels() ([]FalModel, error) {
 	return extend, nil
 }
 
-// ListFalAudioModels returns fal's audio-generation catalog for the Settings
-// audio-model picker. It merges the text-to-audio (music/sound effects) and
-// text-to-speech categories, deduped by endpoint id.
-func (a *App) ListFalAudioModels() ([]FalModel, error) {
+// ListFalSpeechModels returns fal's text-to-speech catalog for the Settings
+// speech-model picker (the generate_speech tool's endpoint).
+func (a *App) ListFalSpeechModels() ([]FalModel, error) {
 	key, err := loadFalAPIKey()
 	if err != nil {
 		return nil, err
@@ -1766,28 +1768,26 @@ func (a *App) ListFalAudioModels() ([]FalModel, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	client := newFalClient(a.client, key)
+	return client.ListModels(ctx, falTextToSpeechCategory, 0)
+}
 
-	merged := []FalModel{}
-	seen := map[string]bool{}
-	for _, category := range []string{falTextToSpeechCategory, falTextToAudioCategory} {
-		models, err := client.ListModels(ctx, category, 0)
-		if err != nil {
-			return nil, err
-		}
-		for _, model := range models {
-			if model.ID == "" || seen[model.ID] {
-				continue
-			}
-			seen[model.ID] = true
-			merged = append(merged, model)
-		}
+// ListFalSoundEffectModels returns fal's text-to-audio catalog (music and sound
+// effects) for the Settings sound-effects-model picker (the generate_sound
+// tool's endpoint).
+func (a *App) ListFalSoundEffectModels() ([]FalModel, error) {
+	key, err := loadFalAPIKey()
+	if err != nil {
+		return nil, err
 	}
-	return merged, nil
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	client := newFalClient(a.client, key)
+	return client.ListModels(ctx, falTextToAudioCategory, 0)
 }
 
 // ListFalTranscribeModels returns fal's speech-to-text catalog for the Settings
-// transcription-model picker. Single category (speech-to-text), unlike audio's
-// two-category merge.
+// transcription-model picker. Single category (speech-to-text), like the other
+// audio-family pickers.
 func (a *App) ListFalTranscribeModels() ([]FalModel, error) {
 	key, err := loadFalAPIKey()
 	if err != nil {
@@ -2063,6 +2063,13 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	}
 	if config.Models.ImageProvider == "fal" && strings.TrimSpace(config.Providers.Fal.Model) == "" {
 		config.Providers.Fal.Model = defaultFalImageModel
+	}
+	// Seed the sound-effects endpoint for configs written before the
+	// generate_speech/generate_sound split: an AudioModel already configured for
+	// the old combined generate_audio tool implies audio generation is in use, so
+	// the new generate_sound tool lights up without a Settings visit.
+	if strings.TrimSpace(config.Providers.Fal.AudioModel) != "" && strings.TrimSpace(config.Providers.Fal.SoundEffectsModel) == "" {
+		config.Providers.Fal.SoundEffectsModel = defaultFalSoundEffectsModel
 	}
 	if strings.TrimSpace(config.Prompts.System) == "" {
 		config.Prompts.System = defaults.Prompts.System
@@ -3114,7 +3121,7 @@ func readVideoArtifactAsDataURL(storage ConfigStorage, conversationID string, co
 }
 
 // tempAudioFileAsDataURL reads a freshly-generated audio temp file (the
-// TempPath/MimeType on a ToolAudioFile produced by generate_audio) and
+// TempPath/MimeType on a ToolAudioFile produced by generate_speech/generate_sound) and
 // re-encodes it as a base64 data URL — the shape AttachedAudio consumers
 // (transcribe_audio, lip_sync) expect. Sibling of readAudioArtifactAsDataURL
 // for the in-turn path: the file is a temp file written by writeTempAudio, not

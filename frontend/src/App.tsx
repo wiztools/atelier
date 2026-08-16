@@ -19,7 +19,8 @@ import {
   ListFalVideoImageModels,
   ListFalVideoExtendModels,
   ListFalVideoDurations,
-  ListFalAudioModels,
+  ListFalSpeechModels,
+  ListFalSoundEffectModels,
   ListFalTranscribeModels,
   ListFalUpscaleModels,
   ListFalLipsyncImageModels,
@@ -197,6 +198,7 @@ const defaultFalVideoModel = 'fal-ai/kling-video/v2/master/text-to-video';
 const defaultFalVideoImageModel = 'fal-ai/kling-video/v2/master/image-to-video';
 const defaultFalVideoExtendModel = 'fal-ai/veo3.1/extend-video';
 const defaultFalAudioModel = 'fal-ai/elevenlabs/tts/multilingual-v2';
+const defaultFalSoundEffectsModel = 'fal-ai/elevenlabs/sound-effects/v2';
 const defaultFalTranscribeModel = 'fal-ai/wizper';
 const defaultFalLipsyncImageModel = 'fal-ai/kling-video/lipsync/audio-to-video';
 const defaultFalLipsyncVideoModel = 'fal-ai/sync-lipsync/v2/pro';
@@ -281,6 +283,8 @@ function App() {
   const [falVideoExtendModels, setFalVideoExtendModels] = useState<main.FalModel[]>([]);
   const [falAudioModel, setFalAudioModel] = useState(defaultFalAudioModel);
   const [falAudioModels, setFalAudioModels] = useState<main.FalModel[]>([]);
+  const [falSoundEffectsModel, setFalSoundEffectsModel] = useState(defaultFalSoundEffectsModel);
+  const [falSoundEffectModels, setFalSoundEffectModels] = useState<main.FalModel[]>([]);
   const [falTranscribeModel, setFalTranscribeModel] = useState(defaultFalTranscribeModel);
   const [falTranscribeModels, setFalTranscribeModels] = useState<main.FalModel[]>([]);
   const [falLipsyncImageModel, setFalLipsyncImageModel] = useState(defaultFalLipsyncImageModel);
@@ -452,6 +456,7 @@ function App() {
             videoImageModel: falVideoImageModel,
             videoExtendModel: falVideoExtendModel,
             audioModel: falAudioModel,
+            soundEffectsModel: falSoundEffectsModel,
             transcribeModel: falTranscribeModel,
             upscaleModel: falUpscaleModel,
             lipsyncImageModel: falLipsyncImageModel,
@@ -486,7 +491,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falAudioModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falAudioModel, falSoundEffectsModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
 
   // On a fresh launch, put the cursor in the chat box so the user can start
   // typing immediately. Fires once, when config finishes loading.
@@ -698,6 +703,8 @@ function App() {
 
   const falAudioModelOptions = useMemo(() => falModelOptionList(falAudioModels), [falAudioModels]);
 
+  const falSoundEffectModelOptions = useMemo(() => falModelOptionList(falSoundEffectModels), [falSoundEffectModels]);
+
   const falTranscribeModelOptions = useMemo(() => falModelOptionList(falTranscribeModels), [falTranscribeModels]);
 
   const falUpscaleModelOptions = useMemo(() => falModelOptionList(falUpscaleModels), [falUpscaleModels]);
@@ -834,6 +841,7 @@ function App() {
 	const nextFalVideoImageModel = config.providers?.fal?.videoImageModel || defaultFalVideoImageModel;
 	const nextFalVideoExtendModel = config.providers?.fal?.videoExtendModel || defaultFalVideoExtendModel;
 	const nextFalAudioModel = config.providers?.fal?.audioModel || defaultFalAudioModel;
+	const nextFalSoundEffectsModel = config.providers?.fal?.soundEffectsModel || defaultFalSoundEffectsModel;
 	const nextFalTranscribeModel = config.providers?.fal?.transcribeModel || defaultFalTranscribeModel;
 	const nextFalLipsyncImageModel = config.providers?.fal?.lipsyncImageModel || defaultFalLipsyncImageModel;
 	const nextFalLipsyncVideoModel = config.providers?.fal?.lipsyncVideoModel || defaultFalLipsyncVideoModel;
@@ -861,6 +869,7 @@ function App() {
     setFalVideoImageModel(nextFalVideoImageModel);
     setFalVideoExtendModel(nextFalVideoExtendModel);
     setFalAudioModel(nextFalAudioModel);
+    setFalSoundEffectsModel(nextFalSoundEffectsModel);
     setFalTranscribeModel(nextFalTranscribeModel);
     setFalLipsyncImageModel(nextFalLipsyncImageModel);
     setFalLipsyncVideoModel(nextFalLipsyncVideoModel);
@@ -1034,9 +1043,14 @@ function App() {
       setFalVideoExtendModels([]);
     }
     try {
-      setFalAudioModels(asArray(await ListFalAudioModels()));
+      setFalAudioModels(asArray(await ListFalSpeechModels()));
     } catch {
       setFalAudioModels([]);
+    }
+    try {
+      setFalSoundEffectModels(asArray(await ListFalSoundEffectModels()));
+    } catch {
+      setFalSoundEffectModels([]);
     }
     try {
       setFalTranscribeModels(asArray(await ListFalTranscribeModels()));
@@ -1126,6 +1140,7 @@ function App() {
       setFalVideoImageModels([]);
       setFalVideoExtendModels([]);
       setFalAudioModels([]);
+      setFalSoundEffectModels([]);
       setFalTranscribeModels([]);
       setFalLipsyncImageModels([]);
       setFalLipsyncVideoModels([]);
@@ -2363,21 +2378,35 @@ function App() {
 
               <section className="settings-section">
                 <h3>Audio</h3>
-                <div className="field">
-                  <label htmlFor="fal-audio-model">Audio Model (fal.ai)</label>
-                  <ModelCombobox
-                    id="fal-audio-model"
-                    ariaLabel="fal.ai audio model"
-                    placeholder={defaultFalAudioModel}
-                    value={falAudioModel}
-                    onChange={setFalAudioModel}
-                    options={falAudioModelOptions}
-                    allowCustom
-                  />
-                  {!falHasKey ? (
-                    <span className="hint">Add a fal.ai API key above to generate audio.</span>
-                  ) : null}
+                <div className="two-column">
+                  <div className="field">
+                    <label htmlFor="fal-audio-model">Speech Model (TTS, fal.ai)</label>
+                    <ModelCombobox
+                      id="fal-audio-model"
+                      ariaLabel="fal.ai speech model"
+                      placeholder={defaultFalAudioModel}
+                      value={falAudioModel}
+                      onChange={setFalAudioModel}
+                      options={falAudioModelOptions}
+                      allowCustom
+                    />
+                  </div>
+                  <div className="field">
+                    <label htmlFor="fal-sound-effects-model">Music &amp; Sound Effects Model (fal.ai)</label>
+                    <ModelCombobox
+                      id="fal-sound-effects-model"
+                      ariaLabel="fal.ai sound effects model"
+                      placeholder={defaultFalSoundEffectsModel}
+                      value={falSoundEffectsModel}
+                      onChange={setFalSoundEffectsModel}
+                      options={falSoundEffectModelOptions}
+                      allowCustom
+                    />
+                  </div>
                 </div>
+                {!falHasKey ? (
+                  <span className="hint">Add a fal.ai API key above to generate speech, music, or sound effects.</span>
+                ) : null}
               </section>
 
               <section className="settings-section">

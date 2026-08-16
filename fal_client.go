@@ -30,9 +30,14 @@ const (
 	// defaultFalVideoExtendModel is the video-extend endpoint used to continue an
 	// attached clip (Google Veo via fal). Veo extend chains a clip up to ~30s.
 	defaultFalVideoExtendModel = "fal-ai/veo3.1/extend-video"
-	// defaultFalAudioModel is the text-to-audio endpoint used when none is
-	// configured — a text-to-speech model, the most common "audio response" case.
+	// defaultFalAudioModel is the text-to-speech endpoint used by the
+	// generate_speech tool when none is configured.
 	defaultFalAudioModel = "fal-ai/elevenlabs/tts/multilingual-v2"
+	// defaultFalSoundEffectsModel is the text-to-audio endpoint used by the
+	// generate_sound tool when none is configured — fal's text-to-audio category
+	// covers both sound effects and music, and this endpoint takes prompt,
+	// duration_seconds, and loop.
+	defaultFalSoundEffectsModel = "fal-ai/elevenlabs/sound-effects/v2"
 	// defaultFalTranscribeModel is the speech-to-text endpoint used when none is
 	// configured — fal's optimized Whisper v3 edition. Accepts audio_url as a
 	// hosted URL or an inline data URI, so no fal storage upload is needed.

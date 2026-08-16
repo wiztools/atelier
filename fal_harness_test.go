@@ -437,7 +437,7 @@ func TestHarnessAnimatesAttachedImageViaFal(t *testing.T) {
 }
 
 // TestHarnessGeneratesAudioViaFal runs the full chat turn (triage → planner →
-// generate_audio tool → fal queue → download → final response) and confirms the
+// generate_speech tool → fal queue → download → final response) and confirms the
 // clip is persisted as a file-path "audio" history artifact.
 func TestHarnessGeneratesAudioViaFal(t *testing.T) {
 	home := t.TempDir()
@@ -495,7 +495,7 @@ func TestHarnessGeneratesAudioViaFal(t *testing.T) {
 					return chatCompletion("harness-model", `{"needsTools":true,"responseMode":"audio","toolTask":"Narrate the line.","reason":"The user asked for speech."}`), nil
 				}
 				prepCalls++
-				body := `{"brief":"Narrate the line.","needsTools":true,"reason":"audio","toolCalls":[{"name":"generate_audio","content":"The happiness of your life depends upon the quality of your thoughts."}]}`
+				body := `{"brief":"Narrate the line.","needsTools":true,"reason":"audio","toolCalls":[{"name":"generate_speech","content":"The happiness of your life depends upon the quality of your thoughts."}]}`
 				if prepCalls > 1 {
 					body = `{"brief":"Done.","needsTools":false,"reason":"done","toolCalls":[]}`
 				}
@@ -551,9 +551,9 @@ func TestHarnessGeneratesAudioViaFal(t *testing.T) {
 }
 
 // TestHarnessAppendsLoopNoticeForUnsupportedModel drives a "looping sound"
-// request against a text-to-speech model that has no loop parameter, and
-// confirms the deterministic caveat is appended to the persisted assistant turn
-// (Route B), not silently dropped.
+// request via generate_sound against a configured sound model that has no loop
+// parameter, and confirms the deterministic caveat is appended to the persisted
+// assistant turn (Route B), not silently dropped.
 func TestHarnessAppendsLoopNoticeForUnsupportedModel(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -573,7 +573,7 @@ func TestHarnessAppendsLoopNoticeForUnsupportedModel(t *testing.T) {
 	config.Providers.Ollama.BaseURL = "http://ollama.test"
 	config.Providers.Ollama.Models.Primary = "chat-box-model"
 	config.Providers.Ollama.Models.Harness = "chat-box-model"
-	config.Providers.Fal.AudioModel = defaultFalAudioModel // TTS: no loop support
+	config.Providers.Fal.SoundEffectsModel = "fal-ai/some/sound-model" // no loop support
 	if err := writeAppConfig(config); err != nil {
 		t.Fatalf("writeAppConfig: %v", err)
 	}
@@ -583,8 +583,8 @@ func TestHarnessAppendsLoopNoticeForUnsupportedModel(t *testing.T) {
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if strings.Contains(req.URL.Path, "/api/openapi/") {
-			// TTS schema — text + voice only, no loop parameter.
-			return jsonResponse(`{"components":{"schemas":{"TtsInput":{"type":"object","required":["text"],"properties":{"text":{"type":"string"},"voice":{"type":"string","default":"Rachel"}}}}}}`), nil
+			// Sound schema — prompt + duration only, no loop parameter.
+			return jsonResponse(`{"components":{"schemas":{"SoundInput":{"type":"object","required":["prompt"],"properties":{"prompt":{"type":"string"},"duration_seconds":{"type":"number"}}}}}}`), nil
 		}
 		if strings.Contains(req.URL.Host, "fal.run") {
 			if req.Method == http.MethodPost {
@@ -611,7 +611,7 @@ func TestHarnessAppendsLoopNoticeForUnsupportedModel(t *testing.T) {
 					return chatCompletion("harness-model", `{"needsTools":true,"responseMode":"audio","toolTask":"Make a looping ambient sound.","reason":"The user asked for a loop."}`), nil
 				}
 				prepCalls++
-				body := `{"brief":"Make a looping ambient sound.","needsTools":true,"reason":"audio","toolCalls":[{"name":"generate_audio","content":"gentle ambient rain","loop":true}]}`
+				body := `{"brief":"Make a looping ambient sound.","needsTools":true,"reason":"audio","toolCalls":[{"name":"generate_sound","content":"gentle ambient rain","loop":true}]}`
 				if prepCalls > 1 {
 					body = `{"brief":"Done.","needsTools":false,"reason":"done","toolCalls":[]}`
 				}
@@ -648,6 +648,134 @@ func TestHarnessAppendsLoopNoticeForUnsupportedModel(t *testing.T) {
 	raw, _ := json.Marshal(assistant)
 	if !strings.Contains(string(raw), "loop") || !strings.Contains(string(raw), "⚠️") {
 		t.Fatalf("expected a loop caveat in the saved assistant turn, got: %s", raw)
+	}
+}
+
+// TestHarnessGeneratesSoundViaFal is the generate_sound happy path: a music
+// request routed through the sound-effects tool against the default
+// fal-ai/elevenlabs/sound-effects/v2 shape (text + duration_seconds + loop),
+// confirming the clip persists as an audio artifact with no resolver notices.
+func TestHarnessGeneratesSoundViaFal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	keyring.MockInit()
+	if err := saveFalAPIKey("fal-test-key"); err != nil {
+		t.Fatalf("saveFalAPIKey: %v", err)
+	}
+	t.Cleanup(func() { _ = clearFalAPIKey() })
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "chat-box-model"
+	config.Providers.Fal.SoundEffectsModel = defaultFalSoundEffectsModel
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig: %v", err)
+	}
+
+	app := NewApp()
+	var submittedBody map[string]any
+	nonStreamCount := 0
+	prepCalls := 0
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/api/openapi/") {
+			// Minimized fal-ai/elevenlabs/sound-effects/v2 shape (see
+			// testdata/fal-schemas/sfx-v2-real.json): text + duration_seconds + loop.
+			return jsonResponse(`{"components":{"schemas":{"ElevenlabsSoundEffectsV2Input":{"type":"object","required":["text"],"properties":{"text":{"type":"string"},"duration_seconds":{"type":"number"},"loop":{"type":"boolean","default":false}}}}}}`), nil
+		}
+		if strings.Contains(req.URL.Host, "fal.run") {
+			if req.Method == http.MethodPost {
+				if err := json.NewDecoder(req.Body).Decode(&submittedBody); err != nil {
+					t.Fatalf("decode fal submit body: %v", err)
+				}
+				return jsonResponse(`{"request_id":"req-snd-1"}`), nil
+			}
+			if strings.HasSuffix(req.URL.Path, "/status") {
+				return jsonResponse(`{"status":"COMPLETED"}`), nil
+			}
+			if strings.HasSuffix(req.URL.Path, "/requests/req-snd-1") {
+				return jsonResponse(`{"audio":{"url":"https://queue.fal.run/generated.mp3","content_type":"audio/mpeg"}}`), nil
+			}
+			return &http.Response{StatusCode: 200, Status: "200 OK",
+				Body:   io.NopCloser(strings.NewReader(string(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x00"), 0xFF, 0xFB, 0x90, 0x00)))),
+				Header: http.Header{"Content-Type": []string{"audio/mpeg"}}}, nil
+		}
+		switch req.URL.Path {
+		case "/api/show":
+			return jsonResponse(`{"capabilities":[],"model_info":{},"details":{"family":"test","parameter_size":"1B"}}`), nil
+		case "/api/chat":
+			payload := chatPayload(t, req)
+			if payload["stream"] == false {
+				nonStreamCount++
+				if nonStreamCount == 1 {
+					return chatCompletion("harness-model", `{"needsTools":true,"responseMode":"audio","toolTask":"Create the ambient bed.","reason":"The user asked for a sound."}`), nil
+				}
+				prepCalls++
+				body := `{"brief":"Create the ambient bed.","needsTools":true,"reason":"audio","toolCalls":[{"name":"generate_sound","content":"gentle ambient rain","duration":"10","loop":true}]}`
+				if prepCalls > 1 {
+					body = `{"brief":"Done.","needsTools":false,"reason":"done","toolCalls":[]}`
+				}
+				return chatCompletion("harness-model", body), nil
+			}
+			body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"Here is your ambient sound."},"done":false}`) +
+				fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+			return &http.Response{StatusCode: 200, Status: "200 OK",
+				Body:   io.NopCloser(strings.NewReader(body)),
+				Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+		default:
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL)
+			return nil, nil
+		}
+	})
+
+	app.runChatStream(context.Background(), "request-fal-sound", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Make a gentle 10-second looping rain ambience."},
+		},
+	})
+
+	if submittedBody["duration_seconds"] != float64(10) {
+		t.Errorf("fal submit body duration_seconds = %v, want 10 (body: %v)", submittedBody["duration_seconds"], submittedBody)
+	}
+	if submittedBody["loop"] != true {
+		t.Errorf("fal submit body loop = %v, want true (body: %v)", submittedBody["loop"], submittedBody)
+	}
+
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations: %v", err)
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation: %v", err)
+	}
+	assistant := detail.Turns[len(detail.Turns)-1]
+	var audio *HistoryContent
+	for i := range assistant.Content {
+		if assistant.Content[i].Type == "audio" {
+			audio = &assistant.Content[i]
+		}
+	}
+	if audio == nil {
+		t.Fatalf("assistant content has no audio artifact: %+v", assistant.Content)
+	}
+	if !strings.HasPrefix(audio.Path, "artifacts/") || !strings.HasSuffix(audio.Path, ".mp3") {
+		t.Errorf("audio path = %q, want artifacts/*.mp3", audio.Path)
+	}
+	if !strings.HasPrefix(audio.Text, "/atelier-artifact/") {
+		t.Errorf("hydrated audio text = %q, want /atelier-artifact/ URL (file missing?)", audio.Text)
+	}
+	raw, _ := json.Marshal(assistant)
+	if strings.Contains(string(raw), "⚠️") {
+		t.Errorf("supported duration/loop should produce no notices, got: %s", raw)
 	}
 }
 

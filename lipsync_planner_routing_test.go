@@ -96,7 +96,7 @@ func newPlannerRegistry(audioCapable bool) HarnessToolRegistry {
 // TestPlannerMediaRoutingGuidancePresentWhenCapable asserts the routing rule
 // appears in BOTH planner prompt variants when the video model is audio-capable
 // — the gap behind conv_b54423f43ab17a060948e74f, where triage routed correctly
-// but the planner ignored it and ran generate_audio + lip_sync.
+// but the planner ignored it and ran generate_speech + lip_sync.
 func TestPlannerMediaRoutingGuidancePresentWhenCapable(t *testing.T) {
 	engine := newHarnessEngine(defaultAppConfig())
 	registry := newPlannerRegistry(true)
@@ -110,7 +110,7 @@ func TestPlannerMediaRoutingGuidancePresentWhenCapable(t *testing.T) {
 			if !strings.Contains(prompt, "call generate_video ONCE") {
 				t.Fatalf("%s planner prompt should include the narration routing rule", name)
 			}
-			if !strings.Contains(prompt, "Do NOT chain generate_audio + lip_sync") {
+			if !strings.Contains(prompt, "Do NOT chain generate_speech + lip_sync") {
 				t.Fatalf("%s planner prompt should explicitly forbid the chain for narration", name)
 			}
 		})

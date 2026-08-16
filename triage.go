@@ -278,12 +278,12 @@ func triageSystemPrompt(registry HarnessToolRegistry, skillIndex []SkillIndexEnt
 	// configured video model can produce audio itself (encoded in the
 	// generate_video description by VideoAudioCapable) do we steer narration-
 	// over-video requests to a single generate_video call. When the video model
-	// has no audio capability this stays empty and the generate_audio +
+	// has no audio capability this stays empty and the generate_speech +
 	// lip_sync chain remains the correct path (made functional by the harness
 	// forward-feeding generated media within a turn).
 	narrationRouting := ""
 	if registry.VideoAudioCapable() {
-		narrationRouting = "\nWhen the user wants speech, narration, or a voice over a video, route to generate_video alone — the configured video model can produce the audio in the same call. Do not chain generate_audio + lip_sync for this. Reserve lip_sync for dubbing or re-syncing an existing attached audio clip to a face."
+		narrationRouting = "\nWhen the user wants speech, narration, or a voice over a video, route to generate_video alone — the configured video model can produce the audio in the same call. Do not chain generate_speech + lip_sync for this. Reserve lip_sync for dubbing or re-syncing an existing attached audio clip to a face."
 	}
 	return strings.TrimSpace(fmt.Sprintf(`You are Atelier's harness model. You decide how the primary model should respond to the latest user turn and whether workspace tools are needed first.
 You will not write the user-visible answer. Right now respond only with a JSON object matching the response schema:
@@ -304,7 +304,7 @@ Set needsTools true only when answering requires acting on the workspace or a li
 Set needsTools false when your own knowledge is enough: greetings, general knowledge, reasoning, writing, and conversation about content already visible in the chat.
 For responseMode "image", set needsTools true so the harness can run the generate_image tool before the primary model responds.
 For responseMode "video", set needsTools true so the harness can run the generate_video tool before the primary model responds. Only use "video" when the generate_video tool is listed as available.
-For responseMode "audio", set needsTools true so the harness can run the generate_audio tool before the primary model responds. Only use "audio" when the generate_audio tool is listed as available.
+For responseMode "audio", set needsTools true so the harness can run the generate_speech or generate_sound tool before the primary model responds. Only use "audio" when the generate_speech or generate_sound tool is listed as available.
 Available tools:
 %s
 Available skills:

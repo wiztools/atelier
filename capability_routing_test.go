@@ -131,14 +131,27 @@ func TestVideoGenerationDescription_NotCapableOmitsAudioHint(t *testing.T) {
 	}
 }
 
-func TestAudioGenerationDescription_ChainHintOnlyWhenVideoLacksAudio(t *testing.T) {
-	withHint := audioGenerationDescription(false)
-	withoutHint := audioGenerationDescription(true)
+func TestSpeechGenerationDescription_ChainHintOnlyWhenVideoLacksAudio(t *testing.T) {
+	withHint := speechGenerationDescription(false)
+	withoutHint := speechGenerationDescription(true)
 	if !strings.Contains(withHint, "carries forward to lip_sync") {
 		t.Fatalf("non-audio-video description should explain the chain: %q", withHint)
 	}
+	if !strings.Contains(withHint, "generate_speech") {
+		t.Fatalf("chain hint should name generate_speech: %q", withHint)
+	}
 	if strings.Contains(withoutHint, "carries forward") {
 		t.Fatalf("audio-capable-video description should not mention the chain: %q", withoutHint)
+	}
+}
+
+func TestSoundEffectsDescriptionHasNoChainHint(t *testing.T) {
+	desc := soundEffectsGenerationDescription()
+	if strings.Contains(desc, "lip_sync") {
+		t.Fatalf("sound description must not suggest the speech-only lip_sync chain: %q", desc)
+	}
+	if !strings.Contains(desc, "sound effect") || !strings.Contains(desc, "music") {
+		t.Fatalf("sound description should cover both music and sound effects: %q", desc)
 	}
 }
 
@@ -208,6 +221,31 @@ func TestTriageSystemPromptRoutingHintConditional(t *testing.T) {
 	without := triageSystemPrompt(notCapable, nil, "/tmp/ws")
 	if strings.Contains(without, "route to generate_video alone") {
 		t.Fatalf("triage prompt must omit the routing hint when video is not audio-capable")
+	}
+}
+
+// TestTriagePromptListsBothAudioTools asserts that with both audio tools
+// registered, triage's catalog and its responseMode "audio" guidance name
+// generate_speech AND generate_sound — the planner picks between them, so
+// triage must surface both. Also pins that the old combined generate_audio name
+// is gone from the catalog.
+func TestTriagePromptListsBothAudioTools(t *testing.T) {
+	registry := newHarnessToolRegistry([]HarnessToolDefinition{
+		speechGenerationToolDefinition(false),
+		soundEffectsGenerationToolDefinition(),
+	})
+	catalog := registry.PromptCatalog()
+	for _, want := range []string{"generate_speech", "generate_sound"} {
+		if !strings.Contains(catalog, want) {
+			t.Fatalf("tool catalog missing %q:\n%s", want, catalog)
+		}
+	}
+	prompt := triageSystemPrompt(registry, nil, "/tmp/ws")
+	if !strings.Contains(prompt, "generate_speech or generate_sound tool is listed as available") {
+		t.Fatalf("audio-mode guidance should name both audio tools:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "generate_audio") {
+		t.Fatalf("the retired generate_audio tool name must not appear in the triage prompt:\n%s", prompt)
 	}
 }
 
@@ -428,20 +466,20 @@ func TestForwardableMediaNewestFirstShadows(t *testing.T) {
 	}
 }
 
-// --- Fix #3 integration: the generate_audio → lip_sync composition ---
+// --- Fix #3 integration: the generate_speech → lip_sync composition ---
 //
 // This is the headline regression test for conv_047accca33610598408b8cf8: a
-// planner requests generate_audio then lip_sync in the same round, and lip_sync
+// planner requests generate_speech then lip_sync in the same round, and lip_sync
 // must see the audio the first call produced. It builds a ToolGateway with fake
 // tool functions (same package, so unexported fields are reachable) and applies
 // the same per-result forward-feed runHarnessToolCalls does, so the composition
 // itself is exercised end to end without a keychain or network.
 
-// TestGenerateAudioFeedsLipSyncInSameBatch verifies the conv_047accca scenario:
-// generate_audio produces audio, then lip_sync consumes it without the
+// TestGenerateSpeechFeedsLipSyncInSameBatch verifies the conv_047accca scenario:
+// generate_speech produces audio, then lip_sync consumes it without the
 // "requires an attached audio clip" error that previously failed the turn.
-func TestGenerateAudioFeedsLipSyncInSameBatch(t *testing.T) {
-	// Fake audio bytes the generate_audio tool will "produce".
+func TestGenerateSpeechFeedsLipSyncInSameBatch(t *testing.T) {
+	// Fake audio bytes the generate_speech tool will "produce".
 	audioBytes := []byte{0xFF, 0xE0, 0x00, 0x00, 'n', 'a', 'r', 'r', 'a', 't', 'e'}
 	audioTmp, err := os.CreateTemp("", "atelier-audio-*.mp3")
 	if err != nil {
@@ -458,7 +496,7 @@ func TestGenerateAudioFeedsLipSyncInSameBatch(t *testing.T) {
 	var lipsyncSawFace string
 
 	registry := newHarnessToolRegistry([]HarnessToolDefinition{
-		audioGenerationToolDefinition(false),
+		speechGenerationToolDefinition(false),
 		lipsyncToolDefinition(false),
 	})
 	tools := HarnessToolExecutionContext{
@@ -481,7 +519,7 @@ func TestGenerateAudioFeedsLipSyncInSameBatch(t *testing.T) {
 
 	// Mirror runHarnessToolCalls's per-call loop + forward-feed.
 	calls := []HarnessToolCall{
-		{Name: "generate_audio", Content: "narration"},
+		{Name: "generate_speech", Content: "narration"},
 		{Name: "lip_sync"},
 	}
 	var results []HarnessToolResult
@@ -498,9 +536,9 @@ func TestGenerateAudioFeedsLipSyncInSameBatch(t *testing.T) {
 		}
 	}
 
-	// generate_audio must have completed.
+	// generate_speech must have completed.
 	if len(results) < 2 || results[0].Status != "completed" {
-		t.Fatalf("generate_audio should complete first, got %+v", results)
+		t.Fatalf("generate_speech should complete first, got %+v", results)
 	}
 	// lip_sync must NOT have failed for a missing audio clip — the original bug.
 	if results[1].Status != "completed" {
@@ -528,7 +566,7 @@ func TestUserAttachedAudioNotOverwritten(t *testing.T) {
 
 	var lipsyncSawAudio string
 	registry := newHarnessToolRegistry([]HarnessToolDefinition{
-		audioGenerationToolDefinition(false),
+		speechGenerationToolDefinition(false),
 		lipsyncToolDefinition(false),
 	})
 	const userAudio = "data:audio/mpeg;base64,USERCLIP"
@@ -546,7 +584,7 @@ func TestUserAttachedAudioNotOverwritten(t *testing.T) {
 	tools.AttachedImages = []string{"data:image/png;base64,FACE"}
 	gateway := ToolGateway{registry: registry, tools: tools}
 
-	calls := []HarnessToolCall{{Name: "generate_audio", Content: "x"}, {Name: "lip_sync"}}
+	calls := []HarnessToolCall{{Name: "generate_speech", Content: "x"}, {Name: "lip_sync"}}
 	var results []HarnessToolResult
 	for _, call := range calls {
 		result := gateway.Execute(context.Background(), ToolExecutionRequest{Name: call.Name, Call: call})

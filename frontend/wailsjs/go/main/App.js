@@ -46,10 +46,6 @@ export function ListConversations() {
   return window['go']['main']['App']['ListConversations']();
 }
 
-export function ListFalAudioModels() {
-  return window['go']['main']['App']['ListFalAudioModels']();
-}
-
 export function ListFalImageEditModels() {
   return window['go']['main']['App']['ListFalImageEditModels']();
 }
@@ -64,6 +60,14 @@ export function ListFalLipsyncVideoModels() {
 
 export function ListFalModels() {
   return window['go']['main']['App']['ListFalModels']();
+}
+
+export function ListFalSoundEffectModels() {
+  return window['go']['main']['App']['ListFalSoundEffectModels']();
+}
+
+export function ListFalSpeechModels() {
+  return window['go']['main']['App']['ListFalSpeechModels']();
 }
 
 export function ListFalTranscribeModels() {

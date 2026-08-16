@@ -107,13 +107,14 @@ type HarnessToolCall struct {
 	// omitted, the configured default dimensions are used. See
 	// generateImageParamSchema and imageSizeForAspectRatio.
 	AspectRatio string `json:"aspectRatio,omitempty"`
-	// Duration is an optional generate_audio and generate_video input naming the
-	// target clip length (a fal enum/seconds string, e.g. "10"). For audio it is
-	// meaningful for music/sound-effect models (text-to-speech ignores it). For
+	// Duration is an optional generate_sound and generate_video input naming the
+	// target clip length (a fal enum/seconds string, e.g. "10"). For sound it is
+	// the target music/sound-effect length; generate_speech has no duration
+	// input (length follows the spoken text). For
 	// video it is forwarded only when the model exposes a duration input; for an
 	// extend (an attached video) the value is the length of the extension, not
 	// the total output length. Forwarded only when set — see
-	// generateAudioParamSchema / generateVideoParamSchema.
+	// generateSoundParamSchema / generateVideoParamSchema.
 	Duration string `json:"duration,omitempty"`
 	// Resolution is an optional generate_video input naming the output resolution
 	// tier (a fal enum string, e.g. "720p", "1080p", "4k"). Tiers vary by model —
@@ -129,9 +130,9 @@ type HarnessToolCall struct {
 	// Resolution — there is no persisted config default. Forwarded only when set
 	// — see generateVideoParamSchema.
 	FPS string `json:"fps,omitempty"`
-	// Loop and Voice are optional generate_audio inputs. Loop requests a
-	// seamless loop (sound-effect models); Voice selects a text-to-speech voice.
-	// Both are resolved against the model's schema and dropped-with-notice when
+	// Loop is an optional generate_sound input requesting a seamless loop; Voice
+	// is an optional generate_speech input selecting the speaking voice. Both
+	// are resolved against the model's schema and dropped-with-notice when
 	// the configured model has no matching parameter.
 	Loop  bool   `json:"loop,omitempty"`
 	Voice string `json:"voice,omitempty"`
@@ -504,8 +505,8 @@ func videosFromToolResults(results []HarnessToolResult) ([]ToolVideoFile, VideoG
 	return videos, videoReq
 }
 
-// audiosFromToolResults collects audio produced by generate_audio tool calls
-// this turn, plus the request metadata used to store them as artifacts.
+// audiosFromToolResults collects audio produced by generate_speech/generate_sound
+// tool calls this turn, plus the request metadata used to store them as artifacts.
 func audiosFromToolResults(results []HarnessToolResult) ([]ToolAudioFile, AudioGenerateRequest) {
 	var audios []ToolAudioFile
 	var audioReq AudioGenerateRequest
@@ -1218,8 +1219,8 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 			}
 		}
 		// Generation modes (image/video/audio) are built-in tool tasks: triage
-		// only routes to them when a generate_image/generate_video/generate_audio
-		// call is the whole point. A planner plan that sets needsTools false or
+		// only routes to them when a generate_image/generate_video/generate_speech/
+		// generate_sound call is the whole point. A planner plan that sets needsTools false or
 		// emits no tool calls in these modes is contradicting the routing, not
 		// legitimately declining tools — feeding it back as a correction (like
 		// any other validation error) gives the planner a chance to emit the
@@ -1270,7 +1271,7 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 		// so the next round's runHarnessToolCalls inherits it. User-attached
 		// media on the original turn takes precedence — generated media only
 		// fills an empty slot, so an attached clip is never shadowed. This
-		// makes generate_audio (round 1) → lip_sync (round 2) work, the exact
+		// makes generate_speech (round 1) → lip_sync (round 2) work, the exact
 		// composition that failed in conv_047accca33610598408b8cf8.
 		if strings.TrimSpace(turn.AttachedAudio) == "" {
 			turn.AttachedAudio = batch.GeneratedAudio
@@ -1462,25 +1463,26 @@ func mapNativeToolCalls(calls []ToolCall) ([]HarnessToolCall, []string) {
 // (triage.go) but is addressed to the planner — the model that actually selects
 // tools. The triage hint alone is insufficient because toolTask is non-binding
 // guidance a weak planner can override (see conv_b54423f43ab17a060948e74f:
-// triage routed to generate_video, the planner ran generate_audio + lip_sync
+// triage routed to generate_video, the planner ran generate_speech + lip_sync
 // anyway). Restating the rule at the planning layer, where the tool choice is
 // made, closes that gap. It also tells the planner to fall back to the
 // audio-capable generate_video path if a lip_sync call fails, so a single tool
 // failure does not sink the turn when an alternative exists. Empty when the
 // configured video model cannot produce audio — in that case the
-// generate_audio + lip_sync chain is the correct path and no rule is needed.
+// generate_speech + lip_sync chain is the correct path and no rule is needed.
 func plannerMediaRoutingGuidance(registry HarnessToolRegistry) string {
 	if !registry.VideoAudioCapable() {
 		return ""
 	}
-	return "\nMedia routing: when the user wants speech, narration, a voice-over, or a speaking character in a video, call generate_video ONCE with the spoken text in the prompt — the configured video model generates the audio in the same call. Do NOT chain generate_audio + lip_sync for narration; lip_sync is only for dubbing or re-syncing an existing attached audio clip to a face. If a lip_sync call fails, retry the narration as a single generate_video call before reporting failure."
+	return "\nMedia routing: when the user wants speech, narration, a voice-over, or a speaking character in a video, call generate_video ONCE with the spoken text in the prompt — the configured video model generates the audio in the same call. Do NOT chain generate_speech + lip_sync for narration; lip_sync is only for dubbing or re-syncing an existing attached audio clip to a face. If a lip_sync call fails, retry the narration as a single generate_video call before reporting failure."
 }
 
 // skillGuidesPlanner decides whether a selected SKILL.md's body should steer the
 // planner. A skill is workflow guidance for command/filesystem tasks the planner
 // executes via run_command/write_file/read_file. When triage routed the turn to
 // a generation mode (image/video/audio), the entire task is a single built-in
-// tool call (generate_image/generate_video/generate_audio) — a SKILL.md cannot
+// tool call (generate_image/generate_video/generate_speech/generate_sound) — a
+// SKILL.md cannot
 // help and can only confuse the planner, since its workflow steps are
 // irrelevant to generation. See conv_473c1357: the skill selector picked
 // `mediabunny` (a browser audio/video metadata library) for an image-generation
@@ -1522,8 +1524,9 @@ func isGenerationMode(responseMode string) bool {
 // the planner as a correction rather than silently breaking with zero output.
 //
 // It requires *a* tool call, not specifically a generate_* call: video mode can
-// be satisfied by generate_video OR lip_sync, and audio mode by generate_audio
-// OR transcribe_audio. The point is only that a media-mode turn triaged to tools
+// be satisfied by generate_video OR lip_sync, and audio mode by
+// generate_speech/generate_sound OR transcribe_audio. The point is only that a
+// media-mode turn triaged to tools
 // must not be declined outright before anything has run — the planner
 // contradicting that routing is a defect. See conv_7832ea8b: the planner
 // returned needsTools:false for an image turn, the loop broke, and no image was
@@ -1540,7 +1543,7 @@ func generationModeRequiresToolCall(responseMode string, plan HarnessToolPlan, p
 	if len(priorResults) > 0 {
 		return ""
 	}
-	return fmt.Sprintf("responseMode %q was routed to tools, but the plan emits no tool call. A media turn cannot be completed without a tool call (e.g. generate_image/generate_video/generate_audio, lip_sync, or transcribe_audio). Set needsTools true and emit the relevant call.", responseMode)
+	return fmt.Sprintf("responseMode %q was routed to tools, but the plan emits no tool call. A media turn cannot be completed without a tool call (e.g. generate_image/generate_video/generate_speech/generate_sound, lip_sync, or transcribe_audio). Set needsTools true and emit the relevant call.", responseMode)
 }
 
 func (h *HarnessEngine) plannerSystemPrompt(registry HarnessToolRegistry, req ChatRequest, loadedSkill *LoadedSkill, toolTask, responseMode string, userRequested bool) string {
@@ -2257,7 +2260,7 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 		batch.Results = append(batch.Results, result)
 		// Forward-feed Part A: a media-generating call seeds the attachment
 		// slots for the NEXT call in this same batch, so a planner can chain
-		// generate_audio → lip_sync in one round. We only fill empty slots — a
+		// generate_speech → lip_sync in one round. We only fill empty slots — a
 		// user-attached clip (set above from turn.Attached*) or an earlier
 		// call's output takes precedence over a later call's. Generated media
 		// lives in the tool execution context only; it never reaches a model
@@ -2288,7 +2291,7 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 }
 
 // forwardableMedia collects media a tool result produced that is eligible to
-// carry forward to a later tool call in the same turn (the generate_audio →
+// carry forward to a later tool call in the same turn (the generate_speech →
 // lip_sync composition, or generate_video → a Veo extend / video-to-video lip
 // sync, or generate_image → image-to-video). Each field is the data URL the
 // corresponding Attached* slot expects.
@@ -2302,8 +2305,8 @@ type forwardableMedia struct {
 // batch of tool results. It walks newest-first so a later call's output shadows
 // an earlier one within the same batch (matching latestAttached*ForTurn's
 // newest-first precedence). Only completed results contribute; a failed
-// generate_audio contributes no audio, so lip_sync surfaces its usual
-// attachment error rather than consuming partial output. Audio and video are
+// generate_speech/generate_sound contributes no audio, so lip_sync surfaces its
+// usual attachment error rather than consuming partial output. Audio and video are
 // read from their temp files and re-encoded as data URLs (tempAudioFileAsDataURL
 // / tempVideoFileAsDataURL); images are already data URLs in ToolImageResult.
 // Returns nil when no result produced any forwardable media.

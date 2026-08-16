@@ -178,8 +178,11 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 		videoAudioCapable = videoModelSupportsAudio(ctx, config, app)
 		definitions = append(definitions, videoGenerationToolDefinition(videoAudioCapable))
 	}
-	if audioGenerationConfigured(config) {
-		definitions = append(definitions, audioGenerationToolDefinition(videoAudioCapable))
+	if speechGenerationConfigured(config) {
+		definitions = append(definitions, speechGenerationToolDefinition(videoAudioCapable))
+	}
+	if soundEffectsGenerationConfigured(config) {
+		definitions = append(definitions, soundEffectsGenerationToolDefinition())
 	}
 	if transcribeAudioConfigured(config) {
 		definitions = append(definitions, transcribeAudioToolDefinition())
@@ -196,7 +199,7 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 // videoModelSupportsAudio reports whether any configured video model exposes a
 // native generate_audio input — i.e. the model can render a video with
 // synchronized audio (speech, music, ambient) from the prompt alone, no
-// separate generate_audio + lip_sync chain needed. The check mirrors the
+// separate generate_speech + lip_sync chain needed. The check mirrors the
 // runtime resolver (findNative "video" "generateAudio") so the planner's tool
 // description and the execution-time body building cannot disagree about a
 // model's audio capability.
@@ -347,13 +350,13 @@ func resolveDefaultVideoExtendModel(config AppConfig) string {
 // videoGenerationDescription assembles the generate_video tool description.
 // audioCapable is the resolved capability of the configured video models
 // (videoModelSupportsAudio); when true the description steers the planner toward
-// a single generate_video call for narration rather than a generate_audio +
+// a single generate_video call for narration rather than a generate_speech +
 // lip_sync chain. The wording is generic — it never names the specific model —
 // so it survives a model swap without rewording.
 func videoGenerationDescription(audioCapable bool) string {
 	base := "Use this when the user asks to create, animate, extend, or render a video or short clip. Works from a text description; when the user attached an image, animates that image (image-to-video); when the user attached a video, extends it into a longer clip (Veo extend). The clip is attached to the assistant reply. Generation runs for a minute or more. Pass negativePrompt to steer content away from unwanted elements, and generateAudio:false when the user wants a silent clip."
 	if audioCapable {
-		return base + " This video model can also generate synchronized audio (speech, music, ambient sound) from the prompt. For narration, a voice-over, or a speaking character, prefer a single generate_video call with the spoken text in the prompt over chaining generate_audio + lip_sync."
+		return base + " This video model can also generate synchronized audio (speech, music, ambient sound) from the prompt. For narration, a voice-over, or a speaking character, prefer a single generate_video call with the spoken text in the prompt over chaining generate_speech + lip_sync."
 	}
 	return base
 }
@@ -499,18 +502,28 @@ func writeTempVideo(video GeneratedVideo) (string, error) {
 	return writeTempMediaBytes(video.Data, "atelier-video-*", videoExtensionForMediaType(video.MimeType))
 }
 
-// audioGenerationConfigured reports whether the generate_audio tool should be
-// offered: a fal audio model must be configured AND a fal.ai key must be
+// speechGenerationConfigured reports whether the generate_speech tool should be
+// offered: a fal speech model must be configured AND a fal.ai key must be
 // present. fal is the only audio backend. The key check avoids offering a tool
 // that is guaranteed to fail at call time with errFalKeyNotConfigured.
-func audioGenerationConfigured(config AppConfig) bool {
+func speechGenerationConfigured(config AppConfig) bool {
 	if strings.TrimSpace(config.Providers.Fal.AudioModel) == "" {
 		return false
 	}
 	return falKeyConfigured()
 }
 
-// resolveDefaultAudioModel returns the model the generate_audio tool uses when
+// soundEffectsGenerationConfigured mirrors speechGenerationConfigured for the
+// generate_sound tool (music and sound effects). mergeAppConfig seeds the
+// default once AudioModel is set, so anyone with speech configured gets both.
+func soundEffectsGenerationConfigured(config AppConfig) bool {
+	if strings.TrimSpace(config.Providers.Fal.SoundEffectsModel) == "" {
+		return false
+	}
+	return falKeyConfigured()
+}
+
+// resolveDefaultAudioModel returns the model the generate_speech tool uses when
 // the call doesn't override it.
 func resolveDefaultAudioModel(config AppConfig) string {
 	if model := strings.TrimSpace(config.Providers.Fal.AudioModel); model != "" {
@@ -519,10 +532,20 @@ func resolveDefaultAudioModel(config AppConfig) string {
 	return defaultFalAudioModel
 }
 
+// resolveDefaultSoundEffectsModel returns the model the generate_sound tool
+// uses when the call doesn't override it.
+func resolveDefaultSoundEffectsModel(config AppConfig) string {
+	if model := strings.TrimSpace(config.Providers.Fal.SoundEffectsModel); model != "" {
+		return model
+	}
+	return defaultFalSoundEffectsModel
+}
+
 // transcribeAudioConfigured reports whether the transcribe_audio tool should be
 // offered: fal is the only transcription backend, and the default model
 // (fal-ai/wizper) always applies, so the gate is purely the fal key — unlike
-// generate_audio/video, no model needs to be configured first.
+// generate_speech/generate_sound/generate_video, no model needs to be
+// configured first.
 func transcribeAudioConfigured(config AppConfig) bool {
 	return falKeyConfigured()
 }
@@ -562,79 +585,123 @@ func resolveDefaultLipsyncVideoModel(config AppConfig) string {
 	return defaultFalLipsyncVideoModel
 }
 
-// audioGenerationDescription assembles the generate_audio tool description.
+// speechGenerationDescription assembles the generate_speech tool description.
 // videoAudioCapable reflects whether the configured video model can produce
 // audio on its own; when it cannot, the description tells the planner that
-// generated audio carries forward to a later lip_sync in the same turn — the
-// correct path for putting speech behind a video on a non-audio video model.
-func audioGenerationDescription(videoAudioCapable bool) string {
-	base := "Use this when the user asks to generate audio: speak or narrate text (text-to-speech), or create music or a sound effect from a description. The configured fal.ai audio model generates it and the clip is attached to the assistant reply."
+// generated speech carries forward to a later lip_sync in the same turn — the
+// correct path for putting narration behind a video on a non-audio video model.
+func speechGenerationDescription(videoAudioCapable bool) string {
+	base := "Use this when the user asks to speak, narrate, or read text aloud (text-to-speech). The configured fal.ai speech model generates the clip and it is attached to the assistant reply."
 	if !videoAudioCapable {
-		return base + " To put generated speech behind a video, call generate_audio first then lip_sync in the same turn — the generated audio carries forward to lip_sync automatically."
+		return base + " To put generated speech behind a video, call generate_speech first then lip_sync in the same turn — the generated speech carries forward to lip_sync automatically."
 	}
 	return base
 }
 
-func audioGenerationToolDefinition(videoAudioCapable bool) HarnessToolDefinition {
+// soundEffectsGenerationDescription assembles the generate_sound tool
+// description. It takes no videoAudioCapable hint: lip_sync is a face tool, so
+// the generate_speech + lip_sync chain never applies to music or sound effects.
+func soundEffectsGenerationDescription() string {
+	return "Use this when the user asks to create music, ambience, or a sound effect from a description. The configured fal.ai sound-effects model generates the clip and it is attached to the assistant reply."
+}
+
+// audioGenerationExecute is the shared Execute body for generate_speech and
+// generate_sound: both resolve the model (call override, then the tool's
+// configured default), run the same fal audio backend, and stage the clip as a
+// ToolAudioResult — carry-forward, artifacts, and notice surfacing are keyed on
+// that result type, so both tools share the machinery. The caller supplies the
+// canonical request with its tool-specific params already set.
+func audioGenerationExecute(ctx context.Context, tools HarnessToolExecutionContext, audioReq AudioGenerateRequest, defaultModel func(AppConfig) string) (any, string, error) {
+	if tools.GenerateAudio == nil {
+		return nil, "audio generation unavailable", errors.New("audio generation is not available in this context")
+	}
+	if strings.TrimSpace(audioReq.Model) == "" {
+		audioReq.Model = defaultModel(tools.Config)
+	}
+	if strings.TrimSpace(audioReq.Model) == "" {
+		return nil, "audio generation unavailable", errors.New("no audio model is configured")
+	}
+	audioReq.Prompt = strings.TrimSpace(audioReq.Prompt)
+	generated, err := tools.GenerateAudio(ctx, audioReq)
+	if err != nil {
+		return nil, "audio generation failed", err
+	}
+	if len(generated.Data) == 0 {
+		return nil, "audio generation returned no audio", errors.New("audio model returned no audio data")
+	}
+	tempPath, err := writeTempAudio(generated)
+	if err != nil {
+		return nil, "audio generation failed", err
+	}
+	output := ToolAudioResult{
+		Model:   audioReq.Model,
+		Prompt:  audioReq.Prompt,
+		Count:   1,
+		Audios:  []ToolAudioFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
+		Notices: generated.Notices,
+	}
+	return output, fmt.Sprintf("generated audio with %s", audioReq.Model), nil
+}
+
+// audioGenerationActivity renders the shared fal generate command for any tool
+// that returns a ToolAudioResult.
+func audioGenerationActivity(result HarnessToolResult) HarnessToolActivity {
+	activity := defaultHarnessToolActivity(result)
+	if typed, ok := result.Result.(ToolAudioResult); ok {
+		activity.Command = []string{"fal", "generate", typed.Model}
+	}
+	return activity
+}
+
+func speechGenerationToolDefinition(videoAudioCapable bool) HarnessToolDefinition {
 	return HarnessToolDefinition{
-		Name:        "generate_audio",
-		Title:       "Generate audio",
-		Description: audioGenerationDescription(videoAudioCapable),
-		Example:     `{"name":"generate_audio","content":"a calm lo-fi piano loop with soft rain in the background"}`,
+		Name:        "generate_speech",
+		Title:       "Generate speech",
+		Description: speechGenerationDescription(videoAudioCapable),
+		Example:     `{"name":"generate_speech","content":"The quick brown fox jumps over the lazy dog."}`,
 		Risk:        HarnessToolRiskRead,
-		ParamSchema: generateAudioParamSchema(),
+		ParamSchema: generateSpeechParamSchema(),
 		Validate: func(prefix string, call HarnessToolCall) []string {
 			if strings.TrimSpace(call.Content) == "" {
-				return []string{prefix + ".content is required for generate_audio (the text or audio prompt)"}
+				return []string{prefix + ".content is required for generate_speech (the text to speak)"}
 			}
 			return nil
 		},
 		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
-			if tools.GenerateAudio == nil {
-				return nil, "audio generation unavailable", errors.New("audio generation is not available in this context")
+			return audioGenerationExecute(ctx, tools, AudioGenerateRequest{
+				Model:  strings.TrimSpace(call.Model),
+				Prompt: call.Content,
+				Voice:  strings.TrimSpace(call.Voice),
+			}, resolveDefaultAudioModel)
+		},
+		Activity: audioGenerationActivity,
+	}
+}
+
+func soundEffectsGenerationToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "generate_sound",
+		Title:       "Generate sound",
+		Description: soundEffectsGenerationDescription(),
+		Example:     `{"name":"generate_sound","content":"a calm lo-fi piano loop with soft rain in the background"}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: generateSoundParamSchema(),
+		Validate: func(prefix string, call HarnessToolCall) []string {
+			if strings.TrimSpace(call.Content) == "" {
+				return []string{prefix + ".content is required for generate_sound (the description of the music or sound)"}
 			}
-			model := strings.TrimSpace(call.Model)
-			if model == "" {
-				model = resolveDefaultAudioModel(tools.Config)
-			}
-			if model == "" {
-				return nil, "audio generation unavailable", errors.New("no audio model is configured")
-			}
-			audioReq := AudioGenerateRequest{
-				Model:          model,
-				Prompt:         strings.TrimSpace(call.Content),
+			return nil
+		},
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			return audioGenerationExecute(ctx, tools, AudioGenerateRequest{
+				Model:          strings.TrimSpace(call.Model),
+				Prompt:         call.Content,
 				Duration:       strings.TrimSpace(call.Duration),
 				NegativePrompt: strings.TrimSpace(call.NegativePrompt),
 				Loop:           call.Loop,
-				Voice:          strings.TrimSpace(call.Voice),
-			}
-			generated, err := tools.GenerateAudio(ctx, audioReq)
-			if err != nil {
-				return nil, "audio generation failed", err
-			}
-			if len(generated.Data) == 0 {
-				return nil, "audio generation returned no audio", errors.New("audio model returned no audio data")
-			}
-			tempPath, err := writeTempAudio(generated)
-			if err != nil {
-				return nil, "audio generation failed", err
-			}
-			output := ToolAudioResult{
-				Model:   model,
-				Prompt:  audioReq.Prompt,
-				Count:   1,
-				Audios:  []ToolAudioFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
-				Notices: generated.Notices,
-			}
-			return output, fmt.Sprintf("generated audio with %s", model), nil
+			}, resolveDefaultSoundEffectsModel)
 		},
-		Activity: func(result HarnessToolResult) HarnessToolActivity {
-			activity := defaultHarnessToolActivity(result)
-			if typed, ok := result.Result.(ToolAudioResult); ok {
-				activity.Command = []string{"fal", "generate", typed.Model}
-			}
-			return activity
-		},
+		Activity: audioGenerationActivity,
 	}
 }
 
@@ -720,7 +787,7 @@ func transcribeAudioParamSchema() map[string]any {
 func lipsyncDescription(videoAudioCapable bool) string {
 	base := "Use this when the user asks to lip sync, dub, or sync audio to a face. Requires an attached audio clip AND an attached face: an image produces a talking-head video (audio-to-video), a video re-lip-syncs the existing clip (video-to-video). The synced video is attached to the assistant reply. Generation runs for a minute or more."
 	if !videoAudioCapable {
-		return base + " The audio clip may be one the user attached or one generate_audio produced earlier in this turn — generated audio carries forward automatically."
+		return base + " The audio clip may be one the user attached or one generate_speech produced earlier in this turn — generated speech carries forward automatically."
 	}
 	return base
 }
@@ -1203,21 +1270,33 @@ func generateVideoParamSchema() map[string]any {
 	}
 }
 
-func generateAudioParamSchema() map[string]any {
+func generateSpeechParamSchema() map[string]any {
 	return map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
-			"content": stringParam("The text to speak, or a description of the music/sound to create."),
-			"model":   stringParam("Optional fal.ai audio model override."),
-			"duration": stringParam("Optional — target clip length for music/sound-effect models (e.g. \"10\"). " +
-				"Ignored by text-to-speech models, whose length follows the spoken text."),
+			"content": stringParam("The text to speak."),
+			"model":   stringParam("Optional fal.ai speech model override."),
+			"voice": stringParam("Optional — the voice for the speech (e.g. \"Rachel\"). " +
+				"Only some speech models support it; ignored otherwise with a note to the user."),
+		},
+		"required": []string{"content"},
+	}
+}
+
+func generateSoundParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"content": stringParam("A description of the music or sound effect to create."),
+			"model":   stringParam("Optional fal.ai sound model override."),
+			"duration": stringParam("Optional — target clip length in seconds (e.g. \"10\"). " +
+				"Ignored by models that don't expose a duration control."),
 			"negativePrompt": stringParam("Optional — describe what to keep out of the audio (e.g. \"vocals, percussion\"). " +
-				"Ignored by text-to-speech models."),
+				"Ignored by models without a negative-prompt control."),
 			"loop": boolParam("Optional — set true for a seamless, gapless loop (ambient beds, backgrounds). " +
-				"Only some sound-effect models support it; ignored otherwise with a note to the user."),
-			"voice": stringParam("Optional — the voice for text-to-speech (e.g. \"Rachel\"). " +
-				"Only text-to-speech models support it; ignored otherwise with a note to the user."),
+				"Only some models support it; ignored otherwise with a note to the user."),
 		},
 		"required": []string{"content"},
 	}
@@ -1470,7 +1549,7 @@ const videoAudioCapabilityMarker = "can also generate synchronized audio"
 // VideoAudioCapable reports whether the generate_video tool's description
 // advertises native audio capability. It returns false when generate_video is
 // not in the registry. Used by triage to bias narration requests toward a
-// single generate_video call instead of a generate_audio + lip_sync chain.
+// single generate_video call instead of a generate_speech + lip_sync chain.
 func (r HarnessToolRegistry) VideoAudioCapable() bool {
 	def, ok := r.Get("generate_video")
 	if !ok {

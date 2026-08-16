@@ -29,7 +29,8 @@ Every turn runs through an agentic loop rather than a single model call:
 | `run_command` | gated | Allowlisted commands (`cat`, `echo`, `find`, `grep`, `head`, `ls`, `pwd`, `rg`, `tail`, `wc`); unlisted or write/exec operations require permission. |
 | `generate_image` | read-only | Invokes the configured image model (Ollama or fal.ai); registered only when an image model is set. |
 | `generate_video` | read-only | fal.ai text-to-video or image-to-video (animates an attached image); registered only when a fal video model and key are configured. |
-| `generate_audio` | read-only | fal.ai text-to-speech, music, or sound-effect generation; registered only when a fal audio model and key are configured. |
+| `generate_speech` | read-only | fal.ai text-to-speech on the configured speech model (`audioModel`); registered only when a fal speech model and key are configured. |
+| `generate_sound` | read-only | fal.ai music or sound-effect generation on the configured sound-effects model (`soundEffectsModel`); registered only when a fal sound model and key are configured. |
 | `transcribe_audio` | read-only | fal.ai speech-to-text (fal-ai/wizper by default) on an attached audio clip; registered only when a fal key is configured. The transcript flows back as tool evidence. |
 | `upscale_image` | read-only | fal.ai image upscaling on an attached image; registered only when a fal key is configured. |
 
@@ -140,6 +141,7 @@ The file is versioned and hierarchical so more providers, model profiles, genera
     "fal": {
       "videoModel": "fal-ai/kling-video/v2/master/text-to-video",
       "audioModel": "fal-ai/elevenlabs/tts/multilingual-v2",
+      "soundEffectsModel": "fal-ai/elevenlabs/sound-effects/v2",
       "transcribeModel": "fal-ai/wizper",
       "upscaleModel": "fal-ai/esrgan"
     }

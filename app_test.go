@@ -6187,47 +6187,125 @@ func TestVideoGenerationToolGating(t *testing.T) {
 	}
 }
 
-// TestAudioGenerationToolGating confirms generate_audio is registered only when
-// a fal audio model is configured AND a fal.ai key is present.
-func TestAudioGenerationToolGating(t *testing.T) {
+// TestSpeechGenerationToolGating confirms generate_speech is registered only
+// when a fal speech model is configured AND a fal.ai key is present.
+func TestSpeechGenerationToolGating(t *testing.T) {
 	keyring.MockInit()
 	t.Cleanup(func() { _ = clearFalAPIKey() })
 
 	base := defaultAppConfig()
 	base.Providers.Fal.AudioModel = ""
-	if audioGenerationConfigured(base) {
-		t.Fatal("audio should not be configured without a fal audio model")
+	if speechGenerationConfigured(base) {
+		t.Fatal("speech should not be configured without a fal speech model")
 	}
-	if _, ok := defaultHarnessToolRegistry(context.Background(), base, nil).Get("generate_audio"); ok {
-		t.Fatal("generate_audio should be absent when unconfigured")
+	if _, ok := defaultHarnessToolRegistry(context.Background(), base, nil).Get("generate_speech"); ok {
+		t.Fatal("generate_speech should be absent when unconfigured")
 	}
 
 	// Model set but no key → still not configured (would only fail at call time).
 	noKey := defaultAppConfig()
-	noKey.Providers.Fal.AudioModel = "fal-ai/some/audio-model"
-	if audioGenerationConfigured(noKey) {
-		t.Fatal("audio should not be configured without a fal key")
+	noKey.Providers.Fal.AudioModel = "fal-ai/some/speech-model"
+	if speechGenerationConfigured(noKey) {
+		t.Fatal("speech should not be configured without a fal key")
 	}
-	if _, ok := defaultHarnessToolRegistry(context.Background(), noKey, nil).Get("generate_audio"); ok {
-		t.Fatal("generate_audio should be absent without a fal key")
+	if _, ok := defaultHarnessToolRegistry(context.Background(), noKey, nil).Get("generate_speech"); ok {
+		t.Fatal("generate_speech should be absent without a fal key")
 	}
 
 	if err := saveFalAPIKey("fal-test-key"); err != nil {
 		t.Fatalf("saveFalAPIKey: %v", err)
 	}
 	configured := defaultAppConfig()
-	configured.Providers.Fal.AudioModel = "fal-ai/some/audio-model"
-	if !audioGenerationConfigured(configured) {
-		t.Fatal("audio should be configured with a fal audio model and key")
+	configured.Providers.Fal.AudioModel = "fal-ai/some/speech-model"
+	if !speechGenerationConfigured(configured) {
+		t.Fatal("speech should be configured with a fal speech model and key")
 	}
-	if _, ok := defaultHarnessToolRegistry(context.Background(), configured, nil).Get("generate_audio"); !ok {
-		t.Fatal("generate_audio should be registered when configured")
+	if _, ok := defaultHarnessToolRegistry(context.Background(), configured, nil).Get("generate_speech"); !ok {
+		t.Fatal("generate_speech should be registered when configured")
 	}
-	if got := resolveDefaultAudioModel(configured); got != "fal-ai/some/audio-model" {
+	if got := resolveDefaultAudioModel(configured); got != "fal-ai/some/speech-model" {
 		t.Fatalf("resolveDefaultAudioModel = %q, want the configured model", got)
 	}
 	if got := resolveDefaultAudioModel(base); got != defaultFalAudioModel {
 		t.Fatalf("resolveDefaultAudioModel fallback = %q, want %q", got, defaultFalAudioModel)
+	}
+}
+
+// TestSoundEffectsGenerationToolGating confirms generate_sound is registered
+// only when a fal sound-effects model is configured AND a fal.ai key is
+// present — mirroring the speech gate on the soundEffectsModel field.
+func TestSoundEffectsGenerationToolGating(t *testing.T) {
+	keyring.MockInit()
+	t.Cleanup(func() { _ = clearFalAPIKey() })
+
+	base := defaultAppConfig()
+	base.Providers.Fal.SoundEffectsModel = ""
+	if soundEffectsGenerationConfigured(base) {
+		t.Fatal("sound effects should not be configured without a fal sound model")
+	}
+	if _, ok := defaultHarnessToolRegistry(context.Background(), base, nil).Get("generate_sound"); ok {
+		t.Fatal("generate_sound should be absent when unconfigured")
+	}
+
+	// Model set but no key → still not configured (would only fail at call time).
+	noKey := defaultAppConfig()
+	noKey.Providers.Fal.SoundEffectsModel = "fal-ai/some/sound-model"
+	if soundEffectsGenerationConfigured(noKey) {
+		t.Fatal("sound effects should not be configured without a fal key")
+	}
+	if _, ok := defaultHarnessToolRegistry(context.Background(), noKey, nil).Get("generate_sound"); ok {
+		t.Fatal("generate_sound should be absent without a fal key")
+	}
+
+	if err := saveFalAPIKey("fal-test-key"); err != nil {
+		t.Fatalf("saveFalAPIKey: %v", err)
+	}
+	configured := defaultAppConfig()
+	configured.Providers.Fal.SoundEffectsModel = "fal-ai/some/sound-model"
+	if !soundEffectsGenerationConfigured(configured) {
+		t.Fatal("sound effects should be configured with a fal sound model and key")
+	}
+	if _, ok := defaultHarnessToolRegistry(context.Background(), configured, nil).Get("generate_sound"); !ok {
+		t.Fatal("generate_sound should be registered when configured")
+	}
+	if got := resolveDefaultSoundEffectsModel(configured); got != "fal-ai/some/sound-model" {
+		t.Fatalf("resolveDefaultSoundEffectsModel = %q, want the configured model", got)
+	}
+	if got := resolveDefaultSoundEffectsModel(base); got != defaultFalSoundEffectsModel {
+		t.Fatalf("resolveDefaultSoundEffectsModel fallback = %q, want %q", got, defaultFalSoundEffectsModel)
+	}
+}
+
+// TestMergeAppConfigSeedsSoundEffectsModel pins the one-time migration for
+// configs written before the speech/sound split: a configured AudioModel means
+// the old combined generate_audio tool was in use, so the sound-effects default
+// lights up generate_sound without a Settings visit. A config with no audio
+// model at all must stay untouched (no new tools appear), and an explicit
+// soundEffectsModel always wins.
+func TestMergeAppConfigSeedsSoundEffectsModel(t *testing.T) {
+	legacy := defaultAppConfig()
+	legacy.Providers.Fal.AudioModel = "fal-ai/elevenlabs/tts/multilingual-v2"
+	legacy.Providers.Fal.SoundEffectsModel = ""
+	merged := mergeAppConfig(legacy)
+	if merged.Providers.Fal.SoundEffectsModel != defaultFalSoundEffectsModel {
+		t.Fatalf("merged soundEffectsModel = %q, want the default %q", merged.Providers.Fal.SoundEffectsModel, defaultFalSoundEffectsModel)
+	}
+	if merged.Providers.Fal.AudioModel != "fal-ai/elevenlabs/tts/multilingual-v2" {
+		t.Fatalf("merge must not touch audioModel, got %q", merged.Providers.Fal.AudioModel)
+	}
+
+	none := defaultAppConfig()
+	none.Providers.Fal.AudioModel = ""
+	none.Providers.Fal.SoundEffectsModel = ""
+	if merged := mergeAppConfig(none); merged.Providers.Fal.SoundEffectsModel != "" {
+		t.Fatalf("no-audio config should gain no soundEffectsModel, got %q", merged.Providers.Fal.SoundEffectsModel)
+	}
+
+	explicit := defaultAppConfig()
+	explicit.Providers.Fal.AudioModel = "fal-ai/elevenlabs/tts/multilingual-v2"
+	explicit.Providers.Fal.SoundEffectsModel = "fal-ai/custom/sound"
+	if merged := mergeAppConfig(explicit); merged.Providers.Fal.SoundEffectsModel != "fal-ai/custom/sound" {
+		t.Fatalf("explicit soundEffectsModel must win, got %q", merged.Providers.Fal.SoundEffectsModel)
 	}
 }
 

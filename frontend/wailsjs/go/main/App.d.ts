@@ -24,8 +24,6 @@ export function HasOpenRouterAPIKey():Promise<boolean>;
 
 export function ListConversations():Promise<Array<main.ConversationSummary>>;
 
-export function ListFalAudioModels():Promise<Array<main.FalModel>>;
-
 export function ListFalImageEditModels():Promise<Array<main.FalModel>>;
 
 export function ListFalLipsyncImageModels():Promise<Array<main.FalModel>>;
@@ -33,6 +31,10 @@ export function ListFalLipsyncImageModels():Promise<Array<main.FalModel>>;
 export function ListFalLipsyncVideoModels():Promise<Array<main.FalModel>>;
 
 export function ListFalModels():Promise<Array<main.FalModel>>;
+
+export function ListFalSoundEffectModels():Promise<Array<main.FalModel>>;
+
+export function ListFalSpeechModels():Promise<Array<main.FalModel>>;
 
 export function ListFalTranscribeModels():Promise<Array<main.FalModel>>;
 
