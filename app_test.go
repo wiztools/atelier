@@ -5056,6 +5056,42 @@ func TestIsFalUpscaleModel(t *testing.T) {
 	}
 }
 
+// TestIsFalSpeechModel covers the id/tag filter that separates speech endpoints
+// from fal's broad text-to-audio category. Entries below are lifted from the
+// live catalog: fal files elevenlabs/tts, kokoro, zonos, and friends under
+// text-to-audio (not text-to-speech), most with no speech tag at all, so the
+// id is the reliable signal — both must be checked. Music/sfx entries that
+// carry near-miss tags (lipsync on minimax-music) must stay false.
+func TestIsFalSpeechModel(t *testing.T) {
+	cases := []struct {
+		name  string
+		model FalModel
+		want  bool
+	}{
+		{"elevenlabs tts by id", FalModel{ID: "fal-ai/elevenlabs/tts/multilingual-v2", Tags: []string{"audio"}}, true},
+		{"elevenlabs tts v3 by id", FalModel{ID: "fal-ai/elevenlabs/tts/eleven-v3", Tags: []string{"audio"}}, true},
+		{"text-to-dialogue by id", FalModel{ID: "fal-ai/elevenlabs/text-to-dialogue/eleven-v3", Tags: []string{"audio"}}, true},
+		{"gemini tts by id", FalModel{ID: "fal-ai/gemini-tts", Tags: []string{"text-to-speech", "audio"}}, true},
+		{"f5 tts by id and tag", FalModel{ID: "fal-ai/f5-tts", Tags: []string{"speech"}}, true},
+		{"kokoro by tag only", FalModel{ID: "fal-ai/kokoro/american-english", Tags: []string{"speech"}}, true},
+		{"csm by tag only", FalModel{ID: "fal-ai/csm-1b", Tags: []string{"conversational", "text to speech"}}, true},
+		{"zonos voice cloning by tag", FalModel{ID: "fal-ai/zonos", Tags: []string{"voice cloning"}}, true},
+		{"sound effects v2", FalModel{ID: "fal-ai/elevenlabs/sound-effects/v2", Tags: []string{"sound"}}, false},
+		{"elevenlabs music", FalModel{ID: "fal-ai/elevenlabs/music", Tags: []string{"music", "text-to-music"}}, false},
+		{"minimax music with lipsync tag", FalModel{ID: "fal-ai/minimax-music/v2.6", Tags: []string{"stylized", "transform", "lipsync"}}, false},
+		{"stable audio text-to-audio", FalModel{ID: "fal-ai/stable-audio-25/text-to-audio", Tags: []string{"audio"}}, false},
+		{"sonilo sound effects", FalModel{ID: "sonilo/v1.1/text-to-sound-effects", Tags: []string{"sfx", "audio", "effects"}}, false},
+		{"lyria sfx", FalModel{ID: "fal-ai/lyria3/pro", Tags: []string{"audio", "sfx"}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isFalSpeechModel(tc.model); got != tc.want {
+				t.Errorf("isFalSpeechModel(%+v) = %v, want %v", tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestResolveDefaultImageEditModel mirrors TestImageUpscaleConfiguredAndResolver:
 // when the image provider is fal and ImageEditModel is unset, the resolver falls
 // back to defaultFalImageEditModel; when set, it returns the configured value.

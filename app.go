@@ -1758,8 +1758,37 @@ func (a *App) ListFalVideoExtendModels() ([]FalModel, error) {
 	return extend, nil
 }
 
+// isFalSpeechModel reports whether a fal catalog entry is a text-to-speech
+// endpoint even though fal files it under the broad text-to-audio category —
+// fal's text-to-speech and text-to-audio categories are disjoint, and
+// endpoints like elevenlabs/tts/*, kokoro/*, gemini-tts, f5-tts, csm, zonos,
+// and elevenlabs text-to-dialogue land in text-to-audio with at best a
+// "speech"-family tag. Both audio pickers consult this predicate: the speech
+// lister merges matches in (the default elevenlabs TTS model is itself filed
+// only under text-to-audio), and the sound-effects lister filters them out.
+// Mirrors isFalLipsyncModel / isFalUpscaleModel's defensive id+tags matching.
+func isFalSpeechModel(model FalModel) bool {
+	id := strings.ToLower(model.ID)
+	for _, marker := range []string{"tts", "speech", "dialogue"} {
+		if strings.Contains(id, marker) {
+			return true
+		}
+	}
+	for _, tag := range model.Tags {
+		lower := strings.ToLower(tag)
+		if strings.Contains(lower, "speech") || strings.Contains(lower, "voice cloning") || strings.Contains(lower, "voice-clone") || strings.Contains(lower, "conversational") {
+			return true
+		}
+	}
+	return false
+}
+
 // ListFalSpeechModels returns fal's text-to-speech catalog for the Settings
-// speech-model picker (the generate_speech tool's endpoint).
+// speech-model picker (the generate_speech tool's endpoint). fal files some
+// TTS endpoints only under the broader text-to-audio category (elevenlabs/tts,
+// kokoro, zonos, ...), so that category is fetched too and the
+// isFalSpeechModel matches are merged in — without it, the default speech
+// model would be missing from its own picker. Deduped by endpoint id.
 func (a *App) ListFalSpeechModels() ([]FalModel, error) {
 	key, err := loadFalAPIKey()
 	if err != nil {
@@ -1768,12 +1797,40 @@ func (a *App) ListFalSpeechModels() ([]FalModel, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	client := newFalClient(a.client, key)
-	return client.ListModels(ctx, falTextToSpeechCategory, 0)
+
+	speech, err := client.ListModels(ctx, falTextToSpeechCategory, 0)
+	if err != nil {
+		return nil, err
+	}
+	audio, err := client.ListModels(ctx, falTextToAudioCategory, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	merged := make([]FalModel, 0, len(speech)+len(audio))
+	seen := map[string]bool{}
+	for _, model := range speech {
+		if model.ID == "" || seen[model.ID] {
+			continue
+		}
+		seen[model.ID] = true
+		merged = append(merged, model)
+	}
+	for _, model := range audio {
+		if model.ID == "" || seen[model.ID] || !isFalSpeechModel(model) {
+			continue
+		}
+		seen[model.ID] = true
+		merged = append(merged, model)
+	}
+	return merged, nil
 }
 
-// ListFalSoundEffectModels returns fal's text-to-audio catalog (music and sound
-// effects) for the Settings sound-effects-model picker (the generate_sound
-// tool's endpoint).
+// ListFalSoundEffectModels returns fal's text-to-audio catalog (music and
+// sound effects) for the Settings sound-effects-model picker (the
+// generate_sound tool's endpoint), with speech endpoints filtered out — fal
+// files TTS models like elevenlabs/tts/* and kokoro/* under this same
+// category, and they don't belong behind a "music & sound effects" label.
 func (a *App) ListFalSoundEffectModels() ([]FalModel, error) {
 	key, err := loadFalAPIKey()
 	if err != nil {
@@ -1782,7 +1839,18 @@ func (a *App) ListFalSoundEffectModels() ([]FalModel, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	client := newFalClient(a.client, key)
-	return client.ListModels(ctx, falTextToAudioCategory, 0)
+
+	models, err := client.ListModels(ctx, falTextToAudioCategory, 0)
+	if err != nil {
+		return nil, err
+	}
+	sound := make([]FalModel, 0, len(models))
+	for _, model := range models {
+		if !isFalSpeechModel(model) {
+			sound = append(sound, model)
+		}
+	}
+	return sound, nil
 }
 
 // ListFalTranscribeModels returns fal's speech-to-text catalog for the Settings
