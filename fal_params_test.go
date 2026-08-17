@@ -895,8 +895,9 @@ func TestResolveVideoBodyDefaultAudioOnModelWithoutToggleNoNotice(t *testing.T) 
 }
 
 // TestResolveVideoBodyVeoExtend verifies the extend path: an attached video maps
-// onto the model's video_url field, and an attached image is ignored in favor of
-// the video (extend takes precedence over image-to-video).
+// onto the model's video_url field, and an attached image — which an extend
+// model has no input for — is dropped with a notice rather than silently
+// ignored (source media maps per side; the model declares only video_url).
 func TestResolveVideoBodyVeoExtend(t *testing.T) {
 	body, notices, _ := resolveVideoBody(loadSchema(t, "veo3.1-extend-video"),
 		VideoGenerateRequest{
@@ -912,12 +913,102 @@ func TestResolveVideoBodyVeoExtend(t *testing.T) {
 	if got, ok := body["video_url"].(string); !ok || !strings.HasPrefix(got, "data:video/") {
 		t.Fatalf("video_url = %v, want the attached video data URI", body["video_url"])
 	}
-	// image_url must NOT appear: extend wins over image-to-video when both are set.
+	// image_url must NOT appear: the extend model has no image input.
 	if _, present := body["image_url"]; present {
 		t.Fatalf("image_url must not be set when extending a video; got %v", body["image_url"])
 	}
+	if len(notices) != 1 {
+		t.Fatalf("expected one notice (image dropped, extend model has no image input), got %v", notices)
+	}
+	if !strings.Contains(notices[0], "no source-image input") {
+		t.Fatalf("notice = %q, want it to say the model has no source-image input", notices[0])
+	}
+}
+
+// TestResolveVideoBodyMotionControlBothSources covers the motion-control shape
+// (fal-ai/kling-video/v2.6/pro/motion-control, schema captured from fal's live
+// OpenAPI endpoint): a turn with BOTH an image and a video maps each onto its
+// own native field, and the model's required character_orientation enum is
+// defaulted to "video" (output orientation follows the motion video — better
+// for complex motions, and the only orientation that allows the 30s limit).
+func TestResolveVideoBodyMotionControlBothSources(t *testing.T) {
+	body, notices, _ := resolveVideoBody(loadSchema(t, "kling-v2.6-pro-motion-control"),
+		VideoGenerateRequest{
+			Model:  defaultFalVideoMotionModel,
+			Prompt: "the character from the image dances like the reference video",
+			Images: []string{"data:image/png;base64,ABC"},
+			Video:  "https://example.com/motion-reference.mp4",
+		},
+		builtinFalOverrides())
+	if body["prompt"] != "the character from the image dances like the reference video" {
+		t.Fatalf("prompt = %v", body["prompt"])
+	}
+	if body["image_url"] != "data:image/png;base64,ABC" {
+		t.Fatalf("image_url = %v, want the attached image — motion control needs both sources", body["image_url"])
+	}
+	if body["video_url"] != "https://example.com/motion-reference.mp4" {
+		t.Fatalf("video_url = %v, want the attached motion video", body["video_url"])
+	}
+	if body["character_orientation"] != "video" {
+		t.Fatalf("character_orientation = %v, want the defaulted \"video\"", body["character_orientation"])
+	}
 	if len(notices) != 0 {
-		t.Fatalf("expected no notices for Veo extend, got %v", notices)
+		t.Fatalf("expected no notices for a well-formed motion-control request, got %v", notices)
+	}
+}
+
+// TestResolveVideoBodyMotionControlMultiImageRejected pins the guardrail on the
+// motion-control path: its image_url is scalar, so a second attached image is a
+// hard error even though a video is also present — silently dropping the extra
+// frame would hide a real capability mismatch.
+func TestResolveVideoBodyMotionControlMultiImageRejected(t *testing.T) {
+	_, _, err := resolveVideoBody(loadSchema(t, "kling-v2.6-pro-motion-control"),
+		VideoGenerateRequest{
+			Model:  defaultFalVideoMotionModel,
+			Prompt: "dance",
+			Images: []string{"data:image/png;base64,ABC", "data:image/png;base64,DEF"},
+			Video:  "https://example.com/motion-reference.mp4",
+		},
+		builtinFalOverrides())
+	if err == nil {
+		t.Fatal("expected a hard error for two images into the scalar-image motion model")
+	}
+	if !strings.Contains(err.Error(), "accepts a single image") {
+		t.Fatalf("err = %v, want it to name the single-image cap", err)
+	}
+}
+
+// motionControlImageOnlyOrientationSchema is a synthetic motion-control schema
+// whose character_orientation enum lists only "image" — a model whose
+// orientation values don't include "video". The resolver must leave the field
+// unset (the model applies its own default) rather than send a value it would
+// reject.
+func motionControlImageOnlyOrientationSchema() *ModelInputSchema {
+	return &ModelInputSchema{
+		Properties: map[string]SchemaProperty{
+			"prompt":                {Name: "prompt", Kind: schemaScalar},
+			"image_url":             {Name: "image_url", Kind: schemaScalar},
+			"video_url":             {Name: "video_url", Kind: schemaScalar},
+			"character_orientation": {Name: "character_orientation", Kind: schemaScalar, Enum: []string{"image"}},
+		},
+		order: []string{"prompt", "image_url", "video_url", "character_orientation"},
+	}
+}
+
+func TestResolveVideoBodyCharacterOrientationEnumGate(t *testing.T) {
+	body, _, _ := resolveVideoBody(motionControlImageOnlyOrientationSchema(),
+		VideoGenerateRequest{
+			Model:  "acme/motion-control",
+			Prompt: "dance",
+			Images: []string{"data:image/png;base64,ABC"},
+			Video:  "https://example.com/motion-reference.mp4",
+		},
+		builtinFalOverrides())
+	if _, present := body["character_orientation"]; present {
+		t.Fatalf("character_orientation must not be set when the enum lacks \"video\"; got %v", body["character_orientation"])
+	}
+	if body["image_url"] != "data:image/png;base64,ABC" || body["video_url"] != "https://example.com/motion-reference.mp4" {
+		t.Fatalf("both sources must still map: image_url=%v video_url=%v", body["image_url"], body["video_url"])
 	}
 }
 

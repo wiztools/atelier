@@ -136,10 +136,13 @@ type ConfigFal struct {
 	// VideoModel is the text-to-video endpoint; VideoImageModel is the
 	// image-to-video endpoint used when the user attaches an image to animate;
 	// VideoExtendModel is the video-extend endpoint used when the user attaches a
-	// video to continue (Veo extend).
+	// video to continue (Veo extend); VideoMotionModel is the motion-control
+	// endpoint used when the user attaches both an image and a video (the video's
+	// motion is applied to the image's subject).
 	VideoModel       string `json:"videoModel,omitempty"`
 	VideoImageModel  string `json:"videoImageModel,omitempty"`
 	VideoExtendModel string `json:"videoExtendModel,omitempty"`
+	VideoMotionModel string `json:"videoMotionModel,omitempty"`
 	// AudioModel is the text-to-speech endpoint used by the generate_speech
 	// tool; SoundEffectsModel is the text-to-audio endpoint (music and sound
 	// effects) used by the generate_sound tool.
@@ -1752,7 +1755,8 @@ func isFalVideoExtendModel(model FalModel) bool {
 // video-extend-model picker — endpoints that continue an attached video clip
 // into a longer one. fal files these under the video-to-video category, fetched
 // and kept only when isFalVideoExtendModel matches. Shares its category with
-// ListFalLipsyncVideoModels; the two filters (extend vs lipsync) partition it.
+// ListFalLipsyncVideoModels and ListFalVideoMotionModels; the three filters
+// (extend vs lipsync vs motion) partition it.
 func (a *App) ListFalVideoExtendModels() ([]FalModel, error) {
 	key, err := loadFalAPIKey()
 	if err != nil {
@@ -1771,6 +1775,48 @@ func (a *App) ListFalVideoExtendModels() ([]FalModel, error) {
 		}
 	}
 	return extend, nil
+}
+
+// isFalVideoMotionModel reports whether a fal catalog entry is a motion-control
+// endpoint — one that transfers an attached video's motion onto an attached
+// image's subject (Kling motion-control). fal files these under the broad
+// video-to-video category alongside extend and lip-sync, so the id and tags are
+// checked for "motion". Mirrors isFalVideoExtendModel / isFalLipsyncModel.
+func isFalVideoMotionModel(model FalModel) bool {
+	if strings.Contains(strings.ToLower(model.ID), "motion") {
+		return true
+	}
+	for _, tag := range model.Tags {
+		if strings.Contains(strings.ToLower(tag), "motion") {
+			return true
+		}
+	}
+	return false
+}
+
+// ListFalVideoMotionModels returns fal's motion-control catalog for the
+// Settings motion-control-model picker — endpoints that apply an attached
+// video's motion to an attached image's subject, selected when the user attaches
+// both. fal files these under the video-to-video category, fetched and kept only
+// when isFalVideoMotionModel matches.
+func (a *App) ListFalVideoMotionModels() ([]FalModel, error) {
+	key, err := loadFalAPIKey()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	models, err := newFalClient(a.client, key).ListModels(ctx, falVideoToVideoCategory, 0)
+	if err != nil {
+		return nil, err
+	}
+	motion := make([]FalModel, 0, len(models))
+	for _, model := range models {
+		if isFalVideoMotionModel(model) {
+			motion = append(motion, model)
+		}
+	}
+	return motion, nil
 }
 
 // isFalSpeechModel reports whether a fal catalog entry is a text-to-speech

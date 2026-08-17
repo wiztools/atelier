@@ -50,8 +50,9 @@ type HarnessToolExecutionContext struct {
 	AttachedAudio string
 	// AttachedVideo is the video clip (a data URL) the user attached to the
 	// current turn, if any. generate_video uses it as the source clip for Veo
-	// extend, and the lip sync tool uses it (with AttachedAudio) for video-to-
-	// video lip sync. Tool-only: it never reaches a chat model.
+	// extend or, alongside AttachedImages, for motion control; the lip sync tool
+	// uses it (with AttachedAudio) for video-to-video lip sync. Tool-only: it
+	// never reaches a chat model.
 	AttachedVideo string
 	GenerateImage func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, []string, error)
 	GenerateVideo func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error)
@@ -221,6 +222,7 @@ func videoModelSupportsAudio(ctx context.Context, config AppConfig, app *App) bo
 		resolveDefaultVideoModel(config),
 		resolveDefaultVideoImageModel(config),
 		resolveDefaultVideoExtendModel(config),
+		resolveDefaultVideoMotionModel(config),
 	} {
 		if strings.TrimSpace(model) == "" {
 			continue
@@ -347,6 +349,16 @@ func resolveDefaultVideoExtendModel(config AppConfig) string {
 	return defaultFalVideoExtendModel
 }
 
+// resolveDefaultVideoMotionModel returns the motion-control model used to apply
+// an attached video's motion to an attached image's subject, selected when the
+// turn carries both an image and a video.
+func resolveDefaultVideoMotionModel(config AppConfig) string {
+	if model := strings.TrimSpace(config.Providers.Fal.VideoMotionModel); model != "" {
+		return model
+	}
+	return defaultFalVideoMotionModel
+}
+
 // videoGenerationDescription assembles the generate_video tool description.
 // audioCapable is the resolved capability of the configured video models
 // (videoModelSupportsAudio); when true the description steers the planner toward
@@ -354,7 +366,7 @@ func resolveDefaultVideoExtendModel(config AppConfig) string {
 // lip_sync chain. The wording is generic — it never names the specific model —
 // so it survives a model swap without rewording.
 func videoGenerationDescription(audioCapable bool) string {
-	base := "Use this when the user asks to create, animate, extend, or render a video or short clip. Works from a text description; when the user attached an image, animates that image (image-to-video); when the user attached a video, extends it into a longer clip (Veo extend). The clip is attached to the assistant reply. Generation runs for a minute or more. Pass negativePrompt to steer content away from unwanted elements, and generateAudio:false when the user wants a silent clip."
+	base := "Use this when the user asks to create, animate, extend, or render a video or short clip. Works from a text description; when the user attached an image, animates that image (image-to-video); when the user attached a video, extends it into a longer clip (Veo extend); when the user attached both an image and a video, transfers the video's motion onto the image's subject (motion control) — describe the desired result in the prompt and do not ask the user which source to use. The clip is attached to the assistant reply. Generation runs for a minute or more. Pass negativePrompt to steer content away from unwanted elements, and generateAudio:false when the user wants a silent clip."
 	if audioCapable {
 		return base + " This video model can also generate synchronized audio (speech, music, ambient sound) from the prompt. For narration, a voice-over, or a speaking character, prefer a single generate_video call with the spoken text in the prompt over chaining generate_speech + lip_sync."
 	}
@@ -383,13 +395,16 @@ func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 			// an attached video switches to a Veo extend endpoint (continues the
 			// clip), an attached image switches to image-to-video (animates the
 			// frame; multiple images switch to reference-to-video when the model
-			// supports it), otherwise text-to-video. The planner may still
-			// override the model per call.
+			// supports it), otherwise text-to-video. An image AND a video together
+			// switch to motion control (the video's motion applied to the image's
+			// subject). The planner may still override the model per call.
 			attachedImages := tools.AttachedImages
 			attachedVideo := strings.TrimSpace(tools.AttachedVideo)
 			model := strings.TrimSpace(call.Model)
 			if model == "" {
 				switch {
+				case attachedVideo != "" && len(attachedImages) > 0:
+					model = resolveDefaultVideoMotionModel(tools.Config)
 				case attachedVideo != "":
 					model = resolveDefaultVideoExtendModel(tools.Config)
 				case len(attachedImages) > 0:
@@ -459,7 +474,9 @@ func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 				Notices: generated.Notices,
 			}
 			summary := fmt.Sprintf("generated a video with %s", model)
-			if attachedVideo != "" {
+			if attachedVideo != "" && len(attachedImages) > 0 {
+				summary = fmt.Sprintf("transferred the attached video's motion onto the attached image with %s", model)
+			} else if attachedVideo != "" {
 				summary = fmt.Sprintf("extended the attached video into a longer clip with %s", model)
 			} else if imageCount := len(attachedImages); imageCount > 1 {
 				summary = fmt.Sprintf("combined %d attached images into a video with %s", imageCount, model)

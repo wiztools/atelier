@@ -436,6 +436,120 @@ func TestHarnessAnimatesAttachedImageViaFal(t *testing.T) {
 	}
 }
 
+// TestHarnessMotionControlsAttachedImageAndVideoViaFal runs the full chat turn
+// with BOTH an image and a video attached (triage → planner → generate_video →
+// fal queue → download → final response) and confirms the turn routes to the
+// motion-control model and the submitted body carries both sources plus the
+// defaulted character_orientation — the exact shape Kling v2.6 motion-control
+// requires, where image_url, video_url, and character_orientation are all
+// required fields.
+func TestHarnessMotionControlsAttachedImageAndVideoViaFal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	keyring.MockInit()
+	if err := saveFalAPIKey("fal-test-key"); err != nil {
+		t.Fatalf("saveFalAPIKey: %v", err)
+	}
+	t.Cleanup(func() { _ = clearFalAPIKey() })
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "chat-box-model"
+	// No motion model configured — the resolver falls back to the Kling
+	// motion-control default, so an image+video turn works out of the box.
+	config.Providers.Fal.VideoModel = defaultFalVideoModel
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig: %v", err)
+	}
+
+	app := NewApp()
+	submittedModelPath := ""
+	sawMotionBody := false
+	nonStreamCount := 0
+	prepCalls := 0
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/api/openapi/") {
+			// Minimal motion-control schema (the shape of Kling v2.6
+			// motion-control): image_url, video_url, and character_orientation
+			// are all required, so resolveVideoBody must map both attachments
+			// and default the orientation for the request to pass fal's gates.
+			return jsonResponse(`{"components":{"schemas":{"MotionControlInput":{"type":"object","required":["image_url","video_url","character_orientation"],"properties":{"prompt":{"type":"string"},"image_url":{"type":"string"},"video_url":{"type":"string"},"character_orientation":{"type":"string","enum":["image","video"]}}}}}}`), nil
+		}
+		if strings.Contains(req.URL.Host, "fal.run") {
+			if req.Method == http.MethodPost {
+				submittedModelPath = req.URL.Path
+				body, _ := io.ReadAll(req.Body)
+				sawMotionBody = strings.Contains(string(body), `"image_url":"data:image/png;base64,`) &&
+					strings.Contains(string(body), `"video_url":"data:video/mp4;base64,`) &&
+					strings.Contains(string(body), `"character_orientation":"video"`)
+				return jsonResponse(`{"request_id":"req-mc-1"}`), nil
+			}
+			if strings.HasSuffix(req.URL.Path, "/status") {
+				return jsonResponse(`{"status":"COMPLETED"}`), nil
+			}
+			if strings.HasSuffix(req.URL.Path, "/requests/req-mc-1") {
+				return jsonResponse(`{"video":{"url":"https://queue.fal.run/generated.mp4","content_type":"video/mp4"}}`), nil
+			}
+			return &http.Response{StatusCode: 200, Status: "200 OK",
+				Body:   io.NopCloser(strings.NewReader(string(tinyMP4()))),
+				Header: http.Header{"Content-Type": []string{"video/mp4"}}}, nil
+		}
+		switch req.URL.Path {
+		case "/api/show":
+			return jsonResponse(`{"capabilities":[],"model_info":{},"details":{"family":"test","parameter_size":"1B"}}`), nil
+		case "/api/chat":
+			payload := chatPayload(t, req)
+			if payload["stream"] == false {
+				nonStreamCount++
+				if nonStreamCount == 1 {
+					decision := `{"needsTools":true,"responseMode":"video","toolTask":"Transfer the video's motion onto the attached image.","reason":"The user attached an image and a motion video."}`
+					return chatCompletion("harness-model", decision), nil
+				}
+				prepCalls++
+				body := `{"brief":"Transfer the motion.","needsTools":true,"reason":"video","toolCalls":[{"name":"generate_video","content":"the character dances like the reference video"}]}`
+				if prepCalls > 1 {
+					body = `{"brief":"The video was generated.","needsTools":false,"reason":"done","toolCalls":[]}`
+				}
+				return chatCompletion("harness-model", body), nil
+			}
+			body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"Here is the motion transfer."},"done":false}`) +
+				fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+			return &http.Response{StatusCode: 200, Status: "200 OK",
+				Body:   io.NopCloser(strings.NewReader(body)),
+				Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+		default:
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL)
+			return nil, nil
+		}
+	})
+
+	app.runChatStream(context.Background(), "request-fal-motion", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			// Both attached: the image is the subject, the video the motion
+			// source. tinyPNG is bare base64 (exactly what the frontend sends);
+			// the video rides as a data URI with MP4 bytes that pass
+			// isVideoBytes when the artifact is persisted.
+			{Role: "user", Content: "Make this character dance like in this video", Images: []string{tinyPNG}, Videos: []string{"data:video/mp4;base64," + base64.StdEncoding.EncodeToString(tinyMP4())}},
+		},
+	})
+
+	if !sawMotionBody {
+		t.Fatal("fal submit did not carry image_url + video_url + character_orientation — the motion-control request shape")
+	}
+	if submittedModelPath != "/"+defaultFalVideoMotionModel {
+		t.Fatalf("submitted to %q, want the motion-control model %q", submittedModelPath, "/"+defaultFalVideoMotionModel)
+	}
+}
+
 // TestHarnessGeneratesAudioViaFal runs the full chat turn (triage → planner →
 // generate_speech tool → fal queue → download → final response) and confirms the
 // clip is persisted as a file-path "audio" history artifact.

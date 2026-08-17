@@ -154,6 +154,20 @@ func hasToolsCapability(capabilities []string) bool {
 	return false
 }
 
+// SupportsVision reports whether the model advertises Ollama's "vision"
+// capability — it accepts image input in chat messages. A text-only model
+// (e.g. gemma4 on an MLX runtime) rejects an image-bearing message with 400
+// "this model does not support image input" rather than ignoring the bytes, so
+// callers must strip images before sending (see stripUnsupportedMedia).
+func (show ollamaShowResponse) SupportsVision() bool {
+	for _, capability := range show.Capabilities {
+		if strings.ToLower(strings.TrimSpace(capability)) == "vision" {
+			return true
+		}
+	}
+	return false
+}
+
 func hasImageGenerationModelInfo(modelInfo map[string]any) bool {
 	for key, value := range modelInfo {
 		text := strings.ToLower(key + " " + fmt.Sprint(value))

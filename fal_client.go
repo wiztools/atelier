@@ -30,6 +30,13 @@ const (
 	// defaultFalVideoExtendModel is the video-extend endpoint used to continue an
 	// attached clip (Google Veo via fal). Veo extend chains a clip up to ~30s.
 	defaultFalVideoExtendModel = "fal-ai/veo3.1/extend-video"
+	// defaultFalVideoMotionModel is the motion-control endpoint used when the
+	// user attaches both an image and a video — Kling applies the video's motion
+	// to the image's subject. Its input requires image_url + video_url +
+	// character_orientation (resolved to "video": output orientation follows the
+	// motion video — better for complex motions and the longer 30s limit), all
+	// mapped by resolveVideoBody.
+	defaultFalVideoMotionModel = "fal-ai/kling-video/v2.6/pro/motion-control"
 	// defaultFalAudioModel is the text-to-speech endpoint used by the
 	// generate_speech tool when none is configured.
 	defaultFalAudioModel = "fal-ai/elevenlabs/tts/multilingual-v2"

@@ -5056,6 +5056,44 @@ func TestIsFalUpscaleModel(t *testing.T) {
 	}
 }
 
+// TestIsFalVideoMotionModel covers the id/tag filter that narrows fal's broad
+// video-to-video category down to motion-control endpoints. It must match the
+// Kling motion-control ids while leaving the category's other partitions
+// (extend, lipsync) alone — the three filters partition the category.
+func TestIsFalVideoMotionModel(t *testing.T) {
+	cases := []struct {
+		name  string
+		model FalModel
+		want  bool
+	}{
+		{"kling v2.6 motion-control", FalModel{ID: "fal-ai/kling-video/v2.6/pro/motion-control", Tags: []string{"video-to-video"}}, true},
+		{"motion by id", FalModel{ID: "acme/motion-transfer"}, true},
+		{"motion by tag", FalModel{ID: "acme/video-edit", Tags: []string{"motion", "video-to-video"}}, true},
+		{"extend endpoint", FalModel{ID: "fal-ai/veo3.1/extend-video", Tags: []string{"extend"}}, false},
+		{"lipsync endpoint", FalModel{ID: "fal-ai/sync-lipsync/v2/pro", Tags: []string{"lipsync"}}, false},
+		{"plain text-to-video", FalModel{ID: "fal-ai/kling-video/v2/master/text-to-video"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isFalVideoMotionModel(tc.model); got != tc.want {
+				t.Errorf("isFalVideoMotionModel(%+v) = %v, want %v", tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveDefaultVideoMotionModel mirrors the upscale resolver test: an unset
+// VideoMotionModel falls back to the Kling motion-control default; a configured
+// value wins.
+func TestResolveDefaultVideoMotionModel(t *testing.T) {
+	if got := resolveDefaultVideoMotionModel(AppConfig{}); got != defaultFalVideoMotionModel {
+		t.Errorf("resolveDefaultVideoMotionModel(empty) = %q, want %q", got, defaultFalVideoMotionModel)
+	}
+	if got := resolveDefaultVideoMotionModel(AppConfig{Providers: ConfigProviders{Fal: ConfigFal{VideoMotionModel: "acme/motion-control"}}}); got != "acme/motion-control" {
+		t.Errorf("resolveDefaultVideoMotionModel(configured) = %q, want acme/motion-control", got)
+	}
+}
+
 // TestIsFalSpeechModel covers the id/tag filter that separates speech endpoints
 // from fal's broad text-to-audio category. Entries below are lifted from the
 // live catalog: fal files elevenlabs/tts, kokoro, zonos, and friends under
@@ -5562,6 +5600,96 @@ func TestPreparedResponseRequestKeepsMediaWhenNoApp(t *testing.T) {
 	if !found {
 		t.Fatal("audio bytes were stripped with no app — permissive fallback must leave media intact")
 	}
+}
+
+// TestStripUnsupportedMediaStripsImagesForNonVisionOllamaModel is the
+// regression test for conv_43aae839dac1a88cba567c37: a motion-control turn
+// (image + video attached) routed and submitted correctly, but the
+// final-response call sent the attached PNG to text-only gemma4:e4b-mlx and
+// the whole turn died with 400 "this model does not support image input" —
+// Ollama rejects image input it can't handle, it does not silently drop the
+// bytes. stripUnsupportedMedia must consult /api/show's vision capability and
+// strip the images first.
+func TestStripUnsupportedMediaStripsImagesForNonVisionOllamaModel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/api/show" {
+			return jsonResponse(`{"capabilities":[],"model_info":{},"details":{"family":"gemma"}}`), nil
+		}
+		t.Fatalf("unexpected request %s %s", req.Method, req.URL)
+		return nil, nil
+	})
+	engine := newHarnessEngine(defaultAppConfig(), app)
+	messages := []ChatMessage{
+		{Role: "user", Content: "Make the cartoon character dance.", Images: []string{"data:image/png;base64,AAA"}},
+	}
+	engine.stripUnsupportedMedia(messages, "gemma4:e4b-mlx", "ollama", "http://ollama.test")
+	if len(messages[0].Images) != 0 {
+		t.Fatalf("images must be stripped for a text-only Ollama model; got %v", messages[0].Images)
+	}
+}
+
+// TestStripUnsupportedMediaKeepsImagesForVisionOllamaModel pins the other side
+// of the vision gate: a model advertising the "vision" capability keeps the
+// images — an unnecessary strip would silently break image-input turns.
+func TestStripUnsupportedMediaKeepsImagesForVisionOllamaModel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/api/show" {
+			return jsonResponse(`{"capabilities":["vision"],"model_info":{},"details":{"family":"llama"}}`), nil
+		}
+		t.Fatalf("unexpected request %s %s", req.Method, req.URL)
+		return nil, nil
+	})
+	engine := newHarnessEngine(defaultAppConfig(), app)
+	messages := []ChatMessage{
+		{Role: "user", Content: "Describe this.", Images: []string{"data:image/png;base64,AAA"}},
+	}
+	engine.stripUnsupportedMedia(messages, "llama3.2-vision", "ollama", "http://ollama.test")
+	if len(messages[0].Images) != 1 {
+		t.Fatalf("images must be kept for a vision-capable model; got %v", messages[0].Images)
+	}
+}
+
+// TestStripUnsupportedMediaKeepsImagesWhenShowFails covers the permissive
+// fallback: a failed /api/show lookup must leave the images intact — a possible
+// 400 is preferred over silently dropping media a model could have handled.
+func TestStripUnsupportedMediaKeepsImagesWhenShowFails(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 500, Status: "500 Internal Server Error",
+			Body: io.NopCloser(strings.NewReader(`{"error":"boom"}`))}, nil
+	})
+	engine := newHarnessEngine(defaultAppConfig(), app)
+	messages := []ChatMessage{
+		{Role: "user", Content: "Describe this.", Images: []string{"data:image/png;base64,AAA"}},
+	}
+	engine.stripUnsupportedMedia(messages, "gemma4:e4b-mlx", "ollama", "http://ollama.test")
+	if len(messages[0].Images) != 1 {
+		t.Fatalf("images must survive a failed capability lookup; got %v", messages[0].Images)
+	}
+}
+
+// TestStripUnsupportedMediaSkipsLookupWithoutImages guards the roundtrip: an
+// image-less turn must not pay the /api/show call at all — the vision lookup
+// only runs when there is an image to gate.
+func TestStripUnsupportedMediaSkipsLookupWithoutImages(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected request %s %s — no /api/show call is needed without images", req.Method, req.URL)
+		return nil, nil
+	})
+	engine := newHarnessEngine(defaultAppConfig(), app)
+	messages := []ChatMessage{{Role: "user", Content: "Plain text turn."}}
+	engine.stripUnsupportedMedia(messages, "gemma4:e4b-mlx", "ollama", "http://ollama.test")
 }
 
 // TestPreparedResponseRequestInjectsHistoryImage verifies that a turn's

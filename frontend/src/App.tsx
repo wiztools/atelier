@@ -18,6 +18,7 @@ import {
   ListFalVideoModels,
   ListFalVideoImageModels,
   ListFalVideoExtendModels,
+  ListFalVideoMotionModels,
   ListFalVideoDurations,
   ListFalSpeechModels,
   ListFalSoundEffectModels,
@@ -198,6 +199,7 @@ const defaultFalImageEditModel = 'fal-ai/flux/dev/image-to-image';
 const defaultFalVideoModel = 'fal-ai/kling-video/v2/master/text-to-video';
 const defaultFalVideoImageModel = 'fal-ai/kling-video/v2/master/image-to-video';
 const defaultFalVideoExtendModel = 'fal-ai/veo3.1/extend-video';
+const defaultFalVideoMotionModel = 'fal-ai/kling-video/v2.6/pro/motion-control';
 const defaultFalAudioModel = 'fal-ai/elevenlabs/tts/multilingual-v2';
 const defaultFalSoundEffectsModel = 'fal-ai/elevenlabs/sound-effects/v2';
 const defaultFalTranscribeModel = 'fal-ai/wizper';
@@ -282,6 +284,8 @@ function App() {
   const [falVideoImageModels, setFalVideoImageModels] = useState<main.FalModel[]>([]);
   const [falVideoExtendModel, setFalVideoExtendModel] = useState(defaultFalVideoExtendModel);
   const [falVideoExtendModels, setFalVideoExtendModels] = useState<main.FalModel[]>([]);
+  const [falVideoMotionModel, setFalVideoMotionModel] = useState(defaultFalVideoMotionModel);
+  const [falVideoMotionModels, setFalVideoMotionModels] = useState<main.FalModel[]>([]);
   const [falAudioModel, setFalAudioModel] = useState(defaultFalAudioModel);
   const [falAudioModels, setFalAudioModels] = useState<main.FalModel[]>([]);
   const [falSoundEffectsModel, setFalSoundEffectsModel] = useState(defaultFalSoundEffectsModel);
@@ -505,6 +509,7 @@ function App() {
             videoModel: falVideoModel,
             videoImageModel: falVideoImageModel,
             videoExtendModel: falVideoExtendModel,
+            videoMotionModel: falVideoMotionModel,
             audioModel: falAudioModel,
             soundEffectsModel: falSoundEffectsModel,
             transcribeModel: falTranscribeModel,
@@ -541,7 +546,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falAudioModel, falSoundEffectsModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falVideoMotionModel, falAudioModel, falSoundEffectsModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
 
   // On a fresh launch, put the cursor in the chat box so the user can start
   // typing immediately. Fires once, when config finishes loading.
@@ -750,6 +755,7 @@ function App() {
   const falVideoImageModelOptions = useMemo(() => falModelOptionList(falVideoImageModels), [falVideoImageModels]);
 
   const falVideoExtendModelOptions = useMemo(() => falModelOptionList(falVideoExtendModels), [falVideoExtendModels]);
+  const falVideoMotionModelOptions = useMemo(() => falModelOptionList(falVideoMotionModels), [falVideoMotionModels]);
 
   const falAudioModelOptions = useMemo(() => falModelOptionList(falAudioModels), [falAudioModels]);
 
@@ -890,6 +896,7 @@ function App() {
 	const nextFalVideoModel = config.providers?.fal?.videoModel || defaultFalVideoModel;
 	const nextFalVideoImageModel = config.providers?.fal?.videoImageModel || defaultFalVideoImageModel;
 	const nextFalVideoExtendModel = config.providers?.fal?.videoExtendModel || defaultFalVideoExtendModel;
+	const nextFalVideoMotionModel = config.providers?.fal?.videoMotionModel || defaultFalVideoMotionModel;
 	const nextFalAudioModel = config.providers?.fal?.audioModel || defaultFalAudioModel;
 	const nextFalSoundEffectsModel = config.providers?.fal?.soundEffectsModel || defaultFalSoundEffectsModel;
 	const nextFalTranscribeModel = config.providers?.fal?.transcribeModel || defaultFalTranscribeModel;
@@ -918,6 +925,7 @@ function App() {
     setFalVideoModel(nextFalVideoModel);
     setFalVideoImageModel(nextFalVideoImageModel);
     setFalVideoExtendModel(nextFalVideoExtendModel);
+    setFalVideoMotionModel(nextFalVideoMotionModel);
     setFalAudioModel(nextFalAudioModel);
     setFalSoundEffectsModel(nextFalSoundEffectsModel);
     setFalTranscribeModel(nextFalTranscribeModel);
@@ -1091,6 +1099,11 @@ function App() {
       setFalVideoExtendModels(asArray(await ListFalVideoExtendModels()));
     } catch {
       setFalVideoExtendModels([]);
+    }
+    try {
+      setFalVideoMotionModels(asArray(await ListFalVideoMotionModels()));
+    } catch {
+      setFalVideoMotionModels([]);
     }
     try {
       setFalAudioModels(asArray(await ListFalSpeechModels()));
@@ -2475,6 +2488,19 @@ function App() {
                         {videoDurationExtendOptions.map((value) => <option key={value} value={value}>{videoDurationLabels[value] ?? value}</option>)}
                       </select>
                     </div>
+                  </div>
+
+                  <div className="field">
+                    <label htmlFor="fal-video-motion-model">Motion-Control Model (fal.ai)</label>
+                    <ModelCombobox
+                      id="fal-video-motion-model"
+                      ariaLabel="fal.ai motion-control model"
+                      placeholder={defaultFalVideoMotionModel}
+                      value={falVideoMotionModel}
+                      onChange={setFalVideoMotionModel}
+                      options={falVideoMotionModelOptions}
+                      allowCustom
+                    />
                   </div>
 
                   <div className="field">

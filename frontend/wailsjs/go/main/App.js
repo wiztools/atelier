@@ -94,6 +94,10 @@ export function ListFalVideoModels() {
   return window['go']['main']['App']['ListFalVideoModels']();
 }
 
+export function ListFalVideoMotionModels() {
+  return window['go']['main']['App']['ListFalVideoMotionModels']();
+}
+
 export function ListModels(arg1) {
   return window['go']['main']['App']['ListModels'](arg1);
 }

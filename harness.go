@@ -1667,14 +1667,16 @@ func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel, 
 		}
 	}
 	// Strip user-attached media the response model cannot accept, so a request
-	// is never rejected with a modality 404 (e.g. sending input_audio to
-	// mistral-large, whose input_modalities are text+image+file). The check is
-	// capability-based for OpenRouter (architecture.input_modalities) and
-	// permissive for Ollama (which silently drops media it can't handle) and for
-	// an unknown provider/model (avoid breaking a working path on a lookup miss).
-	// Images are left intact unless explicitly unsupported: nearly all chat models
-	// are multimodal, and an unnecessary strip would break vision.
-	h.stripUnsupportedMedia(messages, responseModel, responseProvider)
+	// is never rejected with a modality error (e.g. sending input_audio to
+	// mistral-large on OpenRouter, whose input_modalities are text+image+file,
+	// or sending an attached image to a text-only Ollama model, which rejects
+	// it with 400 "this model does not support image input" rather than
+	// silently dropping the bytes — conv_43aae839dac1a88cba567c37 lost an
+	// entire motion-control turn's reply that way). Both checks are
+	// capability-based and permissive on a lookup miss (avoid breaking a
+	// working path on a lookup failure); see stripUnsupportedMedia for the
+	// provider-specific rules.
+	h.stripUnsupportedMedia(messages, responseModel, responseProvider, req.BaseURL)
 	// The tool-evidence note is delivered in the message stream rather than
 	// appended to the system prompt: a per-turn note in message #0 would
 	// invalidate the entire prefix cache on every tooled turn. The evidence
@@ -1696,36 +1698,82 @@ func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel, 
 	return responseReq
 }
 
-// stripUnsupportedMedia removes user-attached audio and video bytes from
-// messages in place when the response model's published input modalities do not
-// include them. It is a no-op when the model accepts the modality, when the
-// provider isn't OpenRouter (Ollama drops unknown fields silently), or when the
-// capability lookup fails (permissive — prefer a possible 404 over dropping
-// media a model could have handled). Images are never stripped here: vision
-// support is near-universal among chat models, and a false-negative strip would
-// silently break image-input turns.
-func (h *HarnessEngine) stripUnsupportedMedia(messages []ChatMessage, model, provider string) {
-	if provider != "openrouter" || h.app == nil {
+// stripUnsupportedMedia removes user-attached media bytes from messages in
+// place when the response model cannot accept them, so the final call is never
+// rejected with a modality error:
+//
+//   - OpenRouter: audio/video bytes are stripped when the model's published
+//     input_modalities (architecture) lack them. Images are never stripped
+//     there — chat models on OpenRouter are near-universally multimodal, and a
+//     false-negative strip would silently break image-input turns.
+//   - Ollama: images are stripped when /api/show reports no "vision"
+//     capability. Ollama does NOT silently drop image input for text-only
+//     models — it rejects the whole request with 400 "this model does not
+//     support image input" (see conv_43aae839dac1a88cba567c37: a
+//     motion-control turn with an attached PNG died at the final-response
+//     call on text-only gemma4, taking the tool-failure explanation with it).
+//
+// Both lookups are permissive on failure — a lookup miss leaves media intact,
+// preferring a possible rejection over dropping media a model could have
+// handled. Audio and video need no Ollama handling here: audio attachments are
+// rejected before the turn runs on non-OpenRouter providers, and video is
+// tool-only (no adapter ever emits it as model input).
+func (h *HarnessEngine) stripUnsupportedMedia(messages []ChatMessage, model, provider, baseURL string) {
+	if h.app == nil {
 		return
 	}
-	client, ok := h.app.openRouterClient()
-	if !ok {
-		return
-	}
-	caps, err := client.ModelCapabilities(context.Background(), strings.TrimSpace(model))
-	if err != nil {
-		return // lookup miss — leave media intact (permissive)
-	}
-	if !caps.acceptsInputModality("audio") {
-		for i := range messages {
-			messages[i].Audios = nil
+	switch provider {
+	case "openrouter":
+		client, ok := h.app.openRouterClient()
+		if !ok {
+			return
+		}
+		caps, err := client.ModelCapabilities(context.Background(), strings.TrimSpace(model))
+		if err != nil {
+			return // lookup miss — leave media intact (permissive)
+		}
+		if !caps.acceptsInputModality("audio") {
+			for i := range messages {
+				messages[i].Audios = nil
+			}
+		}
+		if !caps.acceptsInputModality("video") {
+			for i := range messages {
+				messages[i].Videos = nil
+			}
+		}
+	case "ollama":
+		model = strings.TrimSpace(model)
+		if model == "" || !messagesHaveImages(messages) {
+			return
+		}
+		if baseURL == "" {
+			baseURL = h.config.Providers.Ollama.BaseURL
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		show, err := h.app.ollamaClient(baseURL).ShowModel(ctx, model)
+		if err != nil {
+			return // lookup miss — leave images intact (permissive)
+		}
+		if !show.SupportsVision() {
+			for i := range messages {
+				messages[i].Images = nil
+			}
 		}
 	}
-	if !caps.acceptsInputModality("video") {
-		for i := range messages {
-			messages[i].Videos = nil
+}
+
+// messagesHaveImages reports whether any message carries image bytes, so the
+// Ollama vision lookup (one /api/show roundtrip) only runs when there is an
+// image to gate.
+func messagesHaveImages(messages []ChatMessage) bool {
+	for _, msg := range messages {
+		if len(msg.Images) > 0 {
+			return true
 		}
 	}
+	return false
 }
 
 // toolObservationsPrefix labels tool results carried in a user-role message.

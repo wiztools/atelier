@@ -193,6 +193,13 @@ var videoSynonyms = map[string][]string{
 	"sourceImage":    {"image_url", "image_urls"},
 	"sourceVideo":    {"video_url"},
 	"generateAudio":  {"generate_audio"},
+	// characterOrientation selects the output's orientation source on
+	// motion-control models (Kling v2.6: required enum ["image","video"]). fal's
+	// schema docs: "video" matches the motion video — better for complex motions
+	// and allows up to 30s; "image" matches the subject image — better for
+	// following camera movements, capped at 10s. resolveVideoBody defaults to
+	// "video" since complex motion transfer is the dominant use.
+	"characterOrientation": {"character_orientation"},
 }
 
 // lipsyncSynonyms lists, per canonical param, the native key names to look for
@@ -529,15 +536,17 @@ func coerceImages(prop SchemaProperty, images []string) any {
 // to build itself before the resolver refactor — plus a notice, so fal models
 // without a published schema keep working.
 //
-// Source media is resolved in priority order: an attached Video (extend) wins,
-// then one or more attached Images (image-to-video or multi-image reference-to-
-// video); all are absent for text-to-video. fal requires an HTTP(S) URL or a
-// data URI and rejects bare base64 with a 422, so falImageURL/falVideoURL
-// normalize each. A media field the selected model lacks is dropped with a
-// notice rather than sent. Multiple images into a model whose source-image
-// field is scalar (or into the no-schema legacy path, which only knows a single
-// image_url) is a hard error — the caller fails the tool call so the user
-// knows to switch models rather than silently losing all but one image.
+// Source media is resolved per side, not exclusively: an attached Video maps to
+// the model's video input (extend / motion source) and attached Images map to
+// its image input (image-to-video / reference / motion subject), so a model
+// that takes both — motion control — receives both; all are absent for
+// text-to-video. fal requires an HTTP(S) URL or a data URI and rejects bare
+// base64 with a 422, so falImageURL/falVideoURL normalize each. A media field
+// the selected model lacks is dropped with a notice rather than sent. Multiple
+// images into a model whose source-image field is scalar (or into the no-schema
+// legacy path, which only knows a single image_url) is a hard error — the
+// caller fails the tool call so the user knows to switch models rather than
+// silently losing all but one image.
 func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Overrides) (map[string]any, []string, error) {
 	prompt := strings.TrimSpace(req.Prompt)
 	// SourceImages() unifies the new Images slice and the legacy scalar Image.
@@ -736,9 +745,13 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 		}
 	}
 
-	// Source media: extend (video) takes precedence over image-to-video.
-	switch {
-	case sourceVideo != "":
+	// Source media: a video alone is an extend (video-to-video), images alone are
+	// image-to-video / reference-to-video, and BOTH together are motion control —
+	// the model animates the image's subject with the video's motion, so each
+	// side maps onto its own native field. A model lacking one side's input drops
+	// that side with a notice rather than silently ignoring it (an extend model
+	// sent an image+video turn says so instead of quietly losing the image).
+	if sourceVideo != "" {
 		if path, prop, ok := findNative(schema, ov, "video", req.Model, "sourceVideo"); ok {
 			setBodyPath(schema, body, path, coerceVideoValue(prop, sourceVideo))
 		} else {
@@ -746,30 +759,45 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 				"The selected model %q has no source-video input; the attached video was ignored.",
 				req.Model))
 		}
-	case len(sourceImages) > 0:
+	}
+	if len(sourceImages) > 0 {
 		path, prop, ok := findNative(schema, ov, "video", req.Model, "sourceImage")
 		if !ok {
 			notices = append(notices, fmt.Sprintf(
 				"The selected model %q has no source-image input; the attached image(s) were ignored.",
 				req.Model))
-			break
+		} else {
+			// Guardrail: multiple images into a scalar-image model is a hard error.
+			// The model only accepts one frame; silently dropping the rest would
+			// hide a real capability mismatch. The error names the model so the
+			// user knows what to change.
+			if prop.Kind != schemaArray && len(sourceImages) > 1 {
+				return nil, notices, fmt.Errorf(
+					"model %q accepts a single image; %d were attached. Use a multi-image model (e.g. bytedance/seedance-2.0/reference-to-video).",
+					req.Model, len(sourceImages))
+			}
+			// Guardrail: a model declaring maxItems rejects requests above the cap.
+			if prop.Kind == schemaArray && prop.MaxItems > 0 && len(sourceImages) > prop.MaxItems {
+				return nil, notices, fmt.Errorf(
+					"model %q accepts at most %d image(s); %d were attached. Attach fewer images or switch to a model with a higher image cap.",
+					req.Model, prop.MaxItems, len(sourceImages))
+			}
+			setBodyPath(schema, body, path, coerceImages(prop, sourceImages))
 		}
-		// Guardrail: multiple images into a scalar-image model is a hard error.
-		// The model only accepts one frame; silently dropping the rest would
-		// hide a real capability mismatch. The error names the model so the
-		// user knows what to change.
-		if prop.Kind != schemaArray && len(sourceImages) > 1 {
-			return nil, notices, fmt.Errorf(
-				"model %q accepts a single image; %d were attached. Use a multi-image model (e.g. bytedance/seedance-2.0/reference-to-video).",
-				req.Model, len(sourceImages))
+	}
+
+	// Motion-control models require character_orientation — the output's
+	// orientation source (Kling v2.6: enum ["image","video"]; the request 422s
+	// without it). Per fal's schema docs "video" (follow the motion video) suits
+	// complex motion transfer — the dominant use — and allows up to 30s, while
+	// "image" (follow the subject image) suits camera-following and caps at 10s.
+	// Default the field to "video" whenever the model declares it; a model whose
+	// enum lists other values is left to its own default rather than sent one it
+	// would reject.
+	if path, prop, ok := findNative(schema, ov, "video", req.Model, "characterOrientation"); ok {
+		if valueAllowedByEnum(prop, "video") {
+			setBodyPath(schema, body, path, coerceVideoValue(prop, "video"))
 		}
-		// Guardrail: a model declaring maxItems rejects requests above the cap.
-		if prop.Kind == schemaArray && prop.MaxItems > 0 && len(sourceImages) > prop.MaxItems {
-			return nil, notices, fmt.Errorf(
-				"model %q accepts at most %d image(s); %d were attached. Attach fewer images or switch to a model with a higher image cap.",
-				req.Model, prop.MaxItems, len(sourceImages))
-		}
-		setBodyPath(schema, body, path, coerceImages(prop, sourceImages))
 	}
 	return body, notices, nil
 }
