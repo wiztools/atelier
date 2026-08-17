@@ -146,6 +146,10 @@ export function SaveVideo(arg1) {
   return window['go']['main']['App']['SaveVideo'](arg1);
 }
 
+export function SearchConversations(arg1, arg2) {
+  return window['go']['main']['App']['SearchConversations'](arg1, arg2);
+}
+
 export function SetOllamaBaseURL(arg1) {
   return window['go']['main']['App']['SetOllamaBaseURL'](arg1);
 }

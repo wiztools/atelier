@@ -74,6 +74,8 @@ export function SaveOpenRouterAPIKey(arg1:string):Promise<void>;
 
 export function SaveVideo(arg1:main.SaveVideoRequest):Promise<string>;
 
+export function SearchConversations(arg1:string,arg2:main.SearchOptions):Promise<main.SearchResponse>;
+
 export function SetOllamaBaseURL(arg1:string):Promise<void>;
 
 export function StreamChat(arg1:main.ChatRequest):Promise<main.ChatStreamStart>;

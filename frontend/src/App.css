@@ -456,6 +456,94 @@
   color: #f3f0e8;
 }
 
+.history-search input[type="search"] {
+  font-size: 12px;
+}
+
+.history-search input[type="search"]::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  background:
+    linear-gradient(45deg, transparent 44%, #9ea5a3 44%, #9ea5a3 56%, transparent 56%),
+    linear-gradient(-45deg, transparent 44%, #9ea5a3 44%, #9ea5a3 56%, transparent 56%);
+}
+
+.search-result {
+  border-radius: 6px;
+}
+
+.search-result:hover {
+  background: #303438;
+}
+
+.search-result-open {
+  width: 100%;
+  /* height:auto overrides the global `button { height: 36px }` rule — this
+     button stacks a title plus one or more snippet lines, so it must grow to
+     fit its content instead of clipping them into an overlapping 36px box. */
+  height: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: transparent;
+  color: #d9d7cf;
+  text-align: left;
+}
+
+.search-result-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: #d9d7cf;
+}
+
+.search-result-title.matched {
+  color: #f3f0e8;
+  font-weight: 600;
+}
+
+/* Equal explicit line-heights keep the label and text boxes identical so
+   center alignment puts their glyph centers on the same optical line. */
+.search-result-snippet {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: #9ea5a3;
+}
+
+.search-result-snippet em {
+  font-style: normal;
+  font-size: 10px;
+  line-height: 16px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: #7c8381;
+}
+
+.search-result-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-result-text mark {
+  border-radius: 2px;
+  padding: 0 1px;
+  background: rgba(213, 166, 79, 0.35);
+  color: #f3f0e8;
+}
+
 .settings-button {
   flex: 0 0 auto;
 }

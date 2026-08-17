@@ -30,6 +30,7 @@ import {
   PurgeArchivedConversations,
   ResolveToolPermission,
   SaveImage,
+  SearchConversations,
   SaveVideo,
   SaveAudio,
   SaveConfig,
@@ -327,6 +328,14 @@ function App() {
   const [conversations, setConversations] = useState<main.ConversationSummary[]>([]);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [visibleHistoryCount, setVisibleHistoryCount] = useState(compactHistoryLimit);
+  // historyQuery drives the sidebar's full-history search; results replace
+  // the conversation list while non-empty.
+  const [historyQuery, setHistoryQuery] = useState('');
+  const [historyResults, setHistoryResults] = useState<main.ConversationSearchResult[]>([]);
+  const [historySearchBusy, setHistorySearchBusy] = useState(false);
+  const [historySearchError, setHistorySearchError] = useState('');
+  const [historySearchTruncated, setHistorySearchTruncated] = useState(false);
+  const historySearchSeqRef = useRef(0);
   const [activeConversationID, setActiveConversationID] = useState('');
   // draftWorkspace holds the per-conversation workspace selected for a NEW
   // chat before its first message locks it as immutable on the record. Empty
@@ -417,6 +426,47 @@ function App() {
       }));
     });
   }, []);
+
+  // Debounced sidebar search over full conversation history. The sequence
+  // ref lets a slow earlier response be discarded when the query changes
+  // again before it lands.
+  useEffect(() => {
+    const seq = ++historySearchSeqRef.current;
+    const query = historyQuery.trim();
+    if (!query) {
+      setHistoryResults([]);
+      setHistorySearchError('');
+      setHistorySearchTruncated(false);
+      setHistorySearchBusy(false);
+      return;
+    }
+    setHistorySearchBusy(true);
+    const timer = window.setTimeout(() => {
+      SearchConversations(query, new main.SearchOptions())
+        .then((response) => {
+          if (seq !== historySearchSeqRef.current) {
+            return;
+          }
+          setHistoryResults(asArray(response?.results));
+          setHistorySearchTruncated(Boolean(response?.truncated));
+          setHistorySearchError('');
+        })
+        .catch((error) => {
+          if (seq !== historySearchSeqRef.current) {
+            return;
+          }
+          setHistoryResults([]);
+          setHistorySearchTruncated(false);
+          setHistorySearchError(formatError(error));
+        })
+        .finally(() => {
+          if (seq === historySearchSeqRef.current) {
+            setHistorySearchBusy(false);
+          }
+        });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [historyQuery]);
 
   useEffect(() => {
     return () => {
@@ -1225,11 +1275,18 @@ function App() {
     await resetWorkspace();
   }
 
-  async function openConversationSummary(conversation: main.ConversationSummary) {
+  // focusTurnID, when set, scrolls the opened transcript to that turn's
+  // message — used by history search results to land on the match.
+  async function openConversationSummary(conversation: main.ConversationSummary, focusTurnID = '') {
     try {
       const detail = await GetConversation(conversation.id);
       setView('app');
       hydrateChatConversation(detail);
+      if (focusTurnID) {
+        window.setTimeout(() => {
+          document.getElementById(`msg-${focusTurnID}`)?.scrollIntoView({behavior: 'smooth', block: 'center'});
+        }, 80);
+      }
     } catch (error) {
       setStartupError(formatError(error));
     }
@@ -1808,67 +1865,120 @@ function App() {
                 <span className="nav-icon">+</span>
                 New chat
               </button>
+              <div className="history-search">
+                <input
+                  type="search"
+                  value={historyQuery}
+                  onChange={(event) => setHistoryQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') {
+                      event.preventDefault();
+                      setHistoryQuery('');
+                    }
+                  }}
+                  placeholder="Search chats…"
+                  aria-label="Search conversation history"
+                />
+              </div>
             </nav>
 
             <div className="history-area" onScroll={handleHistoryScroll}>
-              <div className="section-label">Chats</div>
-              {conversationList.length ? (
-                visibleConversations.map((conversation) => {
-                  const inFlight = inFlightConversations[conversation.id];
-                  const selected = selectedConversationID === conversation.id;
-                  return (
-                    <div key={conversation.id} className={`history-item${selected ? ' selected' : ''}`}>
-                      {editingTitleID === conversation.id ? (
-                        <input
-                          value={editingTitle}
-                          onChange={(event) => setEditingTitle(event.target.value)}
-                          onBlur={() => saveConversationTitle(conversation)}
-                          onKeyDown={(event) => handleConversationTitleKeyDown(event, conversation)}
-                          autoFocus
-                        />
-                      ) : (
-                        <>
-                          <button className="history-open" onClick={() => openConversationSummary(conversation)} onDoubleClick={(event) => { event.preventDefault(); startEditingConversationTitle(conversation); }}>
-                            <span>{conversation.title}</span>
-                            <small
-                              className={`history-kind${inFlight ? ' in-flight' : ''}`}
-                              title={inFlight ? 'Running' : 'Chat'}
-                              aria-label={inFlight ? 'Conversation running' : 'Chat conversation'}
-                            >
-                              {inFlight ? <span className="history-spinner" /> : '◌'}
+              {historyQuery.trim() ? (
+                <>
+                  <div className="section-label">{historySearchBusy ? 'Searching…' : 'Results'}</div>
+                  {historySearchError ? (
+                    <div className="history-empty">{historySearchError}</div>
+                  ) : historyResults.length ? (
+                    historyResults.map((result) => (
+                      <div key={result.conversation.id} className="search-result">
+                        <button
+                          className="search-result-open"
+                          onClick={() => openConversationSummary(result.conversation, result.matches[0]?.turnId ?? '')}
+                          title={result.conversation.title}
+                        >
+                          <span className={`search-result-title${result.titleMatched ? ' matched' : ''}`}>
+                            {result.conversation.title || 'Untitled'}
+                          </span>
+                          {result.matches.map((match, index) => (
+                            <small key={index} className="search-result-snippet">
+                              <em>{match.role === 'user' ? 'You' : 'Model'}</em>
+                              <span className="search-result-text">
+                                {match.before}<mark>{match.match}</mark>{match.after}
+                              </span>
                             </small>
-                          </button>
-                          <div className="history-actions">
-                            <button
-                              className="history-icon-button"
-                              aria-label={`More actions for ${conversation.title}`}
-                              title="More"
-                              onClick={() => setOpenHistoryMenuID((current) => current === conversation.id ? '' : conversation.id)}
-                            >
-                              ⋮
-                            </button>
-                            {openHistoryMenuID === conversation.id ? (
-                              <div className="history-menu">
-                                <button onClick={() => copyConversationID(conversation)}>
-                                  {copiedConversationID === conversation.id ? '✓ Copied' : 'Copy ID'}
-                                </button>
-                                <button onClick={() => archiveConversation(conversation)}>Archive</button>
-                              </div>
-                            ) : null}
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  );
-                })
+                          ))}
+                        </button>
+                      </div>
+                    ))
+                  ) : !historySearchBusy ? (
+                    <div className="history-empty">No matches in chat history.</div>
+                  ) : null}
+                  {historySearchTruncated ? (
+                    <div className="history-empty">Older matches hidden — refine the query to narrow results.</div>
+                  ) : null}
+                </>
               ) : (
-                <div className="history-empty">No conversations yet.</div>
+                <>
+                  <div className="section-label">Chats</div>
+                  {conversationList.length ? (
+                    visibleConversations.map((conversation) => {
+                      const inFlight = inFlightConversations[conversation.id];
+                      const selected = selectedConversationID === conversation.id;
+                      return (
+                        <div key={conversation.id} className={`history-item${selected ? ' selected' : ''}`}>
+                          {editingTitleID === conversation.id ? (
+                            <input
+                              value={editingTitle}
+                              onChange={(event) => setEditingTitle(event.target.value)}
+                              onBlur={() => saveConversationTitle(conversation)}
+                              onKeyDown={(event) => handleConversationTitleKeyDown(event, conversation)}
+                              autoFocus
+                            />
+                          ) : (
+                            <>
+                              <button className="history-open" onClick={() => openConversationSummary(conversation)} onDoubleClick={(event) => { event.preventDefault(); startEditingConversationTitle(conversation); }}>
+                                <span>{conversation.title}</span>
+                                <small
+                                  className={`history-kind${inFlight ? ' in-flight' : ''}`}
+                                  title={inFlight ? 'Running' : 'Chat'}
+                                  aria-label={inFlight ? 'Conversation running' : 'Chat conversation'}
+                                >
+                                  {inFlight ? <span className="history-spinner" /> : '◌'}
+                                </small>
+                              </button>
+                              <div className="history-actions">
+                                <button
+                                  className="history-icon-button"
+                                  aria-label={`More actions for ${conversation.title}`}
+                                  title="More"
+                                  onClick={() => setOpenHistoryMenuID((current) => current === conversation.id ? '' : conversation.id)}
+                                >
+                                  ⋮
+                                </button>
+                                {openHistoryMenuID === conversation.id ? (
+                                  <div className="history-menu">
+                                    <button onClick={() => copyConversationID(conversation)}>
+                                      {copiedConversationID === conversation.id ? '✓ Copied' : 'Copy ID'}
+                                    </button>
+                                    <button onClick={() => archiveConversation(conversation)}>Archive</button>
+                                  </div>
+                                ) : null}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="history-empty">No conversations yet.</div>
+                  )}
+                  {hasMoreConversations ? (
+                    <button className="history-more" onClick={showMoreConversations}>
+                      More
+                    </button>
+                  ) : null}
+                </>
               )}
-              {hasMoreConversations ? (
-                <button className="history-more" onClick={showMoreConversations}>
-                  More
-                </button>
-              ) : null}
             </div>
           </div>
 
@@ -2536,7 +2646,7 @@ function App() {
                 ) : asArray(chat).map((entry) => {
                   const thinkingCollapsed = Boolean(entry.thinking && (collapsedThinkingIDs[entry.id] ?? !entry.streaming));
                   return (
-                    <article key={entry.id} className={`message ${entry.role}`}>
+                    <article key={entry.id} id={`msg-${entry.id}`} className={`message ${entry.role}`}>
                       <div className="message-meta">
                         {entry.role}{entry.streaming ? ' streaming' : ''}
                         {entry.provider ? <span className="turn-provider-badge">{entry.provider}</span> : null}

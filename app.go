@@ -737,6 +737,17 @@ func (a *App) GetConversation(conversationID string) (ConversationDetail, error)
 	return getConversation(config.Storage, conversationID)
 }
 
+// SearchConversations greps stored conversation history — turn text and
+// titles — beyond what the sidebar list shows, returning per-conversation
+// matches with context snippets.
+func (a *App) SearchConversations(query string, options SearchOptions) (SearchResponse, error) {
+	config, err := loadReadyConfig()
+	if err != nil {
+		return SearchResponse{}, err
+	}
+	return searchHistory(config.Storage, query, options)
+}
+
 func (a *App) DeleteConversation(conversationID string) error {
 	config, err := loadAppConfig()
 	if err != nil {
