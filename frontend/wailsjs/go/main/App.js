@@ -118,6 +118,10 @@ export function PurgeArchivedConversations() {
   return window['go']['main']['App']['PurgeArchivedConversations']();
 }
 
+export function RandomEmptyStatePrompt() {
+  return window['go']['main']['App']['RandomEmptyStatePrompt']();
+}
+
 export function ReadToolFile(arg1) {
   return window['go']['main']['App']['ReadToolFile'](arg1);
 }

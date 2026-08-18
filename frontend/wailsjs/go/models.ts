@@ -807,6 +807,20 @@ export namespace main {
 		}
 	}
 	
+	export class EmptyStatePrompt {
+	    heading: string;
+	    sub: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EmptyStatePrompt(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.heading = source["heading"];
+	        this.sub = source["sub"];
+	    }
+	}
 	export class FalModel {
 	    id: string;
 	    displayName: string;

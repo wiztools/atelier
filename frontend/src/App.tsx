@@ -30,6 +30,7 @@ import {
   ListModels,
   ListPrimaryModels,
   PurgeArchivedConversations,
+  RandomEmptyStatePrompt,
   ResolveToolPermission,
   SaveImage,
   SearchConversations,
@@ -330,6 +331,7 @@ function App() {
   const mentionStateRef = useRef<{ at: number; query: string } | null>(null);
   const composerRef = useRef<HTMLDivElement | null>(null);
   const [chat, setChat] = useState<ChatEntry[]>([]);
+  const [emptyPrompt, setEmptyPrompt] = useState<main.EmptyStatePrompt | null>(null);
   const [collapsedThinkingIDs, setCollapsedThinkingIDs] = useState<Record<string, boolean>>({});
   const [copiedMessageID, setCopiedMessageID] = useState('');
   const [copiedConversationID, setCopiedConversationID] = useState('');
@@ -348,6 +350,21 @@ function App() {
   const [historySearchTruncated, setHistorySearchTruncated] = useState(false);
   const historySearchSeqRef = useRef(0);
   const [activeConversationID, setActiveConversationID] = useState('');
+  // Re-roll the empty-screen greeting whenever the transcript becomes empty or
+  // the active conversation changes, so a fresh prompt shows each time.
+  const chatIsEmpty = chat.length === 0;
+  useEffect(() => {
+    if (!chatIsEmpty) return;
+    let cancelled = false;
+    RandomEmptyStatePrompt()
+      .then((prompt) => {
+        if (!cancelled) setEmptyPrompt(prompt);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [chatIsEmpty, activeConversationID]);
   // draftWorkspace holds the per-conversation workspace selected for a NEW
   // chat before its first message locks it as immutable on the record. Empty
   // means "inherit the configured default." Reset whenever a new chat starts.
@@ -2715,8 +2732,8 @@ function App() {
                 {visibleHarnessRun ? <HarnessRunPanel run={visibleHarnessRun} /> : null}
                 {asArray(chat).length === 0 ? (
                   <div className="empty-state">
-                    <h2>Ask a model, attach an image, or stream a long answer.</h2>
-                    <p>Your desktop AI workshop — agentic chat and image, audio, and video generation, local or cloud.</p>
+                    <h2>{emptyPrompt?.heading ?? 'What are we making today?'}</h2>
+                    <p>{emptyPrompt?.sub ?? 'Describe an image, video, or sound to begin.'}</p>
                   </div>
                 ) : asArray(chat).map((entry) => {
                   const thinkingCollapsed = Boolean(entry.thinking && (collapsedThinkingIDs[entry.id] ?? !entry.streaming));

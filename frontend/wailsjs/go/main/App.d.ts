@@ -60,6 +60,8 @@ export function ListToolFiles(arg1:main.ToolFileListRequest):Promise<main.ToolFi
 
 export function PurgeArchivedConversations():Promise<main.PurgeArchivedResult>;
 
+export function RandomEmptyStatePrompt():Promise<main.EmptyStatePrompt>;
+
 export function ReadToolFile(arg1:main.ToolFileReadRequest):Promise<main.ToolFileReadResult>;
 
 export function ResolveToolPermission(arg1:string,arg2:boolean):Promise<void>;

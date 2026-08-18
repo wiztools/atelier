@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	mrand "math/rand/v2"
 	"net/http"
 	"net/url"
 	"os"
@@ -707,6 +708,33 @@ type HarnessToolActivity struct {
 	StderrPreview string          `json:"stderrPreview,omitempty"`
 	DurationMS    int64           `json:"durationMs,omitempty"`
 	Error         string          `json:"error,omitempty"`
+}
+
+// EmptyStatePrompt is a heading/subtext pair shown on the empty chat screen.
+type EmptyStatePrompt struct {
+	Heading string `json:"heading"`
+	Sub     string `json:"sub"`
+}
+
+// emptyStatePrompts is the pool of greetings for the empty chat screen; one is
+// picked at random each time the transcript is empty.
+var emptyStatePrompts = []EmptyStatePrompt{
+	{"What are we making today?", "Describe an image, video, or sound to begin."},
+	{"Start something.", "Pick a model, or just describe what you want to create."},
+	{"The studio's open.", "Type a prompt to generate images, video, audio, and more."},
+	{"Describe what you want to create.", "Works across image, video, audio, and motion models."},
+	{"What do you want to generate?", "Enter a prompt and choose a model to get started."},
+	{"Type a prompt to begin.", "Or paste a reference to guide the generation."},
+	{"Begin with a blank canvas.", "Describe your idea and pick a model."},
+	{"Imagine it here.", "Turn a prompt into images, video, or sound."},
+	{"A blank page, endless models.", "Start typing to bring an idea to life."},
+	{"Conjure something.", "Describe it — we'll find the right model."},
+	{"Feed the machines.", "A prompt is all it takes."},
+}
+
+// RandomEmptyStatePrompt returns a random greeting for the empty chat screen.
+func (a *App) RandomEmptyStatePrompt() EmptyStatePrompt {
+	return emptyStatePrompts[mrand.IntN(len(emptyStatePrompts))]
 }
 
 func (a *App) GetConfig() (AppConfig, error) {
