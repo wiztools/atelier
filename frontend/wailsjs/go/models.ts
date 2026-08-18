@@ -166,6 +166,7 @@ export namespace main {
 	    soundEffectsModel?: string;
 	    transcribeModel?: string;
 	    upscaleModel?: string;
+	    videoUpscaleModel?: string;
 	    lipsyncImageModel?: string;
 	    lipsyncVideoModel?: string;
 	
@@ -186,6 +187,7 @@ export namespace main {
 	        this.soundEffectsModel = source["soundEffectsModel"];
 	        this.transcribeModel = source["transcribeModel"];
 	        this.upscaleModel = source["upscaleModel"];
+	        this.videoUpscaleModel = source["videoUpscaleModel"];
 	        this.lipsyncImageModel = source["lipsyncImageModel"];
 	        this.lipsyncVideoModel = source["lipsyncVideoModel"];
 	    }

@@ -153,6 +153,10 @@ type ConfigFal struct {
 	TranscribeModel string `json:"transcribeModel,omitempty"`
 	// UpscaleModel is the image upscaler endpoint (fal-only; Ollama has none).
 	UpscaleModel string `json:"upscaleModel,omitempty"`
+	// VideoUpscaleModel is the video upscaler endpoint used by the upscale_video
+	// tool (fal-only, like UpscaleModel) — a video-to-video transform, so the
+	// picker partitions fal's video-to-video category by "upscal".
+	VideoUpscaleModel string `json:"videoUpscaleModel,omitempty"`
 	// LipsyncImageModel is the audio-to-video lip sync endpoint used when the
 	// user attaches an audio clip plus an image (a talking head).
 	// LipsyncVideoModel is the video-to-video lip sync endpoint used when the
@@ -400,6 +404,17 @@ type ImageGenerateRequest struct {
 type ImageUpscaleRequest struct {
 	Model string  `json:"model"`
 	Image string  `json:"image"`
+	Scale float64 `json:"scale,omitempty"`
+}
+
+// VideoUpscaleRequest is the input to fal's video upscaler — the video sibling
+// of ImageUpscaleRequest. Video is the source clip (a URL or base64 data URI);
+// Scale is a float that resolveVideoUpscaleBody maps onto the endpoint's native
+// factor field (scale / scale_factor / upscale_factor). The result is a
+// GeneratedVideo, carried through the same artifact pipeline as generate_video.
+type VideoUpscaleRequest struct {
+	Model string  `json:"model"`
+	Video string  `json:"video"`
 	Scale float64 `json:"scale,omitempty"`
 }
 
@@ -1817,6 +1832,50 @@ func (a *App) ListFalVideoMotionModels() ([]FalModel, error) {
 		}
 	}
 	return motion, nil
+}
+
+// isFalVideoUpscaleModel reports whether a fal catalog entry is a video
+// upscaler — one that raises an attached clip's resolution (RealESRGAN
+// per-frame, Topaz, Crystal, SeedVR). fal files these under the broad
+// video-to-video category alongside extend, lipsync, and motion, so the id and
+// tags are checked for "upscal" — the same marker isFalUpscaleModel uses on the
+// image side. Together the four predicates partition video-to-video.
+func isFalVideoUpscaleModel(model FalModel) bool {
+	if strings.Contains(strings.ToLower(model.ID), "upscal") {
+		return true
+	}
+	for _, tag := range model.Tags {
+		if strings.Contains(strings.ToLower(tag), "upscal") {
+			return true
+		}
+	}
+	return false
+}
+
+// ListFalVideoUpscaleModels returns fal's video-upscaler catalog for the
+// Settings video-upscale-model picker (the upscale_video tool's endpoint) —
+// endpoints that raise an attached video's resolution. fal files these under the
+// video-to-video category, fetched and kept only when isFalVideoUpscaleModel
+// matches. Shares its category with the extend/lipsync/motion pickers; the four
+// filters partition it.
+func (a *App) ListFalVideoUpscaleModels() ([]FalModel, error) {
+	key, err := loadFalAPIKey()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	models, err := newFalClient(a.client, key).ListModels(ctx, falVideoToVideoCategory, 0)
+	if err != nil {
+		return nil, err
+	}
+	upscale := make([]FalModel, 0, len(models))
+	for _, model := range models {
+		if isFalVideoUpscaleModel(model) {
+			upscale = append(upscale, model)
+		}
+	}
+	return upscale, nil
 }
 
 // isFalSpeechModel reports whether a fal catalog entry is a text-to-speech

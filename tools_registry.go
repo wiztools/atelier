@@ -63,6 +63,10 @@ type HarnessToolExecutionContext struct {
 	GenerateLipsync func(ctx context.Context, req LipsyncGenerateRequest) (GeneratedVideo, error)
 	TranscribeAudio func(ctx context.Context, model, audioURL, task, language string) (GeneratedTranscript, error)
 	UpscaleImage    func(ctx context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, error)
+	// UpscaleVideo raises an attached clip's resolution via fal's video-upscaler
+	// endpoints. It returns a video (same transport as GenerateVideo) plus
+	// resolver notices — the video sibling of UpscaleImage.
+	UpscaleVideo func(ctx context.Context, req VideoUpscaleRequest) (GeneratedVideo, error)
 }
 
 // ToolImageResult carries generated images as data URLs. The Images field is
@@ -194,6 +198,9 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 	if imageUpscaleConfigured(config) {
 		definitions = append(definitions, imageUpscaleToolDefinition())
 	}
+	if videoUpscaleConfigured(config) {
+		definitions = append(definitions, videoUpscaleToolDefinition())
+	}
 	return newHarnessToolRegistry(definitions)
 }
 
@@ -305,6 +312,24 @@ func resolveDefaultImageUpscaleModel(config AppConfig) string {
 		return model
 	}
 	return defaultFalUpscaleModel
+}
+
+// videoUpscaleConfigured mirrors imageUpscaleConfigured for the upscale_video
+// tool: fal is the only video-upscale backend and the default endpoint always
+// applies, so the gate is purely the fal key — like transcribe_audio and
+// lip_sync, no model needs to be configured first.
+func videoUpscaleConfigured(config AppConfig) bool {
+	return falKeyConfigured()
+}
+
+// resolveDefaultVideoUpscaleModel returns the video-upscaler endpoint the
+// upscale_video tool uses when the call doesn't override it. fal-only; falls
+// back to the const default when the user hasn't picked one in Settings.
+func resolveDefaultVideoUpscaleModel(config AppConfig) string {
+	if model := strings.TrimSpace(config.Providers.Fal.VideoUpscaleModel); model != "" {
+		return model
+	}
+	return defaultFalVideoUpscaleModel
 }
 
 // videoGenerationConfigured reports whether the generate_video tool should be
@@ -1178,6 +1203,88 @@ func imageUpscaleParamSchema() map[string]any {
 		"properties": map[string]any{
 			"scale": enumParam("Optional — the upscale factor. Omit for 2x.", "2x", "4x"),
 			"model": stringParam("Optional upscale model override."),
+		},
+		"required": []string{},
+	}
+}
+
+// videoUpscaleToolDefinition exposes the upscale_video tool — the video sibling
+// of upscale_image. It takes an attached clip and returns a
+// higher-resolution version via the configured fal video upscaler (a
+// video-to-video transform). fal-only; the attached-video requirement is
+// enforced in Execute because Validate only sees the call, not tools. The result
+// rides the same ToolVideoResult pipeline as generate_video, so artifacts,
+// history, and the chat reply's video card all work unchanged.
+func videoUpscaleToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "upscale_video",
+		Title:       "Upscale video",
+		Description: "Use this when the user asks to upscale, increase the resolution of, or make a higher-resolution or 4K version of an attached video clip. Requires an attached video. fal.ai only — runs unattended like video generation. Upscaling runs for a minute or more on longer clips.",
+		Example:     `{"name":"upscale_video","scale":"2x"}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: videoUpscaleParamSchema(),
+		Validate: func(prefix string, call HarnessToolCall) []string {
+			return nil
+		},
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			if tools.UpscaleVideo == nil {
+				return nil, "video upscaling unavailable", errors.New("video upscaling is not available in this context")
+			}
+			attachedVideo := strings.TrimSpace(tools.AttachedVideo)
+			if attachedVideo == "" {
+				return nil, "video upscaling requires an attached video", errors.New("upscale_video requires an attached video — ask the user to attach one first")
+			}
+			model := strings.TrimSpace(call.Model)
+			if model == "" {
+				model = resolveDefaultVideoUpscaleModel(tools.Config)
+			}
+			if model == "" {
+				return nil, "video upscaling unavailable", errors.New("no video upscale model is configured")
+			}
+			scale := 2.0
+			if strings.TrimSpace(call.Scale) == "4x" {
+				scale = 4.0
+			}
+			generated, err := tools.UpscaleVideo(ctx, VideoUpscaleRequest{
+				Model: model,
+				Video: attachedVideo,
+				Scale: scale,
+			})
+			if err != nil {
+				return nil, "video upscaling failed", err
+			}
+			if len(generated.Data) == 0 {
+				return nil, "video upscaling returned no video", errors.New("upscale model returned no video data")
+			}
+			tempPath, err := writeTempVideo(generated)
+			if err != nil {
+				return nil, "video upscaling failed", err
+			}
+			output := ToolVideoResult{
+				Model:   model,
+				Count:   1,
+				Videos:  []ToolVideoFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
+				Notices: generated.Notices,
+			}
+			return output, fmt.Sprintf("upscaled the attached video to %dx with %s", int(scale), model), nil
+		},
+		Activity: func(result HarnessToolResult) HarnessToolActivity {
+			activity := defaultHarnessToolActivity(result)
+			if typed, ok := result.Result.(ToolVideoResult); ok {
+				activity.Command = []string{"fal", "upscale", typed.Model}
+			}
+			return activity
+		},
+	}
+}
+
+func videoUpscaleParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"scale": enumParam("Optional — the upscale factor. Omit for 2x.", "2x", "4x"),
+			"model": stringParam("Optional video upscale model override."),
 		},
 		"required": []string{},
 	}

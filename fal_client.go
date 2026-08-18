@@ -37,6 +37,13 @@ const (
 	// motion video — better for complex motions and the longer 30s limit), all
 	// mapped by resolveVideoBody.
 	defaultFalVideoMotionModel = "fal-ai/kling-video/v2.6/pro/motion-control"
+	// defaultFalVideoUpscaleModel is the video upscaler endpoint used when none
+	// is configured — the video sibling of defaultFalUpscaleModel: a simple,
+	// cheap RealESRGAN-based upscaler that runs per frame and takes video_url +
+	// scale. Other endpoints name the factor scale_factor (crystal) or
+	// upscale_factor (topaz); resolveVideoUpscaleBody maps canonical scale onto
+	// whichever the configured endpoint declares.
+	defaultFalVideoUpscaleModel = "fal-ai/video-upscaler"
 	// defaultFalAudioModel is the text-to-speech endpoint used by the
 	// generate_speech tool when none is configured.
 	defaultFalAudioModel = "fal-ai/elevenlabs/tts/multilingual-v2"

@@ -98,6 +98,10 @@ export function ListFalVideoMotionModels() {
   return window['go']['main']['App']['ListFalVideoMotionModels']();
 }
 
+export function ListFalVideoUpscaleModels() {
+  return window['go']['main']['App']['ListFalVideoUpscaleModels']();
+}
+
 export function ListModels(arg1) {
   return window['go']['main']['App']['ListModels'](arg1);
 }

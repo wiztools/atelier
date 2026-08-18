@@ -200,6 +200,12 @@ var videoSynonyms = map[string][]string{
 	// following camera movements, capped at 10s. resolveVideoBody defaults to
 	// "video" since complex motion transfer is the dominant use.
 	"characterOrientation": {"character_orientation"},
+	// scale is the upscale factor on video-upscaler endpoints. fal's endpoints
+	// name it inconsistently — fal-ai/video-upscaler declares "scale",
+	// clarityai/crystal-video-upscaler "scale_factor", topaz "upscale_factor" —
+	// so all three are listed and findNative picks whichever the configured
+	// endpoint's schema declares. Used by resolveVideoUpscaleBody only.
+	"scale": {"scale", "scale_factor", "upscale_factor"},
 }
 
 // lipsyncSynonyms lists, per canonical param, the native key names to look for
@@ -922,6 +928,48 @@ func resolveLipsyncBody(schema *ModelInputSchema, req LipsyncGenerateRequest, ov
 			return nil, notices, fmt.Errorf(
 				"the lip sync model %q has no image input — it cannot lip-sync an attached image; attach a video instead or pick an image-capable model in Settings",
 				req.Model)
+		}
+	}
+	return body, notices, nil
+}
+
+// resolveVideoUpscaleBody maps a VideoUpscaleRequest onto the model's native
+// input schema, returning the fal body and user-facing notices. The source clip
+// is the tool's entire purpose, so an unmapped video input is fatal (mirroring
+// resolveLipsyncBody's face-source rule): sending anyway would 422 downstream
+// with a confusing "field required". A missing scale input is degradable — the
+// model applies its own default factor — so that stays a notice. A nil schema
+// yields the legacy {video_url, scale} body plus a notice. The scale synonym
+// table maps the canonical factor onto whichever name the endpoint declares
+// (scale / scale_factor / upscale_factor).
+func resolveVideoUpscaleBody(schema *ModelInputSchema, req VideoUpscaleRequest, ov Overrides) (map[string]any, []string, error) {
+	video := falVideoURL(strings.TrimSpace(req.Video))
+
+	if schema == nil {
+		body := map[string]any{"video_url": video}
+		if req.Scale > 0 {
+			body["scale"] = req.Scale
+		}
+		return body, []string{"Couldn't load the model's parameter schema; sent the source video and scale with default field names."}, nil
+	}
+
+	body := map[string]any{}
+	var notices []string
+
+	if path, prop, ok := findNative(schema, ov, "video", req.Model, "sourceVideo"); ok {
+		setBodyPath(schema, body, path, coerceVideoValue(prop, video))
+	} else {
+		return nil, notices, fmt.Errorf(
+			"the upscale model %q has no video input — it cannot upscale an attached video; pick a video upscaler in Settings",
+			req.Model)
+	}
+	if req.Scale > 0 {
+		if path, prop, ok := findNative(schema, ov, "video", req.Model, "scale"); ok {
+			setBodyPath(schema, body, path, coerceVideoValue(prop, req.Scale))
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no scale control; using the model's default upscale factor.",
+				req.Model))
 		}
 	}
 	return body, notices, nil

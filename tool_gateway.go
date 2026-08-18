@@ -152,6 +152,35 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			}
 			return newFalClient(app.client, apiKey).UpscaleImage(ctx, req)
 		}
+		gateway.tools.UpscaleVideo = func(ctx context.Context, req VideoUpscaleRequest) (GeneratedVideo, error) {
+			apiKey, err := loadFalAPIKey()
+			if err != nil {
+				return GeneratedVideo{}, err
+			}
+			if strings.TrimSpace(apiKey) == "" {
+				return GeneratedVideo{}, errFalKeyNotConfigured
+			}
+			client := newFalClient(app.client, apiKey)
+			// Pre-resolve the source clip with the force-host variant: an attached
+			// video almost always exceeds fal's inline base64 limit, and the upscale
+			// endpoints sit in the data-URI-rejecting camp downstream (the same
+			// failure mode sync-lipsync v3 showed), so host it on fal's CDN
+			// regardless of size. Fail-soft: on upload failure the inline data URI
+			// is sent and fal's error surfaces verbatim.
+			if resolved, err := client.resolveMediaURLHosted(ctx, req.Video, "video/mp4", "source-video.mp4"); err == nil {
+				req.Video = resolved
+			}
+			schema := schemaCache.Get(ctx, req.Model)
+			body, notices, err := resolveVideoUpscaleBody(schema, req, falOverrides)
+			if err != nil {
+				return GeneratedVideo{Notices: notices}, err
+			}
+			// Upscaling returns a video, so it reuses the GenerateVideo transport
+			// (the same pattern as GenerateLipsync).
+			generated, genErr := client.GenerateVideo(ctx, req.Model, body)
+			generated.Notices = notices
+			return generated, genErr
+		}
 		gateway.tools.GenerateAudio = func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error) {
 			apiKey, err := loadFalAPIKey()
 			if err != nil {

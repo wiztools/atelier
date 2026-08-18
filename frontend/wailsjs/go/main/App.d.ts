@@ -50,6 +50,8 @@ export function ListFalVideoModels():Promise<Array<main.FalModel>>;
 
 export function ListFalVideoMotionModels():Promise<Array<main.FalModel>>;
 
+export function ListFalVideoUpscaleModels():Promise<Array<main.FalModel>>;
+
 export function ListModels(arg1:string):Promise<Array<main.OllamaModel>>;
 
 export function ListPrimaryModels(arg1:string,arg2:string):Promise<Array<main.ModelInfo>>;
