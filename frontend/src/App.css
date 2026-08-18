@@ -250,6 +250,30 @@
   gap: 6px;
 }
 
+.nav-top-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.side-nav .nav-new-chat {
+  flex: 1;
+  min-width: 0;
+}
+
+.side-nav .nav-search-toggle {
+  flex: 0 0 auto;
+  width: 38px;
+  padding: 0;
+  justify-content: center;
+  color: #b7b4ac;
+}
+
+.side-nav .nav-search-toggle.active,
+.side-nav .nav-search-toggle:hover {
+  color: #f3f0e8;
+}
+
 .side-nav button,
 .settings-button {
   width: 100%;

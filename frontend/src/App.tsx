@@ -339,6 +339,9 @@ function App() {
   // historyQuery drives the sidebar's full-history search; results replace
   // the conversation list while non-empty.
   const [historyQuery, setHistoryQuery] = useState('');
+  // searchOpen reveals the sidebar search field; it collapses back to the icon
+  // only when both closed by the user and the query is empty.
+  const [searchOpen, setSearchOpen] = useState(false);
   const [historyResults, setHistoryResults] = useState<main.ConversationSearchResult[]>([]);
   const [historySearchBusy, setHistorySearchBusy] = useState(false);
   const [historySearchError, setHistorySearchError] = useState('');
@@ -1887,25 +1890,48 @@ function App() {
             </div>
 
             <nav className="side-nav" aria-label="Atelier navigation">
-              <button onClick={startNewChat}>
-                <span className="nav-icon">+</span>
-                New chat
-              </button>
-              <div className="history-search">
-                <input
-                  type="search"
-                  value={historyQuery}
-                  onChange={(event) => setHistoryQuery(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Escape') {
-                      event.preventDefault();
-                      setHistoryQuery('');
-                    }
-                  }}
-                  placeholder="Search chats…"
-                  aria-label="Search conversation history"
-                />
+              <div className="nav-top-row">
+                <button className="nav-new-chat" onClick={startNewChat}>
+                  <span className="nav-icon">+</span>
+                  New chat
+                </button>
+                <button
+                  className={`nav-search-toggle${searchOpen || historyQuery.trim() ? ' active' : ''}`}
+                  onClick={() => setSearchOpen(true)}
+                  aria-label="Search chats"
+                  aria-expanded={searchOpen || Boolean(historyQuery.trim())}
+                  title="Search chats"
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                    <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.6" />
+                    <line x1="10.5" y1="10.5" x2="14" y2="14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                  </svg>
+                </button>
               </div>
+              {searchOpen || historyQuery.trim() ? (
+                <div className="history-search">
+                  <input
+                    type="search"
+                    autoFocus
+                    value={historyQuery}
+                    onChange={(event) => setHistoryQuery(event.target.value)}
+                    onBlur={() => {
+                      if (!historyQuery.trim()) {
+                        setSearchOpen(false);
+                      }
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') {
+                        event.preventDefault();
+                        setHistoryQuery('');
+                        setSearchOpen(false);
+                      }
+                    }}
+                    placeholder="Search chats…"
+                    aria-label="Search conversation history"
+                  />
+                </div>
+              ) : null}
             </nav>
 
             <div className="history-area" onScroll={handleHistoryScroll}>
