@@ -172,11 +172,16 @@ type ConfigFal struct {
 	LipsyncVideoModel string `json:"lipsyncVideoModel,omitempty"`
 }
 
-// ConfigOpenAICompatible addresses a local server that speaks OpenAI's
-// /v1/images/generations shape (LocalAI, a diffusers shim, ...). The optional
-// bearer key lives in the OS keychain (see keychain.go), not in config.
+// ConfigOpenAICompatible addresses a local server that speaks OpenAI's API
+// shape (LocalAI, a diffusers shim, ...): chat via /v1/chat/completions and
+// images via /v1/images/generations. Primary/Harness are chat models for the
+// primary/harness roles; Model is the image model used by generate_image. The
+// optional bearer key lives in the OS keychain (see keychain.go), not in
+// config.
 type ConfigOpenAICompatible struct {
 	BaseURL string `json:"baseURL"`
+	Primary string `json:"primary,omitempty"`
+	Harness string `json:"harness,omitempty"`
 	Model   string `json:"model,omitempty"`
 }
 
@@ -2137,11 +2142,14 @@ func (a *App) ListFalTranscribeModels() ([]FalModel, error) {
 // chat role should use when a request doesn't specify one explicitly.
 func (a *App) resolvedPrimaryModelAndProvider(config AppConfig) (model, provider string) {
 	provider = strings.TrimSpace(config.Models.PrimaryProvider)
-	if provider != "openrouter" {
+	if provider != "openrouter" && provider != "openai-compatible" {
 		provider = "ollama"
 	}
 	if provider == "openrouter" {
 		return strings.TrimSpace(config.Providers.OpenRouter.Primary), provider
+	}
+	if provider == "openai-compatible" {
+		return strings.TrimSpace(config.Providers.OpenAICompatible.Primary), provider
 	}
 	return strings.TrimSpace(config.Providers.Ollama.Models.Primary), provider
 }
@@ -2393,7 +2401,7 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	// means a config written before this setting existed, which must keep its
 	// old behaviour exactly.
 	switch strings.TrimSpace(config.Models.HarnessProvider) {
-	case "ollama", "openrouter":
+	case "ollama", "openrouter", "openai-compatible":
 		config.Models.HarnessProvider = strings.TrimSpace(config.Models.HarnessProvider)
 	default:
 		config.Models.HarnessProvider = defaults.Models.HarnessProvider

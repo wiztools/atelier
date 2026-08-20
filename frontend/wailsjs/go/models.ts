@@ -156,6 +156,8 @@ export namespace main {
 	}
 	export class ConfigOpenAICompatible {
 	    baseURL: string;
+	    primary?: string;
+	    harness?: string;
 	    model?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -165,6 +167,8 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.baseURL = source["baseURL"];
+	        this.primary = source["primary"];
+	        this.harness = source["harness"];
 	        this.model = source["model"];
 	    }
 	}

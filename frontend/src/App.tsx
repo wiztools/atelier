@@ -269,11 +269,12 @@ function App() {
   const [status, setStatus] = useState<main.OllamaStatus | null>(null);
   const [models, setModels] = useState<main.OllamaModel[]>([]);
   const [refreshing, setRefreshing] = useState(false);
-  const [harnessProvider, setHarnessProvider] = useState<'ollama' | 'openrouter'>('ollama');
+  type ChatProviderID = 'ollama' | 'openrouter' | 'openai-compatible';
+  const [harnessProvider, setHarnessProvider] = useState<ChatProviderID>('ollama');
   // The harness model is remembered per provider, mirroring primaryModels, so
   // switching providers restores that provider's last selection instead of
   // stranding an Ollama model name under OpenRouter.
-  const [harnessModels, setHarnessModels] = useState<Record<'ollama' | 'openrouter', string>>({ollama: '', openrouter: ''});
+  const [harnessModels, setHarnessModels] = useState<Record<ChatProviderID, string>>({ollama: '', openrouter: '', 'openai-compatible': ''});
   const harnessModel = harnessModels[harnessProvider];
   const setHarnessModel = (next: string | ((current: string) => string)) => {
     setHarnessModels((prev) => {
@@ -286,11 +287,11 @@ function App() {
     });
   };
   const [imageModel, setImageModel] = useState('');
-  const [primaryProvider, setPrimaryProvider] = useState<'ollama' | 'openrouter'>('ollama');
+  const [primaryProvider, setPrimaryProvider] = useState<ChatProviderID>('ollama');
   // The primary model is remembered per provider so switching providers
   // restores that provider's last selection (falling back to the first
   // available model when the remembered one isn't in the current list).
-  const [primaryModels, setPrimaryModels] = useState<Record<'ollama' | 'openrouter', string>>({ollama: '', openrouter: ''});
+  const [primaryModels, setPrimaryModels] = useState<Record<ChatProviderID, string>>({ollama: '', openrouter: '', 'openai-compatible': ''});
   const model = primaryModels[primaryProvider];
   const setModel = (next: string | ((current: string) => string)) => {
     setPrimaryModels((prev) => {
@@ -596,6 +597,8 @@ function App() {
           },
           openaiCompatible: {
             baseURL: openaiCompatibleBaseURL,
+            primary: primaryModels['openai-compatible'],
+            harness: harnessModels['openai-compatible'],
             model: openaiCompatibleModel,
           },
         },
@@ -826,14 +829,23 @@ function App() {
   const modelOptions = useMemo(() => {
     return Array.from(new Set([...asArray(models).map((item) => item.name), harnessModels.ollama, imageModel].filter(Boolean)));
   }, [harnessModels.ollama, imageModel, models]);
+  const falModelOptions = useMemo(() => falModelOptionList(falModels), [falModels]);
+  const openaiCompatibleModelOptions = useMemo(
+    () => openaiCompatibleModels.map((id) => ({value: id, label: id})),
+    [openaiCompatibleModels],
+  );
+
   const primaryModelOptions = useMemo(() => {
     if (primaryProvider === 'openrouter') {
       return asArray(openRouterModels)
         .map((item) => ({value: item.id, label: item.displayName || item.id}))
         .sort((a, b) => a.label.localeCompare(b.label));
     }
+    if (primaryProvider === 'openai-compatible') {
+      return openaiCompatibleModelOptions;
+    }
     return modelOptions.map((name) => ({value: name, label: name}));
-  }, [modelOptions, openRouterModels, primaryProvider]);
+  }, [modelOptions, openRouterModels, openaiCompatibleModelOptions, primaryProvider]);
   const primaryModelIsValid = primaryModelOptions.some((option) => option.value === model);
   const harnessModelOptions = useMemo(() => {
     if (harnessProvider === 'openrouter') {
@@ -841,13 +853,11 @@ function App() {
         .map((item) => ({value: item.id, label: item.displayName || item.id}))
         .sort((a, b) => a.label.localeCompare(b.label));
     }
+    if (harnessProvider === 'openai-compatible') {
+      return openaiCompatibleModelOptions;
+    }
     return modelOptions.map((name) => ({value: name, label: name}));
-  }, [harnessProvider, modelOptions, openRouterModels]);
-  const falModelOptions = useMemo(() => falModelOptionList(falModels), [falModels]);
-  const openaiCompatibleModelOptions = useMemo(
-    () => openaiCompatibleModels.map((id) => ({value: id, label: id})),
-    [openaiCompatibleModels],
-  );
+  }, [harnessProvider, modelOptions, openRouterModels, openaiCompatibleModelOptions]);
 
   const falImageEditModelOptions = useMemo(() => falModelOptionList(falImageEditModels), [falImageEditModels]);
 
@@ -969,17 +979,31 @@ function App() {
     if (needsCatalog && openRouterHasKey && openRouterModels.length === 0 && openRouterStatus !== 'error') {
       refreshOpenRouterModels();
     }
-  }, [primaryProvider, harnessProvider, openRouterHasKey, openRouterModels.length, openRouterStatus]);
+    const needsLocalCatalog = primaryProvider === 'openai-compatible' || harnessProvider === 'openai-compatible';
+    if (needsLocalCatalog && openaiCompatibleModels.length === 0 && openaiCompatibleStatus !== 'error') {
+      refreshOpenAICompatibleModels();
+    }
+  }, [primaryProvider, harnessProvider, openRouterHasKey, openRouterModels.length, openRouterStatus, openaiCompatibleModels.length, openaiCompatibleStatus]);
 
   async function loadConfig() {
     const config = await GetConfig();
     const nextBaseURL = config.providers?.ollama?.baseURL || defaultBaseURL;
     const nextPrimaryModel = config.providers?.ollama?.models?.primary ?? '';
     const nextOpenRouterModel = config.providers?.openrouter?.primary ?? '';
-    const nextPrimaryProvider = config.models?.primaryProvider === 'openrouter' ? 'openrouter' : 'ollama';
+    const nextOpenAICompatiblePrimary = config.providers?.openaiCompatible?.primary ?? '';
+    const nextPrimaryProvider: ChatProviderID = config.models?.primaryProvider === 'openrouter'
+      ? 'openrouter'
+      : config.models?.primaryProvider === 'openai-compatible'
+        ? 'openai-compatible'
+        : 'ollama';
     const nextHarnessModel = config.providers?.ollama?.models?.harness || nextPrimaryModel;
     const nextOpenRouterHarness = config.providers?.openrouter?.harness ?? '';
-    const nextHarnessProvider = config.models?.harnessProvider === 'openrouter' ? 'openrouter' : 'ollama';
+    const nextOpenAICompatibleHarness = config.providers?.openaiCompatible?.harness ?? '';
+    const nextHarnessProvider: ChatProviderID = config.models?.harnessProvider === 'openrouter'
+      ? 'openrouter'
+      : config.models?.harnessProvider === 'openai-compatible'
+        ? 'openai-compatible'
+        : 'ollama';
     const nextImageModel = config.providers?.ollama?.models?.image ?? '';
     const nextSystem = config.prompts?.system || 'You are Atelier, a precise local AI collaborator.';
     const nextImageAspectRatio = config.generation?.image?.aspectRatio || defaultImageAspectRatio;
@@ -1008,9 +1032,9 @@ function App() {
     setStorageConfig(config.storage ?? null);
     setToolConfig(config.tools ?? null);
     setBaseURL(nextBaseURL);
-    setPrimaryModels({ollama: nextPrimaryModel, openrouter: nextOpenRouterModel});
+    setPrimaryModels({ollama: nextPrimaryModel, openrouter: nextOpenRouterModel, 'openai-compatible': nextOpenAICompatiblePrimary});
     setPrimaryProvider(nextPrimaryProvider);
-    setHarnessModels({ollama: nextHarnessModel, openrouter: nextOpenRouterHarness});
+    setHarnessModels({ollama: nextHarnessModel, openrouter: nextOpenRouterHarness, 'openai-compatible': nextOpenAICompatibleHarness});
     setHarnessProvider(nextHarnessProvider);
     setImageModel(nextImageModel);
     setSystem(nextSystem);
@@ -2494,25 +2518,17 @@ function App() {
                       <select
                         id="harness-provider"
                         value={harnessProvider}
-                        onChange={(event) => setHarnessProvider(event.target.value as 'ollama' | 'openrouter')}
+                        onChange={(event) => setHarnessProvider(event.target.value as ChatProviderID)}
                       >
                         <option value="ollama">Ollama</option>
                         <option value="openrouter" disabled={!openRouterHasKey}>OpenRouter</option>
+                        <option value="openai-compatible">OpenAI-compatible (local)</option>
                       </select>
                     </div>
                     <div className="field">
                       <label htmlFor="harness-model">Harness Model</label>
                       <div className="model-inline-control">
-                        {harnessProvider === 'openrouter' ? (
-                          <ModelCombobox
-                            id="harness-model"
-                            ariaLabel="Harness model"
-                            placeholder="Type to filter models..."
-                            value={harnessModel}
-                            onChange={setHarnessModel}
-                            options={harnessModelOptions}
-                          />
-                        ) : (
+                        {harnessProvider === 'ollama' ? (
                           <>
                             <select id="harness-model" value={harnessModel} onChange={(event) => setHarnessModel(event.target.value)}>
                               {harnessModelOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
@@ -2526,6 +2542,16 @@ function App() {
                               variant="icon"
                             />
                           </>
+                        ) : (
+                          <ModelCombobox
+                            id="harness-model"
+                            ariaLabel="Harness model"
+                            placeholder="Type to filter models..."
+                            value={harnessModel}
+                            onChange={setHarnessModel}
+                            options={harnessModelOptions}
+                            allowCustom={harnessProvider === 'openai-compatible'}
+                          />
                         )}
                       </div>
                     </div>
@@ -3165,10 +3191,11 @@ function App() {
                             id="primary-provider"
                             aria-label="Provider for next message"
                             value={primaryProvider}
-                            onChange={(event) => setPrimaryProvider(event.target.value as 'ollama' | 'openrouter')}
+                            onChange={(event) => setPrimaryProvider(event.target.value as ChatProviderID)}
                           >
                             <option value="ollama">Ollama</option>
                             <option value="openrouter">OpenRouter</option>
+                            <option value="openai-compatible">OpenAI-compatible (local)</option>
                           </select>
                         </div>
                       </label>
@@ -3182,6 +3209,7 @@ function App() {
                             value={model}
                             onChange={setModel}
                             options={primaryModelOptions}
+                            allowCustom={primaryProvider === 'openai-compatible'}
                           />
                           {primaryProvider === 'ollama' ? (
                             <ModelCapabilityLink

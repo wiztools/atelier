@@ -86,6 +86,24 @@ func (registry ProviderRegistry) Resolve(providerID, baseURL string) (ChatProvid
 			return nil, errOpenRouterKeyNotConfigured
 		}
 		return newOpenRouterProvider(newOpenRouterClient(registry.app.client, apiKey)), nil
+	case "openai-compatible":
+		// The endpoint lives in config, not the request (the baseURL param is
+		// the Ollama URL). The keychain key is optional — Resolve must never
+		// fail on its absence, or harnessProviderUnavailable would kill every
+		// turn for a keyless local server (the Ollama reachability posture).
+		config, err := loadReadyConfig()
+		if err != nil {
+			return nil, fmt.Errorf("openai-compatible config is not available: %w", err)
+		}
+		apiKey, err := loadOpenAICompatibleAPIKey()
+		if err != nil {
+			return nil, fmt.Errorf("openai-compatible api key is not available: %w", err)
+		}
+		endpoint := strings.TrimSpace(config.Providers.OpenAICompatible.BaseURL)
+		if endpoint == "" {
+			endpoint = defaultOpenAICompatibleBaseURL
+		}
+		return newOpenAICompatibleChatProvider(newOpenAICompatibleClient(registry.app.client, endpoint, apiKey)), nil
 	default:
 		return nil, fmt.Errorf("%w: %q", errUnknownProvider, providerID)
 	}

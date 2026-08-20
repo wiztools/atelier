@@ -793,11 +793,18 @@ type harnessTarget struct {
 func (h *HarnessEngine) resolveHarnessTarget(primaryModel, primaryProvider string) harnessTarget {
 	fallback := harnessTarget{model: primaryModel, provider: primaryProvider}
 
-	// mergeAppConfig normalizes this to "ollama" or "openrouter", but resolve
-	// defensively: engines are also constructed straight from test configs.
+	// mergeAppConfig normalizes this to "ollama", "openrouter", or
+	// "openai-compatible", but resolve defensively: engines are also
+	// constructed straight from test configs.
 	if strings.TrimSpace(h.config.Models.HarnessProvider) == "openrouter" {
 		if model := strings.TrimSpace(h.config.Providers.OpenRouter.Harness); model != "" {
 			return harnessTarget{model: model, provider: "openrouter"}
+		}
+		return fallback
+	}
+	if strings.TrimSpace(h.config.Models.HarnessProvider) == "openai-compatible" {
+		if model := strings.TrimSpace(h.config.Providers.OpenAICompatible.Harness); model != "" {
+			return harnessTarget{model: model, provider: "openai-compatible"}
 		}
 		return fallback
 	}
@@ -814,8 +821,10 @@ func (h *HarnessEngine) resolveHarnessTarget(primaryModel, primaryProvider strin
 //
 // Capability detection is provider-specific: Ollama via /api/show's
 // capabilities array, OpenRouter via supported_parameters containing "tools".
-// A harness model on any other provider reports false and plans via the format
-// schema. Both lookups are single network calls, made once per turn.
+// A harness model on any other provider (the local OpenAI-compatible server
+// plans via the format schema, translated to response_format by the wire
+// adapter) reports false and plans via the format schema. Both lookups are
+// single network calls, made once per turn.
 func (h *HarnessEngine) supportsNativeTools(ctx context.Context, baseURL string, harness harnessTarget) bool {
 	model := strings.TrimSpace(harness.model)
 	if model == "" || h.app == nil {
@@ -878,12 +887,15 @@ func (h *HarnessEngine) responseProviderFor(mode, primaryModel, primaryProvider 
 
 // respondsWithHarnessModel reports whether the final response must fall back to
 // the harness model. Image mode captions an already-generated image, and an
-// image generation model can produce neither text nor vision.
+// image generation model can produce neither text nor vision. The comparison
+// uses resolveDefaultImageModel so it tracks the configured image provider —
+// the image model may live on Ollama, fal, or the local OpenAI-compatible
+// server, not just Ollama.
 func (h *HarnessEngine) respondsWithHarnessModel(mode, primaryModel string) bool {
 	if mode == "image" {
 		return true
 	}
-	imageModel := strings.TrimSpace(h.config.Providers.Ollama.Models.Image)
+	imageModel := resolveDefaultImageModel(h.config)
 	return imageModel != "" && primaryModel == imageModel
 }
 
@@ -2401,12 +2413,15 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 		// generation — sending it to the image endpoint is a wrong-model 404.
 		// fal.ai as the image provider is likewise excluded: the primary (chat)
 		// model is unrelated to fal's image endpoints. So is the local
-		// OpenAI-compatible image server — it is never a chat provider, so
-		// turn.PrimaryProvider can never match its provider id.
+		// OpenAI-compatible image server: it is now also a chat provider, so
+		// turn.PrimaryProvider CAN match its provider id — but a chat model id
+		// is not an image-model pick there. The configured image model governs;
+		// this override stays Ollama-only, where picking a different local
+		// image model per turn is meaningful.
 		imageProvider := strings.TrimSpace(h.config.Models.ImageProvider)
 		primaryOnImageProvider := turn.PrimaryProvider != "" && turn.PrimaryProvider == imageProvider
 		if call.Name == "generate_image" && turn.ResponseMode == "image" &&
-			imageProvider != "fal" && primaryOnImageProvider &&
+			imageProvider == "ollama" && primaryOnImageProvider &&
 			turn.PrimaryModel != "" && turn.PrimaryModel != h.config.Providers.Ollama.Models.Harness {
 			if strings.TrimSpace(call.Model) == "" {
 				call.Model = turn.PrimaryModel
