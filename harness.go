@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -156,15 +157,21 @@ type HarnessToolResult struct {
 	Result  any      `json:"result,omitempty"`
 	Error   string   `json:"error,omitempty"`
 	Notices []string `json:"notices,omitempty"`
+	// Permission records how the permission gate resolved for this call. It is
+	// telemetry only — json:"-" keeps it out of planner evidence (role:"tool"
+	// messages) and generated bindings; toolActivities zips it onto the
+	// persisted HarnessToolActivity fields instead.
+	Permission *ToolPermissionDecision `json:"-"`
 }
 
 type finalResponseAttempt struct {
-	Content  string
-	Thinking string
-	Model    string
-	Reason   string
-	Tokens   int
-	Emitted  bool
+	Content      string
+	Thinking     string
+	Model        string
+	Reason       string
+	Tokens       int
+	PromptTokens int
+	Emitted      bool
 }
 
 func newHarnessEngine(config AppConfig, app ...*App) *HarnessEngine {
@@ -212,6 +219,13 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	// inline at each call site so both consume the same value.
 	attachedImages := latestAttachedImagesForTurn(req, h.config.Storage)
 	run := newHarnessRun(requestID, conversationID)
+	// Stream every step transition to the UI: the live harness panel renders
+	// these snapshots instead of fabricating in-flight state. The closure
+	// copies the run by value at emit time — same goroutine as the mutators,
+	// so the snapshot is always a consistent point-in-time state.
+	run.onUpdate = func() {
+		h.app.emitHarnessRunEvent(HarnessRunEvent{RequestID: requestID, ConversationID: conversationID, Run: run})
+	}
 	queued := run.appendStep("queued", 1, "", "", "turn accepted by harness")
 	run.completeStep(queued, "completed", "", 0, "")
 
@@ -219,6 +233,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	// report it now rather than degrading through triage and the planner first.
 	if err := h.harnessProviderUnavailable(harness, req.BaseURL); err != nil {
 		run.complete("failed", "harness_provider_unavailable")
+		h.saveFailedAssistantTurn(conversationID, err.Error(), harness.model, harness.provider, run)
 		h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
 		return
 	}
@@ -242,15 +257,18 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	}
 
 	decision := HarnessTriageDecision{NeedsTools: true, ResponseMode: "text", Reason: "user explicitly referenced a skill"}
+	var triageSnapshot *HarnessRequestSnapshot
 	if explicitSkill == nil {
 		triage := run.appendStep("triage", 1, harness.provider, harness.model, "harness model deciding response mode and tools")
 		var completion ChatCompletionResult
-		decision, completion = h.triageChatTurn(ctx, req, harness, skillIndex)
+		decision, completion, triageSnapshot = h.triageChatTurn(ctx, req, harness, skillIndex)
 		run.Steps[triage].Decision = triageDecisionLabel(decision)
 		status := "completed"
 		if decision.Error != "" {
 			status = "failed"
 		}
+		run.Steps[triage].PromptTokens = completion.PromptTokens
+		run.Steps[triage].Request = triageSnapshot
 		run.completeStep(triage, status, completion.Reason, completion.EvalTokens, decision.Error)
 	}
 	run.Triage = &decision
@@ -289,6 +307,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		}, &run)
 		if err != nil {
 			run.complete("failed", "harness_prepare_error")
+			h.saveFailedAssistantTurn(conversationID, err.Error(), harness.model, harness.provider, run)
 			h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
 			return
 		}
@@ -332,8 +351,8 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			Reason:  "generation_planning_exhausted",
 		}
 	} else {
-		responseReq := h.preparedResponseRequest(req, responseModel, responseProvider, preparation, attachedImagesForVision)
-		result, err = h.runFinalResponseAttempt(ctx, requestID, conversationID, responseReq, &run)
+		responseReq, responseTruncated := h.preparedResponseRequest(req, responseModel, responseProvider, preparation, attachedImagesForVision)
+		result, err = h.runFinalResponseAttempt(ctx, requestID, conversationID, responseReq, &run, responseTruncated)
 	}
 
 	// Even if the text response stream failed, deliver any media the tool path
@@ -355,6 +374,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			run.complete("completed", "response_stream_failed_media_delivered")
 		} else {
 			run.complete("failed", result.Reason)
+			h.saveFailedAssistantTurn(conversationID, err.Error(), responseModel, responseProvider, run)
 			h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
 			return
 		}
@@ -390,8 +410,11 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	h.evaluateChatRun(&run, assistantContent, finalReason)
 	// The run is serialized into the saved turn, so the saved step is marked
 	// completed optimistically and flipped to failed if the write errors.
+	// No token count here: the streaming step already carries the model-call
+	// usage and the turn total lives in providerResponse.tokens — repeating
+	// it here would double-count in per-model usage aggregation.
 	saved := run.appendStep("saved", 1, "", "", "assistant turn and harness run stored in history")
-	run.completeStep(saved, "completed", finalReason, finalTokens, "")
+	run.completeStep(saved, "completed", finalReason, 0, "")
 	run.complete("completed", "final")
 	var saveErr error
 	var videoURLs []string
@@ -864,11 +887,12 @@ func (h *HarnessEngine) respondsWithHarnessModel(mode, primaryModel string) bool
 	return imageModel != "" && primaryModel == imageModel
 }
 
-func (h *HarnessEngine) runFinalResponseAttempt(ctx context.Context, requestID, conversationID string, req ChatRequest, run *HarnessRun) (finalResponseAttempt, error) {
+func (h *HarnessEngine) runFinalResponseAttempt(ctx context.Context, requestID, conversationID string, req ChatRequest, run *HarnessRun, truncatedMessages int) (finalResponseAttempt, error) {
 	result := finalResponseAttempt{Model: req.Model}
 	providerID := resolvedProvider(req)
 
 	modelCall := run.appendStep("model_call", 1, providerID, req.Model, "provider stream opened")
+	run.Steps[modelCall].Request = requestSnapshot(req, h.numCtx(), truncatedMessages)
 	provider, err := h.app.providerFor(providerID, req.BaseURL)
 	if err != nil {
 		run.completeStep(modelCall, "failed", "", 0, err.Error())
@@ -881,6 +905,8 @@ func (h *HarnessEngine) runFinalResponseAttempt(ctx context.Context, requestID, 
 	}
 	run.completeStep(modelCall, "completed", "", 0, "")
 	streaming := run.appendStep("streaming", 1, providerID, req.Model, "assistant response streamed to UI")
+	streamOpened := time.Now()
+	firstTokenRecorded := false
 
 	var content strings.Builder
 	var thinking strings.Builder
@@ -902,6 +928,14 @@ func (h *HarnessEngine) runFinalResponseAttempt(ctx context.Context, requestID, 
 		if event.Usage != nil && event.Usage.CompletionTokens > 0 {
 			result.Tokens = event.Usage.CompletionTokens
 			tokens = event.Usage.CompletionTokens
+		}
+		if event.Usage != nil && event.Usage.PromptTokens > 0 {
+			result.PromptTokens = event.Usage.PromptTokens
+			run.Steps[streaming].PromptTokens = event.Usage.PromptTokens
+		}
+		if !firstTokenRecorded && (event.ContentDelta != "" || event.Thinking != "") {
+			firstTokenRecorded = true
+			run.Steps[streaming].FirstTokenMS = time.Since(streamOpened).Milliseconds()
 		}
 
 		h.app.emitChatEvent(ChatStreamEvent{
@@ -983,6 +1017,49 @@ func historyBudgetChars(numCtx int, system string, reserveTokens int) int {
 	return budget
 }
 
+// requestSnapshot fingerprints one model request for the step ledger — the
+// prefix-cache-sensitive prompt prefix (system prompt + first message), the
+// tool schema the model saw, and rough sizes — without persisting raw
+// prompts. Consecutive same-model steps that share PromptHash kept the
+// Ollama prefix cache warm; a change between them invalidated it.
+func requestSnapshot(req ChatRequest, numCtx, truncatedMessages int) *HarnessRequestSnapshot {
+	snapshot := &HarnessRequestSnapshot{
+		PromptChars:       len(req.System),
+		NumCtx:            numCtx,
+		TruncatedMessages: truncatedMessages,
+	}
+	for _, message := range req.Messages {
+		snapshot.PromptChars += len(message.Content)
+	}
+	prefix := sha256.New()
+	prefix.Write([]byte(req.System))
+	prefix.Write([]byte{0x1f})
+	if len(req.Messages) > 0 {
+		prefix.Write([]byte(req.Messages[0].Role))
+		prefix.Write([]byte{0x1f})
+		prefix.Write([]byte(req.Messages[0].Content))
+	}
+	snapshot.PromptHash = fmt.Sprintf("%x", prefix.Sum(nil))[:12]
+	switch {
+	case len(req.Tools) > 0:
+		snapshot.ToolMode = "native"
+		snapshot.ToolsHash = hashRequestSchema(req.Tools)
+	case req.Format != nil:
+		snapshot.ToolMode = "format"
+		snapshot.ToolsHash = hashRequestSchema(req.Format)
+	}
+	return snapshot
+}
+
+func hashRequestSchema(schema any) string {
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(raw)
+	return fmt.Sprintf("%x", digest)[:12]
+}
+
 // truncateChatHistory drops the oldest messages until the rest fit the budget,
 // marking the cut so the model knows earlier turns are missing. The newest
 // message is always kept, even when it alone exceeds the budget.
@@ -1044,7 +1121,12 @@ type harnessTurnContext struct {
 	AttachedVideo string
 }
 
-func (h *HarnessEngine) selectSkillForTurn(ctx context.Context, req ChatRequest, turn harnessTurnContext) (*HarnessSkillDecision, *LoadedSkill) {
+// selectSkillForTurn picks (and loads) the skill guiding this turn. It runs a
+// harness-model call only when an index exists and no skill was explicitly
+// referenced; the model-call path records a "skill" step on the run (nil run
+// is tolerated for direct/unit callers) so the call is visible in telemetry
+// like triage and planning.
+func (h *HarnessEngine) selectSkillForTurn(ctx context.Context, req ChatRequest, turn harnessTurnContext, run *HarnessRun) (*HarnessSkillDecision, *LoadedSkill) {
 	if turn.SkillIndexErr != nil {
 		return &HarnessSkillDecision{AvailableCount: 0, Error: turn.SkillIndexErr.Error()}, nil
 	}
@@ -1083,20 +1165,45 @@ Select a skill only when its name or description clearly matches the user's requ
 			"num_ctx":     h.numCtx(),
 		},
 	}
+	var skillStep int = -1
+	if run != nil {
+		skillStep = run.appendStep("skill", 1, turn.Harness.provider, turn.Harness.model, "harness model selecting a skill for the turn")
+		run.Steps[skillStep].Request = requestSnapshot(selectionReq, h.numCtx(), 0)
+	}
 	completion, err := h.completeWithHarnessModel(ctx, turn.Harness, selectionReq)
+	if run != nil {
+		run.Steps[skillStep].PromptTokens = completion.PromptTokens
+	}
 	if err != nil {
+		if run != nil {
+			run.completeStep(skillStep, "failed", "", 0, err.Error())
+		}
 		return &HarnessSkillDecision{AvailableCount: len(index), Error: err.Error()}, nil
 	}
 	plan, err := decodeSkillSelectionPlan(completion.Content)
 	if err != nil {
+		if run != nil {
+			run.completeStep(skillStep, "failed", completion.Reason, completion.EvalTokens, err.Error())
+		}
 		return &HarnessSkillDecision{AvailableCount: len(index), Error: err.Error()}, nil
 	}
 	if strings.TrimSpace(plan.SkillName) == "" {
+		if run != nil {
+			run.Steps[skillStep].Decision = "no skill selected"
+			run.completeStep(skillStep, "completed", completion.Reason, completion.EvalTokens, "")
+		}
 		return &HarnessSkillDecision{AvailableCount: len(index), Reason: strings.TrimSpace(plan.Reason)}, nil
 	}
 	entry, ok := findSkillByName(index, plan.SkillName)
 	if !ok {
+		if run != nil {
+			run.completeStep(skillStep, "failed", completion.Reason, completion.EvalTokens, "selected skill was not found in index")
+		}
 		return &HarnessSkillDecision{AvailableCount: len(index), Name: strings.TrimSpace(plan.SkillName), Reason: strings.TrimSpace(plan.Reason), Error: "selected skill was not found in index"}, nil
+	}
+	if run != nil {
+		run.Steps[skillStep].Decision = "selected: " + entry.Name
+		run.completeStep(skillStep, "completed", completion.Reason, completion.EvalTokens, "")
 	}
 	return h.loadSelectedSkill(entry, strings.TrimSpace(plan.Reason), len(index))
 }
@@ -1144,7 +1251,7 @@ func explicitSkillSelection(index []SkillIndexEntry, prompt string) (SkillIndexE
 // for the next planning round. The loop is bounded by harnessChatMaxSteps
 // planning rounds and harnessChatMaxWallTime of wall time.
 func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conversationID string, req ChatRequest, turn harnessTurnContext, run *HarnessRun) (HarnessPreparedTurn, error) {
-	skillDecision, loadedSkill := h.selectSkillForTurn(ctx, req, turn)
+	skillDecision, loadedSkill := h.selectSkillForTurn(ctx, req, turn, run)
 	// A skill selected for a generation turn (image/video/audio) is workflow
 	// guidance that cannot help a built-in generation tool call and can derail
 	// the planner (conv_473c1357). Its body is suppressed for the planner
@@ -1203,11 +1310,13 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 		} else {
 			prepReq.Format = harnessToolPlanSchema(registry)
 		}
+		run.Steps[planning].Request = requestSnapshot(prepReq, numCtx, len(messages)-len(prepReq.Messages))
 		completion, err := h.completeWithHarnessModel(ctx, turn.Harness, prepReq)
 		if err != nil {
 			run.completeStep(planning, "failed", "", 0, err.Error())
 			return HarnessPreparedTurn{}, err
 		}
+		run.Steps[planning].PromptTokens = completion.PromptTokens
 
 		// Parse the planner response into a common plan shape. Both paths
 		// produce {brief, needsTools, reason, toolCalls, validationErrors}.
@@ -1247,7 +1356,7 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 		prepared.PlanValidationErrors = validationErrors
 
 		if len(validationErrors) > 0 {
-			run.Steps[planning].Summary = "plan failed validation; errors fed back to the planner"
+			run.Steps[planning].Summary = "invalid plan, correction requested: " + validationErrors[0]
 			run.completeStep(planning, "completed", completion.Reason, completion.EvalTokens, "")
 			prepared.Rounds = append(prepared.Rounds, round)
 			prepared.ToolCalls = nil
@@ -1647,7 +1756,7 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 // just generated"). It is injected as an Images entry on the last user message
 // to match the shape adapters expect, and before stripUnsupportedMedia so the
 // same capability logic that governs user-attached images governs it.
-func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel, responseProvider string, preparation HarnessPreparedTurn, attachedImages []string) ChatRequest {
+func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel, responseProvider string, preparation HarnessPreparedTurn, attachedImages []string) (ChatRequest, int) {
 	responseReq := req
 	responseReq.Model = responseModel
 	responseReq.Provider = responseProvider
@@ -1693,9 +1802,10 @@ func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel, 
 		messages = append(messages, ChatMessage{Role: "user", Content: note})
 	}
 	numCtx := h.numCtx()
-	responseReq.Messages = truncateChatHistory(messages, historyBudgetChars(numCtx, responseReq.System, numCtx/4))
+	truncatedMessages := truncateChatHistory(messages, historyBudgetChars(numCtx, responseReq.System, numCtx/4))
+	responseReq.Messages = truncatedMessages
 	responseReq.Options = withNumCtx(req.Options, numCtx)
-	return responseReq
+	return responseReq, len(messages) - len(truncatedMessages)
 }
 
 // stripUnsupportedMedia removes user-attached media bytes from messages in
@@ -2414,6 +2524,10 @@ func (h *HarnessEngine) toolActivities(results []HarnessToolResult, calls []Harn
 		if i < len(calls) {
 			activity.Call = calls[i]
 		}
+		if result.Permission != nil {
+			activity.Permission = result.Permission.Outcome
+			activity.PermissionWaitMS = result.Permission.WaitMS
+		}
 		activities = append(activities, activity)
 	}
 	return activities
@@ -2606,7 +2720,7 @@ func newHarnessRun(requestID, conversationID string) HarnessRun {
 		ID:             randomID("run"),
 		Mode:           "chat",
 		Status:         "running",
-		StartedAt:      time.Now().Format(time.RFC3339),
+		StartedAt:      time.Now().Format(time.RFC3339Nano),
 		RequestID:      requestID,
 		ConversationID: conversationID,
 		Loop: HarnessLoop{
@@ -2620,7 +2734,7 @@ func newHarnessRun(requestID, conversationID string) HarnessRun {
 // fallbackHarnessRun records a turn that was written to history without live
 // harness telemetry. It claims only what actually happened: the turn was saved.
 func fallbackHarnessRun(model, reason string, tokens int) HarnessRun {
-	now := time.Now().Format(time.RFC3339)
+	now := time.Now().Format(time.RFC3339Nano)
 	return HarnessRun{
 		ID:          randomID("run"),
 		Mode:        "chat",
@@ -2653,6 +2767,8 @@ func fallbackHarnessRun(model, reason string, tokens int) HarnessRun {
 
 // appendStep records a step the moment it starts and returns its index for
 // completion. Steps are only ever appended, in the order they actually happen.
+// Timestamps are RFC3339Nano so sub-second durations survive the string
+// round-trip in completeStep (plain RFC3339 quantizes them away).
 func (run *HarnessRun) appendStep(kind string, iteration int, provider, model, summary string) int {
 	run.Steps = append(run.Steps, HarnessStep{
 		ID:        fmt.Sprintf("step_%06d", len(run.Steps)+1),
@@ -2661,9 +2777,10 @@ func (run *HarnessRun) appendStep(kind string, iteration int, provider, model, s
 		Provider:  provider,
 		Model:     model,
 		Status:    "running",
-		StartedAt: time.Now().Format(time.RFC3339),
+		StartedAt: time.Now().Format(time.RFC3339Nano),
 		Summary:   summary,
 	})
+	run.notifyUpdate()
 	return len(run.Steps) - 1
 }
 
@@ -2673,23 +2790,34 @@ func (run *HarnessRun) completeStep(index int, status, reason string, tokens int
 	}
 	step := &run.Steps[index]
 	step.Status = status
-	step.CompletedAt = time.Now().Format(time.RFC3339)
+	step.CompletedAt = time.Now().Format(time.RFC3339Nano)
 	step.DoneReason = reason
 	step.Tokens = tokens
 	step.Error = errorText
 	if startedAt, err := time.Parse(time.RFC3339, step.StartedAt); err == nil {
 		step.DurationMS = time.Since(startedAt).Milliseconds()
 	}
+	run.notifyUpdate()
 }
 
 func (run *HarnessRun) complete(status, stopReason string) {
 	run.Status = status
 	completedAt := time.Now()
-	run.CompletedAt = completedAt.Format(time.RFC3339)
+	run.CompletedAt = completedAt.Format(time.RFC3339Nano)
 	if startedAt, err := time.Parse(time.RFC3339, run.StartedAt); err == nil {
 		run.DurationMS = completedAt.Sub(startedAt).Milliseconds()
 	}
 	run.Loop.StopReason = stopReason
+	run.notifyUpdate()
+}
+
+// notifyUpdate fans a step transition out to the live-run event when the
+// engine wired one; runs built without a hook (tests, fallback records) stay
+// silent.
+func (run *HarnessRun) notifyUpdate() {
+	if run.onUpdate != nil {
+		run.onUpdate()
+	}
 }
 
 func (h *HarnessEngine) evaluateChatRun(run *HarnessRun, assistantContent, doneReason string) {
@@ -2723,5 +2851,17 @@ func (h *HarnessEngine) SaveAssistantTurn(conversationID, assistantContent, assi
 	if strings.TrimSpace(assistantContent) == "" && strings.TrimSpace(assistantThinking) == "" {
 		return nil
 	}
-	return appendChatAssistantTurn(h.config, conversationID, assistantContent, assistantThinking, model, provider, reason, tokens, run)
+	return appendChatAssistantTurn(h.config, conversationID, assistantContent, assistantThinking, model, provider, reason, tokens, run, "")
+}
+
+// saveFailedAssistantTurn persists a failed turn's telemetry so a turn that
+// errored still leaves its run in history (the user turn is already on disk
+// from StartChatTurn). The error text becomes the turn's content — the run's
+// steps carry the structured diagnostics. Best-effort by design: a failure
+// here must not mask the stream error the user is about to see.
+func (h *HarnessEngine) saveFailedAssistantTurn(conversationID, errorText, model, provider string, run HarnessRun) {
+	if strings.TrimSpace(conversationID) == "" {
+		return
+	}
+	_ = appendChatAssistantTurn(h.config, conversationID, errorText, "", model, provider, run.Loop.StopReason, 0, run, errorText)
 }

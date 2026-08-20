@@ -126,6 +126,11 @@ type HarnessRunView = {
   steps?: HarnessStepView[];
 };
 
+// Model-call step kinds carry per-call token usage; bookkeeping steps
+// (queued/saved/evaluation/tool_call) never do, so summing over just these
+// counts each model call exactly once.
+const MODEL_CALL_STEP_KINDS = ['triage', 'skill', 'planning', 'model_call', 'streaming'];
+
 type HarnessStepView = {
   id?: string;
   kind?: string;
@@ -141,7 +146,23 @@ type HarnessStepView = {
   summary?: string;
   error?: string;
   tokens?: number;
+  promptTokens?: number;
+  firstTokenMs?: number;
+  request?: HarnessRequestSnapshotView;
   tools?: HarnessToolActivityView[];
+};
+
+// Fingerprint of one model request (hashes/sizes only — raw prompts are never
+// persisted). promptHash covers the prefix-cache-sensitive prefix, so equal
+// hashes across consecutive same-model steps mean the prefix cache stayed
+// warm.
+type HarnessRequestSnapshotView = {
+  promptHash?: string;
+  toolsHash?: string;
+  promptChars?: number;
+  toolMode?: string;
+  numCtx?: number;
+  truncatedMessages?: number;
 };
 
 type HarnessToolActivityView = {
@@ -154,6 +175,16 @@ type HarnessToolActivityView = {
   stderrPreview?: string;
   durationMs?: number;
   error?: string;
+  permission?: string;
+  permissionWaitMs?: number;
+};
+
+// Payload of the atelier:harness-run event: the full run snapshot after every
+// step transition, identical in shape to the persisted harnessRun record.
+type HarnessRunEventView = {
+  requestId: string;
+  conversationId?: string;
+  run: unknown;
 };
 
 type Attachment = {
@@ -398,6 +429,11 @@ function App() {
   const inFlightConversationsRef = useRef<Record<string, InFlightConversation>>({});
   const requestConversationRef = useRef<Record<string, {conversationID: string; kind: ConversationKind}>>({});
   const chatStreamDraftsRef = useRef<Record<string, ChatStreamDraft>>({});
+  // Live harness runs keyed by requestID, mirrored from atelier:harness-run
+  // events. The chat:chunk effect pattern: refs only, so the empty-deps event
+  // listener never closes over stale state. Used to re-attach the live run
+  // when the user switches conversations mid-stream.
+  const harnessRunDraftsRef = useRef<Record<string, HarnessRunView>>({});
   const chatPromptRef = useRef<HTMLTextAreaElement | null>(null);
   // Per-conversation composer drafts, keyed by conversationID ('' = new chat).
   // Mirror refs keep the latest prompt/attachments/activeConversationID so the
@@ -417,7 +453,10 @@ function App() {
   const hasMoreConversations = visibleConversations.length < conversationList.length;
   const selectedConversationID = activeConversationID;
   const latestHarnessRun = [...chat].reverse().find((entry) => entry.role === 'assistant' && entry.harnessRun)?.harnessRun;
-  const visibleHarnessRun = latestHarnessRun ?? (activeStream ? buildRunningHarnessRun(activeStream, activeConversationID, model) : null);
+  // Live turns receive real run snapshots via atelier:harness-run, so the
+  // latest entry's run is always current — streamed or persisted.
+  const visibleHarnessRun = latestHarnessRun ?? null;
+  const modelUsage = useMemo(() => summarizeModelUsage(chat), [chat]);
 
   function markConversationInFlight(conversationID: string, requestID: string, kind: ConversationKind) {
     requestConversationRef.current[requestID] = {conversationID, kind};
@@ -637,6 +676,26 @@ function App() {
     };
     EventsOn('chat:chunk', onChunk);
     return () => EventsOff('chat:chunk');
+  }, []);
+
+  // Live harness telemetry: every step transition arrives as a full run
+  // snapshot (the same shape history persists), so the panel renders real
+  // in-flight state. Mirrors the chat:chunk effect — refs + setState only.
+  useEffect(() => {
+    const onHarnessRun = (event: HarnessRunEventView) => {
+      if (!event?.requestId) {
+        return;
+      }
+      const run = parseHarnessRun(event.run);
+      if (!run) {
+        return;
+      }
+      harnessRunDraftsRef.current[event.requestId] = run;
+      const entryID = `assistant-${event.requestId}`;
+      setChat((current) => current.map((entry) => entry.id === entryID ? {...entry, harnessRun: run} : entry));
+    };
+    EventsOn('atelier:harness-run', onHarnessRun);
+    return () => EventsOff('atelier:harness-run');
   }, []);
 
   useEffect(() => {
@@ -1405,6 +1464,7 @@ function App() {
         images: draft?.images,
         videos: draft?.videos,
         audios: draft?.audios,
+        harnessRun: harnessRunDraftsRef.current[visibleRequestID],
         streaming: draft?.streaming ?? true,
         error: draft?.error,
         provider: draft?.provider,
@@ -2729,7 +2789,7 @@ function App() {
                   shouldFollowTranscriptRef.current = isNearScrollBottom(event.currentTarget);
                 }}
               >
-                {visibleHarnessRun ? <HarnessRunPanel run={visibleHarnessRun} /> : null}
+                {visibleHarnessRun ? <HarnessRunPanel run={visibleHarnessRun} usage={modelUsage} /> : null}
                 {asArray(chat).length === 0 ? (
                   <div className="empty-state">
                     <h2>{emptyPrompt?.heading ?? 'What are we making today?'}</h2>
@@ -3336,26 +3396,65 @@ function formatModelSize(size: number): string {
   return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
 }
 
-function HarnessRunPanel({run}: {run: HarnessRunView}) {
+function HarnessRunPanel({run, usage}: {run: HarnessRunView; usage: ModelUsageRow[]}) {
   const steps = asArray(run.steps);
   const completed = steps.filter((step) => step.status === 'completed').length;
   const status = run.status ?? 'running';
   const stopReason = run.loop?.stopReason;
+  const totals = usage.reduce(
+    (acc, row) => ({prompt: acc.prompt + row.promptTokens, completion: acc.completion + row.completionTokens}),
+    {prompt: 0, completion: 0},
+  );
+  // Prefix-cache signal: compare each model-call step's promptHash against the
+  // previous request to the same provider+model. Equal hashes kept the cache
+  // warm; a change (marked) invalidated it.
+  const prefixChanged = new Set<number>();
+  const lastHashByModel = new Map<string, string>();
+  steps.forEach((step, index) => {
+    const hash = step.request?.promptHash;
+    if (!hash) {
+      return;
+    }
+    const key = `${step.provider ?? ''}|${step.model ?? ''}`;
+    const previous = lastHashByModel.get(key);
+    if (previous && previous !== hash) {
+      prefixChanged.add(index);
+    }
+    lastHashByModel.set(key, hash);
+  });
   return (
     <details className="harness-panel">
       <summary>
         <span>Harness</span>
         <strong>{status}</strong>
-        <small>{completed}/{steps.length || 6} steps{run.durationMs ? ` · ${formatDuration(run.durationMs)}` : ''}</small>
+        <small>
+          {completed}/{steps.length} steps{run.durationMs ? ` · ${formatDuration(run.durationMs)}` : ''}
+          {totals.prompt || totals.completion ? ` · ${formatTokenCount(totals.prompt + totals.completion)} tokens` : ''}
+        </small>
       </summary>
       <div className="harness-meta">
         {run.loop?.iterations ? <span>{run.loop.iterations} iteration{run.loop.iterations === 1 ? '' : 's'}</span> : null}
         {stopReason ? <span>stop: {stopReason}</span> : null}
         {run.requestId ? <span>{run.requestId}</span> : null}
       </div>
+      {usage.length ? (
+        <div className="harness-usage">
+          {usage.map((row) => (
+            <div className="harness-usage-row" key={`${row.provider}-${row.model}`} title={`${row.provider} · ${row.calls} call${row.calls === 1 ? '' : 's'} across this conversation`}>
+              <span className="harness-usage-model">{row.model}</span>
+              <span>
+                {row.promptTokens ? `${formatTokenCount(row.promptTokens)} in` : '— in'}
+                {' · '}
+                {row.completionTokens ? `${formatTokenCount(row.completionTokens)} out` : '— out'}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
       <ol className="harness-steps">
         {steps.map((step, index) => {
           const lane = harnessStepLane(step);
+          const truncated = step.request?.truncatedMessages ?? 0;
           return (
           <li key={step.id ?? `${step.kind}-${index}`} className={`harness-step ${step.status ?? 'pending'} ${lane.className}`}>
             <div className="harness-step-head">
@@ -3369,8 +3468,15 @@ function HarnessRunPanel({run}: {run: HarnessRunView}) {
             <small className="harness-step-meta">
               {step.provider ? <span>{step.provider}</span> : null}
               {step.model ? <span>{step.model}</span> : null}
-              {step.tokens ? <span>{step.tokens} tokens</span> : null}
+              {step.promptTokens || step.tokens ? (
+                <span>{[step.promptTokens ? `${formatTokenCount(step.promptTokens)} in` : '', step.tokens ? `${formatTokenCount(step.tokens)} out` : ''].filter(Boolean).join(' · ')}</span>
+              ) : null}
+              {step.firstTokenMs ? <span title="time to first token">ttft {formatDuration(step.firstTokenMs)}</span> : null}
               {step.durationMs ? <span>{formatDuration(step.durationMs)}</span> : null}
+              {truncated ? <span className="harness-flag-warn" title="oldest messages dropped to fit num_ctx">trimmed {truncated} msg{truncated === 1 ? '' : 's'}</span> : null}
+              {step.request?.promptHash ? (
+                <code className={prefixChanged.has(index) ? 'harness-hash harness-hash-changed' : 'harness-hash'} title={`prompt prefix hash${prefixChanged.has(index) ? ' — changed since this model\'s previous request, prefix cache invalidated' : ''}`}>#{step.request.promptHash}</code>
+              ) : null}
             </small>
             {asArray(step.tools).length ? (
               <div className="harness-tool-list">
@@ -3380,6 +3486,11 @@ function HarnessRunPanel({run}: {run: HarnessRunView}) {
                       <strong>{formatToolName(tool.name)}</strong>
                       <span>{tool.status ?? 'pending'}{typeof tool.exitCode === 'number' ? ` · exit ${tool.exitCode}` : ''}{tool.durationMs ? ` · ${formatDuration(tool.durationMs)}` : ''}</span>
                     </div>
+                    {tool.permission ? (
+                      <span className={tool.permission === 'approved' ? 'harness-flag-ok' : 'harness-flag-warn'}>
+                        permission {tool.permission}{tool.permissionWaitMs ? ` · waited ${formatDuration(tool.permissionWaitMs)}` : ''}
+                      </span>
+                    ) : null}
                     {tool.command?.length ? <code>{tool.command.join(' ')}</code> : null}
                     {tool.path ? <small>{shortenHomePath(tool.path)}</small> : null}
                     {tool.stdoutPreview ? <pre><strong>stdout</strong>{'\n'}{tool.stdoutPreview}</pre> : null}
@@ -3404,31 +3515,53 @@ function parseHarnessRun(value: unknown): HarnessRunView | undefined {
   return run.status || run.steps?.length ? run : undefined;
 }
 
-function buildRunningHarnessRun(requestID: string, conversationID: string, primaryModel: string): HarnessRunView {
-  return {
-    mode: 'chat',
-    status: 'running',
-    requestId: requestID,
-    conversationId: conversationID,
-    loop: {
-      maxSteps: 3,
-      iterations: 1,
-    },
-    steps: [
-      {kind: 'queued', status: 'completed', summary: 'turn accepted by harness'},
-      {kind: 'triage', status: 'completed', provider: 'ollama', model: primaryModel, summary: 'primary model triaged the turn'},
-      {kind: 'model_call', status: 'completed', provider: 'ollama', model: primaryModel, summary: 'primary model stream opened'},
-      {kind: 'streaming', status: 'running', provider: 'ollama', model: primaryModel, summary: 'primary model response streaming to UI'},
-      {kind: 'evaluation', status: 'pending'},
-      {kind: 'saved', status: 'pending'},
-    ],
-  };
+// One row per model that consumed tokens in this conversation, folded from
+// every assistant entry's run. Only model-call steps count (triage, skill,
+// planning, model_call, streaming): bookkeeping steps carry no usage, so each
+// model call is counted exactly once. Generation models (fal image/video/
+// audio) report no tokens and stay off the rows.
+type ModelUsageRow = {
+  provider: string;
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  calls: number;
+};
+
+function summarizeModelUsage(chat: ChatEntry[]): ModelUsageRow[] {
+  const byModel = new Map<string, ModelUsageRow>();
+  for (const entry of chat) {
+    if (entry.role !== 'assistant' || !entry.harnessRun) {
+      continue;
+    }
+    for (const step of asArray(entry.harnessRun.steps)) {
+      if (!step.model || !MODEL_CALL_STEP_KINDS.includes(step.kind ?? '')) {
+        continue;
+      }
+      const provider = step.provider || '—';
+      const key = `${provider}|${step.model}`;
+      const row = byModel.get(key) ?? {provider, model: step.model, promptTokens: 0, completionTokens: 0, calls: 0};
+      row.promptTokens += step.promptTokens ?? 0;
+      row.completionTokens += step.tokens ?? 0;
+      row.calls += 1;
+      byModel.set(key, row);
+    }
+  }
+  return [...byModel.values()].filter((row) => row.promptTokens > 0 || row.completionTokens > 0);
+}
+
+function formatTokenCount(count: number): string {
+  if (count >= 1000) {
+    return `${(count / 1000).toFixed(1)}k`;
+  }
+  return `${count}`;
 }
 
 function harnessStepLane(step: HarnessStepView): {label: string; className: string} {
   switch (step.kind) {
     case 'triage':
       return {label: 'Chat model', className: 'harness-lane-chat'};
+    case 'skill':
     case 'planning':
       return {label: 'Tool model', className: 'harness-lane-model'};
     case 'tool_call':

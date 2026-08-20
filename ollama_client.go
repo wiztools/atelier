@@ -17,13 +17,18 @@ type OllamaClient struct {
 	baseURL    string
 }
 
+// ChatCompletionResult is the shared non-streaming completion shape for every
+// provider. EvalTokens is the completion-side count (Ollama eval_count,
+// OpenRouter usage.completion_tokens); PromptTokens is the prompt-side count
+// (prompt_eval_count / usage.prompt_tokens), zero when unreported.
 type ChatCompletionResult struct {
-	Model      string
-	Content    string
-	Thinking   string
-	Reason     string
-	EvalTokens int
-	ToolCalls  []ToolCall
+	Model        string
+	Content      string
+	Thinking     string
+	Reason       string
+	EvalTokens   int
+	PromptTokens int
+	ToolCalls    []ToolCall
 }
 
 func newOllamaClient(httpClient *http.Client, baseURL string) OllamaClient {
@@ -316,12 +321,13 @@ func (client OllamaClient) CompleteChat(ctx context.Context, req ChatRequest) (C
 		content = payload.Response
 	}
 	return ChatCompletionResult{
-		Model:      payload.Model,
-		Content:    content,
-		Thinking:   payload.Message.Thinking,
-		Reason:     payload.DoneReason,
-		EvalTokens: payload.EvalCount,
-		ToolCalls:  payload.Message.ToolCalls,
+		Model:        payload.Model,
+		Content:      content,
+		Thinking:     payload.Message.Thinking,
+		Reason:       payload.DoneReason,
+		EvalTokens:   payload.EvalCount,
+		PromptTokens: payload.PromptEvalCount,
+		ToolCalls:    payload.Message.ToolCalls,
 	}, nil
 }
 

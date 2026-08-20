@@ -215,15 +215,17 @@ func pluralize(count int, noun string) string {
 // safe leans toward "vision" when the latest user turn carries an image, so a
 // triage decode failure (e.g. output truncated by num_predict) can't strip the
 // only signal that would have kept the primary model's attention on the image.
-func (h *HarnessEngine) triageChatTurn(ctx context.Context, req ChatRequest, harness harnessTarget, skillIndex []SkillIndexEntry) (HarnessTriageDecision, ChatCompletionResult) {
+func (h *HarnessEngine) triageChatTurn(ctx context.Context, req ChatRequest, harness harnessTarget, skillIndex []SkillIndexEntry) (HarnessTriageDecision, ChatCompletionResult, *HarnessRequestSnapshot) {
 	system := triageSystemPrompt(h.toolRegistry(), skillIndex, h.config.Tools.Filesystem.Root)
 	numCtx := h.numCtx()
+	messages := messagesWithAttachmentNotes(req.Messages)
+	truncated := truncateChatHistory(messages, historyBudgetChars(numCtx, system, triageNumPredict))
 	triageReq := ChatRequest{
 		BaseURL:  req.BaseURL,
 		Model:    harness.model,
 		Provider: harness.provider,
 		System:   system,
-		Messages: truncateChatHistory(messagesWithAttachmentNotes(req.Messages), historyBudgetChars(numCtx, system, triageNumPredict)),
+		Messages: truncated,
 		Format:   triageResponseSchema(),
 		Options: map[string]any{
 			"temperature": 0,
@@ -231,13 +233,14 @@ func (h *HarnessEngine) triageChatTurn(ctx context.Context, req ChatRequest, har
 			"num_ctx":     numCtx,
 		},
 	}
+	snapshot := requestSnapshot(triageReq, numCtx, len(messages)-len(truncated))
 	completion, err := h.completeWithHarnessModel(ctx, harness, triageReq)
 	if err != nil {
-		return triageFailSafe(req, "triage call failed; deferring to the harness model planner", err.Error()), ChatCompletionResult{}
+		return triageFailSafe(req, "triage call failed; deferring to the harness model planner", err.Error()), ChatCompletionResult{}, snapshot
 	}
 	decision, err := decodeTriageDecision(completion.Content)
 	if err != nil {
-		return triageFailSafe(req, "triage response was not valid JSON; deferring to the harness model planner", err.Error()), completion
+		return triageFailSafe(req, "triage response was not valid JSON; deferring to the harness model planner", err.Error()), completion, snapshot
 	}
 	if decision.ResponseMode == "" {
 		// An empty mode usually means truncation salvage recovered needsTools
@@ -249,7 +252,7 @@ func (h *HarnessEngine) triageChatTurn(ctx context.Context, req ChatRequest, har
 			decision.ResponseMode = "vision"
 		}
 	}
-	return decision, completion
+	return decision, completion, snapshot
 }
 
 // triageFailSafe builds the fail-safe decision for a triage failure: needsTools

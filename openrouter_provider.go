@@ -59,7 +59,7 @@ func (provider OpenRouterProvider) StreamChat(ctx context.Context, req ChatReque
 				event.DoneReason = chunk.Choices[0].FinishReason
 			}
 			if chunk.Usage != nil {
-				event.Usage = &TokenUsage{CompletionTokens: chunk.Usage.CompletionTokens}
+				event.Usage = &TokenUsage{PromptTokens: chunk.Usage.PromptTokens, CompletionTokens: chunk.Usage.CompletionTokens}
 			}
 			return event, false, nil
 		})

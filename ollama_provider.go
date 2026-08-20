@@ -64,8 +64,8 @@ func (provider OllamaProvider) StreamChat(ctx context.Context, req ChatRequest) 
 				DoneReason:   chunk.DoneReason,
 				Done:         chunk.Done,
 			}
-			if chunk.EvalCount > 0 {
-				event.Usage = &TokenUsage{CompletionTokens: chunk.EvalCount}
+			if chunk.EvalCount > 0 || chunk.PromptEvalCount > 0 {
+				event.Usage = &TokenUsage{PromptTokens: chunk.PromptEvalCount, CompletionTokens: chunk.EvalCount}
 			}
 			return event, chunk.Done, nil
 		})

@@ -1478,6 +1478,51 @@ button:disabled {
   font-size: 11px;
 }
 
+/* Per-model token usage rows: one per model that consumed tokens in the
+   conversation, folded from model-call steps. */
+.harness-usage {
+  display: grid;
+  gap: 4px;
+  margin: 0 12px 10px;
+  padding: 8px 10px;
+  border: 1px solid #2a2f32;
+  border-radius: 6px;
+  background: #14181a;
+}
+
+.harness-usage-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  color: #9ea5a3;
+}
+
+.harness-usage-model {
+  color: #d7d1c3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Step-level flags: trimmed-history warning and prompt-prefix hash. */
+.harness-flag-warn {
+  color: #d9a25a;
+}
+
+.harness-flag-ok {
+  color: #6fa56d;
+}
+
+.harness-hash {
+  font-size: 10px;
+  color: #6f7a7e;
+}
+
+.harness-hash-changed {
+  color: #d9a25a;
+}
+
 .harness-steps {
   margin: 0;
   padding: 0 12px 12px;

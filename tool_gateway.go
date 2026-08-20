@@ -14,11 +14,30 @@ type ToolExecutionRequest struct {
 	Source         string          `json:"source,omitempty"`
 }
 
+// Permission gate outcomes, recorded on ToolPermissionDecision.Outcome.
+const (
+	permissionOutcomeApproved  = "approved"
+	permissionOutcomeDenied    = "denied"
+	permissionOutcomeTimeout   = "timeout"
+	permissionOutcomeCancelled = "cancelled"
+)
+
+// ToolPermissionDecision records how a permission gate resolved — approved or
+// denied by the UI, timed out (fail-closed after 2 minutes), cancelled with
+// the request context, or denied because no UI was attached — plus how long
+// the gate waited. It is telemetry: it rides HarnessToolResult via json:"-"
+// and lands on HarnessToolActivity, never in planner evidence.
+type ToolPermissionDecision struct {
+	Approved bool   `json:"approved"`
+	Outcome  string `json:"outcome"`
+	WaitMS   int64  `json:"waitMs"`
+}
+
 type ToolGateway struct {
 	app                 *App
 	registry            HarnessToolRegistry
 	tools               HarnessToolExecutionContext
-	permissionRequester func(context.Context, ToolPermissionRequestEvent) bool
+	permissionRequester func(context.Context, ToolPermissionRequestEvent) ToolPermissionDecision
 }
 
 func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry) ToolGateway {
@@ -236,8 +255,13 @@ func (g ToolGateway) Execute(ctx context.Context, req ToolExecutionRequest) Harn
 		return result
 	}
 	requiresPermission := definition.RequiresPermissionFor(call) || g.requiresUnlistedCommandPermission(call)
-	if requiresPermission && !g.requestPermission(ctx, req, definition, call) {
-		return HarnessToolResult{Name: name, Status: "denied", Summary: definition.Title + " was not approved", Error: "permission denied"}
+	var permission *ToolPermissionDecision
+	if requiresPermission {
+		decision := g.requestPermission(ctx, req, definition, call)
+		if !decision.Approved {
+			return HarnessToolResult{Name: name, Status: "denied", Summary: definition.Title + " was not approved", Error: "permission denied", Permission: &decision}
+		}
+		permission = &decision
 	}
 	tools := g.tools
 	if g.requiresUnlistedCommandPermission(call) {
@@ -246,6 +270,7 @@ func (g ToolGateway) Execute(ctx context.Context, req ToolExecutionRequest) Harn
 	output, summary, err := definition.Execute(ctx, tools, call)
 	result.Result = output
 	result.Summary = summary
+	result.Permission = permission
 	if np, ok := output.(NoticeProvider); ok {
 		result.Notices = np.ToolNotices()
 	}
@@ -271,10 +296,10 @@ func (g ToolGateway) requiresUnlistedCommandPermission(call HarnessToolCall) boo
 	return name != "" && !commandAllowed(name, g.tools.Filesystem.config.AllowedCommands)
 }
 
-func (g ToolGateway) requestPermission(ctx context.Context, req ToolExecutionRequest, definition HarnessToolDefinition, call HarnessToolCall) bool {
+func (g ToolGateway) requestPermission(ctx context.Context, req ToolExecutionRequest, definition HarnessToolDefinition, call HarnessToolCall) ToolPermissionDecision {
 	if g.permissionRequester == nil {
 		// Nobody can approve: fail closed.
-		return false
+		return ToolPermissionDecision{Outcome: permissionOutcomeDenied}
 	}
 	event := ToolPermissionRequestEvent{}
 	if definition.Permission != nil {

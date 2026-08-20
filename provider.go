@@ -7,10 +7,13 @@ import (
 	"strings"
 )
 
-// TokenUsage reports completion token counts. Some providers (OpenRouter)
-// only populate this on the final streamed event; Ollama populates it on
-// every event once eval_count is nonzero.
+// TokenUsage reports prompt and completion token counts. Some providers
+// (OpenRouter) only populate this on the final streamed event; Ollama
+// populates it on every event once eval_count is nonzero. PromptTokens maps
+// to Ollama's prompt_eval_count and OpenRouter's usage.prompt_tokens; it is
+// zero when a provider doesn't report it.
 type TokenUsage struct {
+	PromptTokens     int
 	CompletionTokens int
 }
 

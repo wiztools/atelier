@@ -849,9 +849,9 @@ func TestToolGatewayDeniesWriteFileBeforeExecution(t *testing.T) {
 	gateway := ToolGateway{
 		registry: filesystemToolRegistry(),
 		tools:    newHarnessToolExecutionContext(AppConfig{Tools: ConfigTools{Filesystem: ConfigFilesystemTool{Root: root}}}),
-		permissionRequester: func(_ context.Context, event ToolPermissionRequestEvent) bool {
+		permissionRequester: func(_ context.Context, event ToolPermissionRequestEvent) ToolPermissionDecision {
 			permissionEvent = event
-			return false
+			return ToolPermissionDecision{Outcome: permissionOutcomeDenied}
 		},
 	}
 
@@ -886,9 +886,9 @@ func TestToolGatewayDoesNotRequestPermissionForReadFile(t *testing.T) {
 	gateway := ToolGateway{
 		registry: filesystemToolRegistry(),
 		tools:    newHarnessToolExecutionContext(AppConfig{Tools: ConfigTools{Filesystem: ConfigFilesystemTool{Root: root}}}),
-		permissionRequester: func(context.Context, ToolPermissionRequestEvent) bool {
+		permissionRequester: func(context.Context, ToolPermissionRequestEvent) ToolPermissionDecision {
 			permissionCalled = true
-			return false
+			return ToolPermissionDecision{Outcome: permissionOutcomeDenied}
 		},
 	}
 
@@ -917,9 +917,9 @@ func TestToolGatewayDoesNotRequestPermissionForReadOnlyCommand(t *testing.T) {
 			Root:            root,
 			AllowedCommands: []string{"pwd"},
 		}}}),
-		permissionRequester: func(context.Context, ToolPermissionRequestEvent) bool {
+		permissionRequester: func(context.Context, ToolPermissionRequestEvent) ToolPermissionDecision {
 			permissionCalled = true
-			return false
+			return ToolPermissionDecision{Outcome: permissionOutcomeDenied}
 		},
 	}
 
@@ -957,8 +957,8 @@ func TestToolGatewayTreatsProcessExitAsCompletedCommandResult(t *testing.T) {
 			Root:            t.TempDir(),
 			AllowedCommands: []string{"false"},
 		}}}),
-		permissionRequester: func(context.Context, ToolPermissionRequestEvent) bool {
-			return true
+		permissionRequester: func(context.Context, ToolPermissionRequestEvent) ToolPermissionDecision {
+			return ToolPermissionDecision{Approved: true, Outcome: permissionOutcomeApproved}
 		},
 	}
 
@@ -978,8 +978,8 @@ func TestToolGatewayTreatsSpawnFailureAsFailedToolResult(t *testing.T) {
 			Root:            t.TempDir(),
 			AllowedCommands: []string{"atelier-command-that-does-not-exist"},
 		}}}),
-		permissionRequester: func(context.Context, ToolPermissionRequestEvent) bool {
-			return true
+		permissionRequester: func(context.Context, ToolPermissionRequestEvent) ToolPermissionDecision {
+			return ToolPermissionDecision{Approved: true, Outcome: permissionOutcomeApproved}
 		},
 	}
 
@@ -1011,9 +1011,9 @@ func TestToolGatewayRequestsPermissionForCustomCommand(t *testing.T) {
 			Root:            t.TempDir(),
 			AllowedCommands: []string{"git"},
 		}}}),
-		permissionRequester: func(context.Context, ToolPermissionRequestEvent) bool {
+		permissionRequester: func(context.Context, ToolPermissionRequestEvent) ToolPermissionDecision {
 			permissionCalled = true
-			return false
+			return ToolPermissionDecision{Outcome: permissionOutcomeDenied}
 		},
 	}
 
@@ -1048,9 +1048,9 @@ func TestToolGatewayRunsUnlistedCommandWithLongFlagValue(t *testing.T) {
 			Root:            root,
 			AllowedCommands: []string{"cat"},
 		}}}),
-		permissionRequester: func(context.Context, ToolPermissionRequestEvent) bool {
+		permissionRequester: func(context.Context, ToolPermissionRequestEvent) ToolPermissionDecision {
 			permissionCalled = true
-			return true
+			return ToolPermissionDecision{Approved: true, Outcome: permissionOutcomeApproved}
 		},
 	}
 
@@ -1087,8 +1087,8 @@ func TestToolGatewayDeniesUnlistedCommandWithoutPermission(t *testing.T) {
 			Root:            root,
 			AllowedCommands: []string{"cat"},
 		}}}),
-		permissionRequester: func(context.Context, ToolPermissionRequestEvent) bool {
-			return false
+		permissionRequester: func(context.Context, ToolPermissionRequestEvent) ToolPermissionDecision {
+			return ToolPermissionDecision{Outcome: permissionOutcomeDenied}
 		},
 	}
 
@@ -1158,8 +1158,8 @@ func TestToolGatewayRejectsEmptyToolName(t *testing.T) {
 	gateway := ToolGateway{
 		registry: filesystemToolRegistry(),
 		tools:    newHarnessToolExecutionContext(AppConfig{Tools: ConfigTools{Filesystem: ConfigFilesystemTool{Root: t.TempDir()}}}),
-		permissionRequester: func(context.Context, ToolPermissionRequestEvent) bool {
-			return true
+		permissionRequester: func(context.Context, ToolPermissionRequestEvent) ToolPermissionDecision {
+			return ToolPermissionDecision{Approved: true, Outcome: permissionOutcomeApproved}
 		},
 	}
 
@@ -1173,7 +1173,7 @@ func TestToolGatewayRejectsEmptyToolName(t *testing.T) {
 
 func TestRequestToolPermissionFailsClosedWithoutUI(t *testing.T) {
 	app := NewApp()
-	if app.requestToolPermission(context.Background(), ToolPermissionRequestEvent{Summary: "Run command"}) {
+	if decision := app.requestToolPermission(context.Background(), ToolPermissionRequestEvent{Summary: "Run command"}); decision.Approved {
 		t.Fatal("requestToolPermission approved without an attached UI, want fail closed")
 	}
 }
@@ -2697,9 +2697,9 @@ func TestHarnessExecutesSkillCommandInsteadOfDelegatingToFinalModel(t *testing.T
 
 	app := NewApp()
 	var approvedCommands [][]string
-	app.toolPermission = func(_ context.Context, event ToolPermissionRequestEvent) bool {
+	app.toolPermission = func(_ context.Context, event ToolPermissionRequestEvent) ToolPermissionDecision {
 		approvedCommands = append(approvedCommands, event.Command)
-		return true
+		return ToolPermissionDecision{Approved: true, Outcome: permissionOutcomeApproved}
 	}
 	prepCalls := 0
 	var responseSystem string
@@ -2839,8 +2839,8 @@ func TestHarnessModelPlansKnowledgedPost(t *testing.T) {
 	}
 
 	app := NewApp()
-	app.toolPermission = func(context.Context, ToolPermissionRequestEvent) bool {
-		return true
+	app.toolPermission = func(context.Context, ToolPermissionRequestEvent) ToolPermissionDecision {
+		return ToolPermissionDecision{Approved: true, Outcome: permissionOutcomeApproved}
 	}
 	prepCalls := 0
 	var prepSystem string
@@ -5237,7 +5237,7 @@ func TestTriageChatTurnParsesDecision(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
 	})
 	engine := newHarnessEngine(defaultAppConfig(), app)
-	decision, completion := engine.triageChatTurn(context.Background(), ChatRequest{
+	decision, completion, _ := engine.triageChatTurn(context.Background(), ChatRequest{
 		BaseURL:  "http://ollama.test",
 		Messages: []ChatMessage{{Role: "user", Content: "What is the project status?"}},
 	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
@@ -5255,7 +5255,7 @@ func TestTriageChatTurnFailsSafeToToolPath(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusInternalServerError, Status: "500 Internal Server Error", Body: io.NopCloser(strings.NewReader("boom")), Header: http.Header{}}, nil
 	})
 	engine := newHarnessEngine(defaultAppConfig(), app)
-	decision, _ := engine.triageChatTurn(context.Background(), ChatRequest{
+	decision, _, _ := engine.triageChatTurn(context.Background(), ChatRequest{
 		BaseURL:  "http://ollama.test",
 		Messages: []ChatMessage{{Role: "user", Content: "anything"}},
 	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
@@ -5294,7 +5294,7 @@ func TestTriageChatTurnStripsImagesFromRequest(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
 	})
 	engine := newHarnessEngine(defaultAppConfig(), app)
-	decision, _ := engine.triageChatTurn(context.Background(), ChatRequest{
+	decision, _, _ := engine.triageChatTurn(context.Background(), ChatRequest{
 		BaseURL: "http://ollama.test",
 		Messages: []ChatMessage{{
 			Role:    "user",
@@ -5374,7 +5374,7 @@ func TestTriageChatTurnDecodeErrorFailsSafe(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
 	})
 	engine := newHarnessEngine(defaultAppConfig(), app)
-	decision, completion := engine.triageChatTurn(context.Background(), ChatRequest{
+	decision, completion, _ := engine.triageChatTurn(context.Background(), ChatRequest{
 		BaseURL:  "http://ollama.test",
 		Messages: []ChatMessage{{Role: "user", Content: "anything"}},
 	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
@@ -5410,7 +5410,7 @@ func TestTriageChatTurnFailsSafeToVisionWhenImageAttached(t *testing.T) {
 			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
 		})
 		engine := newHarnessEngine(defaultAppConfig(), app)
-		decision, _ := engine.triageChatTurn(context.Background(), withImage, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
+		decision, _, _ := engine.triageChatTurn(context.Background(), withImage, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
 		if !decision.NeedsTools {
 			t.Fatal("fail-safe must keep needsTools true so the planner can still run")
 		}
@@ -5426,7 +5426,7 @@ func TestTriageChatTurnFailsSafeToVisionWhenImageAttached(t *testing.T) {
 			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
 		})
 		engine := newHarnessEngine(defaultAppConfig(), app)
-		decision, _ := engine.triageChatTurn(context.Background(), textOnly, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
+		decision, _, _ := engine.triageChatTurn(context.Background(), textOnly, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
 		if !decision.NeedsTools || decision.ResponseMode != "text" {
 			t.Fatalf("decision = %+v, want text fail-safe when no image is attached", decision)
 		}
@@ -5438,7 +5438,7 @@ func TestTriageChatTurnFailsSafeToVisionWhenImageAttached(t *testing.T) {
 			return &http.Response{StatusCode: http.StatusInternalServerError, Status: "500 Internal Server Error", Body: io.NopCloser(strings.NewReader("boom")), Header: http.Header{}}, nil
 		})
 		engine := newHarnessEngine(defaultAppConfig(), app)
-		decision, _ := engine.triageChatTurn(context.Background(), withImage, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
+		decision, _, _ := engine.triageChatTurn(context.Background(), withImage, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
 		if !decision.NeedsTools || decision.ResponseMode != "vision" {
 			t.Fatalf("decision = %+v, want vision fail-safe when the triage call fails and an image is attached", decision)
 		}
@@ -5501,7 +5501,7 @@ func TestPreparedResponseRequestDeliversToolEvidenceAsUserRole(t *testing.T) {
 		},
 	}
 
-	result := engine.preparedResponseRequest(req, "primary-model", "openrouter", preparation, nil)
+	result, _ := engine.preparedResponseRequest(req, "primary-model", "openrouter", preparation, nil)
 	messages := result.Messages
 
 	// The last message must be user-role, not tool-role.
@@ -5590,7 +5590,7 @@ func TestPreparedResponseRequestKeepsMediaWhenNoApp(t *testing.T) {
 	}
 	preparation := HarnessPreparedTurn{}
 
-	result := engine.preparedResponseRequest(req, "primary-model", "openrouter", preparation, nil)
+	result, _ := engine.preparedResponseRequest(req, "primary-model", "openrouter", preparation, nil)
 	found := false
 	for _, msg := range result.Messages {
 		if len(msg.Audios) > 0 {
@@ -5711,7 +5711,7 @@ func TestPreparedResponseRequestInjectsHistoryImage(t *testing.T) {
 			{Role: "user", Content: "describe the image you just generated"},
 		},
 	}
-	result := engine.preparedResponseRequest(req, "primary-model", "openrouter", HarnessPreparedTurn{}, []string{resolvedImage})
+	result, _ := engine.preparedResponseRequest(req, "primary-model", "openrouter", HarnessPreparedTurn{}, []string{resolvedImage})
 	lastUser := -1
 	for i := len(result.Messages) - 1; i >= 0; i-- {
 		if result.Messages[i].Role == "user" {
@@ -5735,7 +5735,7 @@ func TestPreparedResponseRequestInjectsHistoryImage(t *testing.T) {
 			{Role: "user", Content: "describe this", Images: []string{currentImage}},
 		},
 	}
-	result = engine.preparedResponseRequest(req, "primary-model", "openrouter", HarnessPreparedTurn{}, []string{resolvedImage})
+	result, _ = engine.preparedResponseRequest(req, "primary-model", "openrouter", HarnessPreparedTurn{}, []string{resolvedImage})
 	lastUser = -1
 	for i := len(result.Messages) - 1; i >= 0; i-- {
 		if result.Messages[i].Role == "user" {
@@ -5757,7 +5757,7 @@ func TestPreparedResponseRequestInjectsHistoryImage(t *testing.T) {
 			{Role: "user", Content: "describe it"},
 		},
 	}
-	result = engine.preparedResponseRequest(req, "primary-model", "openrouter", HarnessPreparedTurn{}, nil)
+	result, _ = engine.preparedResponseRequest(req, "primary-model", "openrouter", HarnessPreparedTurn{}, nil)
 	for _, msg := range result.Messages {
 		if msg.Role == "user" && len(msg.Images) != 0 {
 			t.Errorf("empty-image branch: user message unexpectedly got images %+v", msg.Images)
@@ -5776,7 +5776,7 @@ func TestPreparedResponseRequestInjectsHistoryImage(t *testing.T) {
 			{Role: "user", Content: "compare the two images"},
 		},
 	}
-	result = engine.preparedResponseRequest(req, "primary-model", "openrouter", HarnessPreparedTurn{}, []string{firstImage, secondImage})
+	result, _ = engine.preparedResponseRequest(req, "primary-model", "openrouter", HarnessPreparedTurn{}, []string{firstImage, secondImage})
 	lastUser = -1
 	for i := len(result.Messages) - 1; i >= 0; i-- {
 		if result.Messages[i].Role == "user" {
@@ -7034,7 +7034,7 @@ func TestTriageChatTurnRoutesToConfiguredHarnessProvider(t *testing.T) {
 	})
 
 	engine := newHarnessEngine(defaultAppConfig(), app)
-	decision, _ := engine.triageChatTurn(context.Background(), ChatRequest{
+	decision, _, _ := engine.triageChatTurn(context.Background(), ChatRequest{
 		BaseURL:  "http://ollama.test",
 		Messages: []ChatMessage{{Role: "user", Content: "hello"}},
 	}, harnessTarget{model: "anthropic/claude-3.5-sonnet", provider: "openrouter"}, nil)
@@ -7076,7 +7076,7 @@ func TestSelectSkillForTurnRoutesToConfiguredHarnessProvider(t *testing.T) {
 	}, harnessTurnContext{
 		SkillIndex: []SkillIndexEntry{{Name: "demo", Description: "a demo skill"}},
 		Harness:    harnessTarget{model: "anthropic/claude-3.5-sonnet", provider: "openrouter"},
-	})
+	}, nil)
 
 	if gotHost != "openrouter.ai" {
 		t.Fatalf("skill selection reached host %q, want openrouter.ai — it silently keeps hitting Ollama", gotHost)

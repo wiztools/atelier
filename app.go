@@ -38,7 +38,7 @@ type App struct {
 	streamsMu      sync.Mutex
 	permissions    map[string]chan bool
 	permissionsMu  sync.Mutex
-	toolPermission func(context.Context, ToolPermissionRequestEvent) bool
+	toolPermission func(context.Context, ToolPermissionRequestEvent) ToolPermissionDecision
 }
 
 func NewApp() *App {
@@ -360,9 +360,10 @@ type ollamaChatChunk struct {
 		Thinking  string     `json:"thinking"`
 		ToolCalls []ToolCall `json:"tool_calls"`
 	} `json:"message"`
-	DoneReason string `json:"done_reason"`
-	EvalCount  int    `json:"eval_count"`
-	Error      string `json:"error"`
+	DoneReason      string `json:"done_reason"`
+	EvalCount       int    `json:"eval_count"`
+	PromptEvalCount int    `json:"prompt_eval_count"`
+	Error           string `json:"error"`
 }
 
 type ollamaChatResponse struct {
@@ -373,11 +374,12 @@ type ollamaChatResponse struct {
 		Thinking  string     `json:"thinking"`
 		ToolCalls []ToolCall `json:"tool_calls"`
 	} `json:"message"`
-	Response   string `json:"response"`
-	Done       bool   `json:"done"`
-	DoneReason string `json:"done_reason"`
-	EvalCount  int    `json:"eval_count"`
-	Error      string `json:"error"`
+	Response        string `json:"response"`
+	Done            bool   `json:"done"`
+	DoneReason      string `json:"done_reason"`
+	EvalCount       int    `json:"eval_count"`
+	PromptEvalCount int    `json:"prompt_eval_count"`
+	Error           string `json:"error"`
 }
 
 type ImageGenerateRequest struct {
@@ -663,6 +665,11 @@ type HarnessRun struct {
 	Skill          *HarnessSkillDecision  `json:"skill,omitempty"`
 	Triage         *HarnessTriageDecision `json:"triage,omitempty"`
 	Steps          []HarnessStep          `json:"steps"`
+	// onUpdate, when set, fires after every step transition (appendStep,
+	// completeStep, complete) so the UI can render the run live via the
+	// atelier:harness-run event. Unexported and never serialized; tests build
+	// runs without it.
+	onUpdate func()
 }
 
 type HarnessLoop struct {
@@ -673,21 +680,45 @@ type HarnessLoop struct {
 }
 
 type HarnessStep struct {
-	ID          string                `json:"id"`
-	Kind        string                `json:"kind"`
-	Iteration   int                   `json:"iteration,omitempty"`
-	Provider    string                `json:"provider"`
-	Model       string                `json:"model"`
-	Status      string                `json:"status"`
-	StartedAt   string                `json:"startedAt"`
-	CompletedAt string                `json:"completedAt,omitempty"`
-	DurationMS  int64                 `json:"durationMs,omitempty"`
-	Decision    string                `json:"decision,omitempty"`
-	DoneReason  string                `json:"doneReason,omitempty"`
-	Summary     string                `json:"summary,omitempty"`
-	Error       string                `json:"error,omitempty"`
-	Tokens      int                   `json:"tokens,omitempty"`
-	Tools       []HarnessToolActivity `json:"tools,omitempty"`
+	ID          string `json:"id"`
+	Kind        string `json:"kind"`
+	Iteration   int    `json:"iteration,omitempty"`
+	Provider    string `json:"provider"`
+	Model       string `json:"model"`
+	Status      string `json:"status"`
+	StartedAt   string `json:"startedAt"`
+	CompletedAt string `json:"completedAt,omitempty"`
+	DurationMS  int64  `json:"durationMs,omitempty"`
+	Decision    string `json:"decision,omitempty"`
+	DoneReason  string `json:"doneReason,omitempty"`
+	Summary     string `json:"summary,omitempty"`
+	Error       string `json:"error,omitempty"`
+	// Tokens is the completion-side count for model-call steps (triage, skill,
+	// planning, streaming). Bookkeeping steps (saved/evaluation) carry none —
+	// the turn total lives in ProviderResponse.tokens — so summing tokens over
+	// steps counts each model call exactly once.
+	Tokens       int `json:"tokens,omitempty"`
+	PromptTokens int `json:"promptTokens,omitempty"`
+	// FirstTokenMS is time-to-first-token for streaming steps: milliseconds
+	// between the provider stream opening and the first visible delta.
+	FirstTokenMS int64                   `json:"firstTokenMs,omitempty"`
+	Request      *HarnessRequestSnapshot `json:"request,omitempty"`
+	Tools        []HarnessToolActivity   `json:"tools,omitempty"`
+}
+
+// HarnessRequestSnapshot is a compact fingerprint of one model request,
+// recorded on every model-call step so post-hoc debugging can see what was
+// sent without persisting raw prompts. PromptHash covers the prefix-cache-
+// sensitive prefix (system prompt + message #0): consecutive same-model steps
+// sharing a PromptHash kept the Ollama prefix cache warm; a change means the
+// cache was invalidated. Hashes are sha256 truncated to 12 hex chars.
+type HarnessRequestSnapshot struct {
+	PromptHash        string `json:"promptHash,omitempty"`
+	ToolsHash         string `json:"toolsHash,omitempty"`
+	PromptChars       int    `json:"promptChars,omitempty"`
+	ToolMode          string `json:"toolMode,omitempty"` // native|format|"" (final responses carry none)
+	NumCtx            int    `json:"numCtx,omitempty"`
+	TruncatedMessages int    `json:"truncatedMessages,omitempty"`
 }
 
 type HarnessToolActivity struct {
@@ -708,6 +739,12 @@ type HarnessToolActivity struct {
 	StderrPreview string          `json:"stderrPreview,omitempty"`
 	DurationMS    int64           `json:"durationMs,omitempty"`
 	Error         string          `json:"error,omitempty"`
+	// Permission records how the permission gate resolved (approved/denied/
+	// timeout/cancelled) and how long it waited, when the call was gated.
+	// Zipped from HarnessToolResult's json:"-" side-channel at the same
+	// recording site as Call.
+	Permission       string `json:"permission,omitempty"`
+	PermissionWaitMS int64  `json:"permissionWaitMs,omitempty"`
 }
 
 // EmptyStatePrompt is a heading/subtext pair shown on the empty chat screen.
@@ -1435,13 +1472,32 @@ func (a *App) emitChatEvent(event ChatStreamEvent) {
 	}
 }
 
-func (a *App) requestToolPermission(ctx context.Context, event ToolPermissionRequestEvent) bool {
+// HarnessRunEvent is the atelier:harness-run payload: the full run snapshot
+// after every step transition. The live panel and the persisted record render
+// from the same shape, so the UI never fabricates in-flight state.
+type HarnessRunEvent struct {
+	RequestID      string     `json:"requestId"`
+	ConversationID string     `json:"conversationId,omitempty"`
+	Run            HarnessRun `json:"run"`
+}
+
+func (a *App) emitHarnessRunEvent(event HarnessRunEvent) {
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "atelier:harness-run", event)
+	}
+}
+
+func (a *App) requestToolPermission(ctx context.Context, event ToolPermissionRequestEvent) ToolPermissionDecision {
 	if a.ctx == nil {
 		// No UI is attached, so nobody can approve: fail closed.
-		return false
+		return ToolPermissionDecision{Outcome: permissionOutcomeDenied}
 	}
 	if strings.TrimSpace(event.ID) == "" {
 		event.ID = randomID("permission")
+	}
+	requestedAt := time.Now()
+	decisionAt := func(approved bool, outcome string) ToolPermissionDecision {
+		return ToolPermissionDecision{Approved: approved, Outcome: outcome, WaitMS: time.Since(requestedAt).Milliseconds()}
 	}
 	response := make(chan bool, 1)
 	a.permissionsMu.Lock()
@@ -1451,17 +1507,20 @@ func (a *App) requestToolPermission(ctx context.Context, event ToolPermissionReq
 
 	select {
 	case approved := <-response:
-		return approved
+		if approved {
+			return decisionAt(true, permissionOutcomeApproved)
+		}
+		return decisionAt(false, permissionOutcomeDenied)
 	case <-ctx.Done():
 		a.permissionsMu.Lock()
 		delete(a.permissions, event.ID)
 		a.permissionsMu.Unlock()
-		return false
+		return decisionAt(false, permissionOutcomeCancelled)
 	case <-time.After(2 * time.Minute):
 		a.permissionsMu.Lock()
 		delete(a.permissions, event.ID)
 		a.permissionsMu.Unlock()
-		return false
+		return decisionAt(false, permissionOutcomeTimeout)
 	}
 }
 
@@ -2545,7 +2604,7 @@ func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt str
 	if err != nil {
 		return HistoryTurn{}, HistoryTurn{}, err
 	}
-	assistantTurn := buildChatAssistantTurn(conversationID, firstTurnNumber+1, createdAt, assistantContent, assistantThinking, model, provider, reason, tokens, run)
+	assistantTurn := buildChatAssistantTurn(conversationID, firstTurnNumber+1, createdAt, assistantContent, assistantThinking, model, provider, reason, tokens, run, "")
 	return userTurn, assistantTurn, nil
 }
 
@@ -2578,7 +2637,7 @@ func buildChatUserTurn(conversationID string, turnNumber int, createdAt string, 
 	return userTurn, nil
 }
 
-func buildChatAssistantTurn(conversationID string, turnNumber int, createdAt string, assistantContent, assistantThinking, model, provider, reason string, tokens int, run HarnessRun) HistoryTurn {
+func buildChatAssistantTurn(conversationID string, turnNumber int, createdAt string, assistantContent, assistantThinking, model, provider, reason string, tokens int, run HarnessRun, errorText string) HistoryTurn {
 	assistantContents := []HistoryContent{{Type: "text", Text: assistantContent}}
 	if strings.TrimSpace(assistantThinking) != "" {
 		assistantContents = append(assistantContents, HistoryContent{Type: "thinking", Text: assistantThinking})
@@ -2587,6 +2646,9 @@ func buildChatAssistantTurn(conversationID string, turnNumber int, createdAt str
 		"doneReason": reason,
 		"harnessRun": run,
 		"tokens":     tokens,
+	}
+	if strings.TrimSpace(errorText) != "" {
+		providerResponse["error"] = errorText
 	}
 	if run.Skill != nil {
 		providerResponse["skill"] = run.Skill
@@ -2658,14 +2720,14 @@ func appendChatUserTurn(config AppConfig, req ChatRequest) (string, error) {
 	return conversationID, nil
 }
 
-func appendChatAssistantTurn(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, tokens int, run HarnessRun) error {
+func appendChatAssistantTurn(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, tokens int, run HarnessRun, errorText string) error {
 	store := newHistoryStore(config.Storage)
 	loaded, err := store.loadForAppend(conversationID, "chat", "a chat", config.Tools.Filesystem.Root)
 	if err != nil {
 		return err
 	}
 	nowText := time.Now().Format(time.RFC3339)
-	assistantTurn := buildChatAssistantTurn(conversationID, loaded.NextTurnNumber, nowText, assistantContent, assistantThinking, model, provider, reason, tokens, run)
+	assistantTurn := buildChatAssistantTurn(conversationID, loaded.NextTurnNumber, nowText, assistantContent, assistantThinking, model, provider, reason, tokens, run, errorText)
 
 	loaded.Conversation.UpdatedAt = nowText
 	loaded.Conversation.Stats.TurnCount++
