@@ -154,6 +154,20 @@ export namespace main {
 	        this.imageProvider = source["imageProvider"];
 	    }
 	}
+	export class ConfigOpenAICompatible {
+	    baseURL: string;
+	    model?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConfigOpenAICompatible(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.baseURL = source["baseURL"];
+	        this.model = source["model"];
+	    }
+	}
 	export class ConfigFal {
 	    enabled: boolean;
 	    model?: string;
@@ -262,6 +276,7 @@ export namespace main {
 	    ollama: ConfigOllama;
 	    openrouter: ConfigOpenRouter;
 	    fal: ConfigFal;
+	    openaiCompatible: ConfigOpenAICompatible;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigProviders(source);
@@ -272,6 +287,7 @@ export namespace main {
 	        this.ollama = this.convertValues(source["ollama"], ConfigOllama);
 	        this.openrouter = this.convertValues(source["openrouter"], ConfigOpenRouter);
 	        this.fal = this.convertValues(source["fal"], ConfigFal);
+	        this.openaiCompatible = this.convertValues(source["openaiCompatible"], ConfigOpenAICompatible);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -506,6 +522,7 @@ export namespace main {
 	        this.conversationId = source["conversationId"];
 	    }
 	}
+	
 	
 	
 	

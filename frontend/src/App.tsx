@@ -7,10 +7,12 @@ import {
   CheckFalConnection,
   CheckOllama,
   ChooseToolWorkspace,
+  ClearOpenAICompatibleAPIKey,
   DeleteConversation,
   GetConversation,
   GetConfig,
   HasFalAPIKey,
+  HasOpenAICompatibleAPIKey,
   HasOpenRouterAPIKey,
   ListConversations,
   ListFalModels,
@@ -28,6 +30,7 @@ import {
   ListFalLipsyncImageModels,
   ListFalLipsyncVideoModels,
   ListModels,
+  ListOpenAICompatibleModels,
   ListPrimaryModels,
   PurgeArchivedConversations,
   RandomEmptyStatePrompt,
@@ -38,6 +41,7 @@ import {
   SaveAudio,
   SaveConfig,
   SaveFalAPIKey,
+  SaveOpenAICompatibleAPIKey,
   SaveOpenRouterAPIKey,
   StreamChat,
   UpdateConversationTitle,
@@ -303,7 +307,16 @@ function App() {
   const [openRouterHasKey, setOpenRouterHasKey] = useState(false);
   const [openRouterStatus, setOpenRouterStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
   const [openRouterError, setOpenRouterError] = useState('');
-  const [imageProvider, setImageProvider] = useState<'ollama' | 'fal'>('ollama');
+  // Ollama is no longer offered as an image provider in the UI (its runtime
+  // dropped image-generation support); a config still saying "ollama" loads as
+  // the local OpenAI-compatible server. The Go backend keeps accepting the id.
+  const [imageProvider, setImageProvider] = useState<'fal' | 'openai-compatible'>('openai-compatible');
+  const [openaiCompatibleBaseURL, setOpenaiCompatibleBaseURL] = useState('http://localhost:8080');
+  const [openaiCompatibleModel, setOpenaiCompatibleModel] = useState('');
+  const [openaiCompatibleModels, setOpenaiCompatibleModels] = useState<string[]>([]);
+  const [openaiCompatibleKeyInput, setOpenaiCompatibleKeyInput] = useState('');
+  const [openaiCompatibleHasKey, setOpenaiCompatibleHasKey] = useState(false);
+  const [openaiCompatibleStatus, setOpenaiCompatibleStatus] = useState<'unknown' | 'ok' | 'error'>('unknown');
   const [falAPIKeyInput, setFalAPIKeyInput] = useState('');
   const [falHasKey, setFalHasKey] = useState(false);
   const [falStatus, setFalStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
@@ -581,6 +594,10 @@ function App() {
             lipsyncImageModel: falLipsyncImageModel,
             lipsyncVideoModel: falLipsyncVideoModel,
           },
+          openaiCompatible: {
+            baseURL: openaiCompatibleBaseURL,
+            model: openaiCompatibleModel,
+          },
         },
         models: {
           primaryProvider,
@@ -610,7 +627,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falAudioModel, falSoundEffectsModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falAudioModel, falSoundEffectsModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
 
   // On a fresh launch, put the cursor in the chat box so the user can start
   // typing immediately. Fires once, when config finishes loading.
@@ -826,11 +843,11 @@ function App() {
     }
     return modelOptions.map((name) => ({value: name, label: name}));
   }, [harnessProvider, modelOptions, openRouterModels]);
-  const imageModelOptions = useMemo(() => {
-    const detected = asArray(models).filter((item) => item.imageGeneration).map((item) => item.name).filter(Boolean);
-    return detected.length ? detected : modelOptions;
-  }, [modelOptions, models]);
   const falModelOptions = useMemo(() => falModelOptionList(falModels), [falModels]);
+  const openaiCompatibleModelOptions = useMemo(
+    () => openaiCompatibleModels.map((id) => ({value: id, label: id})),
+    [openaiCompatibleModels],
+  );
 
   const falImageEditModelOptions = useMemo(() => falModelOptionList(falImageEditModels), [falImageEditModels]);
 
@@ -883,13 +900,6 @@ function App() {
       return {value: preset.value, label: `${preset.label} (${dims.width}×${dims.height})`};
     });
   }, [imageAspectRatio]);
-
-  useEffect(() => {
-    if (!imageModelOptions.length || imageModelOptions.includes(imageModel)) {
-      return;
-    }
-    setImageModel(imageModelOptions[0]);
-  }, [imageModel, imageModelOptions]);
 
   // Each video picker fetches the duration values its selected model accepts
   // (ListFalVideoDurations → the model's published schema enum), then reconciles
@@ -975,7 +985,9 @@ function App() {
     const nextImageAspectRatio = config.generation?.image?.aspectRatio || defaultImageAspectRatio;
     const nextImageSizePreset = config.generation?.image?.sizePreset || defaultImageSizePreset;
     const nextImageSteps = config.generation?.image?.steps || defaultImageSteps;
-    const nextImageProvider = config.models?.imageProvider === 'fal' ? 'fal' : 'ollama';
+    const nextImageProvider = config.models?.imageProvider === 'fal' ? 'fal' : 'openai-compatible';
+    const nextOpenAICompatibleBaseURL = config.providers?.openaiCompatible?.baseURL || 'http://localhost:8080';
+    const nextOpenAICompatibleModel = config.providers?.openaiCompatible?.model ?? '';
     const nextFalModel = config.providers?.fal?.model || defaultFalImageModel;
     const nextFalImageEditModel = config.providers?.fal?.imageEditModel || defaultFalImageEditModel;
 	const nextFalVideoModel = config.providers?.fal?.videoModel || defaultFalVideoModel;
@@ -1006,6 +1018,8 @@ function App() {
     setImageSizePreset(nextImageSizePreset);
     setImageSteps(nextImageSteps);
     setImageProvider(nextImageProvider);
+    setOpenaiCompatibleBaseURL(nextOpenAICompatibleBaseURL);
+    setOpenaiCompatibleModel(nextOpenAICompatibleModel);
     setFalModel(nextFalModel);
     setFalImageEditModel(nextFalImageEditModel);
     setFalVideoModel(nextFalVideoModel);
@@ -1042,6 +1056,10 @@ function App() {
           refreshFalModels();
         }
       }).catch(() => setFalHasKey(false)),
+      HasOpenAICompatibleAPIKey().then((hasKey) => {
+        setOpenaiCompatibleHasKey(hasKey);
+      }).catch(() => setOpenaiCompatibleHasKey(false)),
+      refreshOpenAICompatibleModels(nextOpenAICompatibleBaseURL),
     ]);
   }
 
@@ -1134,13 +1152,11 @@ function App() {
       const nextModels = asArray(await ListModels(endpoint));
       setModels(nextModels);
       const firstModel = nextModels[0]?.name ?? '';
-      const firstImageModel = nextModels.find((item) => item.imageGeneration)?.name ?? firstModel;
       setPrimaryModels((current) => (current.ollama ? current : {...current, ollama: firstModel}));
       // Target the Ollama slot explicitly: this default comes from the Ollama
       // catalog and must not land in the OpenRouter slot when that provider is
       // the active one.
       setHarnessModels((current) => (current.ollama ? current : {...current, ollama: firstModel}));
-      setImageModel((current) => current || firstImageModel);
     } finally {
       setRefreshing(false);
     }
@@ -1301,7 +1317,40 @@ function App() {
       setFalLipsyncVideoModels([]);
       setFalStatus('unknown');
       setFalError('');
-      setImageProvider((current) => current === 'fal' ? 'ollama' : current);
+      setImageProvider((current) => current === 'fal' ? 'openai-compatible' : current);
+    } catch (error) {
+      setStatus((current) => current ? {...current, error: String(error)} : current);
+    }
+  }
+
+  // The OpenAI-compatible image server list is a discovery aid like fal's
+  // catalog: a server without /v1/models only loses the suggestions, never the
+  // free-text model field. The status feeds the Providers tab endpoint row.
+  async function refreshOpenAICompatibleModels(endpoint = openaiCompatibleBaseURL) {
+    try {
+      const ids = await ListOpenAICompatibleModels(endpoint);
+      setOpenaiCompatibleModels(asArray(ids));
+      setOpenaiCompatibleStatus('ok');
+    } catch {
+      setOpenaiCompatibleModels([]);
+      setOpenaiCompatibleStatus('error');
+    }
+  }
+
+  async function saveOpenAICompatibleKey() {
+    try {
+      await SaveOpenAICompatibleAPIKey(openaiCompatibleKeyInput);
+      setOpenaiCompatibleKeyInput('');
+      setOpenaiCompatibleHasKey(await HasOpenAICompatibleAPIKey());
+    } catch (error) {
+      setStatus((current) => current ? {...current, error: String(error)} : current);
+    }
+  }
+
+  async function clearOpenAICompatibleKey() {
+    try {
+      await ClearOpenAICompatibleAPIKey();
+      setOpenaiCompatibleHasKey(false);
     } catch (error) {
       setStatus((current) => current ? {...current, error: String(error)} : current);
     }
@@ -2331,6 +2380,66 @@ function App() {
                   </div>
                 </div>
               </section>
+
+              <section className="settings-section">
+                <h3>OpenAI-compatible (local)</h3>
+                <div className="connection">
+                  <label htmlFor="openai-image-endpoint">
+                    Local image server endpoint
+                    <span className="help-tip" tabIndex={0}>
+                      <span className="help-tip-icon" aria-hidden="true">?</span>
+                      <span className="help-tip-text" role="tooltip">Any server speaking OpenAI's /v1/images/generations (LocalAI, a diffusers shim, ...). Used when Image Provider is set to OpenAI-compatible.</span>
+                    </span>
+                  </label>
+                  <div className="endpoint-row">
+                    <input
+                      id="openai-image-endpoint"
+                      value={openaiCompatibleBaseURL}
+                      onChange={(event) => setOpenaiCompatibleBaseURL(event.target.value)}
+                    />
+                    <button onClick={() => refreshOpenAICompatibleModels()}>Refresh</button>
+                  </div>
+                  <div className={openaiCompatibleStatus === 'ok' ? 'status online' : 'status offline'}>
+                    <span />
+                    {openaiCompatibleStatus === 'ok'
+                      ? `Online — ${openaiCompatibleModels.length} model${openaiCompatibleModels.length === 1 ? '' : 's'} listed`
+                      : openaiCompatibleStatus === 'error'
+                        ? 'Server unreachable or no /v1/models — enter model ids manually in Models.'
+                        : 'Not checked.'}
+                  </div>
+                </div>
+                <div className="connection">
+                  <label htmlFor="openai-image-key">API Key (optional)</label>
+                  <div className="endpoint-row">
+                    <input
+                      id="openai-image-key"
+                      type="password"
+                      placeholder={openaiCompatibleHasKey ? 'Key saved — enter a new key to replace it' : 'Leave empty for a local server without auth'}
+                      value={openaiCompatibleKeyInput}
+                      onChange={(event) => setOpenaiCompatibleKeyInput(event.target.value)}
+                    />
+                    <button type="button" className="icon-btn" onClick={saveOpenAICompatibleKey} disabled={!openaiCompatibleKeyInput} aria-label="Save key" title="Save key">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                        <polyline points="17 21 17 13 7 13 7 21" />
+                        <polyline points="7 3 7 8 15 8" />
+                      </svg>
+                    </button>
+                    {openaiCompatibleHasKey ? (
+                      <button type="button" className="icon-btn" onClick={clearOpenAICompatibleKey} aria-label="Clear key" title="Clear key">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="3 6 5 6 21 6" />
+                          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                        </svg>
+                      </button>
+                    ) : <span className="icon-btn-placeholder" aria-hidden="true" />}
+                  </div>
+                  <div className={openaiCompatibleHasKey ? 'status online' : 'status offline'}>
+                    <span />
+                    {openaiCompatibleHasKey ? 'Bearer key saved' : 'No key — requests go unauthenticated.'}
+                  </div>
+                </div>
+              </section>
               </>
               ) : null}
 
@@ -2433,10 +2542,10 @@ function App() {
                       <select
                         id="image-provider"
                         value={imageProvider}
-                        onChange={(event) => setImageProvider(event.target.value as 'ollama' | 'fal')}
+                        onChange={(event) => setImageProvider(event.target.value as 'fal' | 'openai-compatible')}
                       >
-                        <option value="ollama">Ollama (local)</option>
                         <option value="fal">fal.ai (cloud)</option>
+                        <option value="openai-compatible">OpenAI-compatible (local)</option>
                       </select>
                     </div>
 
@@ -2460,20 +2569,19 @@ function App() {
                       </div>
                     ) : (
                       <div className="field">
-                        <label htmlFor="image-model">Default Image Model</label>
-                        <div className="model-inline-control">
-                          <select id="image-model" value={imageModel} onChange={(event) => setImageModel(event.target.value)}>
-                            {imageModelOptions.map((name) => <option key={name}>{name}</option>)}
-                          </select>
-                          <ModelCapabilityLink
-                            id="settings-image"
-                            modelName={imageModel}
-                            models={models}
-                            openID={openCapabilityID}
-                            setOpenID={setOpenCapabilityID}
-                            variant="icon"
-                          />
-                        </div>
+                        <label htmlFor="openai-image-model">Default Image Model</label>
+                        <ModelCombobox
+                          id="openai-image-model"
+                          ariaLabel="OpenAI-compatible image model"
+                          placeholder="flux2-klein"
+                          value={openaiCompatibleModel}
+                          onChange={setOpenaiCompatibleModel}
+                          options={openaiCompatibleModelOptions}
+                          allowCustom
+                        />
+                        {openaiCompatibleModelOptions.length ? null : (
+                          <span className="hint">Type a model id from your server — the model list couldn't be loaded.</span>
+                        )}
                       </div>
                     )}
                   </div>
@@ -2779,6 +2887,9 @@ function App() {
                   </svg>
                 </button>
               </div>
+              <div className="toolbar-right">
+                <ConversationUsage usage={modelUsage} />
+              </div>
             </div>
 
             <div className="chat-panel">
@@ -2789,7 +2900,7 @@ function App() {
                   shouldFollowTranscriptRef.current = isNearScrollBottom(event.currentTarget);
                 }}
               >
-                {visibleHarnessRun ? <HarnessRunPanel run={visibleHarnessRun} usage={modelUsage} /> : null}
+                {visibleHarnessRun ? <HarnessRunPanel run={visibleHarnessRun} /> : null}
                 {asArray(chat).length === 0 ? (
                   <div className="empty-state">
                     <h2>{emptyPrompt?.heading ?? 'What are we making today?'}</h2>
@@ -2931,6 +3042,7 @@ function App() {
                           </button>
                         </div>
                       ) : null}
+                      {entry.role === 'assistant' && entry.harnessRun ? <TurnUsage run={entry.harnessRun} /> : null}
                       {entry.error ? <div className="error">{entry.error}</div> : null}
                     </article>
                   );
@@ -3396,8 +3508,77 @@ function formatModelSize(size: number): string {
   return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
 }
 
-function HarnessRunPanel({run, usage}: {run: HarnessRunView; usage: ModelUsageRow[]}) {
+// Per-turn token footer: the turn's total in/out (plus duration once known)
+// is always visible in the summary; expanding lists the per-model breakdown.
+// Renders nothing when the run's providers reported no usage (e.g. fal media
+// generation) — failed turns keep theirs, matching the persisted ledger.
+function TurnUsage({run}: {run: HarnessRunView}) {
+  const usage = summarizeRunUsage(run);
+  if (!usage.length) {
+    return null;
+  }
+  const totals = usage.reduce(
+    (acc, row) => ({prompt: acc.prompt + row.promptTokens, completion: acc.completion + row.completionTokens}),
+    {prompt: 0, completion: 0},
+  );
+  return (
+    <details className="turn-usage">
+      <summary>
+        {[
+          totals.prompt ? `${formatTokenCount(totals.prompt)} in` : '',
+          totals.completion ? `${formatTokenCount(totals.completion)} out` : '',
+          run.durationMs ? formatDuration(run.durationMs) : '',
+        ]
+          .filter(Boolean)
+          .join(' · ')}
+      </summary>
+      <div className="turn-usage-rows">
+        {usage.map((row) => (
+          <div className="harness-usage-row" key={`${row.provider}-${row.model}`} title={`${row.provider} · ${row.calls} call${row.calls === 1 ? '' : 's'} in this turn`}>
+            <span className="harness-usage-model">{row.model}</span>
+            <span>
+              {row.promptTokens ? `${formatTokenCount(row.promptTokens)} in` : '— in'}
+              {' · '}
+              {row.completionTokens ? `${formatTokenCount(row.completionTokens)} out` : '— out'}
+            </span>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+// Conversation-wide token total that stays visible in the chat toolbar;
+// expanding lists the per-model breakdown across every turn so far.
+function ConversationUsage({usage}: {usage: ModelUsageRow[]}) {
+  if (!usage.length) {
+    return null;
+  }
+  const totalTokens = usage.reduce((sum, row) => sum + row.promptTokens + row.completionTokens, 0);
+  return (
+    <details className="conversation-usage">
+      <summary title="Token usage across this conversation">
+        {formatTokenCount(totalTokens)} tokens · {usage.length} model{usage.length === 1 ? '' : 's'}
+      </summary>
+      <div className="conversation-usage-rows">
+        {usage.map((row) => (
+          <div className="harness-usage-row" key={`${row.provider}-${row.model}`} title={`${row.provider} · ${row.calls} call${row.calls === 1 ? '' : 's'} across this conversation`}>
+            <span className="harness-usage-model">{row.model}</span>
+            <span>
+              {row.promptTokens ? `${formatTokenCount(row.promptTokens)} in` : '— in'}
+              {' · '}
+              {row.completionTokens ? `${formatTokenCount(row.completionTokens)} out` : '— out'}
+            </span>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function HarnessRunPanel({run}: {run: HarnessRunView}) {
   const steps = asArray(run.steps);
+  const usage = summarizeRunUsage(run);
   const completed = steps.filter((step) => step.status === 'completed').length;
   const status = run.status ?? 'running';
   const stopReason = run.loop?.stopReason;
@@ -3440,7 +3621,7 @@ function HarnessRunPanel({run, usage}: {run: HarnessRunView; usage: ModelUsageRo
       {usage.length ? (
         <div className="harness-usage">
           {usage.map((row) => (
-            <div className="harness-usage-row" key={`${row.provider}-${row.model}`} title={`${row.provider} · ${row.calls} call${row.calls === 1 ? '' : 's'} across this conversation`}>
+            <div className="harness-usage-row" key={`${row.provider}-${row.model}`} title={`${row.provider} · ${row.calls} call${row.calls === 1 ? '' : 's'} in this run`}>
               <span className="harness-usage-model">{row.model}</span>
               <span>
                 {row.promptTokens ? `${formatTokenCount(row.promptTokens)} in` : '— in'}
@@ -3515,11 +3696,11 @@ function parseHarnessRun(value: unknown): HarnessRunView | undefined {
   return run.status || run.steps?.length ? run : undefined;
 }
 
-// One row per model that consumed tokens in this conversation, folded from
-// every assistant entry's run. Only model-call steps count (triage, skill,
-// planning, model_call, streaming): bookkeeping steps carry no usage, so each
-// model call is counted exactly once. Generation models (fal image/video/
-// audio) report no tokens and stay off the rows.
+// One row per model that consumed tokens, folded from model-call steps. Only
+// model-call steps count (triage, skill, planning, model_call, streaming):
+// bookkeeping steps carry no usage, so each model call is counted exactly
+// once. Generation models (fal image/video/audio) report no tokens and stay
+// off the rows.
 type ModelUsageRow = {
   provider: string;
   model: string;
@@ -3528,26 +3709,45 @@ type ModelUsageRow = {
   calls: number;
 };
 
+// Per-model usage for a single run — one row per model that consumed tokens.
+function summarizeRunUsage(run?: HarnessRunView): ModelUsageRow[] {
+  if (!run) {
+    return [];
+  }
+  const byModel = new Map<string, ModelUsageRow>();
+  for (const step of asArray(run.steps)) {
+    if (!step.model || !MODEL_CALL_STEP_KINDS.includes(step.kind ?? '')) {
+      continue;
+    }
+    const provider = step.provider || '—';
+    const key = `${provider}|${step.model}`;
+    const row = byModel.get(key) ?? {provider, model: step.model, promptTokens: 0, completionTokens: 0, calls: 0};
+    row.promptTokens += step.promptTokens ?? 0;
+    row.completionTokens += step.tokens ?? 0;
+    row.calls += 1;
+    byModel.set(key, row);
+  }
+  return [...byModel.values()].filter((row) => row.promptTokens > 0 || row.completionTokens > 0);
+}
+
+// Per-model usage for the whole conversation, merged from every assistant
+// entry's run.
 function summarizeModelUsage(chat: ChatEntry[]): ModelUsageRow[] {
   const byModel = new Map<string, ModelUsageRow>();
   for (const entry of chat) {
-    if (entry.role !== 'assistant' || !entry.harnessRun) {
+    if (entry.role !== 'assistant') {
       continue;
     }
-    for (const step of asArray(entry.harnessRun.steps)) {
-      if (!step.model || !MODEL_CALL_STEP_KINDS.includes(step.kind ?? '')) {
-        continue;
-      }
-      const provider = step.provider || '—';
-      const key = `${provider}|${step.model}`;
-      const row = byModel.get(key) ?? {provider, model: step.model, promptTokens: 0, completionTokens: 0, calls: 0};
-      row.promptTokens += step.promptTokens ?? 0;
-      row.completionTokens += step.tokens ?? 0;
-      row.calls += 1;
-      byModel.set(key, row);
+    for (const row of summarizeRunUsage(entry.harnessRun)) {
+      const key = `${row.provider}|${row.model}`;
+      const merged = byModel.get(key) ?? {...row, promptTokens: 0, completionTokens: 0, calls: 0};
+      merged.promptTokens += row.promptTokens;
+      merged.completionTokens += row.completionTokens;
+      merged.calls += row.calls;
+      byModel.set(key, merged);
     }
   }
-  return [...byModel.values()].filter((row) => row.promptTokens > 0 || row.completionTokens > 0);
+  return [...byModel.values()];
 }
 
 function formatTokenCount(count: number): string {

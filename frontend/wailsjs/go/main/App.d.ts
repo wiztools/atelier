@@ -10,6 +10,8 @@ export function CheckOllama(arg1:string):Promise<main.OllamaStatus>;
 
 export function ChooseToolWorkspace(arg1:string):Promise<string>;
 
+export function ClearOpenAICompatibleAPIKey():Promise<void>;
+
 export function DeleteConversation(arg1:string):Promise<void>;
 
 export function ExecuteTool(arg1:main.ToolExecutionRequest):Promise<main.HarnessToolResult>;
@@ -19,6 +21,8 @@ export function GetConfig():Promise<main.AppConfig>;
 export function GetConversation(arg1:string):Promise<main.ConversationDetail>;
 
 export function HasFalAPIKey():Promise<boolean>;
+
+export function HasOpenAICompatibleAPIKey():Promise<boolean>;
 
 export function HasOpenRouterAPIKey():Promise<boolean>;
 
@@ -54,6 +58,8 @@ export function ListFalVideoUpscaleModels():Promise<Array<main.FalModel>>;
 
 export function ListModels(arg1:string):Promise<Array<main.OllamaModel>>;
 
+export function ListOpenAICompatibleModels(arg1:string):Promise<Array<string>>;
+
 export function ListPrimaryModels(arg1:string,arg2:string):Promise<Array<main.ModelInfo>>;
 
 export function ListToolFiles(arg1:main.ToolFileListRequest):Promise<main.ToolFileListResult>;
@@ -75,6 +81,8 @@ export function SaveConfig(arg1:main.AppConfig):Promise<void>;
 export function SaveFalAPIKey(arg1:string):Promise<void>;
 
 export function SaveImage(arg1:main.SaveImageRequest):Promise<string>;
+
+export function SaveOpenAICompatibleAPIKey(arg1:string):Promise<void>;
 
 export function SaveOpenRouterAPIKey(arg1:string):Promise<void>;
 

@@ -2400,7 +2400,9 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 		// with Ollama images), the primary model is unrelated to image
 		// generation — sending it to the image endpoint is a wrong-model 404.
 		// fal.ai as the image provider is likewise excluded: the primary (chat)
-		// model is unrelated to fal's image endpoints.
+		// model is unrelated to fal's image endpoints. So is the local
+		// OpenAI-compatible image server — it is never a chat provider, so
+		// turn.PrimaryProvider can never match its provider id.
 		imageProvider := strings.TrimSpace(h.config.Models.ImageProvider)
 		primaryOnImageProvider := turn.PrimaryProvider != "" && turn.PrimaryProvider == imageProvider
 		if call.Name == "generate_image" && turn.ResponseMode == "image" &&

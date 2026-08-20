@@ -243,14 +243,19 @@ func videoModelSupportsAudio(ctx context.Context, config AppConfig, app *App) bo
 }
 
 // imageGenerationConfigured reports whether any image-generation backend is
-// ready to serve a generate_image call: the Ollama image model is set, or fal.ai
-// is the selected image provider with a model configured.
+// ready to serve a generate_image call: the Ollama image model is set, fal.ai
+// is the selected image provider with a model configured, or the local
+// OpenAI-compatible image server has a model configured.
 func imageGenerationConfigured(config AppConfig) bool {
 	if strings.TrimSpace(config.Providers.Ollama.Models.Image) != "" {
 		return true
 	}
-	return strings.TrimSpace(config.Models.ImageProvider) == "fal" &&
-		strings.TrimSpace(config.Providers.Fal.Model) != ""
+	if strings.TrimSpace(config.Models.ImageProvider) == "fal" &&
+		strings.TrimSpace(config.Providers.Fal.Model) != "" {
+		return true
+	}
+	return strings.TrimSpace(config.Models.ImageProvider) == "openai-compatible" &&
+		strings.TrimSpace(config.Providers.OpenAICompatible.Model) != ""
 }
 
 // resolveDefaultImageModel returns the image model the generate_image tool
@@ -263,6 +268,9 @@ func resolveDefaultImageModel(config AppConfig) string {
 		}
 		return defaultFalImageModel
 	}
+	if strings.TrimSpace(config.Models.ImageProvider) == "openai-compatible" {
+		return strings.TrimSpace(config.Providers.OpenAICompatible.Model)
+	}
 	return strings.TrimSpace(config.Providers.Ollama.Models.Image)
 }
 
@@ -270,13 +278,17 @@ func resolveDefaultImageModel(config AppConfig) string {
 // generate_image tool uses when the user attached a source image to transform.
 // Mirrors resolveDefaultImageModel: fal exposes image-to-image as a dedicated
 // endpoint, while Ollama reuses its single image model (it accepts source images
-// inline via the request's images field).
+// inline via the request's images field). The OpenAI-compatible server is
+// ollama-style — one model for both, with source images riding the request.
 func resolveDefaultImageEditModel(config AppConfig) string {
 	if strings.TrimSpace(config.Models.ImageProvider) == "fal" {
 		if model := strings.TrimSpace(config.Providers.Fal.ImageEditModel); model != "" {
 			return model
 		}
 		return defaultFalImageEditModel
+	}
+	if strings.TrimSpace(config.Models.ImageProvider) == "openai-compatible" {
+		return strings.TrimSpace(config.Providers.OpenAICompatible.Model)
 	}
 	return strings.TrimSpace(config.Providers.Ollama.Models.Image)
 }

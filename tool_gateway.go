@@ -86,6 +86,18 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				resp, raw, genErr := client.GenerateImage(ctx, req.Model, body)
 				return resp, raw, notices, genErr
 			}
+			if strings.TrimSpace(config.Models.ImageProvider) == "openai-compatible" {
+				apiKey, err := loadOpenAICompatibleAPIKey()
+				if err != nil {
+					return ollamaGenerateResponse{}, nil, nil, err
+				}
+				client := newOpenAICompatibleClient(app.client, config.Providers.OpenAICompatible.BaseURL, apiKey)
+				resp, _, err := client.GenerateImage(ctx, req)
+				// The client already normalized every result into data URLs, so
+				// raw stays nil like the fal path (collectImagesFromJSON must not
+				// re-harvest source URLs from a response it doesn't see).
+				return resp, nil, nil, err
+			}
 			resp, raw, err := app.ollamaClient(config.Providers.Ollama.BaseURL).GenerateImage(ctx, req)
 			return resp, raw, nil, err
 		}

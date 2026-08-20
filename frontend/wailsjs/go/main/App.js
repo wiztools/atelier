@@ -18,6 +18,10 @@ export function ChooseToolWorkspace(arg1) {
   return window['go']['main']['App']['ChooseToolWorkspace'](arg1);
 }
 
+export function ClearOpenAICompatibleAPIKey() {
+  return window['go']['main']['App']['ClearOpenAICompatibleAPIKey']();
+}
+
 export function DeleteConversation(arg1) {
   return window['go']['main']['App']['DeleteConversation'](arg1);
 }
@@ -36,6 +40,10 @@ export function GetConversation(arg1) {
 
 export function HasFalAPIKey() {
   return window['go']['main']['App']['HasFalAPIKey']();
+}
+
+export function HasOpenAICompatibleAPIKey() {
+  return window['go']['main']['App']['HasOpenAICompatibleAPIKey']();
 }
 
 export function HasOpenRouterAPIKey() {
@@ -106,6 +114,10 @@ export function ListModels(arg1) {
   return window['go']['main']['App']['ListModels'](arg1);
 }
 
+export function ListOpenAICompatibleModels(arg1) {
+  return window['go']['main']['App']['ListOpenAICompatibleModels'](arg1);
+}
+
 export function ListPrimaryModels(arg1, arg2) {
   return window['go']['main']['App']['ListPrimaryModels'](arg1, arg2);
 }
@@ -148,6 +160,10 @@ export function SaveFalAPIKey(arg1) {
 
 export function SaveImage(arg1) {
   return window['go']['main']['App']['SaveImage'](arg1);
+}
+
+export function SaveOpenAICompatibleAPIKey(arg1) {
+  return window['go']['main']['App']['SaveOpenAICompatibleAPIKey'](arg1);
 }
 
 export function SaveOpenRouterAPIKey(arg1) {

@@ -24,6 +24,11 @@ import (
 
 const defaultOllamaBaseURL = "http://localhost:11434"
 
+// defaultOpenAICompatibleBaseURL is the endpoint of the OpenAI-compatible
+// image server (LocalAI's default port; any /v1/images/generations server can
+// be configured instead).
+const defaultOpenAICompatibleBaseURL = "http://localhost:8080"
+
 // defaultOllamaNumCtx is sent as num_ctx on every chat call so the context
 // window is explicit and identical across calls (Ollama reloads the model
 // when num_ctx changes between requests).
@@ -102,9 +107,10 @@ type ConfigStorage struct {
 }
 
 type ConfigProviders struct {
-	Ollama     ConfigOllama     `json:"ollama"`
-	OpenRouter ConfigOpenRouter `json:"openrouter"`
-	Fal        ConfigFal        `json:"fal"`
+	Ollama           ConfigOllama           `json:"ollama"`
+	OpenRouter       ConfigOpenRouter       `json:"openrouter"`
+	Fal              ConfigFal              `json:"fal"`
+	OpenAICompatible ConfigOpenAICompatible `json:"openaiCompatible"`
 }
 
 type ConfigOllama struct {
@@ -164,6 +170,14 @@ type ConfigFal struct {
 	// user attaches an audio clip plus a video (re-lip-sync an existing clip).
 	LipsyncImageModel string `json:"lipsyncImageModel,omitempty"`
 	LipsyncVideoModel string `json:"lipsyncVideoModel,omitempty"`
+}
+
+// ConfigOpenAICompatible addresses a local server that speaks OpenAI's
+// /v1/images/generations shape (LocalAI, a diffusers shim, ...). The optional
+// bearer key lives in the OS keychain (see keychain.go), not in config.
+type ConfigOpenAICompatible struct {
+	BaseURL string `json:"baseURL"`
+	Model   string `json:"model,omitempty"`
 }
 
 type ConfigModels struct {
@@ -1629,6 +1643,51 @@ func (a *App) CheckFalConnection() error {
 	return newFalClient(a.client, key).VerifyKey(ctx)
 }
 
+// ListOpenAICompatibleModels returns the model ids advertised by the local
+// OpenAI-compatible image server (GET /v1/models) for the Settings model
+// picker. Takes the endpoint explicitly because the user may still be editing
+// the baseURL field; the optional bearer key is attached when one is stored.
+// The picker also accepts free text, so a server without /v1/models only loses
+// the suggestions, not the field.
+func (a *App) ListOpenAICompatibleModels(baseURL string) ([]string, error) {
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = defaultOpenAICompatibleBaseURL
+	}
+	apiKey, err := loadOpenAICompatibleAPIKey()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	client := newOpenAICompatibleClient(a.client, baseURL, apiKey)
+	return client.ListModels(ctx)
+}
+
+// SaveOpenAICompatibleAPIKey stores the optional bearer key for the local
+// OpenAI-compatible image server. Saving an empty key clears it — a local
+// server with no auth is the common case and must send no Authorization header.
+func (a *App) SaveOpenAICompatibleAPIKey(apiKey string) error {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return clearOpenAICompatibleAPIKey()
+	}
+	return saveOpenAICompatibleAPIKey(apiKey)
+}
+
+func (a *App) HasOpenAICompatibleAPIKey() (bool, error) {
+	key, err := loadOpenAICompatibleAPIKey()
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(key) != "", nil
+}
+
+// ClearOpenAICompatibleAPIKey removes the optional bearer key so requests to
+// the local image server go out unauthenticated again.
+func (a *App) ClearOpenAICompatibleAPIKey() error {
+	return clearOpenAICompatibleAPIKey()
+}
+
 // ListFalModels returns fal's text-to-image catalog for the Settings image-model
 // picker, replacing the free-text fal model field. Unlike the chat primary
 // picker (ListPrimaryModels), fal is not a ChatProvider — this hits fal's
@@ -2258,6 +2317,9 @@ func defaultAppConfig() AppConfig {
 				},
 				NumCtx: defaultOllamaNumCtx,
 			},
+			OpenAICompatible: ConfigOpenAICompatible{
+				BaseURL: defaultOpenAICompatibleBaseURL,
+			},
 		},
 		Models: ConfigModels{
 			PrimaryProvider: "ollama",
@@ -2315,6 +2377,14 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	if config.Providers.Ollama.NumCtx <= 0 {
 		config.Providers.Ollama.NumCtx = defaults.Providers.Ollama.NumCtx
 	}
+	// The OpenAI-compatible image server has no canonical model id (unlike the
+	// fal catalog), so only the endpoint defaults; the model stays unset until
+	// the user picks or types one.
+	if normalized, err := normalizeBaseURL(config.Providers.OpenAICompatible.BaseURL); err == nil && normalized != "" {
+		config.Providers.OpenAICompatible.BaseURL = normalized
+	} else {
+		config.Providers.OpenAICompatible.BaseURL = defaults.Providers.OpenAICompatible.BaseURL
+	}
 	if strings.TrimSpace(config.Models.PrimaryProvider) == "" {
 		config.Models.PrimaryProvider = defaults.Models.PrimaryProvider
 	}
@@ -2331,7 +2401,7 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	// ImageProvider selects the generate_image backend. Normalize unknown or
 	// empty values to the Ollama default so the tool path never sees a stray id.
 	switch strings.TrimSpace(config.Models.ImageProvider) {
-	case "ollama", "fal":
+	case "ollama", "fal", "openai-compatible":
 		config.Models.ImageProvider = strings.TrimSpace(config.Models.ImageProvider)
 	default:
 		config.Models.ImageProvider = defaults.Models.ImageProvider

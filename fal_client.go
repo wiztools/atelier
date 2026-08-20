@@ -915,11 +915,18 @@ func (client FalClient) downloadImages(ctx context.Context, images []falImage) (
 }
 
 func (client FalClient) fetchAsDataURL(ctx context.Context, url string) (string, error) {
+	return fetchImageAsDataURL(ctx, client.httpClient, url)
+}
+
+// fetchImageAsDataURL downloads an image URL and returns it as a base64 data
+// URL, rejecting payloads that are not decodable images. Shared by FalClient
+// (fal result URLs) and the OpenAI-compatible image client (url results).
+func fetchImageAsDataURL(ctx context.Context, httpClient *http.Client, url string) (string, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
 	}
-	resp, err := client.httpClient.Do(httpReq)
+	resp, err := httpClient.Do(httpReq)
 	if err != nil {
 		return "", err
 	}
@@ -932,7 +939,7 @@ func (client FalClient) fetchAsDataURL(ctx context.Context, url string) (string,
 		return "", err
 	}
 	if !isImageBytes(data) {
-		return "", errors.New("downloaded fal image is not a supported image")
+		return "", errors.New("downloaded image is not a supported image")
 	}
 	mediaType := http.DetectContentType(data)
 	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data), nil

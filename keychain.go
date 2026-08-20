@@ -7,10 +7,12 @@ import (
 )
 
 const (
-	openRouterKeyringService = "atelier-openrouter-key"
-	openRouterKeyringUser    = "openrouter"
-	falKeyringService        = "atelier-fal-key"
-	falKeyringUser           = "fal"
+	openRouterKeyringService       = "atelier-openrouter-key"
+	openRouterKeyringUser          = "openrouter"
+	falKeyringService              = "atelier-fal-key"
+	falKeyringUser                 = "fal"
+	openAICompatibleKeyringService = "atelier-openai-compatible-key"
+	openAICompatibleKeyringUser    = "openai-compatible"
 )
 
 func saveOpenRouterAPIKey(apiKey string) error {
@@ -58,6 +60,35 @@ func loadFalAPIKey() (string, error) {
 
 func clearFalAPIKey() error {
 	err := keyring.Delete(falKeyringService, falKeyringUser)
+	if err != nil && err != keyring.ErrNotFound {
+		return err
+	}
+	return nil
+}
+
+// saveOpenAICompatibleAPIKey stores the optional bearer key for the local
+// OpenAI-compatible image server; most local servers need none (an empty key
+// means the request is sent without an Authorization header).
+func saveOpenAICompatibleAPIKey(apiKey string) error {
+	return keyring.Set(openAICompatibleKeyringService, openAICompatibleKeyringUser, apiKey)
+}
+
+// loadOpenAICompatibleAPIKey returns "" with a nil error when no key has been
+// saved yet, mirroring loadOpenRouterAPIKey so callers treat "not configured"
+// and "empty" uniformly.
+func loadOpenAICompatibleAPIKey() (string, error) {
+	key, err := keyring.Get(openAICompatibleKeyringService, openAICompatibleKeyringUser)
+	if err != nil {
+		if err == keyring.ErrNotFound {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(key), nil
+}
+
+func clearOpenAICompatibleAPIKey() error {
+	err := keyring.Delete(openAICompatibleKeyringService, openAICompatibleKeyringUser)
 	if err != nil && err != keyring.ErrNotFound {
 		return err
 	}
