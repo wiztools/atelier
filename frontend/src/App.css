@@ -1592,6 +1592,21 @@ button:disabled {
   background: #14181a;
 }
 
+/* Media-generation rows sit directly under the token rows and reuse their
+   layout; a tinted border separates what models produced (media) from what
+   they consumed (tokens). */
+.harness-usage-media {
+  margin-top: -6px;
+  border-color: #2f3a2a;
+}
+
+/* Backend attribution prefix on media rows (fal / ollama /
+   openai-compatible): muted next to the model name it qualifies. */
+.harness-usage-provider {
+  margin-right: 6px;
+  color: #8a938f;
+}
+
 .harness-usage-row {
   display: flex;
   justify-content: space-between;

@@ -156,6 +156,33 @@ func TestHarnessGeneratesImageViaFal(t *testing.T) {
 	if !ok || tool["name"] != "image_generation" || tool["model"] != "fal-ai/flux/schnell" {
 		t.Fatalf("assistant provider tool = %+v, want image_generation via fal-ai/flux/schnell", assistant.ProviderResponse["tool"])
 	}
+	// The persisted run's tool_call activity must carry the image model, kind,
+	// count, and routed provider — the image model burns no tokens, so without
+	// these fields the turn's telemetry shows no image consumption at all.
+	run, ok := assistant.ProviderResponse["harnessRun"].(map[string]any)
+	if !ok {
+		t.Fatalf("assistant provider response missing harness run: %+v", assistant.ProviderResponse)
+	}
+	steps, _ := run["steps"].([]any)
+	var mediaActivity map[string]any
+	for _, stepAny := range steps {
+		step, _ := stepAny.(map[string]any)
+		if step == nil || step["kind"] != "tool_call" {
+			continue
+		}
+		tools, _ := step["tools"].([]any)
+		for _, toolAny := range tools {
+			if typed, _ := toolAny.(map[string]any); typed != nil && typed["name"] == "generate_image" {
+				mediaActivity = typed
+			}
+		}
+	}
+	if mediaActivity == nil {
+		t.Fatalf("no generate_image activity in tool_call steps: %+v", steps)
+	}
+	if mediaActivity["model"] != "fal-ai/flux/schnell" || mediaActivity["mediaKind"] != "image" || mediaActivity["mediaCount"] != float64(1) || mediaActivity["provider"] != "fal" {
+		t.Fatalf("image activity media = %v/%v/%v/%v, want fal-ai/flux/schnell/image/1/fal", mediaActivity["model"], mediaActivity["mediaKind"], mediaActivity["mediaCount"], mediaActivity["provider"])
+	}
 }
 
 // TestHarnessGeneratesVideoViaFal runs the full chat turn (triage → planner →
@@ -299,6 +326,33 @@ func TestHarnessGeneratesVideoViaFal(t *testing.T) {
 	tool, ok := assistant.ProviderResponse["tool"].(map[string]any)
 	if !ok || tool["name"] != "video_generation" || tool["model"] != defaultFalVideoModel {
 		t.Fatalf("assistant provider tool = %+v, want video_generation via %s", assistant.ProviderResponse["tool"], defaultFalVideoModel)
+	}
+	// The persisted run's tool_call activity must carry the video model, kind,
+	// and count — the video model burns no tokens, so without these fields the
+	// turn's telemetry shows no video consumption at all (conv_a27d6008).
+	run, ok := assistant.ProviderResponse["harnessRun"].(map[string]any)
+	if !ok {
+		t.Fatalf("assistant provider response missing harness run: %+v", assistant.ProviderResponse)
+	}
+	steps, _ := run["steps"].([]any)
+	var mediaActivity map[string]any
+	for _, stepAny := range steps {
+		step, _ := stepAny.(map[string]any)
+		if step == nil || step["kind"] != "tool_call" {
+			continue
+		}
+		tools, _ := step["tools"].([]any)
+		for _, toolAny := range tools {
+			if typed, _ := toolAny.(map[string]any); typed != nil && typed["name"] == "generate_video" {
+				mediaActivity = typed
+			}
+		}
+	}
+	if mediaActivity == nil {
+		t.Fatalf("no generate_video activity in tool_call steps: %+v", steps)
+	}
+	if mediaActivity["model"] != defaultFalVideoModel || mediaActivity["mediaKind"] != "video" || mediaActivity["mediaCount"] != float64(1) || mediaActivity["provider"] != "fal" {
+		t.Fatalf("video activity media = %v/%v/%v/%v, want %s/video/1/fal", mediaActivity["model"], mediaActivity["mediaKind"], mediaActivity["mediaCount"], mediaActivity["provider"], defaultFalVideoModel)
 	}
 }
 

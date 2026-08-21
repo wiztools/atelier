@@ -176,7 +176,7 @@ func newHarnessToolExecutionContext(config AppConfig) HarnessToolExecutionContex
 func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App) HarnessToolRegistry {
 	definitions := filesystemToolDefinitions(config.Tools.Filesystem)
 	if imageGenerationConfigured(config) {
-		definitions = append(definitions, imageGenerationToolDefinition())
+		definitions = append(definitions, imageGenerationToolDefinition(config))
 	}
 	videoAudioCapable := false
 	if videoGenerationConfigured(config) {
@@ -944,7 +944,7 @@ func lipsyncParamSchema() map[string]any {
 	}
 }
 
-func imageGenerationToolDefinition() HarnessToolDefinition {
+func imageGenerationToolDefinition(config AppConfig) HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "generate_image",
 		Title:       "Generate image",
@@ -1034,13 +1034,11 @@ func imageGenerationToolDefinition() HarnessToolDefinition {
 		Activity: func(result HarnessToolResult) HarnessToolActivity {
 			activity := defaultHarnessToolActivity(result)
 			if typed, ok := result.Result.(ToolImageResult); ok {
-				// fal model ids are namespaced under "fal-ai/..."; Ollama tags
-				// never use that prefix (they look like "x/z-image-turbo:latest").
-				provider := "ollama"
-				if strings.HasPrefix(typed.Model, "fal-ai/") {
-					provider = "fal"
-				}
-				activity.Command = []string{provider, "generate", typed.Model}
+				// The routed backend comes from config (the same source the
+				// gateway routes by), not the model id — a fal model without a
+				// fal-ai/ prefix (e.g. bytedance/...) would otherwise display
+				// as "ollama".
+				activity.Command = []string{imageGenerationProvider(config), "generate", typed.Model}
 			}
 			return activity
 		},
@@ -1709,11 +1707,33 @@ func (definition HarnessToolDefinition) RequiresPermissionFor(call HarnessToolCa
 }
 
 func defaultHarnessToolActivity(result HarnessToolResult) HarnessToolActivity {
-	return HarnessToolActivity{
+	activity := HarnessToolActivity{
 		Name:   result.Name,
 		Status: result.Status,
 		Error:  result.Error,
 	}
+	// Media tools report the resolved generation model and output count so
+	// telemetry can show per-model media consumption: video/audio/image models
+	// never carry tokens, so the usage ledger needs these fields instead of
+	// prompt/completion counts. Centralized in the shared base because every
+	// media tool's activity builder starts here; Command stays per-tool since
+	// its verb differs (generate/lipsync/upscale). A failed call has no result
+	// payload, so its media fields stay empty and it drops out of usage folds.
+	switch typed := result.Result.(type) {
+	case ToolVideoResult:
+		activity.Model = typed.Model
+		activity.MediaKind = "video"
+		activity.MediaCount = typed.Count
+	case ToolAudioResult:
+		activity.Model = typed.Model
+		activity.MediaKind = "audio"
+		activity.MediaCount = typed.Count
+	case ToolImageResult:
+		activity.Model = typed.Model
+		activity.MediaKind = "image"
+		activity.MediaCount = typed.Count
+	}
+	return activity
 }
 
 func formatCommandSummary(command []string) string {

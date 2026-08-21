@@ -456,6 +456,69 @@ func TestToolActivitiesRecordPermissionDecision(t *testing.T) {
 	}
 }
 
+func TestToolActivitiesRecordMediaModelConsumption(t *testing.T) {
+	engine := newHarnessEngine(defaultAppConfig())
+	results := []HarnessToolResult{
+		{Name: "generate_video", Status: "completed", Result: ToolVideoResult{Model: "bytedance/seedance-2.0/reference-to-video", Count: 1}},
+		{Name: "generate_video", Status: "failed", Error: "fal queue unavailable"},
+	}
+
+	activities := engine.toolActivities(results, []HarnessToolCall{
+		{Name: "generate_video", Model: "planner-requested-model", Content: "a banana runs", Duration: "15"},
+		{Name: "generate_video", Content: "a banana runs"},
+	})
+
+	// The completed call records the resolved model — the model that actually
+	// ran after defaulting, not the planner's requested override — plus kind
+	// and count. Media models burn no tokens, so these fields are the only
+	// consumption record the usage fold can read (conv_a27d6008).
+	if activities[0].Model != "bytedance/seedance-2.0/reference-to-video" || activities[0].MediaKind != "video" || activities[0].MediaCount != 1 {
+		t.Fatalf("video activity media = %q/%q/%d, want bytedance/seedance-2.0/reference-to-video/video/1", activities[0].Model, activities[0].MediaKind, activities[0].MediaCount)
+	}
+	if activities[0].Provider != "fal" {
+		t.Fatalf("video activity provider = %q, want fal", activities[0].Provider)
+	}
+	if activities[0].Call.Duration != "15" {
+		t.Fatalf("video activity call duration = %q, want the planner's requested 15", activities[0].Call.Duration)
+	}
+	// A failed call produced no media, so it carries no media fields and drops
+	// out of usage folds instead of counting phantom consumption.
+	if activities[1].Model != "" || activities[1].MediaKind != "" || activities[1].MediaCount != 0 || activities[1].Provider != "" {
+		t.Fatalf("failed activity recorded media %q/%q/%d/%q, want all empty", activities[1].Model, activities[1].MediaKind, activities[1].MediaCount, activities[1].Provider)
+	}
+}
+
+func TestToolActivitiesRecordMediaProviderAttribution(t *testing.T) {
+	// Video and audio generation are fal-only, whatever the image routing says.
+	engine := newHarnessEngine(defaultAppConfig())
+	activities := engine.toolActivities([]HarnessToolResult{
+		{Name: "generate_video", Status: "completed", Result: ToolVideoResult{Model: "bytedance/seedance-2.0/reference-to-video", Count: 1}},
+	}, []HarnessToolCall{{Name: "generate_video", Content: "x"}})
+	if activities[0].Provider != "fal" {
+		t.Fatalf("video activity provider = %q, want fal regardless of image routing", activities[0].Provider)
+	}
+
+	// Images route by config.Models.ImageProvider — the same field the tool
+	// gateway reads — with an unset value meaning local Ollama.
+	for _, tc := range []struct {
+		imageProvider string
+		want          string
+	}{
+		{"", "ollama"},
+		{"fal", "fal"},
+		{"openai-compatible", "openai-compatible"},
+	} {
+		config := defaultAppConfig()
+		config.Models.ImageProvider = tc.imageProvider
+		activities := newHarnessEngine(config).toolActivities([]HarnessToolResult{
+			{Name: "generate_image", Status: "completed", Result: ToolImageResult{Model: "fal-ai/flux/schnell", Count: 1}},
+		}, []HarnessToolCall{{Name: "generate_image", Content: "x"}})
+		if activities[0].Provider != tc.want {
+			t.Fatalf("image activity provider with ImageProvider=%q = %q, want %q", tc.imageProvider, activities[0].Provider, tc.want)
+		}
+	}
+}
+
 // persistedHarnessRun reads the harness run off the Nth (1-based) assistant
 // turn's ProviderResponse in the conversation's sole record.
 func persistedHarnessRun(t *testing.T, config AppConfig, assistantIndex int) map[string]any {

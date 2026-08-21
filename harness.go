@@ -2551,10 +2551,24 @@ func (h *HarnessEngine) toolActivities(results []HarnessToolResult, calls []Harn
 }
 
 func (h *HarnessEngine) toolActivityFromResult(result HarnessToolResult) HarnessToolActivity {
+	var activity HarnessToolActivity
 	if definition, ok := h.toolRegistry().Get(result.Name); ok && definition.Activity != nil {
-		return definition.Activity(result)
+		activity = definition.Activity(result)
+	} else {
+		activity = defaultHarnessToolActivity(result)
 	}
-	return defaultHarnessToolActivity(result)
+	// Media provider attribution rides the engine layer, not the per-tool
+	// builders: video/audio generation is fal-only, and generate_image routes
+	// by config.Models.ImageProvider — the same field the tool gateway reads —
+	// which the builders don't receive. A failed call has no result payload,
+	// so no case matches and Provider stays empty.
+	switch result.Result.(type) {
+	case ToolVideoResult, ToolAudioResult:
+		activity.Provider = "fal"
+	case ToolImageResult:
+		activity.Provider = imageGenerationProvider(h.config)
+	}
+	return activity
 }
 
 // harnessEmptyResponseNotice speaks in the harness's own voice when the

@@ -99,7 +99,7 @@ func TestGenerateImageToolAspectRatioInheritance(t *testing.T) {
 				},
 			}
 
-			def := imageGenerationToolDefinition()
+			def := imageGenerationToolDefinition(tools.Config)
 			if _, _, err := def.Execute(t.Context(), tools, tc.call); err != nil {
 				t.Fatalf("Execute returned error: %v", err)
 			}
@@ -128,7 +128,7 @@ func TestGenerateImageToolAspectRatioInheritsSourceNotPixels(t *testing.T) {
 		},
 	}
 
-	if _, _, err := imageGenerationToolDefinition().Execute(t.Context(), tools, HarnessToolCall{Content: "transform"}); err != nil {
+	if _, _, err := imageGenerationToolDefinition(tools.Config).Execute(t.Context(), tools, HarnessToolCall{Content: "transform"}); err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
 	if captured.AspectRatio != "3:4" {

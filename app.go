@@ -758,6 +758,22 @@ type HarnessToolActivity struct {
 	StderrPreview string          `json:"stderrPreview,omitempty"`
 	DurationMS    int64           `json:"durationMs,omitempty"`
 	Error         string          `json:"error,omitempty"`
+	// Model, MediaKind, and MediaCount record the generation model a media tool
+	// actually ran (after defaulting — not the planner's requested Call.Model),
+	// what it produced ("video"/"audio"/"image"), and how many. Media models
+	// don't consume tokens, so these fields — not token counts — are what makes
+	// their consumption visible in telemetry. Set from the tool's own result
+	// payload in defaultHarnessToolActivity's type switch; empty for non-media
+	// tools and failed calls (no payload).
+	// Provider names the backend that rendered the media ("fal", "ollama",
+	// "openai-compatible") — attribution for Model, since the same image model
+	// family can run locally or in the cloud and the id alone doesn't say which.
+	// Filled at the engine layer (toolActivityFromResult) from the same config
+	// the tool gateway routes by.
+	Provider   string `json:"provider,omitempty"`
+	Model      string `json:"model,omitempty"`
+	MediaKind  string `json:"mediaKind,omitempty"`
+	MediaCount int    `json:"mediaCount,omitempty"`
 	// Permission records how the permission gate resolved (approved/denied/
 	// timeout/cancelled) and how long it waited, when the call was gated.
 	// Zipped from HarnessToolResult's json:"-" side-channel at the same

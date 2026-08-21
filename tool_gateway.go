@@ -40,6 +40,22 @@ type ToolGateway struct {
 	permissionRequester func(context.Context, ToolPermissionRequestEvent) ToolPermissionDecision
 }
 
+// imageGenerationProvider names the backend generate_image routes to for the
+// given config: the routing truth for both the gateway's GenerateImage wiring
+// below and media telemetry attribution (toolActivityFromResult, and the
+// generate_image activity's Command). An unset or unrecognized provider means
+// Ollama, the local default.
+func imageGenerationProvider(config AppConfig) string {
+	switch strings.TrimSpace(config.Models.ImageProvider) {
+	case "fal":
+		return "fal"
+	case "openai-compatible":
+		return "openai-compatible"
+	default:
+		return "ollama"
+	}
+}
+
 func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry) ToolGateway {
 	gw := ToolGateway{
 		app:   app,
@@ -62,7 +78,8 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 		schemaCache := newFalSchemaCache(app.client, config.Storage.Root)
 		falOverrides := loadFalOverrides(config.Storage.Root)
 		gateway.tools.GenerateImage = func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, []string, error) {
-			if strings.TrimSpace(config.Models.ImageProvider) == "fal" {
+			provider := imageGenerationProvider(config)
+			if provider == "fal" {
 				apiKey, err := loadFalAPIKey()
 				if err != nil {
 					return ollamaGenerateResponse{}, nil, nil, err
@@ -86,7 +103,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				resp, raw, genErr := client.GenerateImage(ctx, req.Model, body)
 				return resp, raw, notices, genErr
 			}
-			if strings.TrimSpace(config.Models.ImageProvider) == "openai-compatible" {
+			if provider == "openai-compatible" {
 				apiKey, err := loadOpenAICompatibleAPIKey()
 				if err != nil {
 					return ollamaGenerateResponse{}, nil, nil, err

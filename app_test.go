@@ -4866,7 +4866,7 @@ func TestGenerateImageToolTransformsAttachedImage(t *testing.T) {
 		},
 	}
 
-	def := imageGenerationToolDefinition()
+	def := imageGenerationToolDefinition(tools.Config)
 	result, summary, err := def.Execute(t.Context(), tools, HarnessToolCall{Content: "an impressionist painting of this"})
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
@@ -4898,7 +4898,7 @@ func TestGenerateImageToolTextToImageWithoutAttachment(t *testing.T) {
 		},
 	}
 
-	def := imageGenerationToolDefinition()
+	def := imageGenerationToolDefinition(tools.Config)
 	if _, _, err := def.Execute(t.Context(), tools, HarnessToolCall{Content: "a lighthouse at dusk"}); err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}

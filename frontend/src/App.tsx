@@ -62,6 +62,11 @@ type ChatEntry = {
   videos?: string[];
   audios?: string[];
   harnessRun?: HarnessRunView;
+  // providerResponse.tool block from a persisted media turn — the legacy
+  // record of which generation model ran, kept so media usage can be
+  // summarized for turns saved before tool_call activities carried media
+  // fields (conv_a27d6008).
+  mediaTool?: MediaToolSummaryView;
   streaming?: boolean;
   error?: string;
   provider?: string;
@@ -172,6 +177,15 @@ type HarnessRequestSnapshotView = {
 type HarnessToolActivityView = {
   name?: string;
   status?: string;
+  // Media-generation telemetry: the backend that rendered the media
+  // ("fal"/"ollama"/"openai-compatible"), the resolved generation model a
+  // media tool actually ran, what it produced ("video"/"audio"/"image"), and
+  // how many. Media models burn no tokens, so these — not token counts — are
+  // their consumption record. Empty for non-media tools and failed calls.
+  provider?: string;
+  model?: string;
+  mediaKind?: string;
+  mediaCount?: number;
   path?: string;
   command?: string[];
   exitCode?: number;
@@ -189,6 +203,18 @@ type HarnessRunEventView = {
   requestId: string;
   conversationId?: string;
   run: unknown;
+};
+
+// providerResponse.tool block persisted with media turns: which generation
+// family ran (video_generation / image_generation / audio_generation), on
+// which model, and how much it produced. Superseded for new turns by the
+// media fields on tool_call activities; still the only record on old ones.
+type MediaToolSummaryView = {
+  name?: string;
+  model?: string;
+  videoCount?: number;
+  audioCount?: number;
+  imageCount?: number;
 };
 
 type Attachment = {
@@ -471,6 +497,7 @@ function App() {
   // latest entry's run is always current — streamed or persisted.
   const visibleHarnessRun = latestHarnessRun ?? null;
   const modelUsage = useMemo(() => summarizeModelUsage(chat), [chat]);
+  const mediaUsage = useMemo(() => summarizeMediaUsage(chat), [chat]);
 
   function markConversationInFlight(conversationID: string, requestID: string, kind: ConversationKind) {
     requestConversationRef.current[requestID] = {conversationID, kind};
@@ -1525,6 +1552,7 @@ function App() {
       videos: historyVideos(turn.content),
       audios: historyAudios(turn.content),
       harnessRun: parseHarnessRun(turn.providerResponse?.harnessRun),
+      mediaTool: turn.providerResponse?.tool as MediaToolSummaryView | undefined,
       provider: turn.provider,
     }));
     if (visibleRequestID && !entries.some((entry) => entry.id === `assistant-${visibleRequestID}`)) {
@@ -2914,7 +2942,7 @@ function App() {
                 </button>
               </div>
               <div className="toolbar-right">
-                <ConversationUsage usage={modelUsage} />
+                <ConversationUsage usage={modelUsage} media={mediaUsage} />
               </div>
             </div>
 
@@ -3578,28 +3606,45 @@ function TurnUsage({run}: {run: HarnessRunView}) {
 
 // Conversation-wide token total that stays visible in the chat toolbar;
 // expanding lists the per-model breakdown across every turn so far.
-function ConversationUsage({usage}: {usage: ModelUsageRow[]}) {
-  if (!usage.length) {
+function ConversationUsage({usage, media = []}: {usage: ModelUsageRow[]; media?: MediaUsageRow[]}) {
+  if (!usage.length && !media.length) {
     return null;
   }
   const totalTokens = usage.reduce((sum, row) => sum + row.promptTokens + row.completionTokens, 0);
+  const mediaTotals = media.reduce(
+    (acc, row) => ({video: acc.video + row.video, audio: acc.audio + row.audio, image: acc.image + row.image}),
+    {video: 0, audio: 0, image: 0},
+  );
+  const mediaLabel = mediaCountsLabel(mediaTotals.video, mediaTotals.audio, mediaTotals.image);
   return (
     <details className="conversation-usage">
-      <summary title="Token usage across this conversation">
-        {formatTokenCount(totalTokens)} tokens · {usage.length} model{usage.length === 1 ? '' : 's'}
+      <summary title="Token and media-generation usage across this conversation">
+        {usage.length ? `${formatTokenCount(totalTokens)} tokens · ${usage.length} model${usage.length === 1 ? '' : 's'}` : 'No token usage'}
+        {mediaLabel ? ` · ${mediaLabel}` : ''}
       </summary>
-      <div className="conversation-usage-rows">
-        {usage.map((row) => (
-          <div className="harness-usage-row" key={`${row.provider}-${row.model}`} title={`${row.provider} · ${row.calls} call${row.calls === 1 ? '' : 's'} across this conversation`}>
-            <span className="harness-usage-model">{row.model}</span>
-            <span>
-              {row.promptTokens ? `${formatTokenCount(row.promptTokens)} in` : '— in'}
-              {' · '}
-              {row.completionTokens ? `${formatTokenCount(row.completionTokens)} out` : '— out'}
-            </span>
-          </div>
-        ))}
-      </div>
+      {(usage.length || media.length) ? (
+        <div className="conversation-usage-rows">
+          {usage.map((row) => (
+            <div className="harness-usage-row" key={`${row.provider}-${row.model}`} title={`${row.provider} · ${row.calls} call${row.calls === 1 ? '' : 's'} across this conversation`}>
+              <span className="harness-usage-model">{row.model}</span>
+              <span>
+                {row.promptTokens ? `${formatTokenCount(row.promptTokens)} in` : '— in'}
+                {' · '}
+                {row.completionTokens ? `${formatTokenCount(row.completionTokens)} out` : '— out'}
+              </span>
+            </div>
+          ))}
+          {media.map((row) => (
+            <div className="harness-usage-row harness-usage-media" key={`media-${row.provider}-${row.model}`} title={`${row.provider} · media generation · ${row.calls} call${row.calls === 1 ? '' : 's'} across this conversation`}>
+              <span className="harness-usage-model">
+                {row.provider !== '—' ? <span className="harness-usage-provider">{row.provider}</span> : null}
+                {row.model}
+              </span>
+              <span>{mediaCountsLabel(row.video, row.audio, row.image)}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </details>
   );
 }
@@ -3607,6 +3652,7 @@ function ConversationUsage({usage}: {usage: ModelUsageRow[]}) {
 function HarnessRunPanel({run}: {run: HarnessRunView}) {
   const steps = asArray(run.steps);
   const usage = summarizeRunUsage(run);
+  const media = summarizeRunMediaUsage(run);
   const completed = steps.filter((step) => step.status === 'completed').length;
   const status = run.status ?? 'running';
   const stopReason = run.loop?.stopReason;
@@ -3614,6 +3660,11 @@ function HarnessRunPanel({run}: {run: HarnessRunView}) {
     (acc, row) => ({prompt: acc.prompt + row.promptTokens, completion: acc.completion + row.completionTokens}),
     {prompt: 0, completion: 0},
   );
+  const mediaTotals = media.reduce(
+    (acc, row) => ({video: acc.video + row.video, audio: acc.audio + row.audio, image: acc.image + row.image}),
+    {video: 0, audio: 0, image: 0},
+  );
+  const mediaLabel = mediaCountsLabel(mediaTotals.video, mediaTotals.audio, mediaTotals.image);
   // Prefix-cache signal: compare each model-call step's promptHash against the
   // previous request to the same provider+model. Equal hashes kept the cache
   // warm; a change (marked) invalidated it.
@@ -3639,6 +3690,7 @@ function HarnessRunPanel({run}: {run: HarnessRunView}) {
         <small>
           {completed}/{steps.length} steps{run.durationMs ? ` · ${formatDuration(run.durationMs)}` : ''}
           {totals.prompt || totals.completion ? ` · ${formatTokenCount(totals.prompt + totals.completion)} tokens` : ''}
+          {mediaLabel ? ` · ${mediaLabel}` : ''}
         </small>
       </summary>
       <div className="harness-meta">
@@ -3656,6 +3708,19 @@ function HarnessRunPanel({run}: {run: HarnessRunView}) {
                 {' · '}
                 {row.completionTokens ? `${formatTokenCount(row.completionTokens)} out` : '— out'}
               </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {media.length ? (
+        <div className="harness-usage harness-usage-media">
+          {media.map((row) => (
+            <div className="harness-usage-row" key={`media-${row.provider}-${row.model}`} title={`${row.provider} · media generation · ${row.calls} call${row.calls === 1 ? '' : 's'} in this run`}>
+              <span className="harness-usage-model">
+                {row.provider !== '—' ? <span className="harness-usage-provider">{row.provider}</span> : null}
+                {row.model}
+              </span>
+              <span>{mediaCountsLabel(row.video, row.audio, row.image)}</span>
             </div>
           ))}
         </div>
@@ -3776,6 +3841,122 @@ function summarizeModelUsage(chat: ChatEntry[]): ModelUsageRow[] {
     }
   }
   return [...byModel.values()];
+}
+
+// One row per generation model that produced media. Media models (fal video/
+// audio/image) burn no tokens — their consumption is what they produced — so
+// rows count outputs by kind instead of prompt/completion tokens. They render
+// as a sibling of the token table, never inside it. Provider attributes the
+// model to its backend ("fal"/"ollama"/"openai-compatible") since image model
+// families can run locally or in the cloud.
+type MediaUsageRow = {
+  provider: string;
+  model: string;
+  video: number;
+  audio: number;
+  image: number;
+  calls: number;
+};
+
+// Per-model media generation for a single run, folded from tool_call step
+// activities. Only completed media calls carry model/mediaKind/mediaCount, so
+// failed calls drop out of the fold instead of counting phantom consumption.
+function summarizeRunMediaUsage(run?: HarnessRunView): MediaUsageRow[] {
+  if (!run) {
+    return [];
+  }
+  const byModel = new Map<string, MediaUsageRow>();
+  for (const step of asArray(run.steps)) {
+    if (step.kind !== 'tool_call') {
+      continue;
+    }
+    for (const tool of asArray(step.tools)) {
+      const kind = tool.mediaKind;
+      if (!tool.model || (kind !== 'video' && kind !== 'audio' && kind !== 'image')) {
+        continue;
+      }
+      const provider = tool.provider || '—';
+      const key = `${provider}|${tool.model}`;
+      const row = byModel.get(key) ?? {provider, model: tool.model, video: 0, audio: 0, image: 0, calls: 0};
+      row[kind] += tool.mediaCount ?? 0;
+      row.calls += 1;
+      byModel.set(key, row);
+    }
+  }
+  return [...byModel.values()];
+}
+
+// Legacy turns (saved before tool_call activities carried media fields)
+// recorded the generation model only in the providerResponse.tool block.
+// Recover it so old conversations show their media consumption too.
+function mediaUsageFromToolSummary(tool: MediaToolSummaryView | undefined): MediaUsageRow[] {
+  if (!tool?.model) {
+    return [];
+  }
+  const row: MediaUsageRow = {provider: legacyMediaProvider(tool.name, tool.model), model: tool.model, video: 0, audio: 0, image: 0, calls: 0};
+  if (tool.name === 'video_generation') {
+    row.video = tool.videoCount ?? 0;
+    row.image = tool.imageCount ?? 0;
+  } else if (tool.name === 'image_generation') {
+    row.image = tool.imageCount ?? 0;
+  } else if (tool.name === 'audio_generation') {
+    row.audio = tool.audioCount ?? 0;
+  } else {
+    return [];
+  }
+  row.calls = 1;
+  return [row];
+}
+
+// Best-effort provider for legacy media turns, which never recorded the routed
+// backend: video/audio generation has always been fal-only; for images the
+// fal-ai/ namespace is the closest available signal. New turns record the
+// actual routed provider on the activity instead, so this only ever labels
+// old data.
+function legacyMediaProvider(name: string | undefined, model: string): string {
+  if (name === 'image_generation') {
+    return model.startsWith('fal-ai/') ? 'fal' : 'ollama';
+  }
+  return 'fal';
+}
+
+// Per-model media generation for the whole conversation. Each turn prefers its
+// run's activities; the legacy tool-summary fallback applies only when the run
+// recorded no media (old turns), so a turn is never counted through both.
+function summarizeMediaUsage(chat: ChatEntry[]): MediaUsageRow[] {
+  const byModel = new Map<string, MediaUsageRow>();
+  for (const entry of chat) {
+    if (entry.role !== 'assistant') {
+      continue;
+    }
+    const runRows = summarizeRunMediaUsage(entry.harnessRun);
+    const rows = runRows.length ? runRows : mediaUsageFromToolSummary(entry.mediaTool);
+    for (const row of rows) {
+      const key = `${row.provider}|${row.model}`;
+      const merged = byModel.get(key) ?? {...row, video: 0, audio: 0, image: 0, calls: 0};
+      merged.video += row.video;
+      merged.audio += row.audio;
+      merged.image += row.image;
+      merged.calls += row.calls;
+      byModel.set(key, merged);
+    }
+  }
+  return [...byModel.values()].filter((row) => row.video + row.audio + row.image > 0);
+}
+
+// Human label for a media row's output counts, e.g. "1 video · 2 images".
+function mediaCountsLabel(video: number, audio: number, image: number): string {
+  const parts: string[] = [];
+  if (video) {
+    parts.push(`${video} video${video === 1 ? '' : 's'}`);
+  }
+  if (audio) {
+    parts.push(`${audio} audio clip${audio === 1 ? '' : 's'}`);
+  }
+  if (image) {
+    parts.push(`${image} image${image === 1 ? '' : 's'}`);
+  }
+  return parts.join(' · ');
 }
 
 function formatTokenCount(count: number): string {
