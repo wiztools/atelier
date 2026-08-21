@@ -365,6 +365,22 @@ func TestOpenRouterChatBodyOmitsResponseFormatWithoutSchema(t *testing.T) {
 	}
 }
 
+// TestOpenRouterChatBodyOptsIntoStreamUsage pins the stream_options.include_usage
+// opt-in: spec-strict OpenAI-compatible servers omit usage from every chunk
+// without it, leaving token telemetry empty for streamed answers.
+func TestOpenRouterChatBodyOptsIntoStreamUsage(t *testing.T) {
+	streamed := openRouterChatBody(ChatRequest{Model: "m"}, true)
+	options, ok := streamed["stream_options"].(map[string]any)
+	if !ok || options["include_usage"] != true {
+		t.Fatalf("stream_options = %+v, want include_usage:true on a streaming call", streamed["stream_options"])
+	}
+
+	nonStreamed := openRouterChatBody(ChatRequest{Model: "m"}, false)
+	if _, present := nonStreamed["stream_options"]; present {
+		t.Errorf("stream_options sent on a non-streaming call: %+v", nonStreamed["stream_options"])
+	}
+}
+
 func TestOpenRouterChatBodyMapsPortableSamplingOptions(t *testing.T) {
 	body := openRouterChatBody(ChatRequest{
 		Model: "m",

@@ -88,6 +88,11 @@ func TestOpenAICompatibleChatProviderStreamChatTranslatesSSE(t *testing.T) {
 	if capturedBody["stream"] != true {
 		t.Errorf("body stream = %v, want true", capturedBody["stream"])
 	}
+	// Without this opt-in, spec-strict servers (vLLM, LM Studio, LocalAI) omit
+	// usage from every chunk and the streamed answer records zero tokens.
+	if options, ok := capturedBody["stream_options"].(map[string]any); !ok || options["include_usage"] != true {
+		t.Errorf("stream_options = %+v, want include_usage:true", capturedBody["stream_options"])
+	}
 	if capturedBody["model"] != "gemma-4-e2b-it" {
 		t.Errorf("body model = %v, want gemma-4-e2b-it", capturedBody["model"])
 	}

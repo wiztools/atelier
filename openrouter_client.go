@@ -501,6 +501,14 @@ func openRouterChatBody(req ChatRequest, stream bool) map[string]any {
 		"messages": rendered,
 		"stream":   stream,
 	}
+	// The OpenAI protocol only includes usage in a stream when the caller opts
+	// in via stream_options.include_usage. OpenRouter sends usage regardless,
+	// but spec-strict servers behind the openai-compatible provider (vLLM,
+	// LM Studio, LocalAI) stay silent without the opt-in, and token telemetry
+	// records zero for the streamed answer.
+	if stream {
+		body["stream_options"] = map[string]any{"include_usage": true}
+	}
 
 	if req.Format != nil {
 		body["response_format"] = map[string]any{
