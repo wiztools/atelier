@@ -137,6 +137,37 @@ func TestToSchemaPropertyUnwrapsNullableArrayUnion(t *testing.T) {
 	}
 }
 
+// TestParseModelInputSchemaDescription pins that property descriptions survive
+// parsing — both on a plainly-typed field and on a nullable-union field, where
+// fal documents the property at the parent level next to anyOf (the Kling
+// o3/pro image_urls shape). The resolver gates its @ImageN/@VideoN prompt
+// legend on these descriptions, so losing them would silently disable the
+// legend for exactly the models that advertise the convention.
+func TestParseModelInputSchemaDescription(t *testing.T) {
+	doc := `{"components":{"schemas":{"XInput":{"type":"object","properties":{
+		"image_urls":{"description":"Reference images. Refer to them in the prompt as @Image1, @Image2, etc.","anyOf":[{"type":"array","items":{"type":"string"}},{"type":"null"}]},
+		"prompt":{"type":"string","description":"The prompt."},
+		"duration":{"type":"string"}
+	}}}}}`
+	schema, err := parseModelInputSchema([]byte(doc))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	urls, ok := schema.property("image_urls")
+	if !ok {
+		t.Fatal("expected image_urls property")
+	}
+	if !strings.Contains(urls.Description, "@Image1") {
+		t.Errorf("image_urls.Description = %q, want the parent-level description preserved through the union unwrap", urls.Description)
+	}
+	if p, _ := schema.property("prompt"); p.Description != "The prompt." {
+		t.Errorf("prompt.Description = %q, want %q", p.Description, "The prompt.")
+	}
+	if d, _ := schema.property("duration"); d.Description != "" {
+		t.Errorf("duration.Description = %q, want empty when undocumented", d.Description)
+	}
+}
+
 // TestToSchemaPropertyUnwrapsNullableScalarUnion covers the nullable scalar
 // shape (start_image_url, end_image_url, prompt on the Kling o3/pro schema):
 // anyOf:[{type:string}, {type:null}] must surface as a string scalar.
@@ -285,6 +316,11 @@ func TestParseModelInputSchemaKlingO3ProImageUrlsIsArray(t *testing.T) {
 	}
 	if urls.Kind != schemaArray {
 		t.Fatalf("image_urls.Kind = %v, want schemaArray (the runtime requires a list)", urls.Kind)
+	}
+	// The @ImageN token convention is documented at the union parent, so it must
+	// survive the unwrap for the resolver's reference-token legend to fire.
+	if !strings.Contains(urls.Description, "@Image1") {
+		t.Errorf("image_urls.Description = %q, want it to carry the @Image1 convention from the union parent", urls.Description)
 	}
 }
 

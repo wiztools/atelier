@@ -26,6 +26,13 @@ const (
 type SchemaProperty struct {
 	Name string
 	Kind schemaKind
+	// Description is the property's OpenAPI description. Reference-input
+	// models advertise their in-prompt @ImageN/@VideoN token syntax here
+	// (e.g. seedance's image_urls), so the resolver gates its prompt legend on
+	// the model's own documentation rather than a hardcoded model list. On
+	// nullable-union fields the description lives on the parent property next
+	// to anyOf — toSchemaProperty preserves it through the unwrap.
+	Description string
 	// Type is the raw OpenAPI scalar type ("string", "integer", "number",
 	// "boolean") for scalars; the resolver uses it to coerce the canonical
 	// (always-string) duration into the type fal's schema declares — an integer
@@ -83,6 +90,9 @@ type openAPIProp struct {
 	MaxItems   int                        `json:"maxItems"`
 	AnyOf      []json.RawMessage          `json:"anyOf"`
 	OneOf      []json.RawMessage          `json:"oneOf"`
+	// Description is documented at the property level (not inside union
+	// branches), so it must survive the union unwrap to stay usable.
+	Description string `json:"description"`
 }
 
 type openAPIModel struct {
@@ -158,10 +168,14 @@ func toSchemaProperty(name string, raw json.RawMessage) SchemaProperty {
 	// terminates because the chosen branch has a concrete type.
 	if p.Type == "" {
 		if branch := unwrapUnion(p); branch != nil {
-			return toSchemaProperty(name, branch)
+			unwrapped := toSchemaProperty(name, branch)
+			if unwrapped.Description == "" {
+				unwrapped.Description = p.Description
+			}
+			return unwrapped
 		}
 	}
-	sp := SchemaProperty{Name: name, Kind: schemaScalar, Type: p.Type, Enum: enumStrings(p.Enum)}
+	sp := SchemaProperty{Name: name, Kind: schemaScalar, Type: p.Type, Description: p.Description, Enum: enumStrings(p.Enum)}
 	if len(p.Default) > 0 {
 		var d any
 		if err := json.Unmarshal(p.Default, &d); err == nil {

@@ -510,14 +510,20 @@ func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 				Videos:  []ToolVideoFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
 				Notices: generated.Notices,
 			}
+			// The summary must describe what the resolver actually delivered, not
+			// what was attached: a model lacking one side's input drops that side
+			// with a notice, and the branches below already fall through to an
+			// honest phrasing when a side was dropped.
+			videoUsed := attachedVideo != "" && !noticeSaysSourceVideoDropped(generated.Notices)
+			imagesUsed := len(attachedImages) > 0 && !noticeSaysSourceImageDropped(generated.Notices)
 			summary := fmt.Sprintf("generated a video with %s", model)
-			if attachedVideo != "" && len(attachedImages) > 0 {
+			if videoUsed && imagesUsed {
 				summary = fmt.Sprintf("transferred the attached video's motion onto the attached image with %s", model)
-			} else if attachedVideo != "" {
+			} else if videoUsed {
 				summary = fmt.Sprintf("extended the attached video into a longer clip with %s", model)
-			} else if imageCount := len(attachedImages); imageCount > 1 {
+			} else if imageCount := len(attachedImages); imageCount > 1 && imagesUsed {
 				summary = fmt.Sprintf("combined %d attached images into a video with %s", imageCount, model)
-			} else if imageCount == 1 {
+			} else if imageCount == 1 && imagesUsed {
 				summary = fmt.Sprintf("animated the attached image into a video with %s", model)
 			}
 			return output, summary, nil

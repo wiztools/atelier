@@ -1482,6 +1482,124 @@ func TestResolveVideoBodyNoSourceInput(t *testing.T) {
 	}
 }
 
+// referenceToVideoSchema is a synthesized schema with BOTH array-typed source
+// fields — the shape of bytedance/seedance-2.0/reference-to-video, which
+// declares image_urls (up to 9) and video_urls (up to 3) as parallel reference
+// inputs alongside prompt. The descriptions mirror the real cached schema,
+// including its @ImageN/@VideoN prompt-token convention.
+func referenceToVideoSchema() *ModelInputSchema {
+	return &ModelInputSchema{
+		Properties: map[string]SchemaProperty{
+			"prompt": {Name: "prompt", Kind: schemaScalar},
+			"image_urls": {Name: "image_urls", Kind: schemaArray, Items: &SchemaProperty{Name: "image_urls", Kind: schemaScalar},
+				Description: "Reference images to guide video generation. Refer to them in the prompt as @Image1, @Image2, etc."},
+			"video_urls": {Name: "video_urls", Kind: schemaArray, Items: &SchemaProperty{Name: "video_urls", Kind: schemaScalar},
+				Description: "Reference videos to guide video generation. Refer to them in the prompt as @Video1, @Video2, etc."},
+		},
+		order: []string{"prompt", "image_urls", "video_urls"},
+	}
+}
+
+// TestResolveVideoBodyReferenceVideoBothSources is the regression test for
+// conv_16bf42ce64997fad02f769a9: seedance reference-to-video accepts reference
+// videos via a plural video_urls array, but the sourceVideo synonyms only knew
+// the singular video_url — the attached video was dropped with a false "has no
+// source-video input" notice on a model that accepts it. Both sources must
+// reach the body with no notices.
+func TestResolveVideoBodyReferenceVideoBothSources(t *testing.T) {
+	body, notices, err := resolveVideoBody(referenceToVideoSchema(),
+		VideoGenerateRequest{
+			Model:  "bytedance/seedance-2.0/reference-to-video",
+			Prompt: "continue the flight; girl from @Image1, lunar kitchen from @Image2",
+			Video:  "data:video/mp4;base64,AAA",
+			Images: []string{"data:image/png;base64,BBB", "data:image/png;base64,CCC"},
+		},
+		builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	videos, ok := body["video_urls"].([]any)
+	if !ok {
+		t.Fatalf("video_urls = %v (type %T), want []any", body["video_urls"], body["video_urls"])
+	}
+	if len(videos) != 1 || videos[0] != "data:video/mp4;base64,AAA" {
+		t.Fatalf("video_urls = %+v, want the attached video as a one-element slice", videos)
+	}
+	images, ok := body["image_urls"].([]any)
+	if !ok || len(images) != 2 || images[0] != "data:image/png;base64,BBB" || images[1] != "data:image/png;base64,CCC" {
+		t.Fatalf("image_urls = %v, want both attached images in attach order", body["image_urls"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("expected no notices — the model accepts both sources; got %v", notices)
+	}
+	// The model documents @ImageN/@VideoN tokens, so the prompt carries a legend
+	// mapping attachment order onto those tokens.
+	gotPrompt, _ := body["prompt"].(string)
+	if !strings.Contains(gotPrompt, "Reference media for this request:") ||
+		!strings.Contains(gotPrompt, "@Image1, @Image2") ||
+		!strings.Contains(gotPrompt, "the attached source video is @Video1") {
+		t.Fatalf("prompt = %q, want the reference-media legend naming @Image1, @Image2 and @Video1", gotPrompt)
+	}
+}
+
+// TestResolveVideoBodyNoLegendWithoutTokenConvention pins the legend's gate: a
+// model whose source fields don't document @ImageN/@VideoN tokens (happy-horse,
+// bernini-r) must receive the prompt byte-identical — injected tokens would be
+// literal noise the model never learned.
+func TestResolveVideoBodyNoLegendWithoutTokenConvention(t *testing.T) {
+	const prompt = "blend the attached references, no tokens documented"
+	body, _, err := resolveVideoBody(multiImageVideoSchema(0),
+		VideoGenerateRequest{
+			Model:  "alibaba/happy-horse/v1.1/reference-to-video",
+			Prompt: prompt,
+			Images: []string{"data:image/png;base64,AAA", "data:image/png;base64,BBB"},
+		},
+		builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if body["prompt"] != prompt {
+		t.Fatalf("prompt = %q, want byte-identical %q when the schema documents no token convention", body["prompt"], prompt)
+	}
+}
+
+// TestResolveVideoBodyLegendPerSideGating verifies the legend only names the
+// sides whose own field documents the convention: here video_urls advertises
+// @VideoN but image_urls doesn't, so the legend mentions @Video1 and never
+// @Image — even though images are attached and delivered.
+func TestResolveVideoBodyLegendPerSideGating(t *testing.T) {
+	schema := &ModelInputSchema{
+		Properties: map[string]SchemaProperty{
+			"prompt":     {Name: "prompt", Kind: schemaScalar},
+			"image_urls": {Name: "image_urls", Kind: schemaArray, Items: &SchemaProperty{Name: "image_urls", Kind: schemaScalar}},
+			"video_urls": {Name: "video_urls", Kind: schemaArray, Items: &SchemaProperty{Name: "video_urls", Kind: schemaScalar},
+				Description: "Reference videos. Refer to them as @Video1, @Video2."},
+		},
+		order: []string{"prompt", "image_urls", "video_urls"},
+	}
+	body, notices, err := resolveVideoBody(schema,
+		VideoGenerateRequest{
+			Model:  "acme/mixed-reference",
+			Prompt: "follow the video's motion on the images' subject",
+			Video:  "data:video/mp4;base64,AAA",
+			Images: []string{"data:image/png;base64,BBB"},
+		},
+		builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(notices) != 0 {
+		t.Fatalf("expected no notices, got %v", notices)
+	}
+	gotPrompt, _ := body["prompt"].(string)
+	if !strings.Contains(gotPrompt, "@Video1") {
+		t.Fatalf("prompt = %q, want the legend to name @Video1 (the video field documents tokens)", gotPrompt)
+	}
+	if strings.Contains(gotPrompt, "@Image") {
+		t.Fatalf("prompt = %q, must not name @Image tokens when the image field documents none", gotPrompt)
+	}
+}
+
 // multiImageVideoSchema is a synthesized schema with an array-typed image_urls
 // source field (the shape of seedance reference-to-video). It stands in for a
 // real fal fixture: no captured reference-to-video OpenAPI doc exists in the

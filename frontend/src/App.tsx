@@ -276,9 +276,11 @@ const defaultVideoAspectRatio = '16:9';
 // other models drop it with a notice via the backend enum-guard). These are the
 // generic fallback options shown when a model's published schema can't be
 // loaded (offline / no key); each picker fetches its own model-specific set via
-// ListFalVideoDurations. Labels map raw values to friendlier option text —
-// 'auto' reads better than a bare token.
-const defaultVideoDurationOptions = ['auto', '5', '10', '15'];
+// ListFalVideoDurations. Modern models accept clips up to 30s, so the fallback
+// ladder tops out there — a value the selected model rejects is dropped with a
+// notice by the backend enum-guard. Labels map raw values to friendlier option
+// text — 'auto' reads better than a bare token.
+const defaultVideoDurationOptions = ['auto', '5', '10', '15', '30'];
 const videoDurationLabels: Record<string, string> = { auto: 'Auto' };
 const videoAspectRatioOptions = ['16:9', '9:16', '1:1'];
 

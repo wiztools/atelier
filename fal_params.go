@@ -180,9 +180,13 @@ var imageSynonyms = map[string][]string{
 
 // videoSynonyms lists, per canonical param, the native key names to look for in
 // a video model's schema. `sourceImage` is the image-to-video frame; `sourceVideo`
-// is the clip a Veo extend endpoint continues. aspectRatio covers Veo's
-// "aspect_ratio" and any camelCase variant; duration is model-dependent (Veo
-// wants "8s" strings, Kling wants numbers — coerceVideoValue handles both).
+// is the clip a Veo extend endpoint continues. Both sides list the plural array
+// variant too — reference-to-video models (e.g. seedance) declare image_urls AND
+// video_urls, and missing the plural video key made resolveVideoBody drop the
+// attached video on a model that accepts it (conv_16bf42ce64997fad02f769a9).
+// aspectRatio covers Veo's "aspect_ratio" and any camelCase variant; duration is
+// model-dependent (Veo wants "8s" strings, Kling wants numbers — coerceVideoValue
+// handles both).
 var videoSynonyms = map[string][]string{
 	"prompt":         {"prompt"},
 	"duration":       {"duration"},
@@ -191,7 +195,7 @@ var videoSynonyms = map[string][]string{
 	"fps":            {"fps", "frame_rate", "frameRate", "framerate"},
 	"negativePrompt": {"negative_prompt"},
 	"sourceImage":    {"image_url", "image_urls"},
-	"sourceVideo":    {"video_url"},
+	"sourceVideo":    {"video_url", "video_urls"},
 	"generateAudio":  {"generate_audio"},
 	// characterOrientation selects the output's orientation source on
 	// motion-control models (Kling v2.6: required enum ["image","video"]). fal's
@@ -215,7 +219,7 @@ var videoSynonyms = map[string][]string{
 var lipsyncSynonyms = map[string][]string{
 	"sourceAudio": {"audio_url", "audio_file_url", "audio"},
 	"sourceImage": {"image_url", "image_urls"},
-	"sourceVideo": {"video_url"},
+	"sourceVideo": {"video_url", "video_urls"},
 }
 
 type canonicalValue struct {
@@ -607,7 +611,12 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 	body := map[string]any{}
 	var notices []string
 
+	// Capture the prompt's native path/prop: the reference-token legend below
+	// re-sets the same slot with an augmented prompt after the source sides
+	// resolve.
+	promptPath, promptProp := "", SchemaProperty{}
 	if path, prop, ok := findNative(schema, ov, "video", req.Model, "prompt"); ok {
+		promptPath, promptProp = path, prop
 		setBodyPath(schema, body, path, coerceVideoValue(prop, prompt))
 	} else {
 		body["prompt"] = prompt
@@ -757,8 +766,11 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 	// side maps onto its own native field. A model lacking one side's input drops
 	// that side with a notice rather than silently ignoring it (an extend model
 	// sent an image+video turn says so instead of quietly losing the image).
+	// The resolved props feed the reference-token legend below.
+	var sourceVideoProp, sourceImageProp SchemaProperty
 	if sourceVideo != "" {
 		if path, prop, ok := findNative(schema, ov, "video", req.Model, "sourceVideo"); ok {
+			sourceVideoProp = prop
 			setBodyPath(schema, body, path, coerceVideoValue(prop, sourceVideo))
 		} else {
 			notices = append(notices, fmt.Sprintf(
@@ -788,7 +800,41 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 					"model %q accepts at most %d image(s); %d were attached. Attach fewer images or switch to a model with a higher image cap.",
 					req.Model, prop.MaxItems, len(sourceImages))
 			}
+			sourceImageProp = prop
 			setBodyPath(schema, body, path, coerceImages(prop, sourceImages))
+		}
+	}
+
+	// Reference-token legend: some reference-input models (seedance, kling
+	// o3/pro reference-to-video) address their sources in the prompt with
+	// @ImageN/@VideoN tokens, per their own schema descriptions — but the
+	// planner wrote the prompt before a model was chosen and may reference
+	// attachments by filename, which the video model can't see
+	// (conv_16bf42ce64997fad02f769a9). Append a legend mapping attachment order
+	// onto the tokens the model's schema documents. It rides the outgoing body
+	// only — ToolVideoResult.Prompt keeps the planner's original text, so
+	// history and telemetry stay clean.
+	var legend []string
+	if len(sourceImages) > 0 && advertisesReferenceTokens(sourceImageProp) {
+		tokens := make([]string, len(sourceImages))
+		for i := range sourceImages {
+			tokens[i] = fmt.Sprintf("@Image%d", i+1)
+		}
+		legend = append(legend, "the attached images, in attachment order, are "+strings.Join(tokens, ", "))
+	}
+	if sourceVideo != "" && advertisesReferenceTokens(sourceVideoProp) {
+		legend = append(legend, "the attached source video is @Video1")
+	}
+	if len(legend) > 0 {
+		augmented := prompt
+		if augmented != "" {
+			augmented += "\n\n"
+		}
+		augmented += "Reference media for this request: " + strings.Join(legend, "; ") + "."
+		if promptPath != "" {
+			setBodyPath(schema, body, promptPath, coerceVideoValue(promptProp, augmented))
+		} else {
+			body["prompt"] = augmented
 		}
 	}
 
@@ -806,6 +852,40 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 		}
 	}
 	return body, notices, nil
+}
+
+// noticeSaysSourceVideoDropped / noticeSaysSourceImageDropped report whether the
+// resolver's notices include the caveat for a source side the selected model
+// couldn't accept. The video tool's summary matches on these so it describes
+// what was actually delivered — a summary claiming "transferred the attached
+// video's motion" riding next to "the attached video was ignored" hands the
+// final model contradictory evidence (conv_16bf42ce64997fad02f769a9).
+func noticeSaysSourceVideoDropped(notices []string) bool {
+	return noticesMention(notices, "has no source-video input")
+}
+
+func noticeSaysSourceImageDropped(notices []string) bool {
+	return noticesMention(notices, "has no source-image input")
+}
+
+func noticesMention(notices []string, fragment string) bool {
+	for _, n := range notices {
+		if strings.Contains(n, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+// advertisesReferenceTokens reports whether a source field's own schema
+// description tells the model to reference its entries in the prompt as
+// @ImageN/@VideoN. Seedance and kling o3/pro reference-to-video document this;
+// happy-horse and bernini-r take reference media but define no token syntax, so
+// injecting tokens into their prompts would be literal noise. Gating on the
+// description rather than a model list lets new models that document the same
+// convention light up with no code change.
+func advertisesReferenceTokens(prop SchemaProperty) bool {
+	return strings.Contains(prop.Description, "@Image") || strings.Contains(prop.Description, "@Video")
 }
 
 // coerceVideoValue adapts a canonical video value to the native property's type.
