@@ -538,6 +538,25 @@ func coerceImages(prop SchemaProperty, images []string) any {
 	return images[0]
 }
 
+// coerceVideos is the video sibling of coerceImages: a schemaArray property
+// (e.g. a reference-to-video model declaring video_urls) takes the whole list,
+// a scalar property takes the first clip. The scalar branch only ever sees one
+// video — resolveVideoBody's guardrails reject a multi-video request against a
+// scalar-video model before this runs.
+func coerceVideos(prop SchemaProperty, videos []string) any {
+	if len(videos) == 0 {
+		return nil
+	}
+	if prop.Kind == schemaArray {
+		out := make([]any, 0, len(videos))
+		for _, vid := range videos {
+			out = append(out, vid)
+		}
+		return out
+	}
+	return videos[0]
+}
+
 // resolveVideoBody maps a canonical VideoGenerateRequest onto the model's native
 // input schema, returning the fal body, user-facing notices for anything
 // dropped, and an error for a hard capability mismatch (multi-image into a
@@ -556,7 +575,9 @@ func coerceImages(prop SchemaProperty, images []string) any {
 // images into a model whose source-image field is scalar (or into the no-schema
 // legacy path, which only knows a single image_url) is a hard error — the
 // caller fails the tool call so the user knows to switch models rather than
-// silently losing all but one image.
+// silently losing all but one image. Multiple videos follow the same rule on
+// the source-video side (a scalar video_url vs the video_urls arrays reference
+// models declare).
 func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Overrides) (map[string]any, []string, error) {
 	prompt := strings.TrimSpace(req.Prompt)
 	// SourceImages() unifies the new Images slice and the legacy scalar Image.
@@ -566,15 +587,32 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 			sourceImages = append(sourceImages, u)
 		}
 	}
-	sourceVideo := falVideoURL(strings.TrimSpace(req.Video))
+	// SourceVideos() unifies the new Videos slice and the legacy scalar Video.
+	// sourceVideo stays as the first clip for the scalar uses below (the legacy
+	// body's video_url, the extend aspect-ratio notice, sourcePresent gating).
+	sourceVideos := make([]string, 0, 4)
+	for _, vid := range req.SourceVideos() {
+		if u := falVideoURL(strings.TrimSpace(vid)); u != "" {
+			sourceVideos = append(sourceVideos, u)
+		}
+	}
+	sourceVideo := ""
+	if len(sourceVideos) > 0 {
+		sourceVideo = sourceVideos[0]
+	}
 	if schema == nil {
-		// The legacy fallback only knows a scalar image_url; multiple images
-		// can't be expressed without a schema to map them onto, so fail rather
-		// than silently drop the extras.
+		// The legacy fallback only knows a scalar image_url and video_url;
+		// multiples of either can't be expressed without a schema to map them
+		// onto, so fail rather than silently drop the extras.
 		if len(sourceImages) > 1 {
 			return nil, nil, fmt.Errorf(
 				"model %q could not be queried for its parameter schema and accepts at most one image; %d were attached. Configure a multi-image video model (e.g. bytedance/seedance-2.0/reference-to-video).",
 				req.Model, len(sourceImages))
+		}
+		if len(sourceVideos) > 1 {
+			return nil, nil, fmt.Errorf(
+				"model %q could not be queried for its parameter schema and accepts at most one video; %d were attached. Configure a multi-video reference model (e.g. bytedance/seedance-2.5/reference-to-video).",
+				req.Model, len(sourceVideos))
 		}
 		body := map[string]any{"prompt": prompt}
 		if duration := strings.TrimSpace(req.Duration); duration != "" {
@@ -768,13 +806,27 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 	// sent an image+video turn says so instead of quietly losing the image).
 	// The resolved props feed the reference-token legend below.
 	var sourceVideoProp, sourceImageProp SchemaProperty
-	if sourceVideo != "" {
+	if len(sourceVideos) > 0 {
 		if path, prop, ok := findNative(schema, ov, "video", req.Model, "sourceVideo"); ok {
+			// Guardrails mirroring the image side: multiple videos into a
+			// scalar-video model is a hard error (the model only accepts one
+			// clip; silently dropping the rest would hide a capability
+			// mismatch), and a declared maxItems cap rejects requests above it.
+			if prop.Kind != schemaArray && len(sourceVideos) > 1 {
+				return nil, notices, fmt.Errorf(
+					"model %q accepts a single video; %d were attached. Use a multi-video reference model (e.g. bytedance/seedance-2.5/reference-to-video).",
+					req.Model, len(sourceVideos))
+			}
+			if prop.Kind == schemaArray && prop.MaxItems > 0 && len(sourceVideos) > prop.MaxItems {
+				return nil, notices, fmt.Errorf(
+					"model %q accepts at most %d video(s); %d were attached. Attach fewer videos or switch to a model with a higher video cap.",
+					req.Model, prop.MaxItems, len(sourceVideos))
+			}
 			sourceVideoProp = prop
-			setBodyPath(schema, body, path, coerceVideoValue(prop, sourceVideo))
+			setBodyPath(schema, body, path, coerceVideos(prop, sourceVideos))
 		} else {
 			notices = append(notices, fmt.Sprintf(
-				"The selected model %q has no source-video input; the attached video was ignored.",
+				"The selected model %q has no source-video input; the attached video(s) were ignored.",
 				req.Model))
 		}
 	}
@@ -822,8 +874,12 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 		}
 		legend = append(legend, "the attached images, in attachment order, are "+strings.Join(tokens, ", "))
 	}
-	if sourceVideo != "" && advertisesReferenceTokens(sourceVideoProp) {
-		legend = append(legend, "the attached source video is @Video1")
+	if len(sourceVideos) > 0 && advertisesReferenceTokens(sourceVideoProp) {
+		tokens := make([]string, len(sourceVideos))
+		for i := range sourceVideos {
+			tokens[i] = fmt.Sprintf("@Video%d", i+1)
+		}
+		legend = append(legend, "the attached videos, in attachment order, are "+strings.Join(tokens, ", "))
 	}
 	if len(legend) > 0 {
 		augmented := prompt

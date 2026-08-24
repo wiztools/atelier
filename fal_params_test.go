@@ -1537,8 +1537,107 @@ func TestResolveVideoBodyReferenceVideoBothSources(t *testing.T) {
 	gotPrompt, _ := body["prompt"].(string)
 	if !strings.Contains(gotPrompt, "Reference media for this request:") ||
 		!strings.Contains(gotPrompt, "@Image1, @Image2") ||
-		!strings.Contains(gotPrompt, "the attached source video is @Video1") {
+		!strings.Contains(gotPrompt, "the attached videos, in attachment order, are @Video1") {
 		t.Fatalf("prompt = %q, want the reference-media legend naming @Image1, @Image2 and @Video1", gotPrompt)
+	}
+}
+
+// TestResolveVideoBodyMultipleReferenceVideos pins the plural source-video
+// plumbing: reference-mode generate_video sends every attached video, so a
+// model declaring video_urls receives all of them in attachment order and the
+// legend maps each onto its @VideoN token. This is the capability
+// conv_f4048032debc0e335da6a085 needed — a character sheet plus two style
+// reference clips, all as references rather than a motion source.
+func TestResolveVideoBodyMultipleReferenceVideos(t *testing.T) {
+	body, notices, err := resolveVideoBody(referenceToVideoSchema(),
+		VideoGenerateRequest{
+			Model:  "bytedance/seedance-2.5/reference-to-video",
+			Prompt: "wooden flying bed soars home; character from @Image1, motion style from @Video1 and @Video2",
+			Images: []string{"data:image/png;base64,AAA"},
+			Videos: []string{"data:video/mp4;base64,BBB", "data:video/mp4;base64,CCC"},
+		},
+		builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	videos, ok := body["video_urls"].([]any)
+	if !ok || len(videos) != 2 || videos[0] != "data:video/mp4;base64,BBB" || videos[1] != "data:video/mp4;base64,CCC" {
+		t.Fatalf("video_urls = %v, want both attached videos in attach order", body["video_urls"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("expected no notices — the model accepts both sources; got %v", notices)
+	}
+	gotPrompt, _ := body["prompt"].(string)
+	if !strings.Contains(gotPrompt, "@Image1") || !strings.Contains(gotPrompt, "@Video1, @Video2") {
+		t.Fatalf("prompt = %q, want the legend naming @Image1 and @Video1, @Video2", gotPrompt)
+	}
+}
+
+// TestResolveVideoBodyScalarVideoModelRejectsMultipleVideos pins the
+// source-video guardrail: extend and motion-control models declare a scalar
+// video_url, and a multi-video request against one is a hard error naming the
+// model — mirroring the image side — rather than a silent drop of all but the
+// first clip.
+func TestResolveVideoBodyScalarVideoModelRejectsMultipleVideos(t *testing.T) {
+	_, _, err := resolveVideoBody(loadSchema(t, "kling-v2.6-pro-motion-control"),
+		VideoGenerateRequest{
+			Model:  "fal-ai/kling-video/v2.6/pro/motion-control",
+			Prompt: "bed flies home",
+			Images: []string{"data:image/png;base64,AAA"},
+			Videos: []string{"data:video/mp4;base64,BBB", "data:video/mp4;base64,CCC"},
+		},
+		builtinFalOverrides())
+	if err == nil {
+		t.Fatalf("expected a hard error for multiple videos against a scalar-video model")
+	}
+	if !strings.Contains(err.Error(), "accepts a single video") || !strings.Contains(err.Error(), "fal-ai/kling-video/v2.6/pro/motion-control") {
+		t.Fatalf("error = %v, want it to name the model and the single-video limit", err)
+	}
+}
+
+// TestResolveVideoBodyLegacyNoSchemaRejectsMultipleVideos is the no-schema
+// sibling: the legacy fallback body only knows a scalar video_url, so multiple
+// videos fail the call instead of silently losing the extras.
+func TestResolveVideoBodyLegacyNoSchemaRejectsMultipleVideos(t *testing.T) {
+	_, _, err := resolveVideoBody(nil,
+		VideoGenerateRequest{
+			Model:  "acme/mystery-video",
+			Prompt: "bed flies home",
+			Videos: []string{"data:video/mp4;base64,AAA", "data:video/mp4;base64,BBB"},
+		},
+		builtinFalOverrides())
+	if err == nil {
+		t.Fatalf("expected a hard error for multiple videos without a schema")
+	}
+	if !strings.Contains(err.Error(), "could not be queried for its parameter schema") || !strings.Contains(err.Error(), "at most one video") {
+		t.Fatalf("error = %v, want it to name the missing schema and the single-video limit", err)
+	}
+}
+
+// TestResolveVideoBodySeedance25Fixture pins the real cached seedance-2.5
+// reference-to-video schema (testdata/fal-schemas/seedance-2.5-reference-to-video.json):
+// image_urls and video_urls are parallel arrays and both accept the full
+// attachment list, so the config-default reference model of a
+// useVideoAs:"reference" turn maps cleanly.
+func TestResolveVideoBodySeedance25Fixture(t *testing.T) {
+	body, _, err := resolveVideoBody(loadSchema(t, "seedance-2.5-reference-to-video"),
+		VideoGenerateRequest{
+			Model:  "bytedance/seedance-2.5/reference-to-video",
+			Prompt: "bed flies home, girl winks at camera",
+			Images: []string{"data:image/png;base64,AAA"},
+			Videos: []string{"data:video/mp4;base64,BBB", "data:video/mp4;base64,CCC"},
+		},
+		builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	videos, ok := body["video_urls"].([]any)
+	if !ok || len(videos) != 2 {
+		t.Fatalf("video_urls = %v, want both attached videos", body["video_urls"])
+	}
+	images, ok := body["image_urls"].([]any)
+	if !ok || len(images) != 1 {
+		t.Fatalf("image_urls = %v, want the attached image", body["image_urls"])
 	}
 }
 

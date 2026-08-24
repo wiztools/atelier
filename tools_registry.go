@@ -48,15 +48,16 @@ type HarnessToolExecutionContext struct {
 	// Like AttachedImage it is provider-agnostic: the planner decides whether to
 	// transcribe it (any provider) or, on OpenRouter, send it as chat input.
 	AttachedAudio string
-	// AttachedVideo is the video clip (a data URL) the user attached to the
-	// current turn, if any. generate_video uses it as the source clip for Veo
-	// extend or, alongside AttachedImages, for motion control; the lip sync tool
-	// uses it (with AttachedAudio) for video-to-video lip sync. Tool-only: it
-	// never reaches a chat model.
-	AttachedVideo string
-	GenerateImage func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, []string, error)
-	GenerateVideo func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error)
-	GenerateAudio func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error)
+	// AttachedVideos are the video clips (data URLs) the user attached to the
+	// current turn, in attachment order, if any. generate_video uses them as
+	// source clips for Veo extend or motion control, or — with
+	// useVideoAs:"reference" — as reference media alongside AttachedImages for
+	// a reference-to-video model; the lip sync and upscale tools use the first
+	// clip. Tool-only: they never reach a chat model.
+	AttachedVideos []string
+	GenerateImage  func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, []string, error)
+	GenerateVideo  func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error)
+	GenerateAudio  func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error)
 	// GenerateLipsync runs a lip sync generation — an audio clip drives a face
 	// (image for audio-to-video, video for video-to-video). It returns a video
 	// (same transport as GenerateVideo) plus resolver notices.
@@ -396,6 +397,55 @@ func resolveDefaultVideoMotionModel(config AppConfig) string {
 	return defaultFalVideoMotionModel
 }
 
+// nonEmptyVideos returns the trimmed, non-empty entries of videos — the shape
+// the generate_video executor and its siblings consume — treating nil as empty.
+func nonEmptyVideos(videos []string) []string {
+	out := make([]string, 0, len(videos))
+	for _, v := range videos {
+		if s := strings.TrimSpace(v); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// firstAttachedVideo returns the first non-empty attached video, for the
+// single-clip consumers of AttachedVideos (lip sync, video upscaling, extend).
+func firstAttachedVideo(videos []string) string {
+	for _, v := range videos {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// referenceMediaPhrase names the reference media a reference-mode generate_video
+// call actually delivered, for its summary: "the attached image and 2 videos",
+// "the attached videos", etc. Counts of zero mean that side was dropped by the
+// resolver (or never attached) and are omitted.
+func referenceMediaPhrase(imagesUsed bool, videosUsed bool, imageCount, videoCount int) string {
+	var parts []string
+	switch {
+	case !imagesUsed:
+	case imageCount == 1:
+		parts = append(parts, "the attached image")
+	default:
+		parts = append(parts, fmt.Sprintf("%d attached images", imageCount))
+	}
+	switch {
+	case !videosUsed:
+	case videoCount == 1:
+		parts = append(parts, "the attached video")
+	default:
+		parts = append(parts, fmt.Sprintf("%d attached videos", videoCount))
+	}
+	if len(parts) == 0 {
+		return "the attached media"
+	}
+	return strings.Join(parts, " and ")
+}
+
 // videoGenerationDescription assembles the generate_video tool description.
 // audioCapable is the resolved capability of the configured video models
 // (videoModelSupportsAudio); when true the description steers the planner toward
@@ -403,7 +453,7 @@ func resolveDefaultVideoMotionModel(config AppConfig) string {
 // lip_sync chain. The wording is generic — it never names the specific model —
 // so it survives a model swap without rewording.
 func videoGenerationDescription(audioCapable bool) string {
-	base := "Use this when the user asks to create, animate, extend, or render a video or short clip. Works from a text description; when the user attached an image, animates that image (image-to-video); when the user attached a video, extends it into a longer clip (Veo extend); when the user attached both an image and a video, transfers the video's motion onto the image's subject (motion control) — describe the desired result in the prompt and do not ask the user which source to use. The clip is attached to the assistant reply. Generation runs for a minute or more. Pass negativePrompt to steer content away from unwanted elements, and generateAudio:false when the user wants a silent clip."
+	base := "Use this when the user asks to create, animate, extend, or render a video or short clip. Works from a text description; when the user attached an image, animates that image (image-to-video); when the user attached a video, extends it into a longer clip (Veo extend); when the user attached both an image and a video, transfers the video's motion onto the image's subject (motion control) — describe the desired result in the prompt and do not ask the user which source to use. These defaults interpret the attachments as sources to animate, extend, or copy motion from; pass useVideoAs:\"reference\" instead when the attachments are references — characters, style, or scenes that should guide a brand-new clip rather than serve as its source — and every attached image and video is sent as reference media. The clip is attached to the assistant reply. Generation runs for a minute or more. Pass negativePrompt to steer content away from unwanted elements, and generateAudio:false when the user wants a silent clip."
 	if audioCapable {
 		return base + " This video model can also generate synchronized audio (speech, music, ambient sound) from the prompt. For narration, a voice-over, or a speaking character, prefer a single generate_video call with the spoken text in the prompt over chaining generate_speech + lip_sync."
 	}
@@ -422,27 +472,42 @@ func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 			if strings.TrimSpace(call.Content) == "" {
 				return []string{prefix + ".content is required for generate_video (the video prompt)"}
 			}
+			if role := strings.TrimSpace(call.UseVideoAs); role != "" && role != "motion" && role != "reference" {
+				return []string{prefix + ".useVideoAs must be \"motion\" or \"reference\" for generate_video"}
+			}
 			return nil
 		},
 		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
 			if tools.GenerateVideo == nil {
 				return nil, "video generation unavailable", errors.New("video generation is not available in this context")
 			}
-			// Attached media picks the generation mode and model, in priority order:
-			// an attached video switches to a Veo extend endpoint (continues the
-			// clip), an attached image switches to image-to-video (animates the
-			// frame; multiple images switch to reference-to-video when the model
-			// supports it), otherwise text-to-video. An image AND a video together
-			// switch to motion control (the video's motion applied to the image's
-			// subject). The planner may still override the model per call.
+			// Attached media picks the generation mode and model, in priority
+			// order: an attached video switches to a Veo extend endpoint
+			// (continues the clip), an attached image switches to
+			// image-to-video (animates the frame; multiple images switch to
+			// reference-to-video when the model supports it), otherwise
+			// text-to-video. An image AND a video together switch to motion
+			// control (the video's motion applied to the image's subject).
+			// useVideoAs:"reference" overrides that diagnosis: the planner
+			// judged the attachments to be references — characters, style, or
+			// scenes guiding a new clip — rather than sources to extend or
+			// copy motion from, so the reference-capable image model gets the
+			// turn and every attached video is sent alongside the images
+			// (conv_f4048032debc0e335da6a085: a character sheet plus style
+			// reference clips routed to motion control, whose motion analyzer
+			// rejected the freeze-frame-heavy references). The planner may
+			// still override the model per call.
 			attachedImages := tools.AttachedImages
-			attachedVideo := strings.TrimSpace(tools.AttachedVideo)
+			attachedVideos := nonEmptyVideos(tools.AttachedVideos)
+			videoRole := strings.ToLower(strings.TrimSpace(call.UseVideoAs))
 			model := strings.TrimSpace(call.Model)
 			if model == "" {
 				switch {
-				case attachedVideo != "" && len(attachedImages) > 0:
+				case len(attachedVideos) > 0 && videoRole == "reference":
+					model = resolveDefaultVideoImageModel(tools.Config)
+				case len(attachedVideos) > 0 && len(attachedImages) > 0:
 					model = resolveDefaultVideoMotionModel(tools.Config)
-				case attachedVideo != "":
+				case len(attachedVideos) > 0:
 					model = resolveDefaultVideoExtendModel(tools.Config)
 				case len(attachedImages) > 0:
 					model = resolveDefaultVideoImageModel(tools.Config)
@@ -453,6 +518,14 @@ func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 			if model == "" {
 				return nil, "video generation unavailable", errors.New("no video model is configured")
 			}
+			// Source-video selection: reference mode sends every attached
+			// video; extend and motion control are single-clip semantics (one
+			// clip to continue, one motion source), so extras are dropped with
+			// a notice rather than silently.
+			requestVideos := attachedVideos
+			if videoRole != "reference" && len(attachedVideos) > 1 {
+				requestVideos = attachedVideos[:1]
+			}
 			// Aspect-ratio precedence for video mirrors the image tool's rule
 			// (tools_registry.go generate_image): an explicit aspectRatio on the
 			// tool call wins over everything. With no explicit ratio, image-to-
@@ -460,11 +533,11 @@ func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 			// the configured default stamped on it — a 9:16 portrait image used
 			// to come back 16:9 because the config default ("16:9") was sent
 			// unconditionally (see conv_26cc3f515d6d645b316763cb). Video-extend
-			// (attachedVideo) and text-to-video fall through to the configured
+			// (attachedVideos) and text-to-video fall through to the configured
 			// default, as detection only applies to a source image.
 			ratio := strings.TrimSpace(call.AspectRatio)
 			explicit := ratio != ""
-			if ratio == "" && len(attachedImages) > 0 && attachedVideo == "" {
+			if ratio == "" && len(attachedImages) > 0 && len(attachedVideos) == 0 {
 				ratio = aspectRatioFromImage(attachedImages[0])
 			}
 			if ratio == "" {
@@ -472,7 +545,7 @@ func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 			}
 			// Duration precedence mirrors aspectRatio: an explicit duration on the
 			// call wins; otherwise the configured default applies. For an extend
-			// (attachedVideo), the value is the length of the extension, not the
+			// (attachedVideos), the value is the length of the extension, not the
 			// total clip — resolveVideoBody surfaces that distinction to the user
 			// via a notice so the planner's intent isn't misread as total length.
 			duration := strings.TrimSpace(call.Duration)
@@ -489,7 +562,7 @@ func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 				Resolution:          strings.TrimSpace(call.Resolution),
 				FPS:                 strings.TrimSpace(call.FPS),
 				Images:              attachedImages,
-				Video:               attachedVideo,
+				Videos:              requestVideos,
 				GenerateAudio:       call.GenerateAudio,
 			}
 			generated, err := tools.GenerateVideo(ctx, videoReq)
@@ -504,20 +577,31 @@ func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 				return nil, "video generation failed", err
 			}
 			output := ToolVideoResult{
-				Model:   model,
-				Prompt:  videoReq.Prompt,
-				Count:   1,
-				Videos:  []ToolVideoFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
-				Notices: generated.Notices,
+				Model:  model,
+				Prompt: videoReq.Prompt,
+				Count:  1,
+				Videos: []ToolVideoFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
+			}
+			// Resolver notices ride the result; the executor adds its own only
+			// after generation succeeded, so a failed call carries nothing but
+			// the error (media usage drops failed calls entirely).
+			output.Notices = generated.Notices
+			if len(requestVideos) < len(attachedVideos) {
+				output.Notices = append(output.Notices, fmt.Sprintf(
+					"%d videos were attached but this mode uses only the first; pass useVideoAs:\"reference\" to send every attached video as reference media.",
+					len(attachedVideos)))
 			}
 			// The summary must describe what the resolver actually delivered, not
 			// what was attached: a model lacking one side's input drops that side
 			// with a notice, and the branches below already fall through to an
 			// honest phrasing when a side was dropped.
-			videoUsed := attachedVideo != "" && !noticeSaysSourceVideoDropped(generated.Notices)
+			videoUsed := len(requestVideos) > 0 && !noticeSaysSourceVideoDropped(generated.Notices)
 			imagesUsed := len(attachedImages) > 0 && !noticeSaysSourceImageDropped(generated.Notices)
 			summary := fmt.Sprintf("generated a video with %s", model)
-			if videoUsed && imagesUsed {
+			if videoRole == "reference" && (videoUsed || imagesUsed) {
+				summary = fmt.Sprintf("used %s as references for a new video with %s",
+					referenceMediaPhrase(imagesUsed, videoUsed, len(attachedImages), len(requestVideos)), model)
+			} else if videoUsed && imagesUsed {
 				summary = fmt.Sprintf("transferred the attached video's motion onto the attached image with %s", model)
 			} else if videoUsed {
 				summary = fmt.Sprintf("extended the attached video into a longer clip with %s", model)
@@ -886,7 +970,7 @@ func lipsyncToolDefinition(videoAudioCapable bool) HarnessToolDefinition {
 			if len(tools.AttachedImages) > 0 {
 				attachedImage = strings.TrimSpace(tools.AttachedImages[0])
 			}
-			attachedVideo := strings.TrimSpace(tools.AttachedVideo)
+			attachedVideo := firstAttachedVideo(tools.AttachedVideos)
 			if attachedImage == "" && attachedVideo == "" {
 				return nil, "lip sync requires an attached face", errors.New("lip_sync requires an attached image or video to lip sync — ask the user to attach a face alongside the audio")
 			}
@@ -1246,7 +1330,7 @@ func videoUpscaleToolDefinition() HarnessToolDefinition {
 			if tools.UpscaleVideo == nil {
 				return nil, "video upscaling unavailable", errors.New("video upscaling is not available in this context")
 			}
-			attachedVideo := strings.TrimSpace(tools.AttachedVideo)
+			attachedVideo := firstAttachedVideo(tools.AttachedVideos)
 			if attachedVideo == "" {
 				return nil, "video upscaling requires an attached video", errors.New("upscale_video requires an attached video — ask the user to attach one first")
 			}
@@ -1406,6 +1490,7 @@ func generateVideoParamSchema() map[string]any {
 			"resolution":     stringParam("Optional — the output video resolution tier (e.g. \"480p\", \"720p\", \"1080p\", \"4k\"). Tiers vary by model, so an unsupported value is ignored with a notice and the model's default is used. Omit to let the model choose."),
 			"fps":            stringParam("Optional — the output frame rate in frames per second (e.g. \"24\", \"30\", \"60\"). Only some video models expose an fps/frame_rate input; an unsupported value (or a model with no such input) is ignored with a notice and the model's default is used. Omit to let the model choose."),
 			"generateAudio":  boolParam("Optional — set false to render a silent clip on models that would otherwise add audio. Some models generate audio by default yet expose no way to disable it; on those, a false value cannot be honored and the user is notified."),
+			"useVideoAs":     enumParam("Optional — how an attached video is used. \"motion\" (the default) treats it as a source: with an image also attached, the video's motion is transferred onto the image's subject; with a video alone, the clip is extended. \"reference\" instead treats every attached image and video as references — characters, style, or scenes guiding a brand-new clip — which is the right choice whenever the user cites the attachments as examples to follow rather than the clip to continue or copy motion from.", "motion", "reference"),
 		},
 		"required": []string{"content"},
 	}

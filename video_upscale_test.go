@@ -44,8 +44,8 @@ func TestUpscaleVideoToolDefaultsAndScaleMapping(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var captured VideoUpscaleRequest
 			tools := HarnessToolExecutionContext{
-				Config:        AppConfig{Models: ConfigModels{ImageProvider: "fal"}},
-				AttachedVideo: "data:video/mp4;base64,AAA",
+				Config:         AppConfig{Models: ConfigModels{ImageProvider: "fal"}},
+				AttachedVideos: []string{"data:video/mp4;base64,AAA"},
 				UpscaleVideo: func(_ context.Context, req VideoUpscaleRequest) (GeneratedVideo, error) {
 					captured = req
 					return GeneratedVideo{Data: []byte("fake-mp4"), MimeType: "video/mp4", SourceURL: "https://fal.example/v.mp4"}, nil
@@ -86,8 +86,8 @@ func TestUpscaleVideoToolDefaultsAndScaleMapping(t *testing.T) {
 func TestUpscaleVideoToolHonorsModelOverride(t *testing.T) {
 	var captured VideoUpscaleRequest
 	tools := HarnessToolExecutionContext{
-		Config:        AppConfig{Providers: ConfigProviders{Fal: ConfigFal{VideoUpscaleModel: "fal-ai/topaz/upscale/video"}}},
-		AttachedVideo: "data:video/mp4;base64,AAA",
+		Config:         AppConfig{Providers: ConfigProviders{Fal: ConfigFal{VideoUpscaleModel: "fal-ai/topaz/upscale/video"}}},
+		AttachedVideos: []string{"data:video/mp4;base64,AAA"},
 		UpscaleVideo: func(_ context.Context, req VideoUpscaleRequest) (GeneratedVideo, error) {
 			captured = req
 			return GeneratedVideo{Data: []byte("fake-mp4"), MimeType: "video/mp4"}, nil

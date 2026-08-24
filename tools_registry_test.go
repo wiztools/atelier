@@ -85,7 +85,7 @@ func TestVideoToolSummaryMatchesDeliveredSources(t *testing.T) {
 	exec := func(notices []string) HarnessToolExecutionContext {
 		return HarnessToolExecutionContext{
 			AttachedImages: []string{"data:image/png;base64,AAA", "data:image/png;base64,BBB"},
-			AttachedVideo:  "data:video/mp4;base64,CCC",
+			AttachedVideos: []string{"data:video/mp4;base64,CCC"},
 			GenerateVideo: func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
 				return GeneratedVideo{Data: []byte("mp4"), MimeType: "video/mp4", SourceURL: "https://example.com/v.mp4", Notices: notices}, nil
 			},
@@ -109,5 +109,167 @@ func TestVideoToolSummaryMatchesDeliveredSources(t *testing.T) {
 	}
 	if summary != "combined 2 attached images into a video with "+model {
 		t.Fatalf("summary = %q, want the images-only phrasing when the video was dropped by notice", summary)
+	}
+}
+
+// TestGenerateVideoUseVideoAsRouting pins the planner-facing source-mode
+// choice: with useVideoAs:"reference" an image+video (or video-only) turn
+// routes to the configured reference-capable image model and sends EVERY
+// attached video, while the default keeps source semantics — motion control
+// with an image, Veo extend without — and trims the request to the first clip
+// with a notice pointing at reference mode. conv_f4048032debc0e335da6a085
+// routed a character sheet plus two style reference clips to motion control,
+// whose motion analyzer rejected the freeze-frame-heavy references.
+func TestGenerateVideoUseVideoAsRouting(t *testing.T) {
+	const (
+		imageModel    = "bytedance/seedance-2.5/reference-to-video"
+		motionModel   = "fal-ai/kling-video/v2.6/pro/motion-control"
+		extendModel   = "fal-ai/veo3.1/extend-video"
+		textModel     = "bytedance/seedance-2.0/text-to-video"
+		referenceVid1 = "data:video/mp4;base64,BBB"
+		referenceVid2 = "data:video/mp4;base64,CCC"
+		characterImg  = "data:image/png;base64,AAA"
+	)
+
+	cases := []struct {
+		name          string
+		call          HarnessToolCall
+		images        []string
+		videos        []string
+		wantModel     string
+		wantVideoLen  int
+		wantSummary   string
+		wantDroppedTo int // number of videos the request should carry, post-trim
+	}{
+		{
+			name:         "reference mode with image and two videos",
+			call:         HarnessToolCall{Name: "generate_video", Content: "bed flies home", UseVideoAs: "reference"},
+			images:       []string{characterImg},
+			videos:       []string{referenceVid1, referenceVid2},
+			wantModel:    imageModel,
+			wantVideoLen: 2,
+			wantSummary:  "used the attached image and 2 attached videos as references for a new video with " + imageModel,
+		},
+		{
+			name:         "reference mode with videos only",
+			call:         HarnessToolCall{Name: "generate_video", Content: "bed flies home", UseVideoAs: "reference"},
+			videos:       []string{referenceVid1, referenceVid2},
+			wantModel:    imageModel,
+			wantVideoLen: 2,
+			wantSummary:  "used 2 attached videos as references for a new video with " + imageModel,
+		},
+		{
+			name:          "default keeps motion control and trims to one video",
+			call:          HarnessToolCall{Name: "generate_video", Content: "bed flies home"},
+			images:        []string{characterImg},
+			videos:        []string{referenceVid1, referenceVid2},
+			wantModel:     motionModel,
+			wantVideoLen:  1,
+			wantDroppedTo: 1,
+			wantSummary:   "transferred the attached video's motion onto the attached image with " + motionModel,
+		},
+		{
+			name:          "default video-only keeps extend and trims to one video",
+			call:          HarnessToolCall{Name: "generate_video", Content: "bed flies home"},
+			videos:        []string{referenceVid1, referenceVid2},
+			wantModel:     extendModel,
+			wantVideoLen:  1,
+			wantDroppedTo: 1,
+			wantSummary:   "extended the attached video into a longer clip with " + extendModel,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := defaultAppConfig()
+			config.Providers.Fal.VideoModel = textModel
+			config.Providers.Fal.VideoImageModel = imageModel
+			config.Providers.Fal.VideoMotionModel = motionModel
+			config.Providers.Fal.VideoExtendModel = extendModel
+
+			var gotReq VideoGenerateRequest
+			def := videoGenerationToolDefinition(false)
+			exec := HarnessToolExecutionContext{
+				Config:         config,
+				AttachedImages: tc.images,
+				AttachedVideos: tc.videos,
+				GenerateVideo: func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
+					gotReq = req
+					return GeneratedVideo{Data: []byte("mp4"), MimeType: "video/mp4", SourceURL: "https://example.com/v.mp4"}, nil
+				},
+			}
+			result, summary, err := def.Execute(context.Background(), exec, tc.call)
+			if err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+			if gotReq.Model != tc.wantModel {
+				t.Fatalf("model = %q, want %q", gotReq.Model, tc.wantModel)
+			}
+			if len(gotReq.SourceVideos()) != tc.wantVideoLen {
+				t.Fatalf("request videos = %v, want %d", gotReq.SourceVideos(), tc.wantVideoLen)
+			}
+			if summary != tc.wantSummary {
+				t.Fatalf("summary = %q, want %q", summary, tc.wantSummary)
+			}
+			if tc.wantDroppedTo > 0 {
+				// trimmed case: a notice must tell the user the extras were dropped
+				typed, ok := result.(ToolVideoResult)
+				if !ok {
+					t.Fatalf("result type = %T, want ToolVideoResult", result)
+				}
+				found := false
+				for _, n := range typed.Notices {
+					if strings.Contains(n, "pass useVideoAs:\"reference\"") {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("notices = %v, want one pointing at useVideoAs reference for the dropped extras", typed.Notices)
+				}
+			}
+		})
+	}
+}
+
+// TestGenerateVideoUseVideoAsValidation pins the enum guard: an unknown
+// useVideoAs value is a plan correction, not a silent fallthrough to the
+// default interpretation.
+func TestGenerateVideoUseVideoAsValidation(t *testing.T) {
+	def := videoGenerationToolDefinition(false)
+	problems := def.Validate("toolCalls[0]", HarnessToolCall{Name: "generate_video", Content: "x", UseVideoAs: "inspiration"})
+	if len(problems) != 1 || !strings.Contains(problems[0], "useVideoAs must be") {
+		t.Fatalf("problems = %v, want the useVideoAs enum correction", problems)
+	}
+	for _, ok := range []string{"", "motion", "reference"} {
+		if problems := def.Validate("toolCalls[0]", HarnessToolCall{Name: "generate_video", Content: "x", UseVideoAs: ok}); len(problems) != 0 {
+			t.Fatalf("useVideoAs %q problems = %v, want none", ok, problems)
+		}
+	}
+}
+
+// TestGenerateVideoParamSchemaDocumentsUseVideoAs pins the planner-facing
+// contract: the param schema must expose useVideoAs with exactly the motion and
+// reference enum values and a description that says what each interpretation
+// does, so the planner can make the source-vs-reference call itself.
+func TestGenerateVideoParamSchemaDocumentsUseVideoAs(t *testing.T) {
+	schema := generateVideoParamSchema()
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected properties map, got %T", schema["properties"])
+	}
+	prop, ok := props["useVideoAs"].(map[string]any)
+	if !ok {
+		t.Fatalf("generate_video param schema must expose a `useVideoAs` property; got %v", props)
+	}
+	enum, _ := prop["enum"].([]string)
+	if len(enum) != 2 || enum[0] != "motion" || enum[1] != "reference" {
+		t.Fatalf("useVideoAs enum = %v, want [motion reference]", prop["enum"])
+	}
+	desc, _ := prop["description"].(string)
+	if !strings.Contains(desc, "reference") || !strings.Contains(desc, "motion") {
+		t.Fatalf("useVideoAs description = %q, want it to explain both interpretations", desc)
+	}
+	if !strings.Contains(videoGenerationDescription(false), "useVideoAs") {
+		t.Fatalf("generate_video description must surface the useVideoAs choice to the planner")
 	}
 }

@@ -103,6 +103,13 @@ type HarnessToolCall struct {
 	// false — see VideoGenerateRequest.GenerateAudio.
 	NegativePrompt string `json:"negativePrompt,omitempty"`
 	GenerateAudio  *bool  `json:"generateAudio,omitempty"`
+	// UseVideoAs is an optional generate_video input choosing how an attached
+	// video is used: "motion" (the default) extends a video-only attachment and
+	// transfers motion from it onto an attached image's subject, while
+	// "reference" sends every attached image and video as reference media for a
+	// new clip. Planner-only, like NegativePrompt — see
+	// generateVideoParamSchema and the generate_video routing.
+	UseVideoAs string `json:"useVideoAs,omitempty"`
 	// AspectRatio is an optional generate_image input naming the output shape
 	// (e.g. "16:9"). When set, the handler derives width/height from it; when
 	// omitted, the configured default dimensions are used. See
@@ -303,7 +310,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			Harness:         harness,
 			AttachedImages:  attachedImages,
 			AttachedAudio:   latestAttachedAudioForTurn(req, h.config.Storage),
-			AttachedVideo:   latestAttachedVideoForTurn(req, h.config.Storage),
+			AttachedVideos:  latestAttachedVideosForTurn(req, h.config.Storage),
 		}, &run)
 		if err != nil {
 			run.complete("failed", "harness_prepare_error")
@@ -588,23 +595,25 @@ func latestUserAudioURL(messages []ChatMessage) string {
 	return ""
 }
 
-// latestUserVideoURL returns the first video attachment on the most recent user
-// message (a data URL), or "" if the current turn has none. It is the video
-// sibling of latestUserAudioURL and the source clip Veo extend / video-to-video
-// lip sync consume.
-func latestUserVideoURL(messages []ChatMessage) string {
+// latestUserVideoURLs returns the video attachments on the most recent user
+// message (data URLs, in attachment order), or nil if the current turn has
+// none. Reference-mode generate_video sends every attached video, not just the
+// first; the single-clip consumers (extend, motion control, lip sync) take the
+// first element.
+func latestUserVideoURLs(messages []ChatMessage) []string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role != "user" {
 			continue
 		}
+		var out []string
 		for _, video := range messages[i].Videos {
 			if trimmed := strings.TrimSpace(video); trimmed != "" {
-				return trimmed
+				out = append(out, trimmed)
 			}
 		}
-		return ""
+		return out
 	}
-	return ""
+	return nil
 }
 
 // latestAttachedImagesForTurn returns the images attached to the current turn
@@ -693,27 +702,30 @@ func latestAttachedAudioForTurn(req ChatRequest, storage ConfigStorage) string {
 	return ""
 }
 
-// latestAttachedVideoForTurn is the video sibling of latestAttachedAudioForTurn:
-// it returns the current turn's video attachment (a data URL) if present, else
-// falls back to the most recent video in conversation history, whether
-// user-attached or model-generated. The fallback lets video-dependent tools
-// (Veo extend, video-to-video lip sync) operate across turns without forcing
-// the user to re-attach on every message. History video is persisted as
-// artifacts on disk on both user and assistant turns; they're re-read and
-// re-encoded as a data URL to match the shape AttachedVideo consumers (fal)
-// expect. Errors are swallowed so a stale history file can't break the current
-// turn — the caller falls back to the empty-AttachedVideo path and the tool
-// surfaces its "attach a video" error.
-func latestAttachedVideoForTurn(req ChatRequest, storage ConfigStorage) string {
-	if video := latestUserVideoURL(req.Messages); video != "" {
-		return video
+// latestAttachedVideosForTurn is the plural video sibling of
+// latestAttachedAudioForTurn: it returns the current turn's video attachments
+// (data URLs, in attachment order) if any are present, else falls back to the
+// most recent single video in conversation history, whether user-attached or
+// model-generated. The fallback lets video-dependent tools (Veo extend,
+// video-to-video lip sync, reference mode) operate across turns without
+// forcing the user to re-attach on every message; like the image side it
+// returns at most one video from history, since multi-video state across turns
+// isn't meaningful. History video is persisted as artifacts on disk on both
+// user and assistant turns; they're re-read and re-encoded as data URLs to
+// match the shape AttachedVideos consumers (fal) expect. Errors are swallowed
+// so a stale history file can't break the current turn — the caller falls back
+// to the empty-AttachedVideos path and the tool surfaces its "attach a video"
+// error.
+func latestAttachedVideosForTurn(req ChatRequest, storage ConfigStorage) []string {
+	if videos := latestUserVideoURLs(req.Messages); len(videos) > 0 {
+		return videos
 	}
 	if strings.TrimSpace(req.ConversationID) == "" {
-		return ""
+		return nil
 	}
 	detail, err := getConversation(storage, req.ConversationID)
 	if err != nil {
-		return ""
+		return nil
 	}
 	for i := len(detail.Turns) - 1; i >= 0; i-- {
 		turn := detail.Turns[i]
@@ -723,12 +735,12 @@ func latestAttachedVideoForTurn(req ChatRequest, storage ConfigStorage) string {
 			}
 			dataURL, err := readVideoArtifactAsDataURL(storage, req.ConversationID, content)
 			if err != nil {
-				return ""
+				return nil
 			}
-			return dataURL
+			return []string{dataURL}
 		}
 	}
-	return ""
+	return nil
 }
 
 func (h *HarnessEngine) primaryModelForRequest(req ChatRequest) string {
@@ -1127,10 +1139,11 @@ type harnessTurnContext struct {
 	// AttachedAudio is the audio clip (data URL) the user attached to this turn,
 	// if any — used by transcribe_audio. Provider-agnostic, like AttachedImage.
 	AttachedAudio string
-	// AttachedVideo is the video clip (data URL) the user attached to this turn,
-	// if any — used by generate_video (Veo extend) and the lip sync tool. Tool-
-	// only: unlike audio it never reaches a chat model.
-	AttachedVideo string
+	// AttachedVideos are the video clips (data URLs) the user attached to this
+	// turn, in attachment order, if any — used by generate_video (Veo extend,
+	// motion control, or reference mode) and the lip sync tool. Tool-only:
+	// unlike audio they never reach a chat model.
+	AttachedVideos []string
 }
 
 // selectSkillForTurn picks (and loads) the skill guiding this turn. It runs a
@@ -1400,8 +1413,8 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 		if strings.TrimSpace(turn.AttachedAudio) == "" {
 			turn.AttachedAudio = batch.GeneratedAudio
 		}
-		if strings.TrimSpace(turn.AttachedVideo) == "" {
-			turn.AttachedVideo = batch.GeneratedVideo
+		if len(turn.AttachedVideos) == 0 && strings.TrimSpace(batch.GeneratedVideo) != "" {
+			turn.AttachedVideos = []string{batch.GeneratedVideo}
 		}
 		if len(turn.AttachedImages) == 0 {
 			turn.AttachedImages = batch.GeneratedImages
@@ -2397,7 +2410,7 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 	// the corresponding attachment.
 	gateway.tools.AttachedImages = turn.AttachedImages
 	gateway.tools.AttachedAudio = turn.AttachedAudio
-	gateway.tools.AttachedVideo = turn.AttachedVideo
+	gateway.tools.AttachedVideos = turn.AttachedVideos
 	batch := harnessToolBatchResult{Results: make([]HarnessToolResult, 0, len(calls))}
 	for _, call := range calls {
 		// When the user selected a model that is not the harness model as the
@@ -2457,8 +2470,8 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 			if strings.TrimSpace(gateway.tools.AttachedAudio) == "" && generated.Audio != "" {
 				gateway.tools.AttachedAudio = generated.Audio
 			}
-			if strings.TrimSpace(gateway.tools.AttachedVideo) == "" && generated.Video != "" {
-				gateway.tools.AttachedVideo = generated.Video
+			if len(gateway.tools.AttachedVideos) == 0 && generated.Video != "" {
+				gateway.tools.AttachedVideos = []string{generated.Video}
 			}
 			if len(gateway.tools.AttachedImages) == 0 && len(generated.Images) > 0 {
 				gateway.tools.AttachedImages = generated.Images

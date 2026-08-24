@@ -882,6 +882,7 @@ export namespace main {
 	    allowBinary?: boolean;
 	    negativePrompt?: string;
 	    generateAudio?: boolean;
+	    useVideoAs?: string;
 	    aspectRatio?: string;
 	    duration?: string;
 	    resolution?: string;
@@ -914,6 +915,7 @@ export namespace main {
 	        this.allowBinary = source["allowBinary"];
 	        this.negativePrompt = source["negativePrompt"];
 	        this.generateAudio = source["generateAudio"];
+	        this.useVideoAs = source["useVideoAs"];
 	        this.aspectRatio = source["aspectRatio"];
 	        this.duration = source["duration"];
 	        this.resolution = source["resolution"];

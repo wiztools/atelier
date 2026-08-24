@@ -127,13 +127,20 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				return GeneratedVideo{}, errFalKeyNotConfigured
 			}
 			client := newFalClient(app.client, apiKey)
-			// Pre-resolve attached source media: an attached video for extend or one
-			// or more images for image-to-video / reference-to-video. Oversized
-			// payloads upload to fal's CDN so the queue submit stays under the inline
-			// size limit.
-			if resolved, err := client.resolveMediaURL(ctx, req.Video, "video/mp4", "source-video.mp4"); err == nil {
-				req.Video = resolved
+			// Pre-resolve attached source media: one or more videos for extend,
+			// motion control, or reference-to-video, and one or more images for
+			// image-to-video / reference-to-video. Oversized payloads upload to
+			// fal's CDN so the queue submit stays under the inline size limit.
+			// SourceVideos() unifies the legacy scalar Video into the slice, so
+			// the resolver and transport below see one list.
+			videos := req.SourceVideos()
+			for i := range videos {
+				if resolved, err := client.resolveMediaURL(ctx, videos[i], "video/mp4", fmt.Sprintf("source-video-%d.mp4", i)); err == nil && resolved != "" {
+					videos[i] = resolved
+				}
 			}
+			req.Videos = videos
+			req.Video = ""
 			for i, img := range req.Images {
 				if resolved, err := client.resolveMediaURL(ctx, img, "image/png", fmt.Sprintf("source-image-%d.png", i)); err == nil && resolved != "" {
 					req.Images[i] = resolved

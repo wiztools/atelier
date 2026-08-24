@@ -289,7 +289,7 @@ type ChatMessage struct {
 	// parallel to Audios. Unlike audio, video input is tool-only — it never
 	// reaches a chat model: messagesWithoutMedia strips the bytes before triage
 	// (and therefore before any model call), and no provider adapter emits a
-	// video content part. Tools consume it via AttachedVideo (Veo extend, lip
+	// video content part. Tools consume it via AttachedVideos (Veo extend, lip
 	// sync). Bytes are validated with isVideoBytes before being persisted.
 	Videos    []string   `json:"videos,omitempty"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
@@ -488,8 +488,15 @@ type VideoGenerateRequest struct {
 	Images []string `json:"images,omitempty"`
 	// Video, when set, is the source clip a Veo extend endpoint continues — a
 	// URL or a base64 data URI. It maps to fal's video_url input and requires an
-	// extend-capable model (e.g. fal-ai/veo3.1/extend-video).
+	// extend-capable model (e.g. fal-ai/veo3.1/extend-video). Legacy scalar
+	// field; Videos is preferred. The two are unified by SourceVideos().
 	Video string `json:"video,omitempty"`
+	// Videos, when set, are the source clips for extend / motion control /
+	// reference-to-video generation — URLs or base64 data URIs. They map to
+	// fal's video_url (single) or video_urls (array) input depending on the
+	// model's schema. A multi-video request against a scalar-video model fails
+	// the tool call with a clear error (see resolveVideoBody).
+	Videos []string `json:"videos,omitempty"`
 	// GenerateAudio maps to fal's generate_audio input on audio-capable video
 	// models. A pointer so "unspecified" (nil, let the model default) stays
 	// distinct from an explicit false (silent clip) — the latter is what "video
@@ -516,6 +523,25 @@ func (req VideoGenerateRequest) SourceImages() []string {
 	out := make([]string, 0, len(raw))
 	for _, img := range raw {
 		if s := strings.TrimSpace(img); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// SourceVideos returns the non-empty source videos for the request, preferring
+// Videos (the slice) and falling back to the legacy scalar Video — the video
+// sibling of SourceImages and its single read point.
+func (req VideoGenerateRequest) SourceVideos() []string {
+	var raw []string
+	if len(req.Videos) > 0 {
+		raw = req.Videos
+	} else if s := strings.TrimSpace(req.Video); s != "" {
+		raw = []string{s}
+	}
+	out := make([]string, 0, len(raw))
+	for _, vid := range raw {
+		if s := strings.TrimSpace(vid); s != "" {
 			out = append(out, s)
 		}
 	}
@@ -1308,7 +1334,7 @@ func decodeAudioPayload(audio string) ([]byte, string, error) {
 // artifact), and returns the raw bytes plus a file extension. Bytes are
 // validated with isVideoBytes so a non-video payload is rejected rather than
 // written as a broken artifact. Like audio, there is no bare-base64 fallback:
-// video input is tool-only and the harness resolves AttachedVideo from the data
+// video input is tool-only and the harness resolves AttachedVideos from the data
 // URL the frontend sends (or a re-encoded artifact on history fallback).
 func decodeVideoPayload(video string) ([]byte, string, error) {
 	video = strings.TrimSpace(video)
@@ -3462,7 +3488,7 @@ func lastUserPrompt(messages []ChatMessage) string {
 
 // readVideoArtifactAsDataURL resolves a persisted video artifact (referenced by
 // relative Path in a HistoryContent entry) to its bytes on disk and re-encodes
-// them as a base64 data URL — the shape AttachedVideo consumers (Veo extend,
+// them as a base64 data URL — the shape AttachedVideos consumers (Veo extend,
 // lip sync) expect. Sibling of readAudioArtifactAsDataURL: used by the harness
 // to re-hydrate a prior turn's attached video when the current turn has no
 // attachment, so video-dependent tools work across turns without forcing the
@@ -3526,7 +3552,7 @@ func tempAudioFileAsDataURL(tempPath, mimeType string) (string, error) {
 
 // tempVideoFileAsDataURL is the video sibling of tempAudioFileAsDataURL: reads
 // a freshly-generated video temp file and re-encodes it as a data URL for
-// AttachedVideo consumers (Veo extend, video-to-video lip sync). Same
+// AttachedVideos consumers (Veo extend, video-to-video lip sync). Same
 // swallow-error contract: a bad temp file yields ("", nil), not a failure.
 func tempVideoFileAsDataURL(tempPath, mimeType string) (string, error) {
 	path := strings.TrimSpace(tempPath)
