@@ -883,6 +883,7 @@ export namespace main {
 	    negativePrompt?: string;
 	    generateAudio?: boolean;
 	    useVideoAs?: string;
+	    faceFrom?: string;
 	    aspectRatio?: string;
 	    duration?: string;
 	    resolution?: string;
@@ -916,6 +917,7 @@ export namespace main {
 	        this.negativePrompt = source["negativePrompt"];
 	        this.generateAudio = source["generateAudio"];
 	        this.useVideoAs = source["useVideoAs"];
+	        this.faceFrom = source["faceFrom"];
 	        this.aspectRatio = source["aspectRatio"];
 	        this.duration = source["duration"];
 	        this.resolution = source["resolution"];

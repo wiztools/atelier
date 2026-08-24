@@ -273,3 +273,180 @@ func TestGenerateVideoParamSchemaDocumentsUseVideoAs(t *testing.T) {
 		t.Fatalf("generate_video description must surface the useVideoAs choice to the planner")
 	}
 }
+
+// TestLipsyncFaceFromRouting pins the planner-facing face choice: with both an
+// image and a video attached, the video face wins by default (with a notice
+// saying so), faceFrom:"image" drives the attached image instead, and the
+// request carries exactly one face — LipsyncGenerateRequest's "exactly one of
+// Image or Video" contract. A faceFrom naming a face that isn't attached is a
+// hard error the planner can correct, not a silent fallthrough.
+func TestLipsyncFaceFromRouting(t *testing.T) {
+	const (
+		lipsyncImageModel = "fal-ai/sync-lipsync/v3/image-to-video"
+		lipsyncVideoModel = "google/gemini-omni-flash/edit"
+		audioClip         = "data:audio/mpeg;base64,AAA"
+		faceImage         = "data:image/png;base64,BBB"
+		faceVideo         = "data:video/mp4;base64,CCC"
+	)
+
+	cases := []struct {
+		name        string
+		call        HarnessToolCall
+		images      []string
+		videos      []string
+		wantModel   string
+		wantImage   string
+		wantVideo   string
+		wantSummary string
+		wantNotice  bool
+	}{
+		{
+			name:        "both faces default to video with a notice",
+			call:        HarnessToolCall{Name: "lip_sync"},
+			images:      []string{faceImage},
+			videos:      []string{faceVideo},
+			wantModel:   lipsyncVideoModel,
+			wantVideo:   faceVideo,
+			wantSummary: "lip-synced the attached audio to a video with " + lipsyncVideoModel,
+			wantNotice:  true,
+		},
+		{
+			name:        "faceFrom image drives the attached image",
+			call:        HarnessToolCall{Name: "lip_sync", FaceFrom: "image"},
+			images:      []string{faceImage},
+			videos:      []string{faceVideo},
+			wantModel:   lipsyncImageModel,
+			wantImage:   faceImage,
+			wantSummary: "lip-synced the attached audio to a image with " + lipsyncImageModel,
+		},
+		{
+			name:        "faceFrom video is explicit, no heuristic notice",
+			call:        HarnessToolCall{Name: "lip_sync", FaceFrom: "video"},
+			images:      []string{faceImage},
+			videos:      []string{faceVideo},
+			wantModel:   lipsyncVideoModel,
+			wantVideo:   faceVideo,
+			wantSummary: "lip-synced the attached audio to a video with " + lipsyncVideoModel,
+		},
+		{
+			name:        "image only routes to the talking-head model",
+			call:        HarnessToolCall{Name: "lip_sync"},
+			images:      []string{faceImage},
+			wantModel:   lipsyncImageModel,
+			wantImage:   faceImage,
+			wantSummary: "lip-synced the attached audio to a image with " + lipsyncImageModel,
+		},
+		{
+			name:        "video only routes to the re-sync model",
+			call:        HarnessToolCall{Name: "lip_sync"},
+			videos:      []string{faceVideo},
+			wantModel:   lipsyncVideoModel,
+			wantVideo:   faceVideo,
+			wantSummary: "lip-synced the attached audio to a video with " + lipsyncVideoModel,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := defaultAppConfig()
+			config.Providers.Fal.LipsyncImageModel = lipsyncImageModel
+			config.Providers.Fal.LipsyncVideoModel = lipsyncVideoModel
+
+			var gotReq LipsyncGenerateRequest
+			def := lipsyncToolDefinition(false)
+			exec := HarnessToolExecutionContext{
+				Config:         config,
+				AttachedImages: tc.images,
+				AttachedVideos: tc.videos,
+				AttachedAudio:  audioClip,
+				GenerateLipsync: func(ctx context.Context, req LipsyncGenerateRequest) (GeneratedVideo, error) {
+					gotReq = req
+					return GeneratedVideo{Data: []byte("mp4"), MimeType: "video/mp4"}, nil
+				},
+			}
+			result, summary, err := def.Execute(context.Background(), exec, tc.call)
+			if err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+			if gotReq.Model != tc.wantModel {
+				t.Fatalf("model = %q, want %q", gotReq.Model, tc.wantModel)
+			}
+			if gotReq.Image != tc.wantImage || gotReq.Video != tc.wantVideo {
+				t.Fatalf("request face = image:%q video:%q, want image:%q video:%q (exactly one face)",
+					gotReq.Image, gotReq.Video, tc.wantImage, tc.wantVideo)
+			}
+			if summary != tc.wantSummary {
+				t.Fatalf("summary = %q, want %q", summary, tc.wantSummary)
+			}
+			typed, ok := result.(ToolVideoResult)
+			if !ok {
+				t.Fatalf("result type = %T, want ToolVideoResult", result)
+			}
+			hasShadowNotice := false
+			for _, n := range typed.Notices {
+				if strings.Contains(n, "faceFrom") {
+					hasShadowNotice = true
+				}
+			}
+			if hasShadowNotice != tc.wantNotice {
+				t.Fatalf("faceFrom notice present = %v, want %v (notices: %v)", hasShadowNotice, tc.wantNotice, typed.Notices)
+			}
+		})
+	}
+}
+
+// TestLipsyncFaceFromMissingFace pins the guard: a faceFrom naming a face that
+// isn't attached fails the call with a correction the planner can act on.
+func TestLipsyncFaceFromMissingFace(t *testing.T) {
+	def := lipsyncToolDefinition(false)
+	exec := HarnessToolExecutionContext{
+		Config:         defaultAppConfig(),
+		AttachedVideos: []string{"data:video/mp4;base64,CCC"},
+		AttachedAudio:  "data:audio/mpeg;base64,AAA",
+		GenerateLipsync: func(ctx context.Context, req LipsyncGenerateRequest) (GeneratedVideo, error) {
+			t.Fatal("GenerateLipsync must not run when the requested face is missing")
+			return GeneratedVideo{}, nil
+		},
+	}
+	_, _, err := def.Execute(context.Background(), exec, HarnessToolCall{Name: "lip_sync", FaceFrom: "image"})
+	if err == nil || !strings.Contains(err.Error(), `faceFrom is "image" but no image is attached`) {
+		t.Fatalf("error = %v, want the missing-image-face correction", err)
+	}
+}
+
+// TestLipsyncFaceFromValidation pins the enum guard: an unknown faceFrom value
+// is a plan correction, not a silent fallthrough to the default face.
+func TestLipsyncFaceFromValidation(t *testing.T) {
+	def := lipsyncToolDefinition(false)
+	problems := def.Validate("toolCalls[0]", HarnessToolCall{Name: "lip_sync", FaceFrom: "photograph"})
+	if len(problems) != 1 || !strings.Contains(problems[0], "faceFrom must be") {
+		t.Fatalf("problems = %v, want the faceFrom enum correction", problems)
+	}
+	for _, ok := range []string{"", "image", "video"} {
+		if problems := def.Validate("toolCalls[0]", HarnessToolCall{Name: "lip_sync", FaceFrom: ok}); len(problems) != 0 {
+			t.Fatalf("faceFrom %q problems = %v, want none", ok, problems)
+		}
+	}
+}
+
+// TestLipsyncParamSchemaDocumentsFaceFrom pins the planner-facing contract:
+// the param schema exposes faceFrom with exactly the image and video enum
+// values, and the tool description surfaces the choice.
+func TestLipsyncParamSchemaDocumentsFaceFrom(t *testing.T) {
+	schema := lipsyncParamSchema()
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected properties map, got %T", schema["properties"])
+	}
+	prop, ok := props["faceFrom"].(map[string]any)
+	if !ok {
+		t.Fatalf("lip_sync param schema must expose a `faceFrom` property; got %v", props)
+	}
+	enum, _ := prop["enum"].([]string)
+	if len(enum) != 2 || enum[0] != "image" || enum[1] != "video" {
+		t.Fatalf("faceFrom enum = %v, want [image video]", prop["enum"])
+	}
+	if !strings.Contains(lipsyncDescription(false), "faceFrom") {
+		t.Fatalf("lip_sync description must surface the faceFrom choice to the planner")
+	}
+}

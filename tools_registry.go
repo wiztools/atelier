@@ -930,7 +930,7 @@ func transcribeAudioParamSchema() map[string]any {
 // correct path for a non-audio video model. The attachment requirement stands
 // either way: lip_sync always needs an audio clip plus a face.
 func lipsyncDescription(videoAudioCapable bool) string {
-	base := "Use this when the user asks to lip sync, dub, or sync audio to a face. Requires an attached audio clip AND an attached face: an image produces a talking-head video (audio-to-video), a video re-lip-syncs the existing clip (video-to-video). The synced video is attached to the assistant reply. Generation runs for a minute or more."
+	base := "Use this when the user asks to lip sync, dub, or sync audio to a face. Requires an attached audio clip AND an attached face: an image produces a talking-head video (audio-to-video), a video re-lip-syncs the existing clip (video-to-video). When both an image and a video are attached the video is used by default — pass faceFrom:\"image\" to drive the attached image instead (or faceFrom:\"video\" to be explicit). The synced video is attached to the assistant reply. Generation runs for a minute or more."
 	if !videoAudioCapable {
 		return base + " The audio clip may be one the user attached or one generate_speech produced earlier in this turn — generated speech carries forward automatically."
 	}
@@ -953,6 +953,9 @@ func lipsyncToolDefinition(videoAudioCapable bool) HarnessToolDefinition {
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: lipsyncParamSchema(),
 		Validate: func(prefix string, call HarnessToolCall) []string {
+			if face := strings.TrimSpace(call.FaceFrom); face != "" && face != "image" && face != "video" {
+				return []string{prefix + ".faceFrom must be \"image\" or \"video\" for lip_sync"}
+			}
 			return nil
 		},
 		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
@@ -974,11 +977,30 @@ func lipsyncToolDefinition(videoAudioCapable bool) HarnessToolDefinition {
 			if attachedImage == "" && attachedVideo == "" {
 				return nil, "lip sync requires an attached face", errors.New("lip_sync requires an attached image or video to lip sync — ask the user to attach a face alongside the audio")
 			}
+			// Which face drives the sync: an explicit faceFrom chooses it
+			// (video → video-to-video, image → audio-to-video); with none set,
+			// an attached video takes precedence over an attached image — the
+			// heuristic that shadowed a character-sheet face whenever a clip
+			// rode along. The chosen face is the ONLY one sent on the request
+			// (its doc contract is exactly one of Image/Video); the heuristic
+			// path appends a notice so the user knows the other face was
+			// skipped and how to override it.
+			faceFrom := strings.ToLower(strings.TrimSpace(call.FaceFrom))
+			if faceFrom == "image" && attachedImage == "" {
+				return nil, "lip sync requires an image face", errors.New("lip_sync faceFrom is \"image\" but no image is attached — ask the user to attach one, or drop faceFrom to use the attached video")
+			}
+			if faceFrom == "video" && attachedVideo == "" {
+				return nil, "lip sync requires a video face", errors.New("lip_sync faceFrom is \"video\" but no video is attached — ask the user to attach one, or drop faceFrom to use the attached image")
+			}
+			useVideoFace := attachedVideo != ""
+			if faceFrom == "image" {
+				useVideoFace = false
+			} else if faceFrom == "video" {
+				useVideoFace = true
+			}
 			model := strings.TrimSpace(call.Model)
 			if model == "" {
-				// Pick the mode by which face is attached: video → video-to-video,
-				// image → audio-to-video. A video takes precedence if both are set.
-				if attachedVideo != "" {
+				if useVideoFace {
 					model = resolveDefaultLipsyncVideoModel(tools.Config)
 				} else {
 					model = resolveDefaultLipsyncImageModel(tools.Config)
@@ -987,8 +1009,20 @@ func lipsyncToolDefinition(videoAudioCapable bool) HarnessToolDefinition {
 			lipsyncReq := LipsyncGenerateRequest{
 				Model: model,
 				Audio: attachedAudio,
-				Image: attachedImage,
-				Video: attachedVideo,
+			}
+			var shadowNotice string
+			if useVideoFace {
+				lipsyncReq.Video = attachedVideo
+				// Only the heuristic path notices: faceFrom:"video" with an
+				// image also attached is an explicit choice, not a guess. The
+				// inverse shadowing (an image face skipping an attached video)
+				// can only happen via an explicit faceFrom:"image" — the
+				// heuristic alone never picks an image over an attached video.
+				if attachedImage != "" && faceFrom == "" {
+					shadowNotice = "An image and a video were both attached; lip sync used the video face and skipped the image. Pass faceFrom:\"image\" on the lip_sync call to drive the attached image instead."
+				}
+			} else {
+				lipsyncReq.Image = attachedImage
 			}
 			generated, err := tools.GenerateLipsync(ctx, lipsyncReq)
 			if err != nil {
@@ -1002,12 +1036,15 @@ func lipsyncToolDefinition(videoAudioCapable bool) HarnessToolDefinition {
 				return nil, "lip sync failed", err
 			}
 			output := ToolVideoResult{
-				Model:   model,
-				Count:   1,
-				Videos:  []ToolVideoFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
-				Notices: generated.Notices,
+				Model:  model,
+				Count:  1,
+				Videos: []ToolVideoFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
 			}
-			summary := fmt.Sprintf("lip-synced the attached audio to a %s with %s", map[bool]string{true: "video", false: "image"}[attachedVideo != ""], model)
+			output.Notices = generated.Notices
+			if shadowNotice != "" {
+				output.Notices = append(output.Notices, shadowNotice)
+			}
+			summary := fmt.Sprintf("lip-synced the attached audio to a %s with %s", map[bool]string{true: "video", false: "image"}[useVideoFace], model)
 			return output, summary, nil
 		},
 		Activity: func(result HarnessToolResult) HarnessToolActivity {
@@ -1022,13 +1059,15 @@ func lipsyncToolDefinition(videoAudioCapable bool) HarnessToolDefinition {
 
 // lipsyncParamSchema describes lip_sync's inputs. There is no "content" param —
 // the audio and face come from the user's attachments, not a prompt. model is
-// the only knob the planner can steer; everything else is attachment-driven.
+// the fal endpoint override; faceFrom is the planner-facing choice of which
+// attached face drives the sync when both kinds are attached.
 func lipsyncParamSchema() map[string]any {
 	return map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
-			"model": stringParam("Optional fal.ai lip sync model override."),
+			"model":    stringParam("Optional fal.ai lip sync model override."),
+			"faceFrom": enumParam("Optional — which attached face to sync when both an image and a video are attached. \"video\" (the default) re-lip-syncs the existing clip; \"image\" instead produces a talking head from the attached image. Choose \"image\" when the user's face reference is the image (e.g. a character sheet) and the attached video is only context.", "image", "video"),
 		},
 		"required": []string{},
 	}

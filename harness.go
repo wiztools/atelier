@@ -110,6 +110,12 @@ type HarnessToolCall struct {
 	// new clip. Planner-only, like NegativePrompt — see
 	// generateVideoParamSchema and the generate_video routing.
 	UseVideoAs string `json:"useVideoAs,omitempty"`
+	// FaceFrom is an optional lip_sync input choosing which attached face
+	// drives the sync when both an image and a video are attached: "video"
+	// (the default) re-lip-syncs the clip, "image" produces a talking head
+	// from the frame. Planner-only, like UseVideoAs — see
+	// lipsyncParamSchema and the lip_sync routing.
+	FaceFrom string `json:"faceFrom,omitempty"`
 	// AspectRatio is an optional generate_image input naming the output shape
 	// (e.g. "16:9"). When set, the handler derives width/height from it; when
 	// omitted, the configured default dimensions are used. See
