@@ -450,3 +450,18 @@ func TestLipsyncParamSchemaDocumentsFaceFrom(t *testing.T) {
 		t.Fatalf("lip_sync description must surface the faceFrom choice to the planner")
 	}
 }
+
+// TestImageGenerationDescriptionFramesAttachmentsAsReferences pins the
+// planner-facing framing of the attached-image path: an attachment is a
+// reference the prompt directs — transform OR create anew — not a
+// transform-only input. The old transform-only wording biased planner prompts
+// toward edit framing even when the user's attachment was a style/character
+// reference for a brand-new image.
+func TestImageGenerationDescriptionFramesAttachmentsAsReferences(t *testing.T) {
+	desc := imageGenerationToolDefinition(defaultAppConfig()).Description
+	for _, fragment := range []string{"reference the prompt directs", "transformation or restyle", "new creation guided by it"} {
+		if !strings.Contains(desc, fragment) {
+			t.Fatalf("generate_image description = %q, want it to include %q", desc, fragment)
+		}
+	}
+}

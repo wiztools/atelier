@@ -1077,7 +1077,7 @@ func imageGenerationToolDefinition(config AppConfig) HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "generate_image",
 		Title:       "Generate image",
-		Description: "Use this when the user asks to create, draw, paint, or render an image. Works from a text description, and when the user attached an image, transforms that image in the requested style (image-to-image). The configured image model generates it and the image is attached to the assistant reply.",
+		Description: "Use this when the user asks to create, draw, paint, or render an image. Works from a text description; when the user attached an image, it becomes a reference the prompt directs — describe a transformation or restyle of that image, or a new creation guided by it and any other attached images (image-to-image). The configured image model generates it and the image is attached to the assistant reply.",
 		Example:     `{"name":"generate_image","content":"a watercolor of a lighthouse at dusk"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: generateImageParamSchema(),
