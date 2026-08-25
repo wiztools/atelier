@@ -321,7 +321,7 @@ func TestMergeAppConfigNormalizesOllamaEndpoint(t *testing.T) {
 }
 
 // TestLegacyImageSizePreset covers the one-time migration of legacy config.json
-// width/height values onto the closest SizePreset tier by long edge.
+// width/height values onto the closest resolution tier by long edge.
 func TestLegacyImageSizePreset(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -330,15 +330,14 @@ func TestLegacyImageSizePreset(t *testing.T) {
 		wantPreset string
 	}{
 		{"empty stays empty", 0, 0, ""},
-		{"only width set", 1024, 0, "draft"},
-		{"only height set", 0, 1024, "draft"},
-		{"draft boundary", 1024, 1024, "draft"},
-		{"just above draft", 1025, 1025, "standard"},
-		{"standard boundary", 1536, 864, "standard"},
-		{"high boundary", 2000, 1000, "high"},
-		{"high boundary exact", 2048, 2048, "high"},
-		{"high+ above high", 2560, 1440, "high+"},
-		{"high+ far above", 4096, 4096, "high+"},
+		{"only width set", 1024, 0, "1k"},
+		{"only height set", 0, 1024, "1k"},
+		{"1k boundary", 1024, 1024, "1k"},
+		{"1k/2k tie rounds down", 1536, 1536, "1k"},
+		{"just above tie", 1537, 1537, "2k"},
+		{"2k boundary exact", 2048, 2048, "2k"},
+		{"2k/4k midrange", 2560, 1440, "2k"},
+		{"4k far above", 4096, 4096, "4k"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -350,15 +349,16 @@ func TestLegacyImageSizePreset(t *testing.T) {
 }
 
 // TestMergeAppConfigMigratesLegacyImagePixels confirms mergeAppConfig folds
-// legacy width/height into SizePreset, leaves an explicit SizePreset alone, and
-// defaults both fields when neither is present.
+// legacy width/height into the SizePreset tier, migrates the pre-tier preset
+// vocabulary (draft/standard/high/high+) onto tiers, leaves an explicit tier
+// alone, and defaults the field when nothing is present.
 func TestMergeAppConfigMigratesLegacyImagePixels(t *testing.T) {
 	// Legacy config with pixel dimensions but no preset/ratio → migrated.
 	migrated := mergeAppConfig(AppConfig{Generation: ConfigGeneration{
 		Image: ConfigImageGeneration{Width: 2048, Height: 1024, Steps: 8},
 	}})
-	if migrated.Generation.Image.SizePreset != "high" {
-		t.Errorf("legacy width/height migration: SizePreset = %q, want high", migrated.Generation.Image.SizePreset)
+	if migrated.Generation.Image.SizePreset != "2k" {
+		t.Errorf("legacy width/height migration: SizePreset = %q, want 2k", migrated.Generation.Image.SizePreset)
 	}
 	if migrated.Generation.Image.AspectRatio != defaultImageAspectRatio {
 		t.Errorf("legacy ratio fallback: AspectRatio = %q, want %q", migrated.Generation.Image.AspectRatio, defaultImageAspectRatio)
@@ -367,15 +367,31 @@ func TestMergeAppConfigMigratesLegacyImagePixels(t *testing.T) {
 		t.Errorf("explicit steps clobbered: Steps = %d, want 8", migrated.Generation.Image.Steps)
 	}
 
-	// An explicit preset is honored and not clobbered by legacy width/height.
+	// An explicit tier is honored and not clobbered by legacy width/height.
 	kept := mergeAppConfig(AppConfig{Generation: ConfigGeneration{
-		Image: ConfigImageGeneration{SizePreset: "draft", AspectRatio: "16:9", Width: 4096, Height: 4096},
+		Image: ConfigImageGeneration{SizePreset: "4k", AspectRatio: "16:9", Width: 4096, Height: 4096},
 	}})
-	if kept.Generation.Image.SizePreset != "draft" {
-		t.Errorf("explicit preset clobbered: SizePreset = %q, want draft", kept.Generation.Image.SizePreset)
+	if kept.Generation.Image.SizePreset != "4k" {
+		t.Errorf("explicit preset clobbered: SizePreset = %q, want 4k", kept.Generation.Image.SizePreset)
 	}
 	if kept.Generation.Image.AspectRatio != "16:9" {
 		t.Errorf("explicit ratio clobbered: AspectRatio = %q, want 16:9", kept.Generation.Image.AspectRatio)
+	}
+
+	// Pre-tier preset names map onto the nearest tier so old configs keep
+	// working without a Settings visit.
+	for legacy, want := range map[string]string{
+		"draft":    "1k",
+		"standard": "1k",
+		"high":     "2k",
+		"high+":    "2k",
+	} {
+		got := mergeAppConfig(AppConfig{Generation: ConfigGeneration{
+			Image: ConfigImageGeneration{SizePreset: legacy},
+		}}).Generation.Image.SizePreset
+		if got != want {
+			t.Errorf("legacy preset %q migrated to %q, want %q", legacy, got, want)
+		}
 	}
 
 	// Empty image config → all defaults applied.
@@ -385,19 +401,20 @@ func TestMergeAppConfigMigratesLegacyImagePixels(t *testing.T) {
 	}
 }
 
-// TestImageSizePresetLongEdge covers the preset → long-edge budget mapping.
-// An unknown preset falls back to the standard long edge.
+// TestImageSizePresetLongEdge covers the tier → long-edge budget mapping.
+// An unknown tier falls back to the 1K long edge.
 func TestImageSizePresetLongEdge(t *testing.T) {
 	cases := []struct {
 		preset   string
 		wantLong int
 	}{
-		{"draft", 1024},
-		{"standard", 1536},
-		{"high", 2048},
-		{"high+", 2560},
-		{"", 1536},      // empty → standard fallback
-		{"bogus", 1536}, // unknown → standard fallback
+		{"1k", 1024},
+		{"2k", 2048},
+		{"4k", 4096},
+		{"1K", 1024}, // case-insensitive
+		{" 2k ", 2048},
+		{"", 1024},      // empty → default fallback
+		{"bogus", 1024}, // unknown → default fallback
 	}
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("%q", tc.preset), func(t *testing.T) {
@@ -408,49 +425,49 @@ func TestImageSizePresetLongEdge(t *testing.T) {
 	}
 }
 
-// TestImageSizeForPresetAndRatio covers the composition of preset + ratio into
+// TestImageSizeForPresetAndRatio covers the composition of tier + ratio into
 // concrete pixels. Spot-checks a few combos and the unknown-ratio fallback.
 func TestImageSizeForPresetAndRatio(t *testing.T) {
-	// standard (1536) at 1:1 → 1536×1536 (already a multiple of 16).
-	w, h := imageSizeForPresetAndRatio("standard", "1:1")
-	if w != 1536 || h != 1536 {
-		t.Errorf("(standard,1:1) = %dx%d, want 1536x1536", w, h)
+	// 2k at 1:1 → 2048×2048 (already a multiple of 16).
+	w, h := imageSizeForPresetAndRatio("2k", "1:1")
+	if w != 2048 || h != 2048 {
+		t.Errorf("(2k,1:1) = %dx%d, want 2048x2048", w, h)
 	}
-	// draft (1024) at 16:9 → long edge 1024, short edge ~576 (multiple of 16).
-	w, h = imageSizeForPresetAndRatio("draft", "16:9")
+	// 1k at 16:9 → long edge 1024, short edge ~576 (multiple of 16).
+	w, h = imageSizeForPresetAndRatio("1k", "16:9")
 	if w <= h || w != 1024 {
-		t.Errorf("(draft,16:9) = %dx%d, want landscape with long edge 1024", w, h)
+		t.Errorf("(1k,16:9) = %dx%d, want landscape with long edge 1024", w, h)
 	}
 	if h%16 != 0 {
-		t.Errorf("(draft,16:9) short edge %d not a multiple of 16", h)
+		t.Errorf("(1k,16:9) short edge %d not a multiple of 16", h)
 	}
 	// 21:9 cinematic — landscape, long edge wins.
-	w, h = imageSizeForPresetAndRatio("high+", "21:9")
+	w, h = imageSizeForPresetAndRatio("4k", "21:9")
 	if w <= h {
-		t.Errorf("(high+,21:9) = %dx%d, want landscape (cinematic ultrawide)", w, h)
+		t.Errorf("(4k,21:9) = %dx%d, want landscape (cinematic ultrawide)", w, h)
 	}
-	if w != 2560 {
-		t.Errorf("(high+,21:9) long edge = %d, want 2560", w)
+	if w != 4096 {
+		t.Errorf("(4k,21:9) long edge = %d, want 4096", w)
 	}
 	// 3:2 photographic — landscape.
-	w, h = imageSizeForPresetAndRatio("high", "3:2")
+	w, h = imageSizeForPresetAndRatio("2k", "3:2")
 	if w <= h {
-		t.Errorf("(high,3:2) = %dx%d, want landscape (3:2)", w, h)
+		t.Errorf("(2k,3:2) = %dx%d, want landscape (3:2)", w, h)
 	}
 	// 2:3 portrait.
-	w, h = imageSizeForPresetAndRatio("high", "2:3")
+	w, h = imageSizeForPresetAndRatio("2k", "2:3")
 	if w >= h {
-		t.Errorf("(high,2:3) = %dx%d, want portrait (2:3)", w, h)
+		t.Errorf("(2k,2:3) = %dx%d, want portrait (2:3)", w, h)
 	}
-	// Unknown ratio → square at the preset long edge (never a zero dimension).
-	w, h = imageSizeForPresetAndRatio("standard", "totally-bogus")
-	if w != 1536 || h != 1536 {
-		t.Errorf("(standard,bogus) = %dx%d, want 1536x1536 fallback", w, h)
+	// Unknown ratio → square at the tier long edge (never a zero dimension).
+	w, h = imageSizeForPresetAndRatio("2k", "totally-bogus")
+	if w != 2048 || h != 2048 {
+		t.Errorf("(2k,bogus) = %dx%d, want 2048x2048 fallback", w, h)
 	}
 	// Empty ratio → configured default (1:1) applied, not a crash.
-	w, h = imageSizeForPresetAndRatio("standard", "")
-	if w != 1536 || h != 1536 {
-		t.Errorf("(standard,empty) = %dx%d, want 1536x1536", w, h)
+	w, h = imageSizeForPresetAndRatio("2k", "")
+	if w != 2048 || h != 2048 {
+		t.Errorf("(2k,empty) = %dx%d, want 2048x2048", w, h)
 	}
 }
 
@@ -4908,6 +4925,67 @@ func TestGenerateImageToolTextToImageWithoutAttachment(t *testing.T) {
 	if captured.Model != defaultFalImageModel {
 		t.Errorf("model = %q, want text-to-image default %q", captured.Model, defaultFalImageModel)
 	}
+}
+
+// TestGenerateImageToolResolutionTier pins the tier precedence in the
+// generate_image Execute: an explicit resolution on the call wins and is marked
+// explicit; without one the configured default tier applies unmarked; an
+// unrecognized value falls back to the configured default. The tier drives both
+// the derived pixels and the Resolution field the fal resolver forwards.
+func TestGenerateImageToolResolutionTier(t *testing.T) {
+	newTools := func(sizePreset string) (HarnessToolExecutionContext, *ImageGenerateRequest) {
+		var captured ImageGenerateRequest
+		tools := HarnessToolExecutionContext{
+			Config: AppConfig{
+				Models:     ConfigModels{ImageProvider: "fal"},
+				Generation: ConfigGeneration{Image: ConfigImageGeneration{SizePreset: sizePreset, AspectRatio: "16:9"}},
+			},
+			GenerateImage: func(_ context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, []string, error) {
+				captured = req
+				return ollamaGenerateResponse{Image: "data:image/png;base64,iVBORw0KGgo=", Done: true}, nil, nil, nil
+			},
+		}
+		return tools, &captured
+	}
+
+	t.Run("explicit tier wins and is marked explicit", func(t *testing.T) {
+		tools, captured := newTools("1k")
+		def := imageGenerationToolDefinition(tools.Config)
+		if _, _, err := def.Execute(t.Context(), tools, HarnessToolCall{Content: "a wallpaper", Resolution: "4k"}); err != nil {
+			t.Fatalf("Execute returned error: %v", err)
+		}
+		if captured.Resolution != "4k" || !captured.ResolutionExplicit {
+			t.Fatalf("resolution = %q (explicit %v), want explicit 4k over the 1k config", captured.Resolution, captured.ResolutionExplicit)
+		}
+		if captured.Width != 4096 {
+			t.Errorf("width = %d, want the 4k long edge 4096", captured.Width)
+		}
+	})
+
+	t.Run("omitted tier uses the configured default, unmarked", func(t *testing.T) {
+		tools, captured := newTools("2k")
+		def := imageGenerationToolDefinition(tools.Config)
+		if _, _, err := def.Execute(t.Context(), tools, HarnessToolCall{Content: "a lighthouse"}); err != nil {
+			t.Fatalf("Execute returned error: %v", err)
+		}
+		if captured.Resolution != "2k" || captured.ResolutionExplicit {
+			t.Fatalf("resolution = %q (explicit %v), want the unmarked 2k default", captured.Resolution, captured.ResolutionExplicit)
+		}
+		if captured.Width != 2048 {
+			t.Errorf("width = %d, want the 2k long edge 2048", captured.Width)
+		}
+	})
+
+	t.Run("unrecognized tier falls back to the configured default", func(t *testing.T) {
+		tools, captured := newTools("2k")
+		def := imageGenerationToolDefinition(tools.Config)
+		if _, _, err := def.Execute(t.Context(), tools, HarnessToolCall{Content: "a lighthouse", Resolution: "8k"}); err != nil {
+			t.Fatalf("Execute returned error: %v", err)
+		}
+		if captured.Resolution != "2k" || captured.ResolutionExplicit {
+			t.Fatalf("resolution = %q (explicit %v), want the 2k default for an unrecognized tier", captured.Resolution, captured.ResolutionExplicit)
+		}
+	})
 }
 
 // TestUpscaleImageToolRequiresAttachedImage verifies the tool errors when no

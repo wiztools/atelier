@@ -160,20 +160,22 @@ var audioSynonyms = map[string][]string{
 // `image_url` (scalar), nano-banana-pro declares `image_urls` (array). The
 // resolver wraps to a slice when the matched property is schemaArray.
 //
-// Two canonicals carry an output shape: `imageSize` for models that take a
-// pixel-size or a fal preset enum on `image_size`/`size` (seedream), and
+// Three canonicals carry an output shape: `imageSize` for models that take a
+// pixel-size or a fal preset enum on `image_size`/`size` (seedream),
 // `aspectRatio` for models that take a raw ratio string on `aspect_ratio`
-// (nano-banana-2/edit, whose enum lists "9:16", "16:9", ...). They are
-// separate canonicals because the field names and value spaces don't overlap:
-// resolveImageBody tries `aspectRatio` first and falls back to `imageSize`. We
-// deliberately keep "size" off `aspectRatio` here even though the video table
-// includes it — on image models "size" means pixel-size, so listing it under
-// both canonicals would be ambiguous.
+// (nano-banana-2/edit, whose enum lists "9:16", "16:9", ...), and `resolution`
+// for models that take a tier enum on `resolution` (nano-banana-pro/edit,
+// "1K"/"2K"/"4K"). The field names and value spaces don't overlap:
+// resolveImageBody forwards the tier first, then tries `aspectRatio` and falls
+// back to `imageSize`. We deliberately keep "size" off `aspectRatio` here even
+// though the video table includes it — on image models "size" means pixel-size,
+// so listing it under both canonicals would be ambiguous.
 var imageSynonyms = map[string][]string{
 	"prompt":            {"prompt"},
 	"sourceImage":       {"image_url", "image_urls"},
 	"imageSize":         {"image_size", "size"},
 	"aspectRatio":       {"aspect_ratio", "aspectRatio"},
+	"resolution":        {"resolution"},
 	"numImages":         {"num_images"},
 	"numInferenceSteps": {"num_inference_steps"},
 }
@@ -352,6 +354,13 @@ func resolveImageBody(schema *ModelInputSchema, req ImageGenerateRequest, ov Ove
 		body["num_images"] = 1
 	}
 
+	// Resolution tier first: models that speak tiers natively (nano banana's
+	// resolution enum) get the effective tier — explicit or configured default
+	// — on their own field, independent of the ratio paths below. Pixel-only
+	// models never see it here; their dimensions already encode the tier.
+	resolutionPlaced, tierNotices := forwardImageResolutionTier(schema, ov, body, req)
+	notices = append(notices, tierNotices...)
+
 	// Image-to-image takes the source frame(s). An output-orientation request
 	// ("make this 9:16") must override the source's inherited orientation —
 	// otherwise a landscape source silently stays landscape (see conv_711ebd5f,
@@ -399,8 +408,17 @@ func resolveImageBody(schema *ModelInputSchema, req ImageGenerateRequest, ov Ove
 				}
 			}
 		}
+		// An explicit resolution the model can't express natively (it has no
+		// resolution input — edit resolution follows the source frame by
+		// design, so no pixel fallback exists on this path) deserves a notice;
+		// the configured default stays silent to avoid one per generation.
+		if req.ResolutionExplicit && !resolutionPlaced {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q derives edit resolution from the attached image; ignoring the requested %q resolution.",
+				req.Model, normalizeImageResolutionTier(req.Resolution)))
+		}
 	} else if req.Width > 0 && req.Height > 0 {
-		sendImageSize(schema, ov, body, req)
+		sendImageSize(schema, ov, body, req, resolutionPlaced, &notices)
 	}
 
 	if req.Steps > 0 {
@@ -444,14 +462,15 @@ func sendImageAspectRatio(schema *ModelInputSchema, ov Overrides, body map[strin
 }
 
 // sendImageSize writes the image_size field onto the fal request body, choosing
-// between an aspect-ratio preset enum string and a {width,height} object.
+// between an aspect-ratio preset enum string, a tier auto-preset, and a
+// {width,height} object.
 //
 // The model's native ratio field is tried first via sendImageAspectRatio — a
 // text-to-image model that exposes aspect_ratio (e.g. nano-banana-2) takes the
 // raw "9:16" string there and has no image_size input at all, so routing it
 // through image_size would silently drop the ratio (the image-edit sibling of
 // conv_369b3099eed8483b7b6a14bf). Only when the model has no aspect_ratio input
-// does this fall through to the image_size path below.
+// does this fall through to the image_size paths below.
 //
 // Some fal image models (notably seedream) accept an aspect-ratio preset enum on
 // image_size ("landscape_16_9", "portrait_16_9", ...) and either ignore or
@@ -460,8 +479,14 @@ func sendImageAspectRatio(schema *ModelInputSchema, ov Overrides, body map[strin
 // model falls back to a default landscape size and the requested aspect ratio is
 // lost — see conv_b02dc16f: a 9:16 request returned a 2736x1536 landscape image.
 // When the requested ratio maps to a known preset, prefer the enum the model
-// honors; otherwise send the pixel object (the original behavior).
-func sendImageSize(schema *ModelInputSchema, ov Overrides, body map[string]any, req ImageGenerateRequest) {
+// honors; a mapped preset also fixes the resolution, so an explicit tier that
+// couldn't be expressed anywhere is dropped with a notice. Tier-auto models
+// (seedream's auto_1K/auto_2K) get the tier there when no preset fired —
+// 1k pixels fall under seedream's area floor and 4k pixels exceed its ceiling,
+// so the auto value is the only safe carrier; 2k pixels carry both the ratio
+// and the tier and stay pixels. Otherwise send the pixel object (the original
+// behavior).
+func sendImageSize(schema *ModelInputSchema, ov Overrides, body map[string]any, req ImageGenerateRequest, resolutionPlaced bool, notices *[]string) {
 	if sendImageAspectRatio(schema, ov, body, req) {
 		return
 	}
@@ -476,6 +501,31 @@ func sendImageSize(schema *ModelInputSchema, ov Overrides, body map[string]any, 
 		} else {
 			body["image_size"] = preset
 		}
+		// A mapped preset pins the resolution to whatever the model defines for
+		// that shape. An explicit tier that no native field took is dropped —
+		// say so; the configured default stays silent (it fires every call).
+		if req.ResolutionExplicit && !resolutionPlaced && normalizeImageResolutionTier(req.Resolution) != "" {
+			*notices = append(*notices, fmt.Sprintf(
+				"The selected model %q fixes its own resolution for the %s shape; ignoring the requested %q resolution.",
+				req.Model, req.AspectRatio, normalizeImageResolutionTier(req.Resolution)))
+		}
+		return
+	}
+	if auto := imageResolutionAutoPreset(req.Resolution); auto != "" &&
+		hasSize && (valueAllowedByEnum(prop, auto) || len(prop.Enum) == 0) {
+		// Unlike the preset branch, auto values are only sent when the model
+		// declares image_size: they are seedream-family values, not a fal-wide
+		// convention, so an undeclared field can't be assumed to accept them.
+		// An empty parsed enum is seedream's anyOf shape — same posture as the
+		// preset branch takes there.
+		setBodyPath(schema, body, path, auto)
+		// 4k maps to auto_2K: pixels would exceed the tier-auto model's area
+		// ceiling and 422, so the cap is a real downgrade worth surfacing.
+		if normalizeImageResolutionTier(req.Resolution) == "4k" {
+			*notices = append(*notices, fmt.Sprintf(
+				"The selected model %q tops out at its 2K tier; using it instead of the requested 4k.",
+				req.Model))
+		}
 		return
 	}
 	pixels := map[string]any{"width": req.Width, "height": req.Height}
@@ -484,6 +534,50 @@ func sendImageSize(schema *ModelInputSchema, ov Overrides, body map[string]any, 
 	} else {
 		body["image_size"] = pixels
 	}
+}
+
+// forwardImageResolutionTier writes the effective resolution tier onto the
+// model's native resolution input when it has one (nano banana exposes
+// resolution as a "1K"/"2K"/"4K" enum). fal's enums are uppercase, so the tier
+// is uppercased to match. Returns whether the tier was placed; drop notices are
+// emitted for a tier the model rejects — always for an explicit request, and
+// for the configured default too, since a Settings choice that silently does
+// nothing is exactly the dishonesty the tier rework exists to fix.
+func forwardImageResolutionTier(schema *ModelInputSchema, ov Overrides, body map[string]any, req ImageGenerateRequest) (bool, []string) {
+	tier := normalizeImageResolutionTier(req.Resolution)
+	if tier == "" {
+		return false, nil
+	}
+	native := strings.ToUpper(tier)
+	if path, prop, ok := findNative(schema, ov, "image", req.Model, "resolution"); ok {
+		if valueAllowedByEnum(prop, native) {
+			setBodyPath(schema, body, path, native)
+			return true, nil
+		}
+		return false, []string{fmt.Sprintf(
+			"The selected model %q does not accept resolution %q; ignoring it and letting the model choose.",
+			req.Model, tier)}
+	}
+	// No native field: the tier may still ride pixels or an image_size auto
+	// value below, so nothing is reported here. sendImageSize and the edit
+	// branch own the explicit-request notices for those outcomes.
+	return false, nil
+}
+
+// imageResolutionAutoPreset maps a resolution tier onto fal's image_size auto
+// values where a model's enum lists them (seedream: auto_1K/auto_2K). 2k
+// returns "" on purpose: 2k-derived pixels sit inside the area window
+// tier-auto models accept, and pixels carry the aspect ratio the auto value
+// would drop. 4k maps down to auto_2K — pixels would exceed the model's area
+// ceiling — and the caller notices the cap.
+func imageResolutionAutoPreset(tier string) string {
+	switch normalizeImageResolutionTier(tier) {
+	case "1k":
+		return "auto_1K"
+	case "4k":
+		return "auto_2K"
+	}
+	return ""
 }
 
 // falImageSizePreset maps a named aspect ratio to fal's image_size preset enum

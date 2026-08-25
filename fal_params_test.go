@@ -719,6 +719,226 @@ func TestFalImageSizePreset(t *testing.T) {
 	}
 }
 
+// TestResolveImageBodyResolutionTier covers the tier rework: the effective
+// resolution tier ("1k"/"2k"/"4k" — the planner's explicit choice, else the
+// configured default) reaches the model through whatever tier channel it
+// speaks: nano banana's native resolution enum, seedream's auto_1K/auto_2K
+// image_size values, or the derived pixels. Drop notices fire for explicit
+// requests the model can't express, never for the configured default.
+func TestResolveImageBodyResolutionTier(t *testing.T) {
+	const barePNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
+	t.Run("native resolution enum takes the tier", func(t *testing.T) {
+		// nano-banana-pro/edit shape: resolution as an uppercase "1K"/"2K"/"4K"
+		// enum. A default (non-explicit) tier is sent and never noticed.
+		schema := &ModelInputSchema{
+			Properties: map[string]SchemaProperty{
+				"image_urls":   {Name: "image_urls", Kind: schemaArray},
+				"aspect_ratio": {Name: "aspect_ratio", Kind: schemaScalar, Enum: []string{"auto", "1:1", "16:9", "9:16"}},
+				"resolution":   {Name: "resolution", Kind: schemaScalar, Enum: []string{"1K", "2K", "4K"}},
+			},
+			order: []string{"image_urls", "aspect_ratio", "resolution"},
+		}
+		body, notices, err := resolveImageBody(schema, ImageGenerateRequest{
+			Model: "fal-ai/nano-banana-pro/edit", Prompt: "x",
+			AspectRatio: "16:9", Resolution: "2k",
+			Images: []string{"data:image/png;base64," + barePNG},
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := body["resolution"]; got != "2K" {
+			t.Fatalf("resolution = %+v, want the uppercased \"2K\" enum value", body["resolution"])
+		}
+		if len(notices) != 0 {
+			t.Fatalf("default tier must not produce notices, got %v", notices)
+		}
+	})
+
+	t.Run("tier outside the native enum is dropped with a notice", func(t *testing.T) {
+		schema := &ModelInputSchema{
+			Properties: map[string]SchemaProperty{
+				"resolution": {Name: "resolution", Kind: schemaScalar, Enum: []string{"sd", "hd"}},
+			},
+			order: []string{"resolution"},
+		}
+		body, notices, err := resolveImageBody(schema, ImageGenerateRequest{
+			Model: "odd/tierless", Prompt: "x", Resolution: "4k",
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if _, present := body["resolution"]; present {
+			t.Fatalf("out-of-enum tier must be dropped: %+v", body)
+		}
+		if len(notices) != 1 || !strings.Contains(notices[0], "does not accept resolution") {
+			t.Fatalf("notices = %v, want the enum-rejection notice", notices)
+		}
+	})
+
+	t.Run("seedream auto tier replaces unsafe pixels", func(t *testing.T) {
+		// 1k-derived pixels for an unmapped ratio fall under seedream's minimum
+		// pixel area (conv_b02dc16f) — the auto_1K enum value is the safe
+		// carrier. Empty parsed enum is seedream's anyOf shape.
+		schema := &ModelInputSchema{
+			Properties: map[string]SchemaProperty{
+				"image_size": {Name: "image_size", Kind: schemaScalar},
+			},
+			order: []string{"image_size"},
+		}
+		body, notices, err := resolveImageBody(schema, ImageGenerateRequest{
+			Model: "bytedance/seedream/v5/pro/text-to-image", Prompt: "x",
+			AspectRatio: "21:9", Resolution: "1k", Width: 1024, Height: 448,
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := body["image_size"]; got != "auto_1K" {
+			t.Fatalf("image_size = %+v, want auto_1K for a sub-floor 1k request", got)
+		}
+		if len(notices) != 0 {
+			t.Fatalf("1k auto mapping must not notice, got %v", notices)
+		}
+	})
+
+	t.Run("4k on an auto-tier model caps to auto_2K with a notice", func(t *testing.T) {
+		schema := &ModelInputSchema{
+			Properties: map[string]SchemaProperty{
+				"image_size": {Name: "image_size", Kind: schemaScalar, Enum: []string{"auto_1K", "auto_2K"}},
+			},
+			order: []string{"image_size"},
+		}
+		body, notices, err := resolveImageBody(schema, ImageGenerateRequest{
+			Model: "bytedance/seedream/v5/pro/text-to-image", Prompt: "x",
+			AspectRatio: "21:9", Resolution: "4k", Width: 4096, Height: 1792,
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := body["image_size"]; got != "auto_2K" {
+			t.Fatalf("image_size = %+v, want the capped auto_2K", got)
+		}
+		if len(notices) != 1 || !strings.Contains(notices[0], "2K tier") {
+			t.Fatalf("notices = %v, want the 4k cap notice", notices)
+		}
+	})
+
+	t.Run("2k stays pixels to keep the ratio", func(t *testing.T) {
+		// 2k-derived pixels sit inside the area window pixel models accept, and
+		// pixels carry the unmapped ratio that an auto value would drop.
+		schema := &ModelInputSchema{
+			Properties: map[string]SchemaProperty{
+				"image_size": {Name: "image_size", Kind: schemaScalar},
+			},
+			order: []string{"image_size"},
+		}
+		body, _, err := resolveImageBody(schema, ImageGenerateRequest{
+			Model: "bytedance/seedream/v5/pro/text-to-image", Prompt: "x",
+			AspectRatio: "21:9", Resolution: "2k", Width: 2048, Height: 896,
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		size, ok := body["image_size"].(map[string]any)
+		if !ok {
+			t.Fatalf("image_size = %+v, want the pixel object for 2k", body["image_size"])
+		}
+		if size["width"] != 2048 || size["height"] != 896 {
+			t.Fatalf("image_size = %+v, want 2048x896", size)
+		}
+	})
+
+	t.Run("explicit tier losing to a mapped preset is noticed, default is silent", func(t *testing.T) {
+		// A mapped aspect preset pins the resolution to the model's fixed size
+		// for that shape. An explicit tier that no native field took is dropped
+		// with a notice; the configured default stays silent or every seedream
+		// call would carry one.
+		schema := &ModelInputSchema{
+			Properties: map[string]SchemaProperty{
+				"image_size": {Name: "image_size", Kind: schemaScalar},
+			},
+			order: []string{"image_size"},
+		}
+		body, notices, err := resolveImageBody(schema, ImageGenerateRequest{
+			Model: "bytedance/seedream/v5/pro/text-to-image", Prompt: "x",
+			AspectRatio: "16:9", Resolution: "1k", ResolutionExplicit: true,
+			Width: 1024, Height: 576,
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := body["image_size"]; got != "landscape_16_9" {
+			t.Fatalf("image_size = %+v, want the ratio preset to win", got)
+		}
+		if len(notices) != 1 || !strings.Contains(notices[0], "fixes its own resolution") {
+			t.Fatalf("notices = %v, want the preset-override notice", notices)
+		}
+
+		body, notices, _ = resolveImageBody(schema, ImageGenerateRequest{
+			Model: "bytedance/seedream/v5/pro/text-to-image", Prompt: "x",
+			AspectRatio: "16:9", Resolution: "1k",
+			Width: 1024, Height: 576,
+		}, builtinFalOverrides())
+		if got := body["image_size"]; got != "landscape_16_9" {
+			t.Fatalf("image_size = %+v, want the ratio preset", got)
+		}
+		if len(notices) != 0 {
+			t.Fatalf("default tier losing to the preset must stay silent, got %v", notices)
+		}
+	})
+
+	t.Run("explicit tier on a source-only edit model is noticed", func(t *testing.T) {
+		// Edit models without a native resolution input derive resolution from
+		// the source frame by design; an explicit tier is dropped with a notice.
+		schema := &ModelInputSchema{
+			Properties: map[string]SchemaProperty{
+				"image_urls": {Name: "image_urls", Kind: schemaArray},
+			},
+			order: []string{"image_urls"},
+		}
+		body, notices, err := resolveImageBody(schema, ImageGenerateRequest{
+			Model: "bytedance/seedream/v5/pro/edit", Prompt: "x",
+			AspectRatio: "9:16", Resolution: "4k", ResolutionExplicit: true,
+			Images: []string{"data:image/png;base64," + barePNG},
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if _, present := body["resolution"]; present {
+			t.Fatalf("resolution must not be set on a model without the input: %+v", body)
+		}
+		if len(notices) != 1 || !strings.Contains(notices[0], "derives edit resolution") {
+			t.Fatalf("notices = %v, want the edit-resolution notice", notices)
+		}
+	})
+
+	t.Run("no image_size field means no auto tier", func(t *testing.T) {
+		// Auto values are seedream-family image_size enums, not a fal-wide
+		// convention: a model without image_size gets pixels, never an auto
+		// string on an undeclared field.
+		schema := &ModelInputSchema{
+			Properties: map[string]SchemaProperty{
+				"prompt": {Name: "prompt", Kind: schemaScalar},
+			},
+			order: []string{"prompt"},
+		}
+		body, _, err := resolveImageBody(schema, ImageGenerateRequest{
+			Model: "prompt/only", Prompt: "x",
+			Resolution: "1k", Width: 1024, Height: 448,
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		size, ok := body["image_size"].(map[string]any)
+		if !ok {
+			t.Fatalf("image_size = %+v, want the pixel object", body["image_size"])
+		}
+		if size["width"] != 1024 {
+			t.Fatalf("image_size = %+v, want width 1024", size)
+		}
+	})
+}
+
 // TestResolveImageBodyNormalizesBareBase64 pins the regression from
 // conv_e8ea99de04b547a516394be1: the resolver must wrap bare base64 (the shape
 // AttachedImage arrives in — the frontend strips the data: prefix for Ollama)

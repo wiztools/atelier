@@ -205,8 +205,13 @@ type ConfigGeneration struct {
 
 type ConfigImageGeneration struct {
 	AspectRatio string `json:"aspectRatio,omitempty"`
-	SizePreset  string `json:"sizePreset,omitempty"`
-	Steps       int    `json:"steps"`
+	// SizePreset is the default output resolution tier ("1k", "2k", "4k") —
+	// the fallback when a generate_image call states no resolution. Pre-tier
+	// values (draft/standard/high/high+ and raw pixels) are migrated onto
+	// tiers by mergeAppConfig; fal models that speak tiers natively are told
+	// the tier itself, pixel-only models get dimensions derived from it.
+	SizePreset string `json:"sizePreset,omitempty"`
+	Steps      int    `json:"steps"`
 	// Width/Height are legacy fields, retained so mergeAppConfig can migrate
 	// pre-preset config.json values into SizePreset. New configs leave them
 	// unset; pixels are derived from AspectRatio + SizePreset at call time.
@@ -415,9 +420,24 @@ type ImageGenerateRequest struct {
 	// ("landscape_16_9", "portrait_16_9") on their image_size param, and reject
 	// or ignore width/height objects below a minimum pixel area. Carrying the
 	// ratio lets resolveImageBody send the enum the model actually respects.
-	AspectRatio string   `json:"aspectRatio,omitempty"`
-	Steps       int      `json:"steps,omitempty"`
-	Images      []string `json:"images,omitempty"`
+	AspectRatio string `json:"aspectRatio,omitempty"`
+	// Resolution is the effective output resolution tier ("1k", "2k", "4k") —
+	// the planner's explicit choice, else the configured default. It is the
+	// tier-native sibling of AspectRatio: nano banana models take it directly on
+	// a resolution enum, seedream via its auto_1K/auto_2K image_size values, and
+	// pixel-only models via Width/Height derived from the tier's long-edge
+	// budget. resolveImageBody drops it with a notice where the model can't
+	// express it.
+	Resolution string `json:"resolution,omitempty"`
+	// ResolutionExplicit is true only when Resolution was set by the planner
+	// (an explicit request in the prompt), not filled from the configured
+	// default tier. resolveImageBody gates its drop notices on it so the
+	// configured default never produces a notice on every generation. Tagged
+	// json:"-" — internal signal, never serialized, mirroring
+	// VideoGenerateRequest.AspectRatioExplicit.
+	ResolutionExplicit bool     `json:"-"`
+	Steps              int      `json:"steps,omitempty"`
+	Images             []string `json:"images,omitempty"`
 }
 
 // ImageUpscaleRequest is the input to fal's image upscaler. Scale is a float
@@ -2266,12 +2286,14 @@ func loadReadyConfig() (AppConfig, error) {
 const currentConversationSchemaVersion = 2
 
 // defaultImageAspectRatio / defaultImageSizePreset are the defaults for the
-// image-generation Settings dropdowns. Pixels are derived from these at call
-// time (see imageSizeForPresetAndRatio in tools_registry.go), so config carries
-// the user's choices rather than raw pixel values.
+// image-generation Settings dropdowns. The size preset is a resolution tier
+// ("1k", "2k", "4k") — pixels are derived from it at call time (see
+// imageSizeForPresetAndRatio in tools_registry.go) and fal models that speak
+// tiers natively are told the tier itself (see resolveImageBody), so config
+// carries the user's choice rather than raw pixel values.
 const (
 	defaultImageAspectRatio = "1:1"
-	defaultImageSizePreset  = "standard"
+	defaultImageSizePreset  = "1k"
 )
 
 // resolveTurnWorkspace returns the filesystem-tool root a chat turn must run
@@ -2474,13 +2496,17 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	}
 	if strings.TrimSpace(config.Generation.Image.SizePreset) == "" {
 		// One-time migration: legacy config.json carried width/height in pixels.
-		// Fold the old long edge into the closest preset tier.
+		// Fold the old long edge into the closest resolution tier.
 		if migrated := legacyImageSizePreset(config.Generation.Image.Width, config.Generation.Image.Height); migrated != "" {
 			config.Generation.Image.SizePreset = migrated
 		} else {
 			config.Generation.Image.SizePreset = defaults.Generation.Image.SizePreset
 		}
 	}
+	// Vocabulary migration: presets written before the tier rework
+	// (draft/standard/high/high+) map onto the nearest resolution tier so an
+	// existing config keeps working without a Settings visit.
+	config.Generation.Image.SizePreset = migrateImageSizePresetTier(config.Generation.Image.SizePreset)
 	if config.Generation.Image.Steps <= 0 {
 		config.Generation.Image.Steps = defaults.Generation.Image.Steps
 	}
@@ -2496,8 +2522,8 @@ func mergeAppConfig(config AppConfig) AppConfig {
 }
 
 // legacyImageSizePreset maps a legacy config.json width/height pair (raw pixels)
-// onto the closest SizePreset tier by long edge. Returns "" when neither
-// dimension is set (0/missing), so the caller falls back to the default preset.
+// onto the closest resolution tier by long edge. Returns "" when neither
+// dimension is set (0/missing), so the caller falls back to the default tier.
 // Used once during mergeAppConfig to migrate pre-preset configs.
 func legacyImageSizePreset(width, height int) string {
 	longEdge := width
@@ -2508,15 +2534,30 @@ func legacyImageSizePreset(width, height int) string {
 		return ""
 	}
 	switch {
-	case longEdge <= 1024:
-		return "draft"
 	case longEdge <= 1536:
-		return "standard"
-	case longEdge <= 2048:
-		return "high"
+		return "1k"
+	case longEdge <= 3072:
+		return "2k"
 	default:
-		return "high+"
+		return "4k"
 	}
+}
+
+// migrateImageSizePresetTier maps the pre-rework preset vocabulary onto
+// resolution tiers and passes tier values through. Ties round to the cheaper
+// tier (standard's 1536-long-edge lands on 1k, preserving the cheap default;
+// high+'s 2560 lands on 2k rather than jumping to 4k). Unknown values fall
+// back to the default tier.
+func migrateImageSizePresetTier(preset string) string {
+	switch strings.TrimSpace(preset) {
+	case "1k", "2k", "4k":
+		return strings.TrimSpace(preset)
+	case "draft", "standard":
+		return "1k"
+	case "high", "high+":
+		return "2k"
+	}
+	return defaultImageSizePreset
 }
 
 func mergeToolsConfig(tools ConfigTools, defaults ConfigTools) ConfigTools {

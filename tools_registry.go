@@ -1077,7 +1077,7 @@ func imageGenerationToolDefinition(config AppConfig) HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "generate_image",
 		Title:       "Generate image",
-		Description: "Use this when the user asks to create, draw, paint, or render an image. Works from a text description; when the user attached an image, it becomes a reference the prompt directs — describe a transformation or restyle of that image, or a new creation guided by it and any other attached images (image-to-image). The configured image model generates it and the image is attached to the assistant reply.",
+		Description: "Use this when the user asks to create, draw, paint, or render an image. Works from a text description; when the user attached an image, it becomes a reference the prompt directs — describe a transformation or restyle of that image, or a new creation guided by it and any other attached images (image-to-image). The configured image model generates it and the image is attached to the assistant reply. Pass resolution (\"1k\", \"2k\", \"4k\") when the user asks for a specific output size or quality; omit it otherwise.",
 		Example:     `{"name":"generate_image","content":"a watercolor of a lighthouse at dusk"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: generateImageParamSchema(),
@@ -1123,14 +1123,27 @@ func imageGenerationToolDefinition(config AppConfig) HarnessToolDefinition {
 			if ratio == "" {
 				ratio = strings.TrimSpace(tools.Config.Generation.Image.AspectRatio)
 			}
-			width, height := imageSizeForPresetAndRatio(tools.Config.Generation.Image.SizePreset, ratio)
+			// Resolution tier precedence mirrors the ratio rule: an explicit
+			// resolution on the call wins; otherwise the configured default tier
+			// applies. The tier sets the pixel budget for the derived dimensions
+			// and rides the request so fal models that speak tiers natively
+			// (nano banana's resolution enum, seedream's auto_1K/auto_2K
+			// image_size values) can be told directly — see resolveImageBody.
+			tier := normalizeImageResolutionTier(call.Resolution)
+			resolutionExplicit := tier != ""
+			if tier == "" {
+				tier = normalizeImageResolutionTier(tools.Config.Generation.Image.SizePreset)
+			}
+			width, height := imageSizeForPresetAndRatio(tier, ratio)
 			imageReq := ImageGenerateRequest{
-				Model:       model,
-				Prompt:      strings.TrimSpace(call.Content),
-				Width:       width,
-				Height:      height,
-				AspectRatio: ratio,
-				Steps:       tools.Config.Generation.Image.Steps,
+				Model:              model,
+				Prompt:             strings.TrimSpace(call.Content),
+				Width:              width,
+				Height:             height,
+				AspectRatio:        ratio,
+				Resolution:         tier,
+				ResolutionExplicit: resolutionExplicit,
+				Steps:              tools.Config.Generation.Image.Steps,
 			}
 			if len(attachedImages) > 0 {
 				imageReq.Images = attachedImages
@@ -1258,6 +1271,7 @@ func generateImageParamSchema() map[string]any {
 			"content":     stringParam("The image prompt — describe the image to create."),
 			"model":       stringParam("Optional image generation model override."),
 			"aspectRatio": enumParam("Optional — the output image shape. Omit to inherit a single attached image's orientation, else use the configured default.", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"),
+			"resolution":  enumParam("Optional — the output resolution tier. Choose \"2k\" or \"4k\" only when the user asks for a larger, higher-quality image (wallpaper, print, hero art) and \"1k\" for quick drafts or thumbnails; otherwise omit to use the configured default. Tiers vary by model: an unsupported value is dropped with a notice and the model's default is used.", "1k", "2k", "4k"),
 		},
 		"required": []string{"content"},
 	}
@@ -1479,23 +1493,33 @@ func roundToMultipleOf16(n int) int {
 	return rounded
 }
 
-// imageSizePresetLongEdge returns the long-edge pixel budget for a named size
-// preset. These are vetted values (the Settings Size dropdown lists them) so
+// normalizeImageResolutionTier canonicalizes a resolution tier ("1k", "2k",
+// "4k") from planner or config input, lowercased and trimmed. Anything else —
+// including the legacy preset names — yields "" so callers fall back to their
+// default rather than forwarding an unknown value to a provider.
+func normalizeImageResolutionTier(tier string) string {
+	switch strings.ToLower(strings.TrimSpace(tier)) {
+	case "1k", "2k", "4k":
+		return strings.ToLower(strings.TrimSpace(tier))
+	}
+	return ""
+}
+
+// imageSizePresetLongEdge returns the long-edge pixel budget for a resolution
+// tier. These are vetted values (the Settings Size dropdown lists them) so
 // neither the model nor the user can request an out-of-budget generation by
-// accident. An unknown preset falls back to the standard long edge, matching
+// accident. An unknown tier falls back to the 1K long edge, matching
 // defaultImageSizePreset.
 func imageSizePresetLongEdge(preset string) int {
-	switch strings.TrimSpace(preset) {
-	case "draft":
+	switch normalizeImageResolutionTier(preset) {
+	case "1k":
 		return 1024
-	case "standard":
-		return 1536
-	case "high":
+	case "2k":
 		return 2048
-	case "high+":
-		return 2560
+	case "4k":
+		return 4096
 	default:
-		return 1536
+		return 1024
 	}
 }
 

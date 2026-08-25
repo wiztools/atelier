@@ -247,15 +247,14 @@ const maxSidebarWidth = 560;
 const compactHistoryLimit = 10;
 const expandedHistoryBatchSize = 20;
 const defaultImageAspectRatio = '1:1';
-const defaultImageSizePreset = 'standard';
+const defaultImageSizePreset = '1k';
 const defaultImageSteps = 24;
 const imageAspectRatioOptions = ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '21:9'];
 type ImageSizePreset = {value: string; label: string; longEdge: number};
 const imageSizePresetOptions: ImageSizePreset[] = [
-  {value: 'draft', label: 'Draft', longEdge: 1024},
-  {value: 'standard', label: 'Standard', longEdge: 1536},
-  {value: 'high', label: 'High', longEdge: 2048},
-  {value: 'high+', label: 'High+', longEdge: 2560},
+  {value: '1k', label: '1K', longEdge: 1024},
+  {value: '2k', label: '2K', longEdge: 2048},
+  {value: '4k', label: '4K', longEdge: 4096},
 ];
 const defaultFalImageModel = 'fal-ai/flux/schnell';
 const defaultFalImageEditModel = 'fal-ai/flux/dev/image-to-image';
