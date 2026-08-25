@@ -47,6 +47,12 @@ const (
 	// defaultFalAudioModel is the text-to-speech endpoint used by the
 	// generate_speech tool when none is configured.
 	defaultFalAudioModel = "fal-ai/elevenlabs/tts/multilingual-v2"
+	// defaultFalAudioCloneModel is the zero-shot voice-cloning endpoint used by
+	// generate_speech when the user attached a reference clip — the
+	// cloning sibling of defaultFalAudioModel, selected by attachment the way
+	// lipsync picks its image/video endpoints. F5-TTS synthesizes speech in the
+	// reference voice from prompt + audio_url, both mapped by resolveAudioBody.
+	defaultFalAudioCloneModel = "fal-ai/f5-tts"
 	// defaultFalSoundEffectsModel is the text-to-audio endpoint used by the
 	// generate_sound tool when none is configured — fal's text-to-audio category
 	// covers both sound effects and music, and this endpoint takes prompt,

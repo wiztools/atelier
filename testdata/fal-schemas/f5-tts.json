@@ -1,0 +1,15 @@
+{
+  "components": {
+    "schemas": {
+      "F5TTSInput": {
+        "type": "object",
+        "required": ["prompt", "audio_url"],
+        "properties": {
+          "prompt": { "type": "string", "description": "The text to speak in the reference voice." },
+          "audio_url": { "type": "string", "description": "URL or data URI of the reference audio to clone the voice from." },
+          "normalize": { "type": "boolean", "default": true }
+        }
+      }
+    }
+  }
+}

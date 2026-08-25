@@ -48,6 +48,13 @@ type HarnessToolExecutionContext struct {
 	// Like AttachedImage it is provider-agnostic: the planner decides whether to
 	// transcribe it (any provider) or, on OpenRouter, send it as chat input.
 	AttachedAudio string
+	// VoiceReference is the user's own attached clip for this turn, held aside as
+	// a voice-cloning reference for generate_speech. Unlike AttachedAudio it is
+	// pinned at turn start and never overwritten by the generated-audio
+	// carry-forward, so a later generate_speech in the same turn cannot clone
+	// from an earlier call's output (or a sound effect). Empty for the
+	// direct/UI tool path, where no user attachment exists.
+	VoiceReference string
 	// AttachedVideos are the video clips (data URLs) the user attached to the
 	// current turn, in attachment order, if any. generate_video uses them as
 	// source clips for Veo extend or motion control, or — with
@@ -676,6 +683,17 @@ func resolveDefaultAudioModel(config AppConfig) string {
 	return defaultFalAudioModel
 }
 
+// resolveDefaultAudioCloneModel returns the zero-shot voice-cloning model
+// generate_speech switches to when the user attached a reference clip — the
+// speech sibling of the lipsync image/video split: one tool, the attachment
+// decides the endpoint.
+func resolveDefaultAudioCloneModel(config AppConfig) string {
+	if model := strings.TrimSpace(config.Providers.Fal.AudioCloneModel); model != "" {
+		return model
+	}
+	return defaultFalAudioCloneModel
+}
+
 // resolveDefaultSoundEffectsModel returns the model the generate_sound tool
 // uses when the call doesn't override it.
 func resolveDefaultSoundEffectsModel(config AppConfig) string {
@@ -735,7 +753,7 @@ func resolveDefaultLipsyncVideoModel(config AppConfig) string {
 // generated speech carries forward to a later lip_sync in the same turn — the
 // correct path for putting narration behind a video on a non-audio video model.
 func speechGenerationDescription(videoAudioCapable bool) string {
-	base := "Use this when the user asks to speak, narrate, or read text aloud (text-to-speech). The configured fal.ai speech model generates the clip and it is attached to the assistant reply."
+	base := "Use this when the user asks to speak, narrate, or read text aloud (text-to-speech). The configured fal.ai speech model generates the clip and it is attached to the assistant reply. When the user attached an audio clip, the speech is generated in that voice (voice cloning) automatically; pass cloneVoice:false to keep the regular speech voice even though a clip is attached (e.g. the clip holds content to transcribe, not a voice to copy), or cloneVoice:true to require cloning."
 	if !videoAudioCapable {
 		return base + " To put generated speech behind a video, call generate_speech first then lip_sync in the same turn — the generated speech carries forward to lip_sync automatically."
 	}
@@ -812,11 +830,44 @@ func speechGenerationToolDefinition(videoAudioCapable bool) HarnessToolDefinitio
 			return nil
 		},
 		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
-			return audioGenerationExecute(ctx, tools, AudioGenerateRequest{
-				Model:  strings.TrimSpace(call.Model),
-				Prompt: call.Content,
-				Voice:  strings.TrimSpace(call.Voice),
-			}, resolveDefaultAudioModel)
+			// Voice cloning defaults to attachment-driven selection, like the
+			// lipsync image/video split: the user's own attached clip
+			// (VoiceReference — never the generated-audio carry-forward)
+			// selects the cloning endpoint as the default. cloneVoice overrides
+			// that either way: true forces the cloning path, false keeps the
+			// regular speech voice even with a clip attached. call.Model still
+			// overrides both paths.
+			reference := strings.TrimSpace(tools.VoiceReference)
+			forcedWithoutReference := false
+			if call.CloneVoice != nil {
+				if *call.CloneVoice && reference == "" {
+					forcedWithoutReference = true
+				}
+				if !*call.CloneVoice {
+					reference = ""
+				}
+			}
+			out, summary, err := audioGenerationExecute(ctx, tools, AudioGenerateRequest{
+				Model:       strings.TrimSpace(call.Model),
+				Prompt:      call.Content,
+				Voice:       strings.TrimSpace(call.Voice),
+				SourceAudio: reference,
+			}, func(config AppConfig) string {
+				if reference != "" {
+					return resolveDefaultAudioCloneModel(config)
+				}
+				return resolveDefaultAudioModel(config)
+			})
+			// Degrade, don't fail: forced cloning without an attached clip still
+			// produces useful speech, and the notice tells the user why the voice
+			// differs so they can re-ask with an attachment.
+			if forcedWithoutReference {
+				if audio, ok := out.(ToolAudioResult); ok {
+					audio.Notices = append(audio.Notices, "No audio clip was attached, so the speech was generated with the regular voice instead of cloning it.")
+					out = audio
+				}
+			}
+			return out, summary, err
 		},
 		Activity: audioGenerationActivity,
 	}
@@ -1568,6 +1619,9 @@ func generateSpeechParamSchema() map[string]any {
 			"model":   stringParam("Optional fal.ai speech model override."),
 			"voice": stringParam("Optional — the voice for the speech (e.g. \"Rachel\"). " +
 				"Only some speech models support it; ignored otherwise with a note to the user."),
+			"cloneVoice": boolParam("Optional — voice-cloning control. Omit to clone automatically when the user " +
+				"attached an audio clip; true to require cloning from the attached clip; false to keep the regular " +
+				"speech voice even when a clip is attached (e.g. the clip holds content to transcribe, not a voice to copy)."),
 		},
 		"required": []string{"content"},
 	}

@@ -117,6 +117,33 @@ func TestResolveDiffrhythmStylePrompt(t *testing.T) {
 	}
 }
 
+// TestResolveAudioVoiceReference pins the voice-cloning body shape: a
+// zero-shot cloning model (f5-tts) declares audio_url, so the canonical
+// sourceAudio reference must land there, while a speech model with no
+// reference input (elevenlabs) drops it with a notice instead of 422ing.
+func TestResolveAudioVoiceReference(t *testing.T) {
+	const reference = "data:audio/mpeg;base64,QUJD"
+	body, notices := resolveAudioBody(loadSchema(t, "f5-tts"),
+		AudioGenerateRequest{Model: "fal-ai/f5-tts", Prompt: "hello there", SourceAudio: reference},
+		builtinFalOverrides())
+	if body["prompt"] != "hello there" {
+		t.Fatalf("expected prompt=hello there, got %v (body: %v)", body["prompt"], body)
+	}
+	if body["audio_url"] != reference {
+		t.Fatalf("expected audio_url=reference, got %v (body: %v)", body["audio_url"], body)
+	}
+	if len(notices) != 0 {
+		t.Fatalf("expected no notices, got %v", notices)
+	}
+
+	_, notices = resolveAudioBody(loadSchema(t, "elevenlabs-tts-ml-v2"),
+		AudioGenerateRequest{Model: "fal-ai/elevenlabs/tts/multilingual-v2", Prompt: "hello", SourceAudio: reference},
+		builtinFalOverrides())
+	if len(notices) != 1 || !strings.Contains(notices[0], "no voice reference control") {
+		t.Fatalf("expected one voice-reference drop notice, got %v", notices)
+	}
+}
+
 func TestResolveVoiceNestedMerge(t *testing.T) {
 	body, notices := resolveAudioBody(loadSchema(t, "minimax-speech-02-hd"),
 		AudioGenerateRequest{Model: "fal-ai/minimax/speech-02-hd", Prompt: "hello", Voice: "Grandma"},

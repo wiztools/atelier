@@ -153,6 +153,13 @@ type HarnessToolCall struct {
 	Loop  bool   `json:"loop,omitempty"`
 	Voice string `json:"voice,omitempty"`
 	Style string `json:"style,omitempty"`
+	// CloneVoice is the generate_speech voice-cloning override. Nil (absent)
+	// keeps the default: clone automatically when the user attached a clip.
+	// True forces the cloning path; false keeps the regular speech voice even
+	// with a clip attached. A pointer because a plain bool cannot distinguish
+	// "unset" from "false" under omitempty, and strict-mode planners emit null
+	// for absent optionals (strictJSONSchema widens them to nullable unions).
+	CloneVoice *bool `json:"cloneVoice,omitempty"`
 	// Scale is an optional upscale_image input naming the upscale factor
 	// ("2x" or "4x"). Omit for the default 2x. See imageUpscaleParamSchema.
 	Scale string `json:"scale,omitempty"`
@@ -302,6 +309,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		toolReq := req
 		toolReq.Model = harness.model
 		toolReq.Provider = harness.provider
+		attachedAudio := latestAttachedAudioForTurn(req, h.config.Storage)
 		var err error
 		preparation, err = h.prepareChatTurnLoop(ctx, requestID, conversationID, toolReq, harnessTurnContext{
 			SkillIndex:      skillIndex,
@@ -315,7 +323,8 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			UseNativeTools:  useNativeTools,
 			Harness:         harness,
 			AttachedImages:  attachedImages,
-			AttachedAudio:   latestAttachedAudioForTurn(req, h.config.Storage),
+			AttachedAudio:   attachedAudio,
+			VoiceReference:  attachedAudio,
 			AttachedVideos:  latestAttachedVideosForTurn(req, h.config.Storage),
 		}, &run)
 		if err != nil {
@@ -1145,6 +1154,11 @@ type harnessTurnContext struct {
 	// AttachedAudio is the audio clip (data URL) the user attached to this turn,
 	// if any — used by transcribe_audio. Provider-agnostic, like AttachedImage.
 	AttachedAudio string
+	// VoiceReference mirrors AttachedAudio but is pinned at turn start and never
+	// touched by the generated-audio carry-forward — generate_speech uses it as
+	// the zero-shot cloning reference, so only the user's own clip ever selects
+	// the cloning path, never an earlier call's generated audio.
+	VoiceReference string
 	// AttachedVideos are the video clips (data URLs) the user attached to this
 	// turn, in attachment order, if any — used by generate_video (Veo extend,
 	// motion control, or reference mode) and the lip sync tool. Tool-only:
@@ -1416,6 +1430,8 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 		// fills an empty slot, so an attached clip is never shadowed. This
 		// makes generate_speech (round 1) → lip_sync (round 2) work, the exact
 		// composition that failed in conv_047accca33610598408b8cf8.
+		// turn.VoiceReference is deliberately excluded: the cloning path must
+		// stay pinned to the user's own clip, never a generated one.
 		if strings.TrimSpace(turn.AttachedAudio) == "" {
 			turn.AttachedAudio = batch.GeneratedAudio
 		}
@@ -2416,6 +2432,7 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 	// the corresponding attachment.
 	gateway.tools.AttachedImages = turn.AttachedImages
 	gateway.tools.AttachedAudio = turn.AttachedAudio
+	gateway.tools.VoiceReference = turn.VoiceReference
 	gateway.tools.AttachedVideos = turn.AttachedVideos
 	batch := harnessToolBatchResult{Results: make([]HarnessToolResult, 0, len(calls))}
 	for _, call := range calls {

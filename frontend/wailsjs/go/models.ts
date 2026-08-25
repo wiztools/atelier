@@ -182,6 +182,7 @@ export namespace main {
 	    videoMotionModel?: string;
 	    audioModel?: string;
 	    soundEffectsModel?: string;
+	    audioCloneModel?: string;
 	    transcribeModel?: string;
 	    upscaleModel?: string;
 	    videoUpscaleModel?: string;
@@ -203,6 +204,7 @@ export namespace main {
 	        this.videoMotionModel = source["videoMotionModel"];
 	        this.audioModel = source["audioModel"];
 	        this.soundEffectsModel = source["soundEffectsModel"];
+	        this.audioCloneModel = source["audioCloneModel"];
 	        this.transcribeModel = source["transcribeModel"];
 	        this.upscaleModel = source["upscaleModel"];
 	        this.videoUpscaleModel = source["videoUpscaleModel"];
@@ -891,6 +893,7 @@ export namespace main {
 	    loop?: boolean;
 	    voice?: string;
 	    style?: string;
+	    cloneVoice?: boolean;
 	    scale?: string;
 	    task?: string;
 	    language?: string;
@@ -925,6 +928,7 @@ export namespace main {
 	        this.loop = source["loop"];
 	        this.voice = source["voice"];
 	        this.style = source["style"];
+	        this.cloneVoice = source["cloneVoice"];
 	        this.scale = source["scale"];
 	        this.task = source["task"];
 	        this.language = source["language"];

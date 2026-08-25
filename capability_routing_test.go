@@ -600,3 +600,112 @@ func TestUserAttachedAudioNotOverwritten(t *testing.T) {
 		t.Fatalf("user-attached audio must win over generated; lip_sync saw %q", lipsyncSawAudio)
 	}
 }
+
+// TestGeneratedAudioNeverBecomesVoiceReference pins the cloning provenance
+// invariant: the forward-feed that hands generated audio to lip_sync must never
+// turn that audio into a voice-cloning reference. A second generate_speech in
+// the same batch (or a later round) still runs on the plain speech model with
+// no reference — otherwise "make a whoosh, then say hello" would clone speech
+// from the sound effect.
+func TestGeneratedAudioNeverBecomesVoiceReference(t *testing.T) {
+	audioBytes := []byte{0xFF, 0xE0, 0x00, 0x00, 'g', 'e', 'n'}
+	audioTmp, _ := os.CreateTemp("", "atelier-audio-*.mp3")
+	defer os.Remove(audioTmp.Name())
+	audioTmp.Write(audioBytes)
+	audioTmp.Close()
+
+	config := defaultAppConfig()
+	config.Providers.Fal.AudioModel = "fal-ai/speech/model"
+	config.Providers.Fal.AudioCloneModel = "fal-ai/clone/model"
+
+	var saw []AudioGenerateRequest
+	registry := newHarnessToolRegistry([]HarnessToolDefinition{speechGenerationToolDefinition(false)})
+	tools := HarnessToolExecutionContext{
+		Config: config,
+		GenerateAudio: func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error) {
+			saw = append(saw, req)
+			return GeneratedAudio{Data: audioBytes, MimeType: "audio/mpeg"}, nil
+		},
+	}
+	gateway := ToolGateway{registry: registry, tools: tools}
+
+	// Mirror runHarnessToolCalls's per-call loop + forward-feed: generated audio
+	// fills the empty AttachedAudio slot but VoiceReference is never written —
+	// exactly the real loop, which copies VoiceReference from the turn once and
+	// leaves it alone (see runHarnessToolCalls / the round backfill).
+	calls := []HarnessToolCall{{Name: "generate_speech", Content: "a"}, {Name: "generate_speech", Content: "b"}}
+	var results []HarnessToolResult
+	for _, call := range calls {
+		result := gateway.Execute(context.Background(), ToolExecutionRequest{Name: call.Name, Call: call})
+		results = append(results, result)
+		if generated := forwardableMediaFromResults(results); generated != nil {
+			if strings.TrimSpace(gateway.tools.AttachedAudio) == "" && generated.Audio != "" {
+				gateway.tools.AttachedAudio = generated.Audio
+			}
+		}
+	}
+	if len(saw) != 2 {
+		t.Fatalf("expected two generate_speech calls, got %d", len(saw))
+	}
+	for i, req := range saw {
+		if req.Model != "fal-ai/speech/model" {
+			t.Fatalf("call %d model = %q, want the plain speech model — generated audio must not select the clone path", i, req.Model)
+		}
+		if req.SourceAudio != "" {
+			t.Fatalf("call %d sourceAudio = %q, want empty — generated audio must not become a voice reference", i, req.SourceAudio)
+		}
+	}
+}
+
+// TestUserAttachedClipSelectsCloningPath is the positive counterpart: when the
+// user attached a clip (VoiceReference pinned at turn start), generate_speech
+// clones from that clip — and keeps cloning from it even after generated audio
+// fills the AttachedAudio carry-forward slot, so the reference never drifts.
+func TestUserAttachedClipSelectsCloningPath(t *testing.T) {
+	audioBytes := []byte{0xFF, 0xE0, 0x00, 0x00, 'g', 'e', 'n'}
+	audioTmp, _ := os.CreateTemp("", "atelier-audio-*.mp3")
+	defer os.Remove(audioTmp.Name())
+	audioTmp.Write(audioBytes)
+	audioTmp.Close()
+
+	config := defaultAppConfig()
+	config.Providers.Fal.AudioModel = "fal-ai/speech/model"
+	config.Providers.Fal.AudioCloneModel = "fal-ai/clone/model"
+
+	const userClip = "data:audio/mpeg;base64,USERCLIP"
+	var saw []AudioGenerateRequest
+	registry := newHarnessToolRegistry([]HarnessToolDefinition{speechGenerationToolDefinition(false)})
+	tools := HarnessToolExecutionContext{
+		Config:         config,
+		AttachedAudio:  userClip,
+		VoiceReference: userClip,
+		GenerateAudio: func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error) {
+			saw = append(saw, req)
+			return GeneratedAudio{Data: audioBytes, MimeType: "audio/mpeg"}, nil
+		},
+	}
+	gateway := ToolGateway{registry: registry, tools: tools}
+
+	calls := []HarnessToolCall{{Name: "generate_speech", Content: "a"}, {Name: "generate_speech", Content: "b"}}
+	var results []HarnessToolResult
+	for _, call := range calls {
+		result := gateway.Execute(context.Background(), ToolExecutionRequest{Name: call.Name, Call: call})
+		results = append(results, result)
+		if generated := forwardableMediaFromResults(results); generated != nil {
+			if strings.TrimSpace(gateway.tools.AttachedAudio) == "" && generated.Audio != "" {
+				gateway.tools.AttachedAudio = generated.Audio
+			}
+		}
+	}
+	if len(saw) != 2 {
+		t.Fatalf("expected two generate_speech calls, got %d", len(saw))
+	}
+	for i, req := range saw {
+		if req.Model != "fal-ai/clone/model" {
+			t.Fatalf("call %d model = %q, want the clone model", i, req.Model)
+		}
+		if req.SourceAudio != userClip {
+			t.Fatalf("call %d sourceAudio = %q, want the user's clip — the reference must not drift to generated audio", i, req.SourceAudio)
+		}
+	}
+}

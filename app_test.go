@@ -6551,6 +6551,37 @@ func TestMergeAppConfigSeedsSoundEffectsModel(t *testing.T) {
 	}
 }
 
+// TestMergeAppConfigSeedsAudioCloneModel pins the voice-cloning seed: a
+// configured AudioModel means speech generation is in use, so the cloning
+// endpoint lights up for attached reference clips without a Settings visit.
+// No audio model → no seed (the tool stays unregistered anyway), and an
+// explicit audioCloneModel always wins.
+func TestMergeAppConfigSeedsAudioCloneModel(t *testing.T) {
+	legacy := defaultAppConfig()
+	legacy.Providers.Fal.AudioModel = "fal-ai/elevenlabs/tts/multilingual-v2"
+	legacy.Providers.Fal.AudioCloneModel = ""
+	merged := mergeAppConfig(legacy)
+	if merged.Providers.Fal.AudioCloneModel != defaultFalAudioCloneModel {
+		t.Fatalf("merged audioCloneModel = %q, want the default %q", merged.Providers.Fal.AudioCloneModel, defaultFalAudioCloneModel)
+	}
+	if merged.Providers.Fal.AudioModel != "fal-ai/elevenlabs/tts/multilingual-v2" {
+		t.Fatalf("merge must not touch audioModel, got %q", merged.Providers.Fal.AudioModel)
+	}
+
+	none := defaultAppConfig()
+	none.Providers.Fal.AudioModel = ""
+	if merged := mergeAppConfig(none); merged.Providers.Fal.AudioCloneModel != "" {
+		t.Fatalf("no-audio config should gain no audioCloneModel, got %q", merged.Providers.Fal.AudioCloneModel)
+	}
+
+	explicit := defaultAppConfig()
+	explicit.Providers.Fal.AudioModel = "fal-ai/elevenlabs/tts/multilingual-v2"
+	explicit.Providers.Fal.AudioCloneModel = "fal-ai/custom/clone"
+	if merged := mergeAppConfig(explicit); merged.Providers.Fal.AudioCloneModel != "fal-ai/custom/clone" {
+		t.Fatalf("explicit audioCloneModel must win, got %q", merged.Providers.Fal.AudioCloneModel)
+	}
+}
+
 // TestTranscribeAudioToolGating confirms transcribe_audio is registered only
 // when a fal.ai key is present. Unlike generate_audio/video, no model needs to
 // be configured first — the default (fal-ai/wizper) always applies, so the gate

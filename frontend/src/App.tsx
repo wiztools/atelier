@@ -264,6 +264,7 @@ const defaultFalVideoExtendModel = 'fal-ai/veo3.1/extend-video';
 const defaultFalVideoMotionModel = 'fal-ai/kling-video/v2.6/pro/motion-control';
 const defaultFalVideoUpscaleModel = 'fal-ai/video-upscaler';
 const defaultFalAudioModel = 'fal-ai/elevenlabs/tts/multilingual-v2';
+const defaultFalAudioCloneModel = 'fal-ai/f5-tts';
 const defaultFalSoundEffectsModel = 'fal-ai/elevenlabs/sound-effects/v2';
 const defaultFalTranscribeModel = 'fal-ai/wizper';
 const defaultFalLipsyncImageModel = 'fal-ai/kling-video/lipsync/audio-to-video';
@@ -365,6 +366,7 @@ function App() {
   const [falVideoUpscaleModels, setFalVideoUpscaleModels] = useState<main.FalModel[]>([]);
   const [falAudioModel, setFalAudioModel] = useState(defaultFalAudioModel);
   const [falAudioModels, setFalAudioModels] = useState<main.FalModel[]>([]);
+  const [falAudioCloneModel, setFalAudioCloneModel] = useState(defaultFalAudioCloneModel);
   const [falSoundEffectsModel, setFalSoundEffectsModel] = useState(defaultFalSoundEffectsModel);
   const [falSoundEffectModels, setFalSoundEffectModels] = useState<main.FalModel[]>([]);
   const [falTranscribeModel, setFalTranscribeModel] = useState(defaultFalTranscribeModel);
@@ -618,6 +620,7 @@ function App() {
             videoUpscaleModel: falVideoUpscaleModel,
             audioModel: falAudioModel,
             soundEffectsModel: falSoundEffectsModel,
+            audioCloneModel: falAudioCloneModel,
             transcribeModel: falTranscribeModel,
             upscaleModel: falUpscaleModel,
             lipsyncImageModel: falLipsyncImageModel,
@@ -658,7 +661,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falAudioModel, falSoundEffectsModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
 
   // On a fresh launch, put the cursor in the chat box so the user can start
   // typing immediately. Fires once, when config finishes loading.
@@ -1048,6 +1051,7 @@ function App() {
 	const nextFalVideoMotionModel = config.providers?.fal?.videoMotionModel || defaultFalVideoMotionModel;
 	const nextFalVideoUpscaleModel = config.providers?.fal?.videoUpscaleModel || defaultFalVideoUpscaleModel;
 	const nextFalAudioModel = config.providers?.fal?.audioModel || defaultFalAudioModel;
+	const nextFalAudioCloneModel = config.providers?.fal?.audioCloneModel || defaultFalAudioCloneModel;
 	const nextFalSoundEffectsModel = config.providers?.fal?.soundEffectsModel || defaultFalSoundEffectsModel;
 	const nextFalTranscribeModel = config.providers?.fal?.transcribeModel || defaultFalTranscribeModel;
 	const nextFalLipsyncImageModel = config.providers?.fal?.lipsyncImageModel || defaultFalLipsyncImageModel;
@@ -1080,6 +1084,7 @@ function App() {
     setFalVideoMotionModel(nextFalVideoMotionModel);
     setFalVideoUpscaleModel(nextFalVideoUpscaleModel);
     setFalAudioModel(nextFalAudioModel);
+    setFalAudioCloneModel(nextFalAudioCloneModel);
     setFalSoundEffectsModel(nextFalSoundEffectsModel);
     setFalTranscribeModel(nextFalTranscribeModel);
     setFalLipsyncImageModel(nextFalLipsyncImageModel);
@@ -2833,6 +2838,18 @@ function App() {
                       placeholder={defaultFalAudioModel}
                       value={falAudioModel}
                       onChange={setFalAudioModel}
+                      options={falAudioModelOptions}
+                      allowCustom
+                    />
+                  </div>
+                  <div className="field">
+                    <label htmlFor="fal-audio-clone-model">Voice Cloning Model (fal.ai)</label>
+                    <ModelCombobox
+                      id="fal-audio-clone-model"
+                      ariaLabel="fal.ai voice cloning model"
+                      placeholder={defaultFalAudioCloneModel}
+                      value={falAudioCloneModel}
+                      onChange={setFalAudioCloneModel}
                       options={falAudioModelOptions}
                       allowCustom
                     />

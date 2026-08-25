@@ -142,10 +142,15 @@ var audioSynonyms = map[string][]string{
 	// prompt-bearing input is the required lyrics field — see
 	// conv_8be630557ba60c15daba8388, which 422ed with "body.lyrics Field
 	// required" when the generic prompt/text fallback was sent instead.
-	"prompt":         {"prompt", "text", "lyrics"},
-	"duration":       {"duration_seconds", "duration", "music_length_ms"},
-	"loop":           {"loop"},
-	"voice":          {"voice", "voice_id", "voice_name", "speaker", "speaker_id"},
+	"prompt":   {"prompt", "text", "lyrics"},
+	"duration": {"duration_seconds", "duration", "music_length_ms"},
+	"loop":     {"loop"},
+	"voice":    {"voice", "voice_id", "voice_name", "speaker", "speaker_id"},
+	// "sourceAudio" is the voice-cloning reference clip — the audio sibling of
+	// the lipsync source inputs, same native keys. Zero-shot cloning models
+	// (fal-ai/f5-tts, dia, orpheus) declare audio_url for it; a speech model
+	// without a reference input drops it with a notice and uses its own voice.
+	"sourceAudio":    {"audio_url", "audio_file_url", "audio"},
 	"negativePrompt": {"negative_prompt"},
 	// "style_prompt" is required in practice by lyrics-driven music models
 	// (fal-ai/diffrhythm: "Either style prompt or reference audio URL must be
@@ -237,6 +242,7 @@ func canonicalAudioValues(req AudioGenerateRequest) []canonicalValue {
 		{"duration", strings.TrimSpace(req.Duration), strings.TrimSpace(req.Duration) != ""},
 		{"loop", req.Loop, req.Loop},
 		{"voice", strings.TrimSpace(req.Voice), strings.TrimSpace(req.Voice) != ""},
+		{"sourceAudio", strings.TrimSpace(req.SourceAudio), strings.TrimSpace(req.SourceAudio) != ""},
 		{"negativePrompt", strings.TrimSpace(req.NegativePrompt), strings.TrimSpace(req.NegativePrompt) != ""},
 		{"style", strings.TrimSpace(req.Style), strings.TrimSpace(req.Style) != ""},
 	}
@@ -249,7 +255,7 @@ func resolveAudioBody(schema *ModelInputSchema, req AudioGenerateRequest, ov Ove
 	prompt := strings.TrimSpace(req.Prompt)
 	if schema == nil {
 		return map[string]any{"prompt": prompt, "text": prompt},
-			[]string{"Couldn't load the model's parameter schema; generated with defaults and skipped duration/loop/voice."}
+			[]string{"Couldn't load the model's parameter schema; generated with defaults and skipped duration/loop/voice/voice reference."}
 	}
 
 	body := map[string]any{}
@@ -1347,6 +1353,9 @@ func setBodyPath(schema *ModelInputSchema, body map[string]any, path string, val
 func canonLabel(canon string) string {
 	if canon == "negativePrompt" {
 		return "negative prompt"
+	}
+	if canon == "sourceAudio" {
+		return "voice reference"
 	}
 	return canon
 }

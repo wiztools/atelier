@@ -245,6 +245,15 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				return GeneratedAudio{}, errFalKeyNotConfigured
 			}
 			client := newFalClient(app.client, apiKey)
+			// Pre-resolve a voice-cloning reference clip the way transcribe does:
+			// a 10+ second reference can exceed fal's inline data-URI limit, so
+			// upload it to CDN first when oversized. Fail-soft — fal's own error
+			// surfaces if the inline form is also rejected.
+			if strings.TrimSpace(req.SourceAudio) != "" {
+				if resolved, err := client.resolveMediaURL(ctx, req.SourceAudio, "audio/mpeg", "voice-reference.mp3"); err == nil {
+					req.SourceAudio = resolved
+				}
+			}
 			schema := schemaCache.Get(ctx, req.Model)
 			body, notices := resolveAudioBody(schema, req, falOverrides)
 			generated, err := client.GenerateAudio(ctx, req.Model, body)

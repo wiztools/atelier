@@ -152,9 +152,13 @@ type ConfigFal struct {
 	VideoMotionModel string `json:"videoMotionModel,omitempty"`
 	// AudioModel is the text-to-speech endpoint used by the generate_speech
 	// tool; SoundEffectsModel is the text-to-audio endpoint (music and sound
-	// effects) used by the generate_sound tool.
+	// effects) used by the generate_sound tool. AudioCloneModel is the
+	// zero-shot voice-cloning endpoint generate_speech switches to when the
+	// user attached a reference clip — selected by attachment, like the
+	// lipsync image/video split.
 	AudioModel        string `json:"audioModel,omitempty"`
 	SoundEffectsModel string `json:"soundEffectsModel,omitempty"`
+	AudioCloneModel   string `json:"audioCloneModel,omitempty"`
 	// TranscribeModel is the speech-to-text endpoint used by transcribe_audio
 	// (fal-ai/wizper by default). fal-only; Ollama has no transcription API.
 	TranscribeModel string `json:"transcribeModel,omitempty"`
@@ -616,6 +620,12 @@ type AudioGenerateRequest struct {
 	Loop  bool   `json:"loop,omitempty"`
 	Voice string `json:"voice,omitempty"`
 	Style string `json:"style,omitempty"`
+	// SourceAudio is a reference clip (data URL) for zero-shot voice cloning:
+	// generate_speech fills it from the user's attached audio so the speech is
+	// synthesized in that voice. Resolved like the other params — mapped onto
+	// the model's audio_url-shaped input, dropped-with-notice when the model
+	// has no reference input.
+	SourceAudio string `json:"sourceAudio,omitempty"`
 }
 
 // SaveAudioRequest asks to copy a generated audio artifact to a user-chosen
@@ -2487,6 +2497,11 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	// the new generate_sound tool lights up without a Settings visit.
 	if strings.TrimSpace(config.Providers.Fal.AudioModel) != "" && strings.TrimSpace(config.Providers.Fal.SoundEffectsModel) == "" {
 		config.Providers.Fal.SoundEffectsModel = defaultFalSoundEffectsModel
+	}
+	// Seed the voice-clone endpoint the same way: anyone with speech configured
+	// gets cloning when they attach a reference clip, without a Settings visit.
+	if strings.TrimSpace(config.Providers.Fal.AudioModel) != "" && strings.TrimSpace(config.Providers.Fal.AudioCloneModel) == "" {
+		config.Providers.Fal.AudioCloneModel = defaultFalAudioCloneModel
 	}
 	if strings.TrimSpace(config.Prompts.System) == "" {
 		config.Prompts.System = defaults.Prompts.System
