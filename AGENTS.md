@@ -15,7 +15,7 @@ wails build                        # Produce build/bin/Atelier.app
 
 `./bld.sh` runs `gofmt -w *.go` — note the glob is root-level only, so all Go source lives at the repo root in a single `package main`.
 
-Prerequisites: Go 1.24+, Node.js, [Wails CLI v2](https://wails.io) (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`), and a running Ollama.
+Prerequisites: Go 1.27+, Node.js, [Wails CLI v2](https://wails.io) (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`), and a running Ollama.
 
 ## Repository Layout
 

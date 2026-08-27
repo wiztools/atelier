@@ -68,7 +68,7 @@ Drop a `SKILL.md` file into `~/.agents/skills/<name>/` or `~/.atelier/skills/<na
 ## Prerequisites
 
 - [Ollama](https://ollama.com) running locally with at least one chat model pulled.
-- [Go 1.24+](https://go.dev/dl/)
+- [Go 1.27+](https://go.dev/dl/)
 - [Node.js](https://nodejs.org) (for the Vite frontend)
 - [Wails CLI v2](https://wails.io/docs/gettingstarted/installation): `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
 
