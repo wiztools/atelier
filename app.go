@@ -1444,7 +1444,7 @@ func readArtifactAsDataURL(storage ConfigStorage, conversationID string, content
 
 // readAudioArtifactAsDataURL resolves a persisted audio artifact (referenced by
 // relative Path in a HistoryContent entry) to its bytes on disk and re-encodes
-// them as a base64 data URL — the shape AttachedAudio consumers (fal's
+// them as a base64 data URL — the shape AttachedAudios consumers (fal's
 // transcribe_audio) expect. Sibling of readArtifactAsDataURL for the audio
 // path: used by the harness to re-hydrate a prior turn's attached audio when
 // the current turn has no attachment, so transcribe_audio works across turns
@@ -3576,13 +3576,13 @@ func readVideoArtifactAsDataURL(storage ConfigStorage, conversationID string, co
 
 // tempAudioFileAsDataURL reads a freshly-generated audio temp file (the
 // TempPath/MimeType on a ToolAudioFile produced by generate_speech/generate_sound) and
-// re-encodes it as a base64 data URL — the shape AttachedAudio consumers
+// re-encodes it as a base64 data URL — the shape AttachedAudios consumers
 // (transcribe_audio, lip_sync) expect. Sibling of readAudioArtifactAsDataURL
 // for the in-turn path: the file is a temp file written by writeTempAudio, not
 // a persisted conversation artifact, so there is no conversation-path
 // resolution. A missing/unreadable or non-audio file returns ("", nil): an
 // error here must not fail the tool batch — the caller simply leaves
-// AttachedAudio empty and the downstream tool surfaces its own attachment
+// AttachedAudios empty and the downstream tool surfaces its own attachment
 // error, matching today's behavior.
 func tempAudioFileAsDataURL(tempPath, mimeType string) (string, error) {
 	path := strings.TrimSpace(tempPath)

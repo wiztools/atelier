@@ -309,7 +309,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		toolReq := req
 		toolReq.Model = harness.model
 		toolReq.Provider = harness.provider
-		attachedAudio := latestAttachedAudioForTurn(req, h.config.Storage)
+		attachedAudios := latestAttachedAudiosForTurn(req, h.config.Storage)
 		var err error
 		preparation, err = h.prepareChatTurnLoop(ctx, requestID, conversationID, toolReq, harnessTurnContext{
 			SkillIndex:      skillIndex,
@@ -323,8 +323,8 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			UseNativeTools:  useNativeTools,
 			Harness:         harness,
 			AttachedImages:  attachedImages,
-			AttachedAudio:   attachedAudio,
-			VoiceReference:  attachedAudio,
+			AttachedAudios:  attachedAudios,
+			VoiceReference:  firstAttachedAudio(attachedAudios),
 			AttachedVideos:  latestAttachedVideosForTurn(req, h.config.Storage),
 		}, &run)
 		if err != nil {
@@ -592,22 +592,25 @@ func latestUserImages(messages []ChatMessage) []string {
 	return nil
 }
 
-// latestUserAudioURL returns the first audio attachment on the most recent user
-// message (a data URL), or "" if the current turn has none. It is the audio
-// sibling of latestUserImages and the source clip transcribe_audio consumes.
-func latestUserAudioURL(messages []ChatMessage) string {
+// latestUserAudioURLs returns the audio attachments on the most recent user
+// message (data URLs, in attachment order), or nil if the current turn has
+// none. It is the audio sibling of latestUserVideoURLs; the single-clip
+// consumers (transcribe_audio, lip sync, the voice-cloning reference) take the
+// first element via firstAttachedAudio.
+func latestUserAudioURLs(messages []ChatMessage) []string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role != "user" {
 			continue
 		}
+		var out []string
 		for _, audio := range messages[i].Audios {
 			if trimmed := strings.TrimSpace(audio); trimmed != "" {
-				return trimmed
+				out = append(out, trimmed)
 			}
 		}
-		return ""
+		return out
 	}
-	return ""
+	return nil
 }
 
 // latestUserVideoURLs returns the video attachments on the most recent user
@@ -679,27 +682,30 @@ func latestAttachedImagesForTurn(req ChatRequest, storage ConfigStorage) []strin
 	return nil
 }
 
-// latestAttachedAudioForTurn is the audio sibling of latestAttachedImageForTurn:
-// it returns the current turn's audio attachment (a data URL) if present, else
-// falls back to the most recent audio in conversation history, whether
-// user-attached or model-generated (e.g. TTS output). The fallback lets
+// latestAttachedAudiosForTurn is the audio sibling of
+// latestAttachedImagesForTurn: it returns the current turn's audio attachments
+// (data URLs, in attachment order) if any are present, else falls back to a
+// single-element slice with the most recent audio in conversation history,
+// whether user-attached or model-generated (e.g. TTS output). The fallback lets
 // transcribe_audio operate across turns without forcing the user to re-attach
-// on every message. History audio is persisted as artifacts on disk on both
-// user and assistant turns; they're re-read and re-encoded as a data URL to
-// match the shape AttachedAudio consumers (fal) expect. Errors are swallowed so
-// a stale history file can't break the current turn — the caller falls back to
-// the empty-AttachedAudio path and transcribe_audio surfaces its "attach an
+// on every message. Like the video side it returns at most one clip from
+// history, since only the current turn's attachments are meaningfully plural.
+// History audio is persisted as artifacts on disk on both user and assistant
+// turns; they're re-read and re-encoded as data URLs to match the shape
+// AttachedAudios consumers (fal) expect. Errors are swallowed so a stale
+// history file can't break the current turn — the caller falls back to the
+// empty-AttachedAudios path and transcribe_audio surfaces its "attach an
 // audio clip" error.
-func latestAttachedAudioForTurn(req ChatRequest, storage ConfigStorage) string {
-	if audio := latestUserAudioURL(req.Messages); audio != "" {
-		return audio
+func latestAttachedAudiosForTurn(req ChatRequest, storage ConfigStorage) []string {
+	if audios := latestUserAudioURLs(req.Messages); len(audios) > 0 {
+		return audios
 	}
 	if strings.TrimSpace(req.ConversationID) == "" {
-		return ""
+		return nil
 	}
 	detail, err := getConversation(storage, req.ConversationID)
 	if err != nil {
-		return ""
+		return nil
 	}
 	for i := len(detail.Turns) - 1; i >= 0; i-- {
 		turn := detail.Turns[i]
@@ -709,16 +715,16 @@ func latestAttachedAudioForTurn(req ChatRequest, storage ConfigStorage) string {
 			}
 			dataURL, err := readAudioArtifactAsDataURL(storage, req.ConversationID, content)
 			if err != nil {
-				return ""
+				return nil
 			}
-			return dataURL
+			return []string{dataURL}
 		}
 	}
-	return ""
+	return nil
 }
 
-// latestAttachedVideosForTurn is the plural video sibling of
-// latestAttachedAudioForTurn: it returns the current turn's video attachments
+// latestAttachedVideosForTurn is the video sibling of
+// latestAttachedAudiosForTurn: it returns the current turn's video attachments
 // (data URLs, in attachment order) if any are present, else falls back to the
 // most recent single video in conversation history, whether user-attached or
 // model-generated. The fallback lets video-dependent tools (Veo extend,
@@ -1151,13 +1157,16 @@ type harnessTurnContext struct {
 	// to this turn, if any — used by generate_video for image-to-video or multi-
 	// image reference-to-video. May be empty.
 	AttachedImages []string
-	// AttachedAudio is the audio clip (data URL) the user attached to this turn,
-	// if any — used by transcribe_audio. Provider-agnostic, like AttachedImage.
-	AttachedAudio string
-	// VoiceReference mirrors AttachedAudio but is pinned at turn start and never
-	// touched by the generated-audio carry-forward — generate_speech uses it as
-	// the zero-shot cloning reference, so only the user's own clip ever selects
-	// the cloning path, never an earlier call's generated audio.
+	// AttachedAudios are the audio clips (data URLs) the user attached to this
+	// turn, in attachment order, if any — the single-clip consumers
+	// (transcribe_audio, lip sync) take the first. Provider-agnostic, like
+	// AttachedImages.
+	AttachedAudios []string
+	// VoiceReference mirrors the first of AttachedAudios but is pinned at turn
+	// start and never touched by the generated-audio carry-forward —
+	// generate_speech uses it as the zero-shot cloning reference, so only the
+	// user's own clip ever selects the cloning path, never an earlier call's
+	// generated audio.
 	VoiceReference string
 	// AttachedVideos are the video clips (data URLs) the user attached to this
 	// turn, in attachment order, if any — used by generate_video (Veo extend,
@@ -1432,8 +1441,8 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 		// composition that failed in conv_047accca33610598408b8cf8.
 		// turn.VoiceReference is deliberately excluded: the cloning path must
 		// stay pinned to the user's own clip, never a generated one.
-		if strings.TrimSpace(turn.AttachedAudio) == "" {
-			turn.AttachedAudio = batch.GeneratedAudio
+		if len(turn.AttachedAudios) == 0 && strings.TrimSpace(batch.GeneratedAudio) != "" {
+			turn.AttachedAudios = []string{batch.GeneratedAudio}
 		}
 		if len(turn.AttachedVideos) == 0 && strings.TrimSpace(batch.GeneratedVideo) != "" {
 			turn.AttachedVideos = []string{batch.GeneratedVideo}
@@ -2431,7 +2440,7 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 	// video) and transcribe_audio can transcribe the audio. Empty for turns without
 	// the corresponding attachment.
 	gateway.tools.AttachedImages = turn.AttachedImages
-	gateway.tools.AttachedAudio = turn.AttachedAudio
+	gateway.tools.AttachedAudios = turn.AttachedAudios
 	gateway.tools.VoiceReference = turn.VoiceReference
 	gateway.tools.AttachedVideos = turn.AttachedVideos
 	batch := harnessToolBatchResult{Results: make([]HarnessToolResult, 0, len(calls))}
@@ -2490,8 +2499,8 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 			if len(batch.GeneratedImages) == 0 {
 				batch.GeneratedImages = generated.Images
 			}
-			if strings.TrimSpace(gateway.tools.AttachedAudio) == "" && generated.Audio != "" {
-				gateway.tools.AttachedAudio = generated.Audio
+			if len(gateway.tools.AttachedAudios) == 0 && strings.TrimSpace(generated.Audio) != "" {
+				gateway.tools.AttachedAudios = []string{generated.Audio}
 			}
 			if len(gateway.tools.AttachedVideos) == 0 && generated.Video != "" {
 				gateway.tools.AttachedVideos = []string{generated.Video}

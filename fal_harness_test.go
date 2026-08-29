@@ -960,7 +960,7 @@ func chatCompletion(model, content string) *http.Response {
 // TestHarnessTranscribesAudioViaFal drives a turn that attaches an audio clip
 // and asks for a transcription. The planner runs transcribe_audio against
 // fal-ai/wizper, whose result (the transcript) flows as tool evidence into the
-// primary model's reply. Covers the AttachedAudio plumbing and the
+// primary model's reply. Covers the AttachedAudios plumbing and the
 // provider-agnostic audio path (runs on an Ollama primary model — the guard
 // that used to reject this was removed so transcribe works on any provider).
 func TestHarnessTranscribesAudioViaFal(t *testing.T) {

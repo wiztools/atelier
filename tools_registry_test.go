@@ -358,7 +358,7 @@ func TestLipsyncFaceFromRouting(t *testing.T) {
 				Config:         config,
 				AttachedImages: tc.images,
 				AttachedVideos: tc.videos,
-				AttachedAudio:  audioClip,
+				AttachedAudios: []string{audioClip},
 				GenerateLipsync: func(ctx context.Context, req LipsyncGenerateRequest) (GeneratedVideo, error) {
 					gotReq = req
 					return GeneratedVideo{Data: []byte("mp4"), MimeType: "video/mp4"}, nil
@@ -402,7 +402,7 @@ func TestLipsyncFaceFromMissingFace(t *testing.T) {
 	exec := HarnessToolExecutionContext{
 		Config:         defaultAppConfig(),
 		AttachedVideos: []string{"data:video/mp4;base64,CCC"},
-		AttachedAudio:  "data:audio/mpeg;base64,AAA",
+		AttachedAudios: []string{"data:audio/mpeg;base64,AAA"},
 		GenerateLipsync: func(ctx context.Context, req LipsyncGenerateRequest) (GeneratedVideo, error) {
 			t.Fatal("GenerateLipsync must not run when the requested face is missing")
 			return GeneratedVideo{}, nil

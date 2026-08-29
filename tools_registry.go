@@ -43,17 +43,21 @@ type HarnessToolExecutionContext struct {
 	// multi-image request against a single-image model fails the call. Empty for
 	// the direct/UI tool path.
 	AttachedImages []string
-	// AttachedAudio is the audio clip (a data URL) the user attached to the
-	// current turn, if any. transcribe_audio consumes it via fal's Whisper/Wizper.
-	// Like AttachedImage it is provider-agnostic: the planner decides whether to
-	// transcribe it (any provider) or, on OpenRouter, send it as chat input.
-	AttachedAudio string
-	// VoiceReference is the user's own attached clip for this turn, held aside as
-	// a voice-cloning reference for generate_speech. Unlike AttachedAudio it is
-	// pinned at turn start and never overwritten by the generated-audio
-	// carry-forward, so a later generate_speech in the same turn cannot clone
-	// from an earlier call's output (or a sound effect). Empty for the
-	// direct/UI tool path, where no user attachment exists.
+	// AttachedAudios are the audio clips (data URLs) the user attached to the
+	// current turn, in attachment order, if any. Every clip is carried so a
+	// multi-mention turn loses nothing at resolution time; the single-clip
+	// consumers (transcribe_audio, lip sync, the voice-cloning reference) take
+	// the first via firstAttachedAudio, mirroring AttachedVideos. Like
+	// AttachedImages it is provider-agnostic: the planner decides whether to
+	// transcribe a clip (any provider) or, on OpenRouter, send it as chat input.
+	AttachedAudios []string
+	// VoiceReference is the user's own attached clip for this turn (the first
+	// attached audio), held aside as a voice-cloning reference for
+	// generate_speech. Unlike AttachedAudios it is pinned at turn start and
+	// never overwritten by the generated-audio carry-forward, so a later
+	// generate_speech in the same turn cannot clone from an earlier call's
+	// output (or a sound effect). Empty for the direct/UI tool path, where no
+	// user attachment exists.
 	VoiceReference string
 	// AttachedVideos are the video clips (data URLs) the user attached to the
 	// current turn, in attachment order, if any. generate_video uses them as
@@ -421,6 +425,18 @@ func nonEmptyVideos(videos []string) []string {
 func firstAttachedVideo(videos []string) string {
 	for _, v := range videos {
 		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// firstAttachedAudio returns the first non-empty attached audio, for the
+// single-clip consumers of AttachedAudios (transcribe_audio, lip sync, the
+// voice-cloning reference) — fal's audio endpoints each take one audio_url.
+func firstAttachedAudio(audios []string) string {
+	for _, a := range audios {
+		if s := strings.TrimSpace(a); s != "" {
 			return s
 		}
 	}
@@ -908,10 +924,11 @@ func writeTempAudio(audio GeneratedAudio) (string, error) {
 }
 
 // transcribeAudioToolDefinition exposes the transcribe_audio tool. It consumes
-// the user's attached audio clip (AttachedAudio) and returns the transcript via
-// fal's speech-to-text endpoint (fal-ai/wizper by default). The transcript flows
-// as normal tool evidence — the primary model weaves it into its reply. Requires
-// an attached audio clip, mirroring how upscale_image requires an attached image.
+// the user's attached audio clip (the first of AttachedAudios) and returns the
+// transcript via fal's speech-to-text endpoint (fal-ai/wizper by default). The
+// transcript flows as normal tool evidence — the primary model weaves it into
+// its reply. Requires an attached audio clip, mirroring how upscale_image
+// requires an attached image.
 func transcribeAudioToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "transcribe_audio",
@@ -927,7 +944,7 @@ func transcribeAudioToolDefinition() HarnessToolDefinition {
 			if tools.TranscribeAudio == nil {
 				return nil, "audio transcription unavailable", errors.New("audio transcription is not available in this context")
 			}
-			attachedAudio := strings.TrimSpace(tools.AttachedAudio)
+			attachedAudio := firstAttachedAudio(tools.AttachedAudios)
 			if attachedAudio == "" {
 				return nil, "audio transcription requires an attached audio clip", errors.New("transcribe_audio requires an attached audio clip — ask the user to attach one first")
 			}
@@ -1013,7 +1030,9 @@ func lipsyncToolDefinition(videoAudioCapable bool) HarnessToolDefinition {
 			if tools.GenerateLipsync == nil {
 				return nil, "lip sync unavailable", errors.New("lip sync is not available in this context")
 			}
-			attachedAudio := strings.TrimSpace(tools.AttachedAudio)
+			// fal's lip sync endpoints take a single audio_url, so only the
+			// first attached audio is used even when several are attached.
+			attachedAudio := firstAttachedAudio(tools.AttachedAudios)
 			if attachedAudio == "" {
 				return nil, "lip sync requires an attached audio clip", errors.New("lip_sync requires an attached audio clip — ask the user to attach one first")
 			}

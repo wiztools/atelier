@@ -491,7 +491,7 @@ func TestGenerateSpeechFeedsLipSyncInSameBatch(t *testing.T) {
 	}
 	audioTmp.Close()
 
-	// Capture what AttachedAudio lip_sync actually saw.
+	// Capture what the lip_sync audio actually saw.
 	var lipsyncSawAudio string
 	var lipsyncSawFace string
 
@@ -527,8 +527,8 @@ func TestGenerateSpeechFeedsLipSyncInSameBatch(t *testing.T) {
 		result := gateway.Execute(context.Background(), ToolExecutionRequest{Name: call.Name, Call: call})
 		results = append(results, result)
 		if generated := forwardableMediaFromResults(results); generated != nil {
-			if strings.TrimSpace(gateway.tools.AttachedAudio) == "" && generated.Audio != "" {
-				gateway.tools.AttachedAudio = generated.Audio
+			if len(gateway.tools.AttachedAudios) == 0 && strings.TrimSpace(generated.Audio) != "" {
+				gateway.tools.AttachedAudios = []string{generated.Audio}
 			}
 			if len(gateway.tools.AttachedImages) == 0 && len(generated.Images) > 0 {
 				gateway.tools.AttachedImages = generated.Images
@@ -571,8 +571,8 @@ func TestUserAttachedAudioNotOverwritten(t *testing.T) {
 	})
 	const userAudio = "data:audio/mpeg;base64,USERCLIP"
 	tools := HarnessToolExecutionContext{
-		Config:        defaultAppConfig(),
-		AttachedAudio: userAudio,
+		Config:         defaultAppConfig(),
+		AttachedAudios: []string{userAudio},
 		GenerateAudio: func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error) {
 			return GeneratedAudio{Data: audioBytes, MimeType: "audio/mpeg"}, nil
 		},
@@ -591,8 +591,8 @@ func TestUserAttachedAudioNotOverwritten(t *testing.T) {
 		results = append(results, result)
 		// Apply the SAME precedence rule runHarnessToolCalls uses: only fill empty.
 		if generated := forwardableMediaFromResults(results); generated != nil {
-			if strings.TrimSpace(gateway.tools.AttachedAudio) == "" && generated.Audio != "" {
-				gateway.tools.AttachedAudio = generated.Audio
+			if len(gateway.tools.AttachedAudios) == 0 && strings.TrimSpace(generated.Audio) != "" {
+				gateway.tools.AttachedAudios = []string{generated.Audio}
 			}
 		}
 	}
@@ -630,7 +630,7 @@ func TestGeneratedAudioNeverBecomesVoiceReference(t *testing.T) {
 	gateway := ToolGateway{registry: registry, tools: tools}
 
 	// Mirror runHarnessToolCalls's per-call loop + forward-feed: generated audio
-	// fills the empty AttachedAudio slot but VoiceReference is never written —
+	// fills the empty AttachedAudios slot but VoiceReference is never written —
 	// exactly the real loop, which copies VoiceReference from the turn once and
 	// leaves it alone (see runHarnessToolCalls / the round backfill).
 	calls := []HarnessToolCall{{Name: "generate_speech", Content: "a"}, {Name: "generate_speech", Content: "b"}}
@@ -639,8 +639,8 @@ func TestGeneratedAudioNeverBecomesVoiceReference(t *testing.T) {
 		result := gateway.Execute(context.Background(), ToolExecutionRequest{Name: call.Name, Call: call})
 		results = append(results, result)
 		if generated := forwardableMediaFromResults(results); generated != nil {
-			if strings.TrimSpace(gateway.tools.AttachedAudio) == "" && generated.Audio != "" {
-				gateway.tools.AttachedAudio = generated.Audio
+			if len(gateway.tools.AttachedAudios) == 0 && strings.TrimSpace(generated.Audio) != "" {
+				gateway.tools.AttachedAudios = []string{generated.Audio}
 			}
 		}
 	}
@@ -660,7 +660,7 @@ func TestGeneratedAudioNeverBecomesVoiceReference(t *testing.T) {
 // TestUserAttachedClipSelectsCloningPath is the positive counterpart: when the
 // user attached a clip (VoiceReference pinned at turn start), generate_speech
 // clones from that clip — and keeps cloning from it even after generated audio
-// fills the AttachedAudio carry-forward slot, so the reference never drifts.
+// fills the AttachedAudios carry-forward slot, so the reference never drifts.
 func TestUserAttachedClipSelectsCloningPath(t *testing.T) {
 	audioBytes := []byte{0xFF, 0xE0, 0x00, 0x00, 'g', 'e', 'n'}
 	audioTmp, _ := os.CreateTemp("", "atelier-audio-*.mp3")
@@ -677,7 +677,7 @@ func TestUserAttachedClipSelectsCloningPath(t *testing.T) {
 	registry := newHarnessToolRegistry([]HarnessToolDefinition{speechGenerationToolDefinition(false)})
 	tools := HarnessToolExecutionContext{
 		Config:         config,
-		AttachedAudio:  userClip,
+		AttachedAudios: []string{userClip},
 		VoiceReference: userClip,
 		GenerateAudio: func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error) {
 			saw = append(saw, req)
@@ -692,8 +692,8 @@ func TestUserAttachedClipSelectsCloningPath(t *testing.T) {
 		result := gateway.Execute(context.Background(), ToolExecutionRequest{Name: call.Name, Call: call})
 		results = append(results, result)
 		if generated := forwardableMediaFromResults(results); generated != nil {
-			if strings.TrimSpace(gateway.tools.AttachedAudio) == "" && generated.Audio != "" {
-				gateway.tools.AttachedAudio = generated.Audio
+			if len(gateway.tools.AttachedAudios) == 0 && strings.TrimSpace(generated.Audio) != "" {
+				gateway.tools.AttachedAudios = []string{generated.Audio}
 			}
 		}
 	}
