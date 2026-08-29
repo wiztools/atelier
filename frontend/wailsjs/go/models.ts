@@ -543,6 +543,36 @@ export namespace main {
 	
 	
 	
+	export class ConversationAsset {
+	    id: string;
+	    conversationId: string;
+	    kind: string;
+	    mimeType?: string;
+	    url?: string;
+	    width?: number;
+	    height?: number;
+	    originTurnId: string;
+	    role: string;
+	    createdAt?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConversationAsset(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.conversationId = source["conversationId"];
+	        this.kind = source["kind"];
+	        this.mimeType = source["mimeType"];
+	        this.url = source["url"];
+	        this.width = source["width"];
+	        this.height = source["height"];
+	        this.originTurnId = source["originTurnId"];
+	        this.role = source["role"];
+	        this.createdAt = source["createdAt"];
+	    }
+	}
 	export class HistoryContent {
 	    type: string;
 	    text?: string;

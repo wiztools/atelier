@@ -26,6 +26,8 @@ export function HasOpenAICompatibleAPIKey():Promise<boolean>;
 
 export function HasOpenRouterAPIKey():Promise<boolean>;
 
+export function ListConversationAssets(arg1:string):Promise<Array<main.ConversationAsset>>;
+
 export function ListConversations():Promise<Array<main.ConversationSummary>>;
 
 export function ListFalImageEditModels():Promise<Array<main.FalModel>>;

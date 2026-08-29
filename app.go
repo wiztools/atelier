@@ -911,6 +911,17 @@ func (a *App) GetConversation(conversationID string) (ConversationDetail, error)
 	return getConversation(config.Storage, conversationID)
 }
 
+// ListConversationAssets derives the conversation's referable media assets —
+// every image/audio/video artifact in its history, oldest first — for the
+// assets panel and the @-mention composer.
+func (a *App) ListConversationAssets(conversationID string) ([]ConversationAsset, error) {
+	config, err := loadAppConfig()
+	if err != nil {
+		return nil, err
+	}
+	return listConversationAssets(config.Storage, conversationID)
+}
+
 // SearchConversations greps stored conversation history — turn text and
 // titles — beyond what the sidebar list shows, returning per-conversation
 // matches with context snippets.

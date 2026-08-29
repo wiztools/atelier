@@ -50,6 +50,10 @@ export function HasOpenRouterAPIKey() {
   return window['go']['main']['App']['HasOpenRouterAPIKey']();
 }
 
+export function ListConversationAssets(arg1) {
+  return window['go']['main']['App']['ListConversationAssets'](arg1);
+}
+
 export function ListConversations() {
   return window['go']['main']['App']['ListConversations']();
 }
