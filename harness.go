@@ -238,6 +238,15 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	// generated image when the user asks about it. Resolved here rather than
 	// inline at each call site so both consume the same value.
 	attachedImages := latestAttachedImagesForTurn(req, h.config.Storage)
+	// @-mentions put the turn in explicit-media mode: the user's direct
+	// attachments plus the mentioned assets, with the latest-wins history walk
+	// disabled — an unrelated recent artifact must not ride along uninvited.
+	// Direct attachments come first, mentions after, in mention order.
+	referenced := referencedMedia{}
+	if len(req.ReferencedAssetIDs) > 0 {
+		referenced = resolveReferencedAssets(h.config.Storage, req.ConversationID, req.ReferencedAssetIDs)
+		attachedImages = append(latestUserImages(req.Messages), referenced.images...)
+	}
 	run := newHarnessRun(requestID, conversationID)
 	// Stream every step transition to the UI: the live harness panel renders
 	// these snapshots instead of fabricating in-flight state. The closure
@@ -310,6 +319,11 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		toolReq.Model = harness.model
 		toolReq.Provider = harness.provider
 		attachedAudios := latestAttachedAudiosForTurn(req, h.config.Storage)
+		attachedVideos := latestAttachedVideosForTurn(req, h.config.Storage)
+		if len(req.ReferencedAssetIDs) > 0 {
+			attachedAudios = append(latestUserAudioURLs(req.Messages), referenced.audios...)
+			attachedVideos = append(latestUserVideoURLs(req.Messages), referenced.videos...)
+		}
 		var err error
 		preparation, err = h.prepareChatTurnLoop(ctx, requestID, conversationID, toolReq, harnessTurnContext{
 			SkillIndex:      skillIndex,
@@ -325,7 +339,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			AttachedImages:  attachedImages,
 			AttachedAudios:  attachedAudios,
 			VoiceReference:  firstAttachedAudio(attachedAudios),
-			AttachedVideos:  latestAttachedVideosForTurn(req, h.config.Storage),
+			AttachedVideos:  attachedVideos,
 		}, &run)
 		if err != nil {
 			run.complete("failed", "harness_prepare_error")

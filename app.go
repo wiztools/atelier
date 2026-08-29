@@ -343,6 +343,14 @@ type ChatRequest struct {
 	// conversation (turn 2+) this field is ignored — the record's Workspace
 	// wins. Empty falls back to the configured default root.
 	Workspace string `json:"workspace,omitempty"`
+	// ReferencedAssetIDs carries the @-mentioned asset IDs for this turn —
+	// ConversationAsset IDs from ListConversationAssets. The harness resolves
+	// each ID to its artifact and delivers the media through the tool
+	// attachment slots; while set, the latest-wins history fallback for
+	// attachments is disabled, so the user's explicit references define the
+	// turn's media. IDs only — no media bytes ever ride this field, so
+	// nothing enters model context through it.
+	ReferencedAssetIDs []string `json:"referencedAssetIds,omitempty"`
 }
 
 type ChatStreamStart struct {
@@ -2733,7 +2741,7 @@ func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, 
 		Workspace: config.Tools.Filesystem.Root,
 	}
 
-	userTurn, assistantTurn, err := buildChatTurnPair(workspace.ID, 1, nowText, req, assistantContent, assistantThinking, model, provider, reason, tokens, workspace.ArtifactsDir, run)
+	userTurn, assistantTurn, err := buildChatTurnPair(workspace.ID, 1, nowText, req, assistantContent, assistantThinking, model, provider, reason, tokens, workspace.ArtifactsDir, config.Storage, run)
 	if err != nil {
 		return "", err
 	}
@@ -2775,7 +2783,7 @@ func writePendingChatConversation(config AppConfig, req ChatRequest) (string, er
 		},
 		Workspace: config.Tools.Filesystem.Root,
 	}
-	userTurn, err := buildChatUserTurn(workspace.ID, 1, nowText, req, workspace.ArtifactsDir)
+	userTurn, err := buildChatUserTurn(workspace.ID, 1, nowText, req, workspace.ArtifactsDir, config.Storage)
 	if err != nil {
 		return "", err
 	}
@@ -2786,8 +2794,8 @@ func writePendingChatConversation(config AppConfig, req ChatRequest) (string, er
 	return workspace.ID, nil
 }
 
-func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt string, req ChatRequest, assistantContent, assistantThinking, model, provider, reason string, tokens int, artifactsDir string, run HarnessRun) (HistoryTurn, HistoryTurn, error) {
-	userTurn, err := buildChatUserTurn(conversationID, firstTurnNumber, createdAt, req, artifactsDir)
+func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt string, req ChatRequest, assistantContent, assistantThinking, model, provider, reason string, tokens int, artifactsDir string, storage ConfigStorage, run HarnessRun) (HistoryTurn, HistoryTurn, error) {
+	userTurn, err := buildChatUserTurn(conversationID, firstTurnNumber, createdAt, req, artifactsDir, storage)
 	if err != nil {
 		return HistoryTurn{}, HistoryTurn{}, err
 	}
@@ -2795,10 +2803,18 @@ func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt str
 	return userTurn, assistantTurn, nil
 }
 
-func buildChatUserTurn(conversationID string, turnNumber int, createdAt string, req ChatRequest, artifactsDir string) (HistoryTurn, error) {
+func buildChatUserTurn(conversationID string, turnNumber int, createdAt string, req ChatRequest, artifactsDir string, storage ConfigStorage) (HistoryTurn, error) {
 	userContent, err := historyContentForMessage(lastUserMessage(req.Messages), artifactsDir)
 	if err != nil {
 		return HistoryTurn{}, err
+	}
+	// @-mentioned assets are persisted as references to the existing artifact
+	// entries — same ArtifactID and relative Path, no byte copy — so the next
+	// turn's latest-wins history walk sees what the user cited rather than an
+	// older artifact. On a brand-new conversation there is nothing to resolve
+	// and this is a no-op.
+	if len(req.ReferencedAssetIDs) > 0 {
+		userContent = append(userContent, resolveReferencedAssets(storage, conversationID, req.ReferencedAssetIDs).entries...)
 	}
 	userTurn := HistoryTurn{
 		SchemaVersion:  1,
@@ -2862,7 +2878,7 @@ func appendChatConversation(config AppConfig, req ChatRequest, assistantContent,
 		return "", err
 	}
 	nowText := time.Now().Format(time.RFC3339)
-	userTurn, assistantTurn, err := buildChatTurnPair(conversationID, loaded.NextTurnNumber, nowText, req, assistantContent, assistantThinking, model, provider, reason, tokens, loaded.ArtifactsDir, run)
+	userTurn, assistantTurn, err := buildChatTurnPair(conversationID, loaded.NextTurnNumber, nowText, req, assistantContent, assistantThinking, model, provider, reason, tokens, loaded.ArtifactsDir, config.Storage, run)
 	if err != nil {
 		return "", err
 	}
@@ -2890,7 +2906,7 @@ func appendChatUserTurn(config AppConfig, req ChatRequest) (string, error) {
 		return "", err
 	}
 	nowText := time.Now().Format(time.RFC3339)
-	userTurn, err := buildChatUserTurn(conversationID, loaded.NextTurnNumber, nowText, req, loaded.ArtifactsDir)
+	userTurn, err := buildChatUserTurn(conversationID, loaded.NextTurnNumber, nowText, req, loaded.ArtifactsDir, config.Storage)
 	if err != nil {
 		return "", err
 	}

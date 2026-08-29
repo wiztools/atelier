@@ -125,3 +125,75 @@ func TestListConversationAssetsUnknownConversation(t *testing.T) {
 		t.Fatal("expected an error for an unknown conversation")
 	}
 }
+
+// minimalMentionWAV is the smallest payload isAudioBytes accepts, so the audio
+// artifact reader re-reads it as a data URL.
+var minimalMentionWAV = []byte("RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x40\x1f\x00\x00\x40\x1f\x00\x00\x01\x00\x08\x00data\x00\x00\x00\x00")
+
+func TestResolveReferencedAssetsKindsOrderAndUnknown(t *testing.T) {
+	storage := searchTestStorage(t)
+	writeSearchConversation(t, storage, "2026/08/conv_ref1",
+		searchConversationFixture("conv_ref1", "Refs", "2026-08-03T10:00:00Z"),
+		searchTurnFixture("turn_000001", "user", "2026-08-03T10:00:00Z",
+			HistoryContent{Type: "text", Text: "hi"},
+		),
+		searchTurnFixture("turn_000002", "assistant", "2026-08-03T10:00:05Z",
+			HistoryContent{Type: "image", ArtifactID: "img_r1", Path: "artifacts/img_r1.png", MimeType: "image/png"},
+			HistoryContent{Type: "audio", ArtifactID: "aud_r2", Path: "artifacts/aud_r2.wav", MimeType: "audio/wav"},
+			// Pre-ID record: resolvable by its path only.
+			HistoryContent{Type: "audio", Path: "artifacts/legacy_r4.wav", MimeType: "audio/wav"},
+			HistoryContent{Type: "video", ArtifactID: "vid_r3", Path: "artifacts/vid_r3.mp4", MimeType: "video/mp4"},
+		),
+	)
+	writeAssetFile(t, storage, "2026/08/conv_ref1", "artifacts/img_r1.png", string(minimalPNG))
+	writeAssetFile(t, storage, "2026/08/conv_ref1", "artifacts/aud_r2.wav", string(minimalMentionWAV))
+	writeAssetFile(t, storage, "2026/08/conv_ref1", "artifacts/legacy_r4.wav", string(minimalMentionWAV))
+	writeAssetFile(t, storage, "2026/08/conv_ref1", "artifacts/vid_r3.mp4", string([]byte{0x00, 0x00, 0x00, 0x08, 'f', 't', 'y', 'p', 'm', 'p', '4', '2'}))
+
+	got := resolveReferencedAssets(storage, "conv_ref1", []string{"aud_r2", "img_r1", "nope", "artifacts/legacy_r4.wav", "", "vid_r3"})
+	if len(got.audios) != 2 || len(got.images) != 1 || len(got.videos) != 1 {
+		t.Fatalf("per-kind counts = img:%d aud:%d vid:%d, want img:1 aud:2 vid:1", len(got.images), len(got.audios), len(got.videos))
+	}
+	if !strings.HasPrefix(got.audios[0], "data:audio/wav") || !strings.HasPrefix(got.images[0], "data:image/") || !strings.HasPrefix(got.videos[0], "data:video/") {
+		t.Fatalf("resolved media not data URLs: aud:%q img:%q vid:%q", got.audios[0], got.images[0], got.videos[0])
+	}
+	// Entries follow mention order with unknown and empty IDs skipped.
+	wantIDs := []string{"aud_r2", "img_r1", "artifacts/legacy_r4.wav", "vid_r3"}
+	if len(got.entries) != len(wantIDs) {
+		t.Fatalf("entry count = %d, want %d: %+v", len(got.entries), len(wantIDs), got.entries)
+	}
+	for i, want := range wantIDs {
+		key := got.entries[i].ArtifactID
+		if key == "" {
+			key = got.entries[i].Path
+		}
+		if key != want {
+			t.Fatalf("entries[%d] = %q, want %q", i, key, want)
+		}
+	}
+}
+
+func TestResolveReferencedAssetsSkipsMissingAndEmpty(t *testing.T) {
+	storage := searchTestStorage(t)
+	writeSearchConversation(t, storage, "2026/08/conv_ref2",
+		searchConversationFixture("conv_ref2", "Refs", "2026-08-03T11:00:00Z"),
+		searchTurnFixture("turn_000001", "assistant", "2026-08-03T11:00:00Z",
+			// Listed in history but the file is gone: nothing usable to resolve.
+			HistoryContent{Type: "image", ArtifactID: "img_gone", Path: "artifacts/img_gone.png", MimeType: "image/png"},
+		),
+	)
+
+	got := resolveReferencedAssets(storage, "conv_ref2", []string{"img_gone"})
+	if len(got.images) != 0 || len(got.entries) != 0 {
+		t.Fatalf("missing-file mention resolved to img:%d entries:%d, want none", len(got.images), len(got.entries))
+	}
+	if other := resolveReferencedAssets(storage, "conv_ref2", nil); len(other.entries) != 0 {
+		t.Fatal("no IDs must resolve nothing")
+	}
+	if other := resolveReferencedAssets(storage, "", []string{"img_gone"}); len(other.entries) != 0 {
+		t.Fatal("empty conversation ID must resolve nothing")
+	}
+	if other := resolveReferencedAssets(storage, "conv_nope", []string{"img_gone"}); len(other.entries) != 0 {
+		t.Fatal("unknown conversation must resolve nothing, not fail")
+	}
+}

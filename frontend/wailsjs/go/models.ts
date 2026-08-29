@@ -474,6 +474,7 @@ export namespace main {
 	    format?: any;
 	    tools?: any[];
 	    workspace?: string;
+	    referencedAssetIds?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ChatRequest(source);
@@ -494,6 +495,7 @@ export namespace main {
 	        this.format = source["format"];
 	        this.tools = source["tools"];
 	        this.workspace = source["workspace"];
+	        this.referencedAssetIds = source["referencedAssetIds"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

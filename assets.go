@@ -80,3 +80,100 @@ func conversationAssetsFromDetail(detail ConversationDetail) []ConversationAsset
 	}
 	return assets
 }
+
+// referencedMedia is the outcome of resolving one turn's @-mentioned asset IDs
+// against conversation history. The per-kind slices hold data URLs (mention
+// order) for the tool attachment slots; entries holds the resolved history
+// content entries themselves, for persisting the references on the user turn.
+// An entry only appears when its artifact re-read successfully — a dangling
+// reference (file missing on disk) yields nothing usable for a tool, nothing
+// walkable for the next turn, and nothing renderable in the panel, so it is
+// dropped entirely and the user should re-pick.
+type referencedMedia struct {
+	images  []string
+	audios  []string
+	videos  []string
+	entries []HistoryContent
+}
+
+// resolveReferencedAssets maps ReferencedAssetIDs to their artifacts. IDs are
+// ConversationAsset IDs — ArtifactID by precedence, with the relative Path as
+// a fallback key for pre-ID records. Unknown IDs, and artifacts that cannot be
+// re-read as data URLs, are skipped rather than failing the turn: the composer
+// only offers resolvable IDs, so anything else is a stale reference the user
+// should re-pick, not an error worth burning the turn on.
+func resolveReferencedAssets(storage ConfigStorage, conversationID string, ids []string) referencedMedia {
+	out := referencedMedia{}
+	if len(ids) == 0 || strings.TrimSpace(conversationID) == "" {
+		return out
+	}
+	detail, err := getConversation(storage, conversationID)
+	if err != nil {
+		return out
+	}
+	index := assetContentIndex(detail)
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		content, ok := index[id]
+		if !ok {
+			continue
+		}
+		var dataURL string
+		var readErr error
+		switch content.Type {
+		case "image":
+			dataURL, readErr = readArtifactAsDataURL(storage, conversationID, content)
+		case "audio":
+			dataURL, readErr = readAudioArtifactAsDataURL(storage, conversationID, content)
+		case "video":
+			dataURL, readErr = readVideoArtifactAsDataURL(storage, conversationID, content)
+		default:
+			continue
+		}
+		if readErr != nil || dataURL == "" {
+			continue
+		}
+		switch content.Type {
+		case "image":
+			out.images = append(out.images, dataURL)
+		case "audio":
+			out.audios = append(out.audios, dataURL)
+		case "video":
+			out.videos = append(out.videos, dataURL)
+		}
+		out.entries = append(out.entries, content)
+	}
+	return out
+}
+
+// assetContentIndex maps every referable asset key in a conversation to its
+// history content entry. Two keys point at each entry — its ArtifactID and
+// its relative Path — so both the modern scheme (img_/aud_/vid_<hex>) and the
+// path-fallback IDs of pre-ID records resolve. The walk is newest-first, so
+// when a persisted mention re-references an older artifact (same ArtifactID,
+// another entry), the newest entry wins.
+func assetContentIndex(detail ConversationDetail) map[string]HistoryContent {
+	index := map[string]HistoryContent{}
+	for i := len(detail.Turns) - 1; i >= 0; i-- {
+		for _, content := range detail.Turns[i].Content {
+			if content.Type != "image" && content.Type != "audio" && content.Type != "video" {
+				continue
+			}
+			if strings.TrimSpace(content.Path) == "" {
+				continue
+			}
+			if content.ArtifactID != "" {
+				if _, seen := index[content.ArtifactID]; !seen {
+					index[content.ArtifactID] = content
+				}
+			}
+			if _, seen := index[content.Path]; !seen {
+				index[content.Path] = content
+			}
+		}
+	}
+	return index
+}
