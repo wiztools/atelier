@@ -2785,7 +2785,7 @@ func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt str
 }
 
 func buildChatUserTurn(conversationID string, turnNumber int, createdAt string, req ChatRequest, artifactsDir string) (HistoryTurn, error) {
-	userContent, err := historyContentForMessage(lastUserMessage(req.Messages), artifactsDir, turnNumber)
+	userContent, err := historyContentForMessage(lastUserMessage(req.Messages), artifactsDir)
 	if err != nil {
 		return HistoryTurn{}, err
 	}
@@ -2915,12 +2915,12 @@ func appendChatAssistantTurn(config AppConfig, conversationID, assistantContent,
 
 // chatAssistantTurnMedia is the per-call piece a media-bearing assistant turn
 // needs. build writes that turn's artifacts (images, videos, audios) into
-// artifactsDir using turnNumber, and returns the HistoryContent entries they
-// become, any live-render URLs, and the tool metadata recorded on the saved
-// turn. The shared append helper calls build after loading the conversation,
-// since artifact writing needs the resolved ArtifactsDir and NextTurnNumber.
+// artifactsDir, and returns the HistoryContent entries they become, any
+// live-render URLs, and the tool metadata recorded on the saved turn. The
+// shared append helper calls build after loading the conversation, since
+// artifact writing needs the resolved ArtifactsDir.
 type chatAssistantTurnMedia struct {
-	build func(artifactsDir string, turnNumber int) (contents []HistoryContent, urls []string, tool map[string]any, err error)
+	build func(artifactsDir string) (contents []HistoryContent, urls []string, tool map[string]any, err error)
 }
 
 // appendChatAssistantTurnWithMedia is the shared skeleton for persisting an
@@ -2938,7 +2938,7 @@ func appendChatAssistantTurnWithMedia(config AppConfig, conversationID, assistan
 	}
 	nowText := time.Now().Format(time.RFC3339)
 
-	mediaContents, urls, tool, err := media.build(loaded.ArtifactsDir, loaded.NextTurnNumber)
+	mediaContents, urls, tool, err := media.build(loaded.ArtifactsDir)
 	if err != nil {
 		return nil, err
 	}
@@ -2979,8 +2979,8 @@ func appendChatAssistantTurnWithMedia(config AppConfig, conversationID, assistan
 
 func appendChatAssistantTurnWithImages(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, images []string, raw string, run HarnessRun, imageReq ImageGenerateRequest) error {
 	_, err := appendChatAssistantTurnWithMedia(config, conversationID, assistantContent, assistantThinking, model, provider, reason, run, chatAssistantTurnMedia{
-		build: func(artifactsDir string, turnNumber int) ([]HistoryContent, []string, map[string]any, error) {
-			imageContents, err := writeChatImageArtifacts(artifactsDir, imageReq, images, turnNumber)
+		build: func(artifactsDir string) ([]HistoryContent, []string, map[string]any, error) {
+			imageContents, err := writeChatImageArtifacts(artifactsDir, imageReq, images)
 			if err != nil {
 				return nil, nil, nil, err
 			}
@@ -3003,12 +3003,12 @@ func appendChatAssistantTurnWithImages(config AppConfig, conversationID, assista
 // renders before the turn is reloaded from history.
 func appendChatAssistantTurnWithVideos(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, images []string, imageReq ImageGenerateRequest, videos []ToolVideoFile, videoReq VideoGenerateRequest, run HarnessRun) ([]string, error) {
 	return appendChatAssistantTurnWithMedia(config, conversationID, assistantContent, assistantThinking, model, provider, reason, run, chatAssistantTurnMedia{
-		build: func(artifactsDir string, turnNumber int) ([]HistoryContent, []string, map[string]any, error) {
-			imageContents, err := writeChatImageArtifacts(artifactsDir, imageReq, images, turnNumber)
+		build: func(artifactsDir string) ([]HistoryContent, []string, map[string]any, error) {
+			imageContents, err := writeChatImageArtifacts(artifactsDir, imageReq, images)
 			if err != nil {
 				return nil, nil, nil, err
 			}
-			videoContents, videoURLs, err := writeChatVideoArtifacts(artifactsDir, videos, turnNumber)
+			videoContents, videoURLs, err := writeChatVideoArtifacts(artifactsDir, videos)
 			if err != nil {
 				return nil, nil, nil, err
 			}
@@ -3026,22 +3026,25 @@ func appendChatAssistantTurnWithVideos(config AppConfig, conversationID, assista
 }
 
 // writeChatVideoArtifacts moves each generated video's temp file into the
-// artifacts directory as turn_NNNNNN_vid_NNNNNN.<ext> and returns the history
-// content entries plus the "/atelier-artifact" URLs the live UI renders. A temp
-// file that can't be resolved to a video is skipped rather than aborting the
-// whole turn save. Thin wrapper over the shared media-artifact writer.
-func writeChatVideoArtifacts(artifactsDir string, videos []ToolVideoFile, turnNumber int) ([]HistoryContent, []string, error) {
+// artifacts directory as vid_<hex>.<ext> and returns the history content
+// entries plus the "/atelier-artifact" URLs the live UI renders. A temp file
+// that can't be resolved to a video is skipped rather than aborting the whole
+// turn save. Thin wrapper over the shared media-artifact writer.
+func writeChatVideoArtifacts(artifactsDir string, videos []ToolVideoFile) ([]HistoryContent, []string, error) {
 	files := make([]mediaArtifactEntry, len(videos))
 	for i, v := range videos {
 		files[i] = mediaArtifactEntry{tempPath: v.TempPath, mimeType: v.MimeType}
 	}
-	return writeChatMediaArtifacts(artifactsDir, files, turnNumber, "vid", "video", videoExtensionForMediaType)
+	return writeChatMediaArtifacts(artifactsDir, files, "vid", "video", videoExtensionForMediaType)
 }
 
 // writeChatMediaArtifacts is the shared body for moving generated video/audio
 // temp files into a conversation's artifacts directory. Each file is named
-// turn_NNNNNN_<kindTag>_NNNNNN.<ext>; it returns the HistoryContent entries and
-// the "/atelier-artifact" URLs the live UI renders before reload. A file with
+// <kindTag>_<hex>.<ext> — a globally unique randomID, because artifact IDs
+// double as filenames and asset references that must not collide across
+// conversations (legacy records used per-conversation positional IDs like
+// turn_000001_aud_000001). It returns the HistoryContent entries and the
+// "/atelier-artifact" URLs the live UI renders before reload. A file with
 // no temp path is skipped rather than aborting the whole turn save. The
 // contentType ("video"/"audio") and extensionFn differ per media kind.
 type mediaArtifactEntry struct {
@@ -3049,7 +3052,7 @@ type mediaArtifactEntry struct {
 	mimeType string
 }
 
-func writeChatMediaArtifacts(artifactsDir string, files []mediaArtifactEntry, turnNumber int, kindTag, contentType string, extensionFn func(string) string) ([]HistoryContent, []string, error) {
+func writeChatMediaArtifacts(artifactsDir string, files []mediaArtifactEntry, kindTag, contentType string, extensionFn func(string) string) ([]HistoryContent, []string, error) {
 	if len(files) == 0 {
 		return nil, nil, nil
 	}
@@ -3062,13 +3065,13 @@ func writeChatMediaArtifacts(artifactsDir string, files []mediaArtifactEntry, tu
 	}
 	contents := make([]HistoryContent, 0, len(files))
 	urls := make([]string, 0, len(files))
-	for index, file := range files {
+	for _, file := range files {
 		tempPath := strings.TrimSpace(file.tempPath)
 		if tempPath == "" {
 			continue
 		}
 		extension := extensionFn(file.mimeType)
-		artifactID := fmt.Sprintf("turn_%06d_%s_%06d", turnNumber, kindTag, index+1)
+		artifactID := randomID(kindTag)
 		filename := artifactID + extension
 		destPath := filepath.Join(absArtifactsDir, filename)
 		if err := moveFile(tempPath, destPath); err != nil {
@@ -3091,8 +3094,8 @@ func writeChatMediaArtifacts(artifactsDir string, files []mediaArtifactEntry, tu
 // "/atelier-artifact" links the live UI renders before reload.
 func appendChatAssistantTurnWithAudios(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, audios []ToolAudioFile, audioReq AudioGenerateRequest, run HarnessRun) ([]string, error) {
 	return appendChatAssistantTurnWithMedia(config, conversationID, assistantContent, assistantThinking, model, provider, reason, run, chatAssistantTurnMedia{
-		build: func(artifactsDir string, turnNumber int) ([]HistoryContent, []string, map[string]any, error) {
-			audioContents, audioURLs, err := writeChatAudioArtifacts(artifactsDir, audios, turnNumber)
+		build: func(artifactsDir string) ([]HistoryContent, []string, map[string]any, error) {
+			audioContents, audioURLs, err := writeChatAudioArtifacts(artifactsDir, audios)
 			if err != nil {
 				return nil, nil, nil, err
 			}
@@ -3107,15 +3110,15 @@ func appendChatAssistantTurnWithAudios(config AppConfig, conversationID, assista
 }
 
 // writeChatAudioArtifacts moves each generated audio's temp file into the
-// artifacts directory as turn_NNNNNN_aud_NNNNNN.<ext> and returns the history
+// artifacts directory as aud_<hex>.<ext> and returns the history
 // content entries plus the "/atelier-artifact" URLs the live UI renders. Thin
 // wrapper over the shared media-artifact writer, mirroring writeChatVideoArtifacts.
-func writeChatAudioArtifacts(artifactsDir string, audios []ToolAudioFile, turnNumber int) ([]HistoryContent, []string, error) {
+func writeChatAudioArtifacts(artifactsDir string, audios []ToolAudioFile) ([]HistoryContent, []string, error) {
 	files := make([]mediaArtifactEntry, len(audios))
 	for i, a := range audios {
 		files[i] = mediaArtifactEntry{tempPath: a.TempPath, mimeType: a.MimeType}
 	}
-	return writeChatMediaArtifacts(artifactsDir, files, turnNumber, "aud", "audio", audioExtensionForMediaType)
+	return writeChatMediaArtifacts(artifactsDir, files, "aud", "audio", audioExtensionForMediaType)
 }
 
 // moveFile relocates src to dst, falling back to a copy-and-delete when the two
@@ -3135,12 +3138,12 @@ func moveFile(src, dst string) error {
 	return nil
 }
 
-func writeChatImageArtifacts(artifactsDir string, req ImageGenerateRequest, images []string, turnNumber int) ([]HistoryContent, error) {
+func writeChatImageArtifacts(artifactsDir string, req ImageGenerateRequest, images []string) ([]HistoryContent, error) {
 	if err := os.MkdirAll(artifactsDir, 0755); err != nil {
 		return nil, err
 	}
 	imageContents := make([]HistoryContent, 0, len(images))
-	for index, image := range images {
+	for _, image := range images {
 		data, extension, err := decodeImagePayload(image)
 		if err != nil {
 			// Skip entries that aren't decodable image bytes (e.g. a stray http
@@ -3148,7 +3151,7 @@ func writeChatImageArtifacts(artifactsDir string, req ImageGenerateRequest, imag
 			// whole turn save and orphaning any artifacts already written.
 			continue
 		}
-		artifactID := fmt.Sprintf("turn_%06d_img_%06d", turnNumber, index+1)
+		artifactID := randomID("img")
 		filename := artifactID + extension
 		artifactPath := filepath.Join(artifactsDir, filename)
 		if err := os.WriteFile(artifactPath, data, 0644); err != nil {
@@ -3632,7 +3635,7 @@ func tempVideoFileAsDataURL(tempPath, mimeType string) (string, error) {
 	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
-func historyContentForMessage(message ChatMessage, artifactsDir string, turnNumber int) ([]HistoryContent, error) {
+func historyContentForMessage(message ChatMessage, artifactsDir string) ([]HistoryContent, error) {
 	contents := []HistoryContent{}
 	if strings.TrimSpace(message.Content) != "" {
 		contents = append(contents, HistoryContent{Type: "text", Text: message.Content})
@@ -3642,12 +3645,12 @@ func historyContentForMessage(message ChatMessage, artifactsDir string, turnNumb
 			return nil, err
 		}
 	}
-	for index, image := range message.Images {
+	for _, image := range message.Images {
 		data, extension, err := decodeImagePayload(image)
 		if err != nil {
 			return nil, err
 		}
-		artifactID := fmt.Sprintf("input_%06d_%06d", turnNumber, index+1)
+		artifactID := randomID("img")
 		filename := artifactID + extension
 		artifactPath := filepath.Join(artifactsDir, filename)
 		if err := os.WriteFile(artifactPath, data, 0644); err != nil {
@@ -3660,12 +3663,12 @@ func historyContentForMessage(message ChatMessage, artifactsDir string, turnNumb
 			MimeType:   mediaTypeForExtension(extension),
 		})
 	}
-	for index, audio := range message.Audios {
+	for _, audio := range message.Audios {
 		data, extension, err := decodeAudioPayload(audio)
 		if err != nil {
 			return nil, err
 		}
-		artifactID := fmt.Sprintf("input_audio_%06d_%06d", turnNumber, index+1)
+		artifactID := randomID("aud")
 		filename := artifactID + extension
 		artifactPath := filepath.Join(artifactsDir, filename)
 		if err := os.WriteFile(artifactPath, data, 0644); err != nil {
@@ -3678,12 +3681,12 @@ func historyContentForMessage(message ChatMessage, artifactsDir string, turnNumb
 			MimeType:   mediaTypeForExtension(extension),
 		})
 	}
-	for index, video := range message.Videos {
+	for _, video := range message.Videos {
 		data, extension, err := decodeVideoPayload(video)
 		if err != nil {
 			return nil, err
 		}
-		artifactID := fmt.Sprintf("input_video_%06d_%06d", turnNumber, index+1)
+		artifactID := randomID("vid")
 		filename := artifactID + extension
 		artifactPath := filepath.Join(artifactsDir, filename)
 		if err := os.WriteFile(artifactPath, data, 0644); err != nil {

@@ -4395,8 +4395,8 @@ func TestWriteChatConversationPersistsInputImages(t *testing.T) {
 	if imageContent.Type != "image" {
 		t.Fatalf("image content type = %q, want image", imageContent.Type)
 	}
-	if imageContent.Path != "artifacts/input_000001_000001.png" {
-		t.Fatalf("image path = %q, want artifact path", imageContent.Path)
+	if !strings.HasPrefix(imageContent.Path, "artifacts/img_") || !strings.HasSuffix(imageContent.Path, ".png") {
+		t.Fatalf("image path = %q, want a globally unique img_<hex>.png artifact path", imageContent.Path)
 	}
 	if imageContent.MimeType != "image/png" {
 		t.Fatalf("image mime type = %q, want image/png", imageContent.MimeType)
@@ -4515,7 +4515,7 @@ func TestHistoryContentForMessagePersistsAudio(t *testing.T) {
 		Role:    "user",
 		Content: "transcribe this",
 		Audios:  []string{dataURL},
-	}, artifactsDir, 1)
+	}, artifactsDir)
 	if err != nil {
 		t.Fatalf("historyContentForMessage returned error: %v", err)
 	}
