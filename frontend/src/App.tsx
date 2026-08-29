@@ -14,6 +14,7 @@ import {
   HasFalAPIKey,
   HasOpenAICompatibleAPIKey,
   HasOpenRouterAPIKey,
+  ListConversationAssets,
   ListConversations,
   ListFalModels,
   ListFalImageEditModels,
@@ -424,6 +425,30 @@ function App() {
   const [historySearchTruncated, setHistorySearchTruncated] = useState(false);
   const historySearchSeqRef = useRef(0);
   const [activeConversationID, setActiveConversationID] = useState('');
+  // Assets panel: closed by default; lists the active conversation's derived
+  // media assets (ListConversationAssets). assetsRefreshTick re-runs the fetch
+  // when a turn finishes — the index derives from persisted history, so it
+  // lags until the turn is saved.
+  const [assetsPanelOpen, setAssetsPanelOpen] = useState(false);
+  const [conversationAssets, setConversationAssets] = useState<main.ConversationAsset[]>([]);
+  const [assetsRefreshTick, setAssetsRefreshTick] = useState(0);
+  useEffect(() => {
+    if (!activeConversationID) {
+      setConversationAssets([]);
+      return;
+    }
+    let cancelled = false;
+    ListConversationAssets(activeConversationID)
+      .then((assets) => {
+        if (!cancelled) setConversationAssets(asArray(assets));
+      })
+      .catch(() => {
+        if (!cancelled) setConversationAssets([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeConversationID, assetsRefreshTick]);
   // Re-roll the empty-screen greeting whenever the transcript becomes empty or
   // the active conversation changes, so a fresh prompt shows each time.
   const chatIsEmpty = chat.length === 0;
@@ -501,6 +526,16 @@ function App() {
   const visibleHarnessRun = latestHarnessRun ?? null;
   const modelUsage = useMemo(() => summarizeModelUsage(chat), [chat]);
   const mediaUsage = useMemo(() => summarizeMediaUsage(chat), [chat]);
+  // Panel view of the asset list: deduped by ID (a @-mention re-reference
+  // adds another entry for the same artifact — keep the newest turn's) and
+  // newest first, the order a picker wants.
+  const panelAssets = useMemo(() => {
+    const byID = new Map<string, main.ConversationAsset>();
+    for (const asset of conversationAssets) {
+      byID.set(asset.id, asset);
+    }
+    return [...byID.values()].reverse();
+  }, [conversationAssets]);
 
   function markConversationInFlight(conversationID: string, requestID: string, kind: ConversationKind) {
     requestConversationRef.current[requestID] = {conversationID, kind};
@@ -717,6 +752,9 @@ function App() {
         if (isVisibleStream) {
           visibleStreamRef.current = null;
         }
+        // The finished turn's artifacts are now in history — re-derive the
+        // asset list so an open assets panel shows them.
+        setAssetsRefreshTick((tick) => tick + 1);
       }
       if (chunk.conversationId && isVisibleStream) {
         setActiveConversationID(chunk.conversationId);
@@ -2059,7 +2097,12 @@ function App() {
   return (
     <main
       ref={shellRef}
-      className={view === 'settings' ? 'shell settings-open' : resizingSidebar ? 'shell resizing' : 'shell'}
+      className={[
+        'shell',
+        view === 'settings' ? 'settings-open' : '',
+        resizingSidebar ? 'resizing' : '',
+        view !== 'settings' && assetsPanelOpen ? 'assets-open' : '',
+      ].filter(Boolean).join(' ')}
       style={view === 'settings' ? undefined : {'--sidebar-width': `${sidebarWidth}px`} as Record<string, string>}
     >
       {view === 'settings' ? null : (
@@ -2961,6 +3004,21 @@ function App() {
               </div>
               <div className="toolbar-right">
                 <ConversationUsage usage={modelUsage} media={mediaUsage} />
+                <button
+                  type="button"
+                  className={`assets-toggle${assetsPanelOpen ? ' active' : ''}`}
+                  onClick={() => setAssetsPanelOpen((open) => !open)}
+                  aria-label={assetsPanelOpen ? 'Hide assets panel' : 'Show assets panel'}
+                  aria-pressed={assetsPanelOpen}
+                  title={assetsPanelOpen ? 'Hide assets' : 'Show assets'}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect width="7" height="7" x="3" y="3" rx="1" />
+                    <rect width="7" height="7" x="14" y="3" rx="1" />
+                    <rect width="7" height="7" x="14" y="14" rx="1" />
+                    <rect width="7" height="7" x="3" y="14" rx="1" />
+                  </svg>
+                </button>
               </div>
             </div>
 
@@ -3282,6 +3340,61 @@ function App() {
           </>
         )}
       </section>
+      {view === 'settings' || !assetsPanelOpen ? null : (
+        <aside className="assets-panel" aria-label="Conversation assets">
+          <div className="assets-panel-header">
+            <span className="assets-panel-title">Assets</span>
+            <button
+              type="button"
+              className="assets-panel-close"
+              onClick={() => setAssetsPanelOpen(false)}
+              aria-label="Close assets panel"
+              title="Close assets panel"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <div className="assets-list">
+            {panelAssets.length === 0 ? (
+              <p className="assets-empty">
+                No assets yet. Images, audio, and video — attached or generated — show up here as the conversation produces them.
+              </p>
+            ) : (
+              panelAssets.map((asset) => (
+                <figure key={`${asset.id}-${asset.originTurnId}`} className={`asset-card asset-${asset.kind}`}>
+                  <div className="asset-preview">
+                    {asset.kind === 'image' && asset.url ? (
+                      <button
+                        type="button"
+                        className="asset-image-button"
+                        onClick={() => setPreviewImage(asset.url || '')}
+                        aria-label="Preview image asset"
+                        title="Preview image asset"
+                      >
+                        <img src={asset.url} alt="" loading="lazy" />
+                      </button>
+                    ) : asset.kind === 'audio' && asset.url ? (
+                      <audio src={asset.url} controls preload="metadata" />
+                    ) : asset.kind === 'video' && asset.url ? (
+                      <video src={asset.url} controls preload="metadata" />
+                    ) : (
+                      <span className="asset-missing">Artifact file is missing on disk</span>
+                    )}
+                  </div>
+                  <figcaption>
+                    <span className="asset-kind">{asset.kind}</span>
+                    <span className="asset-meta">
+                      {asset.role === 'user' ? 'attached' : 'generated'} · {assetTurnLabel(asset.originTurnId)}
+                    </span>
+                  </figcaption>
+                </figure>
+              ))
+            )}
+          </div>
+        </aside>
+      )}
       {previewImage ? (
         <div className="image-preview-overlay" role="presentation" onClick={() => setPreviewImage('')}>
           <div
@@ -4326,6 +4439,13 @@ function detectMentionAt(text: string, caret: number): MentionMatch | null {
     return null;
   }
   return { at, query };
+}
+
+// assetTurnLabel renders an origin turn ID (turn_000003) as a human label
+// ("turn 3") for the assets panel; anything unparsable passes through as-is.
+function assetTurnLabel(turnID: string): string {
+  const n = Number(turnID.replace(/^turn_/, ''));
+  return Number.isFinite(n) && n > 0 ? `turn ${n}` : turnID;
 }
 
 // mentionMatches returns the attachments whose name contains the query as a
