@@ -2551,3 +2551,11 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+.mention-hint {
+  margin-left: auto;
+  padding-left: 12px;
+  font-size: 11px;
+  color: #777c7f;
+  white-space: nowrap;
+}

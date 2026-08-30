@@ -432,6 +432,17 @@ function App() {
   const [assetsPanelOpen, setAssetsPanelOpen] = useState(false);
   const [conversationAssets, setConversationAssets] = useState<main.ConversationAsset[]>([]);
   const [assetsRefreshTick, setAssetsRefreshTick] = useState(0);
+  // Accepted asset mentions ({label, id}) from the current composition. Ref,
+  // not state: read synchronously at send time, cleared on send and on
+  // conversation switch. submitChat drops any mention whose @token no longer
+  // appears in the prompt text.
+  const mentionedAssetsRef = useRef<{label: string; id: string}[]>([]);
+  useEffect(() => {
+    // Mentions recorded for the previous conversation must not leak into the
+    // next one's send. Runs on conversation switch only — not on
+    // assetsRefreshTick, which fires mid-composition when a turn finishes.
+    mentionedAssetsRef.current = [];
+  }, [activeConversationID]);
   useEffect(() => {
     if (!activeConversationID) {
       setConversationAssets([]);
@@ -1695,7 +1706,9 @@ function App() {
   // pushing/replacing the user + assistant entries in `chat` and building
   // requestMessages before calling this — submitChat for a fresh send,
   // retryFailedTurn for a retry. Extracted so both paths share one error path.
-  async function executeChatStream(opts: {requestID: string; requestMessages: main.ChatMessage[]}) {
+  // referencedAssetIds carries @-mentioned asset IDs; the retry path omits it
+  // and the backend's latest-wins walk picks up the persisted mention refs.
+  async function executeChatStream(opts: {requestID: string; requestMessages: main.ChatMessage[]; referencedAssetIds?: string[]}) {
     const {requestID} = opts;
     visibleStreamRef.current = requestID;
     chatStreamDraftsRef.current[requestID] = {content: '', thinking: '', images: [], videos: [], audios: [], streaming: true};
@@ -1713,6 +1726,7 @@ function App() {
         // Only sent for a new chat (turn 1). The backend ignores it for an
         // existing conversation — the record's immutable workspace wins.
         ...(activeConversationID ? {} : {workspace: draftWorkspace || undefined}),
+        ...(opts.referencedAssetIds?.length ? {referencedAssetIds: opts.referencedAssetIds} : {}),
       }));
       markConversationInFlight(start.conversationId, start.requestID, 'chat');
       setActiveConversationID(start.conversationId);
@@ -1749,6 +1763,13 @@ function App() {
       audios: attachments.filter((item) => item.kind === 'audio').map((item) => item.src),
       videos: attachments.filter((item) => item.kind === 'video').map((item) => item.src),
     };
+    // @-mentioned assets ride the request as IDs (backend resolves them into
+    // the tool attachment slots); the readable @token stays in the message
+    // text for the model. A mention whose token was deleted from the text is
+    // dropped here.
+    const referencedAssetIds = mentionedAssetsRef.current
+      .filter((mention) => trimmed.includes(`@${mention.label}`))
+      .map((mention) => mention.id);
     const requestID = `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const audioAttachments = attachments.filter((item) => item.kind === 'audio').map((item) => item.payload).filter(Boolean);
     const imageAttachments = attachments.filter((item) => item.kind === 'image').map((item) => item.payload).filter(Boolean);
@@ -1776,6 +1797,7 @@ function App() {
 
     setPrompt('');
     setAttachments([]);
+    mentionedAssetsRef.current = [];
     // The composer contents are being sent, not stashed — drop any stored draft
     // for the current key ('' for a brand-new chat) so it isn't resurrected.
     delete composerDraftsRef.current[activeConversationIDRef.current];
@@ -1785,7 +1807,7 @@ function App() {
       userEntry,
       {id: `assistant-${requestID}`, role: 'assistant', content: '', streaming: true, provider: primaryProvider},
     ]);
-    await executeChatStream({requestID, requestMessages});
+    await executeChatStream({requestID, requestMessages, referencedAssetIds});
   }
 
   // retryFailedTurn resends the user message preceding a failed assistant entry,
@@ -1831,9 +1853,25 @@ function App() {
   // Latest filtered mention candidates, mirrored into a ref so the keydown and
   // accept handlers read the same list that the rendered menu shows without
   // racing against React state updates during rapid typing.
-  const [mentionMatchesState, setMentionMatchesState] = useState<Attachment[]>([]);
-  const mentionMatchesRef = useRef<Attachment[]>([]);
+  const [mentionMatchesState, setMentionMatchesState] = useState<MentionCandidate[]>([]);
+  const mentionMatchesRef = useRef<MentionCandidate[]>([]);
   mentionMatchesRef.current = mentionMatchesState;
+
+  // mentionCandidates is the autocomplete pool: this turn's attachments first
+  // (most immediate), then the conversation's assets newest-first (panel
+  // order). Asset candidates carry their assetID so acceptMention can record
+  // the reference.
+  function mentionCandidates(): MentionCandidate[] {
+    const assets: MentionCandidate[] = panelAssets.map((asset) => ({
+      name: assetMentionLabel(asset),
+      src: asset.url ?? '',
+      payload: '',
+      kind: asset.kind === 'audio' ? 'audio' : asset.kind === 'video' ? 'video' : 'image',
+      assetID: asset.id,
+      hint: `${asset.role === 'user' ? 'attached' : 'generated'} · ${assetTurnLabel(asset.originTurnId)}`,
+    }));
+    return [...attachmentsRef.current, ...assets];
+  }
 
   function handleChatPromptChange(event: React.ChangeEvent<HTMLTextAreaElement>) {
     const value = event.target.value;
@@ -1842,7 +1880,7 @@ function App() {
     const match = detectMentionAt(value, caret);
     mentionStateRef.current = match;
     if (match) {
-      const matches = mentionMatches(match.query, attachmentsRef.current);
+      const matches = mentionMatches(match.query, mentionCandidates());
       setMentionMatchesState(matches);
       setMentionIndex(0);
       setMentionOpen(matches.length > 0);
@@ -1866,7 +1904,14 @@ function App() {
       closeMention();
       return;
     }
-    const name = matches[index].name;
+    const chosen = matches[index];
+    const name = chosen.name;
+    // A conversation-asset mention is recorded by ID; the inserted @token is
+    // the readable label, and submitChat ships the IDs via
+    // referencedAssetIds (dropping any whose token was later deleted).
+    if (chosen.assetID && !mentionedAssetsRef.current.some((mention) => mention.id === chosen.assetID)) {
+      mentionedAssetsRef.current.push({label: name, id: chosen.assetID});
+    }
     const before = prompt.slice(0, match.at);
     const afterCaret = prompt.slice(match.at + 1 + match.query.length);
     const next = `${before}@${name} ${afterCaret}`;
@@ -3239,6 +3284,7 @@ function App() {
                             </span>
                           )}
                           <span className="mention-name">{item.name}</span>
+                          {item.hint ? <span className="mention-hint">{item.hint}</span> : null}
                         </button>
                       </li>
                     ))}
@@ -4448,10 +4494,26 @@ function assetTurnLabel(turnID: string): string {
   return Number.isFinite(n) && n > 0 ? `turn ${n}` : turnID;
 }
 
-// mentionMatches returns the attachments whose name contains the query as a
-// case-insensitive substring, preserving attachment order. An empty query lists
-// every attachment (the menu is most useful right after typing '@').
-function mentionMatches(query: string, items: Attachment[]): Attachment[] {
+// MentionCandidate extends an in-composer attachment with optional asset
+// fields: when assetID is set, the candidate is a conversation asset from the
+// panel's list — mentioned by ID (transport via referencedAssetIds) rather
+// than by attached bytes. hint is the small provenance label the menu shows.
+type MentionCandidate = Attachment & {
+  assetID?: string;
+  hint?: string;
+};
+
+// assetMentionLabel derives the @-token for a conversation asset from its ID —
+// kind prefix plus enough hex to be unique in practice, and token-safe (no
+// spaces) so the open-token detection and the send-time text scan agree.
+function assetMentionLabel(asset: main.ConversationAsset): string {
+  return asset.id.slice(0, 12);
+}
+
+// mentionMatches returns the candidates whose name contains the query as a
+// case-insensitive substring, preserving order. An empty query lists every
+// candidate (the menu is most useful right after typing '@').
+function mentionMatches(query: string, items: MentionCandidate[]): MentionCandidate[] {
   const q = query.trim().toLowerCase();
   if (!q) {
     return items;
