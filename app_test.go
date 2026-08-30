@@ -4662,6 +4662,204 @@ func TestLatestAttachedImageForTurn(t *testing.T) {
 	}
 }
 
+// writeConversationWithImageAndVideo persists a conversation shaped like a
+// real animate-then-edit session: a user turn, an assistant turn carrying a
+// model-generated image artifact, and an assistant turn carrying a
+// model-generated video artifact. imageNewest controls which of the two
+// artifacts ends up most recent, mirroring the two orderings a follow-up
+// turn can meet (conv_150c5923a5c31be0cda40397 had the image newest;
+// the inverse exercises video-extend).
+func writeConversationWithImageAndVideo(t *testing.T, imageNewest bool) (ConfigStorage, string) {
+	t.Helper()
+	root := t.TempDir()
+	storage := ConfigStorage{
+		Root:      filepath.Join(root, ".atelier"),
+		History:   filepath.Join(root, ".atelier", "history"),
+		Artifacts: filepath.Join(root, ".atelier", "history"),
+	}
+	config := defaultAppConfig()
+	config.Storage = storage
+	if err := ensureStorageDirs(storage); err != nil {
+		t.Fatalf("ensureStorageDirs returned error: %v", err)
+	}
+	run := fallbackHarnessRun("chat-model", "stop", 0)
+	conversationID, err := writeChatConversation(
+		config,
+		ChatRequest{Model: "chat-model", Messages: []ChatMessage{{Role: "user", Content: "make the watercolour"}}},
+		"Here it is.", "", "chat-model", "ollama", "stop", 4, "Media Test", run,
+	)
+	if err != nil {
+		t.Fatalf("writeChatConversation returned error: %v", err)
+	}
+	appendImage := func() {
+		png := "data:image/png;base64," + base64.StdEncoding.EncodeToString(minimalPNG)
+		if err := appendChatAssistantTurnWithImages(config, conversationID, "Edited.", "", "chat-model", "ollama", "stop", []string{png}, "", run, ImageGenerateRequest{}); err != nil {
+			t.Fatalf("appendChatAssistantTurnWithImages returned error: %v", err)
+		}
+	}
+	appendVideo := func() {
+		// Minimal MP4 "ftyp" box so the artifact reader's isVideoBytes sniff
+		// accepts the file — same trick as the attachment tests.
+		tmp := filepath.Join(t.TempDir(), "clip.mp4")
+		mp4 := append([]byte("\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42\x00\x00\x00\x00"), []byte("video-body-bytes")...)
+		if err := os.WriteFile(tmp, mp4, 0644); err != nil {
+			t.Fatalf("WriteFile returned error: %v", err)
+		}
+		if _, err := appendChatAssistantTurnWithVideos(config, conversationID, "Animated.", "", "chat-model", "ollama", "stop", nil, ImageGenerateRequest{}, []ToolVideoFile{{TempPath: tmp, MimeType: "video/mp4"}}, VideoGenerateRequest{Model: "vid-model"}, run); err != nil {
+			t.Fatalf("appendChatAssistantTurnWithVideos returned error: %v", err)
+		}
+	}
+	if imageNewest {
+		appendVideo()
+		appendImage()
+	} else {
+		appendImage()
+		appendVideo()
+	}
+	return storage, conversationID
+}
+
+// mediaArtifactIDByType walks a conversation newest-first and returns the
+// most recent artifact ID of the given kind, for @-mention tests.
+func mediaArtifactIDByType(t *testing.T, storage ConfigStorage, conversationID, kind string) string {
+	t.Helper()
+	detail, err := getConversation(storage, conversationID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	for i := len(detail.Turns) - 1; i >= 0; i-- {
+		for _, content := range detail.Turns[i].Content {
+			if content.Type == kind && content.ArtifactID != "" {
+				return content.ArtifactID
+			}
+		}
+	}
+	t.Fatalf("no %s artifact in conversation %s", kind, conversationID)
+	return ""
+}
+
+// TestResolveTurnMediaPureFollowUpBackfillsNewestKindOnly pins the fix for
+// conv_150c5923a5c31be0cda40397: a bare "Animate the image" follow-up must
+// not silently pick up one artifact of every kind — that pairing routes
+// generate_video to motion control instead of image-to-video. With no
+// explicit media, history backfills exactly one kind: whichever artifact is
+// newest.
+func TestResolveTurnMediaPureFollowUpBackfillsNewestKindOnly(t *testing.T) {
+	cases := []struct {
+		name        string
+		imageNewest bool
+		wantImages  int
+		wantVideos  int
+	}{
+		{"image newest: animate-the-image stays image-to-video", true, 1, 0},
+		{"video newest: extend-the-clip stays video-only", false, 0, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			storage, conversationID := writeConversationWithImageAndVideo(t, tc.imageNewest)
+			req := ChatRequest{
+				ConversationID: conversationID,
+				Messages:       []ChatMessage{{Role: "user", Content: "Animate the image"}},
+			}
+			images, videos, _ := resolveTurnMedia(req, storage)
+			if len(images) != tc.wantImages || len(videos) != tc.wantVideos {
+				t.Fatalf("pure follow-up resolved %d image(s) / %d video(s), want %d/%d — history must backfill only the newest kind, never both", len(images), len(videos), tc.wantImages, tc.wantVideos)
+			}
+		})
+	}
+}
+
+// TestResolveTurnMediaNeverPairsFallbackWithExplicit pins the second rule:
+// the image+video combination selects motion control, so the other side must
+// never arrive from the history walk when the user explicitly supplied only
+// one of the two.
+func TestResolveTurnMediaNeverPairsFallbackWithExplicit(t *testing.T) {
+	// Video newest, so under the old per-kind walks the history video would
+	// have ridden along with the attached image.
+	storage, conversationID := writeConversationWithImageAndVideo(t, false)
+
+	req := ChatRequest{
+		ConversationID: conversationID,
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Animate the image", Images: []string{"data:image/png;base64,QUJD"}},
+		},
+	}
+	images, videos, _ := resolveTurnMedia(req, storage)
+	if len(images) != 1 || len(videos) != 0 {
+		t.Fatalf("attached-image turn resolved %d image(s) / %d video(s), want 1/0 — an uninvited history video must not flip the mode to motion control", len(images), len(videos))
+	}
+
+	req = ChatRequest{
+		ConversationID: conversationID,
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Extend the clip", Videos: []string{"data:video/mp4;base64,QUJD"}},
+		},
+	}
+	images, videos, _ = resolveTurnMedia(req, storage)
+	if len(images) != 0 || len(videos) != 1 {
+		t.Fatalf("attached-video turn resolved %d image(s) / %d video(s), want 0/1 — an uninvited history image must not flip the mode to motion control", len(images), len(videos))
+	}
+}
+
+// TestResolveTurnMediaMentionsStayPerKind pins the @-mention semantics across
+// the refactor: mentioning one asset of one kind never pulls in artifacts of
+// another kind, in either direction.
+func TestResolveTurnMediaMentionsStayPerKind(t *testing.T) {
+	storage, conversationID := writeConversationWithImageAndVideo(t, false)
+	imageID := mediaArtifactIDByType(t, storage, conversationID, "image")
+	videoID := mediaArtifactIDByType(t, storage, conversationID, "video")
+
+	req := ChatRequest{
+		ConversationID:     conversationID,
+		ReferencedAssetIDs: []string{imageID},
+		Messages:           []ChatMessage{{Role: "user", Content: "Animate @" + imageID}},
+	}
+	images, videos, _ := resolveTurnMedia(req, storage)
+	if len(images) != 1 || len(videos) != 0 {
+		t.Fatalf("image mention resolved %d image(s) / %d video(s), want 1/0", len(images), len(videos))
+	}
+
+	req.ReferencedAssetIDs = []string{videoID}
+	images, videos, _ = resolveTurnMedia(req, storage)
+	if len(images) != 0 || len(videos) != 1 {
+		t.Fatalf("video mention resolved %d image(s) / %d video(s), want 0/1", len(images), len(videos))
+	}
+}
+
+// TestResolveTurnMediaAudioBackfillsIndependently pins audio's exemption
+// from the image/video gate: audio never flips the video mode, so the
+// per-kind latest-wins fallback keeps serving transcribe_audio and lip-sync
+// even when an image is explicit.
+func TestResolveTurnMediaAudioBackfillsIndependently(t *testing.T) {
+	storage, conversationID := writeConversationWithImageAndVideo(t, true)
+	config := defaultAppConfig()
+	config.Storage = storage
+	tmp := filepath.Join(t.TempDir(), "clip.wav")
+	// Minimal RIFF/WAVE header so the artifact reader's isAudioBytes sniff
+	// accepts the file — same trick as the attachment tests.
+	wav := append([]byte("RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x40\x1f\x00\x00\x40\x1f\x00\x00\x01\x00\x08\x00data\x00\x00\x00\x00"), 0x00)
+	if err := os.WriteFile(tmp, wav, 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if _, err := appendChatAssistantTurnWithAudios(config, conversationID, "Narrated.", "", "chat-model", "ollama", "stop", []ToolAudioFile{{TempPath: tmp, MimeType: "audio/wav"}}, AudioGenerateRequest{}, fallbackHarnessRun("chat-model", "stop", 0)); err != nil {
+		t.Fatalf("appendChatAssistantTurnWithAudios returned error: %v", err)
+	}
+
+	req := ChatRequest{
+		ConversationID: conversationID,
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Animate the image with this narration", Images: []string{"data:image/png;base64,QUJD"}},
+		},
+	}
+	images, _, audios := resolveTurnMedia(req, storage)
+	if len(images) != 1 {
+		t.Fatalf("attached image = %d, want 1", len(images))
+	}
+	if len(audios) != 1 {
+		t.Fatalf("history audio backfill = %d, want 1 — audio keeps its per-kind fallback alongside explicit images", len(audios))
+	}
+}
+
 // writeConversationWithAssistantImage persists a conversation whose second
 // turn is an assistant message carrying a model-generated PNG, returning the
 // storage and conversationID for follow-up assertions. This mirrors how

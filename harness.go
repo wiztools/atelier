@@ -232,21 +232,14 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	primaryModel := h.primaryModelForRequest(req)
 	primaryProvider := resolvedProvider(req)
 	harness := h.resolveHarnessTarget(primaryModel, primaryProvider)
-	// Resolve the turn's source image once: it feeds the tool execution context
-	// (image-to-video, upscale, image-to-image) and is also injected into the
-	// final response so a vision-capable primary model can see a previously
-	// generated image when the user asks about it. Resolved here rather than
-	// inline at each call site so both consume the same value.
-	attachedImages := latestAttachedImagesForTurn(req, h.config.Storage)
-	// @-mentions put the turn in explicit-media mode: the user's direct
-	// attachments plus the mentioned assets, with the latest-wins history walk
-	// disabled — an unrelated recent artifact must not ride along uninvited.
-	// Direct attachments come first, mentions after, in mention order.
-	referenced := referencedMedia{}
-	if len(req.ReferencedAssetIDs) > 0 {
-		referenced = resolveReferencedAssets(h.config.Storage, req.ConversationID, req.ReferencedAssetIDs)
-		attachedImages = append(latestUserImages(req.Messages), referenced.images...)
-	}
+	// Resolve the turn's media slots once, for the tool execution context and
+	// the final response alike (a vision-capable primary model sees a
+	// previously generated image when the user asks about it). resolveTurnMedia
+	// puts explicit media — this turn's attachments plus @-mentioned assets —
+	// first and gates the history fallback across kinds, so a stale artifact
+	// of one kind cannot pair with "the image" and flip generate_video to
+	// motion control.
+	attachedImages, attachedVideos, attachedAudios := resolveTurnMedia(req, h.config.Storage)
 	run := newHarnessRun(requestID, conversationID)
 	// Stream every step transition to the UI: the live harness panel renders
 	// these snapshots instead of fabricating in-flight state. The closure
@@ -318,12 +311,6 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		toolReq := req
 		toolReq.Model = harness.model
 		toolReq.Provider = harness.provider
-		attachedAudios := latestAttachedAudiosForTurn(req, h.config.Storage)
-		attachedVideos := latestAttachedVideosForTurn(req, h.config.Storage)
-		if len(req.ReferencedAssetIDs) > 0 {
-			attachedAudios = append(latestUserAudioURLs(req.Messages), referenced.audios...)
-			attachedVideos = append(latestUserVideoURLs(req.Messages), referenced.videos...)
-		}
 		var err error
 		preparation, err = h.prepareChatTurnLoop(ctx, requestID, conversationID, toolReq, harnessTurnContext{
 			SkillIndex:      skillIndex,
@@ -776,6 +763,74 @@ func latestAttachedVideosForTurn(req ChatRequest, storage ConfigStorage) []strin
 		}
 	}
 	return nil
+}
+
+// resolveTurnMedia decides the tool-facing media slots for one turn: explicit
+// media first — this turn's attachments, then @-mentioned assets (direct
+// attachments before mentions, in mention order) — with the history fallback
+// gated across kinds. Two rules keep a stale artifact from changing the
+// generate_video mode (conv_150c5923a5c31be0cda40397: "Animate the image"
+// silently picked up a model-generated video from four turns earlier and
+// routed to motion control instead of image-to-video):
+//
+//   - When neither an image nor a video is explicit, history backfills
+//     exactly one of the two — the kind of the most recent image-or-video
+//     artifact. A bare follow-up ("animate it", "extend the clip") refers to
+//     the conversation's latest media, not one of every kind ever made.
+//   - When one of the two is explicit, the other is never backfilled: the
+//     image+video combination selects motion control, so it must be fully
+//     user-provided (attached or mentioned), never half-assembled from an
+//     uninvited old artifact.
+//
+// Audio sits outside the gate — it never flips the video mode — so it keeps
+// the per-kind latest-wins fallback (transcribe_audio, lip-sync sources).
+func resolveTurnMedia(req ChatRequest, storage ConfigStorage) (images, videos, audios []string) {
+	referenced := referencedMedia{}
+	if len(req.ReferencedAssetIDs) > 0 {
+		referenced = resolveReferencedAssets(storage, req.ConversationID, req.ReferencedAssetIDs)
+	}
+	images = append(latestUserImages(req.Messages), referenced.images...)
+	videos = append(latestUserVideoURLs(req.Messages), referenced.videos...)
+	audios = append(latestUserAudioURLs(req.Messages), referenced.audios...)
+	if len(images) == 0 && len(videos) == 0 {
+		switch newestVisualMediaKind(req, storage) {
+		case "image":
+			images = latestAttachedImagesForTurn(req, storage)
+		case "video":
+			videos = latestAttachedVideosForTurn(req, storage)
+		}
+	}
+	if len(audios) == 0 {
+		audios = latestAttachedAudiosForTurn(req, storage)
+	}
+	return images, videos, audios
+}
+
+// newestVisualMediaKind reports the type of the conversation's most recent
+// image-or-video artifact — the media a bare "it" / "the image" / "the clip"
+// follow-up most plausibly refers to. Audio entries don't compete for the
+// image/video mode slots, so they are skipped. Empty when the conversation
+// has neither kind or history can't be read (the fallback then stays off,
+// matching the per-kind walkers' swallow-errors behavior).
+func newestVisualMediaKind(req ChatRequest, storage ConfigStorage) string {
+	if strings.TrimSpace(req.ConversationID) == "" {
+		return ""
+	}
+	detail, err := getConversation(storage, req.ConversationID)
+	if err != nil {
+		return ""
+	}
+	for i := len(detail.Turns) - 1; i >= 0; i-- {
+		for _, content := range detail.Turns[i].Content {
+			if content.Type == "image" && strings.TrimSpace(content.Path) != "" {
+				return "image"
+			}
+			if content.Type == "video" && strings.TrimSpace(content.Path) != "" {
+				return "video"
+			}
+		}
+	}
+	return ""
 }
 
 func (h *HarnessEngine) primaryModelForRequest(req ChatRequest) string {
