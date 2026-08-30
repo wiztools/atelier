@@ -183,7 +183,7 @@
 }
 
 .sidebar-resizer:hover,
-.shell.resizing .sidebar-resizer {
+.shell.resizing-sidebar .sidebar-resizer {
   border-left-color: #5da9b7;
   background: #20282a;
 }
@@ -2392,7 +2392,7 @@ button:disabled {
    so the settings view keeps its single-column override. */
 
 .shell.assets-open:not(.settings-open) {
-  grid-template-columns: var(--sidebar-width, 320px) 6px minmax(0, 1fr) 300px;
+  grid-template-columns: var(--sidebar-width, 320px) 6px minmax(0, 1fr) 6px var(--assets-width, 300px);
 }
 
 .assets-toggle {
@@ -2558,4 +2558,21 @@ button:disabled {
   font-size: 11px;
   color: #777c7f;
   white-space: nowrap;
+}
+
+/* Right-edge sibling of the sidebar resizer: sits between the workspace and
+   the assets panel. Borders mirror the sidebar's (the solid edge faces the
+   panel). Dragging below minAssetsPanelWidth snaps the panel closed. */
+.assets-resizer {
+  width: 6px;
+  border-right: 1px solid #2b2e30;
+  border-left: 1px solid transparent;
+  background: #181b1d;
+  cursor: col-resize;
+}
+
+.assets-resizer:hover,
+.shell.resizing-assets .assets-resizer {
+  border-right-color: #5da9b7;
+  background: #20282a;
 }

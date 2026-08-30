@@ -245,6 +245,12 @@ const defaultBaseURL = 'http://localhost:11434';
 const defaultSidebarWidth = 320;
 const minSidebarWidth = 240;
 const maxSidebarWidth = 560;
+// The assets panel snaps closed when a drag crosses minAssetsPanelWidth —
+// below it the media cards no longer render properly. maxAssetsPanelWidth
+// keeps room for the chat column, mirroring the sidebar clamps.
+const minAssetsPanelWidth = 240;
+const maxAssetsPanelWidth = 560;
+const defaultAssetsPanelWidth = 300;
 const compactHistoryLimit = 10;
 const expandedHistoryBatchSize = 20;
 const defaultImageAspectRatio = '1:1';
@@ -430,6 +436,8 @@ function App() {
   // when a turn finishes — the index derives from persisted history, so it
   // lags until the turn is saved.
   const [assetsPanelOpen, setAssetsPanelOpen] = useState(false);
+  const [assetsWidth, setAssetsWidth] = useState(loadAssetsPanelWidth);
+  const [resizingAssets, setResizingAssets] = useState(false);
   const [conversationAssets, setConversationAssets] = useState<main.ConversationAsset[]>([]);
   const [assetsRefreshTick, setAssetsRefreshTick] = useState(0);
   // Accepted asset mentions ({label, id}) from the current composition. Ref,
@@ -842,6 +850,34 @@ function App() {
   }, [resizingSidebar]);
 
   useEffect(() => {
+    if (!resizingAssets) {
+      return;
+    }
+    const onMouseMove = (event: MouseEvent) => {
+      const right = shellRef.current?.getBoundingClientRect().right ?? window.innerWidth;
+      const width = right - event.clientX;
+      // Snap to close: dragging below the minimum renderable width closes the
+      // panel (the toolbar toggle follows) instead of clamping to an unusable
+      // sliver. The stored width never drops below the minimum, so reopening
+      // restores the last good width.
+      if (width < minAssetsPanelWidth) {
+        setAssetsPanelOpen(false);
+        setResizingAssets(false);
+        return;
+      }
+      const max = Math.min(maxAssetsPanelWidth, window.innerWidth - 420);
+      setAssetsWidth(clampAssetsPanelWidth(width, max));
+    };
+    const onMouseUp = () => setResizingAssets(false);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, [resizingAssets]);
+
+  useEffect(() => {
     if (!previewImage) {
       return;
     }
@@ -857,6 +893,10 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem('atelier.sidebarWidth', String(sidebarWidth));
   }, [sidebarWidth]);
+
+  useEffect(() => {
+    window.localStorage.setItem('atelier.assetsPanelWidth', String(assetsWidth));
+  }, [assetsWidth]);
 
   useEffect(() => {
     if (!openCapabilityID) {
@@ -2145,10 +2185,14 @@ function App() {
       className={[
         'shell',
         view === 'settings' ? 'settings-open' : '',
-        resizingSidebar ? 'resizing' : '',
+        resizingSidebar ? 'resizing resizing-sidebar' : '',
+        resizingAssets ? 'resizing resizing-assets' : '',
         view !== 'settings' && assetsPanelOpen ? 'assets-open' : '',
       ].filter(Boolean).join(' ')}
-      style={view === 'settings' ? undefined : {'--sidebar-width': `${sidebarWidth}px`} as Record<string, string>}
+      style={view === 'settings' ? undefined : {
+        '--sidebar-width': `${sidebarWidth}px`,
+        '--assets-width': `${assetsWidth}px`,
+      } as Record<string, string>}
     >
       {view === 'settings' ? null : (
         <aside className="sidebar">
@@ -3387,6 +3431,18 @@ function App() {
         )}
       </section>
       {view === 'settings' || !assetsPanelOpen ? null : (
+        <div
+          className="assets-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize assets panel"
+          onMouseDown={(event) => {
+            event.preventDefault();
+            setResizingAssets(true);
+          }}
+        />
+      )}
+      {view === 'settings' || !assetsPanelOpen ? null : (
         <aside className="assets-panel" aria-label="Conversation assets">
           <div className="assets-panel-header">
             <span className="assets-panel-title">Assets</span>
@@ -3471,6 +3527,15 @@ function loadSidebarWidth(): number {
 
 function clampSidebarWidth(width: number, max = maxSidebarWidth): number {
   return Math.round(Math.max(minSidebarWidth, Math.min(Math.max(minSidebarWidth, max), width)));
+}
+
+function loadAssetsPanelWidth(): number {
+  const stored = Number(window.localStorage.getItem('atelier.assetsPanelWidth'));
+  return clampAssetsPanelWidth(Number.isFinite(stored) && stored > 0 ? stored : defaultAssetsPanelWidth);
+}
+
+function clampAssetsPanelWidth(width: number, max = maxAssetsPanelWidth): number {
+  return Math.round(Math.max(minAssetsPanelWidth, Math.min(Math.max(minAssetsPanelWidth, max), width)));
 }
 
 function ModelCombobox({
