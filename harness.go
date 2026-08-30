@@ -110,6 +110,17 @@ type HarnessToolCall struct {
 	// new clip. Planner-only, like NegativePrompt — see
 	// generateVideoParamSchema and the generate_video routing.
 	UseVideoAs string `json:"useVideoAs,omitempty"`
+	// Source is an optional generate_video input choosing which attached media
+	// drives the clip — "image" (animate the attached image; an attached video
+	// is not used), "video" (operate on the attached video; attached images are
+	// not used), or "motion" (transfer the video's motion onto the image; needs
+	// both) — overriding the attachment-count default when the planner judges
+	// that the user's words point at one kind ("animate the image" on a turn
+	// whose fallback slot carries a video, say). When the named kind is absent
+	// from the turn's slots, the newest artifact of that kind is re-read from
+	// conversation history. Planner-only, like UseVideoAs — see
+	// generateVideoParamSchema and the generate_video routing.
+	Source string `json:"source,omitempty"`
 	// FaceFrom is an optional lip_sync input choosing which attached face
 	// drives the sync when both an image and a video are attached: "video"
 	// (the default) re-lip-syncs the clip, "image" produces a talking head
@@ -2512,6 +2523,10 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 	gateway.tools.AttachedAudios = turn.AttachedAudios
 	gateway.tools.VoiceReference = turn.VoiceReference
 	gateway.tools.AttachedVideos = turn.AttachedVideos
+	// History access for the planner's explicit source: generate_video re-reads
+	// the newest artifact of the named kind when the turn's slots lack it.
+	gateway.tools.Storage = h.config.Storage
+	gateway.tools.ConversationID = conversationID
 	batch := harnessToolBatchResult{Results: make([]HarnessToolResult, 0, len(calls))}
 	for _, call := range calls {
 		// When the user selected a model that is not the harness model as the

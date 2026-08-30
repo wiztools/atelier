@@ -274,6 +274,199 @@ func TestGenerateVideoParamSchemaDocumentsUseVideoAs(t *testing.T) {
 	}
 }
 
+// TestGenerateVideoSourceRouting pins the planner's source override: when the
+// user's words point at one kind and the attachments imply another — "animate
+// the image" on a turn whose fallback slot carries the newest artifact, a
+// video — source:"image"/"video" makes the named kind drive the clip, drops
+// the other side with a notice, and re-reads the named kind from conversation
+// history when the slots lack it. An unfulfillable source fails the call
+// rather than generating a clip nobody asked for.
+func TestGenerateVideoSourceRouting(t *testing.T) {
+	const (
+		imageModel  = "bytedance/seedance-2.5/reference-to-video"
+		motionModel = "fal-ai/kling-video/v2.6/pro/motion-control"
+		extendModel = "fal-ai/veo3.1/extend-video"
+	)
+
+	videoConfig := func() AppConfig {
+		config := defaultAppConfig()
+		config.Providers.Fal.VideoImageModel = imageModel
+		config.Providers.Fal.VideoMotionModel = motionModel
+		config.Providers.Fal.VideoExtendModel = extendModel
+		return config
+	}
+
+	run := func(images, videos []string, storage ConfigStorage, conversationID string, call HarnessToolCall) (VideoGenerateRequest, ToolVideoResult, string, error) {
+		var gotReq VideoGenerateRequest
+		def := videoGenerationToolDefinition(false)
+		exec := HarnessToolExecutionContext{
+			Config:         videoConfig(),
+			AttachedImages: images,
+			AttachedVideos: videos,
+			Storage:        storage,
+			ConversationID: conversationID,
+			GenerateVideo: func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
+				gotReq = req
+				return GeneratedVideo{Data: []byte("mp4"), MimeType: "video/mp4", SourceURL: "https://example.com/v.mp4"}, nil
+			},
+		}
+		result, summary, err := def.Execute(context.Background(), exec, call)
+		typed, _ := result.(ToolVideoResult)
+		return gotReq, typed, summary, err
+	}
+
+	t.Run("source image drops the attached video and routes image-to-video", func(t *testing.T) {
+		call := HarnessToolCall{Name: "generate_video", Content: "gentle candle flicker", Source: "image"}
+		gotReq, result, summary, err := run([]string{"data:image/png;base64,AAA"}, []string{"data:video/mp4;base64,BBB"}, ConfigStorage{}, "", call)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if gotReq.Model != imageModel {
+			t.Fatalf("model = %q, want the image-to-video model %q", gotReq.Model, imageModel)
+		}
+		if len(gotReq.SourceImages()) != 1 || len(gotReq.SourceVideos()) != 0 {
+			t.Fatalf("request sources = %d image(s) / %d video(s), want 1/0", len(gotReq.SourceImages()), len(gotReq.SourceVideos()))
+		}
+		if summary != "animated the attached image into a video with "+imageModel {
+			t.Fatalf("summary = %q, want the image-to-video phrasing", summary)
+		}
+		foundNotice := false
+		for _, notice := range result.Notices {
+			if strings.Contains(notice, `the attached video was not used`) {
+				foundNotice = true
+			}
+		}
+		if !foundNotice {
+			t.Fatalf("notices = %v, want one saying the attached video was not used", result.Notices)
+		}
+	})
+
+	t.Run("source video drops the attached image and routes extend", func(t *testing.T) {
+		call := HarnessToolCall{Name: "generate_video", Content: "continue the flight", Source: "video"}
+		gotReq, _, summary, err := run([]string{"data:image/png;base64,AAA"}, []string{"data:video/mp4;base64,BBB"}, ConfigStorage{}, "", call)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if gotReq.Model != extendModel {
+			t.Fatalf("model = %q, want the extend model %q", gotReq.Model, extendModel)
+		}
+		if len(gotReq.SourceImages()) != 0 || len(gotReq.SourceVideos()) != 1 {
+			t.Fatalf("request sources = %d image(s) / %d video(s), want 0/1", len(gotReq.SourceImages()), len(gotReq.SourceVideos()))
+		}
+		if summary != "extended the attached video into a longer clip with "+extendModel {
+			t.Fatalf("summary = %q, want the extend phrasing", summary)
+		}
+	})
+
+	t.Run("source image fetches the history image when only a video is attached", func(t *testing.T) {
+		// Video newest, so the turn's fallback slot carries the video while the
+		// user asked to animate the image — the conv_150c5923 gap.
+		storage, conversationID := writeConversationWithImageAndVideo(t, false)
+		call := HarnessToolCall{Name: "generate_video", Content: "animate the watercolour", Source: "image"}
+		gotReq, _, summary, err := run(nil, []string{"data:video/mp4;base64,BBB"}, storage, conversationID, call)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if gotReq.Model != imageModel {
+			t.Fatalf("model = %q, want the image-to-video model %q", gotReq.Model, imageModel)
+		}
+		if len(gotReq.SourceImages()) != 1 || !strings.HasPrefix(gotReq.SourceImages()[0], "data:image/png;base64,") {
+			t.Fatalf("request images = %v, want the re-read history image", gotReq.SourceImages())
+		}
+		if len(gotReq.SourceVideos()) != 0 {
+			t.Fatalf("request videos = %v, want none", gotReq.SourceVideos())
+		}
+		if summary != "animated the attached image into a video with "+imageModel {
+			t.Fatalf("summary = %q, want the image-to-video phrasing", summary)
+		}
+	})
+
+	t.Run("source video fetches the history video when only an image is attached", func(t *testing.T) {
+		storage, conversationID := writeConversationWithImageAndVideo(t, true)
+		call := HarnessToolCall{Name: "generate_video", Content: "extend the clip", Source: "video"}
+		gotReq, _, _, err := run([]string{"data:image/png;base64,AAA"}, nil, storage, conversationID, call)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if gotReq.Model != extendModel {
+			t.Fatalf("model = %q, want the extend model %q", gotReq.Model, extendModel)
+		}
+		if len(gotReq.SourceVideos()) != 1 {
+			t.Fatalf("request videos = %v, want the re-read history video", gotReq.SourceVideos())
+		}
+	})
+
+	t.Run("source image with no image anywhere fails the call", func(t *testing.T) {
+		call := HarnessToolCall{Name: "generate_video", Content: "animate it", Source: "image"}
+		_, _, _, err := run(nil, []string{"data:video/mp4;base64,BBB"}, ConfigStorage{}, "", call)
+		if err == nil || !strings.Contains(err.Error(), `source "image"`) {
+			t.Fatalf("err = %v, want the unfulfillable-source error", err)
+		}
+	})
+
+	t.Run("source motion with one side missing fails the call", func(t *testing.T) {
+		call := HarnessToolCall{Name: "generate_video", Content: "transfer the motion", Source: "motion"}
+		_, _, _, err := run([]string{"data:image/png;base64,AAA"}, nil, ConfigStorage{}, "", call)
+		if err == nil || !strings.Contains(err.Error(), `source "motion"`) {
+			t.Fatalf("err = %v, want the needs-both error", err)
+		}
+	})
+
+	t.Run("reference mode wins over source", func(t *testing.T) {
+		call := HarnessToolCall{Name: "generate_video", Content: "a new clip in this style", UseVideoAs: "reference", Source: "image"}
+		gotReq, _, _, err := run([]string{"data:image/png;base64,AAA"}, []string{"data:video/mp4;base64,BBB"}, ConfigStorage{}, "", call)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if gotReq.Model != imageModel || len(gotReq.SourceVideos()) != 1 {
+			t.Fatalf("model = %q with %d video(s), want the reference model carrying the video too", gotReq.Model, len(gotReq.SourceVideos()))
+		}
+	})
+}
+
+// TestGenerateVideoSourceValidation pins the enum guard: an unknown source
+// value is a plan correction, not a silent fallthrough to the default
+// interpretation.
+func TestGenerateVideoSourceValidation(t *testing.T) {
+	def := videoGenerationToolDefinition(false)
+	problems := def.Validate("toolCalls[0]", HarnessToolCall{Name: "generate_video", Content: "x", Source: "the neighbors"})
+	if len(problems) != 1 || !strings.Contains(problems[0], "source must be") {
+		t.Fatalf("problems = %v, want the source enum correction", problems)
+	}
+	for _, ok := range []string{"", "image", "video", "motion"} {
+		if problems := def.Validate("toolCalls[0]", HarnessToolCall{Name: "generate_video", Content: "x", Source: ok}); len(problems) != 0 {
+			t.Fatalf("source %q problems = %v, want none", ok, problems)
+		}
+	}
+}
+
+// TestGenerateVideoParamSchemaDocumentsSource pins the planner-facing
+// contract: the param schema must expose source with the image/video/motion
+// enum and a description that says when to set it — when the user's words and
+// the attachments disagree about which media drives the clip.
+func TestGenerateVideoParamSchemaDocumentsSource(t *testing.T) {
+	schema := generateVideoParamSchema()
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected properties map, got %T", schema["properties"])
+	}
+	prop, ok := props["source"].(map[string]any)
+	if !ok {
+		t.Fatalf("generate_video param schema must expose a `source` property; got %v", props)
+	}
+	enum, _ := prop["enum"].([]string)
+	if len(enum) != 3 || enum[0] != "image" || enum[1] != "video" || enum[2] != "motion" {
+		t.Fatalf("source enum = %v, want [image video motion]", prop["enum"])
+	}
+	desc, _ := prop["description"].(string)
+	if !strings.Contains(desc, "overriding") || !strings.Contains(desc, "conversation history") {
+		t.Fatalf("source description = %q, want it to say it overrides the default routing and can fetch from history", desc)
+	}
+	if !strings.Contains(videoGenerationDescription(false), "source:") {
+		t.Fatalf("generate_video description must surface the source choice to the planner")
+	}
+}
+
 // TestLipsyncFaceFromRouting pins the planner-facing face choice: with both an
 // image and a video attached, the video face wins by default (with a notice
 // saying so), faceFrom:"image" drives the attached image instead, and the

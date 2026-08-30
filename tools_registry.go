@@ -66,6 +66,13 @@ type HarnessToolExecutionContext struct {
 	// a reference-to-video model; the lip sync and upscale tools use the first
 	// clip. Tool-only: they never reach a chat model.
 	AttachedVideos []string
+	// Storage and ConversationID let generate_video re-read the conversation's
+	// most recent artifact of a kind when the planner's explicit source names
+	// one the slots don't carry (a bare follow-up whose fallback resolved to a
+	// video, while the user asked to animate "the image"). Empty on the
+	// direct/UI tool path, where there is no conversation to consult.
+	Storage        ConfigStorage
+	ConversationID string
 	GenerateImage  func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, []string, error)
 	GenerateVideo  func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error)
 	GenerateAudio  func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error)
@@ -420,6 +427,25 @@ func nonEmptyVideos(videos []string) []string {
 	return out
 }
 
+// historyMediaForSource re-reads the conversation's most recent artifact of
+// the planner-requested source kind when the turn's slots don't carry it —
+// the explicit-source counterpart of the harness's cross-turn fallback. Used
+// only on the planned tool path, where Storage and ConversationID are wired;
+// the direct/UI tool path has no conversation to consult and gets nil.
+func historyMediaForSource(tools HarnessToolExecutionContext, kind string) []string {
+	if strings.TrimSpace(tools.ConversationID) == "" {
+		return nil
+	}
+	req := ChatRequest{ConversationID: tools.ConversationID}
+	switch kind {
+	case "image":
+		return latestAttachedImagesForTurn(req, tools.Storage)
+	case "video":
+		return latestAttachedVideosForTurn(req, tools.Storage)
+	}
+	return nil
+}
+
 // firstAttachedVideo returns the first non-empty attached video, for the
 // single-clip consumers of AttachedVideos (lip sync, video upscaling, extend).
 func firstAttachedVideo(videos []string) string {
@@ -476,7 +502,7 @@ func referenceMediaPhrase(imagesUsed bool, videosUsed bool, imageCount, videoCou
 // lip_sync chain. The wording is generic — it never names the specific model —
 // so it survives a model swap without rewording.
 func videoGenerationDescription(audioCapable bool) string {
-	base := "Use this when the user asks to create, animate, extend, or render a video or short clip. Works from a text description; when the user attached an image, animates that image (image-to-video); when the user attached a video, extends it into a longer clip (Veo extend); when the user attached both an image and a video, transfers the video's motion onto the image's subject (motion control) — describe the desired result in the prompt and do not ask the user which source to use. These defaults interpret the attachments as sources to animate, extend, or copy motion from; pass useVideoAs:\"reference\" instead when the attachments are references — characters, style, or scenes that should guide a brand-new clip rather than serve as its source — and every attached image and video is sent as reference media. The clip is attached to the assistant reply. Generation runs for a minute or more. Pass negativePrompt to steer content away from unwanted elements, and generateAudio:false when the user wants a silent clip."
+	base := "Use this when the user asks to create, animate, extend, or render a video or short clip. Works from a text description; when the user attached an image, animates that image (image-to-video); when the user attached a video, extends it into a longer clip (Veo extend); when the user attached both an image and a video, transfers the video's motion onto the image's subject (motion control) — describe the desired result in the prompt and do not ask the user which source to use. These defaults interpret the attachments as sources to animate, extend, or copy motion from; pass useVideoAs:\"reference\" instead when the attachments are references — characters, style, or scenes that should guide a brand-new clip rather than serve as its source — and every attached image and video is sent as reference media. When the user's words name one source but the attachments imply another (\"animate the image\" while the newest conversation artifact is a video, or \"extend the clip\" while it is an image), pass source:\"image\", \"video\", or \"motion\" to make the named source drive the clip — it is fetched from conversation history when not attached. The clip is attached to the assistant reply. Generation runs for a minute or more. Pass negativePrompt to steer content away from unwanted elements, and generateAudio:false when the user wants a silent clip."
 	if audioCapable {
 		return base + " This video model can also generate synchronized audio (speech, music, ambient sound) from the prompt. For narration, a voice-over, or a speaking character, prefer a single generate_video call with the spoken text in the prompt over chaining generate_speech + lip_sync."
 	}
@@ -497,6 +523,9 @@ func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 			}
 			if role := strings.TrimSpace(call.UseVideoAs); role != "" && role != "motion" && role != "reference" {
 				return []string{prefix + ".useVideoAs must be \"motion\" or \"reference\" for generate_video"}
+			}
+			if src := strings.TrimSpace(call.Source); src != "" && src != "image" && src != "video" && src != "motion" {
+				return []string{prefix + ".source must be \"image\", \"video\", or \"motion\" for generate_video"}
 			}
 			return nil
 		},
@@ -523,6 +552,48 @@ func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 			attachedImages := tools.AttachedImages
 			attachedVideos := nonEmptyVideos(tools.AttachedVideos)
 			videoRole := strings.ToLower(strings.TrimSpace(call.UseVideoAs))
+			// An explicit source overrides the attachment-count diagnosis when
+			// the planner judged the user's words point at one kind — "animate
+			// the image" on a turn whose fallback slot resolved to the newest
+			// artifact, a video, say. The named kind must exist: it is re-read
+			// from conversation history when the slots lack it, other kinds
+			// are dropped with a notice, and an unfulfillable source fails the
+			// call rather than generating a clip nobody asked for. Reference
+			// mode is the stronger, existing override and bypasses this.
+			source := strings.ToLower(strings.TrimSpace(call.Source))
+			var sourceNotices []string
+			if videoRole != "reference" {
+				switch source {
+				case "image":
+					if len(attachedImages) == 0 {
+						attachedImages = historyMediaForSource(tools, "image")
+					}
+					if len(attachedImages) == 0 {
+						return nil, "video generation unavailable", errors.New(`source "image" is set but no image is attached or in conversation history`)
+					}
+					if len(attachedVideos) > 0 {
+						attachedVideos = nil
+						sourceNotices = append(sourceNotices, `source "image" is set for this clip: the attached video was not used — pass source "motion" to transfer its motion onto the image.`)
+					}
+				case "video":
+					if len(attachedVideos) == 0 {
+						attachedVideos = nonEmptyVideos(historyMediaForSource(tools, "video"))
+					}
+					if len(attachedVideos) == 0 {
+						return nil, "video generation unavailable", errors.New(`source "video" is set but no video is attached or in conversation history`)
+					}
+					if len(attachedImages) > 0 {
+						attachedImages = nil
+						sourceNotices = append(sourceNotices, `source "video" is set for this clip: the attached image was not used — pass source "motion" to transfer a video's motion onto it.`)
+					}
+				case "motion":
+					// Both sides must be user-provided; a source-named combo is
+					// never half-assembled from history.
+					if len(attachedImages) == 0 || len(attachedVideos) == 0 {
+						return nil, "video generation unavailable", errors.New(`source "motion" is set but needs both an image and a video; attach or @-mention both`)
+					}
+				}
+			}
 			model := strings.TrimSpace(call.Model)
 			if model == "" {
 				switch {
@@ -609,6 +680,7 @@ func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 			// after generation succeeded, so a failed call carries nothing but
 			// the error (media usage drops failed calls entirely).
 			output.Notices = generated.Notices
+			output.Notices = append(output.Notices, sourceNotices...)
 			if len(requestVideos) < len(attachedVideos) {
 				output.Notices = append(output.Notices, fmt.Sprintf(
 					"%d videos were attached but this mode uses only the first; pass useVideoAs:\"reference\" to send every attached video as reference media.",
@@ -1624,6 +1696,7 @@ func generateVideoParamSchema() map[string]any {
 			"fps":            stringParam("Optional — the output frame rate in frames per second (e.g. \"24\", \"30\", \"60\"). Only some video models expose an fps/frame_rate input; an unsupported value (or a model with no such input) is ignored with a notice and the model's default is used. Omit to let the model choose."),
 			"generateAudio":  boolParam("Optional — set false to render a silent clip on models that would otherwise add audio. Some models generate audio by default yet expose no way to disable it; on those, a false value cannot be honored and the user is notified."),
 			"useVideoAs":     enumParam("Optional — how an attached video is used. \"motion\" (the default) treats it as a source: with an image also attached, the video's motion is transferred onto the image's subject; with a video alone, the clip is extended. \"reference\" instead treats every attached image and video as references — characters, style, or scenes guiding a brand-new clip — which is the right choice whenever the user cites the attachments as examples to follow rather than the clip to continue or copy motion from.", "motion", "reference"),
+			"source":         enumParam("Optional — which media drives the clip, overriding the attachment-based default routing. \"image\" animates the attached image (any attached video is not used); \"video\" operates on the attached video (attached images are not used); \"motion\" transfers the attached video's motion onto the attached image (needs both). Set this when the user's words point at one kind and the attachments say another — \"animate the image\" on a turn where the newest conversation artifact is a video, or \"extend the clip\" where it is an image: the named kind is fetched from conversation history when it is not attached. Omit to use the defaults.", "image", "video", "motion"),
 		},
 		"required": []string{"content"},
 	}
