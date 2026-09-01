@@ -368,6 +368,10 @@ PY
 # ---------- Publish GitHub release ----------
 if [[ "$DRY_RUN" != true ]]; then
     if command -v gh >/dev/null 2>&1; then
+        # gh release create needs the tag on the remote; the script creates it
+        # locally, so push it (and the bump commit it points at) first.
+        echo "==> Pushing release tag"
+        git push origin "v${VERSION}"
         echo "==> Publishing GitHub release v${VERSION}"
         gh release create "v${VERSION}" \
             --title "Atelier v${VERSION}" \
