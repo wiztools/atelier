@@ -1261,12 +1261,16 @@ button:disabled {
 .transcript {
   min-height: 0;
   overflow: auto;
-  padding: 22px;
+  /* bottom padding clears the hover-revealed copy chip below the last turn */
+  padding: 22px 22px 30px;
 }
 
 .message {
+  position: relative;
   max-width: 860px;
-  margin: 0 0 16px;
+  /* margin clears the hover-revealed copy chip (ends 26px below the box)
+     plus breathing room so the chip reads as belonging to this turn */
+  margin: 0 0 34px;
   padding: 14px 16px;
   border: 1px solid #2f3335;
   border-radius: 7px;
@@ -1288,19 +1292,40 @@ button:disabled {
 }
 
 .message-copy-button {
-  width: 28px;
-  height: 28px;
+  position: absolute;
+  bottom: -26px;
+  right: 0;
+  z-index: 2;
+  width: 22px;
+  height: 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
   border: 1px solid #3f484b;
-  border-radius: 6px;
+  border-radius: 5px;
   background: #242a2d;
   color: #cfd5d3;
-  font-size: 15px;
+  font-size: 12px;
   line-height: 1;
   cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+/* invisible hit margin that reaches up into the turn box, so the pointer
+   never crosses dead space on the way to the chip (which would drop :hover
+   mid-motion); the chip itself is always hit-testable even while faded out */
+.message-copy-button::before {
+  content: '';
+  position: absolute;
+  inset: -6px -6px 0;
+}
+
+.message:hover .message-copy-button,
+.message-copy-button:hover,
+.message-copy-button:focus-visible {
+  opacity: 1;
 }
 
 .message-copy-button:hover,

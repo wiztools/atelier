@@ -2027,7 +2027,7 @@ function App() {
     }));
   }
 
-  async function copyAgentResponse(entry: ChatEntry) {
+  async function copyMessage(entry: ChatEntry) {
     if (!entry.content) {
       return;
     }
@@ -3234,18 +3234,16 @@ function App() {
                       ) : (
                         <p>{entry.content || (entry.streaming ? '...' : '')}</p>
                       )}
-                      {entry.role === 'assistant' && entry.content ? (
-                        <div className="message-actions">
-                          <button
-                            className="message-copy-button"
-                            type="button"
-                            aria-label="Copy agent response"
-                            title={copiedMessageID === entry.id ? 'Copied' : 'Copy response'}
-                            onClick={() => copyAgentResponse(entry)}
-                          >
-                            {copiedMessageID === entry.id ? '✓' : '⧉'}
-                          </button>
-                        </div>
+                      {(entry.role === 'user' || entry.role === 'assistant') && entry.content ? (
+                        <button
+                          className="message-copy-button"
+                          type="button"
+                          aria-label={entry.role === 'user' ? 'Copy prompt' : 'Copy agent response'}
+                          title={copiedMessageID === entry.id ? 'Copied' : entry.role === 'user' ? 'Copy prompt' : 'Copy response'}
+                          onClick={() => copyMessage(entry)}
+                        >
+                          {copiedMessageID === entry.id ? '✓' : '⧉'}
+                        </button>
                       ) : null}
                       {entry.error ? (
                         <div className="message-actions">
