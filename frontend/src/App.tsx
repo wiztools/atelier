@@ -769,13 +769,18 @@ function App() {
           <>
             <button className="history-open" onClick={() => openConversationSummary(conversation)} onDoubleClick={(event) => { event.preventDefault(); startEditingConversationTitle(conversation); }}>
               <span>{conversation.title}</span>
-              <small
-                className={`history-kind${inFlight ? ' in-flight' : ''}`}
-                title={inFlight ? 'Running' : 'Chat'}
-                aria-label={inFlight ? 'Conversation running' : 'Chat conversation'}
-              >
-                {inFlight ? <span className="history-spinner" /> : '◌'}
-              </small>
+              {/* The running indicator mounts only while the turn streams —
+                  idle rows don't reserve the slot, so the title runs to the
+                  full row width and the kebab sits flush after hover reveal. */}
+              {inFlight ? (
+                <small
+                  className="history-kind in-flight"
+                  title="Running"
+                  aria-label="Conversation running"
+                >
+                  <span className="history-spinner" />
+                </small>
+              ) : null}
             </button>
             <div className="history-actions">
               <button
