@@ -2601,3 +2601,48 @@ button:disabled {
   border-right-color: #5da9b7;
   background: #20282a;
 }
+
+.update-banner {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  z-index: 15;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: min(420px, calc(100vw - 36px));
+  padding: 12px;
+  border: 1px solid #3d5570;
+  border-radius: 8px;
+  background: #1a222c;
+  box-shadow: 0 16px 40px rgb(0 0 0 / 36%);
+}
+
+.update-banner-content {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.update-banner-content strong {
+  font-size: 13px;
+}
+
+.update-banner-content span {
+  font-size: 12px;
+  color: #b8c4d4;
+}
+
+.update-queued {
+  color: #d9b36c !important;
+}
+
+.update-error {
+  color: #f0a09a !important;
+}
+
+.update-banner-actions {
+  display: flex;
+  gap: 8px;
+}

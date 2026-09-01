@@ -1,5 +1,19 @@
 export namespace main {
 	
+	export class ConfigUpdates {
+	    manifestUrl: string;
+	    autoCheck?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConfigUpdates(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.manifestUrl = source["manifestUrl"];
+	        this.autoCheck = source["autoCheck"];
+	    }
+	}
 	export class ConfigUI {
 	    mode: string;
 	
@@ -339,6 +353,7 @@ export namespace main {
 	    generation: ConfigGeneration;
 	    tools: ConfigTools;
 	    ui: ConfigUI;
+	    updates: ConfigUpdates;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppConfig(source);
@@ -354,6 +369,7 @@ export namespace main {
 	        this.generation = this.convertValues(source["generation"], ConfigGeneration);
 	        this.tools = this.convertValues(source["tools"], ConfigTools);
 	        this.ui = this.convertValues(source["ui"], ConfigUI);
+	        this.updates = this.convertValues(source["updates"], ConfigUpdates);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -530,6 +546,7 @@ export namespace main {
 	        this.conversationId = source["conversationId"];
 	    }
 	}
+	
 	
 	
 	
@@ -1394,6 +1411,27 @@ export namespace main {
 	        this.approved = source["approved"];
 	        this.outcome = source["outcome"];
 	        this.waitMs = source["waitMs"];
+	    }
+	}
+	
+	export class UpdateStatus {
+	    state: string;
+	    currentVersion: string;
+	    latestVersion?: string;
+	    notes?: string;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new UpdateStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.state = source["state"];
+	        this.currentVersion = source["currentVersion"];
+	        this.latestVersion = source["latestVersion"];
+	        this.notes = source["notes"];
+	        this.error = source["error"];
 	    }
 	}
 

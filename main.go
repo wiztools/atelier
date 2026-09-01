@@ -48,6 +48,16 @@ func main() {
 		menu.AppMenu(),
 		menu.EditMenu(),
 		menu.WindowMenu(),
+		// "Check for Updates…" lives under Help rather than the app menu:
+		// Wails' AppMenu() is a native role with no Go-side submenu to append
+		// into. Clicking runs the same check as the Settings button; the
+		// emitted event raises the update banner either way.
+		menu.SubMenu("Help", menu.NewMenuFromItems(
+			&menu.MenuItem{
+				Label: "Check for Updates…",
+				Click: func(*menu.CallbackData) { app.menuCheckForUpdates() },
+			},
+		)),
 	)
 
 	err := wails.Run(&options.App{

@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -35,20 +36,31 @@ const defaultOpenAICompatibleBaseURL = "http://localhost:8080"
 const defaultOllamaNumCtx = 8192
 
 type App struct {
-	ctx            context.Context
-	client         *http.Client
-	baseURL        string
-	configMu       sync.Mutex
-	streams        map[string]context.CancelFunc
-	streamsMu      sync.Mutex
-	permissions    map[string]chan bool
-	permissionsMu  sync.Mutex
-	toolPermission func(context.Context, ToolPermissionRequestEvent) ToolPermissionDecision
+	ctx             context.Context
+	client          *http.Client
+	updateClient    *http.Client
+	baseURL         string
+	configMu        sync.Mutex
+	streams         map[string]context.CancelFunc
+	streamsMu       sync.Mutex
+	permissions     map[string]chan bool
+	permissionsMu   sync.Mutex
+	toolPermission  func(context.Context, ToolPermissionRequestEvent) ToolPermissionDecision
+	updatesMu       sync.Mutex
+	lastUpdate      *updateManifest
+	updaterQuitting atomic.Bool
 }
 
 func NewApp() *App {
 	app := &App{
 		client: &http.Client{
+			Timeout: 10 * time.Minute,
+		},
+		// The updater gets its own client so a hung check never queues behind
+		// a long model stream on the shared one; each call still bounds
+		// itself with a context deadline appropriate to its phase (seconds
+		// for the manifest, the client timeout for the download).
+		updateClient: &http.Client{
 			Timeout: 10 * time.Minute,
 		},
 		baseURL:     defaultOllamaBaseURL,
@@ -69,11 +81,17 @@ func (a *App) startup(ctx context.Context) {
 		_ = ensureStorageDirs(config.Storage)
 		a.baseURL = config.Providers.Ollama.BaseURL
 	}
+	a.startUpdateScheduler(ctx)
 }
 
 // beforeClose is wired to Wails' OnBeforeClose hook. It prompts the user to
 // confirm before the window closes; returning true prevents the close.
 func (a *App) beforeClose(ctx context.Context) (prevent bool) {
+	// The self-updater's own quit: the user already chose to install, and the
+	// detached helper is waiting on this process to exit — skip the dialog.
+	if a.updaterQuitting.Load() {
+		return false
+	}
 	choice, err := runtime.MessageDialog(ctx, runtime.MessageDialogOptions{
 		Type:          runtime.QuestionDialog,
 		Title:         "Quit Atelier?",
@@ -98,6 +116,16 @@ type AppConfig struct {
 	Generation ConfigGeneration `json:"generation"`
 	Tools      ConfigTools      `json:"tools"`
 	UI         ConfigUI         `json:"ui"`
+	Updates    ConfigUpdates    `json:"updates"`
+}
+
+// ConfigUpdates configures the self-updater. ManifestURL is overridable so the
+// flow can be exercised against a local server. AutoCheck is a pointer so an
+// absent field — a config written before the updater existed — still means
+// the default "enabled" rather than silently disabling update checks.
+type ConfigUpdates struct {
+	ManifestURL string `json:"manifestUrl"`
+	AutoCheck   *bool  `json:"autoCheck,omitempty"`
 }
 
 type ConfigStorage struct {
@@ -976,6 +1004,53 @@ func (a *App) SetOllamaBaseURL(baseURL string) error {
 
 func (a *App) CheckOllama(baseURL string) OllamaStatus {
 	return a.ollamaClient(baseURL).Check(context.Background())
+}
+
+// CheckForUpdates fetches the release manifest and compares it with the
+// running version. Manual by design — the automatic startup/ticker path runs
+// the same core behind the 24h throttle — and raises the banner event when an
+// update is found so the Settings status line and the banner agree.
+func (a *App) CheckForUpdates() UpdateStatus {
+	return a.checkForUpdates(a.ctx, true)
+}
+
+// menuCheckForUpdates is the app-menu entry point; the emitted event raises
+// the same banner the automatic check does.
+func (a *App) menuCheckForUpdates() {
+	_ = a.checkForUpdates(a.ctx, true)
+}
+
+// InstallUpdate installs the update found by the last check: download,
+// verify, stage the swap, hand off to the detached helper, then quit so the
+// bundle can be replaced and relaunched. Refuses while a turn is streaming —
+// the frontend queues and retries when idle; this gate stays authoritative —
+// and refuses cleanly in development, where there is no bundle to swap.
+func (a *App) InstallUpdate() error {
+	if a.anyStreamActive() {
+		return errors.New("a conversation is still running; wait for it to finish before updating")
+	}
+	manifest := a.cachedUpdateManifest()
+	if manifest == nil {
+		return errors.New("no update is available yet; check for updates first")
+	}
+	if err := applySelfUpdate(a.updateClient, manifest); err != nil {
+		return err
+	}
+	// The helper is live and waiting on this PID: quit now, dialog-free.
+	a.updaterQuitting.Store(true)
+	if a.ctx != nil {
+		runtime.Quit(a.ctx)
+	}
+	return nil
+}
+
+// anyStreamActive reports whether any chat turn is in flight. StreamChat
+// registers the cancel func synchronously and the goroutine removes it only
+// on completion, so a non-empty map is the reliable "turn running" signal.
+func (a *App) anyStreamActive() bool {
+	a.streamsMu.Lock()
+	defer a.streamsMu.Unlock()
+	return len(a.streams) > 0
 }
 
 func (a *App) ListModels(baseURL string) ([]OllamaModel, error) {
@@ -2401,6 +2476,7 @@ func writeAppConfig(config AppConfig) error {
 func defaultAppConfig() AppConfig {
 	root := defaultStorageRoot()
 	history := filepath.Join(root, "history")
+	autoCheckDefault := true
 	return AppConfig{
 		Version: 1,
 		Storage: ConfigStorage{
@@ -2451,6 +2527,10 @@ func defaultAppConfig() AppConfig {
 		},
 		UI: ConfigUI{
 			Mode: "chat",
+		},
+		Updates: ConfigUpdates{
+			ManifestURL: defaultUpdateManifestURL,
+			AutoCheck:   &autoCheckDefault,
 		},
 	}
 }
@@ -2552,6 +2632,12 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	}
 	config.Tools = mergeToolsConfig(config.Tools, defaults.Tools)
 	config.UI.Mode = defaults.UI.Mode
+	if strings.TrimSpace(config.Updates.ManifestURL) == "" {
+		config.Updates.ManifestURL = defaults.Updates.ManifestURL
+	}
+	if config.Updates.AutoCheck == nil {
+		config.Updates.AutoCheck = defaults.Updates.AutoCheck
+	}
 	return config
 }
 

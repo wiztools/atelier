@@ -10,6 +10,10 @@ export function CheckFalConnection() {
   return window['go']['main']['App']['CheckFalConnection']();
 }
 
+export function CheckForUpdates() {
+  return window['go']['main']['App']['CheckForUpdates']();
+}
+
 export function CheckOllama(arg1) {
   return window['go']['main']['App']['CheckOllama'](arg1);
 }
@@ -48,6 +52,10 @@ export function HasOpenAICompatibleAPIKey() {
 
 export function HasOpenRouterAPIKey() {
   return window['go']['main']['App']['HasOpenRouterAPIKey']();
+}
+
+export function InstallUpdate() {
+  return window['go']['main']['App']['InstallUpdate']();
 }
 
 export function ListConversationAssets(arg1) {

@@ -18,13 +18,19 @@
 #
 # The script updates wails.json/frontend/package.json with the supplied version,
 # commits the bump, creates a Git tag, builds a universal macOS .app, signs it,
-# packages a signed .dmg, and notarizes + staples the result.
+# packages a signed .dmg, and notarizes + staples the result. It also produces
+# the self-updater artifacts — a zip of the stapled app and
+# update-manifest.json — and publishes everything as a GitHub Release.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="Atelier"
 PRODUCT_BUNDLE_ID="com.wails.Atelier"
+# The stable update-feed URL: GitHub redirects this to the update-manifest.json
+# asset on the newest non-prerelease release, so the app never hardcodes a
+# version into its feed URL.
+UPDATE_MANIFEST_URL="https://github.com/wiztools/atelier/releases/latest/download/update-manifest.json"
 
 cd "$REPO_ROOT"
 
@@ -245,6 +251,20 @@ codesign \
 
 codesign --verify --verbose "$APP_PATH"
 
+# ---------- Verify bundle version consistency ----------
+# The updater runs on the ldflags-injected main.version and, before swapping,
+# requires the staged bundle's CFBundleShortVersionString to match the
+# manifest. Both derive from $VERSION here; a mismatch means the wails.json
+# bump regressed, so fail the release loudly instead of shipping a bundle the
+# updater would refuse to install.
+PLIST_VERSION=$(plutil -extract CFBundleShortVersionString raw "$APP_PATH/Contents/Info.plist")
+if [[ "$PLIST_VERSION" != "$VERSION" ]]; then
+    echo "Error: app bundle reports version '$PLIST_VERSION', expected '$VERSION'" >&2
+    echo "       Check wails.json info.productVersion (release.sh updates it automatically)." >&2
+    exit 1
+fi
+echo "    Bundle version consistent: $PLIST_VERSION"
+
 # ---------- Package as signed DMG ----------
 DMG_PATH="build/bin/${APP_NAME}-${VERSION}.dmg"
 TMP_DMG="build/bin/${APP_NAME}-${VERSION}-tmp.dmg"
@@ -297,10 +317,88 @@ else
     echo "==> Dry run: skipping notarization"
 fi
 
+# ---------- Self-updater artifacts ----------
+# The updater downloads a zip of the app (not the DMG) plus update-manifest.json.
+# The manifest asset name is fixed across releases so
+# releases/latest/download/update-manifest.json always resolves to the newest
+# feed. Zip + manifest are produced in dry runs too, so the local E2E flow
+# (two locally built versions + a local manifest server) rehearses exactly
+# what ships.
+ZIP_PATH="build/bin/${APP_NAME}-${VERSION}.zip"
+MANIFEST_PATH="build/bin/update-manifest.json"
+
+if [[ "$DRY_RUN" != true ]]; then
+    # The DMG notarization above issued tickets for the contained code; staple
+    # the app bundle itself so a self-updated install carries its ticket even
+    # though the zip was never Gatekeeper-checked.
+    echo "==> Stapling notarization ticket into the app bundle"
+    xcrun stapler staple "$APP_PATH"
+    xcrun stapler validate "$APP_PATH"
+fi
+
+echo "==> Creating $ZIP_PATH"
+rm -f "$ZIP_PATH"
+ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
+ZIP_SHA256=$(shasum -a 256 "$ZIP_PATH" | awk '{print $1}')
+ZIP_SIZE=$(stat -f%z "$ZIP_PATH")
+echo "    sha256: $ZIP_SHA256 ($ZIP_SIZE bytes)"
+
+echo "==> Generating $MANIFEST_PATH"
+PUBLISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+ZIP_URL="https://github.com/wiztools/atelier/releases/download/v${VERSION}/${APP_NAME}-${VERSION}.zip"
+python3 - <<PY
+import json
+
+manifest = {
+    "version": "$VERSION",
+    "publishedAt": "$PUBLISHED_AT",
+    "platforms": {
+        "darwin-universal": {
+            "url": "$ZIP_URL",
+            "sha256": "$ZIP_SHA256",
+            "size": $ZIP_SIZE,
+        }
+    },
+}
+with open("$MANIFEST_PATH", "w") as f:
+    json.dump(manifest, f, indent=2)
+    f.write("\n")
+PY
+
+# ---------- Publish GitHub release ----------
+if [[ "$DRY_RUN" != true ]]; then
+    if command -v gh >/dev/null 2>&1; then
+        echo "==> Publishing GitHub release v${VERSION}"
+        gh release create "v${VERSION}" \
+            --title "Atelier v${VERSION}" \
+            --generate-notes \
+            "$DMG_PATH" "$ZIP_PATH" "$MANIFEST_PATH"
+
+        echo "==> Verifying the published update feed"
+        sleep 5
+        PUBLISHED=$(curl -fsSL "$UPDATE_MANIFEST_URL")
+        PUBLISHED_VERSION=$(printf '%s' "$PUBLISHED" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')
+        PUBLISHED_SHA=$(printf '%s' "$PUBLISHED" | python3 -c 'import json,sys; print(json.load(sys.stdin)["platforms"]["darwin-universal"]["sha256"])')
+        if [[ "$PUBLISHED_VERSION" != "$VERSION" || "$PUBLISHED_SHA" != "$ZIP_SHA256" ]]; then
+            echo "Error: published manifest does not match this release" >&2
+            echo "       version=$PUBLISHED_VERSION (expected $VERSION)" >&2
+            echo "       sha256=$PUBLISHED_SHA (expected $ZIP_SHA256)" >&2
+            exit 1
+        fi
+        echo "    update feed verified"
+    else
+        echo "Warning: gh CLI not found — publish manually with:" >&2
+        echo "  gh release create v${VERSION} --title \"Atelier v${VERSION}\" \\" >&2
+        echo "    \"$DMG_PATH\" \"$ZIP_PATH\" \"$MANIFEST_PATH\"" >&2
+    fi
+fi
+
 echo ""
 echo "==> Release artifacts"
-echo "    App:  $APP_PATH"
-echo "    DMG:  $DMG_PATH"
+echo "    App:      $APP_PATH"
+echo "    DMG:      $DMG_PATH"
+echo "    Zip:      $ZIP_PATH"
+echo "    Manifest: $MANIFEST_PATH"
 if [[ "$DRY_RUN" != true ]]; then
-    echo "    Tag:  v${VERSION}"
+    echo "    Tag:      v$VERSION"
 fi

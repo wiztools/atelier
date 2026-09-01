@@ -5,6 +5,7 @@ import './App.css';
 import {
   CancelStream,
   CheckFalConnection,
+  CheckForUpdates,
   CheckOllama,
   ChooseToolWorkspace,
   ClearOpenAICompatibleAPIKey,
@@ -14,6 +15,7 @@ import {
   HasFalAPIKey,
   HasOpenAICompatibleAPIKey,
   HasOpenRouterAPIKey,
+  InstallUpdate,
   ListConversationAssets,
   ListConversations,
   ListFalModels,
@@ -111,6 +113,12 @@ type ToolPermissionEvent = {
   cwd?: string;
   path?: string;
   contentPreview?: string;
+};
+
+type UpdateAvailableEvent = {
+  current: string;
+  latest: string;
+  notes?: string;
 };
 
 type InFlightConversation = {
@@ -509,6 +517,19 @@ function App() {
   const [confirmPurgeArchived, setConfirmPurgeArchived] = useState(false);
   const [purgeStatus, setPurgeStatus] = useState('');
   const [openCapabilityID, setOpenCapabilityID] = useState('');
+  // Self-update UI state: the banner rides the atelier:update-available event
+  // (raised by startup, ticker, and manual checks alike); an install clicked
+  // mid-turn queues until the last conversation finishes.
+  const [updateAvailable, setUpdateAvailable] = useState<UpdateAvailableEvent | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateQueued, setUpdateQueued] = useState(false);
+  const [updateError, setUpdateError] = useState('');
+  const [updateCheckBusy, setUpdateCheckBusy] = useState(false);
+  const [updateCheckStatus, setUpdateCheckStatus] = useState('');
+  const [updatesConfig, setUpdatesConfig] = useState<main.ConfigUpdates | null>(null);
+  // Updates wait out any running conversation; both the banner's queue and
+  // the backend's InstallUpdate gate read this shape of "busy".
+  const anyConversationInFlight = activeStream !== null || Object.keys(inFlightConversations).length > 0;
   const shellRef = useRef<HTMLElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const shouldFollowTranscriptRef = useRef(true);
@@ -710,12 +731,16 @@ function App() {
         ui: {
           mode: 'chat',
         },
+        // Round-trip the updater section untouched: it has no Settings UI yet,
+        // and dropping it here would reset a manually-edited manifestUrl or
+        // autoCheck on every unrelated settings save.
+        updates: updatesConfig ?? undefined,
       })).catch((error) => {
         setStatus((current) => current ? {...current, error: String(error)} : current);
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, videoAspectRatio, videoDuration]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, updatesConfig, videoAspectRatio, videoDuration]);
 
   // On a fresh launch, put the cursor in the chat box so the user can start
   // typing immediately. Fires once, when config finishes loading.
@@ -814,12 +839,84 @@ function App() {
     return () => EventsOff('atelier:tool-permission');
   }, []);
 
+  // Update availability mirrors the tool-permission pattern: setState only, no
+  // stale closures. Every check that finds a newer version (startup, daily
+  // ticker, manual) re-emits, so a dismissed banner reappears on the next
+  // check rather than being permanently silenced.
+  useEffect(() => {
+    const onUpdateAvailable = (event: UpdateAvailableEvent) => {
+      if (!event?.latest) {
+        return;
+      }
+      setUpdateAvailable(event);
+      setUpdateError('');
+    };
+    EventsOn('atelier:update-available', onUpdateAvailable);
+    return () => EventsOff('atelier:update-available');
+  }, []);
+
   async function resolveToolPermission(permissionID: string, approved: boolean) {
     setToolPermissions((current) => current.filter((item) => item.id !== permissionID));
     try {
       await ResolveToolPermission(permissionID, approved);
     } catch (error) {
       setStartupError(formatError(error));
+    }
+  }
+
+  // Installing while a turn runs would kill the conversation mid-stream, so a
+  // click during a turn queues the install; this effect fires it once the last
+  // conversation finishes. The Go-side gate in InstallUpdate stays
+  // authoritative — this queue is UX, not enforcement.
+  useEffect(() => {
+    if (!updateQueued || updateBusy || anyConversationInFlight) {
+      return;
+    }
+    setUpdateQueued(false);
+    void requestUpdateInstall();
+  }, [updateQueued, updateBusy, anyConversationInFlight]);
+
+  async function requestUpdateInstall() {
+    if (anyConversationInFlight) {
+      setUpdateQueued(true);
+      return;
+    }
+    setUpdateBusy(true);
+    setUpdateError('');
+    try {
+      await InstallUpdate();
+      // Success ends the session: the backend quits, the detached helper
+      // swaps the bundle, and the new version reopens. Nothing to render.
+    } catch (error) {
+      setUpdateError(formatError(error));
+      setUpdateQueued(false);
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
+
+  function dismissUpdate() {
+    setUpdateAvailable(null);
+    setUpdateQueued(false);
+    setUpdateError('');
+  }
+
+  async function checkForUpdates() {
+    setUpdateCheckBusy(true);
+    setUpdateCheckStatus('');
+    try {
+      const status = await CheckForUpdates();
+      if (status.state === 'available') {
+        setUpdateCheckStatus(`Atelier ${status.latestVersion} is available — install from the banner.`);
+      } else if (status.state === 'current') {
+        setUpdateCheckStatus(`Atelier is up to date (${status.currentVersion}).`);
+      } else {
+        setUpdateCheckStatus(`Update check failed: ${status.error || 'unknown error'}`);
+      }
+    } catch (error) {
+      setUpdateCheckStatus(formatError(error));
+    } finally {
+      setUpdateCheckBusy(false);
     }
   }
 
@@ -1152,6 +1249,7 @@ function App() {
     setStartupError('');
     setStorageConfig(config.storage ?? null);
     setToolConfig(config.tools ?? null);
+    setUpdatesConfig(config.updates ?? null);
     setBaseURL(nextBaseURL);
     setPrimaryModels({ollama: nextPrimaryModel, openrouter: nextOpenRouterModel, 'openai-compatible': nextOpenAICompatiblePrimary});
     setPrimaryProvider(nextPrimaryProvider);
@@ -2376,6 +2474,24 @@ function App() {
             <span>{startupError}</span>
           </div>
         ) : null}
+        {updateAvailable ? (
+          <div className="update-banner">
+            <div className="update-banner-content">
+              <strong>Atelier {updateAvailable.latest} is available.</strong>
+              {updateAvailable.notes ? <span>{updateAvailable.notes}</span> : null}
+              {updateQueued ? (
+                <span className="update-queued">Installing when the current conversation finishes…</span>
+              ) : null}
+              {updateError ? <span className="update-error">{updateError}</span> : null}
+            </div>
+            <div className="update-banner-actions">
+              <button onClick={dismissUpdate} disabled={updateBusy}>Later</button>
+              <button className="primary" onClick={requestUpdateInstall} disabled={updateBusy}>
+                {updateBusy ? 'Installing…' : 'Install & Relaunch'}
+              </button>
+            </div>
+          </div>
+        ) : null}
         {toolPermissions.length ? (
           <div className="tool-permission-panel">
             {toolPermissions.map((permission) => (
@@ -2634,6 +2750,7 @@ function App() {
               ) : null}
 
               {settingsTab === 'others' ? (
+              <>
               <section className="settings-section">
                 <h3>Storage</h3>
                 <div className="storage-list">
@@ -2671,6 +2788,19 @@ function App() {
                   </div>
                 ) : null}
               </section>
+              <section className="settings-section">
+                <h3>Updates</h3>
+                <div className="storage-actions">
+                  <button onClick={checkForUpdates} disabled={updateCheckBusy}>
+                    {updateCheckBusy ? 'Checking...' : 'Check for Updates'}
+                  </button>
+                  {updateCheckStatus ? <span>{updateCheckStatus}</span> : null}
+                </div>
+                <div className="storage-hint">
+                  Atelier checks for updates automatically once a day and installs only when you choose to.
+                </div>
+              </section>
+              </>
               ) : null}
 
               {settingsTab === 'models' ? (

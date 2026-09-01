@@ -6,6 +6,8 @@ export function CancelStream(arg1:string):Promise<void>;
 
 export function CheckFalConnection():Promise<void>;
 
+export function CheckForUpdates():Promise<main.UpdateStatus>;
+
 export function CheckOllama(arg1:string):Promise<main.OllamaStatus>;
 
 export function ChooseToolWorkspace(arg1:string):Promise<string>;
@@ -25,6 +27,8 @@ export function HasFalAPIKey():Promise<boolean>;
 export function HasOpenAICompatibleAPIKey():Promise<boolean>;
 
 export function HasOpenRouterAPIKey():Promise<boolean>;
+
+export function InstallUpdate():Promise<void>;
 
 export function ListConversationAssets(arg1:string):Promise<Array<main.ConversationAsset>>;
 
