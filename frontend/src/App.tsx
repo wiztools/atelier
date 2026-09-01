@@ -1730,10 +1730,13 @@ function App() {
   // The File-menu / ⌘N "New Conversation": FCP-style context awareness —
   // keep composing in the pending project if one is already active, else the
   // project of the conversation being viewed, else the last project the user
-  // worked in, else a standalone chat.
+  // worked in, else a standalone chat. startNewChatInProject preserves the
+  // context (resetWorkspace clears it, then this re-stashes it) — a plain
+  // startNewChat() here would silently drop the pending project.
   function handleNewConversationAction() {
-    if (pendingProjectRef.current) {
-      void startNewChat();
+    const pending = pendingProjectRef.current;
+    if (pending) {
+      void startNewChatInProject(pending.projectID, pending.libraryID);
       return;
     }
     const context = activeConversationProjectID
