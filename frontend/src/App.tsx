@@ -317,6 +317,404 @@ function positiveIntOrDefault(value: string, fallback: number): number {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+// LibrariesEnvironment is everything useLibraries needs from App() — the seam
+// the hook crosses. Refs are typed structurally ({current}) so the hook stays
+// independent of React's namespace types.
+type LibrariesEnvironment = {
+  activeConversationID: string;
+  activeConversationProjectID: string;
+  closeConversationMenu: () => void;
+  composerDraftsRef: {current: Record<string, ComposerDraft>};
+  pendingProjectRef: {current: {projectID: string; libraryID: string} | null};
+  refreshConversations: () => Promise<main.ConversationSummary[]>;
+  reportError: (error: unknown) => void;
+  resetWorkspace: () => Promise<void>;
+  setPendingProject: (project: {projectID: string; libraryID: string} | null) => void;
+  setView: (view: View) => void;
+  startNewChat: () => Promise<void>;
+};
+
+// useLibraries owns the sidebar's Libraries tree: the library/project data,
+// the expansion/creation/rename/delete UI state, and the actions over them.
+// App() destructures the returned names directly into the JSX it renders, so
+// the tree markup stays in App while its logic lives here. Handlers are plain
+// functions recreated each render (App's own idiom) — the env object is
+// re-created every render too, so ref-mirrored callers (File menu, ⌘N) and
+// the empty-deps chat:chunk listener always observe current values; the only
+// state they touch through closures is the stable useState setters.
+function useLibraries(env: LibrariesEnvironment) {
+  // libraries state mirrors ListLibraries; expandedLibraryIDs/
+  // expandedProjectIDs drive the sidebar tree; projectConversations caches
+  // each expanded project's listing. librariesRefreshTick re-fetches both
+  // when a turn finishes or a mutation lands, the same role assetsRefreshTick
+  // plays for the assets panel.
+  const [libraries, setLibraries] = useState<main.LibrarySummary[]>([]);
+  const [librariesOpen, setLibrariesOpen] = useState(true);
+  const [expandedLibraryIDs, setExpandedLibraryIDs] = useState<Record<string, boolean>>({});
+  const [expandedProjectIDs, setExpandedProjectIDs] = useState<Record<string, boolean>>({});
+  const [projectConversations, setProjectConversations] = useState<Record<string, main.ConversationSummary[]>>({});
+  const [librariesRefreshTick, setLibrariesRefreshTick] = useState(0);
+  // Inline creation/rename state for the library tree; editingContainerID is
+  // the lib_/proj_ record being renamed (prefix tells the submitter which
+  // binding to call).
+  const [creatingLibrary, setCreatingLibrary] = useState(false);
+  const [newLibraryName, setNewLibraryName] = useState('');
+  const [creatingProjectLibraryID, setCreatingProjectLibraryID] = useState('');
+  const [newProjectName, setNewProjectName] = useState('');
+  const [editingContainerID, setEditingContainerID] = useState('');
+  const [editingContainerName, setEditingContainerName] = useState('');
+  const [openContainerMenuID, setOpenContainerMenuID] = useState('');
+  const [confirmDeleteContainerID, setConfirmDeleteContainerID] = useState('');
+  const [containerBusy, setContainerBusy] = useState(false);
+  // The last project the user started a chat in / expanded a library into —
+  // the fallback context for the File-menu actions.
+  const lastProjectRef = useRef<{projectID: string; libraryID: string} | null>(null);
+  const lastExpandedLibraryIDRef = useRef('');
+
+  // Library tree: fetch on mount and whenever a turn finishes or a mutation
+  // lands (librariesRefreshTick).
+  useEffect(() => {
+    let cancelled = false;
+    ListLibraries()
+      .then((items) => {
+        if (!cancelled) setLibraries(asArray(items));
+      })
+      .catch(() => {
+        if (!cancelled) setLibraries([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [librariesRefreshTick]);
+
+  // Expanded projects' conversation listings refresh with the tree. Collapse
+  // drops stale entries from the cache on the next expand via the same fetch.
+  useEffect(() => {
+    const openProjectIDs = Object.entries(expandedProjectIDs)
+      .filter(([, open]) => open)
+      .map(([projectID]) => projectID);
+    if (!openProjectIDs.length) {
+      return;
+    }
+    let cancelled = false;
+    Promise.all(openProjectIDs.map((projectID) =>
+      ListProjectConversations(projectID).catch(() => [] as main.ConversationSummary[]),
+    )).then((results) => {
+      if (cancelled) {
+        return;
+      }
+      setProjectConversations((current) => {
+        const next = {...current};
+        openProjectIDs.forEach((projectID, index) => {
+          next[projectID] = asArray(results[index]);
+        });
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [expandedProjectIDs, librariesRefreshTick]);
+
+  // The library a project belongs to, from the loaded tree. Empty when the
+  // project is unknown (dangling record) — callers treat that as no context.
+  function libraryIDForProject(projectID: string): string {
+    if (!projectID) {
+      return '';
+    }
+    for (const library of libraries) {
+      if (asArray(library.projects).some((project) => project.id === projectID)) {
+        return library.id;
+      }
+    }
+    return '';
+  }
+
+  // Flatten the library tree into move targets for the conversation ⋮ menu.
+  const moveTargets = useMemo(() => {
+    const targets: {projectID: string; label: string}[] = [];
+    for (const library of libraries) {
+      for (const project of asArray(library.projects)) {
+        targets.push({projectID: project.id, label: `${library.name} › ${project.name}`});
+      }
+    }
+    return targets;
+  }, [libraries]);
+
+  function bumpLibrariesRefresh() {
+    setLibrariesRefreshTick((tick) => tick + 1);
+  }
+
+  function startCreatingLibrary() {
+    env.setView('app');
+    setLibrariesOpen(true);
+    setCreatingLibrary(true);
+    setNewLibraryName('');
+  }
+
+  function startCreatingProject(library: main.LibrarySummary) {
+    env.setView('app');
+    setLibrariesOpen(true);
+    setExpandedLibraryIDs((current) => ({...current, [library.id]: true}));
+    lastExpandedLibraryIDRef.current = library.id;
+    setCreatingProjectLibraryID(library.id);
+    setNewProjectName('');
+  }
+
+  async function submitNewLibrary() {
+    const name = newLibraryName.trim();
+    setCreatingLibrary(false);
+    if (!name) {
+      return;
+    }
+    try {
+      await CreateLibrary(name);
+      setNewLibraryName('');
+      bumpLibrariesRefresh();
+    } catch (error) {
+      env.reportError(error);
+    }
+  }
+
+  async function submitNewProject(libraryID: string) {
+    const name = newProjectName.trim();
+    setCreatingProjectLibraryID('');
+    if (!name) {
+      return;
+    }
+    try {
+      await CreateProject(libraryID, name);
+      setNewProjectName('');
+      bumpLibrariesRefresh();
+    } catch (error) {
+      env.reportError(error);
+    }
+  }
+
+  function startEditingContainer(id: string, name: string) {
+    setOpenContainerMenuID('');
+    setEditingContainerID(id);
+    setEditingContainerName(name);
+  }
+
+  function cancelEditingContainer() {
+    setEditingContainerID('');
+    setEditingContainerName('');
+  }
+
+  async function saveContainerName() {
+    const id = editingContainerID;
+    const name = editingContainerName.trim();
+    cancelEditingContainer();
+    if (!id || !name) {
+      return;
+    }
+    try {
+      if (id.startsWith('lib_')) {
+        await RenameLibrary(id, name);
+      } else {
+        await RenameProject(id, name);
+      }
+      bumpLibrariesRefresh();
+    } catch (error) {
+      env.reportError(error);
+    }
+  }
+
+  // Opening/toggling a container ⋮ menu always disarms any pending delete
+  // confirmation, so the destructive second step can never linger into a
+  // different menu.
+  function toggleContainerMenu(id: string) {
+    setConfirmDeleteContainerID('');
+    setOpenContainerMenuID((current) => current === id ? '' : id);
+  }
+
+  // Deleting a library or project is a HARD delete — conversations and their
+  // artifacts leave the disk — so the ⋮ item is a two-step confirm showing
+  // what goes with it. The backend refuses while any member chat is running.
+  async function confirmDeleteContainer(id: string) {
+    if (containerBusy) {
+      return;
+    }
+    setContainerBusy(true);
+    setOpenContainerMenuID('');
+    setConfirmDeleteContainerID('');
+    try {
+      if (id.startsWith('lib_')) {
+        await DeleteLibrary(id);
+      } else {
+        await DeleteProject(id);
+      }
+      const remaining = await env.refreshConversations();
+      bumpLibrariesRefresh();
+      // Drop session drafts for conversations that no longer exist, and reset
+      // the view if the open conversation was deleted with its project.
+      const liveIDs = new Set(remaining.map((item) => item.id));
+      for (const draftID of Object.keys(env.composerDraftsRef.current)) {
+        if (draftID !== '' && !liveIDs.has(draftID)) {
+          delete env.composerDraftsRef.current[draftID];
+        }
+      }
+      if (env.activeConversationID && !liveIDs.has(env.activeConversationID)) {
+        await env.resetWorkspace();
+      }
+    } catch (error) {
+      env.reportError(error);
+    } finally {
+      setContainerBusy(false);
+    }
+  }
+
+  function toggleLibraryExpanded(libraryID: string) {
+    setExpandedLibraryIDs((current) => {
+      const open = !current[libraryID];
+      if (open) {
+        lastExpandedLibraryIDRef.current = libraryID;
+      }
+      return {...current, [libraryID]: open};
+    });
+  }
+
+  function toggleProjectExpanded(projectID: string) {
+    setExpandedProjectIDs((current) => ({...current, [projectID]: !current[projectID]}));
+  }
+
+  // New chat inside a project: resets the composer and stashes the project so
+  // the first send pins ChatRequest.projectId onto the new conversation.
+  async function startNewChatInProject(projectID: string, libraryID: string) {
+    const context = {projectID, libraryID};
+    lastProjectRef.current = context;
+    await env.resetWorkspace();
+    env.setPendingProject(context);
+  }
+
+  // The File-menu / ⌘N "New Conversation": FCP-style context awareness —
+  // keep composing in the pending project if one is already active, else the
+  // project of the conversation being viewed, else the last project the user
+  // worked in, else a standalone chat. startNewChatInProject preserves the
+  // context (resetWorkspace clears it, then this re-stashes it) — a plain
+  // startNewChat() here would silently drop the pending project.
+  function handleNewConversationAction() {
+    const pending = env.pendingProjectRef.current;
+    if (pending) {
+      void startNewChatInProject(pending.projectID, pending.libraryID);
+      return;
+    }
+    const context = env.activeConversationProjectID
+      ? {projectID: env.activeConversationProjectID, libraryID: libraryIDForProject(env.activeConversationProjectID)}
+      : lastProjectRef.current;
+    if (context && context.libraryID) {
+      void startNewChatInProject(context.projectID, context.libraryID);
+    } else {
+      void env.startNewChat();
+    }
+  }
+
+  // File → New Project…: target the last expanded (or first) library; with no
+  // library yet, fall through to the new-library input — a project needs a home.
+  function handleNewProjectAction() {
+    const targetLibraryID = lastExpandedLibraryIDRef.current
+      || asArray(libraries)[0]?.id
+      || '';
+    if (!targetLibraryID) {
+      startCreatingLibrary();
+      return;
+    }
+    const library = libraries.find((item) => item.id === targetLibraryID) ?? asArray(libraries)[0];
+    if (library) {
+      startCreatingProject(library);
+    }
+  }
+
+  async function moveConversation(conversation: main.ConversationSummary, projectID: string) {
+    env.closeConversationMenu();
+    try {
+      await MoveConversationToProject(conversation.id, projectID);
+      await env.refreshConversations();
+      bumpLibrariesRefresh();
+    } catch (error) {
+      env.reportError(error);
+    }
+  }
+
+  // Drop a conversation from every cached project listing — used when a
+  // conversation is archived from the main list or one of the project rows.
+  function forgetConversation(conversationID: string) {
+    setProjectConversations((current) => {
+      const next: Record<string, main.ConversationSummary[]> = {};
+      for (const [projectID, members] of Object.entries(current)) {
+        next[projectID] = members.filter((item) => item.id !== conversationID);
+      }
+      return next;
+    });
+  }
+
+  function toggleLibrariesOpen() {
+    setLibrariesOpen((open) => !open);
+  }
+
+  function cancelCreatingLibrary() {
+    setCreatingLibrary(false);
+    setNewLibraryName('');
+  }
+
+  function cancelCreatingProject() {
+    setCreatingProjectLibraryID('');
+    setNewProjectName('');
+  }
+
+  // Arms the two-step delete confirmation inside the open ⋮ menu;
+  // toggleContainerMenu and the confirming click disarm it again.
+  function armContainerDelete(id: string) {
+    setConfirmDeleteContainerID(id);
+  }
+
+  return {
+    libraries,
+    librariesOpen,
+    expandedLibraryIDs,
+    expandedProjectIDs,
+    projectConversations,
+    creatingLibrary,
+    newLibraryName,
+    creatingProjectLibraryID,
+    newProjectName,
+    editingContainerID,
+    editingContainerName,
+    openContainerMenuID,
+    confirmDeleteContainerID,
+    containerBusy,
+    moveTargets,
+    libraryIDForProject,
+    bumpLibrariesRefresh,
+    startCreatingLibrary,
+    startCreatingProject,
+    submitNewLibrary,
+    submitNewProject,
+    startEditingContainer,
+    cancelEditingContainer,
+    saveContainerName,
+    toggleContainerMenu,
+    confirmDeleteContainer,
+    toggleLibraryExpanded,
+    toggleProjectExpanded,
+    startNewChatInProject,
+    handleNewConversationAction,
+    handleNewProjectAction,
+    moveConversation,
+    forgetConversation,
+    toggleLibrariesOpen,
+    cancelCreatingLibrary,
+    cancelCreatingProject,
+    armContainerDelete,
+    // Field bindings for the tree's inline inputs (ContainerNameInput's
+    // onChange) — the one place raw setters are the natural API.
+    setNewLibraryName,
+    setNewProjectName,
+    setEditingContainerName,
+  };
+}
+
 function App() {
   const [baseURL, setBaseURL] = useState(defaultBaseURL);
   const [status, setStatus] = useState<main.OllamaStatus | null>(null);
@@ -449,40 +847,15 @@ function App() {
   const [historySearchTruncated, setHistorySearchTruncated] = useState(false);
   const historySearchSeqRef = useRef(0);
   const [activeConversationID, setActiveConversationID] = useState('');
-  // Libraries & projects (FCP-inspired tree): libraries state mirrors
-  // ListLibraries; expandedLibraryIDs/expandedProjectIDs drive the sidebar
-  // tree; projectConversations caches each expanded project's listing.
-  // librariesRefreshTick re-fetches both when a turn finishes or a mutation
-  // lands, the same role assetsRefreshTick plays for the assets panel.
-  const [libraries, setLibraries] = useState<main.LibrarySummary[]>([]);
-  const [librariesOpen, setLibrariesOpen] = useState(true);
-  const [expandedLibraryIDs, setExpandedLibraryIDs] = useState<Record<string, boolean>>({});
-  const [expandedProjectIDs, setExpandedProjectIDs] = useState<Record<string, boolean>>({});
-  const [projectConversations, setProjectConversations] = useState<Record<string, main.ConversationSummary[]>>({});
-  const [librariesRefreshTick, setLibrariesRefreshTick] = useState(0);
-  // Inline creation/rename state for the library tree; editingContainerID is
-  // the lib_/proj_ record being renamed (prefix tells the submitter which
-  // binding to call).
-  const [creatingLibrary, setCreatingLibrary] = useState(false);
-  const [newLibraryName, setNewLibraryName] = useState('');
-  const [creatingProjectLibraryID, setCreatingProjectLibraryID] = useState('');
-  const [newProjectName, setNewProjectName] = useState('');
-  const [editingContainerID, setEditingContainerID] = useState('');
-  const [editingContainerName, setEditingContainerName] = useState('');
-  const [openContainerMenuID, setOpenContainerMenuID] = useState('');
-  const [confirmDeleteContainerID, setConfirmDeleteContainerID] = useState('');
-  const [containerBusy, setContainerBusy] = useState(false);
   // pendingProject is the {projectID, libraryID} a NEW chat will be filed into
   // on its first send (ChatRequest.projectId). Set by "New chat" inside a
   // project; cleared once the conversation exists (the record carries its own
-  // membership from there) and when opening any existing conversation.
+  // membership from there) and when opening any existing conversation. The
+  // library tree's own state and actions live in the useLibraries hook.
   const [pendingProject, setPendingProject] = useState<{projectID: string; libraryID: string} | null>(null);
-  // Mirror refs: the File-menu event subscriptions and the ⌘N keydown listener
-  // run with empty deps, and executeChatStream reads the pending project at
-  // send time — both need current values, not first-render captures.
+  // Mirror ref for the empty-deps menu/keyboard listeners and the send path,
+  // which read the pending project synchronously rather than from state.
   const pendingProjectRef = useRef<{projectID: string; libraryID: string} | null>(null);
-  const lastProjectRef = useRef<{projectID: string; libraryID: string} | null>(null);
-  const lastExpandedLibraryIDRef = useRef('');
   // Assets panel: closed by default; lists the active conversation's derived
   // media assets (ListConversationAssets) — or, when the conversation is
   // project-scoped, every asset in its library (ListLibraryAssets).
@@ -524,94 +897,12 @@ function App() {
   }, [activeConversationID, assetsRefreshTick]);
   useEffect(() => {
     pendingProjectRef.current = pendingProject;
-    if (pendingProject) {
-      lastProjectRef.current = pendingProject;
-    }
   }, [pendingProject]);
-  // The library a project belongs to, from the loaded tree. Empty when the
-  // project is unknown (dangling record) — callers treat that as no context.
-  function libraryIDForProject(projectID: string): string {
-    if (!projectID) {
-      return '';
-    }
-    for (const library of libraries) {
-      if (asArray(library.projects).some((project) => project.id === projectID)) {
-        return library.id;
-      }
-    }
-    return '';
-  }
-  // The project the ACTIVE conversation belongs to (from its summary), and the
-  // library scope the composer + assets panel use: the pending project while
-  // composing a new chat inside one, else the active conversation's project.
+  // The project the ACTIVE conversation belongs to (from its summary). Feeds
+  // the useLibraries env, the composer's library scope, and the mention pool.
   const activeConversationProjectID = activeConversationID
     ? conversations.find((item) => item.id === activeConversationID)?.projectId ?? ''
     : '';
-  const composerLibraryID = pendingProject?.libraryID
-    || (activeConversationProjectID ? libraryIDForProject(activeConversationProjectID) : '');
-  // Library-scoped assets refresh like the conversation's do: the fold derives
-  // from persisted history, so a finished turn's artifacts need a re-fetch.
-  useEffect(() => {
-    if (!composerLibraryID) {
-      setLibraryAssets([]);
-      return;
-    }
-    let cancelled = false;
-    ListLibraryAssets(composerLibraryID)
-      .then((assets) => {
-        if (!cancelled) setLibraryAssets(asArray(assets));
-      })
-      .catch(() => {
-        if (!cancelled) setLibraryAssets([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [composerLibraryID, assetsRefreshTick]);
-  // Library tree: fetch on mount and whenever a turn finishes or a mutation
-  // lands (librariesRefreshTick). Pure setters, safe from empty-deps event
-  // handlers via the tick.
-  useEffect(() => {
-    let cancelled = false;
-    ListLibraries()
-      .then((items) => {
-        if (!cancelled) setLibraries(asArray(items));
-      })
-      .catch(() => {
-        if (!cancelled) setLibraries([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [librariesRefreshTick]);
-  // Expanded projects' conversation listings refresh with the tree. Collapse
-  // drops stale entries from the cache on the next expand via the same fetch.
-  useEffect(() => {
-    const openProjectIDs = Object.entries(expandedProjectIDs)
-      .filter(([, open]) => open)
-      .map(([projectID]) => projectID);
-    if (!openProjectIDs.length) {
-      return;
-    }
-    let cancelled = false;
-    Promise.all(openProjectIDs.map((projectID) =>
-      ListProjectConversations(projectID).catch(() => [] as main.ConversationSummary[]),
-    )).then((results) => {
-      if (cancelled) {
-        return;
-      }
-      setProjectConversations((current) => {
-        const next = {...current};
-        openProjectIDs.forEach((projectID, index) => {
-          next[projectID] = asArray(results[index]);
-        });
-        return next;
-      });
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [expandedProjectIDs, librariesRefreshTick]);
   // Re-roll the empty-screen greeting whenever the transcript becomes empty or
   // the active conversation changes, so a fresh prompt shows each time.
   const chatIsEmpty = chat.length === 0;
@@ -689,6 +980,62 @@ function App() {
   const activeConversationIDRef = useRef('');
   const copyResetRef = useRef<number | null>(null);
 
+  // The Libraries & projects sidebar tree — data, expansion/creation/rename/
+  // delete state, and every tree action — lives in the useLibraries hook;
+  // App destructures the same names its JSX uses. Everything crossing the
+  // boundary (error surfacing, conversation refresh, workspace reset, the
+  // composer's pending project) arrives via env, so the hook never reaches
+  // into App state.
+  const {
+    libraries, librariesOpen, expandedLibraryIDs, expandedProjectIDs, projectConversations,
+    creatingLibrary, newLibraryName, creatingProjectLibraryID, newProjectName,
+    editingContainerID, editingContainerName, openContainerMenuID, confirmDeleteContainerID, containerBusy,
+    moveTargets, libraryIDForProject, bumpLibrariesRefresh,
+    startCreatingLibrary, startCreatingProject, submitNewLibrary, submitNewProject,
+    startEditingContainer, cancelEditingContainer, saveContainerName, toggleContainerMenu,
+    confirmDeleteContainer, toggleLibraryExpanded, toggleProjectExpanded,
+    startNewChatInProject, handleNewConversationAction, handleNewProjectAction, moveConversation,
+    forgetConversation, toggleLibrariesOpen, cancelCreatingLibrary, cancelCreatingProject, armContainerDelete,
+    setNewLibraryName, setNewProjectName, setEditingContainerName,
+  } = useLibraries({
+    activeConversationID,
+    activeConversationProjectID,
+    closeConversationMenu: () => setOpenHistoryMenuID(''),
+    composerDraftsRef,
+    pendingProjectRef,
+    refreshConversations,
+    reportError: (error) => setStartupError(formatError(error)),
+    resetWorkspace,
+    setPendingProject,
+    setView,
+    startNewChat,
+  });
+
+  // The library scope the composer + assets panel use: the pending project
+  // while composing a new chat inside one, else the active conversation's
+  // project.
+  const composerLibraryID = pendingProject?.libraryID
+    || (activeConversationProjectID ? libraryIDForProject(activeConversationProjectID) : '');
+  // Library-scoped assets refresh like the conversation's do: the fold derives
+  // from persisted history, so a finished turn's artifacts need a re-fetch.
+  useEffect(() => {
+    if (!composerLibraryID) {
+      setLibraryAssets([]);
+      return;
+    }
+    let cancelled = false;
+    ListLibraryAssets(composerLibraryID)
+      .then((assets) => {
+        if (!cancelled) setLibraryAssets(asArray(assets));
+      })
+      .catch(() => {
+        if (!cancelled) setLibraryAssets([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [composerLibraryID, assetsRefreshTick]);
+
   const assistantEntryID = activeStream ? `assistant-${activeStream}` : '';
   // The standalone chats list hides project-scoped conversations — they live
   // under their library's project rows instead, so they are never orphaned in
@@ -720,17 +1067,6 @@ function App() {
     const list = [...byID.values()];
     return composerLibraryID ? list : list.reverse();
   }, [composerLibraryID, libraryAssets, conversationAssets]);
-
-  // Flatten the library tree into move targets for the conversation ⋮ menu.
-  const moveTargets = useMemo(() => {
-    const targets: {projectID: string; label: string}[] = [];
-    for (const library of libraries) {
-      for (const project of asArray(library.projects)) {
-        targets.push({projectID: project.id, label: `${library.name} › ${project.name}`});
-      }
-    }
-    return targets;
-  }, [libraries]);
 
   // Names for the toolbar breadcrumb and composer chip: the library (and
   // project) the current composition is scoped to.
@@ -1040,9 +1376,11 @@ function App() {
         }
         // The finished turn's artifacts are now in history — re-derive the
         // asset list (and the library tree, whose project listings may have
-        // gained a conversation) so an open panel shows them.
+        // gained a conversation) so an open panel shows them. The bump closure
+        // only touches a stable useState setter, so this empty-deps listener
+        // never goes stale — the same reason refreshConversations is safe here.
         setAssetsRefreshTick((tick) => tick + 1);
-        setLibrariesRefreshTick((tick) => tick + 1);
+        bumpLibrariesRefresh();
       }
       if (chunk.conversationId && isVisibleStream) {
         setActiveConversationID(chunk.conversationId);
@@ -1578,204 +1916,6 @@ function App() {
     }
   }
 
-  // ---- Libraries & projects (FCP-inspired sidebar tree) ----
-
-  function bumpLibrariesRefresh() {
-    setLibrariesRefreshTick((tick) => tick + 1);
-  }
-
-  function startCreatingLibrary() {
-    setView('app');
-    setLibrariesOpen(true);
-    setCreatingLibrary(true);
-    setNewLibraryName('');
-  }
-
-  function startCreatingProject(library: main.LibrarySummary) {
-    setView('app');
-    setLibrariesOpen(true);
-    setExpandedLibraryIDs((current) => ({...current, [library.id]: true}));
-    lastExpandedLibraryIDRef.current = library.id;
-    setCreatingProjectLibraryID(library.id);
-    setNewProjectName('');
-  }
-
-  async function submitNewLibrary() {
-    const name = newLibraryName.trim();
-    setCreatingLibrary(false);
-    if (!name) {
-      return;
-    }
-    try {
-      await CreateLibrary(name);
-      setNewLibraryName('');
-      bumpLibrariesRefresh();
-    } catch (error) {
-      setStartupError(formatError(error));
-    }
-  }
-
-  async function submitNewProject(libraryID: string) {
-    const name = newProjectName.trim();
-    setCreatingProjectLibraryID('');
-    if (!name) {
-      return;
-    }
-    try {
-      await CreateProject(libraryID, name);
-      setNewProjectName('');
-      bumpLibrariesRefresh();
-    } catch (error) {
-      setStartupError(formatError(error));
-    }
-  }
-
-  function startEditingContainer(id: string, name: string) {
-    setOpenContainerMenuID('');
-    setEditingContainerID(id);
-    setEditingContainerName(name);
-  }
-
-  function cancelEditingContainer() {
-    setEditingContainerID('');
-    setEditingContainerName('');
-  }
-
-  async function saveContainerName() {
-    const id = editingContainerID;
-    const name = editingContainerName.trim();
-    cancelEditingContainer();
-    if (!id || !name) {
-      return;
-    }
-    try {
-      if (id.startsWith('lib_')) {
-        await RenameLibrary(id, name);
-      } else {
-        await RenameProject(id, name);
-      }
-      bumpLibrariesRefresh();
-    } catch (error) {
-      setStartupError(formatError(error));
-    }
-  }
-
-  // Opening/toggling a container ⋮ menu always disarms any pending delete
-  // confirmation, so the destructive second step can never linger into a
-  // different menu.
-  function toggleContainerMenu(id: string) {
-    setConfirmDeleteContainerID('');
-    setOpenContainerMenuID((current) => current === id ? '' : id);
-  }
-
-  // Deleting a library or project is a HARD delete — conversations and their
-  // artifacts leave the disk — so the ⋮ item is a two-step confirm showing
-  // what goes with it. The backend refuses while any member chat is running.
-  async function confirmDeleteContainer(id: string) {
-    if (containerBusy) {
-      return;
-    }
-    setContainerBusy(true);
-    setOpenContainerMenuID('');
-    setConfirmDeleteContainerID('');
-    try {
-      if (id.startsWith('lib_')) {
-        await DeleteLibrary(id);
-      } else {
-        await DeleteProject(id);
-      }
-      const remaining = await refreshConversations();
-      bumpLibrariesRefresh();
-      // Drop session drafts for conversations that no longer exist, and reset
-      // the view if the open conversation was deleted with its project.
-      const liveIDs = new Set(remaining.map((item) => item.id));
-      for (const draftID of Object.keys(composerDraftsRef.current)) {
-        if (draftID !== '' && !liveIDs.has(draftID)) {
-          delete composerDraftsRef.current[draftID];
-        }
-      }
-      if (activeConversationID && !liveIDs.has(activeConversationID)) {
-        await resetWorkspace();
-      }
-    } catch (error) {
-      setStartupError(formatError(error));
-    } finally {
-      setContainerBusy(false);
-    }
-  }
-
-  function toggleLibraryExpanded(libraryID: string) {
-    setExpandedLibraryIDs((current) => {
-      const open = !current[libraryID];
-      if (open) {
-        lastExpandedLibraryIDRef.current = libraryID;
-      }
-      return {...current, [libraryID]: open};
-    });
-  }
-
-  function toggleProjectExpanded(projectID: string) {
-    setExpandedProjectIDs((current) => ({...current, [projectID]: !current[projectID]}));
-  }
-
-  // New chat inside a project: resets the composer and stashes the project so
-  // the first send pins ChatRequest.projectId onto the new conversation.
-  async function startNewChatInProject(projectID: string, libraryID: string) {
-    const context = {projectID, libraryID};
-    lastProjectRef.current = context;
-    await resetWorkspace();
-    setPendingProject(context);
-  }
-
-  // The File-menu / ⌘N "New Conversation": FCP-style context awareness —
-  // keep composing in the pending project if one is already active, else the
-  // project of the conversation being viewed, else the last project the user
-  // worked in, else a standalone chat. startNewChatInProject preserves the
-  // context (resetWorkspace clears it, then this re-stashes it) — a plain
-  // startNewChat() here would silently drop the pending project.
-  function handleNewConversationAction() {
-    const pending = pendingProjectRef.current;
-    if (pending) {
-      void startNewChatInProject(pending.projectID, pending.libraryID);
-      return;
-    }
-    const context = activeConversationProjectID
-      ? {projectID: activeConversationProjectID, libraryID: libraryIDForProject(activeConversationProjectID)}
-      : lastProjectRef.current;
-    if (context && context.libraryID) {
-      void startNewChatInProject(context.projectID, context.libraryID);
-    } else {
-      void startNewChat();
-    }
-  }
-
-  // File → New Project…: target the last expanded (or first) library; with no
-  // library yet, fall through to the new-library input — a project needs a home.
-  function handleNewProjectAction() {
-    const targetLibraryID = lastExpandedLibraryIDRef.current
-      || asArray(libraries)[0]?.id
-      || '';
-    if (!targetLibraryID) {
-      startCreatingLibrary();
-      return;
-    }
-    const library = libraries.find((item) => item.id === targetLibraryID) ?? asArray(libraries)[0];
-    if (library) {
-      startCreatingProject(library);
-    }
-  }
-
-  async function moveConversation(conversation: main.ConversationSummary, projectID: string) {
-    setOpenHistoryMenuID('');
-    try {
-      await MoveConversationToProject(conversation.id, projectID);
-      await refreshConversations();
-      bumpLibrariesRefresh();
-    } catch (error) {
-      setStartupError(formatError(error));
-    }
-  }
-
   function showMoreConversations() {
     setHistoryExpanded(true);
     setVisibleHistoryCount((current) => Math.max(current, compactHistoryLimit) + expandedHistoryBatchSize);
@@ -2258,13 +2398,7 @@ function App() {
       await DeleteConversation(conversation.id);
       delete composerDraftsRef.current[conversation.id];
       setConversations((items) => asArray(items).filter((item) => item.id !== conversation.id));
-      setProjectConversations((current) => {
-        const next: Record<string, main.ConversationSummary[]> = {};
-        for (const [projectID, members] of Object.entries(current)) {
-          next[projectID] = members.filter((item) => item.id !== conversation.id);
-        }
-        return next;
-      });
+      forgetConversation(conversation.id);
       if (editingTitleID === conversation.id) {
         cancelEditingConversationTitle();
       }
@@ -2894,7 +3028,7 @@ function App() {
                       <button
                         type="button"
                         className="libraries-toggle"
-                        onClick={() => setLibrariesOpen((open) => !open)}
+                        onClick={toggleLibrariesOpen}
                         aria-expanded={librariesOpen}
                       >
                         <span className={`tree-chevron${librariesOpen ? ' open' : ''}`} aria-hidden="true">▸</span>
@@ -2918,10 +3052,7 @@ function App() {
                             placeholder="Library name…"
                             onChange={setNewLibraryName}
                             onSubmit={() => void submitNewLibrary()}
-                            onCancel={() => {
-                              setCreatingLibrary(false);
-                              setNewLibraryName('');
-                            }}
+                            onCancel={cancelCreatingLibrary}
                           />
                         ) : null}
                         {libraries.length ? libraries.map((library) => {
@@ -2977,7 +3108,7 @@ function App() {
                                             Delete library and everything in it?
                                           </button>
                                         ) : (
-                                          <button className="menu-danger" onClick={() => setConfirmDeleteContainerID(library.id)}>Delete…</button>
+                                          <button className="menu-danger" onClick={() => armContainerDelete(library.id)}>Delete…</button>
                                         )}
                                       </div>
                                     ) : null}
@@ -2992,10 +3123,7 @@ function App() {
                                       placeholder="Project name…"
                                       onChange={setNewProjectName}
                                       onSubmit={() => void submitNewProject(library.id)}
-                                      onCancel={() => {
-                                        setCreatingProjectLibraryID('');
-                                        setNewProjectName('');
-                                      }}
+                                      onCancel={cancelCreatingProject}
                                     />
                                   ) : null}
                                   {asArray(library.projects).map((project) => {
@@ -3050,7 +3178,7 @@ function App() {
                                                       Delete project and its chats?
                                                     </button>
                                                   ) : (
-                                                    <button className="menu-danger" onClick={() => setConfirmDeleteContainerID(project.id)}>Delete…</button>
+                                                    <button className="menu-danger" onClick={() => armContainerDelete(project.id)}>Delete…</button>
                                                   )}
                                                 </div>
                                               ) : null}
