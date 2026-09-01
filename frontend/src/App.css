@@ -324,14 +324,26 @@
   text-align: center;
 }
 
+/* Static column: the chats list and the libraries tree each scroll on their
+   own, in a fixed 70/30 split of the height, so expanding one never resizes
+   or pushes the other out of view. */
 .history-area {
   min-height: 0;
   display: flex;
   flex: 1;
   flex-direction: column;
   gap: 4px;
-  overflow: auto;
+  overflow: hidden;
   padding-right: 2px;
+}
+
+.history-chats {
+  flex: 7 1 0;
+  min-height: 96px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
 }
 
 .section-label {
@@ -2654,6 +2666,23 @@ button:disabled {
   flex-direction: column;
   gap: 4px;
   margin-top: 14px;
+  flex: 3 1 0;
+  min-height: 120px;
+}
+
+/* Collapsed, the section is just its header and yields all height to chats. */
+.libraries-section.collapsed {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+.libraries-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
 }
 
 .libraries-header {

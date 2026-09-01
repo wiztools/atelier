@@ -2974,9 +2974,9 @@ function App() {
               ) : null}
             </nav>
 
-            <div className="history-area" onScroll={handleHistoryScroll}>
+            <div className="history-area">
               {historyQuery.trim() ? (
-                <>
+                <div className="history-chats">
                   <div className="section-label">{historySearchBusy ? 'Searching…' : 'Results'}</div>
                   {historySearchError ? (
                     <div className="history-empty">{historySearchError}</div>
@@ -3008,22 +3008,24 @@ function App() {
                   {historySearchTruncated ? (
                     <div className="history-empty">Older matches hidden — refine the query to narrow results.</div>
                   ) : null}
-                </>
+                </div>
               ) : (
                 <>
-                  <div className="section-label">Chats</div>
-                  {conversationList.length ? (
-                    visibleConversations.map(renderConversationRow)
-                  ) : (
-                    <div className="history-empty">No conversations yet.</div>
-                  )}
-                  {hasMoreConversations ? (
-                    <button className="history-more" onClick={showMoreConversations}>
-                      More
-                    </button>
-                  ) : null}
+                  <div className="history-chats" onScroll={handleHistoryScroll}>
+                    <div className="section-label">Chats</div>
+                    {conversationList.length ? (
+                      visibleConversations.map(renderConversationRow)
+                    ) : (
+                      <div className="history-empty">No conversations yet.</div>
+                    )}
+                    {hasMoreConversations ? (
+                      <button className="history-more" onClick={showMoreConversations}>
+                        More
+                      </button>
+                    ) : null}
+                  </div>
 
-                  <div className="libraries-section">
+                  <div className={`libraries-section${librariesOpen ? '' : ' collapsed'}`}>
                     <div className="section-label libraries-header">
                       <button
                         type="button"
@@ -3045,7 +3047,7 @@ function App() {
                       </button>
                     </div>
                     {librariesOpen ? (
-                      <>
+                      <div className="libraries-body">
                         {creatingLibrary ? (
                           <ContainerNameInput
                             value={newLibraryName}
@@ -3209,7 +3211,7 @@ function App() {
                         }) : (!creatingLibrary ? (
                           <div className="history-empty">No libraries yet.</div>
                         ) : null)}
-                      </>
+                      </div>
                     ) : null}
                   </div>
                 </>
