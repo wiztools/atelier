@@ -27,6 +27,7 @@ func workspaceTestConfig(t *testing.T, home string) (AppConfig, string) {
 		Root:      filepath.Join(home, ".atelier"),
 		History:   filepath.Join(home, ".atelier", "history"),
 		Artifacts: filepath.Join(home, ".atelier", "history"),
+		Libraries: filepath.Join(home, ".atelier", "libraries"),
 	}
 	config.Tools.Filesystem.Root = root
 	if err := os.MkdirAll(root, 0755); err != nil {

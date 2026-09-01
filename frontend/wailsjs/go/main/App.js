@@ -26,8 +26,24 @@ export function ClearOpenAICompatibleAPIKey() {
   return window['go']['main']['App']['ClearOpenAICompatibleAPIKey']();
 }
 
+export function CreateLibrary(arg1) {
+  return window['go']['main']['App']['CreateLibrary'](arg1);
+}
+
+export function CreateProject(arg1, arg2) {
+  return window['go']['main']['App']['CreateProject'](arg1, arg2);
+}
+
 export function DeleteConversation(arg1) {
   return window['go']['main']['App']['DeleteConversation'](arg1);
+}
+
+export function DeleteLibrary(arg1) {
+  return window['go']['main']['App']['DeleteLibrary'](arg1);
+}
+
+export function DeleteProject(arg1) {
+  return window['go']['main']['App']['DeleteProject'](arg1);
 }
 
 export function ExecuteTool(arg1) {
@@ -122,6 +138,14 @@ export function ListFalVideoUpscaleModels() {
   return window['go']['main']['App']['ListFalVideoUpscaleModels']();
 }
 
+export function ListLibraries() {
+  return window['go']['main']['App']['ListLibraries']();
+}
+
+export function ListLibraryAssets(arg1) {
+  return window['go']['main']['App']['ListLibraryAssets'](arg1);
+}
+
 export function ListModels(arg1) {
   return window['go']['main']['App']['ListModels'](arg1);
 }
@@ -134,8 +158,16 @@ export function ListPrimaryModels(arg1, arg2) {
   return window['go']['main']['App']['ListPrimaryModels'](arg1, arg2);
 }
 
+export function ListProjectConversations(arg1) {
+  return window['go']['main']['App']['ListProjectConversations'](arg1);
+}
+
 export function ListToolFiles(arg1) {
   return window['go']['main']['App']['ListToolFiles'](arg1);
+}
+
+export function MoveConversationToProject(arg1, arg2) {
+  return window['go']['main']['App']['MoveConversationToProject'](arg1, arg2);
 }
 
 export function PurgeArchivedConversations() {
@@ -148,6 +180,14 @@ export function RandomEmptyStatePrompt() {
 
 export function ReadToolFile(arg1) {
   return window['go']['main']['App']['ReadToolFile'](arg1);
+}
+
+export function RenameLibrary(arg1, arg2) {
+  return window['go']['main']['App']['RenameLibrary'](arg1, arg2);
+}
+
+export function RenameProject(arg1, arg2) {
+  return window['go']['main']['App']['RenameProject'](arg1, arg2);
 }
 
 export function ResolveToolPermission(arg1, arg2) {

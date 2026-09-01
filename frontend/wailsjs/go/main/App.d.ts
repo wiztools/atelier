@@ -14,7 +14,15 @@ export function ChooseToolWorkspace(arg1:string):Promise<string>;
 
 export function ClearOpenAICompatibleAPIKey():Promise<void>;
 
+export function CreateLibrary(arg1:string):Promise<main.LibrarySummary>;
+
+export function CreateProject(arg1:string,arg2:string):Promise<main.ProjectSummary>;
+
 export function DeleteConversation(arg1:string):Promise<void>;
+
+export function DeleteLibrary(arg1:string):Promise<main.DeleteLibraryResult>;
+
+export function DeleteProject(arg1:string):Promise<main.DeleteProjectResult>;
 
 export function ExecuteTool(arg1:main.ToolExecutionRequest):Promise<main.HarnessToolResult>;
 
@@ -62,19 +70,31 @@ export function ListFalVideoMotionModels():Promise<Array<main.FalModel>>;
 
 export function ListFalVideoUpscaleModels():Promise<Array<main.FalModel>>;
 
+export function ListLibraries():Promise<Array<main.LibrarySummary>>;
+
+export function ListLibraryAssets(arg1:string):Promise<Array<main.ConversationAsset>>;
+
 export function ListModels(arg1:string):Promise<Array<main.OllamaModel>>;
 
 export function ListOpenAICompatibleModels(arg1:string):Promise<Array<string>>;
 
 export function ListPrimaryModels(arg1:string,arg2:string):Promise<Array<main.ModelInfo>>;
 
+export function ListProjectConversations(arg1:string):Promise<Array<main.ConversationSummary>>;
+
 export function ListToolFiles(arg1:main.ToolFileListRequest):Promise<main.ToolFileListResult>;
+
+export function MoveConversationToProject(arg1:string,arg2:string):Promise<main.ConversationSummary>;
 
 export function PurgeArchivedConversations():Promise<main.PurgeArchivedResult>;
 
 export function RandomEmptyStatePrompt():Promise<main.EmptyStatePrompt>;
 
 export function ReadToolFile(arg1:main.ToolFileReadRequest):Promise<main.ToolFileReadResult>;
+
+export function RenameLibrary(arg1:string,arg2:string):Promise<main.LibrarySummary>;
+
+export function RenameProject(arg1:string,arg2:string):Promise<main.ProjectSummary>;
 
 export function ResolveToolPermission(arg1:string,arg2:boolean):Promise<void>;
 

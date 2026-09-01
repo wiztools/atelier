@@ -798,7 +798,10 @@ func latestAttachedVideosForTurn(req ChatRequest, storage ConfigStorage) []strin
 func resolveTurnMedia(req ChatRequest, storage ConfigStorage) (images, videos, audios []string) {
 	referenced := referencedMedia{}
 	if len(req.ReferencedAssetIDs) > 0 {
-		referenced = resolveReferencedAssets(storage, req.ConversationID, req.ReferencedAssetIDs)
+		// No fallback project here: by run time the user turn is persisted and
+		// the conversation record carries its own ProjectID, which
+		// resolveReferencedAssets reads from the loaded detail.
+		referenced = resolveReferencedAssets(storage, req.ConversationID, "", req.ReferencedAssetIDs)
 	}
 	images = append(latestUserImages(req.Messages), referenced.images...)
 	videos = append(latestUserVideoURLs(req.Messages), referenced.videos...)

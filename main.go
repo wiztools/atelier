@@ -7,6 +7,7 @@ import (
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/menu"
+	"github.com/wailsapp/wails/v2/pkg/menu/keys"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
@@ -46,6 +47,26 @@ func main() {
 
 	appMenu := menu.NewMenuFromItems(
 		menu.AppMenu(),
+		// File holds the creation actions (new conversation, library, project).
+		// The clicks emit atelier:menu-new-* events; the frontend owns the
+		// flows — see the menuNew* handlers in app.go.
+		menu.SubMenu("File", menu.NewMenuFromItems(
+			&menu.MenuItem{
+				Label:       "New Conversation",
+				Accelerator: keys.CmdOrCtrl("n"),
+				Click:       func(*menu.CallbackData) { app.menuNewConversation() },
+			},
+			&menu.MenuItem{
+				Label:       "New Library…",
+				Accelerator: keys.Combo("l", keys.ShiftKey, keys.CmdOrCtrlKey),
+				Click:       func(*menu.CallbackData) { app.menuNewLibrary() },
+			},
+			&menu.MenuItem{
+				Label:       "New Project…",
+				Accelerator: keys.Combo("p", keys.ShiftKey, keys.CmdOrCtrlKey),
+				Click:       func(*menu.CallbackData) { app.menuNewProject() },
+			},
+		)),
 		menu.EditMenu(),
 		menu.WindowMenu(),
 		// "Check for Updates…" lives under Help rather than the app menu:

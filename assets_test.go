@@ -150,7 +150,7 @@ func TestResolveReferencedAssetsKindsOrderAndUnknown(t *testing.T) {
 	writeAssetFile(t, storage, "2026/08/conv_ref1", "artifacts/legacy_r4.wav", string(minimalMentionWAV))
 	writeAssetFile(t, storage, "2026/08/conv_ref1", "artifacts/vid_r3.mp4", string([]byte{0x00, 0x00, 0x00, 0x08, 'f', 't', 'y', 'p', 'm', 'p', '4', '2'}))
 
-	got := resolveReferencedAssets(storage, "conv_ref1", []string{"aud_r2", "img_r1", "nope", "artifacts/legacy_r4.wav", "", "vid_r3"})
+	got := resolveReferencedAssets(storage, "conv_ref1", "", []string{"aud_r2", "img_r1", "nope", "artifacts/legacy_r4.wav", "", "vid_r3"})
 	if len(got.audios) != 2 || len(got.images) != 1 || len(got.videos) != 1 {
 		t.Fatalf("per-kind counts = img:%d aud:%d vid:%d, want img:1 aud:2 vid:1", len(got.images), len(got.audios), len(got.videos))
 	}
@@ -183,17 +183,17 @@ func TestResolveReferencedAssetsSkipsMissingAndEmpty(t *testing.T) {
 		),
 	)
 
-	got := resolveReferencedAssets(storage, "conv_ref2", []string{"img_gone"})
+	got := resolveReferencedAssets(storage, "conv_ref2", "", []string{"img_gone"})
 	if len(got.images) != 0 || len(got.entries) != 0 {
 		t.Fatalf("missing-file mention resolved to img:%d entries:%d, want none", len(got.images), len(got.entries))
 	}
-	if other := resolveReferencedAssets(storage, "conv_ref2", nil); len(other.entries) != 0 {
+	if other := resolveReferencedAssets(storage, "conv_ref2", "", nil); len(other.entries) != 0 {
 		t.Fatal("no IDs must resolve nothing")
 	}
-	if other := resolveReferencedAssets(storage, "", []string{"img_gone"}); len(other.entries) != 0 {
+	if other := resolveReferencedAssets(storage, "", "", []string{"img_gone"}); len(other.entries) != 0 {
 		t.Fatal("empty conversation ID must resolve nothing")
 	}
-	if other := resolveReferencedAssets(storage, "conv_nope", []string{"img_gone"}); len(other.entries) != 0 {
+	if other := resolveReferencedAssets(storage, "conv_nope", "", []string{"img_gone"}); len(other.entries) != 0 {
 		t.Fatal("unknown conversation must resolve nothing, not fail")
 	}
 }

@@ -36,19 +36,24 @@ const defaultOpenAICompatibleBaseURL = "http://localhost:8080"
 const defaultOllamaNumCtx = 8192
 
 type App struct {
-	ctx             context.Context
-	client          *http.Client
-	updateClient    *http.Client
-	baseURL         string
-	configMu        sync.Mutex
-	streams         map[string]context.CancelFunc
-	streamsMu       sync.Mutex
-	permissions     map[string]chan bool
-	permissionsMu   sync.Mutex
-	toolPermission  func(context.Context, ToolPermissionRequestEvent) ToolPermissionDecision
-	updatesMu       sync.Mutex
-	lastUpdate      *updateManifest
-	updaterQuitting atomic.Bool
+	ctx          context.Context
+	client       *http.Client
+	updateClient *http.Client
+	baseURL      string
+	configMu     sync.Mutex
+	streams      map[string]context.CancelFunc
+	// streamConversations mirrors streams keyed the same (requestID), holding
+	// the conversationID each active stream is writing to — the signal the
+	// library/project delete and move guards need, since a stream in flight
+	// during a hard delete would resurrect turns into a removed directory.
+	streamConversations map[string]string
+	streamsMu           sync.Mutex
+	permissions         map[string]chan bool
+	permissionsMu       sync.Mutex
+	toolPermission      func(context.Context, ToolPermissionRequestEvent) ToolPermissionDecision
+	updatesMu           sync.Mutex
+	lastUpdate          *updateManifest
+	updaterQuitting     atomic.Bool
 }
 
 func NewApp() *App {
@@ -63,9 +68,10 @@ func NewApp() *App {
 		updateClient: &http.Client{
 			Timeout: 10 * time.Minute,
 		},
-		baseURL:     defaultOllamaBaseURL,
-		streams:     map[string]context.CancelFunc{},
-		permissions: map[string]chan bool{},
+		baseURL:             defaultOllamaBaseURL,
+		streams:             map[string]context.CancelFunc{},
+		streamConversations: map[string]string{},
+		permissions:         map[string]chan bool{},
 	}
 	app.toolPermission = app.requestToolPermission
 	return app
@@ -132,6 +138,10 @@ type ConfigStorage struct {
 	Root      string `json:"root"`
 	History   string `json:"history"`
 	Artifacts string `json:"artifacts"`
+	// Libraries is where library/project records live (see libraries.go).
+	// Media never moves into it — assets stay in conversation dirs and
+	// library listings fold across conversations.
+	Libraries string `json:"libraries"`
 }
 
 type ConfigProviders struct {
@@ -371,6 +381,13 @@ type ChatRequest struct {
 	// conversation (turn 2+) this field is ignored — the record's Workspace
 	// wins. Empty falls back to the configured default root.
 	Workspace string `json:"workspace,omitempty"`
+	// ProjectID assigns a NEW conversation (ConversationID empty) to a library
+	// project. Read once at creation and persisted onto the conversation
+	// record, immutable afterwards — same lifecycle as Workspace. For an
+	// existing conversation the field is ignored; the record's ProjectID wins.
+	// Must reference an existing project or the turn fails before anything is
+	// persisted (resolveTurnProject). Empty means a standalone conversation.
+	ProjectID string `json:"projectId,omitempty"`
 	// ReferencedAssetIDs carries the @-mentioned asset IDs for this turn —
 	// ConversationAsset IDs from ListConversationAssets. The harness resolves
 	// each ID to its artifact and delivers the media through the tool
@@ -693,6 +710,11 @@ type ConversationSummary struct {
 	// against. Empty for legacy conversations created before per-conversation
 	// workspaces; the UI falls back to the configured default root.
 	Workspace string `json:"workspace,omitempty"`
+	// ProjectID is the library project this conversation belongs to; empty
+	// means standalone. Pinned at creation from ChatRequest.ProjectID and
+	// immutable afterwards (MoveConversationToProject is the one sanctioned
+	// rewrite). No schema bump: absent and empty both read as standalone.
+	ProjectID string `json:"projectId,omitempty"`
 }
 
 type ConversationDetail struct {
@@ -720,6 +742,11 @@ type HistoryConversation struct {
 	// against. Set at creation and never changed. SchemaVersion 2+ guarantees
 	// this is populated; SchemaVersion 1 records are backfilled on resume.
 	Workspace string `json:"workspace,omitempty"`
+	// ProjectID is the library project this conversation belongs to; empty
+	// means standalone. Pinned at creation from ChatRequest.ProjectID and
+	// immutable afterwards (MoveConversationToProject is the one sanctioned
+	// rewrite). No schema bump: absent and empty both read as standalone.
+	ProjectID string `json:"projectId,omitempty"`
 }
 
 type HistoryProvider struct {
@@ -993,6 +1020,157 @@ func (a *App) UpdateConversationTitle(conversationID string, title string) (Conv
 	return updateConversationTitle(config.Storage, conversationID, title)
 }
 
+// CreateLibrary creates a top-level library container (see libraries.go).
+func (a *App) CreateLibrary(name string) (LibrarySummary, error) {
+	config, err := loadReadyConfig()
+	if err != nil {
+		return LibrarySummary{}, err
+	}
+	return createLibrary(config.Storage, name)
+}
+
+// ListLibraries returns every library with its projects, name-sorted, for the
+// sidebar's Libraries tree.
+func (a *App) ListLibraries() ([]LibrarySummary, error) {
+	config, err := loadReadyConfig()
+	if err != nil {
+		return nil, err
+	}
+	return listLibraries(config.Storage)
+}
+
+func (a *App) RenameLibrary(libraryID string, name string) (LibrarySummary, error) {
+	config, err := loadReadyConfig()
+	if err != nil {
+		return LibrarySummary{}, err
+	}
+	return renameLibrary(config.Storage, libraryID, name)
+}
+
+// DeleteLibrary hard-deletes a library, its projects, and every conversation
+// in them — Final Cut's trash, no recovery. Refused while any member
+// conversation is streaming: an in-flight append would write turns into a
+// directory this call just removed.
+func (a *App) DeleteLibrary(libraryID string) (DeleteLibraryResult, error) {
+	config, err := loadReadyConfig()
+	if err != nil {
+		return DeleteLibraryResult{}, err
+	}
+	projectIDs, err := libraryProjectIDs(config.Storage, libraryID)
+	if err != nil {
+		return DeleteLibraryResult{}, err
+	}
+	if a.conversationsStreamingInProjects(config.Storage, projectIDs) {
+		return DeleteLibraryResult{}, errors.New("a conversation in this library is still running; wait for it to finish before deleting")
+	}
+	return deleteLibrary(config.Storage, libraryID)
+}
+
+func (a *App) CreateProject(libraryID string, name string) (ProjectSummary, error) {
+	config, err := loadReadyConfig()
+	if err != nil {
+		return ProjectSummary{}, err
+	}
+	return createProject(config.Storage, libraryID, name)
+}
+
+func (a *App) RenameProject(projectID string, name string) (ProjectSummary, error) {
+	config, err := loadReadyConfig()
+	if err != nil {
+		return ProjectSummary{}, err
+	}
+	return renameProject(config.Storage, projectID, name)
+}
+
+// DeleteProject hard-deletes a project and every conversation in it, with the
+// same streaming refusal as DeleteLibrary.
+func (a *App) DeleteProject(projectID string) (DeleteProjectResult, error) {
+	config, err := loadReadyConfig()
+	if err != nil {
+		return DeleteProjectResult{}, err
+	}
+	if a.conversationsStreamingInProjects(config.Storage, map[string]bool{projectID: true}) {
+		return DeleteProjectResult{}, errors.New("a conversation in this project is still running; wait for it to finish before deleting")
+	}
+	return deleteProject(config.Storage, projectID)
+}
+
+// ListProjectConversations returns the project's conversations, newest-first,
+// for the sidebar's project rows. Not recency-capped — these conversations are
+// filtered out of the standalone list, so this is their only listing.
+func (a *App) ListProjectConversations(projectID string) ([]ConversationSummary, error) {
+	config, err := loadReadyConfig()
+	if err != nil {
+		return nil, err
+	}
+	return listProjectConversations(config.Storage, projectID)
+}
+
+// ListLibraryAssets folds every conversation in the library's projects into
+// one asset list — uploads and generated media alike — for the library assets
+// panel and the @-mention picker.
+func (a *App) ListLibraryAssets(libraryID string) ([]ConversationAsset, error) {
+	config, err := loadReadyConfig()
+	if err != nil {
+		return nil, err
+	}
+	return listLibraryAssets(config.Storage, libraryID)
+}
+
+// MoveConversationToProject reassigns a conversation to a project, or detaches
+// it to standalone when projectID is empty. Refused while the conversation is
+// streaming — the append path rewrites conversation.json from its own load,
+// and a concurrent move would clobber one of the two writes.
+func (a *App) MoveConversationToProject(conversationID string, projectID string) (ConversationSummary, error) {
+	config, err := loadReadyConfig()
+	if err != nil {
+		return ConversationSummary{}, err
+	}
+	if a.conversationStreaming(conversationID) {
+		return ConversationSummary{}, errors.New("this conversation is still running; wait for it to finish before moving it")
+	}
+	return moveConversationToProject(config.Storage, conversationID, projectID)
+}
+
+// conversationsStreamingInProjects reports whether any conversation belonging
+// to one of projectIDs has an active stream. On a walk error it falls back to
+// anyStreamActive — deletion is destructive, so uncertainty blocks rather
+// than allows.
+func (a *App) conversationsStreamingInProjects(storage ConfigStorage, projectIDs map[string]bool) bool {
+	ids, err := projectConversationIDs(storage, projectIDs)
+	if err != nil {
+		return a.anyStreamActive()
+	}
+	if len(ids) == 0 {
+		return false
+	}
+	a.streamsMu.Lock()
+	defer a.streamsMu.Unlock()
+	active := make(map[string]bool, len(a.streamConversations))
+	for _, conversationID := range a.streamConversations {
+		active[conversationID] = true
+	}
+	for _, id := range ids {
+		if active[id] {
+			return true
+		}
+	}
+	return false
+}
+
+// conversationStreaming reports whether this one conversation has an active
+// stream.
+func (a *App) conversationStreaming(conversationID string) bool {
+	a.streamsMu.Lock()
+	defer a.streamsMu.Unlock()
+	for _, id := range a.streamConversations {
+		if id == conversationID {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *App) SetOllamaBaseURL(baseURL string) error {
 	normalized, err := normalizeBaseURL(baseURL)
 	if err != nil {
@@ -1018,6 +1196,27 @@ func (a *App) CheckForUpdates() UpdateStatus {
 // the same banner the automatic check does.
 func (a *App) menuCheckForUpdates() {
 	_ = a.checkForUpdates(a.ctx, true)
+}
+
+// The File-menu creation actions are pure frontend navigation: the menu click
+// lands in Go (Wails menu handlers), so each emits a dedicated event and the
+// UI drives its inline creation flow from it — no Go-side dialogs, no new
+// bindings. menuNewConversation is context-aware on the frontend side: a
+// pending in-project chat when the user is working inside a project (FCP's
+// ⌘N-acts-on-the-selected-container), else a standalone chat.
+func (a *App) menuNewConversation() { a.emitMenuAction("atelier:menu-new-conversation") }
+
+// menuNewLibrary routes File → New Library… to the sidebar's inline input.
+func (a *App) menuNewLibrary() { a.emitMenuAction("atelier:menu-new-library") }
+
+// menuNewProject routes File → New Project… to the inline input under the
+// currently expanded (or first) library; the frontend picks the target.
+func (a *App) menuNewProject() { a.emitMenuAction("atelier:menu-new-project") }
+
+func (a *App) emitMenuAction(event string) {
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, event)
+	}
 }
 
 // InstallUpdate installs the update found by the last check: download,
@@ -1191,6 +1390,11 @@ func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Fail an unknown project before anything is persisted (see
+	// resolveTurnProject) — same fail-early posture as the provider check.
+	if _, err := resolveTurnProject(config, req); err != nil {
+		return nil, err
+	}
 	// Resolve the conversation's immutable workspace and make it the engine's
 	// filesystem-tool root before construction. The registry (cached per
 	// engine), the filesystem layer, and the harness/triage prompts all read it
@@ -1225,12 +1429,14 @@ func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {
 	streamCtx, cancel := context.WithCancel(context.Background())
 	a.streamsMu.Lock()
 	a.streams[requestID] = cancel
+	a.streamConversations[requestID] = conversationID
 	a.streamsMu.Unlock()
 
 	go func() {
 		defer func() {
 			a.streamsMu.Lock()
 			delete(a.streams, requestID)
+			delete(a.streamConversations, requestID)
 			a.streamsMu.Unlock()
 		}()
 		engine.RunChatStream(streamCtx, requestID, req, true)
@@ -1508,6 +1714,23 @@ func decodeVideoPayload(video string) ([]byte, string, error) {
 	return data, extension, nil
 }
 
+// contentArtifactPath resolves a HistoryContent entry's artifact path to an
+// absolute filesystem path. Entries written by their own conversation carry a
+// path relative to that conversation's directory; entries persisted as
+// references to OTHER conversations' library assets carry an absolute path
+// (see resolveReferencedAssets) and skip the conversation lookup entirely.
+func contentArtifactPath(storage ConfigStorage, conversationID string, content HistoryContent) (string, error) {
+	resolved := filepath.FromSlash(strings.TrimSpace(content.Path))
+	if filepath.IsAbs(resolved) {
+		return resolved, nil
+	}
+	conversationPath, err := findConversationPath(storage, conversationID)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(conversationPath), resolved), nil
+}
+
 // readArtifactAsDataURL resolves a persisted image artifact (referenced by
 // relative Path in a HistoryContent entry) to its bytes on disk and re-encodes
 // them as a base64 data URL — the shape AttachedImage consumers (fal/Ollama)
@@ -1517,11 +1740,10 @@ func decodeVideoPayload(video string) ([]byte, string, error) {
 // to re-attach on every message. Path resolution mirrors hydrateHistoryContent;
 // bytes are read directly rather than going through getConversation's hydration.
 func readArtifactAsDataURL(storage ConfigStorage, conversationID string, content HistoryContent) (string, error) {
-	conversationPath, err := findConversationPath(storage, conversationID)
+	absPath, err := contentArtifactPath(storage, conversationID, content)
 	if err != nil {
 		return "", err
 	}
-	absPath := filepath.Join(filepath.Dir(conversationPath), filepath.FromSlash(content.Path))
 	data, err := os.ReadFile(absPath)
 	if err != nil {
 		return "", err
@@ -1544,11 +1766,10 @@ func readArtifactAsDataURL(storage ConfigStorage, conversationID string, content
 // the current turn has no attachment, so transcribe_audio works across turns
 // without forcing the user to re-attach on every message.
 func readAudioArtifactAsDataURL(storage ConfigStorage, conversationID string, content HistoryContent) (string, error) {
-	conversationPath, err := findConversationPath(storage, conversationID)
+	absPath, err := contentArtifactPath(storage, conversationID, content)
 	if err != nil {
 		return "", err
 	}
-	absPath := filepath.Join(filepath.Dir(conversationPath), filepath.FromSlash(content.Path))
 	data, err := os.ReadFile(absPath)
 	if err != nil {
 		return "", err
@@ -1574,6 +1795,10 @@ func (a *App) writeChatConversation(req ChatRequest, assistantContent, assistant
 	}
 	config, err := loadReadyConfig()
 	if err != nil {
+		return "", err
+	}
+	// Same fail-early project validation as StreamChat (see resolveTurnProject).
+	if _, err := resolveTurnProject(config, req); err != nil {
 		return "", err
 	}
 	// Apply the same per-conversation workspace override as StreamChat so this
@@ -2427,6 +2652,25 @@ func resolveTurnWorkspace(config AppConfig, req ChatRequest) (string, error) {
 	return readConversationWorkspace(config.Storage, req.ConversationID, config.Tools.Filesystem.Root)
 }
 
+// resolveTurnProject validates the project a NEW conversation is being assigned
+// to. Like resolveTurnWorkspace it only reads the request on turn 1 — for an
+// existing conversation the record's ProjectID is already the truth and the
+// request field is ignored — but unlike the workspace there is nothing to
+// resolve: an empty projectID means standalone, a non-empty one must reference
+// an existing project or the turn fails before anything is persisted. A wrong
+// ID is a UI bug (the composer only offers real projects), so failing loudly
+// beats silently filing the conversation as standalone.
+func resolveTurnProject(config AppConfig, req ChatRequest) (string, error) {
+	projectID := strings.TrimSpace(req.ProjectID)
+	if projectID == "" || strings.TrimSpace(req.ConversationID) != "" {
+		return "", nil
+	}
+	if _, _, err := findProject(config.Storage, projectID); err != nil {
+		return "", err
+	}
+	return projectID, nil
+}
+
 // readConversationWorkspace loads a conversation record solely to read its
 // workspace root. Legacy SchemaVersion 1 records (no Workspace) are backfilled
 // to defaultWorkspace so a conversation resumed for the first time after the
@@ -2483,6 +2727,7 @@ func defaultAppConfig() AppConfig {
 			Root:      root,
 			History:   history,
 			Artifacts: history,
+			Libraries: filepath.Join(root, "libraries"),
 		},
 		Providers: ConfigProviders{
 			Ollama: ConfigOllama{
@@ -2747,6 +2992,7 @@ func mergeStorageConfig(storage ConfigStorage, defaults ConfigStorage) ConfigSto
 	storage.Root = normalizeStoragePath(storage.Root)
 	storage.History = normalizeStoragePath(storage.History)
 	storage.Artifacts = normalizeStoragePath(storage.Artifacts)
+	storage.Libraries = normalizeStoragePath(storage.Libraries)
 	if storage.Root == "" {
 		storage.Root = defaults.Root
 	}
@@ -2755,6 +3001,9 @@ func mergeStorageConfig(storage ConfigStorage, defaults ConfigStorage) ConfigSto
 	}
 	if storage.Artifacts == "" {
 		storage.Artifacts = storage.History
+	}
+	if storage.Libraries == "" {
+		storage.Libraries = filepath.Join(storage.Root, "libraries")
 	}
 	return storage
 }
@@ -2785,9 +3034,16 @@ func ensureStorageDirs(storage ConfigStorage) error {
 		storage.Root,
 		storage.History,
 		storage.Artifacts,
+		storage.Libraries,
 		filepath.Join(storage.History, "conversations"),
 		filepath.Join(storage.History, "indexes"),
 	} {
+		// An empty entry is an unconfigured path, not one to create — merged
+		// configs always fill these (see mergeStorageConfig); hand-built
+		// partial configs (tests) may set only the dirs they use.
+		if path == "" {
+			continue
+		}
 		if err := os.MkdirAll(path, 0755); err != nil {
 			return err
 		}
@@ -2825,9 +3081,10 @@ func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, 
 			ArtifactCount: countMessageAttachments([]ChatMessage{lastUserMessage(req.Messages)}),
 		},
 		Workspace: config.Tools.Filesystem.Root,
+		ProjectID: strings.TrimSpace(req.ProjectID),
 	}
 
-	userTurn, assistantTurn, err := buildChatTurnPair(workspace.ID, 1, nowText, req, assistantContent, assistantThinking, model, provider, reason, tokens, workspace.ArtifactsDir, config.Storage, run)
+	userTurn, assistantTurn, err := buildChatTurnPair(workspace.ID, 1, nowText, req, assistantContent, assistantThinking, model, provider, reason, tokens, workspace.ArtifactsDir, config.Storage, run, strings.TrimSpace(req.ProjectID))
 	if err != nil {
 		return "", err
 	}
@@ -2868,8 +3125,9 @@ func writePendingChatConversation(config AppConfig, req ChatRequest) (string, er
 			ArtifactCount: countMessageAttachments([]ChatMessage{lastUserMessage(req.Messages)}),
 		},
 		Workspace: config.Tools.Filesystem.Root,
+		ProjectID: strings.TrimSpace(req.ProjectID),
 	}
-	userTurn, err := buildChatUserTurn(workspace.ID, 1, nowText, req, workspace.ArtifactsDir, config.Storage)
+	userTurn, err := buildChatUserTurn(workspace.ID, 1, nowText, req, workspace.ArtifactsDir, config.Storage, strings.TrimSpace(req.ProjectID))
 	if err != nil {
 		return "", err
 	}
@@ -2880,8 +3138,8 @@ func writePendingChatConversation(config AppConfig, req ChatRequest) (string, er
 	return workspace.ID, nil
 }
 
-func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt string, req ChatRequest, assistantContent, assistantThinking, model, provider, reason string, tokens int, artifactsDir string, storage ConfigStorage, run HarnessRun) (HistoryTurn, HistoryTurn, error) {
-	userTurn, err := buildChatUserTurn(conversationID, firstTurnNumber, createdAt, req, artifactsDir, storage)
+func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt string, req ChatRequest, assistantContent, assistantThinking, model, provider, reason string, tokens int, artifactsDir string, storage ConfigStorage, run HarnessRun, projectID string) (HistoryTurn, HistoryTurn, error) {
+	userTurn, err := buildChatUserTurn(conversationID, firstTurnNumber, createdAt, req, artifactsDir, storage, projectID)
 	if err != nil {
 		return HistoryTurn{}, HistoryTurn{}, err
 	}
@@ -2889,7 +3147,12 @@ func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt str
 	return userTurn, assistantTurn, nil
 }
 
-func buildChatUserTurn(conversationID string, turnNumber int, createdAt string, req ChatRequest, artifactsDir string, storage ConfigStorage) (HistoryTurn, error) {
+// buildChatUserTurn persists the user's turn. projectID is the conversation's
+// project — req.ProjectID on the creation paths (turn 1, before the record
+// exists) and the loaded record's ProjectID on appends — so @-mention
+// resolution can widen into the library even on the very first turn, when the
+// conversation being built is not yet on disk for getConversation to read.
+func buildChatUserTurn(conversationID string, turnNumber int, createdAt string, req ChatRequest, artifactsDir string, storage ConfigStorage, projectID string) (HistoryTurn, error) {
 	userContent, err := historyContentForMessage(lastUserMessage(req.Messages), artifactsDir)
 	if err != nil {
 		return HistoryTurn{}, err
@@ -2897,10 +3160,12 @@ func buildChatUserTurn(conversationID string, turnNumber int, createdAt string, 
 	// @-mentioned assets are persisted as references to the existing artifact
 	// entries — same ArtifactID and relative Path, no byte copy — so the next
 	// turn's latest-wins history walk sees what the user cited rather than an
-	// older artifact. On a brand-new conversation there is nothing to resolve
-	// and this is a no-op.
+	// older artifact. Mentions of library assets from OTHER conversations
+	// persist with an absolute Path (see resolveReferencedAssets). On a
+	// brand-new conversation there is nothing local to resolve, but a project
+	// context can still resolve library-wide mentions.
 	if len(req.ReferencedAssetIDs) > 0 {
-		userContent = append(userContent, resolveReferencedAssets(storage, conversationID, req.ReferencedAssetIDs).entries...)
+		userContent = append(userContent, resolveReferencedAssets(storage, conversationID, projectID, req.ReferencedAssetIDs).entries...)
 	}
 	userTurn := HistoryTurn{
 		SchemaVersion:  1,
@@ -2964,7 +3229,7 @@ func appendChatConversation(config AppConfig, req ChatRequest, assistantContent,
 		return "", err
 	}
 	nowText := time.Now().Format(time.RFC3339)
-	userTurn, assistantTurn, err := buildChatTurnPair(conversationID, loaded.NextTurnNumber, nowText, req, assistantContent, assistantThinking, model, provider, reason, tokens, loaded.ArtifactsDir, config.Storage, run)
+	userTurn, assistantTurn, err := buildChatTurnPair(conversationID, loaded.NextTurnNumber, nowText, req, assistantContent, assistantThinking, model, provider, reason, tokens, loaded.ArtifactsDir, config.Storage, run, loaded.Conversation.ProjectID)
 	if err != nil {
 		return "", err
 	}
@@ -2992,7 +3257,7 @@ func appendChatUserTurn(config AppConfig, req ChatRequest) (string, error) {
 		return "", err
 	}
 	nowText := time.Now().Format(time.RFC3339)
-	userTurn, err := buildChatUserTurn(conversationID, loaded.NextTurnNumber, nowText, req, loaded.ArtifactsDir, config.Storage)
+	userTurn, err := buildChatUserTurn(conversationID, loaded.NextTurnNumber, nowText, req, loaded.ArtifactsDir, config.Storage, loaded.Conversation.ProjectID)
 	if err != nil {
 		return "", err
 	}
@@ -3378,18 +3643,24 @@ func getConversation(storage ConfigStorage, conversationID string) (Conversation
 	if err != nil {
 		return ConversationDetail{}, err
 	}
+	return getConversationAt(conversationPath)
+}
 
+// getConversationAt is getConversation for a caller that already knows the
+// conversation.json path (the library asset fold walks the tree and hands
+// paths straight through, skipping the per-conversation find walk).
+func getConversationAt(conversationPath string) (ConversationDetail, error) {
 	var conversation HistoryConversation
 	if err := readJSONFile(conversationPath, &conversation); err != nil {
 		return ConversationDetail{}, err
 	}
 	if conversation.DeletedAt != "" {
-		return ConversationDetail{}, fmt.Errorf("conversation %s is deleted", conversationID)
+		return ConversationDetail{}, fmt.Errorf("conversation %s is deleted", conversation.ID)
 	}
 
 	turnsDir := filepath.Join(filepath.Dir(conversationPath), "turns")
 	turns := []HistoryTurn{}
-	err = filepath.WalkDir(turnsDir, func(path string, entry os.DirEntry, err error) error {
+	err := filepath.WalkDir(turnsDir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -3579,12 +3850,16 @@ func hydrateHistoryContent(conversationDir string, contents []HistoryContent) []
 	hydrated := make([]HistoryContent, 0, len(contents))
 	for _, content := range contents {
 		// Image, video, and audio artifacts are all stored on disk and served by
-		// the asset handler; resolve their relative path to an /atelier-artifact
-		// URL.
+		// the asset handler; resolve their path to an /atelier-artifact URL.
+		// Library-asset references carry absolute paths; local artifacts are
+		// relative to the conversation directory.
 		if (content.Type == "image" || content.Type == "video" || content.Type == "audio") && content.Path != "" && !strings.HasPrefix(content.Path, "data:") {
-			absPath := filepath.Join(conversationDir, filepath.FromSlash(content.Path))
-			if _, err := os.Stat(absPath); err == nil {
-				content.Text = "/atelier-artifact" + absPath
+			resolved := filepath.FromSlash(content.Path)
+			if !filepath.IsAbs(resolved) {
+				resolved = filepath.Join(conversationDir, resolved)
+			}
+			if _, err := os.Stat(resolved); err == nil {
+				content.Text = "/atelier-artifact" + resolved
 			}
 		}
 		hydrated = append(hydrated, content)
@@ -3666,11 +3941,10 @@ func lastUserPrompt(messages []ChatMessage) string {
 // attachment, so video-dependent tools work across turns without forcing the
 // user to re-attach on every message.
 func readVideoArtifactAsDataURL(storage ConfigStorage, conversationID string, content HistoryContent) (string, error) {
-	conversationPath, err := findConversationPath(storage, conversationID)
+	absPath, err := contentArtifactPath(storage, conversationID, content)
 	if err != nil {
 		return "", err
 	}
-	absPath := filepath.Join(filepath.Dir(conversationPath), filepath.FromSlash(content.Path))
 	data, err := os.ReadFile(absPath)
 	if err != nil {
 		return "", err

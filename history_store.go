@@ -144,5 +144,6 @@ func conversationSummaryFrom(conversation HistoryConversation) ConversationSumma
 		TurnCount:     conversation.Stats.TurnCount,
 		ArtifactCount: conversation.Stats.ArtifactCount,
 		Workspace:     conversation.Workspace,
+		ProjectID:     conversation.ProjectID,
 	}
 }

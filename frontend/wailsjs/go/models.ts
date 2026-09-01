@@ -332,6 +332,7 @@ export namespace main {
 	    root: string;
 	    history: string;
 	    artifacts: string;
+	    libraries: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigStorage(source);
@@ -342,6 +343,7 @@ export namespace main {
 	        this.root = source["root"];
 	        this.history = source["history"];
 	        this.artifacts = source["artifacts"];
+	        this.libraries = source["libraries"];
 	    }
 	}
 	export class AppConfig {
@@ -490,6 +492,7 @@ export namespace main {
 	    format?: any;
 	    tools?: any[];
 	    workspace?: string;
+	    projectId?: string;
 	    referencedAssetIds?: string[];
 	
 	    static createFrom(source: any = {}) {
@@ -511,6 +514,7 @@ export namespace main {
 	        this.format = source["format"];
 	        this.tools = source["tools"];
 	        this.workspace = source["workspace"];
+	        this.projectId = source["projectId"];
 	        this.referencedAssetIds = source["referencedAssetIds"];
 	    }
 	
@@ -573,6 +577,7 @@ export namespace main {
 	    originTurnId: string;
 	    role: string;
 	    createdAt?: string;
+	    conversationTitle?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConversationAsset(source);
@@ -590,6 +595,7 @@ export namespace main {
 	        this.originTurnId = source["originTurnId"];
 	        this.role = source["role"];
 	        this.createdAt = source["createdAt"];
+	        this.conversationTitle = source["conversationTitle"];
 	    }
 	}
 	export class HistoryContent {
@@ -724,6 +730,7 @@ export namespace main {
 	    defaults: HistoryDefaults;
 	    stats: HistoryConversationStats;
 	    workspace?: string;
+	    projectId?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new HistoryConversation(source);
@@ -742,6 +749,7 @@ export namespace main {
 	        this.defaults = this.convertValues(source["defaults"], HistoryDefaults);
 	        this.stats = this.convertValues(source["stats"], HistoryConversationStats);
 	        this.workspace = source["workspace"];
+	        this.projectId = source["projectId"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -826,6 +834,7 @@ export namespace main {
 	    turnCount: number;
 	    artifactCount: number;
 	    workspace?: string;
+	    projectId?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConversationSummary(source);
@@ -842,6 +851,7 @@ export namespace main {
 	        this.turnCount = source["turnCount"];
 	        this.artifactCount = source["artifactCount"];
 	        this.workspace = source["workspace"];
+	        this.projectId = source["projectId"];
 	    }
 	}
 	export class ConversationSearchResult {
@@ -879,6 +889,36 @@ export namespace main {
 		}
 	}
 	
+	export class DeleteLibraryResult {
+	    deletedProjects: number;
+	    deletedConversations: number;
+	    deletedAssets: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeleteLibraryResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.deletedProjects = source["deletedProjects"];
+	        this.deletedConversations = source["deletedConversations"];
+	        this.deletedAssets = source["deletedAssets"];
+	    }
+	}
+	export class DeleteProjectResult {
+	    deletedConversations: number;
+	    deletedAssets: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeleteProjectResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.deletedConversations = source["deletedConversations"];
+	        this.deletedAssets = source["deletedAssets"];
+	    }
+	}
 	export class EmptyStatePrompt {
 	    heading: string;
 	    sub: string;
@@ -1013,6 +1053,64 @@ export namespace main {
 	
 	
 	
+	export class ProjectSummary {
+	    id: string;
+	    libraryId: string;
+	    name: string;
+	    createdAt: string;
+	    updatedAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProjectSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.libraryId = source["libraryId"];
+	        this.name = source["name"];
+	        this.createdAt = source["createdAt"];
+	        this.updatedAt = source["updatedAt"];
+	    }
+	}
+	export class LibrarySummary {
+	    id: string;
+	    name: string;
+	    createdAt: string;
+	    updatedAt: string;
+	    projects: ProjectSummary[];
+	
+	    static createFrom(source: any = {}) {
+	        return new LibrarySummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.createdAt = source["createdAt"];
+	        this.updatedAt = source["updatedAt"];
+	        this.projects = this.convertValues(source["projects"], ProjectSummary);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class ModelInfo {
 	    provider: string;
 	    id: string;
@@ -1075,6 +1173,7 @@ export namespace main {
 	        this.error = source["error"];
 	    }
 	}
+	
 	export class PurgeArchivedResult {
 	    deletedConversations: number;
 	    deletedAssets: number;

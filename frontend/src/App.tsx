@@ -9,7 +9,11 @@ import {
   CheckOllama,
   ChooseToolWorkspace,
   ClearOpenAICompatibleAPIKey,
+  CreateLibrary,
+  CreateProject,
   DeleteConversation,
+  DeleteLibrary,
+  DeleteProject,
   GetConversation,
   GetConfig,
   HasFalAPIKey,
@@ -32,11 +36,17 @@ import {
   ListFalUpscaleModels,
   ListFalLipsyncImageModels,
   ListFalLipsyncVideoModels,
+  ListLibraries,
+  ListLibraryAssets,
   ListModels,
   ListOpenAICompatibleModels,
   ListPrimaryModels,
+  ListProjectConversations,
+  MoveConversationToProject,
   PurgeArchivedConversations,
   RandomEmptyStatePrompt,
+  RenameLibrary,
+  RenameProject,
   ResolveToolPermission,
   SaveImage,
   SearchConversations,
@@ -439,14 +449,50 @@ function App() {
   const [historySearchTruncated, setHistorySearchTruncated] = useState(false);
   const historySearchSeqRef = useRef(0);
   const [activeConversationID, setActiveConversationID] = useState('');
+  // Libraries & projects (FCP-inspired tree): libraries state mirrors
+  // ListLibraries; expandedLibraryIDs/expandedProjectIDs drive the sidebar
+  // tree; projectConversations caches each expanded project's listing.
+  // librariesRefreshTick re-fetches both when a turn finishes or a mutation
+  // lands, the same role assetsRefreshTick plays for the assets panel.
+  const [libraries, setLibraries] = useState<main.LibrarySummary[]>([]);
+  const [librariesOpen, setLibrariesOpen] = useState(true);
+  const [expandedLibraryIDs, setExpandedLibraryIDs] = useState<Record<string, boolean>>({});
+  const [expandedProjectIDs, setExpandedProjectIDs] = useState<Record<string, boolean>>({});
+  const [projectConversations, setProjectConversations] = useState<Record<string, main.ConversationSummary[]>>({});
+  const [librariesRefreshTick, setLibrariesRefreshTick] = useState(0);
+  // Inline creation/rename state for the library tree; editingContainerID is
+  // the lib_/proj_ record being renamed (prefix tells the submitter which
+  // binding to call).
+  const [creatingLibrary, setCreatingLibrary] = useState(false);
+  const [newLibraryName, setNewLibraryName] = useState('');
+  const [creatingProjectLibraryID, setCreatingProjectLibraryID] = useState('');
+  const [newProjectName, setNewProjectName] = useState('');
+  const [editingContainerID, setEditingContainerID] = useState('');
+  const [editingContainerName, setEditingContainerName] = useState('');
+  const [openContainerMenuID, setOpenContainerMenuID] = useState('');
+  const [confirmDeleteContainerID, setConfirmDeleteContainerID] = useState('');
+  const [containerBusy, setContainerBusy] = useState(false);
+  // pendingProject is the {projectID, libraryID} a NEW chat will be filed into
+  // on its first send (ChatRequest.projectId). Set by "New chat" inside a
+  // project; cleared once the conversation exists (the record carries its own
+  // membership from there) and when opening any existing conversation.
+  const [pendingProject, setPendingProject] = useState<{projectID: string; libraryID: string} | null>(null);
+  // Mirror refs: the File-menu event subscriptions and the ⌘N keydown listener
+  // run with empty deps, and executeChatStream reads the pending project at
+  // send time — both need current values, not first-render captures.
+  const pendingProjectRef = useRef<{projectID: string; libraryID: string} | null>(null);
+  const lastProjectRef = useRef<{projectID: string; libraryID: string} | null>(null);
+  const lastExpandedLibraryIDRef = useRef('');
   // Assets panel: closed by default; lists the active conversation's derived
-  // media assets (ListConversationAssets). assetsRefreshTick re-runs the fetch
-  // when a turn finishes — the index derives from persisted history, so it
-  // lags until the turn is saved.
+  // media assets (ListConversationAssets) — or, when the conversation is
+  // project-scoped, every asset in its library (ListLibraryAssets).
+  // assetsRefreshTick re-runs the fetch when a turn finishes — the index
+  // derives from persisted history, so it lags until the turn is saved.
   const [assetsPanelOpen, setAssetsPanelOpen] = useState(false);
   const [assetsWidth, setAssetsWidth] = useState(loadAssetsPanelWidth);
   const [resizingAssets, setResizingAssets] = useState(false);
   const [conversationAssets, setConversationAssets] = useState<main.ConversationAsset[]>([]);
+  const [libraryAssets, setLibraryAssets] = useState<main.ConversationAsset[]>([]);
   const [assetsRefreshTick, setAssetsRefreshTick] = useState(0);
   // Accepted asset mentions ({label, id}) from the current composition. Ref,
   // not state: read synchronously at send time, cleared on send and on
@@ -476,6 +522,96 @@ function App() {
       cancelled = true;
     };
   }, [activeConversationID, assetsRefreshTick]);
+  useEffect(() => {
+    pendingProjectRef.current = pendingProject;
+    if (pendingProject) {
+      lastProjectRef.current = pendingProject;
+    }
+  }, [pendingProject]);
+  // The library a project belongs to, from the loaded tree. Empty when the
+  // project is unknown (dangling record) — callers treat that as no context.
+  function libraryIDForProject(projectID: string): string {
+    if (!projectID) {
+      return '';
+    }
+    for (const library of libraries) {
+      if (asArray(library.projects).some((project) => project.id === projectID)) {
+        return library.id;
+      }
+    }
+    return '';
+  }
+  // The project the ACTIVE conversation belongs to (from its summary), and the
+  // library scope the composer + assets panel use: the pending project while
+  // composing a new chat inside one, else the active conversation's project.
+  const activeConversationProjectID = activeConversationID
+    ? conversations.find((item) => item.id === activeConversationID)?.projectId ?? ''
+    : '';
+  const composerLibraryID = pendingProject?.libraryID
+    || (activeConversationProjectID ? libraryIDForProject(activeConversationProjectID) : '');
+  // Library-scoped assets refresh like the conversation's do: the fold derives
+  // from persisted history, so a finished turn's artifacts need a re-fetch.
+  useEffect(() => {
+    if (!composerLibraryID) {
+      setLibraryAssets([]);
+      return;
+    }
+    let cancelled = false;
+    ListLibraryAssets(composerLibraryID)
+      .then((assets) => {
+        if (!cancelled) setLibraryAssets(asArray(assets));
+      })
+      .catch(() => {
+        if (!cancelled) setLibraryAssets([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [composerLibraryID, assetsRefreshTick]);
+  // Library tree: fetch on mount and whenever a turn finishes or a mutation
+  // lands (librariesRefreshTick). Pure setters, safe from empty-deps event
+  // handlers via the tick.
+  useEffect(() => {
+    let cancelled = false;
+    ListLibraries()
+      .then((items) => {
+        if (!cancelled) setLibraries(asArray(items));
+      })
+      .catch(() => {
+        if (!cancelled) setLibraries([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [librariesRefreshTick]);
+  // Expanded projects' conversation listings refresh with the tree. Collapse
+  // drops stale entries from the cache on the next expand via the same fetch.
+  useEffect(() => {
+    const openProjectIDs = Object.entries(expandedProjectIDs)
+      .filter(([, open]) => open)
+      .map(([projectID]) => projectID);
+    if (!openProjectIDs.length) {
+      return;
+    }
+    let cancelled = false;
+    Promise.all(openProjectIDs.map((projectID) =>
+      ListProjectConversations(projectID).catch(() => [] as main.ConversationSummary[]),
+    )).then((results) => {
+      if (cancelled) {
+        return;
+      }
+      setProjectConversations((current) => {
+        const next = {...current};
+        openProjectIDs.forEach((projectID, index) => {
+          next[projectID] = asArray(results[index]);
+        });
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [expandedProjectIDs, librariesRefreshTick]);
   // Re-roll the empty-screen greeting whenever the transcript becomes empty or
   // the active conversation changes, so a fresh prompt shows each time.
   const chatIsEmpty = chat.length === 0;
@@ -554,7 +690,10 @@ function App() {
   const copyResetRef = useRef<number | null>(null);
 
   const assistantEntryID = activeStream ? `assistant-${activeStream}` : '';
-  const conversationList = asArray(conversations);
+  // The standalone chats list hides project-scoped conversations — they live
+  // under their library's project rows instead, so they are never orphaned in
+  // neither place.
+  const conversationList = asArray(conversations).filter((item) => !item.projectId);
   const visibleConversations = historyExpanded
     ? conversationList.slice(0, visibleHistoryCount)
     : conversationList.slice(0, compactHistoryLimit);
@@ -566,16 +705,114 @@ function App() {
   const visibleHarnessRun = latestHarnessRun ?? null;
   const modelUsage = useMemo(() => summarizeModelUsage(chat), [chat]);
   const mediaUsage = useMemo(() => summarizeMediaUsage(chat), [chat]);
-  // Panel view of the asset list: deduped by ID (a @-mention re-reference
-  // adds another entry for the same artifact — keep the newest turn's) and
-  // newest first, the order a picker wants.
+  // Panel view of the asset list: library-scoped when the composer sits in a
+  // project context (every asset across the library's conversations), else the
+  // active conversation's own. Deduped by ID (a @-mention re-reference adds
+  // another entry for the same artifact — keep the newest turn's). The
+  // conversation listing arrives oldest-first (reversed to newest-first); the
+  // library fold already arrives newest-first.
   const panelAssets = useMemo(() => {
+    const source = composerLibraryID ? libraryAssets : conversationAssets;
     const byID = new Map<string, main.ConversationAsset>();
-    for (const asset of conversationAssets) {
+    for (const asset of source) {
       byID.set(asset.id, asset);
     }
-    return [...byID.values()].reverse();
-  }, [conversationAssets]);
+    const list = [...byID.values()];
+    return composerLibraryID ? list : list.reverse();
+  }, [composerLibraryID, libraryAssets, conversationAssets]);
+
+  // Flatten the library tree into move targets for the conversation ⋮ menu.
+  const moveTargets = useMemo(() => {
+    const targets: {projectID: string; label: string}[] = [];
+    for (const library of libraries) {
+      for (const project of asArray(library.projects)) {
+        targets.push({projectID: project.id, label: `${library.name} › ${project.name}`});
+      }
+    }
+    return targets;
+  }, [libraries]);
+
+  // Names for the toolbar breadcrumb and composer chip: the library (and
+  // project) the current composition is scoped to.
+  const composerProjectNames = useMemo(() => {
+    if (!composerLibraryID) {
+      return null;
+    }
+    const library = libraries.find((item) => item.id === composerLibraryID);
+    if (!library) {
+      return null;
+    }
+    const projectID = pendingProject?.projectID || activeConversationProjectID;
+    const project = projectID ? asArray(library.projects).find((item) => item.id === projectID) : undefined;
+    return {libraryName: library.name, projectName: project?.name ?? ''};
+  }, [composerLibraryID, libraries, pendingProject, activeConversationProjectID]);
+
+  // One conversation row, shared by the standalone chats list and the project
+  // listings: open/rename/archive behave identically; the ⋮ menu gains
+  // project-move targets (standalone rows) or a move-to-standalone action
+  // (project rows).
+  function renderConversationRow(conversation: main.ConversationSummary) {
+    const inFlight = inFlightConversations[conversation.id];
+    const selected = selectedConversationID === conversation.id;
+    const targets = conversation.projectId ? [] : moveTargets;
+    return (
+      <div key={conversation.id} className={`history-item${selected ? ' selected' : ''}`}>
+        {editingTitleID === conversation.id ? (
+          <input
+            value={editingTitle}
+            onChange={(event) => setEditingTitle(event.target.value)}
+            onBlur={() => saveConversationTitle(conversation)}
+            onKeyDown={(event) => handleConversationTitleKeyDown(event, conversation)}
+            autoFocus
+          />
+        ) : (
+          <>
+            <button className="history-open" onClick={() => openConversationSummary(conversation)} onDoubleClick={(event) => { event.preventDefault(); startEditingConversationTitle(conversation); }}>
+              <span>{conversation.title}</span>
+              <small
+                className={`history-kind${inFlight ? ' in-flight' : ''}`}
+                title={inFlight ? 'Running' : 'Chat'}
+                aria-label={inFlight ? 'Conversation running' : 'Chat conversation'}
+              >
+                {inFlight ? <span className="history-spinner" /> : '◌'}
+              </small>
+            </button>
+            <div className="history-actions">
+              <button
+                className="history-icon-button"
+                aria-label={`More actions for ${conversation.title}`}
+                title="More"
+                onClick={() => setOpenHistoryMenuID((current) => current === conversation.id ? '' : conversation.id)}
+              >
+                ⋮
+              </button>
+              {openHistoryMenuID === conversation.id ? (
+                <div className="history-menu">
+                  <button onClick={() => copyConversationID(conversation)}>
+                    {copiedConversationID === conversation.id ? '✓ Copied' : 'Copy ID'}
+                  </button>
+                  <button onClick={() => archiveConversation(conversation)}>Archive</button>
+                  {targets.length ? (
+                    <>
+                      <div className="history-menu-label">Move to project</div>
+                      {targets.map((target) => (
+                        <button key={target.projectID} onClick={() => void moveConversation(conversation, target.projectID)}>
+                          {target.label}
+                        </button>
+                      ))}
+                    </>
+                  ) : null}
+                  {conversation.projectId ? (
+                    <button onClick={() => void moveConversation(conversation, '')}>Move to standalone</button>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
 
   function markConversationInFlight(conversationID: string, requestID: string, kind: ConversationKind) {
     requestConversationRef.current[requestID] = {conversationID, kind};
@@ -797,8 +1034,10 @@ function App() {
           visibleStreamRef.current = null;
         }
         // The finished turn's artifacts are now in history — re-derive the
-        // asset list so an open assets panel shows them.
+        // asset list (and the library tree, whose project listings may have
+        // gained a conversation) so an open panel shows them.
         setAssetsRefreshTick((tick) => tick + 1);
+        setLibrariesRefreshTick((tick) => tick + 1);
       }
       if (chunk.conversationId && isVisibleStream) {
         setActiveConversationID(chunk.conversationId);
@@ -853,6 +1092,20 @@ function App() {
     };
     EventsOn('atelier:update-available', onUpdateAvailable);
     return () => EventsOff('atelier:update-available');
+  }, []);
+
+  // File-menu creation actions (main.go's File menu emits these; see the
+  // menuNew* handlers in app.go). The refs always point at the latest handler
+  // closures, so the empty-deps subscription never fires a stale one.
+  useEffect(() => {
+    EventsOn('atelier:menu-new-conversation', () => newConversationActionRef.current());
+    EventsOn('atelier:menu-new-library', () => newLibraryActionRef.current());
+    EventsOn('atelier:menu-new-project', () => newProjectActionRef.current());
+    return () => {
+      EventsOff('atelier:menu-new-conversation');
+      EventsOff('atelier:menu-new-library');
+      EventsOff('atelier:menu-new-project');
+    };
   }, []);
 
   async function resolveToolPermission(permissionID: string, approved: boolean) {
@@ -1320,6 +1573,215 @@ function App() {
     }
   }
 
+  // ---- Libraries & projects (FCP-inspired sidebar tree) ----
+
+  function bumpLibrariesRefresh() {
+    setLibrariesRefreshTick((tick) => tick + 1);
+  }
+
+  function startCreatingLibrary() {
+    setView('app');
+    setLibrariesOpen(true);
+    setCreatingLibrary(true);
+    setNewLibraryName('');
+  }
+
+  function startCreatingProject(library: main.LibrarySummary) {
+    setView('app');
+    setLibrariesOpen(true);
+    setExpandedLibraryIDs((current) => ({...current, [library.id]: true}));
+    lastExpandedLibraryIDRef.current = library.id;
+    setCreatingProjectLibraryID(library.id);
+    setNewProjectName('');
+  }
+
+  async function submitNewLibrary() {
+    const name = newLibraryName.trim();
+    setCreatingLibrary(false);
+    if (!name) {
+      return;
+    }
+    try {
+      await CreateLibrary(name);
+      setNewLibraryName('');
+      bumpLibrariesRefresh();
+    } catch (error) {
+      setStartupError(formatError(error));
+    }
+  }
+
+  async function submitNewProject(libraryID: string) {
+    const name = newProjectName.trim();
+    setCreatingProjectLibraryID('');
+    if (!name) {
+      return;
+    }
+    try {
+      await CreateProject(libraryID, name);
+      setNewProjectName('');
+      bumpLibrariesRefresh();
+    } catch (error) {
+      setStartupError(formatError(error));
+    }
+  }
+
+  function startEditingContainer(id: string, name: string) {
+    setOpenContainerMenuID('');
+    setEditingContainerID(id);
+    setEditingContainerName(name);
+  }
+
+  function cancelEditingContainer() {
+    setEditingContainerID('');
+    setEditingContainerName('');
+  }
+
+  async function saveContainerName() {
+    const id = editingContainerID;
+    const name = editingContainerName.trim();
+    cancelEditingContainer();
+    if (!id || !name) {
+      return;
+    }
+    try {
+      if (id.startsWith('lib_')) {
+        await RenameLibrary(id, name);
+      } else {
+        await RenameProject(id, name);
+      }
+      bumpLibrariesRefresh();
+    } catch (error) {
+      setStartupError(formatError(error));
+    }
+  }
+
+  function handleContainerNameKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      void saveContainerName();
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      cancelEditingContainer();
+    }
+  }
+
+  // Opening/toggling a container ⋮ menu always disarms any pending delete
+  // confirmation, so the destructive second step can never linger into a
+  // different menu.
+  function toggleContainerMenu(id: string) {
+    setConfirmDeleteContainerID('');
+    setOpenContainerMenuID((current) => current === id ? '' : id);
+  }
+
+  // Deleting a library or project is a HARD delete — conversations and their
+  // artifacts leave the disk — so the ⋮ item is a two-step confirm showing
+  // what goes with it. The backend refuses while any member chat is running.
+  async function confirmDeleteContainer(id: string) {
+    if (containerBusy) {
+      return;
+    }
+    setContainerBusy(true);
+    setOpenContainerMenuID('');
+    setConfirmDeleteContainerID('');
+    try {
+      if (id.startsWith('lib_')) {
+        await DeleteLibrary(id);
+      } else {
+        await DeleteProject(id);
+      }
+      const remaining = await refreshConversations();
+      bumpLibrariesRefresh();
+      // Drop session drafts for conversations that no longer exist, and reset
+      // the view if the open conversation was deleted with its project.
+      const liveIDs = new Set(remaining.map((item) => item.id));
+      for (const draftID of Object.keys(composerDraftsRef.current)) {
+        if (draftID !== '' && !liveIDs.has(draftID)) {
+          delete composerDraftsRef.current[draftID];
+        }
+      }
+      if (activeConversationID && !liveIDs.has(activeConversationID)) {
+        await resetWorkspace();
+      }
+    } catch (error) {
+      setStartupError(formatError(error));
+    } finally {
+      setContainerBusy(false);
+    }
+  }
+
+  function toggleLibraryExpanded(libraryID: string) {
+    setExpandedLibraryIDs((current) => {
+      const open = !current[libraryID];
+      if (open) {
+        lastExpandedLibraryIDRef.current = libraryID;
+      }
+      return {...current, [libraryID]: open};
+    });
+  }
+
+  function toggleProjectExpanded(projectID: string) {
+    setExpandedProjectIDs((current) => ({...current, [projectID]: !current[projectID]}));
+  }
+
+  // New chat inside a project: resets the composer and stashes the project so
+  // the first send pins ChatRequest.projectId onto the new conversation.
+  async function startNewChatInProject(projectID: string, libraryID: string) {
+    const context = {projectID, libraryID};
+    lastProjectRef.current = context;
+    await resetWorkspace();
+    setPendingProject(context);
+  }
+
+  // The File-menu / ⌘N "New Conversation": FCP-style context awareness —
+  // keep composing in the pending project if one is already active, else the
+  // project of the conversation being viewed, else the last project the user
+  // worked in, else a standalone chat.
+  function handleNewConversationAction() {
+    if (pendingProjectRef.current) {
+      void startNewChat();
+      return;
+    }
+    const activeProjectID = activeConversationIDRef.current
+      ? conversations.find((item) => item.id === activeConversationIDRef.current)?.projectId ?? ''
+      : '';
+    const context = activeProjectID
+      ? {projectID: activeProjectID, libraryID: libraryIDForProject(activeProjectID)}
+      : lastProjectRef.current;
+    if (context && context.libraryID) {
+      void startNewChatInProject(context.projectID, context.libraryID);
+    } else {
+      void startNewChat();
+    }
+  }
+
+  // File → New Project…: target the last expanded (or first) library; with no
+  // library yet, fall through to the new-library input — a project needs a home.
+  function handleNewProjectAction() {
+    const targetLibraryID = lastExpandedLibraryIDRef.current
+      || asArray(libraries)[0]?.id
+      || '';
+    if (!targetLibraryID) {
+      startCreatingLibrary();
+      return;
+    }
+    const library = libraries.find((item) => item.id === targetLibraryID) ?? asArray(libraries)[0];
+    if (library) {
+      startCreatingProject(library);
+    }
+  }
+
+  async function moveConversation(conversation: main.ConversationSummary, projectID: string) {
+    setOpenHistoryMenuID('');
+    try {
+      await MoveConversationToProject(conversation.id, projectID);
+      await refreshConversations();
+      bumpLibrariesRefresh();
+    } catch (error) {
+      setStartupError(formatError(error));
+    }
+  }
+
   function showMoreConversations() {
     setHistoryExpanded(true);
     setVisibleHistoryCount((current) => Math.max(current, compactHistoryLimit) + expandedHistoryBatchSize);
@@ -1645,6 +2107,9 @@ function App() {
     restoreDraftFor('');
     setActiveConversationID('');
     setDraftWorkspace('');
+    // A blank composer is standalone unless the caller (startNewChatInProject)
+    // immediately re-stashes a project context for this composition.
+    setPendingProject(null);
     setView('app');
     window.setTimeout(() => {
       chatPromptRef.current?.focus();
@@ -1658,7 +2123,10 @@ function App() {
       }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'n') {
         event.preventDefault();
-        void resetWorkspace();
+        // Same context-aware flow as File → New Conversation: the native menu
+        // accelerator usually intercepts ⌘N first; this web-side listener
+        // covers the case where it doesn't (both paths are idempotent).
+        newConversationActionRef.current();
       }
       if ((event.metaKey || event.ctrlKey) && event.key === ',') {
         event.preventDefault();
@@ -1677,6 +2145,9 @@ function App() {
   // message — used by history search results to land on the match.
   async function openConversationSummary(conversation: main.ConversationSummary, focusTurnID = '') {
     try {
+      // Opening an existing conversation supersedes any pending in-project
+      // composition — the panel and mention scope follow its own project.
+      setPendingProject(null);
       const detail = await GetConversation(conversation.id);
       setView('app');
       hydrateChatConversation(detail);
@@ -1793,6 +2264,13 @@ function App() {
       await DeleteConversation(conversation.id);
       delete composerDraftsRef.current[conversation.id];
       setConversations((items) => asArray(items).filter((item) => item.id !== conversation.id));
+      setProjectConversations((current) => {
+        const next: Record<string, main.ConversationSummary[]> = {};
+        for (const [projectID, members] of Object.entries(current)) {
+          next[projectID] = members.filter((item) => item.id !== conversation.id);
+        }
+        return next;
+      });
       if (editingTitleID === conversation.id) {
         cancelEditingConversationTitle();
       }
@@ -1864,10 +2342,16 @@ function App() {
         // Only sent for a new chat (turn 1). The backend ignores it for an
         // existing conversation — the record's immutable workspace wins.
         ...(activeConversationID ? {} : {workspace: draftWorkspace || undefined}),
+        // Same turn-1-only lifecycle as the workspace: the pending project the
+        // composition started in, pinned onto the new conversation's record.
+        ...(activeConversationID ? {} : pendingProjectRef.current?.projectID ? {projectId: pendingProjectRef.current.projectID} : {}),
         ...(opts.referencedAssetIds?.length ? {referencedAssetIds: opts.referencedAssetIds} : {}),
       }));
       markConversationInFlight(start.conversationId, start.requestID, 'chat');
       setActiveConversationID(start.conversationId);
+      // The conversation now carries its own membership — the pending context
+      // has done its job.
+      setPendingProject(null);
       void refreshConversations();
     } catch (error) {
       chatStreamDraftsRef.current[requestID] = {
@@ -1995,18 +2479,32 @@ function App() {
   const mentionMatchesRef = useRef<MentionCandidate[]>([]);
   mentionMatchesRef.current = mentionMatchesState;
 
+  // File-menu handler mirrors: the menu-event subscription runs with empty
+  // deps, so it must call through to the latest closure, not the first one.
+  const newConversationActionRef = useRef(() => {});
+  const newLibraryActionRef = useRef(() => {});
+  const newProjectActionRef = useRef(() => {});
+  newConversationActionRef.current = handleNewConversationAction;
+  newLibraryActionRef.current = startCreatingLibrary;
+  newProjectActionRef.current = handleNewProjectAction;
+
   // mentionCandidates is the autocomplete pool: this turn's attachments first
-  // (most immediate), then the conversation's assets newest-first (panel
-  // order). Asset candidates carry their assetID so acceptMention can record
-  // the reference.
+  // (most immediate), then the referable assets newest-first. In a project
+  // context the pool is the whole library — every conversation's uploads and
+  // generated media, per-conversation provenance in the hint — so an
+  // @-mention can cite any asset in the library. Asset candidates carry their
+  // assetID so acceptMention can record the reference.
   function mentionCandidates(): MentionCandidate[] {
-    const assets: MentionCandidate[] = panelAssets.map((asset) => ({
+    const source = composerLibraryID ? libraryAssets : panelAssets;
+    const assets: MentionCandidate[] = source.map((asset) => ({
       name: assetMentionLabel(asset),
       src: asset.url ?? '',
       payload: '',
       kind: asset.kind === 'audio' ? 'audio' : asset.kind === 'video' ? 'video' : 'image',
       assetID: asset.id,
-      hint: `${asset.role === 'user' ? 'attached' : 'generated'} · ${assetTurnLabel(asset.originTurnId)}`,
+      hint: composerLibraryID
+        ? `${asset.role === 'user' ? 'attached' : 'generated'} · ${asset.conversationTitle || 'another chat'}`
+        : `${asset.role === 'user' ? 'attached' : 'generated'} · ${assetTurnLabel(asset.originTurnId)}`,
     }));
     return [...attachmentsRef.current, ...assets];
   }
@@ -2387,54 +2885,7 @@ function App() {
                 <>
                   <div className="section-label">Chats</div>
                   {conversationList.length ? (
-                    visibleConversations.map((conversation) => {
-                      const inFlight = inFlightConversations[conversation.id];
-                      const selected = selectedConversationID === conversation.id;
-                      return (
-                        <div key={conversation.id} className={`history-item${selected ? ' selected' : ''}`}>
-                          {editingTitleID === conversation.id ? (
-                            <input
-                              value={editingTitle}
-                              onChange={(event) => setEditingTitle(event.target.value)}
-                              onBlur={() => saveConversationTitle(conversation)}
-                              onKeyDown={(event) => handleConversationTitleKeyDown(event, conversation)}
-                              autoFocus
-                            />
-                          ) : (
-                            <>
-                              <button className="history-open" onClick={() => openConversationSummary(conversation)} onDoubleClick={(event) => { event.preventDefault(); startEditingConversationTitle(conversation); }}>
-                                <span>{conversation.title}</span>
-                                <small
-                                  className={`history-kind${inFlight ? ' in-flight' : ''}`}
-                                  title={inFlight ? 'Running' : 'Chat'}
-                                  aria-label={inFlight ? 'Conversation running' : 'Chat conversation'}
-                                >
-                                  {inFlight ? <span className="history-spinner" /> : '◌'}
-                                </small>
-                              </button>
-                              <div className="history-actions">
-                                <button
-                                  className="history-icon-button"
-                                  aria-label={`More actions for ${conversation.title}`}
-                                  title="More"
-                                  onClick={() => setOpenHistoryMenuID((current) => current === conversation.id ? '' : conversation.id)}
-                                >
-                                  ⋮
-                                </button>
-                                {openHistoryMenuID === conversation.id ? (
-                                  <div className="history-menu">
-                                    <button onClick={() => copyConversationID(conversation)}>
-                                      {copiedConversationID === conversation.id ? '✓ Copied' : 'Copy ID'}
-                                    </button>
-                                    <button onClick={() => archiveConversation(conversation)}>Archive</button>
-                                  </div>
-                                ) : null}
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      );
-                    })
+                    visibleConversations.map(renderConversationRow)
                   ) : (
                     <div className="history-empty">No conversations yet.</div>
                   )}
@@ -2443,6 +2894,222 @@ function App() {
                       More
                     </button>
                   ) : null}
+
+                  <div className="libraries-section">
+                    <div className="section-label libraries-header">
+                      <button
+                        type="button"
+                        className="libraries-toggle"
+                        onClick={() => setLibrariesOpen((open) => !open)}
+                        aria-expanded={librariesOpen}
+                      >
+                        <span className={`tree-chevron${librariesOpen ? ' open' : ''}`} aria-hidden="true">▸</span>
+                        Libraries
+                      </button>
+                      <button
+                        type="button"
+                        className="history-icon-button"
+                        onClick={startCreatingLibrary}
+                        aria-label="New library"
+                        title="New library"
+                      >
+                        +
+                      </button>
+                    </div>
+                    {librariesOpen ? (
+                      <>
+                        {creatingLibrary ? (
+                          <input
+                            className="container-name-input"
+                            autoFocus
+                            value={newLibraryName}
+                            placeholder="Library name…"
+                            onChange={(event) => setNewLibraryName(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                void submitNewLibrary();
+                              }
+                              if (event.key === 'Escape') {
+                                event.preventDefault();
+                                setCreatingLibrary(false);
+                                setNewLibraryName('');
+                              }
+                            }}
+                            onBlur={() => void submitNewLibrary()}
+                          />
+                        ) : null}
+                        {libraries.length ? libraries.map((library) => {
+                          const libraryOpen = Boolean(expandedLibraryIDs[library.id]);
+                          return (
+                            <div key={library.id} className="library-item">
+                              {editingContainerID === library.id ? (
+                                <input
+                                  className="container-name-input"
+                                  autoFocus
+                                  value={editingContainerName}
+                                  onChange={(event) => setEditingContainerName(event.target.value)}
+                                  onKeyDown={handleContainerNameKeyDown}
+                                  onBlur={() => void saveContainerName()}
+                                />
+                              ) : (
+                                <div className={`container-row library-row${libraryOpen ? ' open' : ''}`}>
+                                  <button
+                                    type="button"
+                                    className="container-open"
+                                    onClick={() => toggleLibraryExpanded(library.id)}
+                                    onDoubleClick={() => startEditingContainer(library.id, library.name)}
+                                    title={library.name}
+                                  >
+                                    <span className={`tree-chevron${libraryOpen ? ' open' : ''}`} aria-hidden="true">▸</span>
+                                    <span className="container-name">{library.name}</span>
+                                    <small className="container-count">{asArray(library.projects).length || ''}</small>
+                                  </button>
+                                  <div className="history-actions">
+                                    <button
+                                      type="button"
+                                      className="history-icon-button"
+                                      onClick={() => startCreatingProject(library)}
+                                      aria-label={`New project in ${library.name}`}
+                                      title="New project"
+                                    >
+                                      +
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="history-icon-button"
+                                      aria-label={`More actions for ${library.name}`}
+                                      title="More"
+                                      onClick={() => toggleContainerMenu(library.id)}
+                                    >
+                                      ⋮
+                                    </button>
+                                    {openContainerMenuID === library.id ? (
+                                      <div className="history-menu">
+                                        <button onClick={() => startCreatingProject(library)}>New Project</button>
+                                        <button onClick={() => startEditingContainer(library.id, library.name)}>Rename</button>
+                                        {confirmDeleteContainerID === library.id ? (
+                                          <button className="menu-danger" disabled={containerBusy} onClick={() => void confirmDeleteContainer(library.id)}>
+                                            Delete library and everything in it?
+                                          </button>
+                                        ) : (
+                                          <button className="menu-danger" onClick={() => setConfirmDeleteContainerID(library.id)}>Delete…</button>
+                                        )}
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              )}
+                              {libraryOpen && editingContainerID !== library.id ? (
+                                <div className="library-children">
+                                  {creatingProjectLibraryID === library.id ? (
+                                    <input
+                                      className="container-name-input"
+                                      autoFocus
+                                      value={newProjectName}
+                                      placeholder="Project name…"
+                                      onChange={(event) => setNewProjectName(event.target.value)}
+                                      onKeyDown={(event) => {
+                                        if (event.key === 'Enter') {
+                                          event.preventDefault();
+                                          void submitNewProject(library.id);
+                                        }
+                                        if (event.key === 'Escape') {
+                                          event.preventDefault();
+                                          setCreatingProjectLibraryID('');
+                                          setNewProjectName('');
+                                        }
+                                      }}
+                                      onBlur={() => void submitNewProject(library.id)}
+                                    />
+                                  ) : null}
+                                  {asArray(library.projects).map((project) => {
+                                    const projectOpen = Boolean(expandedProjectIDs[project.id]);
+                                    return (
+                                      <div key={project.id} className="project-item">
+                                        {editingContainerID === project.id ? (
+                                          <input
+                                            className="container-name-input"
+                                            autoFocus
+                                            value={editingContainerName}
+                                            onChange={(event) => setEditingContainerName(event.target.value)}
+                                            onKeyDown={handleContainerNameKeyDown}
+                                            onBlur={() => void saveContainerName()}
+                                          />
+                                        ) : (
+                                          <div className={`container-row project-row${projectOpen ? ' open' : ''}`}>
+                                            <button
+                                              type="button"
+                                              className="container-open"
+                                              onClick={() => toggleProjectExpanded(project.id)}
+                                              onDoubleClick={() => startEditingContainer(project.id, project.name)}
+                                              title={project.name}
+                                            >
+                                              <span className={`tree-chevron${projectOpen ? ' open' : ''}`} aria-hidden="true">▸</span>
+                                              <span className="container-name">{project.name}</span>
+                                            </button>
+                                            <div className="history-actions">
+                                              <button
+                                                type="button"
+                                                className="history-icon-button"
+                                                onClick={() => void startNewChatInProject(project.id, library.id)}
+                                                aria-label={`New chat in ${project.name}`}
+                                                title="New chat in project"
+                                              >
+                                                +
+                                              </button>
+                                              <button
+                                                type="button"
+                                                className="history-icon-button"
+                                                aria-label={`More actions for ${project.name}`}
+                                                title="More"
+                                                onClick={() => toggleContainerMenu(project.id)}
+                                              >
+                                                ⋮
+                                              </button>
+                                              {openContainerMenuID === project.id ? (
+                                                <div className="history-menu">
+                                                  <button onClick={() => void startNewChatInProject(project.id, library.id)}>New Chat</button>
+                                                  <button onClick={() => startEditingContainer(project.id, project.name)}>Rename</button>
+                                                  {confirmDeleteContainerID === project.id ? (
+                                                    <button className="menu-danger" disabled={containerBusy} onClick={() => void confirmDeleteContainer(project.id)}>
+                                                      Delete project and its chats?
+                                                    </button>
+                                                  ) : (
+                                                    <button className="menu-danger" onClick={() => setConfirmDeleteContainerID(project.id)}>Delete…</button>
+                                                  )}
+                                                </div>
+                                              ) : null}
+                                            </div>
+                                          </div>
+                                        )}
+                                        {projectOpen && editingContainerID !== project.id ? (
+                                          <div className="project-conversations">
+                                            {asArray(projectConversations[project.id]).length ? (
+                                              asArray(projectConversations[project.id]).map(renderConversationRow)
+                                            ) : (
+                                              <div className="history-empty">No chats in this project yet.</div>
+                                            )}
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    );
+                                  })}
+                                  {!asArray(library.projects).length && creatingProjectLibraryID !== library.id ? (
+                                    <button type="button" className="project-add" onClick={() => startCreatingProject(library)}>
+                                      + Project
+                                    </button>
+                                  ) : null}
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        }) : (!creatingLibrary ? (
+                          <div className="history-empty">No libraries yet.</div>
+                        ) : null)}
+                      </>
+                    ) : null}
+                  </div>
                 </>
               )}
             </div>
@@ -3205,6 +3872,11 @@ function App() {
           <>
             <div className="toolbar">
               <div className="toolbar-left">
+                {composerProjectNames ? (
+                  <div className="project-context" title="This chat is scoped to a library project">
+                    {composerProjectNames.libraryName}{composerProjectNames.projectName ? ` › ${composerProjectNames.projectName}` : ''}
+                  </div>
+                ) : null}
                 <div className="model-count">{asArray(models).length} local models</div>
                 <button
                   className={`refresh-icon${refreshing ? ' spinning' : ''}`}
@@ -3492,6 +4164,17 @@ function App() {
                       </svg>
                       <code>{shortenHomePath(displayedWorkspace)}</code>
                     </button>
+                    {composerProjectNames ? (
+                      <span
+                        className="composer-project-chip"
+                        title={`Filed under ${composerProjectNames.libraryName}${composerProjectNames.projectName ? ` › ${composerProjectNames.projectName}` : ''} — the assets panel and @-mentions scope to the library`}
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z" />
+                        </svg>
+                        <code>{composerProjectNames.projectName || composerProjectNames.libraryName}</code>
+                      </span>
+                    ) : null}
                     <label className="file-button" aria-label="Attach file" title="Attach file">
                       {/* Inline icon keeps the composer row compact — the text
                           label was pushing the submit row onto a new line at
@@ -3571,9 +4254,11 @@ function App() {
         />
       )}
       {view === 'settings' || !assetsPanelOpen ? null : (
-        <aside className="assets-panel" aria-label="Conversation assets">
+        <aside className="assets-panel" aria-label={composerLibraryID ? 'Library assets' : 'Conversation assets'}>
           <div className="assets-panel-header">
-            <span className="assets-panel-title">Assets</span>
+            <span className="assets-panel-title">
+              {composerLibraryID && composerProjectNames ? `Assets · ${composerProjectNames.libraryName}` : 'Assets'}
+            </span>
             <button
               type="button"
               className="assets-panel-close"
@@ -3589,7 +4274,9 @@ function App() {
           <div className="assets-list">
             {panelAssets.length === 0 ? (
               <p className="assets-empty">
-                No assets yet. Images, audio, and video — attached or generated — show up here as the conversation produces them.
+                {composerLibraryID
+                  ? 'No library assets yet. Uploads and generated media from every chat in this library show up here.'
+                  : 'No assets yet. Images, audio, and video — attached or generated — show up here as the conversation produces them.'}
               </p>
             ) : (
               panelAssets.map((asset) => (
@@ -3616,7 +4303,7 @@ function App() {
                   <figcaption>
                     <span className="asset-kind">{asset.kind}</span>
                     <span className="asset-meta">
-                      {asset.role === 'user' ? 'attached' : 'generated'} · {assetTurnLabel(asset.originTurnId)}
+                      {asset.role === 'user' ? 'attached' : 'generated'} · {composerLibraryID ? (asset.conversationTitle || 'chat') : assetTurnLabel(asset.originTurnId)}
                     </span>
                   </figcaption>
                 </figure>
