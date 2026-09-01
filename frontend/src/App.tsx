@@ -1660,17 +1660,6 @@ function App() {
     }
   }
 
-  function handleContainerNameKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      void saveContainerName();
-    }
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      cancelEditingContainer();
-    }
-  }
-
   // Opening/toggling a container ⋮ menu always disarms any pending delete
   // confirmation, so the destructive second step can never linger into a
   // different menu.
@@ -1747,11 +1736,8 @@ function App() {
       void startNewChat();
       return;
     }
-    const activeProjectID = activeConversationIDRef.current
-      ? conversations.find((item) => item.id === activeConversationIDRef.current)?.projectId ?? ''
-      : '';
-    const context = activeProjectID
-      ? {projectID: activeProjectID, libraryID: libraryIDForProject(activeProjectID)}
+    const context = activeConversationProjectID
+      ? {projectID: activeConversationProjectID, libraryID: libraryIDForProject(activeConversationProjectID)}
       : lastProjectRef.current;
     if (context && context.libraryID) {
       void startNewChatInProject(context.projectID, context.libraryID);
@@ -2924,24 +2910,15 @@ function App() {
                     {librariesOpen ? (
                       <>
                         {creatingLibrary ? (
-                          <input
-                            className="container-name-input"
-                            autoFocus
+                          <ContainerNameInput
                             value={newLibraryName}
                             placeholder="Library name…"
-                            onChange={(event) => setNewLibraryName(event.target.value)}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter') {
-                                event.preventDefault();
-                                void submitNewLibrary();
-                              }
-                              if (event.key === 'Escape') {
-                                event.preventDefault();
-                                setCreatingLibrary(false);
-                                setNewLibraryName('');
-                              }
+                            onChange={setNewLibraryName}
+                            onSubmit={() => void submitNewLibrary()}
+                            onCancel={() => {
+                              setCreatingLibrary(false);
+                              setNewLibraryName('');
                             }}
-                            onBlur={() => void submitNewLibrary()}
                           />
                         ) : null}
                         {libraries.length ? libraries.map((library) => {
@@ -2949,13 +2926,12 @@ function App() {
                           return (
                             <div key={library.id} className="library-item">
                               {editingContainerID === library.id ? (
-                                <input
-                                  className="container-name-input"
-                                  autoFocus
+                                <ContainerNameInput
                                   value={editingContainerName}
-                                  onChange={(event) => setEditingContainerName(event.target.value)}
-                                  onKeyDown={handleContainerNameKeyDown}
-                                  onBlur={() => void saveContainerName()}
+                                  placeholder="Library name…"
+                                  onChange={setEditingContainerName}
+                                  onSubmit={() => void saveContainerName()}
+                                  onCancel={cancelEditingContainer}
                                 />
                               ) : (
                                 <div className={`container-row library-row${libraryOpen ? ' open' : ''}`}>
@@ -3008,24 +2984,15 @@ function App() {
                               {libraryOpen && editingContainerID !== library.id ? (
                                 <div className="library-children">
                                   {creatingProjectLibraryID === library.id ? (
-                                    <input
-                                      className="container-name-input"
-                                      autoFocus
+                                    <ContainerNameInput
                                       value={newProjectName}
                                       placeholder="Project name…"
-                                      onChange={(event) => setNewProjectName(event.target.value)}
-                                      onKeyDown={(event) => {
-                                        if (event.key === 'Enter') {
-                                          event.preventDefault();
-                                          void submitNewProject(library.id);
-                                        }
-                                        if (event.key === 'Escape') {
-                                          event.preventDefault();
-                                          setCreatingProjectLibraryID('');
-                                          setNewProjectName('');
-                                        }
+                                      onChange={setNewProjectName}
+                                      onSubmit={() => void submitNewProject(library.id)}
+                                      onCancel={() => {
+                                        setCreatingProjectLibraryID('');
+                                        setNewProjectName('');
                                       }}
-                                      onBlur={() => void submitNewProject(library.id)}
                                     />
                                   ) : null}
                                   {asArray(library.projects).map((project) => {
@@ -3033,13 +3000,12 @@ function App() {
                                     return (
                                       <div key={project.id} className="project-item">
                                         {editingContainerID === project.id ? (
-                                          <input
-                                            className="container-name-input"
-                                            autoFocus
+                                          <ContainerNameInput
                                             value={editingContainerName}
-                                            onChange={(event) => setEditingContainerName(event.target.value)}
-                                            onKeyDown={handleContainerNameKeyDown}
-                                            onBlur={() => void saveContainerName()}
+                                            placeholder="Project name…"
+                                            onChange={setEditingContainerName}
+                                            onSubmit={() => void saveContainerName()}
+                                            onCancel={cancelEditingContainer}
                                           />
                                         ) : (
                                           <div className={`container-row project-row${projectOpen ? ' open' : ''}`}>
@@ -4356,6 +4322,39 @@ function loadAssetsPanelWidth(): number {
 
 function clampAssetsPanelWidth(width: number, max = maxAssetsPanelWidth): number {
   return Math.round(Math.max(minAssetsPanelWidth, Math.min(Math.max(minAssetsPanelWidth, max), width)));
+}
+
+// ContainerNameInput is the shared inline input for creating or renaming a
+// library/project: Enter submits, Escape cancels, blur submits (clicking
+// elsewhere commits the edit). The four tree call sites differ only in value,
+// placeholder, and what submit/cancel mean.
+function ContainerNameInput(props: {
+  value: string;
+  placeholder?: string;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <input
+      className="container-name-input"
+      autoFocus
+      value={props.value}
+      placeholder={props.placeholder}
+      onChange={(event) => props.onChange(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          props.onSubmit();
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          props.onCancel();
+        }
+      }}
+      onBlur={props.onSubmit}
+    />
+  );
 }
 
 function ModelCombobox({

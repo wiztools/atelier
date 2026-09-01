@@ -102,6 +102,25 @@ func normalizeContainerName(name string) string {
 	return compactString(strings.Join(strings.Fields(name), " "), 72)
 }
 
+// requireContainerName is the create/rename entry check shared by libraries
+// and projects: normalize, and reject empty naming the container kind.
+func requireContainerName(name, kind string) (string, error) {
+	normalizedName := normalizeContainerName(name)
+	if normalizedName == "" {
+		return "", fmt.Errorf("%s name is required", kind)
+	}
+	return normalizedName, nil
+}
+
+// lessByName orders name-bearing records (libraries, projects) for
+// deterministic sidebar rendering: case-insensitive name, then ID.
+func lessByName(nameI, idI, nameJ, idJ string) bool {
+	if strings.ToLower(nameI) == strings.ToLower(nameJ) {
+		return idI < idJ
+	}
+	return strings.ToLower(nameI) < strings.ToLower(nameJ)
+}
+
 // findLibrary loads one library record by ID. The ID is the directory name, so
 // this is a direct read — no scan.
 func findLibrary(storage ConfigStorage, libraryID string) (Library, error) {
@@ -240,21 +259,17 @@ func projectSummaryFrom(project Project) ProjectSummary {
 	}
 }
 
-// sortContainerSummaries orders libraries/projects by name (case-insensitive,
-// then by ID) for deterministic sidebar rendering.
+// sortLibrarySummaries orders libraries for deterministic sidebar rendering.
 func sortLibrarySummaries(libraries []LibrarySummary) {
 	sort.Slice(libraries, func(i, j int) bool {
-		if strings.ToLower(libraries[i].Name) == strings.ToLower(libraries[j].Name) {
-			return libraries[i].ID < libraries[j].ID
-		}
-		return strings.ToLower(libraries[i].Name) < strings.ToLower(libraries[j].Name)
+		return lessByName(libraries[i].Name, libraries[i].ID, libraries[j].Name, libraries[j].ID)
 	})
 }
 
 func createLibrary(storage ConfigStorage, name string) (LibrarySummary, error) {
-	normalizedName := normalizeContainerName(name)
-	if normalizedName == "" {
-		return LibrarySummary{}, errors.New("library name is required")
+	normalizedName, err := requireContainerName(name, "library")
+	if err != nil {
+		return LibrarySummary{}, err
 	}
 	now := time.Now().Format(time.RFC3339)
 	library := Library{
@@ -278,9 +293,9 @@ func renameLibrary(storage ConfigStorage, libraryID, name string) (LibrarySummar
 	if err != nil {
 		return LibrarySummary{}, err
 	}
-	normalizedName := normalizeContainerName(name)
-	if normalizedName == "" {
-		return LibrarySummary{}, errors.New("library name is required")
+	normalizedName, err := requireContainerName(name, "library")
+	if err != nil {
+		return LibrarySummary{}, err
 	}
 	library.Name = normalizedName
 	library.UpdatedAt = time.Now().Format(time.RFC3339)
@@ -294,9 +309,9 @@ func createProject(storage ConfigStorage, libraryID, name string) (ProjectSummar
 	if _, err := findLibrary(storage, libraryID); err != nil {
 		return ProjectSummary{}, err
 	}
-	normalizedName := normalizeContainerName(name)
-	if normalizedName == "" {
-		return ProjectSummary{}, errors.New("project name is required")
+	normalizedName, err := requireContainerName(name, "project")
+	if err != nil {
+		return ProjectSummary{}, err
 	}
 	now := time.Now().Format(time.RFC3339)
 	project := Project{
@@ -321,9 +336,9 @@ func renameProject(storage ConfigStorage, projectID, name string) (ProjectSummar
 	if err != nil {
 		return ProjectSummary{}, err
 	}
-	normalizedName := normalizeContainerName(name)
-	if normalizedName == "" {
-		return ProjectSummary{}, errors.New("project name is required")
+	normalizedName, err := requireContainerName(name, "project")
+	if err != nil {
+		return ProjectSummary{}, err
 	}
 	project.Name = normalizedName
 	project.UpdatedAt = time.Now().Format(time.RFC3339)
@@ -344,10 +359,7 @@ func librarySummary(storage ConfigStorage, library Library) (LibrarySummary, err
 		summaries = append(summaries, projectSummaryFrom(project))
 	}
 	sort.Slice(summaries, func(i, j int) bool {
-		if strings.ToLower(summaries[i].Name) == strings.ToLower(summaries[j].Name) {
-			return summaries[i].ID < summaries[j].ID
-		}
-		return strings.ToLower(summaries[i].Name) < strings.ToLower(summaries[j].Name)
+		return lessByName(summaries[i].Name, summaries[i].ID, summaries[j].Name, summaries[j].ID)
 	})
 	return librarySummaryFrom(library, summaries), nil
 }
@@ -392,6 +404,23 @@ func forEachConversationRecord(storage ConfigStorage, visit func(path string, co
 	})
 }
 
+// forEachProjectConversationRecord walks every conversation record belonging
+// to one of projectIDs — the shared shape behind the project listing, the
+// stream guard, the hard-delete sweep, and the library asset fold.
+// includeDeleted covers soft-deleted conversations too (they still occupy
+// disk and go with a hard delete); the read paths pass false.
+func forEachProjectConversationRecord(storage ConfigStorage, projectIDs map[string]bool, includeDeleted bool, visit func(path string, conversation HistoryConversation) error) error {
+	if len(projectIDs) == 0 {
+		return nil
+	}
+	return forEachConversationRecord(storage, func(path string, conversation HistoryConversation) error {
+		if !projectIDs[conversation.ProjectID] || (!includeDeleted && conversation.DeletedAt != "") {
+			return nil
+		}
+		return visit(path, conversation)
+	})
+}
+
 // listProjectConversations returns the non-deleted conversations belonging to a
 // project, newest-updated first. Unlike the sidebar's main list this is not
 // recency-capped: a project is a curated set, and hiding older members would
@@ -401,10 +430,7 @@ func listProjectConversations(storage ConfigStorage, projectID string) ([]Conver
 		return nil, err
 	}
 	summaries := []ConversationSummary{}
-	err := forEachConversationRecord(storage, func(path string, conversation HistoryConversation) error {
-		if conversation.DeletedAt != "" || conversation.ProjectID != projectID {
-			return nil
-		}
+	err := forEachProjectConversationRecord(storage, map[string]bool{projectID: true}, false, func(path string, conversation HistoryConversation) error {
 		summaries = append(summaries, conversationSummaryFrom(conversation))
 		return nil
 	})
@@ -424,14 +450,9 @@ func listProjectConversations(storage ConfigStorage, projectID string) ([]Conver
 // belonging to one of projectIDs — the stream guard's cheaper question (no
 // artifact counting; deleted conversations can't be streaming).
 func projectConversationIDs(storage ConfigStorage, projectIDs map[string]bool) ([]string, error) {
-	if len(projectIDs) == 0 {
-		return nil, nil
-	}
 	ids := []string{}
-	err := forEachConversationRecord(storage, func(path string, conversation HistoryConversation) error {
-		if conversation.DeletedAt == "" && projectIDs[conversation.ProjectID] {
-			ids = append(ids, conversation.ID)
-		}
+	err := forEachProjectConversationRecord(storage, projectIDs, false, func(path string, conversation HistoryConversation) error {
+		ids = append(ids, conversation.ID)
 		return nil
 	})
 	if err != nil {
@@ -445,15 +466,9 @@ func projectConversationIDs(storage ConfigStorage, projectIDs map[string]bool) (
 // which still occupy disk and go with the project. The artifact count is the
 // number of files removed, reported by the delete bindings.
 func projectConversationDirs(storage ConfigStorage, projectIDs map[string]bool) ([]string, int, error) {
-	if len(projectIDs) == 0 {
-		return nil, 0, nil
-	}
 	dirs := []string{}
 	deletedAssets := 0
-	err := forEachConversationRecord(storage, func(path string, conversation HistoryConversation) error {
-		if !projectIDs[conversation.ProjectID] {
-			return nil
-		}
+	err := forEachProjectConversationRecord(storage, projectIDs, true, func(path string, conversation HistoryConversation) error {
 		dir := filepath.Dir(path)
 		dirs = append(dirs, dir)
 		deletedAssets += countFiles(filepath.Join(dir, "artifacts"))

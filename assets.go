@@ -285,10 +285,7 @@ func listLibraryAssets(storage ConfigStorage, libraryID string) ([]ConversationA
 		conversation HistoryConversation
 	}
 	members := []libraryMember{}
-	err = forEachConversationRecord(storage, func(path string, conversation HistoryConversation) error {
-		if conversation.DeletedAt != "" || !projectIDs[conversation.ProjectID] {
-			return nil
-		}
+	err = forEachProjectConversationRecord(storage, projectIDs, false, func(path string, conversation HistoryConversation) error {
 		members = append(members, libraryMember{path: path, conversation: conversation})
 		return nil
 	})

@@ -2761,15 +2761,7 @@ button:disabled {
 
 /* Indentation carries the tree: projects sit under their library, chats under
    their project. */
-.library-children {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 2px 0 4px 10px;
-  padding-left: 8px;
-  border-left: 1px solid rgba(255, 255, 255, 0.08);
-}
-
+.library-children,
 .project-conversations {
   display: flex;
   flex-direction: column;
