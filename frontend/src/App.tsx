@@ -14,11 +14,14 @@ import {
   DeleteConversation,
   DeleteLibrary,
   DeleteProject,
+  ExportLibrary,
   GetConversation,
   GetConfig,
   HasFalAPIKey,
   HasOpenAICompatibleAPIKey,
   HasOpenRouterAPIKey,
+  ImportLibrary,
+  InspectLibraryExport,
   InstallUpdate,
   ListConversationAssets,
   ListConversations,
@@ -366,6 +369,13 @@ function useLibraries(env: LibrariesEnvironment) {
   const [openContainerMenuID, setOpenContainerMenuID] = useState('');
   const [confirmDeleteContainerID, setConfirmDeleteContainerID] = useState('');
   const [containerBusy, setContainerBusy] = useState(false);
+  // Library export/import: exportPlan holds the pre-flight for the ⋮ menu's
+  // two-step confirm (counts, size, missing assets); importingLibrary disables
+  // the header button while an archive is being verified and written;
+  // archiveNotice is the transient status line under the Libraries header.
+  const [exportPlan, setExportPlan] = useState<main.LibraryExportPlan | null>(null);
+  const [importingLibrary, setImportingLibrary] = useState(false);
+  const [archiveNotice, setArchiveNotice] = useState('');
   // The last project the user started a chat in / expanded a library into —
   // the fallback context for the File-menu actions.
   const lastProjectRef = useRef<{projectID: string; libraryID: string} | null>(null);
@@ -522,10 +532,11 @@ function useLibraries(env: LibrariesEnvironment) {
   }
 
   // Opening/toggling a container ⋮ menu always disarms any pending delete
-  // confirmation, so the destructive second step can never linger into a
-  // different menu.
+  // confirmation or export confirm, so a second-step click can never linger
+  // into a different menu.
   function toggleContainerMenu(id: string) {
     setConfirmDeleteContainerID('');
+    setExportPlan(null);
     setOpenContainerMenuID((current) => current === id ? '' : id);
   }
 
@@ -669,6 +680,69 @@ function useLibraries(env: LibrariesEnvironment) {
     setConfirmDeleteContainerID(id);
   }
 
+  // Arms the ⋮ menu's export confirm: fetch the pre-flight so the second step
+  // can say what the archive will hold (and flag missing assets) before the
+  // native save dialog opens.
+  async function armLibraryExport(libraryID: string) {
+    try {
+      const plan = await InspectLibraryExport(libraryID);
+      setExportPlan(plan ?? null);
+    } catch (error) {
+      env.reportError(error);
+    }
+  }
+
+  // Export confirm: the backend opens the save dialog and writes the archive;
+  // a cancel comes back as an empty result and leaves everything as it was.
+  async function confirmExportLibrary(libraryID: string) {
+    if (containerBusy) {
+      return;
+    }
+    setContainerBusy(true);
+    setOpenContainerMenuID('');
+    setExportPlan(null);
+    try {
+      const result = await ExportLibrary(libraryID);
+      if (result?.path) {
+        showArchiveNotice(`Exported to ${result.path}`);
+      }
+    } catch (error) {
+      env.reportError(error);
+    } finally {
+      setContainerBusy(false);
+    }
+  }
+
+  // Import: the file picker is the confirmation; everything after it is
+  // backend verification and writing. A failed verification surfaces through
+  // reportError; success refreshes the tree and reveals the imported library.
+  async function importLibrary() {
+    if (importingLibrary) {
+      return;
+    }
+    setImportingLibrary(true);
+    try {
+      const result = await ImportLibrary();
+      if (result?.library?.id) {
+        bumpLibrariesRefresh();
+        setExpandedLibraryIDs((current) => ({...current, [result.library.id]: true}));
+        lastExpandedLibraryIDRef.current = result.library.id;
+        showArchiveNotice(`Imported “${result.library.name}” — ${result.conversations} conversation${result.conversations === 1 ? '' : 's'}`);
+      }
+    } catch (error) {
+      env.reportError(error);
+    } finally {
+      setImportingLibrary(false);
+    }
+  }
+
+  function showArchiveNotice(text: string) {
+    setArchiveNotice(text);
+    window.setTimeout(() => {
+      setArchiveNotice((current) => (current === text ? '' : current));
+    }, 6000);
+  }
+
   return {
     libraries,
     librariesOpen,
@@ -684,6 +758,9 @@ function useLibraries(env: LibrariesEnvironment) {
     openContainerMenuID,
     confirmDeleteContainerID,
     containerBusy,
+    exportPlan,
+    importingLibrary,
+    archiveNotice,
     moveTargets,
     libraryIDForProject,
     bumpLibrariesRefresh,
@@ -707,6 +784,9 @@ function useLibraries(env: LibrariesEnvironment) {
     cancelCreatingLibrary,
     cancelCreatingProject,
     armContainerDelete,
+    armLibraryExport,
+    confirmExportLibrary,
+    importLibrary,
     // Field bindings for the tree's inline inputs (ContainerNameInput's
     // onChange) — the one place raw setters are the natural API.
     setNewLibraryName,
@@ -990,12 +1070,14 @@ function App() {
     libraries, librariesOpen, expandedLibraryIDs, expandedProjectIDs, projectConversations,
     creatingLibrary, newLibraryName, creatingProjectLibraryID, newProjectName,
     editingContainerID, editingContainerName, openContainerMenuID, confirmDeleteContainerID, containerBusy,
+    exportPlan, importingLibrary, archiveNotice,
     moveTargets, libraryIDForProject, bumpLibrariesRefresh,
     startCreatingLibrary, startCreatingProject, submitNewLibrary, submitNewProject,
     startEditingContainer, cancelEditingContainer, saveContainerName, toggleContainerMenu,
     confirmDeleteContainer, toggleLibraryExpanded, toggleProjectExpanded,
     startNewChatInProject, handleNewConversationAction, handleNewProjectAction, moveConversation,
     forgetConversation, toggleLibrariesOpen, cancelCreatingLibrary, cancelCreatingProject, armContainerDelete,
+    armLibraryExport, confirmExportLibrary, importLibrary,
     setNewLibraryName, setNewProjectName, setEditingContainerName,
   } = useLibraries({
     activeConversationID,
@@ -3045,7 +3127,18 @@ function App() {
                       >
                         +
                       </button>
+                      <button
+                        type="button"
+                        className="history-icon-button"
+                        onClick={() => void importLibrary()}
+                        disabled={importingLibrary}
+                        aria-label="Import library archive"
+                        title={importingLibrary ? 'Importing…' : 'Import library archive'}
+                      >
+                        ⇩
+                      </button>
                     </div>
+                    {archiveNotice ? <div className="libraries-notice">{archiveNotice}</div> : null}
                     {librariesOpen ? (
                       <div className="libraries-body">
                         {creatingLibrary ? (
@@ -3105,6 +3198,17 @@ function App() {
                                       <div className="history-menu">
                                         <button onClick={() => startCreatingProject(library)}>New Project</button>
                                         <button onClick={() => startEditingContainer(library.id, library.name)}>Rename</button>
+                                        {exportPlan && exportPlan.libraryId === library.id ? (
+                                          <button disabled={containerBusy} onClick={() => void confirmExportLibrary(library.id)}>
+                                            {`Export ${exportPlan.conversations} conversation${exportPlan.conversations === 1 ? '' : 's'} (${formatModelSize(exportPlan.bytes)})`
+                                              + (asArray(exportPlan.missingAssets).length
+                                                ? ` — ${asArray(exportPlan.missingAssets).length} missing asset${asArray(exportPlan.missingAssets).length === 1 ? '' : 's'} marked`
+                                                : '')
+                                              + '?'}
+                                          </button>
+                                        ) : (
+                                          <button onClick={() => void armLibraryExport(library.id)}>Export…</button>
+                                        )}
                                         {confirmDeleteContainerID === library.id ? (
                                           <button className="menu-danger" disabled={containerBusy} onClick={() => void confirmDeleteContainer(library.id)}>
                                             Delete library and everything in it?

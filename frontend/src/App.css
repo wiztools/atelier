@@ -2692,6 +2692,14 @@ button:disabled {
   gap: 4px;
 }
 
+/* Transient export/import status line under the Libraries header. */
+.libraries-notice {
+  color: #9ea5a3;
+  font-size: 12px;
+  padding: 0 4px;
+  overflow-wrap: anywhere;
+}
+
 .libraries-toggle {
   flex: 1;
   min-width: 0;
