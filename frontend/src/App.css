@@ -346,6 +346,22 @@
   overflow-y: auto;
 }
 
+/* Collapsed, the section is just its header and yields all height to
+   libraries — mirrors .libraries-section.collapsed. */
+.history-chats.collapsed {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+.chats-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+
 .section-label {
   margin-top: 8px;
   font-size: 13px;
@@ -2668,7 +2684,8 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
-.libraries-toggle {
+/* Shared section-header toggle (chats, libraries). */
+.section-toggle {
   flex: 1;
   min-width: 0;
   display: flex;
@@ -2682,6 +2699,11 @@ button:disabled {
   text-transform: uppercase;
   text-align: left;
   cursor: pointer;
+}
+
+/* With no chevron, hover is the cue that the header collapses its section. */
+.section-toggle:hover {
+  color: #f3f0e8;
 }
 
 /* Shared chevron for every expandable row (libraries, projects); rotates open. */

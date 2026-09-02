@@ -921,6 +921,9 @@ function App() {
   // searchOpen reveals the sidebar search field; it collapses back to the icon
   // only when both closed by the user and the query is empty.
   const [searchOpen, setSearchOpen] = useState(false);
+  // chatsOpen collapses the standalone Chats section to just its header, the
+  // same affordance the Libraries section below it has.
+  const [chatsOpen, setChatsOpen] = useState(true);
   const [historyResults, setHistoryResults] = useState<main.ConversationSearchResult[]>([]);
   const [historySearchBusy, setHistorySearchBusy] = useState(false);
   const [historySearchError, setHistorySearchError] = useState('');
@@ -3093,17 +3096,30 @@ function App() {
                 </div>
               ) : (
                 <>
-                  <div className="history-chats" onScroll={handleHistoryScroll}>
-                    <div className="section-label">Chats</div>
-                    {conversationList.length ? (
-                      visibleConversations.map(renderConversationRow)
-                    ) : (
-                      <div className="history-empty">No conversations yet.</div>
-                    )}
-                    {hasMoreConversations ? (
-                      <button className="history-more" onClick={showMoreConversations}>
-                        More
+                  <div className={`history-chats${chatsOpen ? '' : ' collapsed'}`}>
+                    <div className="section-label">
+                      <button
+                        type="button"
+                        className="section-toggle"
+                        onClick={() => setChatsOpen((open) => !open)}
+                        aria-expanded={chatsOpen}
+                      >
+                        Chats
                       </button>
+                    </div>
+                    {chatsOpen ? (
+                      <div className="chats-body" onScroll={handleHistoryScroll}>
+                        {conversationList.length ? (
+                          visibleConversations.map(renderConversationRow)
+                        ) : (
+                          <div className="history-empty">No conversations yet.</div>
+                        )}
+                        {hasMoreConversations ? (
+                          <button className="history-more" onClick={showMoreConversations}>
+                            More
+                          </button>
+                        ) : null}
+                      </div>
                     ) : null}
                   </div>
 
@@ -3111,11 +3127,10 @@ function App() {
                     <div className="section-label libraries-header">
                       <button
                         type="button"
-                        className="libraries-toggle"
+                        className="section-toggle"
                         onClick={toggleLibrariesOpen}
                         aria-expanded={librariesOpen}
                       >
-                        <span className={`tree-chevron${librariesOpen ? ' open' : ''}`} aria-hidden="true">▸</span>
                         Libraries
                       </button>
                       <button
