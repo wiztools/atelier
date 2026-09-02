@@ -2511,7 +2511,12 @@ button:disabled {
   color: #9ea5a3;
 }
 
+/* Cards must not shrink: .assets-list is a flex column, so the default
+   flex-shrink would squash over-tall cards to fit the panel (clipping their
+   media) instead of letting them overflow — which is what makes the list
+   scrollable. */
 .asset-card {
+  flex: none;
   margin: 0;
   border: 1px solid #2b2e30;
   border-radius: 10px;
@@ -2519,13 +2524,24 @@ button:disabled {
   overflow: hidden;
 }
 
+/* Every preview is one fixed-height window regardless of media dimensions or
+   panel width: images fill it with a center crop (click for the full image),
+   videos letterbox inside it so playback never crops, audio centers its
+   control bar. Definite pixel height (not aspect-ratio) so the children's
+   percentage heights resolve. */
 .asset-preview {
+  height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: #141618;
+  overflow: hidden;
 }
 
 .asset-image-button {
   display: block;
   width: 100%;
+  height: 100%;
   padding: 0;
   border: 0;
   background: none;
@@ -2535,13 +2551,20 @@ button:disabled {
 .asset-preview img {
   display: block;
   width: 100%;
-  height: auto;
+  height: 100%;
+  object-fit: cover;
 }
 
-.asset-preview audio,
 .asset-preview video {
   display: block;
   width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.asset-preview audio {
+  display: block;
+  width: calc(100% - 28px);
 }
 
 .asset-missing {
@@ -2550,6 +2573,7 @@ button:disabled {
   font-size: 12px;
   font-style: italic;
   color: #6f7477;
+  text-align: center;
 }
 
 .asset-card figcaption {
