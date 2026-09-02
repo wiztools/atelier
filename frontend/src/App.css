@@ -600,15 +600,6 @@
   flex: 0 0 auto;
 }
 
-.gear-icon {
-  width: 18px;
-  height: 18px;
-  display: inline-block;
-  border: 2px solid #f3f0e8;
-  border-radius: 50%;
-  box-shadow: 0 -7px 0 -5px #f3f0e8, 0 7px 0 -5px #f3f0e8, 7px 0 0 -5px #f3f0e8, -7px 0 0 -5px #f3f0e8;
-}
-
 .connection,
 .field {
   display: flex;
