@@ -3884,6 +3884,16 @@ func updateConversationTitle(storage ConfigStorage, conversationID string, title
 
 func findConversationPath(storage ConfigStorage, conversationID string) (string, error) {
 	root := filepath.Join(storage.History, "conversations")
+	// Conversation directories are named by ID (conversationDir), so the
+	// lookup normally resolves with one glob + one file read. The tree walk
+	// below stays as the fallback for records whose directory name is not
+	// their ID and for IDs containing glob metacharacters.
+	if matches, globErr := filepath.Glob(filepath.Join(root, "*", "*", conversationID, "conversation.json")); globErr == nil && len(matches) > 0 {
+		var conversation HistoryConversation
+		if readErr := readJSONFile(matches[0], &conversation); readErr == nil && conversation.ID == conversationID {
+			return matches[0], nil
+		}
+	}
 	var found string
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {

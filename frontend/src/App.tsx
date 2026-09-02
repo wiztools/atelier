@@ -2397,14 +2397,23 @@ function App() {
       cancelEditingConversationTitle();
       return;
     }
+    // Optimistic: the sidebar shows the new title immediately; the backend
+    // response reconciles the normalized form (whitespace collapsed, capped
+    // length), and a failure restores the previous title.
+    setConversations((items) =>
+      asArray(items).map((item) => item.id === conversation.id ? {...item, title} : item),
+    );
+    cancelEditingConversationTitle();
     try {
       const updated = await UpdateConversationTitle(conversation.id, title);
       setConversations((items) =>
         asArray(items).map((item) => item.id === updated.id ? {...item, ...updated} : item),
       );
-      cancelEditingConversationTitle();
     } catch (error) {
       setStartupError(formatError(error));
+      setConversations((items) =>
+        asArray(items).map((item) => item.id === conversation.id ? {...item, title: conversation.title} : item),
+      );
     }
   }
 

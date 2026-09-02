@@ -1989,6 +1989,60 @@ func TestPurgeArchivedConversationsRemovesOnlySoftDeletedFolders(t *testing.T) {
 	}
 }
 
+func TestFindConversationPathResolvesCanonicalAndMismatchedLayouts(t *testing.T) {
+	root := t.TempDir()
+	storage := ConfigStorage{
+		Root:      filepath.Join(root, ".atelier"),
+		History:   filepath.Join(root, ".atelier", "history"),
+		Artifacts: filepath.Join(root, ".atelier", "history"),
+	}
+	config := defaultAppConfig()
+	config.Storage = storage
+	if err := ensureStorageDirs(storage); err != nil {
+		t.Fatalf("ensureStorageDirs returned error: %v", err)
+	}
+
+	canonicalID, err := writePendingChatConversation(config, ChatRequest{
+		Model:    "chat-model",
+		Messages: []ChatMessage{{Role: "user", Content: "Canonical"}},
+	})
+	if err != nil {
+		t.Fatalf("write canonical conversation returned error: %v", err)
+	}
+	canonicalPath, err := findConversationPath(storage, canonicalID)
+	if err != nil {
+		t.Fatalf("find canonical conversation returned error: %v", err)
+	}
+	if filepath.Base(filepath.Dir(canonicalPath)) != canonicalID {
+		t.Fatalf("canonical path = %s, want a directory named %s", canonicalPath, canonicalID)
+	}
+
+	// A record whose directory name is not its ID (legacy tree shape) must
+	// still resolve through the walk fallback.
+	legacyDir := filepath.Join(storage.History, "conversations", "2025", "12", "legacy-folder")
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatalf("mkdir legacy conversation returned error: %v", err)
+	}
+	legacy := HistoryConversation{
+		ID:        "conv_legacy",
+		CreatedAt: time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339),
+	}
+	if err := writeJSONFile(filepath.Join(legacyDir, "conversation.json"), legacy); err != nil {
+		t.Fatalf("write legacy conversation returned error: %v", err)
+	}
+	legacyPath, err := findConversationPath(storage, legacy.ID)
+	if err != nil {
+		t.Fatalf("find legacy conversation returned error: %v", err)
+	}
+	if legacyPath != filepath.Join(legacyDir, "conversation.json") {
+		t.Fatalf("legacy path = %s, want %s", legacyPath, filepath.Join(legacyDir, "conversation.json"))
+	}
+
+	if _, err := findConversationPath(storage, "conv_missing"); err == nil {
+		t.Fatal("findConversationPath on an unknown ID must fail")
+	}
+}
+
 func TestChatConversationLifecycle(t *testing.T) {
 	root := t.TempDir()
 	storage := ConfigStorage{
