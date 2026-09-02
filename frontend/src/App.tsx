@@ -3457,11 +3457,27 @@ function App() {
                   <label htmlFor="base-url">Ollama endpoint</label>
                   <div className="endpoint-row">
                     <input id="base-url" value={baseURL} onChange={(event) => setBaseURL(event.target.value)} />
-                    <button onClick={() => refreshOllama()}>Refresh</button>
+                    <button
+                      type="button"
+                      className={`icon-btn${refreshing ? ' spinning' : ''}`}
+                      onClick={() => refreshOllama()}
+                      disabled={refreshing}
+                      aria-label="Refresh models"
+                      title="Refresh models"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.7-3" />
+                        <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.7 3" />
+                        <polyline points="21 4 21 9 16 9" />
+                        <polyline points="3 20 3 15 8 15" />
+                      </svg>
+                    </button>
                   </div>
                   <div className={status?.online ? 'status online' : 'status offline'}>
                     <span />
-                    {status?.online ? `Online ${status.version ?? ''}` : status?.error ?? 'Not checked'}
+                    {status?.online
+                      ? `Online${status.version ? ` ${status.version}` : ''} — ${asArray(models).length} local models available`
+                      : status?.error ?? 'Not checked'}
                   </div>
                 </div>
               </section>
@@ -4085,21 +4101,6 @@ function App() {
                     {composerProjectNames.libraryName}{composerProjectNames.projectName ? ` › ${composerProjectNames.projectName}` : ''}
                   </div>
                 ) : null}
-                <div className="model-count">{asArray(models).length} local models</div>
-                <button
-                  className={`refresh-icon${refreshing ? ' spinning' : ''}`}
-                  onClick={() => refreshOllama()}
-                  disabled={refreshing}
-                  aria-label="Refresh models"
-                  title="Refresh models"
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.7-3" />
-                    <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.7 3" />
-                    <polyline points="21 4 21 9 16 9" />
-                    <polyline points="3 20 3 15 8 15" />
-                  </svg>
-                </button>
               </div>
               <div className="toolbar-right">
                 <ConversationUsage usage={modelUsage} media={mediaUsage} />
