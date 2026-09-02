@@ -26,6 +26,8 @@ export function DeleteProject(arg1:string):Promise<main.DeleteProjectResult>;
 
 export function ExecuteTool(arg1:main.ToolExecutionRequest):Promise<main.HarnessToolResult>;
 
+export function ExportLibrary(arg1:string):Promise<main.LibraryExportResult>;
+
 export function GetConfig():Promise<main.AppConfig>;
 
 export function GetConversation(arg1:string):Promise<main.ConversationDetail>;
@@ -35,6 +37,10 @@ export function HasFalAPIKey():Promise<boolean>;
 export function HasOpenAICompatibleAPIKey():Promise<boolean>;
 
 export function HasOpenRouterAPIKey():Promise<boolean>;
+
+export function ImportLibrary():Promise<main.LibraryImportResult>;
+
+export function InspectLibraryExport(arg1:string):Promise<main.LibraryExportPlan>;
 
 export function InstallUpdate():Promise<void>;
 

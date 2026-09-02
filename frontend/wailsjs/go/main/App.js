@@ -50,6 +50,10 @@ export function ExecuteTool(arg1) {
   return window['go']['main']['App']['ExecuteTool'](arg1);
 }
 
+export function ExportLibrary(arg1) {
+  return window['go']['main']['App']['ExportLibrary'](arg1);
+}
+
 export function GetConfig() {
   return window['go']['main']['App']['GetConfig']();
 }
@@ -68,6 +72,14 @@ export function HasOpenAICompatibleAPIKey() {
 
 export function HasOpenRouterAPIKey() {
   return window['go']['main']['App']['HasOpenRouterAPIKey']();
+}
+
+export function ImportLibrary() {
+  return window['go']['main']['App']['ImportLibrary']();
+}
+
+export function InspectLibraryExport(arg1) {
+  return window['go']['main']['App']['InspectLibraryExport'](arg1);
 }
 
 export function InstallUpdate() {

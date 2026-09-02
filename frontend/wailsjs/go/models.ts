@@ -1053,6 +1053,82 @@ export namespace main {
 	
 	
 	
+	export class LibraryArchiveMissingRef {
+	    conversationId: string;
+	    turnId?: string;
+	    path: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LibraryArchiveMissingRef(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.conversationId = source["conversationId"];
+	        this.turnId = source["turnId"];
+	        this.path = source["path"];
+	    }
+	}
+	export class LibraryExportPlan {
+	    libraryId: string;
+	    libraryName: string;
+	    projects: number;
+	    conversations: number;
+	    assets: number;
+	    bytes: number;
+	    missingAssets?: LibraryArchiveMissingRef[];
+	
+	    static createFrom(source: any = {}) {
+	        return new LibraryExportPlan(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.libraryId = source["libraryId"];
+	        this.libraryName = source["libraryName"];
+	        this.projects = source["projects"];
+	        this.conversations = source["conversations"];
+	        this.assets = source["assets"];
+	        this.bytes = source["bytes"];
+	        this.missingAssets = this.convertValues(source["missingAssets"], LibraryArchiveMissingRef);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class LibraryExportResult {
+	    path: string;
+	    conversations: number;
+	    assets: number;
+	    bytes: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new LibraryExportResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.conversations = source["conversations"];
+	        this.assets = source["assets"];
+	        this.bytes = source["bytes"];
+	    }
+	}
 	export class ProjectSummary {
 	    id: string;
 	    libraryId: string;
@@ -1111,6 +1187,47 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class LibraryImportResult {
+	    library: LibrarySummary;
+	    projects: number;
+	    conversations: number;
+	    assets: number;
+	    bytes: number;
+	    missingAssets: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new LibraryImportResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.library = this.convertValues(source["library"], LibrarySummary);
+	        this.projects = source["projects"];
+	        this.conversations = source["conversations"];
+	        this.assets = source["assets"];
+	        this.bytes = source["bytes"];
+	        this.missingAssets = source["missingAssets"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class ModelInfo {
 	    provider: string;
 	    id: string;

@@ -1132,6 +1132,90 @@ func (a *App) MoveConversationToProject(conversationID string, projectID string)
 	return moveConversationToProject(config.Storage, conversationID, projectID)
 }
 
+// InspectLibraryExport is the export pre-flight: what an archive of this
+// library would contain, how big it is, and which referenced assets are
+// missing on disk. No dialog, no writes — the confirm UI runs it first, and
+// missing assets never block (the manifest records them).
+func (a *App) InspectLibraryExport(libraryID string) (LibraryExportPlan, error) {
+	config, err := loadReadyConfig()
+	if err != nil {
+		return LibraryExportPlan{}, err
+	}
+	return inspectLibraryExport(config.Storage, libraryID)
+}
+
+// ExportLibrary archives a library — projects, member conversations (soft-
+// deleted included), and all artifacts — into a user-chosen .atelierlib file.
+// Refused while any member conversation is streaming: the archive must
+// snapshot settled turns, not a directory an in-flight append is still
+// writing.
+func (a *App) ExportLibrary(libraryID string) (LibraryExportResult, error) {
+	config, err := loadReadyConfig()
+	if err != nil {
+		return LibraryExportResult{}, err
+	}
+	projectIDs, err := libraryProjectIDs(config.Storage, libraryID)
+	if err != nil {
+		return LibraryExportResult{}, err
+	}
+	if a.conversationsStreamingInProjects(config.Storage, projectIDs) {
+		return LibraryExportResult{}, errors.New("a conversation in this library is still running; wait for it to finish before exporting")
+	}
+	plan, err := inspectLibraryExport(config.Storage, libraryID)
+	if err != nil {
+		return LibraryExportResult{}, err
+	}
+	filename := sanitizeFilename(plan.LibraryName)
+	if filename == "" {
+		filename = libraryID
+	}
+	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "Export Library",
+		DefaultFilename: filename + libraryArchiveExtension,
+		Filters:         []runtime.FileFilter{{DisplayName: "Atelier Library Archive (*.atelierlib)", Pattern: "*.atelierlib"}},
+	})
+	if err != nil {
+		return LibraryExportResult{}, err
+	}
+	if path == "" {
+		return LibraryExportResult{}, nil
+	}
+	if !strings.HasSuffix(strings.ToLower(path), libraryArchiveExtension) {
+		path += libraryArchiveExtension
+	}
+	return exportLibrary(config.Storage, libraryID, path, func(phase string, done, total int) {
+		a.emitLibraryArchiveEvent(LibraryArchiveEvent{Op: "export", LibraryID: libraryID, Phase: phase, Done: done, Total: total})
+	})
+}
+
+// ImportLibrary restores a .atelierlib archive as a new library in storage.
+// The archive is verified whole (per-file SHA-256 against its manifest) before
+// anything is written, and an archive whose library or conversations already
+// exist is refused — import never merges. Model names in the archived history
+// are provenance, not capabilities: nothing checks model availability.
+func (a *App) ImportLibrary() (LibraryImportResult, error) {
+	config, err := loadReadyConfig()
+	if err != nil {
+		return LibraryImportResult{}, err
+	}
+	path, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Import Library",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Atelier Library Archive (*.atelierlib)", Pattern: "*.atelierlib"},
+			{DisplayName: "Zip Archive (*.zip)", Pattern: "*.zip"},
+		},
+	})
+	if err != nil {
+		return LibraryImportResult{}, err
+	}
+	if path == "" {
+		return LibraryImportResult{}, nil
+	}
+	return importLibraryArchive(config.Storage, config.Tools.Filesystem.Root, path, func(phase string, done, total int) {
+		a.emitLibraryArchiveEvent(LibraryArchiveEvent{Op: "import", Phase: phase, Done: done, Total: total})
+	})
+}
+
 // conversationsStreamingInProjects reports whether any conversation belonging
 // to one of projectIDs has an active stream. On a walk error it falls back to
 // anyStreamActive — deletion is destructive, so uncertainty blocks rather
@@ -1894,6 +1978,23 @@ type HarnessRunEvent struct {
 func (a *App) emitHarnessRunEvent(event HarnessRunEvent) {
 	if a.ctx != nil {
 		runtime.EventsEmit(a.ctx, "atelier:harness-run", event)
+	}
+}
+
+// LibraryArchiveEvent is the atelier:library-archive payload: coarse progress
+// for a library export or import — one tick per written conversation (export)
+// and per verified entry / written conversation (import).
+type LibraryArchiveEvent struct {
+	Op        string `json:"op"` // "export" | "import"
+	LibraryID string `json:"libraryId,omitempty"`
+	Phase     string `json:"phase"` // "verify" | "write"
+	Done      int    `json:"done"`
+	Total     int    `json:"total"`
+}
+
+func (a *App) emitLibraryArchiveEvent(event LibraryArchiveEvent) {
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "atelier:library-archive", event)
 	}
 }
 
