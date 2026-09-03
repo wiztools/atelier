@@ -1708,15 +1708,18 @@ function App() {
     const onMouseMove = (event: MouseEvent) => {
       const right = shellRef.current?.getBoundingClientRect().right ?? window.innerWidth;
       const width = right - event.clientX;
-      // Snap to close: dragging below the minimum renderable width closes the
-      // panel (the toolbar toggle follows) instead of clamping to an unusable
-      // sliver. The stored width never drops below the minimum, so reopening
-      // restores the last good width.
+      // Snap to close: dragging below the minimum renderable width collapses
+      // the panel (the toolbar toggle follows) instead of clamping to an
+      // unusable sliver. The drag session stays alive across the snap — the
+      // listeners ride on window, so they survive the panel unmounting — and
+      // dragging back past the threshold reopens it; the close only sticks
+      // when the pointer is released while collapsed. The stored width never
+      // drops below the minimum, so reopening restores the last good width.
       if (width < minAssetsPanelWidth) {
         setAssetsPanelOpen(false);
-        setResizingAssets(false);
         return;
       }
+      setAssetsPanelOpen(true);
       const max = Math.min(maxAssetsPanelWidth, window.innerWidth - 420);
       setAssetsWidth(clampAssetsPanelWidth(width, max));
     };
