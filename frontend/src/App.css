@@ -1008,13 +1008,13 @@ button:disabled {
   gap: 5px;
   max-width: 240px;
   /* Match the attach-image button's height so the two controls form a pair. */
-  height: 30px;
+  height: 28px;
   padding: 0 9px;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(255, 255, 255, 0.04);
   color: inherit;
-  font-size: 12px;
+  font-size: 11px;
   cursor: pointer;
   min-width: 0;
 }
@@ -1038,7 +1038,7 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: 10px;
 }
 
 .storage-actions {
@@ -1910,6 +1910,29 @@ button:disabled {
   min-width: 0;
 }
 
+/* The composer's action row runs one size below the global form scale so the
+   workspace chip, provider/model combos, and submit button read as secondary
+   chrome. Scoped here so Settings (which shares the capability ⓘ and
+   combobox markup) keeps the default sizing. */
+.composer-submit-row > button {
+  height: 30px;
+  font-size: 12px;
+}
+
+.composer-submit-row .model-capability--icon .model-capability-link {
+  width: 22px;
+  height: 22px;
+}
+
+.composer-submit-row .model-capability--icon .model-capability-link svg {
+  width: 14px;
+  height: 14px;
+}
+
+.composer-submit-row .model-combobox-list button {
+  font-size: 12px;
+}
+
 .composer-model-switch {
   display: flex;
   align-items: center;
@@ -1932,9 +1955,9 @@ button:disabled {
 
 .model-inline span {
   color: #9ea5a3;
-  /* Dropped from 12px to 11px to match the workspace chip's path text and
-     reduce the visual weight of the labels. */
-  font-size: 11px;
+  /* Tracks the workspace chip's path text one size down (both 10px now) so
+     the composer row's secondary labels share a single scale. */
+  font-size: 10px;
   font-weight: 700;
   white-space: nowrap;
 }
@@ -1959,7 +1982,8 @@ button:disabled {
 
 .model-inline select,
 .model-inline input {
-  height: 34px;
+  height: 30px;
+  font-size: 12px;
 }
 
 .model-combobox {
@@ -2083,8 +2107,8 @@ button:disabled {
      activates its input on click anywhere inside its box, so the box must
      not exceed the visible icon by more than the padding below. Fixed
      width/height prevent flex/grid from stretching it. */
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   padding: 0;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 6px;
@@ -2105,7 +2129,7 @@ button:disabled {
      beyond the visible icon and create dead clickable flanks (including into
      the gap between controls). Clip it to a 1px box tucked in the corner with
      zero opacity; the label's native activation handles the rest and is
-     bounded to the label's own 30x30 box. */
+     bounded to the label's own 28x28 box. */
   position: absolute;
   top: 0;
   left: 0;
@@ -2874,13 +2898,13 @@ button:disabled {
   align-items: center;
   gap: 5px;
   max-width: 200px;
-  height: 30px;
+  height: 28px;
   padding: 0 9px;
   border-radius: 6px;
   border: 1px solid rgba(213, 166, 79, 0.35);
   background: rgba(213, 166, 79, 0.08);
   color: #d5a64f;
-  font-size: 12px;
+  font-size: 11px;
   min-width: 0;
 }
 

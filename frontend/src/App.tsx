@@ -4483,7 +4483,7 @@ function App() {
                         ? `Workspace locked to ${displayedWorkspace}`
                         : 'Choose workspace for this conversation'}
                     >
-                      <svg className="workspace-chip-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <svg className="workspace-chip-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
                       </svg>
                       <code>{shortenHomePath(displayedWorkspace)}</code>
@@ -4493,7 +4493,7 @@ function App() {
                         className="composer-project-chip"
                         title={`Filed under ${composerProjectNames.libraryName}${composerProjectNames.projectName ? ` › ${composerProjectNames.projectName}` : ''} — the assets panel and @-mentions scope to the library`}
                       >
-                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                           <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z" />
                         </svg>
                         <code>{composerProjectNames.projectName || composerProjectNames.libraryName}</code>
@@ -4505,7 +4505,7 @@ function App() {
                           narrow widths. The title/aria-label preserve meaning.
                           A paperclip reads as generic attach (image or audio)
                           rather than implying image-only. */}
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
                       </svg>
                       <input type="file" accept="image/*,audio/*,video/*" multiple onChange={(event) => addFiles(event.target.files)} />
