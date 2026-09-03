@@ -178,6 +178,10 @@ export function ListToolFiles(arg1) {
   return window['go']['main']['App']['ListToolFiles'](arg1);
 }
 
+export function LoadUIState() {
+  return window['go']['main']['App']['LoadUIState']();
+}
+
 export function MoveConversationToProject(arg1, arg2) {
   return window['go']['main']['App']['MoveConversationToProject'](arg1, arg2);
 }
@@ -232,6 +236,10 @@ export function SaveOpenAICompatibleAPIKey(arg1) {
 
 export function SaveOpenRouterAPIKey(arg1) {
   return window['go']['main']['App']['SaveOpenRouterAPIKey'](arg1);
+}
+
+export function SaveUIState(arg1) {
+  return window['go']['main']['App']['SaveUIState'](arg1);
 }
 
 export function SaveVideo(arg1) {

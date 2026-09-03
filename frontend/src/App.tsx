@@ -45,6 +45,7 @@ import {
   ListOpenAICompatibleModels,
   ListPrimaryModels,
   ListProjectConversations,
+  LoadUIState,
   MoveConversationToProject,
   PurgeArchivedConversations,
   RandomEmptyStatePrompt,
@@ -59,6 +60,7 @@ import {
   SaveFalAPIKey,
   SaveOpenAICompatibleAPIKey,
   SaveOpenRouterAPIKey,
+  SaveUIState,
   StreamChat,
   UpdateConversationTitle,
 } from '../wailsjs/go/main/App';
@@ -590,6 +592,23 @@ function useLibraries(env: LibrariesEnvironment) {
     setExpandedProjectIDs((current) => ({...current, [projectID]: !current[projectID]}));
   }
 
+  // Hydration from the persisted UI state (App calls this once LoadUIState
+  // resolves at launch): restore the tree's expanded nodes exactly as the
+  // toggles above would have left them, and seed the File-menu fallback with
+  // the first recorded library. Only stable setters and the ref close over —
+  // safe for App to call from a mount effect holding a first-render copy.
+  function applySidebarState(sidebar?: main.SidebarState) {
+    if (!sidebar) {
+      return;
+    }
+    setLibrariesOpen(!sidebar.librariesCollapsed);
+    const libraryIDs = asArray(sidebar.expandedLibraries).filter(Boolean);
+    const projectIDs = asArray(sidebar.expandedProjects).filter(Boolean);
+    setExpandedLibraryIDs(Object.fromEntries(libraryIDs.map((id) => [id, true])));
+    setExpandedProjectIDs(Object.fromEntries(projectIDs.map((id) => [id, true])));
+    lastExpandedLibraryIDRef.current = libraryIDs[0] ?? '';
+  }
+
   // New chat inside a project: resets the composer and stashes the project so
   // the first send pins ChatRequest.projectId onto the new conversation.
   async function startNewChatInProject(projectID: string, libraryID: string) {
@@ -787,6 +806,7 @@ function useLibraries(env: LibrariesEnvironment) {
     armLibraryExport,
     confirmExportLibrary,
     importLibrary,
+    applySidebarState,
     // Field bindings for the tree's inline inputs (ContainerNameInput's
     // onChange) — the one place raw setters are the natural API.
     setNewLibraryName,
@@ -924,6 +944,10 @@ function App() {
   // chatsOpen collapses the standalone Chats section to just its header, the
   // same affordance the Libraries section below it has.
   const [chatsOpen, setChatsOpen] = useState(true);
+  // uiStateLoaded flips once the persisted navigation state is hydrated; the
+  // save effect below waits for it so launch-time defaults can't clobber the
+  // saved file.
+  const [uiStateLoaded, setUiStateLoaded] = useState(false);
   const [historyResults, setHistoryResults] = useState<main.ConversationSearchResult[]>([]);
   const [historySearchBusy, setHistorySearchBusy] = useState(false);
   const [historySearchError, setHistorySearchError] = useState('');
@@ -1083,7 +1107,7 @@ function App() {
     confirmDeleteContainer, toggleLibraryExpanded, toggleProjectExpanded,
     startNewChatInProject, handleNewConversationAction, handleNewProjectAction, moveConversation,
     forgetConversation, toggleLibrariesOpen, cancelCreatingLibrary, cancelCreatingProject, armContainerDelete,
-    armLibraryExport, confirmExportLibrary, importLibrary,
+    armLibraryExport, confirmExportLibrary, importLibrary, applySidebarState,
     setNewLibraryName, setNewProjectName, setEditingContainerName,
   } = useLibraries({
     activeConversationID,
@@ -1098,6 +1122,52 @@ function App() {
     setView,
     startNewChat,
   });
+
+  // Restore the left navigation's collapsed/expanded sections from the last
+  // session. applySidebarState is a first-render copy by design (it only
+  // touches stable setters and a ref), so this mount effect never refires.
+  useEffect(() => {
+    let cancelled = false;
+    LoadUIState()
+      .then((state) => {
+        if (cancelled) {
+          return;
+        }
+        const sidebar = state?.sidebar;
+        setChatsOpen(!sidebar?.chatsCollapsed);
+        applySidebarState(sidebar);
+      })
+      .catch(() => {
+        // No saved state (first launch) or an unreadable file — defaults stand.
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setUiStateLoaded(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Persist the navigation state on every change rather than at quit: each
+  // toggle is one tiny atomic write, so the file is already current whenever
+  // the app shuts down — cleanly or not.
+  useEffect(() => {
+    if (!uiStateLoaded) {
+      return;
+    }
+    SaveUIState(main.UIState.createFrom({
+      sidebar: {
+        chatsCollapsed: !chatsOpen,
+        librariesCollapsed: !librariesOpen,
+        expandedLibraries: Object.keys(expandedLibraryIDs).filter((id) => expandedLibraryIDs[id]),
+        expandedProjects: Object.keys(expandedProjectIDs).filter((id) => expandedProjectIDs[id]),
+      },
+    })).catch((error) => {
+      setStatus((current) => current ? {...current, error: String(error)} : current);
+    });
+  }, [uiStateLoaded, chatsOpen, librariesOpen, expandedLibraryIDs, expandedProjectIDs]);
 
   // The library scope the composer + assets panel use: the pending project
   // while composing a new chat inside one, else the active conversation's

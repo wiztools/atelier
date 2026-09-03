@@ -90,6 +90,8 @@ export function ListProjectConversations(arg1:string):Promise<Array<main.Convers
 
 export function ListToolFiles(arg1:main.ToolFileListRequest):Promise<main.ToolFileListResult>;
 
+export function LoadUIState():Promise<main.UIState>;
+
 export function MoveConversationToProject(arg1:string,arg2:string):Promise<main.ConversationSummary>;
 
 export function PurgeArchivedConversations():Promise<main.PurgeArchivedResult>;
@@ -117,6 +119,8 @@ export function SaveImage(arg1:main.SaveImageRequest):Promise<string>;
 export function SaveOpenAICompatibleAPIKey(arg1:string):Promise<void>;
 
 export function SaveOpenRouterAPIKey(arg1:string):Promise<void>;
+
+export function SaveUIState(arg1:main.UIState):Promise<void>;
 
 export function SaveVideo(arg1:main.SaveVideoRequest):Promise<string>;
 

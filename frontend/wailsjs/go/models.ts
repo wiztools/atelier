@@ -1397,6 +1397,24 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class SidebarState {
+	    chatsCollapsed?: boolean;
+	    librariesCollapsed?: boolean;
+	    expandedLibraries?: string[];
+	    expandedProjects?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SidebarState(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.chatsCollapsed = source["chatsCollapsed"];
+	        this.librariesCollapsed = source["librariesCollapsed"];
+	        this.expandedLibraries = source["expandedLibraries"];
+	        this.expandedProjects = source["expandedProjects"];
+	    }
+	}
 	
 	export class ToolCommandRequest {
 	    command: string;
@@ -1630,6 +1648,36 @@ export namespace main {
 	    }
 	}
 	
+	export class UIState {
+	    sidebar: SidebarState;
+	
+	    static createFrom(source: any = {}) {
+	        return new UIState(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sidebar = this.convertValues(source["sidebar"], SidebarState);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class UpdateStatus {
 	    state: string;
 	    currentVersion: string;
