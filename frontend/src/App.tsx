@@ -1044,6 +1044,9 @@ function App() {
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const shouldFollowTranscriptRef = useRef(true);
   const visibleStreamRef = useRef<string | null>(null);
+  // The conversation whose open is in flight; a repeat click on the same row
+  // (double-click enters rename) must not fetch it twice.
+  const openingConversationRef = useRef<string>('');
   const inFlightConversationsRef = useRef<Record<string, InFlightConversation>>({});
   const requestConversationRef = useRef<Record<string, {conversationID: string; kind: ConversationKind}>>({});
   const chatStreamDraftsRef = useRef<Record<string, ChatStreamDraft>>({});
@@ -1214,6 +1217,7 @@ function App() {
               </button>
               {openHistoryMenuID === conversation.id ? (
                 <div className="history-menu">
+                  <button onClick={() => startEditingConversationTitle(conversation)}>Rename</button>
                   <button onClick={() => copyConversationID(conversation)}>
                     {copiedConversationID === conversation.id ? '✓ Copied' : 'Copy ID'}
                   </button>
@@ -2363,6 +2367,13 @@ function App() {
   // focusTurnID, when set, scrolls the opened transcript to that turn's
   // message — used by history search results to land on the match.
   async function openConversationSummary(conversation: main.ConversationSummary, focusTurnID = '') {
+    // Skip redundant opens: the row being viewed (or already loading) needs
+    // no re-fetch or transcript re-render. Search-result jumps re-enter with
+    // focusTurnID and must still run to scroll to the requested turn.
+    if (!focusTurnID && (conversation.id === activeConversationID || openingConversationRef.current === conversation.id)) {
+      return;
+    }
+    openingConversationRef.current = conversation.id;
     try {
       // Opening an existing conversation supersedes any pending in-project
       // composition — the panel and mention scope follow its own project.
@@ -2377,6 +2388,10 @@ function App() {
       }
     } catch (error) {
       setStartupError(formatError(error));
+    } finally {
+      if (openingConversationRef.current === conversation.id) {
+        openingConversationRef.current = '';
+      }
     }
   }
 
