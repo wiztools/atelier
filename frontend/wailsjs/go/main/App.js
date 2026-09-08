@@ -94,6 +94,10 @@ export function ListConversations() {
   return window['go']['main']['App']['ListConversations']();
 }
 
+export function ListFalAudioExtendModels() {
+  return window['go']['main']['App']['ListFalAudioExtendModels']();
+}
+
 export function ListFalImageEditModels() {
   return window['go']['main']['App']['ListFalImageEditModels']();
 }

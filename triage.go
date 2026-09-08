@@ -301,13 +301,13 @@ Set responseMode to one of:
 - "image": the user asks to create, draw, paint, or render an image.
 - "vision": the user attached an image and wants it analyzed, described, or understood.
 - "video": the user asks to create, animate, or render a video or short clip.
-- "audio": the user asks to speak/narrate text, or create music or a sound effect.
-When the latest user message begins with "[Attachments: ...]", the user attached that media to the turn — treat it as available to tools that require it (e.g. lip_sync needs an audio clip plus a face image or video, transcribe_audio needs an audio clip, generate_video can animate an attached image or extend an attached video).%s
+- "audio": the user asks to speak/narrate text, create music or a sound effect, or extend an audio clip.
+When the latest user message begins with "[Attachments: ...]", the user attached that media to the turn — treat it as available to tools that require it (e.g. lip_sync needs an audio clip plus a face image or video, transcribe_audio needs an audio clip, extend_audio can extend an attached audio clip, generate_video can animate an attached image or extend an attached video).%s
 Set needsTools true only when answering requires acting on the workspace or a listed capability: reading, listing, searching, or writing files, running a command, generating an image, generating a video, generating audio, or following one of the listed skills.
 Set needsTools false when your own knowledge is enough: greetings, general knowledge, reasoning, writing, and conversation about content already visible in the chat.
 For responseMode "image", set needsTools true so the harness can run the generate_image tool before the primary model responds.
 For responseMode "video", set needsTools true so the harness can run the generate_video tool before the primary model responds. Only use "video" when the generate_video tool is listed as available.
-For responseMode "audio", set needsTools true so the harness can run the generate_speech or generate_sound tool before the primary model responds. Only use "audio" when the generate_speech or generate_sound tool is listed as available.
+For responseMode "audio", set needsTools true so the harness can run the generate_speech, generate_sound, or extend_audio tool before the primary model responds. Only use "audio" when one of those tools is listed as available. An attached or recent audio clip plus a request to extend, continue, or lengthen it is audio mode even when the user describes nothing about the addition — extend_audio works from just a length; do not route it to "text" to ask what the added audio should sound like.
 Available tools:
 %s
 Available skills:

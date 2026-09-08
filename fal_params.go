@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -157,6 +159,11 @@ var audioSynonyms = map[string][]string{
 	// provided" — a cross-field rule its schema can't express), so the planner
 	// gets a canonical style param to fill (conv_3c7d38ba07af8ea2ba60573b).
 	"style": {"style_prompt", "style", "genre"},
+	// "direction" and "lyrics" are extend_audio canonicals (see
+	// resolveAudioExtendBody); sonauto names its side selector "side" and its
+	// lyric input "lyrics_prompt".
+	"direction": {"direction", "side"},
+	"lyrics":    {"lyrics", "lyrics_prompt"},
 }
 
 // imageSynonyms lists, per canonical param, the native key names to look for in
@@ -288,6 +295,235 @@ func resolveAudioBody(schema *ModelInputSchema, req AudioGenerateRequest, ov Ove
 		setBodyPath(schema, body, path, value)
 	}
 	return body, notices
+}
+
+// audioExtendFlavor classifies an extend endpoint by id so the resolver can
+// apply each one's native extension controls. The three flavors' input names
+// are verified against fal's published schemas (OpenAPI for ace-step and
+// stable-audio, llms.txt for sonauto); "generic" covers any other endpoint
+// chosen via the model override and resolves through the synonym table.
+func audioExtendFlavor(model string) string {
+	model = strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case strings.Contains(model, "audio-outpaint"):
+		return "ace-step"
+	case strings.HasPrefix(model, "sonauto/"):
+		return "sonauto"
+	case strings.Contains(model, "stable-audio") && strings.Contains(model, "inpaint"):
+		return "stable-inpaint"
+	}
+	return "generic"
+}
+
+// stableAudioInpaintMaxSeconds is stable-audio-25/inpaint's hard ceiling on
+// seconds_total (and therefore on mask_end).
+const stableAudioInpaintMaxSeconds = 190
+
+// aceStepOutpaintMaxSeconds is ace-step's per-side extension cap.
+const aceStepOutpaintMaxSeconds = 107
+
+// sonautoExtendDurationRange bounds sonauto's extend_duration input.
+const (
+	sonautoExtendMinSeconds = 2
+	sonautoExtendMaxSeconds = 85
+)
+
+// parseAudioExtendSeconds reads the planner's duration string as added
+// seconds. ok is false when absent or not a positive number (the caller
+// notices the invalid case and applies its flavor's default).
+func parseAudioExtendSeconds(duration string) (secs float64, ok bool, notice string) {
+	trimmed := strings.TrimSpace(duration)
+	if trimmed == "" {
+		return 0, false, ""
+	}
+	parsed, err := strconv.ParseFloat(trimmed, 64)
+	if err != nil || parsed <= 0 {
+		return 0, false, fmt.Sprintf("Ignored duration %q: not a positive number of seconds; the model default applies.", trimmed)
+	}
+	return parsed, true, ""
+}
+
+// splitCommaTags turns a comma-separated style string into sonauto's tags
+// list ("lofi, chill" → ["lofi","chill"]).
+func splitCommaTags(style string) []string {
+	parts := strings.Split(style, ",")
+	tags := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if tag := strings.TrimSpace(part); tag != "" {
+			tags = append(tags, tag)
+		}
+	}
+	return tags
+}
+
+// roundSeconds converts a float duration to the integer seconds
+// stable-audio's mask fields take, rounding to nearest (a sub-second seam at
+// the mask edge beats either regenerating a sliver of the original or leaving
+// a generated gap).
+func roundSeconds(secs float64) int {
+	return int(secs + 0.5)
+}
+
+// resolveAudioExtendBody maps a canonical AudioExtendRequest onto the selected
+// extend endpoint's native body. Unlike resolveAudioBody the flavors differ
+// structurally — ace-step splits before/after durations, sonauto takes a side
+// plus one extend_duration, stable-audio places an integer-seconds mask — so
+// each flavor builds its body explicitly; only the generic fallback (an
+// arbitrary endpoint via the model override) uses the synonym machinery. A nil
+// schema still yields a correct literal body for the three known flavors;
+// errors are reserved for unfulfillable calls (a source duration the
+// mask-based endpoint needs but the probe couldn't determine, or a total past
+// the endpoint's cap).
+func resolveAudioExtendBody(schema *ModelInputSchema, req AudioExtendRequest, ov Overrides) (map[string]any, []string, error) {
+	prompt := strings.TrimSpace(req.Prompt)
+	style := strings.TrimSpace(req.Style)
+	lyrics := strings.TrimSpace(req.Lyrics)
+	extSeconds, extSet, notice := parseAudioExtendSeconds(req.Duration)
+	var notices []string
+	if notice != "" {
+		notices = append(notices, notice)
+	}
+	before := strings.TrimSpace(req.Direction) == "before"
+
+	switch audioExtendFlavor(req.Model) {
+	case "ace-step":
+		body := map[string]any{"audio_url": req.SourceAudio}
+		// ace-step has no prompt input; tags (required) carries the style, and
+		// the description doubles as tags when no style was given.
+		tags := style
+		if tags == "" {
+			tags = prompt
+		} else if prompt != "" {
+			notices = append(notices, "fal-ai/ace-step/audio-outpaint has no prompt input; the continuation description wasn't sent — style tags and lyrics steer the extension.")
+		}
+		body["tags"] = tags
+		if lyrics != "" {
+			body["lyrics"] = lyrics
+		}
+		if !extSet {
+			extSeconds = 30
+		}
+		if extSeconds > aceStepOutpaintMaxSeconds {
+			notices = append(notices, fmt.Sprintf("Capped the extension at %ds: fal-ai/ace-step/audio-outpaint accepts at most %ds per side.", aceStepOutpaintMaxSeconds, aceStepOutpaintMaxSeconds))
+			extSeconds = aceStepOutpaintMaxSeconds
+		}
+		// Both sides are always sent explicitly — fal defaults
+		// extend_after_duration to 30, so an omitted zero would silently grow
+		// the other end of the clip.
+		if before {
+			body["extend_before_duration"] = extSeconds
+			body["extend_after_duration"] = 0
+		} else {
+			body["extend_before_duration"] = 0
+			body["extend_after_duration"] = extSeconds
+		}
+		return body, notices, nil
+
+	case "sonauto":
+		body := map[string]any{"audio_url": req.SourceAudio}
+		if before {
+			body["side"] = "left"
+		} else {
+			body["side"] = "right"
+		}
+		if prompt != "" {
+			body["prompt"] = prompt
+		}
+		if style != "" {
+			body["tags"] = splitCommaTags(style)
+		}
+		if lyrics != "" {
+			body["lyrics_prompt"] = lyrics
+		}
+		// Omitted duration stays omitted: sonauto auto-determines the
+		// extension length, which beats guessing a default for it.
+		if extSet {
+			if extSeconds < sonautoExtendMinSeconds || extSeconds > sonautoExtendMaxSeconds {
+				clamped := math.Min(math.Max(extSeconds, sonautoExtendMinSeconds), sonautoExtendMaxSeconds)
+				notices = append(notices, fmt.Sprintf("Adjusted the extension to %ds: sonauto/v2/extend accepts %ds at most (minimum %ds).", int(clamped), sonautoExtendMaxSeconds, sonautoExtendMinSeconds))
+				extSeconds = clamped
+			}
+			body["extend_duration"] = extSeconds
+		}
+		return body, notices, nil
+
+	case "stable-inpaint":
+		if req.SourceDurationSeconds <= 0 {
+			return nil, notices, fmt.Errorf("could not determine the source clip's length, which %q needs to place its mask; try \"fal-ai/ace-step/audio-outpaint\" or \"sonauto/v2/extend\", which extend without it", req.Model)
+		}
+		if !extSet {
+			extSeconds = 30
+		}
+		sourceLen := roundSeconds(req.SourceDurationSeconds)
+		ext := roundSeconds(extSeconds)
+		// The mask covers only the generated region: [sourceLen, total] when
+		// appending, [0, ext] when prepending — the original occupies the rest
+		// of seconds_total and is preserved.
+		var maskStart, maskEnd, total int
+		if before {
+			maskStart = 0
+			maskEnd = ext
+			total = sourceLen + ext
+		} else {
+			maskStart = sourceLen
+			maskEnd = sourceLen + ext
+			total = sourceLen + ext
+		}
+		if total > stableAudioInpaintMaxSeconds {
+			return nil, notices, fmt.Errorf("extending the ~%ds clip by %ds reaches %ds, past %q's %ds cap; ask for a shorter extension, or use \"fal-ai/ace-step/audio-outpaint\" for music", sourceLen, ext, total, req.Model, stableAudioInpaintMaxSeconds)
+		}
+		body := map[string]any{
+			"prompt":        prompt,
+			"audio_url":     req.SourceAudio,
+			"mask_start":    maskStart,
+			"mask_end":      maskEnd,
+			"seconds_total": total,
+		}
+		return body, notices, nil
+	}
+
+	// Generic: an arbitrary endpoint via the model override — resolve the
+	// shared canonicals through the synonym table, drop-with-notice anything
+	// the endpoint doesn't declare, and fail when it has no audio input to
+	// extend.
+	body := map[string]any{}
+	if schema == nil {
+		return nil, notices, errors.New("couldn't load the selected extend model's parameter schema; only the mapped endpoints (stable-audio-25/inpaint, ace-step/audio-outpaint, sonauto/v2/extend) can run without it")
+	}
+	path, _, ok := findNative(schema, ov, "audio", req.Model, "sourceAudio")
+	if !ok {
+		return nil, notices, fmt.Errorf("the selected model %q has no audio input to extend", req.Model)
+	}
+	setBodyPath(schema, body, path, req.SourceAudio)
+	if path, _, ok := findNative(schema, ov, "audio", req.Model, "prompt"); ok {
+		setBodyPath(schema, body, path, prompt)
+	} else {
+		body["prompt"] = prompt
+	}
+	generic := []canonicalValue{
+		{"duration", req.Duration, extSet},
+		{"direction", strings.TrimSpace(req.Direction), strings.TrimSpace(req.Direction) != ""},
+		{"negativePrompt", strings.TrimSpace(req.NegativePrompt), strings.TrimSpace(req.NegativePrompt) != ""},
+		{"style", style, style != ""},
+		{"lyrics", lyrics, lyrics != ""},
+	}
+	for _, item := range generic {
+		if !item.present {
+			continue
+		}
+		path, prop, ok := findNative(schema, ov, "audio", req.Model, item.canon)
+		if !ok {
+			notices = append(notices, fmt.Sprintf("The selected model %q has no %s control; ignoring the requested %s.", req.Model, canonLabel(item.canon), canonLabel(item.canon)))
+			continue
+		}
+		value, notice := coerceValue(item.canon, prop, item.value, req.Model)
+		if notice != "" {
+			notices = append(notices, notice)
+			continue
+		}
+		setBodyPath(schema, body, path, value)
+	}
+	return body, notices, nil
 }
 
 // resolveImageBody maps a canonical ImageGenerateRequest onto the model's native

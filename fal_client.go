@@ -58,6 +58,14 @@ const (
 	// covers both sound effects and music, and this endpoint takes prompt,
 	// duration_seconds, and loop.
 	defaultFalSoundEffectsModel = "fal-ai/elevenlabs/sound-effects/v2"
+	// defaultFalAudioExtendModel is the audio-extend endpoint used by the
+	// extend_audio tool when none is configured — stable-audio-25/inpaint
+	// appends or prepends generated audio while preserving the unmasked original
+	// exactly (mask_start/mask_end/seconds_total, capped at 190s total). The
+	// music-oriented siblings (fal-ai/ace-step/audio-outpaint, sonauto/v2/extend)
+	// are selected per-call via the model override; all three are mapped by
+	// resolveAudioExtendBody.
+	defaultFalAudioExtendModel = "fal-ai/stable-audio-25/inpaint"
 	// defaultFalTranscribeModel is the speech-to-text endpoint used when none is
 	// configured — fal's optimized Whisper v3 edition. Accepts audio_url as a
 	// hosted URL or an inline data URI, so no fal storage upload is needed.
@@ -84,6 +92,10 @@ const (
 	// agree on a single source of truth.
 	defaultFalVideoDuration    = "5"
 	defaultFalVideoAspectRatio = "16:9"
+	// defaultFalAudioExtendSeconds is how much audio the extend_audio tool adds
+	// when the planner passes no duration — a sensible bed-extension default
+	// (ace-step's own extend_after_duration default is also 30).
+	defaultFalAudioExtendSeconds = "30"
 	// falPollInterval is the delay between queue status checks.
 	falPollInterval = 1500 * time.Millisecond
 	// falVideoMaxBytes caps a downloaded video. Generated clips are typically a
@@ -168,9 +180,42 @@ type falResultResponse struct {
 	Data      json.RawMessage `json:"data,omitempty"`
 	Images    []falImage      `json:"images,omitempty"`
 	Video     *falVideoFile   `json:"video,omitempty"`
-	Audio     *falVideoFile   `json:"audio,omitempty"`
+	Audio     falAudioField   `json:"audio,omitempty"`
 	AudioFile *falVideoFile   `json:"audio_file,omitempty"`
 	Error     string          `json:"error,omitempty"`
+}
+
+// falAudioField tolerates the two shapes fal endpoints use for the "audio"
+// result: a single File object (most endpoints) or an array of Files
+// (sonauto/v2/extend returns a list — its num_songs input can yield several;
+// the first entry is the clip). Without this, json.Unmarshal rejects the
+// array shape before GenerateAudio's firstFalAudioURL fallback can run.
+type falAudioField struct {
+	File *falVideoFile
+}
+
+func (field *falAudioField) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	if trimmed[0] == '[' {
+		var files []falVideoFile
+		if err := json.Unmarshal(trimmed, &files); err != nil {
+			return err
+		}
+		if len(files) > 0 {
+			first := files[0]
+			field.File = &first
+		}
+		return nil
+	}
+	var file falVideoFile
+	if err := json.Unmarshal(trimmed, &file); err != nil {
+		return err
+	}
+	field.File = &file
+	return nil
 }
 
 // falVideoFile is a fal "File" result object (url + metadata). It backs the
@@ -684,7 +729,7 @@ func (client FalClient) GenerateAudio(ctx context.Context, model string, body ma
 	}
 
 	audioURL := ""
-	for _, file := range []*falVideoFile{result.Audio, result.AudioFile} {
+	for _, file := range []*falVideoFile{result.Audio.File, result.AudioFile} {
 		if file != nil && strings.TrimSpace(file.URL) != "" {
 			audioURL = strings.TrimSpace(file.URL)
 			break
@@ -1169,6 +1214,11 @@ const (
 	// speech, respectively).
 	falTextToAudioCategory  = "text-to-audio"
 	falTextToSpeechCategory = "text-to-speech"
+	// falAudioToAudioCategory is the /v1/models category filter for
+	// audio-to-audio endpoints — audio in, audio out. The extend_audio Settings
+	// lister fetches it and post-filters for extend/outpaint/inpaint ids
+	// (stable-audio-25/inpaint, ace-step/audio-outpaint, sonauto/v2/extend).
+	falAudioToAudioCategory = "audio-to-audio"
 	// falSpeechToTextCategory is the /v1/models category filter for
 	// speech-to-text (transcription) endpoints — fal-ai/wizper and friends.
 	// ListFalTranscribeModels is the only consumer.

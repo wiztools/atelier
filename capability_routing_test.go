@@ -224,25 +224,36 @@ func TestTriageSystemPromptRoutingHintConditional(t *testing.T) {
 	}
 }
 
-// TestTriagePromptListsBothAudioTools asserts that with both audio tools
+// TestTriagePromptListsAudioTools asserts that with the audio tools
 // registered, triage's catalog and its responseMode "audio" guidance name
-// generate_speech AND generate_sound — the planner picks between them, so
-// triage must surface both. Also pins that the old combined generate_audio name
-// is gone from the catalog.
-func TestTriagePromptListsBothAudioTools(t *testing.T) {
+// generate_speech, generate_sound, AND extend_audio — the planner picks
+// between them, so triage must surface all three. Also pins that the old
+// combined generate_audio name is gone from the catalog.
+func TestTriagePromptListsAudioTools(t *testing.T) {
 	registry := newHarnessToolRegistry([]HarnessToolDefinition{
 		speechGenerationToolDefinition(false),
 		soundEffectsGenerationToolDefinition(),
+		extendAudioToolDefinition(),
 	})
 	catalog := registry.PromptCatalog()
-	for _, want := range []string{"generate_speech", "generate_sound"} {
+	for _, want := range []string{"generate_speech", "generate_sound", "extend_audio"} {
 		if !strings.Contains(catalog, want) {
 			t.Fatalf("tool catalog missing %q:\n%s", want, catalog)
 		}
 	}
 	prompt := triageSystemPrompt(registry, nil, "/tmp/ws")
-	if !strings.Contains(prompt, "generate_speech or generate_sound tool is listed as available") {
-		t.Fatalf("audio-mode guidance should name both audio tools:\n%s", prompt)
+	if !strings.Contains(prompt, "generate_speech, generate_sound, or extend_audio tool") {
+		t.Fatalf("audio-mode guidance should name all three audio tools:\n%s", prompt)
+	}
+	// conv_a1990c38b8ee9269525a4c0a: a small harness model routed a bare
+	// "extend this clip by 20s" (clip attached) to text mode to ask what the
+	// addition should sound like. The prompt must connect attached clips to
+	// extend_audio and bless the description-less request.
+	if !strings.Contains(prompt, "extend_audio can extend an attached audio clip") {
+		t.Fatalf("attachments line should name extend_audio:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, `do not route it to "text" to ask what the added audio should sound like`) {
+		t.Fatalf("audio-mode guidance should bless bare extend requests:\n%s", prompt)
 	}
 	if strings.Contains(prompt, "generate_audio") {
 		t.Fatalf("the retired generate_audio tool name must not appear in the triage prompt:\n%s", prompt)

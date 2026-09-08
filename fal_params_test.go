@@ -2310,3 +2310,223 @@ func TestResolveLipsyncBodyNoSchema(t *testing.T) {
 		t.Fatalf("notice = %q, want it to mention the unavailable schema", notices[0])
 	}
 }
+
+// TestResolveAudioExtendBody pins each extend flavor's native body: the three
+// mapped endpoints build literal bodies (their input names are verified
+// against fal's published schemas), while any other endpoint resolves through
+// the synonym table and fails when it has no audio input.
+func TestResolveAudioExtendBody(t *testing.T) {
+	const source = "https://v3.test.fal.media/files/abc/source.mp3"
+
+	t.Run("stable inpaint appends", func(t *testing.T) {
+		body, notices, err := resolveAudioExtendBody(nil, AudioExtendRequest{
+			Model: "fal-ai/stable-audio-25/inpaint", Prompt: "rain continues",
+			Duration: "20", SourceAudio: source, SourceDurationSeconds: 10.2,
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if body["mask_start"] != 10 || body["mask_end"] != 30 || body["seconds_total"] != 30 {
+			t.Fatalf("mask math wrong (src 10.2s + 20s): %v", body)
+		}
+		if body["audio_url"] != source || body["prompt"] != "rain continues" {
+			t.Fatalf("body = %v", body)
+		}
+		if len(notices) != 0 {
+			t.Fatalf("expected no notices, got %v", notices)
+		}
+	})
+
+	t.Run("stable inpaint prepends", func(t *testing.T) {
+		body, _, err := resolveAudioExtendBody(nil, AudioExtendRequest{
+			Model: "fal-ai/stable-audio-25/inpaint", Prompt: "rain eases in",
+			Duration: "20", Direction: "before", SourceAudio: source, SourceDurationSeconds: 10.0,
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if body["mask_start"] != 0 || body["mask_end"] != 20 || body["seconds_total"] != 30 {
+			t.Fatalf("prepend mask math wrong: %v", body)
+		}
+	})
+
+	t.Run("stable inpaint default duration is 30", func(t *testing.T) {
+		body, _, err := resolveAudioExtendBody(nil, AudioExtendRequest{
+			Model: "fal-ai/stable-audio-25/inpaint", Prompt: "more rain",
+			SourceAudio: source, SourceDurationSeconds: 10,
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if body["seconds_total"] != 40 {
+			t.Fatalf("default extension should add 30s: %v", body)
+		}
+	})
+
+	t.Run("stable inpaint over the cap errors", func(t *testing.T) {
+		_, _, err := resolveAudioExtendBody(nil, AudioExtendRequest{
+			Model: "fal-ai/stable-audio-25/inpaint", Prompt: "more",
+			Duration: "20", SourceAudio: source, SourceDurationSeconds: 180,
+		}, builtinFalOverrides())
+		if err == nil || !strings.Contains(err.Error(), "190") {
+			t.Fatalf("expected a 190s-cap error, got %v", err)
+		}
+	})
+
+	t.Run("stable inpaint without a source duration errors with an alternative", func(t *testing.T) {
+		_, _, err := resolveAudioExtendBody(nil, AudioExtendRequest{
+			Model: "fal-ai/stable-audio-25/inpaint", Prompt: "more",
+			SourceAudio: source,
+		}, builtinFalOverrides())
+		if err == nil || !strings.Contains(err.Error(), "ace-step") {
+			t.Fatalf("expected a duration-probe error suggesting ace-step, got %v", err)
+		}
+	})
+
+	t.Run("ace step after sends both sides explicitly", func(t *testing.T) {
+		body, notices, err := resolveAudioExtendBody(nil, AudioExtendRequest{
+			Model: "fal-ai/ace-step/audio-outpaint", Prompt: "brighter outro",
+			Duration: "45", Style: "lofi, chill", Lyrics: "[inst]",
+			SourceAudio: source,
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if body["extend_before_duration"] != 0 || body["extend_after_duration"] != 45.0 {
+			t.Fatalf("durations = %v (before must be an explicit 0)", body)
+		}
+		if body["tags"] != "lofi, chill" || body["lyrics"] != "[inst]" {
+			t.Fatalf("body = %v", body)
+		}
+		if body["audio_url"] != source {
+			t.Fatalf("body = %v", body)
+		}
+		// A style was given, so the prompt has nowhere to go — noticed, not lost.
+		if len(notices) != 1 || !strings.Contains(notices[0], "no prompt input") {
+			t.Fatalf("expected a prompt-drop notice, got %v", notices)
+		}
+	})
+
+	t.Run("ace step falls back to prompt as tags", func(t *testing.T) {
+		body, notices, err := resolveAudioExtendBody(nil, AudioExtendRequest{
+			Model: "fal-ai/ace-step/audio-outpaint", Prompt: "gentle piano outro",
+			Duration: "200", SourceAudio: source,
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if body["tags"] != "gentle piano outro" {
+			t.Fatalf("tags should fall back to the prompt, got %v", body)
+		}
+		if body["extend_after_duration"] != 107.0 {
+			t.Fatalf("duration should clamp to 107, got %v", body)
+		}
+		if len(notices) != 1 || !strings.Contains(notices[0], "107") {
+			t.Fatalf("expected a clamp notice, got %v", notices)
+		}
+	})
+
+	t.Run("ace step before", func(t *testing.T) {
+		body, _, err := resolveAudioExtendBody(nil, AudioExtendRequest{
+			Model: "fal-ai/ace-step/audio-outpaint", Prompt: "intro swell", Style: "ambient",
+			Duration: "15", Direction: "before", SourceAudio: source,
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if body["extend_before_duration"] != 15.0 || body["extend_after_duration"] != 0 {
+			t.Fatalf("durations = %v", body)
+		}
+	})
+
+	t.Run("sonauto maps side and splits tags", func(t *testing.T) {
+		body, notices, err := resolveAudioExtendBody(nil, AudioExtendRequest{
+			Model: "sonauto/v2/extend", Prompt: "add a final chorus",
+			Duration: "40", Style: "lofi, chill", Lyrics: "la la la",
+			SourceAudio: source,
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if body["side"] != "right" || body["extend_duration"] != 40.0 {
+			t.Fatalf("body = %v", body)
+		}
+		tags, ok := body["tags"].([]string)
+		if !ok || len(tags) != 2 || tags[0] != "lofi" || tags[1] != "chill" {
+			t.Fatalf("tags = %#v, want [lofi chill]", body["tags"])
+		}
+		if body["lyrics_prompt"] != "la la la" {
+			t.Fatalf("body = %v", body)
+		}
+		if len(notices) != 0 {
+			t.Fatalf("expected no notices, got %v", notices)
+		}
+	})
+
+	t.Run("sonauto before clamps the minimum", func(t *testing.T) {
+		body, notices, err := resolveAudioExtendBody(nil, AudioExtendRequest{
+			Model: "sonauto/v2/extend", Prompt: "intro", Duration: "1",
+			Direction: "before", SourceAudio: source,
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if body["side"] != "left" || body["extend_duration"] != 2.0 {
+			t.Fatalf("body = %v", body)
+		}
+		if len(notices) != 1 || !strings.Contains(notices[0], "sonauto") {
+			t.Fatalf("expected a clamp notice, got %v", notices)
+		}
+	})
+
+	t.Run("sonauto omits duration when unset", func(t *testing.T) {
+		body, _, err := resolveAudioExtendBody(nil, AudioExtendRequest{
+			Model: "sonauto/v2/extend", Prompt: "keep going", SourceAudio: source,
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if _, ok := body["extend_duration"]; ok {
+			t.Fatalf("unset duration must be omitted so sonauto auto-determines it: %v", body)
+		}
+	})
+
+	t.Run("generic model resolves through synonyms", func(t *testing.T) {
+		body, notices, err := resolveAudioExtendBody(loadSchema(t, "f5-tts"), AudioExtendRequest{
+			Model: "acme/extend", Prompt: "more rain", Duration: "12",
+			SourceAudio: source,
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if body["audio_url"] != source || body["prompt"] != "more rain" {
+			t.Fatalf("body = %v", body)
+		}
+		// f5-tts declares no duration input, so the canonical drops with a
+		// notice rather than 422ing at fal.
+		if _, ok := body["duration"]; ok {
+			t.Fatalf("f5-tts has no duration input; it must not be sent (body: %v)", body)
+		}
+		if len(notices) != 1 || !strings.Contains(notices[0], "duration") {
+			t.Fatalf("expected a duration drop notice, got %v", notices)
+		}
+	})
+
+	t.Run("generic model without an audio input fails", func(t *testing.T) {
+		_, _, err := resolveAudioExtendBody(loadSchema(t, "sfx-v2"), AudioExtendRequest{
+			Model: "acme/extend", Prompt: "more rain", SourceAudio: source,
+		}, builtinFalOverrides())
+		if err == nil || !strings.Contains(err.Error(), "no audio input") {
+			t.Fatalf("expected a no-audio-input error, got %v", err)
+		}
+	})
+
+	t.Run("generic model without a schema fails", func(t *testing.T) {
+		_, _, err := resolveAudioExtendBody(nil, AudioExtendRequest{
+			Model: "acme/extend", Prompt: "more rain", SourceAudio: source,
+		}, builtinFalOverrides())
+		if err == nil || !strings.Contains(err.Error(), "schema") {
+			t.Fatalf("expected a schema error, got %v", err)
+		}
+	})
+}

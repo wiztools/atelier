@@ -48,6 +48,8 @@ export function ListConversationAssets(arg1:string):Promise<Array<main.Conversat
 
 export function ListConversations():Promise<Array<main.ConversationSummary>>;
 
+export function ListFalAudioExtendModels():Promise<Array<main.FalModel>>;
+
 export function ListFalImageEditModels():Promise<Array<main.FalModel>>;
 
 export function ListFalLipsyncImageModels():Promise<Array<main.FalModel>>;

@@ -260,6 +260,40 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			generated.Notices = notices
 			return generated, err
 		}
+		gateway.tools.GenerateAudioExtend = func(ctx context.Context, req AudioExtendRequest) (GeneratedAudio, error) {
+			apiKey, err := loadFalAPIKey()
+			if err != nil {
+				return GeneratedAudio{}, err
+			}
+			if strings.TrimSpace(apiKey) == "" {
+				return GeneratedAudio{}, errFalKeyNotConfigured
+			}
+			client := newFalClient(app.client, apiKey)
+			// Probe the source clip's length while its bytes are still at hand:
+			// mask-based endpoints (stable-audio inpaint) need it to place the
+			// mask, and after the upload below only a URL remains.
+			if seconds, ok := dataURLAudioDuration(req.SourceAudio); ok {
+				req.SourceDurationSeconds = seconds
+			}
+			// sonauto/v2/extend rejects inline data URIs ("must be a valid
+			// publicly accessible URL"), so the source always goes through fal's
+			// CDN storage — the lipsync pattern — instead of the ≤1MB inline
+			// path the voice reference uses. Fail-soft; fal's own error surfaces
+			// if the inline form is also rejected.
+			if strings.TrimSpace(req.SourceAudio) != "" {
+				if resolved, err := client.resolveMediaURLHosted(ctx, req.SourceAudio, "audio/mpeg", "source-audio.mp3"); err == nil {
+					req.SourceAudio = resolved
+				}
+			}
+			schema := schemaCache.Get(ctx, req.Model)
+			body, notices, err := resolveAudioExtendBody(schema, req, falOverrides)
+			if err != nil {
+				return GeneratedAudio{Notices: notices}, err
+			}
+			generated, err := client.GenerateAudio(ctx, req.Model, body)
+			generated.Notices = notices
+			return generated, err
+		}
 		gateway.tools.TranscribeAudio = func(ctx context.Context, model, audioURL, task, language string) (GeneratedTranscript, error) {
 			apiKey, err := loadFalAPIKey()
 			if err != nil {

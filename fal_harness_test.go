@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -1219,4 +1220,192 @@ func chatPayload(t *testing.T, req *http.Request) map[string]any {
 		t.Fatalf("provider request body is not JSON: %v", err)
 	}
 	return payload
+}
+
+// TestHarnessExtendsAudioViaFal drives two turns of extend_audio against the
+// default inpaint endpoint. Turn 1 attaches a 1s WAV and extends by 2s —
+// pinning the attachment-driven source, the duration probe (the mask must sit
+// at the probed clip length), the forced CDN upload (sonauto's public-URL
+// rule applies to every extend model), and the mask math. Turn 2 is a bare
+// follow-up with no attachment: the newest audio artifact is re-read from
+// conversation history (audio's per-kind latest-wins fallback) and extended
+// again.
+func TestHarnessExtendsAudioViaFal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	keyring.MockInit()
+	if err := saveFalAPIKey("fal-test-key"); err != nil {
+		t.Fatalf("saveFalAPIKey: %v", err)
+	}
+	t.Cleanup(func() { _ = clearFalAPIKey() })
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig: %v", err)
+	}
+
+	// A 1s WAV the user "attached" (8 kHz mono 8-bit, 8000 payload bytes).
+	attached := "data:audio/wav;base64," + base64.StdEncoding.EncodeToString(buildWAV(8000))
+	const cdnSource = "https://v3.test.fal.media/files/abc/source.wav"
+
+	var submitted []map[string]any
+	app := NewApp()
+	harnessCalls := 0
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case strings.Contains(req.URL.String(), "storage/auth/token"):
+			return jsonResponse(`{"token":"cdn-test-token","token_type":"Bearer","base_url":"https://v3.test.fal.media"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/files/upload"):
+			if auth := req.Header.Get("Authorization"); auth != "Bearer cdn-test-token" {
+				t.Errorf("upload auth = %q, want Bearer cdn-test-token", auth)
+			}
+			return jsonResponse(`{"access_url":"` + cdnSource + `","uploaded":true}`), nil
+		case strings.Contains(req.URL.Path, "/api/openapi/"):
+			// The inpaint flavor builds its body from verified endpoint
+			// contracts, not the schema — an empty document suffices here.
+			return jsonResponse(`{}`), nil
+		case strings.Contains(req.URL.Host, "fal.run"):
+			if req.Method == http.MethodPost {
+				var body map[string]any
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+					t.Fatalf("decode fal submit body: %v", err)
+				}
+				submitted = append(submitted, body)
+				return jsonResponse(fmt.Sprintf(`{"request_id":"req-ext-%d"}`, len(submitted))), nil
+			}
+			if strings.HasSuffix(req.URL.Path, "/status") {
+				return jsonResponse(`{"status":"COMPLETED"}`), nil
+			}
+			if strings.Contains(req.URL.Path, "/requests/") {
+				return jsonResponse(fmt.Sprintf(`{"audio":{"url":"https://queue.fal.run/extended.wav","content_type":"audio/wav"}}`)), nil
+			}
+			// Download: a WAV probing to exactly 1s, so turn 2's fallback
+			// probe computes mask_start=1.
+			return &http.Response{StatusCode: 200, Status: "200 OK",
+				Body:   io.NopCloser(bytes.NewReader(buildWAV(8000))),
+				Header: http.Header{"Content-Type": []string{"audio/wav"}}}, nil
+		}
+		switch req.URL.Path {
+		case "/api/show":
+			return jsonResponse(`{"capabilities":[],"model_info":{},"details":{"family":"test","parameter_size":"1B"}}`), nil
+		case "/api/chat":
+			payload := chatPayload(t, req)
+			if payload["stream"] == false {
+				switch payload["model"] {
+				case "harness-model":
+					harnessCalls++
+					switch harnessCalls {
+					case 1: // turn 1 triage
+						return chatCompletion("harness-model", `{"needsTools":true,"responseMode":"audio","toolTask":"Extend the clip.","reason":"The user asked to extend audio."}`), nil
+					case 2: // turn 1 plan
+						return chatCompletion("harness-model", `{"brief":"Extend the attached clip by 2 seconds.","needsTools":true,"reason":"extend","toolCalls":[{"name":"extend_audio","content":"gentle rain continues","duration":"2"}]}`), nil
+					case 3:
+						return chatCompletion("harness-model", `{"brief":"Done.","needsTools":false,"reason":"done","toolCalls":[]}`), nil
+					case 4: // turn 2 triage
+						return chatCompletion("harness-model", `{"needsTools":true,"responseMode":"audio","toolTask":"Extend the newest clip.","reason":"The user asked to extend audio again."}`), nil
+					case 5: // turn 2 plan
+						return chatCompletion("harness-model", `{"brief":"Extend the newest clip by 1 second.","needsTools":true,"reason":"extend","toolCalls":[{"name":"extend_audio","content":"rain swells once more","duration":"1"}]}`), nil
+					case 6:
+						return chatCompletion("harness-model", `{"brief":"Done.","needsTools":false,"reason":"done","toolCalls":[]}`), nil
+					}
+					t.Fatalf("unexpected harness call #%d", harnessCalls)
+					return nil, nil
+				default:
+					// Title generation runs once, on the primary model, after
+					// turn 1 — not part of the harness sequence.
+					return chatCompletion("chat-box-model", `"Extended rain"`), nil
+				}
+			}
+			body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"Here is the longer clip."},"done":false}`) +
+				fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+			return &http.Response{StatusCode: 200, Status: "200 OK",
+				Body:   io.NopCloser(strings.NewReader(body)),
+				Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+		default:
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL)
+			return nil, nil
+		}
+	})
+
+	// Turn 1: attach the clip and extend by 2s.
+	app.runChatStream(context.Background(), "request-ext-1", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{{
+			Role:    "user",
+			Content: "Extend this clip by 2 more seconds of rain.",
+			Audios:  []string{attached},
+		}},
+	})
+
+	if len(submitted) < 1 {
+		t.Fatal("extend_audio never submitted to fal — the tool did not run")
+	}
+	first := submitted[0]
+	if first["audio_url"] != cdnSource {
+		t.Errorf("turn 1 audio_url = %v, want the CDN-hosted source (sonauto's public-URL rule)", first["audio_url"])
+	}
+	if first["mask_start"] != float64(1) || first["mask_end"] != float64(3) || first["seconds_total"] != float64(3) {
+		t.Errorf("turn 1 mask math (1s source + 2s) = %v", first)
+	}
+	if first["prompt"] != "gentle rain continues" {
+		t.Errorf("turn 1 prompt = %v", first["prompt"])
+	}
+
+	conversations, err := listConversations(config.Storage)
+	if err != nil || len(conversations) == 0 {
+		t.Fatalf("listConversations: %v (%d)", err, len(conversations))
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation: %v", err)
+	}
+	turn1 := detail.Turns[len(detail.Turns)-1]
+	var audio *HistoryContent
+	for i := range turn1.Content {
+		if turn1.Content[i].Type == "audio" {
+			audio = &turn1.Content[i]
+		}
+	}
+	if audio == nil {
+		t.Fatalf("turn 1 assistant content has no audio artifact: %+v", turn1.Content)
+	}
+	if !strings.HasPrefix(audio.Path, "artifacts/") || !strings.HasSuffix(audio.Path, ".wav") {
+		t.Errorf("turn 1 audio path = %q, want artifacts/*.wav", audio.Path)
+	}
+	if !strings.HasPrefix(audio.Text, "/atelier-artifact/") {
+		t.Errorf("hydrated audio text = %q, want /atelier-artifact/ URL", audio.Text)
+	}
+
+	// Turn 2: a bare follow-up — the history fallback re-reads turn 1's
+	// artifact (the downloaded 1s WAV) as the source.
+	app.runChatStream(context.Background(), "request-ext-2", ChatRequest{
+		BaseURL:        "http://ollama.test",
+		Model:          "chat-box-model",
+		ConversationID: conversations[0].ID,
+		Messages: []ChatMessage{{
+			Role:    "user",
+			Content: "Extend it again by 1 second.",
+		}},
+	})
+
+	if len(submitted) != 2 {
+		t.Fatalf("expected 2 fal submissions, got %d", len(submitted))
+	}
+	second := submitted[1]
+	if second["mask_start"] != float64(1) || second["mask_end"] != float64(2) || second["seconds_total"] != float64(2) {
+		t.Errorf("turn 2 mask math (1s source from history + 1s) = %v", second)
+	}
+	if second["prompt"] != "rain swells once more" {
+		t.Errorf("turn 2 prompt = %v", second["prompt"])
+	}
 }

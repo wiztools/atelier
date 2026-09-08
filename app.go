@@ -193,10 +193,13 @@ type ConfigFal struct {
 	// effects) used by the generate_sound tool. AudioCloneModel is the
 	// zero-shot voice-cloning endpoint generate_speech switches to when the
 	// user attached a reference clip — selected by attachment, like the
-	// lipsync image/video split.
+	// lipsync image/video split. AudioExtendModel is the audio-extend endpoint
+	// used by the extend_audio tool (stable-audio-25/inpaint by default — the
+	// audio sibling of VideoExtendModel).
 	AudioModel        string `json:"audioModel,omitempty"`
 	SoundEffectsModel string `json:"soundEffectsModel,omitempty"`
 	AudioCloneModel   string `json:"audioCloneModel,omitempty"`
+	AudioExtendModel  string `json:"audioExtendModel,omitempty"`
 	// TranscribeModel is the speech-to-text endpoint used by transcribe_audio
 	// (fal-ai/wizper by default). fal-only; Ollama has no transcription API.
 	TranscribeModel string `json:"transcribeModel,omitempty"`
@@ -679,6 +682,26 @@ type AudioGenerateRequest struct {
 	// the model's audio_url-shaped input, dropped-with-notice when the model
 	// has no reference input.
 	SourceAudio string `json:"sourceAudio,omitempty"`
+}
+
+// AudioExtendRequest is the input to extend_audio: lengthen an existing clip
+// by generated audio. Duration is the length of the ADDED audio in seconds
+// (a string canonical, like video extend), not the total output length.
+// Direction is "after" (default, append) or "before" (prepend). Style and
+// Lyrics steer music models (ace-step tags, sonauto tags/lyrics_prompt).
+// SourceAudio is the clip to extend (data URL), and SourceDurationSeconds is
+// its probed length — required by mask-based endpoints (stable-audio inpaint)
+// and computed before the clip is uploaded, when the bytes are still at hand.
+type AudioExtendRequest struct {
+	Model                 string  `json:"model"`
+	Prompt                string  `json:"prompt"`
+	Duration              string  `json:"duration,omitempty"`
+	Direction             string  `json:"direction,omitempty"`
+	NegativePrompt        string  `json:"negativePrompt,omitempty"`
+	Style                 string  `json:"style,omitempty"`
+	Lyrics                string  `json:"lyrics,omitempty"`
+	SourceAudio           string  `json:"sourceAudio,omitempty"`
+	SourceDurationSeconds float64 `json:"sourceDurationSeconds,omitempty"`
 }
 
 // SaveAudioRequest asks to copy a generated audio artifact to a user-chosen
@@ -2628,6 +2651,69 @@ func (a *App) ListFalTranscribeModels() ([]FalModel, error) {
 	defer cancel()
 	client := newFalClient(a.client, key)
 	return client.ListModels(ctx, falSpeechToTextCategory, 0)
+}
+
+// isFalAudioExtendModel reports whether a fal catalog entry is an audio-extend
+// endpoint — one that continues an existing clip with generated audio
+// (stable-audio inpaint/outpaint, ace-step audio-outpaint, sonauto extend).
+// fal files them under the audio-to-audio category alongside unrelated
+// transforms, so the id is checked for the extend/outpaint/inpaint keywords.
+// Mirrors isFalVideoExtendModel.
+func isFalAudioExtendModel(model FalModel) bool {
+	id := strings.ToLower(model.ID)
+	for _, keyword := range []string{"extend", "outpaint", "inpaint"} {
+		if strings.Contains(id, keyword) {
+			return true
+		}
+	}
+	for _, tag := range model.Tags {
+		lower := strings.ToLower(tag)
+		for _, keyword := range []string{"extend", "outpaint", "inpaint"} {
+			if strings.Contains(lower, keyword) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ListFalAudioExtendModels returns fal's audio-extend catalog for the Settings
+// audio-extend-model picker (the extend_audio tool's default endpoint),
+// fetched from the audio-to-audio category and kept only when
+// isFalAudioExtendModel matches. The three mapped endpoints are always
+// included even when the catalog fetch or filter misses them (a catalog
+// re-shuffle then degrades to a short static list instead of an empty picker).
+func (a *App) ListFalAudioExtendModels() ([]FalModel, error) {
+	key, err := loadFalAPIKey()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	client := newFalClient(a.client, key)
+
+	extend := []FalModel{
+		{ID: defaultFalAudioExtendModel},
+		{ID: "fal-ai/ace-step/audio-outpaint"},
+		{ID: "sonauto/v2/extend"},
+	}
+	seen := map[string]bool{}
+	for _, model := range extend {
+		seen[model.ID] = true
+	}
+	models, err := client.ListModels(ctx, falAudioToAudioCategory, 0)
+	if err != nil {
+		// Catalog failure keeps the static three — the picker stays usable.
+		return extend, nil
+	}
+	for _, model := range models {
+		if model.ID == "" || seen[model.ID] || !isFalAudioExtendModel(model) {
+			continue
+		}
+		seen[model.ID] = true
+		extend = append(extend, model)
+	}
+	return extend, nil
 }
 
 // resolvedPrimaryModelAndProvider returns which model/provider the primary

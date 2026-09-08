@@ -164,6 +164,13 @@ type HarnessToolCall struct {
 	Loop  bool   `json:"loop,omitempty"`
 	Voice string `json:"voice,omitempty"`
 	Style string `json:"style,omitempty"`
+	// Direction and Lyrics are optional extend_audio inputs. Direction selects
+	// "after" (the default — append to the clip's end) or "before" (prepend to
+	// its start); Lyrics carries song words for music extenders (ace-step
+	// lyrics, sonauto lyrics_prompt) the way Style carries genre. Planner-only,
+	// like Style — see extendAudioParamSchema.
+	Direction string `json:"direction,omitempty"`
+	Lyrics    string `json:"lyrics,omitempty"`
 	// CloneVoice is the generate_speech voice-cloning override. Nil (absent)
 	// keeps the default: clone automatically when the user attached a clip.
 	// True forces the cloning path; false keeps the regular speech voice even
@@ -1794,7 +1801,7 @@ func generationModeRequiresToolCall(responseMode string, plan HarnessToolPlan, p
 	if len(priorResults) > 0 {
 		return ""
 	}
-	return fmt.Sprintf("responseMode %q was routed to tools, but the plan emits no tool call. A media turn cannot be completed without a tool call (e.g. generate_image/generate_video/generate_speech/generate_sound, lip_sync, or transcribe_audio). Set needsTools true and emit the relevant call.", responseMode)
+	return fmt.Sprintf("responseMode %q was routed to tools, but the plan emits no tool call. A media turn cannot be completed without a tool call (e.g. generate_image/generate_video/generate_speech/generate_sound/extend_audio, lip_sync, or transcribe_audio). Set needsTools true and emit the relevant call.", responseMode)
 }
 
 func (h *HarnessEngine) plannerSystemPrompt(registry HarnessToolRegistry, req ChatRequest, loadedSkill *LoadedSkill, toolTask, responseMode string, userRequested bool) string {

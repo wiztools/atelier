@@ -156,3 +156,125 @@ func TestGenerateSoundSurfacesNotices(t *testing.T) {
 		t.Fatalf("expected [loop ignored], got %v", notices)
 	}
 }
+
+// TestExtendAudioRoutingAndValidation pins the extend_audio tool's contract:
+// validation (content required, direction enum), the fail-fast on a missing
+// source clip, the first-attachment source selection, param forwarding, and
+// the default-model resolution chain (call override → config → built-in
+// default).
+func TestExtendAudioRoutingAndValidation(t *testing.T) {
+	const clip = "data:audio/mpeg;base64,QUJD"
+	const second = "data:audio/mpeg;base64,REVG"
+	def := extendAudioToolDefinition()
+
+	if errs := def.Validate("toolCalls[0]", HarnessToolCall{}); len(errs) != 1 || !strings.Contains(errs[0], "content is required") {
+		t.Fatalf("content validation = %v", errs)
+	}
+	if errs := def.Validate("toolCalls[0]", HarnessToolCall{Content: "x", Direction: "middle"}); len(errs) != 1 || !strings.Contains(errs[0], "direction") {
+		t.Fatalf("direction validation = %v", errs)
+	}
+	for _, direction := range []string{"", "after", "before"} {
+		if errs := def.Validate("toolCalls[0]", HarnessToolCall{Content: "x", Direction: direction}); len(errs) != 0 {
+			t.Fatalf("direction %q should validate, got %v", direction, errs)
+		}
+	}
+
+	// A missing source fails the call rather than generating brand-new audio.
+	tools := HarnessToolExecutionContext{
+		GenerateAudioExtend: func(ctx context.Context, req AudioExtendRequest) (GeneratedAudio, error) {
+			t.Fatal("extend must not run without a source clip")
+			return GeneratedAudio{}, nil
+		},
+	}
+	if _, _, err := def.Execute(context.Background(), tools, HarnessToolCall{Content: "more rain"}); err == nil || !strings.Contains(err.Error(), "needs an audio clip") {
+		t.Fatalf("missing source error = %v", err)
+	}
+
+	// Unavailable backend fails, mirroring audioGenerationExecute.
+	if _, _, err := def.Execute(context.Background(), HarnessToolExecutionContext{}, HarnessToolCall{Content: "more rain"}); err == nil || !strings.Contains(err.Error(), "not available") {
+		t.Fatalf("unavailable backend error = %v", err)
+	}
+
+	config := defaultAppConfig()
+	config.Providers.Fal.AudioExtendModel = "fal-ai/configured/extend"
+	cases := []struct {
+		name      string
+		config    AppConfig
+		callModel string
+		wantModel string
+	}{
+		{"configured model wins over the default", config, "", "fal-ai/configured/extend"},
+		{"built-in default when unset", defaultAppConfig(), "", defaultFalAudioExtendModel},
+		{"call model overrides the config", config, "fal-ai/manual", "fal-ai/manual"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotReq AudioExtendRequest
+			tools := HarnessToolExecutionContext{
+				Config:         tc.config,
+				AttachedAudios: []string{clip, second},
+				GenerateAudioExtend: func(ctx context.Context, req AudioExtendRequest) (GeneratedAudio, error) {
+					gotReq = req
+					return GeneratedAudio{Data: []byte("x"), MimeType: "audio/wav", Notices: []string{"capped"}}, nil
+				},
+			}
+			out, summary, err := def.Execute(context.Background(), tools, HarnessToolCall{
+				Content: "more rain", Duration: "20", Direction: "before",
+				Style: "lofi", Lyrics: "la", NegativePrompt: "vocals", Model: tc.callModel,
+			})
+			if err != nil {
+				t.Fatalf("Execute error: %v", err)
+			}
+			if gotReq.Model != tc.wantModel {
+				t.Fatalf("model = %q, want %q", gotReq.Model, tc.wantModel)
+			}
+			// The FIRST attached clip is the source — fal endpoints take one
+			// audio_url.
+			if gotReq.SourceAudio != clip {
+				t.Fatalf("source = %q, want the first attachment", gotReq.SourceAudio)
+			}
+			if gotReq.Prompt != "more rain" || gotReq.Duration != "20" || gotReq.Direction != "before" ||
+				gotReq.Style != "lofi" || gotReq.Lyrics != "la" || gotReq.NegativePrompt != "vocals" {
+				t.Fatalf("params not forwarded: %+v", gotReq)
+			}
+			audio, ok := out.(ToolAudioResult)
+			if !ok {
+				t.Fatalf("expected ToolAudioResult, got %T", out)
+			}
+			if audio.Model != tc.wantModel || audio.Count != 1 || len(audio.Audios) != 1 {
+				t.Fatalf("result = %+v", audio)
+			}
+			if !strings.Contains(summary, tc.wantModel) {
+				t.Fatalf("summary = %q, want it to name the model", summary)
+			}
+			np, ok := out.(NoticeProvider)
+			if !ok || len(np.ToolNotices()) != 1 || np.ToolNotices()[0] != "capped" {
+				t.Fatalf("notices must ride the result, got %T %+v", out, out)
+			}
+		})
+	}
+}
+
+// TestExtendAudioDescriptionBlessesBareLength pins the catalog half of the
+// conv_a1990c38b8ee9269525a4c0a lesson: a bare "extend this clip by 20s" with
+// no description is a valid extend_audio request. The tool description must
+// teach the same-style default and forbid asking — the small harness model
+// read "content required" as "uncallable without a description" and routed
+// the turn to text.
+func TestExtendAudioDescriptionBlessesBareLength(t *testing.T) {
+	description := extendAudioDescription()
+	if !strings.Contains(description, "continue in the same style") {
+		t.Fatalf("description should teach the bare-length default:\n%s", description)
+	}
+	if !strings.Contains(description, "do not ask the user") {
+		t.Fatalf("description should forbid asking instead of extending:\n%s", description)
+	}
+	schema := extendAudioParamSchema()
+	content, ok := schema["properties"].(map[string]any)["content"].(map[string]any)
+	if !ok {
+		t.Fatalf("content property missing from schema: %#v", schema)
+	}
+	if !strings.Contains(content["description"].(string), "continue in the same style") {
+		t.Fatalf("content param should carry the bare-length default too: %#v", content)
+	}
+}

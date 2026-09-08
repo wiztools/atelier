@@ -76,6 +76,11 @@ type HarnessToolExecutionContext struct {
 	GenerateImage  func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, []string, error)
 	GenerateVideo  func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error)
 	GenerateAudio  func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error)
+	// GenerateAudioExtend lengthens an existing clip with generated audio —
+	// the extend sibling of GenerateAudio. It takes the canonical extend
+	// request (source clip, direction, added duration) and returns the longer
+	// clip plus resolver notices, same transport shape as GenerateAudio.
+	GenerateAudioExtend func(ctx context.Context, req AudioExtendRequest) (GeneratedAudio, error)
 	// GenerateLipsync runs a lip sync generation — an audio clip drives a face
 	// (image for audio-to-video, video for video-to-video). It returns a video
 	// (same transport as GenerateVideo) plus resolver notices.
@@ -207,6 +212,9 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 	}
 	if soundEffectsGenerationConfigured(config) {
 		definitions = append(definitions, soundEffectsGenerationToolDefinition())
+	}
+	if audioExtendConfigured(config) {
+		definitions = append(definitions, extendAudioToolDefinition())
 	}
 	if transcribeAudioConfigured(config) {
 		definitions = append(definitions, transcribeAudioToolDefinition())
@@ -459,7 +467,8 @@ func firstAttachedVideo(videos []string) string {
 
 // firstAttachedAudio returns the first non-empty attached audio, for the
 // single-clip consumers of AttachedAudios (transcribe_audio, lip sync, the
-// voice-cloning reference) — fal's audio endpoints each take one audio_url.
+// voice-cloning reference, extend_audio) — fal's audio endpoints each take one
+// audio_url.
 func firstAttachedAudio(audios []string) string {
 	for _, a := range audios {
 		if s := strings.TrimSpace(a); s != "" {
@@ -791,6 +800,24 @@ func resolveDefaultSoundEffectsModel(config AppConfig) string {
 	return defaultFalSoundEffectsModel
 }
 
+// audioExtendConfigured reports whether the extend_audio tool should be
+// offered: fal is the only audio-extend backend, and the default model always
+// applies (stable-audio-25/inpaint), so the gate is purely the fal key — like
+// transcribe_audio and lip_sync, no model needs to be configured first.
+func audioExtendConfigured(config AppConfig) bool {
+	return falKeyConfigured()
+}
+
+// resolveDefaultAudioExtendModel returns the audio-extend endpoint the
+// extend_audio tool uses when the call doesn't override it — the audio sibling
+// of resolveDefaultVideoExtendModel.
+func resolveDefaultAudioExtendModel(config AppConfig) string {
+	if model := strings.TrimSpace(config.Providers.Fal.AudioExtendModel); model != "" {
+		return model
+	}
+	return defaultFalAudioExtendModel
+}
+
 // transcribeAudioConfigured reports whether the transcribe_audio tool should be
 // offered: fal is the only transcription backend, and the default model
 // (fal-ai/wizper) always applies, so the gate is purely the fal key — unlike
@@ -852,7 +879,25 @@ func speechGenerationDescription(videoAudioCapable bool) string {
 // description. It takes no videoAudioCapable hint: lip_sync is a face tool, so
 // the generate_speech + lip_sync chain never applies to music or sound effects.
 func soundEffectsGenerationDescription() string {
-	return "Use this when the user asks to create music, ambience, or a sound effect from a description. The configured fal.ai sound-effects model generates the clip and it is attached to the assistant reply. When the request names a genre or mood, pass it as style and keep content as the pure lyrics or sound description."
+	return "Use this when the user asks to create music, ambience, or a sound effect from a description. The configured fal.ai sound-effects model generates the clip and it is attached to the assistant reply. When the request names a genre or mood, pass it as style and keep content as the pure lyrics or sound description. To make an existing clip longer (\"extend this\", \"add 30 seconds to this clip\", \"continue this song\") use extend_audio instead."
+}
+
+// stageGeneratedAudio writes a downloaded clip to a temp file and wraps it in
+// the ToolAudioResult every audio tool shares — carry-forward, artifacts, and
+// notice surfacing are keyed on that result type.
+func stageGeneratedAudio(model, prompt string, generated GeneratedAudio) (any, string, error) {
+	tempPath, err := writeTempAudio(generated)
+	if err != nil {
+		return nil, "audio generation failed", err
+	}
+	output := ToolAudioResult{
+		Model:   model,
+		Prompt:  prompt,
+		Count:   1,
+		Audios:  []ToolAudioFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
+		Notices: generated.Notices,
+	}
+	return output, fmt.Sprintf("generated audio with %s", model), nil
 }
 
 // audioGenerationExecute is the shared Execute body for generate_speech and
@@ -879,18 +924,7 @@ func audioGenerationExecute(ctx context.Context, tools HarnessToolExecutionConte
 	if len(generated.Data) == 0 {
 		return nil, "audio generation returned no audio", errors.New("audio model returned no audio data")
 	}
-	tempPath, err := writeTempAudio(generated)
-	if err != nil {
-		return nil, "audio generation failed", err
-	}
-	output := ToolAudioResult{
-		Model:   audioReq.Model,
-		Prompt:  audioReq.Prompt,
-		Count:   1,
-		Audios:  []ToolAudioFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
-		Notices: generated.Notices,
-	}
-	return output, fmt.Sprintf("generated audio with %s", audioReq.Model), nil
+	return stageGeneratedAudio(audioReq.Model, audioReq.Prompt, generated)
 }
 
 // audioGenerationActivity renders the shared fal generate command for any tool
@@ -987,6 +1021,87 @@ func soundEffectsGenerationToolDefinition() HarnessToolDefinition {
 		},
 		Activity: audioGenerationActivity,
 	}
+}
+
+// extendAudioToolDefinition exposes the extend_audio tool: lengthen an existing
+// clip with generated audio. The source is the first attached audio —
+// resolveTurnMedia already fills AttachedAudios with this turn's attachments
+// and @-mentions, falls back to the newest audio artifact in conversation
+// history (audio sits outside the image/video cross-kind gate), and the
+// in-turn carry-forward feeds a clip generated earlier in the same turn, so
+// "generate a bed, then extend it" chains. A missing source fails the call
+// rather than generating brand-new audio the user didn't ask for — the same
+// unfulfillable-source rule as generate_video.
+func extendAudioToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "extend_audio",
+		Title:       "Extend audio",
+		Description: extendAudioDescription(),
+		Example:     `{"name":"extend_audio","content":"continue the ambient pad with soft rain, growing slightly brighter","duration":"20"}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: extendAudioParamSchema(),
+		Validate: func(prefix string, call HarnessToolCall) []string {
+			if strings.TrimSpace(call.Content) == "" {
+				return []string{prefix + ".content is required for extend_audio (how the added audio should sound)"}
+			}
+			switch strings.TrimSpace(call.Direction) {
+			case "", "after", "before":
+			default:
+				return []string{prefix + `.direction must be "after" or "before" for extend_audio`}
+			}
+			return nil
+		},
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			if tools.GenerateAudioExtend == nil {
+				return nil, "audio extend unavailable", errors.New("audio extend is not available in this context")
+			}
+			source := firstAttachedAudio(tools.AttachedAudios)
+			if source == "" {
+				return nil, "audio extend needs an audio clip", errors.New("extend_audio needs an audio clip: none is attached and the conversation has no earlier audio")
+			}
+			req := AudioExtendRequest{
+				Model:          strings.TrimSpace(call.Model),
+				Prompt:         strings.TrimSpace(call.Content),
+				Duration:       strings.TrimSpace(call.Duration),
+				Direction:      strings.TrimSpace(call.Direction),
+				NegativePrompt: strings.TrimSpace(call.NegativePrompt),
+				Style:          strings.TrimSpace(call.Style),
+				Lyrics:         strings.TrimSpace(call.Lyrics),
+				SourceAudio:    source,
+			}
+			if req.Model == "" {
+				req.Model = resolveDefaultAudioExtendModel(tools.Config)
+			}
+			if req.Model == "" {
+				return nil, "audio extend unavailable", errors.New("no audio extend model is configured")
+			}
+			generated, err := tools.GenerateAudioExtend(ctx, req)
+			if err != nil {
+				return nil, "audio extend failed", err
+			}
+			if len(generated.Data) == 0 {
+				return nil, "audio extend returned no audio", errors.New("audio extend model returned no audio data")
+			}
+			return stageGeneratedAudio(req.Model, req.Prompt, generated)
+		},
+		Activity: audioExtendActivity,
+	}
+}
+
+// extendAudioDescription assembles the extend_audio tool description.
+func extendAudioDescription() string {
+	return "Use this when the user asks to extend, continue, or lengthen an existing audio clip (\"make this 30 seconds longer\", \"continue this song\", \"add more rain at the end\"). The newest audio clip in the conversation is the source: a clip attached or @-mentioned this turn, or the most recent generated one. A bare \"extend this clip by 20 seconds\" with no description of the addition is a valid request — call the tool with content \"continue in the same style\" and the duration; do not ask the user what the added audio should sound like. content describes how the ADDED audio should sound; duration is the length to add in seconds, not the total length; direction picks \"after\" (append, the default) or \"before\" (prepend). For music extensions pass style (genre tags) and optionally lyrics for the added portion; for ambience or sound effects a plain description is enough. The configured fal.ai extend model is used by default (it preserves the original audio exactly and suits ambience/sound); pass model \"fal-ai/ace-step/audio-outpaint\" or \"sonauto/v2/extend\" for music with vocals. To create brand-new audio from a description, use generate_sound instead. The extended clip replaces the source as the conversation's newest audio and is attached to the assistant reply."
+}
+
+// audioExtendActivity renders the fal extend command for extend_audio's
+// ToolAudioResult — a sibling of audioGenerationActivity, so the tool row
+// reads "fal extend-audio <model>" rather than "fal generate".
+func audioExtendActivity(result HarnessToolResult) HarnessToolActivity {
+	activity := defaultHarnessToolActivity(result)
+	if typed, ok := result.Result.(ToolAudioResult); ok {
+		activity.Command = []string{"fal", "extend-audio", typed.Model}
+	}
+	return activity
 }
 
 // writeTempAudio writes downloaded audio bytes to a temp file, mirroring the
@@ -1734,6 +1849,33 @@ func generateSoundParamSchema() map[string]any {
 				"Only some models support it; ignored otherwise with a note to the user."),
 			"style": stringParam("Optional — the genre or mood of the music (e.g. \"jazz\", \"lo-fi\", \"orchestral\"). " +
 				"Keep content as the pure lyrics or sound description and put the style here; some music models require a style."),
+		},
+		"required": []string{"content"},
+	}
+}
+
+// extendAudioParamSchema is extend_audio's planner-facing schema. duration is
+// the length of audio to ADD, mirroring generate_video's extend semantics —
+// not the total output length.
+func extendAudioParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"content": stringParam("How the added audio should sound — the continuation's description (ambience/sound) or musical direction (music). " +
+				"When the user gave no direction beyond the length, pass \"continue in the same style\"."),
+			"model": stringParam("Optional fal.ai extend model override — \"fal-ai/ace-step/audio-outpaint\" or \"sonauto/v2/extend\" for music with vocals. Omit for the configured default (suits ambience and sound effects)."),
+			"duration": stringParam("Optional — the length of audio to ADD in seconds (e.g. \"20\"), not the total output length. " +
+				"Omit for the default 30s (sonauto decides on its own when omitted)."),
+			"direction": enumParam("Optional — where the generated audio is added. \"after\" (the default) appends to the clip's end; "+
+				"\"before\" prepends to its start.", "after", "before"),
+			"negativePrompt": stringParam("Optional — describe what to keep out of the added audio (e.g. \"vocals, percussion\"). " +
+				"Ignored by models without a negative-prompt control."),
+			"style": stringParam("Optional — genre/mood tags for music extensions (e.g. \"lofi, chill\", \"orchestral, epic\"). " +
+				"Music extenders need them (ace-step requires tags); keep content as the description and put the genre here. " +
+				"Ignored by ambience models."),
+			"lyrics": stringParam("Optional — lyrics for the added portion of a song. " +
+				"Omit for instrumental (music models treat empty lyrics as instrumental)."),
 		},
 		"required": []string{"content"},
 	}

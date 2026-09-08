@@ -954,6 +954,37 @@ func TestFalClientGenerateAudioAudioFileField(t *testing.T) {
 	}
 }
 
+func TestFalClientGenerateAudioAudioArrayField(t *testing.T) {
+	// sonauto/v2/extend returns "audio" as an array of files (its num_songs
+	// input can yield several). Before falAudioField tolerated the shape, the
+	// array failed json.Unmarshal in fetchResult before the raw-JSON fallback
+	// could run. The first file is the clip.
+	model := "sonauto/v2/extend"
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodPost {
+			return jsonResp(`{"request_id":"req-sa"}`), nil
+		}
+		if strings.HasSuffix(req.URL.Path, "/status") {
+			return jsonResp(`{"status":"COMPLETED"}`), nil
+		}
+		if strings.HasSuffix(req.URL.Path, "/requests/req-sa") {
+			return jsonResp(`{"audio":[{"url":"https://v3.fal.media/files/first.wav","content_type":"audio/wav"},{"url":"https://v3.fal.media/files/second.wav"}]}`), nil
+		}
+		return audioResp(tinyMP3(), "audio/mpeg"), nil
+	}))
+
+	audio, err := client.GenerateAudio(context.Background(), model, map[string]any{"prompt": "keep going"})
+	if err != nil {
+		t.Fatalf("GenerateAudio returned error: %v", err)
+	}
+	if audio.SourceURL != "https://v3.fal.media/files/first.wav" {
+		t.Errorf("source url = %q, want the first array entry", audio.SourceURL)
+	}
+	if len(audio.Data) == 0 {
+		t.Fatal("expected audio bytes")
+	}
+}
+
 func TestFalClientGenerateAudioForwardsBodyVerbatim(t *testing.T) {
 	// GenerateAudio is now a thin transport: it submits the already-native body
 	// unchanged (body construction is resolveAudioBody's job, tested separately).
