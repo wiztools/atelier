@@ -3242,7 +3242,7 @@ function App() {
               ) : (
                 <>
                   <div className={`history-chats${chatsOpen ? '' : ' collapsed'}`}>
-                    <div className="section-label">
+                    <div className="section-label chats-header">
                       <button
                         type="button"
                         className="section-toggle"
@@ -3250,6 +3250,18 @@ function App() {
                         aria-expanded={chatsOpen}
                       >
                         Chats
+                      </button>
+                      {/* Standalone by design (resetWorkspace clears any pending
+                          project) — the project-scoped new chats live under
+                          their project rows. */}
+                      <button
+                        type="button"
+                        className="history-icon-button"
+                        onClick={() => void startNewChat()}
+                        aria-label="New chat"
+                        title="New chat"
+                      >
+                        +
                       </button>
                     </div>
                     {chatsOpen ? (
@@ -3281,21 +3293,21 @@ function App() {
                       <button
                         type="button"
                         className="history-icon-button"
-                        onClick={startCreatingLibrary}
-                        aria-label="New library"
-                        title="New library"
-                      >
-                        +
-                      </button>
-                      <button
-                        type="button"
-                        className="history-icon-button"
                         onClick={() => void importLibrary()}
                         disabled={importingLibrary}
                         aria-label="Import library archive"
                         title={importingLibrary ? 'Importing…' : 'Import library archive'}
                       >
                         ⇩
+                      </button>
+                      <button
+                        type="button"
+                        className="history-icon-button"
+                        onClick={startCreatingLibrary}
+                        aria-label="New library"
+                        title="New library"
+                      >
+                        +
                       </button>
                     </div>
                     {archiveNotice ? <div className="libraries-notice">{archiveNotice}</div> : null}

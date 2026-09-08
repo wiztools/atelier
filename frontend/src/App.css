@@ -2708,7 +2708,10 @@ button:disabled {
   overflow-y: auto;
 }
 
-.libraries-header {
+/* Shared section-header row (chats, libraries): the toggle stretches to
+   fill, header actions sit at the right end. */
+.libraries-header,
+.chats-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
