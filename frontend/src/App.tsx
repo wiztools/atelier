@@ -329,6 +329,7 @@ type LibrariesEnvironment = {
   activeConversationID: string;
   activeConversationProjectID: string;
   closeConversationMenu: () => void;
+  expandChatsSection: () => void;
   composerDraftsRef: {current: Record<string, ComposerDraft>};
   pendingProjectRef: {current: {projectID: string; libraryID: string} | null};
   refreshConversations: () => Promise<main.ConversationSummary[]>;
@@ -618,6 +619,20 @@ function useLibraries(env: LibrariesEnvironment) {
     env.setPendingProject(context);
   }
 
+  // A conversation created inside a project is selected via its row under the
+  // owning library — expand the library → project chain so the selection is
+  // visible even from a collapsed tree, and bump the refresh so an
+  // already-expanded project lists the new row immediately (the listings
+  // effect only refetches on expansion change or tick). The standalone Chats
+  // section, which App owns, covers the no-project case.
+  function revealConversationInProject(project: {projectID: string; libraryID: string}) {
+    setLibrariesOpen(true);
+    setExpandedLibraryIDs((current) => ({...current, [project.libraryID]: true}));
+    setExpandedProjectIDs((current) => ({...current, [project.projectID]: true}));
+    lastExpandedLibraryIDRef.current = project.libraryID;
+    bumpLibrariesRefresh();
+  }
+
   // The File-menu / ⌘N "New Conversation": FCP-style context awareness —
   // keep composing in the pending project if one is already active, else the
   // project of the conversation being viewed, else the last project the user
@@ -661,7 +676,22 @@ function useLibraries(env: LibrariesEnvironment) {
     try {
       await MoveConversationToProject(conversation.id, projectID);
       await env.refreshConversations();
-      bumpLibrariesRefresh();
+      // The moved row's new home may be collapsed — expand it so the
+      // conversation stays in view instead of vanishing into a closed
+      // section. A project move expands its library → project chain (the
+      // reveal bumps the tree refresh itself); a standalone move expands the
+      // Chats section App owns.
+      const libraryID = projectID ? libraryIDForProject(projectID) : '';
+      if (projectID && libraryID) {
+        revealConversationInProject({projectID, libraryID});
+      } else {
+        // Standalone move, or a target that dropped out of the loaded tree
+        // (nothing to expand for it) — the standalone row lands in Chats.
+        if (!projectID) {
+          env.expandChatsSection();
+        }
+        bumpLibrariesRefresh();
+      }
     } catch (error) {
       env.reportError(error);
     }
@@ -795,6 +825,7 @@ function useLibraries(env: LibrariesEnvironment) {
     toggleLibraryExpanded,
     toggleProjectExpanded,
     startNewChatInProject,
+    revealConversationInProject,
     handleNewConversationAction,
     handleNewProjectAction,
     moveConversation,
@@ -1105,7 +1136,7 @@ function App() {
     startCreatingLibrary, startCreatingProject, submitNewLibrary, submitNewProject,
     startEditingContainer, cancelEditingContainer, saveContainerName, toggleContainerMenu,
     confirmDeleteContainer, toggleLibraryExpanded, toggleProjectExpanded,
-    startNewChatInProject, handleNewConversationAction, handleNewProjectAction, moveConversation,
+    startNewChatInProject, revealConversationInProject, handleNewConversationAction, handleNewProjectAction, moveConversation,
     forgetConversation, toggleLibrariesOpen, cancelCreatingLibrary, cancelCreatingProject, armContainerDelete,
     armLibraryExport, confirmExportLibrary, importLibrary, applySidebarState,
     setNewLibraryName, setNewProjectName, setEditingContainerName,
@@ -1113,6 +1144,7 @@ function App() {
     activeConversationID,
     activeConversationProjectID,
     closeConversationMenu: () => setOpenHistoryMenuID(''),
+    expandChatsSection: () => setChatsOpen(true),
     composerDraftsRef,
     pendingProjectRef,
     refreshConversations,
@@ -2636,6 +2668,10 @@ function App() {
   // and the backend's latest-wins walk picks up the persisted mention refs.
   async function executeChatStream(opts: {requestID: string; requestMessages: main.ChatMessage[]; referencedAssetIds?: string[]}) {
     const {requestID} = opts;
+    // Captured before any await: whether this send creates a brand-new
+    // conversation — the same turn-1 condition that gates the workspace/
+    // projectId fields below and the sidebar reveal when the start lands.
+    const isNewConversation = !activeConversationID;
     visibleStreamRef.current = requestID;
     chatStreamDraftsRef.current[requestID] = {content: '', thinking: '', images: [], videos: [], audios: [], streaming: true};
     setActiveStream(requestID);
@@ -2660,8 +2696,20 @@ function App() {
       markConversationInFlight(start.conversationId, start.requestID, 'chat');
       setActiveConversationID(start.conversationId);
       // The conversation now carries its own membership — the pending context
-      // has done its job.
+      // has done its job. Captured before the clear: it names where the new
+      // row appears in the sidebar tree.
+      const createdInProject = isNewConversation ? pendingProjectRef.current : null;
       setPendingProject(null);
+      // The new row is selected via activeConversationID; expand the section
+      // that owns it so the selection is actually visible — the Chats list
+      // for a standalone chat, the library → project chain for a pinned one.
+      if (isNewConversation) {
+        if (createdInProject?.projectID && createdInProject?.libraryID) {
+          revealConversationInProject(createdInProject);
+        } else {
+          setChatsOpen(true);
+        }
+      }
       void refreshConversations();
     } catch (error) {
       chatStreamDraftsRef.current[requestID] = {
