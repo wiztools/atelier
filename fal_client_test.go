@@ -1269,6 +1269,10 @@ func TestFalClientTranscribeAudioTimestamps(t *testing.T) {
 			if !strings.Contains(transcript.TimestampedText, "[00:00:01.500] world") {
 				t.Errorf("TimestampedText missing open-ended chunk: %q", transcript.TimestampedText)
 			}
+			// The structured chunks ride along for the .vtt artifact rendering.
+			if len(transcript.Chunks) != 2 || transcript.Chunks[1].End != nil {
+				t.Errorf("Chunks = %+v, want two chunks with a nil end on the second", transcript.Chunks)
+			}
 		})
 	}
 }

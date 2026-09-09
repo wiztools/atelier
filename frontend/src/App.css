@@ -2382,6 +2382,41 @@ button:disabled {
   font-size: 12px;
 }
 
+/* Transcript artifacts (.vtt/.txt) render as one card per file — a label plus
+   a Download button matching the audio/video cards' footer action. */
+.chat-transcript-results {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.chat-transcript-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: min(100%, 620px);
+  padding: 10px 12px;
+  border: 1px solid #3b3f42;
+  border-radius: 6px;
+  background: #121415;
+}
+
+.chat-transcript-name {
+  color: #d7d1c3;
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-transcript-card button {
+  flex: 0 0 auto;
+  height: 32px;
+  font-size: 12px;
+}
+
 .attachment-strip span {
   overflow: hidden;
   text-overflow: ellipsis;

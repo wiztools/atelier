@@ -720,3 +720,30 @@ func TestUserAttachedClipSelectsCloningPath(t *testing.T) {
 		}
 	}
 }
+
+// TestTriagePromptRoutesTranscriptionToText pins the transcription carve-out
+// in triage's mode guidance: a transcript is a TEXT deliverable gathered by
+// transcribe_audio, never "audio" mode. conv_f70468e4f91ae1dd5ab9ead1 and its
+// successors kept tagging "transcribe this clip with timestamps" as audio mode
+// because the request is phrased about audio — the prompt must say explicitly
+// that analyzing/transcribing an EXISTING clip is text while only GENERATING
+// a new clip is audio.
+func TestTriagePromptRoutesTranscriptionToText(t *testing.T) {
+	registry := newHarnessToolRegistry([]HarnessToolDefinition{
+		speechGenerationToolDefinition(false),
+		soundEffectsGenerationToolDefinition(),
+		extendAudioToolDefinition(),
+		transcribeAudioToolDefinition(defaultAppConfig()),
+	})
+	prompt := triageSystemPrompt(registry, nil, "/tmp/ws")
+	for _, want := range []string{
+		"A transcript is a text deliverable",
+		"GENERATE a new audio clip",
+		`Transcribing, captioning, or timestamping an EXISTING clip is never "audio" mode`,
+		"transcribe_audio needs an audio clip",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("triage prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}

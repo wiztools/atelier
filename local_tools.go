@@ -320,12 +320,14 @@ func runLocalWhisperTranscription(ctx context.Context, config AppConfig, req Tra
 		}
 		return GeneratedTranscript{Text: text}, nil
 	}
-	// Timestamped modes parse the structured output back into chunks. Both
-	// local flavors serve word- and segment-level natively, so the produced
-	// level is the requested one; a parser that yields nothing falls back to
-	// the whole-file text so the turn still carries a transcript.
+	// Timestamped modes parse the structured output back into chunks, and the
+	// plain text always comes FROM the chunks — the raw file is a VTT/JSON
+	// document, not prose (conv_4fe9e638: feeding the raw .vtt through made
+	// the plain transcript a 6.9KB WebVTT dump). Both local flavors serve
+	// word- and segment-level natively, so the produced level is the requested
+	// one.
 	var chunks []transcriptChunk
-	plain := strings.TrimSpace(string(raw))
+	plain := ""
 	if resolved.flavor == localWhisperFlavorCPP {
 		chunks = parseWhisperVTT(raw)
 	} else {
@@ -340,6 +342,7 @@ func runLocalWhisperTranscription(ctx context.Context, config AppConfig, req Tra
 	transcript := GeneratedTranscript{Text: plain, Timestamps: timestamps}
 	if rendered := renderTimestampedChunks(chunks); rendered != "" {
 		transcript.TimestampedText = rendered
+		transcript.Chunks = chunks
 	} else {
 		transcript.Timestamps = ""
 	}

@@ -246,6 +246,10 @@ export function SaveOpenRouterAPIKey(arg1) {
   return window['go']['main']['App']['SaveOpenRouterAPIKey'](arg1);
 }
 
+export function SaveTranscript(arg1) {
+  return window['go']['main']['App']['SaveTranscript'](arg1);
+}
+
 export function SaveUIState(arg1) {
   return window['go']['main']['App']['SaveUIState'](arg1);
 }

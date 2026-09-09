@@ -1459,6 +1459,20 @@ export namespace main {
 	        this.suggestedName = source["suggestedName"];
 	    }
 	}
+	export class SaveTranscriptRequest {
+	    path: string;
+	    suggestedName?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SaveTranscriptRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.suggestedName = source["suggestedName"];
+	    }
+	}
 	export class SaveVideoRequest {
 	    path: string;
 	    suggestedName?: string;

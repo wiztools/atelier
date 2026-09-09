@@ -252,6 +252,11 @@ type GeneratedTranscript struct {
 	// ("[HH:MM:SS.mmm --> HH:MM:SS.mmm] text"). Present only when the caller
 	// requested timestamps and the backend produced them.
 	TimestampedText string
+	// Chunks carries the structured timestamped units behind TimestampedText.
+	// The tool layer re-renders them as a WebVTT artifact (the full transcript
+	// rides as a file, not model context) and derives the capped evidence
+	// preview — evidence never needs more than the preview.
+	Chunks []transcriptChunk `json:"-"`
 	// Notices holds deterministic, user-facing caveats (e.g. an auto-detected
 	// language, or a word-level request served at segment level). Surfaced
 	// verbatim in the chat reply.
@@ -323,6 +328,29 @@ func renderTimestampedChunks(chunks []transcriptChunk) string {
 		lines = append(lines, fmt.Sprintf("[%s] %s", formatTranscriptSeconds(chunk.Start), text))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// renderTranscriptVTT renders chunks as a WebVTT document — the artifact form
+// of a timestamped transcript: subtitle players load it directly, and it is
+// provider-neutral (fal chunks, whisper.cpp VTT, openai-whisper json all
+// normalize to the same chunks). An open-ended chunk (nil end) closes at its
+// start, since a VTT cue needs both timestamps; empty-text chunks are dropped
+// like in renderTimestampedChunks.
+func renderTranscriptVTT(chunks []transcriptChunk) string {
+	var builder strings.Builder
+	builder.WriteString("WEBVTT\n\n")
+	for _, chunk := range chunks {
+		text := strings.TrimSpace(chunk.Text)
+		if text == "" {
+			continue
+		}
+		end := chunk.Start
+		if chunk.End != nil && *chunk.End >= chunk.Start {
+			end = *chunk.End
+		}
+		fmt.Fprintf(&builder, "%s --> %s\n%s\n\n", formatTranscriptSeconds(chunk.Start), formatTranscriptSeconds(end), text)
+	}
+	return strings.TrimSpace(builder.String())
 }
 
 // GeneratedVideo is a downloaded text-to-video result. Data holds the raw video
@@ -929,6 +957,7 @@ func (client FalClient) TranscribeAudio(ctx context.Context, req TranscribeAudio
 	if transcript.Timestamps != "" {
 		if rendered := renderTimestampedChunks(chunks); rendered != "" {
 			transcript.TimestampedText = rendered
+			transcript.Chunks = chunks
 		} else {
 			// The model accepted chunk_level but returned no chunks — report
 			// plain text rather than claiming a timestamped transcript.

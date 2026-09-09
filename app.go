@@ -32,8 +32,12 @@ const defaultOpenAICompatibleBaseURL = "http://localhost:8080"
 
 // defaultOllamaNumCtx is sent as num_ctx on every chat call so the context
 // window is explicit and identical across calls (Ollama reloads the model
-// when num_ctx changes between requests).
-const defaultOllamaNumCtx = 8192
+// when num_ctx changes between requests). 16K because the planner's prompt
+// carries the tool catalog before any conversation or evidence — in native
+// tool-calling mode that alone is ~5K tokens (conv_4fe9e638: a replan round
+// hit 10,857 prompt tokens against 8,192, and Ollama's overflow behavior is
+// to truncate from the FRONT, dropping the planner's instructions).
+const defaultOllamaNumCtx = 16384
 
 type App struct {
 	ctx          context.Context
@@ -441,12 +445,15 @@ type ChatStreamStart struct {
 }
 
 type ChatStreamEvent struct {
-	RequestID      string   `json:"requestID"`
-	Content        string   `json:"content,omitempty"`
-	Thinking       string   `json:"thinking,omitempty"`
-	Images         []string `json:"images,omitempty"`
-	Videos         []string `json:"videos,omitempty"`
-	Audios         []string `json:"audios,omitempty"`
+	RequestID string   `json:"requestID"`
+	Content   string   `json:"content,omitempty"`
+	Thinking  string   `json:"thinking,omitempty"`
+	Images    []string `json:"images,omitempty"`
+	Videos    []string `json:"videos,omitempty"`
+	Audios    []string `json:"audios,omitempty"`
+	// Transcripts carries the "/atelier-artifact" URLs of timestamped
+	// transcript artifacts (.vtt) a turn produced, parallel to Videos/Audios.
+	Transcripts    []string `json:"transcripts,omitempty"`
 	Done           bool     `json:"done"`
 	Error          string   `json:"error,omitempty"`
 	Model          string   `json:"model,omitempty"`
@@ -741,6 +748,13 @@ type AudioExtendRequest struct {
 // SaveAudioRequest asks to copy a generated audio artifact to a user-chosen
 // location, mirroring SaveVideoRequest.
 type SaveAudioRequest struct {
+	Path          string `json:"path"`
+	SuggestedName string `json:"suggestedName,omitempty"`
+}
+
+// SaveTranscriptRequest is the input to SaveTranscript — the transcript
+// artifact's path or "/atelier-artifact" URL plus a suggested file name.
+type SaveTranscriptRequest struct {
 	Path          string `json:"path"`
 	SuggestedName string `json:"suggestedName,omitempty"`
 }
@@ -1659,6 +1673,35 @@ func (a *App) SaveAudio(req SaveAudioRequest) (string, error) {
 	}
 	return a.saveArtifactDialog(data, req.SuggestedName, "atelier-audio", extension, "Save generated audio", []runtime.FileFilter{
 		{DisplayName: "Audio Files", Pattern: "*.mp3;*.wav;*.ogg;*.flac;*.m4a;*.aac;*.opus"},
+		{DisplayName: "All Files", Pattern: "*.*"},
+	})
+}
+
+// SaveTranscript copies a transcript artifact (.vtt timestamped or .txt plain)
+// to a user-chosen location, mirroring SaveVideo/SaveAudio. The guard is a
+// non-empty-text check rather than the media savers' byte sniffing — there is
+// no container magic to verify.
+func (a *App) SaveTranscript(req SaveTranscriptRequest) (string, error) {
+	sourcePath := strings.TrimSpace(req.Path)
+	sourcePath = strings.TrimPrefix(sourcePath, artifactPrefix)
+	if sourcePath == "" {
+		return "", errors.New("transcript path is empty")
+	}
+
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return "", errors.New("transcript artifact is empty")
+	}
+
+	extension := strings.ToLower(filepath.Ext(sourcePath))
+	if extension != ".vtt" && extension != ".txt" {
+		extension = ".txt"
+	}
+	return a.saveArtifactDialog(data, req.SuggestedName, "atelier-transcript", extension, "Save transcript", []runtime.FileFilter{
+		{DisplayName: "Transcript Files", Pattern: "*.vtt;*.txt"},
 		{DisplayName: "All Files", Pattern: "*.*"},
 	})
 }
@@ -3751,6 +3794,53 @@ func writeChatAudioArtifacts(artifactsDir string, audios []ToolAudioFile) ([]His
 	return writeChatMediaArtifacts(artifactsDir, files, "aud", "audio", audioExtensionForMediaType)
 }
 
+// writeChatTranscriptArtifacts moves each transcript's temp file into the
+// artifacts directory as trc_<hex>.<ext> and returns the history content
+// entries plus the "/atelier-artifact" URLs the live UI renders. The extension
+// follows the staged file's mime type — .vtt for the WebVTT rendering of a
+// timestamped transcript, .txt for an oversized plain transcript. Thin wrapper
+// over the shared media-artifact writer, mirroring writeChatAudioArtifacts.
+func writeChatTranscriptArtifacts(artifactsDir string, transcripts []ToolTranscriptFile) ([]HistoryContent, []string, error) {
+	files := make([]mediaArtifactEntry, len(transcripts))
+	for i, t := range transcripts {
+		files[i] = mediaArtifactEntry{tempPath: t.TempPath, mimeType: t.MimeType}
+	}
+	return writeChatMediaArtifacts(artifactsDir, files, "trc", "transcript", transcriptExtensionForMimeType)
+}
+
+// transcriptExtensionForMimeType maps a staged transcript's mime type onto its
+// artifact extension — .vtt for WebVTT, .txt for anything else (the tool layer
+// stages plain text with text/plain).
+func transcriptExtensionForMimeType(mimeType string) string {
+	if strings.EqualFold(strings.TrimSpace(mimeType), "text/vtt") {
+		return ".vtt"
+	}
+	return ".txt"
+}
+
+// appendChatAssistantTurnWithTranscripts persists an assistant turn that
+// produced one or more transcript artifacts (.vtt timestamped or .txt plain).
+// Transcript temp files are moved into the conversation's artifacts directory
+// as trc_<hex>.<ext>; the returned URLs are the "/atelier-artifact" links the
+// live UI renders before the turn is reloaded from history.
+func appendChatAssistantTurnWithTranscripts(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, transcripts []ToolTranscriptFile, transcriptModel, timestamps string, run HarnessRun) ([]string, error) {
+	return appendChatAssistantTurnWithMedia(config, conversationID, assistantContent, assistantThinking, model, provider, reason, run, chatAssistantTurnMedia{
+		build: func(artifactsDir string) ([]HistoryContent, []string, map[string]any, error) {
+			transcriptContents, transcriptURLs, err := writeChatTranscriptArtifacts(artifactsDir, transcripts)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			tool := map[string]any{
+				"name":        "audio_transcription",
+				"model":       transcriptModel,
+				"timestamps":  timestamps,
+				"transcripts": len(transcriptContents),
+			}
+			return transcriptContents, transcriptURLs, tool, nil
+		},
+	})
+}
+
 // moveFile relocates src to dst, falling back to a copy-and-delete when the two
 // live on different filesystems (os.Rename fails with a cross-device error).
 func moveFile(src, dst string) error {
@@ -4111,11 +4201,11 @@ func readJSONFile(path string, target any) error {
 func hydrateHistoryContent(conversationDir string, contents []HistoryContent) []HistoryContent {
 	hydrated := make([]HistoryContent, 0, len(contents))
 	for _, content := range contents {
-		// Image, video, and audio artifacts are all stored on disk and served by
-		// the asset handler; resolve their path to an /atelier-artifact URL.
-		// Library-asset references carry absolute paths; local artifacts are
-		// relative to the conversation directory.
-		if (content.Type == "image" || content.Type == "video" || content.Type == "audio") && content.Path != "" && !strings.HasPrefix(content.Path, "data:") {
+		// Image, video, audio, and transcript artifacts are all stored on disk
+		// and served by the asset handler; resolve their path to an
+		// /atelier-artifact URL. Library-asset references carry absolute
+		// paths; local artifacts are relative to the conversation directory.
+		if (content.Type == "image" || content.Type == "video" || content.Type == "audio" || content.Type == "transcript") && content.Path != "" && !strings.HasPrefix(content.Path, "data:") {
 			resolved := filepath.FromSlash(content.Path)
 			if !filepath.IsAbs(resolved) {
 				resolved = filepath.Join(conversationDir, resolved)
@@ -4564,6 +4654,10 @@ func mediaTypeForExtension(extension string) string {
 		return "audio/flac"
 	case ".m4a", ".aac":
 		return "audio/mp4"
+	case ".vtt":
+		return "text/vtt"
+	case ".txt":
+		return "text/plain"
 	default:
 		return "image/png"
 	}

@@ -284,8 +284,10 @@ func TestHarnessRequestSnapshotsRecordTruncation(t *testing.T) {
 
 	// Oversized first message forces truncateChatHistory to drop it on every
 	// model call (triage and final response both budget against num_ctx).
+	// ~96KB ≈ 24K tokens — over even the 16,384-token default, so the fixture
+	// survives future default bumps without re-tuning.
 	messages := []ChatMessage{
-		{Role: "user", Content: strings.Repeat("history ", 6000)},
+		{Role: "user", Content: strings.Repeat("history ", 12000)},
 		{Role: "assistant", Content: "earlier reply"},
 		{Role: "user", Content: "Say hello"},
 	}
@@ -580,4 +582,89 @@ func notFoundResponse() *http.Response {
 		Body:       io.NopCloser(strings.NewReader("not found")),
 		Header:     http.Header{},
 	}
+}
+
+// TestPlannerEvidenceBudgetChars pins the num_ctx → evidence-budget mapping:
+// the reserved planner overhead (tool catalog + framing) is subtracted and the
+// remainder converts to characters, with a floor so a tiny window still
+// carries evidence.
+func TestPlannerEvidenceBudgetChars(t *testing.T) {
+	cases := []struct {
+		numCtx int
+		want   int
+	}{
+		{16384, (16384 - plannerEvidenceReservedTokens) * 4},
+		{8192, (8192 - plannerEvidenceReservedTokens) * 4},
+		{4096, plannerEvidenceMinBudgetChars}, // below the floor
+		{32768, (32768 - plannerEvidenceReservedTokens) * 4},
+	}
+	for _, tc := range cases {
+		if got := plannerEvidenceBudgetChars(tc.numCtx); got != tc.want {
+			t.Errorf("plannerEvidenceBudgetChars(%d) = %d, want %d", tc.numCtx, got, tc.want)
+		}
+	}
+}
+
+// TestBuildToolResultMessagesBudget pins the cross-result budget: results that
+// individually pass the per-result cap can still overflow a round's budget,
+// and the largest is compacted (with the truncation marker) until the sum
+// fits — while an under-budget set passes through untouched.
+func TestBuildToolResultMessagesBudget(t *testing.T) {
+	bigResult := func(name, text string) HarnessToolResult {
+		return HarnessToolResult{
+			Name:   name,
+			Status: "completed",
+			Result: ToolTranscribeResult{Model: "whisper", Transcript: text},
+		}
+	}
+	fill := strings.Repeat("evidence ", 700) // ~6.3KB, under the per-result cap
+
+	t.Run("under budget passes through", func(t *testing.T) {
+		messages := buildToolResultMessages([]HarnessToolResult{bigResult("read_file", fill)}, 16*1024)
+		if len(messages) != 1 || strings.Contains(messages[0].Content, "truncated to fit") {
+			t.Fatalf("under-budget evidence must pass unchanged: %.200s", messages[0].Content)
+		}
+	})
+	t.Run("over budget compacts the largest", func(t *testing.T) {
+		results := []HarnessToolResult{
+			bigResult("transcribe_audio", fill),
+			bigResult("read_file", fill),
+		}
+		budget := 8 * 1024
+		messages := buildToolResultMessages(results, budget)
+		if len(messages) != 2 {
+			t.Fatalf("messages = %d", len(messages))
+		}
+		total := 0
+		compacted := 0
+		for _, message := range messages {
+			total += len(message.Content)
+			if strings.Contains(message.Content, "truncated to fit") {
+				compacted++
+			}
+		}
+		// Halving rounds converge below the budget; allow a small wrapper
+		// margin for the closing iteration.
+		if total > budget+2*1024 {
+			t.Fatalf("total evidence = %d chars, want ≤ budget+2K (%d)", total, budget)
+		}
+		if compacted == 0 {
+			t.Fatal("no result was compacted despite the budget overflow")
+		}
+	})
+	t.Run("zero budget disables the total check", func(t *testing.T) {
+		results := []HarnessToolResult{
+			bigResult("transcribe_audio", fill),
+			bigResult("read_file", fill),
+			bigResult("list_files", fill),
+		}
+		messages := buildToolResultMessages(results, 0)
+		total := 0
+		for _, message := range messages {
+			total += len(message.Content)
+		}
+		if total <= 8*1024 {
+			t.Fatalf("total = %d, want the unbudgeted sum (~19K)", total)
+		}
+	})
 }

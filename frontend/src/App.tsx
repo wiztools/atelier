@@ -64,6 +64,7 @@ import {
   SaveOpenAICompatibleAPIKey,
   SaveOpenRouterAPIKey,
   SaveUIState,
+  SaveTranscript,
   StreamChat,
   UpdateConversationTitle,
 } from '../wailsjs/go/main/App';
@@ -82,6 +83,9 @@ type ChatEntry = {
   images?: string[];
   videos?: string[];
   audios?: string[];
+  // Timestamped-transcript artifacts (.vtt) produced by transcribe_audio —
+  // "/atelier-artifact" URLs rendered as downloadable chips.
+  transcripts?: string[];
   harnessRun?: HarnessRunView;
   // providerResponse.tool block from a persisted media turn — the legacy
   // record of which generation model ran, kept so media usage can be
@@ -100,6 +104,7 @@ type ChatChunk = {
   images?: string[];
   videos?: string[];
   audios?: string[];
+  transcripts?: string[];
   done: boolean;
   error?: string;
   model?: string;
@@ -115,6 +120,7 @@ type ChatStreamDraft = {
   images: string[];
   videos: string[];
   audios: string[];
+  transcripts: string[];
   streaming: boolean;
   error?: string;
   provider?: string;
@@ -268,6 +274,15 @@ type ComposerDraft = {
 };
 
 const defaultBaseURL = 'http://localhost:11434';
+// Mirrors Go's defaultOllamaNumCtx (app.go): 16K because planner prompts
+// carry the tool catalog (~5K tokens in native tool mode) before any
+// conversation or evidence. Must stay in sync with the Go default so a config
+// saved without a visit to the field hydrates to the same value.
+const defaultOllamaNumCtx = 16384;
+const numCtxOptions = [8192, 12288, 16384, 32768];
+function numCtxLabel(value: number): string {
+  return `${Math.round(value / 1024)}K (${value} tokens)`;
+}
 const defaultSidebarWidth = 320;
 const minSidebarWidth = 240;
 const maxSidebarWidth = 560;
@@ -868,6 +883,7 @@ function useLibraries(env: LibrariesEnvironment) {
 
 function App() {
   const [baseURL, setBaseURL] = useState(defaultBaseURL);
+  const [ollamaNumCtx, setOllamaNumCtx] = useState(defaultOllamaNumCtx);
   const [status, setStatus] = useState<main.OllamaStatus | null>(null);
   const [models, setModels] = useState<main.OllamaModel[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -1475,6 +1491,7 @@ function App() {
         providers: {
           ollama: {
             baseURL,
+            numCtx: ollamaNumCtx,
             models: {
               primary: primaryModels.ollama,
               harness: harnessModels.ollama,
@@ -1550,7 +1567,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, whisperBinary, whisperModel]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, whisperBinary, whisperModel]);
 
   // Re-probe local CLI tools when the whisper binary override changes so the
   // provider dropdown reflects an unsaved override without waiting for a save
@@ -1586,13 +1603,14 @@ function App() {
       if (chunk.conversationId) {
         markConversationInFlight(chunk.conversationId, chunk.requestID, 'chat');
       }
-      const draft = chatStreamDraftsRef.current[chunk.requestID] ?? {content: '', thinking: '', images: [], videos: [], audios: [], streaming: true};
+      const draft = chatStreamDraftsRef.current[chunk.requestID] ?? {content: '', thinking: '', images: [], videos: [], audios: [], transcripts: [], streaming: true};
       chatStreamDraftsRef.current[chunk.requestID] = {
         content: `${draft.content}${chunk.content ?? ''}`,
         thinking: `${draft.thinking}${chunk.thinking ?? ''}`,
         images: chunk.images?.length ? chunk.images : draft.images,
         videos: chunk.videos?.length ? chunk.videos : draft.videos,
         audios: chunk.audios?.length ? chunk.audios : draft.audios,
+        transcripts: chunk.transcripts?.length ? chunk.transcripts : draft.transcripts,
         streaming: !chunk.done && !chunk.error,
         error: chunk.error ?? draft.error,
         provider: chunk.provider ?? draft.provider,
@@ -1610,6 +1628,7 @@ function App() {
             images: nextDraft.images,
             videos: nextDraft.videos,
             audios: nextDraft.audios,
+            transcripts: nextDraft.transcripts,
             streaming: nextDraft.streaming,
             error: nextDraft.error,
             provider: nextDraft.provider ?? entry.provider,
@@ -2057,6 +2076,7 @@ function App() {
   async function loadConfig() {
     const config = await GetConfig();
     const nextBaseURL = config.providers?.ollama?.baseURL || defaultBaseURL;
+    const nextNumCtx = config.providers?.ollama?.numCtx || defaultOllamaNumCtx;
     const nextPrimaryModel = config.providers?.ollama?.models?.primary ?? '';
     const nextOpenRouterModel = config.providers?.openrouter?.primary ?? '';
     const nextOpenAICompatiblePrimary = config.providers?.openaiCompatible?.primary ?? '';
@@ -2107,6 +2127,7 @@ function App() {
     setToolConfig(config.tools ?? null);
     setUpdatesConfig(config.updates ?? null);
     setBaseURL(nextBaseURL);
+    setOllamaNumCtx(nextNumCtx);
     setPrimaryModels({ollama: nextPrimaryModel, openrouter: nextOpenRouterModel, 'openai-compatible': nextOpenAICompatiblePrimary});
     setPrimaryProvider(nextPrimaryProvider);
     setHarnessModels({ollama: nextHarnessModel, openrouter: nextOpenRouterHarness, 'openai-compatible': nextOpenAICompatibleHarness});
@@ -2649,6 +2670,7 @@ function App() {
       images: historyImages(turn.content),
       videos: historyVideos(turn.content),
       audios: historyAudios(turn.content),
+      transcripts: historyTranscripts(turn.content),
       harnessRun: parseHarnessRun(turn.providerResponse?.harnessRun),
       mediaTool: turn.providerResponse?.tool as MediaToolSummaryView | undefined,
       provider: turn.provider,
@@ -2663,6 +2685,7 @@ function App() {
         images: draft?.images,
         videos: draft?.videos,
         audios: draft?.audios,
+        transcripts: draft?.transcripts,
         harnessRun: harnessRunDraftsRef.current[visibleRequestID],
         streaming: draft?.streaming ?? true,
         error: draft?.error,
@@ -2759,7 +2782,7 @@ function App() {
     // projectId fields below and the sidebar reveal when the start lands.
     const isNewConversation = !activeConversationID;
     visibleStreamRef.current = requestID;
-    chatStreamDraftsRef.current[requestID] = {content: '', thinking: '', images: [], videos: [], audios: [], streaming: true};
+    chatStreamDraftsRef.current[requestID] = {content: '', thinking: '', images: [], videos: [], audios: [], transcripts: [], streaming: true};
     setActiveStream(requestID);
     try {
       const start = await StreamChat(main.ChatRequest.createFrom({
@@ -3212,6 +3235,17 @@ function App() {
     try {
       await SaveAudio(main.SaveAudioRequest.createFrom({
         path: audio,
+        suggestedName: `atelier-${Date.now()}-${index + 1}`,
+      }));
+    } catch (error) {
+      setStartupError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function saveGeneratedTranscript(transcript: string, index: number) {
+    try {
+      await SaveTranscript(main.SaveTranscriptRequest.createFrom({
+        path: transcript,
         suggestedName: `atelier-${Date.now()}-${index + 1}`,
       }));
     } catch (error) {
@@ -3728,6 +3762,22 @@ function App() {
                       ? `Online${status.version ? ` ${status.version}` : ''} — ${asArray(models).length} local models available`
                       : status?.error ?? 'Not checked'}
                   </div>
+                  <div className="field-label-row">
+                    <label htmlFor="ollama-num-ctx">Context Window (num_ctx)</label>
+                    <InfoHint
+                      label="Context window guidance"
+                      text="Sent on every call. Planning prompts carry the tool catalog (~6K tokens) before evidence — 16K or more is recommended for tool-heavy turns."
+                    />
+                  </div>
+                  <select
+                    id="ollama-num-ctx"
+                    value={ollamaNumCtx}
+                    onChange={(event) => setOllamaNumCtx(Number(event.target.value) || defaultOllamaNumCtx)}
+                  >
+                    {(numCtxOptions.includes(ollamaNumCtx) ? numCtxOptions : [...numCtxOptions, ollamaNumCtx].sort((a, b) => a - b)).map((value) => (
+                      <option key={value} value={value}>{numCtxLabel(value)}</option>
+                    ))}
+                  </select>
                 </div>
               </section>
 
@@ -4535,6 +4585,16 @@ function App() {
                                 <button type="button" onClick={() => saveGeneratedAudio(audio, index)}>Download audio</button>
                               </figcaption>
                             </figure>
+                          ))}
+                        </div>
+                      ) : null}
+                      {entry.role === 'assistant' && entry.transcripts?.length ? (
+                        <div className="chat-transcript-results">
+                          {entry.transcripts.map((transcript, index) => (
+                            <div key={`${entry.id}-transcript-${index}`} className="chat-transcript-card">
+                              <span className="chat-transcript-name">{transcriptChipLabel(transcript)}</span>
+                              <button type="button" onClick={() => saveGeneratedTranscript(transcript, index)}>Download transcript</button>
+                            </div>
                           ))}
                         </div>
                       ) : null}
@@ -5490,6 +5550,14 @@ function HarnessRunPanel({run}: {run: HarnessRunView}) {
               {step.firstTokenMs ? <span title="time to first token">ttft {formatDuration(step.firstTokenMs)}</span> : null}
               {step.durationMs ? <span>{formatDuration(step.durationMs)}</span> : null}
               {truncated ? <span className="harness-flag-warn" title="oldest messages dropped to fit num_ctx">trimmed {truncated} msg{truncated === 1 ? '' : 's'}</span> : null}
+              {step.promptTokens && step.request?.numCtx && step.promptTokens > step.request.numCtx ? (
+                <span
+                  className="harness-flag-warn"
+                  title={`The prompt (${formatTokenCount(step.promptTokens)} tokens) exceeded the ${formatTokenCount(step.request.numCtx)}-token context window — Ollama truncated it from the FRONT, so instructions may have been dropped. Raise the Context Window in Settings → Providers.`}
+                >
+                  ctx overflow {formatTokenCount(step.promptTokens)}/{formatTokenCount(step.request.numCtx)}
+                </span>
+              ) : null}
               {step.request?.promptHash ? (
                 <code className={prefixChanged.has(index) ? 'harness-hash harness-hash-changed' : 'harness-hash'} title={`prompt prefix hash${prefixChanged.has(index) ? ' — changed since this model\'s previous request, prefix cache invalidated' : ''}`}>#{step.request.promptHash}</code>
               ) : null}
@@ -5835,6 +5903,22 @@ function historyAudios(contents: main.HistoryContent[] | null | undefined): stri
     .filter((content) => content.type === 'audio')
     .map((content) => content.text || content.path || '')
     .filter(Boolean);
+}
+
+function historyTranscripts(contents: main.HistoryContent[] | null | undefined): string[] {
+  return asArray(contents)
+    .filter((content) => content.type === 'transcript')
+    .map((content) => content.text || content.path || '')
+    .filter(Boolean);
+}
+
+// Transcript artifacts come in two kinds — the WebVTT rendering of a
+// timestamped transcript (.vtt) and an oversized plain transcript staged as
+// text (.txt). The URL's extension says which; the chip label follows it.
+function transcriptChipLabel(url: string): string {
+  return url.toLowerCase().endsWith('.vtt')
+    ? '📄 Timestamped transcript (.vtt)'
+    : '📄 Transcript (.txt)';
 }
 
 function imagePayloadForOllama(image: string): string {

@@ -124,6 +124,8 @@ export function SaveOpenAICompatibleAPIKey(arg1:string):Promise<void>;
 
 export function SaveOpenRouterAPIKey(arg1:string):Promise<void>;
 
+export function SaveTranscript(arg1:main.SaveTranscriptRequest):Promise<string>;
+
 export function SaveUIState(arg1:main.UIState):Promise<void>;
 
 export function SaveVideo(arg1:main.SaveVideoRequest):Promise<string>;

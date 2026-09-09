@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 type HarnessToolRisk string
@@ -142,22 +143,58 @@ type ToolAudioResult struct {
 	Notices []string        `json:"notices,omitempty"`
 }
 
+// ToolTranscriptFile mirrors ToolVideoFile/ToolAudioFile: a timestamped
+// transcript persisted as an on-disk temp-file reference. The harness moves it
+// into the conversation's artifacts directory as trc_<hex>.vtt at save time;
+// the slice is stripped from model evidence like the media slices, so the full
+// transcript reaches the user as a file rather than the model as context.
+type ToolTranscriptFile struct {
+	TempPath string `json:"tempPath,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
+}
+
+// transcriptEvidencePreviewLines caps how many timestamped lines ride in tool
+// evidence. A word-level transcript of a long clip runs to hundreds of
+// token-dense lines — enough to overflow a small model's context and tempt it
+// to re-type the whole list (conv_fa2ad51e0f8d0b2e4c67eb95: 9,445 generated
+// tokens, 8 minutes, for a transcript the tool already held). The cap bounds
+// that echo cost, and it is deliberately tight: the preview only needs to show
+// the model the format and the opening of the audio (conv_4fe9e638: a 40-line
+// preview still drew a 3,059-token echo; 15 lines show the shape at a third of
+// the cost). The full version is persisted as a .vtt artifact; evidence
+// carries the preview plus a notice pointing at it.
+const transcriptEvidencePreviewLines = 15
+
+// plainTranscriptArtifactChars is the size beyond which a PLAIN transcript is
+// staged as a .txt artifact instead of riding in full: a long recording (a
+// 30-minute meeting is ~25-30KB, ~6-8K tokens) would otherwise overflow a
+// small model's context and get blunt-truncated by the generic
+// toolResultMessageMaxChars compaction — losing the tail with no file to
+// recover it. Timestamped transcripts are always staged (see
+// transcriptEvidencePreviewLines); this threshold governs the plain text.
+const plainTranscriptArtifactChars = 4 * 1024
+
 // ToolTranscribeResult carries the transcript of an audio clip. Unlike the
 // media results it holds plain text (the transcript), which rides the standard
 // role:"tool" evidence path verbatim — no media slice to strip. A
-// timestamps-requested call additionally carries the per-chunk rendering in
-// TimestampedTranscript. Notices carries deterministic caveats surfaced via
-// NoticeProvider, matching ToolAudioResult.
+// timestamps-requested call additionally carries a capped preview of the
+// per-chunk rendering (the full version is a Transcripts artifact file).
+// Notices carries deterministic caveats surfaced via NoticeProvider, matching
+// ToolAudioResult.
 type ToolTranscribeResult struct {
 	Model      string `json:"model"`
 	Transcript string `json:"transcript"`
 	// Timestamps names the produced granularity — "words" or "segments" — and
-	// TimestampedTranscript holds the rendering, one chunk per line
-	// ("[HH:MM:SS.mmm --> HH:MM:SS.mmm] text"). Both are empty when the call
-	// asked for no timestamps or the backend produced none.
-	Timestamps            string   `json:"timestamps,omitempty"`
-	TimestampedTranscript string   `json:"timestampedTranscript,omitempty"`
-	Notices               []string `json:"notices,omitempty"`
+	// TimestampedTranscript holds the capped evidence preview of the rendering
+	// (one chunk per line, "[HH:MM:SS.mmm --> HH:MM:SS.mmm] text"). Both are
+	// empty when the call asked for no timestamps or the backend produced
+	// none.
+	Timestamps            string `json:"timestamps,omitempty"`
+	TimestampedTranscript string `json:"timestampedTranscript,omitempty"`
+	// Transcripts references the full timestamped transcript as a temp-file
+	// artifact (WebVTT). Stripped from evidence; persisted by the harness.
+	Transcripts []ToolTranscriptFile `json:"transcripts,omitempty"`
+	Notices     []string             `json:"notices,omitempty"`
 }
 
 // ToolNotices reports deterministic, user-facing caveats produced while
@@ -1250,15 +1287,69 @@ func transcribeAudioToolDefinition(config AppConfig) HarnessToolDefinition {
 // Execute branches share — model, plain text, and (when the backend produced
 // them) the timestamped fields, plus the summary line naming the backend,
 // model, and produced timestamp granularity.
+//
+// Transcripts that would bloat evidence are persisted as artifacts instead:
+// timestamped ones always stage as WebVTT (the chunks ride
+// GeneratedTranscript.Chunks), and a plain transcript stages as .txt once it
+// passes plainTranscriptArtifactChars. Evidence keeps a capped preview plus a
+// notice pointing at the artifact — a long or timestamped transcript is large
+// and token-dense enough to overflow context and invite the final model to
+// re-type it (see transcriptEvidencePreviewLines). If a temp write fails, the
+// full text stays in evidence instead — no artifact to point at.
 func transcribeAudioOutput(req TranscribeAudioRequest, backend string, transcript GeneratedTranscript) (ToolTranscribeResult, string, error) {
 	output := ToolTranscribeResult{
 		Model:                 req.Model,
 		Transcript:            transcript.Text,
 		Timestamps:            transcript.Timestamps,
 		TimestampedTranscript: transcript.TimestampedText,
-		Notices:               transcript.Notices,
+		Notices:               append([]string(nil), transcript.Notices...),
+	}
+	if transcript.Timestamps != "" && transcript.TimestampedText != "" {
+		if tempPath, err := writeTempMediaBytes([]byte(renderTranscriptVTT(transcript.Chunks)), "atelier-transcript-*", ".vtt"); err == nil {
+			output.Transcripts = append(output.Transcripts, ToolTranscriptFile{TempPath: tempPath, MimeType: "text/vtt"})
+			output.TimestampedTranscript = capTranscriptPreview(transcript.TimestampedText)
+			// The full plain text rides in the .vtt artifact, so an oversized
+			// Transcript is capped against it rather than staged a second time.
+			if len(transcript.Text) > plainTranscriptArtifactChars {
+				output.Transcript = capPlainTranscriptPreview(transcript.Text, ".vtt")
+			}
+			output.Notices = append(output.Notices, fmt.Sprintf("The full %s-level transcript was saved as a WebVTT artifact attached to the reply; the evidence below carries only a preview.", transcript.Timestamps))
+		}
+	}
+	if len(output.Transcripts) == 0 && len(transcript.Text) > plainTranscriptArtifactChars {
+		if tempPath, err := writeTempMediaBytes([]byte(transcript.Text), "atelier-transcript-*", ".txt"); err == nil {
+			output.Transcripts = append(output.Transcripts, ToolTranscriptFile{TempPath: tempPath, MimeType: "text/plain"})
+			output.Transcript = capPlainTranscriptPreview(transcript.Text, ".txt")
+			output.Notices = append(output.Notices, fmt.Sprintf("The full transcript (%d characters) was saved as a text artifact attached to the reply; the evidence below carries only a preview.", utf8.RuneCountInString(transcript.Text)))
+		}
 	}
 	return output, transcribeAudioSummary(backend, req.Model, transcript.Timestamps), nil
+}
+
+// capTranscriptPreview keeps the first transcriptEvidencePreviewLines lines of
+// a timestamped rendering and closes with a pointer at the artifact holding
+// the rest. Short transcripts pass through unchanged.
+func capTranscriptPreview(rendered string) string {
+	lines := strings.Split(rendered, "\n")
+	if len(lines) <= transcriptEvidencePreviewLines {
+		return rendered
+	}
+	return strings.Join(lines[:transcriptEvidencePreviewLines], "\n") +
+		fmt.Sprintf("\n… (%d of %d lines shown — the full transcript is in the attached .vtt artifact)", transcriptEvidencePreviewLines, len(lines))
+}
+
+// capPlainTranscriptPreview keeps the first plainTranscriptArtifactChars runes
+// of a plain transcript and closes with a pointer at the artifact holding the
+// rest (".txt" when staged standalone, ".vtt" when it rides the timestamped
+// artifact). The cut lands on a rune boundary (truncateRunes).
+func capPlainTranscriptPreview(text, artifact string) string {
+	if len(text) <= plainTranscriptArtifactChars {
+		return text
+	}
+	head := truncateRunes(text, plainTranscriptArtifactChars)
+	return head +
+		fmt.Sprintf("\n\n… (%d of %d characters shown — the full transcript is in the attached %s artifact)",
+			utf8.RuneCountInString(head), utf8.RuneCountInString(text), artifact)
 }
 
 // transcribeAudioDescription assembles the transcribe_audio tool description,

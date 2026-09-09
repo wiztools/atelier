@@ -299,6 +299,14 @@ func TestRunLocalWhisperTranscription(t *testing.T) {
 			!strings.Contains(transcript.TimestampedText, "[00:00:01.000 --> 00:00:02.000] world") {
 			t.Fatalf("TimestampedText = %q, want per-cue lines", transcript.TimestampedText)
 		}
+		// The plain transcript must be PROSE joined from the cues, never the
+		// raw VTT document (conv_4fe9e638 regression).
+		if transcript.Text != "hello world" {
+			t.Fatalf("plain transcript = %q, want the joined cue text", transcript.Text)
+		}
+		if strings.Contains(transcript.Text, "WEBVTT") || strings.Contains(transcript.Text, "-->") {
+			t.Fatalf("plain transcript leaked the VTT document: %q", transcript.Text)
+		}
 	})
 	t.Run("whisper-cpp empty model uses the cached default when present", func(t *testing.T) {
 		home := t.TempDir()
@@ -769,6 +777,49 @@ func TestHarnessTranscribesViaLocalWhisper(t *testing.T) {
 	if strings.Contains(joined, "fal-ai/wizper") {
 		t.Fatal("a fal model id leaked into a local-whisper turn")
 	}
+
+	// The timestamped transcript must be persisted as a trc_*.vtt artifact and
+	// recorded on the turn as a transcript content entry — evidence keeps only
+	// the preview (its temp path must never appear on the wire).
+	conversations, err := listConversations(config.Storage)
+	if err != nil || len(conversations) != 1 {
+		t.Fatalf("listConversations = %v (%d conversations)", err, len(conversations))
+	}
+	loaded, err := newHistoryStore(config.Storage).loadForAppend(conversations[0].ID, "chat", "a chat", config.Tools.Filesystem.Root)
+	if err != nil {
+		t.Fatalf("loadForAppend: %v", err)
+	}
+	turnData, err := os.ReadFile(filepath.Join(loaded.TurnsDir, "turn_000002.json"))
+	if err != nil {
+		t.Fatalf("ReadFile assistant turn: %v", err)
+	}
+	var savedTurn HistoryTurn
+	if err := json.Unmarshal(turnData, &savedTurn); err != nil {
+		t.Fatalf("Unmarshal turn: %v", err)
+	}
+	var transcriptPath string
+	for _, content := range savedTurn.Content {
+		if content.Type == "transcript" {
+			transcriptPath = content.Path
+			break
+		}
+	}
+	if !strings.Contains(transcriptPath, "trc_") || !strings.HasSuffix(transcriptPath, ".vtt") {
+		t.Fatalf("transcript entry path = %q, want a trc_<hex>.vtt artifact", transcriptPath)
+	}
+	artifact, err := os.ReadFile(filepath.Join(loaded.ArtifactsDir, filepath.Base(transcriptPath)))
+	if err != nil {
+		t.Fatalf("transcript artifact unreadable: %v", err)
+	}
+	if !strings.HasPrefix(string(artifact), "WEBVTT") || !strings.Contains(string(artifact), "00:00:00.000 --> 00:00:00.500\nhello") {
+		t.Fatalf("artifact payload =\n%s", artifact)
+	}
+	if strings.Contains(joined, "tempPath") {
+		t.Fatal("the artifact temp path leaked into model evidence")
+	}
+	if !strings.Contains(joined, "WebVTT artifact") {
+		t.Fatal("the artifact notice never reached the final model as evidence")
+	}
 }
 
 // TestParseWhisperVTT pins the VTT cue parser: headers are skipped, cue
@@ -861,5 +912,212 @@ func TestTranscribeAudioTimestampsValidation(t *testing.T) {
 	problems := definition.Validate("toolCalls[0]", call)
 	if len(problems) != 1 || !strings.Contains(problems[0], `timestamps must be "words" or "segments"`) {
 		t.Fatalf("problems = %v", problems)
+	}
+}
+
+// TestRenderTranscriptVTT pins the artifact rendering: header, cue format,
+// closed and open-ended chunks, and the dropping of empty-text chunks.
+func TestRenderTranscriptVTT(t *testing.T) {
+	open := 2.5
+	chunks := []transcriptChunk{
+		{Start: 0, End: &[]float64{1.5}[0], Text: "hello"},
+		{Start: 1.5, End: &open, Text: "  world  "},
+		{Start: 2.5, Text: "open-ended"},    // nil end closes at its start
+		{Start: 3, End: &open, Text: "   "}, // empty text dropped
+	}
+	vtt := renderTranscriptVTT(chunks)
+	want := "WEBVTT\n\n" +
+		"00:00:00.000 --> 00:00:01.500\nhello\n\n" +
+		"00:00:01.500 --> 00:00:02.500\nworld\n\n" +
+		"00:00:02.500 --> 00:00:02.500\nopen-ended"
+	if vtt != want {
+		t.Fatalf("vtt =\n%s\nwant\n%s", vtt, want)
+	}
+}
+
+// TestCapTranscriptPreview pins the evidence preview cap: short renderings
+// pass through, long ones keep the first N lines and close with a pointer at
+// the artifact.
+func TestCapTranscriptPreview(t *testing.T) {
+	short := "[00:00:00.000 --> 00:00:01.000] hi"
+	if got := capTranscriptPreview(short); got != short {
+		t.Fatalf("short preview = %q", got)
+	}
+	lines := make([]string, transcriptEvidencePreviewLines+25)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("[00:00:%02d.000 --> 00:00:%02d.000] w%d", i, i+1, i)
+	}
+	capped := capTranscriptPreview(strings.Join(lines, "\n"))
+	if got := strings.Count(capped, "\n"); got != transcriptEvidencePreviewLines {
+		t.Fatalf("capped preview has %d lines, want %d + the closing pointer", got, transcriptEvidencePreviewLines)
+	}
+	if !strings.Contains(capped, "full transcript is in the attached .vtt artifact") {
+		t.Fatalf("capped preview missing the artifact pointer:\n%s", capped)
+	}
+	if strings.Contains(capped, "w"+fmt.Sprint(transcriptEvidencePreviewLines+24)) {
+		t.Fatal("capped preview leaked a line beyond the cap")
+	}
+}
+
+// TestTranscribeAudioOutputArtifact pins the artifact decision in
+// transcribeAudioOutput: a timestamped transcript is staged as a temp .vtt
+// file, evidence keeps only the capped preview, and the notice points at the
+// artifact. A plain transcript produces neither.
+func TestTranscribeAudioOutputArtifact(t *testing.T) {
+	t.Run("plain transcript stages no artifact", func(t *testing.T) {
+		output, summary, err := transcribeAudioOutput(TranscribeAudioRequest{Model: "fal-ai/wizper"}, "fal", GeneratedTranscript{Text: "hello"})
+		if err != nil {
+			t.Fatalf("transcribeAudioOutput: %v", err)
+		}
+		if output.Transcripts != nil || output.Timestamps != "" || output.TimestampedTranscript != "" {
+			t.Fatalf("plain output = %+v", output)
+		}
+		if summary != "transcribed audio with fal (fal-ai/wizper)" {
+			t.Fatalf("summary = %q", summary)
+		}
+	})
+	t.Run("timestamped transcript stages the vtt artifact", func(t *testing.T) {
+		end := 0.5
+		chunks := []transcriptChunk{{Start: 0, End: &end, Text: "hello"}}
+		transcript := GeneratedTranscript{
+			Text:            "hello",
+			Timestamps:      "words",
+			TimestampedText: "[00:00:00.000 --> 00:00:00.500] hello",
+			Chunks:          chunks,
+		}
+		output, _, err := transcribeAudioOutput(TranscribeAudioRequest{Timestamps: "words"}, "local whisper", transcript)
+		if err != nil {
+			t.Fatalf("transcribeAudioOutput: %v", err)
+		}
+		if len(output.Transcripts) != 1 || output.Transcripts[0].TempPath == "" {
+			t.Fatalf("transcripts = %+v, want one staged temp file", output.Transcripts)
+		}
+		defer os.Remove(output.Transcripts[0].TempPath)
+		data, err := os.ReadFile(output.Transcripts[0].TempPath)
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		if !strings.HasPrefix(string(data), "WEBVTT") || !strings.Contains(string(data), "00:00:00.000 --> 00:00:00.500\nhello") {
+			t.Fatalf("artifact payload =\n%s", data)
+		}
+		// The short rendering passes through the cap untouched.
+		if output.TimestampedTranscript != transcript.TimestampedText {
+			t.Fatalf("preview = %q", output.TimestampedTranscript)
+		}
+		found := false
+		for _, notice := range output.Notices {
+			if strings.Contains(notice, "WebVTT artifact") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("notices = %v, want the artifact pointer", output.Notices)
+		}
+	})
+	t.Run("oversized plain transcript stages the txt artifact", func(t *testing.T) {
+		var builder strings.Builder
+		for len(builder.String()) <= 2*plainTranscriptArtifactChars {
+			builder.WriteString("this meeting drags on and on, and every word of it lands in the transcript. ")
+		}
+		full := strings.TrimSpace(builder.String())
+		transcript := GeneratedTranscript{Text: full}
+		output, _, err := transcribeAudioOutput(TranscribeAudioRequest{}, "local whisper", transcript)
+		if err != nil {
+			t.Fatalf("transcribeAudioOutput: %v", err)
+		}
+		if len(output.Transcripts) != 1 || output.Transcripts[0].MimeType != "text/plain" {
+			t.Fatalf("transcripts = %+v, want one text/plain file", output.Transcripts)
+		}
+		defer os.Remove(output.Transcripts[0].TempPath)
+		data, err := os.ReadFile(output.Transcripts[0].TempPath)
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		if string(data) != full {
+			t.Fatalf("artifact payload lost or altered the full transcript (%d vs %d bytes)", len(data), len(full))
+		}
+		// Evidence keeps a capped preview with the artifact pointer — never
+		// the whole text.
+		if len(output.Transcript) >= plainTranscriptArtifactChars+512 {
+			t.Fatalf("evidence transcript was not capped (%d chars)", len(output.Transcript))
+		}
+		if !strings.Contains(output.Transcript, "full transcript is in the attached .txt artifact") {
+			t.Fatalf("capped preview missing the pointer:\n…%s", output.Transcript[len(output.Transcript)-200:])
+		}
+		found := false
+		for _, notice := range output.Notices {
+			if strings.Contains(notice, "text artifact") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("notices = %v, want the artifact pointer", output.Notices)
+		}
+	})
+	t.Run("timestamped call with oversized plain text stages only the vtt", func(t *testing.T) {
+		var builder strings.Builder
+		for len(builder.String()) <= plainTranscriptArtifactChars {
+			builder.WriteString("word after word after word lands in both renderings. ")
+		}
+		end := 1.0
+		transcript := GeneratedTranscript{
+			Text:            strings.TrimSpace(builder.String()),
+			Timestamps:      "segments",
+			TimestampedText: "[00:00:00.000 --> 00:00:01.000] plenty of segments follow",
+			Chunks:          []transcriptChunk{{Start: 0, End: &end, Text: "plenty of segments follow"}},
+		}
+		output, _, err := transcribeAudioOutput(TranscribeAudioRequest{Timestamps: "segments"}, "fal", transcript)
+		if err != nil {
+			t.Fatalf("transcribeAudioOutput: %v", err)
+		}
+		defer os.Remove(output.Transcripts[0].TempPath)
+		// One .vtt artifact only — the full plain text rides inside it, so no
+		// second .txt file is staged, but the plain Transcript is capped.
+		if len(output.Transcripts) != 1 || output.Transcripts[0].MimeType != "text/vtt" {
+			t.Fatalf("transcripts = %+v, want exactly the vtt file", output.Transcripts)
+		}
+		if output.Transcript == transcript.Text {
+			t.Fatal("oversized plain text should be capped against the vtt artifact")
+		}
+		if !strings.Contains(output.Transcript, "attached .vtt artifact") {
+			t.Fatalf("capped plain preview should point at the vtt artifact, got: …%s", output.Transcript[len(output.Transcript)-160:])
+		}
+	})
+	t.Run("evidence strips the transcripts slice", func(t *testing.T) {
+		result := HarnessToolResult{
+			Name:   "transcribe_audio",
+			Status: "completed",
+			Result: ToolTranscribeResult{
+				Transcript:  "hello",
+				Timestamps:  "words",
+				Transcripts: []ToolTranscriptFile{{TempPath: "/tmp/atelier-transcript-1.vtt"}},
+			},
+		}
+		messages := toolResultMessages([]HarnessToolResult{result})
+		if len(messages) != 1 {
+			t.Fatalf("messages = %d", len(messages))
+		}
+		if strings.Contains(messages[0].Content, "tempPath") || strings.Contains(messages[0].Content, "atelier-transcript-1") {
+			t.Fatalf("evidence leaked the temp path:\n%s", messages[0].Content)
+		}
+		if !strings.Contains(messages[0].Content, `"transcript":"hello"`) {
+			t.Fatalf("evidence lost the transcript:\n%s", messages[0].Content)
+		}
+	})
+}
+
+// TestTranscriptExtensionForMimeType pins the artifact extension mapping:
+// WebVTT keeps .vtt, anything else (plain text) lands as .txt.
+func TestTranscriptExtensionForMimeType(t *testing.T) {
+	cases := map[string]string{
+		"text/vtt":   ".vtt",
+		"TEXT/VTT":   ".vtt",
+		"text/plain": ".txt",
+		"":           ".txt",
+	}
+	for mimeType, want := range cases {
+		if got := transcriptExtensionForMimeType(mimeType); got != want {
+			t.Errorf("transcriptExtensionForMimeType(%q) = %q, want %q", mimeType, got, want)
+		}
 	}
 }

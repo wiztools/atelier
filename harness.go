@@ -405,10 +405,13 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	images, imageReq := imagesFromToolResults(preparation.ToolResults)
 	videos, videoReq := videosFromToolResults(preparation.ToolResults)
 	audios, audioReq := audiosFromToolResults(preparation.ToolResults)
-	// Video/audio temp files are moved into the artifacts directory at persist
-	// time; remove any that survive (e.g. a save error) so they don't leak.
+	transcripts, transcriptModel, transcriptTimestamps := transcriptsFromToolResults(preparation.ToolResults)
+	// Video/audio/transcript temp files are moved into the artifacts directory
+	// at persist time; remove any that survive (e.g. a save error, or a media
+	// combination the save switch doesn't extend) so they don't leak.
 	defer cleanupVideoTempFiles(videos)
 	defer cleanupAudioTempFiles(audios)
+	defer cleanupTranscriptTempFiles(transcripts)
 	if err != nil {
 		if len(images) > 0 || len(videos) > 0 || len(audios) > 0 {
 			result = finalResponseAttempt{
@@ -464,15 +467,22 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	var saveErr error
 	var videoURLs []string
 	var audioURLs []string
+	var transcriptURLs []string
 	switch {
 	case len(videos) > 0:
 		// The video appender also stores any images produced this turn, so a
-		// turn with both media types keeps everything.
+		// turn with both media types keeps everything. Transcripts in such a
+		// combination are not persisted as artifacts (the preview evidence
+		// survives; the temp files are cleaned above) — transcription requires
+		// an attached audio clip, which the video tools don't produce, so the
+		// combination is not one the planner can reach today.
 		videoURLs, saveErr = appendChatAssistantTurnWithVideos(h.config, conversationID, assistantContent, assistantThinking, finalModel, responseProvider, finalReason, images, imageReq, videos, videoReq, run)
 	case len(audios) > 0:
 		audioURLs, saveErr = appendChatAssistantTurnWithAudios(h.config, conversationID, assistantContent, assistantThinking, finalModel, responseProvider, finalReason, audios, audioReq, run)
 	case len(images) > 0:
 		saveErr = appendChatAssistantTurnWithImages(h.config, conversationID, assistantContent, assistantThinking, finalModel, responseProvider, finalReason, images, "", run, imageReq)
+	case len(transcripts) > 0:
+		transcriptURLs, saveErr = appendChatAssistantTurnWithTranscripts(h.config, conversationID, assistantContent, assistantThinking, finalModel, responseProvider, finalReason, transcripts, transcriptModel, transcriptTimestamps, run)
 	default:
 		saveErr = h.SaveAssistantTurn(conversationID, assistantContent, assistantThinking, finalModel, responseProvider, finalReason, finalTokens, run)
 	}
@@ -497,6 +507,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		Images:         images,
 		Videos:         videoURLs,
 		Audios:         audioURLs,
+		Transcripts:    transcriptURLs,
 		Done:           true,
 		Model:          finalModel,
 		Reason:         finalReason,
@@ -533,6 +544,16 @@ func cleanupVideoTempFiles(videos []ToolVideoFile) {
 func cleanupAudioTempFiles(audios []ToolAudioFile) {
 	for _, audio := range audios {
 		if path := strings.TrimSpace(audio.TempPath); path != "" {
+			os.Remove(path)
+		}
+	}
+}
+
+// cleanupTranscriptTempFiles removes timestamped-transcript temp files that
+// still exist — a no-op after a successful persist moved them into artifacts.
+func cleanupTranscriptTempFiles(transcripts []ToolTranscriptFile) {
+	for _, transcript := range transcripts {
+		if path := strings.TrimSpace(transcript.TempPath); path != "" {
 			os.Remove(path)
 		}
 	}
@@ -592,6 +613,28 @@ func audiosFromToolResults(results []HarnessToolResult) ([]ToolAudioFile, AudioG
 		audios = append(audios, typed.Audios...)
 	}
 	return audios, audioReq
+}
+
+// transcriptsFromToolResults collects the timestamped-transcript artifacts
+// produced by transcribe_audio tool calls this turn, plus the metadata used to
+// record them on the saved turn. The temp files hold the FULL transcript —
+// evidence only carries a preview (see transcribeAudioOutput).
+func transcriptsFromToolResults(results []HarnessToolResult) ([]ToolTranscriptFile, string, string) {
+	var transcripts []ToolTranscriptFile
+	transcriptModel := ""
+	timestamps := ""
+	for _, result := range results {
+		typed, ok := result.Result.(ToolTranscribeResult)
+		if !ok || result.Status != "completed" {
+			continue
+		}
+		if transcriptModel == "" {
+			transcriptModel = typed.Model
+			timestamps = typed.Timestamps
+		}
+		transcripts = append(transcripts, typed.Transcripts...)
+	}
+	return transcripts, transcriptModel, timestamps
 }
 
 // latestUserImages returns all non-empty images attached to the most recent
@@ -1549,7 +1592,7 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 			break
 		}
 		messages = append(messages, h.plannerAssistantMessage(turn.UseNativeTools, completion))
-		messages = append(messages, toolResultMessages(results)...)
+		messages = append(messages, buildToolResultMessages(results, plannerEvidenceBudgetChars(h.numCtx()))...)
 	}
 	run.Loop.Iterations = len(prepared.Rounds)
 	return prepared, nil
@@ -2083,38 +2126,110 @@ func toolEvidenceNote(preparation HarnessPreparedTurn) string {
 // Oversized results are cut down for the message only; history and telemetry
 // keep the full result.
 func toolResultMessages(results []HarnessToolResult) []ChatMessage {
-	messages := make([]ChatMessage, 0, len(results))
-	for _, result := range results {
-		messageResult := result
-		if typed, ok := result.Result.(ToolImageResult); ok {
-			typed.Images = nil
-			messageResult.Result = typed
-		}
-		if typed, ok := result.Result.(ToolVideoResult); ok {
-			typed.Videos = nil
-			messageResult.Result = typed
-		}
-		if typed, ok := result.Result.(ToolAudioResult); ok {
-			typed.Audios = nil
-			messageResult.Result = typed
-		}
-		// Sanitize before marshaling: a failed media tool can carry a raw
-		// downstream error that embeds a megabyte of base64 (e.g. fal echoing
-		// back the submitted data URI in a 422). Left intact it both bloats the
-		// model's context and invites the final model to over-read the raw
-		// field name as a user instruction (conv_ff1caffa123d39a9fd98f2ac:
-		// "video_url: Field required" became "you need to attach a video").
-		messageResult.Error = sanitizeToolErrorForModel(result.Error)
-		content, err := json.Marshal(messageResult)
+	return buildToolResultMessages(results, 0)
+}
+
+// plannerEvidenceReservedTokens is the prompt overhead a planning round pays
+// before any conversation or evidence: the tool catalog (native tool-calling
+// expands the schemas into the template — ~5K tokens) plus system framing,
+// the user turn, and the prior round's plan echo. The evidence budget below
+// subtracts it so a replan round cannot crowd the planner's instructions out
+// of the window.
+const plannerEvidenceReservedTokens = 6144
+
+// plannerEvidenceMinBudgetChars is the floor for the evidence budget — a very
+// small num_ctx still carries this much evidence rather than none.
+const plannerEvidenceMinBudgetChars = 4 * 1024
+
+// plannerEvidenceBudgetChars converts the context window into a total
+// character budget for one planning round's tool evidence (~4 chars/token).
+// With the old 8,192 default this is ~8KB; at the 16,384 default it is ~40KB
+// — enough that ordinary turns never touch it, while a pathological stack of
+// huge results still gets compacted instead of overflowing.
+func plannerEvidenceBudgetChars(numCtx int) int {
+	budget := (numCtx - plannerEvidenceReservedTokens) * 4
+	if budget < plannerEvidenceMinBudgetChars {
+		return plannerEvidenceMinBudgetChars
+	}
+	return budget
+}
+
+// buildToolResultMessages renders tool results as role:"tool" messages (see
+// toolResultMessages) under an optional cross-result budget. Individual
+// results are capped at toolResultMessageMaxChars; when totalBudget > 0 and
+// the marshaled results together exceed it, the largest result is compacted
+// to ever-smaller sizes until the sum fits (or everything reaches the floor —
+// overflowing is still better than erasing evidence entirely). Ollama's
+// overflow behavior is front truncation, which silently drops the planner's
+// instructions (conv_4fe9e638: 10,857 prompt tokens against an 8,192 num_ctx),
+// so the only safe direction is to keep evidence inside the window.
+func buildToolResultMessages(results []HarnessToolResult, totalBudget int) []ChatMessage {
+	contents := make([][]byte, len(results))
+	total := 0
+	for i, result := range results {
+		content, err := json.Marshal(toolResultMessageView(result))
 		if err != nil {
 			content = []byte(fmt.Sprintf(`{"name":%q,"status":"failed","error":"tool result could not be serialized"}`, result.Name))
 		}
 		if len(content) > toolResultMessageMaxChars {
-			content = compactToolResultMessage(messageResult, string(content))
+			content = compactToolResultMessageTo(toolResultMessageView(result), string(content), toolResultMessageMaxChars)
 		}
+		contents[i] = content
+		total += len(content)
+	}
+	for totalBudget > 0 && total > totalBudget {
+		largest := -1
+		for i := range contents {
+			if largest < 0 || len(contents[i]) > len(contents[largest]) {
+				largest = i
+			}
+		}
+		target := len(contents[largest]) / 2
+		if largest < 0 || target < 1024 {
+			break // every result is at the floor; keep the evidence rather than erase it
+		}
+		compacted := compactToolResultMessageTo(toolResultMessageView(results[largest]), string(contents[largest]), target)
+		if len(compacted) >= len(contents[largest]) {
+			break // no progress possible
+		}
+		total += len(compacted) - len(contents[largest])
+		contents[largest] = compacted
+	}
+	messages := make([]ChatMessage, 0, len(results))
+	for _, content := range contents {
 		messages = append(messages, ChatMessage{Role: "tool", Content: string(content)})
 	}
 	return messages
+}
+
+// toolResultMessageView copies a result with media slices stripped (temp-file
+// refs and base64 payloads never enter model context) and the error sanitized
+// (a failed media tool can carry a raw downstream error that embeds a
+// megabyte of base64 — e.g. fal echoing back the submitted data URI in a 422.
+// Left intact it both bloats the model's context and invites the final model
+// to over-read the raw field name as a user instruction
+// (conv_ff1caffa123d39a9fd98f2ac: "video_url: Field required" became "you
+// need to attach a video").
+func toolResultMessageView(result HarnessToolResult) HarnessToolResult {
+	messageResult := result
+	if typed, ok := result.Result.(ToolImageResult); ok {
+		typed.Images = nil
+		messageResult.Result = typed
+	}
+	if typed, ok := result.Result.(ToolVideoResult); ok {
+		typed.Videos = nil
+		messageResult.Result = typed
+	}
+	if typed, ok := result.Result.(ToolAudioResult); ok {
+		typed.Audios = nil
+		messageResult.Result = typed
+	}
+	if typed, ok := result.Result.(ToolTranscribeResult); ok {
+		typed.Transcripts = nil
+		messageResult.Result = typed
+	}
+	messageResult.Error = sanitizeToolErrorForModel(result.Error)
+	return messageResult
 }
 
 // toolErrorMaxChars caps a tool error string before it enters model context.
@@ -2142,7 +2257,15 @@ func sanitizeToolErrorForModel(errorText string) string {
 }
 
 func compactToolResultMessage(result HarnessToolResult, fullJSON string) []byte {
-	preview := truncateRunes(fullJSON, toolResultMessageMaxChars-512)
+	return compactToolResultMessageTo(result, fullJSON, toolResultMessageMaxChars)
+}
+
+// compactToolResultMessageTo truncates a marshaled tool result to maxChars
+// (with headroom for the wrapper) and marks the summary so the model knows
+// the observation was cut down. compactToolResultMessage is the standard
+// per-result cap; the evidence budget calls this with smaller targets.
+func compactToolResultMessageTo(result HarnessToolResult, fullJSON string, maxChars int) []byte {
+	preview := truncateRunes(fullJSON, maxChars-512)
 	compact := HarnessToolResult{
 		Name:    result.Name,
 		Status:  result.Status,
