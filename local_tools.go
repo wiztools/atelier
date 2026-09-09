@@ -41,6 +41,15 @@ const (
 	localBinarySourceConfig = "config" // the configured override resolved
 )
 
+// ImageMagick CLI flavors — the dialect names for imagemagickBinarySpec.
+const (
+	// localMagickFlavorIM7 is ImageMagick 7's `magick` CLI.
+	localMagickFlavorIM7 = "magick7"
+	// localMagickFlavorIM6 is the legacy `convert` spelling (a real IM6
+	// install, or IM7's compatibility shim — same command shape either way).
+	localMagickFlavorIM6 = "convert6"
+)
+
 // localBinaryCandidate is one PATH name a tool may be installed as, carrying
 // the CLI dialect found under that name.
 type localBinaryCandidate struct {
@@ -88,12 +97,39 @@ var ffprobeBinarySpec = localBinarySpec{
 	},
 }
 
+// sipsBinarySpec describes the sips CLI macOS bundles — the basic local image
+// tool backend (format conversion incl. HEIC, resize/crop/rotate/flip/pad,
+// image facts; see local_images.go). One dialect; the override exists for
+// tests and unusual setups since /usr/bin/sips is guaranteed on macOS.
+var sipsBinarySpec = localBinarySpec{
+	key:   "sips",
+	label: "sips",
+	candidates: []localBinaryCandidate{
+		{name: "sips", flavor: "sips"},
+	},
+}
+
+// imagemagickBinarySpec describes the ImageMagick CLI — the advanced local
+// image tool backend (watermarks, collages, color adjustments, metadata
+// stripping; see local_images.go). Two dialects: "magick" (ImageMagick 7,
+// preferred) and "convert" (the IM6 spelling, also installed by IM7 as a
+// compatibility shim). Both run the same single-image command shape.
+var imagemagickBinarySpec = localBinarySpec{
+	key:   "imagemagick",
+	label: "ImageMagick",
+	candidates: []localBinaryCandidate{
+		{name: "magick", flavor: localMagickFlavorIM7},
+		{name: "convert", flavor: localMagickFlavorIM6},
+	},
+}
+
 // knownLocalBinaries is the registry of local CLI media tools. whisper powers
-// local transcription; ffmpeg/ffprobe power the local media transforms — add a
-// spec here and detection, the Settings status report, and the per-binary
-// config override plumbing all pick it up without further changes. Only the
-// tool-specific executor is new code.
-var knownLocalBinaries = []localBinarySpec{whisperBinarySpec, ffmpegBinarySpec, ffprobeBinarySpec}
+// local transcription; ffmpeg/ffprobe power the local media transforms; sips
+// and ImageMagick power the local image tools — add a spec here and
+// detection, the Settings status report, and the per-binary config override
+// plumbing all pick it up without further changes. Only the tool-specific
+// executor is new code.
+var knownLocalBinaries = []localBinarySpec{whisperBinarySpec, ffmpegBinarySpec, ffprobeBinarySpec, sipsBinarySpec, imagemagickBinarySpec}
 
 // localBinaryLookPath is the seam tests stub to keep binary detection
 // hermetic: without it, every test that builds a tool registry would register
@@ -179,6 +215,19 @@ func resolveLocalFFprobeBinary(config AppConfig) (resolvedLocalBinary, bool) {
 	return resolvedLocalBinary{}, false
 }
 
+// resolveLocalSipsBinary detects the sips CLI the basic local image tools run:
+// the configured override if set, else "sips" on PATH (guaranteed on macOS).
+func resolveLocalSipsBinary(config AppConfig) (resolvedLocalBinary, bool) {
+	return resolveLocalBinary(sipsBinarySpec, config.Providers.Local.Sips.Binary)
+}
+
+// resolveLocalImageMagickBinary detects the ImageMagick CLI the advanced local
+// image tools run: the configured override if set, else "magick" (IM7) then
+// "convert" (IM6) on PATH.
+func resolveLocalImageMagickBinary(config AppConfig) (resolvedLocalBinary, bool) {
+	return resolveLocalBinary(imagemagickBinarySpec, config.Providers.Local.Magick.Binary)
+}
+
 // LocalToolOverrides lets the Settings UI reflect unsaved edits: binary
 // overrides keyed by tool id ("whisper"), each replacing the saved config
 // value for detection only.
@@ -252,6 +301,10 @@ func configuredLocalBinaryOverride(config AppConfig, key string) string {
 		return config.Providers.Local.FFmpeg.Binary
 	case ffprobeBinarySpec.key:
 		return config.Providers.Local.FFprobe.Binary
+	case sipsBinarySpec.key:
+		return config.Providers.Local.Sips.Binary
+	case imagemagickBinarySpec.key:
+		return config.Providers.Local.Magick.Binary
 	default:
 		return ""
 	}
@@ -268,6 +321,12 @@ func localBinaryFoundDetail(resolved resolvedLocalBinary) string {
 		dialect = "ffmpeg CLI"
 	case "ffprobe":
 		dialect = "ffprobe CLI"
+	case "sips":
+		dialect = "sips CLI (macOS built-in)"
+	case localMagickFlavorIM7:
+		dialect = "ImageMagick 7 `magick` CLI"
+	case localMagickFlavorIM6:
+		dialect = "ImageMagick 6 `convert` CLI"
 	}
 	source := "detected on PATH"
 	if resolved.source == localBinarySourceConfig {
@@ -284,6 +343,10 @@ func localBinaryMissingDetail(spec localBinarySpec) string {
 		return "No ffmpeg CLI found on this Mac's PATH. Install one to enable local video tools (screenshot, split, join, extract audio): `brew install ffmpeg`."
 	case ffprobeBinarySpec.key:
 		return "No ffprobe CLI found. It ships with ffmpeg (`brew install ffmpeg`); without it the video tools still run but always re-encode and extract audio as MP3."
+	case sipsBinarySpec.key:
+		return "No sips CLI found on PATH. sips ships with macOS and powers the basic image tools; it is missing only on non-macOS systems."
+	case imagemagickBinarySpec.key:
+		return "No ImageMagick CLI found on this Mac's PATH. Install one to enable the advanced image tools (watermark, collage, color adjust, strip metadata): `brew install imagemagick`."
 	default:
 		return fmt.Sprintf("%s was not found on this Mac's PATH.", spec.label)
 	}
@@ -734,6 +797,32 @@ func runLocalFFprobe(ctx context.Context, config AppConfig, args []string) ([]by
 		return nil, errors.New("no local ffprobe CLI found — it ships with ffmpeg (brew install ffmpeg)")
 	}
 	return runLocalMediaCLI(ctx, resolved, "ffprobe", localFFmpegTimeout, args)
+}
+
+// localImageToolTimeout bounds one sips/ImageMagick invocation. Image
+// transforms are fast; like the other local CLIs this exists to reap a wedged
+// process, not to enforce latency.
+const localImageToolTimeout = 5 * time.Minute
+
+// runLocalSips executes the macOS sips CLI with args, re-resolved per call so
+// a Settings change applies without rebuilding the gateway.
+func runLocalSips(ctx context.Context, config AppConfig, args []string) ([]byte, error) {
+	resolved, ok := resolveLocalSipsBinary(config)
+	if !ok {
+		return nil, errors.New("no sips CLI found — it ships with macOS; check Settings → Image Tools for a configured override")
+	}
+	return runLocalMediaCLI(ctx, resolved, "sips", localImageToolTimeout, args)
+}
+
+// runLocalImageMagick executes the detected ImageMagick CLI (magick or
+// convert) with args, re-resolved per call so a Settings change applies
+// without rebuilding the gateway.
+func runLocalImageMagick(ctx context.Context, config AppConfig, args []string) ([]byte, error) {
+	resolved, ok := resolveLocalImageMagickBinary(config)
+	if !ok {
+		return nil, errors.New("no ImageMagick CLI found — install one (brew install imagemagick), or clear the configured binary override in Settings → Image Tools")
+	}
+	return runLocalMediaCLI(ctx, resolved, "imagemagick", localImageToolTimeout, args)
 }
 
 // runLocalMediaCLI is the shared exec body for the local media CLIs: a bounded

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -71,6 +72,14 @@ type HarnessPreparedTurn struct {
 	// instead of letting the request silently fall through to a from-knowledge
 	// text answer. Set by RunChatStream regardless of NeedsTools.
 	LocalMediaEditUnavailable bool
+	// LocalImageEditNote is the code-authored note for the final model when
+	// triage flagged the turn as an image edit (HarnessTriageDecision.
+	// ImageEdit) while some local image backend is missing — the note names
+	// what is available and what needs installing (see
+	// imageEditUnavailableNote in local_images.go). Empty when every image
+	// tool backend is configured. Set by RunChatStream regardless of
+	// NeedsTools; delivered like LocalMediaEditUnavailable's note.
+	LocalImageEditNote string
 }
 
 type HarnessToolRound struct {
@@ -204,12 +213,36 @@ type HarnessToolCall struct {
 	// End means through the end. Mode is the per-tool strategy selector:
 	// split_video takes "fast" (stream copy) or "accurate" (re-encode, the
 	// default), join_videos takes "auto" (probe and copy when inputs match,
-	// the default), "copy", or "reencode". Planner-only, like the other media
-	// inputs — see local_ffmpeg.go.
+	// the default), "copy", or "reencode", and compose_images takes
+	// "watermark" (the default) or "collage". Planner-only, like the other
+	// media inputs — see local_ffmpeg.go and local_images.go.
 	At    string `json:"at,omitempty"`
 	Start string `json:"start,omitempty"`
 	End   string `json:"end,omitempty"`
 	Mode  string `json:"mode,omitempty"`
+	// Local image-tool inputs (convert_image, transform_image, compose_images,
+	// adjust_image, optimize_image; see local_images.go). Format names an
+	// output format; Quality is a 1-100 encoding percentage; AspectRatio
+	// (reused from generate_image — here the center-crop shape, e.g. "4:5")
+	// drives transform_image's crop; Width/Height/Rotate/Flip are
+	// transform_image's geometry ops; Position and Opacity place and fade a
+	// watermark (Scale, reused from upscale_image, sizes it — a percentage
+	// here); Brightness/Contrast/Saturation/Grayscale/Sepia are adjust_image's
+	// color controls. Planner-only, like At — declared in
+	// harnessToolPlanSchema and validated per-tool.
+	Format     string `json:"format,omitempty"`
+	Quality    int    `json:"quality,omitempty"`
+	Width      int    `json:"width,omitempty"`
+	Height     int    `json:"height,omitempty"`
+	Rotate     int    `json:"rotate,omitempty"`
+	Flip       string `json:"flip,omitempty"`
+	Position   string `json:"position,omitempty"`
+	Opacity    int    `json:"opacity,omitempty"`
+	Brightness int    `json:"brightness,omitempty"`
+	Contrast   int    `json:"contrast,omitempty"`
+	Saturation int    `json:"saturation,omitempty"`
+	Grayscale  bool   `json:"grayscale,omitempty"`
+	Sepia      bool   `json:"sepia,omitempty"`
 }
 
 type HarnessToolResult struct {
@@ -390,6 +423,12 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	// never be served this turn; the flag routes the install guidance into the
 	// final model's messages (and a deterministic fallback onto the reply).
 	preparation.LocalMediaEditUnavailable = decision.MediaEdit && !ffmpegToolsConfigured(h.config)
+	// Same first-run UX for image edits: the note names whichever backend
+	// is missing (ImageMagick for watermark/collage/adjust/optimize, sips
+	// for the basic edits — the latter only on non-macOS systems).
+	if decision.ImageEdit {
+		preparation.LocalImageEditNote = imageEditUnavailableNote(sipsToolsConfigured(h.config), imageMagickToolsConfigured(h.config))
+	}
 
 	// Resolve the response model: when the primary model is an image generation
 	// model, it cannot produce text or analyze images, so fall back to the
@@ -478,6 +517,13 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			toolNotices += "\n" + ffmpegNotice
 		} else {
 			toolNotices = ffmpegNotice
+		}
+	}
+	if imageNotice := imageEditFallbackNotice(preparation.LocalImageEditNote != "", assistantContent); imageNotice != "" {
+		if toolNotices != "" {
+			toolNotices += "\n" + imageNotice
+		} else {
+			toolNotices = imageNotice
 		}
 	}
 	if toolNotices != "" {
@@ -2006,6 +2052,26 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 						"start": map[string]any{"type": "string"},
 						"end":   map[string]any{"type": "string"},
 						"mode":  map[string]any{"type": "string"},
+						// Local image tool inputs (convert/transform/compose/
+						// adjust/optimize — see local_images.go). Same
+						// contract: per-tool validation, grammar freedom here.
+						// aspectRatio and scale are shared with generate_image
+						// and upscale_image (string shapes there).
+						"format":      map[string]any{"type": "string"},
+						"quality":     map[string]any{"type": "integer"},
+						"aspectRatio": map[string]any{"type": "string"},
+						"scale":       map[string]any{"type": "string"},
+						"width":       map[string]any{"type": "integer"},
+						"height":      map[string]any{"type": "integer"},
+						"rotate":      map[string]any{"type": "integer"},
+						"flip":        map[string]any{"type": "string"},
+						"position":    map[string]any{"type": "string"},
+						"opacity":     map[string]any{"type": "integer"},
+						"brightness":  map[string]any{"type": "integer"},
+						"contrast":    map[string]any{"type": "integer"},
+						"saturation":  map[string]any{"type": "integer"},
+						"grayscale":   map[string]any{"type": "boolean"},
+						"sepia":       map[string]any{"type": "boolean"},
 					},
 				},
 			},
@@ -2069,9 +2135,13 @@ func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel, 
 	}
 	// A local media edit with no ffmpeg CLI rides its own trailing user
 	// message, mirroring the no-tools note path: the final model learns why the
-	// edit cannot happen and what to tell the user.
+	// edit cannot happen and what to tell the user. The image-edit note (a
+	// missing sips/ImageMagick backend) rides the same channel.
 	if preparation.LocalMediaEditUnavailable {
 		messages = append(messages, ChatMessage{Role: "user", Content: localMediaEditUnavailableNote})
+	}
+	if preparation.LocalImageEditNote != "" {
+		messages = append(messages, ChatMessage{Role: "user", Content: preparation.LocalImageEditNote})
 	}
 	numCtx := h.numCtx()
 	truncatedMessages := truncateChatHistory(messages, historyBudgetChars(numCtx, responseReq.System, numCtx/4))
@@ -2501,7 +2571,7 @@ func matchParen(s string, openIdx int) int {
 	return -1
 }
 
-var kwargPattern = regexp.MustCompile(`([A-Za-z_]+)\s*=\s*('([^']*)'|"([^"]*)"|([0-9.]+)|(true|false|null))`)
+var kwargPattern = regexp.MustCompile(`([A-Za-z_]+)\s*=\s*('([^']*)'|"([^"]*)"|(-?[0-9.]+)|(true|false|null))`)
 
 // applyKwargs parses key=value pairs from a call's argument string (Python-style
 // kwargs) and maps them onto the HarnessToolCall fields. Both the JSON field
@@ -2509,9 +2579,18 @@ var kwargPattern = regexp.MustCompile(`([A-Za-z_]+)\s*=\s*('([^']*)'|"([^"]*)"|(
 // accepted, since observed dialects use both. Unrecognized keys are ignored.
 func applyKwargs(call *HarnessToolCall, args string) {
 	for _, m := range kwargPattern.FindAllStringSubmatch(args, -1) {
-		raw := m[3]
-		if raw == "" {
-			raw = m[4]
+		// The regex captures the value four ways (single-quoted, double-quoted,
+		// numeric, boolean/null); take the first non-empty one. A bare null
+		// means the planner omitted the value — leave the field untouched.
+		raw := ""
+		for _, group := range m[3:7] {
+			if group != "" {
+				raw = group
+				break
+			}
+		}
+		if raw == "null" {
+			continue
 		}
 		switch m[1] {
 		case "content", "prompt":
@@ -2556,8 +2635,44 @@ func applyKwargs(call *HarnessToolCall, args string) {
 			call.End = raw
 		case "mode":
 			call.Mode = raw
+		case "format":
+			call.Format = raw
+		case "flip":
+			call.Flip = raw
+		case "position":
+			call.Position = raw
+		case "quality":
+			call.Quality = kwargInt(raw)
+		case "width":
+			call.Width = kwargInt(raw)
+		case "height":
+			call.Height = kwargInt(raw)
+		case "rotate":
+			call.Rotate = kwargInt(raw)
+		case "opacity":
+			call.Opacity = kwargInt(raw)
+		case "brightness":
+			call.Brightness = kwargInt(raw)
+		case "contrast":
+			call.Contrast = kwargInt(raw)
+		case "saturation":
+			call.Saturation = kwargInt(raw)
+		case "grayscale":
+			call.Grayscale = raw == "true"
+		case "sepia":
+			call.Sepia = raw == "true"
 		}
 	}
+}
+
+// kwargInt reads a kwargs integer value; an unparseable value yields 0 so
+// per-tool validation (not the parser) produces the correction message.
+func kwargInt(raw string) int {
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return 0
+	}
+	return value
 }
 
 func decodeAndValidateHarnessToolPlan(candidate string, registry HarnessToolRegistry) (HarnessToolPlan, []string) {

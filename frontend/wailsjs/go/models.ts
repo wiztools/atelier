@@ -170,6 +170,30 @@ export namespace main {
 	        this.transcriptionProvider = source["transcriptionProvider"];
 	    }
 	}
+	export class ConfigLocalImageMagick {
+	    binary?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConfigLocalImageMagick(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.binary = source["binary"];
+	    }
+	}
+	export class ConfigLocalSips {
+	    binary?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConfigLocalSips(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.binary = source["binary"];
+	    }
+	}
 	export class ConfigLocalFFprobe {
 	    binary?: string;
 	
@@ -212,6 +236,8 @@ export namespace main {
 	    whisper: ConfigLocalWhisper;
 	    ffmpeg: ConfigLocalFFmpeg;
 	    ffprobe: ConfigLocalFFprobe;
+	    sips: ConfigLocalSips;
+	    magick: ConfigLocalImageMagick;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigLocalProviders(source);
@@ -222,6 +248,8 @@ export namespace main {
 	        this.whisper = this.convertValues(source["whisper"], ConfigLocalWhisper);
 	        this.ffmpeg = this.convertValues(source["ffmpeg"], ConfigLocalFFmpeg);
 	        this.ffprobe = this.convertValues(source["ffprobe"], ConfigLocalFFprobe);
+	        this.sips = this.convertValues(source["sips"], ConfigLocalSips);
+	        this.magick = this.convertValues(source["magick"], ConfigLocalImageMagick);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -628,6 +656,8 @@ export namespace main {
 	        this.conversationId = source["conversationId"];
 	    }
 	}
+	
+	
 	
 	
 	
@@ -1076,6 +1106,19 @@ export namespace main {
 	    start?: string;
 	    end?: string;
 	    mode?: string;
+	    format?: string;
+	    quality?: number;
+	    width?: number;
+	    height?: number;
+	    rotate?: number;
+	    flip?: string;
+	    position?: string;
+	    opacity?: number;
+	    brightness?: number;
+	    contrast?: number;
+	    saturation?: number;
+	    grayscale?: boolean;
+	    sepia?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new HarnessToolCall(source);
@@ -1119,6 +1162,19 @@ export namespace main {
 	        this.start = source["start"];
 	        this.end = source["end"];
 	        this.mode = source["mode"];
+	        this.format = source["format"];
+	        this.quality = source["quality"];
+	        this.width = source["width"];
+	        this.height = source["height"];
+	        this.rotate = source["rotate"];
+	        this.flip = source["flip"];
+	        this.position = source["position"];
+	        this.opacity = source["opacity"];
+	        this.brightness = source["brightness"];
+	        this.contrast = source["contrast"];
+	        this.saturation = source["saturation"];
+	        this.grayscale = source["grayscale"];
+	        this.sepia = source["sepia"];
 	    }
 	}
 	export class HarnessToolResult {

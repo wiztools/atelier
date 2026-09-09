@@ -244,9 +244,11 @@ type ConfigOpenAICompatible struct {
 // here, a spec in knownLocalBinaries, and a config override case in
 // configuredLocalBinaryOverride is the whole wiring for detection + Settings.
 type ConfigLocalProviders struct {
-	Whisper ConfigLocalWhisper `json:"whisper"`
-	FFmpeg  ConfigLocalFFmpeg  `json:"ffmpeg"`
-	FFprobe ConfigLocalFFprobe `json:"ffprobe"`
+	Whisper ConfigLocalWhisper     `json:"whisper"`
+	FFmpeg  ConfigLocalFFmpeg      `json:"ffmpeg"`
+	FFprobe ConfigLocalFFprobe     `json:"ffprobe"`
+	Sips    ConfigLocalSips        `json:"sips"`
+	Magick  ConfigLocalImageMagick `json:"magick"`
 }
 
 // ConfigLocalWhisper configures the local whisper CLI. Binary overrides
@@ -275,6 +277,23 @@ type ConfigLocalFFmpeg struct {
 // "ffprobe" on PATH and then the directory of the resolved ffmpeg binary —
 // they ship together.
 type ConfigLocalFFprobe struct {
+	Binary string `json:"binary,omitempty"`
+}
+
+// ConfigLocalSips configures the macOS-bundled sips CLI behind the basic
+// local image tools (convert_image, transform_image, probe_image — see
+// local_images.go). sips ships with every macOS, so detection almost always
+// succeeds; the override exists for non-standard setups and tests.
+type ConfigLocalSips struct {
+	Binary string `json:"binary,omitempty"`
+}
+
+// ConfigLocalImageMagick configures the ImageMagick CLI behind the advanced
+// local image tools (compose_images, adjust_image, optimize_image — sips
+// cannot watermark, build collages, adjust colors, or strip metadata). Empty
+// auto-detects "magick" (ImageMagick 7) then "convert" (legacy ImageMagick 6)
+// on PATH.
+type ConfigLocalImageMagick struct {
 	Binary string `json:"binary,omitempty"`
 }
 

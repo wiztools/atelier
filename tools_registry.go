@@ -274,6 +274,12 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 	if ffmpegToolsConfigured(config) {
 		definitions = append(definitions, ffmpegToolDefinitions(config)...)
 	}
+	if sipsToolsConfigured(config) {
+		definitions = append(definitions, sipsImageToolDefinitions()...)
+	}
+	if imageMagickToolsConfigured(config) {
+		definitions = append(definitions, imagemagickImageToolDefinitions()...)
+	}
 	if lipsyncConfigured(config) {
 		definitions = append(definitions, lipsyncToolDefinition(videoAudioCapable))
 	}
@@ -527,6 +533,31 @@ func firstAttachedVideo(videos []string) string {
 func firstAttachedAudio(audios []string) string {
 	for _, a := range audios {
 		if s := strings.TrimSpace(a); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// nonEmptyImages returns the trimmed, non-empty entries of images — the shape
+// compose_images consumes (a watermark's base+overlay pair, or a collage's
+// every image) — treating nil as empty.
+func nonEmptyImages(images []string) []string {
+	out := make([]string, 0, len(images))
+	for _, image := range images {
+		if s := strings.TrimSpace(image); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// firstAttachedImage returns the first non-empty attached image, for the
+// single-image consumers of AttachedImages (the local image tools, image
+// upscaling).
+func firstAttachedImage(images []string) string {
+	for _, image := range images {
+		if s := strings.TrimSpace(image); s != "" {
 			return s
 		}
 	}

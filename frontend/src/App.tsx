@@ -973,6 +973,8 @@ function App() {
   const [whisperBinary, setWhisperBinary] = useState('');
   const [ffmpegBinary, setFfmpegBinary] = useState('');
   const [ffprobeBinary, setFfprobeBinary] = useState('');
+  const [sipsBinary, setSipsBinary] = useState('');
+  const [magickBinary, setMagickBinary] = useState('');
   const [localToolsReport, setLocalToolsReport] = useState<main.LocalToolsReport | null>(null);
   const [falLipsyncImageModel, setFalLipsyncImageModel] = useState(defaultFalLipsyncImageModel);
   const [falLipsyncVideoModel, setFalLipsyncVideoModel] = useState(defaultFalLipsyncVideoModel);
@@ -1540,6 +1542,12 @@ function App() {
             ffprobe: {
               binary: ffprobeBinary,
             },
+            sips: {
+              binary: sipsBinary,
+            },
+            magick: {
+              binary: magickBinary,
+            },
           },
         },
         models: {
@@ -1575,10 +1583,10 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, whisperBinary, whisperModel]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, whisperBinary, whisperModel]);
 
   // Re-probe local CLI tools when a binary override changes so the provider
-  // dropdown and the video-tools status reflect an unsaved override without
+  // dropdown and the video/image-tools status reflect an unsaved override without
   // waiting for a save (an empty override means PATH auto-detection — the Go
   // side treats it that way too).
   useEffect(() => {
@@ -1586,12 +1594,12 @@ function App() {
       return;
     }
     const timer = window.setTimeout(() => {
-      DetectLocalTools(new main.LocalToolOverrides({binaries: {whisper: whisperBinary, ffmpeg: ffmpegBinary, ffprobe: ffprobeBinary}}))
+      DetectLocalTools(new main.LocalToolOverrides({binaries: {whisper: whisperBinary, ffmpeg: ffmpegBinary, ffprobe: ffprobeBinary, sips: sipsBinary, imagemagick: magickBinary}}))
         .then((report) => setLocalToolsReport(report))
         .catch(() => setLocalToolsReport(null));
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [configLoaded, whisperBinary, ffmpegBinary, ffprobeBinary]);
+  }, [configLoaded, whisperBinary, ffmpegBinary, ffprobeBinary, sipsBinary, magickBinary]);
 
   // On a fresh launch, put the cursor in the chat box so the user can start
   // typing immediately. Fires once, when config finishes loading.
@@ -1978,6 +1986,14 @@ function App() {
     () => localToolsReport?.binaries?.find((entry) => entry.key === 'ffprobe') ?? null,
     [localToolsReport],
   );
+  const sipsStatus = useMemo(
+    () => localToolsReport?.binaries?.find((entry) => entry.key === 'sips') ?? null,
+    [localToolsReport],
+  );
+  const magickStatus = useMemo(
+    () => localToolsReport?.binaries?.find((entry) => entry.key === 'imagemagick') ?? null,
+    [localToolsReport],
+  );
 
   const falUpscaleModelOptions = useMemo(() => falModelOptionList(falUpscaleModels), [falUpscaleModels]);
 
@@ -2134,6 +2150,8 @@ function App() {
 	const nextWhisperBinary = config.providers?.local?.whisper?.binary ?? '';
 	const nextFfmpegBinary = config.providers?.local?.ffmpeg?.binary ?? '';
 	const nextFfprobeBinary = config.providers?.local?.ffprobe?.binary ?? '';
+	const nextSipsBinary = config.providers?.local?.sips?.binary ?? '';
+	const nextMagickBinary = config.providers?.local?.magick?.binary ?? '';
 	const nextFalLipsyncImageModel = config.providers?.fal?.lipsyncImageModel || defaultFalLipsyncImageModel;
 	const nextFalLipsyncVideoModel = config.providers?.fal?.lipsyncVideoModel || defaultFalLipsyncVideoModel;
     const nextFalUpscaleModel = config.providers?.fal?.upscaleModel || defaultFalUpscaleModel;
@@ -2175,6 +2193,8 @@ function App() {
     setWhisperBinary(nextWhisperBinary);
     setFfmpegBinary(nextFfmpegBinary);
     setFfprobeBinary(nextFfprobeBinary);
+    setSipsBinary(nextSipsBinary);
+    setMagickBinary(nextMagickBinary);
     setFalLipsyncImageModel(nextFalLipsyncImageModel);
     setFalLipsyncVideoModel(nextFalLipsyncVideoModel);
     setFalUpscaleModel(nextFalUpscaleModel);
@@ -3999,6 +4019,52 @@ function App() {
                   </div>
                   {!ffmpegStatus?.available ? (
                     <span className="hint">{ffmpegStatus?.detail ?? 'Detecting local tools…'}</span>
+                  ) : null}
+                </div>
+              </section>
+
+              <section className="settings-section">
+                <h3>
+                  Image Tools (sips + ImageMagick){' '}
+                  <InfoHint
+                    label="Local image tools"
+                    text="Two local backends power the image-editing tools in chat. macOS's built-in sips converts formats (including HEIC photos), crops to an aspect, resizes, rotates, flips, and reports image facts — no install needed. ImageMagick adds watermarks and logo overlays, collages/grids, color adjustments (brightness, contrast, saturation, grayscale, sepia), and metadata stripping with webp output: `brew install imagemagick`. Both are detected automatically on PATH, or set explicit binaries below."
+                  />
+                </h3>
+                <div className="settings-rows">
+                  <div className="two-column">
+                    <div className="field">
+                      <div className="field-label-row">
+                        <label htmlFor="sips-binary">sips Binary</label>
+                        {sipsStatus?.detail ? (
+                          <InfoHint label="sips binary detection" text={sipsStatus.detail} />
+                        ) : null}
+                      </div>
+                      <input
+                        id="sips-binary"
+                        value={sipsBinary}
+                        onChange={(event) => setSipsBinary(event.target.value)}
+                        placeholder={sipsStatus?.path || 'auto-detect on PATH: sips'}
+                      />
+                    </div>
+
+                    <div className="field">
+                      <div className="field-label-row">
+                        <label htmlFor="magick-binary">ImageMagick Binary</label>
+                        {magickStatus?.detail ? (
+                          <InfoHint label="ImageMagick binary detection" text={magickStatus.detail} />
+                        ) : null}
+                      </div>
+                      <input
+                        id="magick-binary"
+                        value={magickBinary}
+                        onChange={(event) => setMagickBinary(event.target.value)}
+                        placeholder={magickStatus?.path || 'auto-detect on PATH: magick / convert'}
+                      />
+                    </div>
+                  </div>
+                  {!magickStatus?.available ? (
+                    <span className="hint">{magickStatus?.detail ?? 'Detecting local tools…'}</span>
                   ) : null}
                 </div>
               </section>

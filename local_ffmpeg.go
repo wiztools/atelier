@@ -118,6 +118,16 @@ func stagedMediaExtension(mediaType string) string {
 		return ".jpg"
 	case strings.HasPrefix(mediaType, "image/webp"):
 		return ".webp"
+	case strings.HasPrefix(mediaType, "image/heic"), strings.HasPrefix(mediaType, "image/heif"):
+		return ".heic"
+	case strings.HasPrefix(mediaType, "image/avif"):
+		return ".avif"
+	case strings.HasPrefix(mediaType, "image/tiff"):
+		return ".tiff"
+	case strings.HasPrefix(mediaType, "image/gif"):
+		return ".gif"
+	case strings.HasPrefix(mediaType, "image/bmp"):
+		return ".bmp"
 	case strings.HasPrefix(mediaType, "image/"):
 		return ".png"
 	default:
