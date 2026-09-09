@@ -274,9 +274,10 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 	if ffmpegToolsConfigured(config) {
 		definitions = append(definitions, ffmpegToolDefinitions(config)...)
 	}
-	if sipsToolsConfigured(config) {
-		definitions = append(definitions, sipsImageToolDefinitions()...)
-	}
+	// The basic image tools bind to whichever backend the platform resolved
+	// (sips on macOS with ImageMagick fallback, ImageMagick elsewhere) —
+	// nil (nothing appended) when neither is available.
+	definitions = append(definitions, basicImageToolDefinitions(config)...)
 	if imageMagickToolsConfigured(config) {
 		definitions = append(definitions, imagemagickImageToolDefinitions()...)
 	}

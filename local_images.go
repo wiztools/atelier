@@ -1,10 +1,13 @@
 package main
 
 // Local image tools: six deterministic raster transforms on the turn's
-// attached images, split across two local CLI backends chosen by capability
-// (macOS sips runs what it can; ImageMagick covers what sips cannot):
+// attached images, split across two local CLI backends. The basic three run
+// on the platform's basic backend — sips on macOS (it ships with the OS and
+// writes HEIC natively), ImageMagick everywhere else, with ImageMagick as
+// sips' fallback when it cannot be resolved; the advanced three always run
+// on ImageMagick:
 //
-//	sips (ships with macOS)        ImageMagick (brew install imagemagick)
+//	basic backend (sips | ImageMagick)   ImageMagick (package install)
 //	  convert_image  — format+quality    compose_images — watermark / collage
 //	  transform_image — crop/resize/     adjust_image  — brightness/contrast/
 //	    rotate/flip                        saturation, grayscale, sepia
@@ -20,10 +23,15 @@ package main
 // (reads fine — such inputs are transcoded to PNG with a notice), has no
 // aspect-ratio crop (the crop rect is computed from probed dimensions), and
 // CHAINING ops in one invocation misbehaves (crop 200x200 + resampleWidth
-// 100 on a 400x300 image yields 50x50, not 100x100) — so every sips op runs
-// as its own invocation. ImageMagick's `montage` needs a font delegate that
-// default Homebrew installs lack, so collages are built with parenthesized
-// +append/-append row groups instead.
+// 100 on a 400x300 image yields 50x50, not 100x100) — so every basic-tool op
+// runs as its own invocation on BOTH backends (ImageMagick would chain fine;
+// one shared step-file relay keeps a single execution path per tool). The
+// ImageMagick probe rides the convert-style `input -format ... info:` idiom
+// rather than a separate identify binary — the IM7 `convert` compatibility
+// shim prints a deprecation warning into combined output, so the facts ride
+// one pipe-separated line the parser scans for. ImageMagick's `montage`
+// needs a font delegate that default Homebrew installs lack, so collages are
+// built with parenthesized +append/-append row groups instead.
 
 import (
 	"context"
@@ -46,11 +54,45 @@ const (
 	imageMagickModelName = "imagemagick"
 )
 
-// sipsToolsConfigured reports whether the sips-backed image tools (convert,
-// transform, probe) should be offered.
-func sipsToolsConfigured(config AppConfig) bool {
-	_, ok := resolveLocalSipsBinary(config)
+// Basic image backend ids — the values double as the telemetry labels tool
+// results and activities carry.
+const (
+	basicImageBackendSips   = sipsModelName
+	basicImageBackendMagick = imageMagickModelName
+)
+
+// resolveBasicImageBackend picks the CLI that runs the basic image tools:
+// sips on macOS (it ships with the OS and writes HEIC natively), falling
+// back to ImageMagick when sips cannot be resolved (a broken override);
+// ImageMagick alone everywhere else — sips does not exist off macOS, so it
+// is not even consulted there. ok is false when neither backend resolves.
+// The platform check reads runtimeGOOS (the localBinaryLookPath-style seam)
+// so tests can pin either side on any host.
+func resolveBasicImageBackend(config AppConfig) (string, bool) {
+	if runtimeGOOS == "darwin" {
+		if _, ok := resolveLocalSipsBinary(config); ok {
+			return basicImageBackendSips, true
+		}
+	}
+	if _, ok := resolveLocalImageMagickBinary(config); ok {
+		return basicImageBackendMagick, true
+	}
+	return "", false
+}
+
+// basicImageToolsConfigured reports whether the basic image tools (convert,
+// transform, probe) should be offered on any backend.
+func basicImageToolsConfigured(config AppConfig) bool {
+	_, ok := resolveBasicImageBackend(config)
 	return ok
+}
+
+// basicImageDialectFor maps a resolved backend id onto its dialect.
+func basicImageDialectFor(backend string) basicImageDialect {
+	if backend == basicImageBackendMagick {
+		return magickBasicImageDialect
+	}
+	return sipsBasicImageDialect
 }
 
 // imageMagickToolsConfigured reports whether the ImageMagick-backed image
@@ -64,21 +106,24 @@ func imageMagickToolsConfigured(config AppConfig) bool {
 // Formats
 // ---------------------------------------------------------------------------
 
-// sipsWritableFormats are the output formats this macOS's sips can write
-// (verified via `sips --formats`): notably NOT webp — sips reads webp but
-// refuses to write it, so a webp input to a sips tool is transcoded to PNG
-// with a notice.
-var sipsWritableFormats = map[string]bool{
+// convertImageFormats are the output formats convert_image accepts — the
+// tool surface is identical on every backend, and both sips and ImageMagick
+// write every entry (verified against macOS sips `--formats`; ImageMagick's
+// set is the same plus webp, kept out to reserve webp output for
+// optimize_image).
+var convertImageFormats = map[string]bool{
 	"jpeg": true, "png": true, "heic": true, "tiff": true,
 	"gif": true, "bmp": true, "jp2": true, "avif": true,
 }
 
-// sipsQualityFormats are the formats sips' -s formatOptions quality setting
-// applies to.
-var sipsQualityFormats = map[string]bool{"jpeg": true, "heic": true, "jp2": true}
+// convertQualityFormats are the formats convert_image's quality setting
+// applies to — a sips constraint (`-s formatOptions`) the shared surface
+// keeps on ImageMagick too, so validation never promises what a backend
+// won't honor.
+var convertQualityFormats = map[string]bool{"jpeg": true, "heic": true, "jp2": true}
 
 // imagemagickFormats are the output formats the optimize tool accepts from
-// ImageMagick — a superset of sips' (webp included).
+// ImageMagick — a superset of convert_image's (webp included).
 var imagemagickFormats = map[string]bool{
 	"jpeg": true, "png": true, "webp": true, "heic": true, "tiff": true,
 	"gif": true, "bmp": true, "jp2": true, "avif": true,
@@ -112,21 +157,45 @@ func imageFormatMime(format string) string {
 	}
 }
 
+// nativeImageFormatForMediaType maps an attached image's media type onto the
+// format name both backends address it by ("" when unrecognized).
+func nativeImageFormatForMediaType(mediaType string) string {
+	trimmed := strings.TrimSpace(strings.ToLower(mediaType))
+	return map[string]string{
+		"image/jpeg": "jpeg", "image/png": "png", "image/heic": "heic",
+		"image/heif": "heic", "image/tiff": "tiff", "image/gif": "gif",
+		"image/bmp": "bmp", "image/jp2": "jp2", "image/jpx": "jp2",
+		"image/jxl": "avif", "image/avif": "avif", "image/webp": "webp",
+	}[trimmed]
+}
+
 // sipsFormatForMediaType maps an attached image's media type onto the sips
 // output format to use for it: the native format when sips can write it, PNG
 // otherwise (webp and exotic inputs), with a notice explaining the transcode.
 func sipsFormatForMediaType(mediaType string) (format string, notice string) {
-	trimmed := strings.TrimSpace(strings.ToLower(mediaType))
-	native := map[string]string{
-		"image/jpeg": "jpeg", "image/png": "png", "image/heic": "heic",
-		"image/heif": "heic", "image/tiff": "tiff", "image/gif": "gif",
-		"image/bmp": "bmp", "image/jp2": "jp2", "image/jpx": "jp2",
-		"image/jxl": "avif", "image/avif": "avif",
-	}[trimmed]
-	if native != "" && sipsWritableFormats[native] {
+	if native := nativeImageFormatForMediaType(mediaType); native != "" && convertImageFormats[native] {
 		return native, ""
 	}
-	return "png", fmt.Sprintf("sips cannot write %s images, so the output was saved as PNG.", strings.TrimPrefix(trimmed, "image/"))
+	return "png", fmt.Sprintf("sips cannot write %s images, so the output was saved as PNG.", transcodeNoticeFormat(mediaType))
+}
+
+// magickFormatForMediaType is the ImageMagick counterpart: IM writes webp
+// (and everything else the media types map onto), so inputs keep their
+// native format through every IM-backed tool.
+func magickFormatForMediaType(mediaType string) (format string, notice string) {
+	if native := nativeImageFormatForMediaType(mediaType); native != "" && imagemagickFormats[native] {
+		return native, ""
+	}
+	return "png", fmt.Sprintf("ImageMagick cannot write %s images, so the output was saved as PNG.", transcodeNoticeFormat(mediaType))
+}
+
+// transcodeNoticeFormat renders a media type as the format name a transcode
+// notice names (the native name when known, the media subtype otherwise).
+func transcodeNoticeFormat(mediaType string) string {
+	if native := nativeImageFormatForMediaType(mediaType); native != "" {
+		return native
+	}
+	return strings.TrimPrefix(strings.TrimSpace(strings.ToLower(mediaType)), "image/")
 }
 
 // ---------------------------------------------------------------------------
@@ -168,9 +237,10 @@ func parseSipsProperties(output []byte) map[string]string {
 	return properties
 }
 
-// probeStagedImage runs sips -g all over a staged image file and parses it
-// into the compact ToolImageProbeResult. Size comes from os.Stat, not sips.
-func probeStagedImage(ctx context.Context, config AppConfig, path string) (ToolImageProbeResult, error) {
+// probeStagedImageWithSips runs sips -g all over a staged image file and
+// parses it into the compact ToolImageProbeResult. Size comes from os.Stat,
+// not sips.
+func probeStagedImageWithSips(ctx context.Context, config AppConfig, path string) (ToolImageProbeResult, error) {
 	output, err := runLocalSips(ctx, config, []string{"-g", "all", path})
 	if err != nil {
 		return ToolImageProbeResult{}, err
@@ -191,6 +261,63 @@ func probeStagedImage(ctx context.Context, config AppConfig, path string) (ToolI
 		return ToolImageProbeResult{}, fmt.Errorf("sips reported no dimensions for the image: %s", truncateLocalToolOutput(output))
 	}
 	return result, nil
+}
+
+// magickIdentifyFormat is the -format escape string the ImageMagick probe
+// prints — format|width|height|depth|channels|colorspace on ONE line. One
+// line, not a fact per line, because the IM7 `convert` compatibility shim
+// prints a deprecation warning that combined output mixes ahead of the
+// facts; the parser scans for the line that carries the separators.
+const magickIdentifyFormat = "%m|%w|%h|%z|%[channels]|%[colorspace]"
+
+// probeStagedImageWithMagick reads an image's facts through ImageMagick's
+// convert-style idiom — `input -format ... info:` — which works under both
+// the `magick` and legacy `convert` spellings, so no separate identify
+// binary is ever resolved. Size comes from os.Stat, as with sips.
+func probeStagedImageWithMagick(ctx context.Context, config AppConfig, path string) (ToolImageProbeResult, error) {
+	output, err := runLocalImageMagick(ctx, config, []string{path, "-format", magickIdentifyFormat, "info:"})
+	if err != nil {
+		return ToolImageProbeResult{}, err
+	}
+	result, err := parseMagickIdentifyOutput(output)
+	if err != nil {
+		return ToolImageProbeResult{}, err
+	}
+	if info, statErr := os.Stat(path); statErr == nil {
+		result.SizeBytes = info.Size()
+	}
+	return result, nil
+}
+
+// parseMagickIdentifyOutput reads the pipe-separated facts line. Channels
+// render as "srgb 4.0" / "srgba 5.0" — the first token's trailing "a" marks
+// an alpha channel (graya, srgba, cmyka).
+func parseMagickIdentifyOutput(output []byte) (ToolImageProbeResult, error) {
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Split(strings.TrimSpace(line), "|")
+		if len(fields) != 6 {
+			continue
+		}
+		width, widthErr := strconv.Atoi(strings.TrimSpace(fields[1]))
+		height, heightErr := strconv.Atoi(strings.TrimSpace(fields[2]))
+		if widthErr != nil || heightErr != nil || width <= 0 || height <= 0 {
+			continue
+		}
+		channels := ""
+		if tokens := strings.Fields(fields[4]); len(tokens) > 0 {
+			channels = tokens[0]
+		}
+		depth, _ := strconv.Atoi(strings.TrimSpace(fields[3]))
+		return ToolImageProbeResult{
+			Format:        strings.ToLower(strings.TrimSpace(fields[0])),
+			Width:         width,
+			Height:        height,
+			HasAlpha:      strings.HasSuffix(channels, "a"),
+			ColorSpace:    strings.TrimSpace(fields[5]),
+			BitsPerSample: depth,
+		}, nil
+	}
+	return ToolImageProbeResult{}, fmt.Errorf("the ImageMagick probe reported no dimensions for the image: %s", truncateLocalToolOutput(output))
 }
 
 // parseAspectRatio reads a planner-supplied aspect like "16:9" or "1:1" as
@@ -288,6 +415,119 @@ func sipsRotateArgs(input string, degrees int, output string) []string {
 // sipsFlipArgs flips horizontally or vertically.
 func sipsFlipArgs(input, direction, output string) []string {
 	return []string{"-f", direction, input, "--out", output}
+}
+
+// ImageMagick arg builders for the basic tools (pure — pinned by tests next
+// to their sips counterparts). The shape is convert-style `input ops...`
+// output`; the output format rides the output path's extension, which
+// ImageMagick infers.
+
+// magickConvertArgs converts format with an optional quality percentage. The
+// format parameter only shaped sips' `-s format` flag — it is unused here
+// but kept for the shared dialect signature.
+func magickConvertArgs(input, format, quality, output string) []string {
+	args := []string{input}
+	if quality != "" {
+		args = append(args, "-quality", quality)
+	}
+	return append(args, output)
+}
+
+// magickCropArgs center-crops to height×width — the geometry spells WxH (the
+// reverse of sips' H-then-W flag order both builders keep in their
+// signatures), gravity center matches sips' centered -c, and +repage drops
+// the cropped-away virtual canvas.
+func magickCropArgs(input string, height, width int, output string) []string {
+	return []string{input, "-gravity", "center", "-crop", fmt.Sprintf("%dx%d+0+0", width, height), "+repage", output}
+}
+
+// magickResizeExactArgs resamples to exactly height×width — the trailing "!"
+// forces the pixel box, matching sips' -z semantics (no aspect preservation).
+func magickResizeExactArgs(input string, height, width int, output string) []string {
+	return []string{input, "-resize", fmt.Sprintf("%dx%d!", width, height), output}
+}
+
+// magickResizeWidthArgs resamples so the width is width pixels, preserving
+// aspect (the lone "W" geometry); magickResizeHeightArgs is the "xH" spelling.
+func magickResizeWidthArgs(input string, width int, output string) []string {
+	return []string{input, "-resize", strconv.Itoa(width), output}
+}
+
+func magickResizeHeightArgs(input string, height int, output string) []string {
+	return []string{input, "-resize", "x" + strconv.Itoa(height), output}
+}
+
+// magickRotateArgs rotates clockwise by degrees — positive rotation is
+// clockwise in ImageMagick, as with sips' -r.
+func magickRotateArgs(input string, degrees int, output string) []string {
+	return []string{input, "-rotate", strconv.Itoa(degrees), output}
+}
+
+// magickFlipArgs flips horizontally or vertically — IM spells the horizontal
+// mirror -flop and the vertical one -flip.
+func magickFlipArgs(input, direction, output string) []string {
+	op := "-flip"
+	if direction == "horizontal" {
+		op = "-flop"
+	}
+	return []string{input, op, output}
+}
+
+// ---------------------------------------------------------------------------
+// Basic-backend dialects
+// ---------------------------------------------------------------------------
+
+// basicImageDialect bundles the per-backend execution surface of the basic
+// image tools: how each operation's CLI arguments are shaped, which runner
+// executes them, how an attachment's media type maps onto the output format,
+// and how a staged image is probed. The tool surface itself — names, params,
+// validation — is backend-agnostic; only the dialect underneath changes.
+type basicImageDialect struct {
+	name             string // telemetry label: result Model + activity Provider
+	command          string // activity Command token ("sips" / "magick")
+	run              func(ctx context.Context, config AppConfig, args []string) ([]byte, error)
+	convertArgs      func(input, format, quality, output string) []string
+	cropArgs         func(input string, height, width int, output string) []string
+	resizeExactArgs  func(input string, height, width int, output string) []string
+	resizeWidthArgs  func(input string, width int, output string) []string
+	resizeHeightArgs func(input string, height int, output string) []string
+	rotateArgs       func(input string, degrees int, output string) []string
+	flipArgs         func(input, direction, output string) []string
+	probe            func(ctx context.Context, config AppConfig, path string) (ToolImageProbeResult, error)
+	formatFor        func(mediaType string) (format string, notice string)
+}
+
+// sipsBasicImageDialect is the macOS basic backend: the OS-bundled sips CLI.
+var sipsBasicImageDialect = basicImageDialect{
+	name:             sipsModelName,
+	command:          "sips",
+	run:              runLocalSips,
+	convertArgs:      sipsConvertArgs,
+	cropArgs:         sipsCropArgs,
+	resizeExactArgs:  sipsResizeExactArgs,
+	resizeWidthArgs:  sipsResizeWidthArgs,
+	resizeHeightArgs: sipsResizeHeightArgs,
+	rotateArgs:       sipsRotateArgs,
+	flipArgs:         sipsFlipArgs,
+	probe:            probeStagedImageWithSips,
+	formatFor:        sipsFormatForMediaType,
+}
+
+// magickBasicImageDialect is the non-macOS basic backend (and sips' fallback
+// on macOS): the same ImageMagick CLI the advanced tools run.
+var magickBasicImageDialect = basicImageDialect{
+	name:             imageMagickModelName,
+	command:          "magick",
+	run:              runLocalImageMagick,
+	convertArgs:      magickConvertArgs,
+	cropArgs:         magickCropArgs,
+	resizeExactArgs:  magickResizeExactArgs,
+	resizeWidthArgs:  magickResizeWidthArgs,
+	resizeHeightArgs: magickResizeHeightArgs,
+	rotateArgs:       magickRotateArgs,
+	flipArgs:         magickFlipArgs,
+	probe:            probeStagedImageWithMagick,
+	formatFor:        magickFormatForMediaType,
 }
 
 // magickGravity maps a planner-facing watermark position onto ImageMagick
@@ -423,17 +663,23 @@ func parseScalePercent(token string) int {
 // imageEditUnavailableNote composes the code-authored note delivered to the
 // final model — as its own trailing user message, never in the system prompt
 // — when triage flagged the turn as an image edit and some local image
-// backend is missing. Empty when everything is configured. The realistic
-// macOS case is sips present (it ships with the OS) and ImageMagick missing;
-// the other branches keep non-macOS and override setups honest.
-func imageEditUnavailableNote(sipsAvailable, magickAvailable bool) string {
+// backend is missing. Empty when everything is configured. basicAvailable
+// says whether the basic tools (convert, transform, probe) resolved on any
+// backend; magickAvailable says whether the advanced tools' ImageMagick
+// resolved (when it is true, basicAvailable necessarily is too — the basic
+// resolver falls back to ImageMagick). The realistic macOS case is sips
+// present (it ships with the OS) and ImageMagick missing.
+func imageEditUnavailableNote(basicAvailable, magickAvailable bool) string {
 	switch {
-	case !sipsAvailable && !magickAvailable:
-		return "Atelier note: the user's latest request asks for a local image edit — converting format, resizing or cropping, rotating or flipping, watermarking, building a collage, adjusting colors, or stripping metadata — but no local image tool backend is available on this machine, so Atelier has no tool that can perform it. Do not claim the edit was done and do not attempt it through other tools. Tell the user plainly that local image editing needs macOS's built-in sips (missing here — are you on a non-macOS build?) for basic edits and a one-time `brew install imagemagick` for watermark/collage/color-adjust tools; Atelier detects them automatically on the next message."
-	case sipsAvailable && !magickAvailable:
+	case !basicAvailable && !magickAvailable:
+		if runtimeGOOS == "darwin" {
+			return "Atelier note: the user's latest request asks for a local image edit — converting format, resizing or cropping, rotating or flipping, watermarking, building a collage, adjusting colors, or stripping metadata — but no local image tool backend is available on this machine, so Atelier has no tool that can perform it. Do not claim the edit was done and do not attempt it through other tools. Tell the user plainly that sips ships with macOS, so its absence usually means a misconfigured binary override in Settings → Image Tools, and that a one-time `brew install imagemagick` enables the watermark/collage/color-adjust/metadata-strip tools (and serves as the basic tools' fallback); Atelier detects changes automatically on the next message."
+		}
+		return "Atelier note: the user's latest request asks for a local image edit — converting format, resizing or cropping, rotating or flipping, watermarking, building a collage, adjusting colors, or stripping metadata — but no local image tool backend is available on this machine, so Atelier has no tool that can perform it. Do not claim the edit was done and do not attempt it through other tools. Tell the user plainly that on this platform every local image tool runs on ImageMagick, and a one-time install enables all of them: `apt install imagemagick` on Debian/Ubuntu or `dnf install ImageMagick` on Fedora (or an explicit binary in Settings → Image Tools); Atelier detects it automatically on the next message."
+	case basicAvailable && !magickAvailable:
+		// Only reachable on macOS with sips: elsewhere the basic tools ARE
+		// ImageMagick, so a missing ImageMagick leaves nothing configured.
 		return "Atelier note: the user's latest request asks for a local image edit. Basic edits (format conversion including HEIC, resize, crop, rotate, flip) are available through macOS's built-in sips, but the watermark, collage, color-adjust, and metadata-strip tools run on ImageMagick, which is not installed on this machine. If the request needs those, do not claim it was done and do not attempt it through other tools — tell the user plainly that a one-time `brew install imagemagick` (or an explicit binary in Settings → Image Tools) enables them, and Atelier detects it automatically on the next message."
-	case !sipsAvailable && magickAvailable:
-		return "Atelier note: the user's latest request asks for a local image edit. The watermark, collage, color-adjust, and metadata-strip tools are available, but the format-conversion, resize/crop/rotate/flip, and image-facts tools run on macOS's built-in sips CLI, which was not found on this machine — check Settings → Image Tools for a misconfigured override. Do not claim an unavailable edit was done."
 	default:
 		return ""
 	}
@@ -449,28 +695,37 @@ func imageEditFallbackNotice(unavailable bool, assistantContent string) string {
 		return ""
 	}
 	lower := strings.ToLower(assistantContent)
-	if strings.Contains(lower, "imagemagick") || strings.Contains(lower, "sips") {
+	if strings.Contains(lower, "imagemagick") || strings.Contains(lower, "sips") || strings.Contains(lower, "apt") || strings.Contains(lower, "dnf") {
 		return ""
 	}
-	return "> ⚠️ Some local image editing isn't available yet — install ImageMagick (`brew install imagemagick`, or set the binary in Settings → Image Tools) and Atelier picks it up automatically."
+	return "> ⚠️ Some local image editing isn't available yet — install ImageMagick (`brew install imagemagick` on macOS, `apt install imagemagick` or `dnf install ImageMagick` on Linux, or set the binary in Settings → Image Tools) and Atelier picks it up automatically."
 }
 
 // ---------------------------------------------------------------------------
-// sips tool definitions
+// Basic image tool definitions (backend-agnostic surface, dialect-bound
+// execution)
 // ---------------------------------------------------------------------------
 
-// sipsImageToolDefinitions assembles the sips-backed image tool catalog.
-func sipsImageToolDefinitions() []HarnessToolDefinition {
+// basicImageToolDefinitions assembles the basic image tool catalog bound to
+// whichever backend resolved — sips on macOS (ImageMagick fallback), Image
+// Magick elsewhere. nil when no backend resolved, so registry gating is just
+// the nil append.
+func basicImageToolDefinitions(config AppConfig) []HarnessToolDefinition {
+	backend, ok := resolveBasicImageBackend(config)
+	if !ok {
+		return nil
+	}
+	dialect := basicImageDialectFor(backend)
 	return []HarnessToolDefinition{
-		convertImageToolDefinition(),
-		transformImageToolDefinition(),
-		probeImageToolDefinition(),
+		convertImageToolDefinition(dialect),
+		transformImageToolDefinition(dialect),
+		probeImageToolDefinition(dialect),
 	}
 }
 
 // convertImageToolDefinition exposes convert_image: change an attached
-// image's format (and quality) using macOS sips.
-func convertImageToolDefinition() HarnessToolDefinition {
+// image's format (and quality) on the platform's basic image backend.
+func convertImageToolDefinition(dialect basicImageDialect) HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "convert_image",
 		Title:       "Convert image",
@@ -483,14 +738,14 @@ func convertImageToolDefinition() HarnessToolDefinition {
 			if format == "" {
 				return []string{prefix + ".format is required for convert_image (\"jpeg\", \"png\", \"heic\", \"avif\", \"tiff\", \"gif\", \"bmp\", or \"jp2\")"}
 			}
-			if !sipsWritableFormats[format] {
+			if !convertImageFormats[format] {
 				return []string{prefix + ".format must be one of \"jpeg\", \"png\", \"heic\", \"avif\", \"tiff\", \"gif\", \"bmp\", \"jp2\" for convert_image (webp output is available via optimize_image)"}
 			}
 			if call.Quality != 0 {
 				if call.Quality < 1 || call.Quality > 100 {
 					return []string{prefix + ".quality must be 1-100 for convert_image"}
 				}
-				if !sipsQualityFormats[format] {
+				if !convertQualityFormats[format] {
 					return []string{prefix + ".quality applies to jpeg, heic, or jp2 output only — omit it for " + format}
 				}
 			}
@@ -503,10 +758,10 @@ func convertImageToolDefinition() HarnessToolDefinition {
 			}
 			format := strings.TrimSpace(call.Format)
 			quality := ""
-			if call.Quality > 0 && sipsQualityFormats[format] {
+			if call.Quality > 0 && convertQualityFormats[format] {
 				quality = strconv.Itoa(call.Quality)
 			}
-			staging, err := os.MkdirTemp("", "atelier-sips-*")
+			staging, err := os.MkdirTemp("", "atelier-image-*")
 			if err != nil {
 				return nil, "conversion failed", err
 			}
@@ -516,26 +771,26 @@ func convertImageToolDefinition() HarnessToolDefinition {
 				return nil, "conversion failed", err
 			}
 			output := filepath.Join(staging, "converted"+imageFormatExtension(format))
-			if _, err := runLocalSips(ctx, tools.Config, sipsConvertArgs(input, format, quality, output)); err != nil {
+			if _, err := dialect.run(ctx, tools.Config, dialect.convertArgs(input, format, quality, output)); err != nil {
 				return nil, "conversion failed", err
 			}
 			prompt := "converted to " + format
 			if quality != "" {
 				prompt += " (quality " + quality + ")"
 			}
-			result, err := imageResultFromStagedFile(output, format, prompt, sipsModelName)
+			result, err := imageResultFromStagedFile(output, format, prompt, dialect.name)
 			if err != nil {
 				return nil, "conversion failed", err
 			}
-			return result, fmt.Sprintf("converted the attached image to %s with sips", format), nil
+			return result, fmt.Sprintf("converted the attached image to %s with %s", format, dialect.name), nil
 		},
-		Activity: sipsActivity("convert"),
+		Activity: basicImageActivity(dialect, "convert"),
 	}
 }
 
 // transformImageToolDefinition exposes transform_image: crop to an aspect
-// ratio, resize, rotate, or flip an attached image using macOS sips.
-func transformImageToolDefinition() HarnessToolDefinition {
+// ratio, resize, rotate, or flip an attached image on the basic backend.
+func transformImageToolDefinition(dialect basicImageDialect) HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "transform_image",
 		Title:       "Transform image",
@@ -573,7 +828,7 @@ func transformImageToolDefinition() HarnessToolDefinition {
 			if source == "" {
 				return nil, "transform requires an attached image", errors.New("transform_image requires an attached image — ask the user to attach one first")
 			}
-			staging, err := os.MkdirTemp("", "atelier-sips-*")
+			staging, err := os.MkdirTemp("", "atelier-image-*")
 			if err != nil {
 				return nil, "transform failed", err
 			}
@@ -582,7 +837,7 @@ func transformImageToolDefinition() HarnessToolDefinition {
 			if err != nil {
 				return nil, "transform failed", err
 			}
-			outputFormat, transcodeNotice := sipsFormatForMediaType(mediaType)
+			outputFormat, transcodeNotice := dialect.formatFor(mediaType)
 			step := 0
 			next := func(ext string) string {
 				step++
@@ -590,14 +845,14 @@ func transformImageToolDefinition() HarnessToolDefinition {
 			}
 			ops := []string{}
 			if aspect := strings.TrimSpace(call.AspectRatio); aspect != "" {
-				probe, err := probeStagedImage(ctx, tools.Config, current)
+				probe, err := dialect.probe(ctx, tools.Config, current)
 				if err != nil {
 					return nil, "transform failed", fmt.Errorf("the image's dimensions could not be read for the %s crop: %w", aspect, err)
 				}
 				aspectWidth, aspectHeight, _ := parseAspectRatio(aspect)
 				cropWidth, cropHeight := aspectCropDimensions(probe.Width, probe.Height, aspectWidth, aspectHeight)
 				target := next(imageFormatExtension(outputFormat))
-				if _, err := runLocalSips(ctx, tools.Config, sipsCropArgs(current, cropHeight, cropWidth, target)); err != nil {
+				if _, err := dialect.run(ctx, tools.Config, dialect.cropArgs(current, cropHeight, cropWidth, target)); err != nil {
 					return nil, "transform failed", err
 				}
 				current = target
@@ -608,23 +863,23 @@ func transformImageToolDefinition() HarnessToolDefinition {
 				var args []string
 				switch {
 				case call.Width > 0 && call.Height > 0:
-					args = sipsResizeExactArgs(current, call.Height, call.Width, target)
+					args = dialect.resizeExactArgs(current, call.Height, call.Width, target)
 					ops = append(ops, fmt.Sprintf("resized to %dx%d", call.Width, call.Height))
 				case call.Width > 0:
-					args = sipsResizeWidthArgs(current, call.Width, target)
+					args = dialect.resizeWidthArgs(current, call.Width, target)
 					ops = append(ops, fmt.Sprintf("resized to %d pixels wide", call.Width))
 				default:
-					args = sipsResizeHeightArgs(current, call.Height, target)
+					args = dialect.resizeHeightArgs(current, call.Height, target)
 					ops = append(ops, fmt.Sprintf("resized to %d pixels tall", call.Height))
 				}
-				if _, err := runLocalSips(ctx, tools.Config, args); err != nil {
+				if _, err := dialect.run(ctx, tools.Config, args); err != nil {
 					return nil, "transform failed", err
 				}
 				current = target
 			}
 			if call.Rotate != 0 {
 				target := next(imageFormatExtension(outputFormat))
-				if _, err := runLocalSips(ctx, tools.Config, sipsRotateArgs(current, call.Rotate, target)); err != nil {
+				if _, err := dialect.run(ctx, tools.Config, dialect.rotateArgs(current, call.Rotate, target)); err != nil {
 					return nil, "transform failed", err
 				}
 				current = target
@@ -632,34 +887,34 @@ func transformImageToolDefinition() HarnessToolDefinition {
 			}
 			if flip := strings.TrimSpace(call.Flip); flip != "" {
 				target := next(imageFormatExtension(outputFormat))
-				if _, err := runLocalSips(ctx, tools.Config, sipsFlipArgs(current, flip, target)); err != nil {
+				if _, err := dialect.run(ctx, tools.Config, dialect.flipArgs(current, flip, target)); err != nil {
 					return nil, "transform failed", err
 				}
 				current = target
 				ops = append(ops, "flipped "+flip)
 			}
 			prompt := "transform: " + strings.Join(ops, ", ")
-			result, err := imageResultFromStagedFile(current, outputFormat, prompt, sipsModelName)
+			result, err := imageResultFromStagedFile(current, outputFormat, prompt, dialect.name)
 			if err != nil {
 				return nil, "transform failed", err
 			}
 			if transcodeNotice != "" {
 				result.Notices = append(result.Notices, transcodeNotice)
 			}
-			return result, fmt.Sprintf("transformed the attached image with sips (%s)", strings.Join(ops, ", ")), nil
+			return result, fmt.Sprintf("transformed the attached image with %s (%s)", dialect.name, strings.Join(ops, ", ")), nil
 		},
-		Activity: sipsActivity("transform"),
+		Activity: basicImageActivity(dialect, "transform"),
 	}
 }
 
-// probeImageToolDefinition exposes probe_image: sips facts of an attached
-// image as evidence — dimensions for crop planning, format and size for
-// format decisions.
-func probeImageToolDefinition() HarnessToolDefinition {
+// probeImageToolDefinition exposes probe_image: the basic backend's facts of
+// an attached image as evidence — dimensions for crop planning, format and
+// size for format decisions.
+func probeImageToolDefinition(dialect basicImageDialect) HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "probe_image",
 		Title:       "Probe image",
-		Description: "Use this when the user asks about an attached image's properties (how big is it, what format, does it have an alpha channel, what file size) or when planning crops and conversions needs exact numbers. Runs macOS sips on the newest attached image and returns dimensions, format, color space, bit depth, alpha, and file size as evidence. No parameters.",
+		Description: "Use this when the user asks about an attached image's properties (how big is it, what format, does it have an alpha channel, what file size) or when planning crops and conversions needs exact numbers. Probes the newest attached image with the local image CLI and returns dimensions, format, color space, bit depth, alpha, and file size as evidence. No parameters.",
 		Example:     `{"name":"probe_image"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: probeImageParamSchema(),
@@ -668,7 +923,7 @@ func probeImageToolDefinition() HarnessToolDefinition {
 			if source == "" {
 				return nil, "probe requires an attached image", errors.New("probe_image requires an attached image — ask the user to attach one first")
 			}
-			staging, err := os.MkdirTemp("", "atelier-sips-*")
+			staging, err := os.MkdirTemp("", "atelier-image-*")
 			if err != nil {
 				return nil, "probe failed", err
 			}
@@ -677,18 +932,13 @@ func probeImageToolDefinition() HarnessToolDefinition {
 			if err != nil {
 				return nil, "probe failed", err
 			}
-			result, err := probeStagedImage(ctx, tools.Config, input)
+			result, err := dialect.probe(ctx, tools.Config, input)
 			if err != nil {
 				return nil, "probe failed", err
 			}
-			return result, probeImageSummary(result), nil
+			return result, probeImageSummary(dialect.name, result), nil
 		},
-		Activity: func(result HarnessToolResult) HarnessToolActivity {
-			activity := defaultHarnessToolActivity(result)
-			activity.Provider = "sips"
-			activity.Command = []string{"sips", "probe"}
-			return activity
-		},
+		Activity: basicImageActivity(dialect, "probe"),
 	}
 }
 
@@ -850,11 +1100,7 @@ func adjustImageToolDefinition() HarnessToolDefinition {
 			if err != nil {
 				return nil, "adjust failed", err
 			}
-			format, _ := sipsFormatForMediaType(mediaType)
-			// ImageMagick writes webp fine, so a webp input keeps its format.
-			if strings.Contains(strings.ToLower(mediaType), "webp") {
-				format = "webp"
-			}
+			format, _ := magickFormatForMediaType(mediaType)
 			output := filepath.Join(staging, "adjusted"+imageFormatExtension(format))
 			hasBrightnessContrast := call.Brightness != 0 || call.Contrast != 0
 			hasSaturation := call.Saturation != 0 && call.Saturation != 100
@@ -921,9 +1167,7 @@ func optimizeImageToolDefinition() HarnessToolDefinition {
 			}
 			format := strings.TrimSpace(call.Format)
 			if format == "" {
-				if format, _ = sipsFormatForMediaType(mediaType); strings.Contains(strings.ToLower(mediaType), "webp") {
-					format = "webp"
-				}
+				format, _ = magickFormatForMediaType(mediaType)
 			}
 			quality := call.Quality
 			switch format {
@@ -954,30 +1198,26 @@ func optimizeImageToolDefinition() HarnessToolDefinition {
 // Activities and summaries
 // ---------------------------------------------------------------------------
 
-// sipsActivity is the shared activity builder for the sips image tools:
-// default media fields (kind/count/model ride the result type) plus the
+// basicImageActivity is the activity builder for the image tools: default
+// media fields (kind/count/model ride the result type) plus the dialect's
 // provider attribution. Provider is pre-filled so the engine layer's
 // fal/ollama attribution (toolActivityFromResult) skips these.
-func sipsActivity(verb string) func(result HarnessToolResult) HarnessToolActivity {
+func basicImageActivity(dialect basicImageDialect, verb string) func(result HarnessToolResult) HarnessToolActivity {
 	return func(result HarnessToolResult) HarnessToolActivity {
 		activity := defaultHarnessToolActivity(result)
-		activity.Provider = "sips"
-		activity.Command = []string{"sips", verb}
+		activity.Provider = dialect.name
+		activity.Command = []string{dialect.command, verb}
 		return activity
 	}
 }
 
-// magickActivity is the ImageMagick counterpart of sipsActivity.
+// magickActivity is the ImageMagick spelling of basicImageActivity, serving
+// the advanced catalog (compose/adjust/optimize), which always runs on IM.
 func magickActivity(verb string) func(result HarnessToolResult) HarnessToolActivity {
-	return func(result HarnessToolResult) HarnessToolActivity {
-		activity := defaultHarnessToolActivity(result)
-		activity.Provider = "imagemagick"
-		activity.Command = []string{"magick", verb}
-		return activity
-	}
+	return basicImageActivity(magickBasicImageDialect, verb)
 }
 
-func probeImageSummary(result ToolImageProbeResult) string {
+func probeImageSummary(backend string, result ToolImageProbeResult) string {
 	parts := []string{fmt.Sprintf("%dx%d", result.Width, result.Height)}
 	if result.Format != "" {
 		parts = append(parts, result.Format)
@@ -994,7 +1234,7 @@ func probeImageSummary(result ToolImageProbeResult) string {
 	if result.SizeBytes > 0 {
 		parts = append(parts, fmt.Sprintf("%.1fKB", float64(result.SizeBytes)/1024))
 	}
-	return fmt.Sprintf("probed the attached image with sips: %s", strings.Join(parts, ", "))
+	return fmt.Sprintf("probed the attached image with %s: %s", backend, strings.Join(parts, ", "))
 }
 
 // ---------------------------------------------------------------------------

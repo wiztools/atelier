@@ -424,11 +424,12 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	// never be served this turn; the flag routes the install guidance into the
 	// final model's messages (and a deterministic fallback onto the reply).
 	preparation.LocalMediaEditUnavailable = decision.MediaEdit && !ffmpegToolsConfigured(h.config)
-	// Same first-run UX for image edits: the note names whichever backend
-	// is missing (ImageMagick for watermark/collage/adjust/optimize, sips
-	// for the basic edits — the latter only on non-macOS systems).
+	// Same first-run UX for image edits: the note names whichever backend is
+	// missing (ImageMagick for watermark/collage/adjust/optimize — and every
+	// image tool on non-macOS platforms, where it also serves the basic
+	// edits).
 	if decision.ImageEdit {
-		preparation.LocalImageEditNote = imageEditUnavailableNote(sipsToolsConfigured(h.config), imageMagickToolsConfigured(h.config))
+		preparation.LocalImageEditNote = imageEditUnavailableNote(basicImageToolsConfigured(h.config), imageMagickToolsConfigured(h.config))
 	}
 
 	// Resolve the response model: when the primary model is an image generation

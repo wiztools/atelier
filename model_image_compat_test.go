@@ -38,9 +38,11 @@ printf '\377\330\377\340FAKE-JPEG-BYTES' > "$out"
 var fakeSipsJPEGBytes = append([]byte{0xff, 0xd8, 0xff, 0xe0}, []byte("FAKE-JPEG-BYTES")...)
 
 // stubSipsJPEG writes the fake sips script under a temp dir and points the
-// local-binary lookup at it for this test.
+// local-binary lookup at it for this test, pinning the platform to darwin so
+// the sips backend serves regardless of the host running the tests.
 func stubSipsJPEG(t *testing.T) {
 	t.Helper()
+	pinRuntimeGOOS(t, "darwin")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sips")
 	if err := os.WriteFile(path, []byte(fakeSipsJPEGScript), 0o755); err != nil {
@@ -152,6 +154,28 @@ func TestEnsureModelSafeImageFailSoftOnBadConversion(t *testing.T) {
 	got := ensureModelSafeImage(context.Background(), config, payload)
 	if got != payload {
 		t.Errorf("got %q, want the original payload (non-JPEG sips output → fail-soft)", got)
+	}
+}
+
+// TestEnsureModelSafeImageConvertsViaImageMagickOnLinux pins the non-macOS
+// boundary: with the platform pinned off darwin, the same HEIC conversion
+// routes through ImageMagick — sips is not even consulted (the stub lookup
+// has no entry for it).
+func TestEnsureModelSafeImageConvertsViaImageMagickOnLinux(t *testing.T) {
+	pinRuntimeGOOS(t, "linux")
+	// The fake magick writes JPEG-sniffable bytes to its LAST argument (every
+	// convert-style invocation passes the output path last).
+	dir := t.TempDir()
+	path := filepath.Join(dir, "magick")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nout=\"\"\nfor a in \"$@\"; do out=\"$a\"; done\nprintf '\\377\\330\\377\\340FAKE-JPEG-BYTES' > \"$out\"\n"), 0o755); err != nil {
+		t.Fatalf("write fake magick: %v", err)
+	}
+	stubLocalLookup(t, map[string]string{"magick": path})
+
+	payload := "data:image/heic;base64," + base64.StdEncoding.EncodeToString(heifTestImage("heic"))
+	want := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(fakeSipsJPEGBytes)
+	if got := ensureModelSafeImage(context.Background(), defaultAppConfig(), payload); got != want {
+		t.Fatalf("got %q, want converted JPEG data URL %q", got, want)
 	}
 }
 

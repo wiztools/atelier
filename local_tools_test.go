@@ -46,6 +46,15 @@ func stubLocalLookup(t *testing.T, found map[string]string) {
 	t.Cleanup(func() { localBinaryLookPath = previous })
 }
 
+// pinRuntimeGOOS pins the platform seam (runtimeGOOS) for one test — used to
+// exercise the sips-vs-ImageMagick backend selection on any host.
+func pinRuntimeGOOS(t *testing.T, goos string) {
+	t.Helper()
+	previous := runtimeGOOS
+	runtimeGOOS = goos
+	t.Cleanup(func() { runtimeGOOS = previous })
+}
+
 // writeFakeWhisper writes an executable shell script under dir, returning its
 // absolute path for a config binary override.
 func writeFakeWhisper(t *testing.T, dir, name, script string) string {

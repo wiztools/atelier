@@ -52,12 +52,19 @@ done
 if [ -n "$in" ] && [ -n "$out" ]; then cp "$in" "$out"; fi
 `
 
-// fakeMagickScript fakes the ImageMagick CLI: it records its args and copies
-// the first existing file argument (the base image) to the last argument
-// (every builder passes the output path last).
+// fakeMagickScript fakes the ImageMagick CLI: it records its args, answers
+// the basic tools' probe (`-format ... info:`) with a fixed pipe-separated
+// facts line, and otherwise copies the first existing file argument (the
+// base image) to the last argument (every builder passes the output last).
 const fakeMagickScript = `#!/bin/sh
 dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 printf '%s\n' "$*" >> "$dir/args.txt"
+for a in "$@"; do
+  if [ "$a" = "-format" ]; then
+    echo "PNG|400|300|8|srgb 4.0|sRGB"
+    exit 0
+  fi
+done
 in=""
 out=""
 for a in "$@"; do
@@ -75,10 +82,12 @@ func imageDataURL(payload string) string {
 }
 
 // sipsTestConfig wires a fake sips binary and returns the config plus the
-// directory holding its args.txt.
+// directory holding its args.txt. The platform seam is pinned to darwin —
+// sips only serves as the basic backend there.
 func sipsTestConfig(t *testing.T) (AppConfig, string) {
 	t.Helper()
 	withRealLocalLookup(t)
+	pinRuntimeGOOS(t, "darwin")
 	dir := t.TempDir()
 	config := defaultAppConfig()
 	config.Providers.Local.Sips.Binary = writeFakeWhisper(t, filepath.Join(dir, "bin"), "sips", fakeSipsScript)
@@ -86,13 +95,27 @@ func sipsTestConfig(t *testing.T) (AppConfig, string) {
 }
 
 // magickTestConfig wires a fake ImageMagick binary (and a fake sips for the
-// basic tools that share the registry).
+// basic tools that share the registry), pinned to darwin so the basic tools
+// bind to the sips dialect.
 func magickTestConfig(t *testing.T) (AppConfig, string) {
+	t.Helper()
+	withRealLocalLookup(t)
+	pinRuntimeGOOS(t, "darwin")
+	dir := t.TempDir()
+	config := defaultAppConfig()
+	config.Providers.Local.Sips.Binary = writeFakeWhisper(t, filepath.Join(dir, "bin"), "sips", fakeSipsScript)
+	config.Providers.Local.Magick.Binary = writeFakeWhisper(t, filepath.Join(dir, "bin"), "magick", fakeMagickScript)
+	return config, filepath.Join(dir, "bin")
+}
+
+// magickOnlyTestConfig wires only a fake ImageMagick binary — the
+// non-macOS machine shape, where ImageMagick serves every image tool. The
+// caller pins the platform seam (pinRuntimeGOOS) for the routing under test.
+func magickOnlyTestConfig(t *testing.T) (AppConfig, string) {
 	t.Helper()
 	withRealLocalLookup(t)
 	dir := t.TempDir()
 	config := defaultAppConfig()
-	config.Providers.Local.Sips.Binary = writeFakeWhisper(t, filepath.Join(dir, "bin"), "sips", fakeSipsScript)
 	config.Providers.Local.Magick.Binary = writeFakeWhisper(t, filepath.Join(dir, "bin"), "magick", fakeMagickScript)
 	return config, filepath.Join(dir, "bin")
 }
@@ -179,6 +202,114 @@ func TestMagickArgBuilders(t *testing.T) {
 	optimize := magickOptimizeArgs("in.jpg", 80, "out.jpg")
 	if got := strings.Join(optimize, " "); got != "in.jpg -strip -quality 80 out.jpg" {
 		t.Errorf("optimize args = %s", got)
+	}
+}
+
+// TestMagickBasicArgBuilders pins the ImageMagick builders of the basic
+// tools: convert-style `input ops... output`, WxH crop geometry (the reverse
+// of the sips builders' H-before-W signature order), the exact-box "!"
+// resize, and the -flip/-flop vertical/horizontal split.
+func TestMagickBasicArgBuilders(t *testing.T) {
+	if got := magickConvertArgs("in.heic", "jpeg", "85", "out.jpg"); strings.Join(got, " ") != "in.heic -quality 85 out.jpg" {
+		t.Errorf("convert args = %v", got)
+	}
+	if got := magickConvertArgs("in.heic", "jpeg", "", "out.jpg"); strings.Join(got, " ") != "in.heic out.jpg" {
+		t.Errorf("convert args without quality = %v", got)
+	}
+	if got := magickCropArgs("in.png", 300, 240, "out.png"); strings.Join(got, " ") != "in.png -gravity center -crop 240x300+0+0 +repage out.png" {
+		t.Errorf("crop args = %v (geometry is WxH of the H,W signature)", got)
+	}
+	if got := magickResizeExactArgs("in.png", 1350, 1080, "out.png"); strings.Join(got, " ") != "in.png -resize 1080x1350! out.png" {
+		t.Errorf("exact resize args = %v", got)
+	}
+	if got := magickResizeWidthArgs("in.png", 1080, "out.png"); strings.Join(got, " ") != "in.png -resize 1080 out.png" {
+		t.Errorf("width resize args = %v", got)
+	}
+	if got := magickResizeHeightArgs("in.png", 1350, "out.png"); strings.Join(got, " ") != "in.png -resize x1350 out.png" {
+		t.Errorf("height resize args = %v", got)
+	}
+	if got := magickRotateArgs("in.png", 90, "out.png"); strings.Join(got, " ") != "in.png -rotate 90 out.png" {
+		t.Errorf("rotate args = %v", got)
+	}
+	if got := magickFlipArgs("in.png", "horizontal", "out.png"); strings.Join(got, " ") != "in.png -flop out.png" {
+		t.Errorf("horizontal flip args = %v (IM spells it -flop)", got)
+	}
+	if got := magickFlipArgs("in.png", "vertical", "out.png"); strings.Join(got, " ") != "in.png -flip out.png" {
+		t.Errorf("vertical flip args = %v", got)
+	}
+}
+
+// TestParseMagickIdentifyOutput pins the probe parser: the pipe-separated
+// facts line, alpha via the channels token's trailing "a", tolerance of the
+// convert-shim deprecation warning, and the no-dimensions error.
+func TestParseMagickIdentifyOutput(t *testing.T) {
+	result, err := parseMagickIdentifyOutput([]byte("PNG|400|300|8|srgb  4.0|sRGB\n"))
+	if err != nil || result.Width != 400 || result.Height != 300 || result.Format != "png" || result.BitsPerSample != 8 || result.ColorSpace != "sRGB" || result.HasAlpha {
+		t.Fatalf("plain = %+v (err %v)", result, err)
+	}
+	result, err = parseMagickIdentifyOutput([]byte("PNG|400|300|8|srgba 5.0|sRGB\n"))
+	if err != nil || !result.HasAlpha {
+		t.Fatalf("alpha = %+v (err %v), want hasAlpha", result, err)
+	}
+	result, err = parseMagickIdentifyOutput([]byte("HEIC|4032|3024|10|graya 2.0|Gray\n"))
+	if err != nil || !result.HasAlpha || result.Format != "heic" || result.BitsPerSample != 10 || result.ColorSpace != "Gray" {
+		t.Fatalf("heic graya = %+v (err %v)", result, err)
+	}
+	// The IM7 convert compatibility shim warns on stderr; CombinedOutput
+	// mixes it ahead of the facts — the parser scans for the facts line.
+	result, err = parseMagickIdentifyOutput([]byte("WARNING: The convert command is deprecated in IMv7\n\nPNG|400|300|8|srgb  4.0|sRGB\n"))
+	if err != nil || result.Width != 400 {
+		t.Fatalf("with warning = %+v (err %v)", result, err)
+	}
+	if _, err = parseMagickIdentifyOutput([]byte("no facts here\n")); err == nil {
+		t.Fatal("garbage output must error, not zero out")
+	}
+}
+
+// TestMagickFormatForMediaType pins the IM format mapper: webp keeps its
+// native format (IM writes it; sips cannot), everything known stays native,
+// unknown inputs fall back to PNG.
+func TestMagickFormatForMediaType(t *testing.T) {
+	if format, notice := magickFormatForMediaType("image/webp"); format != "webp" || notice != "" {
+		t.Errorf("webp = %q (%q), want native webp with no notice", format, notice)
+	}
+	if format, notice := magickFormatForMediaType("image/jpeg"); format != "jpeg" || notice != "" {
+		t.Errorf("jpeg = %q (%q), want jpeg with no notice", format, notice)
+	}
+	if format, notice := magickFormatForMediaType("image/heic"); format != "heic" || notice != "" {
+		t.Errorf("heic = %q (%q), want heic with no notice", format, notice)
+	}
+	if format, _ := magickFormatForMediaType("image/x-exotic"); format != "png" {
+		t.Errorf("unknown = %q, want png", format)
+	}
+}
+
+// TestResolveBasicImageBackend pins the platform routing: sips preferred on
+// darwin, ImageMagick as its fallback and the only backend elsewhere — sips
+// is not even consulted off macOS.
+func TestResolveBasicImageBackend(t *testing.T) {
+	config := defaultAppConfig()
+	pinRuntimeGOOS(t, "darwin")
+	stubLocalLookup(t, map[string]string{"sips": "/usr/bin/sips", "magick": "/opt/homebrew/bin/magick"})
+	if backend, ok := resolveBasicImageBackend(config); !ok || backend != basicImageBackendSips {
+		t.Fatalf("darwin with both = %q (%v), want sips preferred", backend, ok)
+	}
+	stubLocalLookup(t, map[string]string{"magick": "/opt/homebrew/bin/magick"})
+	if backend, ok := resolveBasicImageBackend(config); !ok || backend != basicImageBackendMagick {
+		t.Fatalf("darwin without sips = %q (%v), want the imagemagick fallback", backend, ok)
+	}
+	stubLocalLookup(t, map[string]string{})
+	if _, ok := resolveBasicImageBackend(config); ok {
+		t.Fatal("darwin with neither must not resolve a backend")
+	}
+	pinRuntimeGOOS(t, "linux")
+	stubLocalLookup(t, map[string]string{"magick": "/usr/bin/magick"})
+	if backend, ok := resolveBasicImageBackend(config); !ok || backend != basicImageBackendMagick {
+		t.Fatalf("linux with magick = %q (%v), want imagemagick", backend, ok)
+	}
+	stubLocalLookup(t, map[string]string{"sips": "/usr/bin/sips"})
+	if _, ok := resolveBasicImageBackend(config); ok {
+		t.Fatal("linux must not serve the basic tools on sips, however it is installed")
 	}
 }
 
@@ -278,8 +409,8 @@ func TestImageToolValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		registry := newHarnessToolRegistry([]HarnessToolDefinition{
-			convertImageToolDefinition(), transformImageToolDefinition(), composeImagesToolDefinition(),
-			adjustImageToolDefinition(), optimizeImageToolDefinition(), probeImageToolDefinition(),
+			convertImageToolDefinition(sipsBasicImageDialect), transformImageToolDefinition(sipsBasicImageDialect), composeImagesToolDefinition(),
+			adjustImageToolDefinition(), optimizeImageToolDefinition(), probeImageToolDefinition(sipsBasicImageDialect),
 		})
 		definition, ok := registry.Get(tc.call.Name)
 		if !ok {
@@ -290,11 +421,14 @@ func TestImageToolValidation(t *testing.T) {
 			t.Errorf("%s: errors = %v, want one containing %q", tc.name, errors, tc.want)
 		}
 	}
-	// A valid call produces no errors.
-	registry := newHarnessToolRegistry([]HarnessToolDefinition{convertImageToolDefinition()})
-	definition, _ := registry.Get("convert_image")
-	if errors := definition.Validate("toolCalls[0]", HarnessToolCall{Name: "convert_image", Format: "jpeg", Quality: 85}); len(errors) != 0 {
-		t.Errorf("valid convert errors = %v", errors)
+	// A valid call produces no errors, on either dialect — validation is
+	// backend-agnostic.
+	for _, dialect := range []basicImageDialect{sipsBasicImageDialect, magickBasicImageDialect} {
+		registry := newHarnessToolRegistry([]HarnessToolDefinition{convertImageToolDefinition(dialect)})
+		definition, _ := registry.Get("convert_image")
+		if errors := definition.Validate("toolCalls[0]", HarnessToolCall{Name: "convert_image", Format: "jpeg", Quality: 85}); len(errors) != 0 {
+			t.Errorf("valid convert errors (%s) = %v", dialect.name, errors)
+		}
 	}
 }
 
@@ -355,6 +489,69 @@ func TestProbeImageExecutes(t *testing.T) {
 	}
 	probe, ok := result.Result.(ToolImageProbeResult)
 	if !ok || probe.Width != 400 || probe.Height != 300 || probe.Format != "png" {
+		t.Fatalf("probe output = %+v", result.Result)
+	}
+}
+
+// TestBasicImageToolsOnImageMagick pins the non-macOS routing end to end: a
+// Linux-shaped machine with only ImageMagick offers every image tool, and
+// the basic three execute through the magick CLI with imagemagick
+// attribution — no sips flag shapes anywhere.
+func TestBasicImageToolsOnImageMagick(t *testing.T) {
+	pinRuntimeGOOS(t, "linux")
+
+	config, bin := magickOnlyTestConfig(t)
+	registry := defaultHarnessToolRegistry(context.Background(), config, nil)
+	for _, name := range []string{"convert_image", "transform_image", "probe_image", "compose_images", "adjust_image", "optimize_image"} {
+		if _, ok := registry.Get(name); !ok {
+			t.Errorf("%s missing with ImageMagick as the basic backend", name)
+		}
+	}
+
+	attachments := HarnessToolExecutionContext{AttachedImages: []string{imageDataURL("PHOTO")}}
+	result := executeImageTool(t, config, attachments, "convert_image", HarnessToolCall{Format: "jpeg", Quality: 85})
+	if result.Status != "completed" {
+		t.Fatalf("convert status = %s (%s)", result.Status, result.Error)
+	}
+	if args := fakeCLIArgs(t, bin); len(args) != 1 || !strings.Contains(args[0], "-quality 85") || !strings.Contains(args[0], "converted.jpg") || strings.Contains(args[0], "-s format") {
+		t.Fatalf("convert invocation = %v", args)
+	}
+	if image := result.Result.(ToolImageResult); image.Model != imageMagickModelName {
+		t.Errorf("convert attribution = %q, want %q", image.Model, imageMagickModelName)
+	}
+	if !strings.Contains(result.Summary, "imagemagick") {
+		t.Errorf("convert summary = %q, want the backend named", result.Summary)
+	}
+
+	config, bin = magickOnlyTestConfig(t)
+	result = executeImageTool(t, config, attachments, "transform_image", HarnessToolCall{AspectRatio: "4:5", Rotate: 90})
+	if result.Status != "completed" {
+		t.Fatalf("transform status = %s (%s)", result.Status, result.Error)
+	}
+	args := fakeCLIArgs(t, bin)
+	if len(args) != 3 {
+		t.Fatalf("magick invocations = %d (%v), want 3 (probe, crop, rotate)", len(args), args)
+	}
+	if !strings.Contains(args[0], "-format") || !strings.Contains(args[0], "info:") {
+		t.Errorf("probe invocation = %q, want the -format ... info: idiom", args[0])
+	}
+	if !strings.Contains(args[1], "-crop 240x300+0+0") {
+		t.Errorf("crop invocation = %q, want the 4:5 rect of the probed 400x300", args[1])
+	}
+	if !strings.Contains(args[2], "-rotate 90") {
+		t.Errorf("rotate invocation = %q", args[2])
+	}
+	if !strings.HasPrefix(result.Result.(ToolImageResult).Images[0], "data:image/png;base64,") {
+		t.Errorf("transform output is not the input's native png data URL")
+	}
+
+	config, bin = magickOnlyTestConfig(t)
+	result = executeImageTool(t, config, attachments, "probe_image", HarnessToolCall{})
+	if result.Status != "completed" {
+		t.Fatalf("probe status = %s (%s)", result.Status, result.Error)
+	}
+	probe, ok := result.Result.(ToolImageProbeResult)
+	if !ok || probe.Width != 400 || probe.Height != 300 || probe.Format != "png" || probe.BitsPerSample != 8 || probe.ColorSpace != "sRGB" || probe.HasAlpha {
 		t.Fatalf("probe output = %+v", result.Result)
 	}
 }
@@ -458,6 +655,26 @@ func TestImageToolsRegistryGating(t *testing.T) {
 			t.Errorf("%s missing with ImageMagick configured", name)
 		}
 	}
+
+	// Non-darwin: sips is not consulted at all — the basic tools ride
+	// ImageMagick, so a sips-only machine offers nothing while a magick
+	// machine offers all six.
+	pinRuntimeGOOS(t, "linux")
+	stubLocalLookup(t, map[string]string{"sips": "/usr/bin/sips"})
+	linuxSipsOnly := defaultHarnessToolRegistry(context.Background(), defaultAppConfig(), nil)
+	for _, name := range []string{"convert_image", "transform_image", "probe_image", "compose_images", "adjust_image", "optimize_image"} {
+		if _, ok := linuxSipsOnly.Get(name); ok {
+			t.Errorf("%s offered on a non-macOS machine with only sips", name)
+		}
+	}
+	linuxConfig, _ := magickOnlyTestConfig(t)
+	stubLocalLookup(t, map[string]string{"sips": "/usr/bin/sips", linuxConfig.Providers.Local.Magick.Binary: linuxConfig.Providers.Local.Magick.Binary})
+	linuxMagick := defaultHarnessToolRegistry(context.Background(), linuxConfig, nil)
+	for _, name := range []string{"convert_image", "transform_image", "probe_image", "compose_images", "adjust_image", "optimize_image"} {
+		if _, ok := linuxMagick.Get(name); !ok {
+			t.Errorf("%s missing on a non-macOS machine with ImageMagick", name)
+		}
+	}
 }
 
 func TestHarnessToolPlanSchemaHasImageParams(t *testing.T) {
@@ -506,15 +723,23 @@ func TestImageEditUnavailableNote(t *testing.T) {
 	if got := imageEditUnavailableNote(true, true); got != "" {
 		t.Fatalf("note with both backends = %q, want none", got)
 	}
-	if got := imageEditUnavailableNote(false, false); !strings.Contains(got, "brew install imagemagick") {
-		t.Fatalf("both-missing note = %q, want the install remedy", got)
+	// ImageMagick resolving implies a basic backend (the resolver falls back
+	// to it), so this combination is unreachable — the note must not invent
+	// a gap.
+	if got := imageEditUnavailableNote(false, true); got != "" {
+		t.Fatalf("note with imagemagick = %q, want none (magick implies a basic backend)", got)
+	}
+	pinRuntimeGOOS(t, "darwin")
+	if got := imageEditUnavailableNote(false, false); !strings.Contains(got, "brew install imagemagick") || !strings.Contains(got, "sips") {
+		t.Fatalf("darwin both-missing note = %q, want the sips-override and brew remedies", got)
 	}
 	got := imageEditUnavailableNote(true, false)
 	if !strings.Contains(got, "brew install imagemagick") || !strings.Contains(got, "sips") {
 		t.Fatalf("sips-only note = %q, want both the available basic edits and the imagemagick remedy", got)
 	}
-	if got := imageEditUnavailableNote(false, true); !strings.Contains(got, "sips") {
-		t.Fatalf("magick-only note = %q, want the sips gap named", got)
+	pinRuntimeGOOS(t, "linux")
+	if got := imageEditUnavailableNote(false, false); !strings.Contains(got, "apt install imagemagick") || strings.Contains(got, "brew install imagemagick") {
+		t.Fatalf("linux both-missing note = %q, want the package-manager remedy, not brew", got)
 	}
 }
 

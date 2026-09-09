@@ -1,19 +1,21 @@
 package main
 
 // Model-boundary image-format normalization. Atelier accepts as attachments
-// every image container macOS sips reads (the HEIF family, AVIF, JP2, TIFF,
-// BMP — imageExtensionForBytes), but the models that consume image bytes are
-// far narrower: vision chat models and image/video generation source inputs
-// decode only the web-native formats. The helpers here convert anything else
-// to JPEG with sips at the two model boundaries — the final-response message
-// stream (preparedResponseRequest) and the generation gateways (tool_gateway)
-// — while attachments, artifacts, and the local CLI tools keep the original
-// bytes (sips edits a .heic natively; convert_image is the user-facing path
-// for explicit format changes).
+// every image container the local image backends read (the HEIF family,
+// AVIF, JP2, TIFF, BMP — imageExtensionForBytes), but the models that
+// consume image bytes are far narrower: vision chat models and image/video
+// generation source inputs decode only the web-native formats. The helpers
+// here convert anything else to JPEG on the resolved basic image backend —
+// sips on macOS, ImageMagick elsewhere — at the two model boundaries: the
+// final-response message stream (preparedResponseRequest) and the generation
+// gateways (tool_gateway). Attachments, artifacts, and the local CLI tools
+// keep the original bytes (the backend edits a .heic natively; convert_image
+// is the user-facing path for explicit format changes).
 
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"os"
 	"path/filepath"
 )
@@ -49,11 +51,12 @@ func ensureModelSafeImages(ctx context.Context, config AppConfig, images []strin
 // through unchanged: already-safe formats (no work), http(s) URLs (already
 // hosted; fal fetches them), and anything undecodable (the adapters' own
 // fail-closed normalization drops or rejects those, as before). Conversion
-// runs on the detected sips CLI and is fail-soft: when sips is unavailable or
-// the conversion errors, the original payload is returned so the turn
-// proceeds exactly as it would have without this normalization. Decisions are
-// made on the sniffed bytes, never the data-URL header — a mislabeled header
-// must not smuggle an unsupported container past the boundary.
+// runs on the resolved basic image backend and is fail-soft: when no backend
+// resolved or the conversion errors, the original payload is returned so the
+// turn proceeds exactly as it would have without this normalization.
+// Decisions are made on the sniffed bytes, never the data-URL header — a
+// mislabeled header must not smuggle an unsupported container past the
+// boundary.
 func ensureModelSafeImage(ctx context.Context, config AppConfig, payload string) string {
 	dataURL := normalizeAttachedImage(payload)
 	if dataURL == "" {
@@ -67,24 +70,29 @@ func ensureModelSafeImage(ctx context.Context, config AppConfig, payload string)
 	if extension == "" || modelSafeImageExtensions[extension] {
 		return payload
 	}
-	converted, err := convertImageBytesWithSips(ctx, config, data, extension)
+	converted, err := convertImageBytesForModel(ctx, config, data, extension)
 	if err != nil || len(converted) == 0 {
 		return payload
 	}
-	// Trust the output's bytes, not the command's success: a sips that wrote
-	// something unexpected must not ship HEIC bytes under a JPEG label.
+	// Trust the output's bytes, not the command's success: a backend that
+	// wrote something unexpected must not ship HEIC bytes under a JPEG label.
 	if !modelSafeImageExtensions[imageExtensionForBytes(converted)] {
 		return payload
 	}
 	return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(converted)
 }
 
-// convertImageBytesWithSips re-encodes image bytes (whose sniffed extension
-// rode in as `extension`, so the staged input gets the container sips trusts)
-// as JPEG in a scratch directory. It is the silent sibling of the
-// convert_image tool: same sips invocation shape, no quality knob, no
-// ToolImageResult — the output is raw bytes for a model-boundary data URL.
-func convertImageBytesWithSips(ctx context.Context, config AppConfig, data []byte, extension string) ([]byte, error) {
+// convertImageBytesForModel re-encodes image bytes (whose sniffed extension
+// rode in as `extension`, so the staged input gets the container the backend
+// trusts) as JPEG in a scratch directory, on whichever basic image backend
+// resolved. It is the silent sibling of the convert_image tool: same
+// invocation shapes, no quality knob, no ToolImageResult — the output is raw
+// bytes for a model-boundary data URL.
+func convertImageBytesForModel(ctx context.Context, config AppConfig, data []byte, extension string) ([]byte, error) {
+	backend, ok := resolveBasicImageBackend(config)
+	if !ok {
+		return nil, errors.New("no local image backend found — sips ships with macOS; ImageMagick serves other platforms")
+	}
 	staging, err := os.MkdirTemp("", "atelier-model-image-*")
 	if err != nil {
 		return nil, err
@@ -95,7 +103,8 @@ func convertImageBytesWithSips(ctx context.Context, config AppConfig, data []byt
 		return nil, err
 	}
 	output := filepath.Join(staging, "model-safe.jpg")
-	if _, err := runLocalSips(ctx, config, sipsConvertArgs(input, "jpeg", "", output)); err != nil {
+	dialect := basicImageDialectFor(backend)
+	if _, err := dialect.run(ctx, config, dialect.convertArgs(input, "jpeg", "", output)); err != nil {
 		return nil, err
 	}
 	return os.ReadFile(output)

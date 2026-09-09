@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -100,7 +101,9 @@ var ffprobeBinarySpec = localBinarySpec{
 // sipsBinarySpec describes the sips CLI macOS bundles — the basic local image
 // tool backend (format conversion incl. HEIC, resize/crop/rotate/flip/pad,
 // image facts; see local_images.go). One dialect; the override exists for
-// tests and unusual setups since /usr/bin/sips is guaranteed on macOS.
+// tests and unusual setups since /usr/bin/sips is guaranteed on macOS. Off
+// macOS, sips does not exist: the basic image tools ride ImageMagick there
+// and this spec is neither consulted nor reported.
 var sipsBinarySpec = localBinarySpec{
 	key:   "sips",
 	label: "sips",
@@ -137,6 +140,12 @@ var knownLocalBinaries = []localBinarySpec{whisperBinarySpec, ffmpegBinarySpec, 
 // helpers_test.go pins it to always-not-found for the whole package;
 // local_tools_test.go restores the real lookup per test.
 var localBinaryLookPath = exec.LookPath
+
+// runtimeGOOS is the platform seam for macOS-vs-other behavior — backend
+// selection for the basic image tools (local_images.go) and the
+// platform-aware install copy below read it instead of runtime.GOOS so tests
+// can pin either side on any host.
+var runtimeGOOS = runtime.GOOS
 
 // resolvedLocalBinary is a detection result: which candidate was found, where,
 // and whether that came from PATH or the configured override.
@@ -270,6 +279,11 @@ type LocalToolsReport struct {
 func detectLocalTools(config AppConfig, overrides LocalToolOverrides) LocalToolsReport {
 	report := LocalToolsReport{TranscriptionProvider: resolveTranscriptionProvider(config)}
 	for _, spec := range knownLocalBinaries {
+		if spec.key == sipsBinarySpec.key && runtimeGOOS != "darwin" {
+			// sips is macOS-only; on other platforms the basic image tools
+			// ride ImageMagick, so Settings never sees the unfindable binary.
+			continue
+		}
 		override := configuredLocalBinaryOverride(config, spec.key)
 		if value, ok := overrides.Binaries[spec.key]; ok {
 			override = value
@@ -335,20 +349,35 @@ func localBinaryFoundDetail(resolved resolvedLocalBinary) string {
 	return fmt.Sprintf("%s — %s (%s, %s)", resolved.spec.label, resolved.path, dialect, source)
 }
 
+// packageInstallHint names how to install a formula on this platform: brew
+// on macOS, the mainstream Linux package managers otherwise (dnf spells some
+// formulas differently — ImageMagick capitalizes — so it takes its own
+// argument).
+func packageInstallHint(formula, dnfFormula string) string {
+	if runtimeGOOS == "darwin" {
+		return "`brew install " + formula + "`"
+	}
+	return "`apt install " + formula + "` (Debian/Ubuntu) or `dnf install " + dnfFormula + "` (Fedora)"
+}
+
 func localBinaryMissingDetail(spec localBinarySpec) string {
 	switch spec.key {
 	case whisperBinarySpec.key:
-		return "No whisper CLI found on this Mac's PATH. Install one to enable local transcription: `pip install -U openai-whisper` or `brew install whisper-cpp`."
+		return "No whisper CLI found on the PATH. Install one to enable local transcription: `pip install -U openai-whisper` or `brew install whisper-cpp`."
 	case ffmpegBinarySpec.key:
-		return "No ffmpeg CLI found on this Mac's PATH. Install one to enable local video tools (screenshot, split, join, extract audio): `brew install ffmpeg`."
+		return "No ffmpeg CLI found on the PATH. Install one to enable local video tools (screenshot, split, join, extract audio): " + packageInstallHint("ffmpeg", "ffmpeg") + "."
 	case ffprobeBinarySpec.key:
-		return "No ffprobe CLI found. It ships with ffmpeg (`brew install ffmpeg`); without it the video tools still run but always re-encode and extract audio as MP3."
+		return "No ffprobe CLI found. It ships with ffmpeg (" + packageInstallHint("ffmpeg", "ffmpeg") + "); without it the video tools still run but always re-encode and extract audio as MP3."
 	case sipsBinarySpec.key:
-		return "No sips CLI found on PATH. sips ships with macOS and powers the basic image tools; it is missing only on non-macOS systems."
+		return "No sips CLI found — it ships with macOS, so a miss here means the configured override in Settings → Image Tools points at the wrong path."
 	case imagemagickBinarySpec.key:
-		return "No ImageMagick CLI found on this Mac's PATH. Install one to enable the advanced image tools (watermark, collage, color adjust, strip metadata): `brew install imagemagick`."
+		detail := "Install one to enable the advanced image tools (watermark, collage, color adjust, strip metadata)"
+		if runtimeGOOS != "darwin" {
+			detail = "Install one to enable local image editing — every image tool rides ImageMagick on this platform"
+		}
+		return "No ImageMagick CLI found on the PATH. " + detail + ": " + packageInstallHint("imagemagick", "ImageMagick") + "."
 	default:
-		return fmt.Sprintf("%s was not found on this Mac's PATH.", spec.label)
+		return fmt.Sprintf("%s was not found on the PATH.", spec.label)
 	}
 }
 
