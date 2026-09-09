@@ -1352,31 +1352,60 @@ Select a skill only when its name or description clearly matches the user's requ
 		Format: skillSelectionSchema(),
 		Options: map[string]any{
 			"temperature": 0,
-			"num_predict": 160,
+			"num_predict": skillSelectionNumPredict,
 			"num_ctx":     h.numCtx(),
 		},
 	}
-	var skillStep int = -1
-	if run != nil {
-		skillStep = run.appendStep("skill", 1, turn.Harness.provider, turn.Harness.model, "harness model selecting a skill for the turn")
-		run.Steps[skillStep].Request = requestSnapshot(selectionReq, h.numCtx(), 0)
-	}
-	completion, err := h.completeWithHarnessModel(ctx, turn.Harness, selectionReq)
-	if run != nil {
-		run.Steps[skillStep].PromptTokens = completion.PromptTokens
-	}
-	if err != nil {
-		if run != nil {
-			run.completeStep(skillStep, "failed", "", 0, err.Error())
+	// One provider call per attempt, one "skill" step per attempt — the retry
+	// records itself the way the planner's truncation correction rounds do, so
+	// the telemetry convention (a step per intercepted model call) holds.
+	var (
+		completion ChatCompletionResult
+		plan       skillSelectionPlan
+		salvaged   bool
+		skillStep  = -1
+	)
+	for attempt := 1; attempt <= skillSelectionMaxAttempts; attempt++ {
+		if attempt > 1 {
+			selectionReq.Options["num_predict"] = skillSelectionRetryNumPredict
 		}
-		return &HarnessSkillDecision{AvailableCount: len(index), Error: err.Error()}, nil
-	}
-	plan, err := decodeSkillSelectionPlan(completion.Content)
-	if err != nil {
 		if run != nil {
-			run.completeStep(skillStep, "failed", completion.Reason, completion.EvalTokens, err.Error())
+			skillStep = run.appendStep("skill", attempt, turn.Harness.provider, turn.Harness.model, "harness model selecting a skill for the turn")
+			run.Steps[skillStep].Request = requestSnapshot(selectionReq, h.numCtx(), 0)
 		}
-		return &HarnessSkillDecision{AvailableCount: len(index), Error: err.Error()}, nil
+		var err error
+		completion, err = h.completeWithHarnessModel(ctx, turn.Harness, selectionReq)
+		if run != nil {
+			run.Steps[skillStep].PromptTokens = completion.PromptTokens
+		}
+		if err != nil {
+			if run != nil {
+				run.completeStep(skillStep, "failed", "", 0, err.Error())
+			}
+			return &HarnessSkillDecision{AvailableCount: len(index), Error: err.Error()}, nil
+		}
+		var decodeErr error
+		plan, salvaged, decodeErr = decodeSkillSelectionPlan(completion.Content)
+		if decodeErr == nil {
+			break
+		}
+		// A length-truncated selection the salvage could not recover: the call
+		// finished but its JSON was cut short, so record the attempt as a
+		// correction round (not a failure) and retry once at a larger cap.
+		if strings.TrimSpace(completion.Reason) == "length" && attempt < skillSelectionMaxAttempts {
+			if run != nil {
+				run.Steps[skillStep].Summary = "selection hit the output token limit; retrying with a larger cap"
+				run.completeStep(skillStep, "completed", completion.Reason, completion.EvalTokens, "")
+			}
+			continue
+		}
+		if run != nil {
+			run.completeStep(skillStep, "failed", completion.Reason, completion.EvalTokens, decodeErr.Error())
+		}
+		return &HarnessSkillDecision{AvailableCount: len(index), Error: decodeErr.Error()}, nil
+	}
+	if salvaged && run != nil {
+		run.Steps[skillStep].Summary = "skill selection salvaged from truncated JSON"
 	}
 	if strings.TrimSpace(plan.SkillName) == "" {
 		if run != nil {

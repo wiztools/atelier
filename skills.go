@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -14,6 +15,20 @@ import (
 const (
 	skillIndexReadLimit = 32 * 1024
 	skillBodyReadLimit  = 32 * 1024
+)
+
+// Skill-selection output budgeting. The selection JSON itself is tiny
+// (skillName + reason), but reasoning-style harness models spend a large
+// preamble inside the schema's string fields before the object closes; at the
+// old 160-token cap every gemma4:e4b-mlx selection was cut mid-JSON and failed
+// (conv_f70468e4 and siblings: done_reason "length" at exactly 160 tokens,
+// "no valid skill selection JSON found", on every turn). 512 leaves room for
+// the preamble; a selection still truncated beyond salvage gets one retry at
+// 1024 before the turn proceeds without a skill.
+const (
+	skillSelectionNumPredict      = 512
+	skillSelectionRetryNumPredict = 1024
+	skillSelectionMaxAttempts     = 2
 )
 
 type SkillIndexEntry struct {
@@ -223,12 +238,49 @@ func skillSelectionSchema() map[string]any {
 	}
 }
 
-func decodeSkillSelectionPlan(content string) (skillSelectionPlan, error) {
-	var plan skillSelectionPlan
-	if err := json.Unmarshal([]byte(stripJSONFence(content)), &plan); err != nil {
-		return skillSelectionPlan{}, errors.New("no valid skill selection JSON found")
+// decodeSkillSelectionPlan parses the harness model's skill-selection JSON. It
+// is lenient the way triage is (decodeTriageDecision): mis-typed scalar fields
+// are coerced to their JSON text (coerceJSONString), and a response truncated
+// by the output token limit is salvaged by regex when a complete "skillName"
+// value closed before the cut. Chosen salvage semantics:
+//   - a truncation after a complete skillName value is a successful selection
+//     (salvaged=true so the caller can note the degradation on the step);
+//   - a truncation inside the skillName value is a hard error — the selection
+//     is knowably incomplete, and guessing a prefix match would pick the wrong
+//     skill (the caller's length-retry gets one more chance at it);
+//   - prose or an empty response is a hard error, as before: the model ignored
+//     the schema entirely, which deserves a visible failed step.
+func decodeSkillSelectionPlan(content string) (skillSelectionPlan, bool, error) {
+	candidate := stripJSONFence(content)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(candidate), &raw); err != nil {
+		return salvageSkillSelectionFromTruncation(candidate)
 	}
-	return plan, nil
+	return skillSelectionPlan{
+		SkillName: coerceJSONString(raw["skillName"]),
+		Reason:    coerceJSONString(raw["reason"]),
+	}, false, nil
+}
+
+// salvageSkillSelectionFromTruncation recovers a skill selection from a JSON
+// object that was truncated before it closed (the model hit its output token
+// limit), mirroring salvageTriageFromTruncation. Only complete, well-formed
+// values are kept — a skillName cut off mid-string is an error, never guessed.
+// Unquoted keys are tolerated the way the triage salvage regexes tolerate them.
+func salvageSkillSelectionFromTruncation(candidate string) (skillSelectionPlan, bool, error) {
+	if m := regexp.MustCompile(`"?skillName"?\s*:\s*"([^"]*)"`).FindStringSubmatch(candidate); m != nil {
+		plan := skillSelectionPlan{SkillName: m[1]}
+		if m := regexp.MustCompile(`"?reason"?\s*:\s*"([^"]*)"`).FindStringSubmatch(candidate); m != nil {
+			plan.Reason = m[1]
+		}
+		return plan, true, nil
+	}
+	// A skillName that opened but never closed means the truncation fell inside
+	// the value itself: the selection is incomplete and unrecoverable.
+	if regexp.MustCompile(`"?skillName"?\s*:\s*"[^"]*$`).MatchString(candidate) {
+		return skillSelectionPlan{}, false, errors.New("skill selection was truncated before the skill name completed")
+	}
+	return skillSelectionPlan{}, false, errors.New("no valid skill selection JSON found")
 }
 
 func fileExists(path string) bool {
