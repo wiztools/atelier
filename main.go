@@ -3,6 +3,8 @@ package main
 import (
 	"embed"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/wailsapp/wails/v2"
@@ -42,7 +44,64 @@ func artifactHandler(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, filePath)
 }
 
+// guiPathPrefixes are the directories a GUI-launched app's PATH usually lacks.
+// A Dock/Finder launch inherits launchd's minimal PATH (/usr/bin:/bin:/usr/sbin/
+// /sbin), which excludes Homebrew — so a Homebrew-installed ffmpeg or whisper
+// looks "not installed" to local-binary detection on first run even though the
+// user just installed it. Prepending these (existing directories only, never
+// duplicating what's already there) makes detection see what a
+// terminal-launched app would see. Apple Silicon Homebrew lives in
+// /opt/homebrew/bin; Intel (and Rosetta) installs in /usr/local/bin.
+var guiPathPrefixes = []string{"/opt/homebrew/bin", "/usr/local/bin"}
+
+// augmentGUIPath prepends guiPathPrefixes to the process PATH. Must run before
+// anything calls exec.LookPath — i.e. first thing in main.
+func augmentGUIPath() {
+	current := os.Getenv("PATH")
+	updated := prependMissingPathDirs(current, guiPathPrefixes, func(dir string) bool {
+		info, err := os.Stat(dir)
+		return err == nil && info.IsDir()
+	})
+	if updated != current {
+		os.Setenv("PATH", updated)
+	}
+}
+
+// prependMissingPathDirs returns path with every dir that exists and is not
+// already on it prepended, in order. Pure apart from the injected existence
+// check so tests can pin the merge without touching the filesystem. On
+// Windows the Homebrew directories never exist, so the exists check filters
+// them out and PATH is returned unchanged.
+func prependMissingPathDirs(path string, dirs []string, exists func(string) bool) string {
+	if len(dirs) == 0 {
+		return path
+	}
+	present := make(map[string]bool)
+	for _, entry := range filepath.SplitList(path) {
+		if entry != "" {
+			present[filepath.Clean(entry)] = true
+		}
+	}
+	var add []string
+	for _, dir := range dirs {
+		cleaned := filepath.Clean(strings.TrimSpace(dir))
+		if cleaned == "" || cleaned == "." || present[cleaned] || !exists(cleaned) {
+			continue
+		}
+		present[cleaned] = true
+		add = append(add, cleaned)
+	}
+	if len(add) == 0 {
+		return path
+	}
+	if path == "" {
+		return strings.Join(add, string(os.PathListSeparator))
+	}
+	return strings.Join(add, string(os.PathListSeparator)) + string(os.PathListSeparator) + path
+}
+
 func main() {
+	augmentGUIPath()
 	app := NewApp()
 
 	appMenu := menu.NewMenuFromItems(
