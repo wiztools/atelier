@@ -63,6 +63,14 @@ type HarnessPreparedTurn struct {
 	ToolResults          []HarnessToolResult
 	PlanValidationErrors []string
 	Rounds               []HarnessToolRound
+	// LocalMediaEditUnavailable records that triage flagged the turn as a
+	// local media edit (see HarnessTriageDecision.MediaEdit) while no ffmpeg
+	// CLI is configured. The harness then delivers a code-authored note
+	// telling the final model to direct the user to install ffmpeg (and a
+	// deterministic blockquote fallback when the model's answer doesn't),
+	// instead of letting the request silently fall through to a from-knowledge
+	// text answer. Set by RunChatStream regardless of NeedsTools.
+	LocalMediaEditUnavailable bool
 }
 
 type HarnessToolRound struct {
@@ -189,6 +197,19 @@ type HarnessToolCall struct {
 	Task       string `json:"task,omitempty"`
 	Language   string `json:"language,omitempty"`
 	Timestamps string `json:"timestamps,omitempty"`
+	// At is the optional screenshot_video input naming the timestamp of the
+	// frame to capture — seconds ("42") or clock ("00:01:30"). Start and End
+	// are the optional split_video segment bounds in the same timestamp
+	// formats; an omitted Start means the beginning of the clip, an omitted
+	// End means through the end. Mode is the per-tool strategy selector:
+	// split_video takes "fast" (stream copy) or "accurate" (re-encode, the
+	// default), join_videos takes "auto" (probe and copy when inputs match,
+	// the default), "copy", or "reencode". Planner-only, like the other media
+	// inputs — see local_ffmpeg.go.
+	At    string `json:"at,omitempty"`
+	Start string `json:"start,omitempty"`
+	End   string `json:"end,omitempty"`
+	Mode  string `json:"mode,omitempty"`
 }
 
 type HarnessToolResult struct {
@@ -365,6 +386,10 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			})
 		}
 	}
+	// A triage-flagged local media edit with no ffmpeg CLI configured can
+	// never be served this turn; the flag routes the install guidance into the
+	// final model's messages (and a deterministic fallback onto the reply).
+	preparation.LocalMediaEditUnavailable = decision.MediaEdit && !ffmpegToolsConfigured(h.config)
 
 	// Resolve the response model: when the primary model is an image generation
 	// model, it cannot produce text or analyze images, so fall back to the
@@ -443,8 +468,18 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	}
 	// Deterministic tool caveats (e.g. a requested loop the model can't honor)
 	// are appended verbatim so the user always sees them, regardless of whether
-	// the model chose to mention them in its prose.
+	// the model chose to mention them in its prose. The ffmpeg fallback rides
+	// the same channel: appended only when the model's own answer didn't
+	// already tell the user about ffmpeg, so the remedy is always visible
+	// without duplicating itself.
 	toolNotices := collectToolNotices(preparation.ToolResults)
+	if ffmpegNotice := mediaEditFallbackNotice(preparation.LocalMediaEditUnavailable, assistantContent); ffmpegNotice != "" {
+		if toolNotices != "" {
+			toolNotices += "\n" + ffmpegNotice
+		} else {
+			toolNotices = ffmpegNotice
+		}
+	}
 	if toolNotices != "" {
 		if strings.TrimSpace(assistantContent) != "" {
 			assistantContent += "\n\n" + toolNotices
@@ -465,25 +500,24 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	run.completeStep(saved, "completed", finalReason, 0, "")
 	run.complete("completed", "final")
 	var saveErr error
-	var videoURLs []string
-	var audioURLs []string
-	var transcriptURLs []string
-	switch {
-	case len(videos) > 0:
-		// The video appender also stores any images produced this turn, so a
-		// turn with both media types keeps everything. Transcripts in such a
-		// combination are not persisted as artifacts (the preview evidence
-		// survives; the temp files are cleaned above) — transcription requires
-		// an attached audio clip, which the video tools don't produce, so the
-		// combination is not one the planner can reach today.
-		videoURLs, saveErr = appendChatAssistantTurnWithVideos(h.config, conversationID, assistantContent, assistantThinking, finalModel, responseProvider, finalReason, images, imageReq, videos, videoReq, run)
-	case len(audios) > 0:
-		audioURLs, saveErr = appendChatAssistantTurnWithAudios(h.config, conversationID, assistantContent, assistantThinking, finalModel, responseProvider, finalReason, audios, audioReq, run)
-	case len(images) > 0:
-		saveErr = appendChatAssistantTurnWithImages(h.config, conversationID, assistantContent, assistantThinking, finalModel, responseProvider, finalReason, images, "", run, imageReq)
-	case len(transcripts) > 0:
-		transcriptURLs, saveErr = appendChatAssistantTurnWithTranscripts(h.config, conversationID, assistantContent, assistantThinking, finalModel, responseProvider, finalReason, transcripts, transcriptModel, transcriptTimestamps, run)
-	default:
+	var mediaURLs chatTurnMediaURLs
+	// One appender writes every media kind the turn produced into a single
+	// turn. Combinations beyond videos+images only became reachable with the
+	// local ffmpeg tools (a screenshot plus an extracted audio track, say);
+	// before that, the save switch persisted exactly one kind per turn.
+	if len(videos) > 0 || len(audios) > 0 || len(images) > 0 || len(transcripts) > 0 {
+		mediaURLs, saveErr = appendChatAssistantTurnWithTurnMedia(h.config, conversationID, assistantContent, assistantThinking, finalModel, responseProvider, finalReason, chatTurnMedia{
+			images:               images,
+			imageReq:             imageReq,
+			videos:               videos,
+			videoReq:             videoReq,
+			audios:               audios,
+			audioReq:             audioReq,
+			transcripts:          transcripts,
+			transcriptModel:      transcriptModel,
+			transcriptTimestamps: transcriptTimestamps,
+		}, run)
+	} else {
 		saveErr = h.SaveAssistantTurn(conversationID, assistantContent, assistantThinking, finalModel, responseProvider, finalReason, finalTokens, run)
 	}
 	if saveErr != nil {
@@ -492,6 +526,9 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: fmt.Sprintf("history save failed: %v", saveErr), Done: true})
 		return
 	}
+	videoURLs := mediaURLs.videos
+	audioURLs := mediaURLs.audios
+	transcriptURLs := mediaURLs.transcripts
 	terminalContent := assistantContent
 	if finalContentEmitted {
 		// The model's streamed prose already reached the UI; only the appended
@@ -1962,6 +1999,13 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 						"overwrite":   map[string]any{"type": "boolean"},
 						"maxBytes":    map[string]any{"type": "integer"},
 						"allowBinary": map[string]any{"type": "boolean"},
+						// ffmpeg tool inputs (screenshot/split/join). The values
+						// are validated per-tool; the schema only frees the
+						// grammar to emit them.
+						"at":    map[string]any{"type": "string"},
+						"start": map[string]any{"type": "string"},
+						"end":   map[string]any{"type": "string"},
+						"mode":  map[string]any{"type": "string"},
 					},
 				},
 			},
@@ -2022,6 +2066,12 @@ func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel, 
 		}
 	} else if note != "" {
 		messages = append(messages, ChatMessage{Role: "user", Content: note})
+	}
+	// A local media edit with no ffmpeg CLI rides its own trailing user
+	// message, mirroring the no-tools note path: the final model learns why the
+	// edit cannot happen and what to tell the user.
+	if preparation.LocalMediaEditUnavailable {
+		messages = append(messages, ChatMessage{Role: "user", Content: localMediaEditUnavailableNote})
 	}
 	numCtx := h.numCtx()
 	truncatedMessages := truncateChatHistory(messages, historyBudgetChars(numCtx, responseReq.System, numCtx/4))
@@ -2498,6 +2548,14 @@ func applyKwargs(call *HarnessToolCall, args string) {
 			call.Overwrite = raw == "true"
 		case "allow_binary", "allowBinary":
 			call.AllowBinary = raw == "true"
+		case "at":
+			call.At = raw
+		case "start":
+			call.Start = raw
+		case "end":
+			call.End = raw
+		case "mode":
+			call.Mode = raw
 		}
 	}
 }
@@ -2856,12 +2914,16 @@ func (h *HarnessEngine) toolActivityFromResult(result HarnessToolResult) Harness
 	// builders: video/audio generation is fal-only, and generate_image routes
 	// by config.Models.ImageProvider — the same field the tool gateway reads —
 	// which the builders don't receive. A failed call has no result payload,
-	// so no case matches and Provider stays empty.
-	switch result.Result.(type) {
-	case ToolVideoResult, ToolAudioResult:
-		activity.Provider = "fal"
-	case ToolImageResult:
-		activity.Provider = imageGenerationProvider(h.config)
+	// so no case matches and Provider stays empty. A builder that already
+	// named its provider (the ffmpeg tools stamp "ffmpeg") wins — the engine
+	// layer cannot know which backend a local tool ran on.
+	if activity.Provider == "" {
+		switch result.Result.(type) {
+		case ToolVideoResult, ToolAudioResult:
+			activity.Provider = "fal"
+		case ToolImageResult:
+			activity.Provider = imageGenerationProvider(h.config)
+		}
 	}
 	return activity
 }

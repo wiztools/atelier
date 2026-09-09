@@ -1,12 +1,13 @@
 package main
 
 // Local CLI media tools: detection of binaries installed on the user's machine
-// (whisper today, ffmpeg planned) plus the whisper transcription runner the
-// transcribe_audio tool routes to when Models.TranscriptionProvider selects the
-// local backend. A local binary is a provider like any cloud service — it just
-// resolves via exec.LookPath instead of an API key. Everything here is
-// side-effect-free at detection time (no process is spawned); the only process
-// execution lives in runLocalWhisperTranscription.
+// (whisper for transcription; ffmpeg/ffprobe for local media transforms, see
+// local_ffmpeg.go) plus the whisper transcription runner the transcribe_audio
+// tool routes to when Models.TranscriptionProvider selects the local backend.
+// A local binary is a provider like any cloud service — it just resolves via
+// exec.LookPath instead of an API key. Everything here is side-effect-free at
+// detection time (no process is spawned); process execution lives in
+// runLocalWhisperTranscription and the ffmpeg runners below.
 
 import (
 	"context"
@@ -63,12 +64,36 @@ var whisperBinarySpec = localBinarySpec{
 	},
 }
 
+// ffmpegBinarySpec describes the ffmpeg CLI — the local video/audio transform
+// backend (see local_ffmpeg.go). One dialect: the standard ffmpeg CLI every
+// distribution ships.
+var ffmpegBinarySpec = localBinarySpec{
+	key:   "ffmpeg",
+	label: "FFmpeg",
+	candidates: []localBinaryCandidate{
+		{name: "ffmpeg", flavor: "ffmpeg"},
+	},
+}
+
+// ffprobeBinarySpec describes ffprobe, ffmpeg's metadata sibling — it powers
+// probe_media and the codec-aware decisions inside join/extract (copy vs
+// re-encode). Detected independently of ffmpeg, with one extra tier: when PATH
+// has no ffprobe but ffmpeg resolved, the ffmpeg binary's own directory is
+// probed for a sibling ffprobe (they ship together).
+var ffprobeBinarySpec = localBinarySpec{
+	key:   "ffprobe",
+	label: "FFprobe",
+	candidates: []localBinaryCandidate{
+		{name: "ffprobe", flavor: "ffprobe"},
+	},
+}
+
 // knownLocalBinaries is the registry of local CLI media tools. whisper powers
-// local transcription; a planned ffmpeg tool (local media transforms) is the
-// next entry — add a spec here and detection, the Settings status report, and
-// the per-binary config override plumbing all pick it up without further
-// changes. Only the tool-specific executor is new code.
-var knownLocalBinaries = []localBinarySpec{whisperBinarySpec}
+// local transcription; ffmpeg/ffprobe power the local media transforms — add a
+// spec here and detection, the Settings status report, and the per-binary
+// config override plumbing all pick it up without further changes. Only the
+// tool-specific executor is new code.
+var knownLocalBinaries = []localBinarySpec{whisperBinarySpec, ffmpegBinarySpec, ffprobeBinarySpec}
 
 // localBinaryLookPath is the seam tests stub to keep binary detection
 // hermetic: without it, every test that builds a tool registry would register
@@ -126,6 +151,32 @@ func (spec localBinarySpec) flavorFor(pathOrName string) string {
 // "whisper-cli" on PATH.
 func resolveLocalWhisperBinary(config AppConfig) (resolvedLocalBinary, bool) {
 	return resolveLocalBinary(whisperBinarySpec, config.Providers.Local.Whisper.Binary)
+}
+
+// resolveLocalFFmpegBinary detects the ffmpeg CLI the local media transforms
+// run: the configured override if set, else "ffmpeg" on PATH.
+func resolveLocalFFmpegBinary(config AppConfig) (resolvedLocalBinary, bool) {
+	return resolveLocalBinary(ffmpegBinarySpec, config.Providers.Local.FFmpeg.Binary)
+}
+
+// resolveLocalFFprobeBinary detects the ffprobe CLI. The normal spec tiers run
+// first (override, then PATH); when both miss but an ffmpeg resolved, its own
+// directory is probed for a sibling ffprobe — they ship in the same package,
+// so a PATH-less GUI environment with an explicit ffmpeg override usually has
+// the matching ffprobe right next to it.
+func resolveLocalFFprobeBinary(config AppConfig) (resolvedLocalBinary, bool) {
+	if resolved, ok := resolveLocalBinary(ffprobeBinarySpec, config.Providers.Local.FFprobe.Binary); ok {
+		return resolved, true
+	}
+	ffmpeg, ok := resolveLocalFFmpegBinary(config)
+	if !ok {
+		return resolvedLocalBinary{}, false
+	}
+	sibling := filepath.Join(filepath.Dir(ffmpeg.path), "ffprobe")
+	if path, err := localBinaryLookPath(sibling); err == nil {
+		return resolvedLocalBinary{spec: ffprobeBinarySpec, flavor: "ffprobe", path: path, source: localBinarySourcePath}, true
+	}
+	return resolvedLocalBinary{}, false
 }
 
 // LocalToolOverrides lets the Settings UI reflect unsaved edits: binary
@@ -197,6 +248,10 @@ func configuredLocalBinaryOverride(config AppConfig, key string) string {
 	switch key {
 	case whisperBinarySpec.key:
 		return config.Providers.Local.Whisper.Binary
+	case ffmpegBinarySpec.key:
+		return config.Providers.Local.FFmpeg.Binary
+	case ffprobeBinarySpec.key:
+		return config.Providers.Local.FFprobe.Binary
 	default:
 		return ""
 	}
@@ -209,6 +264,10 @@ func localBinaryFoundDetail(resolved resolvedLocalBinary) string {
 		dialect = "openai-whisper CLI"
 	case localWhisperFlavorCPP:
 		dialect = "whisper.cpp CLI"
+	case "ffmpeg":
+		dialect = "ffmpeg CLI"
+	case "ffprobe":
+		dialect = "ffprobe CLI"
 	}
 	source := "detected on PATH"
 	if resolved.source == localBinarySourceConfig {
@@ -221,6 +280,10 @@ func localBinaryMissingDetail(spec localBinarySpec) string {
 	switch spec.key {
 	case whisperBinarySpec.key:
 		return "No whisper CLI found on this Mac's PATH. Install one to enable local transcription: `pip install -U openai-whisper` or `brew install whisper-cpp`."
+	case ffmpegBinarySpec.key:
+		return "No ffmpeg CLI found on this Mac's PATH. Install one to enable local video tools (screenshot, split, join, extract audio): `brew install ffmpeg`."
+	case ffprobeBinarySpec.key:
+		return "No ffprobe CLI found. It ships with ffmpeg (`brew install ffmpeg`); without it the video tools still run but always re-encode and extract audio as MP3."
 	default:
 		return fmt.Sprintf("%s was not found on this Mac's PATH.", spec.label)
 	}
@@ -610,24 +673,81 @@ func joinTranscriptChunkText(chunks []transcriptChunk) string {
 }
 
 // decodeAudioDataURL splits a data:audio/... URL into its bytes and media
-// type. Parameters after the media type (";codecs=opus", ";base64") are
-// ignored; the payload must be standard base64.
+// type, delegating to the generic media decoder. Parameters after the media
+// type (";codecs=opus", ";base64") are ignored; the payload must be standard
+// base64.
 func decodeAudioDataURL(dataURL string) ([]byte, string, error) {
+	return decodeMediaDataURL(dataURL)
+}
+
+// decodeMediaDataURL splits any data:... URL into its bytes and media type —
+// the shared decoder for every local CLI tool's attached media (whisper audio,
+// ffmpeg video/audio). Parameters after the media type (";codecs=opus",
+// ";base64") are ignored; the payload must be standard base64.
+func decodeMediaDataURL(dataURL string) ([]byte, string, error) {
 	trimmed := strings.TrimSpace(dataURL)
 	if !strings.HasPrefix(trimmed, "data:") {
-		return nil, "", errors.New("attached audio is not a data URL")
+		return nil, "", errors.New("attached media is not a data URL")
 	}
 	comma := strings.Index(trimmed, ",")
 	if comma < 0 {
-		return nil, "", errors.New("attached audio data URL has no payload")
+		return nil, "", errors.New("attached media data URL has no payload")
 	}
-	mediaType := strings.TrimSpace(strings.TrimPrefix(trimmed[:comma], "data:"))
+	mediaType := strings.TrimSpace(trimmed[:comma][len("data:"):])
 	if idx := strings.Index(mediaType, ";"); idx >= 0 {
 		mediaType = strings.TrimSpace(mediaType[:idx])
 	}
 	data, err := base64.StdEncoding.DecodeString(trimmed[comma+1:])
 	if err != nil {
-		return nil, "", fmt.Errorf("attached audio payload is not valid base64: %w", err)
+		return nil, "", fmt.Errorf("attached media payload is not valid base64: %w", err)
 	}
 	return data, mediaType, nil
+}
+
+// localFFmpegTimeout bounds one local ffmpeg/ffprobe invocation. Local
+// transforms are CPU-bound and a re-encode of a long clip can legitimately run
+// for minutes, so this exists to reap a wedged process — not to enforce
+// latency. Context cancellation (a cancelled turn) propagates immediately, and
+// the harness's own wall-time budget bounds the planned-tool path.
+const localFFmpegTimeout = 10 * time.Minute
+
+// runLocalFFmpeg executes the locally installed ffmpeg CLI with args. The
+// binary is re-resolved per call, so a Settings change takes effect on the next
+// tool call without rebuilding the gateway. ffmpeg's stderr carries progress
+// and diagnostics, so the combined output rides any error message (capped).
+func runLocalFFmpeg(ctx context.Context, config AppConfig, args []string) error {
+	resolved, ok := resolveLocalFFmpegBinary(config)
+	if !ok {
+		return errors.New("no local ffmpeg CLI found — install ffmpeg (brew install ffmpeg), or clear the configured binary override in Settings → Video Tools")
+	}
+	_, err := runLocalMediaCLI(ctx, resolved, "ffmpeg", localFFmpegTimeout, args)
+	return err
+}
+
+// runLocalFFprobe executes the locally installed ffprobe CLI with args and
+// returns its combined output — the metadata sibling the ffmpeg tools use for
+// codec/container decisions (probe_media, join copy-vs-reencode, extract
+// copy-vs-convert). JSON output lands on stdout; diagnostics on stderr.
+func runLocalFFprobe(ctx context.Context, config AppConfig, args []string) ([]byte, error) {
+	resolved, ok := resolveLocalFFprobeBinary(config)
+	if !ok {
+		return nil, errors.New("no local ffprobe CLI found — it ships with ffmpeg (brew install ffmpeg)")
+	}
+	return runLocalMediaCLI(ctx, resolved, "ffprobe", localFFmpegTimeout, args)
+}
+
+// runLocalMediaCLI is the shared exec body for the local media CLIs: a bounded
+// context, combined output, and an error that embeds the (capped) output so a
+// chatty ffmpeg failure is still useful in chat.
+func runLocalMediaCLI(ctx context.Context, resolved resolvedLocalBinary, label string, timeout time.Duration, args []string) ([]byte, error) {
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	output, err := exec.CommandContext(runCtx, resolved.path, args...).CombinedOutput()
+	if err != nil {
+		if runCtx.Err() == context.DeadlineExceeded {
+			return output, fmt.Errorf("%s timed out after %s: %s", label, timeout, truncateLocalToolOutput(output))
+		}
+		return output, fmt.Errorf("%s failed: %v: %s", label, err, truncateLocalToolOutput(output))
+	}
+	return output, nil
 }

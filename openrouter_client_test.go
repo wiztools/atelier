@@ -306,8 +306,8 @@ func TestStrictJSONSchemaLeavesAlreadyStrictSchemaIntact(t *testing.T) {
 			t.Errorf("property %q widened to a nullable union, want plain type", name)
 		}
 	}
-	if len(got["required"].([]string)) != 4 {
-		t.Errorf("required = %v, want the original four", got["required"])
+	if len(got["required"].([]string)) != 5 {
+		t.Errorf("required = %v, want the original five (incl. mediaEdit)", got["required"])
 	}
 }
 

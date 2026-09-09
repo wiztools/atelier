@@ -170,6 +170,30 @@ export namespace main {
 	        this.transcriptionProvider = source["transcriptionProvider"];
 	    }
 	}
+	export class ConfigLocalFFprobe {
+	    binary?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConfigLocalFFprobe(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.binary = source["binary"];
+	    }
+	}
+	export class ConfigLocalFFmpeg {
+	    binary?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConfigLocalFFmpeg(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.binary = source["binary"];
+	    }
+	}
 	export class ConfigLocalWhisper {
 	    binary?: string;
 	    model?: string;
@@ -186,6 +210,8 @@ export namespace main {
 	}
 	export class ConfigLocalProviders {
 	    whisper: ConfigLocalWhisper;
+	    ffmpeg: ConfigLocalFFmpeg;
+	    ffprobe: ConfigLocalFFprobe;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigLocalProviders(source);
@@ -194,6 +220,8 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.whisper = this.convertValues(source["whisper"], ConfigLocalWhisper);
+	        this.ffmpeg = this.convertValues(source["ffmpeg"], ConfigLocalFFmpeg);
+	        this.ffprobe = this.convertValues(source["ffprobe"], ConfigLocalFFprobe);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -600,6 +628,8 @@ export namespace main {
 	        this.conversationId = source["conversationId"];
 	    }
 	}
+	
+	
 	
 	
 	
@@ -1042,6 +1072,10 @@ export namespace main {
 	    task?: string;
 	    language?: string;
 	    timestamps?: string;
+	    at?: string;
+	    start?: string;
+	    end?: string;
+	    mode?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new HarnessToolCall(source);
@@ -1081,6 +1115,10 @@ export namespace main {
 	        this.task = source["task"];
 	        this.language = source["language"];
 	        this.timestamps = source["timestamps"];
+	        this.at = source["at"];
+	        this.start = source["start"];
+	        this.end = source["end"];
+	        this.mode = source["mode"];
 	    }
 	}
 	export class HarnessToolResult {

@@ -570,14 +570,23 @@ func TestDetectLocalToolsReport(t *testing.T) {
 		if report.TranscriptionProvider != transcriptionProviderLocalWhisper {
 			t.Fatalf("provider = %q, want local-whisper", report.TranscriptionProvider)
 		}
-		if len(report.Binaries) != 1 || report.Binaries[0].Key != "whisper" || !report.Binaries[0].Available {
+		// The registry now covers whisper, ffmpeg, and ffprobe; find the entry
+		// by key rather than assuming position or count.
+		var whisper LocalBinaryStatus
+		found := false
+		for _, status := range report.Binaries {
+			if status.Key == "whisper" {
+				whisper, found = status, true
+			}
+		}
+		if !found || !whisper.Available {
 			t.Fatalf("binaries = %+v", report.Binaries)
 		}
-		if report.Binaries[0].Path != "/opt/test/bin/whisper" || report.Binaries[0].Flavor != localWhisperFlavorOpenAI {
-			t.Fatalf("status = %+v", report.Binaries[0])
+		if whisper.Path != "/opt/test/bin/whisper" || whisper.Flavor != localWhisperFlavorOpenAI {
+			t.Fatalf("status = %+v", whisper)
 		}
-		if !strings.Contains(report.Binaries[0].Detail, "/opt/test/bin/whisper") {
-			t.Fatalf("detail should name the path: %q", report.Binaries[0].Detail)
+		if !strings.Contains(whisper.Detail, "/opt/test/bin/whisper") {
+			t.Fatalf("detail should name the path: %q", whisper.Detail)
 		}
 	})
 	t.Run("fal key resolves fal", func(t *testing.T) {

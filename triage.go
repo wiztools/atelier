@@ -24,18 +24,34 @@ type HarnessTriageDecision struct {
 	ToolTask     string `json:"toolTask,omitempty"`
 	Reason       string `json:"reason,omitempty"`
 	Error        string `json:"error,omitempty"`
+	// MediaEdit records that triage judged the request to be a local edit of
+	// EXISTING media rather than generation — grab a frame/screenshot,
+	// split/trim a segment, join clips, extract the audio track, or put
+	// different audio under a video: the operations Atelier's local ffmpeg
+	// tools serve (see local_ffmpeg.go). When no ffmpeg CLI is configured,
+	// the harness turns this flag into a code-authored note telling the final
+	// model to direct the user to install ffmpeg, instead of letting the
+	// request silently fall through to a from-knowledge text answer. Advisory:
+	// a false or missing flag only loses that notice, never routing.
+	MediaEdit bool `json:"mediaEdit,omitempty"`
 }
 
 func triageResponseSchema() map[string]any {
 	return map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
-		"required":             []string{"needsTools", "responseMode", "toolTask", "reason"},
+		// Every property required — the same all-required shape that keeps
+		// this schema strict-clean for OpenRouter (see strictJSONSchema): an
+		// optional property would be widened to a nullable union there. Decode
+		// stays lenient (an absent mediaEdit is false) so the truncation-
+		// salvage path still works.
+		"required": []string{"needsTools", "responseMode", "toolTask", "reason", "mediaEdit"},
 		"properties": map[string]any{
 			"needsTools":   map[string]any{"type": "boolean"},
 			"responseMode": map[string]any{"type": "string", "enum": []string{"text", "image", "vision", "video", "audio"}},
 			"toolTask":     map[string]any{"type": "string"},
 			"reason":       map[string]any{"type": "string"},
+			"mediaEdit":    map[string]any{"type": "boolean"},
 		},
 	}
 }
@@ -80,6 +96,11 @@ func decodeTriageDecision(content string) (HarnessTriageDecision, error) {
 	decision.ResponseMode = coerceJSONString(raw["responseMode"])
 	decision.ToolTask = coerceJSONString(raw["toolTask"])
 	decision.Reason = coerceJSONString(raw["reason"])
+	// mediaEdit is advisory: a mis-typed value leaves it false rather than
+	// sinking the routing decision the way a mis-typed needsTools would.
+	if data, ok := raw["mediaEdit"]; ok {
+		_ = json.Unmarshal(data, &decision.MediaEdit)
+	}
 	return decision, nil
 }
 
@@ -294,7 +315,8 @@ You will not write the user-visible answer. Right now respond only with a JSON o
   "needsTools": false,
   "responseMode": "text",
   "toolTask": "when needsTools is true, the evidence the harness model should gather",
-  "reason": "brief decision reason"
+  "reason": "brief decision reason",
+  "mediaEdit": false
 }
 Set responseMode to one of:
 - "text": the user wants a text response (greetings, general knowledge, reasoning, writing, code, conversation). A transcript is a text deliverable too: transcribing, captioning, or timestamping an attached audio clip routes here, with needsTools true so the transcribe_audio tool gathers it.
@@ -302,6 +324,7 @@ Set responseMode to one of:
 - "vision": the user attached an image and wants it analyzed, described, or understood.
 - "video": the user asks to create, animate, or render a video or short clip.
 - "audio": the user asks to GENERATE a new audio clip — speak/narrate text, create music or a sound effect, or extend an audio clip.
+Set mediaEdit true when the user asks to EDIT an existing clip instead of generating new media: grab a frame/screenshot of a video, split/trim/cut a segment, join/concatenate clips, extract the audio track, or put different audio under a video. The responseMode for these stays "text" — the edited clip is attached to the reply, not generated. When one of the edit tools (screenshot_video, split_video, join_videos, extract_audio, replace_audio) is listed under Available tools, set needsTools true and describe the edit in toolTask; when none is listed, set needsTools false — the harness itself tells the user how to enable local editing.
 When the latest user message begins with "[Attachments: ...]", the user attached that media to the turn — treat it as available to tools that require it (e.g. lip_sync needs an audio clip plus a face image or video, transcribe_audio needs an audio clip, extend_audio can extend an attached audio clip, generate_video can animate an attached image or extend an attached video).%s
 Set needsTools true only when answering requires acting on the workspace or a listed capability: reading, listing, searching, or writing files, running a command, generating an image, generating a video, generating audio, or following one of the listed skills.
 Set needsTools false when your own knowledge is enough: greetings, general knowledge, reasoning, writing, and conversation about content already visible in the chat.

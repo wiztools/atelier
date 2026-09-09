@@ -239,12 +239,14 @@ type ConfigOpenAICompatible struct {
 
 // ConfigLocalProviders configures locally installed CLI media tools — binaries
 // on the user's machine rather than cloud services (see local_tools.go for
-// detection and the registry). whisper powers local transcription; an ffmpeg
-// sibling for local media transforms is planned. Adding a tool here, a spec in
-// knownLocalBinaries, and a config override case in
+// detection and the registry). whisper powers local transcription; ffmpeg and
+// ffprobe power the local media transforms (local_ffmpeg.go). Adding a tool
+// here, a spec in knownLocalBinaries, and a config override case in
 // configuredLocalBinaryOverride is the whole wiring for detection + Settings.
 type ConfigLocalProviders struct {
 	Whisper ConfigLocalWhisper `json:"whisper"`
+	FFmpeg  ConfigLocalFFmpeg  `json:"ffmpeg"`
+	FFprobe ConfigLocalFFprobe `json:"ffprobe"`
 }
 
 // ConfigLocalWhisper configures the local whisper CLI. Binary overrides
@@ -258,6 +260,22 @@ type ConfigLocalProviders struct {
 type ConfigLocalWhisper struct {
 	Binary string `json:"binary,omitempty"`
 	Model  string `json:"model,omitempty"`
+}
+
+// ConfigLocalFFmpeg configures the local ffmpeg CLI behind the video tools
+// (screenshot, split, join, extract audio, replace audio). Binary overrides
+// detection (an absolute path or a bare PATH name; empty auto-detects
+// "ffmpeg" on PATH). No model — one ffmpeg dialect.
+type ConfigLocalFFmpeg struct {
+	Binary string `json:"binary,omitempty"`
+}
+
+// ConfigLocalFFprobe configures the local ffprobe CLI (metadata for
+// probe_media and the copy-vs-reencode decisions). Empty auto-detects
+// "ffprobe" on PATH and then the directory of the resolved ffmpeg binary —
+// they ship together.
+type ConfigLocalFFprobe struct {
+	Binary string `json:"binary,omitempty"`
 }
 
 type ConfigModels struct {
@@ -3127,6 +3145,8 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	// PATH auto-detection and an empty model means the CLI's own default.
 	config.Providers.Local.Whisper.Binary = strings.TrimSpace(config.Providers.Local.Whisper.Binary)
 	config.Providers.Local.Whisper.Model = strings.TrimSpace(config.Providers.Local.Whisper.Model)
+	config.Providers.Local.FFmpeg.Binary = strings.TrimSpace(config.Providers.Local.FFmpeg.Binary)
+	config.Providers.Local.FFprobe.Binary = strings.TrimSpace(config.Providers.Local.FFprobe.Binary)
 	if config.Models.ImageProvider == "fal" && strings.TrimSpace(config.Providers.Fal.Model) == "" {
 		config.Providers.Fal.Model = defaultFalImageModel
 	}
@@ -3587,40 +3607,76 @@ func appendChatAssistantTurn(config AppConfig, conversationID, assistantContent,
 }
 
 // chatAssistantTurnMedia is the per-call piece a media-bearing assistant turn
-// needs. build writes that turn's artifacts (images, videos, audios) into
-// artifactsDir, and returns the HistoryContent entries they become, any
-// live-render URLs, and the tool metadata recorded on the saved turn. The
-// shared append helper calls build after loading the conversation, since
-// artifact writing needs the resolved ArtifactsDir.
+// needs. build writes that turn's artifacts (any mix of images, videos,
+// audios, transcripts) into artifactsDir, and returns the HistoryContent
+// entries they become, the per-kind live-render URLs, and the tool metadata
+// recorded on the saved turn. The shared append helper calls build after
+// loading the conversation, since artifact writing needs the resolved
+// ArtifactsDir.
 type chatAssistantTurnMedia struct {
-	build func(artifactsDir string) (contents []HistoryContent, urls []string, tool map[string]any, err error)
+	build func(artifactsDir string) (chatAssistantTurnMediaOutput, error)
+}
+
+// chatTurnMedia carries every media kind a turn produced into the shared
+// appender. Kinds the turn didn't produce stay empty; the builder writes only
+// what is present, so any combination persists in one turn — which the local
+// ffmpeg tools make reachable (a screenshot plus an extracted audio track in
+// one turn, say) and the earlier one-kind-per-switch appenders would have
+// dropped.
+type chatTurnMedia struct {
+	images   []string
+	imageReq ImageGenerateRequest
+	// imageRaw is the direct image-generation path's raw provider JSON,
+	// recorded as rawCompact on the tool metadata.
+	imageRaw             string
+	videos               []ToolVideoFile
+	videoReq             VideoGenerateRequest
+	audios               []ToolAudioFile
+	audioReq             AudioGenerateRequest
+	transcripts          []ToolTranscriptFile
+	transcriptModel      string
+	transcriptTimestamps string
+}
+
+// chatTurnMediaURLs holds the "/atelier-artifact" links per media kind; the
+// live UI renders each kind in its own player, so they cannot share one list.
+type chatTurnMediaURLs struct {
+	videos      []string
+	audios      []string
+	transcripts []string
+}
+
+// chatAssistantTurnMediaOutput is what a media build closure produced: the
+// history content entries (all kinds, in order), the per-kind artifact URLs,
+// and the providerResponse.tool metadata.
+type chatAssistantTurnMediaOutput struct {
+	contents []HistoryContent
+	urls     chatTurnMediaURLs
+	tool     map[string]any
 }
 
 // appendChatAssistantTurnWithMedia is the shared skeleton for persisting an
 // assistant turn that produced media. It loads the conversation, delegates
 // artifact writing + metadata assembly to media.build, then writes a single
-// assistant turn whose ProviderResponse carries the tool metadata. The three
-// media-specific append functions (images/videos/audios) are thin wrappers
-// that differ only in their build closure; the load, content assembly, stat
-// update, and persistence are identical and live here once.
-func appendChatAssistantTurnWithMedia(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, run HarnessRun, media chatAssistantTurnMedia) ([]string, error) {
+// assistant turn whose ProviderResponse carries the tool metadata.
+func appendChatAssistantTurnWithMedia(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, run HarnessRun, media chatAssistantTurnMedia) (chatTurnMediaURLs, error) {
 	store := newHistoryStore(config.Storage)
 	loaded, err := store.loadForAppend(conversationID, "chat", "a chat", config.Tools.Filesystem.Root)
 	if err != nil {
-		return nil, err
+		return chatTurnMediaURLs{}, err
 	}
 	nowText := time.Now().Format(time.RFC3339)
 
-	mediaContents, urls, tool, err := media.build(loaded.ArtifactsDir)
+	output, err := media.build(loaded.ArtifactsDir)
 	if err != nil {
-		return nil, err
+		return chatTurnMediaURLs{}, err
 	}
 
 	contents := []HistoryContent{{Type: "text", Text: assistantContent}}
 	if strings.TrimSpace(assistantThinking) != "" {
 		contents = append(contents, HistoryContent{Type: "thinking", Text: assistantThinking})
 	}
-	contents = append(contents, mediaContents...)
+	contents = append(contents, output.contents...)
 	assistantTurn := HistoryTurn{
 		SchemaVersion:  1,
 		ID:             fmt.Sprintf("turn_%06d", loaded.NextTurnNumber),
@@ -3634,38 +3690,94 @@ func appendChatAssistantTurnWithMedia(config AppConfig, conversationID, assistan
 		ProviderResponse: map[string]any{
 			"doneReason": reason,
 			"harnessRun": run,
-			"tool":       tool,
+			"tool":       output.tool,
 		},
 	}
 
 	loaded.Conversation.UpdatedAt = nowText
 	loaded.Conversation.Stats.TurnCount++
-	loaded.Conversation.Stats.ArtifactCount += len(mediaContents)
+	loaded.Conversation.Stats.ArtifactCount += len(output.contents)
 	if err := store.writeConversation(loaded.Path, loaded.Conversation); err != nil {
-		return nil, err
+		return chatTurnMediaURLs{}, err
 	}
 	if err := store.writeTurn(loaded.TurnsDir, assistantTurn); err != nil {
-		return nil, err
+		return chatTurnMediaURLs{}, err
 	}
-	return urls, nil
+	return output.urls, nil
+}
+
+// appendChatAssistantTurnWithTurnMedia persists an assistant turn that
+// produced any combination of media kinds. Every kind present is written into
+// the one turn — images, videos, audios, transcripts — with the tool metadata
+// naming the dominant kind (video > audio > image > transcript) plus every
+// kind's count. The single-kind appenders below are thin conveniences over
+// this one.
+func appendChatAssistantTurnWithTurnMedia(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, media chatTurnMedia, run HarnessRun) (chatTurnMediaURLs, error) {
+	return appendChatAssistantTurnWithMedia(config, conversationID, assistantContent, assistantThinking, model, provider, reason, run, chatAssistantTurnMedia{
+		build: func(artifactsDir string) (chatAssistantTurnMediaOutput, error) {
+			var contents []HistoryContent
+			urls := chatTurnMediaURLs{}
+			tool := map[string]any{}
+			if len(media.videos) > 0 {
+				videoContents, videoURLs, err := writeChatVideoArtifacts(artifactsDir, media.videos)
+				if err != nil {
+					return chatAssistantTurnMediaOutput{}, err
+				}
+				contents = append(contents, videoContents...)
+				urls.videos = videoURLs
+				tool["name"] = "video_generation"
+				tool["model"] = media.videoReq.Model
+				tool["videoCount"] = len(videoContents)
+			}
+			if len(media.audios) > 0 {
+				audioContents, audioURLs, err := writeChatAudioArtifacts(artifactsDir, media.audios)
+				if err != nil {
+					return chatAssistantTurnMediaOutput{}, err
+				}
+				contents = append(contents, audioContents...)
+				urls.audios = audioURLs
+				if tool["name"] == nil {
+					tool["name"] = "audio_generation"
+					tool["model"] = media.audioReq.Model
+				}
+				tool["audioCount"] = len(audioContents)
+			}
+			if len(media.images) > 0 {
+				imageContents, err := writeChatImageArtifacts(artifactsDir, media.imageReq, media.images)
+				if err != nil {
+					return chatAssistantTurnMediaOutput{}, err
+				}
+				contents = append(contents, imageContents...)
+				if tool["name"] == nil {
+					tool["name"] = "image_generation"
+					tool["model"] = media.imageReq.Model
+					if media.imageRaw != "" {
+						tool["rawCompact"] = media.imageRaw
+					}
+				}
+				tool["imageCount"] = len(imageContents)
+			}
+			if len(media.transcripts) > 0 {
+				transcriptContents, transcriptURLs, err := writeChatTranscriptArtifacts(artifactsDir, media.transcripts)
+				if err != nil {
+					return chatAssistantTurnMediaOutput{}, err
+				}
+				contents = append(contents, transcriptContents...)
+				urls.transcripts = transcriptURLs
+				if tool["name"] == nil {
+					tool["name"] = "audio_transcription"
+					tool["model"] = media.transcriptModel
+					tool["timestamps"] = media.transcriptTimestamps
+				}
+				tool["transcripts"] = len(transcriptContents)
+			}
+			return chatAssistantTurnMediaOutput{contents: contents, urls: urls, tool: tool}, nil
+		},
+	})
 }
 
 func appendChatAssistantTurnWithImages(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, images []string, raw string, run HarnessRun, imageReq ImageGenerateRequest) error {
-	_, err := appendChatAssistantTurnWithMedia(config, conversationID, assistantContent, assistantThinking, model, provider, reason, run, chatAssistantTurnMedia{
-		build: func(artifactsDir string) ([]HistoryContent, []string, map[string]any, error) {
-			imageContents, err := writeChatImageArtifacts(artifactsDir, imageReq, images)
-			if err != nil {
-				return nil, nil, nil, err
-			}
-			tool := map[string]any{
-				"name":       "image_generation",
-				"model":      imageReq.Model,
-				"imageCount": len(imageContents),
-				"rawCompact": raw,
-			}
-			return imageContents, nil, tool, nil
-		},
-	})
+	_, err := appendChatAssistantTurnWithTurnMedia(config, conversationID, assistantContent, assistantThinking, model, provider, reason, chatTurnMedia{images: images, imageReq: imageReq, imageRaw: raw}, run)
 	return err
 }
 
@@ -3675,27 +3787,10 @@ func appendChatAssistantTurnWithImages(config AppConfig, conversationID, assista
 // directory; the returned URLs are the "/atelier-artifact" links the live UI
 // renders before the turn is reloaded from history.
 func appendChatAssistantTurnWithVideos(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, images []string, imageReq ImageGenerateRequest, videos []ToolVideoFile, videoReq VideoGenerateRequest, run HarnessRun) ([]string, error) {
-	return appendChatAssistantTurnWithMedia(config, conversationID, assistantContent, assistantThinking, model, provider, reason, run, chatAssistantTurnMedia{
-		build: func(artifactsDir string) ([]HistoryContent, []string, map[string]any, error) {
-			imageContents, err := writeChatImageArtifacts(artifactsDir, imageReq, images)
-			if err != nil {
-				return nil, nil, nil, err
-			}
-			videoContents, videoURLs, err := writeChatVideoArtifacts(artifactsDir, videos)
-			if err != nil {
-				return nil, nil, nil, err
-			}
-			contents := append([]HistoryContent{}, imageContents...)
-			contents = append(contents, videoContents...)
-			tool := map[string]any{
-				"name":       "video_generation",
-				"model":      videoReq.Model,
-				"videoCount": len(videoContents),
-				"imageCount": len(imageContents),
-			}
-			return contents, videoURLs, tool, nil
-		},
-	})
+	urls, err := appendChatAssistantTurnWithTurnMedia(config, conversationID, assistantContent, assistantThinking, model, provider, reason, chatTurnMedia{
+		images: images, imageReq: imageReq, videos: videos, videoReq: videoReq,
+	}, run)
+	return urls.videos, err
 }
 
 // writeChatVideoArtifacts moves each generated video's temp file into the
@@ -3766,20 +3861,10 @@ func writeChatMediaArtifacts(artifactsDir string, files []mediaArtifactEntry, ki
 // conversation's artifacts directory; the returned URLs are the
 // "/atelier-artifact" links the live UI renders before reload.
 func appendChatAssistantTurnWithAudios(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, audios []ToolAudioFile, audioReq AudioGenerateRequest, run HarnessRun) ([]string, error) {
-	return appendChatAssistantTurnWithMedia(config, conversationID, assistantContent, assistantThinking, model, provider, reason, run, chatAssistantTurnMedia{
-		build: func(artifactsDir string) ([]HistoryContent, []string, map[string]any, error) {
-			audioContents, audioURLs, err := writeChatAudioArtifacts(artifactsDir, audios)
-			if err != nil {
-				return nil, nil, nil, err
-			}
-			tool := map[string]any{
-				"name":       "audio_generation",
-				"model":      audioReq.Model,
-				"audioCount": len(audioContents),
-			}
-			return audioContents, audioURLs, tool, nil
-		},
-	})
+	urls, err := appendChatAssistantTurnWithTurnMedia(config, conversationID, assistantContent, assistantThinking, model, provider, reason, chatTurnMedia{
+		audios: audios, audioReq: audioReq,
+	}, run)
+	return urls.audios, err
 }
 
 // writeChatAudioArtifacts moves each generated audio's temp file into the
@@ -3824,21 +3909,10 @@ func transcriptExtensionForMimeType(mimeType string) string {
 // as trc_<hex>.<ext>; the returned URLs are the "/atelier-artifact" links the
 // live UI renders before the turn is reloaded from history.
 func appendChatAssistantTurnWithTranscripts(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, transcripts []ToolTranscriptFile, transcriptModel, timestamps string, run HarnessRun) ([]string, error) {
-	return appendChatAssistantTurnWithMedia(config, conversationID, assistantContent, assistantThinking, model, provider, reason, run, chatAssistantTurnMedia{
-		build: func(artifactsDir string) ([]HistoryContent, []string, map[string]any, error) {
-			transcriptContents, transcriptURLs, err := writeChatTranscriptArtifacts(artifactsDir, transcripts)
-			if err != nil {
-				return nil, nil, nil, err
-			}
-			tool := map[string]any{
-				"name":        "audio_transcription",
-				"model":       transcriptModel,
-				"timestamps":  timestamps,
-				"transcripts": len(transcriptContents),
-			}
-			return transcriptContents, transcriptURLs, tool, nil
-		},
-	})
+	urls, err := appendChatAssistantTurnWithTurnMedia(config, conversationID, assistantContent, assistantThinking, model, provider, reason, chatTurnMedia{
+		transcripts: transcripts, transcriptModel: transcriptModel, transcriptTimestamps: timestamps,
+	}, run)
+	return urls.transcripts, err
 }
 
 // moveFile relocates src to dst, falling back to a copy-and-delete when the two

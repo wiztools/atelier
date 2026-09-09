@@ -271,6 +271,9 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 	if transcribeAudioConfigured(config) {
 		definitions = append(definitions, transcribeAudioToolDefinition(config))
 	}
+	if ffmpegToolsConfigured(config) {
+		definitions = append(definitions, ffmpegToolDefinitions(config)...)
+	}
 	if lipsyncConfigured(config) {
 		definitions = append(definitions, lipsyncToolDefinition(videoAudioCapable))
 	}

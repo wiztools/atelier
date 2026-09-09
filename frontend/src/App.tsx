@@ -971,6 +971,8 @@ function App() {
   const [transcriptionProvider, setTranscriptionProvider] = useState<'fal' | 'local-whisper'>('fal');
   const [whisperModel, setWhisperModel] = useState('');
   const [whisperBinary, setWhisperBinary] = useState('');
+  const [ffmpegBinary, setFfmpegBinary] = useState('');
+  const [ffprobeBinary, setFfprobeBinary] = useState('');
   const [localToolsReport, setLocalToolsReport] = useState<main.LocalToolsReport | null>(null);
   const [falLipsyncImageModel, setFalLipsyncImageModel] = useState(defaultFalLipsyncImageModel);
   const [falLipsyncVideoModel, setFalLipsyncVideoModel] = useState(defaultFalLipsyncVideoModel);
@@ -1532,6 +1534,12 @@ function App() {
               binary: whisperBinary,
               model: whisperModel,
             },
+            ffmpeg: {
+              binary: ffmpegBinary,
+            },
+            ffprobe: {
+              binary: ffprobeBinary,
+            },
           },
         },
         models: {
@@ -1567,23 +1575,23 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, whisperBinary, whisperModel]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, whisperBinary, whisperModel]);
 
-  // Re-probe local CLI tools when the whisper binary override changes so the
-  // provider dropdown reflects an unsaved override without waiting for a save
-  // (an empty override means PATH auto-detection — the Go side treats it that
-  // way too).
+  // Re-probe local CLI tools when a binary override changes so the provider
+  // dropdown and the video-tools status reflect an unsaved override without
+  // waiting for a save (an empty override means PATH auto-detection — the Go
+  // side treats it that way too).
   useEffect(() => {
     if (!configLoaded) {
       return;
     }
     const timer = window.setTimeout(() => {
-      DetectLocalTools(new main.LocalToolOverrides({binaries: {whisper: whisperBinary}}))
+      DetectLocalTools(new main.LocalToolOverrides({binaries: {whisper: whisperBinary, ffmpeg: ffmpegBinary, ffprobe: ffprobeBinary}}))
         .then((report) => setLocalToolsReport(report))
         .catch(() => setLocalToolsReport(null));
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [configLoaded, whisperBinary]);
+  }, [configLoaded, whisperBinary, ffmpegBinary, ffprobeBinary]);
 
   // On a fresh launch, put the cursor in the chat box so the user can start
   // typing immediately. Fires once, when config finishes loading.
@@ -1962,6 +1970,14 @@ function App() {
     () => localToolsReport?.binaries?.find((entry) => entry.key === 'whisper') ?? null,
     [localToolsReport],
   );
+  const ffmpegStatus = useMemo(
+    () => localToolsReport?.binaries?.find((entry) => entry.key === 'ffmpeg') ?? null,
+    [localToolsReport],
+  );
+  const ffprobeStatus = useMemo(
+    () => localToolsReport?.binaries?.find((entry) => entry.key === 'ffprobe') ?? null,
+    [localToolsReport],
+  );
 
   const falUpscaleModelOptions = useMemo(() => falModelOptionList(falUpscaleModels), [falUpscaleModels]);
 
@@ -2116,6 +2132,8 @@ function App() {
 	const nextTranscriptionProvider = config.models?.transcriptionProvider === 'local-whisper' ? 'local-whisper' : 'fal';
 	const nextWhisperModel = config.providers?.local?.whisper?.model ?? '';
 	const nextWhisperBinary = config.providers?.local?.whisper?.binary ?? '';
+	const nextFfmpegBinary = config.providers?.local?.ffmpeg?.binary ?? '';
+	const nextFfprobeBinary = config.providers?.local?.ffprobe?.binary ?? '';
 	const nextFalLipsyncImageModel = config.providers?.fal?.lipsyncImageModel || defaultFalLipsyncImageModel;
 	const nextFalLipsyncVideoModel = config.providers?.fal?.lipsyncVideoModel || defaultFalLipsyncVideoModel;
     const nextFalUpscaleModel = config.providers?.fal?.upscaleModel || defaultFalUpscaleModel;
@@ -2155,6 +2173,8 @@ function App() {
     setTranscriptionProvider(nextTranscriptionProvider);
     setWhisperModel(nextWhisperModel);
     setWhisperBinary(nextWhisperBinary);
+    setFfmpegBinary(nextFfmpegBinary);
+    setFfprobeBinary(nextFfprobeBinary);
     setFalLipsyncImageModel(nextFalLipsyncImageModel);
     setFalLipsyncVideoModel(nextFalLipsyncVideoModel);
     setFalUpscaleModel(nextFalUpscaleModel);
@@ -3934,6 +3954,52 @@ function App() {
                     <span />
                     {openaiCompatibleHasKey ? 'Bearer key saved' : 'No key — requests go unauthenticated.'}
                   </div>
+                </div>
+              </section>
+
+              <section className="settings-section">
+                <h3>
+                  Video Tools (FFmpeg){' '}
+                  <InfoHint
+                    label="Local video tools"
+                    text="ffmpeg powers the local video tools in chat: screenshot a frame, split a clip, join clips in attachment order, extract or replace audio, and probe a clip's properties. Detected automatically on PATH, or set an explicit binary below. A missing ffprobe only degrades two paths — joins always re-encode and audio extraction falls back to MP3."
+                  />
+                </h3>
+                <div className="settings-rows">
+                  <div className="two-column">
+                    <div className="field">
+                      <div className="field-label-row">
+                        <label htmlFor="ffmpeg-binary">FFmpeg Binary</label>
+                        {ffmpegStatus?.detail ? (
+                          <InfoHint label="FFmpeg binary detection" text={ffmpegStatus.detail} />
+                        ) : null}
+                      </div>
+                      <input
+                        id="ffmpeg-binary"
+                        value={ffmpegBinary}
+                        onChange={(event) => setFfmpegBinary(event.target.value)}
+                        placeholder={ffmpegStatus?.path || 'auto-detect on PATH: ffmpeg'}
+                      />
+                    </div>
+
+                    <div className="field">
+                      <div className="field-label-row">
+                        <label htmlFor="ffprobe-binary">FFprobe Binary</label>
+                        {ffprobeStatus?.detail ? (
+                          <InfoHint label="FFprobe binary detection" text={ffprobeStatus.detail} />
+                        ) : null}
+                      </div>
+                      <input
+                        id="ffprobe-binary"
+                        value={ffprobeBinary}
+                        onChange={(event) => setFfprobeBinary(event.target.value)}
+                        placeholder={ffprobeStatus?.path || 'auto-detect on PATH: ffprobe'}
+                      />
+                    </div>
+                  </div>
+                  {!ffmpegStatus?.available ? (
+                    <span className="hint">{ffmpegStatus?.detail ?? 'Detecting local tools…'}</span>
+                  ) : null}
                 </div>
               </section>
               </>
