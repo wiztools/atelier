@@ -78,6 +78,10 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 		schemaCache := newFalSchemaCache(app.client, config.Storage.Root)
 		falOverrides := loadFalOverrides(config.Storage.Root)
 		gateway.tools.GenerateImage = func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, []string, error) {
+			// Source images must decode at the model: an attached HEIC/AVIF/
+			// TIFF/BMP/JP2 becomes JPEG here (model_image_compat.go) for every
+			// backend below — fal, openai-compatible, and Ollama alike.
+			req.Images = ensureModelSafeImages(ctx, config, req.Images)
 			provider := imageGenerationProvider(config)
 			if provider == "fal" {
 				apiKey, err := loadFalAPIKey()
@@ -133,6 +137,12 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			// fal's CDN so the queue submit stays under the inline size limit.
 			// SourceVideos() unifies the legacy scalar Video into the slice, so
 			// the resolver and transport below see one list.
+			//
+			// Image sources are first normalized to a model-decodable format
+			// (model_image_compat.go): image-to-video and reference frames
+			// arrive as HEIC attachments that fal's image_url rejects.
+			req.Images = ensureModelSafeImages(ctx, config, req.Images)
+			req.Image = ensureModelSafeImage(ctx, config, req.Image)
 			videos := req.SourceVideos()
 			for i := range videos {
 				if resolved, err := client.resolveMediaURL(ctx, videos[i], "video/mp4", fmt.Sprintf("source-video-%d.mp4", i)); err == nil && resolved != "" {
@@ -178,6 +188,11 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			// media reference sidesteps the downstream rejection; resolveMediaURLHosted
 			// uploads regardless of size and falls back to an inline data URI on
 			// upload failure so the request still goes through.
+			//
+			// The image face is normalized to a model-decodable format first
+			// (model_image_compat.go) — a HEIC face source can't ride fal's
+			// image_url any better than a generation source can.
+			req.Image = ensureModelSafeImage(ctx, config, req.Image)
 			if resolved, err := client.resolveMediaURLHosted(ctx, req.Audio, "audio/mpeg", "audio.mp3"); err == nil {
 				req.Audio = resolved
 			}
@@ -205,6 +220,10 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			if strings.TrimSpace(apiKey) == "" {
 				return ollamaGenerateResponse{}, errFalKeyNotConfigured
 			}
+			// fal's upscaler consumes the same image_url input as generation —
+			// normalize the source to a model-decodable format first
+			// (model_image_compat.go).
+			req.Image = ensureModelSafeImage(ctx, config, req.Image)
 			return newFalClient(app.client, apiKey).UpscaleImage(ctx, req)
 		}
 		gateway.tools.UpscaleVideo = func(ctx context.Context, req VideoUpscaleRequest) (GeneratedVideo, error) {

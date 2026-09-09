@@ -5952,7 +5952,7 @@ func TestPreparedResponseRequestDeliversToolEvidenceAsUserRole(t *testing.T) {
 		},
 	}
 
-	result, _ := engine.preparedResponseRequest(req, "primary-model", "openrouter", preparation, nil)
+	result, _ := engine.preparedResponseRequest(context.Background(), req, "primary-model", "openrouter", preparation, nil)
 	messages := result.Messages
 
 	// The last message must be user-role, not tool-role.
@@ -6041,7 +6041,7 @@ func TestPreparedResponseRequestKeepsMediaWhenNoApp(t *testing.T) {
 	}
 	preparation := HarnessPreparedTurn{}
 
-	result, _ := engine.preparedResponseRequest(req, "primary-model", "openrouter", preparation, nil)
+	result, _ := engine.preparedResponseRequest(context.Background(), req, "primary-model", "openrouter", preparation, nil)
 	found := false
 	for _, msg := range result.Messages {
 		if len(msg.Audios) > 0 {
@@ -6162,7 +6162,7 @@ func TestPreparedResponseRequestInjectsHistoryImage(t *testing.T) {
 			{Role: "user", Content: "describe the image you just generated"},
 		},
 	}
-	result, _ := engine.preparedResponseRequest(req, "primary-model", "openrouter", HarnessPreparedTurn{}, []string{resolvedImage})
+	result, _ := engine.preparedResponseRequest(context.Background(), req, "primary-model", "openrouter", HarnessPreparedTurn{}, []string{resolvedImage})
 	lastUser := -1
 	for i := len(result.Messages) - 1; i >= 0; i-- {
 		if result.Messages[i].Role == "user" {
@@ -6186,7 +6186,7 @@ func TestPreparedResponseRequestInjectsHistoryImage(t *testing.T) {
 			{Role: "user", Content: "describe this", Images: []string{currentImage}},
 		},
 	}
-	result, _ = engine.preparedResponseRequest(req, "primary-model", "openrouter", HarnessPreparedTurn{}, []string{resolvedImage})
+	result, _ = engine.preparedResponseRequest(context.Background(), req, "primary-model", "openrouter", HarnessPreparedTurn{}, []string{resolvedImage})
 	lastUser = -1
 	for i := len(result.Messages) - 1; i >= 0; i-- {
 		if result.Messages[i].Role == "user" {
@@ -6208,7 +6208,7 @@ func TestPreparedResponseRequestInjectsHistoryImage(t *testing.T) {
 			{Role: "user", Content: "describe it"},
 		},
 	}
-	result, _ = engine.preparedResponseRequest(req, "primary-model", "openrouter", HarnessPreparedTurn{}, nil)
+	result, _ = engine.preparedResponseRequest(context.Background(), req, "primary-model", "openrouter", HarnessPreparedTurn{}, nil)
 	for _, msg := range result.Messages {
 		if msg.Role == "user" && len(msg.Images) != 0 {
 			t.Errorf("empty-image branch: user message unexpectedly got images %+v", msg.Images)
@@ -6227,7 +6227,7 @@ func TestPreparedResponseRequestInjectsHistoryImage(t *testing.T) {
 			{Role: "user", Content: "compare the two images"},
 		},
 	}
-	result, _ = engine.preparedResponseRequest(req, "primary-model", "openrouter", HarnessPreparedTurn{}, []string{firstImage, secondImage})
+	result, _ = engine.preparedResponseRequest(context.Background(), req, "primary-model", "openrouter", HarnessPreparedTurn{}, []string{firstImage, secondImage})
 	lastUser = -1
 	for i := len(result.Messages) - 1; i >= 0; i-- {
 		if result.Messages[i].Role == "user" {

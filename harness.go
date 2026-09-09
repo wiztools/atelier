@@ -461,7 +461,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			Reason:  "generation_planning_exhausted",
 		}
 	} else {
-		responseReq, responseTruncated := h.preparedResponseRequest(req, responseModel, responseProvider, preparation, attachedImagesForVision)
+		responseReq, responseTruncated := h.preparedResponseRequest(ctx, req, responseModel, responseProvider, preparation, attachedImagesForVision)
 		result, err = h.runFinalResponseAttempt(ctx, requestID, conversationID, responseReq, &run, responseTruncated)
 	}
 
@@ -2123,7 +2123,7 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 // just generated"). It is injected as an Images entry on the last user message
 // to match the shape adapters expect, and before stripUnsupportedMedia so the
 // same capability logic that governs user-attached images governs it.
-func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel, responseProvider string, preparation HarnessPreparedTurn, attachedImages []string) (ChatRequest, int) {
+func (h *HarnessEngine) preparedResponseRequest(ctx context.Context, req ChatRequest, responseModel, responseProvider string, preparation HarnessPreparedTurn, attachedImages []string) (ChatRequest, int) {
 	responseReq := req
 	responseReq.Model = responseModel
 	responseReq.Provider = responseProvider
@@ -2153,6 +2153,16 @@ func (h *HarnessEngine) preparedResponseRequest(req ChatRequest, responseModel, 
 	// working path on a lookup failure); see stripUnsupportedMedia for the
 	// provider-specific rules.
 	h.stripUnsupportedMedia(messages, responseModel, responseProvider, req.BaseURL)
+	// Convert image formats the response model cannot decode (model_image_
+	// compat.go) AFTER the strip, so images a text-only model never sees don't
+	// pay for a sips conversion. This is the vision boundary: a HEIC/AVIF/
+	// TIFF/BMP/JP2 attachment — accepted and persisted as-is because sips and
+	// the local tools read it — is re-encoded to JPEG just for this call.
+	for i := range messages {
+		if len(messages[i].Images) > 0 {
+			messages[i].Images = ensureModelSafeImages(ctx, h.config, messages[i].Images)
+		}
+	}
 	// The tool-evidence note is delivered in the message stream rather than
 	// appended to the system prompt: a per-turn note in message #0 would
 	// invalidate the entire prefix cache on every tooled turn. The evidence
