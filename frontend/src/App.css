@@ -473,6 +473,20 @@
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35);
 }
 
+/* The portaled variant (AnchoredMenu) swaps the in-row absolute offsets for
+   fixed viewport coordinates set inline from the trigger's rect, so the
+   scrolling list can't clip it. max-height keeps a long menu (many
+   move-to-project targets) inside the window; it then scrolls internally,
+   which AnchoredMenu exempts from its scroll-to-close. */
+.history-menu.anchored {
+  position: fixed;
+  top: auto;
+  right: auto;
+  z-index: 45;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+}
+
 .history-menu button {
   width: 100%;
   height: 30px;

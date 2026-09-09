@@ -1,4 +1,5 @@
-import {useEffect, useMemo, useRef, useState} from 'react';
+import {useEffect, useLayoutEffect, useMemo, useRef, useState} from 'react';
+import {createPortal} from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import './App.css';
@@ -538,11 +539,26 @@ function useLibraries(env: LibrariesEnvironment) {
 
   // Opening/toggling a container ⋮ menu always disarms any pending delete
   // confirmation or export confirm, so a second-step click can never linger
-  // into a different menu.
+  // into a different menu. Opening also closes the conversation ⋮ menu —
+  // both float in portals now, and two open at once reads as broken.
   function toggleContainerMenu(id: string) {
     setConfirmDeleteContainerID('');
     setExportPlan(null);
-    setOpenContainerMenuID((current) => current === id ? '' : id);
+    if (openContainerMenuID === id) {
+      setOpenContainerMenuID('');
+      return;
+    }
+    env.closeConversationMenu();
+    setOpenContainerMenuID(id);
+  }
+
+  // Closing without toggling (outside press, Escape, scroll) disarms the
+  // two-step confirms the same way — a pending confirmation must never
+  // outlive its menu.
+  function closeContainerMenu() {
+    setConfirmDeleteContainerID('');
+    setExportPlan(null);
+    setOpenContainerMenuID('');
   }
 
   // Deleting a library or project is a HARD delete — conversations and their
@@ -823,6 +839,7 @@ function useLibraries(env: LibrariesEnvironment) {
     cancelEditingContainer,
     saveContainerName,
     toggleContainerMenu,
+    closeContainerMenu,
     confirmDeleteContainer,
     toggleLibraryExpanded,
     toggleProjectExpanded,
@@ -1138,7 +1155,7 @@ function App() {
     exportPlan, importingLibrary, archiveNotice,
     moveTargets, libraryIDForProject, bumpLibrariesRefresh,
     startCreatingLibrary, startCreatingProject, submitNewLibrary, submitNewProject,
-    startEditingContainer, cancelEditingContainer, saveContainerName, toggleContainerMenu,
+    startEditingContainer, cancelEditingContainer, saveContainerName, toggleContainerMenu, closeContainerMenu,
     confirmDeleteContainer, toggleLibraryExpanded, toggleProjectExpanded,
     startNewChatInProject, revealConversationInProject, handleNewConversationAction, handleNewProjectAction, moveConversation,
     forgetConversation, toggleLibrariesOpen, cancelCreatingLibrary, cancelCreatingProject, armContainerDelete,
@@ -1313,36 +1330,38 @@ function App() {
               ) : null}
             </button>
             <div className="history-actions">
-              <button
-                className="history-icon-button"
-                aria-label={`More actions for ${conversation.title}`}
-                title="More"
-                onClick={() => setOpenHistoryMenuID((current) => current === conversation.id ? '' : conversation.id)}
+              <AnchoredMenu
+                label={`More actions for ${conversation.title}`}
+                open={openHistoryMenuID === conversation.id}
+                onToggle={() => {
+                  // Opening one menu family closes the other — both float in
+                  // portals now, and two open at once reads as broken.
+                  if (openHistoryMenuID !== conversation.id) {
+                    closeContainerMenu();
+                  }
+                  setOpenHistoryMenuID((current) => current === conversation.id ? '' : conversation.id);
+                }}
+                onClose={() => setOpenHistoryMenuID('')}
               >
-                ⋮
-              </button>
-              {openHistoryMenuID === conversation.id ? (
-                <div className="history-menu">
-                  <button onClick={() => startEditingConversationTitle(conversation)}>Rename</button>
-                  <button onClick={() => copyConversationID(conversation)}>
-                    {copiedConversationID === conversation.id ? '✓ Copied' : 'Copy ID'}
-                  </button>
-                  <button onClick={() => archiveConversation(conversation)}>Archive</button>
-                  {targets.length ? (
-                    <>
-                      <div className="history-menu-label">Move to project</div>
-                      {targets.map((target) => (
-                        <button key={target.projectID} onClick={() => void moveConversation(conversation, target.projectID)}>
-                          {target.label}
-                        </button>
-                      ))}
-                    </>
-                  ) : null}
-                  {conversation.projectId ? (
-                    <button onClick={() => void moveConversation(conversation, '')}>Move to standalone</button>
-                  ) : null}
-                </div>
-              ) : null}
+                <button onClick={() => startEditingConversationTitle(conversation)}>Rename</button>
+                <button onClick={() => copyConversationID(conversation)}>
+                  {copiedConversationID === conversation.id ? '✓ Copied' : 'Copy ID'}
+                </button>
+                <button onClick={() => archiveConversation(conversation)}>Archive</button>
+                {targets.length ? (
+                  <>
+                    <div className="history-menu-label">Move to project</div>
+                    {targets.map((target) => (
+                      <button key={target.projectID} onClick={() => void moveConversation(conversation, target.projectID)}>
+                        {target.label}
+                      </button>
+                    ))}
+                  </>
+                ) : null}
+                {conversation.projectId ? (
+                  <button onClick={() => void moveConversation(conversation, '')}>Move to standalone</button>
+                ) : null}
+              </AnchoredMenu>
             </div>
           </>
         )}
@@ -3371,39 +3390,33 @@ function App() {
                                     >
                                       +
                                     </button>
-                                    <button
-                                      type="button"
-                                      className="history-icon-button"
-                                      aria-label={`More actions for ${library.name}`}
-                                      title="More"
-                                      onClick={() => toggleContainerMenu(library.id)}
+                                    <AnchoredMenu
+                                      label={`More actions for ${library.name}`}
+                                      open={openContainerMenuID === library.id}
+                                      onToggle={() => toggleContainerMenu(library.id)}
+                                      onClose={closeContainerMenu}
                                     >
-                                      ⋮
-                                    </button>
-                                    {openContainerMenuID === library.id ? (
-                                      <div className="history-menu">
-                                        <button onClick={() => startCreatingProject(library)}>New Project</button>
-                                        <button onClick={() => startEditingContainer(library.id, library.name)}>Rename</button>
-                                        {exportPlan && exportPlan.libraryId === library.id ? (
-                                          <button disabled={containerBusy} onClick={() => void confirmExportLibrary(library.id)}>
-                                            {`Export ${exportPlan.conversations} conversation${exportPlan.conversations === 1 ? '' : 's'} (${formatModelSize(exportPlan.bytes)})`
-                                              + (asArray(exportPlan.missingAssets).length
-                                                ? ` — ${asArray(exportPlan.missingAssets).length} missing asset${asArray(exportPlan.missingAssets).length === 1 ? '' : 's'} marked`
-                                                : '')
-                                              + '?'}
-                                          </button>
-                                        ) : (
-                                          <button onClick={() => void armLibraryExport(library.id)}>Export…</button>
-                                        )}
-                                        {confirmDeleteContainerID === library.id ? (
-                                          <button className="menu-danger" disabled={containerBusy} onClick={() => void confirmDeleteContainer(library.id)}>
-                                            Delete library and everything in it?
-                                          </button>
-                                        ) : (
-                                          <button className="menu-danger" onClick={() => armContainerDelete(library.id)}>Delete…</button>
-                                        )}
-                                      </div>
-                                    ) : null}
+                                      <button onClick={() => startCreatingProject(library)}>New Project</button>
+                                      <button onClick={() => startEditingContainer(library.id, library.name)}>Rename</button>
+                                      {exportPlan && exportPlan.libraryId === library.id ? (
+                                        <button disabled={containerBusy} onClick={() => void confirmExportLibrary(library.id)}>
+                                          {`Export ${exportPlan.conversations} conversation${exportPlan.conversations === 1 ? '' : 's'} (${formatModelSize(exportPlan.bytes)})`
+                                            + (asArray(exportPlan.missingAssets).length
+                                              ? ` — ${asArray(exportPlan.missingAssets).length} missing asset${asArray(exportPlan.missingAssets).length === 1 ? '' : 's'} marked`
+                                              : '')
+                                            + '?'}
+                                        </button>
+                                      ) : (
+                                        <button onClick={() => void armLibraryExport(library.id)}>Export…</button>
+                                      )}
+                                      {confirmDeleteContainerID === library.id ? (
+                                        <button className="menu-danger" disabled={containerBusy} onClick={() => void confirmDeleteContainer(library.id)}>
+                                          Delete library and everything in it?
+                                        </button>
+                                      ) : (
+                                        <button className="menu-danger" onClick={() => armContainerDelete(library.id)}>Delete…</button>
+                                      )}
+                                    </AnchoredMenu>
                                   </div>
                                 </div>
                               )}
@@ -3452,28 +3465,22 @@ function App() {
                                               >
                                                 +
                                               </button>
-                                              <button
-                                                type="button"
-                                                className="history-icon-button"
-                                                aria-label={`More actions for ${project.name}`}
-                                                title="More"
-                                                onClick={() => toggleContainerMenu(project.id)}
+                                              <AnchoredMenu
+                                                label={`More actions for ${project.name}`}
+                                                open={openContainerMenuID === project.id}
+                                                onToggle={() => toggleContainerMenu(project.id)}
+                                                onClose={closeContainerMenu}
                                               >
-                                                ⋮
-                                              </button>
-                                              {openContainerMenuID === project.id ? (
-                                                <div className="history-menu">
-                                                  <button onClick={() => void startNewChatInProject(project.id, library.id)}>New Chat</button>
-                                                  <button onClick={() => startEditingContainer(project.id, project.name)}>Rename</button>
-                                                  {confirmDeleteContainerID === project.id ? (
-                                                    <button className="menu-danger" disabled={containerBusy} onClick={() => void confirmDeleteContainer(project.id)}>
-                                                      Delete project and its chats?
-                                                    </button>
-                                                  ) : (
-                                                    <button className="menu-danger" onClick={() => armContainerDelete(project.id)}>Delete…</button>
-                                                  )}
-                                                </div>
-                                              ) : null}
+                                                <button onClick={() => void startNewChatInProject(project.id, library.id)}>New Chat</button>
+                                                <button onClick={() => startEditingContainer(project.id, project.name)}>Rename</button>
+                                                {confirmDeleteContainerID === project.id ? (
+                                                  <button className="menu-danger" disabled={containerBusy} onClick={() => void confirmDeleteContainer(project.id)}>
+                                                    Delete project and its chats?
+                                                  </button>
+                                                ) : (
+                                                  <button className="menu-danger" onClick={() => armContainerDelete(project.id)}>Delete…</button>
+                                                )}
+                                              </AnchoredMenu>
                                             </div>
                                           </div>
                                         )}
@@ -4793,6 +4800,114 @@ function ContainerNameInput(props: {
       }}
       onBlur={props.onSubmit}
     />
+  );
+}
+
+// AnchoredMenu is the sidebar's ⋮ menu: a trigger button plus its dropdown,
+// portaled to document.body and fixed-positioned at the trigger's viewport
+// rect. The portal is the point — the sidebar's lists scroll (overflow-y:
+// auto), so an absolutely-positioned menu inside them is clipped to the
+// scroll pane and demands scrolling to read. Fixed viewport coordinates also
+// let the menu flip ABOVE the trigger when the window's bottom edge leaves no
+// room below. It closes on outside press, Escape, scroll, or resize —
+// anything that detaches it from its anchor.
+function AnchoredMenu(props: {
+  label: string;
+  open: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  // Viewport coordinates for the open menu; null during the hidden
+  // pre-measure render.
+  const [placement, setPlacement] = useState<{top?: number; bottom?: number; right: number} | null>(null);
+
+  // Place the freshly rendered menu below the trigger, or above it when the
+  // window can't fit it below. The menu paints hidden (visibility, not
+  // display, so it still has layout to measure) and useLayoutEffect lands
+  // the coordinates before anything becomes visible. children is a
+  // dependency on purpose — content changes the height (Copy ID → ✓ Copied,
+  // Export… → the sized plan) and the placement must follow.
+  useLayoutEffect(() => {
+    if (!props.open || !triggerRef.current || !menuRef.current) {
+      setPlacement(null);
+      return;
+    }
+    const rect = triggerRef.current.getBoundingClientRect();
+    const height = menuRef.current.offsetHeight;
+    const fitsBelow = window.innerHeight - rect.bottom >= height + 8;
+    const openDownward = fitsBelow || rect.bottom <= window.innerHeight / 2;
+    setPlacement({
+      right: window.innerWidth - rect.right,
+      ...(openDownward
+        ? {top: Math.round(rect.bottom) + 4}
+        : {bottom: Math.round(window.innerHeight - rect.top) + 4}),
+    });
+  }, [props.open, props.children]);
+
+  useEffect(() => {
+    if (!props.open) {
+      return;
+    }
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target instanceof Node ? event.target : null;
+      if ((triggerRef.current && triggerRef.current.contains(target))
+        || (menuRef.current && menuRef.current.contains(target))) {
+        return;
+      }
+      props.onClose();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        props.onClose();
+      }
+    };
+    // Scroll (captured, so nested panes count) or resize detaches a fixed
+    // menu from its anchor — closing is the only correct response. Scrolling
+    // INSIDE the menu itself is exempt.
+    const onReflow = (event: Event) => {
+      if (event.target instanceof Node && menuRef.current?.contains(event.target)) {
+        return;
+      }
+      props.onClose();
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    window.addEventListener('resize', onReflow);
+    window.addEventListener('scroll', onReflow, true);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('resize', onReflow);
+      window.removeEventListener('scroll', onReflow, true);
+    };
+  }, [props.open, props.onClose]);
+
+  return (
+    <>
+      <button
+        type="button"
+        className="history-icon-button"
+        aria-label={props.label}
+        title="More"
+        onClick={props.onToggle}
+        ref={triggerRef}
+      >
+        ⋮
+      </button>
+      {props.open ? createPortal(
+        <div
+          ref={menuRef}
+          className="history-menu anchored"
+          style={placement ? {...placement} : {visibility: 'hidden'}}
+        >
+          {props.children}
+        </div>,
+        document.body,
+      ) : null}
+    </>
   );
 }
 
