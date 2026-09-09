@@ -294,7 +294,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			generated.Notices = notices
 			return generated, err
 		}
-		gateway.tools.TranscribeAudio = func(ctx context.Context, model, audioURL, task, language string) (GeneratedTranscript, error) {
+		gateway.tools.TranscribeAudio = func(ctx context.Context, req TranscribeAudioRequest) (GeneratedTranscript, error) {
 			apiKey, err := loadFalAPIKey()
 			if err != nil {
 				return GeneratedTranscript{}, err
@@ -305,10 +305,19 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			client := newFalClient(app.client, apiKey)
 			// Pre-resolve the audio clip: a long voice memo can exceed fal's inline
 			// size limit, so upload it to CDN first when oversized.
-			if resolved, err := client.resolveMediaURL(ctx, audioURL, "audio/mpeg", "audio.mp3"); err == nil {
-				audioURL = resolved
+			if resolved, err := client.resolveMediaURL(ctx, req.Audio, "audio/mpeg", "audio.mp3"); err == nil {
+				req.Audio = resolved
 			}
-			return client.TranscribeAudio(ctx, model, audioURL, task, language)
+			return client.TranscribeAudio(ctx, req)
+		}
+	}
+	// Local whisper transcription needs neither an API key nor an HTTP client,
+	// so it wires outside the app block (tests pass a nil app). The runner
+	// re-resolves the binary per call, so a Settings change takes effect on the
+	// next tool call without rebuilding the gateway.
+	if _, ok := resolveLocalWhisperBinary(config); ok {
+		gateway.tools.TranscribeAudioLocal = func(ctx context.Context, req TranscribeAudioRequest) (GeneratedTranscript, error) {
+			return runLocalWhisperTranscription(ctx, config, req)
 		}
 	}
 	return gateway

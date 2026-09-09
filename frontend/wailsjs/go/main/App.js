@@ -46,6 +46,10 @@ export function DeleteProject(arg1) {
   return window['go']['main']['App']['DeleteProject'](arg1);
 }
 
+export function DetectLocalTools(arg1) {
+  return window['go']['main']['App']['DetectLocalTools'](arg1);
+}
+
 export function ExecuteTool(arg1) {
   return window['go']['main']['App']['ExecuteTool'](arg1);
 }

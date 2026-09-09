@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -244,9 +245,84 @@ type GeneratedAudio struct {
 // returns the transcript inline in the result payload's "text" field.
 type GeneratedTranscript struct {
 	Text string
+	// Timestamps names the granularity of TimestampedText — "segments" or
+	// "words" — empty when only plain text was produced.
+	Timestamps string
+	// TimestampedText is the timestamped rendering, one chunk per line
+	// ("[HH:MM:SS.mmm --> HH:MM:SS.mmm] text"). Present only when the caller
+	// requested timestamps and the backend produced them.
+	TimestampedText string
 	// Notices holds deterministic, user-facing caveats (e.g. an auto-detected
-	// language). Surfaced verbatim in the chat reply.
+	// language, or a word-level request served at segment level). Surfaced
+	// verbatim in the chat reply.
 	Notices []string
+}
+
+// TranscribeAudioRequest is the canonical transcription request, shared by the
+// fal and local-whisper backends so the tool layer cannot drift between them.
+// Audio is a hosted URL or inline data URI for fal, a data URL for the local
+// runner. Task is "transcribe" (default) or "translate"; Language is an
+// optional two-letter hint. Timestamps is "" (plain text), "segments", or
+// "words" — the backends degrade word-level to segments with a notice when
+// the model cannot serve it.
+type TranscribeAudioRequest struct {
+	Model      string
+	Audio      string
+	Task       string
+	Language   string
+	Timestamps string
+}
+
+// transcriptChunk is one timestamped unit — a word or a segment — normalized
+// across every backend that produces timestamps (fal's chunks, whisper.cpp's
+// VTT cues, openai-whisper's json). End is nil for an open range.
+type transcriptChunk struct {
+	Start float64
+	End   *float64
+	Text  string
+}
+
+// falTranscribeModelSupportsWordChunks reports whether a fal speech-to-text
+// endpoint can return word-level chunks. fal-ai/whisper exposes chunk_level
+// "word"; wizper's schema pins chunk_level to the const "segment" (verified
+// against the live OpenAPI documents). Unknown models are treated as
+// segment-only — the safe degradation, with a notice rather than a 422.
+func falTranscribeModelSupportsWordChunks(model string) bool {
+	return strings.Contains(strings.ToLower(model), "whisper")
+}
+
+// formatTranscriptSeconds renders a chunk boundary as HH:MM:SS.mmm — the same
+// shape whisper.cpp's VTT cues use, so local and fal transcripts read alike.
+func formatTranscriptSeconds(seconds float64) string {
+	if seconds < 0 || math.IsNaN(seconds) {
+		seconds = 0
+	}
+	total := int64(seconds)
+	millis := int64(math.Round((seconds - float64(total)) * 1000))
+	if millis >= 1000 {
+		total++
+		millis = 0
+	}
+	return fmt.Sprintf("%02d:%02d:%02d.%03d", total/3600, total%3600/60, total%60, millis)
+}
+
+// renderTimestampedChunks lays chunks out one per line, e.g.
+// "[00:00:01.520 --> 00:00:02.100] Atelier". An open-ended chunk (nil end)
+// renders with its start only; empty-text chunks are dropped.
+func renderTimestampedChunks(chunks []transcriptChunk) string {
+	lines := make([]string, 0, len(chunks))
+	for _, chunk := range chunks {
+		text := strings.TrimSpace(chunk.Text)
+		if text == "" {
+			continue
+		}
+		if chunk.End != nil {
+			lines = append(lines, fmt.Sprintf("[%s --> %s] %s", formatTranscriptSeconds(chunk.Start), formatTranscriptSeconds(*chunk.End), text))
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("[%s] %s", formatTranscriptSeconds(chunk.Start), text))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // GeneratedVideo is a downloaded text-to-video result. Data holds the raw video
@@ -753,24 +829,42 @@ func (client FalClient) GenerateAudio(ctx context.Context, model string, body ma
 // (fal-ai/wizper by default), polls until completion, and returns the
 // transcript text. fal-ai/wizper accepts audio_url as a hosted URL or an inline
 // data URI (see falAudioURL), so no fal storage upload is needed. The transcript
-// lives in the result payload's top-level "text" field. task is "transcribe" or
-// "translate" (empty defaults to "transcribe"); language is an optional hint
-// (empty lets the model auto-detect).
-func (client FalClient) TranscribeAudio(ctx context.Context, model, audioURL, task, language string) (GeneratedTranscript, error) {
-	model = strings.TrimSpace(model)
+// lives in the result payload's top-level "text" field; when req.Timestamps is
+// set, the payload's "chunks" array is also rendered as TimestampedText (see
+// TranscribeAudioRequest for the levels and degradations).
+func (client FalClient) TranscribeAudio(ctx context.Context, req TranscribeAudioRequest) (GeneratedTranscript, error) {
+	model := strings.TrimSpace(req.Model)
 	if model == "" {
 		model = defaultFalTranscribeModel
 	}
-	task = strings.TrimSpace(task)
+	task := strings.TrimSpace(req.Task)
 	if task == "" {
 		task = "transcribe"
 	}
 	body := map[string]any{
-		"audio_url": falAudioURL(audioURL),
+		"audio_url": falAudioURL(req.Audio),
 		"task":      task,
 	}
-	if hint := strings.TrimSpace(language); hint != "" {
+	if hint := strings.TrimSpace(req.Language); hint != "" {
 		body["language"] = hint
+	}
+	var transcript GeneratedTranscript
+	// Timestamps map onto fal's chunk_level input — fal-ai/wizper and
+	// fal-ai/whisper both accept it. A word-level request on a segment-only
+	// model degrades to segments with a notice rather than failing the call.
+	switch strings.TrimSpace(req.Timestamps) {
+	case "segments":
+		body["chunk_level"] = "segment"
+		transcript.Timestamps = "segments"
+	case "words":
+		if falTranscribeModelSupportsWordChunks(model) {
+			body["chunk_level"] = "word"
+			transcript.Timestamps = "words"
+		} else {
+			body["chunk_level"] = "segment"
+			transcript.Timestamps = "segments"
+			transcript.Notices = append(transcript.Notices, fmt.Sprintf("%s provides segment-level timestamps only — returning segments", model))
+		}
 	}
 
 	submit, err := client.submit(ctx, model, body)
@@ -793,21 +887,83 @@ func (client FalClient) TranscribeAudio(ctx context.Context, model, audioURL, ta
 	}
 
 	text := ""
+	chunks := []transcriptChunk(nil)
+	var payload falTranscriptPayload
 	if len(result.Data) > 0 {
-		var payload struct {
-			Text string `json:"text"`
-		}
 		if err := json.Unmarshal(result.Data, &payload); err == nil {
 			text = strings.TrimSpace(payload.Text)
+			chunks = payload.chunks()
+		}
+	}
+	if text == "" || (transcript.Timestamps != "" && len(chunks) == 0) {
+		// Speech-to-text results often sit at the top level of the raw result
+		// (no "data" envelope) — parse it for whichever half is still missing,
+		// the same layered approach firstFalTranscriptText takes for text.
+		var rawPayload falTranscriptPayload
+		if err := json.Unmarshal(raw, &rawPayload); err == nil {
+			if text == "" {
+				text = strings.TrimSpace(rawPayload.Text)
+			}
+			if len(chunks) == 0 {
+				chunks = rawPayload.chunks()
+			}
 		}
 	}
 	if text == "" {
 		text = firstFalTranscriptText(raw)
 	}
+	if text == "" && len(chunks) > 0 {
+		// A chunk-only payload still yields a usable plain transcript.
+		parts := make([]string, 0, len(chunks))
+		for _, chunk := range chunks {
+			if trimmed := strings.TrimSpace(chunk.Text); trimmed != "" {
+				parts = append(parts, trimmed)
+			}
+		}
+		text = strings.Join(parts, " ")
+	}
 	if text == "" {
 		return GeneratedTranscript{}, errors.New("fal transcription returned no text")
 	}
-	return GeneratedTranscript{Text: text}, nil
+	transcript.Text = text
+	if transcript.Timestamps != "" {
+		if rendered := renderTimestampedChunks(chunks); rendered != "" {
+			transcript.TimestampedText = rendered
+		} else {
+			// The model accepted chunk_level but returned no chunks — report
+			// plain text rather than claiming a timestamped transcript.
+			transcript.Timestamps = ""
+		}
+	}
+	return transcript, nil
+}
+
+// falTranscriptPayload mirrors the speech-to-text result: the plain "text"
+// plus the optional "chunks" array of {timestamp: [start, end], text} entries
+// shared by fal-ai/wizper and fal-ai/whisper. The end timestamp may be null.
+type falTranscriptPayload struct {
+	Text   string              `json:"text"`
+	Chunks []falTranscriptUnit `json:"chunks"`
+}
+
+type falTranscriptUnit struct {
+	Timestamp []*float64 `json:"timestamp"`
+	Text      string     `json:"text"`
+}
+
+func (payload falTranscriptPayload) chunks() []transcriptChunk {
+	chunks := make([]transcriptChunk, 0, len(payload.Chunks))
+	for _, unit := range payload.Chunks {
+		chunk := transcriptChunk{Text: unit.Text}
+		if len(unit.Timestamp) > 0 && unit.Timestamp[0] != nil {
+			chunk.Start = *unit.Timestamp[0]
+		}
+		if len(unit.Timestamp) > 1 {
+			chunk.End = unit.Timestamp[1]
+		}
+		chunks = append(chunks, chunk)
+	}
+	return chunks
 }
 
 // firstFalTranscriptText walks the raw fal result for a "text" string field, as

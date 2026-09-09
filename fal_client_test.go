@@ -1089,12 +1089,15 @@ func TestFalClientTranscribeAudioSubmitsWizperBody(t *testing.T) {
 		}
 	}))
 
-	transcript, err := client.TranscribeAudio(context.Background(), "", "data:audio/wav;base64,AAAA", "", "")
+	transcript, err := client.TranscribeAudio(context.Background(), TranscribeAudioRequest{Audio: "data:audio/wav;base64,AAAA"})
 	if err != nil {
 		t.Fatalf("TranscribeAudio returned error: %v", err)
 	}
 	if transcript.Text != "hello world" {
 		t.Errorf("transcript = %q, want \"hello world\"", transcript.Text)
+	}
+	if transcript.Timestamps != "" || transcript.TimestampedText != "" {
+		t.Errorf("plain request must not claim timestamps: %+v", transcript)
 	}
 	if !strings.Contains(submitBody, `"audio_url":"data:audio/wav;base64,AAAA"`) {
 		t.Errorf("submit body did not carry audio_url as the data URI: %s", submitBody)
@@ -1126,7 +1129,7 @@ func TestFalClientTranscribeAudioForwardsTaskAndLanguage(t *testing.T) {
 		}
 	}))
 
-	if _, err := client.TranscribeAudio(context.Background(), model, "data:audio/mpeg;base64,AAAA", "translate", "fr"); err != nil {
+	if _, err := client.TranscribeAudio(context.Background(), TranscribeAudioRequest{Model: model, Audio: "data:audio/mpeg;base64,AAAA", Task: "translate", Language: "fr"}); err != nil {
 		t.Fatalf("TranscribeAudio returned error: %v", err)
 	}
 	if !strings.Contains(submitBody, `"task":"translate"`) {
@@ -1155,7 +1158,7 @@ func TestFalClientTranscribeAudioNoText(t *testing.T) {
 		}
 	}))
 
-	_, err := client.TranscribeAudio(context.Background(), model, "data:audio/mpeg;base64,AAAA", "", "")
+	_, err := client.TranscribeAudio(context.Background(), TranscribeAudioRequest{Model: model, Audio: "data:audio/mpeg;base64,AAAA"})
 	if err == nil || !strings.Contains(err.Error(), "no text") {
 		t.Fatalf("expected a no-text error, got %v", err)
 	}
@@ -1180,11 +1183,92 @@ func TestFalClientTranscribeAudioUnmarshalDataText(t *testing.T) {
 		}
 	}))
 
-	transcript, err := client.TranscribeAudio(context.Background(), model, "data:audio/mpeg;base64,AAAA", "", "")
+	transcript, err := client.TranscribeAudio(context.Background(), TranscribeAudioRequest{Model: model, Audio: "data:audio/mpeg;base64,AAAA"})
 	if err != nil {
 		t.Fatalf("TranscribeAudio returned error: %v", err)
 	}
 	if transcript.Text != "nested transcript" {
 		t.Errorf("transcript = %q, want \"nested transcript\"", transcript.Text)
+	}
+}
+
+// TestFalClientTranscribeAudioTimestamps pins the timestamps routing: segments
+// map onto chunk_level "segment"; words map onto "word" only for models that
+// offer it (fal-ai/whisper) and degrade to segments with a notice on wizper;
+// the chunks array renders into TimestampedText. The result payload here is
+// top-level (no "data" envelope) — the shape real speech-to-text results use.
+func TestFalClientTranscribeAudioTimestamps(t *testing.T) {
+	const chunksResult = `{"text":"hello world","chunks":[` +
+		`{"timestamp":[0,1.5],"text":"hello"},` +
+		`{"timestamp":[1.5,null],"text":"world"}]}`
+	cases := []struct {
+		name           string
+		model          string
+		timestamps     string
+		wantChunkLevel string // "" = the body must not carry chunk_level
+		wantLevel      string
+		wantNotice     bool
+	}{
+		{name: "wizper segments", model: "fal-ai/wizper", timestamps: "segments", wantChunkLevel: "segment", wantLevel: "segments"},
+		{name: "wizper words degrade to segments", model: "fal-ai/wizper", timestamps: "words", wantChunkLevel: "segment", wantLevel: "segments", wantNotice: true},
+		{name: "whisper words", model: "fal-ai/whisper", timestamps: "words", wantChunkLevel: "word", wantLevel: "words"},
+		{name: "plain carries no chunk_level", model: "fal-ai/wizper", timestamps: "", wantChunkLevel: "", wantLevel: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var submitBody string
+			client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+				switch {
+				case req.Method == http.MethodPost && req.URL.Path == "/"+tc.model:
+					body, _ := io.ReadAll(req.Body)
+					submitBody = string(body)
+					return jsonResp(`{"request_id":"req-ts"}`), nil
+				case strings.HasSuffix(req.URL.Path, "/status"):
+					return jsonResp(`{"status":"COMPLETED"}`), nil
+				case strings.HasSuffix(req.URL.Path, "/requests/req-ts"):
+					return jsonResp(chunksResult), nil
+				default:
+					t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+					return nil, nil
+				}
+			}))
+			transcript, err := client.TranscribeAudio(context.Background(), TranscribeAudioRequest{
+				Model:      tc.model,
+				Audio:      "data:audio/mpeg;base64,AAAA",
+				Timestamps: tc.timestamps,
+			})
+			if err != nil {
+				t.Fatalf("TranscribeAudio returned error: %v", err)
+			}
+			if tc.wantChunkLevel == "" {
+				if strings.Contains(submitBody, "chunk_level") {
+					t.Errorf("plain request must not send chunk_level: %s", submitBody)
+				}
+			} else if !strings.Contains(submitBody, `"chunk_level":"`+tc.wantChunkLevel+`"`) {
+				t.Errorf("submit body chunk_level = %s", submitBody)
+			}
+			if transcript.Timestamps != tc.wantLevel {
+				t.Errorf("Timestamps = %q, want %q", transcript.Timestamps, tc.wantLevel)
+			}
+			hasNotice := false
+			for _, notice := range transcript.Notices {
+				if strings.Contains(notice, "segment-level timestamps only") {
+					hasNotice = true
+				}
+			}
+			if hasNotice != tc.wantNotice {
+				t.Errorf("degradation notice present = %v, want %v (notices: %v)", hasNotice, tc.wantNotice, transcript.Notices)
+			}
+			if tc.wantLevel == "" {
+				return
+			}
+			// The null end timestamp renders start-only; the closed pair renders both.
+			if !strings.Contains(transcript.TimestampedText, "[00:00:00.000 --> 00:00:01.500] hello") {
+				t.Errorf("TimestampedText missing closed chunk: %q", transcript.TimestampedText)
+			}
+			if !strings.Contains(transcript.TimestampedText, "[00:00:01.500] world") {
+				t.Errorf("TimestampedText missing open-ended chunk: %q", transcript.TimestampedText)
+			}
+		})
 	}
 }

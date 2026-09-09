@@ -15,6 +15,7 @@ import {
   DeleteConversation,
   DeleteLibrary,
   DeleteProject,
+  DetectLocalTools,
   ExportLibrary,
   GetConversation,
   GetConfig,
@@ -946,6 +947,15 @@ function App() {
   const [falAudioExtendModels, setFalAudioExtendModels] = useState<main.FalModel[]>([]);
   const [falTranscribeModel, setFalTranscribeModel] = useState(defaultFalTranscribeModel);
   const [falTranscribeModels, setFalTranscribeModels] = useState<main.FalModel[]>([]);
+  // Transcription provider selection ("fal" cloud vs the locally installed
+  // whisper CLI) plus the local-whisper knobs. localToolsReport is the Go
+  // side's detection snapshot (DetectLocalTools): which binaries exist and
+  // which provider the config resolves to — the dropdown's local option only
+  // makes sense when a whisper was actually found.
+  const [transcriptionProvider, setTranscriptionProvider] = useState<'fal' | 'local-whisper'>('fal');
+  const [whisperModel, setWhisperModel] = useState('');
+  const [whisperBinary, setWhisperBinary] = useState('');
+  const [localToolsReport, setLocalToolsReport] = useState<main.LocalToolsReport | null>(null);
   const [falLipsyncImageModel, setFalLipsyncImageModel] = useState(defaultFalLipsyncImageModel);
   const [falLipsyncVideoModel, setFalLipsyncVideoModel] = useState(defaultFalLipsyncVideoModel);
   const [falLipsyncImageModels, setFalLipsyncImageModels] = useState<main.FalModel[]>([]);
@@ -1500,11 +1510,18 @@ function App() {
             harness: harnessModels['openai-compatible'],
             model: openaiCompatibleModel,
           },
+          local: {
+            whisper: {
+              binary: whisperBinary,
+              model: whisperModel,
+            },
+          },
         },
         models: {
           primaryProvider,
           harnessProvider,
           imageProvider,
+          transcriptionProvider,
         },
         prompts: {
           system,
@@ -1533,7 +1550,23 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, updatesConfig, videoAspectRatio, videoDuration]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, whisperBinary, whisperModel]);
+
+  // Re-probe local CLI tools when the whisper binary override changes so the
+  // provider dropdown reflects an unsaved override without waiting for a save
+  // (an empty override means PATH auto-detection — the Go side treats it that
+  // way too).
+  useEffect(() => {
+    if (!configLoaded) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      DetectLocalTools(new main.LocalToolOverrides({binaries: {whisper: whisperBinary}}))
+        .then((report) => setLocalToolsReport(report))
+        .catch(() => setLocalToolsReport(null));
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [configLoaded, whisperBinary]);
 
   // On a fresh launch, put the cursor in the chat box so the user can start
   // typing immediately. Fires once, when config finishes loading.
@@ -1906,6 +1939,10 @@ function App() {
   const falAudioExtendModelOptions = useMemo(() => falModelOptionList(falAudioExtendModels), [falAudioExtendModels]);
 
   const falTranscribeModelOptions = useMemo(() => falModelOptionList(falTranscribeModels), [falTranscribeModels]);
+  const whisperStatus = useMemo(
+    () => localToolsReport?.binaries?.find((entry) => entry.key === 'whisper') ?? null,
+    [localToolsReport],
+  );
 
   const falUpscaleModelOptions = useMemo(() => falModelOptionList(falUpscaleModels), [falUpscaleModels]);
 
@@ -2056,6 +2093,9 @@ function App() {
 	const nextFalSoundEffectsModel = config.providers?.fal?.soundEffectsModel || defaultFalSoundEffectsModel;
 	const nextFalAudioExtendModel = config.providers?.fal?.audioExtendModel || defaultFalAudioExtendModel;
 	const nextFalTranscribeModel = config.providers?.fal?.transcribeModel || defaultFalTranscribeModel;
+	const nextTranscriptionProvider = config.models?.transcriptionProvider === 'local-whisper' ? 'local-whisper' : 'fal';
+	const nextWhisperModel = config.providers?.local?.whisper?.model ?? '';
+	const nextWhisperBinary = config.providers?.local?.whisper?.binary ?? '';
 	const nextFalLipsyncImageModel = config.providers?.fal?.lipsyncImageModel || defaultFalLipsyncImageModel;
 	const nextFalLipsyncVideoModel = config.providers?.fal?.lipsyncVideoModel || defaultFalLipsyncVideoModel;
     const nextFalUpscaleModel = config.providers?.fal?.upscaleModel || defaultFalUpscaleModel;
@@ -2091,6 +2131,9 @@ function App() {
     setFalSoundEffectsModel(nextFalSoundEffectsModel);
     setFalAudioExtendModel(nextFalAudioExtendModel);
     setFalTranscribeModel(nextFalTranscribeModel);
+    setTranscriptionProvider(nextTranscriptionProvider);
+    setWhisperModel(nextWhisperModel);
+    setWhisperBinary(nextWhisperBinary);
     setFalLipsyncImageModel(nextFalLipsyncImageModel);
     setFalLipsyncVideoModel(nextFalLipsyncVideoModel);
     setFalUpscaleModel(nextFalUpscaleModel);
@@ -2117,6 +2160,16 @@ function App() {
           refreshFalModels();
         }
       }).catch(() => setFalHasKey(false)),
+      DetectLocalTools(new main.LocalToolOverrides()).then((report) => {
+        setLocalToolsReport(report);
+        // An unset provider auto-resolves in Go (fal when a key exists, else a
+        // detected local whisper). Adopt that resolution here so the dropdown
+        // shows — and the next save persists — what the backend would do.
+        if (!config.models?.transcriptionProvider &&
+            (report.transcriptionProvider === 'fal' || report.transcriptionProvider === 'local-whisper')) {
+          setTranscriptionProvider(report.transcriptionProvider);
+        }
+      }).catch(() => setLocalToolsReport(null)),
       HasOpenAICompatibleAPIKey().then((hasKey) => {
         setOpenaiCompatibleHasKey(hasKey);
       }).catch(() => setOpenaiCompatibleHasKey(false)),
@@ -4235,19 +4288,79 @@ function App() {
 
               <section className="settings-section">
                 <h3>Transcription</h3>
-                <div className="field">
-                  <label htmlFor="fal-transcribe-model">Transcription Model (fal.ai)</label>
-                  <ModelCombobox
-                    id="fal-transcribe-model"
-                    ariaLabel="fal.ai transcription model"
-                    placeholder={defaultFalTranscribeModel}
-                    value={falTranscribeModel}
-                    onChange={setFalTranscribeModel}
-                    options={falTranscribeModelOptions}
-                    allowCustom
-                  />
-                  {!falHasKey ? (
-                    <span className="hint">Add a fal.ai API key above to transcribe audio.</span>
+                <div className="settings-rows">
+                  <div className="two-column">
+                    <div className="field">
+                      <label htmlFor="transcription-provider">Transcription Provider</label>
+                      <select
+                        id="transcription-provider"
+                        value={transcriptionProvider}
+                        onChange={(event) => setTranscriptionProvider(event.target.value as 'fal' | 'local-whisper')}
+                      >
+                        <option value="fal">fal.ai (cloud)</option>
+                        <option
+                          value="local-whisper"
+                          disabled={!whisperStatus?.available && transcriptionProvider !== 'local-whisper'}
+                        >
+                          Whisper (local)
+                        </option>
+                      </select>
+                      {!whisperStatus?.available && transcriptionProvider !== 'local-whisper' ? (
+                        <span className="hint">{whisperStatus?.detail ?? 'Detecting local tools…'}</span>
+                      ) : null}
+                    </div>
+
+                    {transcriptionProvider === 'local-whisper' ? (
+                      <div className="field">
+                        <div className="field-label-row">
+                          <label htmlFor="whisper-model">Whisper Model</label>
+                          {whisperStatus?.flavor === 'whisper-cpp' ? (
+                            <InfoHint
+                              label="Empty whisper model resolution"
+                              text="Empty model resolves: $WHISPER_MODEL (if set when Atelier launched) → ~/.whisper-base.en.bin → ~/.cache/whisper.cpp/ggml-base.en.bin → ~/models/ggml-base.en.bin."
+                            />
+                          ) : null}
+                        </div>
+                        <input
+                          id="whisper-model"
+                          value={whisperModel}
+                          onChange={(event) => setWhisperModel(event.target.value)}
+                          placeholder={whisperStatus?.flavor === 'whisper-cpp' ? '/path/to/ggml-base.en.bin' : 'small (whisper default)'}
+                        />
+                      </div>
+                    ) : (
+                      <div className="field">
+                        <label htmlFor="fal-transcribe-model">Transcription Model (fal.ai)</label>
+                        <ModelCombobox
+                          id="fal-transcribe-model"
+                          ariaLabel="fal.ai transcription model"
+                          placeholder={defaultFalTranscribeModel}
+                          value={falTranscribeModel}
+                          onChange={setFalTranscribeModel}
+                          options={falTranscribeModelOptions}
+                          allowCustom
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  {transcriptionProvider === 'local-whisper' ? (
+                    <div className="field">
+                      <div className="field-label-row">
+                        <label htmlFor="whisper-binary">Whisper Binary</label>
+                        {whisperStatus?.detail ? (
+                          <InfoHint label="Whisper binary detection" text={whisperStatus.detail} />
+                        ) : null}
+                      </div>
+                      <input
+                        id="whisper-binary"
+                        value={whisperBinary}
+                        onChange={(event) => setWhisperBinary(event.target.value)}
+                        placeholder={whisperStatus?.path || 'auto-detect on PATH: whisper, then whisper-cli'}
+                      />
+                    </div>
+                  ) : !falHasKey ? (
+                    <span className="hint">Add a fal.ai API key above — or install whisper locally — to transcribe audio.</span>
                   ) : null}
                 </div>
               </section>
@@ -4908,6 +5021,20 @@ function AnchoredMenu(props: {
         document.body,
       ) : null}
     </>
+  );
+}
+
+// InfoHint is a small circled "i" whose informational text pops open on hover
+// — and on keyboard focus, so hover-only doesn't hide it from keyboard users.
+// The popover is CSS-anchored to the icon (no portal): it's narrow, opens
+// rightward/downward from a label row, and closes on pointer-leave, so it
+// never fights the scroll/resize detachment the anchored menus handle.
+function InfoHint(props: {label: string; text: string}) {
+  return (
+    <span className="info-hint" tabIndex={0} role="note" aria-label={props.label}>
+      <span className="info-hint-icon" aria-hidden="true">i</span>
+      <span className="info-hint-pop" role="tooltip">{props.text}</span>
+    </span>
   );
 }
 

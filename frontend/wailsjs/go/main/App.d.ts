@@ -24,6 +24,8 @@ export function DeleteLibrary(arg1:string):Promise<main.DeleteLibraryResult>;
 
 export function DeleteProject(arg1:string):Promise<main.DeleteProjectResult>;
 
+export function DetectLocalTools(arg1:main.LocalToolOverrides):Promise<main.LocalToolsReport>;
+
 export function ExecuteTool(arg1:main.ToolExecutionRequest):Promise<main.HarnessToolResult>;
 
 export function ExportLibrary(arg1:string):Promise<main.LibraryExportResult>;

@@ -149,6 +149,7 @@ type ConfigProviders struct {
 	OpenRouter       ConfigOpenRouter       `json:"openrouter"`
 	Fal              ConfigFal              `json:"fal"`
 	OpenAICompatible ConfigOpenAICompatible `json:"openaiCompatible"`
+	Local            ConfigLocalProviders   `json:"local"`
 }
 
 type ConfigOllama struct {
@@ -201,7 +202,9 @@ type ConfigFal struct {
 	AudioCloneModel   string `json:"audioCloneModel,omitempty"`
 	AudioExtendModel  string `json:"audioExtendModel,omitempty"`
 	// TranscribeModel is the speech-to-text endpoint used by transcribe_audio
-	// (fal-ai/wizper by default). fal-only; Ollama has no transcription API.
+	// when the transcription provider is fal (fal-ai/wizper by default). The
+	// local whisper CLI is the provider-independent alternative — see
+	// Models.TranscriptionProvider and local_tools.go.
 	TranscribeModel string `json:"transcribeModel,omitempty"`
 	// UpscaleModel is the image upscaler endpoint (fal-only; Ollama has none).
 	UpscaleModel string `json:"upscaleModel,omitempty"`
@@ -230,6 +233,29 @@ type ConfigOpenAICompatible struct {
 	Model   string `json:"model,omitempty"`
 }
 
+// ConfigLocalProviders configures locally installed CLI media tools — binaries
+// on the user's machine rather than cloud services (see local_tools.go for
+// detection and the registry). whisper powers local transcription; an ffmpeg
+// sibling for local media transforms is planned. Adding a tool here, a spec in
+// knownLocalBinaries, and a config override case in
+// configuredLocalBinaryOverride is the whole wiring for detection + Settings.
+type ConfigLocalProviders struct {
+	Whisper ConfigLocalWhisper `json:"whisper"`
+}
+
+// ConfigLocalWhisper configures the local whisper CLI. Binary overrides
+// detection (an absolute path or a bare PATH name; empty auto-detects
+// "whisper" then "whisper-cli" on PATH). Model is the whisper model — an
+// openai-whisper size ("small", "large-v3", ...) or, for whisper.cpp, a path
+// to a ggml .bin file. Empty resolves in tiers (see local_tools.go):
+// WHISPER_MODEL from Atelier's environment, then ~/.whisper-base.en.bin,
+// then ~/.cache/whisper.cpp/ggml-base.en.bin when present, else
+// whisper-cli's own models/ default anchored to the user's home.
+type ConfigLocalWhisper struct {
+	Binary string `json:"binary,omitempty"`
+	Model  string `json:"model,omitempty"`
+}
+
 type ConfigModels struct {
 	PrimaryProvider string `json:"primaryProvider,omitempty"`
 	// HarnessProvider selects where the harness model runs (triage, skill
@@ -237,6 +263,14 @@ type ConfigModels struct {
 	// selection existed, so it normalizes to "ollama" — see mergeAppConfig.
 	HarnessProvider string `json:"harnessProvider,omitempty"`
 	ImageProvider   string `json:"imageProvider,omitempty"`
+	// TranscriptionProvider selects the transcribe_audio backend: "fal"
+	// (fal.ai speech-to-text) or "local-whisper" (the locally installed
+	// whisper CLI — see local_tools.go). Empty auto-resolves at use time:
+	// fal when its API key is configured, else a detected local whisper —
+	// so a config written before this setting existed keeps its old
+	// behaviour exactly while a fal-less machine with whisper installed
+	// still lights up. Normalized in mergeAppConfig.
+	TranscriptionProvider string `json:"transcriptionProvider,omitempty"`
 }
 
 type ConfigPrompts struct {
@@ -2653,6 +2687,21 @@ func (a *App) ListFalTranscribeModels() ([]FalModel, error) {
 	return client.ListModels(ctx, falSpeechToTextCategory, 0)
 }
 
+// DetectLocalTools reports the locally installed CLI media tools (whisper
+// today — see local_tools.go) for the Settings Transcription section: which
+// binaries were found, where, and which transcription provider the current
+// config resolves to. overrides carries unsaved binary overrides keyed by
+// tool id ("whisper") so the UI can reflect an edit before it is persisted.
+// Detection is LookPath-only — no process is spawned — so this is cheap to
+// call on every settings render.
+func (a *App) DetectLocalTools(overrides LocalToolOverrides) (LocalToolsReport, error) {
+	config, err := loadAppConfig()
+	if err != nil {
+		return LocalToolsReport{}, err
+	}
+	return detectLocalTools(config, overrides), nil
+}
+
 // isFalAudioExtendModel reports whether a fal catalog entry is an audio-extend
 // endpoint — one that continues an existing clip with generated audio
 // (stable-audio inpaint/outpaint, ace-step audio-outpaint, sonauto extend).
@@ -3019,6 +3068,22 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	default:
 		config.Models.ImageProvider = defaults.Models.ImageProvider
 	}
+	// TranscriptionProvider selects the transcribe_audio backend ("fal" |
+	// "local-whisper"). Unknown or empty normalizes to "" — empty
+	// auto-resolves at use time (fal when its key is configured, else a
+	// detected local whisper), so a config written before this setting
+	// existed keeps its old behaviour exactly. Deliberately not seeded from
+	// defaults: the effective provider depends on live key/detection state.
+	switch strings.TrimSpace(config.Models.TranscriptionProvider) {
+	case transcriptionProviderFal, transcriptionProviderLocalWhisper:
+		config.Models.TranscriptionProvider = strings.TrimSpace(config.Models.TranscriptionProvider)
+	default:
+		config.Models.TranscriptionProvider = ""
+	}
+	// Local CLI tool settings carry no forced defaults: an empty binary means
+	// PATH auto-detection and an empty model means the CLI's own default.
+	config.Providers.Local.Whisper.Binary = strings.TrimSpace(config.Providers.Local.Whisper.Binary)
+	config.Providers.Local.Whisper.Model = strings.TrimSpace(config.Providers.Local.Whisper.Model)
 	if config.Models.ImageProvider == "fal" && strings.TrimSpace(config.Providers.Fal.Model) == "" {
 		config.Providers.Fal.Model = defaultFalImageModel
 	}

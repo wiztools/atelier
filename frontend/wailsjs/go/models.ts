@@ -156,6 +156,7 @@ export namespace main {
 	    primaryProvider?: string;
 	    harnessProvider?: string;
 	    imageProvider?: string;
+	    transcriptionProvider?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigModels(source);
@@ -166,7 +167,52 @@ export namespace main {
 	        this.primaryProvider = source["primaryProvider"];
 	        this.harnessProvider = source["harnessProvider"];
 	        this.imageProvider = source["imageProvider"];
+	        this.transcriptionProvider = source["transcriptionProvider"];
 	    }
+	}
+	export class ConfigLocalWhisper {
+	    binary?: string;
+	    model?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConfigLocalWhisper(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.binary = source["binary"];
+	        this.model = source["model"];
+	    }
+	}
+	export class ConfigLocalProviders {
+	    whisper: ConfigLocalWhisper;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConfigLocalProviders(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.whisper = this.convertValues(source["whisper"], ConfigLocalWhisper);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class ConfigOpenAICompatible {
 	    baseURL: string;
@@ -299,6 +345,7 @@ export namespace main {
 	    openrouter: ConfigOpenRouter;
 	    fal: ConfigFal;
 	    openaiCompatible: ConfigOpenAICompatible;
+	    local: ConfigLocalProviders;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigProviders(source);
@@ -310,6 +357,7 @@ export namespace main {
 	        this.openrouter = this.convertValues(source["openrouter"], ConfigOpenRouter);
 	        this.fal = this.convertValues(source["fal"], ConfigFal);
 	        this.openaiCompatible = this.convertValues(source["openaiCompatible"], ConfigOpenAICompatible);
+	        this.local = this.convertValues(source["local"], ConfigLocalProviders);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -552,6 +600,8 @@ export namespace main {
 	        this.conversationId = source["conversationId"];
 	    }
 	}
+	
+	
 	
 	
 	
@@ -991,6 +1041,7 @@ export namespace main {
 	    scale?: string;
 	    task?: string;
 	    language?: string;
+	    timestamps?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new HarnessToolCall(source);
@@ -1029,6 +1080,7 @@ export namespace main {
 	        this.scale = source["scale"];
 	        this.task = source["task"];
 	        this.language = source["language"];
+	        this.timestamps = source["timestamps"];
 	    }
 	}
 	export class HarnessToolResult {
@@ -1234,6 +1286,74 @@ export namespace main {
 		}
 	}
 	
+	export class LocalBinaryStatus {
+	    key: string;
+	    label: string;
+	    available: boolean;
+	    flavor?: string;
+	    path?: string;
+	    source?: string;
+	    detail?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LocalBinaryStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.label = source["label"];
+	        this.available = source["available"];
+	        this.flavor = source["flavor"];
+	        this.path = source["path"];
+	        this.source = source["source"];
+	        this.detail = source["detail"];
+	    }
+	}
+	export class LocalToolOverrides {
+	    binaries?: Record<string, string>;
+	
+	    static createFrom(source: any = {}) {
+	        return new LocalToolOverrides(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.binaries = source["binaries"];
+	    }
+	}
+	export class LocalToolsReport {
+	    binaries: LocalBinaryStatus[];
+	    transcriptionProvider: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LocalToolsReport(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.binaries = this.convertValues(source["binaries"], LocalBinaryStatus);
+	        this.transcriptionProvider = source["transcriptionProvider"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class ModelInfo {
 	    provider: string;
 	    id: string;

@@ -183,9 +183,12 @@ type HarnessToolCall struct {
 	Scale string `json:"scale,omitempty"`
 	// Task and Language are optional transcribe_audio inputs. Task selects
 	// "transcribe" (default) or "translate"; Language is an optional hint
-	// (empty lets the model auto-detect). See transcribeAudioParamSchema.
-	Task     string `json:"task,omitempty"`
-	Language string `json:"language,omitempty"`
+	// (empty lets the model auto-detect). Timestamps requests a time-stamped
+	// transcript — "words" or "segments" (empty returns plain text). See
+	// transcribeAudioParamSchema.
+	Task       string `json:"task,omitempty"`
+	Language   string `json:"language,omitempty"`
+	Timestamps string `json:"timestamps,omitempty"`
 }
 
 type HarnessToolResult struct {
@@ -279,10 +282,11 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	}
 
 	// Attached audio is a tool-consumable resource on any provider, exactly like
-	// an attached image: the planner may run transcribe_audio (fal-ai/wizper,
-	// provider-independent) to turn it into text evidence, or — on OpenRouter —
-	// send it as chat input via an input_audio content part. There is no
-	// provider guard here: Ollama's lack of a native audio input API only
+	// an attached image: the planner may run transcribe_audio (whichever
+	// backend Models.TranscriptionProvider resolves to — fal.ai or the local
+	// whisper CLI; see local_tools.go) to turn it into text evidence, or — on
+	// OpenRouter — send it as chat input via an input_audio content part. There
+	// is no provider guard here: Ollama's lack of a native audio input API only
 	// matters if the planner chooses not to transcribe, in which case the
 	// Ollama adapter simply drops the Audios field (it doesn't recognize it).
 
