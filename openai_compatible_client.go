@@ -83,10 +83,12 @@ func (client openAICompatibleClient) GenerateImage(ctx context.Context, req Imag
 	if req.Steps > 0 {
 		body["steps"] = req.Steps
 	}
-	// Attached source images ride the request ollama-style: a non-standard
-	// extension img2img-capable servers understand and the rest ignore.
+	// Attached source images ride the request ollama-style (bare base64, a
+	// non-standard extension img2img-capable servers understand and the rest
+	// ignore) — the harness's attachment slots carry data URLs, so strip the
+	// wrappers exactly like the Ollama client does.
 	if len(req.Images) > 0 {
-		body["images"] = req.Images
+		body["images"] = sanitizeOllamaSourceImages(req.Images)
 	}
 
 	data, err := json.Marshal(body)

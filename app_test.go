@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -155,6 +156,120 @@ func TestDecodeImagePayloadArtifactURL(t *testing.T) {
 func TestNormalizeImagePayloadRejectsNonImageBase64(t *testing.T) {
 	if normalizeImagePayload("stop") != "" {
 		t.Fatal("non-image base64 should not be treated as a renderable image")
+	}
+}
+
+// heifTestImage builds a minimal ISO BMFF payload: an ftyp box whose major
+// brand is the given fourcc ("heic", "mif1", "avif", ...). Real HEIF files
+// carry more boxes, but the sniff only reads the ftyp header.
+func heifTestImage(brand string) []byte {
+	data := make([]byte, 32)
+	binary.BigEndian.PutUint32(data[0:4], uint32(len(data)))
+	copy(data[4:8], "ftyp")
+	copy(data[8:12], brand)
+	copy(data[16:20], brand)
+	return data
+}
+
+// TestDecodeImagePayloadHEIF pins iPhone HEIF attachment persistence: a HEIF
+// payload — whether as a data URL (hydrate/history paths) or as the bare
+// base64 the frontend sends for the current turn — must decode and persist
+// with a .heic artifact, not fail the whole turn ("payload is not a supported
+// image"), which used to lose the conversation before it reached the sidebar.
+func TestDecodeImagePayloadHEIF(t *testing.T) {
+	heif := heifTestImage("heic")
+	encoded := base64.StdEncoding.EncodeToString(heif)
+
+	t.Run("data URL keeps its declared type", func(t *testing.T) {
+		data, extension, err := decodeImagePayload("data:image/heif;base64," + encoded)
+		if err != nil {
+			t.Fatalf("decodeImagePayload returned error: %v", err)
+		}
+		if !bytes.Equal(data, heif) {
+			t.Fatalf("decoded bytes = %v, want the HEIF fixture", data)
+		}
+		if extension != ".heic" {
+			t.Fatalf("extension = %q, want .heic", extension)
+		}
+	})
+	t.Run("bare base64 sniffs the format", func(t *testing.T) {
+		data, extension, err := decodeImagePayload(encoded)
+		if err != nil {
+			t.Fatalf("decodeImagePayload returned error: %v", err)
+		}
+		if !bytes.Equal(data, heif) {
+			t.Fatalf("decoded bytes = %v, want the HEIF fixture", data)
+		}
+		if extension != ".heic" {
+			t.Fatalf("extension = %q, want .heic", extension)
+		}
+	})
+	t.Run("bare base64 JPEG is not mislabeled png", func(t *testing.T) {
+		jpeg := []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10}
+		_, extension, err := decodeImagePayload(base64.StdEncoding.EncodeToString(jpeg))
+		if err != nil {
+			t.Fatalf("decodeImagePayload returned error: %v", err)
+		}
+		if extension != ".jpg" {
+			t.Fatalf("extension = %q, want .jpg", extension)
+		}
+	})
+}
+
+// TestImageBytesSniffing pins the magic-byte table behind isImageBytes: the
+// HEIF family (HEIC/HEIF brands), AVIF, JPEG 2000, TIFF, and BMP — every
+// format macOS sips reads — are images, while an ISO BMFF container with a
+// video brand (mp42) and random bytes are not.
+func TestImageBytesSniffing(t *testing.T) {
+	cases := []struct {
+		name string
+		data []byte
+		want bool
+	}{
+		{"heic major brand", heifTestImage("heic"), true},
+		{"mif1 HEIF brand", heifTestImage("mif1"), true},
+		{"msf1 sequence brand", heifTestImage("msf1"), true},
+		{"avif brand", heifTestImage("avif"), true},
+		{"jp2 brand", heifTestImage("jp2 "), true},
+		{"compatible-only brand", append(heifTestImage("mif1"), heifTestImage("heic")...), true},
+		{"mp4 video brand", heifTestImage("mp42"), false},
+		{"truncated ftyp", heifTestImage("heic")[:10], false},
+		{"tiff little-endian", []byte{'I', 'I', 0x2a, 0x00, 0x00, 0x00, 0x00, 0x00}, true},
+		{"tiff big-endian", []byte{'M', 'M', 0x00, 0x2a, 0x00, 0x00, 0x00, 0x00}, true},
+		{"bmp", append([]byte("BM"), make([]byte, 16)...), true},
+		{"random bytes", []byte("not an image at all"), false},
+		{"empty", nil, false},
+	}
+	for _, tc := range cases {
+		if got := isImageBytes(tc.data); got != tc.want {
+			t.Errorf("%s: isImageBytes = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestLatestUserImagesNormalizesBareBase64 pins the seam between the
+// frontend's image payloads (bare base64, Ollama's wire shape) and the
+// AttachedImages consumers (data URLs — decodeMediaDataURL requires the
+// data: header): latestUserImages must wrap bare base64 with its sniffed
+// media type so same-turn attachments reach the local CLI tools.
+func TestLatestUserImagesNormalizesBareBase64(t *testing.T) {
+	heif := heifTestImage("heic")
+	bare := base64.StdEncoding.EncodeToString(heif)
+	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'})
+
+	messages := []ChatMessage{
+		{Role: "assistant", Content: "hi"},
+		{Role: "user", Content: "convert this", Images: []string{bare, dataURL, "garbage!!"}},
+	}
+	got := latestUserImages(messages)
+	if len(got) != 2 {
+		t.Fatalf("latestUserImages returned %d images (%v), want 2 (bare + data URL, garbage dropped)", len(got), got)
+	}
+	if !strings.HasPrefix(got[0], "data:image/heic;base64,") {
+		t.Fatalf("bare HEIF base64 normalized to %q, want a data:image/heic URL", got[0][:40])
+	}
+	if got[1] != dataURL {
+		t.Fatalf("data URL passthrough = %q, want unchanged", got[1])
 	}
 }
 
@@ -5088,6 +5203,12 @@ func TestLatestAttachedImageRecencyPrecedence(t *testing.T) {
 }
 
 func TestGenerateImageSendsAttachedImages(t *testing.T) {
+	// The harness's attachment slots carry data URLs (fresh attachments are
+	// normalized to that form; history fallback re-reads artifacts as data
+	// URLs), while /api/generate wants bare base64 — so both shapes must land
+	// on the wire stripped.
+	bareOne := base64.StdEncoding.EncodeToString([]byte("source-one"))
+	bareTwo := base64.StdEncoding.EncodeToString([]byte("source-two"))
 	client := newOllamaClient(&http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			if req.URL.Path != "/api/generate" {
@@ -5099,8 +5220,8 @@ func TestGenerateImageSendsAttachedImages(t *testing.T) {
 				t.Fatalf("image request body is not JSON: %v", err)
 			}
 			images, ok := payload["images"].([]any)
-			if !ok || len(images) != 2 || images[0] != "source-one" || images[1] != "source-two" {
-				t.Fatalf("image request images = %+v, want attached source images", payload["images"])
+			if !ok || len(images) != 2 || images[0] != bareOne || images[1] != bareTwo {
+				t.Fatalf("image request images = %+v, want both sources as bare base64", payload["images"])
 			}
 			return &http.Response{
 				StatusCode: http.StatusOK,
@@ -5114,7 +5235,7 @@ func TestGenerateImageSendsAttachedImages(t *testing.T) {
 	if _, _, err := client.GenerateImage(t.Context(), ImageGenerateRequest{
 		Model:  "image-model",
 		Prompt: "Use these references",
-		Images: []string{"source-one", "source-two"},
+		Images: []string{"data:image/png;base64," + bareOne, bareTwo},
 	}); err != nil {
 		t.Fatalf("GenerateImage returned error: %v", err)
 	}

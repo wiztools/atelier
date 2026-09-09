@@ -230,6 +230,23 @@ func sanitizeOllamaImages(messages []ChatMessage) []ChatMessage {
 	return cleaned
 }
 
+// sanitizeOllamaSourceImages strips data: URL wrappers from an
+// ImageGenerateRequest's source images: /api/generate expects bare base64
+// (the same wire shape as chat messages), while the harness's AttachedImages
+// slots carry data URLs — fresh attachments are normalized to that form
+// (normalizeAttachedImage) and history-fallback artifacts are re-read as data
+// URLs (readArtifactAsDataURL). Malformed entries drop rather than poisoning
+// the request.
+func sanitizeOllamaSourceImages(images []string) []string {
+	cleaned := make([]string, 0, len(images))
+	for _, image := range images {
+		if normalized := normalizeOllamaImage(image); normalized != "" {
+			cleaned = append(cleaned, normalized)
+		}
+	}
+	return cleaned
+}
+
 // normalizeOllamaImage returns the bare base64 payload Ollama's chat API
 // expects: it strips a data: URL wrapper and validates the remainder decodes,
 // dropping anything else. This is deliberately distinct from the broad
@@ -347,7 +364,7 @@ func (client OllamaClient) GenerateImage(ctx context.Context, req ImageGenerateR
 		body["steps"] = req.Steps
 	}
 	if len(req.Images) > 0 {
-		body["images"] = req.Images
+		body["images"] = sanitizeOllamaSourceImages(req.Images)
 	}
 
 	resp, err := client.postJSON(ctx, "/api/generate", body)

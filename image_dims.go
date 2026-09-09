@@ -9,8 +9,10 @@ import (
 )
 
 // imageDimensions returns the pixel dimensions of a decoded image. It accepts
-// PNG, JPEG, and GIF bytes (the formats the rest of the app treats as images —
-// see isImageBytes). ok is false on any decode error; callers must treat that as
+// PNG, JPEG, and GIF bytes (the Go stdlib decodable formats — see
+// imageExtensionForBytes for the wider set the app accepts as attachments,
+// incl. HEIF, whose dimensions this helper cannot read). ok is false on any
+// decode error; callers must treat that as
 // "unknown" and fall back to a default rather than guessing.
 //
 // This is the inverse of imageSizeForAspectRatio, which goes ratio → pixels:

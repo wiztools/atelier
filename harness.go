@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -725,6 +726,13 @@ func transcriptsFromToolResults(results []HarnessToolResult) ([]ToolTranscriptFi
 // are the source frames generate_video consumes for image-to-video or multi-
 // image reference-to-video. The walk is newest-first at the message level and
 // in-order within the message, preserving the user's attach order.
+//
+// Entries are normalized to data URLs via normalizeAttachedImage: the
+// frontend sends the current turn's images as bare base64 (Ollama's wire
+// shape), but the AttachedImages consumers — the local CLI tools'
+// decodeMediaDataURL, fal's data-URL upload paths — need the data: header,
+// and the header's media type decides the staged file's extension (a HEIF
+// attachment must stage as .heic so sips trusts the container).
 func latestUserImages(messages []ChatMessage) []string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role != "user" {
@@ -732,13 +740,40 @@ func latestUserImages(messages []ChatMessage) []string {
 		}
 		var out []string
 		for _, image := range messages[i].Images {
-			if trimmed := strings.TrimSpace(image); trimmed != "" {
-				out = append(out, trimmed)
+			if normalized := normalizeAttachedImage(image); normalized != "" {
+				out = append(out, normalized)
 			}
 		}
 		return out
 	}
 	return nil
+}
+
+// normalizeAttachedImage coerces one ChatMessage.Images entry into the data
+// URL form AttachedImages consumers require: a data: URL passes through
+// unchanged, bare base64 is wrapped with its sniffed media type, and anything
+// else (a display-only /atelier-artifact path, garbage) is dropped so it
+// cannot fail a tool's staging step. This is the mirror of the provider
+// adapters' tolerance (normalizeOllamaImage strips the wrapper again,
+// openRouterImageURL accepts either form) — normalization happens at the
+// attachment-slot seam, never by mutating the request's messages.
+func normalizeAttachedImage(image string) string {
+	image = strings.TrimSpace(image)
+	if image == "" {
+		return ""
+	}
+	if strings.HasPrefix(image, "data:") {
+		return image
+	}
+	data, err := base64.StdEncoding.DecodeString(image)
+	if err != nil {
+		return ""
+	}
+	extension := imageExtensionForBytes(data)
+	if extension == "" {
+		return ""
+	}
+	return "data:" + mediaTypeForExtension(extension) + ";base64," + image
 }
 
 // latestUserAudioURLs returns the audio attachments on the most recent user

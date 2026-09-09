@@ -1652,7 +1652,7 @@ func (a *App) SaveImage(req SaveImageRequest) (string, error) {
 		return "", err
 	}
 	return a.saveArtifactDialog(data, req.SuggestedName, "atelier-image", extension, "Save generated image", []runtime.FileFilter{
-		{DisplayName: "Image Files", Pattern: "*.png;*.jpg;*.jpeg;*.webp;*.gif"},
+		{DisplayName: "Image Files", Pattern: "*.png;*.jpg;*.jpeg;*.webp;*.gif;*.heic;*.avif;*.tiff;*.bmp;*.jp2"},
 		{DisplayName: "All Files", Pattern: "*.*"},
 	})
 }
@@ -1819,6 +1819,15 @@ func decodeImagePayload(image string) ([]byte, string, error) {
 	}
 	if !isImageBytes(data) {
 		return nil, "", errors.New("payload is not a supported image")
+	}
+	// Bare base64 (the frontend's attachment shape — no data: header carrying
+	// the media type) falls through with the .png default, so derive the real
+	// extension from the sniffed bytes. A HEIF attachment must persist as .heic,
+	// and a JPEG must not be mislabeled .png: the artifact's extension becomes
+	// its MIME on later turns (readArtifactAsDataURL) and the staged file name
+	// the local CLI tools hand to sips/ffmpeg.
+	if sniffed := imageExtensionForBytes(data); sniffed != "" {
+		extension = sniffed
 	}
 	return data, extension, nil
 }
@@ -4591,25 +4600,63 @@ func normalizeImagePayload(value string) string {
 	}
 	data, err := base64.StdEncoding.DecodeString(value)
 	if err == nil && isImageBytes(data) {
-		return "data:image/png;base64," + value
+		return "data:" + mediaTypeForExtension(imageExtensionForBytes(data)) + ";base64," + value
+	}
+	return ""
+}
+
+// imageExtensionForBytes sniffs image bytes and returns their file extension —
+// the single magic-number table behind isImageBytes, bare-base64 payload
+// persistence, and attachment normalization. Beyond the web formats it covers
+// every container macOS sips reads (local_images.go): the HEIF family, AVIF,
+// JPEG 2000, TIFF, and BMP. An ISO BMFF container (bytes 4-8 "ftyp") counts
+// only when its major or a compatible brand is an image brand, so an attached
+// mp4/mov is never mistaken for a HEIF photo.
+func imageExtensionForBytes(data []byte) string {
+	if len(data) >= 8 && bytes.Equal(data[:8], []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}) {
+		return ".png"
+	}
+	if len(data) >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff {
+		return ".jpg"
+	}
+	if len(data) >= 12 && bytes.Equal(data[:4], []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WEBP")) {
+		return ".webp"
+	}
+	if len(data) >= 6 && (bytes.Equal(data[:6], []byte("GIF87a")) || bytes.Equal(data[:6], []byte("GIF89a"))) {
+		return ".gif"
+	}
+	if len(data) >= 12 && bytes.Equal(data[4:8], []byte("ftyp")) {
+		// The brand table: HEIC/HEIF image and sequence brands, AVIF, and
+		// JPEG 2000. The major brand sits at 8:12; compatible brands follow
+		// the minor-version field at 16, four bytes apart.
+		heifBrands := map[string]string{
+			"heic": ".heic", "heix": ".heic", "heim": ".heic", "heis": ".heic",
+			"hevc": ".heic", "hevx": ".heic", "hevm": ".heic", "hevs": ".heic",
+			"mif1": ".heic", "mif2": ".heic", "msf1": ".heic",
+			"avif": ".avif", "avis": ".avif",
+			"jp2 ": ".jp2",
+		}
+		if extension, ok := heifBrands[string(data[8:12])]; ok {
+			return extension
+		}
+		for offset := 16; offset+4 <= len(data); offset += 4 {
+			if extension, ok := heifBrands[string(data[offset:offset+4])]; ok {
+				return extension
+			}
+		}
+	}
+	if len(data) >= 4 && ((data[0] == 'I' && data[1] == 'I' && data[2] == 0x2a && data[3] == 0x00) ||
+		(data[0] == 'M' && data[1] == 'M' && data[2] == 0x00 && data[3] == 0x2a)) {
+		return ".tiff"
+	}
+	if len(data) >= 2 && data[0] == 'B' && data[1] == 'M' {
+		return ".bmp"
 	}
 	return ""
 }
 
 func isImageBytes(data []byte) bool {
-	if len(data) >= 8 && bytes.Equal(data[:8], []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}) {
-		return true
-	}
-	if len(data) >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff {
-		return true
-	}
-	if len(data) >= 12 && bytes.Equal(data[:4], []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WEBP")) {
-		return true
-	}
-	if len(data) >= 6 && (bytes.Equal(data[:6], []byte("GIF87a")) || bytes.Equal(data[:6], []byte("GIF89a"))) {
-		return true
-	}
-	return false
+	return imageExtensionForBytes(data) != ""
 }
 
 func collectImagesFromJSON(raw []byte) []string {
@@ -4718,6 +4765,16 @@ func extensionForMediaType(mediaType string) string {
 		return ".webp"
 	case "image/gif":
 		return ".gif"
+	case "image/heic", "image/heif":
+		return ".heic"
+	case "image/avif":
+		return ".avif"
+	case "image/jp2":
+		return ".jp2"
+	case "image/tiff", "image/tif":
+		return ".tiff"
+	case "image/bmp":
+		return ".bmp"
 	default:
 		return ".png"
 	}
@@ -4731,6 +4788,16 @@ func mediaTypeForExtension(extension string) string {
 		return "image/webp"
 	case ".gif":
 		return "image/gif"
+	case ".heic", ".heif":
+		return "image/heic"
+	case ".avif":
+		return "image/avif"
+	case ".jp2":
+		return "image/jp2"
+	case ".tiff", ".tif":
+		return "image/tiff"
+	case ".bmp":
+		return "image/bmp"
 	case ".mp4", ".m4v":
 		return "video/mp4"
 	case ".webm":

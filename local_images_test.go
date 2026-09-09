@@ -764,3 +764,136 @@ func TestHarnessImageTurnPersistsMedia(t *testing.T) {
 		t.Fatalf("image artifact unreadable: %v", err)
 	}
 }
+
+// TestHarnessHEIFAttachmentConverts pins the user-facing HEIF flow end to end:
+// an iPhone HEIC photo attached with "convert this to jpg" — sent as bare
+// base64, the frontend's real payload shape — must persist the conversation
+// (it used to die at StartChatTurn with "payload is not a supported image",
+// so the chat never reached the sidebar), stage the .heic bytes for sips, and
+// attach the converted artifact to the reply.
+func TestHarnessHEIFAttachmentConverts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	withRealLocalLookup(t)
+
+	keyring.MockInit()
+	t.Cleanup(func() { _ = clearFalAPIKey() })
+
+	config, bin := sipsTestConfig(t)
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig: %v", err)
+	}
+
+	// The frontend strips the data: URL header before sending (Ollama's wire
+	// shape), so the current turn's images arrive as bare base64.
+	bareHEIF := base64.StdEncoding.EncodeToString(heifTestImage("heic"))
+
+	var finalBodies []string
+	app := NewApp()
+	harnessCalls := 0
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/api/show":
+			return jsonResponse(`{"capabilities":[],"model_info":{},"details":{"family":"test","parameter_size":"1B"}}`), nil
+		case "/api/chat":
+			payload := chatPayload(t, req)
+			if payload["stream"] == false {
+				switch payload["model"] {
+				case "harness-model":
+					harnessCalls++
+					switch harnessCalls {
+					case 1: // triage
+						return chatCompletion("harness-model", `{"needsTools":true,"responseMode":"text","toolTask":"Convert the HEIF photo to JPEG.","reason":"The user asked for a format conversion.","mediaEdit":false,"imageEdit":true}`), nil
+					case 2: // plan
+						return chatCompletion("harness-model", `{"brief":"Convert the attached image to jpeg.","needsTools":true,"reason":"format conversion","toolCalls":[{"name":"convert_image","format":"jpeg"}]}`), nil
+					case 3:
+						return chatCompletion("harness-model", `{"brief":"Done.","needsTools":false,"reason":"done","toolCalls":[]}`), nil
+					}
+					t.Fatalf("unexpected harness call #%d", harnessCalls)
+					return nil, nil
+				default:
+					return chatCompletion("chat-box-model", `"Converted"`), nil
+				}
+			}
+			encoded, _ := json.Marshal(payload)
+			finalBodies = append(finalBodies, string(encoded))
+			body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"Here is the JPEG."},"done":false}`) +
+				fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+			return &http.Response{StatusCode: 200, Status: "200 OK",
+				Body:   io.NopCloser(strings.NewReader(body)),
+				Header: http.Header{"Content-Type": []string{"application/x-ndjson"}},
+			}, nil
+		default:
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL)
+			return nil, nil
+		}
+	})
+
+	app.runChatStream(context.Background(), "request-heif-turn", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{{
+			Role:    "user",
+			Content: "Convert this to jpg.",
+			Images:  []string{bareHEIF},
+		}},
+	})
+
+	if len(finalBodies) == 0 {
+		t.Fatal("the final model was never called")
+	}
+	// The turn must survive to history — the reported bug lost the whole
+	// conversation at attachment validation, so it never hit the sidebar.
+	conversations, err := listConversations(config.Storage)
+	if err != nil || len(conversations) != 1 {
+		t.Fatalf("listConversations = %v (%d conversations), want exactly 1", err, len(conversations))
+	}
+	loaded, err := newHistoryStore(config.Storage).loadForAppend(conversations[0].ID, "chat", "a chat", config.Tools.Filesystem.Root)
+	if err != nil {
+		t.Fatalf("loadForAppend: %v", err)
+	}
+	// The staged input carries the .heic extension so sips trusts the format.
+	invocations := fakeCLIArgs(t, bin)
+	if len(invocations) == 0 {
+		t.Fatal("the fake sips never ran — convert_image never executed")
+	}
+	stagedHEIC := false
+	for _, args := range invocations {
+		if strings.Contains(args, "input.heic") {
+			stagedHEIC = true
+		}
+	}
+	if !stagedHEIC {
+		t.Fatalf("sips args = %v, want the staged input named input.heic", invocations)
+	}
+	// The user turn persists the HEIF bytes as a .heic artifact; the assistant
+	// turn carries the converted image.
+	userData, err := os.ReadFile(filepath.Join(loaded.TurnsDir, "turn_000001.json"))
+	if err != nil {
+		t.Fatalf("ReadFile user turn: %v", err)
+	}
+	var userTurn HistoryTurn
+	if err := json.Unmarshal(userData, &userTurn); err != nil {
+		t.Fatalf("Unmarshal user turn: %v", err)
+	}
+	heicArtifact := false
+	for _, content := range userTurn.Content {
+		if content.Type == "image" && strings.HasSuffix(content.Path, ".heic") && content.MimeType == "image/heic" {
+			heicArtifact = true
+		}
+	}
+	if !heicArtifact {
+		t.Fatalf("user turn content = %+v, want a persisted .heic image artifact", userTurn.Content)
+	}
+	if reply := savedAssistantContent(t, config); !strings.Contains(reply, "Here is the JPEG.") {
+		t.Fatalf("assistant reply = %q, want the completed conversion reply", reply)
+	}
+}

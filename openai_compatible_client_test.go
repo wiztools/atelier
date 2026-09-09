@@ -83,8 +83,11 @@ func TestOpenAICompatibleClientGenerateImageHappyPath(t *testing.T) {
 	if captured["n"] != float64(1) {
 		t.Errorf("body n = %v, want 1", captured["n"])
 	}
-	if images, ok := captured["images"].([]any); !ok || len(images) != 1 || images[0] != "data:image/png;base64,AAAA" {
-		t.Errorf("body images = %v, want the attached source forwarded", captured["images"])
+	// Source images ride ollama-style — bare base64 — so the data: wrapper the
+	// harness attachment slots carry is stripped at the adapter (see
+	// sanitizeOllamaSourceImages).
+	if images, ok := captured["images"].([]any); !ok || len(images) != 1 || images[0] != "AAAA" {
+		t.Errorf("body images = %v, want the attached source as bare base64", captured["images"])
 	}
 	if resp.Model != "flux2-klein" {
 		t.Errorf("response model = %q, want flux2-klein", resp.Model)
