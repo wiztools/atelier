@@ -8,6 +8,7 @@ Assets for the intro video (and any future brand-adjacent output).
 | `logo-wordmark.svg` | Horizontal lockup: mark + "Atelier" wordmark in Georgia (outlined). Cream word expects a dark background. |
 | `colors.md` | Palette and color-usage rules. |
 | `typography.md` | Georgia / Inter / mono stack and usage. |
+| `brand-guide.md` | Self-contained guide (no source-file references) — safe to paste into video-generation prompts. |
 
 ## Construction (matches `build/render_appicon.swift`)
 
