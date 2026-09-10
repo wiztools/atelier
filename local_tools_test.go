@@ -241,6 +241,34 @@ func TestWhisperArgBuilders(t *testing.T) {
 	})
 }
 
+func TestExpandTildePath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty stays empty", "", ""},
+		{"absolute path unchanged", "/opt/models/ggml-base.en.bin", "/opt/models/ggml-base.en.bin"},
+		{"relative path stays for the CLI working directory", "models/ggml-base.en.bin", "models/ggml-base.en.bin"},
+		{"openai-whisper size unchanged", "large-v3", "large-v3"},
+		{"bare tilde is the home", "~", home},
+		{"tilde slash expands against the home", "~/.cache/whisper.cpp/ggml-large-v3.bin", filepath.Join(home, ".cache", "whisper.cpp", "ggml-large-v3.bin")},
+		{"tilde with a deeper relative tail", "~/models/ggml-base.en.bin", filepath.Join(home, "models", "ggml-base.en.bin")},
+		{"other user's home is out of scope", "~user/model.bin", "~user/model.bin"},
+		{"tilde prefix without a slash stays", "~large-v3", "~large-v3"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := expandTildePath(tc.in); got != tc.want {
+				t.Fatalf("expandTildePath(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRunLocalWhisperTranscription(t *testing.T) {
 	withRealLocalLookup(t)
 	dir := t.TempDir()
@@ -274,6 +302,27 @@ func TestRunLocalWhisperTranscription(t *testing.T) {
 			if !strings.Contains(transcript.Text, want) {
 				t.Errorf("transcript %q missing %q", transcript.Text, want)
 			}
+		}
+	})
+	t.Run("whisper-cpp tilde model expands before the CLI sees it", func(t *testing.T) {
+		// conv_6bce6645 regression: the Settings-configured model
+		// "~/.cache/whisper.cpp/ggml-large-v3.bin" (fed straight through as
+		// req.Model by the gateway) reached whisper-cli unexpanded and its
+		// fopen failed with exit status 3.
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		config := newConfig()
+		config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, filepath.Join(dir, "cpp-tilde"), "whisper-cli", cppWhisperScript)
+		transcript, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Model: "~/.cache/whisper.cpp/ggml-large-v3.bin", Audio: wavDataURL()})
+		if err != nil {
+			t.Fatalf("runLocalWhisperTranscription: %v", err)
+		}
+		want := "-m " + filepath.Join(home, ".cache", "whisper.cpp", "ggml-large-v3.bin")
+		if !strings.Contains(transcript.Text, want) {
+			t.Fatalf("transcript %q should pass the expanded model path %q", transcript.Text, want)
+		}
+		if strings.Contains(transcript.Text, "-m ~/") {
+			t.Fatalf("transcript %q leaked the unexpanded tilde path", transcript.Text)
 		}
 	})
 	t.Run("openai-whisper words parse the json output", func(t *testing.T) {

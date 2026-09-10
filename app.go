@@ -255,10 +255,11 @@ type ConfigLocalProviders struct {
 // detection (an absolute path or a bare PATH name; empty auto-detects
 // "whisper" then "whisper-cli" on PATH). Model is the whisper model — an
 // openai-whisper size ("small", "large-v3", ...) or, for whisper.cpp, a path
-// to a ggml .bin file. Empty resolves in tiers (see local_tools.go):
-// WHISPER_MODEL from Atelier's environment, then ~/.whisper-base.en.bin,
-// then ~/.cache/whisper.cpp/ggml-base.en.bin when present, else
-// whisper-cli's own models/ default anchored to the user's home.
+// to a ggml .bin file (a leading "~/" is expanded before it reaches the CLI;
+// whisper-cli's fopen does no shell expansion). Empty resolves in tiers (see
+// local_tools.go): WHISPER_MODEL from Atelier's environment, then
+// ~/.whisper-base.en.bin, then ~/.cache/whisper.cpp/ggml-base.en.bin when
+// present, else whisper-cli's own models/ default anchored to the user's home.
 type ConfigLocalWhisper struct {
 	Binary string `json:"binary,omitempty"`
 	Model  string `json:"model,omitempty"`

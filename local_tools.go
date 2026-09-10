@@ -436,6 +436,7 @@ func runLocalWhisperTranscription(ctx context.Context, config AppConfig, req Tra
 		if model == "" {
 			model = resolveDefaultWhisperCPPModel()
 		}
+		model = expandTildePath(model)
 		args, outputPath = whisperCPPArgs(input.Name(), outDir, model, req.Task, req.Language, timestamps)
 		runFromHome = true
 	default:
@@ -577,6 +578,28 @@ func whisperCPPArgs(input, outDir, model, task, language, timestamps string) ([]
 		args = append(args, "-tr")
 	}
 	return args, base + ext
+}
+
+// expandTildePath expands a leading "~" or "~/" to the user's home directory
+// and leaves every other string untouched — "~user/...", relative paths
+// (whisper-cli resolves those against its working directory), absolute paths,
+// openai-whisper sizes like "large-v3". whisper-cli opens its -m model with
+// plain fopen, which does no shell-style expansion, so a configured "~/..."
+// path must be absolutized before it reaches the CLI (conv_6bce6645: a
+// literal "~/.cache/whisper.cpp/ggml-large-v3.bin" failed with exit status 3
+// even though the file existed).
+func expandTildePath(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if path == "~" {
+		return home
+	}
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(home, path[2:])
+	}
+	return path
 }
 
 // resolveDefaultWhisperCPPModel fills in an empty whisper.cpp model in
