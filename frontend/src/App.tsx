@@ -359,6 +359,15 @@ type LibrariesEnvironment = {
   startNewChat: () => Promise<void>;
 };
 
+// MoveTargetGroup is one library's slice of the move dialog's target list:
+// the dialog groups projects under their library instead of the flat
+// `library › project` button list the ⋮ menu used to inline.
+type MoveTargetGroup = {
+  libraryID: string;
+  libraryName: string;
+  projects: {projectID: string; name: string}[];
+};
+
 // useLibraries owns the sidebar's Libraries tree: the library/project data,
 // the expansion/creation/rename/delete UI state, and the actions over them.
 // App() destructures the returned names directly into the JSX it renders, so
@@ -462,15 +471,18 @@ function useLibraries(env: LibrariesEnvironment) {
     return '';
   }
 
-  // Flatten the library tree into move targets for the conversation ⋮ menu.
-  const moveTargets = useMemo(() => {
-    const targets: {projectID: string; label: string}[] = [];
-    for (const library of libraries) {
-      for (const project of asArray(library.projects)) {
-        targets.push({projectID: project.id, label: `${library.name} › ${project.name}`});
-      }
-    }
-    return targets;
+  // Group the library tree into the move dialog's targets — one group per
+  // library that has projects. The ⋮ menu's old inline list flattened these
+  // into one button per project, which buried Rename/Archive once the tree
+  // grew past a handful of projects.
+  const moveTargetGroups = useMemo<MoveTargetGroup[]>(() => {
+    return libraries
+      .map((library) => ({
+        libraryID: library.id,
+        libraryName: library.name,
+        projects: asArray(library.projects).map((project) => ({projectID: project.id, name: project.name})),
+      }))
+      .filter((group) => group.projects.length > 0);
   }, [libraries]);
 
   function bumpLibrariesRefresh() {
@@ -844,7 +856,7 @@ function useLibraries(env: LibrariesEnvironment) {
     exportPlan,
     importingLibrary,
     archiveNotice,
-    moveTargets,
+    moveTargetGroups,
     libraryIDForProject,
     bumpLibrariesRefresh,
     startCreatingLibrary,
@@ -1124,6 +1136,9 @@ function App() {
   const [editingTitleID, setEditingTitleID] = useState('');
   const [editingTitle, setEditingTitle] = useState('');
   const [openHistoryMenuID, setOpenHistoryMenuID] = useState('');
+  // The conversation whose "Move to…" picker is open; null keeps the dialog
+  // unmounted so its filter state resets on every open.
+  const [moveDialogConversation, setMoveDialogConversation] = useState<main.ConversationSummary | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth);
   const [resizingSidebar, setResizingSidebar] = useState(false);
   const [view, setView] = useState<View>('app');
@@ -1183,7 +1198,7 @@ function App() {
     creatingLibrary, newLibraryName, creatingProjectLibraryID, newProjectName,
     editingContainerID, editingContainerName, openContainerMenuID, confirmDeleteContainerID, containerBusy,
     exportPlan, importingLibrary, archiveNotice,
-    moveTargets, libraryIDForProject, bumpLibrariesRefresh,
+    moveTargetGroups, libraryIDForProject, bumpLibrariesRefresh,
     startCreatingLibrary, startCreatingProject, submitNewLibrary, submitNewProject,
     startEditingContainer, cancelEditingContainer, saveContainerName, toggleContainerMenu, closeContainerMenu,
     confirmDeleteContainer, toggleLibraryExpanded, toggleProjectExpanded,
@@ -1325,13 +1340,15 @@ function App() {
   }, [composerLibraryID, libraries, pendingProject, activeConversationProjectID]);
 
   // One conversation row, shared by the standalone chats list and the project
-  // listings: open/rename/archive behave identically; the ⋮ menu gains
-  // project-move targets (standalone rows) or a move-to-standalone action
-  // (project rows).
+  // listings: open/rename/archive behave identically; the ⋮ menu's Move to…
+  // opens the picker dialog for both row kinds (project rows included, so a
+  // project → project move no longer detours through standalone).
   function renderConversationRow(conversation: main.ConversationSummary) {
     const inFlight = inFlightConversations[conversation.id];
     const selected = selectedConversationID === conversation.id;
-    const targets = conversation.projectId ? [] : moveTargets;
+    // A standalone row with no defined projects has nowhere to move; a
+    // project row always offers at least the return to standalone.
+    const canMove = moveTargetGroups.length > 0 || Boolean(conversation.projectId);
     return (
       <div key={conversation.id} className={`history-item${selected ? ' selected' : ''}`}>
         {editingTitleID === conversation.id ? (
@@ -1378,18 +1395,11 @@ function App() {
                   {copiedConversationID === conversation.id ? '✓ Copied' : 'Copy ID'}
                 </button>
                 <button onClick={() => archiveConversation(conversation)}>Archive</button>
-                {targets.length ? (
-                  <>
-                    <div className="history-menu-label">Move to project</div>
-                    {targets.map((target) => (
-                      <button key={target.projectID} onClick={() => void moveConversation(conversation, target.projectID)}>
-                        {target.label}
-                      </button>
-                    ))}
-                  </>
-                ) : null}
-                {conversation.projectId ? (
-                  <button onClick={() => void moveConversation(conversation, '')}>Move to standalone</button>
+                {canMove ? (
+                  <button onClick={() => {
+                    setOpenHistoryMenuID('');
+                    setMoveDialogConversation(conversation);
+                  }}>Move to…</button>
                 ) : null}
               </AnchoredMenu>
             </div>
@@ -5053,6 +5063,20 @@ function App() {
           </div>
         </div>
       ) : null}
+      {moveDialogConversation ? (
+        <MoveConversationDialog
+          conversation={moveDialogConversation}
+          groups={moveTargetGroups}
+          onMove={(projectID) => {
+            // Close first so the picker never lingers over the moved row's
+            // reveal; moveConversation owns refresh + error reporting.
+            const conversation = moveDialogConversation;
+            setMoveDialogConversation(null);
+            void moveConversation(conversation, projectID);
+          }}
+          onClose={() => setMoveDialogConversation(null)}
+        />
+      ) : null}
     </main>
   );
 }
@@ -5213,6 +5237,96 @@ function AnchoredMenu(props: {
         document.body,
       ) : null}
     </>
+  );
+}
+
+// MoveConversationDialog is the ⋮ menu's "Move to…" picker: a modal listing
+// every library's projects under a filter, plus a return-to-standalone
+// option for chats already inside a project. It replaces the menu's inline
+// flat list, which grew one button per project and buried Rename/Archive.
+// One click performs the move and closes — the dialog is a picker, not a
+// confirmation, and a wrong pick is undone by moving back. The chat's
+// current home is omitted rather than disabled: choosing it again would be
+// a no-op either way.
+function MoveConversationDialog(props: {
+  conversation: main.ConversationSummary;
+  groups: MoveTargetGroup[];
+  onMove: (projectID: string) => void;
+  onClose: () => void;
+}) {
+  const [filter, setFilter] = useState('');
+  const normalized = filter.trim().toLowerCase();
+
+  // Escape mirrors the anchored menus' close key; the overlay press below
+  // closes too, and the dialog body stops that click's propagation.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        props.onClose();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [props.onClose]);
+
+  const match = (libraryName: string, projectName: string) =>
+    !normalized
+    || libraryName.toLowerCase().includes(normalized)
+    || projectName.toLowerCase().includes(normalized);
+  const showStandalone = Boolean(props.conversation.projectId)
+    && (!normalized || 'standalone'.includes(normalized) || 'chats'.includes(normalized));
+  const visibleGroups = props.groups
+    .map((group) => ({
+      ...group,
+      projects: group.projects.filter((project) =>
+        project.projectID !== props.conversation.projectId
+        && match(group.libraryName, project.name)),
+    }))
+    .filter((group) => group.projects.length > 0);
+  const hasTargets = showStandalone || visibleGroups.length > 0;
+
+  return (
+    <div className="move-dialog-overlay" role="presentation" onClick={props.onClose}>
+      <div
+        className="move-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Move ${props.conversation.title}`}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="move-dialog-head">
+          <span className="move-dialog-title">Move chat</span>
+          <span className="move-dialog-subtitle" title={props.conversation.title}>{props.conversation.title}</span>
+        </div>
+        <input
+          className="move-dialog-filter"
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+          placeholder="Filter projects…"
+          aria-label="Filter projects"
+          autoFocus
+        />
+        <div className="move-dialog-list">
+          {showStandalone ? (
+            <button type="button" className="move-dialog-move" onClick={() => props.onMove('')}>
+              <span>Standalone</span>
+              <small>Chats section</small>
+            </button>
+          ) : null}
+          {visibleGroups.map((group) => (
+            <div key={group.libraryID} className="move-dialog-group">
+              <div className="move-dialog-group-label">{group.libraryName}</div>
+              {group.projects.map((project) => (
+                <button key={project.projectID} type="button" className="move-dialog-move" onClick={() => props.onMove(project.projectID)}>
+                  <span>{project.name}</span>
+                </button>
+              ))}
+            </div>
+          ))}
+          {!hasTargets ? <div className="move-dialog-empty">No matching projects.</div> : null}
+        </div>
+      </div>
+    </div>
   );
 }
 
