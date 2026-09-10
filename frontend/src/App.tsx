@@ -3920,13 +3920,13 @@ function App() {
               <section className="settings-section">
                 <h3>OpenAI-compatible (local)</h3>
                 <div className="connection">
-                  <label htmlFor="openai-image-endpoint">
-                    Local image server endpoint
-                    <span className="help-tip" tabIndex={0}>
-                      <span className="help-tip-icon" aria-hidden="true">?</span>
-                      <span className="help-tip-text" role="tooltip">Any server speaking OpenAI's /v1/images/generations (LocalAI, a diffusers shim, ...). Used when Image Provider is set to OpenAI-compatible.</span>
-                    </span>
-                  </label>
+                  <div className="field-label-row">
+                    <label htmlFor="openai-image-endpoint">Local image server endpoint</label>
+                    <InfoHint
+                      label="Local image server endpoint"
+                      text="Any server speaking OpenAI's /v1/images/generations (LocalAI, a diffusers shim, ...). Used when Image Provider is set to OpenAI-compatible."
+                    />
+                  </div>
                   <div className="endpoint-row">
                     <input
                       id="openai-image-endpoint"
