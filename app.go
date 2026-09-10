@@ -2464,8 +2464,23 @@ func (a *App) ListFalImageEditModels() ([]FalModel, error) {
 // by id or tag. fal tags these inconsistently ("lipsync" vs "lip sync", and some
 // carry only one), so both the id and every tag are checked. Mirrors
 // isFalUpscaleModel's defensive matching.
+//
+// Kling's ai-avatar endpoints are the untagged exception: they are audio-driven
+// talking-head generators whose published schemas require exactly audio_url +
+// image_url — the audio-to-video picker's contract, mapped as-is by
+// lipsyncSynonyms — but fal files them under image-to-video with no lipsync tag,
+// so "kling" + "avatar" in the id also matches. Avatar matching stays
+// Kling-scoped on purpose: other avatar endpoints do not take an audio+image
+// pair (argil/avatars/audio-to-video takes an avatar id with no image input,
+// fal-ai/ai-avatar/single-text and friends are text-driven), and selecting one
+// for an audio+image turn fails at generation time via resolveLipsyncBody's
+// face-source rule.
 func isFalLipsyncModel(model FalModel) bool {
-	if strings.Contains(strings.ToLower(model.ID), "lipsync") || strings.Contains(strings.ToLower(model.ID), "lip-sync") {
+	id := strings.ToLower(model.ID)
+	if strings.Contains(id, "lipsync") || strings.Contains(id, "lip-sync") {
+		return true
+	}
+	if strings.Contains(id, "kling") && strings.Contains(id, "avatar") {
 		return true
 	}
 	for _, tag := range model.Tags {
@@ -2482,8 +2497,9 @@ func isFalLipsyncModel(model FalModel) bool {
 // with an audio clip (a talking head). fal files these across the audio-to-video
 // and image-to-video categories (kling lipsync/audio-to-video is tagged
 // text-to-video but sync-lipsync/v3/image-to-video and musetalk are
-// image-to-video), so both are fetched, merged, deduped by endpoint id, and kept
-// only when isFalLipsyncModel matches. The category split mirrors how
+// image-to-video; kling's ai-avatar endpoints sit in image-to-video with no
+// lipsync tag at all), so both are fetched, merged, deduped by endpoint id, and
+// kept only when isFalLipsyncModel matches. The category split mirrors how
 // ListFalAudioModels merges two categories; the filter mirrors
 // ListFalUpscaleModels.
 func (a *App) ListFalLipsyncImageModels() ([]FalModel, error) {

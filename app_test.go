@@ -5533,6 +5533,41 @@ func TestIsFalVideoMotionModel(t *testing.T) {
 	}
 }
 
+// TestIsFalLipsyncModel covers the id/tag filter that narrows fal's categories
+// down to lip-sync endpoints. Entries below are lifted from the live catalog:
+// fal tags lipsync inconsistently, and Kling's ai-avatar endpoints carry no tag
+// at all (they sit in image-to-video despite being audio-driven talking heads),
+// so the id check carries them. Avatar matching is Kling-scoped — other avatar
+// endpoints (argil's avatar-id input, fal-ai/ai-avatar text variants) don't take
+// an audio+image pair and must stay false.
+func TestIsFalLipsyncModel(t *testing.T) {
+	cases := []struct {
+		name  string
+		model FalModel
+		want  bool
+	}{
+		{"kling ai-avatar v2 standard", FalModel{ID: "fal-ai/kling-video/ai-avatar/v2/standard"}, true},
+		{"kling ai-avatar v2 pro", FalModel{ID: "fal-ai/kling-video/ai-avatar/v2/pro"}, true},
+		{"kling v1 standard ai-avatar", FalModel{ID: "fal-ai/kling-video/v1/standard/ai-avatar"}, true},
+		{"kling v1 pro ai-avatar", FalModel{ID: "fal-ai/kling-video/v1/pro/ai-avatar"}, true},
+		{"sync-lipsync by id", FalModel{ID: "fal-ai/sync-lipsync/v2/pro"}, true},
+		{"lipsync by tag", FalModel{ID: "fal-ai/latentsync", Tags: []string{"lipsync", "video-to-video"}}, true},
+		{"lip sync tag with space", FalModel{ID: "fal-ai/veed/lip-sync", Tags: []string{"lip sync"}}, true},
+		{"kling plain image-to-video", FalModel{ID: "fal-ai/kling-video/v2/master/image-to-video"}, false},
+		{"argil avatar id input", FalModel{ID: "argil/avatars/audio-to-video"}, false},
+		{"fal text-driven avatar", FalModel{ID: "fal-ai/ai-avatar/single-text"}, false},
+		{"heygen avatar4", FalModel{ID: "fal-ai/heygen/avatar4/image-to-video"}, false},
+		{"plain text-to-video", FalModel{ID: "fal-ai/kling-video/v2/master/text-to-video"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isFalLipsyncModel(tc.model); got != tc.want {
+				t.Errorf("isFalLipsyncModel(%+v) = %v, want %v", tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestResolveDefaultVideoMotionModel mirrors the upscale resolver test: an unset
 // VideoMotionModel falls back to the Kling motion-control default; a configured
 // value wins.
