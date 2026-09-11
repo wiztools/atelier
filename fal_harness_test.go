@@ -1409,3 +1409,197 @@ func TestHarnessExtendsAudioViaFal(t *testing.T) {
 		t.Errorf("turn 2 prompt = %v", second["prompt"])
 	}
 }
+
+// TestToolErrorRemediationNotice covers the pure matcher that turns failed
+// tool errors into deterministic remedies: fal's billing lock yields the
+// top-up notice, a remedy the model's own answer already carries is skipped,
+// and repeated identical failures collapse to one line.
+func TestToolErrorRemediationNotice(t *testing.T) {
+	billingErr := `fal POST https://queue.fal.run/minimax/h3-max/image-to-video returned 403 Forbidden: {"detail":"User is locked. Reason: Exhausted balance. Top up your balance at fal.ai/dashboard/billing."}`
+	tests := []struct {
+		name    string
+		results []HarnessToolResult
+		answer  string
+		want    string
+	}{
+		{
+			name:    "billing lock with vague answer appends the top-up remedy",
+			results: []HarnessToolResult{{Status: "failed", Error: billingErr}},
+			answer:  "The request failed because the required services were inaccessible due to account limitations.",
+			want:    "> ⚠️ fal.ai declined the request — the account balance is exhausted. Top up at fal.ai/dashboard/billing, then try again.",
+		},
+		{
+			name:    "answer that already names the balance is not duplicated",
+			results: []HarnessToolResult{{Status: "failed", Error: billingErr}},
+			answer:  "Your fal.ai balance is exhausted — top it up and try again.",
+			want:    "",
+		},
+		{
+			name: "repeated identical failures collapse to one line",
+			results: []HarnessToolResult{
+				{Status: "failed", Error: billingErr},
+				{Status: "failed", Error: billingErr},
+			},
+			answer: "It did not work.",
+			want:   "> ⚠️ fal.ai declined the request — the account balance is exhausted. Top up at fal.ai/dashboard/billing, then try again.",
+		},
+		{
+			name:    "non-fal exhausted balance is not attributed to fal",
+			results: []HarnessToolResult{{Status: "failed", Error: `POST https://other.test returned 403: Exhausted balance.`}},
+			answer:  "It did not work.",
+			want:    "",
+		},
+		{
+			name:    "auth failure",
+			results: []HarnessToolResult{{Status: "failed", Error: "fal authentication failed: {\"detail\":\"invalid key\"}"}},
+			answer:  "It did not work.",
+			want:    "> ⚠️ fal.ai rejected the API key — re-enter it in Settings → Providers.",
+		},
+		{
+			name:    "missing key",
+			results: []HarnessToolResult{{Status: "failed", Error: errFalKeyNotConfigured.Error()}},
+			answer:  "It did not work.",
+			want:    "> ⚠️ No fal.ai API key is configured — add one in Settings → Providers to use cloud generation.",
+		},
+		{
+			name:    "rate limit",
+			results: []HarnessToolResult{{Status: "failed", Error: "fal rate limited: too many requests"}},
+			answer:  "It did not work.",
+			want:    "> ⚠️ fal.ai is rate-limiting this account — wait a moment and try again.",
+		},
+		{
+			name:    "answer naming the API key skips the auth notice",
+			results: []HarnessToolResult{{Status: "failed", Error: "fal authentication failed: {\"detail\":\"invalid key\"}"}},
+			answer:  "The fal API key was rejected — fix it in Settings.",
+			want:    "",
+		},
+		{
+			name:    "unrelated error has no remedy",
+			results: []HarnessToolResult{{Status: "failed", Error: "connection reset by peer"}},
+			answer:  "It did not work.",
+			want:    "",
+		},
+		{
+			name:    "completed results are ignored",
+			results: []HarnessToolResult{{Status: "completed", Error: ""}},
+			answer:  "Here is your video.",
+			want:    "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := toolErrorRemediationNotice(tt.results, tt.answer)
+			if got != tt.want {
+				t.Errorf("toolErrorRemediationNotice() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHarnessAppendsRemediationNoticeForFalBillingError replays
+// conv_8d9de0162061c9ff35cf3b8e: a video turn whose generate_video call dies on
+// fal's billing lock (403 "Exhausted balance"), and whose final model — seeing
+// the raw error as evidence — paraphrases the remedy into a vague "account
+// limitations". The top-up remedy must still reach the user, appended
+// deterministically to the saved reply.
+func TestHarnessAppendsRemediationNoticeForFalBillingError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	keyring.MockInit()
+	if err := saveFalAPIKey("fal-test-key"); err != nil {
+		t.Fatalf("saveFalAPIKey: %v", err)
+	}
+	t.Cleanup(func() { _ = clearFalAPIKey() })
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "chat-box-model"
+	config.Providers.Fal.VideoModel = "fal-ai/some/video-model" // registers generate_video
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig: %v", err)
+	}
+
+	app := NewApp()
+	nonStreamCount := 0
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/api/openapi/") {
+			// Video schema — prompt only.
+			return jsonResponse(`{"components":{"schemas":{"VideoInput":{"type":"object","required":["prompt"],"properties":{"prompt":{"type":"string"}}}}}}`), nil
+		}
+		if strings.Contains(req.URL.Host, "fal.run") {
+			// The billing lock, verbatim from fal.
+			return &http.Response{StatusCode: http.StatusForbidden, Status: "403 Forbidden",
+				Body:   io.NopCloser(strings.NewReader(`{"detail":"User is locked. Reason: Exhausted balance. Top up your balance at fal.ai/dashboard/billing."}`)),
+				Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
+		}
+		switch req.URL.Path {
+		case "/api/show":
+			return jsonResponse(`{"capabilities":[],"model_info":{},"details":{"family":"test","parameter_size":"1B"}}`), nil
+		case "/api/chat":
+			payload := chatPayload(t, req)
+			if payload["stream"] == false {
+				nonStreamCount++
+				if nonStreamCount == 1 {
+					return chatCompletion("harness-model", `{"needsTools":true,"responseMode":"video","toolTask":"Animate a bell.","reason":"The user wants a video."}`), nil
+				}
+				body := `{"brief":"Animate it.","needsTools":true,"reason":"video","toolCalls":[{"name":"generate_video","content":"a bronze bell swinging"}]}`
+				if nonStreamCount > 2 {
+					// Planning round 2 sees the failed evidence and gives up,
+					// exactly like the source conversation.
+					body = `{"brief":"Done.","needsTools":false,"reason":"failed","toolCalls":[]}`
+				}
+				return chatCompletion("harness-model", body), nil
+			}
+			// The final model relays the failure but paraphrases the remedy
+			// away — no "balance", no billing URL.
+			body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"The animation could not be completed because the required services were inaccessible due to account limitations."},"done":false}`) +
+				fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+			return &http.Response{StatusCode: 200, Status: "200 OK",
+				Body:   io.NopCloser(strings.NewReader(body)),
+				Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+		default:
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL)
+			return nil, nil
+		}
+	})
+
+	app.runChatStream(context.Background(), "request-billing-notice", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Animate the bell swinging."},
+		},
+	})
+
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations: %v", err)
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation: %v", err)
+	}
+	assistant := detail.Turns[len(detail.Turns)-1]
+	var reply string
+	for _, c := range assistant.Content {
+		if c.Type == "text" {
+			reply = c.Text
+		}
+	}
+	if !strings.Contains(reply, "account limitations") {
+		t.Fatalf("expected the model's vague prose in the reply, got: %q", reply)
+	}
+	if !strings.Contains(reply, "fal.ai/dashboard/billing") || !strings.Contains(reply, "⚠️") {
+		t.Fatalf("expected the deterministic top-up remedy appended to the reply, got: %q", reply)
+	}
+	if strings.Count(reply, "fal.ai/dashboard/billing") != 1 {
+		t.Fatalf("expected the remedy exactly once, got: %q", reply)
+	}
+}

@@ -512,7 +512,9 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	// the model chose to mention them in its prose. The ffmpeg fallback rides
 	// the same channel: appended only when the model's own answer didn't
 	// already tell the user about ffmpeg, so the remedy is always visible
-	// without duplicating itself.
+	// without duplicating itself. Error remediations (a billing lock's top-up
+	// URL, a rejected key) ride it too — the model saw the raw error as
+	// evidence and may still paraphrase the remedy away.
 	toolNotices := collectToolNotices(preparation.ToolResults)
 	if ffmpegNotice := mediaEditFallbackNotice(preparation.LocalMediaEditUnavailable, assistantContent); ffmpegNotice != "" {
 		if toolNotices != "" {
@@ -526,6 +528,13 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			toolNotices += "\n" + imageNotice
 		} else {
 			toolNotices = imageNotice
+		}
+	}
+	if remediationNotice := toolErrorRemediationNotice(preparation.ToolResults, assistantContent); remediationNotice != "" {
+		if toolNotices != "" {
+			toolNotices += "\n" + remediationNotice
+		} else {
+			toolNotices = remediationNotice
 		}
 	}
 	if toolNotices != "" {
@@ -613,6 +622,85 @@ func collectToolNotices(results []HarnessToolResult) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// toolErrorRemediationRule pairs a matcher over a failed tool result's error
+// text (already lowercased) with the deterministic remedy to surface. coveredBy
+// lists substrings that mean the model's own answer already relayed the remedy,
+// so the appended notice doesn't duplicate the prose.
+type toolErrorRemediationRule struct {
+	match     func(errLower string) bool
+	notice    string
+	coveredBy []string
+}
+
+// toolErrorRemediationRules maps provider error shapes onto their remedy. The
+// billing rule matches fal's verbatim lock phrase ("Exhausted balance. Top up
+// your balance at fal.ai/dashboard/billing") rather than the HTTP status, so a
+// lock for any other reason keeps its raw error instead of a wrong remedy. The
+// auth/key/rate-limit shapes are fal_client.go's own error prefixes.
+var toolErrorRemediationRules = []toolErrorRemediationRule{
+	{
+		match: func(errLower string) bool {
+			return strings.Contains(errLower, "fal") && strings.Contains(errLower, "exhausted balance")
+		},
+		notice:    "fal.ai declined the request — the account balance is exhausted. Top up at fal.ai/dashboard/billing, then try again.",
+		coveredBy: []string{"fal.ai/dashboard/billing", "balance"},
+	},
+	{
+		match:     func(errLower string) bool { return strings.Contains(errLower, "fal authentication failed") },
+		notice:    "fal.ai rejected the API key — re-enter it in Settings → Providers.",
+		coveredBy: []string{"api key"},
+	},
+	{
+		match:     func(errLower string) bool { return strings.Contains(errLower, "fal api key is not configured") },
+		notice:    "No fal.ai API key is configured — add one in Settings → Providers to use cloud generation.",
+		coveredBy: []string{"api key"},
+	},
+	{
+		match:     func(errLower string) bool { return strings.Contains(errLower, "fal rate limited") },
+		notice:    "fal.ai is rate-limiting this account — wait a moment and try again.",
+		coveredBy: []string{"rate limit"},
+	},
+}
+
+// toolErrorRemediationNotice extracts actionable remedies from failed tool
+// errors and formats them as blockquote lines. The final model already sees the
+// raw error as evidence, but it may paraphrase the remedy into something vague
+// — conv_8d9de0162061c9ff35cf3b8e turned fal's "Exhausted balance. Top up your
+// balance at fal.ai/dashboard/billing" into "account limitations" — so the
+// remedy is also appended verbatim. A remedy the model's answer already
+// carries is skipped, and repeated identical failures yield one line.
+func toolErrorRemediationNotice(results []HarnessToolResult, assistantContent string) string {
+	answer := strings.ToLower(assistantContent)
+	emitted := map[string]bool{}
+	var lines []string
+	for _, r := range results {
+		if r.Status != "failed" {
+			continue
+		}
+		errLower := strings.ToLower(r.Error)
+		for _, rule := range toolErrorRemediationRules {
+			if !rule.match(errLower) || emitted[rule.notice] {
+				continue
+			}
+			emitted[rule.notice] = true
+			if anySubstring(answer, rule.coveredBy...) {
+				continue
+			}
+			lines = append(lines, "> ⚠️ "+rule.notice)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func anySubstring(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // cleanupVideoTempFiles removes any generated-video temp files that still exist.
