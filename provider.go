@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -11,10 +12,25 @@ import (
 // (OpenRouter) only populate this on the final streamed event; Ollama
 // populates it on every event once eval_count is nonzero. PromptTokens maps
 // to Ollama's prompt_eval_count and OpenRouter's usage.prompt_tokens; it is
-// zero when a provider doesn't report it.
+// zero when a provider doesn't report it. CostMicros carries the
+// server-billed cost of the call in USD millionths (OpenRouter's usage.cost);
+// zero means no cost was reported — local providers never set it.
 type TokenUsage struct {
 	PromptTokens     int
 	CompletionTokens int
+	CostMicros       int64
+}
+
+// usdCostMicros converts a provider's floating-point USD cost to integer
+// millionths, the shape every layer below the wire adapters carries (integer
+// arithmetic all the way to the persisted run, so sums never drift). A nil
+// cost — provider didn't report one — maps to 0, indistinguishable from a
+// genuinely free call; both render as "no cost shown".
+func usdCostMicros(cost *float64) int64 {
+	if cost == nil || *cost <= 0 || math.IsNaN(*cost) || math.IsInf(*cost, 0) {
+		return 0
+	}
+	return int64(math.Round(*cost * 1e6))
 }
 
 // ChatEvent is the provider-agnostic shape every ChatProvider streams.

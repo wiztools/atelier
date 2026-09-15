@@ -189,6 +189,9 @@ type HarnessStepView = {
   error?: string;
   tokens?: number;
   promptTokens?: number;
+  // Server-billed cost of this model call in USD millionths (OpenRouter
+  // usage.cost); absent when the provider reports none (Ollama, local).
+  costMicros?: number;
   firstTokenMs?: number;
   request?: HarnessRequestSnapshotView;
   tools?: HarnessToolActivityView[];
@@ -219,6 +222,10 @@ type HarnessToolActivityView = {
   model?: string;
   mediaKind?: string;
   mediaCount?: number;
+  // Estimated cost of a media generation or transcription in USD millionths,
+  // computed at call time from fal's pricing API; absent for local backends
+  // and calls pricing could not price.
+  costMicros?: number;
   path?: string;
   command?: string[];
   exitCode?: number;
@@ -5621,9 +5628,13 @@ function TurnUsage({run}: {run: HarnessRunView}) {
   if (!usage.length) {
     return null;
   }
+  // Media generation burns no tokens, so its cost would otherwise be missing
+  // from a video/audio-only turn's footer; the harness panel shows the
+  // per-model breakdown (tokens and media rows both).
+  const mediaCost = summarizeRunMediaUsage(run).reduce((sum, row) => sum + row.costMicros, 0);
   const totals = usage.reduce(
-    (acc, row) => ({prompt: acc.prompt + row.promptTokens, completion: acc.completion + row.completionTokens}),
-    {prompt: 0, completion: 0},
+    (acc, row) => ({prompt: acc.prompt + row.promptTokens, completion: acc.completion + row.completionTokens, cost: acc.cost + row.costMicros}),
+    {prompt: 0, completion: 0, cost: mediaCost},
   );
   return (
     <details className="turn-usage">
@@ -5631,6 +5642,7 @@ function TurnUsage({run}: {run: HarnessRunView}) {
         {[
           totals.prompt ? `${formatTokenCount(totals.prompt)} in` : '',
           totals.completion ? `${formatTokenCount(totals.completion)} out` : '',
+          formatCostMicros(totals.cost),
           run.durationMs ? formatDuration(run.durationMs) : '',
         ]
           .filter(Boolean)
@@ -5644,6 +5656,7 @@ function TurnUsage({run}: {run: HarnessRunView}) {
               {row.promptTokens ? `${formatTokenCount(row.promptTokens)} in` : '— in'}
               {' · '}
               {row.completionTokens ? `${formatTokenCount(row.completionTokens)} out` : '— out'}
+              {formatCostMicros(row.costMicros) ? ` · ${formatCostMicros(row.costMicros)}` : ''}
             </span>
           </div>
         ))}
@@ -5659,6 +5672,7 @@ function ConversationUsage({usage, media = []}: {usage: ModelUsageRow[]; media?:
     return null;
   }
   const totalTokens = usage.reduce((sum, row) => sum + row.promptTokens + row.completionTokens, 0);
+  const totalCost = usage.reduce((sum, row) => sum + row.costMicros, 0) + media.reduce((sum, row) => sum + row.costMicros, 0);
   const mediaTotals = media.reduce(
     (acc, row) => ({video: acc.video + row.video, audio: acc.audio + row.audio, image: acc.image + row.image}),
     {video: 0, audio: 0, image: 0},
@@ -5669,6 +5683,7 @@ function ConversationUsage({usage, media = []}: {usage: ModelUsageRow[]; media?:
       <summary title="Token and media-generation usage across this conversation">
         {usage.length ? `${formatTokenCount(totalTokens)} tokens · ${usage.length} model${usage.length === 1 ? '' : 's'}` : 'No token usage'}
         {mediaLabel ? ` · ${mediaLabel}` : ''}
+        {formatCostMicros(totalCost) ? ` · ${formatCostMicros(totalCost)}` : ''}
       </summary>
       {(usage.length || media.length) ? (
         <div className="conversation-usage-rows">
@@ -5679,6 +5694,7 @@ function ConversationUsage({usage, media = []}: {usage: ModelUsageRow[]; media?:
                 {row.promptTokens ? `${formatTokenCount(row.promptTokens)} in` : '— in'}
                 {' · '}
                 {row.completionTokens ? `${formatTokenCount(row.completionTokens)} out` : '— out'}
+                {formatCostMicros(row.costMicros) ? ` · ${formatCostMicros(row.costMicros)}` : ''}
               </span>
             </div>
           ))}
@@ -5688,7 +5704,10 @@ function ConversationUsage({usage, media = []}: {usage: ModelUsageRow[]; media?:
                 {row.provider !== '—' ? <span className="harness-usage-provider">{row.provider}</span> : null}
                 {row.model}
               </span>
-              <span>{mediaCountsLabel(row.video, row.audio, row.image)}</span>
+              <span>
+                {mediaCountsLabel(row.video, row.audio, row.image) || '—'}
+                {formatCostMicros(row.costMicros) ? ` · ${formatCostMicros(row.costMicros)}` : ''}
+              </span>
             </div>
           ))}
         </div>
@@ -5705,14 +5724,15 @@ function HarnessRunPanel({run}: {run: HarnessRunView}) {
   const status = run.status ?? 'running';
   const stopReason = run.loop?.stopReason;
   const totals = usage.reduce(
-    (acc, row) => ({prompt: acc.prompt + row.promptTokens, completion: acc.completion + row.completionTokens}),
-    {prompt: 0, completion: 0},
+    (acc, row) => ({prompt: acc.prompt + row.promptTokens, completion: acc.completion + row.completionTokens, cost: acc.cost + row.costMicros}),
+    {prompt: 0, completion: 0, cost: 0},
   );
   const mediaTotals = media.reduce(
-    (acc, row) => ({video: acc.video + row.video, audio: acc.audio + row.audio, image: acc.image + row.image}),
-    {video: 0, audio: 0, image: 0},
+    (acc, row) => ({video: acc.video + row.video, audio: acc.audio + row.audio, image: acc.image + row.image, cost: acc.cost + row.costMicros}),
+    {video: 0, audio: 0, image: 0, cost: 0},
   );
   const mediaLabel = mediaCountsLabel(mediaTotals.video, mediaTotals.audio, mediaTotals.image);
+  const runCost = formatCostMicros(totals.cost + mediaTotals.cost);
   // Prefix-cache signal: compare each model-call step's promptHash against the
   // previous request to the same provider+model. Equal hashes kept the cache
   // warm; a change (marked) invalidated it.
@@ -5739,6 +5759,7 @@ function HarnessRunPanel({run}: {run: HarnessRunView}) {
           {completed}/{steps.length} steps{run.durationMs ? ` · ${formatDuration(run.durationMs)}` : ''}
           {totals.prompt || totals.completion ? ` · ${formatTokenCount(totals.prompt + totals.completion)} tokens` : ''}
           {mediaLabel ? ` · ${mediaLabel}` : ''}
+          {runCost ? ` · ${runCost}` : ''}
         </small>
       </summary>
       <div className="harness-meta">
@@ -5755,6 +5776,7 @@ function HarnessRunPanel({run}: {run: HarnessRunView}) {
                 {row.promptTokens ? `${formatTokenCount(row.promptTokens)} in` : '— in'}
                 {' · '}
                 {row.completionTokens ? `${formatTokenCount(row.completionTokens)} out` : '— out'}
+                {formatCostMicros(row.costMicros) ? ` · ${formatCostMicros(row.costMicros)}` : ''}
               </span>
             </div>
           ))}
@@ -5768,7 +5790,10 @@ function HarnessRunPanel({run}: {run: HarnessRunView}) {
                 {row.provider !== '—' ? <span className="harness-usage-provider">{row.provider}</span> : null}
                 {row.model}
               </span>
-              <span>{mediaCountsLabel(row.video, row.audio, row.image)}</span>
+              <span>
+                {mediaCountsLabel(row.video, row.audio, row.image) || '—'}
+                {formatCostMicros(row.costMicros) ? ` · ${formatCostMicros(row.costMicros)}` : ''}
+              </span>
             </div>
           ))}
         </div>
@@ -5793,6 +5818,7 @@ function HarnessRunPanel({run}: {run: HarnessRunView}) {
               {step.promptTokens || step.tokens ? (
                 <span>{[step.promptTokens ? `${formatTokenCount(step.promptTokens)} in` : '', step.tokens ? `${formatTokenCount(step.tokens)} out` : ''].filter(Boolean).join(' · ')}</span>
               ) : null}
+              {formatCostMicros(step.costMicros) ? <span title="server-billed cost of this call">{formatCostMicros(step.costMicros)}</span> : null}
               {step.firstTokenMs ? <span title="time to first token">ttft {formatDuration(step.firstTokenMs)}</span> : null}
               {step.durationMs ? <span>{formatDuration(step.durationMs)}</span> : null}
               {truncated ? <span className="harness-flag-warn" title="oldest messages dropped to fit num_ctx">trimmed {truncated} msg{truncated === 1 ? '' : 's'}</span> : null}
@@ -5814,7 +5840,7 @@ function HarnessRunPanel({run}: {run: HarnessRunView}) {
                   <div className={`harness-tool ${tool.status ?? 'pending'}`} key={`${tool.name}-${toolIndex}`}>
                     <div>
                       <strong>{formatToolName(tool.name)}</strong>
-                      <span>{tool.status ?? 'pending'}{typeof tool.exitCode === 'number' ? ` · exit ${tool.exitCode}` : ''}{tool.durationMs ? ` · ${formatDuration(tool.durationMs)}` : ''}</span>
+                      <span>{tool.status ?? 'pending'}{typeof tool.exitCode === 'number' ? ` · exit ${tool.exitCode}` : ''}{tool.durationMs ? ` · ${formatDuration(tool.durationMs)}` : ''}{formatCostMicros(tool.costMicros) ? ` · est. ${formatCostMicros(tool.costMicros)}` : ''}</span>
                     </div>
                     {tool.permission ? (
                       <span className={tool.permission === 'approved' ? 'harness-flag-ok' : 'harness-flag-warn'}>
@@ -5856,6 +5882,7 @@ type ModelUsageRow = {
   promptTokens: number;
   completionTokens: number;
   calls: number;
+  costMicros: number;
 };
 
 // Per-model usage for a single run — one row per model that consumed tokens.
@@ -5870,13 +5897,14 @@ function summarizeRunUsage(run?: HarnessRunView): ModelUsageRow[] {
     }
     const provider = step.provider || '—';
     const key = `${provider}|${step.model}`;
-    const row = byModel.get(key) ?? {provider, model: step.model, promptTokens: 0, completionTokens: 0, calls: 0};
+    const row = byModel.get(key) ?? {provider, model: step.model, promptTokens: 0, completionTokens: 0, calls: 0, costMicros: 0};
     row.promptTokens += step.promptTokens ?? 0;
     row.completionTokens += step.tokens ?? 0;
+    row.costMicros += step.costMicros ?? 0;
     row.calls += 1;
     byModel.set(key, row);
   }
-  return [...byModel.values()].filter((row) => row.promptTokens > 0 || row.completionTokens > 0);
+  return [...byModel.values()].filter((row) => row.promptTokens > 0 || row.completionTokens > 0 || row.costMicros > 0);
 }
 
 // Per-model usage for the whole conversation, merged from every assistant
@@ -5889,9 +5917,10 @@ function summarizeModelUsage(chat: ChatEntry[]): ModelUsageRow[] {
     }
     for (const row of summarizeRunUsage(entry.harnessRun)) {
       const key = `${row.provider}|${row.model}`;
-      const merged = byModel.get(key) ?? {...row, promptTokens: 0, completionTokens: 0, calls: 0};
+      const merged = byModel.get(key) ?? {...row, promptTokens: 0, completionTokens: 0, calls: 0, costMicros: 0};
       merged.promptTokens += row.promptTokens;
       merged.completionTokens += row.completionTokens;
+      merged.costMicros += row.costMicros;
       merged.calls += row.calls;
       byModel.set(key, merged);
     }
@@ -5912,11 +5941,15 @@ type MediaUsageRow = {
   audio: number;
   image: number;
   calls: number;
+  costMicros: number;
 };
 
 // Per-model media generation for a single run, folded from tool_call step
 // activities. Only completed media calls carry model/mediaKind/mediaCount, so
 // failed calls drop out of the fold instead of counting phantom consumption.
+// Cost-carrying activities without a mediaKind (fal transcription) join too —
+// rows then show a cost with no output counts, keeping the fold's rows
+// reconcilable with the turn's money total.
 function summarizeRunMediaUsage(run?: HarnessRunView): MediaUsageRow[] {
   if (!run) {
     return [];
@@ -5928,13 +5961,17 @@ function summarizeRunMediaUsage(run?: HarnessRunView): MediaUsageRow[] {
     }
     for (const tool of asArray(step.tools)) {
       const kind = tool.mediaKind;
-      if (!tool.model || (kind !== 'video' && kind !== 'audio' && kind !== 'image')) {
+      const cost = tool.costMicros ?? 0;
+      if (!tool.model || (kind !== 'video' && kind !== 'audio' && kind !== 'image' && cost <= 0)) {
         continue;
       }
       const provider = tool.provider || '—';
       const key = `${provider}|${tool.model}`;
-      const row = byModel.get(key) ?? {provider, model: tool.model, video: 0, audio: 0, image: 0, calls: 0};
-      row[kind] += tool.mediaCount ?? 0;
+      const row = byModel.get(key) ?? {provider, model: tool.model, video: 0, audio: 0, image: 0, calls: 0, costMicros: 0};
+      if (kind === 'video' || kind === 'audio' || kind === 'image') {
+        row[kind] += tool.mediaCount ?? 0;
+      }
+      row.costMicros += cost;
       row.calls += 1;
       byModel.set(key, row);
     }
@@ -5949,7 +5986,7 @@ function mediaUsageFromToolSummary(tool: MediaToolSummaryView | undefined): Medi
   if (!tool?.model) {
     return [];
   }
-  const row: MediaUsageRow = {provider: legacyMediaProvider(tool.name, tool.model), model: tool.model, video: 0, audio: 0, image: 0, calls: 0};
+  const row: MediaUsageRow = {provider: legacyMediaProvider(tool.name, tool.model), model: tool.model, video: 0, audio: 0, image: 0, calls: 0, costMicros: 0};
   if (tool.name === 'video_generation') {
     row.video = tool.videoCount ?? 0;
     row.image = tool.imageCount ?? 0;
@@ -6020,6 +6057,18 @@ function formatTokenCount(count: number): string {
     return `${(count / 1000).toFixed(1)}k`;
   }
   return `${count}`;
+}
+
+// Cost in USD millionths → a dollar string with decimals scaled to the
+// magnitude: model/media calls range from fractions of a cent to a few
+// dollars, and two decimals would round a $0.004 turn to "$0.00".
+function formatCostMicros(micros?: number): string {
+  if (!micros || micros <= 0) {
+    return '';
+  }
+  const dollars = micros / 1e6;
+  const decimals = dollars >= 1 ? 2 : dollars >= 0.01 ? 3 : 5;
+  return `$${dollars.toFixed(decimals)}`;
 }
 
 function harnessStepLane(step: HarnessStepView): {label: string; className: string} {

@@ -658,3 +658,49 @@ func TestImageGenerationDescriptionFramesAttachmentsAsReferences(t *testing.T) {
 		}
 	}
 }
+
+// TestDefaultHarnessToolActivityCopiesCost pins the media-cost ledger: the
+// generation result's estimated cost (stamped by the tool gateway from fal's
+// pricing API) rides the persisted activity beside MediaKind/MediaCount, and
+// transcription joins with cost but no media kind. Failed calls carry no
+// payload, so they keep zero cost — matching how counts drop out.
+func TestDefaultHarnessToolActivityCopiesCost(t *testing.T) {
+	video := defaultHarnessToolActivity(HarnessToolResult{Result: ToolVideoResult{Model: "fal-ai/kling-video/v2/master/text-to-video", Count: 1, CostMicros: 350000}})
+	if video.CostMicros != 350000 || video.MediaKind != "video" || video.Model != "fal-ai/kling-video/v2/master/text-to-video" {
+		t.Fatalf("video activity = %+v, want cost 350000 on the media fields", video)
+	}
+	image := defaultHarnessToolActivity(HarnessToolResult{Result: ToolImageResult{Model: "fal-ai/flux/schnell", Count: 2, CostMicros: 6000}})
+	if image.CostMicros != 6000 || image.MediaKind != "image" {
+		t.Fatalf("image activity = %+v, want cost 6000", image)
+	}
+	transcript := defaultHarnessToolActivity(HarnessToolResult{Result: ToolTranscribeResult{Model: "fal-ai/wizper", CostMicros: 500}})
+	if transcript.CostMicros != 500 || transcript.MediaKind != "" {
+		t.Fatalf("transcript activity = %+v, want cost 500 with no media kind", transcript)
+	}
+	failed := defaultHarnessToolActivity(HarnessToolResult{Error: "boom"})
+	if failed.CostMicros != 0 || failed.MediaKind != "" {
+		t.Fatalf("failed activity = %+v, want no cost and no media fields", failed)
+	}
+}
+
+// TestHarnessRunCostMicros pins the turn-total fold: model-call steps and tool
+// activities sum, bookkeeping steps contribute nothing, so the persisted
+// providerResponse.costMicros reconciles with what the usage rows display.
+func TestHarnessRunCostMicros(t *testing.T) {
+	run := HarnessRun{Steps: []HarnessStep{
+		{Kind: "triage", CostMicros: 100},
+		{Kind: "planning", CostMicros: 250},
+		{Kind: "tool_call", Tools: []HarnessToolActivity{
+			{Name: "generate_video", CostMicros: 350000},
+			{Name: "transcribe_audio", CostMicros: 500},
+		}},
+		{Kind: "streaming", CostMicros: 243},
+		{Kind: "saved"},
+	}}
+	if got := harnessRunCostMicros(run); got != 351093 {
+		t.Fatalf("harnessRunCostMicros = %d, want 351093", got)
+	}
+	if got := harnessRunCostMicros(HarnessRun{}); got != 0 {
+		t.Fatalf("empty run cost = %d, want 0", got)
+	}
+}

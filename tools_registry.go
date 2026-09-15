@@ -110,6 +110,9 @@ type ToolImageResult struct {
 	Count   int      `json:"count"`
 	Images  []string `json:"images,omitempty"`
 	Notices []string `json:"notices,omitempty"`
+	// CostMicros estimates what this generation cost in USD millionths
+	// (fal_pricing.go); zero on the local backends.
+	CostMicros int64 `json:"costMicros,omitempty"`
 }
 
 // ToolVideoResult carries generated videos as on-disk temp-file references, not
@@ -124,6 +127,9 @@ type ToolVideoResult struct {
 	Count   int             `json:"count"`
 	Videos  []ToolVideoFile `json:"videos,omitempty"`
 	Notices []string        `json:"notices,omitempty"`
+	// CostMicros estimates what this generation cost in USD millionths
+	// (fal_pricing.go); zero for the local ffmpeg tools.
+	CostMicros int64 `json:"costMicros,omitempty"`
 }
 
 type ToolVideoFile struct {
@@ -141,6 +147,9 @@ type ToolAudioResult struct {
 	Count   int             `json:"count"`
 	Audios  []ToolAudioFile `json:"audios,omitempty"`
 	Notices []string        `json:"notices,omitempty"`
+	// CostMicros estimates what this generation cost in USD millionths
+	// (fal_pricing.go); zero for the local ffmpeg tools.
+	CostMicros int64 `json:"costMicros,omitempty"`
 }
 
 // ToolTranscriptFile mirrors ToolVideoFile/ToolAudioFile: a timestamped
@@ -195,6 +204,9 @@ type ToolTranscribeResult struct {
 	// artifact (WebVTT). Stripped from evidence; persisted by the harness.
 	Transcripts []ToolTranscriptFile `json:"transcripts,omitempty"`
 	Notices     []string             `json:"notices,omitempty"`
+	// CostMicros estimates what this transcription cost in USD millionths
+	// (fal_pricing.go); zero for the local whisper runner.
+	CostMicros int64 `json:"costMicros,omitempty"`
 }
 
 // ToolNotices reports deterministic, user-facing caveats produced while
@@ -767,10 +779,11 @@ func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 				return nil, "video generation failed", err
 			}
 			output := ToolVideoResult{
-				Model:  model,
-				Prompt: videoReq.Prompt,
-				Count:  1,
-				Videos: []ToolVideoFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
+				Model:      model,
+				Prompt:     videoReq.Prompt,
+				Count:      1,
+				Videos:     []ToolVideoFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
+				CostMicros: generated.CostMicros,
 			}
 			// Resolver notices ride the result; the executor adds its own only
 			// after generation succeeded, so a failed call carries nothing but
@@ -1022,11 +1035,12 @@ func stageGeneratedAudio(model, prompt string, generated GeneratedAudio) (any, s
 		return nil, "audio generation failed", err
 	}
 	output := ToolAudioResult{
-		Model:   model,
-		Prompt:  prompt,
-		Count:   1,
-		Audios:  []ToolAudioFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
-		Notices: generated.Notices,
+		Model:      model,
+		Prompt:     prompt,
+		Count:      1,
+		Audios:     []ToolAudioFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
+		CostMicros: generated.CostMicros,
+		Notices:    generated.Notices,
 	}
 	return output, fmt.Sprintf("generated audio with %s", model), nil
 }
@@ -1303,6 +1317,9 @@ func transcribeAudioToolDefinition(config AppConfig) HarnessToolDefinition {
 		Activity: func(result HarnessToolResult) HarnessToolActivity {
 			activity := defaultHarnessToolActivity(result)
 			if typed, ok := result.Result.(ToolTranscribeResult); ok {
+				// Backend attribution mirrors the ffmpeg tools' own stamp: the
+				// engine layer cannot know which runner served the call.
+				activity.Provider = map[bool]string{true: "whisper", false: "fal"}[local]
 				if local {
 					command := []string{"whisper", "transcribe"}
 					if typed.Model != "" {
@@ -1338,6 +1355,7 @@ func transcribeAudioOutput(req TranscribeAudioRequest, backend string, transcrip
 		Timestamps:            transcript.Timestamps,
 		TimestampedTranscript: transcript.TimestampedText,
 		Notices:               append([]string(nil), transcript.Notices...),
+		CostMicros:            transcript.CostMicros,
 	}
 	if transcript.Timestamps != "" && transcript.TimestampedText != "" {
 		if tempPath, err := writeTempMediaBytes([]byte(renderTranscriptVTT(transcript.Chunks)), "atelier-transcript-*", ".vtt"); err == nil {
@@ -1556,9 +1574,10 @@ func lipsyncToolDefinition(videoAudioCapable bool) HarnessToolDefinition {
 				return nil, "lip sync failed", err
 			}
 			output := ToolVideoResult{
-				Model:  model,
-				Count:  1,
-				Videos: []ToolVideoFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
+				Model:      model,
+				Count:      1,
+				Videos:     []ToolVideoFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
+				CostMicros: generated.CostMicros,
 			}
 			output.Notices = generated.Notices
 			if shadowNotice != "" {
@@ -1684,7 +1703,7 @@ func imageGenerationToolDefinition(config AppConfig) HarnessToolDefinition {
 			if len(images) == 0 {
 				return nil, "image generation returned no image", errors.New("image model returned no image data")
 			}
-			output := ToolImageResult{Model: model, Prompt: imageReq.Prompt, Count: len(images), Images: images, Notices: notices}
+			output := ToolImageResult{Model: model, Prompt: imageReq.Prompt, Count: len(images), Images: images, Notices: notices, CostMicros: payload.CostMicros}
 			summary := fmt.Sprintf("generated %d image%s with %s", len(images), pluralSuffix(len(images)), model)
 			if imageCount := len(attachedImages); imageCount > 1 {
 				summary = fmt.Sprintf("combined %d attached images into %d image%s with %s", imageCount, len(images), pluralSuffix(len(images)), model)
@@ -1855,7 +1874,7 @@ func imageUpscaleToolDefinition() HarnessToolDefinition {
 			if len(images) == 0 {
 				return nil, "image upscaling returned no image", errors.New("upscale model returned no image data")
 			}
-			output := ToolImageResult{Model: model, Count: len(images), Images: images}
+			output := ToolImageResult{Model: model, Count: len(images), Images: images, CostMicros: payload.CostMicros}
 			summary := fmt.Sprintf("upscaled the attached image to %dx with %s", int(scale), model)
 			return output, summary, nil
 		},
@@ -1934,10 +1953,11 @@ func videoUpscaleToolDefinition() HarnessToolDefinition {
 				return nil, "video upscaling failed", err
 			}
 			output := ToolVideoResult{
-				Model:   model,
-				Count:   1,
-				Videos:  []ToolVideoFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
-				Notices: generated.Notices,
+				Model:      model,
+				Count:      1,
+				Videos:     []ToolVideoFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
+				Notices:    generated.Notices,
+				CostMicros: generated.CostMicros,
 			}
 			return output, fmt.Sprintf("upscaled the attached video to %dx with %s", int(scale), model), nil
 		},
@@ -2429,14 +2449,25 @@ func defaultHarnessToolActivity(result HarnessToolResult) HarnessToolActivity {
 		activity.Model = typed.Model
 		activity.MediaKind = "video"
 		activity.MediaCount = typed.Count
+		activity.CostMicros = typed.CostMicros
 	case ToolAudioResult:
 		activity.Model = typed.Model
 		activity.MediaKind = "audio"
 		activity.MediaCount = typed.Count
+		activity.CostMicros = typed.CostMicros
 	case ToolImageResult:
 		activity.Model = typed.Model
 		activity.MediaKind = "image"
 		activity.MediaCount = typed.Count
+		activity.CostMicros = typed.CostMicros
+	case ToolTranscribeResult:
+		// Transcription consumes fal credits without generating media: Model
+		// and CostMicros ride the ledger, MediaKind stays empty so the count
+		// folds (which describe produced media) skip it — the usage fold
+		// admits cost-carrying activities without counts so its rows still
+		// reconcile with the turn's money total.
+		activity.Model = typed.Model
+		activity.CostMicros = typed.CostMicros
 	}
 	return activity
 }

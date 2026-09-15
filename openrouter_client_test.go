@@ -120,6 +120,31 @@ func TestOpenRouterClientCompleteChat(t *testing.T) {
 	}
 }
 
+func TestOpenRouterClientCompleteChatParsesCost(t *testing.T) {
+	client := newOpenRouterClient(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body := `{"model":"anthropic/claude-3.5-sonnet","choices":[{"message":{"content":"Hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":25,"completion_tokens":4,"cost":0.0015}}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     http.Header{},
+			}, nil
+		}),
+	}, "sk-or-test")
+
+	result, err := client.CompleteChat(context.Background(), ChatRequest{Model: "anthropic/claude-3.5-sonnet"})
+	if err != nil {
+		t.Fatalf("CompleteChat returned error: %v", err)
+	}
+	if result.PromptTokens != 25 || result.EvalTokens != 4 {
+		t.Fatalf("tokens = %d prompt / %d completion, want 25 / 4", result.PromptTokens, result.EvalTokens)
+	}
+	if result.CostMicros != 1500 {
+		t.Fatalf("cost = %d micros, want 1500 (usage.cost 0.0015 USD)", result.CostMicros)
+	}
+}
+
 func TestOpenRouterClientMissingAPIKey(t *testing.T) {
 	client := newOpenRouterClient(&http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {

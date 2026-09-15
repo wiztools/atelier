@@ -58,6 +58,11 @@ type App struct {
 	updatesMu           sync.Mutex
 	lastUpdate          *updateManifest
 	updaterQuitting     atomic.Bool
+	// falPricing caches fal's per-endpoint unit pricing for media cost
+	// estimation (fal_pricing.go). Created once here so every gateway rebuild
+	// shares the TTL window; nil on bare &App{} literals, which the estimator
+	// treats as "no pricing available" (fail-soft zero).
+	falPricing *falPricingCache
 }
 
 func NewApp() *App {
@@ -76,6 +81,7 @@ func NewApp() *App {
 		streams:             map[string]context.CancelFunc{},
 		streamConversations: map[string]string{},
 		permissions:         map[string]chan bool{},
+		falPricing:          newFalPricingCache(),
 	}
 	app.toolPermission = app.requestToolPermission
 	return app
@@ -804,6 +810,10 @@ type ollamaGenerateResponse struct {
 	Images   []string `json:"images"`
 	Done     bool     `json:"done"`
 	Error    string   `json:"error"`
+	// CostMicros estimates the generation's USD-millionth cost, stamped by the
+	// tool gateway on the fal path only (fal_pricing.go); Ollama and the
+	// openai-compatible path never set it.
+	CostMicros int64 `json:"costMicros,omitempty"`
 }
 
 type ConversationSummary struct {
@@ -946,6 +956,11 @@ type HarnessStep struct {
 	// steps counts each model call exactly once.
 	Tokens       int `json:"tokens,omitempty"`
 	PromptTokens int `json:"promptTokens,omitempty"`
+	// CostMicros is the server-billed cost of one model call in USD millionths
+	// (OpenRouter usage.cost), riding the same steps as the token counts —
+	// fal media generation's cost rides the tool_call step's activities
+	// instead. Zero when the provider reports no cost (Ollama, local servers).
+	CostMicros int64 `json:"costMicros,omitempty"`
 	// FirstTokenMS is time-to-first-token for streaming steps: milliseconds
 	// between the provider stream opening and the first visible delta.
 	FirstTokenMS int64                   `json:"firstTokenMs,omitempty"`
@@ -1002,6 +1017,13 @@ type HarnessToolActivity struct {
 	Model      string `json:"model,omitempty"`
 	MediaKind  string `json:"mediaKind,omitempty"`
 	MediaCount int    `json:"mediaCount,omitempty"`
+	// CostMicros estimates what this media generation cost in USD millionths,
+	// computed at call time from fal's pricing API (unit price × billed units
+	// — images, seconds of video, characters, or one request). An estimate,
+	// not a bill: feature multipliers fal applies server-side may not be
+	// captured. Zero when the backend is local (Ollama, openai-compatible) or
+	// pricing was unavailable; failed calls carry none, matching MediaCount.
+	CostMicros int64 `json:"costMicros,omitempty"`
 	// Permission records how the permission gate resolved (approved/denied/
 	// timeout/cancelled) and how long it waited, when the call was gated.
 	// Zipped from HarnessToolResult's json:"-" side-channel at the same
@@ -3551,6 +3573,22 @@ func buildChatUserTurn(conversationID string, turnNumber int, createdAt string, 
 	return userTurn, nil
 }
 
+// harnessRunCostMicros totals a run's USD-millionth cost: every model-call
+// step's server-billed cost plus every media generation's estimate. It
+// mirrors how the frontend folds token usage (sum over steps, one row per
+// model call) so providerResponse.costMicros and the UI's per-step rows can
+// never disagree. Bookkeeping steps carry no cost, same as tokens.
+func harnessRunCostMicros(run HarnessRun) int64 {
+	var total int64
+	for _, step := range run.Steps {
+		total += step.CostMicros
+		for _, activity := range step.Tools {
+			total += activity.CostMicros
+		}
+	}
+	return total
+}
+
 func buildChatAssistantTurn(conversationID string, turnNumber int, createdAt string, assistantContent, assistantThinking, model, provider, reason string, tokens int, run HarnessRun, errorText string) HistoryTurn {
 	assistantContents := []HistoryContent{{Type: "text", Text: assistantContent}}
 	if strings.TrimSpace(assistantThinking) != "" {
@@ -3560,6 +3598,13 @@ func buildChatAssistantTurn(conversationID string, turnNumber int, createdAt str
 		"doneReason": reason,
 		"harnessRun": run,
 		"tokens":     tokens,
+	}
+	// The turn's money total rides beside the token total, derived from the
+	// run (model-call steps + media activities) rather than threaded through
+	// the streaming result — the run is the single ledger everything else
+	// already renders from, and failed turns keep their burned cost too.
+	if costMicros := harnessRunCostMicros(run); costMicros > 0 {
+		providerResponse["costMicros"] = costMicros
 	}
 	if strings.TrimSpace(errorText) != "" {
 		providerResponse["error"] = errorText

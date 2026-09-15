@@ -547,8 +547,9 @@ type openRouterCompletionResponse struct {
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
+		PromptTokens     int      `json:"prompt_tokens"`
+		CompletionTokens int      `json:"completion_tokens"`
+		Cost             *float64 `json:"cost"`
 	} `json:"usage"`
 	Error *openRouterError `json:"error"`
 }
@@ -566,8 +567,9 @@ type openRouterStreamChunk struct {
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
+		PromptTokens     int      `json:"prompt_tokens"`
+		CompletionTokens int      `json:"completion_tokens"`
+		Cost             *float64 `json:"cost"`
 	} `json:"usage"`
 	Error *openRouterError `json:"error"`
 }
@@ -612,6 +614,7 @@ func (client OpenRouterClient) CompleteChat(ctx context.Context, req ChatRequest
 		Reason:       choice.FinishReason,
 		EvalTokens:   payload.Usage.CompletionTokens,
 		PromptTokens: payload.Usage.PromptTokens,
+		CostMicros:   usdCostMicros(payload.Usage.Cost),
 	}, nil
 }
 

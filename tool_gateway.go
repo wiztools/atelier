@@ -105,6 +105,15 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 					return ollamaGenerateResponse{}, nil, nil, err
 				}
 				resp, raw, genErr := client.GenerateImage(ctx, req.Model, body)
+				if genErr == nil {
+					// Cost is priced from what the response actually delivered
+					// (image count), not what the plan asked for.
+					imageCount := len(resp.Images)
+					if imageCount == 0 && resp.Image != "" {
+						imageCount = 1
+					}
+					resp.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, falBillingHints{Images: imageCount, Requests: 1})
+				}
 				return resp, raw, notices, genErr
 			}
 			if provider == "openai-compatible" {
@@ -167,6 +176,16 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				return GeneratedVideo{}, err
 			}
 			generated, genErr := client.GenerateVideo(ctx, req.Model, body)
+			if genErr == nil {
+				hints := falBillingHints{Requests: 1}
+				// Per-second models bill the requested duration; for an
+				// extend that is the extension length, which is exactly
+				// what Duration holds.
+				if seconds, ok := falDurationSeconds(req.Duration); ok {
+					hints.Seconds = seconds
+				}
+				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
+			}
 			generated.Notices = notices
 			return generated, genErr
 		}
@@ -209,6 +228,12 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			}
 			// Lip sync returns a video, so it reuses the GenerateVideo transport.
 			generated, genErr := client.GenerateVideo(ctx, req.Model, body)
+			if genErr == nil {
+				// Output length ≈ the driving audio's length, which the
+				// gateway never knows — per-second lipsync endpoints get no
+				// estimate rather than a guessed duration.
+				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, falBillingHints{Requests: 1})
+			}
 			generated.Notices = notices
 			return generated, genErr
 		}
@@ -224,7 +249,11 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			// normalize the source to a model-decodable format first
 			// (model_image_compat.go).
 			req.Image = ensureModelSafeImage(ctx, config, req.Image)
-			return newFalClient(app.client, apiKey).UpscaleImage(ctx, req)
+			resp, err := newFalClient(app.client, apiKey).UpscaleImage(ctx, req)
+			if err == nil {
+				resp.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, falBillingHints{Images: 1, Requests: 1})
+			}
+			return resp, err
 		}
 		gateway.tools.UpscaleVideo = func(ctx context.Context, req VideoUpscaleRequest) (GeneratedVideo, error) {
 			apiKey, err := loadFalAPIKey()
@@ -252,6 +281,11 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			// Upscaling returns a video, so it reuses the GenerateVideo transport
 			// (the same pattern as GenerateLipsync).
 			generated, genErr := client.GenerateVideo(ctx, req.Model, body)
+			if genErr == nil {
+				// Per-second upscalers bill the source clip's length, which the
+				// gateway never probed — no estimate rather than a guess.
+				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, falBillingHints{Requests: 1})
+			}
 			generated.Notices = notices
 			return generated, genErr
 		}
@@ -276,6 +310,14 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			schema := schemaCache.Get(ctx, req.Model)
 			body, notices := resolveAudioBody(schema, req, falOverrides)
 			generated, err := client.GenerateAudio(ctx, req.Model, body)
+			if err == nil {
+				// Character-billed TTS models price the spoken text; per-request
+				// models ignore the character count via the unit mapping.
+				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, falBillingHints{
+					Requests:   1,
+					Characters: len([]rune(req.Prompt)),
+				})
+			}
 			generated.Notices = notices
 			return generated, err
 		}
@@ -310,6 +352,14 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				return GeneratedAudio{Notices: notices}, err
 			}
 			generated, err := client.GenerateAudio(ctx, req.Model, body)
+			if err == nil {
+				// Duration is the ADDED length — what a per-second model bills.
+				hints := falBillingHints{Requests: 1}
+				if seconds, ok := falDurationSeconds(req.Duration); ok {
+					hints.Seconds = seconds
+				}
+				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
+			}
 			generated.Notices = notices
 			return generated, err
 		}
@@ -324,10 +374,20 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			client := newFalClient(app.client, apiKey)
 			// Pre-resolve the audio clip: a long voice memo can exceed fal's inline
 			// size limit, so upload it to CDN first when oversized.
+			// Duration for the per-second billing hint is probed while the clip
+			// is still inline — after resolution only a URL remains.
+			hints := falBillingHints{Requests: 1}
+			if seconds, ok := dataURLAudioDuration(req.Audio); ok {
+				hints.Seconds = seconds
+			}
 			if resolved, err := client.resolveMediaURL(ctx, req.Audio, "audio/mpeg", "audio.mp3"); err == nil {
 				req.Audio = resolved
 			}
-			return client.TranscribeAudio(ctx, req)
+			generated, err := client.TranscribeAudio(ctx, req)
+			if err == nil {
+				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
+			}
+			return generated, err
 		}
 	}
 	// Local whisper transcription needs neither an API key nor an HTTP client,

@@ -2434,6 +2434,103 @@ func TestHarnessRunChatStreamRecordsHistory(t *testing.T) {
 	}
 }
 
+// TestHarnessRunChatStreamRecordsCost covers the dollar ledger end to end for
+// the chat path: OpenRouter's usage.cost on the final streamed chunk lands on
+// the streaming step, sums into the run, and persists as the turn's
+// providerResponse.costMicros. The harness (Ollama) contributes no cost, so
+// the turn total is exactly the primary model's bill.
+func TestHarnessRunChatStreamRecordsCost(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	keyring.MockInit()
+	if err := saveOpenRouterAPIKey("sk-or-test"); err != nil {
+		t.Fatalf("saveOpenRouterAPIKey returned error: %v", err)
+	}
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Host {
+		case "ollama.test":
+			decision := `{"needsTools":false,"responseMode":"text","toolTask":"","reason":"General knowledge answer."}`
+			triageBody := `{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(triageBody)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+			}, nil
+		case "openrouter.ai":
+			if req.URL.Path == "/api/v1/models" {
+				body := `{"data":[{"id":"anthropic/claude-3.5-sonnet","name":"Claude","context_length":200000,"architecture":{"input_modalities":["text"]},"supported_parameters":["tools"]}]}`
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK",
+					Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+			}
+			body := strings.Join([]string{
+				`data: {"model":"anthropic/claude-3.5-sonnet","choices":[{"delta":{"content":"Hello from OpenRouter."},"finish_reason":"stop"}]}`,
+				`data: {"model":"anthropic/claude-3.5-sonnet","choices":[{"delta":{}}],"usage":{"prompt_tokens":25,"completion_tokens":3,"cost":0.000243}}`,
+				`data: [DONE]`,
+			}, "\n")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     http.Header{},
+			}, nil
+		default:
+			t.Fatalf("unexpected request host %q", req.URL.Host)
+			return nil, nil
+		}
+	})
+
+	app.runChatStream(context.Background(), "request-1", ChatRequest{
+		BaseURL:  "http://ollama.test",
+		Model:    "anthropic/claude-3.5-sonnet",
+		Provider: "openrouter",
+		Messages: []ChatMessage{{Role: "user", Content: "Say hello"}},
+	})
+
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations returned error: %v", err)
+	}
+	if len(conversations) != 1 {
+		t.Fatalf("conversation count = %d, want 1", len(conversations))
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+
+	harnessRun, ok := detail.Turns[1].ProviderResponse["harnessRun"].(map[string]any)
+	if !ok {
+		t.Fatalf("assistant turn missing harness run: %+v", detail.Turns[1].ProviderResponse)
+	}
+	steps, ok := harnessRun["steps"].([]any)
+	if !ok {
+		t.Fatalf("harness run missing steps: %+v", harnessRun)
+	}
+	streaming := harnessStepByKind(t, steps, "streaming")
+	if got := streaming["costMicros"]; got != float64(243) {
+		t.Fatalf("streaming step costMicros = %v, want 243", got)
+	}
+	// The turn total is JSON-persisted, so it reads back as float64.
+	if got := detail.Turns[1].ProviderResponse["costMicros"]; got != float64(243) {
+		t.Fatalf("turn costMicros = %v (%T), want 243", got, got)
+	}
+}
+
 func TestHarnessRunChatStreamUsesOpenRouterWhenRequestSpecifiesIt(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -17,6 +17,30 @@ import (
 	"github.com/zalando/go-keyring"
 )
 
+// falTestPricingResponse answers fal's pricing API (api.fal.ai/v1/models/
+// pricing) for the media-cost ledger: every gateway-wrapped fal generation
+// asks for unit pricing after success (fal_pricing.go), so the strict test
+// transports in this file must serve it or they fatal on the unexpected GET.
+func falTestPricingResponse() *http.Response {
+	return jsonResponse(`{"prices":[` +
+		`{"endpoint_id":"fal-ai/flux/schnell","unit_price":0.003,"unit":"image","currency":"USD"},` +
+		`{"endpoint_id":"fal-ai/flux/dev/image-to-image","unit_price":0.025,"unit":"image","currency":"USD"},` +
+		`{"endpoint_id":"fal-ai/kling-video/v2/master/text-to-video","unit_price":0.07,"unit":"second","currency":"USD"},` +
+		`{"endpoint_id":"fal-ai/kling-video/v2/master/image-to-video","unit_price":0.07,"unit":"second","currency":"USD"},` +
+		`{"endpoint_id":"fal-ai/veo3.1/extend-video","unit_price":0.4,"unit":"second","currency":"USD"},` +
+		`{"endpoint_id":"fal-ai/kling-video/v2.6/pro/motion-control","unit_price":0.07,"unit":"second","currency":"USD"},` +
+		`{"endpoint_id":"fal-ai/video-upscaler","unit_price":0.05,"unit":"request","currency":"USD"},` +
+		`{"endpoint_id":"fal-ai/elevenlabs/tts/multilingual-v2","unit_price":0.0005,"unit":"character","currency":"USD"},` +
+		`{"endpoint_id":"fal-ai/f5-tts","unit_price":0.05,"unit":"request","currency":"USD"},` +
+		`{"endpoint_id":"fal-ai/elevenlabs/sound-effects/v2","unit_price":0.05,"unit":"request","currency":"USD"},` +
+		`{"endpoint_id":"fal-ai/stable-audio-25/inpaint","unit_price":0.03,"unit":"second","currency":"USD"},` +
+		`{"endpoint_id":"fal-ai/wizper","unit_price":0.001,"unit":"second","currency":"USD"},` +
+		`{"endpoint_id":"fal-ai/esrgan","unit_price":0.01,"unit":"image","currency":"USD"},` +
+		`{"endpoint_id":"fal-ai/sync-lipsync/v3/image-to-video","unit_price":0.15,"unit":"request","currency":"USD"},` +
+		`{"endpoint_id":"fal-ai/sync-lipsync/v2/pro","unit_price":0.15,"unit":"request","currency":"USD"}` +
+		`],"next_cursor":null,"has_more":false}`)
+}
+
 // TestHarnessGeneratesImageViaFal is the fal.ai counterpart of
 // TestHarnessGeneratesImageViaPlannedTool. It runs the full chat turn
 // (triage → planner → generate_image tool → fal queue API → final response) and
@@ -67,6 +91,9 @@ func TestHarnessGeneratesImageViaFal(t *testing.T) {
 	prepCalls := 0
 	nonStreamCount := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
+			return falTestPricingResponse(), nil
+		}
 		if strings.Contains(req.URL.Path, "/api/openapi/") {
 			// Minimal flux/schnell text-to-image schema so resolveImageBody can
 			// map the canonical request onto fal's native field names.
@@ -185,6 +212,11 @@ func TestHarnessGeneratesImageViaFal(t *testing.T) {
 	if mediaActivity["model"] != "fal-ai/flux/schnell" || mediaActivity["mediaKind"] != "image" || mediaActivity["mediaCount"] != float64(1) || mediaActivity["provider"] != "fal" {
 		t.Fatalf("image activity media = %v/%v/%v/%v, want fal-ai/flux/schnell/image/1/fal", mediaActivity["model"], mediaActivity["mediaKind"], mediaActivity["mediaCount"], mediaActivity["provider"])
 	}
+	// The cost ledger end to end: 1 image × $0.003 (falTestPricingResponse)
+	// estimated at the gateway and persisted on the activity.
+	if mediaActivity["costMicros"] != float64(3000) {
+		t.Fatalf("image activity costMicros = %v, want 3000", mediaActivity["costMicros"])
+	}
 }
 
 // TestHarnessGeneratesVideoViaFal runs the full chat turn (triage → planner →
@@ -222,6 +254,9 @@ func TestHarnessGeneratesVideoViaFal(t *testing.T) {
 	nonStreamCount := 0
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
+			return falTestPricingResponse(), nil
+		}
 		if strings.Contains(req.URL.Path, "/api/openapi/") {
 			// Minimal kling text-to-video schema so resolveVideoBody can map the
 			// canonical params onto native fields.
@@ -356,6 +391,11 @@ func TestHarnessGeneratesVideoViaFal(t *testing.T) {
 	if mediaActivity["model"] != defaultFalVideoModel || mediaActivity["mediaKind"] != "video" || mediaActivity["mediaCount"] != float64(1) || mediaActivity["provider"] != "fal" {
 		t.Fatalf("video activity media = %v/%v/%v/%v, want %s/video/1/fal", mediaActivity["model"], mediaActivity["mediaKind"], mediaActivity["mediaCount"], mediaActivity["provider"], defaultFalVideoModel)
 	}
+	// The plan passed no duration, so the configured default (5s) prices the
+	// per-second ledger: 5 × $0.07 (falTestPricingResponse) = $0.35.
+	if mediaActivity["costMicros"] != float64(350000) {
+		t.Fatalf("video activity costMicros = %v, want 350000", mediaActivity["costMicros"])
+	}
 }
 
 // TestHarnessAnimatesAttachedImageViaFal is the regression test for
@@ -398,6 +438,9 @@ func TestHarnessAnimatesAttachedImageViaFal(t *testing.T) {
 	nonStreamCount := 0
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
+			return falTestPricingResponse(), nil
+		}
 		if strings.Contains(req.URL.Path, "/api/openapi/") {
 			// Minimal kling image-to-video schema so resolveVideoBody can run.
 			// The schema declares a scalar image_url, but the builtin override
@@ -531,6 +574,9 @@ func TestHarnessMotionControlsAttachedImageAndVideoViaFal(t *testing.T) {
 	nonStreamCount := 0
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
+			return falTestPricingResponse(), nil
+		}
 		if strings.Contains(req.URL.Path, "/api/openapi/") {
 			// Minimal motion-control schema (the shape of Kling v2.6
 			// motion-control): image_url, video_url, and character_orientation
@@ -637,6 +683,9 @@ func TestHarnessGeneratesAudioViaFal(t *testing.T) {
 	nonStreamCount := 0
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
+			return falTestPricingResponse(), nil
+		}
 		if strings.Contains(req.URL.Path, "/api/openapi/") {
 			return jsonResponse(`{"components":{"schemas":{"TtsInput":{"type":"object","required":["text"],"properties":{"text":{"type":"string"},"voice":{"type":"string","default":"Rachel"}}}}}}`), nil
 		}
@@ -752,6 +801,9 @@ func TestHarnessAppendsLoopNoticeForUnsupportedModel(t *testing.T) {
 	nonStreamCount := 0
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
+			return falTestPricingResponse(), nil
+		}
 		if strings.Contains(req.URL.Path, "/api/openapi/") {
 			// Sound schema — prompt + duration only, no loop parameter.
 			return jsonResponse(`{"components":{"schemas":{"SoundInput":{"type":"object","required":["prompt"],"properties":{"prompt":{"type":"string"},"duration_seconds":{"type":"number"}}}}}}`), nil
@@ -854,6 +906,9 @@ func TestHarnessGeneratesSoundViaFal(t *testing.T) {
 	nonStreamCount := 0
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
+			return falTestPricingResponse(), nil
+		}
 		if strings.Contains(req.URL.Path, "/api/openapi/") {
 			// Minimized fal-ai/elevenlabs/sound-effects/v2 shape (see
 			// testdata/fal-schemas/sfx-v2-real.json): text + duration_seconds + loop.
@@ -997,6 +1052,9 @@ func TestHarnessTranscribesAudioViaFal(t *testing.T) {
 	nonStreamCount := 0
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
+			return falTestPricingResponse(), nil
+		}
 		if strings.Contains(req.URL.Host, "fal.run") {
 			if req.Method == http.MethodPost && req.URL.Path == "/"+defaultFalTranscribeModel {
 				sawTranscribeSubmit = true
@@ -1131,6 +1189,9 @@ func TestHarnessMentionedAssetDrivesTranscribe(t *testing.T) {
 	nonStreamCount := 0
 	prepCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
+			return falTestPricingResponse(), nil
+		}
 		if strings.Contains(req.URL.Host, "fal.run") {
 			if req.Method == http.MethodPost && req.URL.Path == "/"+defaultFalTranscribeModel {
 				data, _ := io.ReadAll(req.Body)
@@ -1261,6 +1322,9 @@ func TestHarnessExtendsAudioViaFal(t *testing.T) {
 	app := NewApp()
 	harnessCalls := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
+			return falTestPricingResponse(), nil
+		}
 		switch {
 		case strings.Contains(req.URL.String(), "storage/auth/token"):
 			return jsonResponse(`{"token":"cdn-test-token","token_type":"Bearer","base_url":"https://v3.test.fal.media"}`), nil
@@ -1529,6 +1593,9 @@ func TestHarnessAppendsRemediationNoticeForFalBillingError(t *testing.T) {
 	app := NewApp()
 	nonStreamCount := 0
 	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
+			return falTestPricingResponse(), nil
+		}
 		if strings.Contains(req.URL.Path, "/api/openapi/") {
 			// Video schema — prompt only.
 			return jsonResponse(`{"components":{"schemas":{"VideoInput":{"type":"object","required":["prompt"],"properties":{"prompt":{"type":"string"}}}}}}`), nil

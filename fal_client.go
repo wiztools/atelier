@@ -234,6 +234,10 @@ type GeneratedAudio struct {
 	Data      []byte
 	MimeType  string
 	SourceURL string
+	// CostMicros estimates the generation's USD-millionth cost, stamped by the
+	// tool gateway after a successful call (fal_pricing.go). Not part of fal's
+	// response — the transport itself never sets it.
+	CostMicros int64
 	// Notices holds deterministic, user-facing caveats produced while resolving
 	// the request against the model's schema (e.g. a requested loop the model
 	// cannot honor). Surfaced verbatim in the chat reply.
@@ -257,6 +261,10 @@ type GeneratedTranscript struct {
 	// rides as a file, not model context) and derives the capped evidence
 	// preview — evidence never needs more than the preview.
 	Chunks []transcriptChunk `json:"-"`
+	// CostMicros estimates the transcription's USD-millionth cost, stamped by
+	// the tool gateway on the fal path only (fal_pricing.go); the local
+	// whisper runner never sets it.
+	CostMicros int64
 	// Notices holds deterministic, user-facing caveats (e.g. an auto-detected
 	// language, or a word-level request served at segment level). Surfaced
 	// verbatim in the chat reply.
@@ -360,6 +368,11 @@ type GeneratedVideo struct {
 	Data      []byte
 	MimeType  string
 	SourceURL string
+	// CostMicros estimates the generation's USD-millionth cost, stamped by the
+	// tool gateway after a successful call (fal_pricing.go). Not part of fal's
+	// response — the transport itself never sets it. Shared by every caller of
+	// the GenerateVideo transport: generation, lipsync, and video upscale.
+	CostMicros int64
 	// Notices holds deterministic, user-facing caveats produced while resolving
 	// the request against the model's schema (e.g. a model with no source-video
 	// input when the user attached a video to extend). Surfaced verbatim in the

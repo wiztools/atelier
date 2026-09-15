@@ -21,6 +21,8 @@ type OllamaClient struct {
 // provider. EvalTokens is the completion-side count (Ollama eval_count,
 // OpenRouter usage.completion_tokens); PromptTokens is the prompt-side count
 // (prompt_eval_count / usage.prompt_tokens), zero when unreported.
+// CostMicros is the server-billed cost in USD millionths when the provider
+// reports one (OpenRouter's usage.cost); zero otherwise.
 type ChatCompletionResult struct {
 	Model        string
 	Content      string
@@ -28,6 +30,7 @@ type ChatCompletionResult struct {
 	Reason       string
 	EvalTokens   int
 	PromptTokens int
+	CostMicros   int64
 	ToolCalls    []ToolCall
 }
 

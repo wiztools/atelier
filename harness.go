@@ -267,6 +267,7 @@ type finalResponseAttempt struct {
 	Reason       string
 	Tokens       int
 	PromptTokens int
+	CostMicros   int64
 	Emitted      bool
 }
 
@@ -367,6 +368,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			status = "failed"
 		}
 		run.Steps[triage].PromptTokens = completion.PromptTokens
+		run.Steps[triage].CostMicros = completion.CostMicros
 		run.Steps[triage].Request = triageSnapshot
 		run.completeStep(triage, status, completion.Reason, completion.EvalTokens, decision.Error)
 	}
@@ -1322,6 +1324,11 @@ func (h *HarnessEngine) runFinalResponseAttempt(ctx context.Context, requestID, 
 			result.PromptTokens = event.Usage.PromptTokens
 			run.Steps[streaming].PromptTokens = event.Usage.PromptTokens
 		}
+		// OpenRouter reports cost once, on the usage-carrying final chunk.
+		if event.Usage != nil && event.Usage.CostMicros > 0 {
+			result.CostMicros = event.Usage.CostMicros
+			run.Steps[streaming].CostMicros = event.Usage.CostMicros
+		}
 		if !firstTokenRecorded && (event.ContentDelta != "" || event.Thinking != "") {
 			firstTokenRecorded = true
 			run.Steps[streaming].FirstTokenMS = time.Since(streamOpened).Milliseconds()
@@ -1584,6 +1591,7 @@ Select a skill only when its name or description clearly matches the user's requ
 		completion, err = h.completeWithHarnessModel(ctx, turn.Harness, selectionReq)
 		if run != nil {
 			run.Steps[skillStep].PromptTokens = completion.PromptTokens
+			run.Steps[skillStep].CostMicros = completion.CostMicros
 		}
 		if err != nil {
 			if run != nil {
@@ -1744,6 +1752,7 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 			return HarnessPreparedTurn{}, err
 		}
 		run.Steps[planning].PromptTokens = completion.PromptTokens
+		run.Steps[planning].CostMicros = completion.CostMicros
 
 		// Parse the planner response into a common plan shape. Both paths
 		// produce {brief, needsTools, reason, toolCalls, validationErrors}.
