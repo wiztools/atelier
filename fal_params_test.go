@@ -1093,6 +1093,73 @@ func TestResolveVideoBodyVeoTextToVideo(t *testing.T) {
 	}
 }
 
+// TestResolveVideoBodyReferenceURLsNaming pins the reference_*_urls input naming
+// family: minimax/h3-max/reference-to-video (and fal-ai/bernini-r) declare their
+// reference inputs as reference_image_urls / reference_video_urls rather than
+// image_url(s)/video_url(s). Before those synonyms existed, findNative matched
+// neither field, the resolver dropped the attached image with a "no source-image
+// input" notice, and fal rejected the bare {prompt, duration} body with 422 "At
+// least one reference image, video, or audio must be provided"
+// (conv_b1447b28bb48021702444ca4).
+func TestResolveVideoBodyReferenceURLsNaming(t *testing.T) {
+	schema := loadSchema(t, "minimax-h3-max-reference-to-video")
+	for _, tc := range []struct {
+		name  string
+		req   VideoGenerateRequest
+		field string
+		want  []string
+	}{
+		{
+			name:  "attached image lands on reference_image_urls",
+			req:   VideoGenerateRequest{Model: "minimax/h3-max/reference-to-video", Prompt: "gentle breeze", Images: []string{"data:image/png;base64,AAA"}},
+			field: "reference_image_urls",
+			want:  []string{"data:image/png;base64,AAA"},
+		},
+		{
+			name:  "attached video lands on reference_video_urls",
+			req:   VideoGenerateRequest{Model: "minimax/h3-max/reference-to-video", Prompt: "gentle breeze", Videos: []string{"data:video/mp4;base64,BBB"}},
+			field: "reference_video_urls",
+			want:  []string{"data:video/mp4;base64,BBB"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, notices, err := resolveVideoBody(schema, tc.req, builtinFalOverrides())
+			if err != nil {
+				t.Fatalf("resolveVideoBody error: %v", err)
+			}
+			got, ok := body[tc.field].([]any)
+			if !ok {
+				t.Fatalf("%s = %v (%T); want the source media list — a miss here means the attachment was dropped and fal 422s demanding a reference",
+					tc.field, body[tc.field], body[tc.field])
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("%s = %v; want %v", tc.field, got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Fatalf("%s[%d] = %v; want %v", tc.field, i, got[i], tc.want[i])
+				}
+			}
+			for _, notice := range notices {
+				if strings.Contains(notice, "were ignored") {
+					t.Fatalf("source media must map, not drop; got notice %q (all notices: %v)", notice, notices)
+				}
+			}
+			// The minimax prompt documents "Image 1"-style references, not the
+			// @ImageN tokens the legend appends, so the prompt must pass through
+			// unmangled and no sibling plural key may leak.
+			if body["prompt"] != tc.req.Prompt {
+				t.Fatalf("prompt = %v; want %v", body["prompt"], tc.req.Prompt)
+			}
+			for _, stray := range []string{"image_url", "image_urls", "video_url", "video_urls"} {
+				if _, present := body[stray]; present {
+					t.Fatalf("body must not carry %q; got %v", stray, body[stray])
+				}
+			}
+		})
+	}
+}
+
 // TestResolveVideoBodySilentRequestOnModelWithoutToggle reproduces the
 // conv_e30f67cc834d4e98e1a49631 regression: a user asks for "no audio"
 // (generateAudio:false) against a model that emits synchronized audio by

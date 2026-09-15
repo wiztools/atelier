@@ -197,7 +197,12 @@ var imageSynonyms = map[string][]string{
 // is the clip a Veo extend endpoint continues. Both sides list the plural array
 // variant too — reference-to-video models (e.g. seedance) declare image_urls AND
 // video_urls, and missing the plural video key made resolveVideoBody drop the
-// attached video on a model that accepts it (conv_16bf42ce64997fad02f769a9).
+// attached video on a model that accepts it (conv_16bf42ce64997fad02f769a9) —
+// as well as the reference_*_urls family: minimax/h3-max and bernini-r name
+// their reference inputs reference_image_urls / reference_video_urls, and
+// missing those made the resolver drop an attached image and fail at fal with
+// 422 "At least one reference image, video, or audio must be provided"
+// (conv_b1447b28bb48021702444ca4).
 // aspectRatio covers Veo's "aspect_ratio" and any camelCase variant; duration is
 // model-dependent (Veo wants "8s" strings, Kling wants numbers — coerceVideoValue
 // handles both).
@@ -208,8 +213,8 @@ var videoSynonyms = map[string][]string{
 	"resolution":     {"resolution"},
 	"fps":            {"fps", "frame_rate", "frameRate", "framerate"},
 	"negativePrompt": {"negative_prompt"},
-	"sourceImage":    {"image_url", "image_urls"},
-	"sourceVideo":    {"video_url", "video_urls"},
+	"sourceImage":    {"image_url", "image_urls", "reference_image_urls"},
+	"sourceVideo":    {"video_url", "video_urls", "reference_video_urls"},
 	"generateAudio":  {"generate_audio"},
 	// characterOrientation selects the output's orientation source on
 	// motion-control models (Kling v2.6: required enum ["image","video"]). fal's
