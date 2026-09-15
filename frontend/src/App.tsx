@@ -5625,7 +5625,8 @@ function formatModelSize(size: number): string {
 // generation) — failed turns keep theirs, matching the persisted ledger.
 function TurnUsage({run}: {run: HarnessRunView}) {
   const usage = summarizeRunUsage(run);
-  if (!usage.length) {
+  const latency = summarizeRunLatency(run);
+  if (!usage.length && !latency) {
     return null;
   }
   // Media generation burns no tokens, so its cost would otherwise be missing
@@ -5649,6 +5650,28 @@ function TurnUsage({run}: {run: HarnessRunView}) {
           .join(' · ')}
       </summary>
       <div className="turn-usage-rows">
+        {latency ? (
+          <div
+            className="turn-latency"
+            title="Where this turn's time went — the phases run in sequence; brief bookkeeping between them is not counted."
+          >
+            {latency.harnessMs ? (
+              <span title="Triage, skill selection, and planning calls on the harness model.">harness {formatDuration(latency.harnessMs)}</span>
+            ) : null}
+            {latency.toolsMs ? (
+              <span title="Tool execution — commands and local media tools (ffmpeg, whisper, …) — including time spent waiting for approvals.">tools {formatDuration(latency.toolsMs)}</span>
+            ) : null}
+            {latency.responseMs ? (
+              <span title="The final response: opening the provider stream and streaming it to completion.">response {formatDuration(latency.responseMs)}</span>
+            ) : null}
+            {latency.firstTokenMs ? (
+              <span title="Time from the response stream opening to its first visible output.">first token {formatDuration(latency.firstTokenMs)}</span>
+            ) : null}
+            {latency.permissionWaitMs ? (
+              <span title="Time tools spent waiting for your approval — counted within tools above.">approval wait {formatDuration(latency.permissionWaitMs)}</span>
+            ) : null}
+          </div>
+        ) : null}
         {usage.map((row) => (
           <div className="harness-usage-row" key={`${row.provider}-${row.model}`} title={`${row.provider} · ${row.calls} call${row.calls === 1 ? '' : 's'} in this turn`}>
             <span className="harness-usage-model">{row.model}</span>
@@ -5657,6 +5680,7 @@ function TurnUsage({run}: {run: HarnessRunView}) {
               {' · '}
               {row.completionTokens ? `${formatTokenCount(row.completionTokens)} out` : '— out'}
               {formatCostMicros(row.costMicros) ? ` · ${formatCostMicros(row.costMicros)}` : ''}
+              {row.durationMs ? <span title="wall time of this model's calls in this turn">{` · ${formatDuration(row.durationMs)}`}</span> : ''}
             </span>
           </div>
         ))}
@@ -5695,6 +5719,7 @@ function ConversationUsage({usage, media = []}: {usage: ModelUsageRow[]; media?:
                 {' · '}
                 {row.completionTokens ? `${formatTokenCount(row.completionTokens)} out` : '— out'}
                 {formatCostMicros(row.costMicros) ? ` · ${formatCostMicros(row.costMicros)}` : ''}
+                {row.durationMs ? <span title="wall time of this model's calls across this conversation">{` · ${formatDuration(row.durationMs)}`}</span> : ''}
               </span>
             </div>
           ))}
@@ -5777,6 +5802,7 @@ function HarnessRunPanel({run}: {run: HarnessRunView}) {
                 {' · '}
                 {row.completionTokens ? `${formatTokenCount(row.completionTokens)} out` : '— out'}
                 {formatCostMicros(row.costMicros) ? ` · ${formatCostMicros(row.costMicros)}` : ''}
+                {row.durationMs ? ` · ${formatDuration(row.durationMs)}` : ''}
               </span>
             </div>
           ))}
@@ -5883,6 +5909,11 @@ type ModelUsageRow = {
   completionTokens: number;
   calls: number;
   costMicros: number;
+  // Wall time of this model's calls. The two final-response step kinds are
+  // sequential, not overlapping — model_call ends when the provider stream
+  // opens, streaming covers the body after it — so their durations may be
+  // summed; deduping them would halve the response time.
+  durationMs: number;
 };
 
 // Per-model usage for a single run — one row per model that consumed tokens.
@@ -5897,10 +5928,11 @@ function summarizeRunUsage(run?: HarnessRunView): ModelUsageRow[] {
     }
     const provider = step.provider || '—';
     const key = `${provider}|${step.model}`;
-    const row = byModel.get(key) ?? {provider, model: step.model, promptTokens: 0, completionTokens: 0, calls: 0, costMicros: 0};
+    const row = byModel.get(key) ?? {provider, model: step.model, promptTokens: 0, completionTokens: 0, calls: 0, costMicros: 0, durationMs: 0};
     row.promptTokens += step.promptTokens ?? 0;
     row.completionTokens += step.tokens ?? 0;
     row.costMicros += step.costMicros ?? 0;
+    row.durationMs += step.durationMs ?? 0;
     row.calls += 1;
     byModel.set(key, row);
   }
@@ -5917,15 +5949,68 @@ function summarizeModelUsage(chat: ChatEntry[]): ModelUsageRow[] {
     }
     for (const row of summarizeRunUsage(entry.harnessRun)) {
       const key = `${row.provider}|${row.model}`;
-      const merged = byModel.get(key) ?? {...row, promptTokens: 0, completionTokens: 0, calls: 0, costMicros: 0};
+      const merged = byModel.get(key) ?? {...row, promptTokens: 0, completionTokens: 0, calls: 0, costMicros: 0, durationMs: 0};
       merged.promptTokens += row.promptTokens;
       merged.completionTokens += row.completionTokens;
       merged.costMicros += row.costMicros;
       merged.calls += row.calls;
+      merged.durationMs += row.durationMs;
       byModel.set(key, merged);
     }
   }
   return [...byModel.values()];
+}
+
+// Where one turn's wall time went, folded from the run's steps. The lanes are
+// the pipeline's sequential phases — harness-model prep (triage + skill +
+// planning), tool rounds, final response (model_call + streaming, which are
+// themselves sequential) — so they roughly compose into the run's total;
+// bookkeeping steps (queued/saved/evaluation) are excluded. Tool time already
+// includes permission waits, which are surfaced separately too so an approval
+// stall reads as such rather than as a slow tool.
+type RunLatencyLanes = {
+  harnessMs: number;
+  toolsMs: number;
+  responseMs: number;
+  permissionWaitMs: number;
+  firstTokenMs: number;
+};
+
+function summarizeRunLatency(run?: HarnessRunView): RunLatencyLanes | undefined {
+  if (!run) {
+    return undefined;
+  }
+  const lanes = {harnessMs: 0, toolsMs: 0, responseMs: 0, permissionWaitMs: 0, firstTokenMs: 0};
+  let timed = false;
+  for (const step of asArray(run.steps)) {
+    const duration = step.durationMs ?? 0;
+    if (duration > 0) {
+      timed = true;
+    }
+    switch (step.kind) {
+      case 'triage':
+      case 'skill':
+      case 'planning':
+        lanes.harnessMs += duration;
+        break;
+      case 'tool_call':
+        lanes.toolsMs += duration;
+        for (const tool of asArray(step.tools)) {
+          lanes.permissionWaitMs += tool.permissionWaitMs ?? 0;
+        }
+        break;
+      case 'model_call':
+      case 'streaming':
+        lanes.responseMs += duration;
+        if (step.firstTokenMs) {
+          lanes.firstTokenMs = Math.max(lanes.firstTokenMs, step.firstTokenMs);
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  return timed ? lanes : undefined;
 }
 
 // One row per generation model that produced media. Media models (fal video/

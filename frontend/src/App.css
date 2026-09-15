@@ -1689,6 +1689,23 @@ button:disabled {
   background: #14181a;
 }
 
+/* Time lanes shown above the per-model rows when a turn footer is expanded:
+   the turn's sequential phases (harness prep, tools, response) plus
+   first-token and approval-wait annotations. Divided off from the model rows
+   below when any follow. */
+.turn-latency {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  color: #8a938f;
+}
+
+.turn-latency:not(:last-child) {
+  padding-bottom: 6px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid #2b2e30;
+}
+
 /* Step-level flags: trimmed-history warning and prompt-prefix hash. */
 .harness-flag-warn {
   color: #d9a25a;
