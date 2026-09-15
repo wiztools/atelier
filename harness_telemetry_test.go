@@ -434,6 +434,123 @@ func TestHarnessTelemetryCoversEveryModelCall(t *testing.T) {
 	}
 }
 
+// TestTriageFailureSkipsSkillSelection pins the fail-safe-path guard behind
+// conv_b8581c45e97098773e5bd238: when triage fails (even after its correction
+// retry), the skill selector must not run — selection is another weak-model
+// JSON judgment, and there it matched the knowledged skill, whose kc
+// instructions pushed the planner into a spurious permission prompt for a poem
+// question. The planner itself still runs: filesystem and media tools are
+// deterministic capabilities that don't depend on the failed model's judgment.
+func TestTriageFailureSkipsSkillSelection(t *testing.T) {
+	config := telemetryTestConfig(t)
+	// Plant a skill the selector would eagerly match, so a skipped selection is
+	// observable (an empty index would skip it too, for a different reason).
+	skillDir := filepath.Join(filepath.Dir(config.Storage.Root), ".agents", "skills", "poems")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	skillMD := "---\nname: poems\ndescription: Explain poems and verse, with knowledge-base lookups via the kc CLI.\n---\n\nExplain poems.\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillMD), 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	skillCalls := 0
+	triageCalls := 0
+	planningCalls := 0
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/chat" {
+			return notFoundResponse(), nil
+		}
+		var payload map[string]any
+		data, _ := io.ReadAll(req.Body)
+		if err := json.Unmarshal(data, &payload); err != nil {
+			t.Fatalf("provider request body is not JSON: %v", err)
+		}
+		if payload["stream"] != false {
+			// The streamed final response.
+			body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"The bell tolls."},"done":false}`) +
+				fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     http.Header{"Content-Type": []string{"application/x-ndjson"}},
+			}, nil
+		}
+		// The system prompt rides as the leading role:"system" message on the
+		// Ollama wire, not a top-level field.
+		system := ""
+		if messages, _ := payload["messages"].([]any); len(messages) > 0 {
+			if first, _ := messages[0].(map[string]any); first != nil {
+				if role, _ := first["role"].(string); role == "system" {
+					system, _ = first["content"].(string)
+				}
+			}
+		}
+		switch {
+		case strings.Contains(system, "private skill selector"):
+			skillCalls++
+			selection := `{"skillName":"poems","reason":"poem question"}`
+			return jsonResponse(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(selection) + `},"done":true,"done_reason":"stop","eval_count":2}`), nil
+		case strings.Contains(system, "You decide how the primary model should respond"):
+			triageCalls++
+			// Prose on every attempt: the exact conv_b8581c45e97098773e5bd238
+			// failure ("invalid character 'T'") — the model answers instead of
+			// routing, and the correction retry doesn't recover it.
+			return jsonResponse(`{"model":"harness-model","message":{"role":"assistant","content":"The poem is about a church bell."},"done":true,"done_reason":"stop","eval_count":2}`), nil
+		case strings.Contains(system, "gather evidence for the final model"):
+			planningCalls++
+			plan := "```json\n{\"brief\":\"Answer from knowledge.\",\"needsTools\":false,\"reason\":\"no tools needed\",\"toolCalls\":[]}\n```"
+			return jsonResponse(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(plan) + `},"done":true,"done_reason":"stop","eval_count":4}`), nil
+		default:
+			// Title generation or any other non-harness call.
+			return jsonResponse(`{"model":"chat-box-model","message":{"role":"assistant","content":"The Bell"},"done":true,"done_reason":"stop","eval_count":2}`), nil
+		}
+	})
+
+	app.runChatStream(context.Background(), "request-skip", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Please explain the poem The Bell"},
+		},
+	})
+
+	if triageCalls != triageMaxAttempts {
+		t.Fatalf("triage calls = %d, want %d (initial + correction retry)", triageCalls, triageMaxAttempts)
+	}
+	if skillCalls != 0 {
+		t.Fatalf("skill selection ran %d time(s) on a triage-failed turn; want it skipped", skillCalls)
+	}
+	if planningCalls == 0 {
+		t.Fatal("the planner must still run on the fail-safe path — deterministic tools stay available")
+	}
+
+	run := persistedHarnessRun(t, config, 1)
+	steps, _ := run["steps"].([]any)
+	if got := len(harnessStepsByKind(t, steps, "triage")); got != triageMaxAttempts {
+		t.Fatalf("triage steps = %d, want %d", got, triageMaxAttempts)
+	}
+	if got := len(harnessStepsByKind(t, steps, "skill")); got != 0 {
+		t.Fatalf("skill steps = %d, want 0 on the fail-safe path", got)
+	}
+	skill, _ := run["skill"].(map[string]any)
+	if skill == nil {
+		t.Fatal("run.Skill missing — the skip must still record its decision for telemetry")
+	}
+	if reason, _ := skill["reason"].(string); reason != triageFailedSkillSkipReason {
+		t.Fatalf("run.Skill.Reason = %q, want the triage-failure skip reason", reason)
+	}
+	triage, _ := run["triage"].(map[string]any)
+	if triage == nil {
+		t.Fatal("run.Triage missing")
+	}
+	if needsTools, _ := triage["needsTools"].(bool); !needsTools {
+		t.Fatal("fail-safe must keep needsTools true so the planner can still run")
+	}
+}
+
 func TestToolActivitiesRecordPermissionDecision(t *testing.T) {
 	engine := newHarnessEngine(defaultAppConfig())
 	results := []HarnessToolResult{

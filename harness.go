@@ -357,20 +357,10 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	}
 
 	decision := HarnessTriageDecision{NeedsTools: true, ResponseMode: "text", Reason: "user explicitly referenced a skill"}
-	var triageSnapshot *HarnessRequestSnapshot
 	if explicitSkill == nil {
-		triage := run.appendStep("triage", 1, harness.provider, harness.model, "harness model deciding response mode and tools")
-		var completion ChatCompletionResult
-		decision, completion, triageSnapshot = h.triageChatTurn(ctx, req, harness, skillIndex)
-		run.Steps[triage].Decision = triageDecisionLabel(decision)
-		status := "completed"
-		if decision.Error != "" {
-			status = "failed"
-		}
-		run.Steps[triage].PromptTokens = completion.PromptTokens
-		run.Steps[triage].CostMicros = completion.CostMicros
-		run.Steps[triage].Request = triageSnapshot
-		run.completeStep(triage, status, completion.Reason, completion.EvalTokens, decision.Error)
+		// triageChatTurn records its own "triage" steps — one per attempt,
+		// including the correction retry — the way selectSkillForTurn does.
+		decision, _, _ = h.triageChatTurn(ctx, req, harness, skillIndex, &run)
 	}
 	run.Triage = &decision
 
@@ -401,6 +391,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			PrimaryProvider: primaryProvider,
 			ResponseMode:    decision.ResponseMode,
 			UseNativeTools:  useNativeTools,
+			TriageFailed:    decision.Error != "",
 			Harness:         harness,
 			AttachedImages:  attachedImages,
 			AttachedAudios:  attachedAudios,
@@ -1501,6 +1492,18 @@ type harnessTurnContext struct {
 	PrimaryProvider string
 	ResponseMode    string
 	UseNativeTools  bool
+	// TriageFailed marks a turn that reached the planner through the triage
+	// fail-safe (the routing decision carries an Error) rather than a
+	// successful triage. The planner still runs — filesystem and media tools
+	// are deterministic capabilities — but the skill selector is skipped:
+	// selection is another harness-model JSON judgment, and trusting the same
+	// model that just failed a simpler one compounds the failure instead of
+	// informing the planner (conv_b8581c45e97098773e5bd238: a failed triage
+	// let the selector match the knowledged skill, whose kc instructions
+	// produced a spurious permission prompt for a poem explanation). An
+	// explicitly referenced skill is unaffected — it short-circuits triage
+	// entirely, so TriageFailed is never set alongside ExplicitSkill.
+	TriageFailed bool
 	// Harness is the resolved model+provider for the skill-selection and
 	// planning calls, carried as a unit so neither can drift from the other.
 	Harness harnessTarget
@@ -1680,13 +1683,28 @@ func explicitSkillSelection(index []SkillIndexEntry, prompt string) (SkillIndexE
 	return SkillIndexEntry{}, "", false
 }
 
+// triageFailedSkillSkipReason is the recorded skill-decision reason when a turn
+// reaches the planner through the triage fail-safe: selection is skipped so an
+// already-unreliable harness model cannot seed the planner with skill
+// instructions (see harnessTurnContext.TriageFailed).
+const triageFailedSkillSkipReason = "skill selection skipped: triage failed this turn, so the harness model's skill judgment is not trusted to guide the planner"
+
 // prepareChatTurnLoop is the harness planning loop: the planner model is called
 // with the conversation so far, every requested tool call is executed, and each
 // result — including failures and denials — is appended back as a tool message
 // for the next planning round. The loop is bounded by harnessChatMaxSteps
 // planning rounds and harnessChatMaxWallTime of wall time.
 func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conversationID string, req ChatRequest, turn harnessTurnContext, run *HarnessRun) (HarnessPreparedTurn, error) {
-	skillDecision, loadedSkill := h.selectSkillForTurn(ctx, req, turn, run)
+	var skillDecision *HarnessSkillDecision
+	var loadedSkill *LoadedSkill
+	if turn.TriageFailed {
+		// The fail-safe path (see harnessTurnContext.TriageFailed): the
+		// planner keeps its deterministic tools, but no skill body enters its
+		// prompt and no "skill" step burns a provider call.
+		skillDecision = &HarnessSkillDecision{AvailableCount: len(turn.SkillIndex), Reason: triageFailedSkillSkipReason}
+	} else {
+		skillDecision, loadedSkill = h.selectSkillForTurn(ctx, req, turn, run)
+	}
 	// A skill selected for a generation turn (image/video/audio) is workflow
 	// guidance that cannot help a built-in generation tool call and can derail
 	// the planner (conv_473c1357). Its body is suppressed for the planner

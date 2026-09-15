@@ -15,6 +15,11 @@ import (
 // "text" even when the user attached an image that warranted "vision".
 const triageNumPredict = 1024
 
+// triageMaxAttempts bounds the triage call: one initial attempt plus a single
+// correction retry when the response doesn't parse, the same bound the skill
+// selector allows itself.
+const triageMaxAttempts = 2
+
 // HarnessTriageDecision is the harness model's routing decision for a turn. It is
 // stored on the HarnessRun for telemetry; Error records a triage failure that
 // forced the fail-safe tool path.
@@ -243,23 +248,30 @@ func pluralize(count int, noun string) string {
 }
 
 // triageChatTurn asks the harness model whether the turn needs tools and what
-// response mode the primary model should use. Failures fail safe to the tool
-// path: the planner there can still conclude no tools are needed, so a wrong
-// fallback costs latency, never correctness. The response mode for the fail-
-// safe leans toward "vision" when the latest user turn carries an image, so a
-// triage decode failure (e.g. output truncated by num_predict) can't strip the
-// only signal that would have kept the primary model's attention on the image.
-func (h *HarnessEngine) triageChatTurn(ctx context.Context, req ChatRequest, harness harnessTarget, skillIndex []SkillIndexEntry) (HarnessTriageDecision, ChatCompletionResult, *HarnessRequestSnapshot) {
+// response mode the primary model should use. A response that doesn't decode
+// gets one correction retry with the parse error fed back — the same repair
+// idiom the planner uses for invalid plans — so a model that answered in prose
+// instead of routing (conv_b8581c45e97098773e5bd238: "invalid character 'T'")
+// gets a chance to emit the JSON object before the fail-safe engages. Failures
+// still fail safe to the tool path: the planner there can still conclude no
+// tools are needed, so a wrong fallback costs latency, never correctness. The
+// response mode for the fail-safe leans toward "vision" when the latest user
+// turn carries an image, so a triage decode failure (e.g. output truncated by
+// num_predict) can't strip the only signal that would have kept the primary
+// model's attention on the image. One "triage" step is recorded per attempt
+// (nil run is tolerated for direct/unit callers), keeping the
+// one-step-per-provider-call telemetry convention.
+func (h *HarnessEngine) triageChatTurn(ctx context.Context, req ChatRequest, harness harnessTarget, skillIndex []SkillIndexEntry, run *HarnessRun) (HarnessTriageDecision, ChatCompletionResult, *HarnessRequestSnapshot) {
 	system := triageSystemPrompt(h.toolRegistry(), skillIndex, h.config.Tools.Filesystem.Root)
 	numCtx := h.numCtx()
 	messages := messagesWithAttachmentNotes(req.Messages)
-	truncated := truncateChatHistory(messages, historyBudgetChars(numCtx, system, triageNumPredict))
+	budget := historyBudgetChars(numCtx, system, triageNumPredict)
 	triageReq := ChatRequest{
 		BaseURL:  req.BaseURL,
 		Model:    harness.model,
 		Provider: harness.provider,
 		System:   system,
-		Messages: truncated,
+		Messages: truncateChatHistory(messages, budget),
 		Format:   triageResponseSchema(),
 		Options: map[string]any{
 			"temperature": 0,
@@ -267,26 +279,81 @@ func (h *HarnessEngine) triageChatTurn(ctx context.Context, req ChatRequest, har
 			"num_ctx":     numCtx,
 		},
 	}
-	snapshot := requestSnapshot(triageReq, numCtx, len(messages)-len(truncated))
-	completion, err := h.completeWithHarnessModel(ctx, harness, triageReq)
-	if err != nil {
-		return triageFailSafe(req, "triage call failed; deferring to the harness model planner", err.Error()), ChatCompletionResult{}, snapshot
-	}
-	decision, err := decodeTriageDecision(completion.Content)
-	if err != nil {
-		return triageFailSafe(req, "triage response was not valid JSON; deferring to the harness model planner", err.Error()), completion, snapshot
-	}
-	if decision.ResponseMode == "" {
-		// An empty mode usually means truncation salvage recovered needsTools
-		// but not responseMode. Lean the same way the hard fail-safe does: an
-		// attached image is the strongest signal the user wanted it seen, so
-		// default to vision rather than text.
-		decision.ResponseMode = "text"
-		if len(latestUserImages(req.Messages)) > 0 {
-			decision.ResponseMode = "vision"
+	triageStep := -1
+	for attempt := 1; attempt <= triageMaxAttempts; attempt++ {
+		snapshot := requestSnapshot(triageReq, numCtx, len(messages)-len(triageReq.Messages))
+		if run != nil {
+			triageStep = run.appendStep("triage", attempt, harness.provider, harness.model, "harness model deciding response mode and tools")
+			run.Steps[triageStep].Request = snapshot
 		}
+		completion, err := h.completeWithHarnessModel(ctx, harness, triageReq)
+		if err != nil {
+			decision := triageFailSafe(req, "triage call failed; deferring to the harness model planner", err.Error())
+			if run != nil {
+				run.Steps[triageStep].Decision = triageDecisionLabel(decision)
+				run.completeStep(triageStep, "failed", completion.Reason, completion.EvalTokens, decision.Error)
+			}
+			return decision, ChatCompletionResult{}, snapshot
+		}
+		if run != nil {
+			run.Steps[triageStep].PromptTokens = completion.PromptTokens
+			run.Steps[triageStep].CostMicros = completion.CostMicros
+		}
+		decision, decodeErr := decodeTriageDecision(completion.Content)
+		if decodeErr == nil {
+			// An empty mode usually means truncation salvage recovered needsTools
+			// but not responseMode. Lean the same way the hard fail-safe does: an
+			// attached image is the strongest signal the user wanted it seen, so
+			// default to vision rather than text.
+			if decision.ResponseMode == "" {
+				decision.ResponseMode = "text"
+				if len(latestUserImages(req.Messages)) > 0 {
+					decision.ResponseMode = "vision"
+				}
+			}
+			if run != nil {
+				run.Steps[triageStep].Decision = triageDecisionLabel(decision)
+				run.completeStep(triageStep, "completed", completion.Reason, completion.EvalTokens, "")
+			}
+			return decision, completion, snapshot
+		}
+		if attempt < triageMaxAttempts {
+			// One correction retry: the call itself succeeded, so record the
+			// attempt as a correction round (like the planner's invalid-plan
+			// rounds) rather than a failure, then feed the parse error back.
+			if run != nil {
+				run.Steps[triageStep].Summary = "invalid triage decision, correction requested: " + decodeErr.Error()
+				run.completeStep(triageStep, "completed", completion.Reason, completion.EvalTokens, "")
+			}
+			messages = append(messages,
+				ChatMessage{Role: "assistant", Content: completion.Content},
+				ChatMessage{Role: "user", Content: triageCorrectionPrompt(decodeErr.Error())})
+			triageReq.Messages = truncateChatHistory(messages, budget)
+			continue
+		}
+		decision = triageFailSafe(req, "triage response was not valid JSON after the correction retry; deferring to the harness model planner", decodeErr.Error())
+		if run != nil {
+			run.Steps[triageStep].Decision = triageDecisionLabel(decision)
+			run.completeStep(triageStep, "failed", completion.Reason, completion.EvalTokens, decision.Error)
+		}
+		return decision, completion, snapshot
 	}
-	return decision, completion, snapshot
+	// Unreachable — every attempt returns — but the loop shape needs a fall-through.
+	return triageFailSafe(req, "triage exhausted its attempts; deferring to the harness model planner", ""), ChatCompletionResult{}, nil
+}
+
+// triageCorrectionPrompt renders the feedback for a triage response that didn't
+// decode, modeled on the planner's parse-failure correction: a vague "not
+// valid JSON" leaves a weak model free to repeat the prose it just wrote, so
+// name the observed failure and demand only the JSON object. See
+// conv_b8581c45e97098773e5bd238: the harness model began answering the user
+// in prose, the fail-safe sent the turn down the tool path, and the run ended
+// in a spurious kc permission prompt for a poem question.
+func triageCorrectionPrompt(parseErr string) string {
+	return "Your previous response was not JSON, so no routing decision could be read: " + parseErr + ". " +
+		"You are not answering the user. Do NOT emit code, markdown, or prose. " +
+		"Respond with ONLY the JSON object matching the response schema " +
+		`({"needsTools":..., "responseMode":..., "toolTask":..., "reason":..., "mediaEdit":..., "imageEdit":...}).`
 }
 
 // triageFailSafe builds the fail-safe decision for a triage failure: needsTools

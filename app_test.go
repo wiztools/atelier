@@ -5823,7 +5823,7 @@ func TestTriageChatTurnParsesDecision(t *testing.T) {
 	decision, completion, _ := engine.triageChatTurn(context.Background(), ChatRequest{
 		BaseURL:  "http://ollama.test",
 		Messages: []ChatMessage{{Role: "user", Content: "What is the project status?"}},
-	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
+	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil)
 	if !decision.NeedsTools || decision.ResponseMode != "text" || decision.ToolTask != "Read status.txt" || decision.Error != "" {
 		t.Fatalf("decision = %+v, want parsed tool request with responseMode text", decision)
 	}
@@ -5841,7 +5841,7 @@ func TestTriageChatTurnFailsSafeToToolPath(t *testing.T) {
 	decision, _, _ := engine.triageChatTurn(context.Background(), ChatRequest{
 		BaseURL:  "http://ollama.test",
 		Messages: []ChatMessage{{Role: "user", Content: "anything"}},
-	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
+	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil)
 	if !decision.NeedsTools {
 		t.Fatal("triage failure must fail safe to the tool path (planner can still decline tools)")
 	}
@@ -5885,7 +5885,7 @@ func TestTriageChatTurnStripsImagesFromRequest(t *testing.T) {
 			Images:  []string{"data:image/png;base64,AAAA"},
 			Audios:  []string{"data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA="},
 		}},
-	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
+	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil)
 	if decision.Error != "" {
 		t.Fatalf("decision = %+v, want clean decision with media stripped", decision)
 	}
@@ -5960,13 +5960,181 @@ func TestTriageChatTurnDecodeErrorFailsSafe(t *testing.T) {
 	decision, completion, _ := engine.triageChatTurn(context.Background(), ChatRequest{
 		BaseURL:  "http://ollama.test",
 		Messages: []ChatMessage{{Role: "user", Content: "anything"}},
-	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
+	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil)
 	if !decision.NeedsTools || decision.Error == "" {
 		t.Fatalf("decision = %+v, want fail-safe with recorded decode error", decision)
 	}
 	if completion.EvalTokens != 3 {
 		t.Fatalf("completion tokens = %d, want telemetry preserved on decode failure", completion.EvalTokens)
 	}
+}
+
+// TestTriageChatTurnRetriesInvalidJSONWithCorrection pins the correction retry:
+// a harness model that answers in prose instead of routing (the exact failure
+// in conv_b8581c45e97098773e5bd238 — "invalid character 'T'") gets one retry
+// whose prompt names the parse error and demands only the JSON object, and a
+// valid decision on the retry is used rather than fail-safing.
+func TestTriageChatTurnRetriesInvalidJSONWithCorrection(t *testing.T) {
+	calls := 0
+	var retryBody string
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		data, _ := io.ReadAll(req.Body)
+		if calls == 2 {
+			retryBody = string(data)
+		}
+		content := "The poem is a meditation on the church bell's role across a life."
+		if calls == 2 {
+			content = `{"needsTools":false,"responseMode":"text","toolTask":"","reason":"general knowledge"}`
+		}
+		body := `{"model":"chat-box-model","message":{"role":"assistant","content":` + strconv.Quote(content) + `},"done":true,"done_reason":"stop","eval_count":3}`
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+	})
+	engine := newHarnessEngine(defaultAppConfig(), app)
+	decision, _, _ := engine.triageChatTurn(context.Background(), ChatRequest{
+		BaseURL:  "http://ollama.test",
+		Messages: []ChatMessage{{Role: "user", Content: "Please explain the poem The Bell by Ralph Waldo Emerson"}},
+	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil)
+	if calls != 2 {
+		t.Fatalf("provider calls = %d, want 2 (initial attempt + correction retry)", calls)
+	}
+	if decision.Error != "" || decision.NeedsTools {
+		t.Fatalf("decision = %+v, want the retried decision parsed, not the fail-safe", decision)
+	}
+	// The retry must show the model its previous output and the parse error —
+	// otherwise a weak model has nothing to correct against.
+	if !strings.Contains(retryBody, "The poem is a meditation") {
+		t.Fatalf("retry request must echo the invalid first response as the assistant message:\n%s", retryBody)
+	}
+	if !strings.Contains(retryBody, "Your previous response was not JSON") || !strings.Contains(retryBody, "Respond with ONLY the JSON object") {
+		t.Fatalf("retry request must carry the correction prompt naming the parse error:\n%s", retryBody)
+	}
+}
+
+// TestTriageChatTurnRetryExhaustedFailsSafe: when the correction retry also
+// fails to decode, the fail-safe still engages — bounded at two attempts, with
+// the exhaustion recorded in the reason.
+func TestTriageChatTurnRetryExhaustedFailsSafe(t *testing.T) {
+	calls := 0
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		body := `{"model":"chat-box-model","message":{"role":"assistant","content":"tools sound useful here"},"done":true,"done_reason":"stop","eval_count":3}`
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+	})
+	engine := newHarnessEngine(defaultAppConfig(), app)
+	decision, _, _ := engine.triageChatTurn(context.Background(), ChatRequest{
+		BaseURL:  "http://ollama.test",
+		Messages: []ChatMessage{{Role: "user", Content: "anything"}},
+	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil)
+	if calls != triageMaxAttempts {
+		t.Fatalf("provider calls = %d, want %d (the retry is bounded)", calls, triageMaxAttempts)
+	}
+	if !decision.NeedsTools || decision.Error == "" {
+		t.Fatalf("decision = %+v, want fail-safe with recorded error after the exhausted retry", decision)
+	}
+	if !strings.Contains(decision.Reason, "after the correction retry") {
+		t.Fatalf("reason = %q, want it to record that the retry was exhausted", decision.Reason)
+	}
+}
+
+// TestTriageChatTurnRecordsStepPerAttempt keeps the one-step-per-provider-call
+// telemetry convention across the retry: a correction round for the unparsable
+// attempt, then the final attempt carrying the decision — and a failed step for
+// the exhausted and provider-error paths.
+func TestTriageChatTurnRecordsStepPerAttempt(t *testing.T) {
+	triageSteps := func(run HarnessRun) []HarnessStep {
+		var steps []HarnessStep
+		for _, s := range run.Steps {
+			if s.Kind == "triage" {
+				steps = append(steps, s)
+			}
+		}
+		return steps
+	}
+
+	t.Run("correction then success", func(t *testing.T) {
+		calls := 0
+		app := NewApp()
+		app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			content := "I will just answer directly."
+			if calls == 2 {
+				content = `{"needsTools":false,"responseMode":"text","toolTask":"","reason":"chat"}`
+			}
+			body := `{"model":"chat-box-model","message":{"role":"assistant","content":` + strconv.Quote(content) + `},"done":true,"done_reason":"stop","eval_count":1}`
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+		})
+		engine := newHarnessEngine(defaultAppConfig(), app)
+		run := newHarnessRun("run-retry", "conv-retry")
+		decision, _, _ := engine.triageChatTurn(context.Background(), ChatRequest{
+			BaseURL:  "http://ollama.test",
+			Messages: []ChatMessage{{Role: "user", Content: "hello"}},
+		}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, &run)
+		if decision.Error != "" {
+			t.Fatalf("decision = %+v, want the retried decision", decision)
+		}
+		steps := triageSteps(run)
+		if len(steps) != 2 {
+			t.Fatalf("triage steps = %d, want 2 (one per attempt)", len(steps))
+		}
+		if steps[0].Status != "completed" || !strings.HasPrefix(steps[0].Summary, "invalid triage decision, correction requested:") {
+			t.Fatalf("first attempt step = %+v, want a completed correction round", steps[0])
+		}
+		if steps[1].Status != "completed" || steps[1].Decision != "text" {
+			t.Fatalf("second attempt step = %+v, want the successful decision", steps[1])
+		}
+	})
+
+	t.Run("retry exhausted records failed final step", func(t *testing.T) {
+		app := NewApp()
+		app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body := `{"model":"chat-box-model","message":{"role":"assistant","content":"prose again"},"done":true,"done_reason":"stop","eval_count":1}`
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+		})
+		engine := newHarnessEngine(defaultAppConfig(), app)
+		run := newHarnessRun("run-exhausted", "conv-exhausted")
+		decision, _, _ := engine.triageChatTurn(context.Background(), ChatRequest{
+			BaseURL:  "http://ollama.test",
+			Messages: []ChatMessage{{Role: "user", Content: "hello"}},
+		}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, &run)
+		if decision.Error == "" {
+			t.Fatal("exhausted retry must fail safe with a recorded error")
+		}
+		steps := triageSteps(run)
+		if len(steps) != 2 {
+			t.Fatalf("triage steps = %d, want 2", len(steps))
+		}
+		if steps[1].Status != "failed" || steps[1].Error == "" {
+			t.Fatalf("final attempt step = %+v, want a failed step carrying the decode error", steps[1])
+		}
+	})
+
+	t.Run("provider error records single failed step without retry", func(t *testing.T) {
+		calls := 0
+		app := NewApp()
+		app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			return &http.Response{StatusCode: http.StatusInternalServerError, Status: "500 Internal Server Error", Body: io.NopCloser(strings.NewReader("boom")), Header: http.Header{}}, nil
+		})
+		engine := newHarnessEngine(defaultAppConfig(), app)
+		run := newHarnessRun("run-provider", "conv-provider")
+		decision, _, _ := engine.triageChatTurn(context.Background(), ChatRequest{
+			BaseURL:  "http://ollama.test",
+			Messages: []ChatMessage{{Role: "user", Content: "hello"}},
+		}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, &run)
+		if !decision.NeedsTools || decision.Error == "" {
+			t.Fatalf("decision = %+v, want the provider-failure fail-safe", decision)
+		}
+		if calls != 1 {
+			t.Fatalf("provider calls = %d, want 1 (a dead provider is not retried)", calls)
+		}
+		steps := triageSteps(run)
+		if len(steps) != 1 || steps[0].Status != "failed" {
+			t.Fatalf("triage steps = %+v, want a single failed step", steps)
+		}
+	})
 }
 
 // TestTriageChatTurnFailsSafeToVisionWhenImageAttached covers the regression
@@ -5993,7 +6161,7 @@ func TestTriageChatTurnFailsSafeToVisionWhenImageAttached(t *testing.T) {
 			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
 		})
 		engine := newHarnessEngine(defaultAppConfig(), app)
-		decision, _, _ := engine.triageChatTurn(context.Background(), withImage, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
+		decision, _, _ := engine.triageChatTurn(context.Background(), withImage, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil)
 		if !decision.NeedsTools {
 			t.Fatal("fail-safe must keep needsTools true so the planner can still run")
 		}
@@ -6009,7 +6177,7 @@ func TestTriageChatTurnFailsSafeToVisionWhenImageAttached(t *testing.T) {
 			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
 		})
 		engine := newHarnessEngine(defaultAppConfig(), app)
-		decision, _, _ := engine.triageChatTurn(context.Background(), textOnly, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
+		decision, _, _ := engine.triageChatTurn(context.Background(), textOnly, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil)
 		if !decision.NeedsTools || decision.ResponseMode != "text" {
 			t.Fatalf("decision = %+v, want text fail-safe when no image is attached", decision)
 		}
@@ -6021,7 +6189,7 @@ func TestTriageChatTurnFailsSafeToVisionWhenImageAttached(t *testing.T) {
 			return &http.Response{StatusCode: http.StatusInternalServerError, Status: "500 Internal Server Error", Body: io.NopCloser(strings.NewReader("boom")), Header: http.Header{}}, nil
 		})
 		engine := newHarnessEngine(defaultAppConfig(), app)
-		decision, _, _ := engine.triageChatTurn(context.Background(), withImage, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil)
+		decision, _, _ := engine.triageChatTurn(context.Background(), withImage, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil)
 		if !decision.NeedsTools || decision.ResponseMode != "vision" {
 			t.Fatalf("decision = %+v, want vision fail-safe when the triage call fails and an image is attached", decision)
 		}
@@ -7651,7 +7819,7 @@ func TestTriageChatTurnRoutesToConfiguredHarnessProvider(t *testing.T) {
 	decision, _, _ := engine.triageChatTurn(context.Background(), ChatRequest{
 		BaseURL:  "http://ollama.test",
 		Messages: []ChatMessage{{Role: "user", Content: "hello"}},
-	}, harnessTarget{model: "anthropic/claude-3.5-sonnet", provider: "openrouter"}, nil)
+	}, harnessTarget{model: "anthropic/claude-3.5-sonnet", provider: "openrouter"}, nil, nil)
 
 	if gotHost != "openrouter.ai" {
 		t.Fatalf("triage reached host %q, want openrouter.ai — the harness is still pinned to Ollama", gotHost)
