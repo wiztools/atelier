@@ -587,15 +587,21 @@ func imageResultMegapixels(images []string, single string) float64 {
 // the explicit value when the schema accepts it (or doesn't constrain it),
 // else the schema's declared default, else "". A value the schema's enum
 // rejects is treated as dropped — resolveVideoBody drops it with a notice, so
-// the model's server-side default is what actually billed.
+// the model's server-side default is what actually billed. Acceptance is
+// enumValueFor's case-insensitive match, and the accepted spelling is the
+// enum's own member, mirroring resolveVideoBody exactly (a "1080p" request on
+// minimax's uppercase "1080P" enum is sent as 1080P and bills as 1080P, not
+// as dropped-to-default).
 func schemaStringInput(schema *ModelInputSchema, name, explicit string) string {
 	if schema == nil {
 		return strings.TrimSpace(explicit)
 	}
 	explicit = strings.TrimSpace(explicit)
 	if prop, ok := schema.property(name); ok {
-		if explicit != "" && (len(prop.Enum) == 0 || contains(prop.Enum, explicit)) {
-			return explicit
+		if explicit != "" {
+			if canonical, allowed := enumValueFor(prop, explicit); allowed {
+				return canonical
+			}
 		}
 		if def, isStr := prop.Default.(string); isStr {
 			return strings.TrimSpace(def)

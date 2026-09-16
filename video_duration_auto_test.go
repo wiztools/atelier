@@ -75,7 +75,10 @@ func TestResolveVideoBodyNumericDurationStillWorksForKling(t *testing.T) {
 	}
 }
 
-// TestValueAllowedByEnumDirect covers the helper standalone.
+// TestValueAllowedByEnumDirect covers the helper standalone. Matching is
+// case-insensitive (enumValueFor underneath): planner-facing values and model
+// enums disagree on casing for resolution tiers (lowercase "1080p" vs minimax's
+// uppercase "1080P"), so a differing case is accepted, never rejected.
 func TestValueAllowedByEnumDirect(t *testing.T) {
 	enumProp := SchemaProperty{Enum: []string{"auto", "5", "10"}}
 	noEnumProp := SchemaProperty{}
@@ -89,11 +92,40 @@ func TestValueAllowedByEnumDirect(t *testing.T) {
 		{"5 in enum", enumProp, "5", true},
 		{"8 not in enum", enumProp, "8", false},
 		{"empty enum accepts all", noEnumProp, "anything", true},
+		{"case-insensitive match", enumProp, "AUTO", true},
+		{"case cannot invent a member", enumProp, "5x", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			if got := valueAllowedByEnum(c.prop, c.in); got != c.want {
 				t.Fatalf("valueAllowedByEnum(%v) = %v, want %v", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// TestEnumValueForCanonicalSpelling pins the canonical return: the body must
+// carry the enum's own member (what the model documents), not the caller's
+// casing, so a case-insensitive match is safe to send verbatim.
+func TestEnumValueForCanonicalSpelling(t *testing.T) {
+	cases := []struct {
+		name          string
+		prop          SchemaProperty
+		in            string
+		wantCanonical string
+		wantOK        bool
+	}{
+		{"no enum echoes value", SchemaProperty{}, "1080p", "1080p", true},
+		{"exact match returns member", SchemaProperty{Enum: []string{"480P", "1080P"}}, "1080P", "1080P", true},
+		{"case-insensitive returns enum spelling", SchemaProperty{Enum: []string{"480P", "1080P"}}, "1080p", "1080P", true},
+		{"uppercase request onto lowercase enum", SchemaProperty{Enum: []string{"auto"}}, "AUTO", "auto", true},
+		{"rejected when no member matches", SchemaProperty{Enum: []string{"480P", "768P"}}, "720p", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			canonical, ok := enumValueFor(c.prop, c.in)
+			if ok != c.wantOK || canonical != c.wantCanonical {
+				t.Fatalf("enumValueFor(%q) = (%q, %v), want (%q, %v)", c.in, canonical, ok, c.wantCanonical, c.wantOK)
 			}
 		})
 	}

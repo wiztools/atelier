@@ -1044,7 +1044,19 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 		if sourcePresent && !req.AspectRatioExplicit {
 			// skip — inherit the source media's orientation
 		} else if path, prop, ok := findNative(schema, ov, "video", req.Model, "aspectRatio"); ok {
-			setBodyPath(schema, body, path, coerceVideoValue(prop, aspect))
+			// Enum guard, same as duration/resolution/fps: the planner's ratio
+			// enum offers values not every model takes (3:2 and 2:3, while
+			// minimax accepts only adaptive/21:9/16:9/4:3/1:1/3:4/9:16), and
+			// passing an out-of-enum ratio through would 422 at fal. Drop it
+			// with a notice so the request still runs on the model's own
+			// default (minimax: "adaptive", which follows the source media).
+			if canonical, allowed := enumValueFor(prop, aspect); allowed {
+				setBodyPath(schema, body, path, coerceVideoValue(prop, canonical))
+			} else {
+				notices = append(notices, fmt.Sprintf(
+					"The selected model %q does not accept aspect ratio %q; ignoring it and letting the model choose.",
+					req.Model, aspect))
+			}
 		} else if sourceVideo != "" {
 			// Extend with an explicit ratio, but the model has no aspect_ratio
 			// input. Its output ratio is NOT uncontrolled — it is inherited
@@ -1091,14 +1103,17 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 		// the model's enum doesn't list before sending — passing an out-of-enum
 		// tier through would 422 at fal. Drop it with a notice so the request
 		// still runs (the model picks its own default), mirroring how duration is
-		// handled above.
+		// handled above. enumValueFor matches case-insensitively and returns the
+		// enum's own spelling, so the planner's lowercase "1080p" reaches
+		// minimax's uppercase "1080P" enum member instead of being dropped
+		// (a tier that merely differs in case is accepted, not rejected).
 		if path, prop, ok := findNative(schema, ov, "video", req.Model, "resolution"); ok {
-			if !valueAllowedByEnum(prop, res) {
+			if canonical, allowed := enumValueFor(prop, res); allowed {
+				setBodyPath(schema, body, path, coerceVideoValue(prop, canonical))
+			} else {
 				notices = append(notices, fmt.Sprintf(
 					"The selected model %q does not accept resolution %q; ignoring it and letting the model choose.",
 					req.Model, res))
-			} else {
-				setBodyPath(schema, body, path, coerceVideoValue(prop, res))
 			}
 		} else {
 			notices = append(notices, fmt.Sprintf(
@@ -1350,15 +1365,40 @@ func coerceVideoValue(prop SchemaProperty, value any) any {
 // valueAllowedByEnum reports whether value is accepted by prop's enum constraint.
 // A property with no enum accepts anything; an enum-constrained property (like
 // a video model's duration: Seedance allows "auto" plus "4".."15", Kling allows
-// only "5"/"10") accepts only its listed values. Used to gate enum-sensitive
+// only "5"/"10") accepts only its listed values — case-insensitively, via
+// enumValueFor, because planner-facing values and model enums don't always
+// agree on casing (the resolution tiers are lowercase "480p"/"1080p" while
+// minimax/h3-max lists "480P"/"768P"/"1080P"; an exact-match guard dropped
+// every planner request as out-of-enum). Used to gate enum-sensitive
 // fields before sending so an out-of-enum value is dropped with a notice rather
 // than 422ing at fal. The value is stringified to match how enums are parsed
 // from the schema (string literals).
 func valueAllowedByEnum(prop SchemaProperty, value string) bool {
+	_, ok := enumValueFor(prop, value)
+	return ok
+}
+
+// enumValueFor matches value against a property's enum and returns the enum's
+// own spelling for the body. The match is exact first, then case-insensitive:
+// callers send the canonical member (not the caller's casing) so fal receives a
+// value the model's schema documents. A property with no enum accepts anything
+// and echoes the value unchanged; ok is false only when an enum is declared and
+// the value matches no member under either comparison.
+func enumValueFor(prop SchemaProperty, value string) (canonical string, ok bool) {
 	if len(prop.Enum) == 0 {
-		return true
+		return value, true
 	}
-	return contains(prop.Enum, value)
+	for _, member := range prop.Enum {
+		if member == value {
+			return member, true
+		}
+	}
+	for _, member := range prop.Enum {
+		if strings.EqualFold(member, value) {
+			return member, true
+		}
+	}
+	return "", false
 }
 
 // resolveLipsyncBody maps a LipsyncGenerateRequest onto the model's native input

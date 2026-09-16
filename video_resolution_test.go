@@ -101,3 +101,46 @@ func TestResolveVideoBodyResolutionOmittedSendsNothing(t *testing.T) {
 		t.Fatalf("expected no notices when resolution is omitted, got %v", notices)
 	}
 }
+
+// TestResolveVideoBodyResolutionCaseInsensitiveEnumMatch is the minimax
+// regression: the planner-facing tiers are lowercase ("480p", "1080p" — the
+// tool description's own examples) while minimax/h3-max's resolution enum is
+// uppercase ["480P","768P","1080P"], and the enum guard used to be an
+// exact-case match — so every planner-requested tier was dropped as
+// out-of-enum and nobody could actually select 1080P on minimax. The match is
+// now case-insensitive and sends the enum's own spelling.
+func TestResolveVideoBodyResolutionCaseInsensitiveEnumMatch(t *testing.T) {
+	body, notices, _ := resolveVideoBody(loadSchema(t, "minimax-h3-max-reference-to-video"),
+		VideoGenerateRequest{
+			Model:      "minimax/h3-max/reference-to-video",
+			Prompt:     "the character walks through the house",
+			Resolution: "1080p",
+		},
+		builtinFalOverrides())
+	if body["resolution"] != "1080P" {
+		t.Fatalf("resolution = %v, want the enum's own spelling \"1080P\"", body["resolution"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("a case-only mismatch is accepted, want no notices, got %v", notices)
+	}
+}
+
+// TestResolveVideoBodyResolutionCaseMismatchStillDropped pins the boundary:
+// case-insensitivity cannot invent a member. minimax has no 720p tier (its
+// middle tier is 768P), so "720p" must still be dropped with a notice rather
+// than silently coerced onto a tier the user never asked for.
+func TestResolveVideoBodyResolutionCaseMismatchStillDropped(t *testing.T) {
+	body, notices, _ := resolveVideoBody(loadSchema(t, "minimax-h3-max-reference-to-video"),
+		VideoGenerateRequest{
+			Model:      "minimax/h3-max/reference-to-video",
+			Prompt:     "the character walks through the house",
+			Resolution: "720p",
+		},
+		builtinFalOverrides())
+	if _, present := body["resolution"]; present {
+		t.Fatalf("resolution must stay dropped when no enum member matches, got %v", body["resolution"])
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "does not accept resolution") || !strings.Contains(notices[0], "720p") {
+		t.Fatalf("expected one resolution-dropped notice naming 720p, got %v", notices)
+	}
+}

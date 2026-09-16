@@ -1730,6 +1730,69 @@ func TestResolveVideoBodyImageToVideoExplicitRatio(t *testing.T) {
 	})
 }
 
+// TestResolveVideoBodyAspectRatioEnumGuardDropsUnsupported is the 422 guard:
+// the planner's aspect-ratio enum offers 3:2 and 2:3, which minimax's enum
+// (adaptive/21:9/16:9/4:3/1:1/3:4/9:16) doesn't list, and the ratio used to be
+// sent as-is — fal would reject the request outright. Mirror the duration/
+// resolution/fps guards: drop the ratio with a notice so the request still
+// runs on the model's own default ("adaptive", which follows the source
+// media). Covers both the text-to-video and the explicit-with-source paths,
+// since an explicit ratio reaches the guard in either case.
+func TestResolveVideoBodyAspectRatioEnumGuardDropsUnsupported(t *testing.T) {
+	t.Run("text-to-video", func(t *testing.T) {
+		body, notices, _ := resolveVideoBody(loadSchema(t, "minimax-h3-max-reference-to-video"),
+			VideoGenerateRequest{
+				Model:       "minimax/h3-max/reference-to-video",
+				Prompt:      "the character walks through the house",
+				AspectRatio: "3:2",
+			},
+			builtinFalOverrides())
+		if _, present := body["aspect_ratio"]; present {
+			t.Fatalf("out-of-enum aspect_ratio must be dropped, got %v", body["aspect_ratio"])
+		}
+		if len(notices) != 1 || !strings.Contains(notices[0], "does not accept aspect ratio") || !strings.Contains(notices[0], "3:2") {
+			t.Fatalf("expected one aspect-dropped notice naming 3:2, got %v", notices)
+		}
+	})
+	t.Run("explicit ratio with reference images", func(t *testing.T) {
+		body, notices, _ := resolveVideoBody(loadSchema(t, "minimax-h3-max-reference-to-video"),
+			VideoGenerateRequest{
+				Model:               "minimax/h3-max/reference-to-video",
+				Prompt:              "the character walks through the house",
+				AspectRatio:         "2:3",
+				AspectRatioExplicit: true,
+				Images:              []string{"data:image/png;base64,AAAA"},
+			},
+			builtinFalOverrides())
+		if _, present := body["aspect_ratio"]; present {
+			t.Fatalf("out-of-enum explicit aspect_ratio must be dropped, got %v", body["aspect_ratio"])
+		}
+		if len(notices) != 1 || !strings.Contains(notices[0], "does not accept aspect ratio") || !strings.Contains(notices[0], "2:3") {
+			t.Fatalf("expected one aspect-dropped notice naming 2:3, got %v", notices)
+		}
+	})
+}
+
+// TestResolveVideoBodyAspectRatioEnumMemberSentAsCanonical pins the positive
+// side of the guard: a ratio the model's enum lists is sent (the enum's own
+// spelling, via enumValueFor) with no notice, so the guard never eats a
+// supported Settings value like 16:9/9:16/1:1 on minimax.
+func TestResolveVideoBodyAspectRatioEnumMemberSentAsCanonical(t *testing.T) {
+	body, notices, _ := resolveVideoBody(loadSchema(t, "minimax-h3-max-reference-to-video"),
+		VideoGenerateRequest{
+			Model:       "minimax/h3-max/reference-to-video",
+			Prompt:      "the character walks through the house",
+			AspectRatio: "16:9",
+		},
+		builtinFalOverrides())
+	if body["aspect_ratio"] != "16:9" {
+		t.Fatalf("in-enum aspect_ratio must be sent, got %v", body["aspect_ratio"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("a supported ratio must not warn, got %v", notices)
+	}
+}
+
 // TestResolveVideoBodyNoSchema verifies the nil-schema legacy fallback reproduces
 // the body GenerateVideo used to build itself, plus a schema-unavailable notice.
 func TestResolveVideoBodyNoSchema(t *testing.T) {
