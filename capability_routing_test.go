@@ -260,6 +260,31 @@ func TestTriagePromptListsAudioTools(t *testing.T) {
 	}
 }
 
+// TestTriagePromptBaresVideoExtendAsVideoMode pins the video sibling of the
+// audio-extend guidance above: conv_c9a17b4c860500ddff15984f, a bare "extend
+// this video by 5s" follow-up with no attachment, was routed to text mode
+// because the small harness model reasoned "there is no 'extend_video' tool"
+// — no tool ran, and the primary model claimed in prose that the extension
+// happened. The prompt must teach that generate_video IS the extend tool, that
+// the source clip is fetched from history when not attached, and that the
+// video-mode enumeration itself names extension.
+func TestTriagePromptBaresVideoExtendAsVideoMode(t *testing.T) {
+	registry := newHarnessToolRegistry([]HarnessToolDefinition{videoGenerationToolDefinition(false)})
+	prompt := triageSystemPrompt(registry, nil, "/tmp/ws")
+	if !strings.Contains(prompt, "create, animate, extend, or render a video") {
+		t.Fatalf("video-mode enumeration should name extension:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "there is no separate extend_video tool") {
+		t.Fatalf("video-mode guidance should preempt the invented-tool-name reasoning:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "fetching the source from conversation history when it is not attached") {
+		t.Fatalf("video-mode guidance should cover the unattached recent-clip case:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, `do not route it to "text" and describe the extension as if it happened`) {
+		t.Fatalf("video-mode guidance should forbid prose claims of success:\n%s", prompt)
+	}
+}
+
 // --- Fix #6 (backstop): findNative nil-schema safety ---
 
 func TestFindNativeNilSchemaReturnsFalse(t *testing.T) {
