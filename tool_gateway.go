@@ -178,10 +178,22 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			generated, genErr := client.GenerateVideo(ctx, req.Model, body)
 			if genErr == nil {
 				hints := falBillingHints{Requests: 1}
-				// Per-second models bill the requested duration; for an
-				// extend that is the extension length, which is exactly
-				// what Duration holds.
-				if seconds, ok := falDurationSeconds(req.Duration); ok {
+				if len(req.SourceVideos()) == 0 {
+					// Pure generation: the rendered clip's own container is
+					// the exact billed length (a planner-omitted or "auto"
+					// duration is unknowable from the request), falling back
+					// to the requested duration. Per-second models bill those
+					// seconds directly; token-billed ones feed them into
+					// fal's token formula with the effective resolution tier.
+					if seconds, ok := falVideoBilledSeconds(generated.Data, req.Duration); ok {
+						hints.Seconds = seconds
+						hints.Tokens = falVideoTokenEstimate(schema, req, seconds)
+					}
+				} else if seconds, ok := falDurationSeconds(req.Duration); ok {
+					// Video-source turns (extend/motion): the rendered clip
+					// contains the source footage, so probing it would
+					// overstate what a per-second model bills — Duration
+					// names the billed extension length here.
 					hints.Seconds = seconds
 				}
 				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)

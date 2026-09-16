@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -14,16 +15,20 @@ import (
 )
 
 // fal media generation has no token meter — fal bills per output unit (an
-// image, a second of video, a character of speech, or one request, depending
-// on the model). Cost is therefore estimated at call time from fal's pricing
-// API: GET {falPlatformBaseURL}/v1/models/pricing?endpoint_id=a,b,c returns
+// image, a second of video, a character of speech, one request, or a block of
+// video tokens, depending on the model). Cost is therefore estimated at call
+// time from fal's pricing API: GET {falPlatformBaseURL}/v1/models/pricing?endpoint_id=a,b,c returns
 // each endpoint's unit price and billing unit, and the tool gateway multiplies
-// by the quantity it knows from the request (image count, requested seconds,
-// prompt length). This is an estimate, not a bill — feature multipliers fal
-// applies server-side (Kling's audio toggle, resolution tiers) may not be
-// captured — but it is the only fal source that attributes cost to a specific
-// generation: the usage/line-items API aggregates per time bucket with no
-// request IDs, so it cannot answer "what did this call cost".
+// by the quantity it knows from the request (image count, requested or
+// rendered seconds, prompt length). This is an estimate, not a bill — feature
+// multipliers fal applies server-side (Kling's audio toggle, resolution
+// tiers) may not be captured — but it is the only fal source that attributes
+// cost to a specific generation: the usage/line-items API aggregates per time
+// bucket with no request IDs, so it cannot answer "what did this call cost".
+// Token-billed video models (seedance-2.x, quoted per "1000 tokens") report
+// no usage in the generation response; their quantity is computed from fal's
+// documented token formula over the request's actual parameters (see
+// falVideoTokenEstimate).
 //
 // Everything here is fail-soft by design: no key, no network, an unknown
 // billing unit, or an unresolvable quantity yields 0 (no cost shown), never a
@@ -194,6 +199,12 @@ type falBillingHints struct {
 	Seconds    float64
 	Characters int
 	Requests   int
+	// Tokens is the computed token count for a token-billed model (fal's newer
+	// video families — seedance 2.x prices per "1000 tokens"). fal does not
+	// report usage in the generation response, so the count comes from fal's
+	// documented token formula over the request's actual parameters (see
+	// falVideoTokenEstimate).
+	Tokens float64
 }
 
 // quantityForUnit maps a billing unit onto the hint that prices it.
@@ -210,8 +221,38 @@ func (hints falBillingHints) quantityForUnit(unit string) (float64, bool) {
 		// Both price as one unit per generation.
 		return float64(hints.Requests), hints.Requests > 0
 	default:
+		// Token-billed models: the unit names how many tokens one billed unit
+		// covers ("1000 tokens" is what fal's pricing API returns for
+		// seedance-2.x). The quantity is the token count scaled to that unit.
+		if multiplier, isTokens := falTokenUnitMultiplier(unit); isTokens {
+			return hints.Tokens / multiplier, hints.Tokens > 0
+		}
 		return 0, false
 	}
+}
+
+// falTokenUnitMultiplier parses fal's token billing units — "token",
+// "tokens", "1000 tokens", "1,000 tokens" — returning how many tokens one
+// billed unit covers (1 for the bare forms). ok is false for any other unit.
+func falTokenUnitMultiplier(unit string) (float64, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(unit))
+	normalized = strings.ReplaceAll(normalized, " ", "")
+	normalized = strings.ReplaceAll(normalized, ",", "")
+	plural := strings.TrimSuffix(normalized, "tokens")
+	if plural == normalized {
+		plural = strings.TrimSuffix(normalized, "token")
+		if plural == normalized {
+			return 0, false
+		}
+	}
+	if plural == "" {
+		return 1, true
+	}
+	multiplier, err := strconv.ParseFloat(plural, 64)
+	if err != nil || multiplier <= 0 {
+		return 0, false
+	}
+	return multiplier, true
 }
 
 // estimateFalCostMicros prices one fal generation in USD millionths. Fail-soft
@@ -276,6 +317,205 @@ func falDurationSeconds(duration string) (float64, bool) {
 		return 0, false
 	}
 	return parsed, true
+}
+
+// falVideoTokenFPS is the fixed frame-rate factor in fal's documented token
+// formula for token-billed video models (seedance-2.x):
+//
+//	tokens = (height × width × (input_duration + output_duration) × 24) / 1024
+//
+// The 24 is part of the formula itself, not the request's fps knob — fal
+// counts tokens at a fixed 24 frames per second of output regardless of what
+// frame rate the model renders. Verified against fal's published rates:
+// 720p (1280×720) works out to 21,600 tokens/second × $0.014 = $0.3024/s,
+// exactly the figure on the model page.
+const falVideoTokenFPS = 24
+
+// falVideoPixelProduct estimates one output frame's pixel budget (height ×
+// width) from the request's resolution tier and aspect ratio. The tier names
+// the frame's short side ("720p" → 720, "4k" → 2160); the ratio fixes the
+// long side, and only the product matters — portrait and landscape of the
+// same ratio bill identically. An "auto" or unrecognized ratio assumes 16:9,
+// fal's landscape default; a "w:h" ratio is parsed generically. ok is false
+// when the tier is missing or unrecognized: tiers span a 9× cost spread
+// (720p vs 4k), so the estimate is skipped rather than pinned to a guess.
+func falVideoPixelProduct(resolution, aspect string) (float64, bool) {
+	tier := strings.ToLower(strings.TrimSpace(resolution))
+	if tier == "" {
+		return 0, false
+	}
+	shortSide := 0.0
+	if tier == "4k" {
+		shortSide = 2160
+	} else {
+		parsed, err := strconv.ParseFloat(strings.TrimSuffix(strings.TrimSuffix(tier, "p"), " "), 64)
+		if err != nil || parsed <= 0 {
+			return 0, false
+		}
+		shortSide = parsed
+	}
+	ratio := 16.0 / 9.0
+	trimmed := strings.ToLower(strings.TrimSpace(aspect))
+	if parts := strings.Split(trimmed, ":"); len(parts) == 2 {
+		w, werr := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+		h, herr := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+		if werr == nil && herr == nil && w > 0 && h > 0 {
+			ratio = w / h
+			// The tier names the SHORT side, so the long-side multiplier is
+			// the ratio's ≥1 orientation — portrait and landscape of the
+			// same ratio bill the same pixel product.
+			if ratio < 1 {
+				ratio = 1 / ratio
+			}
+		}
+	}
+	// Clamp to sane frame ratios so a bogus schema value cannot explode the
+	// estimate (the formula only needs long × short).
+	if ratio < 1.0/3.0 || ratio > 3.0 {
+		ratio = 16.0 / 9.0
+	}
+	return shortSide * shortSide * ratio, true
+}
+
+// falVideoTokenCount applies fal's token formula to one generation. Zero when
+// any input is unknown — the caller then omits the estimate entirely.
+func falVideoTokenCount(resolution, aspect string, seconds float64) float64 {
+	pixels, ok := falVideoPixelProduct(resolution, aspect)
+	if !ok || seconds <= 0 {
+		return 0
+	}
+	return pixels * seconds * falVideoTokenFPS / 1024
+}
+
+// falVideoTokenEstimate computes a token-billed video generation's token count
+// from what the request actually produced. fal reports no usage in the
+// response, so the count is derived (per fal's documented formula) from the
+// effective resolution tier and the billed seconds:
+//
+//   - Resolution defaults live in the model's schema ("720p" for seedance),
+//     and a tier the model's enum rejects is dropped by resolveVideoBody —
+//     schemaStringInput reproduces that resolution either way.
+//   - Seconds come from the generated clip's own MP4 container (exact, and the
+//     only source when the duration was "auto"), falling back to the requested
+//     duration.
+//   - Video inputs add their own duration to fal's token formula; the gateway
+//     never probes source clips, so a turn with video inputs estimates nothing
+//     rather than half the bill. Image inputs contribute no seconds.
+//
+// Zero means "not computable" — quantityForUnit then skips the cost.
+func falVideoTokenEstimate(schema *ModelInputSchema, req VideoGenerateRequest, seconds float64) float64 {
+	if len(req.SourceVideos()) > 0 || seconds <= 0 {
+		return 0
+	}
+	resolution := schemaStringInput(schema, "resolution", req.Resolution)
+	aspect := schemaStringInput(schema, "aspect_ratio", req.AspectRatio)
+	return falVideoTokenCount(resolution, aspect, seconds)
+}
+
+// schemaStringInput resolves the effective value of a native string input:
+// the explicit value when the schema accepts it (or doesn't constrain it),
+// else the schema's declared default, else "". A value the schema's enum
+// rejects is treated as dropped — resolveVideoBody drops it with a notice, so
+// the model's server-side default is what actually billed.
+func schemaStringInput(schema *ModelInputSchema, name, explicit string) string {
+	if schema == nil {
+		return strings.TrimSpace(explicit)
+	}
+	explicit = strings.TrimSpace(explicit)
+	if prop, ok := schema.property(name); ok {
+		if explicit != "" && (len(prop.Enum) == 0 || contains(prop.Enum, explicit)) {
+			return explicit
+		}
+		if def, isStr := prop.Default.(string); isStr {
+			return strings.TrimSpace(def)
+		}
+	}
+	return explicit
+}
+
+// mp4DurationSeconds reads a generated clip's exact duration from its MP4
+// container — the moov/mvhd box's duration ÷ timescale. The gateway already
+// holds the downloaded bytes, so this prices token- and per-second models by
+// what was actually rendered (a planner-omitted or "auto" duration is
+// unknowable from the request). Pure byte parsing, no ffprobe dependency;
+// fail-soft on any non-MP4 or malformed payload.
+func mp4DurationSeconds(data []byte) (float64, bool) {
+	if len(data) < 8 {
+		return 0, false
+	}
+	// ftyp must lead a valid MP4; a different container (MOV variants, webm)
+	// is out of scope for the probe.
+	if string(data[4:8]) != "ftyp" {
+		return 0, false
+	}
+	moov, ok := mp4ChildBoxPayload(data, "moov")
+	if !ok {
+		return 0, false
+	}
+	mvhd, ok := mp4ChildBoxPayload(moov, "mvhd")
+	if !ok || len(mvhd) < 4 {
+		return 0, false
+	}
+	// mvhd payload: version(1) flags(3), then v0 [created(4) modified(4)
+	// timescale(4) duration(4)] or v1 [created(8) modified(8) timescale(4)
+	// duration(8)].
+	var timescale, duration float64
+	switch mvhd[0] {
+	case 1:
+		if len(mvhd) < 32 {
+			return 0, false
+		}
+		timescale = float64(binary.BigEndian.Uint32(mvhd[20:24]))
+		duration = float64(binary.BigEndian.Uint64(mvhd[24:32]))
+	default:
+		if len(mvhd) < 20 {
+			return 0, false
+		}
+		timescale = float64(binary.BigEndian.Uint32(mvhd[12:16]))
+		duration = float64(binary.BigEndian.Uint32(mvhd[16:20]))
+	}
+	if timescale <= 0 || duration <= 0 {
+		return 0, false
+	}
+	return duration / timescale, true
+}
+
+// mp4ChildBoxPayload scans one container's boxes for the first of the wanted
+// type and returns its payload. Handles the 32-bit size form plus size==0
+// (box runs to end of data) and size==1 (64-bit largesize).
+func mp4ChildBoxPayload(data []byte, boxType string) ([]byte, bool) {
+	for offset := 0; offset+8 <= len(data); {
+		size := uint64(binary.BigEndian.Uint32(data[offset : offset+4]))
+		headerLen := uint64(8)
+		if size == 1 {
+			if offset+16 > len(data) {
+				return nil, false
+			}
+			size = binary.BigEndian.Uint64(data[offset+8 : offset+16])
+			headerLen = 16
+		} else if size == 0 {
+			size = uint64(len(data) - offset)
+		}
+		if size < headerLen || offset+int(size) > len(data) {
+			return nil, false
+		}
+		if string(data[offset+4:offset+8]) == boxType {
+			return data[offset+int(headerLen) : offset+int(size)], true
+		}
+		offset += int(size)
+	}
+	return nil, false
+}
+
+// falVideoBilledSeconds resolves the output duration for pricing: the
+// generated clip's own container is exact (including "auto" durations the
+// request never stated); the requested duration is the fallback when the
+// container can't be parsed.
+func falVideoBilledSeconds(output []byte, requested string) (float64, bool) {
+	if seconds, ok := mp4DurationSeconds(output); ok {
+		return seconds, true
+	}
+	return falDurationSeconds(requested)
 }
 
 // estimateFalGenerationCost is the App-level entry the tool gateway calls
