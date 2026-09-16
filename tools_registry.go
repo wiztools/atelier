@@ -754,12 +754,18 @@ func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 			if duration == "" {
 				duration = tools.Config.Generation.Video.Duration
 			}
+			// ExtendSource records the extend diagnosis for the resolver: a
+			// video-only, non-reference turn continues the clip, so multi-task
+			// models (seedance-2.5's task enum) must run their extension task
+			// rather than the reference default. Motion control carries an image
+			// side, and useVideoAs:"reference" sends guidance — both stay false.
 			videoReq := VideoGenerateRequest{
 				Model:               model,
 				Prompt:              strings.TrimSpace(call.Content),
 				Duration:            duration,
 				AspectRatio:         ratio,
 				AspectRatioExplicit: explicit,
+				ExtendSource:        len(requestVideos) > 0 && len(attachedImages) == 0 && videoRole != "reference",
 				NegativePrompt:      strings.TrimSpace(call.NegativePrompt),
 				Resolution:          strings.TrimSpace(call.Resolution),
 				FPS:                 strings.TrimSpace(call.FPS),

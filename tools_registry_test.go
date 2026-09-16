@@ -138,6 +138,7 @@ func TestGenerateVideoUseVideoAsRouting(t *testing.T) {
 		videos        []string
 		wantModel     string
 		wantVideoLen  int
+		wantExtend    bool
 		wantSummary   string
 		wantDroppedTo int // number of videos the request should carry, post-trim
 	}{
@@ -148,6 +149,7 @@ func TestGenerateVideoUseVideoAsRouting(t *testing.T) {
 			videos:       []string{referenceVid1, referenceVid2},
 			wantModel:    imageModel,
 			wantVideoLen: 2,
+			wantExtend:   false,
 			wantSummary:  "used the attached image and 2 attached videos as references for a new video with " + imageModel,
 		},
 		{
@@ -156,6 +158,7 @@ func TestGenerateVideoUseVideoAsRouting(t *testing.T) {
 			videos:       []string{referenceVid1, referenceVid2},
 			wantModel:    imageModel,
 			wantVideoLen: 2,
+			wantExtend:   false,
 			wantSummary:  "used 2 attached videos as references for a new video with " + imageModel,
 		},
 		{
@@ -165,6 +168,7 @@ func TestGenerateVideoUseVideoAsRouting(t *testing.T) {
 			videos:        []string{referenceVid1, referenceVid2},
 			wantModel:     motionModel,
 			wantVideoLen:  1,
+			wantExtend:    false,
 			wantDroppedTo: 1,
 			wantSummary:   "transferred the attached video's motion onto the attached image with " + motionModel,
 		},
@@ -174,6 +178,7 @@ func TestGenerateVideoUseVideoAsRouting(t *testing.T) {
 			videos:        []string{referenceVid1, referenceVid2},
 			wantModel:     extendModel,
 			wantVideoLen:  1,
+			wantExtend:    true,
 			wantDroppedTo: 1,
 			wantSummary:   "extended the attached video into a longer clip with " + extendModel,
 		},
@@ -204,6 +209,12 @@ func TestGenerateVideoUseVideoAsRouting(t *testing.T) {
 			}
 			if gotReq.Model != tc.wantModel {
 				t.Fatalf("model = %q, want %q", gotReq.Model, tc.wantModel)
+			}
+			// ExtendSource must mirror the routing diagnosis: only the video-only,
+			// non-reference turn is a continuation (multi-task models key their
+			// extension task off it); reference mode and motion control stay false.
+			if gotReq.ExtendSource != tc.wantExtend {
+				t.Fatalf("ExtendSource = %v, want %v", gotReq.ExtendSource, tc.wantExtend)
 			}
 			if len(gotReq.SourceVideos()) != tc.wantVideoLen {
 				t.Fatalf("request videos = %v, want %d", gotReq.SourceVideos(), tc.wantVideoLen)

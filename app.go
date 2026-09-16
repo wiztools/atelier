@@ -625,8 +625,18 @@ type VideoGenerateRequest struct {
 	// frame's orientation (and is sent), while a config/detected default is
 	// dropped so the model inherits the frame. Tagged json:"-" — it is an
 	// internal signal, never serialized or surfaced to the frontend.
-	AspectRatioExplicit bool   `json:"-"`
-	NegativePrompt      string `json:"negativePrompt,omitempty"`
+	AspectRatioExplicit bool `json:"-"`
+	// ExtendSource is true only when the tool layer diagnosed the turn as a
+	// continuation of the attached clip — a video-only, non-reference turn routed
+	// to the video-extend model — mirroring how AspectRatioExplicit carries the
+	// planner's intent. resolveVideoBody uses it to select the "extension" task
+	// on multi-task reference models (bytedance/seedance-2.5/reference-to-video
+	// folds continuation into a task enum rather than a dedicated extend
+	// endpoint; its "reference" default would silently generate a new clip
+	// guided by the source instead of continuing it). Tagged json:"-" — it is
+	// an internal intent signal, never serialized or surfaced to the frontend.
+	ExtendSource   bool   `json:"-"`
+	NegativePrompt string `json:"negativePrompt,omitempty"`
 	// Resolution is an optional output resolution tier (a fal enum string, e.g.
 	// "720p", "1080p", "4k"). Tiers vary by model; resolveVideoBody drops a tier
 	// the selected model's enum doesn't list with a notice rather than 422ing at

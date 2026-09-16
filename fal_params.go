@@ -223,6 +223,13 @@ var videoSynonyms = map[string][]string{
 	// following camera movements, capped at 10s. resolveVideoBody defaults to
 	// "video" since complex motion transfer is the dominant use.
 	"characterOrientation": {"character_orientation"},
+	// task selects the operation on multi-task reference models (seedance-2.5
+	// reference-to-video: reference | editing | extension). resolveVideoBody sets
+	// "extension" when the tool layer diagnosed the turn as a continuation; the
+	// model's "reference" default would use the clip as guidance for a new video
+	// instead of continuing it. Models without the param — dedicated extend
+	// endpoints, minimax reference-to-video — are untouched.
+	"task": {"task"},
 	// scale is the upscale factor on video-upscaler endpoints. fal's endpoints
 	// name it inconsistently — fal-ai/video-upscaler declares "scale",
 	// clarityai/crystal-video-upscaler "scale_factor", topaz "upscale_factor" —
@@ -1246,6 +1253,23 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 	if path, prop, ok := findNative(schema, ov, "video", req.Model, "characterOrientation"); ok {
 		if valueAllowedByEnum(prop, "video") {
 			setBodyPath(schema, body, path, coerceVideoValue(prop, "video"))
+		}
+	}
+	// Multi-task reference models fold continuation into a `task` enum instead of
+	// a dedicated extend endpoint: seedance-2.5 reference-to-video defaults to
+	// "reference" (the clip guides a new video), so an extend-shaped turn sent
+	// there without task:"extension" silently generates a new clip rather than
+	// continuing the source. When the tool layer diagnosed the turn as an
+	// extension, set the task wherever the model's schema declares one that lists
+	// "extension". A model without the param (veo/ltx extend endpoints, minimax
+	// reference-to-video) or with an enum lacking "extension" is left to its own
+	// default rather than sent a value it would reject — the same enum-gated
+	// defaulting as characterOrientation above.
+	if req.ExtendSource {
+		if path, prop, ok := findNative(schema, ov, "video", req.Model, "task"); ok {
+			if valueAllowedByEnum(prop, "extension") {
+				setBodyPath(schema, body, path, coerceVideoValue(prop, "extension"))
+			}
 		}
 	}
 	return body, notices, nil

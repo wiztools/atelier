@@ -1955,6 +1955,94 @@ func TestResolveVideoBodySeedance25Fixture(t *testing.T) {
 	}
 }
 
+// TestResolveVideoBodyTaskExtension pins the multi-task routing on seedance-2.5
+// reference-to-video: an extend-shaped turn (ExtendSource, the tool layer's
+// continuation diagnosis) must send task:"extension" — the model's "reference"
+// default would use the clip as guidance for a NEW video instead of continuing
+// it — while a reference-mode turn leaves the task at its default. Models
+// without a task input (the captured veo extend endpoint) and a task enum
+// lacking "extension" are untouched.
+func TestResolveVideoBodyTaskExtension(t *testing.T) {
+	schema := loadSchema(t, "seedance-2.5-reference-to-video")
+
+	// Extend-shaped turn: task must be "extension" and the clip rides video_urls.
+	body, _, err := resolveVideoBody(schema,
+		VideoGenerateRequest{
+			Model:        "bytedance/seedance-2.5/reference-to-video",
+			Prompt:       "the rocket clears the tower and climbs",
+			Videos:       []string{"data:video/mp4;base64,AAA"},
+			ExtendSource: true,
+		},
+		builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if body["task"] != "extension" {
+		t.Fatalf("task = %v, want \"extension\" for an extend-shaped turn", body["task"])
+	}
+	if videos, ok := body["video_urls"].([]any); !ok || len(videos) != 1 {
+		t.Fatalf("video_urls = %v, want the attached clip", body["video_urls"])
+	}
+
+	// Reference-mode turn (useVideoAs:"reference"): the task stays unset so the
+	// model's "reference" default applies — the clip is guidance, not a source
+	// to continue.
+	body, _, err = resolveVideoBody(schema,
+		VideoGenerateRequest{
+			Model:  "bytedance/seedance-2.5/reference-to-video",
+			Prompt: "a city of glass",
+			Videos: []string{"data:video/mp4;base64,AAA"},
+		},
+		builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if _, exists := body["task"]; exists {
+		t.Fatalf("task = %v, want unset so the model's \"reference\" default applies", body["task"])
+	}
+
+	// A dedicated extend endpoint declares no task input: the flag is a no-op.
+	body, _, err = resolveVideoBody(loadSchema(t, "veo3.1-extend-video"),
+		VideoGenerateRequest{
+			Model:        "fal-ai/veo3.1/extend-video",
+			Prompt:       "the rocket climbs",
+			Video:        "data:video/mp4;base64,AAA",
+			ExtendSource: true,
+		},
+		builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if _, exists := body["task"]; exists {
+		t.Fatalf("task = %v, want absent on a model with no task input", body["task"])
+	}
+
+	// A task enum that doesn't list "extension" is left to its own default
+	// rather than sent a value it would reject.
+	limited := &ModelInputSchema{
+		Properties: map[string]SchemaProperty{
+			"prompt":    {Name: "prompt", Kind: schemaScalar},
+			"video_url": {Name: "video_url", Kind: schemaScalar},
+			"task":      {Name: "task", Kind: schemaScalar, Enum: []string{"reference", "editing"}},
+		},
+		order: []string{"prompt", "video_url", "task"},
+	}
+	body, _, err = resolveVideoBody(limited,
+		VideoGenerateRequest{
+			Model:        "acme/multimode-video",
+			Prompt:       "keep flying",
+			Video:        "data:video/mp4;base64,AAA",
+			ExtendSource: true,
+		},
+		builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if _, exists := body["task"]; exists {
+		t.Fatalf("task = %v, want absent when the enum lacks \"extension\"", body["task"])
+	}
+}
+
 // TestResolveVideoBodyNoLegendWithoutTokenConvention pins the legend's gate: a
 // model whose source fields don't document @ImageN/@VideoN tokens (happy-horse,
 // bernini-r) must receive the prompt byte-identical — injected tokens would be
