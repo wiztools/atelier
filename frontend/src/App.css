@@ -2281,6 +2281,23 @@ button:disabled {
   margin-top: 10px;
 }
 
+/* VideoPlayer: native controls plus a precise m:ss.mmm readout under the
+   frame. The readout is selectable so a timestamp can be copied straight
+   into tool requests (screenshot at, split start/end). */
+.video-player {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+}
+
+.video-time-readout {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: #9ea5a3;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 .chat-user-videos {
   display: grid;
   gap: 12px;
@@ -2293,6 +2310,10 @@ button:disabled {
   max-height: 520px;
   border-radius: 8px;
   background: #0f1112;
+}
+
+.chat-user-videos .video-player {
+  width: min(100%, 620px);
 }
 
 .chat-video-card {
@@ -2759,6 +2780,14 @@ button:disabled {
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+
+/* The preview box has a definite pixel height; give the readout its own row
+   so letterboxed video shrinks instead of the readout being cropped. */
+.asset-preview .video-player {
+  width: 100%;
+  height: 100%;
+  grid-template-rows: 1fr auto;
 }
 
 .asset-preview audio {

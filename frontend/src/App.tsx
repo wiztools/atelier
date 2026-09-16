@@ -4709,7 +4709,7 @@ function App() {
                       {entry.role === 'user' && entry.videos?.length ? (
                         <div className="chat-user-videos">
                           {entry.videos.map((video, index) => (
-                            <video key={`${entry.id}-video-${index}`} src={video} controls preload="metadata" />
+                            <VideoPlayer key={`${entry.id}-video-${index}`} src={video} />
                           ))}
                         </div>
                       ) : null}
@@ -4717,7 +4717,7 @@ function App() {
                         <div className="chat-video-results">
                           {entry.videos.map((video, index) => (
                             <figure key={`${entry.id}-video-${index}`} className="chat-video-card">
-                              <video src={video} controls preload="metadata" />
+                              <VideoPlayer src={video} />
                               <figcaption>
                                 <button type="button" onClick={() => saveGeneratedVideo(video, index)}>Download video</button>
                               </figcaption>
@@ -5034,7 +5034,7 @@ function App() {
                     ) : asset.kind === 'audio' && asset.url ? (
                       <audio src={asset.url} controls preload="metadata" />
                     ) : asset.kind === 'video' && asset.url ? (
-                      <video src={asset.url} controls preload="metadata" />
+                      <VideoPlayer src={asset.url} />
                     ) : (
                       <span className="asset-missing">Artifact file is missing on disk</span>
                     )}
@@ -5349,6 +5349,67 @@ function InfoHint(props: {label: string; text: string}) {
       <span className="info-hint-pop" role="tooltip">{props.text}</span>
     </span>
   );
+}
+
+// The native <video controls> time readout belongs to WKWebView and can't be
+// reformatted, so VideoPlayer floats its own precise m:ss.mmm readout under
+// the frame. Milliseconds rather than microseconds: playback position is only
+// frame-accurate, so finer digits would be noise. The readout is written
+// straight to the DOM from a requestAnimationFrame loop while playing (React
+// re-renders never touch the span because its JSX children stay static).
+function VideoPlayer({src}: {src: string}) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const readoutRef = useRef<HTMLSpanElement | null>(null);
+  const rafRef = useRef(0);
+
+  const syncReadout = () => {
+    const video = videoRef.current;
+    const readout = readoutRef.current;
+    if (!video || !readout) return;
+    readout.textContent = `${preciseMediaTime(video.currentTime)} / ${preciseMediaTime(video.duration)}`;
+  };
+  const tick = () => {
+    syncReadout();
+    rafRef.current = requestAnimationFrame(tick);
+  };
+  const startTicking = () => {
+    cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(tick);
+  };
+  const stopTicking = () => {
+    cancelAnimationFrame(rafRef.current);
+    syncReadout();
+  };
+
+  useEffect(() => () => cancelAnimationFrame(rafRef.current), []);
+
+  return (
+    <div className="video-player">
+      <video
+        ref={videoRef}
+        src={src}
+        controls
+        preload="metadata"
+        onPlay={startTicking}
+        onPause={stopTicking}
+        onEnded={stopTicking}
+        onTimeUpdate={syncReadout}
+        onSeeked={syncReadout}
+        onLoadedMetadata={syncReadout}
+        onDurationChange={syncReadout}
+      />
+      <span ref={readoutRef} className="video-time-readout">
+        0:00.000 / 0:00.000
+      </span>
+    </div>
+  );
+}
+
+function preciseMediaTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '0:00.000';
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds - minutes * 60;
+  return `${minutes}:${rest.toFixed(3).padStart(6, '0')}`;
 }
 
 function ModelCombobox({
