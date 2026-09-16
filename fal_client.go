@@ -1430,23 +1430,29 @@ const (
 	falImageUpscalingCategory = "image-to-image"
 	// falModelsPageSize is how many models to request per catalog page.
 	falModelsPageSize = 100
-	// falModelsDefaultMax caps how many models ListModels will accumulate so we
-	// don't walk the entire (large, growing) catalog on a settings open.
+	// falModelsDefaultMax caps how many models an unscoped ListModels walk will
+	// accumulate so we don't walk the entire (large, growing) catalog on a
+	// settings open. Category-scoped walks are exempt: they feed the Settings
+	// filter pickers, which post-filter a whole category, so they exhaust the
+	// pagination instead — video-to-video outgrew this cap (226 entries) and its
+	// silently-dropped tail took five extend endpoints with it.
 	falModelsDefaultMax = 200
 )
 
 // ListModels returns fal's public model catalog filtered by category (empty
 // means all categories), walking the paginated /v1/models endpoint until the
 // catalog is exhausted or maxModels entries have been collected. maxModels <= 0
-// applies falModelsDefaultMax. fal allows this endpoint keyless (a key only
-// raises rate limits), but it routes through the shared do() helper, which
-// requires the configured key — matching VerifyKey and the rest of the client.
+// applies falModelsDefaultMax for an unscoped walk and no cap for a
+// category-scoped one (categories are small and bounded; only the whole catalog
+// is large). fal allows this endpoint keyless (a key only raises rate limits),
+// but it routes through the shared do() helper, which requires the configured
+// key — matching VerifyKey and the rest of the client.
 func (client FalClient) ListModels(ctx context.Context, category string, maxModels int) ([]FalModel, error) {
-	if maxModels <= 0 {
+	if maxModels <= 0 && strings.TrimSpace(category) == "" {
 		maxModels = falModelsDefaultMax
 	}
 
-	models := make([]FalModel, 0, maxModels)
+	models := make([]FalModel, 0, falModelsPageSize)
 	cursor := ""
 	for {
 		query := url.Values{}
@@ -1486,7 +1492,7 @@ func (client FalClient) ListModels(ctx context.Context, category string, maxMode
 				model.ThumbnailURL = entry.Metadata.ThumbnailURL
 			}
 			models = append(models, model)
-			if len(models) >= maxModels {
+			if maxModels > 0 && len(models) >= maxModels {
 				return models, nil
 			}
 		}

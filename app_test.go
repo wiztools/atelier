@@ -5604,6 +5604,44 @@ func TestIsFalUpscaleModel(t *testing.T) {
 	}
 }
 
+// TestIsFalVideoExtendModel covers the id/tag filter that narrows fal's broad
+// video-to-video category down to video-extend endpoints. Entries below are
+// lifted from the live catalog — including several that only escaped the
+// category's tail once ListModels stopped truncating at 200 (magi, ltx-13b,
+// ltx-v097) — plus the "continue" naming MiniMax's H3 continuation endpoints
+// use. It must leave the category's other partitions (motion, lipsync) alone —
+// the three filters partition the category.
+func TestIsFalVideoExtendModel(t *testing.T) {
+	cases := []struct {
+		name  string
+		model FalModel
+		want  bool
+	}{
+		{"veo extend by id", FalModel{ID: "fal-ai/veo3.1/extend-video", Tags: []string{"extend-video"}}, true},
+		{"veo fast extend by id", FalModel{ID: "fal-ai/veo3.1/fast/extend-video"}, true},
+		{"ltx extend by id", FalModel{ID: "fal-ai/ltx-2.3/extend-video", Tags: []string{"stylized", "transform", "lipsync"}}, true},
+		{"pixverse extend by tag", FalModel{ID: "fal-ai/pixverse/v6/extend", Tags: []string{"video-to-video", "extend"}}, true},
+		{"grok extend by id", FalModel{ID: "xai/grok-imagine-video/extend-video", Tags: []string{"video-edit", "v2v"}}, true},
+		{"magi extend-video", FalModel{ID: "fal-ai/magi/extend-video"}, true},
+		{"ltx 13b extend", FalModel{ID: "fal-ai/ltx-video-13b-dev/extend"}, true},
+		{"ltx v097 extend", FalModel{ID: "fal-ai/ltx-video-v097/extend"}, true},
+		{"lora extend tail", FalModel{ID: "fal-ai/ltx-2-19b/extend-video/lora"}, true},
+		{"minimax continue by id", FalModel{ID: "minimax/h3/continue-video"}, true},
+		{"continue by tag", FalModel{ID: "acme/video-edit", Tags: []string{"continue", "video-to-video"}}, true},
+		{"motion-control endpoint", FalModel{ID: "fal-ai/kling-video/v2.6/pro/motion-control"}, false},
+		{"lipsync endpoint", FalModel{ID: "fal-ai/sync-lipsync/v2/pro", Tags: []string{"lipsync"}}, false},
+		{"minimax reference-to-video", FalModel{ID: "minimax/h3/reference-to-video", Tags: []string{"stylized", "transform", "lipsync"}}, false},
+		{"plain text-to-video", FalModel{ID: "fal-ai/kling-video/v2/master/text-to-video"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isFalVideoExtendModel(tc.model); got != tc.want {
+				t.Errorf("isFalVideoExtendModel(%+v) = %v, want %v", tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestIsFalVideoMotionModel covers the id/tag filter that narrows fal's broad
 // video-to-video category down to motion-control endpoints. It must match the
 // Kling motion-control ids while leaving the category's other partitions

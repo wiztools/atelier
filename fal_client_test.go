@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -378,6 +379,81 @@ func TestFalClientListModelsRespectsMax(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("expected to stop after 1 page, made %d calls", calls)
+	}
+}
+
+// falModelsPageJSON builds a /v1/models response page with count entries under
+// a shared id prefix. A non-empty cursor leaves has_more true so the walk
+// continues; an empty one closes the catalog.
+func falModelsPageJSON(prefix string, count int, cursor string) string {
+	var b strings.Builder
+	b.WriteString(`{"models":[`)
+	for i := 0; i < count; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, `{"endpoint_id":%q}`, fmt.Sprintf("%s/%d", prefix, i))
+	}
+	if cursor != "" {
+		fmt.Fprintf(&b, `],"next_cursor":%q,"has_more":true}`, cursor)
+	} else {
+		b.WriteString(`],"next_cursor":null,"has_more":false}`)
+	}
+	return b.String()
+}
+
+// TestFalClientListModelsCategoryExhaustsPagination pins the regression where a
+// category walk stopped at falModelsDefaultMax even though the category had more
+// pages: video-to-video crossed 200 entries and its silently-dropped tail took
+// five extend endpoints out of the Settings video-extend picker. A scoped walk
+// (maxModels <= 0) must exhaust the pagination — 226 entries as 100+100+26 —
+// while the unscoped walk keeps the cap (the test below).
+func TestFalClientListModelsCategoryExhaustsPagination(t *testing.T) {
+	calls := 0
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		calls++
+		switch calls {
+		case 1:
+			return jsonResp(falModelsPageJSON("p1", falModelsPageSize, "p2")), nil
+		case 2:
+			return jsonResp(falModelsPageJSON("p2", falModelsPageSize, "p3")), nil
+		default:
+			return jsonResp(falModelsPageJSON("p3", 26, "")), nil
+		}
+	}))
+
+	models, err := client.ListModels(context.Background(), falVideoToVideoCategory, 0)
+	if err != nil {
+		t.Fatalf("ListModels returned error: %v", err)
+	}
+	if len(models) != 2*falModelsPageSize+26 {
+		t.Fatalf("expected all 226 category models, got %d", len(models))
+	}
+	if calls != 3 {
+		t.Errorf("expected 3 catalog pages, made %d calls", calls)
+	}
+}
+
+// TestFalClientListModelsUnscopedAppliesDefaultCap keeps the other half of the
+// ListModels contract: without a category the walk stops at falModelsDefaultMax
+// (two full pages) so a settings open never walks fal's entire 1000+-entry
+// catalog.
+func TestFalClientListModelsUnscopedAppliesDefaultCap(t *testing.T) {
+	calls := 0
+	client := newFalTestClient(t, falHandler(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return jsonResp(falModelsPageJSON(fmt.Sprintf("p%d", calls), falModelsPageSize, "more")), nil
+	}))
+
+	models, err := client.ListModels(context.Background(), "", 0)
+	if err != nil {
+		t.Fatalf("ListModels returned error: %v", err)
+	}
+	if len(models) != falModelsDefaultMax {
+		t.Fatalf("expected the %d-model unscoped cap, got %d", falModelsDefaultMax, len(models))
+	}
+	if calls != 2 {
+		t.Errorf("expected to stop after 2 full pages, made %d calls", calls)
 	}
 }
 

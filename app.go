@@ -2581,13 +2581,17 @@ func (a *App) ListFalLipsyncVideoModels() ([]FalModel, error) {
 // endpoint — one that continues an existing clip into a longer one (Veo extend,
 // ltx extend, pixverse extend, etc.). fal files these under the broad
 // video-to-video category alongside lip-sync and other transforms, so the id and
-// tags are checked for "extend". Mirrors isFalLipsyncModel / isFalUpscaleModel.
+// tags are checked for "extend" — and for "continue", the same capability under
+// the naming MiniMax's H3 continuation endpoints use (continue-video rather than
+// extend-video). Mirrors isFalLipsyncModel / isFalUpscaleModel.
 func isFalVideoExtendModel(model FalModel) bool {
-	if strings.Contains(strings.ToLower(model.ID), "extend") {
+	id := strings.ToLower(model.ID)
+	if strings.Contains(id, "extend") || strings.Contains(id, "continue") {
 		return true
 	}
 	for _, tag := range model.Tags {
-		if strings.Contains(strings.ToLower(tag), "extend") {
+		tag = strings.ToLower(tag)
+		if strings.Contains(tag, "extend") || strings.Contains(tag, "continue") {
 			return true
 		}
 	}
