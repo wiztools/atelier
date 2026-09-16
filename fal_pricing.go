@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -15,20 +16,22 @@ import (
 )
 
 // fal media generation has no token meter — fal bills per output unit (an
-// image, a second of video, a character of speech, one request, or a block of
-// video tokens, depending on the model). Cost is therefore estimated at call
+// image, a second of video, a character of speech, one request, a block of
+// video tokens, or a megapixel of generated pixels, depending on the model). Cost is therefore estimated at call
 // time from fal's pricing API: GET {falPlatformBaseURL}/v1/models/pricing?endpoint_id=a,b,c returns
 // each endpoint's unit price and billing unit, and the tool gateway multiplies
 // by the quantity it knows from the request (image count, requested or
-// rendered seconds, prompt length). This is an estimate, not a bill — feature
-// multipliers fal applies server-side (Kling's audio toggle, resolution
-// tiers) may not be captured — but it is the only fal source that attributes
-// cost to a specific generation: the usage/line-items API aggregates per time
-// bucket with no request IDs, so it cannot answer "what did this call cost".
-// Token-billed video models (seedance-2.x, quoted per "1000 tokens") report
-// no usage in the generation response; their quantity is computed from fal's
-// documented token formula over the request's actual parameters (see
-// falVideoTokenEstimate).
+// rendered seconds, prompt length, or rendered pixels — width × height ×
+// frames for video). This is an estimate, not a bill — feature multipliers fal
+// applies server-side (Kling's audio toggle, resolution tiers) may not be
+// captured — but it is the only fal source that attributes cost to a specific
+// generation: the usage/line-items API aggregates per time bucket with no
+// request IDs, so it cannot answer "what did this call cost". Token- and
+// megapixel-billed video models (seedance-2.x per "1000 tokens", the
+// ltx-2.3-22b family per "megapixel") report no usage in the generation
+// response; their quantity is computed from fal's documented formulas over the
+// request's actual parameters (see falVideoTokenEstimate and
+// falVideoBilledMegapixels).
 //
 // Everything here is fail-soft by design: no key, no network, an unknown
 // billing unit, or an unresolvable quantity yields 0 (no cost shown), never a
@@ -205,6 +208,12 @@ type falBillingHints struct {
 	// documented token formula over the request's actual parameters (see
 	// falVideoTokenEstimate).
 	Tokens float64
+	// Megapixels is the generated pixel budget for an MP-billed model — fal's
+	// ltx-2.3-22b video family prices per "megapixel of generated video data"
+	// (width × height × frames), and some image models (flux essenza) per
+	// megapixel of output. Computed from what was actually rendered (see
+	// falVideoBilledMegapixels / imageResultMegapixels).
+	Megapixels float64
 }
 
 // quantityForUnit maps a billing unit onto the hint that prices it.
@@ -227,6 +236,12 @@ func (hints falBillingHints) quantityForUnit(unit string) (float64, bool) {
 		if multiplier, isTokens := falTokenUnitMultiplier(unit); isTokens {
 			return hints.Tokens / multiplier, hints.Tokens > 0
 		}
+		// Megapixel-billed models: the unit names how many megapixels one
+		// billed unit covers ("megapixel" in the singular is what fal's pricing
+		// API returns for the ltx-2.3-22b family and MP-priced image models).
+		if multiplier, isMegapixels := falMegapixelUnitMultiplier(unit); isMegapixels {
+			return hints.Megapixels / multiplier, hints.Megapixels > 0
+		}
 		return 0, false
 	}
 }
@@ -242,6 +257,31 @@ func falTokenUnitMultiplier(unit string) (float64, bool) {
 	if plural == normalized {
 		plural = strings.TrimSuffix(normalized, "token")
 		if plural == normalized {
+			return 0, false
+		}
+	}
+	if plural == "" {
+		return 1, true
+	}
+	multiplier, err := strconv.ParseFloat(plural, 64)
+	if err != nil || multiplier <= 0 {
+		return 0, false
+	}
+	return multiplier, true
+}
+
+// falMegapixelUnitMultiplier parses fal's megapixel billing units —
+// "megapixel", "megapixels", "1 megapixel" — returning how many megapixels one
+// billed unit covers (1 for the bare forms). ok is false for any other unit.
+func falMegapixelUnitMultiplier(unit string) (float64, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(unit))
+	normalized = strings.ReplaceAll(normalized, " ", "")
+	normalized = strings.ReplaceAll(normalized, ",", "")
+	stem := normalized
+	plural := strings.TrimSuffix(stem, "megapixels")
+	if plural == stem {
+		plural = strings.TrimSuffix(stem, "megapixel")
+		if plural == stem {
 			return 0, false
 		}
 	}
@@ -412,6 +452,137 @@ func falVideoTokenEstimate(schema *ModelInputSchema, req VideoGenerateRequest, s
 	return falVideoTokenCount(resolution, aspect, seconds)
 }
 
+// falVideoBilledMegapixels computes the megapixel quantity an MP-billed video
+// model is charged for. fal's ltx-2.3-22b family prices per "megapixel of
+// generated video data (width × height × frames)":
+//
+//   - Frame size always comes from the rendered clip's own tkhd — exact, and
+//     the only source when the model's video_size is "auto" (extend inherits
+//     the source clip's dimensions).
+//   - Frames: a pure generation's container carries exactly the frames the
+//     model rendered (stts sample count). Video-source turns (extend/motion)
+//     must NOT read the container — the output embeds the source footage and
+//     would overstate the bill (the same principle as seconds there) — so the
+//     generated count is the effective num_frames input, which is the schema's
+//     default: Atelier maps no canonical knob onto num_frames, so an omitted
+//     input is what the request actually rode.
+//
+// Zero means "not computable" — quantityForUnit then skips the cost.
+func falVideoBilledMegapixels(schema *ModelInputSchema, req VideoGenerateRequest, output []byte) float64 {
+	width, height, ok := mp4VideoDimensions(output)
+	if !ok {
+		return 0
+	}
+	frames := 0.0
+	if count, ok := mp4VideoFrameCount(output); ok && len(req.SourceVideos()) == 0 {
+		frames = count
+	} else {
+		frames = schemaNumberDefault(schema, "num_frames")
+	}
+	if frames <= 0 {
+		return 0
+	}
+	return width * height * frames / 1e6
+}
+
+// imagePixelDimensions sniffs a decoded image payload's pixel size from its
+// magic bytes — PNG/GIF/WebP read from fixed headers, JPEG by scanning for a
+// SOFn marker segment. No codec imports (x/image is not a dependency): pricing
+// only needs the dimensions, and the outputs fal returns are PNG/JPEG/WebP.
+func imagePixelDimensions(data []byte) (float64, float64, bool) {
+	// PNG: 8-byte signature, IHDR's width/height at offsets 16 and 20.
+	if len(data) >= 24 && bytes.Equal(data[:8], []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}) {
+		width := float64(binary.BigEndian.Uint32(data[16:20]))
+		height := float64(binary.BigEndian.Uint32(data[20:24]))
+		return width, height, width > 0 && height > 0
+	}
+	// GIF: 6-byte signature, then the 7-byte logical screen descriptor's
+	// little-endian width/height.
+	if len(data) >= 10 && (bytes.Equal(data[:6], []byte("GIF87a")) || bytes.Equal(data[:6], []byte("GIF89a"))) {
+		width := float64(binary.LittleEndian.Uint16(data[6:8]))
+		height := float64(binary.LittleEndian.Uint16(data[8:10]))
+		return width, height, width > 0 && height > 0
+	}
+	// WebP: RIFF container. VP8X (extended) carries the canvas size minus one
+	// as 24-bit little-endian; VP8 (lossy) and VP8L (lossless) carry their own
+	// dimensions after their chunk headers.
+	if len(data) >= 30 && bytes.Equal(data[:4], []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WEBP")) {
+		switch string(data[12:16]) {
+		case "VP8X":
+			width := float64(uint32(data[24])|uint32(data[25])<<8|uint32(data[26])<<16) + 1
+			height := float64(uint32(data[27])|uint32(data[28])<<8|uint32(data[29])<<16) + 1
+			return width, height, width > 0 && height > 0
+		case "VP8 ":
+			// 3-byte frame tag, then the 10-bit/22-bit start code and
+			// little-endian dimensions (14 bits each, stored low 14 bits).
+			width := float64(binary.LittleEndian.Uint16(data[26:28]) & 0x3fff)
+			height := float64(binary.LittleEndian.Uint16(data[28:30]) & 0x3fff)
+			return width, height, width > 0 && height > 0
+		case "VP8L":
+			// 5-byte signature, then a 14+14-bit packed little-endian size.
+			bits := uint32(binary.LittleEndian.Uint16(data[21:23])) | uint32(data[23])<<16 | uint32(data[24])<<24
+			width := float64(bits&0x3fff) + 1
+			height := float64((bits>>14)&0x3fff) + 1
+			return width, height, width > 0 && height > 0
+		}
+		return 0, 0, false
+	}
+	// JPEG: scan the marker segments for SOF0..SOF15 (minus DHT/JPG/DAC) and
+	// read the big-endian height/width that follow the segment length.
+	if len(data) >= 4 && data[0] == 0xff && data[1] == 0xd8 {
+		for offset := 2; offset+4 <= len(data); {
+			if data[offset] != 0xff {
+				offset++
+				continue
+			}
+			marker := data[offset+1]
+			if marker == 0xd8 || (0xd0 <= marker && marker <= 0xd7) || marker == 0x01 {
+				offset += 2
+				continue
+			}
+			if offset+4 > len(data) {
+				break
+			}
+			segmentLen := int(binary.BigEndian.Uint16(data[offset+2 : offset+4]))
+			if segmentLen < 2 {
+				break
+			}
+			isSOF := marker >= 0xc0 && marker <= 0xcf && marker != 0xc4 && marker != 0xc8 && marker != 0xcc
+			if isSOF && offset+9 <= len(data) {
+				height := float64(binary.BigEndian.Uint16(data[offset+5 : offset+7]))
+				width := float64(binary.BigEndian.Uint16(data[offset+7 : offset+9]))
+				return width, height, width > 0 && height > 0
+			}
+			offset += 2 + segmentLen
+		}
+	}
+	return 0, 0, false
+}
+
+// imageResultMegapixels sums the megapixels of a generated-image response's
+// decoded payloads — the quantity an MP-billed image model (fal's flux essenza
+// prices per megapixel of output) bills. References that are not data URLs or
+// that don't decode contribute nothing: an undercount beats a fetch or a guess.
+func imageResultMegapixels(images []string, single string) float64 {
+	total := 0.0
+	add := func(ref string) {
+		data, _, err := decodeMediaDataURL(ref)
+		if err != nil {
+			return
+		}
+		if width, height, ok := imagePixelDimensions(data); ok {
+			total += width * height / 1e6
+		}
+	}
+	for _, ref := range images {
+		add(ref)
+	}
+	if single != "" {
+		add(single)
+	}
+	return total
+}
+
 // schemaStringInput resolves the effective value of a native string input:
 // the explicit value when the schema accepts it (or doesn't constrain it),
 // else the schema's declared default, else "". A value the schema's enum
@@ -431,6 +602,30 @@ func schemaStringInput(schema *ModelInputSchema, name, explicit string) string {
 		}
 	}
 	return explicit
+}
+
+// schemaNumberDefault reads a numeric input's declared default from the model's
+// schema — the value fal applied server-side when the request omitted the
+// input. Zero when the schema is missing, has no such input, or declares no
+// numeric default.
+func schemaNumberDefault(schema *ModelInputSchema, name string) float64 {
+	prop, ok := schema.property(name)
+	if !ok {
+		return 0
+	}
+	switch value := prop.Default.(type) {
+	case float64:
+		return value
+	case float32:
+		return float64(value)
+	case int:
+		return float64(value)
+	case int64:
+		return float64(value)
+	case uint64:
+		return float64(value)
+	}
+	return 0
 }
 
 // mp4DurationSeconds reads a generated clip's exact duration from its MP4
@@ -505,6 +700,140 @@ func mp4ChildBoxPayload(data []byte, boxType string) ([]byte, bool) {
 		offset += int(size)
 	}
 	return nil, false
+}
+
+// mp4EachChild walks one container's immediate child boxes, calling visit with
+// each box's type and payload. The walk stops early when visit returns false.
+// Shares mp4ChildBoxPayload's size-form handling (32-bit, 64-bit largesize,
+// size==0 to end of data); a malformed box truncates the walk.
+func mp4EachChild(data []byte, visit func(boxType string, payload []byte) bool) {
+	for offset := 0; offset+8 <= len(data); {
+		size := uint64(binary.BigEndian.Uint32(data[offset : offset+4]))
+		headerLen := uint64(8)
+		if size == 1 {
+			if offset+16 > len(data) {
+				return
+			}
+			size = binary.BigEndian.Uint64(data[offset+8 : offset+16])
+			headerLen = 16
+		} else if size == 0 {
+			size = uint64(len(data) - offset)
+		}
+		if size < headerLen || offset+int(size) > len(data) {
+			return
+		}
+		if !visit(string(data[offset+4:offset+8]), data[offset+int(headerLen):offset+int(size)]) {
+			return
+		}
+		offset += int(size)
+	}
+}
+
+// mp4VideoTrak returns the payload of moov's first trak whose mdia/hdlr names
+// the 'vide' handler — the video track, whose tkhd/stts carry the frame size
+// and count pricing needs. ok is false when no video track parses; an
+// audio-only container is not priced.
+func mp4VideoTrak(data []byte) ([]byte, bool) {
+	moov, ok := mp4ChildBoxPayload(data, "moov")
+	if !ok {
+		return nil, false
+	}
+	var videoTrak []byte
+	mp4EachChild(moov, func(boxType string, payload []byte) bool {
+		if boxType != "trak" {
+			return true
+		}
+		mdia, ok := mp4ChildBoxPayload(payload, "mdia")
+		if !ok {
+			return true
+		}
+		hdlr, ok := mp4ChildBoxPayload(mdia, "hdlr")
+		// hdlr payload: version+flags(4), pre_defined(4), then the 4-byte
+		// handler_type ('vide' for a video track, 'soun' for audio).
+		if !ok || len(hdlr) < 12 || string(hdlr[8:12]) != "vide" {
+			return true
+		}
+		videoTrak = payload
+		return false
+	})
+	if videoTrak == nil {
+		return nil, false
+	}
+	return videoTrak, true
+}
+
+// mp4VideoDimensions reads the video track's presentation size from tkhd —
+// width and height ride as 32-bit 16.16 fixed-point values. This is the
+// effective render size: a model whose video_size is "auto" inherits the
+// source clip's dimensions, and the output carries what was actually rendered.
+func mp4VideoDimensions(data []byte) (float64, float64, bool) {
+	trak, ok := mp4VideoTrak(data)
+	if !ok {
+		return 0, 0, false
+	}
+	tkhd, ok := mp4ChildBoxPayload(trak, "tkhd")
+	if !ok || len(tkhd) < 4 {
+		return 0, 0, false
+	}
+	// tkhd payload: version(1) flags(3), then v0 [created(4) modified(4)
+	// trackID(4) reserved(4) duration(4) reserved(8) layer(2) altGroup(2)
+	// volume(2) reserved(2) matrix(36)] or v1 [created(8) modified(8)
+	// trackID(4) reserved(4) duration(8) + the same trailer], with width and
+	// height's 16.16 fixed-point pair closing the box.
+	widthOffset := 76
+	if tkhd[0] == 1 {
+		widthOffset = 88
+	}
+	if len(tkhd) < widthOffset+8 {
+		return 0, 0, false
+	}
+	width := float64(binary.BigEndian.Uint32(tkhd[widthOffset:widthOffset+4])) / 65536
+	height := float64(binary.BigEndian.Uint32(tkhd[widthOffset+4:widthOffset+8])) / 65536
+	if width <= 0 || height <= 0 {
+		return 0, 0, false
+	}
+	return width, height, true
+}
+
+// mp4VideoFrameCount sums the video track's stts sample counts — every frame
+// the container actually carries. Exact for a purely generated clip, where the
+// output holds exactly the frames the model rendered.
+func mp4VideoFrameCount(data []byte) (float64, bool) {
+	trak, ok := mp4VideoTrak(data)
+	if !ok {
+		return 0, false
+	}
+	mdia, ok := mp4ChildBoxPayload(trak, "mdia")
+	if !ok {
+		return 0, false
+	}
+	minf, ok := mp4ChildBoxPayload(mdia, "minf")
+	if !ok {
+		return 0, false
+	}
+	stbl, ok := mp4ChildBoxPayload(minf, "stbl")
+	if !ok {
+		return 0, false
+	}
+	stts, ok := mp4ChildBoxPayload(stbl, "stts")
+	if !ok || len(stts) < 8 {
+		return 0, false
+	}
+	// stts payload: version+flags(4), entry_count(4), then run-length entries
+	// of {sample_count(4), sample_delta(4)}.
+	entries := int(binary.BigEndian.Uint32(stts[4:8]))
+	if entries < 0 || 8+entries*8 > len(stts) {
+		return 0, false
+	}
+	total := 0.0
+	for i := 0; i < entries; i++ {
+		offset := 8 + i*8
+		total += float64(binary.BigEndian.Uint32(stts[offset : offset+4]))
+	}
+	if total <= 0 {
+		return 0, false
+	}
+	return total, true
 }
 
 // falVideoBilledSeconds resolves the output duration for pricing: the

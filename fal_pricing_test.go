@@ -1,8 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
+	"image"
+	"image/gif"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"math"
 	"net/http"
@@ -41,7 +47,7 @@ func TestUsdCostMicros(t *testing.T) {
 func nanValue() float64 { return math.NaN() }
 
 func TestFalBillingHintsQuantityForUnit(t *testing.T) {
-	hints := falBillingHints{Images: 4, Seconds: 7.5, Characters: 120, Requests: 1, Tokens: 216000}
+	hints := falBillingHints{Images: 4, Seconds: 7.5, Characters: 120, Requests: 1, Tokens: 216000, Megapixels: 124.895232}
 	tests := []struct {
 		unit    string
 		wantQty float64
@@ -60,6 +66,11 @@ func TestFalBillingHintsQuantityForUnit(t *testing.T) {
 		{unit: "1,000 tokens", wantQty: 216, wantOK: true},
 		{unit: "tokens", wantQty: 216000, wantOK: true},
 		{unit: "Token", wantQty: 216000, wantOK: true},
+		// Megapixel vocabulary fal's pricing API returns for the ltx-2.3-22b
+		// video family and MP-priced image models.
+		{unit: "megapixel", wantQty: 124.895232, wantOK: true},
+		{unit: "Megapixels", wantQty: 124.895232, wantOK: true},
+		{unit: "1 megapixel", wantQty: 124.895232, wantOK: true},
 		{unit: "gpu_second", wantQty: 0, wantOK: false},
 		{unit: "", wantQty: 0, wantOK: false},
 	}
@@ -80,6 +91,11 @@ func TestFalBillingHintsQuantityForUnit(t *testing.T) {
 	// gateway never probed) must not price at zero tokens either.
 	if _, ok := (falBillingHints{Requests: 1}).quantityForUnit("1000 tokens"); ok {
 		t.Fatal("quantityForUnit(1000 tokens) with no tokens hint should report not-ok")
+	}
+	// Nor may an MP-billed model price at zero megapixels when no pixel budget
+	// was computable.
+	if _, ok := (falBillingHints{Requests: 1}).quantityForUnit("megapixel"); ok {
+		t.Fatal("quantityForUnit(megapixel) with no megapixels hint should report not-ok")
 	}
 }
 
@@ -102,6 +118,31 @@ func TestFalTokenUnitMultiplier(t *testing.T) {
 		got, ok := falTokenUnitMultiplier(tt.unit)
 		if ok != tt.wantOK || got != tt.want {
 			t.Fatalf("falTokenUnitMultiplier(%q) = (%v, %v), want (%v, %v)", tt.unit, got, ok, tt.want, tt.wantOK)
+		}
+	}
+}
+
+func TestFalMegapixelUnitMultiplier(t *testing.T) {
+	for _, tt := range []struct {
+		unit   string
+		want   float64
+		wantOK bool
+	}{
+		{unit: "megapixel", want: 1, wantOK: true},
+		{unit: "Megapixels", want: 1, wantOK: true},
+		{unit: "1 megapixel", want: 1, wantOK: true},
+		{unit: "1000 megapixels", want: 1000, wantOK: true},
+		{unit: "1,000 megapixels", want: 1000, wantOK: true},
+		{unit: "1000megapixels", want: 1000, wantOK: true},
+		// The token vocabulary must not leak into the megapixel parser.
+		{unit: "1000 tokens", want: 0, wantOK: false},
+		{unit: "mp", want: 0, wantOK: false},
+		{unit: "image", want: 0, wantOK: false},
+		{unit: "", want: 0, wantOK: false},
+	} {
+		got, ok := falMegapixelUnitMultiplier(tt.unit)
+		if ok != tt.wantOK || got != tt.want {
+			t.Fatalf("falMegapixelUnitMultiplier(%q) = (%v, %v), want (%v, %v)", tt.unit, got, ok, tt.want, tt.wantOK)
 		}
 	}
 }
@@ -208,6 +249,104 @@ func mp4FixtureWithDuration(version byte, timescale, duration uint32) []byte {
 	return append(out, moovBox...)
 }
 
+// mp4TestBox builds one length-prefixed ISO BMFF box around a payload.
+func mp4TestBox(boxType string, payload []byte) []byte {
+	out := binary.BigEndian.AppendUint32(nil, uint32(len(payload)+8))
+	out = append(out, boxType...)
+	return append(out, payload...)
+}
+
+// mp4FixtureWithVideoTrack builds ftyp + moov{video trak, audio trak}. The
+// video track's tkhd carries the 16.16 fixed-point presentation size and its
+// stbl one stts entry per sampleCounts element (their sum is the frame
+// count); the trailing audio trak proves the probes pick the 'vide' handler.
+// A call with no sampleCounts omits the sample table entirely — the
+// frame-count-unparseable shape.
+func mp4FixtureWithVideoTrack(width, height uint32, sampleCounts ...uint32) []byte {
+	tkhd := make([]byte, 84) // v0 layout; width/height close the box as 16.16
+	binary.BigEndian.PutUint32(tkhd[76:80], width<<16)
+	binary.BigEndian.PutUint32(tkhd[80:84], height<<16)
+
+	videoHdlr := make([]byte, 24)
+	copy(videoHdlr[8:12], "vide")
+
+	mdiaPayload := mp4TestBox("hdlr", videoHdlr)
+	if len(sampleCounts) > 0 {
+		stts := make([]byte, 8, 8+len(sampleCounts)*8)
+		binary.BigEndian.PutUint32(stts[4:8], uint32(len(sampleCounts)))
+		for _, count := range sampleCounts {
+			stts = binary.BigEndian.AppendUint32(stts, count)
+			stts = binary.BigEndian.AppendUint32(stts, 1) // sample_delta
+		}
+		mdiaPayload = append(mdiaPayload,
+			mp4TestBox("minf", mp4TestBox("stbl", mp4TestBox("stts", stts)))...)
+	}
+	videoTrak := mp4TestBox("trak", append(mp4TestBox("tkhd", tkhd), mp4TestBox("mdia", mdiaPayload)...))
+
+	audioHdlr := make([]byte, 24)
+	copy(audioHdlr[8:12], "soun")
+	audioTrak := mp4TestBox("trak", mp4TestBox("mdia", mp4TestBox("hdlr", audioHdlr)))
+
+	moov := mp4TestBox("moov", append(videoTrak, audioTrak...))
+	return append(tinyMP4(), moov...)
+}
+
+// mp4FixtureAudioOnly builds ftyp + moov{trak} with no video track — the
+// shape every video probe must refuse.
+func mp4FixtureAudioOnly() []byte {
+	audioHdlr := make([]byte, 24)
+	copy(audioHdlr[8:12], "soun")
+	moov := mp4TestBox("moov", mp4TestBox("trak", mp4TestBox("mdia", mp4TestBox("hdlr", audioHdlr))))
+	return append(tinyMP4(), moov...)
+}
+
+func TestMp4VideoDimensions(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		data   []byte
+		wantW  float64
+		wantH  float64
+		wantOK bool
+	}{
+		{name: "ltx extend output", data: mp4FixtureWithVideoTrack(1344, 768, 339), wantW: 1344, wantH: 768, wantOK: true},
+		{name: "portrait", data: mp4FixtureWithVideoTrack(720, 1280), wantW: 720, wantH: 1280, wantOK: true},
+		{name: "audio only", data: mp4FixtureAudioOnly(), wantOK: false},
+		{name: "no moov", data: tinyMP4(), wantOK: false},
+		{name: "not mp4", data: []byte("not a video at all"), wantOK: false},
+		{name: "empty", data: nil, wantOK: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			w, h, ok := mp4VideoDimensions(tt.data)
+			if ok != tt.wantOK || (tt.wantOK && (w != tt.wantW || h != tt.wantH)) {
+				t.Fatalf("mp4VideoDimensions = (%v, %v, %v), want (%v, %v, %v)", w, h, ok, tt.wantW, tt.wantH, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestMp4VideoFrameCount(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		data   []byte
+		want   float64
+		wantOK bool
+	}{
+		{name: "single run", data: mp4FixtureWithVideoTrack(1344, 768, 339), want: 339, wantOK: true},
+		{name: "runs sum", data: mp4FixtureWithVideoTrack(1344, 768, 243, 96), want: 339, wantOK: true},
+		{name: "no sample table", data: mp4FixtureWithVideoTrack(1344, 768), wantOK: false},
+		{name: "audio only", data: mp4FixtureAudioOnly(), wantOK: false},
+		{name: "not mp4", data: []byte("not a video at all"), wantOK: false},
+		{name: "empty", data: nil, wantOK: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := mp4VideoFrameCount(tt.data)
+			if ok != tt.wantOK || got != tt.want {
+				t.Fatalf("mp4VideoFrameCount = (%v, %v), want (%v, %v)", got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
 func TestSchemaStringInput(t *testing.T) {
 	schema := &ModelInputSchema{Properties: map[string]SchemaProperty{
 		"resolution":   {Name: "resolution", Enum: []string{"480p", "720p", "1080p", "4k"}, Default: "720p"},
@@ -263,6 +402,125 @@ func TestFalVideoTokenEstimate(t *testing.T) {
 	rejected.Resolution = "2160p"
 	if got := falVideoTokenEstimate(schema, rejected, 10); got != 216000 {
 		t.Fatalf("enum-rejected tier should fall to 720p default (216000 tokens), got %v", got)
+	}
+}
+
+func TestFalVideoBilledMegapixels(t *testing.T) {
+	schema := &ModelInputSchema{Properties: map[string]SchemaProperty{
+		"num_frames": {Name: "num_frames", Default: float64(121)},
+	}}
+	// The motivating turn (conv_801b5619): ltx-2.3-22b extend over a 1344×768
+	// clip. The rendered output carries 339 frames (243 source + 96 extension),
+	// but the bill is the 121 generated frames — the schema default the request
+	// rode when the planner set no duration knob.
+	extend := VideoGenerateRequest{Prompt: "earthquake", Videos: []string{"data:video/mp4;base64,AAAA"}}
+	if got := falVideoBilledMegapixels(schema, extend, mp4FixtureWithVideoTrack(1344, 768, 339)); got != 124.895232 {
+		t.Fatalf("extend megapixels = %v, want 124.895232 (1344×768×121/1e6)", got)
+	}
+	// Pure generation: every frame in the container was rendered by the model,
+	// so the stts count is the billed quantity.
+	pure := VideoGenerateRequest{Prompt: "tornado"}
+	if got := falVideoBilledMegapixels(schema, pure, mp4FixtureWithVideoTrack(1344, 768, 339)); got != 349.913088 {
+		t.Fatalf("pure megapixels = %v, want 349.913088 (1344×768×339/1e6)", got)
+	}
+	// Pure generation with no parseable frame table falls back to the schema's
+	// num_frames default.
+	if got := falVideoBilledMegapixels(schema, pure, mp4FixtureWithVideoTrack(1280, 720)); got != 111.5136 {
+		t.Fatalf("fallback megapixels = %v, want 111.5136 (1280×720×121/1e6)", got)
+	}
+	// Extend with no num_frames default on the schema: not computable, and a
+	// zero quantity skips the estimate rather than guessing.
+	if got := falVideoBilledMegapixels(&ModelInputSchema{}, extend, mp4FixtureWithVideoTrack(1344, 768, 339)); got != 0 {
+		t.Fatalf("extend with no num_frames default should estimate 0, got %v", got)
+	}
+	// No frame size at all: not computable.
+	if got := falVideoBilledMegapixels(schema, extend, mp4FixtureAudioOnly()); got != 0 {
+		t.Fatalf("audio-only output should estimate 0, got %v", got)
+	}
+	if got := falVideoBilledMegapixels(schema, extend, nil); got != 0 {
+		t.Fatalf("empty output should estimate 0, got %v", got)
+	}
+}
+
+// testImageBytes encodes a zero-filled image of the given size in one of the
+// formats fal returns for image generation.
+func testImageBytes(t *testing.T, format string, width, height int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	var buf bytes.Buffer
+	var err error
+	switch format {
+	case "png":
+		err = png.Encode(&buf, img)
+	case "jpeg":
+		err = jpeg.Encode(&buf, img, nil)
+	case "gif":
+		err = gif.Encode(&buf, img, nil)
+	default:
+		t.Fatalf("unknown fixture format %q", format)
+	}
+	if err != nil {
+		t.Fatalf("encode %s fixture: %v", format, err)
+	}
+	return buf.Bytes()
+}
+
+func TestImagePixelDimensions(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		data   []byte
+		wantW  float64
+		wantH  float64
+		wantOK bool
+	}{
+		{name: "png", data: testImageBytes(t, "png", 64, 48), wantW: 64, wantH: 48, wantOK: true},
+		{name: "jpeg", data: testImageBytes(t, "jpeg", 64, 48), wantW: 64, wantH: 48, wantOK: true},
+		{name: "gif", data: testImageBytes(t, "gif", 64, 48), wantW: 64, wantH: 48, wantOK: true},
+		{name: "not an image", data: []byte("plain text"), wantOK: false},
+		{name: "empty", data: nil, wantOK: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			w, h, ok := imagePixelDimensions(tt.data)
+			if ok != tt.wantOK || (tt.wantOK && (w != tt.wantW || h != tt.wantH)) {
+				t.Fatalf("imagePixelDimensions = (%v, %v, %v), want (%v, %v, %v)", w, h, ok, tt.wantW, tt.wantH, tt.wantOK)
+			}
+		})
+	}
+	// WebP's three chunk layouts, hand-built to the container spec (no stdlib
+	// encoder): VP8X carries the canvas size, VP8/VP8L their own dimensions.
+	vp8x := append([]byte("RIFF\x00\x00\x00\x00WEBPVP8X\x0a\x00\x00\x00\x00\x00\x00\x00"),
+		byte(63), 0, 0, // width-1 = 63 → 64
+		byte(47), 0, 0) // height-1 = 47 → 48
+	if w, h, ok := imagePixelDimensions(vp8x); !ok || w != 64 || h != 48 {
+		t.Fatalf("VP8X dimensions = (%v, %v, %v), want (64, 48, true)", w, h, ok)
+	}
+	vp8 := append([]byte("RIFF\x00\x00\x00\x00WEBPVP8 \x0a\x00\x00\x00\x00\x00\x00\x9d\x01\x2a"),
+		byte(64), 0, // width = 64
+		byte(48), 0) // height = 48
+	if w, h, ok := imagePixelDimensions(vp8); !ok || w != 64 || h != 48 {
+		t.Fatalf("VP8 dimensions = (%v, %v, %v), want (64, 48, true)", w, h, ok)
+	}
+	// VP8L packs (width-1)|(height-1)<<14 into 32 bits after its 0x2f marker.
+	// Padded past the 30-byte webp guard — real files carry much more.
+	vp8l := append([]byte("RIFF\x00\x00\x00\x00WEBPVP8L\x05\x00\x00\x00\x2f"),
+		append(binary.LittleEndian.AppendUint32(nil, 63|47<<14), make([]byte, 5)...)...)
+	if w, h, ok := imagePixelDimensions(vp8l); !ok || w != 64 || h != 48 {
+		t.Fatalf("VP8L dimensions = (%v, %v, %v), want (64, 48, true)", w, h, ok)
+	}
+}
+
+func TestImageResultMegapixels(t *testing.T) {
+	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(testImageBytes(t, "png", 64, 48))
+	// Two 64×48 images + one legacy scalar: (3 × 3072 px) / 1e6.
+	got := imageResultMegapixels([]string{dataURL, dataURL}, dataURL)
+	if got != 3*64*48/1e6 {
+		t.Fatalf("imageResultMegapixels = %v, want %v", got, 3*64*48/1e6)
+	}
+	// References that aren't data URLs are not fetched; undecodable payloads
+	// contribute nothing.
+	got = imageResultMegapixels([]string{"https://fal.media/far-away.png", "data:image/png;base64,!!!"}, "")
+	if got != 0 {
+		t.Fatalf("non-decodable references should contribute 0, got %v", got)
 	}
 }
 
@@ -555,5 +813,75 @@ func TestGatewayGenerateVideoPricesTokenBilledModel(t *testing.T) {
 	// 216,000 tokens × $0.014/1000 = $3.024 — fal's published rate card.
 	if generated.CostMicros != 3024000 {
 		t.Fatalf("CostMicros = %d, want 3024000 (216000 tokens at $0.014/1000)", generated.CostMicros)
+	}
+}
+
+func TestGatewayGenerateVideoPricesMegapixelBilledModel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	keyring.MockInit()
+	if err := saveFalAPIKey("fal-test-key"); err != nil {
+		t.Fatalf("saveFalAPIKey: %v", err)
+	}
+	t.Cleanup(func() { _ = clearFalAPIKey() })
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig: %v", err)
+	}
+
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case strings.HasPrefix(req.URL.Path, "/v1/models/pricing"):
+			return jsonResponse(`{"prices":[` +
+				`{"endpoint_id":"fal-ai/ltx-2.3-22b/extend-video","unit_price":0.001605,"unit":"megapixel","currency":"USD"}` +
+				`],"next_cursor":null,"has_more":false}`), nil
+		case strings.Contains(req.URL.Path, "/api/openapi/"):
+			// Minimal ltx-2.3-22b extend-shaped input schema: prompt + the
+			// video_url source slot, with the num_frames default the megapixel
+			// estimate must read (Atelier maps no canonical knob onto it).
+			return jsonResponse(`{"components":{"schemas":{"LtxExtendInput":{"type":"object","required":["prompt"],` +
+				`"properties":{"prompt":{"type":"string"},"video_url":{"type":"string"},` +
+				`"num_frames":{"type":"integer","minimum":9,"maximum":481,"default":121}}}}}}`), nil
+		}
+		if strings.Contains(req.URL.Host, "fal.run") {
+			switch {
+			case req.Method == http.MethodPost:
+				return jsonResponse(`{"request_id":"req-mp-1"}`), nil
+			case strings.HasSuffix(req.URL.Path, "/status"):
+				return jsonResponse(`{"status":"COMPLETED"}`), nil
+			case strings.HasSuffix(req.URL.Path, "/requests/req-mp-1"):
+				return jsonResponse(`{"video":{"url":"https://queue.fal.run/dl/megapixel-video.mp4","content_type":"video/mp4"}}`), nil
+			default:
+				// The clip download: a 1344×768 container carrying 339 frames
+				// (243 source + 96 extension). The extend turn must bill the
+				// 121 generated frames, not the container's total.
+				return mp4Resp(mp4FixtureWithVideoTrack(1344, 768, 339), "video/mp4"), nil
+			}
+		}
+		t.Fatalf("unexpected request %s %s", req.Method, req.URL)
+		return nil, nil
+	})
+
+	gateway := newToolGateway(app, config)
+	generated, err := gateway.tools.GenerateVideo(context.Background(), VideoGenerateRequest{
+		Model:  "fal-ai/ltx-2.3-22b/extend-video",
+		Prompt: "The girl experiences an earthquake, with a rumble noise.",
+		Video:  "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(tinyMP4()),
+	})
+	if err != nil {
+		t.Fatalf("GenerateVideo: %v", err)
+	}
+	// 1344×768 × 121 schema-default frames = 124.895232 MP × $0.001605/MP =
+	// $0.200457 — fal's published rate card for the 22B family.
+	if generated.CostMicros != 200457 {
+		t.Fatalf("CostMicros = %d, want 200457 (124.895232 MP at $0.001605)", generated.CostMicros)
 	}
 }

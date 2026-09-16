@@ -107,12 +107,17 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				resp, raw, genErr := client.GenerateImage(ctx, req.Model, body)
 				if genErr == nil {
 					// Cost is priced from what the response actually delivered
-					// (image count), not what the plan asked for.
+					// (image count, rendered megapixels for MP-billed models),
+					// not what the plan asked for.
 					imageCount := len(resp.Images)
 					if imageCount == 0 && resp.Image != "" {
 						imageCount = 1
 					}
-					resp.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, falBillingHints{Images: imageCount, Requests: 1})
+					resp.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, falBillingHints{
+						Images:     imageCount,
+						Requests:   1,
+						Megapixels: imageResultMegapixels(resp.Images, resp.Image),
+					})
 				}
 				return resp, raw, notices, genErr
 			}
@@ -196,6 +201,11 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 					// names the billed extension length here.
 					hints.Seconds = seconds
 				}
+				// Megapixel-billed models (ltx-2.3-22b) read the rendered
+				// frame size from the container plus the generated frame count
+				// (container for pure turns, num_frames default when the
+				// output embeds source footage).
+				hints.Megapixels = falVideoBilledMegapixels(schema, req, generated.Data)
 				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
 			}
 			generated.Notices = notices
