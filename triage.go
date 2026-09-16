@@ -192,31 +192,85 @@ func messagesWithoutMedia(messages []ChatMessage) []ChatMessage {
 	return stripped
 }
 
+// turnMediaSlots carries the tool-facing media resolved for the turn — explicit
+// attachments plus @-mentioned assets plus the conversation-history fallback —
+// exactly what resolveTurnMedia computed once in RunChatStream. Triage renders
+// its grounding note from these slots instead of re-resolving: the fallback
+// re-reads and re-encodes multi-megabyte artifacts as data URLs, which a
+// routing decision that only needs counts must not pay for twice.
+type turnMediaSlots struct {
+	images []string
+	videos []string
+	audios []string
+}
+
 // messagesWithAttachmentNotes is the triage variant of messagesWithoutMedia:
 // it strips the media bytes (so megabytes never reach the routing model) but
-// leaves a compact text note on the latest user message describing what was
-// attached. Without this, triage sees only bare text and can reason itself out
-// of running an attachment-dependent tool — e.g. deciding lip_sync isn't needed
-// because it "requires an audio clip and a video" that triage couldn't see were
-// attached. Only the latest user turn is annotated: routing cares about what the
-// user just sent, and annotating every historical message adds noise.
-func messagesWithAttachmentNotes(messages []ChatMessage) []ChatMessage {
-	// Build the note from the ORIGINAL latest user message (before stripping),
-	// since attachmentNote reads the media counts the strip would nil out.
-	var note string
+// leaves compact text notes on the latest user message describing the media
+// the turn has access to. Two notes, both computed from the ORIGINAL messages
+// (before stripping), since they read the media counts the strip would nil
+// out:
+//
+//   - "[Attachments: ...]" — media the user attached to this message. Without
+//     it, triage sees only bare text and can reason itself out of running an
+//     attachment-dependent tool (deciding lip_sync isn't needed because it
+//     "requires an audio clip and a video" triage couldn't see were attached).
+//   - "[Available media: ...]" — media beyond the attachments: @-mentioned
+//     assets and the newest artifacts the history fallback resolved. Without
+//     it, triage cannot tell that "extend this video" refers to something
+//     real (conv_a90d8a8fec4a33e58e635b37: assistant media is stripped from
+//     history, the frontend never echoes generated artifacts back as
+//     attachments, so a bare extend follow-up looked like text-only feedback
+//     and the primary model then claimed in prose that the clip had been
+//     extended).
+//
+// Only the latest user turn is annotated: routing cares about what the user
+// just sent, and annotating every historical message adds noise.
+func messagesWithAttachmentNotes(messages []ChatMessage, slots turnMediaSlots) []ChatMessage {
+	var notes []string
 	latestUser := -1
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "user" {
 			latestUser = i
-			note = attachmentNote(messages[i])
+			if note := attachmentNote(messages[i]); note != "" {
+				notes = append(notes, note)
+			}
 			break
 		}
 	}
+	if note := availableMediaNote(slots, messages); note != "" {
+		notes = append(notes, note)
+	}
 	stripped := messagesWithoutMedia(messages)
-	if note != "" && latestUser >= 0 {
-		stripped[latestUser].Content = note + "\n" + stripped[latestUser].Content
+	if len(notes) > 0 && latestUser >= 0 {
+		stripped[latestUser].Content = strings.Join(notes, "\n") + "\n" + stripped[latestUser].Content
 	}
 	return stripped
+}
+
+// availableMediaNote summarizes the media tools can reach beyond the latest
+// user turn's explicit attachments: @-mentioned assets plus whatever the
+// resolveTurnMedia history fallback backfilled (the newest image-or-video
+// artifact when neither kind is explicit, the newest audio). Counts only —
+// the routing model never needs the bytes, and the fallback's data URLs can
+// be tens of megabytes. Empty when every resolved slot is explained by the
+// message's own attachments, so an ordinary attached-media turn renders no
+// second note.
+func availableMediaNote(slots turnMediaSlots, messages []ChatMessage) string {
+	var parts []string
+	if n := len(slots.images) - len(latestUserImages(messages)); n > 0 {
+		parts = append(parts, pluralize(n, "image"))
+	}
+	if n := len(slots.videos) - len(latestUserVideoURLs(messages)); n > 0 {
+		parts = append(parts, pluralize(n, "video"))
+	}
+	if n := len(slots.audios) - len(latestUserAudioURLs(messages)); n > 0 {
+		parts = append(parts, pluralize(n, "audio clip"))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "[Available media: " + strings.Join(parts, ", ") + "]"
 }
 
 // attachmentNote builds the bracketed attachment summary prepended to a user
@@ -260,11 +314,14 @@ func pluralize(count int, noun string) string {
 // num_predict) can't strip the only signal that would have kept the primary
 // model's attention on the image. One "triage" step is recorded per attempt
 // (nil run is tolerated for direct/unit callers), keeping the
-// one-step-per-provider-call telemetry convention.
-func (h *HarnessEngine) triageChatTurn(ctx context.Context, req ChatRequest, harness harnessTarget, skillIndex []SkillIndexEntry, run *HarnessRun) (HarnessTriageDecision, ChatCompletionResult, *HarnessRequestSnapshot) {
+// one-step-per-provider-call telemetry convention. slots is the turn's
+// resolved media (RunChatStream's resolveTurnMedia result): it grounds the
+// available-media note so a bare "extend this video" follow-up can be routed
+// against media the message itself doesn't carry.
+func (h *HarnessEngine) triageChatTurn(ctx context.Context, req ChatRequest, harness harnessTarget, skillIndex []SkillIndexEntry, run *HarnessRun, slots turnMediaSlots) (HarnessTriageDecision, ChatCompletionResult, *HarnessRequestSnapshot) {
 	system := triageSystemPrompt(h.toolRegistry(), skillIndex, h.config.Tools.Filesystem.Root)
 	numCtx := h.numCtx()
-	messages := messagesWithAttachmentNotes(req.Messages)
+	messages := messagesWithAttachmentNotes(req.Messages, slots)
 	budget := historyBudgetChars(numCtx, system, triageNumPredict)
 	triageReq := ChatRequest{
 		BaseURL:  req.BaseURL,
@@ -407,7 +464,7 @@ Set responseMode to one of:
 - "audio": the user asks to GENERATE a new audio clip — speak/narrate text, create music or a sound effect, or extend an audio clip.
 Set mediaEdit true when the user asks to EDIT an existing clip instead of generating new media: grab a frame/screenshot of a video, split/trim/cut a segment, join/concatenate clips, extract the audio track, or put different audio under a video. The responseMode for these stays "text" — the edited clip is attached to the reply, not generated. When one of the edit tools (screenshot_video, split_video, join_videos, extract_audio, replace_audio) is listed under Available tools, set needsTools true and describe the edit in toolTask; when none is listed, set needsTools false — the harness itself tells the user how to enable local editing.
 Set imageEdit true when the user asks to EDIT an existing image instead of generating new ones: convert its format (including iPhone HEIC photos), resize or crop it (e.g. to a 1:1/4:5/9:16/16:9 shape), rotate or flip it, add a watermark or logo overlay, combine several images into a collage/grid, adjust colors (brightness, contrast, saturation, grayscale, sepia), or strip metadata / shrink it for sharing. The responseMode stays "text" — the edited image is attached to the reply. When one of the image tools (convert_image, transform_image, compose_images, adjust_image, optimize_image) is listed under Available tools, set needsTools true and describe the edit in toolTask; when none is listed, set needsTools false — the harness itself tells the user how to enable local image editing.
-When the latest user message begins with "[Attachments: ...]", the user attached that media to the turn — treat it as available to tools that require it (e.g. lip_sync needs an audio clip plus a face image or video, transcribe_audio needs an audio clip, extend_audio can extend an attached audio clip, generate_video can animate an attached image or extend an attached video).%s
+When the latest user message begins with "[Attachments: ...]", the user attached that media to the turn — treat it as available to tools that require it (e.g. lip_sync needs an audio clip plus a face image or video, transcribe_audio needs an audio clip, extend_audio can extend an attached audio clip, generate_video can animate an attached image or extend an attached video). When the message carries an "[Available media: ...]" note, tools can additionally reach that media even though nothing is attached — it was resolved from @-mentioned assets or the conversation's recent artifacts, so a bare "extend this video", "continue the clip", or "animate it" refers to it and belongs in the matching media mode with needsTools true, never in "text" as feedback or description (conv_a90d8a8fec4a33e58e635b37: "Extend this video" after an earlier generation was routed to text because the routing model could not see that any video existed). The note only reports that the media exists and tools can reach it — it does not by itself mean the user wants new media.%s
 Set needsTools true only when answering requires acting on the workspace or a listed capability: reading, listing, searching, or writing files, running a command, generating an image, generating a video, generating audio, or following one of the listed skills.
 Set needsTools false when your own knowledge is enough: greetings, general knowledge, reasoning, writing, and conversation about content already visible in the chat.
 For responseMode "image", set needsTools true so the harness can run the generate_image tool before the primary model responds.

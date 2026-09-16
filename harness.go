@@ -360,7 +360,13 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	if explicitSkill == nil {
 		// triageChatTurn records its own "triage" steps — one per attempt,
 		// including the correction retry — the way selectSkillForTurn does.
-		decision, _, _ = h.triageChatTurn(ctx, req, harness, skillIndex, &run)
+		// The resolved media slots ground the available-media note so routing
+		// sees the same history fallback the tools will consume.
+		decision, _, _ = h.triageChatTurn(ctx, req, harness, skillIndex, &run, turnMediaSlots{
+			images: attachedImages,
+			videos: attachedVideos,
+			audios: attachedAudios,
+		})
 	}
 	run.Triage = &decision
 
@@ -1739,8 +1745,15 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 	// out of calling an attachment-dependent tool — e.g. deciding lip_sync's
 	// required audio+video "weren't provided" even though the user attached
 	// both. See conv_dc0c0433ceb1b84826cec959: triage routed to lip_sync, but
-	// the planner made no call because it couldn't see the attachments.
-	messages := messagesWithAttachmentNotes(req.Messages)
+	// the planner made no call because it couldn't see the attachments. The
+	// turn's resolved media slots ride along too — the available-media note
+	// grounds bare "extend this video" follow-ups on the fail-safe path where
+	// triage never ran, with the same slots the executed tools will consume.
+	messages := messagesWithAttachmentNotes(req.Messages, turnMediaSlots{
+		images: turn.AttachedImages,
+		videos: turn.AttachedVideos,
+		audios: turn.AttachedAudios,
+	})
 	deadline := time.Now().Add(harnessChatMaxWallTime)
 
 	prepared := HarnessPreparedTurn{SkillDecision: skillDecision, LoadedSkill: loadedSkill}

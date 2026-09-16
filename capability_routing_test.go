@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -282,6 +285,85 @@ func TestTriagePromptBaresVideoExtendAsVideoMode(t *testing.T) {
 	}
 	if !strings.Contains(prompt, `do not route it to "text" and describe the extension as if it happened`) {
 		t.Fatalf("video-mode guidance should forbid prose claims of success:\n%s", prompt)
+	}
+}
+
+// TestTriagePromptExplainsAvailableMediaNote pins the grounding contract for
+// the second bracketed note: the prompt must define "[Available media: ...]",
+// say where the media comes from (@-mentions or the conversation's recent
+// artifacts), tie bare extend/continue/animate references to media mode, and
+// guard against over-routing (the note alone doesn't mean the user wants new
+// media).
+func TestTriagePromptExplainsAvailableMediaNote(t *testing.T) {
+	registry := newHarnessToolRegistry([]HarnessToolDefinition{videoGenerationToolDefinition(false)})
+	prompt := triageSystemPrompt(registry, nil, "/tmp/ws")
+	for _, want := range []string{
+		`"[Available media: ...]"`,
+		"resolved from @-mentioned assets or the conversation's recent artifacts",
+		`never in "text" as feedback or description`,
+		"it does not by itself mean the user wants new media",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("triage prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+// TestTriageChatTurnGroundsHistoryVideoForExtend reproduces the routing half
+// of conv_a90d8a8fec4a33e58e635b37: after an earlier generate_video turn, a
+// bare "Extend this video: ..." follow-up with no attachment was routed to
+// text mode as "feedback on the previous response format" — the routing model
+// had no evidence any video existed (assistant media is stripped from history
+// and generated artifacts never ride back as attachments). resolveTurnMedia's
+// history fallback holds the clip, so triage must surface it as an
+// "[Available media: 1 video]" note on the latest user message while still
+// keeping the bytes out of the routing request.
+func TestTriageChatTurnGroundsHistoryVideoForExtend(t *testing.T) {
+	var requestBodies []string
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		data, _ := io.ReadAll(req.Body)
+		requestBodies = append(requestBodies, string(data))
+		decision := `{"needsTools":true,"responseMode":"video","toolTask":"generate_video extends the recent clip","reason":"extend request with a recent video"}`
+		body := `{"model":"chat-box-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":1}`
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+	})
+	engine := newHarnessEngine(defaultAppConfig(), app)
+	historyVideo := "data:video/mp4;base64,SElTVE9SWVZJREVP" // sentinel bytes — must never reach the routing model
+	decision, _, _ := engine.triageChatTurn(context.Background(), ChatRequest{
+		BaseURL: "http://ollama.test",
+		Messages: []ChatMessage{
+			{Role: "user", Content: `Create video: The character comes inside the house and sits in the couch reading.`},
+			{Role: "assistant", Content: "The video has been generated based on your request."},
+			{Role: "user", Content: "Extend this video: the girl experiences earthquake like rumble noise, and everything around her starts shaking."},
+		},
+	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil, turnMediaSlots{videos: []string{historyVideo}})
+	if decision.Error != "" || !decision.NeedsTools || decision.ResponseMode != "video" {
+		t.Fatalf("decision = %+v, want the clean video+tools routing", decision)
+	}
+	if len(requestBodies) != 1 {
+		t.Fatalf("routing calls = %d, want 1", len(requestBodies))
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(requestBodies[0]), &payload); err != nil {
+		t.Fatalf("routing request is not JSON: %v", err)
+	}
+	wireMessages, _ := payload["messages"].([]any)
+	lastUser := ""
+	for i := len(wireMessages) - 1; i >= 0; i-- {
+		if msg, _ := wireMessages[i].(map[string]any); msg["role"] == "user" {
+			lastUser, _ = msg["content"].(string)
+			break
+		}
+	}
+	if !strings.HasPrefix(lastUser, "[Available media: 1 video]\n") {
+		t.Fatalf("latest user message = %q, want it to lead with the available-media note", lastUser)
+	}
+	if strings.HasPrefix(lastUser, "[Attachments:") {
+		t.Fatalf("nothing was attached — latest user message = %q must carry no attachment note", lastUser)
+	}
+	if strings.Contains(requestBodies[0], "SElTVE9SWVZJREVP") {
+		t.Fatalf("history video bytes must stay out of the routing request:\n%s", requestBodies[0])
 	}
 }
 

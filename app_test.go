@@ -5861,7 +5861,7 @@ func TestTriageChatTurnParsesDecision(t *testing.T) {
 	decision, completion, _ := engine.triageChatTurn(context.Background(), ChatRequest{
 		BaseURL:  "http://ollama.test",
 		Messages: []ChatMessage{{Role: "user", Content: "What is the project status?"}},
-	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil)
+	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil, turnMediaSlots{})
 	if !decision.NeedsTools || decision.ResponseMode != "text" || decision.ToolTask != "Read status.txt" || decision.Error != "" {
 		t.Fatalf("decision = %+v, want parsed tool request with responseMode text", decision)
 	}
@@ -5879,7 +5879,7 @@ func TestTriageChatTurnFailsSafeToToolPath(t *testing.T) {
 	decision, _, _ := engine.triageChatTurn(context.Background(), ChatRequest{
 		BaseURL:  "http://ollama.test",
 		Messages: []ChatMessage{{Role: "user", Content: "anything"}},
-	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil)
+	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil, turnMediaSlots{})
 	if !decision.NeedsTools {
 		t.Fatal("triage failure must fail safe to the tool path (planner can still decline tools)")
 	}
@@ -5923,9 +5923,66 @@ func TestTriageChatTurnStripsImagesFromRequest(t *testing.T) {
 			Images:  []string{"data:image/png;base64,AAAA"},
 			Audios:  []string{"data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA="},
 		}},
-	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil)
+	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil, turnMediaSlots{})
 	if decision.Error != "" {
 		t.Fatalf("decision = %+v, want clean decision with media stripped", decision)
+	}
+}
+
+// TestAvailableMediaNoteCountsBeyondAttachments verifies the second bracketed
+// note counts only media the latest user message did NOT explicitly attach:
+// @-mentioned assets and the resolveTurnMedia history fallback. Slots fully
+// explained by the message's own attachments must render no note, so an
+// ordinary attached-media turn is unchanged.
+func TestAvailableMediaNoteCountsBeyondAttachments(t *testing.T) {
+	extendFollowUp := []ChatMessage{{Role: "user", Content: "Extend this video."}}
+	attachedVideo := []ChatMessage{{Role: "user", Content: "Extend this clip.", Videos: []string{"v1"}}}
+	attachedImages := []ChatMessage{{Role: "user", Content: "Animate these.", Images: []string{"data:image/png;base64,aTE=", "data:image/png;base64,aTI="}}}
+	cases := []struct {
+		name     string
+		slots    turnMediaSlots
+		messages []ChatMessage
+		want     string
+	}{
+		{"history video grounds bare follow-up", turnMediaSlots{videos: []string{"v1"}}, extendFollowUp, "[Available media: 1 video]"},
+		{"image and audio mention/fallback mix", turnMediaSlots{images: []string{"data:image/png;base64,aTE="}, audios: []string{"a1"}}, extendFollowUp, "[Available media: 1 image, 1 audio clip]"},
+		{"attachment explains the slot — no note", turnMediaSlots{videos: []string{"v1"}}, attachedVideo, ""},
+		{"mention beyond attachments counted", turnMediaSlots{images: []string{"data:image/png;base64,aTE=", "data:image/png;base64,aTI=", "data:image/png;base64,aTM="}}, attachedImages, "[Available media: 1 image]"},
+		{"no resolved media — no note", turnMediaSlots{}, extendFollowUp, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := availableMediaNote(tc.slots, tc.messages); got != tc.want {
+				t.Fatalf("availableMediaNote = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMessagesWithAttachmentNotesStacksAvailableMedia pins how the two notes
+// compose on the latest user message: the attachment note stays first (the
+// system prompt's "begins with [Attachments: ...]" contract), the
+// available-media note follows, and the original text survives after both.
+// Historical messages stay untouched.
+func TestMessagesWithAttachmentNotesStacksAvailableMedia(t *testing.T) {
+	messages := []ChatMessage{
+		{Role: "user", Content: "Create video: the character reads on the couch."},
+		{Role: "assistant", Content: "The video has been generated based on your request."},
+		{Role: "user", Content: "Extend this video: earthquake rumble.", Images: []string{"data:image/png;base64,aTE="}},
+	}
+	result := messagesWithAttachmentNotes(messages, turnMediaSlots{
+		images: []string{"data:image/png;base64,aTE=", "data:image/png;base64,aTI="}, // first attached, second mentioned
+		videos: []string{"v1"},                                                       // history fallback
+	})
+	latest := result[2]
+	if !strings.HasPrefix(latest.Content, "[Attachments: 1 image]\n[Available media: 1 image, 1 video]\n") {
+		t.Fatalf("latest user content = %q, want attachment note first, then available-media note", latest.Content)
+	}
+	if !strings.HasSuffix(latest.Content, "Extend this video: earthquake rumble.") {
+		t.Fatalf("latest user content = %q, original text must survive after the notes", latest.Content)
+	}
+	if result[1].Content != "The video has been generated based on your request." {
+		t.Fatalf("assistant history = %q, must be untouched", result[1].Content)
 	}
 }
 
@@ -5964,7 +6021,7 @@ func TestMessagesWithAttachmentNotesAnnotatesLatestUserOnly(t *testing.T) {
 		{Role: "assistant", Content: "sure"},                                                 // not a user turn
 		{Role: "user", Content: "Lipsync the audio to the video.", Audios: []string{"a"}, Videos: []string{"v"}},
 	}
-	result := messagesWithAttachmentNotes(messages)
+	result := messagesWithAttachmentNotes(messages, turnMediaSlots{})
 
 	// Latest user message (index 2) gets the note and loses the bytes.
 	latest := result[2]
@@ -5998,7 +6055,7 @@ func TestTriageChatTurnDecodeErrorFailsSafe(t *testing.T) {
 	decision, completion, _ := engine.triageChatTurn(context.Background(), ChatRequest{
 		BaseURL:  "http://ollama.test",
 		Messages: []ChatMessage{{Role: "user", Content: "anything"}},
-	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil)
+	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil, turnMediaSlots{})
 	if !decision.NeedsTools || decision.Error == "" {
 		t.Fatalf("decision = %+v, want fail-safe with recorded decode error", decision)
 	}
@@ -6033,7 +6090,7 @@ func TestTriageChatTurnRetriesInvalidJSONWithCorrection(t *testing.T) {
 	decision, _, _ := engine.triageChatTurn(context.Background(), ChatRequest{
 		BaseURL:  "http://ollama.test",
 		Messages: []ChatMessage{{Role: "user", Content: "Please explain the poem The Bell by Ralph Waldo Emerson"}},
-	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil)
+	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil, turnMediaSlots{})
 	if calls != 2 {
 		t.Fatalf("provider calls = %d, want 2 (initial attempt + correction retry)", calls)
 	}
@@ -6065,7 +6122,7 @@ func TestTriageChatTurnRetryExhaustedFailsSafe(t *testing.T) {
 	decision, _, _ := engine.triageChatTurn(context.Background(), ChatRequest{
 		BaseURL:  "http://ollama.test",
 		Messages: []ChatMessage{{Role: "user", Content: "anything"}},
-	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil)
+	}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil, turnMediaSlots{})
 	if calls != triageMaxAttempts {
 		t.Fatalf("provider calls = %d, want %d (the retry is bounded)", calls, triageMaxAttempts)
 	}
@@ -6109,7 +6166,7 @@ func TestTriageChatTurnRecordsStepPerAttempt(t *testing.T) {
 		decision, _, _ := engine.triageChatTurn(context.Background(), ChatRequest{
 			BaseURL:  "http://ollama.test",
 			Messages: []ChatMessage{{Role: "user", Content: "hello"}},
-		}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, &run)
+		}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, &run, turnMediaSlots{})
 		if decision.Error != "" {
 			t.Fatalf("decision = %+v, want the retried decision", decision)
 		}
@@ -6136,7 +6193,7 @@ func TestTriageChatTurnRecordsStepPerAttempt(t *testing.T) {
 		decision, _, _ := engine.triageChatTurn(context.Background(), ChatRequest{
 			BaseURL:  "http://ollama.test",
 			Messages: []ChatMessage{{Role: "user", Content: "hello"}},
-		}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, &run)
+		}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, &run, turnMediaSlots{})
 		if decision.Error == "" {
 			t.Fatal("exhausted retry must fail safe with a recorded error")
 		}
@@ -6161,7 +6218,7 @@ func TestTriageChatTurnRecordsStepPerAttempt(t *testing.T) {
 		decision, _, _ := engine.triageChatTurn(context.Background(), ChatRequest{
 			BaseURL:  "http://ollama.test",
 			Messages: []ChatMessage{{Role: "user", Content: "hello"}},
-		}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, &run)
+		}, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, &run, turnMediaSlots{})
 		if !decision.NeedsTools || decision.Error == "" {
 			t.Fatalf("decision = %+v, want the provider-failure fail-safe", decision)
 		}
@@ -6199,7 +6256,7 @@ func TestTriageChatTurnFailsSafeToVisionWhenImageAttached(t *testing.T) {
 			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
 		})
 		engine := newHarnessEngine(defaultAppConfig(), app)
-		decision, _, _ := engine.triageChatTurn(context.Background(), withImage, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil)
+		decision, _, _ := engine.triageChatTurn(context.Background(), withImage, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil, turnMediaSlots{})
 		if !decision.NeedsTools {
 			t.Fatal("fail-safe must keep needsTools true so the planner can still run")
 		}
@@ -6215,7 +6272,7 @@ func TestTriageChatTurnFailsSafeToVisionWhenImageAttached(t *testing.T) {
 			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
 		})
 		engine := newHarnessEngine(defaultAppConfig(), app)
-		decision, _, _ := engine.triageChatTurn(context.Background(), textOnly, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil)
+		decision, _, _ := engine.triageChatTurn(context.Background(), textOnly, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil, turnMediaSlots{})
 		if !decision.NeedsTools || decision.ResponseMode != "text" {
 			t.Fatalf("decision = %+v, want text fail-safe when no image is attached", decision)
 		}
@@ -6227,7 +6284,7 @@ func TestTriageChatTurnFailsSafeToVisionWhenImageAttached(t *testing.T) {
 			return &http.Response{StatusCode: http.StatusInternalServerError, Status: "500 Internal Server Error", Body: io.NopCloser(strings.NewReader("boom")), Header: http.Header{}}, nil
 		})
 		engine := newHarnessEngine(defaultAppConfig(), app)
-		decision, _, _ := engine.triageChatTurn(context.Background(), withImage, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil)
+		decision, _, _ := engine.triageChatTurn(context.Background(), withImage, harnessTarget{model: "chat-box-model", provider: "ollama"}, nil, nil, turnMediaSlots{})
 		if !decision.NeedsTools || decision.ResponseMode != "vision" {
 			t.Fatalf("decision = %+v, want vision fail-safe when the triage call fails and an image is attached", decision)
 		}
@@ -7857,7 +7914,7 @@ func TestTriageChatTurnRoutesToConfiguredHarnessProvider(t *testing.T) {
 	decision, _, _ := engine.triageChatTurn(context.Background(), ChatRequest{
 		BaseURL:  "http://ollama.test",
 		Messages: []ChatMessage{{Role: "user", Content: "hello"}},
-	}, harnessTarget{model: "anthropic/claude-3.5-sonnet", provider: "openrouter"}, nil, nil)
+	}, harnessTarget{model: "anthropic/claude-3.5-sonnet", provider: "openrouter"}, nil, nil, turnMediaSlots{})
 
 	if gotHost != "openrouter.ai" {
 		t.Fatalf("triage reached host %q, want openrouter.ai — the harness is still pinned to Ollama", gotHost)
