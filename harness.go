@@ -81,6 +81,16 @@ type HarnessPreparedTurn struct {
 	// tool backend is configured. Set by RunChatStream regardless of
 	// NeedsTools; delivered like LocalMediaEditUnavailable's note.
 	LocalImageEditNote string
+	// MediaGenUnavailable records that triage routed the turn to a generation
+	// mode (video/audio) but no matching generate_* tool is configured, so
+	// Atelier cannot produce the media. Like the local-edit gaps, the harness
+	// then delivers a code-authored decline note to the final model (and a
+	// deterministic blockquote fallback), instead of letting a small model
+	// hallucinate a "queued / rendering shortly" confirmation for media that was
+	// never generated (conv_20a0df2b2db9b4e9ea5a1ad9). MediaGenMode carries the
+	// responseMode so the notes can name the media kind.
+	MediaGenUnavailable bool
+	MediaGenMode        string
 }
 
 type HarnessToolRound struct {
@@ -433,6 +443,16 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	if decision.ImageEdit {
 		preparation.LocalImageEditNote = imageEditUnavailableNote(basicImageToolsConfigured(h.config), imageMagickToolsConfigured(h.config))
 	}
+	// A generation-mode turn that triage could not tool (needsTools false) and
+	// for which the registry carries no matching generate_* tool can never
+	// produce media this turn. Route a decline note to the final model so it
+	// doesn't fabricate a confirmation. Image mode never reaches here — it is
+	// force-tooled just above, so it falls through the planner-exhausted path
+	// instead; in practice this guards video and audio.
+	preparation.MediaGenMode = decision.ResponseMode
+	preparation.MediaGenUnavailable = isGenerationMode(decision.ResponseMode) &&
+		!decision.NeedsTools &&
+		!generationToolAvailable(h.toolRegistry(), decision.ResponseMode)
 
 	// Resolve the response model: when the primary model is an image generation
 	// model, it cannot produce text or analyze images, so fall back to the
@@ -530,6 +550,13 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			toolNotices += "\n" + imageNotice
 		} else {
 			toolNotices = imageNotice
+		}
+	}
+	if genNotice := mediaGenFallbackNotice(preparation.MediaGenUnavailable, preparation.MediaGenMode, assistantContent); genNotice != "" {
+		if toolNotices != "" {
+			toolNotices += "\n" + genNotice
+		} else {
+			toolNotices = genNotice
 		}
 	}
 	if remediationNotice := toolErrorRemediationNotice(preparation.ToolResults, assistantContent); remediationNotice != "" {
@@ -2337,6 +2364,14 @@ func (h *HarnessEngine) preparedResponseRequest(ctx context.Context, req ChatReq
 	}
 	if preparation.LocalImageEditNote != "" {
 		messages = append(messages, ChatMessage{Role: "user", Content: preparation.LocalImageEditNote})
+	}
+	// A generation request with no configured generate_* tool rides the same
+	// trailing-note channel: the final model learns the media cannot be produced
+	// and what to tell the user, instead of inventing a queued-render reply.
+	if preparation.MediaGenUnavailable {
+		if note := mediaGenUnavailableNote(preparation.MediaGenMode); note != "" {
+			messages = append(messages, ChatMessage{Role: "user", Content: note})
+		}
 	}
 	numCtx := h.numCtx()
 	truncatedMessages := truncateChatHistory(messages, historyBudgetChars(numCtx, responseReq.System, numCtx/4))
