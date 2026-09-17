@@ -244,23 +244,34 @@ func ffmpegReplaceAudioArgs(video, audio string, copyVideo bool, output string) 
 	return append(args, "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", output)
 }
 
-// ffmpegTransformArgs applies a -vf filter chain with the house re-encode
-// preset — geometry filters cannot stream-copy, so every transform re-encodes.
-func ffmpegTransformArgs(input, filters, output string) []string {
-	return []string{"-i", input, "-vf", filters,
+// ffmpegTransformArgs applies -vf/-af filter chains with the house re-encode
+// preset — geometry and speed filters cannot stream-copy, so every transform
+// re-encodes. An empty chain is omitted (a speed-only transform passes just
+// -af), since an empty filtergraph argument is a CLI error.
+func ffmpegTransformArgs(input, videoFilters, audioFilters, output string) []string {
+	args := []string{"-i", input}
+	if videoFilters != "" {
+		args = append(args, "-vf", videoFilters)
+	}
+	if audioFilters != "" {
+		args = append(args, "-af", audioFilters)
+	}
+	return append(args,
 		"-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-		"-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output}
+		"-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output)
 }
 
 // videoTransformFilters resolves one transform_video call into its -vf chain
 // plus the op phrases for the summary, applying the ops in transform_image's
 // order: aspectRatio crop, then width/height resize, then rotate, then flip
-// (rotation is not aspect-aware — it turns the finished frame). srcWidth and
-// srcHeight are the source clip's dimensions and must be positive whenever
-// aspectRatio is set; the other branches need no source geometry. With both
-// width and height and no aspectRatio, the cover idiom
-// (force_original_aspect_ratio=increase + crop) lands on exactly those pixels
-// while center-trimming the overflowing side — the shape is never stretched.
+// (rotation is not aspect-aware — it turns the finished frame), then the
+// playback-speed rescale (setpts only touches timestamps, so it composes with
+// any geometry). srcWidth and srcHeight are the source clip's dimensions and
+// must be positive whenever aspectRatio is set; the other branches need no
+// source geometry. With both width and height and no aspectRatio, the cover
+// idiom (force_original_aspect_ratio=increase + crop) lands on exactly those
+// pixels while center-trimming the overflowing side — the shape is never
+// stretched.
 func videoTransformFilters(call HarnessToolCall, srcWidth, srcHeight int) (string, []string) {
 	var chain []string
 	var ops []string
@@ -307,7 +318,35 @@ func videoTransformFilters(call HarnessToolCall, srcWidth, srcHeight int) (strin
 		chain = append(chain, "vflip")
 		ops = append(ops, "flipped vertical")
 	}
+	if call.Speed != 0 {
+		chain = append(chain, "setpts=PTS/"+formatPlaybackSpeed(call.Speed))
+		ops = append(ops, formatPlaybackSpeed(call.Speed)+"x playback speed")
+	}
 	return strings.Join(chain, ","), ops
+}
+
+// formatPlaybackSpeed renders a playback multiplier in its shortest exact form
+// (3, 0.5, 1.75) for both the setpts expression and the op phrase.
+func formatPlaybackSpeed(speed float64) string {
+	return strconv.FormatFloat(speed, 'f', -1, 64)
+}
+
+// atempoChain decomposes a playback multiplier into atempo filter instances,
+// each inside the filter's [0.5, 2.0] tempo envelope — one instance tops out
+// at 2x, so a 3x speedup or a 0.25x crawl needs a chain. atempo changes tempo
+// without shifting pitch, keeping the audio in sync with the setpts-rescaled
+// video. speed must be positive and within transform_video's validated range.
+func atempoChain(speed float64) string {
+	stages := []string{}
+	for speed > 2.0 {
+		stages = append(stages, "atempo=2.0")
+		speed /= 2.0
+	}
+	for speed < 0.5 {
+		stages = append(stages, "atempo=0.5")
+		speed /= 0.5
+	}
+	return strings.Join(append(stages, "atempo="+formatPlaybackSpeed(speed)), ",")
 }
 
 // evenDown floors a pixel count to the nearest even value — H.264's yuv420p
@@ -819,13 +858,14 @@ func replaceAudioCopyVideo(ctx context.Context, config AppConfig, videoPath stri
 }
 
 // transformVideoToolDefinition exposes transform_video: crop an attached
-// video to an aspect ratio, resize it to exact dimensions, rotate, or flip —
-// the video sibling of transform_image, on one ffmpeg filter chain.
+// video to an aspect ratio, resize it to exact dimensions, rotate, flip, or
+// change its playback speed — the video sibling of transform_image, on one
+// ffmpeg filter chain.
 func transformVideoToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "transform_video",
 		Title:       "Transform video",
-		Description: "Use this when the user asks to change the shape or size of an attached video — crop it to an aspect ratio, downscale or resize it to specific pixel dimensions (for example a clip too large for a video model's input limit), rotate a sideways clip, or mirror it. It crops to a shape, not a region of time — cutting a segment out is split_video. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). aspectRatio crops (from the center) to a W:H ratio like \"1:1\" or \"16:9\", trimming the longer side; width and height resize — both together produces exactly those pixels (center-cropped to the target shape, never stretched), one alone preserves aspect; rotate is 90, 180, or 270 clockwise; flip is \"horizontal\" or \"vertical\". At least one operation is required. The video is re-encoded to H.264 with its audio kept. The result is attached to the assistant reply and becomes the conversation's newest video.",
+		Description: "Use this when the user asks to change the shape or size of an attached video — crop it to an aspect ratio, downscale or resize it to specific pixel dimensions (for example a clip too large for a video model's input limit), rotate a sideways clip, mirror it — or to speed up or slow down its playback. It crops to a shape, not a region of time — cutting a segment out is split_video. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). aspectRatio crops (from the center) to a W:H ratio like \"1:1\" or \"16:9\", trimming the longer side; width and height resize — both together produces exactly those pixels (center-cropped to the target shape, never stretched), one alone preserves aspect; rotate is 90, 180, or 270 clockwise; flip is \"horizontal\" or \"vertical\"; speed is a playback multiplier for the WHOLE clip — 3 plays three times as fast, 0.5 at half speed (slow motion), between 0.25 and 8, with the audio tempo-adjusted to stay in sync (pitch preserved). Speeding up only a PORTION of a clip is a sequence: split_video the portion out, transform_video it with speed, then join_videos the parts back in order. At least one operation is required. The video is re-encoded to H.264 with its audio kept. The result is attached to the assistant reply and becomes the conversation's newest video.",
 		Example:     `{"name":"transform_video","width":1280,"height":720}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: transformVideoParamSchema(),
@@ -842,8 +882,14 @@ func transformVideoToolDefinition() HarnessToolDefinition {
 			if (call.Width > 0 && call.Width%2 != 0) || (call.Height > 0 && call.Height%2 != 0) {
 				return []string{prefix + ".width and .height must be even pixel counts for transform_video (video encoders require even dimensions)"}
 			}
-			if call.Width == 0 && call.Height == 0 && aspect == "" && call.Rotate == 0 && strings.TrimSpace(call.Flip) == "" {
-				return []string{prefix + ".transform_video needs at least one of aspectRatio, width, height, rotate, or flip"}
+			if call.Speed != 0 && (call.Speed < 0.25 || call.Speed > 8) {
+				return []string{prefix + ".speed must be a playback multiplier between 0.25 and 8 for transform_video (2 plays twice as fast, 0.5 at half speed)"}
+			}
+			if call.Speed == 1 {
+				return []string{prefix + ".speed must not be 1 for transform_video — a multiplier of 1 leaves playback unchanged"}
+			}
+			if call.Width == 0 && call.Height == 0 && aspect == "" && call.Rotate == 0 && strings.TrimSpace(call.Flip) == "" && call.Speed == 0 {
+				return []string{prefix + ".transform_video needs at least one of aspectRatio, width, height, rotate, flip, or speed"}
 			}
 			switch call.Rotate {
 			case 0, 90, 180, 270:
@@ -879,8 +925,14 @@ func transformVideoToolDefinition() HarnessToolDefinition {
 				}
 			}
 			filters, ops := videoTransformFilters(call, srcWidth, srcHeight)
+			audioFilters := ""
+			if call.Speed != 0 {
+				// atempo keeps the audio in sync with the setpts-rescaled
+				// video; a clip with no audio stream simply ignores -af.
+				audioFilters = atempoChain(call.Speed)
+			}
 			staged := filepath.Join(staging, "transformed.mp4")
-			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegTransformArgs(input, filters, staged)); err != nil {
+			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegTransformArgs(input, filters, audioFilters, staged)); err != nil {
 				return nil, "transform failed", err
 			}
 			tempPath, err := promoteStagedOutput(staged, "atelier-video-*", ".mp4")
@@ -893,7 +945,7 @@ func transformVideoToolDefinition() HarnessToolDefinition {
 				Count:  1,
 				Videos: []ToolVideoFile{{TempPath: tempPath, MimeType: "video/mp4"}},
 				Notices: []string{
-					"the video was re-encoded (H.264, CRF 18) — crop, resize, rotate, and flip cannot stream-copy.",
+					"the video was re-encoded (H.264, CRF 18) — crop, resize, rotate, flip, and speed changes cannot stream-copy.",
 				},
 			}
 			return output, fmt.Sprintf("transformed the attached video with ffmpeg (%s)", strings.Join(ops, ", ")), nil
@@ -1132,6 +1184,7 @@ func transformVideoParamSchema() map[string]any {
 			"height":      intParam("Optional — resize to this pixel height (with width, exactly those pixels via center-crop; alone, aspect-preserving). Must be even."),
 			"rotate":      intParam(`Optional — rotate clockwise: 90, 180, or 270.`),
 			"flip":        stringParam(`Optional — "horizontal" or "vertical".`),
+			"speed":       numberParam("Optional — playback-speed multiplier for the whole clip: 3 plays three times as fast, 0.5 at half speed (slow motion). Between 0.25 and 8, not 1. The audio is tempo-adjusted to stay in sync."),
 		},
 		"required": []string{},
 	}

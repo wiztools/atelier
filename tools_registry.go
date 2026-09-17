@@ -1748,6 +1748,10 @@ func intParam(description string) map[string]any {
 	return map[string]any{"type": "integer", "description": description}
 }
 
+func numberParam(description string) map[string]any {
+	return map[string]any{"type": "number", "description": description}
+}
+
 func boolParam(description string) map[string]any {
 	return map[string]any{"type": "boolean", "description": description}
 }

@@ -229,21 +229,24 @@ type HarnessToolCall struct {
 	// transform_image's geometry ops; Position and Opacity place and fade a
 	// watermark (Scale, reused from upscale_image, sizes it — a percentage
 	// here); Brightness/Contrast/Saturation/Grayscale/Sepia are adjust_image's
-	// color controls. Planner-only, like At — declared in
+	// color controls; Speed is transform_video's playback multiplier (2 plays
+	// twice as fast, 0.5 at half speed) — a float, unlike the integer geometry
+	// params. Planner-only, like At — declared in
 	// harnessToolPlanSchema and validated per-tool.
-	Format     string `json:"format,omitempty"`
-	Quality    int    `json:"quality,omitempty"`
-	Width      int    `json:"width,omitempty"`
-	Height     int    `json:"height,omitempty"`
-	Rotate     int    `json:"rotate,omitempty"`
-	Flip       string `json:"flip,omitempty"`
-	Position   string `json:"position,omitempty"`
-	Opacity    int    `json:"opacity,omitempty"`
-	Brightness int    `json:"brightness,omitempty"`
-	Contrast   int    `json:"contrast,omitempty"`
-	Saturation int    `json:"saturation,omitempty"`
-	Grayscale  bool   `json:"grayscale,omitempty"`
-	Sepia      bool   `json:"sepia,omitempty"`
+	Format     string  `json:"format,omitempty"`
+	Quality    int     `json:"quality,omitempty"`
+	Width      int     `json:"width,omitempty"`
+	Height     int     `json:"height,omitempty"`
+	Rotate     int     `json:"rotate,omitempty"`
+	Flip       string  `json:"flip,omitempty"`
+	Speed      float64 `json:"speed,omitempty"`
+	Position   string  `json:"position,omitempty"`
+	Opacity    int     `json:"opacity,omitempty"`
+	Brightness int     `json:"brightness,omitempty"`
+	Contrast   int     `json:"contrast,omitempty"`
+	Saturation int     `json:"saturation,omitempty"`
+	Grayscale  bool    `json:"grayscale,omitempty"`
+	Sepia      bool    `json:"sepia,omitempty"`
 }
 
 type HarnessToolResult struct {
@@ -2235,7 +2238,8 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 						// contract: per-tool validation, grammar freedom here.
 						// aspectRatio and scale are shared with generate_image
 						// and upscale_image (string shapes there); the geometry
-						// params are shared with transform_video.
+						// params are shared with transform_video, and speed is
+						// transform_video's playback multiplier (a float).
 						"format":      map[string]any{"type": "string"},
 						"quality":     map[string]any{"type": "integer"},
 						"aspectRatio": map[string]any{"type": "string"},
@@ -2244,6 +2248,7 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 						"height":      map[string]any{"type": "integer"},
 						"rotate":      map[string]any{"type": "integer"},
 						"flip":        map[string]any{"type": "string"},
+						"speed":       map[string]any{"type": "number"},
 						"position":    map[string]any{"type": "string"},
 						"opacity":     map[string]any{"type": "integer"},
 						"brightness":  map[string]any{"type": "integer"},
@@ -2838,6 +2843,8 @@ func applyKwargs(call *HarnessToolCall, args string) {
 			call.Height = kwargInt(raw)
 		case "rotate":
 			call.Rotate = kwargInt(raw)
+		case "speed":
+			call.Speed = kwargFloat(raw)
 		case "opacity":
 			call.Opacity = kwargInt(raw)
 		case "brightness":
@@ -2858,6 +2865,19 @@ func applyKwargs(call *HarnessToolCall, args string) {
 // per-tool validation (not the parser) produces the correction message.
 func kwargInt(raw string) int {
 	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return 0
+	}
+	return value
+}
+
+// kwargFloat reads a kwargs float value. A trailing "x" (as in speed='3x') is
+// tolerated; an unparseable value yields 0 so per-tool validation (not the
+// parser) produces the correction message.
+func kwargFloat(raw string) float64 {
+	trimmed := strings.TrimSpace(raw)
+	trimmed = strings.TrimSuffix(strings.TrimSuffix(trimmed, "x"), "X")
+	value, err := strconv.ParseFloat(trimmed, 64)
 	if err != nil {
 		return 0
 	}

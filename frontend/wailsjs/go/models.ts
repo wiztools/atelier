@@ -1112,6 +1112,7 @@ export namespace main {
 	    height?: number;
 	    rotate?: number;
 	    flip?: string;
+	    speed?: number;
 	    position?: string;
 	    opacity?: number;
 	    brightness?: number;
@@ -1168,6 +1169,7 @@ export namespace main {
 	        this.height = source["height"];
 	        this.rotate = source["rotate"];
 	        this.flip = source["flip"];
+	        this.speed = source["speed"];
 	        this.position = source["position"];
 	        this.opacity = source["opacity"];
 	        this.brightness = source["brightness"];

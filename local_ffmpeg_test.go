@@ -220,8 +220,12 @@ func TestFFmpegArgBuilders(t *testing.T) {
 			"-i v.mp4 -i a.mp3 -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 192k -shortest -movflags +faststart out.mp4"},
 		{"replace reencode video", ffmpegReplaceAudioArgs("v.webm", "a.mp3", false, "out.mp4"),
 			"-i v.webm -i a.mp3 -map 0:v:0 -map 1:a:0 -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -shortest -movflags +faststart out.mp4"},
-		{"transform", ffmpegTransformArgs("in.mp4", "crop=864:1080", "out.mp4"),
+		{"transform", ffmpegTransformArgs("in.mp4", "crop=864:1080", "", "out.mp4"),
 			"-i in.mp4 -vf crop=864:1080 -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -movflags +faststart out.mp4"},
+		{"transform with speed", ffmpegTransformArgs("in.mp4", "setpts=PTS/3", "atempo=2.0,atempo=1.5", "out.mp4"),
+			"-i in.mp4 -vf setpts=PTS/3 -af atempo=2.0,atempo=1.5 -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -movflags +faststart out.mp4"},
+		{"transform speed only omits -vf", ffmpegTransformArgs("in.mp4", "", "atempo=0.5", "out.mp4"),
+			"-i in.mp4 -af atempo=0.5 -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -movflags +faststart out.mp4"},
 	}
 	for _, tc := range cases {
 		if joined := strings.Join(tc.got, " "); joined != tc.want {
@@ -271,9 +275,15 @@ func TestVideoTransformFilters(t *testing.T) {
 			"vflip", "flipped vertical"},
 		{"odd crop floors to even", HarnessToolCall{AspectRatio: "1:1"}, 1000, 333,
 			"crop=332:332", "cropped to 1:1 (center 332x332)"},
-		{"everything combined", HarnessToolCall{AspectRatio: "16:9", Width: 1280, Height: 720, Rotate: 90, Flip: "vertical"}, 1344, 768,
-			"crop=1344:756,scale=1280:720,transpose=1,vflip",
-			"cropped to 16:9 (center 1344x756), resized to 1280x720, rotated 90° clockwise, flipped vertical"},
+		{"speed up only", HarnessToolCall{Speed: 3}, 0, 0,
+			"setpts=PTS/3", "3x playback speed"},
+		{"slow motion only", HarnessToolCall{Speed: 0.5}, 0, 0,
+			"setpts=PTS/0.5", "0.5x playback speed"},
+		{"fractional speed", HarnessToolCall{Speed: 1.75}, 0, 0,
+			"setpts=PTS/1.75", "1.75x playback speed"},
+		{"everything combined", HarnessToolCall{AspectRatio: "16:9", Width: 1280, Height: 720, Rotate: 90, Flip: "vertical", Speed: 2}, 1344, 768,
+			"crop=1344:756,scale=1280:720,transpose=1,vflip,setpts=PTS/2",
+			"cropped to 16:9 (center 1344x756), resized to 1280x720, rotated 90° clockwise, flipped vertical, 2x playback speed"},
 	}
 	for _, tc := range cases {
 		filter, ops := videoTransformFilters(tc.call, tc.srcWidth, tc.srcHeight)
@@ -282,6 +292,28 @@ func TestVideoTransformFilters(t *testing.T) {
 		}
 		if joined := strings.Join(ops, ", "); joined != tc.wantOps {
 			t.Errorf("%s ops = %q, want %q", tc.name, joined, tc.wantOps)
+		}
+	}
+}
+
+// TestAtempoChain pins the tempo decomposition: one instance inside
+// [0.5, 2.0] when the multiplier already fits, chained 2.0/0.5 stages beyond.
+func TestAtempoChain(t *testing.T) {
+	cases := []struct {
+		speed float64
+		want  string
+	}{
+		{3, "atempo=2.0,atempo=1.5"},
+		{2, "atempo=2"},
+		{1.75, "atempo=1.75"},
+		{0.5, "atempo=0.5"},
+		{0.25, "atempo=0.5,atempo=0.5"},
+		{0.3, "atempo=0.5,atempo=0.6"},
+		{8, "atempo=2.0,atempo=2.0,atempo=2"},
+	}
+	for _, tc := range cases {
+		if got := atempoChain(tc.speed); got != tc.want {
+			t.Errorf("atempoChain(%v) = %q, want %q", tc.speed, got, tc.want)
 		}
 	}
 }
@@ -335,8 +367,20 @@ func TestFFmpegToolValidation(t *testing.T) {
 	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Flip: "diagonal"}); len(errors) == 0 || !strings.Contains(errors[0], `.flip must be "horizontal" or "vertical"`) {
 		t.Errorf("transform with a bad flip = %v", errors)
 	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Speed: 10}); len(errors) == 0 || !strings.Contains(errors[0], ".speed must be a playback multiplier between 0.25 and 8") {
+		t.Errorf("transform with an out-of-range speed = %v, want the range error", errors)
+	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Speed: 0.1}); len(errors) == 0 || !strings.Contains(errors[0], ".speed must be a playback multiplier between 0.25 and 8") {
+		t.Errorf("transform with a too-slow speed = %v, want the range error", errors)
+	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Width: 1280, Speed: 1}); len(errors) == 0 || !strings.Contains(errors[0], ".speed must not be 1") {
+		t.Errorf("transform with speed 1 = %v, want the no-op error", errors)
+	}
 	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Width: 1280, Height: 720}); len(errors) != 0 {
 		t.Errorf("valid transform = %v, want none", errors)
+	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Speed: 3}); len(errors) != 0 {
+		t.Errorf("valid speed-only transform = %v, want none", errors)
 	}
 }
 
@@ -635,6 +679,41 @@ func TestFFmpegTransformExecutes(t *testing.T) {
 		}
 	})
 
+	t.Run("speed 3x rescales video and audio", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "transform_video", HarnessToolCall{Speed: 3})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, _ := result.Result.(ToolVideoResult)
+		defer os.Remove(typed.Videos[0].TempPath)
+		args := fakeFFmpegArgs(t, bin)
+		if !strings.Contains(args, "-vf setpts=PTS/3 ") || !strings.Contains(args, "-af atempo=2.0,atempo=1.5 ") {
+			t.Fatalf("transform args = %q, want the setpts rescale and the chained atempo", args)
+		}
+		if !strings.Contains(result.Summary, "3x playback speed") {
+			t.Fatalf("summary = %q, want the speed op", result.Summary)
+		}
+	})
+
+	t.Run("slow motion 0.5x", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "transform_video", HarnessToolCall{Speed: 0.5})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, _ := result.Result.(ToolVideoResult)
+		defer os.Remove(typed.Videos[0].TempPath)
+		args := fakeFFmpegArgs(t, bin)
+		if !strings.Contains(args, "-vf setpts=PTS/0.5 ") || !strings.Contains(args, "-af atempo=0.5 ") {
+			t.Fatalf("transform args = %q, want the half-speed setpts and a single atempo", args)
+		}
+	})
+
 	t.Run("aspect crop without ffprobe reads MP4 bytes", func(t *testing.T) {
 		// No ffprobe override and a lookup stub without one (the override is
 		// looked up by its own value), so dimensions can only come from the
@@ -752,7 +831,7 @@ func TestHarnessToolPlanSchemaHasFFmpegParams(t *testing.T) {
 	schema := harnessToolPlanSchema(filesystemToolRegistry())
 	items := schema["properties"].(map[string]any)["toolCalls"].(map[string]any)["items"].(map[string]any)
 	properties := items["properties"].(map[string]any)
-	for _, param := range []string{"at", "start", "end", "mode"} {
+	for _, param := range []string{"at", "start", "end", "mode", "speed"} {
 		if _, ok := properties[param].(map[string]any); !ok {
 			t.Errorf("plan schema properties missing %q: %+v", param, properties)
 		}
@@ -761,9 +840,14 @@ func TestHarnessToolPlanSchemaHasFFmpegParams(t *testing.T) {
 
 func TestApplyKwargsFFmpegParams(t *testing.T) {
 	var call HarnessToolCall
-	applyKwargs(&call, "at='4.5', start='10', end='25', mode='fast'")
-	if call.At != "4.5" || call.Start != "10" || call.End != "25" || call.Mode != "fast" {
+	applyKwargs(&call, "at='4.5', start='10', end='25', mode='fast', speed=3")
+	if call.At != "4.5" || call.Start != "10" || call.End != "25" || call.Mode != "fast" || call.Speed != 3 {
 		t.Fatalf("applyKwargs = %+v", call)
+	}
+	var slowed HarnessToolCall
+	applyKwargs(&slowed, "speed='0.5x'")
+	if slowed.Speed != 0.5 {
+		t.Fatalf("applyKwargs speed='0.5x' = %v, want 0.5", slowed.Speed)
 	}
 }
 
