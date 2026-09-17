@@ -2048,14 +2048,28 @@ func mapNativeToolCalls(calls []ToolCall) ([]HarnessToolCall, []string) {
 // anyway). Restating the rule at the planning layer, where the tool choice is
 // made, closes that gap. It also tells the planner to fall back to the
 // audio-capable generate_video path if a lip_sync call fails, so a single tool
-// failure does not sink the turn when an alternative exists. Empty when the
-// configured video model cannot produce audio — in that case the
-// generate_speech + lip_sync chain is the correct path and no rule is needed.
+// failure does not sink the turn when an alternative exists. The narration note
+// is empty when the configured video model cannot produce audio — in that case
+// the generate_speech + lip_sync chain is the correct path and no rule is
+// needed. The extend note mirrors the triage prompt's "there is no separate
+// extend_video tool" teaching and rides whenever generate_video is offered,
+// audio-capable or not: conv_b387ee0cf745e471d71e3207 had triage route
+// correctly, but the planner (native tool mode, so names are not enum-locked)
+// hallucinated extend_video three times — the audio-sibling extend_audio in the
+// catalog primes that name — and the turn exhausted its planning attempts
+// without any tool running.
 func plannerMediaRoutingGuidance(registry HarnessToolRegistry) string {
-	if !registry.VideoAudioCapable() {
+	notes := make([]string, 0, 2)
+	if registry.VideoAudioCapable() {
+		notes = append(notes, "Media routing: when the user wants speech, narration, a voice-over, or a speaking character in a video, call generate_video ONCE with the spoken text in the prompt — the configured video model generates the audio in the same call. Do NOT chain generate_speech + lip_sync for narration; lip_sync is only for dubbing or re-syncing an existing attached audio clip to a face. If a lip_sync call fails, retry the narration as a single generate_video call before reporting failure.")
+	}
+	if _, ok := registry.Get("generate_video"); ok {
+		notes = append(notes, "Video extends: when the user asks to extend, continue, or lengthen an attached or recent video, call generate_video — content describes the ADDED segment, duration is the seconds to add, and the attached or most recent video is continued automatically (there is no separate extend_video tool). Never emit a tool name outside the ones listed for you: a plan corrected for an unknown tool name is invalid input, not a failed execution — re-emit the call with the listed tool instead of reporting failure.")
+	}
+	if len(notes) == 0 {
 		return ""
 	}
-	return "\nMedia routing: when the user wants speech, narration, a voice-over, or a speaking character in a video, call generate_video ONCE with the spoken text in the prompt — the configured video model generates the audio in the same call. Do NOT chain generate_speech + lip_sync for narration; lip_sync is only for dubbing or re-syncing an existing attached audio clip to a face. If a lip_sync call fails, retry the narration as a single generate_video call before reporting failure."
+	return "\n" + strings.Join(notes, "\n")
 }
 
 // skillGuidesPlanner decides whether a selected SKILL.md's body should steer the

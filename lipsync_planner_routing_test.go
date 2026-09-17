@@ -153,14 +153,52 @@ func TestPlannerMediaRoutingGuidanceIncludesFallbackRule(t *testing.T) {
 	}
 }
 
-// TestPlannerMediaRoutingGuidanceHelperDirect covers the helper standalone,
-// including the empty-string return when not audio-capable.
+// TestPlannerMediaRoutingGuidanceHelperDirect covers the helper standalone:
+// the narration rule gated on audio capability, the extend note present
+// whenever generate_video is offered (audio-capable or not), and empty output
+// only when the registry has no generate_video tool at all.
 func TestPlannerMediaRoutingGuidanceHelperDirect(t *testing.T) {
-	if plannerMediaRoutingGuidance(newPlannerRegistry(false)) != "" {
-		t.Fatal("guidance must be empty when video is not audio-capable")
+	got := plannerMediaRoutingGuidance(newPlannerRegistry(false))
+	if strings.Contains(got, "generate_video ONCE") {
+		t.Fatalf("guidance must omit the narration rule when video is not audio-capable, got %q", got)
 	}
-	got := plannerMediaRoutingGuidance(newPlannerRegistry(true))
-	if !strings.Contains(got, "generate_video ONCE") {
+	if !strings.Contains(got, "no separate extend_video tool") {
+		t.Fatalf("guidance must keep the extend note without audio capability, got %q", got)
+	}
+	if got := plannerMediaRoutingGuidance(newPlannerRegistry(true)); !strings.Contains(got, "generate_video ONCE") {
 		t.Fatalf("capable guidance should mention generate_video ONCE, got %q", got)
+	}
+	if got := plannerMediaRoutingGuidance(newHarnessToolRegistry([]HarnessToolDefinition{{Name: "read_file"}})); got != "" {
+		t.Fatalf("guidance must be empty when generate_video is not offered, got %q", got)
+	}
+}
+
+// TestPlannerMediaRoutingGuidanceIncludesExtendNote is the regression for
+// conv_b387ee0cf745e471d71e3207: triage routed the extend turn correctly, but
+// the planner hallucinated a nonexistent extend_video tool in native tool mode
+// (names are not enum-locked there) until the planning loop gave up. The extend
+// note must reach BOTH planner prompt variants whenever generate_video is
+// offered — including a non-audio-capable video model, which is exactly the
+// registry shape where the narration rule stays out.
+func TestPlannerMediaRoutingGuidanceIncludesExtendNote(t *testing.T) {
+	engine := newHarnessEngine(defaultAppConfig())
+	req := ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "extend this video by 7s"}}}
+
+	for _, audioCapable := range []bool{true, false} {
+		registry := newPlannerRegistry(audioCapable)
+		for name, prompt := range map[string]string{
+			"json":   engine.plannerSystemPrompt(registry, req, nil, "", "", false),
+			"native": engine.plannerSystemPromptNative(registry, req, nil, "", "", false),
+		} {
+			capability := "audio-capable"
+			if !audioCapable {
+				capability = "not audio-capable"
+			}
+			t.Run(capability+"/"+name, func(t *testing.T) {
+				if !strings.Contains(prompt, "there is no separate extend_video tool") {
+					t.Fatalf("%s planner prompt should name generate_video as the extend tool", name)
+				}
+			})
+		}
 	}
 }
