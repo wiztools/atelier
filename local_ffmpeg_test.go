@@ -220,10 +220,68 @@ func TestFFmpegArgBuilders(t *testing.T) {
 			"-i v.mp4 -i a.mp3 -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 192k -shortest -movflags +faststart out.mp4"},
 		{"replace reencode video", ffmpegReplaceAudioArgs("v.webm", "a.mp3", false, "out.mp4"),
 			"-i v.webm -i a.mp3 -map 0:v:0 -map 1:a:0 -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -shortest -movflags +faststart out.mp4"},
+		{"transform", ffmpegTransformArgs("in.mp4", "crop=864:1080", "out.mp4"),
+			"-i in.mp4 -vf crop=864:1080 -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -movflags +faststart out.mp4"},
 	}
 	for _, tc := range cases {
 		if joined := strings.Join(tc.got, " "); joined != tc.want {
 			t.Errorf("%s args =\n%q\nwant\n%q", tc.name, joined, tc.want)
+		}
+	}
+}
+
+// TestVideoTransformFilters pins the -vf chain resolution: op order
+// (aspect crop → resize → rotate → flip), the cover idiom for exact
+// width+height, the -2 aspect-preserving single-dim scales, and the
+// even-dimension floor on computed crop rects.
+func TestVideoTransformFilters(t *testing.T) {
+	cases := []struct {
+		name       string
+		call       HarnessToolCall
+		srcWidth   int
+		srcHeight  int
+		wantFilter string
+		wantOps    string
+	}{
+		{"exact size cover-crops", HarnessToolCall{Width: 1280, Height: 720}, 1344, 768,
+			"scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720",
+			"resized to 1280x720"},
+		{"aspect crop only", HarnessToolCall{AspectRatio: "4:5"}, 1920, 1080,
+			"crop=864:1080",
+			"cropped to 4:5 (center 864x1080)"},
+		{"aspect plus exact size", HarnessToolCall{AspectRatio: "4:5", Width: 1080, Height: 1350}, 1920, 1080,
+			"crop=864:1080,scale=1080:1350",
+			"cropped to 4:5 (center 864x1080), resized to 1080x1350"},
+		{"aspect plus width", HarnessToolCall{AspectRatio: "16:9", Width: 1280}, 1920, 1080,
+			"crop=1920:1080,scale=1280:-2",
+			"cropped to 16:9 (center 1920x1080), resized to 1280 pixels wide"},
+		{"width only", HarnessToolCall{Width: 640}, 0, 0,
+			"scale=640:-2", "resized to 640 pixels wide"},
+		{"height only", HarnessToolCall{Height: 720}, 0, 0,
+			"scale=-2:720", "resized to 720 pixels tall"},
+		{"rotate 90", HarnessToolCall{Rotate: 90}, 0, 0,
+			"transpose=1", "rotated 90° clockwise"},
+		{"rotate 180", HarnessToolCall{Rotate: 180}, 0, 0,
+			"transpose=1,transpose=1", "rotated 180°"},
+		{"rotate 270", HarnessToolCall{Rotate: 270}, 0, 0,
+			"transpose=2", "rotated 270° clockwise"},
+		{"flip horizontal", HarnessToolCall{Flip: "horizontal"}, 0, 0,
+			"hflip", "flipped horizontal"},
+		{"flip vertical", HarnessToolCall{Flip: "vertical"}, 0, 0,
+			"vflip", "flipped vertical"},
+		{"odd crop floors to even", HarnessToolCall{AspectRatio: "1:1"}, 1000, 333,
+			"crop=332:332", "cropped to 1:1 (center 332x332)"},
+		{"everything combined", HarnessToolCall{AspectRatio: "16:9", Width: 1280, Height: 720, Rotate: 90, Flip: "vertical"}, 1344, 768,
+			"crop=1344:756,scale=1280:720,transpose=1,vflip",
+			"cropped to 16:9 (center 1344x756), resized to 1280x720, rotated 90° clockwise, flipped vertical"},
+	}
+	for _, tc := range cases {
+		filter, ops := videoTransformFilters(tc.call, tc.srcWidth, tc.srcHeight)
+		if filter != tc.wantFilter {
+			t.Errorf("%s filter = %q, want %q", tc.name, filter, tc.wantFilter)
+		}
+		if joined := strings.Join(ops, ", "); joined != tc.wantOps {
+			t.Errorf("%s ops = %q, want %q", tc.name, joined, tc.wantOps)
 		}
 	}
 }
@@ -259,6 +317,26 @@ func TestFFmpegToolValidation(t *testing.T) {
 	}
 	if errors := join.Validate("toolCalls[0]", HarnessToolCall{Mode: "copy"}); len(errors) != 0 {
 		t.Errorf("join copy mode = %v, want none", errors)
+	}
+
+	transform := transformVideoToolDefinition()
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{}); len(errors) == 0 || !strings.Contains(errors[0], ".transform_video needs at least one of") {
+		t.Errorf("transform without ops = %v, want the at-least-one error", errors)
+	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{AspectRatio: "wide"}); len(errors) == 0 || !strings.Contains(errors[0], ".aspectRatio must be a W:H ratio") {
+		t.Errorf("transform with a bad ratio = %v", errors)
+	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Width: 1279}); len(errors) == 0 || !strings.Contains(errors[0], "must be even") {
+		t.Errorf("transform with an odd width = %v", errors)
+	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Rotate: 45}); len(errors) == 0 || !strings.Contains(errors[0], ".rotate must be 90, 180, or 270") {
+		t.Errorf("transform with a bad rotate = %v", errors)
+	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Flip: "diagonal"}); len(errors) == 0 || !strings.Contains(errors[0], `.flip must be "horizontal" or "vertical"`) {
+		t.Errorf("transform with a bad flip = %v", errors)
+	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Width: 1280, Height: 720}); len(errors) != 0 {
+		t.Errorf("valid transform = %v, want none", errors)
 	}
 }
 
@@ -506,8 +584,126 @@ func TestFFmpegProbeMediaExecutes(t *testing.T) {
 	}
 }
 
+// TestFFmpegTransformExecutes drives transform_video through the gateway
+// against the fake ffmpeg/ffprobe: every branch of the filter resolution,
+// including the MP4 tkhd fallback when ffprobe does not resolve.
+func TestFFmpegTransformExecutes(t *testing.T) {
+	t.Run("exact size cover-crops", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "transform_video", HarnessToolCall{Width: 1280, Height: 720})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, ok := result.Result.(ToolVideoResult)
+		if !ok || typed.Model != ffmpegModelName || len(typed.Videos) != 1 {
+			t.Fatalf("result payload = %+v", result.Result)
+		}
+		defer os.Remove(typed.Videos[0].TempPath)
+		if typed.Videos[0].MimeType != "video/mp4" {
+			t.Fatalf("mimeType = %q", typed.Videos[0].MimeType)
+		}
+		data, err := os.ReadFile(typed.Videos[0].TempPath)
+		if err != nil || !strings.HasPrefix(string(data), "\xff\xd8\xffFAKE-MEDIA") {
+			t.Fatalf("output file = %q (%v), want the fake ffmpeg payload", data, err)
+		}
+		args := fakeFFmpegArgs(t, bin)
+		if !strings.Contains(args, "-vf scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720 ") || !strings.Contains(args, "libx264") {
+			t.Fatalf("transform args = %q, want the cover-crop filter and a re-encode", args)
+		}
+		if len(typed.Notices) == 0 || !strings.Contains(typed.Notices[0], "re-encoded") {
+			t.Fatalf("notices = %v, want the re-encode notice", typed.Notices)
+		}
+		if !strings.Contains(result.Summary, "resized to 1280x720") {
+			t.Fatalf("summary = %q", result.Summary)
+		}
+	})
+
+	t.Run("aspect crop from the probed dimensions", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "transform_video", HarnessToolCall{AspectRatio: "4:5"})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, _ := result.Result.(ToolVideoResult)
+		defer os.Remove(typed.Videos[0].TempPath)
+		if args := fakeFFmpegArgs(t, bin); !strings.Contains(args, "-vf crop=864:1080 ") {
+			t.Fatalf("transform args = %q, want the 4:5 crop of the probed 1920x1080", args)
+		}
+	})
+
+	t.Run("aspect crop without ffprobe reads MP4 bytes", func(t *testing.T) {
+		// No ffprobe override and a lookup stub without one (the override is
+		// looked up by its own value), so dimensions can only come from the
+		// attached MP4's tkhd.
+		dir := t.TempDir()
+		bin := filepath.Join(dir, "bin")
+		config := defaultAppConfig()
+		ffmpegPath := writeFakeWhisper(t, bin, "ffmpeg", fakeFFmpegScript)
+		stubLocalLookup(t, map[string]string{"ffmpeg": ffmpegPath, ffmpegPath: ffmpegPath})
+		config.Providers.Local.FFmpeg.Binary = ffmpegPath
+		clip := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(mp4FixtureWithVideoTrack(1344, 768))
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{clip},
+		}, "transform_video", HarnessToolCall{AspectRatio: "16:9"})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, _ := result.Result.(ToolVideoResult)
+		defer os.Remove(typed.Videos[0].TempPath)
+		if args := fakeFFmpegArgs(t, bin); !strings.Contains(args, "-vf crop=1344:756 ") {
+			t.Fatalf("transform args = %q, want the 16:9 crop of the tkhd-reported 1344x768", args)
+		}
+	})
+
+	t.Run("aspect crop fails without readable dimensions", func(t *testing.T) {
+		dir := t.TempDir()
+		bin := filepath.Join(dir, "bin")
+		config := defaultAppConfig()
+		ffmpegPath := writeFakeWhisper(t, bin, "ffmpeg", fakeFFmpegScript)
+		stubLocalLookup(t, map[string]string{"ffmpeg": ffmpegPath, ffmpegPath: ffmpegPath})
+		config.Providers.Local.FFmpeg.Binary = ffmpegPath
+		// The ftyp-only fixture is an MP4 with no readable track box.
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "transform_video", HarnessToolCall{AspectRatio: "16:9"})
+		if result.Status != "failed" || !strings.Contains(result.Error, "dimensions") {
+			t.Fatalf("result = %+v (error %s), want the unreadable-dimensions failure", result, result.Error)
+		}
+	})
+
+	t.Run("rotate and flip", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		for _, tc := range []struct {
+			call HarnessToolCall
+			want string
+		}{
+			{HarnessToolCall{Rotate: 90}, "-vf transpose=1 "},
+			{HarnessToolCall{Rotate: 180}, "-vf transpose=1,transpose=1 "},
+			{HarnessToolCall{Rotate: 270}, "-vf transpose=2 "},
+			{HarnessToolCall{Flip: "horizontal"}, "-vf hflip "},
+			{HarnessToolCall{Flip: "vertical"}, "-vf vflip "},
+		} {
+			result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+				AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+			}, "transform_video", tc.call)
+			if result.Status != "completed" {
+				t.Fatalf("call %+v = %+v (error %s)", tc.call, result, result.Error)
+			}
+			typed, _ := result.Result.(ToolVideoResult)
+			os.Remove(typed.Videos[0].TempPath)
+			if args := fakeFFmpegArgs(t, bin); !strings.Contains(args, tc.want) {
+				t.Fatalf("call %+v args = %q, want %q", tc.call, args, tc.want)
+			}
+		}
+	})
+}
+
 // TestFFmpegRegistryGating pins the tool gates: nothing without a binary, the
-// five transform tools with ffmpeg alone, plus probe_media only when ffprobe
+// six transform tools with ffmpeg alone, plus probe_media only when ffprobe
 // also resolves.
 func TestFFmpegRegistryGating(t *testing.T) {
 	newRegistryNames := func(t *testing.T, found map[string]string) []string {
@@ -519,7 +715,7 @@ func TestFFmpegRegistryGating(t *testing.T) {
 		t.Fatal("ffmpeg tools must be absent without a detected binary")
 	}
 	names := newRegistryNames(t, map[string]string{"ffmpeg": "/opt/test/bin/ffmpeg"})
-	for _, want := range []string{"screenshot_video", "split_video", "join_videos", "extract_audio", "replace_audio"} {
+	for _, want := range []string{"screenshot_video", "split_video", "join_videos", "extract_audio", "replace_audio", "transform_video"} {
 		if !containsString(names, want) {
 			t.Errorf("registry with ffmpeg = %v, want %q", names, want)
 		}

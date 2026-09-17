@@ -2234,7 +2234,8 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 						// adjust/optimize — see local_images.go). Same
 						// contract: per-tool validation, grammar freedom here.
 						// aspectRatio and scale are shared with generate_image
-						// and upscale_image (string shapes there).
+						// and upscale_image (string shapes there); the geometry
+						// params are shared with transform_video.
 						"format":      map[string]any{"type": "string"},
 						"quality":     map[string]any{"type": "integer"},
 						"aspectRatio": map[string]any{"type": "string"},

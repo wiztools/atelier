@@ -1,6 +1,6 @@
 package main
 
-// Local ffmpeg tools: the six video/audio transform tools that run on the
+// Local ffmpeg tools: the seven video/audio transform tools that run on the
 // locally installed ffmpeg CLI (see local_tools.go for binary detection and
 // the shared runners). They follow the media-tool conventions of
 // tools_registry.go — attachment-driven sources (the turn's media slots carry
@@ -44,7 +44,7 @@ func ffmpegToolsConfigured(config AppConfig) bool {
 // configured. It tells the model what actually happened (the capability is
 // absent, not broken) and the exact remedy to relay, so a from-knowledge
 // answer can't masquerade as a failed edit or hand the user a raw CLI recipe.
-const localMediaEditUnavailableNote = "Atelier note: the user's latest request asks for a local video edit — capturing a frame, splitting or trimming a clip, joining clips, or extracting/replacing audio — but no ffmpeg CLI was detected on this machine, so Atelier has no tool that can perform it. Do not claim the edit was done and do not attempt it through other tools. Tell the user plainly that local video editing needs a one-time install: install ffmpeg with `brew install ffmpeg` (or set an explicit binary in Settings → Video Tools); Atelier detects it automatically on the next message."
+const localMediaEditUnavailableNote = "Atelier note: the user's latest request asks for a local video edit — capturing a frame, splitting or trimming a clip, joining clips, cropping/resizing/rotating a clip, or extracting/replacing audio — but no ffmpeg CLI was detected on this machine, so Atelier has no tool that can perform it. Do not claim the edit was done and do not attempt it through other tools. Tell the user plainly that local video editing needs a one-time install: install ffmpeg with `brew install ffmpeg` (or set an explicit binary in Settings → Video Tools); Atelier detects it automatically on the next message."
 
 // mediaEditFallbackNotice returns the deterministic one-line blockquote for
 // the chat reply when the final model's answer did not already mention ffmpeg
@@ -70,6 +70,7 @@ func ffmpegToolDefinitions(config AppConfig) []HarnessToolDefinition {
 		joinVideosToolDefinition(),
 		extractAudioToolDefinition(),
 		replaceAudioToolDefinition(),
+		transformVideoToolDefinition(),
 	}
 	if _, ok := resolveLocalFFprobeBinary(config); ok {
 		definitions = append(definitions, probeMediaToolDefinition())
@@ -241,6 +242,79 @@ func ffmpegReplaceAudioArgs(video, audio string, copyVideo bool, output string) 
 		args = append(args, "-c:v", "libx264", "-preset", "veryfast", "-crf", "18")
 	}
 	return append(args, "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", output)
+}
+
+// ffmpegTransformArgs applies a -vf filter chain with the house re-encode
+// preset — geometry filters cannot stream-copy, so every transform re-encodes.
+func ffmpegTransformArgs(input, filters, output string) []string {
+	return []string{"-i", input, "-vf", filters,
+		"-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+		"-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output}
+}
+
+// videoTransformFilters resolves one transform_video call into its -vf chain
+// plus the op phrases for the summary, applying the ops in transform_image's
+// order: aspectRatio crop, then width/height resize, then rotate, then flip
+// (rotation is not aspect-aware — it turns the finished frame). srcWidth and
+// srcHeight are the source clip's dimensions and must be positive whenever
+// aspectRatio is set; the other branches need no source geometry. With both
+// width and height and no aspectRatio, the cover idiom
+// (force_original_aspect_ratio=increase + crop) lands on exactly those pixels
+// while center-trimming the overflowing side — the shape is never stretched.
+func videoTransformFilters(call HarnessToolCall, srcWidth, srcHeight int) (string, []string) {
+	var chain []string
+	var ops []string
+	aspect := strings.TrimSpace(call.AspectRatio)
+	if aspect != "" {
+		aspectWidth, aspectHeight, _ := parseAspectRatio(aspect)
+		cropWidth, cropHeight := aspectCropDimensions(srcWidth, srcHeight, aspectWidth, aspectHeight)
+		cropWidth, cropHeight = evenDown(cropWidth), evenDown(cropHeight)
+		chain = append(chain, fmt.Sprintf("crop=%d:%d", cropWidth, cropHeight))
+		ops = append(ops, fmt.Sprintf("cropped to %s (center %dx%d)", aspect, cropWidth, cropHeight))
+	}
+	switch {
+	case call.Width > 0 && call.Height > 0:
+		if aspect == "" {
+			chain = append(chain, fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d",
+				call.Width, call.Height, call.Width, call.Height))
+		} else {
+			chain = append(chain, fmt.Sprintf("scale=%d:%d", call.Width, call.Height))
+		}
+		ops = append(ops, fmt.Sprintf("resized to %dx%d", call.Width, call.Height))
+	case call.Width > 0:
+		chain = append(chain, fmt.Sprintf("scale=%d:-2", call.Width))
+		ops = append(ops, fmt.Sprintf("resized to %d pixels wide", call.Width))
+	case call.Height > 0:
+		chain = append(chain, fmt.Sprintf("scale=-2:%d", call.Height))
+		ops = append(ops, fmt.Sprintf("resized to %d pixels tall", call.Height))
+	}
+	switch call.Rotate {
+	case 90:
+		chain = append(chain, "transpose=1")
+		ops = append(ops, "rotated 90° clockwise")
+	case 180:
+		chain = append(chain, "transpose=1,transpose=1")
+		ops = append(ops, "rotated 180°")
+	case 270:
+		chain = append(chain, "transpose=2")
+		ops = append(ops, "rotated 270° clockwise")
+	}
+	switch strings.TrimSpace(call.Flip) {
+	case "horizontal":
+		chain = append(chain, "hflip")
+		ops = append(ops, "flipped horizontal")
+	case "vertical":
+		chain = append(chain, "vflip")
+		ops = append(ops, "flipped vertical")
+	}
+	return strings.Join(chain, ","), ops
+}
+
+// evenDown floors a pixel count to the nearest even value — H.264's yuv420p
+// chroma needs even dimensions, and a computed crop rect can land odd (a
+// 1000x333 clip cropped to 1:1 is 333x333).
+func evenDown(value int) int {
+	return value - value%2
 }
 
 // concatListFileContents renders the concat demuxer's playlist: one
@@ -744,6 +818,114 @@ func replaceAudioCopyVideo(ctx context.Context, config AppConfig, videoPath stri
 	return false, fmt.Sprintf("the video's container (%s) cannot hold a copied stream inside MP4, so the video was re-encoded.", probe.Format)
 }
 
+// transformVideoToolDefinition exposes transform_video: crop an attached
+// video to an aspect ratio, resize it to exact dimensions, rotate, or flip —
+// the video sibling of transform_image, on one ffmpeg filter chain.
+func transformVideoToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "transform_video",
+		Title:       "Transform video",
+		Description: "Use this when the user asks to change the shape or size of an attached video — crop it to an aspect ratio, downscale or resize it to specific pixel dimensions (for example a clip too large for a video model's input limit), rotate a sideways clip, or mirror it. It crops to a shape, not a region of time — cutting a segment out is split_video. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). aspectRatio crops (from the center) to a W:H ratio like \"1:1\" or \"16:9\", trimming the longer side; width and height resize — both together produces exactly those pixels (center-cropped to the target shape, never stretched), one alone preserves aspect; rotate is 90, 180, or 270 clockwise; flip is \"horizontal\" or \"vertical\". At least one operation is required. The video is re-encoded to H.264 with its audio kept. The result is attached to the assistant reply and becomes the conversation's newest video.",
+		Example:     `{"name":"transform_video","width":1280,"height":720}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: transformVideoParamSchema(),
+		Validate: func(prefix string, call HarnessToolCall) []string {
+			aspect := strings.TrimSpace(call.AspectRatio)
+			if aspect != "" {
+				if _, _, ok := parseAspectRatio(aspect); !ok {
+					return []string{prefix + `.aspectRatio must be a W:H ratio like "1:1" or "16:9" for transform_video`}
+				}
+			}
+			if call.Width < 0 || call.Height < 0 {
+				return []string{prefix + ".width and .height must be positive pixel counts for transform_video"}
+			}
+			if (call.Width > 0 && call.Width%2 != 0) || (call.Height > 0 && call.Height%2 != 0) {
+				return []string{prefix + ".width and .height must be even pixel counts for transform_video (video encoders require even dimensions)"}
+			}
+			if call.Width == 0 && call.Height == 0 && aspect == "" && call.Rotate == 0 && strings.TrimSpace(call.Flip) == "" {
+				return []string{prefix + ".transform_video needs at least one of aspectRatio, width, height, rotate, or flip"}
+			}
+			switch call.Rotate {
+			case 0, 90, 180, 270:
+			default:
+				return []string{prefix + ".rotate must be 90, 180, or 270 for transform_video"}
+			}
+			switch strings.TrimSpace(call.Flip) {
+			case "", "horizontal", "vertical":
+			default:
+				return []string{prefix + `.flip must be "horizontal" or "vertical" for transform_video`}
+			}
+			return nil
+		},
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			source := firstAttachedVideo(tools.AttachedVideos)
+			if source == "" {
+				return nil, "transform requires an attached video clip", errors.New("transform_video requires an attached video clip — ask the user to attach one first")
+			}
+			staging, err := os.MkdirTemp("", "atelier-ffmpeg-*")
+			if err != nil {
+				return nil, "transform failed", err
+			}
+			defer os.RemoveAll(staging)
+			input, err := stageMediaDataURL(staging, "input", source)
+			if err != nil {
+				return nil, "transform failed", err
+			}
+			srcWidth, srcHeight := 0, 0
+			if aspect := strings.TrimSpace(call.AspectRatio); aspect != "" {
+				srcWidth, srcHeight, err = transformVideoSourceDimensions(ctx, tools.Config, input, source)
+				if err != nil {
+					return nil, "transform failed", err
+				}
+			}
+			filters, ops := videoTransformFilters(call, srcWidth, srcHeight)
+			staged := filepath.Join(staging, "transformed.mp4")
+			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegTransformArgs(input, filters, staged)); err != nil {
+				return nil, "transform failed", err
+			}
+			tempPath, err := promoteStagedOutput(staged, "atelier-video-*", ".mp4")
+			if err != nil {
+				return nil, "transform failed", err
+			}
+			output := ToolVideoResult{
+				Model:  ffmpegModelName,
+				Prompt: "transform: " + strings.Join(ops, ", "),
+				Count:  1,
+				Videos: []ToolVideoFile{{TempPath: tempPath, MimeType: "video/mp4"}},
+				Notices: []string{
+					"the video was re-encoded (H.264, CRF 18) — crop, resize, rotate, and flip cannot stream-copy.",
+				},
+			}
+			return output, fmt.Sprintf("transformed the attached video with ffmpeg (%s)", strings.Join(ops, ", ")), nil
+		},
+		Activity: ffmpegActivity("transform"),
+	}
+}
+
+// transformVideoSourceDimensions resolves the source clip's dimensions for an
+// aspect-ratio crop: ffprobe when it resolves (any container), then the MP4
+// tkhd read off the attached bytes — generation outputs are MP4, so the crop
+// works even on a machine where ffprobe went missing.
+func transformVideoSourceDimensions(ctx context.Context, config AppConfig, input, sourceDataURL string) (int, int, error) {
+	width, height := 0, 0
+	if _, ok := resolveLocalFFprobeBinary(config); ok {
+		if probe, err := probeStagedMedia(ctx, config, input, "video"); err == nil {
+			width, height = probe.Width, probe.Height
+		}
+	}
+	if width <= 0 || height <= 0 {
+		if data, _, err := decodeMediaDataURL(sourceDataURL); err == nil {
+			if w, h, ok := mp4VideoDimensions(data); ok {
+				width, height = int(w), int(h)
+			}
+		}
+	}
+	if width <= 0 || height <= 0 {
+		return 0, 0, errors.New("transform_video could not read the attached clip's dimensions for the aspect-ratio crop — ffprobe is unavailable and the clip is not a readable MP4")
+	}
+	return width, height, nil
+}
+
 // probeMediaToolDefinition exposes probe_media: ffprobe facts of an attached
 // clip as evidence — durations for split planning, codec facts for joins.
 func probeMediaToolDefinition() HarnessToolDefinition {
@@ -937,6 +1119,21 @@ func replaceAudioParamSchema() map[string]any {
 		"additionalProperties": false,
 		"properties":           map[string]any{},
 		"required":             []string{},
+	}
+}
+
+func transformVideoParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"aspectRatio": stringParam(`Optional — crop (from the center) to a W:H ratio like "1:1", "4:5", "9:16", "16:9" (trims the longer side), applied before any resize.`),
+			"width":       intParam("Optional — resize to this pixel width (with height, exactly those pixels via center-crop; alone, aspect-preserving). Must be even."),
+			"height":      intParam("Optional — resize to this pixel height (with width, exactly those pixels via center-crop; alone, aspect-preserving). Must be even."),
+			"rotate":      intParam(`Optional — rotate clockwise: 90, 180, or 270.`),
+			"flip":        stringParam(`Optional — "horizontal" or "vertical".`),
+		},
+		"required": []string{},
 	}
 }
 
