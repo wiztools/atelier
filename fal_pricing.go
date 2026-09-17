@@ -229,6 +229,20 @@ func (hints falBillingHints) quantityForUnit(unit string) (float64, bool) {
 		// "video" is the flat per-clip unit; "request" the flat per-call one.
 		// Both price as one unit per generation.
 		return float64(hints.Requests), hints.Requests > 0
+	case "audio", "audios":
+		// fal's flat per-generated-audio unit (stable-audio inpaint returns
+		// "audios"): one per generation, like "request".
+		return float64(hints.Requests), hints.Requests > 0
+	case "unit", "units":
+		// fal's generic per-output unit — seedream v5 prices "units" per
+		// generated image, gemini-omni edit per clip (conv_26ef0c4f billed a
+		// seedream edit with no dollar row until this unit was taught). Only
+		// image-generating calls carry an image count; every other call
+		// produced exactly one output.
+		if hints.Images > 0 {
+			return float64(hints.Images), true
+		}
+		return float64(hints.Requests), hints.Requests > 0
 	default:
 		// Token-billed models: the unit names how many tokens one billed unit
 		// covers ("1000 tokens" is what fal's pricing API returns for
@@ -236,12 +250,22 @@ func (hints falBillingHints) quantityForUnit(unit string) (float64, bool) {
 		if multiplier, isTokens := falTokenUnitMultiplier(unit); isTokens {
 			return hints.Tokens / multiplier, hints.Tokens > 0
 		}
+		// Character-billed TTS models name their block the same way ("1000
+		// characters" for elevenlabs v3 and f5-tts): the spoken text's length
+		// scaled to that block.
+		if multiplier, isCharacters := falCharacterUnitMultiplier(unit); isCharacters {
+			return float64(hints.Characters) / multiplier, hints.Characters > 0
+		}
 		// Megapixel-billed models: the unit names how many megapixels one
 		// billed unit covers ("megapixel" in the singular is what fal's pricing
 		// API returns for the ltx-2.3-22b family and MP-priced image models).
 		if multiplier, isMegapixels := falMegapixelUnitMultiplier(unit); isMegapixels {
 			return hints.Megapixels / multiplier, hints.Megapixels > 0
 		}
+		// Anything else — "compute seconds" (wizper, esrgan: billed GPU time
+		// the request can never state), "minutes" (sync-lipsync: output length
+		// ≈ the driving audio's, which the gateway doesn't know) — stays
+		// unpriced rather than guessed onto a nearby hint.
 		return 0, false
 	}
 }
@@ -257,6 +281,32 @@ func falTokenUnitMultiplier(unit string) (float64, bool) {
 	if plural == normalized {
 		plural = strings.TrimSuffix(normalized, "token")
 		if plural == normalized {
+			return 0, false
+		}
+	}
+	if plural == "" {
+		return 1, true
+	}
+	multiplier, err := strconv.ParseFloat(plural, 64)
+	if err != nil || multiplier <= 0 {
+		return 0, false
+	}
+	return multiplier, true
+}
+
+// falCharacterUnitMultiplier parses fal's character billing units —
+// "character", "characters", "1000 characters", "1,000 characters" — returning
+// how many characters one billed unit covers (1 for the bare forms). ok is
+// false for any other unit.
+func falCharacterUnitMultiplier(unit string) (float64, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(unit))
+	normalized = strings.ReplaceAll(normalized, " ", "")
+	normalized = strings.ReplaceAll(normalized, ",", "")
+	stem := normalized
+	plural := strings.TrimSuffix(stem, "characters")
+	if plural == stem {
+		plural = strings.TrimSuffix(stem, "character")
+		if plural == stem {
 			return 0, false
 		}
 	}

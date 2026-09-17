@@ -3781,21 +3781,29 @@ func appendChatAssistantTurnWithMedia(config AppConfig, conversationID, assistan
 		contents = append(contents, HistoryContent{Type: "thinking", Text: assistantThinking})
 	}
 	contents = append(contents, output.contents...)
+	providerResponse := map[string]any{
+		"doneReason": reason,
+		"harnessRun": run,
+		"tool":       output.tool,
+	}
+	// Same turn-total derivation as buildChatAssistantTurn: the run is the
+	// ledger, and a media turn's dollar total rides beside the run just like a
+	// text turn's (the frontend folds the run itself, but history stays
+	// self-describing for inspection).
+	if costMicros := harnessRunCostMicros(run); costMicros > 0 {
+		providerResponse["costMicros"] = costMicros
+	}
 	assistantTurn := HistoryTurn{
-		SchemaVersion:  1,
-		ID:             fmt.Sprintf("turn_%06d", loaded.NextTurnNumber),
-		ConversationID: conversationID,
-		CreatedAt:      nowText,
-		Kind:           "chat",
-		Role:           "assistant",
-		Model:          model,
-		Provider:       provider,
-		Content:        contents,
-		ProviderResponse: map[string]any{
-			"doneReason": reason,
-			"harnessRun": run,
-			"tool":       output.tool,
-		},
+		SchemaVersion:    1,
+		ID:               fmt.Sprintf("turn_%06d", loaded.NextTurnNumber),
+		ConversationID:   conversationID,
+		CreatedAt:        nowText,
+		Kind:             "chat",
+		Role:             "assistant",
+		Model:            model,
+		Provider:         provider,
+		Content:          contents,
+		ProviderResponse: providerResponse,
 	}
 
 	loaded.Conversation.UpdatedAt = nowText

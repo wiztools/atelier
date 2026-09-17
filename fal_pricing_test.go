@@ -58,8 +58,18 @@ func TestFalBillingHintsQuantityForUnit(t *testing.T) {
 		{unit: "second", wantQty: 7.5, wantOK: true},
 		{unit: "seconds", wantQty: 7.5, wantOK: true},
 		{unit: "character", wantQty: 120, wantOK: true},
+		// Character blocks fal's pricing API returns for elevenlabs v3 and
+		// f5-tts: the unit names how many characters one billed block covers.
+		{unit: "1000 characters", wantQty: 0.12, wantOK: true},
+		{unit: "1,000 characters", wantQty: 0.12, wantOK: true},
 		{unit: "video", wantQty: 1, wantOK: true},
 		{unit: "request", wantQty: 1, wantOK: true},
+		// fal's flat per-audio unit (stable-audio inpaint returns "audios").
+		{unit: "audios", wantQty: 1, wantOK: true},
+		// fal's generic per-output unit — seedream v5 returns "units" per
+		// generated image (conv_26ef0c4f), so an image call's count is its
+		// images while every other call bills one per request.
+		{unit: "units", wantQty: 4, wantOK: true},
 		// Token vocabulary fal's pricing API returns for seedance-2.x: the
 		// unit names how many tokens one billed block covers.
 		{unit: "1000 tokens", wantQty: 216, wantOK: true},
@@ -97,6 +107,23 @@ func TestFalBillingHintsQuantityForUnit(t *testing.T) {
 	if _, ok := (falBillingHints{Requests: 1}).quantityForUnit("megapixel"); ok {
 		t.Fatal("quantityForUnit(megapixel) with no megapixels hint should report not-ok")
 	}
+	// "units" falls back to one per request when no image count applies (a
+	// video/lipsync call billed per clip).
+	if qty, ok := (falBillingHints{Requests: 1}).quantityForUnit("units"); !ok || qty != 1 {
+		t.Fatalf("quantityForUnit(units) with only requests = (%v, %v), want (1, true)", qty, ok)
+	}
+	// A character-billed model with no text must not price at zero characters.
+	if _, ok := (falBillingHints{Requests: 1}).quantityForUnit("1000 characters"); ok {
+		t.Fatal("quantityForUnit(1000 characters) with no characters hint should report not-ok")
+	}
+	// fal's compute-time and per-minute vocabulary stays unpriced: the request
+	// can never state GPU seconds, and a lipsync clip's minutes ride the
+	// driving audio the gateway doesn't probe.
+	for _, unit := range []string{"compute seconds", "minutes"} {
+		if _, ok := (falBillingHints{Requests: 1, Seconds: 30}).quantityForUnit(unit); ok {
+			t.Fatalf("quantityForUnit(%q) should report not-ok", unit)
+		}
+	}
 }
 
 func TestFalTokenUnitMultiplier(t *testing.T) {
@@ -118,6 +145,28 @@ func TestFalTokenUnitMultiplier(t *testing.T) {
 		got, ok := falTokenUnitMultiplier(tt.unit)
 		if ok != tt.wantOK || got != tt.want {
 			t.Fatalf("falTokenUnitMultiplier(%q) = (%v, %v), want (%v, %v)", tt.unit, got, ok, tt.want, tt.wantOK)
+		}
+	}
+}
+
+func TestFalCharacterUnitMultiplier(t *testing.T) {
+	for _, tt := range []struct {
+		unit   string
+		want   float64
+		wantOK bool
+	}{
+		{unit: "1000 characters", want: 1000, wantOK: true},
+		{unit: " 1,000 CHARACTERS ", want: 1000, wantOK: true},
+		{unit: "1000characters", want: 1000, wantOK: true},
+		{unit: "characters", want: 1, wantOK: true},
+		{unit: "character", want: 1, wantOK: true},
+		{unit: "1k characters", want: 0, wantOK: false},
+		{unit: "1000 tokens", want: 0, wantOK: false},
+		{unit: "", want: 0, wantOK: false},
+	} {
+		got, ok := falCharacterUnitMultiplier(tt.unit)
+		if ok != tt.wantOK || got != tt.want {
+			t.Fatalf("falCharacterUnitMultiplier(%q) = (%v, %v), want (%v, %v)", tt.unit, got, ok, tt.want, tt.wantOK)
 		}
 	}
 }
@@ -563,6 +612,8 @@ func (transport *falPricingTransport) RoundTrip(req *http.Request) (*http.Respon
 			`{"endpoint_id":"fal-ai/flux/schnell","unit_price":0.003,"unit":"image","currency":"USD"},` +
 			`{"endpoint_id":"fal-ai/kling-video/v2/master/text-to-video","unit_price":0.07,"unit":"second","currency":"USD"},` +
 			`{"endpoint_id":"bytedance/seedance-2.0/reference-to-video","unit_price":0.014,"unit":"1000 tokens","currency":"USD"},` +
+			`{"endpoint_id":"bytedance/seedream/v5/pro/edit","unit_price":0.0675,"unit":"units","currency":"USD"},` +
+			`{"endpoint_id":"fal-ai/f5-tts","unit_price":0.05,"unit":"1000 characters","currency":"USD"},` +
 			`{"endpoint_id":"fal-ai/nonusd/model","unit_price":1,"unit":"image","currency":"EUR"}` +
 			`],"next_cursor":null,"has_more":false}`
 	}
@@ -671,6 +722,17 @@ func TestEstimateFalCostMicros(t *testing.T) {
 	got = estimateFalCostMicros(ctx, cache, client, "key", "bytedance/seedance-2.0/reference-to-video", nil, falBillingHints{Tokens: 216000, Requests: 1})
 	if got != 3024000 {
 		t.Fatalf("token-billed estimate = %d, want 3024000", got)
+	}
+	// Unit-billed: seedream v5 prices "units" per generated image
+	// (conv_26ef0c4f) — 1 unit × $0.0675 = $0.0675.
+	got = estimateFalCostMicros(ctx, cache, client, "key", "bytedance/seedream/v5/pro/edit", nil, falBillingHints{Images: 1, Requests: 1})
+	if got != 67500 {
+		t.Fatalf("unit-billed estimate = %d, want 67500", got)
+	}
+	// Character-block TTS: 120 characters at $0.05/1000 = $0.006.
+	got = estimateFalCostMicros(ctx, cache, client, "key", "fal-ai/f5-tts", nil, falBillingHints{Characters: 120, Requests: 1})
+	if got != 6000 {
+		t.Fatalf("character-billed estimate = %d, want 6000", got)
 	}
 	// Fail-soft: nil cache, empty key, unknown endpoint, and an unpriceable
 	// unit (per-second model with no duration hint) all yield 0.
