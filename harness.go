@@ -1244,15 +1244,16 @@ func (h *HarnessEngine) supportsNativeTools(ctx context.Context, baseURL string,
 		}
 		return hasToolsCapability(show.Capabilities)
 	case "openrouter":
-		client, ok := h.app.openRouterClient()
-		if !ok {
-			return false
-		}
-		caps, err := client.ModelCapabilities(ctx, model)
-		if err != nil {
-			return false
-		}
-		return caps.supportsTools()
+		// Native tool-calling is not wired through the OpenRouter client:
+		// openRouterChatBody sends no "tools" and CompleteChat reads no
+		// tool_calls. Claiming native support here would take the planner down a
+		// path that sends neither tool specs nor a response_format schema, so the
+		// model free-forms the call in content (conv_ae48b36d: a tools-capable
+		// Gemma emitted `call:generate_video{…}`). Returning false routes
+		// OpenRouter through the strict json_schema format path instead, which the
+		// client does send and which OpenRouter honors (require_parameters pins
+		// routing to an endpoint that supports it).
+		return false
 	default:
 		return false
 	}
@@ -2742,11 +2743,30 @@ func stripJSONFence(content string) string {
 // nil when no recoverable calls are found, so the caller falls through to the
 // normal parse-failure path. See conv_f1afe11a.
 func toolCodeDialectToToolCalls(content string, registry HarnessToolRegistry) []HarnessToolCall {
-	// Match an identifier immediately before "(" — the tool name in the dialect.
-	// A namespace prefix (atelier_tools., default_api.) is naturally skipped
-	// because the regex anchors the name to the "(", and the prefix is followed
-	// by "." not "(". Case-insensitive so Generate_Image(...) is tolerated too.
-	callRe := regexp.MustCompile(`(?im)([A-Za-z_]+)\s*\(`)
+	calls := bracketedDialectToToolCalls(content, registry, '(', ')', matchParen)
+	// Brace shorthand: some models emit `generate_video{content: "...", duration: 3}`
+	// (optionally prefixed `call:`) instead of paren kwargs. conv_ae48b36d: a
+	// tools-capable Gemma on OpenRouter returned no native tool_calls and wrote
+	// the call as this shorthand in content. kwargPattern accepts both ':' and '='
+	// separators, so the same arg parser handles the body.
+	calls = append(calls, bracketedDialectToToolCalls(content, registry, '{', '}', matchBrace)...)
+	// Anthropic XML tool blocks: <invoke name="NAME"><parameter name="k">v</parameter>…
+	// conv_6016bce: the planner emitted the correct call in this markup instead of
+	// the plan JSON.
+	calls = append(calls, xmlToolBlockToToolCalls(content, registry)...)
+	if len(calls) == 0 {
+		return nil
+	}
+	return calls
+}
+
+// bracketedDialectToToolCalls recovers `name(<args>)` or `name{<args>}` call
+// forms whose name is a registered tool. A namespace prefix (default_api.,
+// atelier_tools.) is naturally skipped because the name is anchored to the
+// opening bracket. matchClose finds the balanced closing bracket so nested
+// brackets and quoted strings inside the args don't cut the body short.
+func bracketedDialectToToolCalls(content string, registry HarnessToolRegistry, open, close byte, matchClose func(string, int) int) []HarnessToolCall {
+	callRe := regexp.MustCompile(`(?im)([A-Za-z_]+)\s*` + regexp.QuoteMeta(string(open)))
 	indices := callRe.FindAllStringSubmatchIndex(content, -1)
 	if len(indices) == 0 {
 		return nil
@@ -2757,8 +2777,7 @@ func toolCodeDialectToToolCalls(content string, registry HarnessToolRegistry) []
 		if _, ok := registry.Get(name); !ok {
 			continue
 		}
-		// idx[1] is the position just past "(", i.e. the start of the args.
-		argsEnd := matchParen(content, idx[1]-1)
+		argsEnd := matchClose(content, idx[1]-1)
 		if argsEnd < 0 {
 			continue
 		}
@@ -2767,6 +2786,61 @@ func toolCodeDialectToToolCalls(content string, registry HarnessToolRegistry) []
 		calls = append(calls, call)
 	}
 	return calls
+}
+
+var xmlInvokeRe = regexp.MustCompile(`(?is)<invoke\s+name="([^"]+)"\s*>(.*?)</invoke>`)
+var xmlParameterRe = regexp.MustCompile(`(?is)<parameter\s+name="([^"]+)"\s*>(.*?)</parameter>`)
+
+// xmlToolBlockToToolCalls recovers Anthropic-style tool markup —
+// <invoke name="NAME"><parameter name="k">v</parameter>…</invoke> — into tool
+// calls whose name is registered. Parameter values are used verbatim (trimmed),
+// since this dialect does not quote them.
+func xmlToolBlockToToolCalls(content string, registry HarnessToolRegistry) []HarnessToolCall {
+	var calls []HarnessToolCall
+	for _, invoke := range xmlInvokeRe.FindAllStringSubmatch(content, -1) {
+		name := strings.TrimSpace(invoke[1])
+		if _, ok := registry.Get(name); !ok {
+			continue
+		}
+		call := HarnessToolCall{Name: name}
+		for _, param := range xmlParameterRe.FindAllStringSubmatch(invoke[2], -1) {
+			setToolCallField(&call, strings.TrimSpace(param[1]), strings.TrimSpace(param[2]))
+		}
+		calls = append(calls, call)
+	}
+	return calls
+}
+
+// matchBrace is the {} counterpart of matchParen: it returns the index of the
+// balanced closing brace for the brace at openIdx, honoring quoted strings so a
+// "}" inside a string value does not close the block early. -1 when unbalanced.
+func matchBrace(s string, openIdx int) int {
+	depth := 0
+	inSingle, inDouble := false, false
+	for i := openIdx; i < len(s); i++ {
+		switch {
+		case inSingle:
+			if s[i] == '\'' {
+				inSingle = false
+			}
+		case inDouble:
+			if s[i] == '"' {
+				inDouble = false
+			}
+		case s[i] == '\'':
+			inSingle = true
+		case s[i] == '"':
+			inDouble = true
+		case s[i] == '{':
+			depth++
+		case s[i] == '}':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // matchParen returns the index of the ")" that closes the "(" at openIdx,
@@ -2801,7 +2875,7 @@ func matchParen(s string, openIdx int) int {
 	return -1
 }
 
-var kwargPattern = regexp.MustCompile(`([A-Za-z_]+)\s*=\s*('([^']*)'|"([^"]*)"|(-?[0-9.]+)|(true|false|null))`)
+var kwargPattern = regexp.MustCompile(`([A-Za-z_]+)\s*[:=]\s*('([^']*)'|"([^"]*)"|(-?[0-9.]+)|(true|false|null))`)
 
 // applyKwargs parses key=value pairs from a call's argument string (Python-style
 // kwargs) and maps them onto the HarnessToolCall fields. Both the JSON field
@@ -2822,78 +2896,87 @@ func applyKwargs(call *HarnessToolCall, args string) {
 		if raw == "null" {
 			continue
 		}
-		switch m[1] {
-		case "content", "prompt":
-			call.Content = raw
-		case "negative_prompt", "negativePrompt":
-			call.NegativePrompt = raw
-		case "aspect_ratio", "aspectRatio":
-			call.AspectRatio = raw
-		case "duration":
-			call.Duration = raw
-		case "resolution":
-			call.Resolution = raw
-		case "voice":
-			call.Voice = raw
-		case "language":
-			call.Language = raw
-		case "task":
-			call.Task = raw
-		case "scale":
-			call.Scale = raw
-		case "command":
-			call.Command = raw
-		case "path":
-			call.Path = raw
-		case "model":
-			call.Model = raw
-		case "cwd":
-			call.Cwd = raw
-		case "loop":
-			call.Loop = raw == "true"
-		case "append":
-			call.Append = raw == "true"
-		case "overwrite":
-			call.Overwrite = raw == "true"
-		case "allow_binary", "allowBinary":
-			call.AllowBinary = raw == "true"
-		case "at":
-			call.At = raw
-		case "start":
-			call.Start = raw
-		case "end":
-			call.End = raw
-		case "mode":
-			call.Mode = raw
-		case "format":
-			call.Format = raw
-		case "flip":
-			call.Flip = raw
-		case "position":
-			call.Position = raw
-		case "quality":
-			call.Quality = kwargInt(raw)
-		case "width":
-			call.Width = kwargInt(raw)
-		case "height":
-			call.Height = kwargInt(raw)
-		case "rotate":
-			call.Rotate = kwargInt(raw)
-		case "speed":
-			call.Speed = kwargFloat(raw)
-		case "opacity":
-			call.Opacity = kwargInt(raw)
-		case "brightness":
-			call.Brightness = kwargInt(raw)
-		case "contrast":
-			call.Contrast = kwargInt(raw)
-		case "saturation":
-			call.Saturation = kwargInt(raw)
-		case "grayscale":
-			call.Grayscale = raw == "true"
-		case "sepia":
-			call.Sepia = raw == "true"
-		}
+		setToolCallField(call, m[1], raw)
+	}
+}
+
+// setToolCallField maps a single key/value pair onto the HarnessToolCall,
+// accepting both JSON field names (content, aspectRatio) and Python-style names
+// (prompt, aspect_ratio). Shared by applyKwargs (paren/brace kwarg dialects) and
+// the XML tool-block recovery so all dialects fill the same fields identically.
+// Unrecognized keys are ignored.
+func setToolCallField(call *HarnessToolCall, key, raw string) {
+	switch key {
+	case "content", "prompt":
+		call.Content = raw
+	case "negative_prompt", "negativePrompt":
+		call.NegativePrompt = raw
+	case "aspect_ratio", "aspectRatio":
+		call.AspectRatio = raw
+	case "duration":
+		call.Duration = raw
+	case "resolution":
+		call.Resolution = raw
+	case "voice":
+		call.Voice = raw
+	case "language":
+		call.Language = raw
+	case "task":
+		call.Task = raw
+	case "scale":
+		call.Scale = raw
+	case "command":
+		call.Command = raw
+	case "path":
+		call.Path = raw
+	case "model":
+		call.Model = raw
+	case "cwd":
+		call.Cwd = raw
+	case "loop":
+		call.Loop = raw == "true"
+	case "append":
+		call.Append = raw == "true"
+	case "overwrite":
+		call.Overwrite = raw == "true"
+	case "allow_binary", "allowBinary":
+		call.AllowBinary = raw == "true"
+	case "at":
+		call.At = raw
+	case "start":
+		call.Start = raw
+	case "end":
+		call.End = raw
+	case "mode":
+		call.Mode = raw
+	case "format":
+		call.Format = raw
+	case "flip":
+		call.Flip = raw
+	case "position":
+		call.Position = raw
+	case "quality":
+		call.Quality = kwargInt(raw)
+	case "width":
+		call.Width = kwargInt(raw)
+	case "height":
+		call.Height = kwargInt(raw)
+	case "rotate":
+		call.Rotate = kwargInt(raw)
+	case "speed":
+		call.Speed = kwargFloat(raw)
+	case "opacity":
+		call.Opacity = kwargInt(raw)
+	case "brightness":
+		call.Brightness = kwargInt(raw)
+	case "contrast":
+		call.Contrast = kwargInt(raw)
+	case "saturation":
+		call.Saturation = kwargInt(raw)
+	case "grayscale":
+		call.Grayscale = raw == "true"
+	case "sepia":
+		call.Sepia = raw == "true"
 	}
 }
 

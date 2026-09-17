@@ -3794,10 +3794,14 @@ func TestGenerationPlanningExhaustedReplacesFinalModel(t *testing.T) {
 					decision := `{"needsTools":true,"responseMode":"image","toolTask":"Generate the requested image.","reason":"The user asked to create an image."}`
 					return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","eval_count":2}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
 				}
-				// Every planning round emits malformed tool-call syntax
-				// (ReAct-style pseudo-XML) instead of the JSON plan schema,
-				// mirroring the failing model in conv_930b7b065de90e53087acd24.
-				body := `<|tool_call|>call:generate_image{prompt: "a sunset"}<|tool_call|>`
+				// Every planning round emits pseudo-syntax with NO recoverable tool
+				// call — no name(...), name{...}, or <invoke name=…> that dialect
+				// recovery (planner_dialect_recovery_test.go) could salvage — so the
+				// turn genuinely exhausts. A recoverable dialect would instead
+				// execute the call; this test guards the truly-unrecoverable path,
+				// mirroring the final-model hallucination in
+				// conv_930b7b065de90e53087acd24.
+				body := `<|tool_call|>Action: render the sunset image now<|tool_call|>`
 				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(body) + `},"done":true,"done_reason":"stop","eval_count":10}`)), Header: http.Header{"Content-Type": []string{"application/json"}}}, nil
 			}
 			streamCalls++

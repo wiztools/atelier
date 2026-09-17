@@ -500,6 +500,14 @@ func openRouterChatBody(req ChatRequest, stream bool) map[string]any {
 		"model":    req.Model,
 		"messages": rendered,
 		"stream":   stream,
+		// require_parameters pins OpenRouter routing to endpoints that honor the
+		// parameters we send (notably response_format json_schema). Without it, a
+		// model whose catalog union advertises structured outputs can still be
+		// routed to a specific provider endpoint that drops response_format, so the
+		// planner's strict-JSON contract silently degrades to free-text
+		// (conv_ae48b36d). Requiring the parameters trades a possible provider
+		// switch for a schema the harness can actually rely on.
+		"provider": map[string]any{"require_parameters": true},
 	}
 	// The OpenAI protocol only includes usage in a stream when the caller opts
 	// in via stream_options.include_usage. OpenRouter sends usage regardless,
