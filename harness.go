@@ -2054,7 +2054,7 @@ func mapNativeToolCalls(calls []ToolCall) ([]HarnessToolCall, []string) {
 	mapped := make([]HarnessToolCall, 0, len(calls))
 	var problems []string
 	for index, call := range calls {
-		name := strings.TrimSpace(call.Function.Name)
+		name := canonicalToolName(strings.TrimSpace(call.Function.Name))
 		var harnessCall HarnessToolCall
 		harnessCall.Name = name
 		args := bytes.TrimSpace(call.Function.Arguments)
@@ -2773,7 +2773,7 @@ func bracketedDialectToToolCalls(content string, registry HarnessToolRegistry, o
 	}
 	var calls []HarnessToolCall
 	for _, idx := range indices {
-		name := content[idx[2]:idx[3]]
+		name := canonicalToolName(content[idx[2]:idx[3]])
 		if _, ok := registry.Get(name); !ok {
 			continue
 		}
@@ -2798,7 +2798,7 @@ var xmlParameterRe = regexp.MustCompile(`(?is)<parameter\s+name="([^"]+)"\s*>(.*
 func xmlToolBlockToToolCalls(content string, registry HarnessToolRegistry) []HarnessToolCall {
 	var calls []HarnessToolCall
 	for _, invoke := range xmlInvokeRe.FindAllStringSubmatch(content, -1) {
-		name := strings.TrimSpace(invoke[1])
+		name := canonicalToolName(strings.TrimSpace(invoke[1]))
 		if _, ok := registry.Get(name); !ok {
 			continue
 		}
@@ -3045,6 +3045,17 @@ func decodeAndValidateHarnessToolPlan(candidate string, registry HarnessToolRegi
 	if data, ok := raw["toolCalls"]; ok {
 		errors = append(errors, decodeHarnessToolCalls(data, &plan.ToolCalls)...)
 	}
+	// Empty-but-valid recovery: some models (notably Ollama's grammar-enforced
+	// structured output) return schema-valid JSON with an empty toolCalls array
+	// while the real call sits in a text field as a dialect. Rather than exhaust
+	// on "emits no tool call", salvage it from the raw candidate the same way the
+	// parse-failure branch above does (conv_6016bce / conv_ae48b36d emitted the
+	// correct call in a non-JSON dialect).
+	if plan.NeedsTools && len(plan.ToolCalls) == 0 {
+		if recovered := toolCodeDialectToToolCalls(candidate, registry); len(recovered) > 0 {
+			plan.ToolCalls = recovered
+		}
+	}
 	errors = append(errors, validateHarnessToolPlan(plan, registry)...)
 	return plan, errors
 }
@@ -3054,6 +3065,7 @@ func decodeAndValidateHarnessToolPlan(candidate string, registry HarnessToolRegi
 // was wrong instead of a blanket "must be an array" message.
 func decodeHarnessToolCalls(data json.RawMessage, calls *[]HarnessToolCall) []string {
 	if err := json.Unmarshal(data, calls); err == nil {
+		canonicalizeToolCallNames(*calls)
 		return nil
 	}
 	var elements []json.RawMessage
@@ -3146,6 +3158,36 @@ func validateHarnessToolPlan(plan HarnessToolPlan, registry HarnessToolRegistry)
 		errors = append(errors, validateHarnessToolCall(index, call, registry)...)
 	}
 	return errors
+}
+
+// toolNameAliases maps tool names small models commonly hallucinate onto the
+// real tool. extend_video is the recurring one: models invent it from the
+// extend_audio sibling in the catalog, but generate_video handles video
+// extension (there is no extend_video tool). Rewriting the name lets the plan
+// validate and run instead of exhausting the planning loop on an unknown-tool
+// rejection (conv_01f6031b769a58fe66d13f6a: gemma-4 named extend_video three
+// times despite the planner guidance saying the tool does not exist).
+var toolNameAliases = map[string]string{
+	"extend_video": "generate_video",
+}
+
+// canonicalToolName resolves a known hallucinated tool name to its real tool;
+// any other name (registered or not) passes through unchanged so validation
+// still reports genuinely-unknown names.
+func canonicalToolName(name string) string {
+	if alias, ok := toolNameAliases[strings.TrimSpace(name)]; ok {
+		return alias
+	}
+	return name
+}
+
+// canonicalizeToolCallNames rewrites hallucinated tool names in place so every
+// planner path (native, format, dialect recovery) resolves aliases identically
+// before validation and execution.
+func canonicalizeToolCallNames(calls []HarnessToolCall) {
+	for i := range calls {
+		calls[i].Name = canonicalToolName(calls[i].Name)
+	}
 }
 
 func validateHarnessToolCall(index int, call HarnessToolCall, registry HarnessToolRegistry) []string {
