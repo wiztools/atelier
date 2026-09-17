@@ -2226,9 +2226,10 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 						"overwrite":   map[string]any{"type": "boolean"},
 						"maxBytes":    map[string]any{"type": "integer"},
 						"allowBinary": map[string]any{"type": "boolean"},
-						// ffmpeg tool inputs (screenshot/split/join). The values
-						// are validated per-tool; the schema only frees the
-						// grammar to emit them.
+						// ffmpeg tool inputs (screenshot/split/join; start/end
+						// also scope transform_video's speed to a portion).
+						// The values are validated per-tool; the schema only
+						// frees the grammar to emit them.
 						"at":    map[string]any{"type": "string"},
 						"start": map[string]any{"type": "string"},
 						"end":   map[string]any{"type": "string"},

@@ -818,6 +818,35 @@ func mp4VideoTrak(data []byte) ([]byte, bool) {
 	return videoTrak, true
 }
 
+// mp4HasAudioTrack reports whether the MP4 carries an audio track — any moov
+// trak whose mdia/hdlr names the 'soun' handler. Pure byte parsing, fail-soft
+// false on malformed payloads; the ffmpeg portion-speed tool reads it when
+// ffprobe is unavailable, because a filter_complex must not reference [0:a]
+// on a silent clip.
+func mp4HasAudioTrack(data []byte) bool {
+	moov, ok := mp4ChildBoxPayload(data, "moov")
+	if !ok {
+		return false
+	}
+	found := false
+	mp4EachChild(moov, func(boxType string, payload []byte) bool {
+		if boxType != "trak" {
+			return true
+		}
+		mdia, ok := mp4ChildBoxPayload(payload, "mdia")
+		if !ok {
+			return true
+		}
+		hdlr, ok := mp4ChildBoxPayload(mdia, "hdlr")
+		if ok && len(hdlr) >= 12 && string(hdlr[8:12]) == "soun" {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
 // mp4VideoDimensions reads the video track's presentation size from tkhd —
 // width and height ride as 32-bit 16.16 fixed-point values. This is the
 // effective render size: a model whose video_size is "auto" inherits the

@@ -349,6 +349,40 @@ func mp4FixtureAudioOnly() []byte {
 	return append(tinyMP4(), moov...)
 }
 
+// mp4FixtureVideoOnly builds ftyp + moov{video trak} with no audio track —
+// the silent-clip shape the portion-speed audio sniff must recognize.
+func mp4FixtureVideoOnly() []byte {
+	tkhd := make([]byte, 84)
+	binary.BigEndian.PutUint32(tkhd[76:80], 1344<<16)
+	binary.BigEndian.PutUint32(tkhd[80:84], 768<<16)
+	videoHdlr := make([]byte, 24)
+	copy(videoHdlr[8:12], "vide")
+	videoTrak := mp4TestBox("trak", append(mp4TestBox("tkhd", tkhd), mp4TestBox("mdia", mp4TestBox("hdlr", videoHdlr))...))
+	return append(tinyMP4(), mp4TestBox("moov", videoTrak)...)
+}
+
+func TestMp4HasAudioTrack(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		data []byte
+		want bool
+	}{
+		{name: "video and audio tracks", data: mp4FixtureWithVideoTrack(1344, 768, 339), want: true},
+		{name: "audio only", data: mp4FixtureAudioOnly(), want: true},
+		{name: "video only", data: mp4FixtureVideoOnly(), want: false},
+		{name: "no trak at all", data: mp4FixtureWithDuration(0, 1000, 10500), want: false},
+		{name: "no moov", data: tinyMP4(), want: false},
+		{name: "not mp4", data: []byte("not a video at all"), want: false},
+		{name: "empty", data: nil, want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := mp4HasAudioTrack(tt.data); got != tt.want {
+				t.Fatalf("mp4HasAudioTrack = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMp4VideoDimensions(t *testing.T) {
 	for _, tt := range []struct {
 		name   string

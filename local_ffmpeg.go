@@ -349,6 +349,132 @@ func atempoChain(speed float64) string {
 	return strings.Join(append(stages, "atempo="+formatPlaybackSpeed(speed)), ",")
 }
 
+// videoPortionSpeedFilterComplex builds the single-invocation filter_complex
+// behind a portion speed change: the head before startSec, the
+// [startSec, endSec) middle rescaled by speed, and (when endBounded) the tail
+// from endSec are trimmed, timestamp-reset, and concatenated — concat requires
+// each segment to start at zero, hence the per-segment PTS-STARTPTS resets,
+// and the middle's audio rides the same atempo chain as a whole-clip change so
+// it stays pitch-preserved and in sync. hasAudio selects the atrim/asetpts
+// chains (referencing [0:a] on a silent clip is a filtergraph error);
+// geometryFilters (crop/scale/rotate/flip from videoTransformFilters) is
+// applied to the joined output, so shape ops cover the whole clip. The final
+// video label is always [vout] and the audio label [acat]; the args builder
+// maps them.
+func videoPortionSpeedFilterComplex(geometryFilters string, startSec, endSec float64, endBounded, hasAudio bool, speed float64) string {
+	segments := 1
+	if startSec > 0 {
+		segments++
+	}
+	if endBounded {
+		segments++
+	}
+	speedExpr := "(PTS-STARTPTS)/" + formatPlaybackSpeed(speed)
+	var parts []string
+	var labels strings.Builder
+	// Head: [clip start, startSec) at normal speed.
+	if startSec > 0 {
+		bound := "end=" + formatPlaybackSpeed(startSec)
+		parts = append(parts, "[0:v]trim="+bound+",setpts=PTS-STARTPTS[v0]")
+		labels.WriteString("[v0]")
+		if hasAudio {
+			parts = append(parts, "[0:a]atrim="+bound+",asetpts=PTS-STARTPTS[a0]")
+			labels.WriteString("[a0]")
+		}
+	}
+	// Middle: [startSec, endSec) rescaled by speed (to the clip's end when
+	// endBounded is false).
+	middleBound := "start=" + formatPlaybackSpeed(startSec)
+	if endBounded {
+		middleBound += ":end=" + formatPlaybackSpeed(endSec)
+	}
+	parts = append(parts, "[0:v]trim="+middleBound+",setpts="+speedExpr+"[v1]")
+	labels.WriteString("[v1]")
+	if hasAudio {
+		parts = append(parts, "[0:a]atrim="+middleBound+",asetpts="+speedExpr+","+atempoChain(speed)+"[a1]")
+		labels.WriteString("[a1]")
+	}
+	// Tail: [endSec, clip end) at normal speed.
+	if endBounded {
+		bound := "start=" + formatPlaybackSpeed(endSec)
+		parts = append(parts, "[0:v]trim="+bound+",setpts=PTS-STARTPTS[v2]")
+		labels.WriteString("[v2]")
+		if hasAudio {
+			parts = append(parts, "[0:a]atrim="+bound+",asetpts=PTS-STARTPTS[a2]")
+			labels.WriteString("[a2]")
+		}
+	}
+	concat := labels.String() + "concat=n=" + strconv.Itoa(segments) + ":v=1:a="
+	if hasAudio {
+		concat += "1"
+	} else {
+		concat += "0"
+	}
+	if geometryFilters == "" {
+		concat += "[vout]"
+	} else {
+		concat += "[vcat]"
+	}
+	if hasAudio {
+		concat += "[acat]"
+	}
+	parts = append(parts, concat)
+	if geometryFilters != "" {
+		parts = append(parts, "[vcat]"+geometryFilters+"[vout]")
+	}
+	return strings.Join(parts, ";")
+}
+
+// ffmpegPortionSpeedArgs runs a portion speed change's filter_complex with the
+// house re-encode preset. Every segment re-encodes once into uniform streams —
+// the concat filter cannot stream-copy, so the normal-speed head and tail are
+// re-encoded too.
+func ffmpegPortionSpeedArgs(input, filterComplex string, hasAudio bool, output string) []string {
+	args := []string{"-i", input, "-filter_complex", filterComplex, "-map", "[vout]"}
+	if hasAudio {
+		args = append(args, "-map", "[acat]")
+	}
+	return append(args,
+		"-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+		"-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output)
+}
+
+// portionSpeedPhrase renders the op phrase for a portion speed change:
+// "3x playback speed from 10s to 20s", with "the start"/"the end" for the
+// open bounds.
+func portionSpeedPhrase(startSec, endSec float64, endBounded bool, speed float64) string {
+	startLabel := "the start"
+	if startSec > 0 {
+		startLabel = formatPlaybackSpeed(startSec) + "s"
+	}
+	endLabel := "the end"
+	if endBounded {
+		endLabel = formatPlaybackSpeed(endSec) + "s"
+	}
+	return fmt.Sprintf("%sx playback speed from %s to %s", formatPlaybackSpeed(speed), startLabel, endLabel)
+}
+
+// transformVideoPortionFacts resolves what a portion speed change needs from
+// the attached clip: its total duration (to validate the bounds and clamp an
+// end past the clip) and whether it carries audio (the filter_complex must not
+// reference [0:a] on a silent clip). ffprobe answers both for any container;
+// the MP4 box sniff (mvhd duration, a 'soun' trak) covers generation outputs
+// when ffprobe is unavailable — the same fallback shape as the aspect crop's
+// dimension resolution.
+func transformVideoPortionFacts(ctx context.Context, config AppConfig, input, sourceDataURL string) (float64, bool, error) {
+	if _, ok := resolveLocalFFprobeBinary(config); ok {
+		if probe, err := probeStagedMedia(ctx, config, input, "video"); err == nil && probe.Duration > 0 {
+			return probe.Duration, probe.AudioCodec != "", nil
+		}
+	}
+	if data, _, err := decodeMediaDataURL(sourceDataURL); err == nil {
+		if seconds, ok := mp4DurationSeconds(data); ok {
+			return seconds, mp4HasAudioTrack(data), nil
+		}
+	}
+	return 0, false, errors.New("transform_video could not read the attached clip's duration for the portion speed change — ffprobe is unavailable and the clip is not a readable MP4")
+}
+
 // evenDown floors a pixel count to the nearest even value — H.264's yuv420p
 // chroma needs even dimensions, and a computed crop rect can land odd (a
 // 1000x333 clip cropped to 1:1 is 333x333).
@@ -865,7 +991,7 @@ func transformVideoToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "transform_video",
 		Title:       "Transform video",
-		Description: "Use this when the user asks to change the shape or size of an attached video — crop it to an aspect ratio, downscale or resize it to specific pixel dimensions (for example a clip too large for a video model's input limit), rotate a sideways clip, mirror it — or to speed up or slow down its playback. It crops to a shape, not a region of time — cutting a segment out is split_video. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). aspectRatio crops (from the center) to a W:H ratio like \"1:1\" or \"16:9\", trimming the longer side; width and height resize — both together produces exactly those pixels (center-cropped to the target shape, never stretched), one alone preserves aspect; rotate is 90, 180, or 270 clockwise; flip is \"horizontal\" or \"vertical\"; speed is a playback multiplier for the WHOLE clip — 3 plays three times as fast, 0.5 at half speed (slow motion), between 0.25 and 8, with the audio tempo-adjusted to stay in sync (pitch preserved). Speeding up only a PORTION of a clip is a sequence: split_video the portion out, transform_video it with speed, then join_videos the parts back in order. At least one operation is required. The video is re-encoded to H.264 with its audio kept. The result is attached to the assistant reply and becomes the conversation's newest video.",
+		Description: "Use this when the user asks to change the shape or size of an attached video — crop it to an aspect ratio, downscale or resize it to specific pixel dimensions (for example a clip too large for a video model's input limit), rotate a sideways clip, mirror it — or to speed up or slow down its playback, in whole or in part. It crops to a shape, not a region of time — cutting a segment out is split_video. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). aspectRatio crops (from the center) to a W:H ratio like \"1:1\" or \"16:9\", trimming the longer side; width and height resize — both together produces exactly those pixels (center-cropped to the target shape, never stretched), one alone preserves aspect; rotate is 90, 180, or 270 clockwise; flip is \"horizontal\" or \"vertical\"; speed is a playback multiplier — 3 plays three times as fast, 0.5 at half speed (slow motion), between 0.25 and 8, with the audio tempo-adjusted to stay in sync (pitch preserved). Alone, speed applies to the WHOLE clip; with the optional start and end bounds (timestamps in seconds or clock form, like split_video's) it applies to that PORTION only — speed 3 with start 10 and end 20 plays 10–20s at 3x while everything before and after keeps its normal speed (e.g. \"make the middle of this clip twice as fast\", \"slow-mo the dive between 3s and 7s\"). At least one operation is required. The video is re-encoded to H.264 with its audio kept. The result is attached to the assistant reply and becomes the conversation's newest video.",
 		Example:     `{"name":"transform_video","width":1280,"height":720}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: transformVideoParamSchema(),
@@ -887,6 +1013,24 @@ func transformVideoToolDefinition() HarnessToolDefinition {
 			}
 			if call.Speed == 1 {
 				return []string{prefix + ".speed must not be 1 for transform_video — a multiplier of 1 leaves playback unchanged"}
+			}
+			startToken := strings.TrimSpace(call.Start)
+			endToken := strings.TrimSpace(call.End)
+			if startToken != "" || endToken != "" {
+				if call.Speed == 0 {
+					return []string{prefix + ".start and .end are only valid with speed for transform_video — to cut a segment out, use split_video"}
+				}
+				startSec, hasStart := parseMediaTimestamp(startToken)
+				if startToken != "" && !hasStart {
+					return []string{prefix + `.start must be a timestamp in seconds ("10") or clock ("00:01:30") for transform_video`}
+				}
+				endSec, hasEnd := parseMediaTimestamp(endToken)
+				if endToken != "" && !hasEnd {
+					return []string{prefix + `.end must be a timestamp in seconds ("20") or clock ("00:00:20") for transform_video`}
+				}
+				if hasStart && hasEnd && endSec <= startSec {
+					return []string{prefix + ".end must be after start for transform_video"}
+				}
 			}
 			if call.Width == 0 && call.Height == 0 && aspect == "" && call.Rotate == 0 && strings.TrimSpace(call.Flip) == "" && call.Speed == 0 {
 				return []string{prefix + ".transform_video needs at least one of aspectRatio, width, height, rotate, flip, or speed"}
@@ -924,15 +1068,66 @@ func transformVideoToolDefinition() HarnessToolDefinition {
 					return nil, "transform failed", err
 				}
 			}
-			filters, ops := videoTransformFilters(call, srcWidth, srcHeight)
-			audioFilters := ""
-			if call.Speed != 0 {
-				// atempo keeps the audio in sync with the setpts-rescaled
-				// video; a clip with no audio stream simply ignores -af.
-				audioFilters = atempoChain(call.Speed)
-			}
 			staged := filepath.Join(staging, "transformed.mp4")
-			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegTransformArgs(input, filters, audioFilters, staged)); err != nil {
+			var args []string
+			var ops []string
+			notices := []string{
+				"the video was re-encoded (H.264, CRF 18) — crop, resize, rotate, flip, and speed changes cannot stream-copy.",
+			}
+			// Portion speed change: the bounds resolve against the clip's
+			// real duration — an end at/past the end clamps open (the tail
+			// segment would be empty and break the concat), and only a
+			// portion with a normal-speed head or tail remaining needs the
+			// filter_complex; one covering the whole clip falls through to
+			// the plain whole-clip run.
+			startSec, endSec := 0.0, 0.0
+			endBounded := false
+			hasAudio := false
+			if call.Speed != 0 && (strings.TrimSpace(call.Start) != "" || strings.TrimSpace(call.End) != "") {
+				startSec, _ = parseMediaTimestamp(strings.TrimSpace(call.Start)) // validation guarantees these parse
+				var hasEnd bool
+				if endRaw := strings.TrimSpace(call.End); endRaw != "" {
+					endSec, hasEnd = parseMediaTimestamp(endRaw)
+				}
+				duration, audio, factsErr := transformVideoPortionFacts(ctx, tools.Config, input, source)
+				if factsErr != nil {
+					return nil, "transform failed", factsErr
+				}
+				hasAudio = audio
+				if startSec >= duration {
+					return nil, "transform failed", fmt.Errorf("transform_video's start (%ss) is at or past the end of the attached clip (%ss)", formatPlaybackSpeed(startSec), formatPlaybackSpeed(duration))
+				}
+				if hasEnd && endSec >= duration {
+					endBounded = false
+					notices = append(notices, fmt.Sprintf("the requested end (%ss) is at or past the clip's end (%ss), so the speed change was applied through the end of the clip.", formatPlaybackSpeed(endSec), formatPlaybackSpeed(duration)))
+				} else {
+					endBounded = hasEnd
+				}
+			}
+			if startSec > 0 || endBounded {
+				// Geometry ops shape the WHOLE output (they run after the
+				// concat), so the portion only rescales the middle's
+				// timestamps; the speed op phrase lands after the shape ops.
+				geometryCall := call
+				geometryCall.Speed = 0
+				filters, geometryOps := videoTransformFilters(geometryCall, srcWidth, srcHeight)
+				ops = append(ops, geometryOps...)
+				ops = append(ops, portionSpeedPhrase(startSec, endSec, endBounded, call.Speed))
+				filterComplex := videoPortionSpeedFilterComplex(filters, startSec, endSec, endBounded, hasAudio, call.Speed)
+				args = ffmpegPortionSpeedArgs(input, filterComplex, hasAudio, staged)
+				notices = append(notices, "the normal-speed head and tail were re-encoded too — the joined segments must share one uniform stream.")
+			} else {
+				filters, transformOps := videoTransformFilters(call, srcWidth, srcHeight)
+				ops = transformOps
+				audioFilters := ""
+				if call.Speed != 0 {
+					// atempo keeps the audio in sync with the setpts-rescaled
+					// video; a clip with no audio stream simply ignores -af.
+					audioFilters = atempoChain(call.Speed)
+				}
+				args = ffmpegTransformArgs(input, filters, audioFilters, staged)
+			}
+			if err := runLocalFFmpeg(ctx, tools.Config, args); err != nil {
 				return nil, "transform failed", err
 			}
 			tempPath, err := promoteStagedOutput(staged, "atelier-video-*", ".mp4")
@@ -940,13 +1135,11 @@ func transformVideoToolDefinition() HarnessToolDefinition {
 				return nil, "transform failed", err
 			}
 			output := ToolVideoResult{
-				Model:  ffmpegModelName,
-				Prompt: "transform: " + strings.Join(ops, ", "),
-				Count:  1,
-				Videos: []ToolVideoFile{{TempPath: tempPath, MimeType: "video/mp4"}},
-				Notices: []string{
-					"the video was re-encoded (H.264, CRF 18) — crop, resize, rotate, flip, and speed changes cannot stream-copy.",
-				},
+				Model:   ffmpegModelName,
+				Prompt:  "transform: " + strings.Join(ops, ", "),
+				Count:   1,
+				Videos:  []ToolVideoFile{{TempPath: tempPath, MimeType: "video/mp4"}},
+				Notices: notices,
 			}
 			return output, fmt.Sprintf("transformed the attached video with ffmpeg (%s)", strings.Join(ops, ", ")), nil
 		},
@@ -1184,7 +1377,9 @@ func transformVideoParamSchema() map[string]any {
 			"height":      intParam("Optional — resize to this pixel height (with width, exactly those pixels via center-crop; alone, aspect-preserving). Must be even."),
 			"rotate":      intParam(`Optional — rotate clockwise: 90, 180, or 270.`),
 			"flip":        stringParam(`Optional — "horizontal" or "vertical".`),
-			"speed":       numberParam("Optional — playback-speed multiplier for the whole clip: 3 plays three times as fast, 0.5 at half speed (slow motion). Between 0.25 and 8, not 1. The audio is tempo-adjusted to stay in sync."),
+			"speed":       numberParam("Optional — playback-speed multiplier: 3 plays three times as fast, 0.5 at half speed (slow motion). Between 0.25 and 8, not 1. The audio is tempo-adjusted to stay in sync. Alone it applies to the whole clip; with start/end it applies to that portion only."),
+			"start":       stringParam(`Optional (requires speed) — portion bound in seconds ("10") or clock ("00:01:30"): the speed change applies from here; before it the clip plays at normal speed. Use split_video to cut a segment out instead.`),
+			"end":         stringParam(`Optional (requires speed) — portion bound: the speed change applies until here; after it the clip plays at normal speed.`),
 		},
 		"required": []string{},
 	}

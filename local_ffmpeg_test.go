@@ -50,6 +50,15 @@ cat <<'JSON'
 JSON
 `
 
+// fakeFFprobeNoAudioScript fakes ffprobe over a silent clip — h264 1920x1080
+// with no audio stream, 12.5 seconds — driving the portion-speed path's
+// audio-less filter_complex.
+const fakeFFprobeNoAudioScript = `#!/bin/sh
+cat <<'JSON'
+{"format":{"duration":"12.500","format_name":"mov,mp4,m4a,3gp,3g2,mj2","bit_rate":"1200000","size":"1875000"},"streams":[{"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"avg_frame_rate":"30000/1001"}]}
+JSON
+`
+
 // fakeFFprobeDriftScript fakes an ffprobe whose SECOND call reports different
 // dimensions — drives the join auto-mode's re-encode branch.
 const fakeFFprobeDriftScript = `#!/bin/sh
@@ -226,6 +235,10 @@ func TestFFmpegArgBuilders(t *testing.T) {
 			"-i in.mp4 -vf setpts=PTS/3 -af atempo=2.0,atempo=1.5 -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -movflags +faststart out.mp4"},
 		{"transform speed only omits -vf", ffmpegTransformArgs("in.mp4", "", "atempo=0.5", "out.mp4"),
 			"-i in.mp4 -af atempo=0.5 -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -movflags +faststart out.mp4"},
+		{"portion speed with audio", ffmpegPortionSpeedArgs("in.mp4", "FC", true, "out.mp4"),
+			"-i in.mp4 -filter_complex FC -map [vout] -map [acat] -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -movflags +faststart out.mp4"},
+		{"portion speed without audio", ffmpegPortionSpeedArgs("in.mp4", "FC", false, "out.mp4"),
+			"-i in.mp4 -filter_complex FC -map [vout] -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -movflags +faststart out.mp4"},
 	}
 	for _, tc := range cases {
 		if joined := strings.Join(tc.got, " "); joined != tc.want {
@@ -318,6 +331,73 @@ func TestAtempoChain(t *testing.T) {
 	}
 }
 
+// TestVideoPortionSpeedFilterComplex pins the portion-speed graph: head and
+// tail trims at normal speed around a rescaled middle, per-segment timestamp
+// resets, the audio chains only when the clip carries audio, and geometry
+// applied to the joined output.
+func TestVideoPortionSpeedFilterComplex(t *testing.T) {
+	cases := []struct {
+		name       string
+		geometry   string
+		start      float64
+		end        float64
+		endBounded bool
+		hasAudio   bool
+		speed      float64
+		want       string
+	}{
+		{"3x middle with audio", "", 10, 20, true, true, 3,
+			"[0:v]trim=end=10,setpts=PTS-STARTPTS[v0];[0:a]atrim=end=10,asetpts=PTS-STARTPTS[a0];" +
+				"[0:v]trim=start=10:end=20,setpts=(PTS-STARTPTS)/3[v1];[0:a]atrim=start=10:end=20,asetpts=(PTS-STARTPTS)/3,atempo=2.0,atempo=1.5[a1];" +
+				"[0:v]trim=start=20,setpts=PTS-STARTPTS[v2];[0:a]atrim=start=20,asetpts=PTS-STARTPTS[a2];" +
+				"[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[vout][acat]"},
+		{"2x middle without audio", "", 4, 8, true, false, 2,
+			"[0:v]trim=end=4,setpts=PTS-STARTPTS[v0];" +
+				"[0:v]trim=start=4:end=8,setpts=(PTS-STARTPTS)/2[v1];" +
+				"[0:v]trim=start=8,setpts=PTS-STARTPTS[v2];" +
+				"[v0][v1][v2]concat=n=3:v=1:a=0[vout]"},
+		{"half-speed opening, no head", "", 0, 4.5, true, true, 0.5,
+			"[0:v]trim=start=0:end=4.5,setpts=(PTS-STARTPTS)/0.5[v1];[0:a]atrim=start=0:end=4.5,asetpts=(PTS-STARTPTS)/0.5,atempo=0.5[a1];" +
+				"[0:v]trim=start=4.5,setpts=PTS-STARTPTS[v2];[0:a]atrim=start=4.5,asetpts=PTS-STARTPTS[a2];" +
+				"[v1][a1][v2][a2]concat=n=2:v=1:a=1[vout][acat]"},
+		{"3x to the end, no tail", "", 10, 0, false, true, 3,
+			"[0:v]trim=end=10,setpts=PTS-STARTPTS[v0];[0:a]atrim=end=10,asetpts=PTS-STARTPTS[a0];" +
+				"[0:v]trim=start=10,setpts=(PTS-STARTPTS)/3[v1];[0:a]atrim=start=10,asetpts=(PTS-STARTPTS)/3,atempo=2.0,atempo=1.5[a1];" +
+				"[v0][a0][v1][a1]concat=n=2:v=1:a=1[vout][acat]"},
+		{"geometry covers the joined output", "crop=864:1080", 10, 20, true, true, 3,
+			"[0:v]trim=end=10,setpts=PTS-STARTPTS[v0];[0:a]atrim=end=10,asetpts=PTS-STARTPTS[a0];" +
+				"[0:v]trim=start=10:end=20,setpts=(PTS-STARTPTS)/3[v1];[0:a]atrim=start=10:end=20,asetpts=(PTS-STARTPTS)/3,atempo=2.0,atempo=1.5[a1];" +
+				"[0:v]trim=start=20,setpts=PTS-STARTPTS[v2];[0:a]atrim=start=20,asetpts=PTS-STARTPTS[a2];" +
+				"[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[vcat][acat];[vcat]crop=864:1080[vout]"},
+	}
+	for _, tc := range cases {
+		if got := videoPortionSpeedFilterComplex(tc.geometry, tc.start, tc.end, tc.endBounded, tc.hasAudio, tc.speed); got != tc.want {
+			t.Errorf("%s filter_complex =\n%q\nwant\n%q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestPortionSpeedPhrase pins the op phrase for the summary and prompt.
+func TestPortionSpeedPhrase(t *testing.T) {
+	cases := []struct {
+		name       string
+		start      float64
+		end        float64
+		endBounded bool
+		speed      float64
+		want       string
+	}{
+		{"bounded", 10, 20, true, 3, "3x playback speed from 10s to 20s"},
+		{"open end", 10, 0, false, 0.5, "0.5x playback speed from 10s to the end"},
+		{"open start", 0, 4.5, true, 2, "2x playback speed from the start to 4.5s"},
+	}
+	for _, tc := range cases {
+		if got := portionSpeedPhrase(tc.start, tc.end, tc.endBounded, tc.speed); got != tc.want {
+			t.Errorf("%s phrase = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 // TestFFmpegToolValidation pins the per-tool Validate rules the planner sees
 // as correction messages.
 func TestFFmpegToolValidation(t *testing.T) {
@@ -376,11 +456,23 @@ func TestFFmpegToolValidation(t *testing.T) {
 	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Width: 1280, Speed: 1}); len(errors) == 0 || !strings.Contains(errors[0], ".speed must not be 1") {
 		t.Errorf("transform with speed 1 = %v, want the no-op error", errors)
 	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Start: "10"}); len(errors) == 0 || !strings.Contains(errors[0], ".start and .end are only valid with speed") {
+		t.Errorf("transform with bounds but no speed = %v, want the bounds-need-speed error", errors)
+	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Speed: 2, Start: "banana"}); len(errors) == 0 || !strings.Contains(errors[0], `.start must be a timestamp`) {
+		t.Errorf("transform with a bad portion start = %v, want the timestamp error", errors)
+	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Speed: 2, Start: "20", End: "10"}); len(errors) == 0 || !strings.Contains(errors[0], ".end must be after start") {
+		t.Errorf("transform with end before start = %v, want the ordering error", errors)
+	}
 	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Width: 1280, Height: 720}); len(errors) != 0 {
 		t.Errorf("valid transform = %v, want none", errors)
 	}
 	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Speed: 3}); len(errors) != 0 {
 		t.Errorf("valid speed-only transform = %v, want none", errors)
+	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Speed: 2, Start: "00:00:10", End: "00:00:20"}); len(errors) != 0 {
+		t.Errorf("valid portion transform = %v, want none", errors)
 	}
 }
 
@@ -711,6 +803,87 @@ func TestFFmpegTransformExecutes(t *testing.T) {
 		args := fakeFFmpegArgs(t, bin)
 		if !strings.Contains(args, "-vf setpts=PTS/0.5 ") || !strings.Contains(args, "-af atempo=0.5 ") {
 			t.Fatalf("transform args = %q, want the half-speed setpts and a single atempo", args)
+		}
+	})
+
+	t.Run("portion 3x between 2 and 4", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "transform_video", HarnessToolCall{Speed: 3, Start: "2", End: "4"})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, _ := result.Result.(ToolVideoResult)
+		defer os.Remove(typed.Videos[0].TempPath)
+		args := fakeFFmpegArgs(t, bin)
+		for _, want := range []string{
+			"-filter_complex ",
+			"trim=start=2:end=4,setpts=(PTS-STARTPTS)/3[v1]",
+			"atrim=start=2:end=4,asetpts=(PTS-STARTPTS)/3,atempo=2.0,atempo=1.5[a1]",
+			"concat=n=3:v=1:a=1[vout][acat]",
+			"-map [vout] -map [acat]",
+		} {
+			if !strings.Contains(args, want) {
+				t.Fatalf("transform args = %q, want %q", args, want)
+			}
+		}
+		if !strings.Contains(result.Summary, "3x playback speed from 2s to 4s") {
+			t.Fatalf("summary = %q", result.Summary)
+		}
+		if !strings.Contains(strings.Join(typed.Notices, " "), "head and tail") {
+			t.Fatalf("notices = %v, want the head/tail re-encode notice", typed.Notices)
+		}
+	})
+
+	t.Run("portion end past the clip's end clamps", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript) // duration 12.5
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "transform_video", HarnessToolCall{Speed: 2, Start: "10", End: "30"})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, _ := result.Result.(ToolVideoResult)
+		defer os.Remove(typed.Videos[0].TempPath)
+		args := fakeFFmpegArgs(t, bin)
+		if !strings.Contains(args, "trim=start=10,setpts=") || strings.Contains(args, ":end=30") {
+			t.Fatalf("transform args = %q, want an open-ended middle after the clamp", args)
+		}
+		if !strings.Contains(args, "concat=n=2:v=1:a=1[vout][acat]") {
+			t.Fatalf("transform args = %q, want a two-segment concat", args)
+		}
+		if !strings.Contains(strings.Join(typed.Notices, " "), "at or past the clip's end") {
+			t.Fatalf("notices = %v, want the clamp notice", typed.Notices)
+		}
+	})
+
+	t.Run("portion start past the clip's end fails", func(t *testing.T) {
+		config, _ := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript) // duration 12.5
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "transform_video", HarnessToolCall{Speed: 2, Start: "30"})
+		if result.Status == "completed" || !strings.Contains(result.Error, "at or past the end of the attached clip") {
+			t.Fatalf("result = %+v, want the start-past-end error", result)
+		}
+	})
+
+	t.Run("portion without audio drops the audio chains", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeNoAudioScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "transform_video", HarnessToolCall{Speed: 2, Start: "2", End: "4"})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, _ := result.Result.(ToolVideoResult)
+		defer os.Remove(typed.Videos[0].TempPath)
+		args := fakeFFmpegArgs(t, bin)
+		if strings.Contains(args, "[0:a]") || !strings.Contains(args, "concat=n=3:v=1:a=0[vout]") {
+			t.Fatalf("transform args = %q, want a video-only graph", args)
+		}
+		if strings.Contains(args, "-map [acat]") {
+			t.Fatalf("transform args = %q, want no audio map", args)
 		}
 	})
 
