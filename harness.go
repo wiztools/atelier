@@ -388,6 +388,21 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		decision.NeedsTools = true
 		decision.ToolTask = "Generate the requested image using the generate_image tool."
 	}
+	// Video/audio generation has no text-only path either: the media can only
+	// come from a generate_* tool call. When triage leaves tools off but the
+	// registry carries the matching tool, that is a mis-read of the toolset, not
+	// a capability gap (conv_50e4aaae3af7ef150ec5c48a: triage claimed "the
+	// specific tool for extending a video clip is not available" while
+	// generate_video sat in the registry, and the final model then narrated a
+	// 2-second extension that never ran). The registry is the deterministic
+	// source, so force the planner on and let the media actually get made.
+	// When the tool is genuinely absent the decision stands and the
+	// MediaGenUnavailable note below carries the decline instead.
+	if isGenerationMode(decision.ResponseMode) && decision.ResponseMode != "image" && !decision.NeedsTools &&
+		generationToolAvailable(h.toolRegistry(), decision.ResponseMode) {
+		decision.NeedsTools = true
+		decision.ToolTask = generationForceToolTask(decision.ResponseMode)
+	}
 
 	var preparation HarnessPreparedTurn
 	preparationThinking := ""

@@ -76,6 +76,137 @@ func TestGenerationToolAvailableReflectsRegistry(t *testing.T) {
 	}
 }
 
+// TestHarnessForceToolsVideoModeWhenTriageMisreadsToolset is the end-to-end
+// regression for conv_50e4aaae3af7ef150ec5c48a. fal IS configured
+// (generate_video sits in the registry), but triage mis-reads the toolset —
+// "the specific tool for extending a video clip is not available" — and returns
+// needsTools:false with responseMode:"video". Neither the unavailable-tool
+// decline note nor the planner-exhausted guard fires on that combination, so
+// the final model narrated a 2-second extension that never ran. The harness
+// must cross-check the registry and force the planner on, so the extension
+// actually happens and the turn persists a real video artifact.
+func TestHarnessForceToolsVideoModeWhenTriageMisreadsToolset(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	keyring.MockInit()
+	if err := saveFalAPIKey("fal-test-key"); err != nil {
+		t.Fatalf("saveFalAPIKey: %v", err)
+	}
+	t.Cleanup(func() { _ = clearFalAPIKey() })
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "chat-box-model"
+	config.Providers.Fal.VideoModel = defaultFalVideoModel
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig: %v", err)
+	}
+
+	app := NewApp()
+	falCalls := 0
+	nonStreamCount := 0
+	prepCalls := 0
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
+			return falTestPricingResponse(), nil
+		}
+		if strings.Contains(req.URL.Path, "/api/openapi/") {
+			return jsonResponse(`{"components":{"schemas":{"Input":{"type":"object","required":["prompt"],"properties":{"prompt":{"type":"string"},"duration":{"type":"string"},"aspect_ratio":{"type":"string"}}}}}}`), nil
+		}
+		if strings.Contains(req.URL.Host, "fal.run") {
+			falCalls++
+			if req.Method == http.MethodPost {
+				return jsonResponse(`{"request_id":"req-extend-1"}`), nil
+			}
+			if strings.HasSuffix(req.URL.Path, "/status") {
+				return jsonResponse(`{"status":"COMPLETED"}`), nil
+			}
+			if strings.HasSuffix(req.URL.Path, "/requests/req-extend-1") {
+				return jsonResponse(`{"video":{"url":"https://queue.fal.run/extended.mp4","content_type":"video/mp4"}}`), nil
+			}
+			return &http.Response{StatusCode: 200, Status: "200 OK",
+				Body:   io.NopCloser(strings.NewReader(string(tinyMP4()))),
+				Header: http.Header{"Content-Type": []string{"video/mp4"}}}, nil
+		}
+		switch req.URL.Path {
+		case "/api/show":
+			return jsonResponse(`{"capabilities":[],"model_info":{},"details":{"family":"test","parameter_size":"1B"}}`), nil
+		case "/api/chat":
+			payload := chatPayload(t, req)
+			if payload["stream"] == false {
+				nonStreamCount++
+				if nonStreamCount == 1 {
+					// Triage: the exact failing decision from the conversation —
+					// video intent preserved, tools declined on a false claim
+					// about the toolset.
+					decision := `{"needsTools":false,"responseMode":"video","toolTask":"","reason":"The user requested a video extension, but the specific tool for extending a video clip is not available in the current toolset.","mediaEdit":false,"imageEdit":false}`
+					return chatCompletion("harness-model", decision), nil
+				}
+				prepCalls++
+				body := `{"brief":"Extend the clip.","needsTools":true,"reason":"video","toolCalls":[{"name":"generate_video","content":"Extend the clip by 2 seconds, keeping the on-screen text unchanged"}]}`
+				if prepCalls > 1 {
+					body = `{"brief":"The extension was generated.","needsTools":false,"reason":"done","toolCalls":[]}`
+				}
+				return chatCompletion("harness-model", body), nil
+			}
+			// The final model's reply from the conversation — asserted harmless
+			// only because the artifact now exists alongside it.
+			body := "{\"model\":\"chat-box-model\",\"message\":{\"role\":\"assistant\",\"content\":\"The video has been extended by 2 seconds, and the existing text remains intact.\"},\"done\":false}\n" +
+				"{\"model\":\"chat-box-model\",\"done\":true,\"done_reason\":\"stop\",\"eval_count\":3}\n"
+			return &http.Response{StatusCode: 200, Status: "200 OK",
+				Body:   io.NopCloser(strings.NewReader(body)),
+				Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+		default:
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL)
+			return nil, nil
+		}
+	})
+
+	app.runChatStream(context.Background(), "request-force-video", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Extend this video by 2 seconds. The text needs to stay."},
+		},
+	})
+
+	if falCalls == 0 {
+		t.Fatal("fal was never called — the force-tooled planner did not run generate_video")
+	}
+
+	conversations, err := listConversations(config.Storage)
+	if err != nil {
+		t.Fatalf("listConversations: %v", err)
+	}
+	if len(conversations) != 1 {
+		t.Fatalf("conversation count = %d, want 1", len(conversations))
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation: %v", err)
+	}
+	if detail.Conversation.Stats.ArtifactCount != 1 {
+		t.Fatalf("artifactCount = %d, want 1 (the extension must actually render)", detail.Conversation.Stats.ArtifactCount)
+	}
+	assistant := detail.Turns[len(detail.Turns)-1]
+	hasVideo := false
+	for i := range assistant.Content {
+		if assistant.Content[i].Type == "video" {
+			hasVideo = true
+		}
+	}
+	if !hasVideo {
+		t.Fatalf("assistant turn has no video artifact: %+v", assistant.Content)
+	}
+}
+
 // TestHarnessDeclinesVideoExtensionWithoutTool is the end-to-end regression for
 // conv_20a0df2b2db9b4e9ea5a1ad9. Triage routes an extend-the-clip request to
 // video mode but finds no generate_video tool (no fal config), so it returns

@@ -11,6 +11,23 @@ import "strings"
 // same code-authored note + deterministic fallback pattern the local-edit gaps
 // use, so the user always learns the capability is absent and how to enable it.
 
+// generationForceToolTask is the toolTask the harness hands the planner when it
+// force-tools a generation mode triage left un-tooled even though the registry
+// carries the matching generate_* tool: it names the deliverable so the plan
+// emits the call. The video case names extension explicitly because weak triage
+// models keep looking for a dedicated extend tool that does not exist —
+// generate_video IS the extension path.
+func generationForceToolTask(mode string) string {
+	switch mode {
+	case "video":
+		return "Generate the requested video using the generate_video tool; extending or continuing an attached or recent clip is also a generate_video call."
+	case "audio":
+		return "Generate the requested audio using the generate_speech, generate_sound, or extend_audio tool."
+	default:
+		return "Generate the requested media using the matching generate_* tool."
+	}
+}
+
 // generationToolNamesByMode maps a triage generation responseMode to the
 // generate_* tool names that could satisfy it. A mode is available when the
 // registry carries at least one of them. Image is included for completeness;
