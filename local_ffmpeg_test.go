@@ -476,6 +476,20 @@ func TestFFmpegToolValidation(t *testing.T) {
 	}
 }
 
+// TestSplitVideoDescriptionTeachesOneSegmentPerCall pins the planner-facing
+// count contract on split_video: one call keeps one segment, so a multi-part
+// split is one call per part in the same plan. conv_e11bdd971b1b1e674d23c6e3:
+// "split into two parts at the 10s mark" produced only the tail clip because
+// the planner mapped the whole task onto a single start=10 call.
+func TestSplitVideoDescriptionTeachesOneSegmentPerCall(t *testing.T) {
+	desc := splitVideoToolDefinition().Description
+	for _, fragment := range []string{"ONE segment", `{"end":"10"}`, `{"start":"10"}`, "same plan"} {
+		if !strings.Contains(desc, fragment) {
+			t.Fatalf("split_video description = %q, want it to include %q", desc, fragment)
+		}
+	}
+}
+
 func TestFFmpegScreenshotExecutes(t *testing.T) {
 	config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
 	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{

@@ -677,12 +677,16 @@ func screenshotVideoToolDefinition() HarnessToolDefinition {
 }
 
 // splitVideoToolDefinition exposes split_video: cut a segment out of the
-// attached video (trim away the rest).
+// attached video (trim away the rest). One call keeps exactly one segment —
+// the description teaches the planner that a multi-part split is one call per
+// part in the same plan (conv_e11bdd971b1b1e674d23c6e3: "split into two
+// parts at the 10s mark" produced only the tail clip because the planner
+// mapped the whole task onto a single start=10 call).
 func splitVideoToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "split_video",
 		Title:       "Split video",
-		Description: "Use this when the user asks to cut, trim, split, or crop out a portion of an attached video — keep a segment, drop the beginning or end, or split off the tail. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). start and end are timestamps in seconds (\"10\", \"12.5\") or clock (\"00:01:30\"); omit start for the beginning of the clip, omit end for through the end. mode \"accurate\" (the default) re-encodes so the cut lands on the exact frame; \"fast\" copies the streams without re-encoding — instant and lossless, but cuts land on the video's keyframes so the clip may begin slightly before the requested start (the right choice for long videos and for clips from the same generator). The resulting clip is attached to the assistant reply and becomes the conversation's newest video.",
+		Description: "Use this when the user asks to cut, trim, split, or crop out a portion of an attached video — keep a segment, drop the beginning or end, or split off the tail. Each call keeps exactly ONE segment and attaches one clip: to split a clip into parts, plan one call per part in the same plan — splitting a clip at 10s is two calls, {\"end\":\"10\"} for the first part and {\"start\":\"10\"} for the second, not one call. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). start and end are timestamps in seconds (\"10\", \"12.5\") or clock (\"00:01:30\"); omit start for the beginning of the clip, omit end for through the end. mode \"accurate\" (the default) re-encodes so the cut lands on the exact frame; \"fast\" copies the streams without re-encoding — instant and lossless, but cuts land on the video's keyframes so the clip may begin slightly before the requested start (the right choice for long videos and for clips from the same generator). The resulting clip is attached to the assistant reply and becomes the conversation's newest video.",
 		Example:     `{"name":"split_video","start":"10","end":"25"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: splitVideoParamSchema(),
