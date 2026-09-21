@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -402,14 +403,39 @@ func TestPortionSpeedPhrase(t *testing.T) {
 // as correction messages.
 func TestFFmpegToolValidation(t *testing.T) {
 	screenshot := screenshotVideoToolDefinition()
-	if errors := screenshot.Validate("toolCalls[0]", HarnessToolCall{}); len(errors) == 0 || !strings.Contains(errors[0], ".at is required") {
-		t.Errorf("screenshot without at = %v, want the .at required error", errors)
+	if errors := screenshot.Validate("toolCalls[0]", HarnessToolCall{}); len(errors) == 0 || !strings.Contains(errors[0], ".at or .count is required") {
+		t.Errorf("screenshot without at or count = %v, want the .at-or-.count required error", errors)
 	}
 	if errors := screenshot.Validate("toolCalls[0]", HarnessToolCall{At: "banana"}); len(errors) == 0 || !strings.Contains(errors[0], ".at must be a timestamp") {
 		t.Errorf("screenshot with a bad at = %v", errors)
 	}
 	if errors := screenshot.Validate("toolCalls[0]", HarnessToolCall{At: "00:01:30"}); len(errors) != 0 {
 		t.Errorf("screenshot with a clock at = %v, want none", errors)
+	}
+	if errors := screenshot.Validate("toolCalls[0]", HarnessToolCall{At: "0, 9.08,00:01:30"}); len(errors) != 0 {
+		t.Errorf("screenshot with an at list = %v, want none", errors)
+	}
+	if errors := screenshot.Validate("toolCalls[0]", HarnessToolCall{At: "0,9.08,banana"}); len(errors) == 0 || !strings.Contains(errors[0], "comma-separated list") {
+		t.Errorf("screenshot with a bad at list token = %v, want the list-form timestamp error", errors)
+	}
+	if errors := screenshot.Validate("toolCalls[0]", HarnessToolCall{Count: 10}); len(errors) != 0 {
+		t.Errorf("screenshot with count = %v, want none", errors)
+	}
+	if errors := screenshot.Validate("toolCalls[0]", HarnessToolCall{At: "4.5", Count: 10}); len(errors) != 0 {
+		t.Errorf("screenshot with at and count = %v, want none (at wins)", errors)
+	}
+	if errors := screenshot.Validate("toolCalls[0]", HarnessToolCall{Count: 0}); len(errors) == 0 || !strings.Contains(errors[0], ".at or .count is required") {
+		t.Errorf("screenshot with count 0 = %v, want the .at-or-.count required error", errors)
+	}
+	if errors := screenshot.Validate("toolCalls[0]", HarnessToolCall{Count: screenshotTimestampsCap + 1}); len(errors) == 0 || !strings.Contains(errors[0], ".count must be between 1 and") {
+		t.Errorf("screenshot with an oversized count = %v, want the range error", errors)
+	}
+	tokens := make([]string, screenshotTimestampsCap+1)
+	for i := range tokens {
+		tokens[i] = strconv.Itoa(i)
+	}
+	if errors := screenshot.Validate("toolCalls[0]", HarnessToolCall{At: strings.Join(tokens, ",")}); len(errors) == 0 || !strings.Contains(errors[0], "at most") {
+		t.Errorf("screenshot with an oversized at list = %v, want the cap error", errors)
 	}
 
 	split := splitVideoToolDefinition()
@@ -516,6 +542,186 @@ func TestFFmpegScreenshotRequiresVideo(t *testing.T) {
 	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{}, "screenshot_video", HarnessToolCall{At: "1"})
 	if result.Status == "completed" || !strings.Contains(result.Error, "requires an attached video clip") {
 		t.Fatalf("result = %+v, want the attachment error", result)
+	}
+}
+
+// TestSplitTimestampTokens pins the at-list tokenizer: single values pass
+// through, commas (with tolerant spacing) split, and junk collapses away.
+func TestSplitTimestampTokens(t *testing.T) {
+	cases := []struct {
+		name string
+		at   string
+		want []string
+	}{
+		{"single seconds", "4.5", []string{"4.5"}},
+		{"single clock", "00:01:30", []string{"00:01:30"}},
+		{"comma list", "0,9.08,18.17", []string{"0", "9.08", "18.17"}},
+		{"spaced list", "0, 9.08 , 18.17", []string{"0", "9.08", "18.17"}},
+		{"blank tokens drop", "0,,9.08,", []string{"0", "9.08"}},
+		{"empty", "", nil},
+		{"only separators", " , ,", nil},
+	}
+	for _, tc := range cases {
+		got := splitTimestampTokens(tc.at)
+		if len(got) != len(tc.want) {
+			t.Errorf("%s tokens = %v, want %v", tc.name, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("%s tokens = %v, want %v", tc.name, got, tc.want)
+				break
+			}
+		}
+	}
+}
+
+// TestEqualIntervalTimestamps pins the count-mode spacing: i/count × duration,
+// first frame at 0, last at (count-1)/count — never the clip's final frame.
+// 90.833333s / 10 is the conv_8ba2eae289b5f884d7064b18 arithmetic the planner
+// had to do in-plan (and got right); here the tool does it.
+func TestEqualIntervalTimestamps(t *testing.T) {
+	got := equalIntervalTimestamps(90.833333, 10)
+	if len(got) != 10 {
+		t.Fatalf("timestamps = %v, want 10 entries", got)
+	}
+	if got[0] != "0" {
+		t.Errorf("first timestamp = %q, want \"0\"", got[0])
+	}
+	if got[1] != "9.0833333" {
+		t.Errorf("second timestamp = %q, want 90.833333/10", got[1])
+	}
+	if got[9] != "81.7499997" {
+		t.Errorf("last timestamp = %q, want 9/10 of the duration", got[9])
+	}
+	if got := equalIntervalTimestamps(12.5, 4); len(got) != 4 || got[1] != "3.125" || got[3] != "9.375" {
+		t.Errorf("quarter intervals = %v, want 0/3.125/6.25/9.375", got)
+	}
+	if got := equalIntervalTimestamps(12.5, 1); len(got) != 1 || got[0] != "0" {
+		t.Errorf("single-frame intervals = %v, want just the first frame", got)
+	}
+}
+
+// TestScreenshotTimestampsPhrase pins the capped list rendering.
+func TestScreenshotTimestampsPhrase(t *testing.T) {
+	if got := screenshotTimestampsPhrase([]string{"0", "4.5"}); got != "0, 4.5" {
+		t.Errorf("short phrase = %q", got)
+	}
+	seven := []string{"0", "1", "2", "3", "4", "5", "6"}
+	if got := screenshotTimestampsPhrase(seven); got != "0, 1, 2, 3, 4, …" {
+		t.Errorf("long phrase = %q, want the first five and an ellipsis", got)
+	}
+}
+
+// TestScreenshotDescriptionTeachesBatch pins the planner-facing batch
+// contract: the description is what rides the planner prompt, and without it a
+// "10 screenshots at equal intervals" turn plans 10 calls against the 3-per-
+// round cap (conv_8ba2eae289b5f884d7064b18).
+func TestScreenshotDescriptionTeachesBatch(t *testing.T) {
+	desc := screenshotVideoToolDefinition().Description
+	for _, fragment := range []string{"comma-separated", "count", "equal intervals", "single call", "no probe_media", "at wins"} {
+		if !strings.Contains(desc, fragment) {
+			t.Fatalf("screenshot_video description = %q, want it to include %q", desc, fragment)
+		}
+	}
+}
+
+// TestHarnessPlanSchemaAdmitsScreenshotCount pins that the format-schema
+// planner grammar frees `count` like the per-tool param schema does — the two
+// are maintained separately, and a grammar without the property silently
+// takes the batch form away from every Ollama-planned turn.
+func TestHarnessPlanSchemaAdmitsScreenshotCount(t *testing.T) {
+	registry := defaultHarnessToolRegistry(context.Background(), defaultAppConfig(), nil)
+	schema := harnessToolPlanSchema(registry)
+	toolCalls, ok := schema["properties"].(map[string]any)["toolCalls"].(map[string]any)
+	if !ok {
+		t.Fatalf("plan schema = %#v, want a toolCalls property", schema)
+	}
+	items, ok := toolCalls["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("toolCalls schema = %#v, want items", toolCalls)
+	}
+	properties, ok := items["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("toolCalls items = %#v, want properties", items)
+	}
+	for _, param := range []string{"at", "count"} {
+		if _, ok := properties[param].(map[string]any); !ok {
+			t.Errorf("plan grammar toolCalls properties missing %q (has %v)", param, propertiesKeys(properties))
+		}
+	}
+}
+
+func propertiesKeys(properties map[string]any) []string {
+	keys := make([]string, 0, len(properties))
+	for key := range properties {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// TestFFmpegScreenshotBatchByCountExecutes drives the equal-interval batch:
+// one call, ten frames, the duration read from the (faked) ffprobe report of
+// 12.5s — so the seeks land at 0, 1.25, …, 11.25.
+func TestFFmpegScreenshotBatchByCountExecutes(t *testing.T) {
+	config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+	}, "screenshot_video", HarnessToolCall{Count: 10})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	typed, ok := result.Result.(ToolImageResult)
+	if !ok || typed.Count != 10 || len(typed.Images) != 10 {
+		t.Fatalf("result payload = %+v, want 10 frames", result.Result)
+	}
+	for i, image := range typed.Images {
+		if !strings.HasPrefix(image, "data:image/jpeg;base64,") {
+			t.Fatalf("image %d payload = %q", i, image[:40])
+		}
+	}
+	args := fakeFFmpegArgs(t, bin)
+	for _, seek := range []string{"-ss 0", "-ss 1.25", "-ss 6.25", "-ss 11.25"} {
+		if !strings.Contains(args, seek) {
+			t.Fatalf("ffmpeg args = %q, want the %s seek", args, seek)
+		}
+	}
+	if !strings.Contains(result.Summary, "10 of 10 frames at equal intervals") {
+		t.Fatalf("summary = %q, want the equal-interval phrase", result.Summary)
+	}
+}
+
+// TestFFmpegScreenshotBatchByAtListExecutes drives the explicit list form:
+// three named timestamps, three frames, order preserved.
+func TestFFmpegScreenshotBatchByAtListExecutes(t *testing.T) {
+	config, _ := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+	}, "screenshot_video", HarnessToolCall{At: "0, 6.25, 00:00:12"})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	typed, ok := result.Result.(ToolImageResult)
+	if !ok || typed.Count != 3 || len(typed.Images) != 3 {
+		t.Fatalf("result payload = %+v, want 3 frames", result.Result)
+	}
+	if !strings.Contains(typed.Prompt, "3 frames at 0, 6.25, 00:00:12") {
+		t.Fatalf("prompt = %q, want the frame list", typed.Prompt)
+	}
+}
+
+// TestFFmpegScreenshotCountWithoutDurationFails pins the count-mode escape
+// hatch: with no ffprobe and a clip the MP4 sniff cannot read, the error names
+// the explicit-at form so the planner repairs into a timestamp list instead of
+// retrying the same call.
+func TestFFmpegScreenshotCountWithoutDurationFails(t *testing.T) {
+	config, _ := ffmpegTestConfig(t, fakeFFmpegScript, "")
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+	}, "screenshot_video", HarnessToolCall{Count: 4})
+	if result.Status == "completed" || !strings.Contains(result.Error, "explicit timestamps") {
+		t.Fatalf("result = %+v, want the explicit-timestamps guidance error", result)
 	}
 }
 

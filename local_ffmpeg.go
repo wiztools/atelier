@@ -102,6 +102,57 @@ func parseMediaTimestamp(token string) (float64, bool) {
 	return parseClockTimestamp(token)
 }
 
+// screenshotTimestampsCap bounds how many frames one screenshot_video call may
+// capture. The batch form exists so "N frames at equal intervals" is one call
+// instead of N planner calls against the 3-per-round cap; 16 keeps a stray
+// "screenshot every second" request from turning into hundreds of seeks.
+const screenshotTimestampsCap = 16
+
+// splitTimestampTokens splits a planner-supplied screenshot `at` value into its
+// individual timestamps: a single timestamp passes through alone, a list is
+// comma-separated ("0,9.08,18.17" — spaces after commas tolerated). Tokens are
+// trimmed but not validated; parseMediaTimestamp is the per-token check. Order
+// is preserved — it is the frame order the user asked for.
+func splitTimestampTokens(at string) []string {
+	raw := strings.FieldsFunc(at, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' })
+	tokens := make([]string, 0, len(raw))
+	for _, token := range raw {
+		if token = strings.TrimSpace(token); token != "" {
+			tokens = append(tokens, token)
+		}
+	}
+	return tokens
+}
+
+// equalIntervalTimestamps spreads count frame captures evenly across a clip of
+// the given duration: i/count × duration for i = 0..count-1 — the first frame
+// at 0 and the last at (count-1)/count × duration, so the clip's final frame is
+// never requested (on a looping clip it would duplicate the first). Values are
+// pre-rendered as bare-second strings, the form ffmpeg takes directly.
+func equalIntervalTimestamps(durationSeconds float64, count int) []string {
+	timestamps := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		seconds := float64(i) * durationSeconds / float64(count)
+		timestamps = append(timestamps, strconv.FormatFloat(seconds, 'f', -1, 64))
+	}
+	return timestamps
+}
+
+// screenshotTimestampsPhrase renders a timestamp list for summaries and result
+// prompts: up to six values joined with commas, longer lists show the first
+// five and an ellipsis — "0, 9.083, 18.167, 27.25, 36.333, …".
+func screenshotTimestampsPhrase(timestamps []string) string {
+	shown := timestamps
+	if len(shown) > 6 {
+		shown = shown[:5]
+	}
+	phrase := strings.Join(shown, ", ")
+	if len(timestamps) > 6 {
+		phrase += ", …"
+	}
+	return phrase
+}
+
 // ---------------------------------------------------------------------------
 // Staging: attached media data URLs → real files ffmpeg can read
 // ---------------------------------------------------------------------------
@@ -475,6 +526,26 @@ func transformVideoPortionFacts(ctx context.Context, config AppConfig, input, so
 	return 0, false, errors.New("transform_video could not read the attached clip's duration for the portion speed change — ffprobe is unavailable and the clip is not a readable MP4")
 }
 
+// screenshotClipDuration resolves the attached clip's duration for
+// screenshot_video's equal-interval batch form (count without at). ffprobe
+// answers for any container; the MP4 box sniff (mvhd) covers generation
+// outputs when ffprobe is unavailable — the same fallback shape as
+// transformVideoPortionFacts. The error names the explicit-at escape so the
+// planner can repair into a timestamp list instead of retrying the same call.
+func screenshotClipDuration(ctx context.Context, config AppConfig, input, sourceDataURL string) (float64, error) {
+	if _, ok := resolveLocalFFprobeBinary(config); ok {
+		if probe, err := probeStagedMedia(ctx, config, input, "video"); err == nil && probe.Duration > 0 {
+			return probe.Duration, nil
+		}
+	}
+	if data, _, err := decodeMediaDataURL(sourceDataURL); err == nil {
+		if seconds, ok := mp4DurationSeconds(data); ok {
+			return seconds, nil
+		}
+	}
+	return 0, errors.New(`screenshot_video could not read the clip's duration for the equal-interval capture (ffprobe is unavailable and the clip is not a readable MP4) — capture explicit timestamps instead, e.g. {"name":"screenshot_video","at":"0,30,60"}`)
+}
+
 // evenDown floors a pixel count to the nearest even value — H.264's yuv420p
 // chroma needs even dimensions, and a computed crop rect can land odd (a
 // 1000x333 clip cropped to 1:1 is 333x333).
@@ -620,23 +691,41 @@ func absFloat(value float64) float64 {
 // Tool definitions
 // ---------------------------------------------------------------------------
 
-// screenshotVideoToolDefinition exposes screenshot_video: one frame of the
-// attached video at a timestamp, as a JPEG attached to the reply.
+// screenshotVideoToolDefinition exposes screenshot_video: one or more frames
+// of the attached video, as JPEGs attached to the reply. The batch forms are
+// one call regardless of frame count — the plan cap is 3 calls per round, so
+// "10 screenshots at equal intervals" as 10 calls is structurally unreachable
+// (conv_8ba2eae289b5f884d7064b18: 3 of 10 frames, loop budget spent).
 func screenshotVideoToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "screenshot_video",
 		Title:       "Screenshot video",
-		Description: "Use this when the user asks to grab a frame, take a screenshot, still, or thumbnail of an attached video at a specific moment. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). at is the timestamp of the frame — seconds (\"42\", \"12.5\") or clock (\"00:01:30\") — and is required; \"0\" is the first frame. The captured JPEG frame is attached to the assistant reply and becomes the conversation's newest image.",
+		Description: "Use this when the user asks to grab a frame, take a screenshot, still, or thumbnail of an attached video. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). at names the frame's timestamp — seconds (\"42\", \"12.5\") or clock (\"00:01:30\") — and may be a comma-separated list to capture several specific frames in ONE call (\"0,9.08,18.17\"). count is the equal-interval batch form: omit at and set count to N to capture N frames spread evenly across the whole clip — the tool reads the duration itself, so prefer it for \"N screenshots/screenshots at equal intervals\" requests and plan it as a single call with no probe_media round. When both are set, at wins. Each captured JPEG frame is attached to the assistant reply and becomes the conversation's newest image.",
 		Example:     `{"name":"screenshot_video","at":"4.5"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: screenshotVideoParamSchema(),
 		Validate: func(prefix string, call HarnessToolCall) []string {
 			at := strings.TrimSpace(call.At)
 			if at == "" {
+				if call.Count < 1 {
+					return []string{prefix + ".at or .count is required for screenshot_video (the frame timestamp, or how many equal-interval frames to capture)"}
+				}
+				if call.Count > screenshotTimestampsCap {
+					return []string{fmt.Sprintf("%s.count must be between 1 and %d for screenshot_video (capture more via multiple calls)", prefix, screenshotTimestampsCap)}
+				}
+				return nil
+			}
+			tokens := splitTimestampTokens(at)
+			if len(tokens) == 0 {
 				return []string{prefix + ".at is required for screenshot_video (the timestamp of the frame)"}
 			}
-			if _, ok := parseMediaTimestamp(at); !ok {
-				return []string{prefix + ".at must be a timestamp in seconds (\"42\") or clock (\"00:01:30\") for screenshot_video"}
+			if len(tokens) > screenshotTimestampsCap {
+				return []string{fmt.Sprintf("%s.at lists %d timestamps; screenshot_video captures at most %d per call", prefix, len(tokens), screenshotTimestampsCap)}
+			}
+			for _, token := range tokens {
+				if _, ok := parseMediaTimestamp(token); !ok {
+					return []string{prefix + ".at must be a timestamp in seconds (\"42\") or clock (\"00:01:30\") for screenshot_video, or a comma-separated list of them"}
+				}
 			}
 			return nil
 		},
@@ -645,7 +734,6 @@ func screenshotVideoToolDefinition() HarnessToolDefinition {
 			if source == "" {
 				return nil, "screenshot requires an attached video clip", errors.New("screenshot_video requires an attached video clip — ask the user to attach one first")
 			}
-			at := strings.TrimSpace(call.At)
 			staging, err := os.MkdirTemp("", "atelier-ffmpeg-*")
 			if err != nil {
 				return nil, "screenshot failed", err
@@ -655,22 +743,70 @@ func screenshotVideoToolDefinition() HarnessToolDefinition {
 			if err != nil {
 				return nil, "screenshot failed", err
 			}
-			framePath := filepath.Join(staging, "screenshot.jpg")
-			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegScreenshotArgs(input, at, framePath)); err != nil {
-				return nil, "screenshot failed", err
+			// Resolve the frame list: explicit timestamps in the planner's
+			// order, or count frames spread evenly across the clip (the
+			// duration read here, not by a probe_media round).
+			at := strings.TrimSpace(call.At)
+			var timestamps []string
+			equalIntervals := false
+			if at != "" {
+				timestamps = splitTimestampTokens(at)
+			} else {
+				duration, err := screenshotClipDuration(ctx, tools.Config, input, source)
+				if err != nil {
+					return nil, "screenshot failed", err
+				}
+				timestamps = equalIntervalTimestamps(duration, call.Count)
+				equalIntervals = true
 			}
-			data, err := os.ReadFile(framePath)
-			if err != nil || len(data) == 0 {
-				return nil, "screenshot failed", fmt.Errorf("ffmpeg produced no frame at %s", at)
+			images := make([]string, 0, len(timestamps))
+			var missed []string
+			for i, timestamp := range timestamps {
+				framePath := filepath.Join(staging, fmt.Sprintf("frame_%02d.jpg", i+1))
+				captureErr := runLocalFFmpeg(ctx, tools.Config, ffmpegScreenshotArgs(input, timestamp, framePath))
+				if captureErr == nil {
+					var data []byte
+					if data, captureErr = os.ReadFile(framePath); captureErr == nil && len(data) == 0 {
+						captureErr = errors.New("the frame file was empty")
+					}
+					if captureErr == nil {
+						images = append(images, "data:image/jpeg;base64,"+base64.StdEncoding.EncodeToString(data))
+					}
+				}
+				if captureErr != nil {
+					// A single-frame call keeps the historical hard error; in a
+					// batch, one bad timestamp (past the clip's end, say)
+					// must not discard the frames that did capture.
+					if len(timestamps) == 1 {
+						return nil, "screenshot failed", fmt.Errorf("ffmpeg produced no frame at %s: %v", timestamp, captureErr)
+					}
+					missed = append(missed, timestamp)
+				}
 			}
-			dataURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(data)
+			if len(images) == 0 {
+				return nil, "screenshot failed", fmt.Errorf("ffmpeg produced no frames at %s", screenshotTimestampsPhrase(timestamps))
+			}
+			prompt := "frame at " + timestamps[0]
+			summary := fmt.Sprintf("captured the frame at %s from the attached video with ffmpeg", timestamps[0])
+			if len(timestamps) > 1 {
+				prompt = fmt.Sprintf("%d frames at %s", len(timestamps), screenshotTimestampsPhrase(timestamps))
+				summary = fmt.Sprintf("captured %d of %d frames from the attached video with ffmpeg", len(images), len(timestamps))
+				if equalIntervals {
+					summary = fmt.Sprintf("captured %d of %d frames at equal intervals across the attached video with ffmpeg", len(images), len(timestamps))
+				}
+			}
+			var notices []string
+			for _, timestamp := range missed {
+				notices = append(notices, fmt.Sprintf("no frame was captured at %s — the timestamp is likely past the end of the clip", timestamp))
+			}
 			output := ToolImageResult{
-				Model:  ffmpegModelName,
-				Prompt: "frame at " + at,
-				Count:  1,
-				Images: []string{dataURL},
+				Model:   ffmpegModelName,
+				Prompt:  prompt,
+				Count:   len(images),
+				Images:  images,
+				Notices: notices,
 			}
-			return output, fmt.Sprintf("captured the frame at %s from the attached video with ffmpeg", at), nil
+			return output, summary, nil
 		},
 		Activity: ffmpegActivity("screenshot"),
 	}
@@ -1323,9 +1459,10 @@ func screenshotVideoParamSchema() map[string]any {
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
-			"at": stringParam("The timestamp of the frame to capture — seconds (\"42\", \"12.5\") or clock (\"00:01:30\"). Required; \"0\" is the first frame."),
+			"at":    stringParam(`The timestamp of the frame to capture — seconds ("42", "12.5") or clock ("00:01:30"); "0" is the first frame. May be a comma-separated list to capture several specific frames in one call ("0,9.08,18.17"). Either at or count is required; at wins when both are set.`),
+			"count": intParam(fmt.Sprintf(`How many frames to capture at equal intervals across the whole clip (1–%d) — the tool reads the clip's duration itself, so no probe is needed. The batch form for "N screenshots at equal intervals"; omit at. Either at or count is required; at wins when both are set.`, screenshotTimestampsCap)),
 		},
-		"required": []string{"at"},
+		"required": []string{},
 	}
 }
 

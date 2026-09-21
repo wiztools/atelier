@@ -217,8 +217,12 @@ type HarnessToolCall struct {
 	Task       string `json:"task,omitempty"`
 	Language   string `json:"language,omitempty"`
 	Timestamps string `json:"timestamps,omitempty"`
-	// At is the optional screenshot_video input naming the timestamp of the
-	// frame to capture — seconds ("42") or clock ("00:01:30"). Start and End
+	// At is the optional screenshot_video input naming the timestamp(s) of the
+	// frame(s) to capture — one timestamp ("42") or a comma-separated list
+	// ("0,9.08,18.17"), each in seconds or clock ("00:01:30") form. Count is
+	// screenshot_video's batch form: when At is empty, capture Count frames at
+	// equal intervals across the whole clip (the tool reads the duration
+	// itself). At wins when both are set. Start and End
 	// are the optional split_video segment bounds in the same timestamp
 	// formats; an omitted Start means the beginning of the clip, an omitted
 	// End means through the end. Mode is the per-tool strategy selector:
@@ -228,6 +232,7 @@ type HarnessToolCall struct {
 	// "watermark" (the default) or "collage". Planner-only, like the other
 	// media inputs — see local_ffmpeg.go and local_images.go.
 	At    string `json:"at,omitempty"`
+	Count int    `json:"count,omitempty"`
 	Start string `json:"start,omitempty"`
 	End   string `json:"end,omitempty"`
 	Mode  string `json:"mode,omitempty"`
@@ -2270,10 +2275,12 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 						"maxBytes":    map[string]any{"type": "integer"},
 						"allowBinary": map[string]any{"type": "boolean"},
 						// ffmpeg tool inputs (screenshot/split/join; start/end
-						// also scope transform_video's speed to a portion).
-						// The values are validated per-tool; the schema only
-						// frees the grammar to emit them.
+						// also scope transform_video's speed to a portion;
+						// count is screenshot_video's equal-interval batch
+						// size). The values are validated per-tool; the
+						// schema only frees the grammar to emit them.
 						"at":    map[string]any{"type": "string"},
+						"count": map[string]any{"type": "integer"},
 						"start": map[string]any{"type": "string"},
 						"end":   map[string]any{"type": "string"},
 						"mode":  map[string]any{"type": "string"},

@@ -1103,6 +1103,7 @@ export namespace main {
 	    language?: string;
 	    timestamps?: string;
 	    at?: string;
+	    count?: number;
 	    start?: string;
 	    end?: string;
 	    mode?: string;
@@ -1160,6 +1161,7 @@ export namespace main {
 	        this.language = source["language"];
 	        this.timestamps = source["timestamps"];
 	        this.at = source["at"];
+	        this.count = source["count"];
 	        this.start = source["start"];
 	        this.end = source["end"];
 	        this.mode = source["mode"];
