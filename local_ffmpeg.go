@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -228,8 +229,17 @@ func promoteStagedOutput(stagedPath, prefix, ext string) (string, error) {
 
 // ffmpegScreenshotArgs grabs one frame at a timestamp as JPEG. -ss before -i
 // is a fast input seek; re-encoding exactly one frame keeps it accurate.
-func ffmpegScreenshotArgs(input, at, output string) []string {
-	return []string{"-ss", at, "-i", input, "-frames:v", "1", "-q:v", "2", output}
+// displayWidth/displayHeight carry the clip's DISPLAY size for an anamorphic
+// source (frames stored squeezed, stretched on playback): the frame is
+// resampled to what a player shows, because JPEG carries no aspect metadata
+// to correct the squeeze at view time. Zero means square pixels — the stored
+// frame is captured untouched.
+func ffmpegScreenshotArgs(input, at, output string, displayWidth, displayHeight int) []string {
+	args := []string{"-ss", at, "-i", input}
+	if displayWidth > 0 && displayHeight > 0 {
+		args = append(args, "-vf", fmt.Sprintf("scale=%d:%d,setsar=1", displayWidth, displayHeight))
+	}
+	return append(args, "-frames:v", "1", "-q:v", "2", output)
 }
 
 // ffmpegSplitArgs cuts a segment. fast copies streams (instant, but cut points
@@ -546,6 +556,87 @@ func screenshotClipDuration(ctx context.Context, config AppConfig, input, source
 	return 0, errors.New(`screenshot_video could not read the clip's duration for the equal-interval capture (ffprobe is unavailable and the clip is not a readable MP4) — capture explicit timestamps instead, e.g. {"name":"screenshot_video","at":"0,30,60"}`)
 }
 
+// aspectCorrection describes an anamorphic clip: frames stored at
+// StoredWidth×StoredHeight, displayed at DisplayWidth×DisplayHeight by
+// players stretching non-square pixels. SampleAspectRatio and
+// DisplayAspectRatio carry ffprobe's strings when it answered (empty on the
+// MP4-sniff path, which only sees the two sizes).
+type aspectCorrection struct {
+	StoredWidth        int
+	StoredHeight       int
+	DisplayWidth       int
+	DisplayHeight      int
+	SampleAspectRatio  string
+	DisplayAspectRatio string
+}
+
+// screenshotAspectCorrection resolves whether the attached clip is
+// anamorphic — frames stored at one size, displayed at another — and the
+// display size screenshots must be resampled to (a raw frame dump carries
+// the squeezed storage size, and JPEG has no aspect metadata to fix it at
+// view time). ffprobe's sample_aspect_ratio answers for any container;
+// without ffprobe the MP4 sniff compares tkhd's presentation size against
+// the coded sample size in stsd — a difference is the container's own
+// stretch. A 90°/270° rotation swaps the display axes (the stretch rotates
+// with the frame, and ffmpeg auto-rotates the captured frame before the
+// resample). Fail-soft: ok false means square pixels, nothing readable, or
+// no way to check — capture proceeds untouched rather than failing.
+func screenshotAspectCorrection(ctx context.Context, config AppConfig, input, sourceDataURL string) (aspectCorrection, bool) {
+	if _, ok := resolveLocalFFprobeBinary(config); ok {
+		if probe, err := probeStagedMedia(ctx, config, input, "video"); err == nil {
+			num, den, _ := parseVideoRational(probe.SampleAspectRatio)
+			if displayWidth, displayHeight, stretched := anamorphicDisplayDimensions(probe.Width, probe.Height, num, den); stretched {
+				correction := aspectCorrection{
+					StoredWidth:        probe.Width,
+					StoredHeight:       probe.Height,
+					DisplayWidth:       displayWidth,
+					DisplayHeight:      displayHeight,
+					SampleAspectRatio:  probe.SampleAspectRatio,
+					DisplayAspectRatio: probe.DisplayAspectRatio,
+				}
+				if probe.Rotation%180 != 0 {
+					correction.DisplayWidth, correction.DisplayHeight = displayHeight, displayWidth
+				}
+				return correction, true
+			}
+			return aspectCorrection{}, false
+		}
+	}
+	if data, _, err := decodeMediaDataURL(sourceDataURL); err == nil {
+		codedWidth, codedHeight, ok := mp4CodedVideoDimensions(data)
+		if !ok {
+			return aspectCorrection{}, false
+		}
+		storedWidth, storedHeight, ok := mp4VideoDimensions(data)
+		if !ok {
+			return aspectCorrection{}, false
+		}
+		displayWidth, displayHeight := int(math.Round(storedWidth)), int(math.Round(storedHeight))
+		if displayWidth != codedWidth || displayHeight != codedHeight {
+			return aspectCorrection{
+				StoredWidth:   codedWidth,
+				StoredHeight:  codedHeight,
+				DisplayWidth:  displayWidth,
+				DisplayHeight: displayHeight,
+			}, true
+		}
+	}
+	return aspectCorrection{}, false
+}
+
+// aspectCorrectionNotice renders the user-facing notice for a resampled
+// capture: what the clip stores, what players show, and that the frames were
+// captured at the display size. DisplayAspectRatio (ffprobe's "16:9") rides
+// along when known.
+func aspectCorrectionNotice(correction aspectCorrection) string {
+	aspect := "non-square pixels"
+	if correction.DisplayAspectRatio != "" {
+		aspect += ", " + correction.DisplayAspectRatio
+	}
+	return fmt.Sprintf("the video stores frames at %dx%d and stretches them to %dx%d on playback (%s) — captured frames were resampled to the display size so they are not squeezed",
+		correction.StoredWidth, correction.StoredHeight, correction.DisplayWidth, correction.DisplayHeight, aspect)
+}
+
 // evenDown floors a pixel count to the nearest even value — H.264's yuv420p
 // chroma needs even dimensions, and a computed crop rect can land odd (a
 // 1000x333 clip cropped to 1:1 is 333x333).
@@ -572,18 +663,32 @@ func concatListFileContents(paths []string) string {
 // ToolProbeResult is probe_media's evidence payload: the compact facts of an
 // attached clip. No media slices — everything rides the standard role:"tool"
 // path verbatim (it is already small; the ffprobe JSON is parsed and
-// projected, never passed through).
+// projected, never passed through). The aspect fields surface anamorphic
+// sources — frames stored at Width×Height but stretched on playback: pixels
+// that aren't square (SampleAspectRatio "4:3" say), so players show
+// DisplayWidth×DisplayHeight instead.
 type ToolProbeResult struct {
-	Kind       string  `json:"kind"`
-	Duration   float64 `json:"durationSeconds"`
-	Width      int     `json:"width,omitempty"`
-	Height     int     `json:"height,omitempty"`
-	FPS        float64 `json:"fps,omitempty"`
-	VideoCodec string  `json:"videoCodec,omitempty"`
-	AudioCodec string  `json:"audioCodec,omitempty"`
-	Format     string  `json:"format,omitempty"`
-	BitRate    string  `json:"bitrate,omitempty"`
-	SizeBytes  int64   `json:"sizeBytes,omitempty"`
+	Kind               string  `json:"kind"`
+	Duration           float64 `json:"durationSeconds"`
+	Width              int     `json:"width,omitempty"`
+	Height             int     `json:"height,omitempty"`
+	FPS                float64 `json:"fps,omitempty"`
+	VideoCodec         string  `json:"videoCodec,omitempty"`
+	AudioCodec         string  `json:"audioCodec,omitempty"`
+	Format             string  `json:"format,omitempty"`
+	BitRate            string  `json:"bitrate,omitempty"`
+	SizeBytes          int64   `json:"sizeBytes,omitempty"`
+	SampleAspectRatio  string  `json:"sampleAspectRatio,omitempty"`
+	DisplayAspectRatio string  `json:"displayAspectRatio,omitempty"`
+	DisplayWidth       int     `json:"displayWidth,omitempty"`
+	DisplayHeight      int     `json:"displayHeight,omitempty"`
+	Rotation           int     `json:"rotation,omitempty"`
+}
+
+// ffprobeSideData is the rotation-bearing subset of ffprobe's per-stream
+// side_data_list entries.
+type ffprobeSideData struct {
+	Rotation float64 `json:"rotation"`
 }
 
 // ffprobeReport is the subset of ffprobe -show_format -show_streams JSON the
@@ -596,11 +701,15 @@ type ffprobeReport struct {
 		Size       string `json:"size"`
 	} `json:"format"`
 	Streams []struct {
-		CodecType    string `json:"codec_type"`
-		CodecName    string `json:"codec_name"`
-		Width        int    `json:"width"`
-		Height       int    `json:"height"`
-		AvgFrameRate string `json:"avg_frame_rate"`
+		CodecType          string            `json:"codec_type"`
+		CodecName          string            `json:"codec_name"`
+		Width              int               `json:"width"`
+		Height             int               `json:"height"`
+		AvgFrameRate       string            `json:"avg_frame_rate"`
+		SampleAspectRatio  string            `json:"sample_aspect_ratio"`
+		DisplayAspectRatio string            `json:"display_aspect_ratio"`
+		SideDataList       []ffprobeSideData `json:"side_data_list"`
+		Tags               map[string]string `json:"tags"`
 	} `json:"streams"`
 }
 
@@ -633,6 +742,18 @@ func probeStagedMedia(ctx context.Context, config AppConfig, path, kind string) 
 				result.Width = stream.Width
 				result.Height = stream.Height
 				result.FPS = parseFrameRate(stream.AvgFrameRate)
+				result.Rotation = ffprobeRotation(stream.SideDataList, stream.Tags)
+				// The aspect fields only carry the anomaly: SampleAspectRatio
+				// reports for every clip with a known ratio (square included),
+				// the display size only when it differs from the stored one.
+				if num, den, ok := parseVideoRational(stream.SampleAspectRatio); ok && num > 0 {
+					result.SampleAspectRatio = stream.SampleAspectRatio
+					if displayWidth, displayHeight, stretched := anamorphicDisplayDimensions(stream.Width, stream.Height, num, den); stretched {
+						result.DisplayAspectRatio = stream.DisplayAspectRatio
+						result.DisplayWidth = displayWidth
+						result.DisplayHeight = displayHeight
+					}
+				}
 			}
 		case "audio":
 			if result.AudioCodec == "" {
@@ -641,6 +762,55 @@ func probeStagedMedia(ctx context.Context, config AppConfig, path, kind string) 
 		}
 	}
 	return result, nil
+}
+
+// parseVideoRational reads ffprobe's rational strings ("4:3", "1:1", "0:1")
+// as integers. ok is false for anything that is not N:D with a nonzero D;
+// num == 0 is ffprobe's "unknown" (0:1), which callers treat as square.
+func parseVideoRational(value string) (num, den int, ok bool) {
+	parts := strings.Split(strings.TrimSpace(value), ":")
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	num, numErr := strconv.Atoi(strings.TrimSpace(parts[0]))
+	den, denErr := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if numErr != nil || denErr != nil || den == 0 {
+		return 0, 0, false
+	}
+	return num, den, true
+}
+
+// anamorphicDisplayDimensions computes the square-pixel display size of a
+// frame stored width×height under a sample aspect ratio: displayWidth =
+// round(width × num/den), height unchanged — SAR stretches width only. ok is
+// false for square pixels (num == den), unknown or degenerate ratios, and a
+// ratio that rounds back onto the stored width.
+func anamorphicDisplayDimensions(width, height, num, den int) (displayWidth, displayHeight int, ok bool) {
+	if width <= 0 || height <= 0 || num <= 0 || den <= 0 || num == den {
+		return 0, 0, false
+	}
+	scaled := int(math.Round(float64(width) * float64(num) / float64(den)))
+	if scaled <= 0 || scaled == width {
+		return 0, 0, false
+	}
+	return scaled, height, true
+}
+
+// ffprobeRotation reads a stream's rotation metadata: modern ffprobe reports
+// the display matrix's degrees in side_data_list, older builds a "rotate"
+// tag. Upright (or unparseable) is 0.
+func ffprobeRotation(sideData []ffprobeSideData, tags map[string]string) int {
+	for _, data := range sideData {
+		if data.Rotation != 0 {
+			return int(math.Round(data.Rotation))
+		}
+	}
+	if tagged := strings.TrimSpace(tags["rotate"]); tagged != "" {
+		if degrees, err := strconv.ParseFloat(tagged, 64); err == nil && degrees != 0 {
+			return int(math.Round(degrees))
+		}
+	}
+	return 0
 }
 
 // parseFrameRate reads ffprobe's rational frame rate ("30000/1001", "25/1")
@@ -700,7 +870,7 @@ func screenshotVideoToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "screenshot_video",
 		Title:       "Screenshot video",
-		Description: "Use this when the user asks to grab a frame, take a screenshot, still, or thumbnail of an attached video. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). at names the frame's timestamp — seconds (\"42\", \"12.5\") or clock (\"00:01:30\") — and may be a comma-separated list to capture several specific frames in ONE call (\"0,9.08,18.17\"). count is the equal-interval batch form: omit at and set count to N to capture N frames spread evenly across the whole clip — the tool reads the duration itself, so prefer it for \"N screenshots/screenshots at equal intervals\" requests and plan it as a single call with no probe_media round. When both are set, at wins. Each captured JPEG frame is attached to the assistant reply and becomes the conversation's newest image.",
+		Description: "Use this when the user asks to grab a frame, take a screenshot, still, or thumbnail of an attached video. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). at names the frame's timestamp — seconds (\"42\", \"12.5\") or clock (\"00:01:30\") — and may be a comma-separated list to capture several specific frames in ONE call (\"0,9.08,18.17\"). count is the equal-interval batch form: omit at and set count to N to capture N frames spread evenly across the whole clip — the tool reads the duration itself, so prefer it for \"N screenshots/screenshots at equal intervals\" requests and plan it as a single call with no probe_media round. When both are set, at wins. Frames are captured at the clip's display size — a clip that stores frames squeezed and stretches them on playback (non-square pixels) is resampled so its frames come out correctly shaped. Each captured JPEG frame is attached to the assistant reply and becomes the conversation's newest image.",
 		Example:     `{"name":"screenshot_video","at":"4.5"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: screenshotVideoParamSchema(),
@@ -759,11 +929,16 @@ func screenshotVideoToolDefinition() HarnessToolDefinition {
 				timestamps = equalIntervalTimestamps(duration, call.Count)
 				equalIntervals = true
 			}
+			// Anamorphic capture correction: a clip that stores frames squeezed
+			// and stretches them on playback must be resampled to its display
+			// size, or every frame comes out squeezed. Fail-soft — the capture
+			// itself must never fail over this check.
+			correction, aspectCorrected := screenshotAspectCorrection(ctx, tools.Config, input, source)
 			images := make([]string, 0, len(timestamps))
 			var missed []string
 			for i, timestamp := range timestamps {
 				framePath := filepath.Join(staging, fmt.Sprintf("frame_%02d.jpg", i+1))
-				captureErr := runLocalFFmpeg(ctx, tools.Config, ffmpegScreenshotArgs(input, timestamp, framePath))
+				captureErr := runLocalFFmpeg(ctx, tools.Config, ffmpegScreenshotArgs(input, timestamp, framePath, correction.DisplayWidth, correction.DisplayHeight))
 				if captureErr == nil {
 					var data []byte
 					if data, captureErr = os.ReadFile(framePath); captureErr == nil && len(data) == 0 {
@@ -796,6 +971,9 @@ func screenshotVideoToolDefinition() HarnessToolDefinition {
 				}
 			}
 			var notices []string
+			if aspectCorrected {
+				notices = append(notices, aspectCorrectionNotice(correction))
+			}
 			for _, timestamp := range missed {
 				notices = append(notices, fmt.Sprintf("no frame was captured at %s — the timestamp is likely past the end of the clip", timestamp))
 			}
@@ -1317,7 +1495,7 @@ func probeMediaToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "probe_media",
 		Title:       "Probe media",
-		Description: "Use this when the user asks about an attached clip's properties (how long is it, what resolution, what codecs, does it have audio) or when planning cuts and joins needs exact numbers. Runs the locally installed ffprobe on the newest attached video (or the attached audio when no video is attached) and returns duration, dimensions, frame rate, codecs, and container as evidence. No parameters.",
+		Description: "Use this when the user asks about an attached clip's properties (how long is it, what resolution, what codecs, does it have audio) or when planning cuts and joins needs exact numbers. Runs the locally installed ffprobe on the newest attached video (or the attached audio when no video is attached) and returns duration, dimensions, frame rate, codecs, and container as evidence — flagging non-square-pixel clips that store frames at one size and display them larger (the display size and aspect ratio ride along). No parameters.",
 		Example:     `{"name":"probe_media"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: probeMediaParamSchema(),
@@ -1424,7 +1602,18 @@ func probeSummary(result ToolProbeResult) string {
 		parts = append(parts, fmt.Sprintf("%gs", result.Duration))
 	}
 	if result.Width > 0 && result.Height > 0 {
-		parts = append(parts, fmt.Sprintf("%dx%d", result.Width, result.Height))
+		dims := fmt.Sprintf("%dx%d", result.Width, result.Height)
+		if result.DisplayWidth > 0 && result.DisplayHeight > 0 {
+			dims += fmt.Sprintf(" (displays as %dx%d", result.DisplayWidth, result.DisplayHeight)
+			if result.DisplayAspectRatio != "" {
+				dims += ", " + result.DisplayAspectRatio
+			}
+			dims += ")"
+		}
+		parts = append(parts, dims)
+	}
+	if result.Rotation != 0 {
+		parts = append(parts, fmt.Sprintf("rotation %d°", result.Rotation))
 	}
 	if result.FPS > 0 {
 		parts = append(parts, fmt.Sprintf("%ggfps", result.FPS))

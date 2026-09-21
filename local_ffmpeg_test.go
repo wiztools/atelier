@@ -76,6 +76,34 @@ JSON
 fi
 `
 
+// fakeFFprobeAnamorphicScript fakes ffprobe over the squeezed-source movie:
+// frames stored 960x720 with 4:3 sample aspect, so players stretch them to a
+// 1280x720 (16:9) display — the screenshot tool must resample its captures.
+const fakeFFprobeAnamorphicScript = `#!/bin/sh
+cat <<'JSON'
+{"format":{"duration":"12.500","format_name":"mov,mp4,m4a,3gp,3g2,mj2","bit_rate":"1200000","size":"1875000"},"streams":[{"codec_type":"video","codec_name":"h264","width":960,"height":720,"avg_frame_rate":"30000/1001","sample_aspect_ratio":"4:3","display_aspect_ratio":"16:9"},{"codec_type":"audio","codec_name":"aac"}]}
+JSON
+`
+
+// fakeFFprobeUnknownSARScript fakes ffprobe over a clip whose sample aspect
+// is unknown (0:1) — ffmpeg's marker for "no aspect metadata". Unknown is
+// treated as square pixels: no resample, no notice.
+const fakeFFprobeUnknownSARScript = `#!/bin/sh
+cat <<'JSON'
+{"format":{"duration":"12.500","format_name":"mov,mp4,m4a,3gp,3g2,mj2"},"streams":[{"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"avg_frame_rate":"30000/1001","sample_aspect_ratio":"0:1","display_aspect_ratio":"0:1"}]}
+JSON
+`
+
+// fakeFFprobeRotatedAnamorphicScript fakes ffprobe over an anamorphic clip
+// with a 90° display-matrix rotation: stored 960x720 at 4:3 sample aspect,
+// played sideways — display becomes 720x1280 after the rotation swaps the
+// axes.
+const fakeFFprobeRotatedAnamorphicScript = `#!/bin/sh
+cat <<'JSON'
+{"format":{"duration":"12.500","format_name":"mov,mp4,m4a,3gp,3g2,mj2"},"streams":[{"codec_type":"video","codec_name":"h264","width":960,"height":720,"avg_frame_rate":"30000/1001","sample_aspect_ratio":"4:3","display_aspect_ratio":"16:9","side_data_list":[{"side_data_type":"Display Matrix","rotation":-90}]}]}
+JSON
+`
+
 func videoDataURL(payload string) string {
 	// A minimal MP4 header (the ftyp box is all isVideoBytes checks) so the
 	// fixture survives attachment persistence like a real clip.
@@ -204,14 +232,15 @@ func TestConcatListFileContents(t *testing.T) {
 
 // TestFFmpegArgBuilders pins every builder's exact argument shape.
 func TestFFmpegArgBuilders(t *testing.T) {
-	if got := ffmpegScreenshotArgs("in.mp4", "4.5", "out.jpg"); strings.Join(got, " ") != "-ss 4.5 -i in.mp4 -frames:v 1 -q:v 2 out.jpg" {
-		t.Errorf("screenshot args = %v", got)
-	}
 	cases := []struct {
 		name string
 		got  []string
 		want string
 	}{
+		{"screenshot square pixels", ffmpegScreenshotArgs("in.mp4", "4.5", "out.jpg", 0, 0),
+			"-ss 4.5 -i in.mp4 -frames:v 1 -q:v 2 out.jpg"},
+		{"screenshot resamples anamorphic", ffmpegScreenshotArgs("in.mp4", "4.5", "out.jpg", 1280, 720),
+			"-ss 4.5 -i in.mp4 -vf scale=1280:720,setsar=1 -frames:v 1 -q:v 2 out.jpg"},
 		{"split accurate full", ffmpegSplitArgs("in.mp4", "10", 15, false, "out.mp4"),
 			"-ss 10 -i in.mp4 -t 15 -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -movflags +faststart out.mp4"},
 		{"split accurate to end", ffmpegSplitArgs("in.mp4", "", 0, false, "out.mp4"),
@@ -708,6 +737,221 @@ func TestFFmpegScreenshotBatchByAtListExecutes(t *testing.T) {
 	}
 	if !strings.Contains(typed.Prompt, "3 frames at 0, 6.25, 00:00:12") {
 		t.Fatalf("prompt = %q, want the frame list", typed.Prompt)
+	}
+}
+
+// TestParseVideoRational pins ffprobe's rational aspect grammar: N:D with a
+// nonzero denominator, 0:1 read as "unknown" (num 0), everything else false.
+func TestParseVideoRational(t *testing.T) {
+	cases := []struct {
+		value  string
+		num    int
+		den    int
+		wantOK bool
+	}{
+		{"4:3", 4, 3, true},
+		{"1:1", 1, 1, true},
+		{"0:1", 0, 1, true},
+		{"32:27", 32, 27, true},
+		{" 4 : 3 ", 4, 3, true},
+		{"", 0, 0, false},
+		{"4", 0, 0, false},
+		{"4:3:2", 0, 0, false},
+		{"a:b", 0, 0, false},
+		{"4:0", 0, 0, false},
+	}
+	for _, tc := range cases {
+		num, den, ok := parseVideoRational(tc.value)
+		if ok != tc.wantOK || (ok && (num != tc.num || den != tc.den)) {
+			t.Errorf("parseVideoRational(%q) = (%d, %d, %v), want (%d, %d, %v)", tc.value, num, den, ok, tc.num, tc.den, tc.wantOK)
+		}
+	}
+}
+
+// TestAnamorphicDisplayDimensions pins the display-size math: width scales by
+// the sample aspect, height never moves, and square/unknown/collapsed ratios
+// report no stretch.
+func TestAnamorphicDisplayDimensions(t *testing.T) {
+	cases := []struct {
+		name          string
+		width         int
+		height        int
+		num           int
+		den           int
+		wantWidth     int
+		wantHeight    int
+		wantStretched bool
+	}{
+		{"16:9 from 4:3 storage", 960, 720, 4, 3, 1280, 720, true},
+		{"NTSC widescreen", 720, 480, 32, 27, 853, 480, true},
+		{"narrower display", 960, 720, 3, 4, 720, 720, true},
+		{"square pixels", 1920, 1080, 1, 1, 0, 0, false},
+		{"unknown", 1920, 1080, 0, 1, 0, 0, false},
+		{"degenerate dimensions", 0, 720, 4, 3, 0, 0, false},
+		{"rounds back onto the width", 5, 4, 101, 100, 0, 0, false},
+	}
+	for _, tc := range cases {
+		width, height, stretched := anamorphicDisplayDimensions(tc.width, tc.height, tc.num, tc.den)
+		if stretched != tc.wantStretched || (stretched && (width != tc.wantWidth || height != tc.wantHeight)) {
+			t.Errorf("%s = (%d, %d, %v), want (%d, %d, %v)", tc.name, width, height, stretched, tc.wantWidth, tc.wantHeight, tc.wantStretched)
+		}
+	}
+}
+
+// TestFFmpegScreenshotAnamorphicCorrection pins the squeezed-frame fix: an
+// anamorphic source (frames stored 960x720, stretched to 1280x720 on
+// playback) is captured at its display size, while square, unknown-aspect,
+// and unreadable sources keep the plain frame dump.
+func TestFFmpegScreenshotAnamorphicCorrection(t *testing.T) {
+	t.Run("resamples to the display size with a notice", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeAnamorphicScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "screenshot_video", HarnessToolCall{At: "4.5"})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, ok := result.Result.(ToolImageResult)
+		if !ok || typed.Count != 1 || len(typed.Images) != 1 {
+			t.Fatalf("result payload = %+v", result.Result)
+		}
+		args := fakeFFmpegArgs(t, bin)
+		if !strings.Contains(args, "-vf scale=1280:720,setsar=1 ") {
+			t.Fatalf("ffmpeg args = %q, want the display-size resample", args)
+		}
+		if len(typed.Notices) == 0 || !strings.Contains(typed.Notices[0], "960x720") || !strings.Contains(typed.Notices[0], "1280x720") {
+			t.Fatalf("notices = %v, want the stored-vs-display explanation", typed.Notices)
+		}
+	})
+	t.Run("square pixels capture untouched", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "screenshot_video", HarnessToolCall{At: "4.5"})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed := result.Result.(ToolImageResult)
+		if len(typed.Notices) != 0 {
+			t.Fatalf("notices = %v, a square-pixel capture should carry none", typed.Notices)
+		}
+		if args := fakeFFmpegArgs(t, bin); strings.Contains(args, "scale=") {
+			t.Fatalf("ffmpeg args = %q, square pixels must not resample", args)
+		}
+	})
+	t.Run("unknown sample aspect stays untouched", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeUnknownSARScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "screenshot_video", HarnessToolCall{At: "4.5"})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		if args := fakeFFmpegArgs(t, bin); strings.Contains(args, "scale=") {
+			t.Fatalf("ffmpeg args = %q, unknown aspect must be treated as square", args)
+		}
+	})
+	t.Run("rotated anamorphic swaps the display axes", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeRotatedAnamorphicScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "screenshot_video", HarnessToolCall{At: "4.5"})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		// Stored 960x720 at 4:3 plays as 1280x720, rotated sideways: the
+		// display size swaps to 720x1280.
+		if args := fakeFFmpegArgs(t, bin); !strings.Contains(args, "-vf scale=720:1280,setsar=1 ") {
+			t.Fatalf("ffmpeg args = %q, want the rotated display-size resample", args)
+		}
+	})
+	t.Run("MP4 sniff corrects without ffprobe", func(t *testing.T) {
+		// No ffprobe override and a lookup stub without one (the override is
+		// looked up by its own value), so the aspect can only come from the
+		// attached MP4's tkhd display size vs the stsd coded size.
+		dir := t.TempDir()
+		bin := filepath.Join(dir, "bin")
+		config := defaultAppConfig()
+		ffmpegPath := writeFakeWhisper(t, bin, "ffmpeg", fakeFFmpegScript)
+		stubLocalLookup(t, map[string]string{"ffmpeg": ffmpegPath, ffmpegPath: ffmpegPath})
+		config.Providers.Local.FFmpeg.Binary = ffmpegPath
+		clip := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(mp4FixtureWithSampleEntry(1280, 720, 960, 720))
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{clip},
+		}, "screenshot_video", HarnessToolCall{At: "1"})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		if args := fakeFFmpegArgs(t, bin); !strings.Contains(args, "-vf scale=1280:720,setsar=1 ") {
+			t.Fatalf("ffmpeg args = %q, want the sniffed display-size resample", args)
+		}
+		typed := result.Result.(ToolImageResult)
+		if len(typed.Notices) == 0 || !strings.Contains(typed.Notices[0], "non-square pixels") {
+			t.Fatalf("notices = %v, want the sniff-path aspect notice", typed.Notices)
+		}
+	})
+	t.Run("MP4 sniff leaves square storage untouched", func(t *testing.T) {
+		dir := t.TempDir()
+		bin := filepath.Join(dir, "bin")
+		config := defaultAppConfig()
+		ffmpegPath := writeFakeWhisper(t, bin, "ffmpeg", fakeFFmpegScript)
+		stubLocalLookup(t, map[string]string{"ffmpeg": ffmpegPath, ffmpegPath: ffmpegPath})
+		config.Providers.Local.FFmpeg.Binary = ffmpegPath
+		clip := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(mp4FixtureWithSampleEntry(1344, 768, 1344, 768))
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{clip},
+		}, "screenshot_video", HarnessToolCall{At: "1"})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		if args := fakeFFmpegArgs(t, bin); strings.Contains(args, "scale=") {
+			t.Fatalf("ffmpeg args = %q, matching coded and display sizes must not resample", args)
+		}
+	})
+}
+
+// TestFFmpegProbeAnamorphicEvidence pins probe_media's assessment of the
+// anomaly: the stored and display sizes, both aspect strings, and a summary
+// that says what the clip shows on playback.
+func TestFFmpegProbeAnamorphicEvidence(t *testing.T) {
+	config, _ := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeAnamorphicScript)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+	}, "probe_media", HarnessToolCall{})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	typed, ok := result.Result.(ToolProbeResult)
+	if !ok {
+		t.Fatalf("result payload = %+v", result.Result)
+	}
+	if typed.Width != 960 || typed.Height != 720 || typed.DisplayWidth != 1280 || typed.DisplayHeight != 720 {
+		t.Fatalf("probe dimensions = %+v, want stored 960x720 and display 1280x720", typed)
+	}
+	if typed.SampleAspectRatio != "4:3" || typed.DisplayAspectRatio != "16:9" {
+		t.Fatalf("probe aspect = %q / %q, want 4:3 / 16:9", typed.SampleAspectRatio, typed.DisplayAspectRatio)
+	}
+	if !strings.Contains(result.Summary, "960x720 (displays as 1280x720, 16:9)") {
+		t.Fatalf("summary = %q, want the display annotation", result.Summary)
+	}
+}
+
+// TestFFmpegProbeRotationEvidence pins the rotation read: modern ffprobe's
+// side_data_list display matrix reaches the evidence and the summary.
+func TestFFmpegProbeRotationEvidence(t *testing.T) {
+	config, _ := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeRotatedAnamorphicScript)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+	}, "probe_media", HarnessToolCall{})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	typed, ok := result.Result.(ToolProbeResult)
+	if !ok || typed.Rotation != -90 {
+		t.Fatalf("result payload = %+v, want rotation -90", result.Result)
+	}
+	if !strings.Contains(result.Summary, "rotation -90°") {
+		t.Fatalf("summary = %q, want the rotation fact", result.Summary)
 	}
 }
 

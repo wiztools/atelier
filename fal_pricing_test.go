@@ -361,6 +361,57 @@ func mp4FixtureVideoOnly() []byte {
 	return append(tinyMP4(), mp4TestBox("moov", videoTrak)...)
 }
 
+// mp4FixtureWithSampleEntry builds ftyp + moov{video trak} whose tkhd carries
+// the display (presentation) size and whose stsd sample entry carries the
+// coded size — anamorphic when they differ (players stretch the coded frames
+// to the tkhd size), square when they match.
+func mp4FixtureWithSampleEntry(displayWidth, displayHeight, codedWidth, codedHeight uint32) []byte {
+	tkhd := make([]byte, 84)
+	binary.BigEndian.PutUint32(tkhd[76:80], displayWidth<<16)
+	binary.BigEndian.PutUint32(tkhd[80:84], displayHeight<<16)
+	videoHdlr := make([]byte, 24)
+	copy(videoHdlr[8:12], "vide")
+	// A VisualSampleEntry fixed header: width/height ride as the uint16 pair
+	// at payload offsets 24/26; the trailing fields stay zeroed — the coded
+	// reader only walks that far.
+	entry := make([]byte, 78)
+	binary.BigEndian.PutUint16(entry[24:26], uint16(codedWidth))
+	binary.BigEndian.PutUint16(entry[26:28], uint16(codedHeight))
+	stsd := append(make([]byte, 8), mp4TestBox("avc1", entry)...) // version+flags + entry_count
+	mdiaPayload := append(mp4TestBox("hdlr", videoHdlr),
+		mp4TestBox("minf", mp4TestBox("stbl", mp4TestBox("stsd", stsd)))...)
+	videoTrak := mp4TestBox("trak", append(mp4TestBox("tkhd", tkhd), mp4TestBox("mdia", mdiaPayload)...))
+	return append(tinyMP4(), mp4TestBox("moov", videoTrak)...)
+}
+
+// TestMp4CodedVideoDimensions pins the stsd sample-entry read: the coded size
+// of an anamorphic or square track, and fail-soft everywhere the sample table
+// is missing or unreadable.
+func TestMp4CodedVideoDimensions(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		data       []byte
+		wantWidth  int
+		wantHeight int
+		wantOK     bool
+	}{
+		{name: "anamorphic track", data: mp4FixtureWithSampleEntry(1280, 720, 960, 720), wantWidth: 960, wantHeight: 720, wantOK: true},
+		{name: "square track", data: mp4FixtureWithSampleEntry(1344, 768, 1344, 768), wantWidth: 1344, wantHeight: 768, wantOK: true},
+		{name: "no sample table", data: mp4FixtureWithVideoTrack(1344, 768), wantOK: false},
+		{name: "video trak without stsd", data: mp4FixtureVideoOnly(), wantOK: false},
+		{name: "no moov", data: tinyMP4(), wantOK: false},
+		{name: "not mp4", data: []byte("not a video at all"), wantOK: false},
+		{name: "empty", data: nil, wantOK: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			width, height, ok := mp4CodedVideoDimensions(tt.data)
+			if ok != tt.wantOK || (ok && (width != tt.wantWidth || height != tt.wantHeight)) {
+				t.Fatalf("mp4CodedVideoDimensions = (%d, %d, %v), want (%d, %d, %v)", width, height, ok, tt.wantWidth, tt.wantHeight, tt.wantOK)
+			}
+		})
+	}
+}
+
 func TestMp4HasAudioTrack(t *testing.T) {
 	for _, tt := range []struct {
 		name string

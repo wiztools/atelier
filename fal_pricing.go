@@ -880,6 +880,56 @@ func mp4VideoDimensions(data []byte) (float64, float64, bool) {
 	return width, height, true
 }
 
+// mp4CodedVideoDimensions reads the video track's coded frame size from the
+// first stsd sample entry — the VisualSampleEntry fixed header's uint16
+// width/height pair, the size the decoder produces, versus tkhd's
+// presentation size. The ffmpeg screenshot tool compares the two: a
+// difference is an anamorphic container, whose players stretch the coded
+// frames to the tkhd size. Pure byte parsing, fail-soft on anything
+// unparseable; an MP4 without a readable sample table reports no coded size.
+func mp4CodedVideoDimensions(data []byte) (int, int, bool) {
+	trak, ok := mp4VideoTrak(data)
+	if !ok {
+		return 0, 0, false
+	}
+	mdia, ok := mp4ChildBoxPayload(trak, "mdia")
+	if !ok {
+		return 0, 0, false
+	}
+	minf, ok := mp4ChildBoxPayload(mdia, "minf")
+	if !ok {
+		return 0, 0, false
+	}
+	stbl, ok := mp4ChildBoxPayload(minf, "stbl")
+	if !ok {
+		return 0, 0, false
+	}
+	stsd, ok := mp4ChildBoxPayload(stbl, "stsd")
+	if !ok || len(stsd) < 8 {
+		return 0, 0, false
+	}
+	// stsd payload: version+flags(4) entry_count(4), then the sample entries;
+	// a VisualSampleEntry's fixed header carries width(2)/height(2) at its
+	// payload offsets 24/26.
+	width, height := 0, 0
+	mp4EachChild(stsd[8:], func(boxType string, payload []byte) bool {
+		if len(payload) < 28 {
+			return true
+		}
+		encodedWidth := int(binary.BigEndian.Uint16(payload[24:26]))
+		encodedHeight := int(binary.BigEndian.Uint16(payload[26:28]))
+		if encodedWidth > 0 && encodedHeight > 0 {
+			width, height = encodedWidth, encodedHeight
+			return false
+		}
+		return true
+	})
+	if width <= 0 || height <= 0 {
+		return 0, 0, false
+	}
+	return width, height, true
+}
+
 // mp4VideoFrameCount sums the video track's stts sample counts — every frame
 // the container actually carries. Exact for a purely generated clip, where the
 // output holds exactly the frames the model rendered.
