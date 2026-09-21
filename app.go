@@ -473,6 +473,14 @@ type ChatRequest struct {
 	// Must reference an existing project or the turn fails before anything is
 	// persisted (resolveTurnProject). Empty means a standalone conversation.
 	ProjectID string `json:"projectId,omitempty"`
+	// ModelOverrides pins model selections for a NEW conversation
+	// (ConversationID empty) — the turn-1 twin of the record's
+	// HistoryConversation.ModelOverrides. Applied to the first turn's config
+	// (applyConversationModelOverrides) and persisted onto the new record at
+	// creation (requestModelOverrides), after which the record is the truth —
+	// for an existing conversation this field is ignored. Unlike Workspace it
+	// stays mutable afterwards via SetConversationModelOverrides.
+	ModelOverrides *ConversationModelOverrides `json:"modelOverrides,omitempty"`
 	// ReferencedAssetIDs carries the @-mentioned asset IDs for this turn —
 	// ConversationAsset IDs from ListConversationAssets. The harness resolves
 	// each ID to its artifact and delivers the media through the tool
@@ -844,6 +852,10 @@ type ConversationSummary struct {
 	// immutable afterwards (MoveConversationToProject is the one sanctioned
 	// rewrite). No schema bump: absent and empty both read as standalone.
 	ProjectID string `json:"projectId,omitempty"`
+	// ModelOverrides mirrors the conversation record's model-selection
+	// override (nil when unset) so the UI can badge and hydrate overridden
+	// conversations from the list without loading the full record.
+	ModelOverrides *ConversationModelOverrides `json:"modelOverrides,omitempty"`
 }
 
 type ConversationDetail struct {
@@ -876,6 +888,15 @@ type HistoryConversation struct {
 	// immutable afterwards (MoveConversationToProject is the one sanctioned
 	// rewrite). No schema bump: absent and empty both read as standalone.
 	ProjectID string `json:"projectId,omitempty"`
+	// ModelOverrides is the per-conversation model-selection override (see
+	// ConversationModelOverrides): empty fields inherit the live global
+	// Settings, so the struct is stored nil unless at least one field is set.
+	// Mutable over the conversation's life via SetConversationModelOverrides,
+	// the one sanctioned rewrite. Applied per turn by rewriting the per-stream
+	// config copy before the HarnessEngine is built (the resolveTurnWorkspace
+	// pattern). No schema bump: absent and nil both read as "follow global
+	// config".
+	ModelOverrides *ConversationModelOverrides `json:"modelOverrides,omitempty"`
 }
 
 type HistoryProvider struct {
@@ -1632,6 +1653,16 @@ func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {
 	if strings.TrimSpace(workspaceRoot) != "" {
 		config.Tools.Filesystem.Root = workspaceRoot
 	}
+	// Apply the conversation's model-selection overrides the same way — one
+	// rewrite of the per-stream config copy before engine construction scopes
+	// harness routing, tool-registry gating, and every tool's default model
+	// through h.config (see applyConversationModelOverrides). A primary
+	// override also rewrites the request's model fields: the record wins,
+	// like the workspace.
+	config, req, err = applyConversationModelOverrides(config, req)
+	if err != nil {
+		return nil, err
+	}
 	engine := newHarnessEngine(config, a)
 	if strings.TrimSpace(req.Model) == "" {
 		req.Model = strings.TrimSpace(config.Providers.Ollama.Models.Primary)
@@ -2072,6 +2103,13 @@ func (a *App) writeChatConversation(req ChatRequest, assistantContent, assistant
 	}
 	if strings.TrimSpace(workspaceRoot) != "" {
 		config.Tools.Filesystem.Root = workspaceRoot
+	}
+	// Same per-conversation model overrides as StreamChat so this
+	// non-streaming write path is consistent (see
+	// applyConversationModelOverrides).
+	config, req, err = applyConversationModelOverrides(config, req)
+	if err != nil {
+		return "", err
 	}
 	if strings.TrimSpace(model) == "" {
 		model = req.Model
@@ -3476,8 +3514,9 @@ func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, 
 			TurnCount:     2,
 			ArtifactCount: countMessageAttachments([]ChatMessage{lastUserMessage(req.Messages)}),
 		},
-		Workspace: config.Tools.Filesystem.Root,
-		ProjectID: strings.TrimSpace(req.ProjectID),
+		Workspace:      config.Tools.Filesystem.Root,
+		ProjectID:      strings.TrimSpace(req.ProjectID),
+		ModelOverrides: requestModelOverrides(req),
 	}
 
 	userTurn, assistantTurn, err := buildChatTurnPair(workspace.ID, 1, nowText, req, assistantContent, assistantThinking, model, provider, reason, tokens, workspace.ArtifactsDir, config.Storage, run, strings.TrimSpace(req.ProjectID))
@@ -3520,8 +3559,9 @@ func writePendingChatConversation(config AppConfig, req ChatRequest) (string, er
 			TurnCount:     1,
 			ArtifactCount: countMessageAttachments([]ChatMessage{lastUserMessage(req.Messages)}),
 		},
-		Workspace: config.Tools.Filesystem.Root,
-		ProjectID: strings.TrimSpace(req.ProjectID),
+		Workspace:      config.Tools.Filesystem.Root,
+		ProjectID:      strings.TrimSpace(req.ProjectID),
+		ModelOverrides: requestModelOverrides(req),
 	}
 	userTurn, err := buildChatUserTurn(workspace.ID, 1, nowText, req, workspace.ArtifactsDir, config.Storage, strings.TrimSpace(req.ProjectID))
 	if err != nil {

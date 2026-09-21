@@ -136,14 +136,15 @@ func (store HistoryStore) writeTurn(turnsDir string, turn HistoryTurn) error {
 
 func conversationSummaryFrom(conversation HistoryConversation) ConversationSummary {
 	return ConversationSummary{
-		ID:            conversation.ID,
-		Kind:          conversation.Kind,
-		Title:         conversation.Title,
-		CreatedAt:     conversation.CreatedAt,
-		UpdatedAt:     conversation.UpdatedAt,
-		TurnCount:     conversation.Stats.TurnCount,
-		ArtifactCount: conversation.Stats.ArtifactCount,
-		Workspace:     conversation.Workspace,
-		ProjectID:     conversation.ProjectID,
+		ID:             conversation.ID,
+		Kind:           conversation.Kind,
+		Title:          conversation.Title,
+		CreatedAt:      conversation.CreatedAt,
+		UpdatedAt:      conversation.UpdatedAt,
+		TurnCount:      conversation.Stats.TurnCount,
+		ArtifactCount:  conversation.Stats.ArtifactCount,
+		Workspace:      conversation.Workspace,
+		ProjectID:      conversation.ProjectID,
+		ModelOverrides: conversation.ModelOverrides,
 	}
 }

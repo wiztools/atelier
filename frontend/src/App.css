@@ -3130,3 +3130,40 @@ button:disabled {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Per-conversation model overrides ------------------------------------- */
+
+/* The "↺ reset" chip on a field this conversation pins; sits in the field's
+   label row and unpins the field back to the global Settings value. */
+.override-reset {
+  border: 1px solid #3a3e41;
+  background: transparent;
+  color: #9ea5a3;
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.override-reset:hover {
+  border-color: #d5a64f;
+  color: #d5a64f;
+}
+
+/* The toolbar button glows while the conversation pins overrides, so the
+   entry point is discoverable after the screen is closed. */
+.conversation-models-toggle.has-overrides {
+  color: #d5a64f;
+  border-color: rgba(213, 166, 79, 0.55);
+}
+
+.conversation-models-error {
+  margin-top: 16px;
+  padding: 10px 12px;
+  border: 1px solid rgba(203, 92, 92, 0.5);
+  border-radius: 8px;
+  color: #e2b1b1;
+  background: rgba(203, 92, 92, 0.08);
+  font-size: 12px;
+}

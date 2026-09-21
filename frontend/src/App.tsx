@@ -60,6 +60,7 @@ import {
   SaveVideo,
   SaveAudio,
   SaveConfig,
+  SetConversationModelOverrides,
   SaveFalAPIKey,
   SaveOpenAICompatibleAPIKey,
   SaveOpenRouterAPIKey,
@@ -71,8 +72,9 @@ import {
 import {main} from '../wailsjs/go/models';
 import {EventsOff, EventsOn} from '../wailsjs/runtime/runtime';
 
-type View = 'app' | 'settings';
+type View = 'app' | 'settings' | 'conversation-models';
 type SettingsTab = 'providers' | 'models' | 'others';
+type ChatProviderID = 'ollama' | 'openrouter' | 'openai-compatible';
 type ConversationKind = 'chat';
 
 type ChatEntry = {
@@ -906,7 +908,6 @@ function App() {
   const [status, setStatus] = useState<main.OllamaStatus | null>(null);
   const [models, setModels] = useState<main.OllamaModel[]>([]);
   const [refreshing, setRefreshing] = useState(false);
-  type ChatProviderID = 'ollama' | 'openrouter' | 'openai-compatible';
   const [harnessProvider, setHarnessProvider] = useState<ChatProviderID>('ollama');
   // The harness model is remembered per provider, mirroring primaryModels, so
   // switching providers restores that provider's last selection instead of
@@ -1150,6 +1151,21 @@ function App() {
   const [resizingSidebar, setResizingSidebar] = useState(false);
   const [view, setView] = useState<View>('app');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('providers');
+  // Per-conversation model-override editing state: the draft is a snapshot of
+  // the effective selection taken when the conversation-models view opens
+  // (the panel edits it; the record is the truth it converges to), the keys
+  // are the fields this conversation pins, and convModelsError surfaces
+  // mutator failures (e.g. changing overrides while the turn streams).
+  const [convModelsDraft, setConvModelsDraft] = useState<ModelSelectionValue | null>(null);
+  const [convModelsKeys, setConvModelsKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const [convModelsError, setConvModelsError] = useState('');
+  // draftModelOverrides is the turn-1 twin of the record's override: what the
+  // NEXT conversation (none active yet) will run on, from its first message.
+  // It travels once with ChatRequest.modelOverrides and the backend pins it
+  // onto the new record; cleared once that conversation exists, after which
+  // the record is the truth. Dormant while an older conversation is open —
+  // same posture as draftWorkspace.
+  const [draftModelOverrides, setDraftModelOverrides] = useState<main.ConversationModelOverrides | null>(null);
   const [previewImage, setPreviewImage] = useState('');
   const [purgeBusy, setPurgeBusy] = useState(false);
   const [confirmPurgeArchived, setConfirmPurgeArchived] = useState(false);
@@ -1951,29 +1967,415 @@ function App() {
     [openaiCompatibleModels],
   );
 
-  const primaryModelOptions = useMemo(() => {
-    if (primaryProvider === 'openrouter') {
-      return asArray(openRouterModels)
-        .map((item) => ({value: item.id, label: item.displayName || item.id}))
-        .sort((a, b) => a.label.localeCompare(b.label));
-    }
-    if (primaryProvider === 'openai-compatible') {
-      return openaiCompatibleModelOptions;
-    }
-    return modelOptions.map((name) => ({value: name, label: name}));
-  }, [modelOptions, openRouterModels, openaiCompatibleModelOptions, primaryProvider]);
+  const primaryModelOptions = useMemo(
+    () => chatModelOptionsFor(primaryProvider, {modelOptions, openRouterModels, openaiCompatibleModels: openaiCompatibleModelOptions}),
+    [modelOptions, openRouterModels, openaiCompatibleModelOptions, primaryProvider],
+  );
   const primaryModelIsValid = primaryModelOptions.some((option) => option.value === model);
-  const harnessModelOptions = useMemo(() => {
-    if (harnessProvider === 'openrouter') {
-      return asArray(openRouterModels)
-        .map((item) => ({value: item.id, label: item.displayName || item.id}))
-        .sort((a, b) => a.label.localeCompare(b.label));
+
+  // ---- Per-conversation model overrides ---------------------------------
+  // The active conversation's record may pin model selections that override
+  // the global Settings (differential: unset fields inherit). Everything the
+  // UI shows derives from globalModelSelection ⊕ conversationOverrides so the
+  // composer, the badge, and the conversation-models screen agree.
+
+  const activeConversation = useMemo(
+    () => conversations.find((conversation) => conversation.id === activeConversationID) ?? null,
+    [conversations, activeConversationID],
+  );
+  const conversationOverrides = activeConversation?.modelOverrides ?? null;
+  // Before any conversation exists, the pending draft stands in for the
+  // record everywhere the UI derives effective selections.
+  const uiModelOverrides = activeConversationID ? conversationOverrides : draftModelOverrides;
+  const uiOverridesActive = overrideKeysFromRecord(uiModelOverrides).size > 0;
+
+  const globalModelSelection = useMemo<ModelSelectionValue>(() => ({
+    primaryProvider,
+    primaryModel: primaryModels[primaryProvider],
+    harnessProvider,
+    harnessModel: harnessModels[harnessProvider],
+    imageProvider,
+    falModel,
+    openaiImageModel: openaiCompatibleModel,
+    falImageEditModel,
+    falUpscaleModel,
+    falVideoModel,
+    falVideoImageModel,
+    falVideoExtendModel,
+    falVideoMotionModel,
+    falVideoUpscaleModel,
+    falAudioModel,
+    falAudioCloneModel,
+    falSoundEffectsModel,
+    falAudioExtendModel,
+    transcriptionProvider,
+    whisperModel,
+    falTranscribeModel,
+    falLipsyncImageModel,
+    falLipsyncVideoModel,
+    imageAspectRatio,
+    imageSizePreset,
+    imageSteps,
+    videoDuration,
+    videoDurationImage,
+    videoDurationExtend,
+    videoAspectRatio,
+    whisperBinary,
+  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, falModel, openaiCompatibleModel, falImageEditModel, falUpscaleModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, whisperModel, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoDurationImage, videoDurationExtend, videoAspectRatio, whisperBinary]);
+
+  const conversationModelSelection = useMemo<ModelSelectionValue>(() => {
+    const global = globalModelSelection;
+    const overrides = uiModelOverrides;
+    if (!overrides) {
+      return global;
     }
-    if (harnessProvider === 'openai-compatible') {
-      return openaiCompatibleModelOptions;
+    const isChatProvider = (value?: string): value is ChatProviderID =>
+      value === 'ollama' || value === 'openrouter' || value === 'openai-compatible';
+    const harnessProvider = isChatProvider(overrides.harnessProvider) ? overrides.harnessProvider : global.harnessProvider;
+    const primaryProvider = isChatProvider(overrides.primaryProvider) ? overrides.primaryProvider : global.primaryProvider;
+    const imageProvider = overrides.imageProvider === 'fal' || overrides.imageProvider === 'openai-compatible' ? overrides.imageProvider : global.imageProvider;
+    const next: ModelSelectionValue = {
+      ...global,
+      primaryProvider,
+      primaryModel: overrides.primaryModel || primaryModels[primaryProvider],
+      harnessProvider,
+      harnessModel: overrides.harnessModel || harnessModels[harnessProvider],
+      imageProvider,
+      falModel: overrides.imageModel && imageProvider === 'fal' ? overrides.imageModel : global.falModel,
+      openaiImageModel: overrides.imageModel && imageProvider === 'openai-compatible' ? overrides.imageModel : global.openaiImageModel,
+      falImageEditModel: overrides.imageEditModel || global.falImageEditModel,
+      falUpscaleModel: overrides.upscaleModel || global.falUpscaleModel,
+      falVideoModel: overrides.videoModel || global.falVideoModel,
+      falVideoImageModel: overrides.videoImageModel || global.falVideoImageModel,
+      falVideoExtendModel: overrides.videoExtendModel || global.falVideoExtendModel,
+      falVideoMotionModel: overrides.videoMotionModel || global.falVideoMotionModel,
+      falVideoUpscaleModel: overrides.videoUpscaleModel || global.falVideoUpscaleModel,
+      falAudioModel: overrides.audioModel || global.falAudioModel,
+      falAudioCloneModel: overrides.audioCloneModel || global.falAudioCloneModel,
+      falSoundEffectsModel: overrides.soundEffectsModel || global.falSoundEffectsModel,
+      falAudioExtendModel: overrides.audioExtendModel || global.falAudioExtendModel,
+      transcriptionProvider: overrides.transcriptionProvider === 'fal' || overrides.transcriptionProvider === 'local-whisper' ? overrides.transcriptionProvider : global.transcriptionProvider,
+      whisperModel: overrides.whisperModel || global.whisperModel,
+      whisperBinary: overrides.whisperBinary || global.whisperBinary,
+      falTranscribeModel: overrides.transcribeModel || global.falTranscribeModel,
+      falLipsyncImageModel: overrides.lipsyncImageModel || global.falLipsyncImageModel,
+      falLipsyncVideoModel: overrides.lipsyncVideoModel || global.falLipsyncVideoModel,
+      imageAspectRatio: overrides.imageAspectRatio || global.imageAspectRatio,
+      imageSizePreset: overrides.imageSizePreset || global.imageSizePreset,
+      imageSteps: overrides.imageSteps || global.imageSteps,
+      videoDuration: overrides.videoDuration || global.videoDuration,
+      videoDurationImage: global.videoDurationImage,
+      videoDurationExtend: global.videoDurationExtend,
+      videoAspectRatio: overrides.videoAspectRatio || global.videoAspectRatio,
+    };
+    return next;
+  }, [globalModelSelection, uiModelOverrides, primaryModels, harnessModels]);
+
+  // The composer speaks the effective pair: while a primary override is
+  // pinned, the picker shows it and edits rewrite the override instead of the
+  // global config (the backend record wins either way).
+  const conversationPrimaryOverride =
+    uiModelOverrides && (uiModelOverrides.primaryProvider || uiModelOverrides.primaryModel) ? uiModelOverrides : null;
+  const composerProvider: ChatProviderID = conversationPrimaryOverride?.primaryProvider === 'openrouter'
+    || conversationPrimaryOverride?.primaryProvider === 'openai-compatible'
+    || conversationPrimaryOverride?.primaryProvider === 'ollama'
+    ? conversationPrimaryOverride.primaryProvider as ChatProviderID
+    : primaryProvider;
+  const composerModel = conversationPrimaryOverride?.primaryModel || primaryModels[composerProvider];
+  const composerModelOptions = useMemo(
+    () => chatModelOptionsFor(composerProvider, {modelOptions, openRouterModels, openaiCompatibleModels: openaiCompatibleModelOptions}),
+    [composerProvider, modelOptions, openRouterModels, openaiCompatibleModelOptions],
+  );
+  const composerModelIsValid = composerModelOptions.some((option) => option.value === composerModel);
+
+  const patchSettingsModelSelection = (patch: Partial<ModelSelectionValue>) => {
+    if (patch.primaryProvider !== undefined) setPrimaryProvider(patch.primaryProvider);
+    if (patch.primaryModel !== undefined) setModel(patch.primaryModel);
+    if (patch.harnessProvider !== undefined) setHarnessProvider(patch.harnessProvider);
+    if (patch.harnessModel !== undefined) setHarnessModel(patch.harnessModel);
+    if (patch.imageProvider !== undefined) setImageProvider(patch.imageProvider);
+    if (patch.falModel !== undefined) setFalModel(patch.falModel);
+    if (patch.openaiImageModel !== undefined) setOpenaiCompatibleModel(patch.openaiImageModel);
+    if (patch.falImageEditModel !== undefined) setFalImageEditModel(patch.falImageEditModel);
+    if (patch.falUpscaleModel !== undefined) setFalUpscaleModel(patch.falUpscaleModel);
+    if (patch.falVideoModel !== undefined) setFalVideoModel(patch.falVideoModel);
+    if (patch.falVideoImageModel !== undefined) setFalVideoImageModel(patch.falVideoImageModel);
+    if (patch.falVideoExtendModel !== undefined) setFalVideoExtendModel(patch.falVideoExtendModel);
+    if (patch.falVideoMotionModel !== undefined) setFalVideoMotionModel(patch.falVideoMotionModel);
+    if (patch.falVideoUpscaleModel !== undefined) setFalVideoUpscaleModel(patch.falVideoUpscaleModel);
+    if (patch.falAudioModel !== undefined) setFalAudioModel(patch.falAudioModel);
+    if (patch.falAudioCloneModel !== undefined) setFalAudioCloneModel(patch.falAudioCloneModel);
+    if (patch.falSoundEffectsModel !== undefined) setFalSoundEffectsModel(patch.falSoundEffectsModel);
+    if (patch.falAudioExtendModel !== undefined) setFalAudioExtendModel(patch.falAudioExtendModel);
+    if (patch.transcriptionProvider !== undefined) setTranscriptionProvider(patch.transcriptionProvider);
+    if (patch.whisperModel !== undefined) setWhisperModel(patch.whisperModel);
+    if (patch.falTranscribeModel !== undefined) setFalTranscribeModel(patch.falTranscribeModel);
+    if (patch.falLipsyncImageModel !== undefined) setFalLipsyncImageModel(patch.falLipsyncImageModel);
+    if (patch.falLipsyncVideoModel !== undefined) setFalLipsyncVideoModel(patch.falLipsyncVideoModel);
+    if (patch.imageAspectRatio !== undefined) setImageAspectRatio(patch.imageAspectRatio);
+    if (patch.imageSizePreset !== undefined) setImageSizePreset(patch.imageSizePreset);
+    if (patch.imageSteps !== undefined) setImageSteps(patch.imageSteps);
+    if (patch.videoDuration !== undefined) setVideoDuration(patch.videoDuration);
+    if (patch.videoDurationImage !== undefined) setVideoDurationImage(patch.videoDurationImage);
+    if (patch.videoDurationExtend !== undefined) setVideoDurationExtend(patch.videoDurationExtend);
+    if (patch.videoAspectRatio !== undefined) setVideoAspectRatio(patch.videoAspectRatio);
+    if (patch.whisperBinary !== undefined) setWhisperBinary(patch.whisperBinary);
+  };
+
+  const openConversationModels = () => {
+    // With no conversation active this edits the PENDING override the next
+    // conversation carries from its first message; otherwise the record's.
+    setConvModelsDraft(conversationModelSelection);
+    setConvModelsKeys(overrideKeysFromRecord(uiModelOverrides));
+    setConvModelsError('');
+    setView('conversation-models');
+  };
+
+  // patchConversationModels applies a panel edit to the conversation draft.
+  // A provider switch also carries the new provider's inherited global model
+  // into the draft (so the paired picker displays it) and drops any model
+  // pinned to the old provider — the patch argument drives the override keys,
+  // the derived display values never do.
+  const patchConversationModels = (patch: Partial<ModelSelectionValue>) => {
+    const draftPatch: Partial<ModelSelectionValue> = {...patch};
+    if (draftPatch.harnessProvider !== undefined && patch.harnessModel === undefined) {
+      draftPatch.harnessModel = harnessModels[draftPatch.harnessProvider];
     }
-    return modelOptions.map((name) => ({value: name, label: name}));
-  }, [harnessProvider, modelOptions, openRouterModels, openaiCompatibleModelOptions]);
+    if (draftPatch.imageProvider !== undefined && patch.falModel === undefined && patch.openaiImageModel === undefined) {
+      if (draftPatch.imageProvider === 'fal') {
+        draftPatch.falModel = falModel;
+      } else {
+        draftPatch.openaiImageModel = openaiCompatibleModel;
+      }
+    }
+    if (draftPatch.primaryProvider !== undefined && patch.primaryModel === undefined) {
+      draftPatch.primaryModel = primaryModels[draftPatch.primaryProvider];
+    }
+    setConvModelsDraft((prev) => (prev ? {...prev, ...draftPatch} : prev));
+    setConvModelsKeys((prev) => {
+      const next = new Set(prev);
+      if (patch.primaryProvider !== undefined || patch.primaryModel !== undefined) next.add('primary');
+      if (patch.harnessProvider !== undefined) {
+        next.add('harnessProvider');
+        next.delete('harnessModel');
+      }
+      if (patch.harnessModel !== undefined) next.add('harnessModel');
+      if (patch.imageProvider !== undefined) {
+        next.add('imageProvider');
+        next.delete('imageModel');
+      }
+      if (patch.falModel !== undefined || patch.openaiImageModel !== undefined) next.add('imageModel');
+      if (patch.falImageEditModel !== undefined) next.add('imageEditModel');
+      if (patch.falUpscaleModel !== undefined) next.add('upscaleModel');
+      if (patch.falVideoModel !== undefined) next.add('videoModel');
+      if (patch.falVideoImageModel !== undefined) next.add('videoImageModel');
+      if (patch.falVideoExtendModel !== undefined) next.add('videoExtendModel');
+      if (patch.falVideoMotionModel !== undefined) next.add('videoMotionModel');
+      if (patch.falVideoUpscaleModel !== undefined) next.add('videoUpscaleModel');
+      if (patch.falAudioModel !== undefined) next.add('audioModel');
+      if (patch.falAudioCloneModel !== undefined) next.add('audioCloneModel');
+      if (patch.falSoundEffectsModel !== undefined) next.add('soundEffectsModel');
+      if (patch.falAudioExtendModel !== undefined) next.add('audioExtendModel');
+      if (patch.falTranscribeModel !== undefined) next.add('transcribeModel');
+      if (patch.transcriptionProvider !== undefined) next.add('transcriptionProvider');
+      if (patch.whisperModel !== undefined) next.add('whisperModel');
+      if (patch.whisperBinary !== undefined) next.add('whisperBinary');
+      if (patch.imageAspectRatio !== undefined) next.add('imageAspectRatio');
+      if (patch.imageSizePreset !== undefined) next.add('imageSizePreset');
+      if (patch.imageSteps !== undefined) next.add('imageSteps');
+      if (patch.videoDuration !== undefined) next.add('videoDuration');
+      if (patch.videoAspectRatio !== undefined) next.add('videoAspectRatio');
+      if (patch.falLipsyncImageModel !== undefined) next.add('lipsyncImageModel');
+      if (patch.falLipsyncVideoModel !== undefined) next.add('lipsyncVideoModel');
+      return next;
+    });
+  };
+
+  const resetConversationModelField = (key: string) => {
+    setConvModelsKeys((prev) => {
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+    setConvModelsDraft((prev) => {
+      if (!prev) {
+        return prev;
+      }
+      const global = globalModelSelection;
+      const next = {...prev};
+      switch (key) {
+        case 'primary':
+          next.primaryProvider = global.primaryProvider;
+          next.primaryModel = primaryModels[global.primaryProvider];
+          break;
+        case 'harnessProvider':
+          next.harnessProvider = global.harnessProvider;
+          break;
+        case 'harnessModel':
+          next.harnessModel = harnessModels[next.harnessProvider];
+          break;
+        case 'imageProvider':
+          next.imageProvider = global.imageProvider;
+          break;
+        case 'imageModel':
+          if (next.imageProvider === 'fal') {
+            next.falModel = global.falModel;
+          } else {
+            next.openaiImageModel = global.openaiImageModel;
+          }
+          break;
+        case 'imageEditModel': next.falImageEditModel = global.falImageEditModel; break;
+        case 'upscaleModel': next.falUpscaleModel = global.falUpscaleModel; break;
+        case 'videoModel': next.falVideoModel = global.falVideoModel; break;
+        case 'videoImageModel': next.falVideoImageModel = global.falVideoImageModel; break;
+        case 'videoExtendModel': next.falVideoExtendModel = global.falVideoExtendModel; break;
+        case 'videoMotionModel': next.falVideoMotionModel = global.falVideoMotionModel; break;
+        case 'videoUpscaleModel': next.falVideoUpscaleModel = global.falVideoUpscaleModel; break;
+        case 'audioModel': next.falAudioModel = global.falAudioModel; break;
+        case 'audioCloneModel': next.falAudioCloneModel = global.falAudioCloneModel; break;
+        case 'soundEffectsModel': next.falSoundEffectsModel = global.falSoundEffectsModel; break;
+        case 'audioExtendModel': next.falAudioExtendModel = global.falAudioExtendModel; break;
+        case 'transcribeModel': next.falTranscribeModel = global.falTranscribeModel; break;
+        case 'transcriptionProvider': next.transcriptionProvider = global.transcriptionProvider; break;
+        case 'whisperModel': next.whisperModel = global.whisperModel; break;
+        case 'whisperBinary': next.whisperBinary = global.whisperBinary; break;
+        case 'imageAspectRatio': next.imageAspectRatio = global.imageAspectRatio; break;
+        case 'imageSizePreset': next.imageSizePreset = global.imageSizePreset; break;
+        case 'imageSteps': next.imageSteps = global.imageSteps; break;
+        case 'videoDuration': next.videoDuration = global.videoDuration; break;
+        case 'videoAspectRatio': next.videoAspectRatio = global.videoAspectRatio; break;
+        case 'lipsyncImageModel': next.falLipsyncImageModel = global.falLipsyncImageModel; break;
+        case 'lipsyncVideoModel': next.falLipsyncVideoModel = global.falLipsyncVideoModel; break;
+      }
+      return next;
+    });
+  };
+
+  const resetAllConversationModels = () => {
+    setConvModelsKeys(new Set());
+    setConvModelsDraft(globalModelSelection);
+  };
+
+  // closeConversationModels leaves the screen with a synchronous flush: the
+  // debounced save below would otherwise be cancelled by the view change and
+  // silently drop an edit made within the debounce window.
+  const closeConversationModels = () => {
+    if (convModelsDraft && activeConversationID) {
+      SetConversationModelOverrides(activeConversationID, conversationOverridesPayload(convModelsDraft, convModelsKeys))
+        .then((summary) => {
+          setConversations((prev) => prev.map((item) => (item.id === summary.id ? main.ConversationSummary.createFrom({...item, modelOverrides: summary.modelOverrides ?? undefined}) : item)));
+          setConvModelsError('');
+        })
+        .catch((error) => setConvModelsError(error instanceof Error ? error.message : String(error)));
+    }
+    setView('app');
+  };
+
+  // Write the conversation draft through, debounced like the Settings
+  // auto-save. With a conversation open it goes to the record via the
+  // mutator — the returned summary keeps the local conversation list
+  // current, so the toolbar badge and the composer pick up the override
+  // without a refetch. With NO conversation yet (pending mode) the draft IS
+  // the storage: it lands in draftModelOverrides and travels with the first
+  // message (ChatRequest.modelOverrides), so no backend call happens.
+  useEffect(() => {
+    if (view !== 'conversation-models' || !convModelsDraft) {
+      return;
+    }
+    if (!activeConversationID) {
+      setDraftModelOverrides(convModelsKeys.size ? conversationOverridesPayload(convModelsDraft, convModelsKeys) : null);
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      SetConversationModelOverrides(activeConversationID, conversationOverridesPayload(convModelsDraft, convModelsKeys))
+        .then((summary) => {
+          setConversations((prev) => prev.map((item) => (item.id === summary.id ? main.ConversationSummary.createFrom({...item, modelOverrides: summary.modelOverrides ?? undefined}) : item)));
+          setConvModelsError('');
+        })
+        .catch((error) => setConvModelsError(error instanceof Error ? error.message : String(error)));
+    }, 300);
+    return () => window.clearTimeout(timeout);
+  }, [view, convModelsDraft, convModelsKeys, activeConversationID]);
+
+  // The per-model duration selects in the conversation screen must follow the
+  // DRAFT's video models (which may be overridden), not the global ones. Same
+  // fetch-and-fallback as the global pickers; the current draft value is kept
+  // selectable at render time even when the model's schema doesn't list it,
+  // so the select never silently shows a value the conversation won't use.
+  const [convDurationOptions, setConvDurationOptions] = useState<{video: string[]; image: string[]; extend: string[]}>({
+    video: defaultVideoDurationOptions,
+    image: defaultVideoDurationOptions,
+    extend: defaultVideoDurationOptions,
+  });
+  const convDraftVideoModel = convModelsDraft?.falVideoModel ?? '';
+  const convDraftVideoImageModel = convModelsDraft?.falVideoImageModel ?? '';
+  const convDraftVideoExtendModel = convModelsDraft?.falVideoExtendModel ?? '';
+  useEffect(() => {
+    if (view !== 'conversation-models') {
+      return;
+    }
+    let cancelled = false;
+    const fetchOptions = async (model: string) => {
+      try {
+        const durations = await ListFalVideoDurations(model);
+        return durations && durations.length ? durations : defaultVideoDurationOptions;
+      } catch {
+        return defaultVideoDurationOptions;
+      }
+    };
+    Promise.all([fetchOptions(convDraftVideoModel), fetchOptions(convDraftVideoImageModel), fetchOptions(convDraftVideoExtendModel)])
+      .then(([video, image, extend]) => {
+        if (!cancelled) {
+          setConvDurationOptions({video, image, extend});
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [view, convDraftVideoModel, convDraftVideoImageModel, convDraftVideoExtendModel]);
+
+  const saveComposerPrimaryOverride = async (provider: ChatProviderID, modelValue: string) => {
+    if (!activeConversationID) {
+      // No conversation yet: the pair pins onto the pending override the
+      // first message will carry — no record exists to write.
+      const pendingKeys = new Set(overrideKeysFromRecord(draftModelOverrides));
+      pendingKeys.add('primary');
+      setDraftModelOverrides(conversationOverridesPayload(
+        {...conversationModelSelection, primaryProvider: provider, primaryModel: modelValue},
+        pendingKeys,
+      ));
+      return;
+    }
+    const keys = new Set(overrideKeysFromRecord(conversationOverrides));
+    keys.add('primary');
+    const payload = conversationOverridesPayload(
+      {...conversationModelSelection, primaryProvider: provider, primaryModel: modelValue},
+      keys,
+    );
+    try {
+      const summary = await SetConversationModelOverrides(activeConversationID, payload);
+      setConversations((prev) => prev.map((item) => (item.id === summary.id ? main.ConversationSummary.createFrom({...item, modelOverrides: summary.modelOverrides ?? undefined}) : item)));
+      setConvModelsError('');
+    } catch (error) {
+      setConvModelsError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const selectComposerProvider = (next: ChatProviderID) => {
+    if (conversationPrimaryOverride) {
+      saveComposerPrimaryOverride(next, primaryModels[next] || composerModel);
+      return;
+    }
+    setPrimaryProvider(next);
+  };
+
+  const selectComposerModel = (next: string) => {
+    if (conversationPrimaryOverride) {
+      saveComposerPrimaryOverride(composerProvider, next);
+      return;
+    }
+    setModel(next);
+  };
 
   const falImageEditModelOptions = useMemo(() => falModelOptionList(falImageEditModels), [falImageEditModels]);
 
@@ -1995,6 +2397,34 @@ function App() {
     () => localToolsReport?.binaries?.find((entry) => entry.key === 'whisper') ?? null,
     [localToolsReport],
   );
+  // modelSelectionCatalogs feeds ModelSelectionPanel's pickers: the fetched
+  // model lists plus the key/detection state. One object serves both the
+  // Settings Models tab and the conversation-models screen.
+  const modelSelectionCatalogs = {
+    models,
+    modelOptions,
+    openRouterModels,
+    openaiCompatibleModels: openaiCompatibleModelOptions,
+    falModels,
+    falImageEditModels,
+    falVideoModels,
+    falVideoImageModels,
+    falVideoExtendModels,
+    falVideoMotionModels,
+    falVideoUpscaleModels,
+    falAudioModels,
+    falSoundEffectModels,
+    falAudioExtendModels,
+    falTranscribeModels,
+    falUpscaleModels,
+    falLipsyncImageModels,
+    falLipsyncVideoModels,
+    openRouterHasKey,
+    falHasKey,
+    whisperStatus,
+    openCapabilityID,
+    setOpenCapabilityID,
+  };
   const ffmpegStatus = useMemo(
     () => localToolsReport?.binaries?.find((entry) => entry.key === 'ffmpeg') ?? null,
     [localToolsReport],
@@ -2685,18 +3115,18 @@ function App() {
     // response reconciles the normalized form (whitespace collapsed, capped
     // length), and a failure restores the previous title.
     setConversations((items) =>
-      asArray(items).map((item) => item.id === conversation.id ? {...item, title} : item),
+      asArray(items).map((item) => item.id === conversation.id ? main.ConversationSummary.createFrom({...item, title}) : item),
     );
     cancelEditingConversationTitle();
     try {
       const updated = await UpdateConversationTitle(conversation.id, title);
       setConversations((items) =>
-        asArray(items).map((item) => item.id === updated.id ? {...item, ...updated} : item),
+        asArray(items).map((item) => item.id === updated.id ? main.ConversationSummary.createFrom({...item, ...updated}) : item),
       );
     } catch (error) {
       setStartupError(formatError(error));
       setConversations((items) =>
-        asArray(items).map((item) => item.id === conversation.id ? {...item, title: conversation.title} : item),
+        asArray(items).map((item) => item.id === conversation.id ? main.ConversationSummary.createFrom({...item, title: conversation.title}) : item),
       );
     }
   }
@@ -2846,9 +3276,12 @@ function App() {
         requestID,
         conversationId: activeConversationID || undefined,
         baseURL,
-        provider: primaryProvider,
-        model,
-        selectedModel: model,
+        // The composer's effective pair — the conversation's primary override
+        // when one is pinned, else the global selection. The backend's record
+        // wins regardless; this keeps the request honest with what was shown.
+        provider: composerProvider,
+        model: composerModel,
+        selectedModel: composerModel,
         system,
         messages: opts.requestMessages,
         // Only sent for a new chat (turn 1). The backend ignores it for an
@@ -2857,6 +3290,10 @@ function App() {
         // Same turn-1-only lifecycle as the workspace: the pending project the
         // composition started in, pinned onto the new conversation's record.
         ...(activeConversationID ? {} : pendingProjectRef.current?.projectID ? {projectId: pendingProjectRef.current.projectID} : {}),
+        // Same turn-1-only lifecycle: the pending model override the composer
+        // pinned for this conversation, applied to the first turn and pinned
+        // onto the record by the backend.
+        ...(activeConversationID ? {} : draftModelOverrides ? {modelOverrides: draftModelOverrides} : {}),
         ...(opts.referencedAssetIds?.length ? {referencedAssetIds: opts.referencedAssetIds} : {}),
       }));
       markConversationInFlight(start.conversationId, start.requestID, 'chat');
@@ -2866,6 +3303,12 @@ function App() {
       // row appears in the sidebar tree.
       const createdInProject = isNewConversation ? pendingProjectRef.current : null;
       setPendingProject(null);
+      // The pending model override is pinned onto the record by this same
+      // turn — the record is the truth now, so a future new conversation
+      // shouldn't silently inherit it.
+      if (isNewConversation) {
+        setDraftModelOverrides(null);
+      }
       // The new row is selected via activeConversationID; expand the section
       // that owns it so the selection is actually visible — the Chats list
       // for a standalone chat, the library → project chain for a pinned one.
@@ -2897,7 +3340,7 @@ function App() {
 
   async function submitChat() {
     const trimmed = prompt.trim();
-    if (!trimmed || !model || activeStream || !primaryModelIsValid) {
+    if (!trimmed || !composerModel || activeStream || !composerModelIsValid) {
       return;
     }
 
@@ -2964,7 +3407,7 @@ function App() {
   // will append a fresh user turn to disk, same as a retyped message; failed
   // turns are never persisted, so on reload the failed entry is gone.
   async function retryFailedTurn(failedAssistantId: string) {
-    if (!model || activeStream || !primaryModelIsValid) {
+    if (!composerModel || activeStream || !composerModelIsValid) {
       return;
     }
     const failedIdx = chat.findIndex((entry) => entry.id === failedAssistantId);
@@ -3315,17 +3758,17 @@ function App() {
       ref={shellRef}
       className={[
         'shell',
-        view === 'settings' ? 'settings-open' : '',
+        view !== 'app' ? 'settings-open' : '',
         resizingSidebar ? 'resizing resizing-sidebar' : '',
         resizingAssets ? 'resizing resizing-assets' : '',
-        view !== 'settings' && assetsPanelOpen ? 'assets-open' : '',
+        view === 'app' && assetsPanelOpen ? 'assets-open' : '',
       ].filter(Boolean).join(' ')}
-      style={view === 'settings' ? undefined : {
+      style={view !== 'app' ? undefined : {
         '--sidebar-width': `${sidebarWidth}px`,
         '--assets-width': `${assetsWidth}px`,
       } as Record<string, string>}
     >
-      {view === 'settings' ? null : (
+      {view !== 'app' ? null : (
         <aside className="sidebar">
           <div className="sidebar-main">
             <div className="brand">
@@ -3669,7 +4112,7 @@ function App() {
           </button>
         </aside>
       )}
-      {view === 'settings' ? null : (
+      {view !== 'app' ? null : (
         <div
           className="sidebar-resizer"
           role="separator"
@@ -4144,461 +4587,13 @@ function App() {
 
               {settingsTab === 'models' ? (
               <>
-              <section className="settings-section">
-                <h3>Harness</h3>
-                <div className="settings-rows">
-                  <div className="two-column">
-                    <div className="field">
-                      <label htmlFor="harness-provider">Harness Provider</label>
-                      <select
-                        id="harness-provider"
-                        value={harnessProvider}
-                        onChange={(event) => setHarnessProvider(event.target.value as ChatProviderID)}
-                      >
-                        <option value="ollama">Ollama</option>
-                        <option value="openrouter" disabled={!openRouterHasKey}>OpenRouter</option>
-                        <option value="openai-compatible">OpenAI-compatible (local)</option>
-                      </select>
-                    </div>
-                    <div className="field">
-                      <label htmlFor="harness-model">Harness Model</label>
-                      <div className="model-inline-control">
-                        {harnessProvider === 'ollama' ? (
-                          <>
-                            <select id="harness-model" value={harnessModel} onChange={(event) => setHarnessModel(event.target.value)}>
-                              {harnessModelOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                            </select>
-                            <ModelCapabilityLink
-                              id="settings-tools"
-                              modelName={harnessModel}
-                              models={models}
-                              openID={openCapabilityID}
-                              setOpenID={setOpenCapabilityID}
-                              variant="icon"
-                            />
-                          </>
-                        ) : (
-                          <ModelCombobox
-                            id="harness-model"
-                            ariaLabel="Harness model"
-                            placeholder="Type to filter models..."
-                            value={harnessModel}
-                            onChange={setHarnessModel}
-                            options={harnessModelOptions}
-                            allowCustom={harnessProvider === 'openai-compatible'}
-                          />
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </section>
-
-              <section className="settings-section">
-                <h3>Image</h3>
-                <div className="settings-rows">
-                  <div className="two-column">
-                    <div className="field">
-                      <label htmlFor="image-provider">Image Provider</label>
-                      <select
-                        id="image-provider"
-                        value={imageProvider}
-                        onChange={(event) => setImageProvider(event.target.value as 'fal' | 'openai-compatible')}
-                      >
-                        <option value="fal">fal.ai (cloud)</option>
-                        <option value="openai-compatible">OpenAI-compatible (local)</option>
-                      </select>
-                    </div>
-
-                    {imageProvider === 'fal' ? (
-                      <div className="field">
-                        <label htmlFor="fal-model">fal.ai Model</label>
-                        <ModelCombobox
-                          id="fal-model"
-                          ariaLabel="fal.ai model"
-                          placeholder={defaultFalImageModel}
-                          value={falModel}
-                          onChange={setFalModel}
-                          options={falModelOptions}
-                          allowCustom
-                        />
-                        {!falHasKey ? (
-                          <span className="hint">Add a fal.ai API key above before generating images.</span>
-                        ) : falModelOptions.length ? null : (
-                          <span className="hint">Type a fal.ai endpoint id — the model list couldn't be loaded.</span>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="field">
-                        <label htmlFor="openai-image-model">Default Image Model</label>
-                        <ModelCombobox
-                          id="openai-image-model"
-                          ariaLabel="OpenAI-compatible image model"
-                          placeholder="flux2-klein"
-                          value={openaiCompatibleModel}
-                          onChange={setOpenaiCompatibleModel}
-                          options={openaiCompatibleModelOptions}
-                          allowCustom
-                        />
-                        {openaiCompatibleModelOptions.length ? null : (
-                          <span className="hint">Type a model id from your server — the model list couldn't be loaded.</span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  {imageProvider === 'fal' ? (
-                    <div className="field">
-                      <label htmlFor="fal-image-edit-model">Image-to-Image Model (fal.ai)</label>
-                      <ModelCombobox
-                        id="fal-image-edit-model"
-                        ariaLabel="fal.ai image-to-image model"
-                        placeholder={defaultFalImageEditModel}
-                        value={falImageEditModel}
-                        onChange={setFalImageEditModel}
-                        options={falImageEditModelOptions}
-                        allowCustom
-                      />
-                    </div>
-                  ) : null}
-
-                  <div className="field">
-                    <label htmlFor="fal-upscale-model">Image-Upscale Model (fal.ai)</label>
-                    <ModelCombobox
-                      id="fal-upscale-model"
-                      ariaLabel="fal.ai image-upscale model"
-                      placeholder={defaultFalUpscaleModel}
-                      value={falUpscaleModel}
-                      onChange={setFalUpscaleModel}
-                      options={falUpscaleModelOptions}
-                      allowCustom
-                    />
-                    {!falHasKey ? (
-                      <span className="hint">Add a fal.ai API key above to upscale images.</span>
-                    ) : falUpscaleModelOptions.length ? null : (
-                      <span className="hint">Type a fal.ai endpoint id — the model list couldn't be loaded.</span>
-                    )}
-                  </div>
-
-                  <div className="three-column">
-                    <div className="field">
-                      <label htmlFor="image-aspect">Aspect Ratio</label>
-                      <select id="image-aspect" value={imageAspectRatio} onChange={(event) => setImageAspectRatio(event.target.value)}>
-                        {imageAspectRatioOptions.map((value) => <option key={value} value={value}>{value}</option>)}
-                      </select>
-                    </div>
-
-                    <div className="field">
-                      <label htmlFor="image-size">Size</label>
-                      <select id="image-size" value={imageSizePreset} onChange={(event) => setImageSizePreset(event.target.value)}>
-                        {imageSizeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                      </select>
-                    </div>
-
-                    <div className="field">
-                      <label htmlFor="image-steps">Image Steps</label>
-                      <input
-                        id="image-steps"
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={imageSteps}
-                        onChange={(event) => setImageSteps(positiveIntOrDefault(event.target.value, defaultImageSteps))}
-                      />
-                    </div>
-                  </div>
-                </div>
-              </section>
-
-              <section className="settings-section">
-                <h3>Video</h3>
-                <div className="settings-rows">
-                  {/*
-                    Each video picker is paired with its own duration dropdown,
-                    whose options come from the selected model's published schema
-                    (ListFalVideoDurations). Splitting per-picker means a model
-                    that only accepts integers never offers Seedance-only "auto".
-                    Only the text-to-video duration persists to config; the image
-                    and extend pickers are a per-model preview that stays valid
-                    where the value is acceptable to their model.
-                  */}
-                  <div className="two-column">
-                    <div className="field">
-                      <label htmlFor="fal-video-model">Text-to-Video Model (fal.ai)</label>
-                      <ModelCombobox
-                        id="fal-video-model"
-                        ariaLabel="fal.ai text-to-video model"
-                        placeholder={defaultFalVideoModel}
-                        value={falVideoModel}
-                        onChange={setFalVideoModel}
-                        options={falVideoModelOptions}
-                        allowCustom
-                      />
-                      {!falHasKey ? (
-                        <span className="hint">Add a fal.ai API key above to generate videos.</span>
-                      ) : falVideoModelOptions.length ? null : (
-                        <span className="hint">Type a fal.ai text-to-video endpoint id.</span>
-                      )}
-                    </div>
-
-                    <div className="field">
-                      <label htmlFor="video-duration">Text-to-Video Duration</label>
-                      <select id="video-duration" value={videoDuration} onChange={(event) => setVideoDuration(event.target.value)}>
-                        {videoDurationOptions.map((value) => <option key={value} value={value}>{videoDurationLabels[value] ?? value}</option>)}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="two-column">
-                    <div className="field">
-                      <label htmlFor="fal-video-image-model">Image-to-Video Model (fal.ai)</label>
-                      <ModelCombobox
-                        id="fal-video-image-model"
-                        ariaLabel="fal.ai image-to-video model"
-                        placeholder={defaultFalVideoImageModel}
-                        value={falVideoImageModel}
-                        onChange={setFalVideoImageModel}
-                        options={falVideoImageModelOptions}
-                        allowCustom
-                      />
-                    </div>
-
-                    <div className="field">
-                      <label htmlFor="video-duration-image">Image-to-Video Duration</label>
-                      <select id="video-duration-image" value={videoDurationImage} onChange={(event) => setVideoDurationImage(event.target.value)}>
-                        {videoDurationImageOptions.map((value) => <option key={value} value={value}>{videoDurationLabels[value] ?? value}</option>)}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="two-column">
-                    <div className="field">
-                      <label htmlFor="fal-video-extend-model">Video-Extend Model (fal.ai)</label>
-                      <ModelCombobox
-                        id="fal-video-extend-model"
-                        ariaLabel="fal.ai video-extend model"
-                        placeholder={defaultFalVideoExtendModel}
-                        value={falVideoExtendModel}
-                        onChange={setFalVideoExtendModel}
-                        options={falVideoExtendModelOptions}
-                        allowCustom
-                      />
-                    </div>
-
-                    <div className="field">
-                      <label htmlFor="video-duration-extend">Video-Extend Duration</label>
-                      <select id="video-duration-extend" value={videoDurationExtend} onChange={(event) => setVideoDurationExtend(event.target.value)}>
-                        {videoDurationExtendOptions.map((value) => <option key={value} value={value}>{videoDurationLabels[value] ?? value}</option>)}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="field">
-                    <label htmlFor="fal-video-motion-model">Motion-Control Model (fal.ai)</label>
-                    <ModelCombobox
-                      id="fal-video-motion-model"
-                      ariaLabel="fal.ai motion-control model"
-                      placeholder={defaultFalVideoMotionModel}
-                      value={falVideoMotionModel}
-                      onChange={setFalVideoMotionModel}
-                      options={falVideoMotionModelOptions}
-                      allowCustom
-                    />
-                  </div>
-
-                  <div className="field">
-                    <label htmlFor="fal-video-upscale-model">Video-Upscale Model (fal.ai)</label>
-                    <ModelCombobox
-                      id="fal-video-upscale-model"
-                      ariaLabel="fal.ai video-upscale model"
-                      placeholder={defaultFalVideoUpscaleModel}
-                      value={falVideoUpscaleModel}
-                      onChange={setFalVideoUpscaleModel}
-                      options={falVideoUpscaleModelOptions}
-                      allowCustom
-                    />
-                  </div>
-
-                  <div className="field">
-                    <label htmlFor="video-aspect">Video Aspect Ratio</label>
-                    <select id="video-aspect" value={videoAspectRatio} onChange={(event) => setVideoAspectRatio(event.target.value)}>
-                      {videoAspectRatioOptions.map((value) => <option key={value} value={value}>{value}</option>)}
-                    </select>
-                  </div>
-                </div>
-              </section>
-
-              <section className="settings-section">
-                <h3>Audio</h3>
-                <div className="two-column">
-                  <div className="field">
-                    <label htmlFor="fal-audio-model">Speech Model (TTS, fal.ai)</label>
-                    <ModelCombobox
-                      id="fal-audio-model"
-                      ariaLabel="fal.ai speech model"
-                      placeholder={defaultFalAudioModel}
-                      value={falAudioModel}
-                      onChange={setFalAudioModel}
-                      options={falAudioModelOptions}
-                      allowCustom
-                    />
-                  </div>
-                  <div className="field">
-                    <label htmlFor="fal-audio-clone-model">Voice Cloning Model (fal.ai)</label>
-                    <ModelCombobox
-                      id="fal-audio-clone-model"
-                      ariaLabel="fal.ai voice cloning model"
-                      placeholder={defaultFalAudioCloneModel}
-                      value={falAudioCloneModel}
-                      onChange={setFalAudioCloneModel}
-                      options={falAudioModelOptions}
-                      allowCustom
-                    />
-                  </div>
-                  <div className="field">
-                    <label htmlFor="fal-sound-effects-model">Music &amp; Sound Effects Model (fal.ai)</label>
-                    <ModelCombobox
-                      id="fal-sound-effects-model"
-                      ariaLabel="fal.ai sound effects model"
-                      placeholder={defaultFalSoundEffectsModel}
-                      value={falSoundEffectsModel}
-                      onChange={setFalSoundEffectsModel}
-                      options={falSoundEffectModelOptions}
-                      allowCustom
-                    />
-                  </div>
-                  <div className="field">
-                    <label htmlFor="fal-audio-extend-model">Audio Extend Model (fal.ai)</label>
-                    <ModelCombobox
-                      id="fal-audio-extend-model"
-                      ariaLabel="fal.ai audio extend model"
-                      placeholder={defaultFalAudioExtendModel}
-                      value={falAudioExtendModel}
-                      onChange={setFalAudioExtendModel}
-                      options={falAudioExtendModelOptions}
-                      allowCustom
-                    />
-                  </div>
-                </div>
-                {!falHasKey ? (
-                  <span className="hint">Add a fal.ai API key above to generate speech, music, or sound effects.</span>
-                ) : null}
-              </section>
-
-              <section className="settings-section">
-                <h3>Transcription</h3>
-                <div className="settings-rows">
-                  <div className="two-column">
-                    <div className="field">
-                      <label htmlFor="transcription-provider">Transcription Provider</label>
-                      <select
-                        id="transcription-provider"
-                        value={transcriptionProvider}
-                        onChange={(event) => setTranscriptionProvider(event.target.value as 'fal' | 'local-whisper')}
-                      >
-                        <option value="fal">fal.ai (cloud)</option>
-                        <option
-                          value="local-whisper"
-                          disabled={!whisperStatus?.available && transcriptionProvider !== 'local-whisper'}
-                        >
-                          Whisper (local)
-                        </option>
-                      </select>
-                      {!whisperStatus?.available && transcriptionProvider !== 'local-whisper' ? (
-                        <span className="hint">{whisperStatus?.detail ?? 'Detecting local tools…'}</span>
-                      ) : null}
-                    </div>
-
-                    {transcriptionProvider === 'local-whisper' ? (
-                      <div className="field">
-                        <div className="field-label-row">
-                          <label htmlFor="whisper-model">Whisper Model</label>
-                          {whisperStatus?.flavor === 'whisper-cpp' ? (
-                            <InfoHint
-                              label="Empty whisper model resolution"
-                              text="Empty model resolves: $WHISPER_MODEL (if set when Atelier launched) → ~/.whisper-base.en.bin → ~/.cache/whisper.cpp/ggml-base.en.bin → ~/models/ggml-base.en.bin."
-                            />
-                          ) : null}
-                        </div>
-                        <input
-                          id="whisper-model"
-                          value={whisperModel}
-                          onChange={(event) => setWhisperModel(event.target.value)}
-                          placeholder={whisperStatus?.flavor === 'whisper-cpp' ? '/path/to/ggml-base.en.bin' : 'small (whisper default)'}
-                        />
-                      </div>
-                    ) : (
-                      <div className="field">
-                        <label htmlFor="fal-transcribe-model">Transcription Model (fal.ai)</label>
-                        <ModelCombobox
-                          id="fal-transcribe-model"
-                          ariaLabel="fal.ai transcription model"
-                          placeholder={defaultFalTranscribeModel}
-                          value={falTranscribeModel}
-                          onChange={setFalTranscribeModel}
-                          options={falTranscribeModelOptions}
-                          allowCustom
-                        />
-                      </div>
-                    )}
-                  </div>
-
-                  {transcriptionProvider === 'local-whisper' ? (
-                    <div className="field">
-                      <div className="field-label-row">
-                        <label htmlFor="whisper-binary">Whisper Binary</label>
-                        {whisperStatus?.detail ? (
-                          <InfoHint label="Whisper binary detection" text={whisperStatus.detail} />
-                        ) : null}
-                      </div>
-                      <input
-                        id="whisper-binary"
-                        value={whisperBinary}
-                        onChange={(event) => setWhisperBinary(event.target.value)}
-                        placeholder={whisperStatus?.path || 'auto-detect on PATH: whisper, then whisper-cli'}
-                      />
-                    </div>
-                  ) : !falHasKey ? (
-                    <span className="hint">Add a fal.ai API key above — or install whisper locally — to transcribe audio.</span>
-                  ) : null}
-                </div>
-              </section>
-
-              <section className="settings-section">
-                <h3>Lip Sync</h3>
-                <div className="settings-rows">
-                  <div className="two-column">
-                    <div className="field">
-                      <label htmlFor="fal-lipsync-image-model">Audio-to-Video Model (fal.ai)</label>
-                      <ModelCombobox
-                        id="fal-lipsync-image-model"
-                        ariaLabel="fal.ai audio-to-video lip sync model"
-                        placeholder={defaultFalLipsyncImageModel}
-                        value={falLipsyncImageModel}
-                        onChange={setFalLipsyncImageModel}
-                        options={falLipsyncImageModelOptions}
-                        allowCustom
-                      />
-                    </div>
-
-                    <div className="field">
-                      <label htmlFor="fal-lipsync-video-model">Video-to-Video Model (fal.ai)</label>
-                      <ModelCombobox
-                        id="fal-lipsync-video-model"
-                        ariaLabel="fal.ai video-to-video lip sync model"
-                        placeholder={defaultFalLipsyncVideoModel}
-                        value={falLipsyncVideoModel}
-                        onChange={setFalLipsyncVideoModel}
-                        options={falLipsyncVideoModelOptions}
-                        allowCustom
-                      />
-                    </div>
-                  </div>
-                  {!falHasKey ? (
-                    <span className="hint">Add a fal.ai API key above to use lip sync.</span>
-                  ) : null}
-                </div>
-              </section>
+              <ModelSelectionPanel
+                variant="settings"
+                value={globalModelSelection}
+                onChange={patchSettingsModelSelection}
+                catalogs={modelSelectionCatalogs}
+                durationOptions={{video: videoDurationOptions, image: videoDurationImageOptions, extend: videoDurationExtendOptions}}
+              />
               </>
               ) : null}
 
@@ -4610,6 +4605,59 @@ function App() {
                 </div>
               </section>
               ) : null}
+            </div>
+          </>
+        ) : view === 'conversation-models' ? (
+          <>
+            <div className="toolbar">
+              <div className="toolbar-left">
+                <button className="back-button" onClick={closeConversationModels}>← Back</button>
+                <div className="model-count">
+                  {convModelsKeys.size
+                    ? `${convModelsKeys.size} override${convModelsKeys.size === 1 ? '' : 's'} ${activeConversationID ? 'for this conversation' : 'for your next conversation'}`
+                    : 'Following the Settings → Models defaults'}
+                </div>
+              </div>
+              {convModelsKeys.size ? (
+                <div className="toolbar-right">
+                  <button className="back-button" onClick={resetAllConversationModels}>Reset all</button>
+                </div>
+              ) : null}
+            </div>
+            <div className="settings-screen conversation-models-screen">
+              <div className="settings-header">
+                <h2>{activeConversationID ? 'Models for this conversation' : 'Models for your next conversation'}</h2>
+                {activeConversationID ? (
+                  <p>
+                    Changes here apply only to “{activeConversation?.title || 'this conversation'}”. Everything you
+                    leave alone keeps following the Settings → Models defaults, and later Settings changes reach those
+                    fields too.
+                  </p>
+                ) : (
+                  <p>
+                    Changes here apply to the conversation you start next — from its very first message. Everything you
+                    leave alone keeps following the Settings → Models defaults.
+                  </p>
+                )}
+              </div>
+              <ModelSelectionPanel
+                variant="conversation"
+                value={convModelsDraft ?? conversationModelSelection}
+                onChange={patchConversationModels}
+                catalogs={modelSelectionCatalogs}
+                durationOptions={(() => {
+                  const withCurrent = (options: string[], current: string) => (options.includes(current) ? options : [current, ...options]);
+                  const shown = convModelsDraft ?? conversationModelSelection;
+                  return {
+                    video: withCurrent(convDurationOptions.video, shown.videoDuration),
+                    image: withCurrent(convDurationOptions.image, shown.videoDurationImage),
+                    extend: withCurrent(convDurationOptions.extend, shown.videoDurationExtend),
+                  };
+                })()}
+                overriddenKeys={convModelsKeys}
+                onResetField={resetConversationModelField}
+              />
+              {convModelsError ? <div className="conversation-models-error">{convModelsError}</div> : null}
             </div>
           </>
         ) : (
@@ -4626,11 +4674,36 @@ function App() {
                 <ConversationUsage usage={modelUsage} media={mediaUsage} />
                 <button
                   type="button"
-                  className={`assets-toggle${assetsPanelOpen ? ' active' : ''}`}
-                  onClick={() => setAssetsPanelOpen((open) => !open)}
-                  aria-label={assetsPanelOpen ? 'Hide assets panel' : 'Show assets panel'}
-                  aria-pressed={assetsPanelOpen}
-                  title={assetsPanelOpen ? 'Hide assets' : 'Show assets'}
+                  className={`assets-toggle conversation-models-toggle${uiOverridesActive ? ' has-overrides' : ''}`}
+                  onClick={openConversationModels}
+                  aria-label={activeConversationID ? 'Model overrides for this conversation' : 'Model overrides for your next conversation'}
+                  title={
+                    activeConversationID
+                      ? uiOverridesActive
+                        ? 'This conversation overrides some model selections — click to change'
+                        : 'Override model selections for this conversation'
+                      : uiOverridesActive
+                        ? 'Your next conversation will override some model selections — click to change'
+                        : 'Override model selections for the conversation you start next'
+                  }
+                >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M12 2v4" />
+                      <path d="m15.9 7.5 3.5-2" />
+                      <path d="M15.9 16.5l3.5 2" />
+                      <path d="M12 18v4" />
+                      <path d="m8.1 16.5-3.5 2" />
+                      <path d="m8.1 7.5-3.5-2" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className={`assets-toggle${assetsPanelOpen ? ' active' : ''}`}
+                    onClick={() => setAssetsPanelOpen((open) => !open)}
+                    aria-label={assetsPanelOpen ? 'Hide assets panel' : 'Show assets panel'}
+                    aria-pressed={assetsPanelOpen}
+                    title={assetsPanelOpen ? 'Hide assets' : 'Show assets'}
                 >
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="m22 11-1.296-1.296a2.4 2.4 0 0 0-3.408 0L11 16" />
@@ -4929,13 +5002,13 @@ function App() {
                   <div className="composer-submit-row">
                     <div className="composer-model-switch">
                       <label className="model-inline" htmlFor="primary-provider">
-                        <span>Provider</span>
+                        <span>Provider{conversationPrimaryOverride ? ' · this chat' : ''}</span>
                         <div className="model-inline-control">
                           <select
                             id="primary-provider"
                             aria-label="Provider for next message"
-                            value={primaryProvider}
-                            onChange={(event) => setPrimaryProvider(event.target.value as ChatProviderID)}
+                            value={composerProvider}
+                            onChange={(event) => selectComposerProvider(event.target.value as ChatProviderID)}
                           >
                             <option value="ollama">Ollama</option>
                             <option value="openrouter">OpenRouter</option>
@@ -4950,15 +5023,15 @@ function App() {
                             id="primary-model"
                             ariaLabel="Model for next message"
                             placeholder="Type to filter models..."
-                            value={model}
-                            onChange={setModel}
-                            options={primaryModelOptions}
-                            allowCustom={primaryProvider === 'openai-compatible'}
+                            value={composerModel}
+                            onChange={selectComposerModel}
+                            options={composerModelOptions}
+                            allowCustom={composerProvider === 'openai-compatible'}
                           />
-                          {primaryProvider === 'ollama' ? (
+                          {composerProvider === 'ollama' ? (
                             <ModelCapabilityLink
                               id="primary-model"
-                              modelName={model}
+                              modelName={composerModel}
                               models={models}
                               openID={openCapabilityID}
                               setOpenID={setOpenCapabilityID}
@@ -4971,7 +5044,7 @@ function App() {
                     {activeStream ? (
                       <button className="danger" onClick={stopChat}>Stop</button>
                     ) : (
-                      <button className="primary" onClick={submitChat} disabled={!prompt.trim() || !model || !primaryModelIsValid}>Send</button>
+                      <button className="primary" onClick={submitChat} disabled={!prompt.trim() || !composerModel || !composerModelIsValid}>Send</button>
                     )}
                   </div>
                 </div>
@@ -4980,7 +5053,7 @@ function App() {
           </>
         )}
       </section>
-      {view === 'settings' || !assetsPanelOpen ? null : (
+      {view !== 'app' || !assetsPanelOpen ? null : (
         <div
           className="assets-resizer"
           role="separator"
@@ -4992,7 +5065,7 @@ function App() {
           }}
         />
       )}
-      {view === 'settings' || !assetsPanelOpen ? null : (
+      {view !== 'app' || !assetsPanelOpen ? null : (
         <aside className="assets-panel" aria-label={composerLibraryID ? 'Library assets' : 'Conversation assets'}>
           <div className="assets-panel-header">
             <span className="assets-panel-title">
@@ -5648,6 +5721,748 @@ function formatCapability(capability: string): string {
   return capability
     .replace(/[-_]+/g, ' ')
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+// ModelSelectionValue is every field the Settings → Models tab edits, in one
+// object — the shared shape behind ModelSelectionPanel. The settings variant
+// binds it to the global config state; the conversation variant binds it to a
+// per-conversation draft whose untouched fields carry the inherited global
+// values, so both screens render the identical field set. The image-to-video
+// and extend duration fields are frontend-only previews in both variants —
+// the backend reads one canonical video duration (videoDuration here).
+type ModelSelectionValue = {
+  primaryProvider: ChatProviderID;
+  primaryModel: string;
+  harnessProvider: ChatProviderID;
+  harnessModel: string;
+  imageProvider: 'fal' | 'openai-compatible';
+  falModel: string;
+  openaiImageModel: string;
+  falImageEditModel: string;
+  falUpscaleModel: string;
+  falVideoModel: string;
+  falVideoImageModel: string;
+  falVideoExtendModel: string;
+  falVideoMotionModel: string;
+  falVideoUpscaleModel: string;
+  falAudioModel: string;
+  falAudioCloneModel: string;
+  falSoundEffectsModel: string;
+  falAudioExtendModel: string;
+  transcriptionProvider: 'fal' | 'local-whisper';
+  whisperModel: string;
+  falTranscribeModel: string;
+  falLipsyncImageModel: string;
+  falLipsyncVideoModel: string;
+  imageAspectRatio: string;
+  imageSizePreset: string;
+  imageSteps: number;
+  videoDuration: string;
+  videoDurationImage: string;
+  videoDurationExtend: string;
+  videoAspectRatio: string;
+  whisperBinary: string;
+};
+
+// chatModelOptionsFor is the provider-aware option list shared by the primary
+// and harness pickers (both the panel's and the composer's).
+function chatModelOptionsFor(
+  provider: ChatProviderID,
+  base: {modelOptions: string[]; openRouterModels: main.ModelInfo[] | null; openaiCompatibleModels: {value: string; label: string}[]},
+): {value: string; label: string}[] {
+  if (provider === 'openrouter') {
+    return asArray(base.openRouterModels)
+      .map((item) => ({value: item.id, label: item.displayName || item.id}))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }
+  if (provider === 'openai-compatible') {
+    return base.openaiCompatibleModels;
+  }
+  return base.modelOptions.map((name) => ({value: name, label: name}));
+}
+
+// overrideKeysFromRecord maps a persisted ConversationModelOverrides onto the
+// set of panel field keys it pins. 'primary' covers the provider+model pair —
+// the two always pin together.
+function overrideKeysFromRecord(overrides: main.ConversationModelOverrides | null | undefined): Set<string> {
+  const keys = new Set<string>();
+  if (!overrides) {
+    return keys;
+  }
+  if (overrides.primaryProvider || overrides.primaryModel) keys.add('primary');
+  if (overrides.harnessProvider) keys.add('harnessProvider');
+  if (overrides.harnessModel) keys.add('harnessModel');
+  if (overrides.imageProvider) keys.add('imageProvider');
+  if (overrides.imageModel) keys.add('imageModel');
+  if (overrides.imageEditModel) keys.add('imageEditModel');
+  if (overrides.upscaleModel) keys.add('upscaleModel');
+  if (overrides.videoModel) keys.add('videoModel');
+  if (overrides.videoImageModel) keys.add('videoImageModel');
+  if (overrides.videoExtendModel) keys.add('videoExtendModel');
+  if (overrides.videoMotionModel) keys.add('videoMotionModel');
+  if (overrides.videoUpscaleModel) keys.add('videoUpscaleModel');
+  if (overrides.audioModel) keys.add('audioModel');
+  if (overrides.audioCloneModel) keys.add('audioCloneModel');
+  if (overrides.soundEffectsModel) keys.add('soundEffectsModel');
+  if (overrides.audioExtendModel) keys.add('audioExtendModel');
+  if (overrides.transcribeModel) keys.add('transcribeModel');
+  if (overrides.transcriptionProvider) keys.add('transcriptionProvider');
+  if (overrides.whisperModel) keys.add('whisperModel');
+  if (overrides.whisperBinary) keys.add('whisperBinary');
+  if (overrides.imageAspectRatio) keys.add('imageAspectRatio');
+  if (overrides.imageSizePreset) keys.add('imageSizePreset');
+  if (overrides.imageSteps) keys.add('imageSteps');
+  if (overrides.videoDuration) keys.add('videoDuration');
+  if (overrides.videoAspectRatio) keys.add('videoAspectRatio');
+  if (overrides.lipsyncImageModel) keys.add('lipsyncImageModel');
+  if (overrides.lipsyncVideoModel) keys.add('lipsyncVideoModel');
+  return keys;
+}
+
+// conversationOverridesPayload builds the wire payload from the conversation
+// draft + its overridden-key set: only pinned fields are stored, so unpinned
+// ones keep inheriting the live global Settings (differential semantics).
+function conversationOverridesPayload(draft: ModelSelectionValue, keys: ReadonlySet<string>): main.ConversationModelOverrides {
+  const payload: Record<string, string | number> = {};
+  if (keys.has('primary')) {
+    payload.primaryProvider = draft.primaryProvider;
+    payload.primaryModel = draft.primaryModel;
+  }
+  if (keys.has('harnessProvider')) payload.harnessProvider = draft.harnessProvider;
+  if (keys.has('harnessModel')) payload.harnessModel = draft.harnessModel;
+  if (keys.has('imageProvider')) payload.imageProvider = draft.imageProvider;
+  if (keys.has('imageModel')) payload.imageModel = draft.imageProvider === 'fal' ? draft.falModel : draft.openaiImageModel;
+  if (keys.has('imageEditModel')) payload.imageEditModel = draft.falImageEditModel;
+  if (keys.has('upscaleModel')) payload.upscaleModel = draft.falUpscaleModel;
+  if (keys.has('videoModel')) payload.videoModel = draft.falVideoModel;
+  if (keys.has('videoImageModel')) payload.videoImageModel = draft.falVideoImageModel;
+  if (keys.has('videoExtendModel')) payload.videoExtendModel = draft.falVideoExtendModel;
+  if (keys.has('videoMotionModel')) payload.videoMotionModel = draft.falVideoMotionModel;
+  if (keys.has('videoUpscaleModel')) payload.videoUpscaleModel = draft.falVideoUpscaleModel;
+  if (keys.has('audioModel')) payload.audioModel = draft.falAudioModel;
+  if (keys.has('audioCloneModel')) payload.audioCloneModel = draft.falAudioCloneModel;
+  if (keys.has('soundEffectsModel')) payload.soundEffectsModel = draft.falSoundEffectsModel;
+  if (keys.has('audioExtendModel')) payload.audioExtendModel = draft.falAudioExtendModel;
+  if (keys.has('transcribeModel')) payload.transcribeModel = draft.falTranscribeModel;
+  if (keys.has('transcriptionProvider')) payload.transcriptionProvider = draft.transcriptionProvider;
+  if (keys.has('whisperModel')) payload.whisperModel = draft.whisperModel;
+  if (keys.has('whisperBinary')) payload.whisperBinary = draft.whisperBinary;
+  if (keys.has('imageAspectRatio')) payload.imageAspectRatio = draft.imageAspectRatio;
+  if (keys.has('imageSizePreset')) payload.imageSizePreset = draft.imageSizePreset;
+  if (keys.has('imageSteps')) payload.imageSteps = draft.imageSteps;
+  if (keys.has('videoDuration')) payload.videoDuration = draft.videoDuration;
+  if (keys.has('videoAspectRatio')) payload.videoAspectRatio = draft.videoAspectRatio;
+  if (keys.has('lipsyncImageModel')) payload.lipsyncImageModel = draft.falLipsyncImageModel;
+  if (keys.has('lipsyncVideoModel')) payload.lipsyncVideoModel = draft.falLipsyncVideoModel;
+  return main.ConversationModelOverrides.createFrom(payload);
+}
+
+// ModelSelectionPanel renders the Settings → Models field set. It is purely
+// value-driven: the settings screen feeds it the global config state and the
+// conversation-models screen feeds it the per-conversation draft, so the two
+// screens stay pixel-identical by construction. The conversation variant adds
+// a Primary section and — via overriddenKeys/onResetField — marks fields this
+// conversation pins with a reset affordance; everything else, generation
+// defaults and the whisper binary included, renders in both variants.
+function ModelSelectionPanel({
+  variant,
+  value,
+  onChange,
+  catalogs,
+  durationOptions,
+  overriddenKeys,
+  onResetField,
+}: {
+  variant: 'settings' | 'conversation';
+  value: ModelSelectionValue;
+  onChange: (patch: Partial<ModelSelectionValue>) => void;
+  catalogs: {
+    models: main.OllamaModel[];
+    modelOptions: string[];
+    openRouterModels: main.ModelInfo[];
+    openaiCompatibleModels: {value: string; label: string}[];
+    falModels: main.FalModel[];
+    falImageEditModels: main.FalModel[];
+    falVideoModels: main.FalModel[];
+    falVideoImageModels: main.FalModel[];
+    falVideoExtendModels: main.FalModel[];
+    falVideoMotionModels: main.FalModel[];
+    falVideoUpscaleModels: main.FalModel[];
+    falAudioModels: main.FalModel[];
+    falSoundEffectModels: main.FalModel[];
+    falAudioExtendModels: main.FalModel[];
+    falTranscribeModels: main.FalModel[];
+    falUpscaleModels: main.FalModel[];
+    falLipsyncImageModels: main.FalModel[];
+    falLipsyncVideoModels: main.FalModel[];
+    openRouterHasKey: boolean;
+    falHasKey: boolean;
+    whisperStatus: main.LocalBinaryStatus | null;
+    openCapabilityID: string;
+    setOpenCapabilityID: (id: string) => void;
+  };
+  durationOptions: {video: string[]; image: string[]; extend: string[]};
+  overriddenKeys?: ReadonlySet<string>;
+  onResetField?: (key: string) => void;
+}) {
+  const isSettings = variant === 'settings';
+  const isPinned = (key: string) => !isSettings && !!overriddenKeys?.has(key);
+  const resetField = (key: string) => onResetField?.(key);
+  // "Add a key above" only reads right inside Settings; the conversation
+  // screen has no Providers tab, so point there instead.
+  const keyWhere = isSettings ? 'above' : 'in Settings → Providers';
+
+  const chatOptions = chatModelOptionsFor(value.harnessProvider, catalogs);
+  const primaryOptions = chatModelOptionsFor(value.primaryProvider, catalogs);
+  const falImageOptions = falModelOptionList(catalogs.falModels);
+  const falImageEditOptions = falModelOptionList(catalogs.falImageEditModels);
+  const falUpscaleOptions = falModelOptionList(catalogs.falUpscaleModels);
+  const falVideoOptions = falModelOptionList(catalogs.falVideoModels);
+  const falVideoImageOptions = falModelOptionList(catalogs.falVideoImageModels);
+  const falVideoExtendOptions = falModelOptionList(catalogs.falVideoExtendModels);
+  const falVideoMotionOptions = falModelOptionList(catalogs.falVideoMotionModels);
+  const falVideoUpscaleOptions = falModelOptionList(catalogs.falVideoUpscaleModels);
+  const falAudioOptions = falModelOptionList(catalogs.falAudioModels);
+  const falSoundEffectOptions = falModelOptionList(catalogs.falSoundEffectModels);
+  const falAudioExtendOptions = falModelOptionList(catalogs.falAudioExtendModels);
+  const falTranscribeOptions = falModelOptionList(catalogs.falTranscribeModels);
+  const falLipsyncImageOptions = falModelOptionList(catalogs.falLipsyncImageModels);
+  const falLipsyncVideoOptions = falModelOptionList(catalogs.falLipsyncVideoModels);
+
+  const imageSizeOptions = useMemo(() => {
+    const parts = value.imageAspectRatio.split(':').map((item) => Number(item));
+    const valid = parts.length === 2 && parts.every((item) => Number.isFinite(item) && item > 0);
+    let wr = valid ? parts[0] : 1;
+    let hr = valid ? parts[1] : 1;
+    const roundTo16 = (n: number) => {
+      const rounded = Math.round(n / 16) * 16;
+      return rounded < 256 ? 256 : rounded;
+    };
+    return imageSizePresetOptions.map((preset) => {
+      const baseLong = preset.longEdge;
+      const longEdge = roundTo16(baseLong);
+      let shortRatio = wr;
+      let longRatio = hr;
+      if (shortRatio > longRatio) {
+        [shortRatio, longRatio] = [longRatio, shortRatio];
+      }
+      const shortEdge = roundTo16((baseLong * shortRatio) / longRatio);
+      const dims = wr >= hr ? {width: longEdge, height: shortEdge} : {width: shortEdge, height: longEdge};
+      return {value: preset.value, label: `${preset.label} (${dims.width}×${dims.height})`};
+    });
+  }, [value.imageAspectRatio]);
+
+  // fieldLabel wraps a field's label with the conversation-variant reset
+  // affordance when the field is pinned by this conversation's override.
+  const fieldLabel = (htmlFor: string, text: string, key: string) => {
+    if (!isPinned(key)) {
+      return <label htmlFor={htmlFor}>{text}</label>;
+    }
+    return (
+      <div className="field-label-row">
+        <label htmlFor={htmlFor}>{text}</label>
+        <button
+          type="button"
+          className="override-reset"
+          onClick={() => resetField(key)}
+          title="Stop overriding — follow the global Settings value"
+        >
+          ↺ reset
+        </button>
+      </div>
+    );
+  };
+
+  const providerSelect = (
+    id: string,
+    provider: ChatProviderID,
+    onPick: (next: ChatProviderID) => void,
+    label: string,
+  ) => (
+    <div className="field">
+      <label htmlFor={id}>{label}</label>
+      <select id={id} value={provider} onChange={(event) => onPick(event.target.value as ChatProviderID)}>
+        <option value="ollama">Ollama</option>
+        <option value="openrouter" disabled={!catalogs.openRouterHasKey}>OpenRouter</option>
+        <option value="openai-compatible">OpenAI-compatible (local)</option>
+      </select>
+    </div>
+  );
+
+  return (
+    <>
+      {!isSettings ? (
+        <section className="settings-section">
+          <h3>Primary</h3>
+          <div className="settings-rows">
+            <div className="two-column">
+              {providerSelect('conv-primary-provider', value.primaryProvider, (next) => onChange({primaryProvider: next}), 'Provider')}
+              <div className="field">
+                {fieldLabel('conv-primary-model', 'Model', 'primary')}
+                <div className="model-inline-control">
+                  <ModelCombobox
+                    id="conv-primary-model"
+                    ariaLabel="Primary model"
+                    placeholder="Type to filter models..."
+                    value={value.primaryModel}
+                    onChange={(next) => onChange({primaryModel: next})}
+                    options={primaryOptions}
+                    allowCustom={value.primaryProvider === 'openai-compatible'}
+                  />
+                  {value.primaryProvider === 'ollama' ? (
+                    <ModelCapabilityLink
+                      id="conv-primary-model"
+                      modelName={value.primaryModel}
+                      models={catalogs.models}
+                      openID={catalogs.openCapabilityID}
+                      setOpenID={catalogs.setOpenCapabilityID}
+                      variant="icon"
+                    />
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      <section className="settings-section">
+        <h3>Harness</h3>
+        <div className="settings-rows">
+          <div className="two-column">
+            {providerSelect('harness-provider', value.harnessProvider, (next) => onChange({harnessProvider: next}), 'Harness Provider')}
+            <div className="field">
+              {fieldLabel('harness-model', 'Harness Model', 'harnessModel')}
+              <div className="model-inline-control">
+                {value.harnessProvider === 'ollama' ? (
+                  <>
+                    <select id="harness-model" value={value.harnessModel} onChange={(event) => onChange({harnessModel: event.target.value})}>
+                      {chatOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                    <ModelCapabilityLink
+                      id="settings-tools"
+                      modelName={value.harnessModel}
+                      models={catalogs.models}
+                      openID={catalogs.openCapabilityID}
+                      setOpenID={catalogs.setOpenCapabilityID}
+                      variant="icon"
+                    />
+                  </>
+                ) : (
+                  <ModelCombobox
+                    id="harness-model"
+                    ariaLabel="Harness model"
+                    placeholder="Type to filter models..."
+                    value={value.harnessModel}
+                    onChange={(next) => onChange({harnessModel: next})}
+                    options={chatOptions}
+                    allowCustom={value.harnessProvider === 'openai-compatible'}
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <h3>Image</h3>
+        <div className="settings-rows">
+          <div className="two-column">
+            <div className="field">
+              {fieldLabel('image-provider', 'Image Provider', 'imageProvider')}
+              <select
+                id="image-provider"
+                value={value.imageProvider}
+                onChange={(event) => onChange({imageProvider: event.target.value as 'fal' | 'openai-compatible'})}
+              >
+                <option value="fal">fal.ai (cloud)</option>
+                <option value="openai-compatible">OpenAI-compatible (local)</option>
+              </select>
+            </div>
+
+            {value.imageProvider === 'fal' ? (
+              <div className="field">
+                {fieldLabel('fal-model', 'fal.ai Model', 'imageModel')}
+                <ModelCombobox
+                  id="fal-model"
+                  ariaLabel="fal.ai model"
+                  placeholder={defaultFalImageModel}
+                  value={value.falModel}
+                  onChange={(next) => onChange({falModel: next})}
+                  options={falImageOptions}
+                  allowCustom
+                />
+                {!catalogs.falHasKey ? (
+                  <span className="hint">Add a fal.ai API key {keyWhere} before generating images.</span>
+                ) : falImageOptions.length ? null : (
+                  <span className="hint">Type a fal.ai endpoint id — the model list couldn't be loaded.</span>
+                )}
+              </div>
+            ) : (
+              <div className="field">
+                {fieldLabel('openai-image-model', 'Default Image Model', 'imageModel')}
+                <ModelCombobox
+                  id="openai-image-model"
+                  ariaLabel="OpenAI-compatible image model"
+                  placeholder="flux2-klein"
+                  value={value.openaiImageModel}
+                  onChange={(next) => onChange({openaiImageModel: next})}
+                  options={catalogs.openaiCompatibleModels}
+                  allowCustom
+                />
+                {catalogs.openaiCompatibleModels.length ? null : (
+                  <span className="hint">Type a model id from your server — the model list couldn't be loaded.</span>
+                )}
+              </div>
+            )}
+          </div>
+
+          {value.imageProvider === 'fal' ? (
+            <div className="field">
+              {fieldLabel('fal-image-edit-model', 'Image-to-Image Model (fal.ai)', 'imageEditModel')}
+              <ModelCombobox
+                id="fal-image-edit-model"
+                ariaLabel="fal.ai image-to-image model"
+                placeholder={defaultFalImageEditModel}
+                value={value.falImageEditModel}
+                onChange={(next) => onChange({falImageEditModel: next})}
+                options={falImageEditOptions}
+                allowCustom
+              />
+            </div>
+          ) : null}
+
+          <div className="field">
+            {fieldLabel('fal-upscale-model', 'Image-Upscale Model (fal.ai)', 'upscaleModel')}
+            <ModelCombobox
+              id="fal-upscale-model"
+              ariaLabel="fal.ai image-upscale model"
+              placeholder={defaultFalUpscaleModel}
+              value={value.falUpscaleModel}
+              onChange={(next) => onChange({falUpscaleModel: next})}
+              options={falUpscaleOptions}
+              allowCustom
+            />
+            {!catalogs.falHasKey ? (
+              <span className="hint">Add a fal.ai API key {keyWhere} to upscale images.</span>
+            ) : falUpscaleOptions.length ? null : (
+              <span className="hint">Type a fal.ai endpoint id — the model list couldn't be loaded.</span>
+            )}
+          </div>
+
+          <div className="three-column">
+            <div className="field">
+              {fieldLabel('image-aspect', 'Aspect Ratio', 'imageAspectRatio')}
+              <select id="image-aspect" value={value.imageAspectRatio} onChange={(event) => onChange({imageAspectRatio: event.target.value})}>
+                {imageAspectRatioOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+              </select>
+            </div>
+
+            <div className="field">
+              {fieldLabel('image-size', 'Size', 'imageSizePreset')}
+              <select id="image-size" value={value.imageSizePreset} onChange={(event) => onChange({imageSizePreset: event.target.value})}>
+                {imageSizeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            </div>
+
+            <div className="field">
+              {fieldLabel('image-steps', 'Image Steps', 'imageSteps')}
+              <input
+                id="image-steps"
+                type="number"
+                min="1"
+                step="1"
+                value={value.imageSteps}
+                onChange={(event) => onChange({imageSteps: positiveIntOrDefault(event.target.value, defaultImageSteps)})}
+              />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <h3>Video</h3>
+        <div className="settings-rows">
+          <div className="two-column">
+            <div className="field">
+              {fieldLabel('fal-video-model', 'Text-to-Video Model (fal.ai)', 'videoModel')}
+              <ModelCombobox
+                id="fal-video-model"
+                ariaLabel="fal.ai text-to-video model"
+                placeholder={defaultFalVideoModel}
+                value={value.falVideoModel}
+                onChange={(next) => onChange({falVideoModel: next})}
+                options={falVideoOptions}
+                allowCustom
+              />
+              {!catalogs.falHasKey ? (
+                <span className="hint">Add a fal.ai API key {keyWhere} to generate videos.</span>
+              ) : falVideoOptions.length ? null : (
+                <span className="hint">Type a fal.ai text-to-video endpoint id.</span>
+              )}
+            </div>
+
+            <div className="field">
+              {fieldLabel('video-duration', 'Text-to-Video Duration', 'videoDuration')}
+              <select id="video-duration" value={value.videoDuration} onChange={(event) => onChange({videoDuration: event.target.value})}>
+                {durationOptions.video.map((option) => <option key={option} value={option}>{videoDurationLabels[option] ?? option}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div className="two-column">
+            <div className="field">
+              {fieldLabel('fal-video-image-model', 'Image-to-Video Model (fal.ai)', 'videoImageModel')}
+              <ModelCombobox
+                id="fal-video-image-model"
+                ariaLabel="fal.ai image-to-video model"
+                placeholder={defaultFalVideoImageModel}
+                value={value.falVideoImageModel}
+                onChange={(next) => onChange({falVideoImageModel: next})}
+                options={falVideoImageOptions}
+                allowCustom
+              />
+            </div>
+
+            <div className="field">
+              <label htmlFor="video-duration-image">Image-to-Video Duration</label>
+              <select id="video-duration-image" value={value.videoDurationImage} onChange={(event) => onChange({videoDurationImage: event.target.value})}>
+                {durationOptions.image.map((option) => <option key={option} value={option}>{videoDurationLabels[option] ?? option}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div className="two-column">
+            <div className="field">
+              {fieldLabel('fal-video-extend-model', 'Video-Extend Model (fal.ai)', 'videoExtendModel')}
+              <ModelCombobox
+                id="fal-video-extend-model"
+                ariaLabel="fal.ai video-extend model"
+                placeholder={defaultFalVideoExtendModel}
+                value={value.falVideoExtendModel}
+                onChange={(next) => onChange({falVideoExtendModel: next})}
+                options={falVideoExtendOptions}
+                allowCustom
+              />
+            </div>
+
+            <div className="field">
+              <label htmlFor="video-duration-extend">Video-Extend Duration</label>
+              <select id="video-duration-extend" value={value.videoDurationExtend} onChange={(event) => onChange({videoDurationExtend: event.target.value})}>
+                {durationOptions.extend.map((option) => <option key={option} value={option}>{videoDurationLabels[option] ?? option}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div className="field">
+            {fieldLabel('fal-video-motion-model', 'Motion-Control Model (fal.ai)', 'videoMotionModel')}
+            <ModelCombobox
+              id="fal-video-motion-model"
+              ariaLabel="fal.ai motion-control model"
+              placeholder={defaultFalVideoMotionModel}
+              value={value.falVideoMotionModel}
+              onChange={(next) => onChange({falVideoMotionModel: next})}
+              options={falVideoMotionOptions}
+              allowCustom
+            />
+          </div>
+
+          <div className="field">
+            {fieldLabel('fal-video-upscale-model', 'Video-Upscale Model (fal.ai)', 'videoUpscaleModel')}
+            <ModelCombobox
+              id="fal-video-upscale-model"
+              ariaLabel="fal.ai video-upscale model"
+              placeholder={defaultFalVideoUpscaleModel}
+              value={value.falVideoUpscaleModel}
+              onChange={(next) => onChange({falVideoUpscaleModel: next})}
+              options={falVideoUpscaleOptions}
+              allowCustom
+            />
+          </div>
+
+          <div className="field">
+            {fieldLabel('video-aspect', 'Video Aspect Ratio', 'videoAspectRatio')}
+            <select id="video-aspect" value={value.videoAspectRatio} onChange={(event) => onChange({videoAspectRatio: event.target.value})}>
+              {videoAspectRatioOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <h3>Audio</h3>
+        <div className="two-column">
+          <div className="field">
+            {fieldLabel('fal-audio-model', 'Speech Model (TTS, fal.ai)', 'audioModel')}
+            <ModelCombobox
+              id="fal-audio-model"
+              ariaLabel="fal.ai speech model"
+              placeholder={defaultFalAudioModel}
+              value={value.falAudioModel}
+              onChange={(next) => onChange({falAudioModel: next})}
+              options={falAudioOptions}
+              allowCustom
+            />
+          </div>
+          <div className="field">
+            {fieldLabel('fal-audio-clone-model', 'Voice Cloning Model (fal.ai)', 'audioCloneModel')}
+            <ModelCombobox
+              id="fal-audio-clone-model"
+              ariaLabel="fal.ai voice cloning model"
+              placeholder={defaultFalAudioCloneModel}
+              value={value.falAudioCloneModel}
+              onChange={(next) => onChange({falAudioCloneModel: next})}
+              options={falAudioOptions}
+              allowCustom
+            />
+          </div>
+          <div className="field">
+            {fieldLabel('fal-sound-effects-model', 'Music &amp; Sound Effects Model (fal.ai)', 'soundEffectsModel')}
+            <ModelCombobox
+              id="fal-sound-effects-model"
+              ariaLabel="fal.ai sound effects model"
+              placeholder={defaultFalSoundEffectsModel}
+              value={value.falSoundEffectsModel}
+              onChange={(next) => onChange({falSoundEffectsModel: next})}
+              options={falSoundEffectOptions}
+              allowCustom
+            />
+          </div>
+          <div className="field">
+            {fieldLabel('fal-audio-extend-model', 'Audio Extend Model (fal.ai)', 'audioExtendModel')}
+            <ModelCombobox
+              id="fal-audio-extend-model"
+              ariaLabel="fal.ai audio extend model"
+              placeholder={defaultFalAudioExtendModel}
+              value={value.falAudioExtendModel}
+              onChange={(next) => onChange({falAudioExtendModel: next})}
+              options={falAudioExtendOptions}
+              allowCustom
+            />
+          </div>
+        </div>
+        {!catalogs.falHasKey ? (
+          <span className="hint">Add a fal.ai API key {keyWhere} to generate speech, music, or sound effects.</span>
+        ) : null}
+      </section>
+
+      <section className="settings-section">
+        <h3>Transcription</h3>
+        <div className="settings-rows">
+          <div className="two-column">
+            <div className="field">
+              {fieldLabel('transcription-provider', 'Transcription Provider', 'transcriptionProvider')}
+              <select
+                id="transcription-provider"
+                value={value.transcriptionProvider}
+                onChange={(event) => onChange({transcriptionProvider: event.target.value as 'fal' | 'local-whisper'})}
+              >
+                <option value="fal">fal.ai (cloud)</option>
+                <option
+                  value="local-whisper"
+                  disabled={!catalogs.whisperStatus?.available && value.transcriptionProvider !== 'local-whisper'}
+                >
+                  Whisper (local)
+                </option>
+              </select>
+              {!catalogs.whisperStatus?.available && value.transcriptionProvider !== 'local-whisper' ? (
+                <span className="hint">{catalogs.whisperStatus?.detail ?? 'Detecting local tools…'}</span>
+              ) : null}
+            </div>
+
+            {value.transcriptionProvider === 'local-whisper' ? (
+              <div className="field">
+                <div className="field-label-row">
+                  {fieldLabel('whisper-model', 'Whisper Model', 'whisperModel')}
+                  {catalogs.whisperStatus?.flavor === 'whisper-cpp' ? (
+                    <InfoHint
+                      label="Empty whisper model resolution"
+                      text="Empty model resolves: $WHISPER_MODEL (if set when Atelier launched) → ~/.whisper-base.en.bin → ~/.cache/whisper.cpp/ggml-base.en.bin → ~/models/ggml-base.en.bin."
+                    />
+                  ) : null}
+                </div>
+                <input
+                  id="whisper-model"
+                  value={value.whisperModel}
+                  onChange={(event) => onChange({whisperModel: event.target.value})}
+                  placeholder={catalogs.whisperStatus?.flavor === 'whisper-cpp' ? '/path/to/ggml-base.en.bin' : 'small (whisper default)'}
+                />
+              </div>
+            ) : (
+              <div className="field">
+                {fieldLabel('fal-transcribe-model', 'Transcription Model (fal.ai)', 'transcribeModel')}
+                <ModelCombobox
+                  id="fal-transcribe-model"
+                  ariaLabel="fal.ai transcription model"
+                  placeholder={defaultFalTranscribeModel}
+                  value={value.falTranscribeModel}
+                  onChange={(next) => onChange({falTranscribeModel: next})}
+                  options={falTranscribeOptions}
+                  allowCustom
+                />
+              </div>
+            )}
+          </div>
+
+          {value.transcriptionProvider === 'local-whisper' ? (
+            <div className="field">
+              <div className="field-label-row">
+                {fieldLabel('whisper-binary', 'Whisper Binary', 'whisperBinary')}
+                {catalogs.whisperStatus?.detail ? (
+                  <InfoHint label="Whisper binary detection" text={catalogs.whisperStatus.detail} />
+                ) : null}
+              </div>
+              <input
+                id="whisper-binary"
+                value={value.whisperBinary}
+                onChange={(event) => onChange({whisperBinary: event.target.value})}
+                placeholder={catalogs.whisperStatus?.path || 'auto-detect on PATH: whisper, then whisper-cli'}
+              />
+            </div>
+          ) : !catalogs.falHasKey ? (
+            <span className="hint">Add a fal.ai API key {keyWhere} — or install whisper locally — to transcribe audio.</span>
+          ) : null}
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <h3>Lip Sync</h3>
+        <div className="settings-rows">
+          <div className="two-column">
+            <div className="field">
+              {fieldLabel('fal-lipsync-image-model', 'Audio-to-Video Model (fal.ai)', 'lipsyncImageModel')}
+              <ModelCombobox
+                id="fal-lipsync-image-model"
+                ariaLabel="fal.ai audio-to-video lip sync model"
+                placeholder={defaultFalLipsyncImageModel}
+                value={value.falLipsyncImageModel}
+                onChange={(next) => onChange({falLipsyncImageModel: next})}
+                options={falLipsyncImageOptions}
+                allowCustom
+              />
+            </div>
+
+            <div className="field">
+              {fieldLabel('fal-lipsync-video-model', 'Video-to-Video Model (fal.ai)', 'lipsyncVideoModel')}
+              <ModelCombobox
+                id="fal-lipsync-video-model"
+                ariaLabel="fal.ai video-to-video lip sync model"
+                placeholder={defaultFalLipsyncVideoModel}
+                value={value.falLipsyncVideoModel}
+                onChange={(next) => onChange({falLipsyncVideoModel: next})}
+                options={falLipsyncVideoOptions}
+                allowCustom
+              />
+            </div>
+          </div>
+          {!catalogs.falHasKey ? (
+            <span className="hint">Add a fal.ai API key {keyWhere} to use lip sync.</span>
+          ) : null}
+        </div>
+      </section>
+    </>
+  );
 }
 
 function modelCapabilityLabels(model: main.OllamaModel): string[] {

@@ -584,6 +584,72 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class ConversationModelOverrides {
+	    primaryProvider?: string;
+	    primaryModel?: string;
+	    harnessProvider?: string;
+	    harnessModel?: string;
+	    imageProvider?: string;
+	    imageModel?: string;
+	    imageEditModel?: string;
+	    upscaleModel?: string;
+	    videoModel?: string;
+	    videoImageModel?: string;
+	    videoExtendModel?: string;
+	    videoMotionModel?: string;
+	    videoUpscaleModel?: string;
+	    audioModel?: string;
+	    soundEffectsModel?: string;
+	    audioCloneModel?: string;
+	    audioExtendModel?: string;
+	    transcribeModel?: string;
+	    lipsyncImageModel?: string;
+	    lipsyncVideoModel?: string;
+	    transcriptionProvider?: string;
+	    whisperModel?: string;
+	    whisperBinary?: string;
+	    imageAspectRatio?: string;
+	    imageSizePreset?: string;
+	    imageSteps?: number;
+	    videoDuration?: string;
+	    videoAspectRatio?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConversationModelOverrides(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.primaryProvider = source["primaryProvider"];
+	        this.primaryModel = source["primaryModel"];
+	        this.harnessProvider = source["harnessProvider"];
+	        this.harnessModel = source["harnessModel"];
+	        this.imageProvider = source["imageProvider"];
+	        this.imageModel = source["imageModel"];
+	        this.imageEditModel = source["imageEditModel"];
+	        this.upscaleModel = source["upscaleModel"];
+	        this.videoModel = source["videoModel"];
+	        this.videoImageModel = source["videoImageModel"];
+	        this.videoExtendModel = source["videoExtendModel"];
+	        this.videoMotionModel = source["videoMotionModel"];
+	        this.videoUpscaleModel = source["videoUpscaleModel"];
+	        this.audioModel = source["audioModel"];
+	        this.soundEffectsModel = source["soundEffectsModel"];
+	        this.audioCloneModel = source["audioCloneModel"];
+	        this.audioExtendModel = source["audioExtendModel"];
+	        this.transcribeModel = source["transcribeModel"];
+	        this.lipsyncImageModel = source["lipsyncImageModel"];
+	        this.lipsyncVideoModel = source["lipsyncVideoModel"];
+	        this.transcriptionProvider = source["transcriptionProvider"];
+	        this.whisperModel = source["whisperModel"];
+	        this.whisperBinary = source["whisperBinary"];
+	        this.imageAspectRatio = source["imageAspectRatio"];
+	        this.imageSizePreset = source["imageSizePreset"];
+	        this.imageSteps = source["imageSteps"];
+	        this.videoDuration = source["videoDuration"];
+	        this.videoAspectRatio = source["videoAspectRatio"];
+	    }
+	}
 	export class ChatRequest {
 	    requestID?: string;
 	    conversationId?: string;
@@ -599,6 +665,7 @@ export namespace main {
 	    tools?: any[];
 	    workspace?: string;
 	    projectId?: string;
+	    modelOverrides?: ConversationModelOverrides;
 	    referencedAssetIds?: string[];
 	
 	    static createFrom(source: any = {}) {
@@ -621,6 +688,7 @@ export namespace main {
 	        this.tools = source["tools"];
 	        this.workspace = source["workspace"];
 	        this.projectId = source["projectId"];
+	        this.modelOverrides = this.convertValues(source["modelOverrides"], ConversationModelOverrides);
 	        this.referencedAssetIds = source["referencedAssetIds"];
 	    }
 	
@@ -843,6 +911,7 @@ export namespace main {
 	    stats: HistoryConversationStats;
 	    workspace?: string;
 	    projectId?: string;
+	    modelOverrides?: ConversationModelOverrides;
 	
 	    static createFrom(source: any = {}) {
 	        return new HistoryConversation(source);
@@ -862,6 +931,7 @@ export namespace main {
 	        this.stats = this.convertValues(source["stats"], HistoryConversationStats);
 	        this.workspace = source["workspace"];
 	        this.projectId = source["projectId"];
+	        this.modelOverrides = this.convertValues(source["modelOverrides"], ConversationModelOverrides);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -914,6 +984,7 @@ export namespace main {
 		    return a;
 		}
 	}
+	
 	export class TurnMatch {
 	    turnId: string;
 	    role: string;
@@ -947,6 +1018,7 @@ export namespace main {
 	    artifactCount: number;
 	    workspace?: string;
 	    projectId?: string;
+	    modelOverrides?: ConversationModelOverrides;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConversationSummary(source);
@@ -964,7 +1036,26 @@ export namespace main {
 	        this.artifactCount = source["artifactCount"];
 	        this.workspace = source["workspace"];
 	        this.projectId = source["projectId"];
+	        this.modelOverrides = this.convertValues(source["modelOverrides"], ConversationModelOverrides);
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class ConversationSearchResult {
 	    conversation: ConversationSummary;

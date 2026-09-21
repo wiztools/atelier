@@ -262,6 +262,10 @@ export function SearchConversations(arg1, arg2) {
   return window['go']['main']['App']['SearchConversations'](arg1, arg2);
 }
 
+export function SetConversationModelOverrides(arg1, arg2) {
+  return window['go']['main']['App']['SetConversationModelOverrides'](arg1, arg2);
+}
+
 export function SetOllamaBaseURL(arg1) {
   return window['go']['main']['App']['SetOllamaBaseURL'](arg1);
 }
