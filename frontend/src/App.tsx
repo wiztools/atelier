@@ -1076,17 +1076,6 @@ function App() {
   const [conversationAssets, setConversationAssets] = useState<main.ConversationAsset[]>([]);
   const [libraryAssets, setLibraryAssets] = useState<main.ConversationAsset[]>([]);
   const [assetsRefreshTick, setAssetsRefreshTick] = useState(0);
-  // Accepted asset mentions ({label, id}) from the current composition. Ref,
-  // not state: read synchronously at send time, cleared on send and on
-  // conversation switch. submitChat drops any mention whose @token no longer
-  // appears in the prompt text.
-  const mentionedAssetsRef = useRef<{label: string; id: string}[]>([]);
-  useEffect(() => {
-    // Mentions recorded for the previous conversation must not leak into the
-    // next one's send. Runs on conversation switch only — not on
-    // assetsRefreshTick, which fires mid-composition when a turn finishes.
-    mentionedAssetsRef.current = [];
-  }, [activeConversationID]);
   useEffect(() => {
     if (!activeConversationID) {
       setConversationAssets([]);
@@ -1200,6 +1189,8 @@ function App() {
   // when the user switches conversations mid-stream.
   const harnessRunDraftsRef = useRef<Record<string, HarnessRunView>>({});
   const chatPromptRef = useRef<HTMLTextAreaElement | null>(null);
+  // The chip mirror behind the composer textarea (see .composer-input-mirror).
+  const chatPromptMirrorRef = useRef<HTMLDivElement | null>(null);
   // Per-conversation composer drafts, keyed by conversationID ('' = new chat).
   // Mirror refs keep the latest prompt/attachments/activeConversationID so the
   // Cmd+N keydown listener (whose closure goes stale between activeStream
@@ -3354,11 +3345,19 @@ function App() {
     };
     // @-mentioned assets ride the request as IDs (backend resolves them into
     // the tool attachment slots); the readable @token stays in the message
-    // text for the model. A mention whose token was deleted from the text is
-    // dropped here.
-    const referencedAssetIds = mentionedAssetsRef.current
-      .filter((mention) => trimmed.includes(`@${mention.label}`))
-      .map((mention) => mention.id);
+    // text for the model — multi-word names quoted (@"my clip.mp4") so the
+    // reference boundary is unambiguous. IDs are derived from the text at send
+    // time by the same parser the chip overlay renders from, against the same
+    // binding pool: the prompt is the single source of truth, so a mention
+    // deleted, half-edited, or re-typed by hand resolves (or drops out)
+    // exactly as it reads.
+    const referencedAssetIds = [
+      ...new Set(
+        parseComposerMentions(trimmed, mentionBindingPool()).flatMap((segment) =>
+          segment.mention?.assetID ? [segment.mention.assetID] : [],
+        ),
+      ),
+    ];
     const requestID = `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const audioAttachments = attachments.filter((item) => item.kind === 'audio').map((item) => item.payload).filter(Boolean);
     const imageAttachments = attachments.filter((item) => item.kind === 'image').map((item) => item.payload).filter(Boolean);
@@ -3386,7 +3385,6 @@ function App() {
 
     setPrompt('');
     setAttachments([]);
-    mentionedAssetsRef.current = [];
     // The composer contents are being sent, not stashed — drop any stored draft
     // for the current key ('' for a brand-new chat) so it isn't resurrected.
     delete composerDraftsRef.current[activeConversationIDRef.current];
@@ -3459,8 +3457,7 @@ function App() {
   // (most immediate), then the referable assets newest-first. In a project
   // context the pool is the whole library — every conversation's uploads and
   // generated media, per-conversation provenance in the hint — so an
-  // @-mention can cite any asset in the library. Asset candidates carry their
-  // assetID so acceptMention can record the reference.
+  // @-mention can cite any asset in the library.
   function mentionCandidates(): MentionCandidate[] {
     const source = composerLibraryID ? libraryAssets : panelAssets;
     const assets: MentionCandidate[] = source.map((asset) => ({
@@ -3468,12 +3465,32 @@ function App() {
       src: asset.url ?? '',
       payload: '',
       kind: asset.kind === 'audio' ? 'audio' : asset.kind === 'video' ? 'video' : 'image',
-      assetID: asset.id,
       hint: composerLibraryID
         ? `${asset.role === 'user' ? 'attached' : 'generated'} · ${asset.conversationTitle || 'another chat'}`
         : `${asset.role === 'user' ? 'attached' : 'generated'} · ${assetTurnLabel(asset.originTurnId)}`,
     }));
     return [...attachmentsRef.current, ...assets];
+  }
+
+  // The mention binding pool for parseComposerMentions: this turn's
+  // attachments plus the same asset list the menu offers (panelAssets already
+  // scopes library-vs-conversation). Both the chip overlay and submit-time
+  // referencedAssetIds resolve through this — the composer text is the single
+  // source of truth; nothing is recorded at accept time.
+  function mentionBindingPool(): { label: string; assetID?: string }[] {
+    return [
+      ...attachmentsRef.current.map((item) => ({ label: item.name })),
+      ...panelAssets.map((asset) => ({ label: assetMentionLabel(asset), assetID: asset.id })),
+    ];
+  }
+
+  // renderMentionOverlay renders the prompt as the chip mirror's children:
+  // resolved mentions as chip spans, everything else as plain (invisible)
+  // text so wrapping matches the textarea exactly.
+  function renderMentionOverlay(text: string): React.ReactNode {
+    return parseComposerMentions(text, mentionBindingPool()).map((segment, index) =>
+      segment.mention ? <span key={index} className="mention-chip">{segment.mention.source}</span> : segment.text,
+    );
   }
 
   function handleChatPromptChange(event: React.ChangeEvent<HTMLTextAreaElement>) {
@@ -3492,14 +3509,28 @@ function App() {
     }
   }
 
+  // Keep the chip mirror scrolled with the textarea: the mirror lays out the
+  // same text, so its scroll offsets track the real input's exactly.
+  function handleChatPromptScroll(event: React.UIEvent<HTMLTextAreaElement>) {
+    const mirror = chatPromptMirrorRef.current;
+    if (mirror) {
+      mirror.scrollTop = event.currentTarget.scrollTop;
+      mirror.scrollLeft = event.currentTarget.scrollLeft;
+    }
+  }
+
   function closeMention() {
     setMentionOpen(false);
     mentionStateRef.current = null;
   }
 
-  // acceptMention replaces the open @-token with @<name> (trailing space) and
-  // places the caret after it. Called from Enter/Tab/Click. No-op if the menu
-  // is closed or the index is out of range.
+  // acceptMention replaces the open @-token with the accepted reference
+  // (trailing space) and places the caret after it. Multi-word names insert in
+  // the quoted form @"sunset beach.png": without delimiters the model cannot
+  // tell where the reference ends and the instruction begins. Called from
+  // Enter/Tab/Click. No-op if the menu is closed or the index is out of range.
+  // No binding is recorded here — resolution happens from the text at render
+  // and send time (see mentionBindingPool).
   function acceptMention(index: number) {
     const matches = mentionMatchesRef.current;
     const match = mentionStateRef.current;
@@ -3508,20 +3539,13 @@ function App() {
       return;
     }
     const chosen = matches[index];
-    const name = chosen.name;
-    // A conversation-asset mention is recorded by ID; the inserted @token is
-    // the readable label, and submitChat ships the IDs via
-    // referencedAssetIds (dropping any whose token was later deleted).
-    if (chosen.assetID && !mentionedAssetsRef.current.some((mention) => mention.id === chosen.assetID)) {
-      mentionedAssetsRef.current.push({label: name, id: chosen.assetID});
-    }
+    const token = /\s/.test(chosen.name) ? `@"${chosen.name}" ` : `@${chosen.name} `;
     const before = prompt.slice(0, match.at);
     const afterCaret = prompt.slice(match.at + 1 + match.query.length);
-    const next = `${before}@${name} ${afterCaret}`;
-    setPrompt(next);
+    setPrompt(`${before}${token}${afterCaret}`);
     closeMention();
     // Restore focus and caret after React re-renders the new value.
-    const caret = (before + `@${name} `).length;
+    const caret = (before + token).length;
     requestAnimationFrame(() => {
       const el = chatPromptRef.current;
       if (el) {
@@ -4946,14 +4970,29 @@ function App() {
                     ))}
                   </ul>
                 ) : null}
-                <textarea
-                  ref={chatPromptRef}
-                  value={prompt}
-                  onChange={handleChatPromptChange}
-                  onKeyDown={handleChatPromptKeyDown}
-                  onPaste={handleChatPromptPaste}
-                  placeholder="Prompt Atelier..."
-                />
+                <div className="composer-input">
+                  {/* Mention chip mirror: renders the same prompt text behind
+                      the textarea with resolved @-mentions styled as chips.
+                      The mirror paints the input's background and its own
+                      text is transparent; the real input stays the native
+                      textarea above it, so caret/IME/selection are untouched
+                      and only the chip decorations show through. Its
+                      typographic and box properties must match
+                      .composer-input textarea exactly or chips drift out of
+                      alignment. */}
+                  <div ref={chatPromptMirrorRef} className="composer-input-mirror" aria-hidden="true">
+                    {renderMentionOverlay(prompt)}
+                  </div>
+                  <textarea
+                    ref={chatPromptRef}
+                    value={prompt}
+                    onChange={handleChatPromptChange}
+                    onKeyDown={handleChatPromptKeyDown}
+                    onPaste={handleChatPromptPaste}
+                    onScroll={handleChatPromptScroll}
+                    placeholder="Prompt Atelier..."
+                  />
+                </div>
                 <div className="composer-actions">
                   <div className="composer-actions-left">
                     <button
@@ -7368,7 +7407,11 @@ type MentionMatch = { at: number; query: string };
 
 // detectMentionAt finds an open @-mention token ending at the caret. A token is
 // valid only when '@' sits at the start of text or right after whitespace (so
-// "foo@bar" is not a mention), and contains no whitespace after the '@'. Returns
+// "foo@bar" is not a mention), and contains no whitespace after the '@'. A
+// leading double quote is allowed: accepted multi-word mentions insert as
+// @"quoted name" tokens, and placing the caret back inside the opening word
+// re-opens completions — the quote stays part of the query so acceptMention's
+// replacement consumes it (mentionMatches strips it for matching). Returns
 // null when no token is active. Pure/module-level for unit testing.
 function detectMentionAt(text: string, caret: number): MentionMatch | null {
   if (caret <= 0) {
@@ -7392,6 +7435,93 @@ function detectMentionAt(text: string, caret: number): MentionMatch | null {
   return { at, query };
 }
 
+// ParsedMention is one resolved @-reference read out of composer text: the
+// verbatim source token (quotes included) plus what it binds to. assetID is
+// set only for asset mentions (their hex labels are self-describing — the
+// identity rides in the text itself); attachment mentions bind to this turn's
+// attached file by name and carry none, since the bytes ride the request's
+// payload arrays regardless of the text.
+type ParsedMention = {
+  source: string;
+  label: string;
+  assetID?: string;
+};
+
+// ComposerSegment splits composer text into plain runs and resolved mentions
+// — the shared view model for the chip overlay and the send-time
+// referencedAssetIds scan.
+type ComposerSegment = { text: string; mention?: ParsedMention };
+
+// parseComposerMentions splits composer text into plain runs and mention
+// tokens, resolving each against pool (this turn's attachments first, then the
+// same asset list the mention menu offers). A token is '@' at text start or
+// after whitespace, either bare (`@img_ab12…`, whitespace-delimited) or quoted
+// (`@"sunset beach.png"`, the only form multi-word names are inserted in).
+// Tokens that resolve against nothing — prose like "ping @john", a half-edited
+// name — stay plain, so the chip decoration only ever marks references that
+// will actually carry media. Un-closed quotes are plain text to the end. Pure/
+// module-level for unit testing.
+function parseComposerMentions(text: string, pool: { label: string; assetID?: string }[]): ComposerSegment[] {
+  const byLabel = new Map<string, { label: string; assetID?: string }>();
+  for (const item of pool) {
+    const key = item.label.toLowerCase();
+    // First wins: attachments outrank a same-named asset, mirroring the menu's
+    // candidate order.
+    if (!byLabel.has(key)) {
+      byLabel.set(key, item);
+    }
+  }
+  const segments: ComposerSegment[] = [];
+  let plain = '';
+  const flushPlain = () => {
+    if (plain) {
+      segments.push({ text: plain });
+      plain = '';
+    }
+  };
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === '@' && (i === 0 || /\s/.test(text[i - 1]))) {
+      let source = '';
+      let label = '';
+      let end = i + 1;
+      if (text[i + 1] === '"') {
+        const close = text.indexOf('"', i + 2);
+        if (close < 0) {
+          // Un-closed quote: not a mention; the rest cannot contain a fresh
+          // token (any '@' inside sits mid-quote), so take it all as plain.
+          plain += text.slice(i);
+          break;
+        }
+        source = text.slice(i, close + 1);
+        label = text.slice(i + 2, close);
+        end = close + 1;
+      } else {
+        let j = i + 1;
+        while (j < text.length && !/\s/.test(text[j])) {
+          j += 1;
+        }
+        source = text.slice(i, j);
+        label = text.slice(i + 1, j);
+        end = j;
+      }
+      const bound = label ? byLabel.get(label.toLowerCase()) : undefined;
+      if (bound) {
+        flushPlain();
+        segments.push({ text: source, mention: { source, label: bound.label, ...(bound.assetID ? { assetID: bound.assetID } : {}) } });
+      } else {
+        plain += source;
+      }
+      i = end;
+      continue;
+    }
+    plain += text[i];
+    i += 1;
+  }
+  flushPlain();
+  return segments;
+}
+
 // assetTurnLabel renders an origin turn ID (turn_000003) as a human label
 // ("turn 3") for the assets panel; anything unparsable passes through as-is.
 function assetTurnLabel(turnID: string): string {
@@ -7399,27 +7529,30 @@ function assetTurnLabel(turnID: string): string {
   return Number.isFinite(n) && n > 0 ? `turn ${n}` : turnID;
 }
 
-// MentionCandidate extends an in-composer attachment with optional asset
-// fields: when assetID is set, the candidate is a conversation asset from the
-// panel's list — mentioned by ID (transport via referencedAssetIds) rather
-// than by attached bytes. hint is the small provenance label the menu shows.
+// MentionCandidate extends an in-composer attachment with the menu's provenance
+// label. Candidates carry no binding state: mention resolution happens at
+// render/send time from the text itself (parseComposerMentions against the
+// binding pool), so accepting one only inserts text.
 type MentionCandidate = Attachment & {
-  assetID?: string;
   hint?: string;
 };
 
 // assetMentionLabel derives the @-token for a conversation asset from its ID —
 // kind prefix plus enough hex to be unique in practice, and token-safe (no
-// spaces) so the open-token detection and the send-time text scan agree.
+// spaces) so the open-token detection and the send-time text scan agree. The
+// label is a prefix of the asset ID, so it is self-describing: resolving a
+// mention is a lookup of the token against the asset list, never a recorded
+// side-channel that the text could drift from.
 function assetMentionLabel(asset: main.ConversationAsset): string {
   return asset.id.slice(0, 12);
 }
 
 // mentionMatches returns the candidates whose name contains the query as a
 // case-insensitive substring, preserving order. An empty query lists every
-// candidate (the menu is most useful right after typing '@').
+// candidate (the menu is most useful right after typing '@'). A leading double
+// quote (re-opening a @"quoted name" token) is stripped before matching.
 function mentionMatches(query: string, items: MentionCandidate[]): MentionCandidate[] {
-  const q = query.trim().toLowerCase();
+  const q = query.trim().toLowerCase().replace(/^"/, '');
   if (!q) {
     return items;
   }

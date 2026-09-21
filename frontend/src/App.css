@@ -1930,6 +1930,55 @@ button:disabled {
   resize: none;
 }
 
+/* Composer input: the textarea sits over a mirror div (composer-input-mirror)
+   rendering the same text with resolved @-mentions as chips. The mirror owns
+   the input's background; the textarea above is transparent so only its text,
+   caret, and focus ring draw. Every typographic/box property on the mirror
+   must match what the textarea computes (global textarea rules: 1px border,
+   6px radius, 10px padding, font-size 13px, line-height 1.45) or the chips
+   drift out of alignment. Chips are net-zero layout: their padding is
+   cancelled by matching negative margins, so no glyph ever moves and the
+   mirror's wrapping stays byte-identical to the textarea's. Classic (occupying)
+   scrollbars would desync wrapping between the two boxes — WKWebView's overlay
+   scrollbars don't; revisit if a non-macOS target lands. */
+.composer-input {
+  position: relative;
+}
+
+.composer-input textarea {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+}
+
+.composer-input-mirror {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: #121415;
+  padding: 10px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  overflow: hidden;
+  color: transparent;
+  pointer-events: none;
+  user-select: none;
+}
+
+.mention-chip {
+  border-radius: 4px;
+  padding: 1px 4px;
+  margin: 0 -4px;
+  background: rgba(93, 169, 183, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(93, 169, 183, 0.45);
+}
+
 .composer-actions {
   display: flex;
   align-items: center;
