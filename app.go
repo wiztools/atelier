@@ -63,6 +63,15 @@ type App struct {
 	// shares the TTL window; nil on bare &App{} literals, which the estimator
 	// treats as "no pricing available" (fail-soft zero).
 	falPricing *falPricingCache
+	// imageToImage* cache fal's image-to-image catalog (~400 models) shared by
+	// the Settings upscale and image-edit pickers, so the two listers don't each
+	// re-page the whole category and race the request timeout — a slow page used
+	// to leave one picker empty. Guarded by imageToImageMu; falImageToImageCacheTTL
+	// bounds staleness. falCategoryFetch is a test seam — nil uses the real fetch.
+	imageToImageMu        sync.Mutex
+	imageToImageModels    []FalModel
+	imageToImageFetchedAt time.Time
+	falCategoryFetch      func(context.Context, string) ([]FalModel, error)
 }
 
 func NewApp() *App {
@@ -2490,19 +2499,54 @@ func (a *App) ListFalVideoKeyframeModels() ([]FalModel, error) {
 	return newFalClient(a.client, key).ListModels(ctx, falImageToVideoCategory, 0)
 }
 
-// ListFalUpscaleModels returns fal's image-upscaler catalog for the Settings
-// upscale-model picker. fal is the only upscale backend (Ollama has none). fal
-// files upscalers under the broader image-to-image category (alongside
-// inpainting, background removal, etc.), so we fetch that and keep only the
-// models whose id or tags mention upscaling.
-func (a *App) ListFalUpscaleModels() ([]FalModel, error) {
+// falImageToImageCacheTTL bounds how long the shared image-to-image catalog is
+// reused before a re-fetch. Long enough that the upscale and edit pickers on one
+// Settings open share a single fetch; short enough that a newly added endpoint
+// shows up on a later visit.
+const falImageToImageCacheTTL = 2 * time.Minute
+
+// fetchFalCategoryModels pages a fal model category. falCategoryFetch overrides
+// it in tests; the real path loads the key and calls the fal client.
+func (a *App) fetchFalCategoryModels(ctx context.Context, category string) ([]FalModel, error) {
+	if a.falCategoryFetch != nil {
+		return a.falCategoryFetch(ctx, category)
+	}
 	key, err := loadFalAPIKey()
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	return newFalClient(a.client, key).ListModels(ctx, category, 0)
+}
+
+// cachedImageToImageModels returns fal's image-to-image catalog, fetching it at
+// most once per falImageToImageCacheTTL. The upscale and edit listers both derive
+// their picks from this one bucket; caching (and serializing behind imageToImageMu)
+// means one Settings open pages the ~400-model category once instead of twice and
+// under a single 45s deadline, so a slow page no longer empties one picker.
+func (a *App) cachedImageToImageModels() ([]FalModel, error) {
+	a.imageToImageMu.Lock()
+	defer a.imageToImageMu.Unlock()
+	if a.imageToImageModels != nil && time.Since(a.imageToImageFetchedAt) < falImageToImageCacheTTL {
+		return a.imageToImageModels, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	models, err := newFalClient(a.client, key).ListModels(ctx, falImageUpscalingCategory, 0)
+	models, err := a.fetchFalCategoryModels(ctx, falImageUpscalingCategory)
+	if err != nil {
+		return nil, err
+	}
+	a.imageToImageModels = models
+	a.imageToImageFetchedAt = time.Now()
+	return models, nil
+}
+
+// ListFalUpscaleModels returns fal's image-upscaler catalog for the Settings
+// upscale-model picker. fal is the only upscale backend (Ollama has none). fal
+// files upscalers under the broader image-to-image category (alongside
+// inpainting, background removal, etc.), so we fetch that (shared, cached) and
+// keep only the models whose id or tags mention upscaling.
+func (a *App) ListFalUpscaleModels() ([]FalModel, error) {
+	models, err := a.cachedImageToImageModels()
 	if err != nil {
 		return nil, err
 	}
@@ -2537,13 +2581,7 @@ func isFalUpscaleModel(model FalModel) bool {
 // that category and keep everything that is NOT an upscaler — the inverse of
 // ListFalUpscaleModels. The two listers share falImageUpscalingCategory.
 func (a *App) ListFalImageEditModels() ([]FalModel, error) {
-	key, err := loadFalAPIKey()
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	models, err := newFalClient(a.client, key).ListModels(ctx, falImageUpscalingCategory, 0)
+	models, err := a.cachedImageToImageModels()
 	if err != nil {
 		return nil, err
 	}

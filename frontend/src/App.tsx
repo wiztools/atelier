@@ -2893,7 +2893,10 @@ function App() {
     try {
       setFalUpscaleModels(asArray(await ListFalUpscaleModels()));
     } catch {
-      setFalUpscaleModels([]);
+      // Keep the last-good list on a transient fetch failure (the upscale and
+      // edit pickers page fal's large image-to-image catalog and can time out);
+      // clearing it would drop a loaded picker to the "couldn't load" hint on a
+      // momentary blip. A genuine cold-load failure simply leaves it empty.
     }
     try {
       setFalLipsyncImageModels(asArray(await ListFalLipsyncImageModels()));

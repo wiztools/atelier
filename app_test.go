@@ -8144,3 +8144,51 @@ func TestGenerateConversationTitleRoutesToProvider(t *testing.T) {
 		})
 	}
 }
+
+// TestFalImageToImageCacheSharedAndFiltered verifies the upscale and edit
+// listers share a single cached fetch of the image-to-image category and
+// partition it correctly, and that the cache refreshes after its TTL.
+func TestFalImageToImageCacheSharedAndFiltered(t *testing.T) {
+	var calls int
+	fake := []FalModel{
+		{ID: "fal-ai/esrgan", Tags: []string{"upscaling", "high-res"}},
+		{ID: "fal-ai/clarity-upscaler", Tags: []string{"upscaling"}},
+		{ID: "bytedance/seedream/v5/pro/edit", Tags: []string{"image-to-image"}},
+	}
+	app := &App{falCategoryFetch: func(_ context.Context, category string) ([]FalModel, error) {
+		if category != falImageUpscalingCategory {
+			t.Fatalf("unexpected category %q", category)
+		}
+		calls++
+		return fake, nil
+	}}
+
+	up, err := app.ListFalUpscaleModels()
+	if err != nil {
+		t.Fatalf("ListFalUpscaleModels: %v", err)
+	}
+	if len(up) != 2 {
+		t.Fatalf("upscale list = %d models, want 2 (esrgan, clarity)", len(up))
+	}
+
+	ed, err := app.ListFalImageEditModels()
+	if err != nil {
+		t.Fatalf("ListFalImageEditModels: %v", err)
+	}
+	if len(ed) != 1 || ed[0].ID != "bytedance/seedream/v5/pro/edit" {
+		t.Fatalf("edit list = %+v, want only the seedream edit model", ed)
+	}
+
+	if calls != 1 {
+		t.Fatalf("the two listers should share one fetch; got %d fetches", calls)
+	}
+
+	// After the TTL lapses, the next call re-fetches.
+	app.imageToImageFetchedAt = time.Now().Add(-falImageToImageCacheTTL - time.Second)
+	if _, err := app.ListFalUpscaleModels(); err != nil {
+		t.Fatalf("refetch: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected a refetch after TTL, got %d fetches", calls)
+	}
+}
