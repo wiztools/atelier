@@ -381,6 +381,7 @@ func configuredFalEndpointIDs(config AppConfig, extra ...string) []string {
 		resolveDefaultVideoImageModel,
 		resolveDefaultVideoExtendModel,
 		resolveDefaultVideoMotionModel,
+		resolveDefaultVideoKeyframeModel,
 		resolveDefaultVideoUpscaleModel,
 		resolveDefaultAudioModel,
 		resolveDefaultAudioCloneModel,

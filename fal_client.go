@@ -38,6 +38,13 @@ const (
 	// motion video — better for complex motions and the longer 30s limit), all
 	// mapped by resolveVideoBody.
 	defaultFalVideoMotionModel = "fal-ai/kling-video/v2.6/pro/motion-control"
+	// defaultFalVideoKeyframeModel is the start→end keyframe endpoint used when
+	// the planner requests a transition (imageRole:"keyframes") — Seedance
+	// image-to-video, whose schema declares end_image_url: "the generated video
+	// will transition from the starting image to this ending image." The first
+	// attached image is the opening frame (image_url), the last the closing
+	// frame (end_image_url), both mapped by resolveVideoBody.
+	defaultFalVideoKeyframeModel = "fal-ai/bytedance/seedance-2.0/image-to-video"
 	// defaultFalVideoUpscaleModel is the video upscaler endpoint used when none
 	// is configured — the video sibling of defaultFalUpscaleModel: a simple,
 	// cheap RealESRGAN-based upscaler that runs per frame and takes video_url +

@@ -199,6 +199,11 @@ type ConfigFal struct {
 	VideoImageModel  string `json:"videoImageModel,omitempty"`
 	VideoExtendModel string `json:"videoExtendModel,omitempty"`
 	VideoMotionModel string `json:"videoMotionModel,omitempty"`
+	// VideoKeyframeModel is the start→end keyframe endpoint used when the planner
+	// sets imageRole:"keyframes" and two images are attached — the first is the
+	// opening frame, the last the closing frame, and the model generates the
+	// transition between them.
+	VideoKeyframeModel string `json:"videoKeyframeModel,omitempty"`
 	// AudioModel is the text-to-speech endpoint used by the generate_speech
 	// tool; SoundEffectsModel is the text-to-audio endpoint (music and sound
 	// effects) used by the generate_sound tool. AudioCloneModel is the

@@ -497,6 +497,16 @@ func resolveDefaultVideoMotionModel(config AppConfig) string {
 	return defaultFalVideoMotionModel
 }
 
+// resolveDefaultVideoKeyframeModel returns the keyframe (start→end transition)
+// model used when the planner requests a two-frame transition, falling back to
+// the built-in Seedance endpoint when none is configured.
+func resolveDefaultVideoKeyframeModel(config AppConfig) string {
+	if model := strings.TrimSpace(config.Providers.Fal.VideoKeyframeModel); model != "" {
+		return model
+	}
+	return defaultFalVideoKeyframeModel
+}
+
 // nonEmptyVideos returns the trimmed, non-empty entries of videos — the shape
 // the generate_video executor and its siblings consume — treating nil as empty.
 func nonEmptyVideos(videos []string) []string {

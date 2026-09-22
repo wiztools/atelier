@@ -5719,6 +5719,17 @@ func TestResolveDefaultVideoMotionModel(t *testing.T) {
 	}
 }
 
+func TestResolveDefaultVideoKeyframeModel(t *testing.T) {
+	if got := resolveDefaultVideoKeyframeModel(AppConfig{}); got != defaultFalVideoKeyframeModel {
+		t.Errorf("resolveDefaultVideoKeyframeModel(empty) = %q, want %q", got, defaultFalVideoKeyframeModel)
+	}
+	cfg := AppConfig{}
+	cfg.Providers.Fal.VideoKeyframeModel = "fal-ai/custom/keyframe"
+	if got := resolveDefaultVideoKeyframeModel(cfg); got != "fal-ai/custom/keyframe" {
+		t.Errorf("resolveDefaultVideoKeyframeModel(configured) = %q, want the configured value", got)
+	}
+}
+
 // TestIsFalSpeechModel covers the id/tag filter that separates speech endpoints
 // from fal's broad text-to-audio category. Entries below are lifted from the
 // live catalog: fal files elevenlabs/tts, kokoro, zonos, and friends under
