@@ -642,3 +642,32 @@ func TestStreamChatTurnOneCarriesRequestModelOverrides(t *testing.T) {
 		t.Fatalf("turn-2 streaming step model = %v, want conv-primary", got)
 	}
 }
+
+// TestConversationOverrideVideoKeyframeModel covers the per-conversation
+// VideoKeyframeModel override, mirroring the sibling fal-endpoint overrides:
+// a set value wins over the base config and a blank one inherits it.
+func TestConversationOverrideVideoKeyframeModel(t *testing.T) {
+	base := AppConfig{}
+	base.Providers.Fal.VideoKeyframeModel = "fal-ai/base/keyframe"
+
+	o := normalizeConversationModelOverrides(ConversationModelOverrides{VideoKeyframeModel: "  fal-ai/override/keyframe  "})
+	if o.VideoKeyframeModel != "fal-ai/override/keyframe" {
+		t.Fatalf("normalize did not trim VideoKeyframeModel: %q", o.VideoKeyframeModel)
+	}
+
+	merged, _, err := overlayModelOverrides(base, ChatRequest{}, o)
+	if err != nil {
+		t.Fatalf("overlayModelOverrides returned error: %v", err)
+	}
+	if got := merged.Providers.Fal.VideoKeyframeModel; got != "fal-ai/override/keyframe" {
+		t.Fatalf("override did not win: got %q", got)
+	}
+
+	mergedEmpty, _, err := overlayModelOverrides(base, ChatRequest{}, normalizeConversationModelOverrides(ConversationModelOverrides{VideoKeyframeModel: "   "}))
+	if err != nil {
+		t.Fatalf("overlayModelOverrides returned error: %v", err)
+	}
+	if got := mergedEmpty.Providers.Fal.VideoKeyframeModel; got != "fal-ai/base/keyframe" {
+		t.Fatalf("blank override should inherit base: got %q", got)
+	}
+}

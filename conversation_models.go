@@ -29,20 +29,21 @@ type ConversationModelOverrides struct {
 	ImageModel    string `json:"imageModel,omitempty"`
 	// The fal endpoint fields map 1:1 onto ConfigFal — fal is the only backend
 	// for these tools, so there is no provider dimension.
-	ImageEditModel    string `json:"imageEditModel,omitempty"`
-	UpscaleModel      string `json:"upscaleModel,omitempty"`
-	VideoModel        string `json:"videoModel,omitempty"`
-	VideoImageModel   string `json:"videoImageModel,omitempty"`
-	VideoExtendModel  string `json:"videoExtendModel,omitempty"`
-	VideoMotionModel  string `json:"videoMotionModel,omitempty"`
-	VideoUpscaleModel string `json:"videoUpscaleModel,omitempty"`
-	AudioModel        string `json:"audioModel,omitempty"`
-	SoundEffectsModel string `json:"soundEffectsModel,omitempty"`
-	AudioCloneModel   string `json:"audioCloneModel,omitempty"`
-	AudioExtendModel  string `json:"audioExtendModel,omitempty"`
-	TranscribeModel   string `json:"transcribeModel,omitempty"`
-	LipsyncImageModel string `json:"lipsyncImageModel,omitempty"`
-	LipsyncVideoModel string `json:"lipsyncVideoModel,omitempty"`
+	ImageEditModel     string `json:"imageEditModel,omitempty"`
+	UpscaleModel       string `json:"upscaleModel,omitempty"`
+	VideoModel         string `json:"videoModel,omitempty"`
+	VideoImageModel    string `json:"videoImageModel,omitempty"`
+	VideoExtendModel   string `json:"videoExtendModel,omitempty"`
+	VideoMotionModel   string `json:"videoMotionModel,omitempty"`
+	VideoKeyframeModel string `json:"videoKeyframeModel,omitempty"`
+	VideoUpscaleModel  string `json:"videoUpscaleModel,omitempty"`
+	AudioModel         string `json:"audioModel,omitempty"`
+	SoundEffectsModel  string `json:"soundEffectsModel,omitempty"`
+	AudioCloneModel    string `json:"audioCloneModel,omitempty"`
+	AudioExtendModel   string `json:"audioExtendModel,omitempty"`
+	TranscribeModel    string `json:"transcribeModel,omitempty"`
+	LipsyncImageModel  string `json:"lipsyncImageModel,omitempty"`
+	LipsyncVideoModel  string `json:"lipsyncVideoModel,omitempty"`
 	// TranscriptionProvider/WhisperModel/WhisperBinary override transcribe_audio's
 	// backend plus the local whisper model and binary (everything the Models
 	// tab's Transcription section edits).
@@ -77,7 +78,7 @@ func normalizeConversationModelOverrides(o ConversationModelOverrides) Conversat
 		&o.HarnessProvider, &o.HarnessModel,
 		&o.ImageProvider, &o.ImageModel,
 		&o.ImageEditModel, &o.UpscaleModel,
-		&o.VideoModel, &o.VideoImageModel, &o.VideoExtendModel, &o.VideoMotionModel, &o.VideoUpscaleModel,
+		&o.VideoModel, &o.VideoImageModel, &o.VideoExtendModel, &o.VideoMotionModel, &o.VideoKeyframeModel, &o.VideoUpscaleModel,
 		&o.AudioModel, &o.SoundEffectsModel, &o.AudioCloneModel, &o.AudioExtendModel, &o.TranscribeModel,
 		&o.LipsyncImageModel, &o.LipsyncVideoModel,
 		&o.TranscriptionProvider, &o.WhisperModel, &o.WhisperBinary,
@@ -265,6 +266,9 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 	}
 	if o.VideoMotionModel != "" {
 		config.Providers.Fal.VideoMotionModel = o.VideoMotionModel
+	}
+	if o.VideoKeyframeModel != "" {
+		config.Providers.Fal.VideoKeyframeModel = o.VideoKeyframeModel
 	}
 	if o.VideoUpscaleModel != "" {
 		config.Providers.Fal.VideoUpscaleModel = o.VideoUpscaleModel
