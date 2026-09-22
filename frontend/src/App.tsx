@@ -6796,25 +6796,25 @@ function ModelSelectionPanel({
       <section className="settings-section">
         <h3>Video</h3>
         <div className="settings-rows">
-          <div className="two-column">
-            <div className="field">
-              <div className="field-label-row">
-                {fieldLabel('video-provider', 'Video Provider', 'videoProvider')}
-                <InfoHint
-                  label="Video provider"
-                  text="Which cloud backend generate_video uses: fal.ai or Replicate. Both serve text-to-video and image-to-video; extend, motion control, and keyframe transitions are fal.ai only (a request for those on Replicate fails with a note suggesting the switch). The video transforms (upscale, reframe, restyle) follow this provider too; lip sync and audio are always fal.ai and configured below regardless of this setting."
-                />
-              </div>
-              <select
-                id="video-provider"
-                value={value.videoProvider}
-                onChange={(event) => onChange({videoProvider: event.target.value as 'fal' | 'replicate'})}
-              >
-                <option value="fal">fal.ai</option>
-                <option value="replicate">Replicate</option>
-              </select>
+          <div className="field">
+            <div className="field-label-row">
+              {fieldLabel('video-provider', 'Video Provider', 'videoProvider')}
+              <InfoHint
+                label="Video provider"
+                text="Which cloud backend generate_video uses: fal.ai or Replicate. Both serve text-to-video and image-to-video; extend, motion control, and keyframe transitions are fal.ai only (a request for those on Replicate fails with a note suggesting the switch). The video transforms (upscale, reframe, restyle) follow this provider too; lip sync and audio are always fal.ai and configured below regardless of this setting."
+              />
             </div>
+            <select
+              id="video-provider"
+              value={value.videoProvider}
+              onChange={(event) => onChange({videoProvider: event.target.value as 'fal' | 'replicate'})}
+            >
+              <option value="fal">fal.ai</option>
+              <option value="replicate">Replicate</option>
+            </select>
+          </div>
 
+          <div className="two-column">
             <div className="field">
               <div className="field-label-row">
                 {fieldLabel('video-duration', 'Default Video Duration', 'videoDuration')}
@@ -6827,9 +6827,7 @@ function ModelSelectionPanel({
                 {durationOptions.video.map((option) => <option key={option} value={option}>{videoDurationLabels[option] ?? option}</option>)}
               </select>
             </div>
-          </div>
 
-          <div className="two-column">
             <div className="field">
               {fieldLabel('video-aspect', 'Video Aspect Ratio', 'videoAspectRatio')}
               <select id="video-aspect" value={value.videoAspectRatio} onChange={(event) => onChange({videoAspectRatio: event.target.value})}>
