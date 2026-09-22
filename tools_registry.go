@@ -673,6 +673,12 @@ func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 			attachedImages := tools.AttachedImages
 			attachedVideos := nonEmptyVideos(tools.AttachedVideos)
 			videoRole := strings.ToLower(strings.TrimSpace(call.UseVideoAs))
+			keyframes := strings.EqualFold(strings.TrimSpace(call.ImageRole), "keyframes")
+			if keyframes && len(attachedImages) != 2 {
+				return nil, "video generation unavailable", fmt.Errorf(
+					"imageRole \"keyframes\" needs exactly two images (the first and last frames); %d were attached",
+					len(attachedImages))
+			}
 			// An explicit source overrides the attachment-count diagnosis when
 			// the planner judged the user's words point at one kind — "animate
 			// the image" on a turn whose fallback slot resolved to the newest
@@ -718,6 +724,8 @@ func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 			model := strings.TrimSpace(call.Model)
 			if model == "" {
 				switch {
+				case keyframes:
+					model = resolveDefaultVideoKeyframeModel(tools.Config)
 				case len(attachedVideos) > 0 && videoRole == "reference":
 					model = resolveDefaultVideoImageModel(tools.Config)
 				case len(attachedVideos) > 0 && len(attachedImages) > 0:
@@ -779,6 +787,7 @@ func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 				AspectRatio:         ratio,
 				AspectRatioExplicit: explicit,
 				ExtendSource:        len(requestVideos) > 0 && len(attachedImages) == 0 && videoRole != "reference",
+				Keyframes:           keyframes,
 				NegativePrompt:      strings.TrimSpace(call.NegativePrompt),
 				Resolution:          strings.TrimSpace(call.Resolution),
 				FPS:                 strings.TrimSpace(call.FPS),

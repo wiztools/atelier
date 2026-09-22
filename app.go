@@ -648,7 +648,13 @@ type VideoGenerateRequest struct {
 	// endpoint; its "reference" default would silently generate a new clip
 	// guided by the source instead of continuing it). Tagged json:"-" — it is
 	// an internal intent signal, never serialized or surfaced to the frontend.
-	ExtendSource   bool   `json:"-"`
+	ExtendSource bool `json:"-"`
+	// Keyframes is true only when the tool layer diagnosed the turn as a
+	// start→end transition (imageRole:"keyframes", exactly two source images).
+	// resolveVideoBody uses it to split the images: the first onto image_url,
+	// the last onto the model's end-frame field. Tagged json:"-" — an internal
+	// intent signal, never serialized or surfaced to the frontend.
+	Keyframes      bool   `json:"-"`
 	NegativePrompt string `json:"negativePrompt,omitempty"`
 	// Resolution is an optional output resolution tier (a fal enum string, e.g.
 	// "720p", "1080p", "4k"). Tiers vary by model; resolveVideoBody drops a tier

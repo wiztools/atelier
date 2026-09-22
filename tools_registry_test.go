@@ -279,6 +279,75 @@ func TestGenerateVideoImageRoleValidation(t *testing.T) {
 	}
 }
 
+// TestGenerateVideoImageRoleKeyframesRouting pins the keyframe diagnosis: an
+// imageRole:"keyframes" turn with exactly two attached images routes to the
+// configured keyframe model, sets the internal Keyframes flag, and forwards
+// both frames; one image fails the call before GenerateVideo is reached.
+func TestGenerateVideoImageRoleKeyframesRouting(t *testing.T) {
+	const (
+		keyframeModel = "fal-ai/test/keyframe"
+		firstFrame    = "data:image/png;base64,AAA"
+		lastFrame     = "data:image/png;base64,BBB"
+	)
+
+	t.Run("two images route to the keyframe model and set the flag", func(t *testing.T) {
+		config := defaultAppConfig()
+		config.Providers.Fal.VideoKeyframeModel = keyframeModel
+
+		var captured VideoGenerateRequest
+		called := false
+		def := videoGenerationToolDefinition(false)
+		exec := HarnessToolExecutionContext{
+			Config:         config,
+			AttachedImages: []string{firstFrame, lastFrame},
+			GenerateVideo: func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
+				captured = req
+				called = true
+				return GeneratedVideo{Data: []byte("mp4"), MimeType: "video/mp4", SourceURL: "https://example.com/v.mp4"}, nil
+			},
+		}
+		call := HarnessToolCall{Name: "generate_video", Content: "morph the first into the last", ImageRole: "keyframes"}
+		if _, _, err := def.Execute(context.Background(), exec, call); err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if !called {
+			t.Fatalf("GenerateVideo was not called")
+		}
+		if !captured.Keyframes {
+			t.Fatalf("captured.Keyframes = false, want true")
+		}
+		if captured.Model != keyframeModel {
+			t.Fatalf("captured.Model = %q, want %q", captured.Model, keyframeModel)
+		}
+		if imgs := captured.SourceImages(); len(imgs) != 2 {
+			t.Fatalf("forwarded images = %v, want two", imgs)
+		}
+	})
+
+	t.Run("one image fails the call before GenerateVideo", func(t *testing.T) {
+		config := defaultAppConfig()
+		config.Providers.Fal.VideoKeyframeModel = keyframeModel
+
+		called := false
+		def := videoGenerationToolDefinition(false)
+		exec := HarnessToolExecutionContext{
+			Config:         config,
+			AttachedImages: []string{firstFrame},
+			GenerateVideo: func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
+				called = true
+				return GeneratedVideo{Data: []byte("mp4"), MimeType: "video/mp4"}, nil
+			},
+		}
+		call := HarnessToolCall{Name: "generate_video", Content: "morph", ImageRole: "keyframes"}
+		if _, _, err := def.Execute(context.Background(), exec, call); err == nil {
+			t.Fatalf("expected an error for one keyframe image, got nil")
+		}
+		if called {
+			t.Fatalf("GenerateVideo should not be called when the image count is wrong")
+		}
+	})
+}
+
 // TestGenerateVideoParamSchemaDocumentsUseVideoAs pins the planner-facing
 // contract: the param schema must expose useVideoAs with exactly the motion and
 // reference enum values and a description that says what each interpretation
