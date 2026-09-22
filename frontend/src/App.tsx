@@ -1028,6 +1028,7 @@ function App() {
   const [mentionOpen, setMentionOpen] = useState(false);
   const [mentionIndex, setMentionIndex] = useState(0);
   const mentionStateRef = useRef<{ at: number; query: string } | null>(null);
+  const mentionListRef = useRef<HTMLUListElement | null>(null);
   const composerRef = useRef<HTMLDivElement | null>(null);
   const [chat, setChat] = useState<ChatEntry[]>([]);
   const [emptyPrompt, setEmptyPrompt] = useState<main.EmptyStatePrompt | null>(null);
@@ -3444,6 +3445,18 @@ function App() {
   const mentionMatchesRef = useRef<MentionCandidate[]>([]);
   mentionMatchesRef.current = mentionMatchesState;
 
+  // The popup's overflow scrolls only for the mouse; arrow-key moves change
+  // mentionIndex without repositioning it, so keyboard navigation runs blind
+  // past the first viewport of items. Keep the highlighted row visible.
+  // block:'nearest' is a no-op when the row is already on screen, so manual
+  // scrolling and hover-driven index changes are never fought. The matches are
+  // a dependency because re-filtering on a narrower query can shrink the list
+  // while the index resets to 0, leaving a stale scroll offset.
+  useEffect(() => {
+    if (!mentionOpen) return;
+    mentionListRef.current?.children[mentionIndex]?.scrollIntoView({block: 'nearest'});
+  }, [mentionIndex, mentionOpen, mentionMatchesState]);
+
   // File-menu handler mirrors: the menu-event subscription runs with empty
   // deps, so it must call through to the latest closure, not the first one.
   const newConversationActionRef = useRef(() => {});
@@ -4966,7 +4979,7 @@ function App() {
                   </div>
                 ) : null}
                 {mentionOpen && mentionMatchesState.length ? (
-                  <ul className="mention-list" role="listbox">
+                  <ul className="mention-list" role="listbox" ref={mentionListRef}>
                     {mentionMatchesState.map((item, index) => (
                       <li key={item.name} role="option" aria-selected={index === mentionIndex}>
                         <button
