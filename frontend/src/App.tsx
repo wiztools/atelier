@@ -5118,9 +5118,18 @@ function App() {
                       </label>
                     </div>
                     {activeStream ? (
-                      <button className="danger" onClick={stopChat}>Stop</button>
+                      <button className="danger" onClick={stopChat} aria-label="Stop generating" title="Stop">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true">
+                          <rect x="5" y="5" width="14" height="14" rx="2" />
+                        </svg>
+                      </button>
                     ) : (
-                      <button className="primary" onClick={submitChat} disabled={!prompt.trim() || !composerModel || !composerModelIsValid}>Send</button>
+                      <button className="primary" onClick={submitChat} disabled={!prompt.trim() || !composerModel || !composerModelIsValid} aria-label="Send message" title="Send">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M3.714 3.048a.498.498 0 0 0-.683.627l2.843 7.627a2 2 0 0 1 0 1.396l-2.842 7.627a.498.498 0 0 0 .682.627l18-8.5a.5.5 0 0 0 0-.904z" />
+                          <path d="M6 12h16" />
+                        </svg>
+                      </button>
                     )}
                   </div>
                 </div>
