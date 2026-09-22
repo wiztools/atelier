@@ -214,8 +214,15 @@ var videoSynonyms = map[string][]string{
 	"fps":            {"fps", "frame_rate", "frameRate", "framerate"},
 	"negativePrompt": {"negative_prompt"},
 	"sourceImage":    {"image_url", "image_urls", "reference_image_urls"},
-	"sourceVideo":    {"video_url", "video_urls", "reference_video_urls"},
-	"generateAudio":  {"generate_audio"},
+	// endImage is the closing frame for a start→end keyframe transition. fal
+	// names it inconsistently — Seedance image-to-video declares end_image_url,
+	// Kling tail_image_url — so both are listed and findNative picks whichever
+	// the configured endpoint's schema declares. Populated only in keyframe mode
+	// (VideoGenerateRequest.Keyframes); resolveVideoBody sends the last source
+	// image here and the first onto image_url.
+	"endImage":      {"end_image_url", "tail_image_url"},
+	"sourceVideo":   {"video_url", "video_urls", "reference_video_urls"},
+	"generateAudio": {"generate_audio"},
 	// characterOrientation selects the output's orientation source on
 	// motion-control models (Kling v2.6: required enum ["image","video"]). fal's
 	// schema docs: "video" matches the motion video — better for complex motions
@@ -1192,6 +1199,23 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 				"The selected model %q has no source-video input; the attached video(s) were ignored.",
 				req.Model))
 		}
+	}
+	// Keyframe mode: the first source image is the opening frame (image_url via
+	// sourceImage), the last is the closing frame (the model's end-frame field).
+	// The tool layer already guaranteed exactly two images. If the model has no
+	// end-frame input, drop the closing frame with a notice and let the request
+	// run as plain image-to-video from the opening frame — the same spirit as the
+	// "no source-video input" degradation elsewhere.
+	if req.Keyframes && len(sourceImages) >= 2 {
+		endFrame := sourceImages[len(sourceImages)-1]
+		if path, prop, ok := findNative(schema, ov, "video", req.Model, "endImage"); ok {
+			setBodyPath(schema, body, path, coerceVideoValue(prop, endFrame))
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no end-frame input; animating from the start frame only.",
+				req.Model))
+		}
+		sourceImages = sourceImages[:1]
 	}
 	if len(sourceImages) > 0 {
 		path, prop, ok := findNative(schema, ov, "video", req.Model, "sourceImage")

@@ -1239,6 +1239,56 @@ func TestResolveVideoBodyVeoExtend(t *testing.T) {
 	}
 }
 
+func TestResolveVideoBodyKeyframesPopulatesEndFrame(t *testing.T) {
+	req := VideoGenerateRequest{
+		Model:     "fal-ai/bytedance/seedance-2.0/image-to-video",
+		Prompt:    "morph the first frame into the second",
+		Keyframes: true,
+		Images:    []string{"https://x/first.jpg", "https://x/last.jpg"},
+	}
+	body, _, err := resolveVideoBody(loadSchema(t, "seedance-2.0-image-to-video"), req, builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("resolveVideoBody error: %v", err)
+	}
+	if body["image_url"] != "https://x/first.jpg" {
+		t.Fatalf("image_url = %v, want the first image", body["image_url"])
+	}
+	if body["end_image_url"] != "https://x/last.jpg" {
+		t.Fatalf("end_image_url = %v, want the last image", body["end_image_url"])
+	}
+}
+
+func TestResolveVideoBodyKeyframesDegradesWithoutEndField(t *testing.T) {
+	req := VideoGenerateRequest{
+		Model:     "fal-ai/kling-video/v2/master/image-to-video",
+		Prompt:    "morph",
+		Keyframes: true,
+		Images:    []string{"https://x/first.jpg", "https://x/last.jpg"},
+	}
+	body, notices, err := resolveVideoBody(loadSchema(t, "kling-image-to-video"), req, builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("resolveVideoBody error: %v", err)
+	}
+	// The builtin override routes Kling's source image onto an image_urls list
+	// (its runtime rejects the scalar image_url its schema declares), so the
+	// opening frame lands there as a one-element slice — and only the opening
+	// frame, since the keyframe branch trimmed the closing frame off.
+	imgs, ok := body["image_urls"].([]any)
+	if !ok || len(imgs) != 1 || imgs[0] != "https://x/first.jpg" {
+		t.Fatalf("image_urls = %v, want a one-element list holding the first image only", body["image_urls"])
+	}
+	if _, ok := body["end_image_url"]; ok {
+		t.Fatal("end_image_url should be absent on a model without an end-frame field")
+	}
+	if _, ok := body["tail_image_url"]; ok {
+		t.Fatal("tail_image_url should be absent — the kling fixture declares no end-frame field")
+	}
+	joined := strings.Join(notices, " ")
+	if !strings.Contains(joined, "end-frame") {
+		t.Fatalf("expected a degradation notice mentioning end-frame, got %v", notices)
+	}
+}
+
 // TestResolveVideoBodyMotionControlBothSources covers the motion-control shape
 // (fal-ai/kling-video/v2.6/pro/motion-control, schema captured from fal's live
 // OpenAPI endpoint): a turn with BOTH an image and a video maps each onto its
