@@ -258,6 +258,27 @@ func TestGenerateVideoUseVideoAsValidation(t *testing.T) {
 	}
 }
 
+// TestGenerateVideoImageRoleValidation pins the enum guard for imageRole: only
+// "keyframes" (or empty) is accepted; any other value is a plan correction.
+func TestGenerateVideoImageRoleValidation(t *testing.T) {
+	def := videoGenerationToolDefinition(false)
+	valid := HarnessToolCall{Name: "generate_video", Content: "morph", ImageRole: "keyframes"}
+	if errs := def.Validate("toolCalls[0]", valid); len(errs) != 0 {
+		t.Fatalf("imageRole \"keyframes\" should validate, got %v", errs)
+	}
+	bad := HarnessToolCall{Name: "generate_video", Content: "morph", ImageRole: "bogus"}
+	errs := def.Validate("toolCalls[0]", bad)
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e, "imageRole") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("imageRole \"bogus\" should be rejected, got %v", errs)
+	}
+}
+
 // TestGenerateVideoParamSchemaDocumentsUseVideoAs pins the planner-facing
 // contract: the param schema must expose useVideoAs with exactly the motion and
 // reference enum values and a description that says what each interpretation

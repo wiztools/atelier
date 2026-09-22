@@ -645,6 +645,9 @@ func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 			if src := strings.TrimSpace(call.Source); src != "" && src != "image" && src != "video" && src != "motion" {
 				return []string{prefix + ".source must be \"image\", \"video\", or \"motion\" for generate_video"}
 			}
+			if role := strings.TrimSpace(call.ImageRole); role != "" && role != "keyframes" {
+				return []string{prefix + ".imageRole must be \"keyframes\" for generate_video"}
+			}
 			return nil
 		},
 		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
@@ -2115,6 +2118,7 @@ func generateVideoParamSchema() map[string]any {
 			"generateAudio":  boolParam("Optional — set false to render a silent clip on models that would otherwise add audio. Some models generate audio by default yet expose no way to disable it; on those, a false value cannot be honored and the user is notified."),
 			"useVideoAs":     enumParam("Optional — how an attached video is used. \"motion\" (the default) treats it as a source: with an image also attached, the video's motion is transferred onto the image's subject; with a video alone, the clip is extended. \"reference\" instead treats every attached image and video as references — characters, style, or scenes guiding a brand-new clip — which is the right choice whenever the user cites the attachments as examples to follow rather than the clip to continue or copy motion from.", "motion", "reference"),
 			"source":         enumParam("Optional — which media drives the clip, overriding the attachment-based default routing. \"image\" animates the attached image (any attached video is not used); \"video\" operates on the attached video (attached images are not used); \"motion\" transfers the attached video's motion onto the attached image (needs both). Set this when the user's words point at one kind and the attachments say another — \"animate the image\" on a turn where the newest conversation artifact is a video, or \"extend the clip\" where it is an image: the named kind is fetched from conversation history when it is not attached. Omit to use the defaults.", "image", "video", "motion"),
+			"imageRole":      enumParam("Optional — how attached images are used. Omit for the default (single image → image-to-video; two or more with useVideoAs:\"reference\" → reference media). Set \"keyframes\" to make a start→end transition from EXACTLY two attached images: the first is the opening frame, the last is the closing frame, and the model generates the video morphing between them. Use it when the user asks to transition, morph, or go from one image to another.", "keyframes"),
 		},
 		"required": []string{"content"},
 	}

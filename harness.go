@@ -149,6 +149,11 @@ type HarnessToolCall struct {
 	// conversation history. Planner-only, like UseVideoAs — see
 	// generateVideoParamSchema and the generate_video routing.
 	Source string `json:"source,omitempty"`
+	// ImageRole is an optional generate_video input. "keyframes" turns two
+	// attached images into a start→end transition (first = opening frame, last =
+	// closing frame); the empty default keeps today's image-to-video / reference
+	// behavior. Planner-only, like UseVideoAs.
+	ImageRole string `json:"imageRole,omitempty"`
 	// FaceFrom is an optional lip_sync input choosing which attached face
 	// drives the sync when both an image and a video are attached: "video"
 	// (the default) re-lip-syncs the clip, "image" produces a talking head
