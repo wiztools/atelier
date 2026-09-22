@@ -1772,7 +1772,10 @@ func fabricateOverrideProperty(entry overrideEntry) SchemaProperty {
 }
 
 // synonymsFor returns the native-name candidates for (category, canon), or nil
-// when the pair isn't in any synonym table.
+// when the pair isn't in any synonym table. The replicate categories route to
+// the Replicate synonym tables (replicate_params.go) through the same
+// findNative machinery — the schema walk, guardrails, and coercion are shared;
+// only the candidate native names differ.
 func synonymsFor(category, canon string) []string {
 	switch category {
 	case "audio":
@@ -1783,6 +1786,12 @@ func synonymsFor(category, canon string) []string {
 		return videoSynonyms[canon]
 	case "lipsync":
 		return lipsyncSynonyms[canon]
+	case "replicate-image":
+		return replicateImageSynonyms[canon]
+	case "replicate-video":
+		return replicateVideoSynonyms[canon]
+	case "replicate-upscale":
+		return replicateUpscaleSynonyms[canon]
 	}
 	return nil
 }

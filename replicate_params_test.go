@@ -1,0 +1,441 @@
+package main
+
+import (
+	"context"
+	"encoding/base64"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/zalando/go-keyring"
+)
+
+// parseReplicateFixtureSchema builds a ModelInputSchema from a raw OpenAPI
+// document shaped like Replicate's latest_version.openapi_schema — the same
+// parse path the runtime uses.
+func parseReplicateFixtureSchema(t *testing.T, doc string) *ModelInputSchema {
+	t.Helper()
+	schema, err := parseModelInputSchema([]byte(doc))
+	if err != nil {
+		t.Fatalf("parseModelInputSchema: %v", err)
+	}
+	return schema
+}
+
+const replicateEditModelSchema = `{"components":{"schemas":{"Input":{"type":"object","properties":{
+	"prompt":{"type":"string","description":"the edit instruction"},
+	"input_image":{"type":"string","description":"source frame"},
+	"aspect_ratio":{"type":"string","enum":["match_input_image","1:1","16:9","9:16"]},
+	"output_format":{"type":"string","default":"webp"},
+	"num_outputs":{"type":"integer","default":1}
+}}}}}`
+
+const replicateVideoModelSchema = `{"components":{"schemas":{"Input":{"type":"object","properties":{
+	"prompt":{"type":"string"},
+	"duration":{"type":"number","description":"seconds"},
+	"aspect_ratio":{"type":"string","enum":["16:9","9:16","1:1"]},
+	"first_frame_image":{"type":"string"},
+	"resolution":{"type":"string","enum":["480p","720p","1080p"]},
+	"negative_prompt":{"type":"string"}
+}}}}}`
+
+func TestResolveReplicateImageInput(t *testing.T) {
+	schema := parseReplicateFixtureSchema(t, replicateEditModelSchema)
+	req := ImageGenerateRequest{
+		Model:       "black-forest-labs/flux-kontext-pro",
+		Prompt:      "make it snowy",
+		Images:      []string{"data:image/png;base64," + tinyPNG},
+		AspectRatio: "9:16",
+	}
+	input, notices, err := resolveReplicateImageInput(schema, req)
+	if err != nil {
+		t.Fatalf("resolveReplicateImageInput: %v", err)
+	}
+	if len(notices) != 0 {
+		t.Fatalf("notices = %v, want none", notices)
+	}
+	if input["prompt"] != "make it snowy" {
+		t.Fatalf("prompt = %v", input["prompt"])
+	}
+	// flux-kontext names its source frame input_image — the synonym table must
+	// find it.
+	if got, ok := input["input_image"].(string); !ok || !strings.HasPrefix(got, "data:image/png;base64,") {
+		t.Fatalf("input_image = %v", input["input_image"])
+	}
+	if input["aspect_ratio"] != "9:16" {
+		t.Fatalf("aspect_ratio = %v", input["aspect_ratio"])
+	}
+	if input["num_outputs"] != 1 {
+		t.Fatalf("num_outputs = %v, want 1 (declared by the model)", input["num_outputs"])
+	}
+	// Speculative fal-side keys must never appear — Replicate rejects unknown
+	// inputs.
+	for _, key := range []string{"num_images", "image_size", "image_url"} {
+		if _, exists := input[key]; exists {
+			t.Fatalf("input carries speculative key %q: %v", key, input)
+		}
+	}
+}
+
+func TestResolveReplicateImageInputEnumAndDrops(t *testing.T) {
+	schema := parseReplicateFixtureSchema(t, replicateEditModelSchema)
+	input, notices, err := resolveReplicateImageInput(schema, ImageGenerateRequest{
+		Model:       "owner/model",
+		Prompt:      "x",
+		AspectRatio: "4:3", // not in the model's enum
+		Steps:       30,    // no num_inference_steps declared
+	})
+	if err != nil {
+		t.Fatalf("resolveReplicateImageInput: %v", err)
+	}
+	if _, exists := input["aspect_ratio"]; exists {
+		t.Fatal("an out-of-enum aspect ratio must not be sent")
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], `aspect ratio "4:3"`) {
+		t.Fatalf("notices = %v, want the enum-drop notice", notices)
+	}
+	if _, exists := input["num_inference_steps"]; exists {
+		t.Fatal("steps must be omitted on a model without the field")
+	}
+}
+
+func TestResolveReplicateImageInputMultiImageScalarError(t *testing.T) {
+	schema := parseReplicateFixtureSchema(t, replicateEditModelSchema)
+	_, _, err := resolveReplicateImageInput(schema, ImageGenerateRequest{
+		Model:  "owner/model",
+		Prompt: "x",
+		Images: []string{"data:image/png;base64," + tinyPNG, "data:image/png;base64," + tinyPNG},
+	})
+	if err == nil || !strings.Contains(err.Error(), "single image") {
+		t.Fatalf("err = %v, want the multi-image-scalar refusal", err)
+	}
+}
+
+func TestResolveReplicateImageInputArrayImages(t *testing.T) {
+	doc := `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"prompt":{"type":"string"},
+		"image":{"type":"array","items":{"type":"string"},"maxItems":3}
+	}}}}}`
+	schema := parseReplicateFixtureSchema(t, doc)
+	input, _, err := resolveReplicateImageInput(schema, ImageGenerateRequest{
+		Model:  "google/nano-banana",
+		Prompt: "x",
+		Images: []string{"data:image/png;base64," + tinyPNG, "data:image/png;base64," + tinyPNG},
+	})
+	if err != nil {
+		t.Fatalf("resolveReplicateImageInput: %v", err)
+	}
+	images, ok := input["image"].([]any)
+	if !ok || len(images) != 2 {
+		t.Fatalf("image = %v, want both entries", input["image"])
+	}
+}
+
+func TestResolveReplicateImageInputNilSchemaFallback(t *testing.T) {
+	input, notices, err := resolveReplicateImageInput(nil, ImageGenerateRequest{
+		Model:  "owner/model",
+		Prompt: "x",
+		Images: []string{"data:image/png;base64," + tinyPNG},
+	})
+	if err != nil {
+		t.Fatalf("resolveReplicateImageInput: %v", err)
+	}
+	if input["prompt"] != "x" || !strings.HasPrefix(input["image"].(string), "data:image/png") {
+		t.Fatalf("minimal fallback input = %v", input)
+	}
+	if len(notices) != 1 {
+		t.Fatalf("notices = %v, want the schema-unavailable notice", notices)
+	}
+}
+
+func TestResolveReplicateVideoInput(t *testing.T) {
+	schema := parseReplicateFixtureSchema(t, replicateVideoModelSchema)
+	input, notices, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
+		Model:               "wan-video/wan-2.5-i2v",
+		Prompt:              "waves crash",
+		Duration:            "5",
+		AspectRatio:         "16:9",
+		AspectRatioExplicit: true,
+		Images:              []string{"data:image/png;base64," + tinyPNG},
+		Resolution:          "720p",
+	})
+	if err != nil {
+		t.Fatalf("resolveReplicateVideoInput: %v", err)
+	}
+	if len(notices) != 0 {
+		t.Fatalf("notices = %v, want none", notices)
+	}
+	// The duration field is number-typed: "5" must coerce to the JSON number 5.
+	if input["duration"] != float64(5) && input["duration"] != 5 {
+		t.Fatalf("duration = %v (%T), want numeric 5", input["duration"], input["duration"])
+	}
+	if got, ok := input["first_frame_image"].(string); !ok || !strings.HasPrefix(got, "data:image/png;base64,") {
+		t.Fatalf("first_frame_image = %v", input["first_frame_image"])
+	}
+	if input["aspect_ratio"] != "16:9" {
+		t.Fatalf("aspect_ratio = %v (an explicit ratio is sent even with a source frame)", input["aspect_ratio"])
+	}
+	if input["resolution"] != "720p" {
+		t.Fatalf("resolution = %v", input["resolution"])
+	}
+}
+
+func TestResolveReplicateVideoInputSourceRatioInheritance(t *testing.T) {
+	schema := parseReplicateFixtureSchema(t, replicateVideoModelSchema)
+	// A config-derived ratio (AspectRatioExplicit false) on an
+	// image-to-video request is skipped so the frame's orientation wins.
+	input, notices, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
+		Model:       "wan-video/wan-2.5-i2v",
+		Prompt:      "waves",
+		AspectRatio: "16:9",
+		Images:      []string{"data:image/png;base64," + tinyPNG},
+	})
+	if err != nil {
+		t.Fatalf("resolveReplicateVideoInput: %v", err)
+	}
+	if _, exists := input["aspect_ratio"]; exists {
+		t.Fatal("a non-explicit ratio must not be sent on a sourced request")
+	}
+	if len(notices) != 0 {
+		t.Fatalf("notices = %v, want none (the skip is silent)", notices)
+	}
+}
+
+func TestResolveReplicateVideoInputRefusals(t *testing.T) {
+	schema := parseReplicateFixtureSchema(t, replicateVideoModelSchema)
+	_, _, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
+		Model:  "owner/model",
+		Prompt: "extend",
+		Videos: []string{"https://x.test/clip.mp4"},
+	})
+	if err != errReplicateVideoSourceUnsupported {
+		t.Fatalf("video-source err = %v", err)
+	}
+	_, _, err = resolveReplicateVideoInput(schema, VideoGenerateRequest{
+		Model:     "owner/model",
+		Prompt:    "transition",
+		Keyframes: true,
+		Images:    []string{"https://x.test/a.png", "https://x.test/b.png"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "keyframe") {
+		t.Fatalf("keyframes err = %v", err)
+	}
+}
+
+func TestResolveReplicateVideoInputEnumDrops(t *testing.T) {
+	schema := parseReplicateFixtureSchema(t, replicateVideoModelSchema)
+	input, notices, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
+		Model:      "owner/model",
+		Prompt:     "x",
+		Resolution: "4k", // not in the enum
+		FPS:        "60", // no fps field declared
+	})
+	if err != nil {
+		t.Fatalf("resolveReplicateVideoInput: %v", err)
+	}
+	if _, exists := input["resolution"]; exists {
+		t.Fatal("an out-of-enum resolution must not be sent")
+	}
+	if _, exists := input["fps"]; exists {
+		t.Fatal("fps must be omitted on a model without the field")
+	}
+	joined := strings.Join(notices, "\n")
+	if !strings.Contains(joined, `resolution "4k"`) || !strings.Contains(joined, "frame-rate") {
+		t.Fatalf("notices = %v, want both drop notices", notices)
+	}
+}
+
+func TestResolveReplicateVideoInputNilSchemaFallback(t *testing.T) {
+	input, notices, err := resolveReplicateVideoInput(nil, VideoGenerateRequest{
+		Model:  "owner/model",
+		Prompt: "x",
+		Images: []string{"data:image/png;base64," + tinyPNG},
+	})
+	if err != nil {
+		t.Fatalf("resolveReplicateVideoInput: %v", err)
+	}
+	if input["prompt"] != "x" || !strings.HasPrefix(input["image"].(string), "data:image/png") {
+		t.Fatalf("minimal fallback input = %v", input)
+	}
+	if len(notices) != 1 {
+		t.Fatalf("notices = %v, want the schema-unavailable notice", notices)
+	}
+}
+
+// TestReplicateVideoDurationOptions exercises the duration picker lookup
+// through the replicate schema cache against a mocked model fetch.
+func TestReplicateVideoDurationOptions(t *testing.T) {
+	doc := `{"latest_version":{"openapi_schema":{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"prompt":{"type":"string"},
+		"duration":{"type":"string","enum":["5","10"]}
+	}}}}}}}`
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/v1/models/owner/model" {
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+		}
+		return jsonResp(doc), nil
+	})}
+	root := t.TempDir()
+	// Seed the keychain so the cache's fetch path can load a token.
+	keyring.MockInit()
+	t.Cleanup(func() { _ = clearReplicateAPIKey() })
+	if err := saveReplicateAPIKey("k"); err != nil {
+		t.Fatalf("saveReplicateAPIKey: %v", err)
+	}
+	opts := replicateVideoDurationOptions(context.Background(), httpClient, root, "owner/model")
+	if len(opts) != 2 || opts[0] != "5" || opts[1] != "10" {
+		t.Fatalf("opts = %v, want [5 10]", opts)
+	}
+	// The cached schema lands in the replicate-namespaced directory.
+	if _, err := os.Stat(filepath.Join(root, "schema-cache", "replicate", "owner_model.json")); err != nil {
+		t.Fatalf("replicate cache file missing: %v", err)
+	}
+}
+
+// TestConversationModelOverridesReplicateRouting pins the overlay routing for
+// the second providers: video/image models land on the effective provider's
+// slots.
+func TestConversationModelOverridesReplicateRouting(t *testing.T) {
+	config := defaultAppConfig()
+	config.Providers.Fal.VideoModel = "fal-ai/kling-video/v2/master/text-to-video"
+	config.Providers.Fal.VideoImageModel = "fal-ai/kling-video/v2/master/image-to-video"
+	config.Providers.Fal.ImageEditModel = "fal-ai/flux/dev/image-to-image"
+	config.Providers.Fal.UpscaleModel = "fal-ai/esrgan"
+
+	overlaid, _, err := overlayModelOverrides(config, ChatRequest{}, ConversationModelOverrides{
+		VideoProvider:   "replicate",
+		VideoModel:      "wan-video/wan-2.5-t2v",
+		VideoImageModel: "wan-video/wan-2.5-i2v",
+		ImageProvider:   "replicate",
+		ImageModel:      "black-forest-labs/flux-schnell",
+		ImageEditModel:  "black-forest-labs/flux-kontext-pro",
+		UpscaleModel:    "nightmareai/real-esrgan",
+	})
+	if err != nil {
+		t.Fatalf("overlayModelOverrides: %v", err)
+	}
+	if overlaid.Models.VideoProvider != "replicate" || overlaid.Models.ImageProvider != "replicate" {
+		t.Fatalf("providers = %q/%q", overlaid.Models.ImageProvider, overlaid.Models.VideoProvider)
+	}
+	if overlaid.Providers.Replicate.VideoModel != "wan-video/wan-2.5-t2v" ||
+		overlaid.Providers.Replicate.VideoImageModel != "wan-video/wan-2.5-i2v" ||
+		overlaid.Providers.Replicate.Model != "black-forest-labs/flux-schnell" ||
+		overlaid.Providers.Replicate.ImageEditModel != "black-forest-labs/flux-kontext-pro" {
+		t.Fatalf("replicate slots = %+v", overlaid.Providers.Replicate)
+	}
+	// The fal slots are untouched — the override routed, not clobbered.
+	if overlaid.Providers.Fal.VideoModel != "fal-ai/kling-video/v2/master/text-to-video" {
+		t.Fatalf("fal VideoModel = %q, want untouched", overlaid.Providers.Fal.VideoModel)
+	}
+	// The upscale override follows the effective image provider too.
+	if overlaid.Providers.Replicate.UpscaleModel != "nightmareai/real-esrgan" {
+		t.Fatalf("replicate UpscaleModel = %q", overlaid.Providers.Replicate.UpscaleModel)
+	}
+	if overlaid.Providers.Fal.UpscaleModel != "fal-ai/esrgan" {
+		t.Fatalf("fal UpscaleModel = %q, want untouched", overlaid.Providers.Fal.UpscaleModel)
+	}
+	// A video model override with no provider pin inherits the config's
+	// effective provider (replicate, set above).
+	overlaid, _, _ = overlayModelOverrides(overlaid, ChatRequest{}, ConversationModelOverrides{VideoModel: "owner/another-t2v"})
+	if overlaid.Providers.Replicate.VideoModel != "owner/another-t2v" {
+		t.Fatalf("inherited-provider VideoModel = %q", overlaid.Providers.Replicate.VideoModel)
+	}
+	if err := validateConversationModelOverrides(ConversationModelOverrides{VideoProvider: "runware"}); err == nil {
+		t.Fatal("an unknown video provider must be rejected")
+	}
+	if err := validateConversationModelOverrides(ConversationModelOverrides{ImageProvider: "replicate"}); err != nil {
+		t.Fatalf("replicate must be a valid image provider override: %v", err)
+	}
+}
+
+// TestReplicateMediaRoutingHelpers pins the replicate branches of the shared
+// default-model resolvers.
+func TestReplicateMediaRoutingHelpers(t *testing.T) {
+	config := defaultAppConfig()
+	config.Models.ImageProvider = "replicate"
+	config.Providers.Replicate.Model = "owner/gen"
+	config.Providers.Replicate.ImageEditModel = "owner/edit"
+	if got := resolveDefaultImageModel(config); got != "owner/gen" {
+		t.Fatalf("resolveDefaultImageModel = %q", got)
+	}
+	if got := resolveDefaultImageEditModel(config); got != "owner/edit" {
+		t.Fatalf("resolveDefaultImageEditModel = %q", got)
+	}
+	// Defaults apply when unset.
+	config.Providers.Replicate.Model = ""
+	config.Providers.Replicate.ImageEditModel = ""
+	if got := resolveDefaultImageModel(config); got != defaultReplicateImageModel {
+		t.Fatalf("default image model = %q", got)
+	}
+	if got := resolveDefaultImageEditModel(config); got != defaultReplicateImageEditModel {
+		t.Fatalf("default edit model = %q", got)
+	}
+	// A seeded model passes the image gate on the replicate path.
+	config.Providers.Replicate.Model = defaultReplicateImageModel
+	if !imageGenerationConfigured(config) {
+		t.Fatal("replicate image generation should be configured with a model")
+	}
+	// A multi-image data URL still decodes through the shared normalizer.
+	if decoded, err := base64.StdEncoding.DecodeString(tinyPNG); err != nil || len(decoded) == 0 {
+		t.Fatalf("tinyPNG fixture did not decode: %v", err)
+	}
+}
+
+func TestResolveReplicateUpscaleInput(t *testing.T) {
+	schema := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"image":{"type":"string"},
+		"scale":{"type":"number"}
+	}}}}}`)
+	input, notices, err := resolveReplicateUpscaleInput(schema, ImageUpscaleRequest{
+		Model: "nightmareai/real-esrgan",
+		Image: "data:image/png;base64," + tinyPNG,
+		Scale: 4,
+	})
+	if err != nil {
+		t.Fatalf("resolveReplicateUpscaleInput: %v", err)
+	}
+	if len(notices) != 0 {
+		t.Fatalf("notices = %v", notices)
+	}
+	if !strings.HasPrefix(input["image"].(string), "data:image/png;base64,") {
+		t.Fatalf("image = %v", input["image"])
+	}
+	if input["scale"] != float64(4) {
+		t.Fatalf("scale = %v (%T), want numeric 4", input["scale"], input["scale"])
+	}
+
+	// Nil schema falls back to the minimal body every upscaler accepts.
+	input, _, err = resolveReplicateUpscaleInput(nil, ImageUpscaleRequest{Model: "owner/model", Image: "data:image/png;base64," + tinyPNG})
+	if err != nil {
+		t.Fatalf("nil-schema fallback: %v", err)
+	}
+	if input["scale"] != float64(2) {
+		t.Fatalf("default scale = %v (%T), want numeric 2", input["scale"], input["scale"])
+	}
+
+	// A model with no image input is a hard error — the source frame is the
+	// tool's entire purpose.
+	noImageSchema := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{"prompt":{"type":"string"}}}}}}`)
+	_, _, err = resolveReplicateUpscaleInput(noImageSchema, ImageUpscaleRequest{Model: "owner/model", Image: "data:image/png;base64," + tinyPNG})
+	if err == nil || !strings.Contains(err.Error(), "no source-image input") {
+		t.Fatalf("err = %v, want the no-image-input refusal", err)
+	}
+
+	// An enum-restricted scale factor is dropped with a notice rather than 422ing.
+	enumSchema := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"image":{"type":"string"},
+		"scale":{"type":"integer","enum":[1,2]}
+	}}}}}`)
+	input, notices, err = resolveReplicateUpscaleInput(enumSchema, ImageUpscaleRequest{Model: "owner/model", Image: "data:image/png;base64," + tinyPNG, Scale: 4})
+	if err != nil {
+		t.Fatalf("enum-guard case: %v", err)
+	}
+	if _, exists := input["scale"]; exists {
+		t.Fatal("an out-of-enum scale must not be sent")
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "does not accept scale 4") {
+		t.Fatalf("notices = %v, want the enum-drop notice", notices)
+	}
+}

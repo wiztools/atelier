@@ -10,6 +10,8 @@ export function CheckForUpdates():Promise<main.UpdateStatus>;
 
 export function CheckOllama(arg1:string):Promise<main.OllamaStatus>;
 
+export function CheckReplicateConnection():Promise<void>;
+
 export function ChooseToolWorkspace(arg1:string):Promise<string>;
 
 export function ClearOpenAICompatibleAPIKey():Promise<void>;
@@ -39,6 +41,8 @@ export function HasFalAPIKey():Promise<boolean>;
 export function HasOpenAICompatibleAPIKey():Promise<boolean>;
 
 export function HasOpenRouterAPIKey():Promise<boolean>;
+
+export function HasReplicateAPIKey():Promise<boolean>;
 
 export function ImportLibrary():Promise<main.LibraryImportResult>;
 
@@ -98,6 +102,18 @@ export function ListPrimaryModels(arg1:string,arg2:string):Promise<Array<main.Mo
 
 export function ListProjectConversations(arg1:string):Promise<Array<main.ConversationSummary>>;
 
+export function ListReplicateImageEditModels():Promise<Array<main.ReplicateModel>>;
+
+export function ListReplicateModels():Promise<Array<main.ReplicateModel>>;
+
+export function ListReplicateUpscaleModels():Promise<Array<main.ReplicateModel>>;
+
+export function ListReplicateVideoDurations(arg1:string):Promise<Array<string>>;
+
+export function ListReplicateVideoImageModels():Promise<Array<main.ReplicateModel>>;
+
+export function ListReplicateVideoModels():Promise<Array<main.ReplicateModel>>;
+
 export function ListToolFiles(arg1:main.ToolFileListRequest):Promise<main.ToolFileListResult>;
 
 export function LoadUIState():Promise<main.UIState>;
@@ -129,6 +145,8 @@ export function SaveImage(arg1:main.SaveImageRequest):Promise<string>;
 export function SaveOpenAICompatibleAPIKey(arg1:string):Promise<void>;
 
 export function SaveOpenRouterAPIKey(arg1:string):Promise<void>;
+
+export function SaveReplicateAPIKey(arg1:string):Promise<void>;
 
 export function SaveTranscript(arg1:main.SaveTranscriptRequest):Promise<string>;
 

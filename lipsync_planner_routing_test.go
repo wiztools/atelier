@@ -90,7 +90,7 @@ func TestResolveMediaURLHostedFallsBackToInlineOnUploadFailure(t *testing.T) {
 // newPlannerRegistry builds a registry with the audio-capable or non-capable
 // generate_video tool so the planner guidance tests can exercise both gates.
 func newPlannerRegistry(audioCapable bool) HarnessToolRegistry {
-	return newHarnessToolRegistry([]HarnessToolDefinition{videoGenerationToolDefinition(audioCapable)})
+	return newHarnessToolRegistry([]HarnessToolDefinition{videoGenerationToolDefinition(AppConfig{}, audioCapable)})
 }
 
 // TestPlannerMediaRoutingGuidancePresentWhenCapable asserts the routing rule

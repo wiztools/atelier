@@ -24,15 +24,21 @@ type ConversationModelOverrides struct {
 	HarnessModel    string `json:"harnessModel,omitempty"`
 	// ImageProvider/ImageModel override generate_image's backend and model.
 	// ImageModel lands on the slot the effective image provider reads
-	// (fal Model / OpenAICompatible Model / Ollama Models.Image).
+	// (fal Model / Replicate Model / OpenAICompatible Model / Ollama
+	// Models.Image).
 	ImageProvider string `json:"imageProvider,omitempty"`
 	ImageModel    string `json:"imageModel,omitempty"`
-	// The fal endpoint fields map 1:1 onto ConfigFal — fal is the only backend
-	// for these tools, so there is no provider dimension.
-	ImageEditModel     string `json:"imageEditModel,omitempty"`
-	UpscaleModel       string `json:"upscaleModel,omitempty"`
+	// VideoProvider overrides generate_video's backend ("fal" |
+	// "replicate"); VideoModel/VideoImageModel land on the slots the
+	// effective video provider reads, mirroring the ImageProvider/ImageModel
+	// pair. The remaining fal endpoint fields still map 1:1 onto ConfigFal —
+	// their tools (video transforms, lipsync, audio) are fal-only with no
+	// provider dimension.
+	VideoProvider      string `json:"videoProvider,omitempty"`
 	VideoModel         string `json:"videoModel,omitempty"`
 	VideoImageModel    string `json:"videoImageModel,omitempty"`
+	ImageEditModel     string `json:"imageEditModel,omitempty"`
+	UpscaleModel       string `json:"upscaleModel,omitempty"`
 	VideoExtendModel   string `json:"videoExtendModel,omitempty"`
 	VideoMotionModel   string `json:"videoMotionModel,omitempty"`
 	VideoKeyframeModel string `json:"videoKeyframeModel,omitempty"`
@@ -79,8 +85,9 @@ func normalizeConversationModelOverrides(o ConversationModelOverrides) Conversat
 		&o.PrimaryProvider, &o.PrimaryModel,
 		&o.HarnessProvider, &o.HarnessModel,
 		&o.ImageProvider, &o.ImageModel,
+		&o.VideoProvider, &o.VideoModel, &o.VideoImageModel,
 		&o.ImageEditModel, &o.UpscaleModel,
-		&o.VideoModel, &o.VideoImageModel, &o.VideoExtendModel, &o.VideoMotionModel, &o.VideoKeyframeModel, &o.VideoUpscaleModel, &o.VideoReframeModel, &o.VideoRestyleModel,
+		&o.VideoExtendModel, &o.VideoMotionModel, &o.VideoKeyframeModel, &o.VideoUpscaleModel, &o.VideoReframeModel, &o.VideoRestyleModel,
 		&o.AudioModel, &o.SoundEffectsModel, &o.AudioCloneModel, &o.AudioExtendModel, &o.TranscribeModel,
 		&o.LipsyncImageModel, &o.LipsyncVideoModel,
 		&o.TranscriptionProvider, &o.WhisperModel, &o.WhisperBinary,
@@ -104,12 +111,17 @@ func validateConversationModelOverrides(o ConversationModelOverrides) error {
 		"primaryProvider":       o.PrimaryProvider,
 		"harnessProvider":       o.HarnessProvider,
 		"imageProvider":         o.ImageProvider,
+		"videoProvider":         o.VideoProvider,
 		"transcriptionProvider": o.TranscriptionProvider,
 	} {
 		switch name {
 		case "imageProvider":
-			if value != "" && value != "ollama" && value != "fal" && value != "openai-compatible" {
+			if value != "" && value != "ollama" && value != "fal" && value != "replicate" && value != "openai-compatible" {
 				return fmt.Errorf("unknown image provider %q", value)
+			}
+		case "videoProvider":
+			if value != "" && value != "fal" && value != "replicate" {
+				return fmt.Errorf("unknown video provider %q", value)
 			}
 		case "transcriptionProvider":
 			if value != "" && value != transcriptionProviderFal && value != transcriptionProviderLocalWhisper {
@@ -235,9 +247,10 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 		config.Models.ImageProvider = o.ImageProvider
 	}
 	if o.ImageModel != "" {
-		// The image provider dimension includes "fal", which the chat-provider
-		// normalizer must never see; validation at mutator time keeps the
-		// values inside {ollama, fal, openai-compatible, ""}.
+		// The image provider dimension includes "fal" and "replicate", which
+		// the chat-provider normalizer must never see; validation at mutator
+		// time keeps the values inside {ollama, fal, replicate,
+		// openai-compatible, ""}.
 		provider := o.ImageProvider
 		if provider == "" {
 			provider = config.Models.ImageProvider
@@ -245,23 +258,68 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 		switch provider {
 		case "fal":
 			config.Providers.Fal.Model = o.ImageModel
+		case "replicate":
+			config.Providers.Replicate.Model = o.ImageModel
 		case "openai-compatible":
 			config.Providers.OpenAICompatible.Model = o.ImageModel
 		default:
 			config.Providers.Ollama.Models.Image = o.ImageModel
 		}
 	}
-	if o.ImageEditModel != "" {
-		config.Providers.Fal.ImageEditModel = o.ImageEditModel
-	}
-	if o.UpscaleModel != "" {
-		config.Providers.Fal.UpscaleModel = o.UpscaleModel
+	if o.VideoProvider != "" {
+		config.Models.VideoProvider = o.VideoProvider
 	}
 	if o.VideoModel != "" {
-		config.Providers.Fal.VideoModel = o.VideoModel
+		// The video model override lands on the slot the effective video
+		// provider reads — the ImageModel recipe.
+		videoProvider := o.VideoProvider
+		if videoProvider == "" {
+			videoProvider = config.Models.VideoProvider
+		}
+		if videoProvider == "replicate" {
+			config.Providers.Replicate.VideoModel = o.VideoModel
+		} else {
+			config.Providers.Fal.VideoModel = o.VideoModel
+		}
 	}
 	if o.VideoImageModel != "" {
-		config.Providers.Fal.VideoImageModel = o.VideoImageModel
+		videoProvider := o.VideoProvider
+		if videoProvider == "" {
+			videoProvider = config.Models.VideoProvider
+		}
+		if videoProvider == "replicate" {
+			config.Providers.Replicate.VideoImageModel = o.VideoImageModel
+		} else {
+			config.Providers.Fal.VideoImageModel = o.VideoImageModel
+		}
+	}
+	if o.ImageEditModel != "" {
+		// The edit-model override follows the effective image provider too:
+		// both fal and Replicate expose a dedicated image-to-image model, so
+		// a Replicate-pinned conversation edits with its Replicate model.
+		imageProvider := o.ImageProvider
+		if imageProvider == "" {
+			imageProvider = config.Models.ImageProvider
+		}
+		if imageProvider == "replicate" {
+			config.Providers.Replicate.ImageEditModel = o.ImageEditModel
+		} else {
+			config.Providers.Fal.ImageEditModel = o.ImageEditModel
+		}
+	}
+	if o.UpscaleModel != "" {
+		// The upscale-model override follows the effective image provider —
+		// upscale_image routes by it, so a Replicate-pinned conversation
+		// upscales with its Replicate model.
+		imageProvider := o.ImageProvider
+		if imageProvider == "" {
+			imageProvider = config.Models.ImageProvider
+		}
+		if imageProvider == "replicate" {
+			config.Providers.Replicate.UpscaleModel = o.UpscaleModel
+		} else {
+			config.Providers.Fal.UpscaleModel = o.UpscaleModel
+		}
 	}
 	if o.VideoExtendModel != "" {
 		config.Providers.Fal.VideoExtendModel = o.VideoExtendModel

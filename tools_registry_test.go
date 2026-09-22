@@ -81,7 +81,7 @@ func TestGenerateVideoParamSchemaExposesDuration(t *testing.T) {
 // reached the final model as evidence and it repeated both claims.
 func TestVideoToolSummaryMatchesDeliveredSources(t *testing.T) {
 	const model = "bytedance/seedance-2.0/reference-to-video"
-	def := videoGenerationToolDefinition(false)
+	def := videoGenerationToolDefinition(AppConfig{}, false)
 	exec := func(notices []string) HarnessToolExecutionContext {
 		return HarnessToolExecutionContext{
 			AttachedImages: []string{"data:image/png;base64,AAA", "data:image/png;base64,BBB"},
@@ -193,7 +193,7 @@ func TestGenerateVideoUseVideoAsRouting(t *testing.T) {
 			config.Providers.Fal.VideoExtendModel = extendModel
 
 			var gotReq VideoGenerateRequest
-			def := videoGenerationToolDefinition(false)
+			def := videoGenerationToolDefinition(AppConfig{}, false)
 			exec := HarnessToolExecutionContext{
 				Config:         config,
 				AttachedImages: tc.images,
@@ -246,7 +246,7 @@ func TestGenerateVideoUseVideoAsRouting(t *testing.T) {
 // useVideoAs value is a plan correction, not a silent fallthrough to the
 // default interpretation.
 func TestGenerateVideoUseVideoAsValidation(t *testing.T) {
-	def := videoGenerationToolDefinition(false)
+	def := videoGenerationToolDefinition(AppConfig{}, false)
 	problems := def.Validate("toolCalls[0]", HarnessToolCall{Name: "generate_video", Content: "x", UseVideoAs: "inspiration"})
 	if len(problems) != 1 || !strings.Contains(problems[0], "useVideoAs must be") {
 		t.Fatalf("problems = %v, want the useVideoAs enum correction", problems)
@@ -261,7 +261,7 @@ func TestGenerateVideoUseVideoAsValidation(t *testing.T) {
 // TestGenerateVideoImageRoleValidation pins the enum guard for imageRole: only
 // "keyframes" (or empty) is accepted; any other value is a plan correction.
 func TestGenerateVideoImageRoleValidation(t *testing.T) {
-	def := videoGenerationToolDefinition(false)
+	def := videoGenerationToolDefinition(AppConfig{}, false)
 	valid := HarnessToolCall{Name: "generate_video", Content: "morph", ImageRole: "keyframes"}
 	if errs := def.Validate("toolCalls[0]", valid); len(errs) != 0 {
 		t.Fatalf("imageRole \"keyframes\" should validate, got %v", errs)
@@ -296,7 +296,7 @@ func TestGenerateVideoImageRoleKeyframesRouting(t *testing.T) {
 
 		var captured VideoGenerateRequest
 		called := false
-		def := videoGenerationToolDefinition(false)
+		def := videoGenerationToolDefinition(AppConfig{}, false)
 		exec := HarnessToolExecutionContext{
 			Config:         config,
 			AttachedImages: []string{firstFrame, lastFrame},
@@ -329,7 +329,7 @@ func TestGenerateVideoImageRoleKeyframesRouting(t *testing.T) {
 		config.Providers.Fal.VideoKeyframeModel = keyframeModel
 
 		called := false
-		def := videoGenerationToolDefinition(false)
+		def := videoGenerationToolDefinition(AppConfig{}, false)
 		exec := HarnessToolExecutionContext{
 			Config:         config,
 			AttachedImages: []string{firstFrame},
@@ -399,7 +399,7 @@ func TestGenerateVideoSourceRouting(t *testing.T) {
 
 	run := func(images, videos []string, storage ConfigStorage, conversationID string, call HarnessToolCall) (VideoGenerateRequest, ToolVideoResult, string, error) {
 		var gotReq VideoGenerateRequest
-		def := videoGenerationToolDefinition(false)
+		def := videoGenerationToolDefinition(AppConfig{}, false)
 		exec := HarnessToolExecutionContext{
 			Config:         videoConfig(),
 			AttachedImages: images,
@@ -529,7 +529,7 @@ func TestGenerateVideoSourceRouting(t *testing.T) {
 // value is a plan correction, not a silent fallthrough to the default
 // interpretation.
 func TestGenerateVideoSourceValidation(t *testing.T) {
-	def := videoGenerationToolDefinition(false)
+	def := videoGenerationToolDefinition(AppConfig{}, false)
 	problems := def.Validate("toolCalls[0]", HarnessToolCall{Name: "generate_video", Content: "x", Source: "the neighbors"})
 	if len(problems) != 1 || !strings.Contains(problems[0], "source must be") {
 		t.Fatalf("problems = %v, want the source enum correction", problems)

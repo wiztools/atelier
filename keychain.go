@@ -13,6 +13,8 @@ const (
 	falKeyringUser                 = "fal"
 	openAICompatibleKeyringService = "atelier-openai-compatible-key"
 	openAICompatibleKeyringUser    = "openai-compatible"
+	replicateKeyringService        = "atelier-replicate-key"
+	replicateKeyringUser           = "replicate"
 )
 
 func saveOpenRouterAPIKey(apiKey string) error {
@@ -89,6 +91,32 @@ func loadOpenAICompatibleAPIKey() (string, error) {
 
 func clearOpenAICompatibleAPIKey() error {
 	err := keyring.Delete(openAICompatibleKeyringService, openAICompatibleKeyringUser)
+	if err != nil && err != keyring.ErrNotFound {
+		return err
+	}
+	return nil
+}
+
+func saveReplicateAPIKey(apiKey string) error {
+	return keyring.Set(replicateKeyringService, replicateKeyringUser, apiKey)
+}
+
+// loadReplicateAPIKey returns "" with a nil error when no key has been saved
+// yet, mirroring loadFalAPIKey so callers treat "not configured" and "empty"
+// uniformly.
+func loadReplicateAPIKey() (string, error) {
+	key, err := keyring.Get(replicateKeyringService, replicateKeyringUser)
+	if err != nil {
+		if err == keyring.ErrNotFound {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(key), nil
+}
+
+func clearReplicateAPIKey() error {
+	err := keyring.Delete(replicateKeyringService, replicateKeyringUser)
 	if err != nil && err != keyring.ErrNotFound {
 		return err
 	}

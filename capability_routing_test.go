@@ -174,11 +174,11 @@ func TestLipsyncDescription_ChainHintOnlyWhenVideoLacksAudio(t *testing.T) {
 // single source of truth), so triage's conditional hint cannot drift from the
 // description the planner sees.
 func TestRegistryVideoAudioCapableReflectsDescription(t *testing.T) {
-	capable := newHarnessToolRegistry([]HarnessToolDefinition{videoGenerationToolDefinition(true)})
+	capable := newHarnessToolRegistry([]HarnessToolDefinition{videoGenerationToolDefinition(AppConfig{}, true)})
 	if !capable.VideoAudioCapable() {
 		t.Fatal("VideoAudioCapable should be true when generate_video is audio-capable")
 	}
-	notCapable := newHarnessToolRegistry([]HarnessToolDefinition{videoGenerationToolDefinition(false)})
+	notCapable := newHarnessToolRegistry([]HarnessToolDefinition{videoGenerationToolDefinition(AppConfig{}, false)})
 	if notCapable.VideoAudioCapable() {
 		t.Fatal("VideoAudioCapable should be false when generate_video is not audio-capable")
 	}
@@ -197,7 +197,7 @@ func TestRegistryVideoAudioCapableReflectsDescription(t *testing.T) {
 // specific model id — checked against the hint sentence in isolation since the
 // broader tool description legitimately mentions "Veo extend".
 func TestTriageSystemPromptRoutingHintConditional(t *testing.T) {
-	capable := newHarnessToolRegistry([]HarnessToolDefinition{videoGenerationToolDefinition(true)})
+	capable := newHarnessToolRegistry([]HarnessToolDefinition{videoGenerationToolDefinition(AppConfig{}, true)})
 	with := triageSystemPrompt(capable, nil, "/tmp/ws")
 	if !strings.Contains(with, "route to generate_video alone") {
 		t.Fatalf("triage prompt should include the narration-routing hint when video is audio-capable")
@@ -220,7 +220,7 @@ func TestTriageSystemPromptRoutingHintConditional(t *testing.T) {
 		}
 	}
 
-	notCapable := newHarnessToolRegistry([]HarnessToolDefinition{videoGenerationToolDefinition(false)})
+	notCapable := newHarnessToolRegistry([]HarnessToolDefinition{videoGenerationToolDefinition(AppConfig{}, false)})
 	without := triageSystemPrompt(notCapable, nil, "/tmp/ws")
 	if strings.Contains(without, "route to generate_video alone") {
 		t.Fatalf("triage prompt must omit the routing hint when video is not audio-capable")
@@ -272,7 +272,7 @@ func TestTriagePromptListsAudioTools(t *testing.T) {
 // the source clip is fetched from history when not attached, and that the
 // video-mode enumeration itself names extension.
 func TestTriagePromptBaresVideoExtendAsVideoMode(t *testing.T) {
-	registry := newHarnessToolRegistry([]HarnessToolDefinition{videoGenerationToolDefinition(false)})
+	registry := newHarnessToolRegistry([]HarnessToolDefinition{videoGenerationToolDefinition(AppConfig{}, false)})
 	prompt := triageSystemPrompt(registry, nil, "/tmp/ws")
 	if !strings.Contains(prompt, "create, animate, extend, restyle, or render a video") {
 		t.Fatalf("video-mode enumeration should name extension and restyling:\n%s", prompt)
@@ -295,7 +295,7 @@ func TestTriagePromptBaresVideoExtendAsVideoMode(t *testing.T) {
 // guard against over-routing (the note alone doesn't mean the user wants new
 // media).
 func TestTriagePromptExplainsAvailableMediaNote(t *testing.T) {
-	registry := newHarnessToolRegistry([]HarnessToolDefinition{videoGenerationToolDefinition(false)})
+	registry := newHarnessToolRegistry([]HarnessToolDefinition{videoGenerationToolDefinition(AppConfig{}, false)})
 	prompt := triageSystemPrompt(registry, nil, "/tmp/ws")
 	for _, want := range []string{
 		`"[Available media: ...]"`,

@@ -49,10 +49,29 @@ func imageGenerationProvider(config AppConfig) string {
 	switch strings.TrimSpace(config.Models.ImageProvider) {
 	case "fal":
 		return "fal"
+	case "replicate":
+		return "replicate"
 	case "openai-compatible":
 		return "openai-compatible"
 	default:
 		return "ollama"
+	}
+}
+
+// videoGenerationProvider names the backend generate_video routes to for the
+// given config — the video sibling of imageGenerationProvider and likewise the
+// routing truth for the gateway's GenerateVideo wiring, media telemetry
+// attribution (toolActivityFromResult), and the tool gates/resolvers. An unset
+// or unrecognized provider means fal: video was fal-only before the Replicate
+// backend existed, so a config written then must keep routing there. The
+// video-source transforms (upscale/reframe/restyle), lipsync, and audio stay
+// fal-only regardless — they are separate tools with their own fal-key gates.
+func videoGenerationProvider(config AppConfig) string {
+	switch strings.TrimSpace(config.Models.VideoProvider) {
+	case "replicate":
+		return "replicate"
+	default:
+		return "fal"
 	}
 }
 
@@ -75,8 +94,11 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 		// schemaCache is category-agnostic (keyed by model id, used by both
 		// resolveAudioBody and resolveImageBody); falOverrides carries the
 		// per-model escape-hatch map for every category (audio, image, ...).
+		// replicateSchemaCache serves the same role for the Replicate backend's
+		// per-model input schemas, namespaced on its own disk directory.
 		schemaCache := newFalSchemaCache(app.client, config.Storage.Root)
 		falOverrides := loadFalOverrides(config.Storage.Root)
+		replicateSchemaCache := newReplicateSchemaCache(app.client, config.Storage.Root)
 		gateway.tools.GenerateImage = func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, []string, error) {
 			// Source images must decode at the model: an attached HEIC/AVIF/
 			// TIFF/BMP/JP2 becomes JPEG here (model_image_compat.go) for every
@@ -133,10 +155,73 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				// re-harvest source URLs from a response it doesn't see).
 				return resp, nil, nil, err
 			}
+			if provider == "replicate" {
+				apiKey, err := loadReplicateAPIKey()
+				if err != nil {
+					return ollamaGenerateResponse{}, nil, nil, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return ollamaGenerateResponse{}, nil, nil, errReplicateKeyNotConfigured
+				}
+				client := newReplicateClient(app.client, apiKey)
+				// Pre-resolve attached source images: oversized payloads upload
+				// through Replicate's Files API so the prediction input stays
+				// within the inline data-URI budget.
+				for i, img := range req.Images {
+					if resolved, err := client.ResolveMediaURL(ctx, img, "image/png", ""); err == nil && resolved != "" {
+						req.Images[i] = resolved
+					}
+				}
+				schema := replicateSchemaCache.Get(ctx, req.Model)
+				input, notices, err := resolveReplicateImageInput(schema, req)
+				if err != nil {
+					return ollamaGenerateResponse{}, nil, nil, err
+				}
+				resp, genErr := client.GenerateImage(ctx, req.Model, input)
+				return resp, nil, notices, genErr
+			}
 			resp, raw, err := app.ollamaClient(config.Providers.Ollama.BaseURL).GenerateImage(ctx, req)
 			return resp, raw, nil, err
 		}
 		gateway.tools.GenerateVideo = func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
+			// Source media is normalized to a model-decodable format for every
+			// backend (model_image_compat.go) before the provider branch — the
+			// same rule GenerateImage applies at the top of its closure.
+			req.Images = ensureModelSafeImages(ctx, config, req.Images)
+			req.Image = ensureModelSafeImage(ctx, config, req.Image)
+			if videoGenerationProvider(config) == "replicate" {
+				apiKey, err := loadReplicateAPIKey()
+				if err != nil {
+					return GeneratedVideo{}, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return GeneratedVideo{}, errReplicateKeyNotConfigured
+				}
+				client := newReplicateClient(app.client, apiKey)
+				// Pre-resolve attached source images: oversized payloads upload
+				// through Replicate's Files API so the prediction input stays
+				// within the inline data-URI budget. Source videos are NOT
+				// resolved here — the Replicate backend serves text-to-video
+				// and image-to-video only, and resolveReplicateVideoInput
+				// refuses a video-source request up front with its remedy in
+				// the message.
+				for i, img := range req.Images {
+					if resolved, err := client.ResolveMediaURL(ctx, img, "image/png", fmt.Sprintf("source-image-%d.png", i)); err == nil && resolved != "" {
+						req.Images[i] = resolved
+					}
+				}
+				if resolved, err := client.ResolveMediaURL(ctx, req.Image, "image/png", "source-image.png"); err == nil {
+					req.Image = resolved
+				}
+				schema := replicateSchemaCache.Get(ctx, req.Model)
+				input, notices, err := resolveReplicateVideoInput(schema, req)
+				if err != nil {
+					return GeneratedVideo{}, err
+				}
+				generated, genErr := client.GenerateVideo(ctx, req.Model, input)
+				generated.Notices = notices
+				return generated, genErr
+			}
 			apiKey, err := loadFalAPIKey()
 			if err != nil {
 				return GeneratedVideo{}, err
@@ -151,12 +236,6 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			// fal's CDN so the queue submit stays under the inline size limit.
 			// SourceVideos() unifies the legacy scalar Video into the slice, so
 			// the resolver and transport below see one list.
-			//
-			// Image sources are first normalized to a model-decodable format
-			// (model_image_compat.go): image-to-video and reference frames
-			// arrive as HEIC attachments that fal's image_url rejects.
-			req.Images = ensureModelSafeImages(ctx, config, req.Images)
-			req.Image = ensureModelSafeImage(ctx, config, req.Image)
 			videos := req.SourceVideos()
 			for i := range videos {
 				if resolved, err := client.resolveMediaURL(ctx, videos[i], "video/mp4", fmt.Sprintf("source-video-%d.mp4", i)); err == nil && resolved != "" {
@@ -259,23 +338,45 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			generated.Notices = notices
 			return generated, genErr
 		}
-		gateway.tools.UpscaleImage = func(ctx context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, error) {
+		gateway.tools.UpscaleImage = func(ctx context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, []string, error) {
+			// The source image is normalized to a model-decodable format for
+			// every backend (model_image_compat.go) before the provider branch.
+			req.Image = ensureModelSafeImage(ctx, config, req.Image)
+			// Upscale follows the image provider: replicate routes there (the
+			// same seam generate_image reads), every other provider stays on
+			// fal — the only cloud upscaler otherwise (Ollama has none).
+			if imageGenerationProvider(config) == "replicate" {
+				apiKey, err := loadReplicateAPIKey()
+				if err != nil {
+					return ollamaGenerateResponse{}, nil, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return ollamaGenerateResponse{}, nil, errReplicateKeyNotConfigured
+				}
+				client := newReplicateClient(app.client, apiKey)
+				if resolved, err := client.ResolveMediaURL(ctx, req.Image, "image/png", "source-image.png"); err == nil {
+					req.Image = resolved
+				}
+				schema := replicateSchemaCache.Get(ctx, req.Model)
+				input, notices, err := resolveReplicateUpscaleInput(schema, req)
+				if err != nil {
+					return ollamaGenerateResponse{}, notices, err
+				}
+				resp, genErr := client.UpscaleImage(ctx, req.Model, input)
+				return resp, notices, genErr
+			}
 			apiKey, err := loadFalAPIKey()
 			if err != nil {
-				return ollamaGenerateResponse{}, err
+				return ollamaGenerateResponse{}, nil, err
 			}
 			if strings.TrimSpace(apiKey) == "" {
-				return ollamaGenerateResponse{}, errFalKeyNotConfigured
+				return ollamaGenerateResponse{}, nil, errFalKeyNotConfigured
 			}
-			// fal's upscaler consumes the same image_url input as generation —
-			// normalize the source to a model-decodable format first
-			// (model_image_compat.go).
-			req.Image = ensureModelSafeImage(ctx, config, req.Image)
 			resp, err := newFalClient(app.client, apiKey).UpscaleImage(ctx, req)
 			if err == nil {
 				resp.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, falBillingHints{Images: 1, Requests: 1})
 			}
-			return resp, err
+			return resp, nil, err
 		}
 		gateway.tools.UpscaleVideo = func(ctx context.Context, req VideoUpscaleRequest) (GeneratedVideo, error) {
 			apiKey, err := loadFalAPIKey()

@@ -99,8 +99,9 @@ const (
 	// hosted URL or an inline data URI, so no fal storage upload is needed.
 	defaultFalTranscribeModel = "fal-ai/wizper"
 	// defaultFalUpscaleModel is the image upscaler endpoint used when none is
-	// configured — a simple, cheap ESRGAN-based upscaler that takes image_url +
-	// scale. fal is the only upscale backend (Ollama has no upscaler).
+	// configured on the fal path — a simple, cheap ESRGAN-based upscaler that
+	// takes image_url + scale. fal serves every image provider but replicate,
+	// whose upscale follows imageGenerationProvider (Ollama has no upscaler).
 	defaultFalUpscaleModel = "fal-ai/esrgan"
 	// defaultFalLipsyncImageModel is the audio-to-video lip sync endpoint used
 	// when the user attaches an audio clip plus an image — drives a face into a
@@ -145,9 +146,12 @@ const (
 )
 
 // FalClient talks to fal.ai's asynchronous queue API for image generation.
-// It is deliberately not a ChatProvider — fal.ai only generates images here.
-// The client mirrors the OpenRouter client shape (value type, injected HTTP
-// client, key read from the OS keyring at construction time).
+// It is deliberately not a ChatProvider — chat runs on the ProviderRegistry;
+// media generation has two cloud clients now (this one and ReplicateClient in
+// replicate_client.go, routed by imageGenerationProvider/
+// videoGenerationProvider), and neither participates in chat. The client
+// mirrors the OpenRouter client shape (value type, injected HTTP client, key
+// read from the OS keyring at construction time).
 type FalClient struct {
 	httpClient *http.Client
 	apiKey     string

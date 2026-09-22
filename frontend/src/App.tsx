@@ -6,6 +6,7 @@ import './App.css';
 import {
   CancelStream,
   CheckFalConnection,
+  CheckReplicateConnection,
   CheckForUpdates,
   CheckOllama,
   ChooseToolWorkspace,
@@ -20,6 +21,7 @@ import {
   GetConversation,
   GetConfig,
   HasFalAPIKey,
+  HasReplicateAPIKey,
   HasOpenAICompatibleAPIKey,
   HasOpenRouterAPIKey,
   ImportLibrary,
@@ -45,6 +47,12 @@ import {
   ListFalUpscaleModels,
   ListFalLipsyncImageModels,
   ListFalLipsyncVideoModels,
+  ListReplicateModels,
+  ListReplicateImageEditModels,
+  ListReplicateUpscaleModels,
+  ListReplicateVideoModels,
+  ListReplicateVideoImageModels,
+  ListReplicateVideoDurations,
   ListLibraries,
   ListLibraryAssets,
   ListModels,
@@ -65,6 +73,7 @@ import {
   SaveConfig,
   SetConversationModelOverrides,
   SaveFalAPIKey,
+  SaveReplicateAPIKey,
   SaveOpenAICompatibleAPIKey,
   SaveOpenRouterAPIKey,
   SaveUIState,
@@ -231,6 +240,10 @@ type HarnessToolActivityView = {
   // computed at call time from fal's pricing API; absent for local backends
   // and calls pricing could not price.
   costMicros?: number;
+  // True when the generation is paid but unpriceable (the Replicate backend
+  // reports no cost) — renders "?" in the money column instead of the empty
+  // slot a genuinely free local call renders.
+  costUnknown?: boolean;
   path?: string;
   command?: string[];
   exitCode?: number;
@@ -334,6 +347,14 @@ const defaultFalTranscribeModel = 'fal-ai/wizper';
 const defaultFalLipsyncImageModel = 'fal-ai/kling-video/lipsync/audio-to-video';
 const defaultFalLipsyncVideoModel = 'fal-ai/sync-lipsync/v2/pro';
 const defaultFalUpscaleModel = 'fal-ai/esrgan';
+// Replicate backend defaults — owner/name slugs, kept in sync with the Go
+// consts in replicate_client.go (the single source of truth; these mirror it
+// for the Settings pickers the same way the fal constants above do).
+const defaultReplicateImageModel = 'black-forest-labs/flux-schnell';
+const defaultReplicateImageEditModel = 'black-forest-labs/flux-kontext-pro';
+const defaultReplicateVideoModel = 'wan-video/wan-2.5-t2v';
+const defaultReplicateVideoImageModel = 'wan-video/wan-2.5-i2v';
+const defaultReplicateUpscaleModel = 'nightmareai/real-esrgan';
 const defaultVideoDuration = '5';
 const defaultVideoAspectRatio = '16:9';
 // 'auto' lets the video model size the clip to the prompt (Seedance supports it;
@@ -980,7 +1001,11 @@ function App() {
   // Ollama is no longer offered as an image provider in the UI (its runtime
   // dropped image-generation support); a config still saying "ollama" loads as
   // the local OpenAI-compatible server. The Go backend keeps accepting the id.
-  const [imageProvider, setImageProvider] = useState<'fal' | 'openai-compatible'>('openai-compatible');
+  const [imageProvider, setImageProvider] = useState<'fal' | 'replicate' | 'openai-compatible'>('openai-compatible');
+  // The generate_video backend: fal.ai (the historical default) or Replicate.
+  // A config written before the second backend existed says "fal" via the Go
+  // merge, so the state mirrors that default.
+  const [videoProvider, setVideoProvider] = useState<'fal' | 'replicate'>('fal');
   const [openaiCompatibleBaseURL, setOpenaiCompatibleBaseURL] = useState('http://localhost:8080');
   const [openaiCompatibleModel, setOpenaiCompatibleModel] = useState('');
   const [openaiCompatibleModels, setOpenaiCompatibleModels] = useState<string[]>([]);
@@ -1039,6 +1064,24 @@ function App() {
   const [falLipsyncVideoModels, setFalLipsyncVideoModels] = useState<main.FalModel[]>([]);
   const [falUpscaleModel, setFalUpscaleModel] = useState(defaultFalUpscaleModel);
   const [falUpscaleModels, setFalUpscaleModels] = useState<main.FalModel[]>([]);
+  // Replicate backend state — the key row, the four generation slots, and
+  // their catalogs. Only the slots the backend routes to Replicate live here
+  // (text-to-image, image edit, text-to-video, image-to-video); the transforms
+  // and audio stay fal-only.
+  const [replicateAPIKeyInput, setReplicateAPIKeyInput] = useState('');
+  const [replicateHasKey, setReplicateHasKey] = useState(false);
+  const [replicateStatus, setReplicateStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
+  const [replicateError, setReplicateError] = useState('');
+  const [replicateModel, setReplicateModel] = useState(defaultReplicateImageModel);
+  const [replicateModels, setReplicateModels] = useState<main.ReplicateModel[]>([]);
+  const [replicateImageEditModel, setReplicateImageEditModel] = useState(defaultReplicateImageEditModel);
+  const [replicateImageEditModels, setReplicateImageEditModels] = useState<main.ReplicateModel[]>([]);
+  const [replicateUpscaleModel, setReplicateUpscaleModel] = useState(defaultReplicateUpscaleModel);
+  const [replicateUpscaleModels, setReplicateUpscaleModels] = useState<main.ReplicateModel[]>([]);
+  const [replicateVideoModel, setReplicateVideoModel] = useState(defaultReplicateVideoModel);
+  const [replicateVideoModels, setReplicateVideoModels] = useState<main.ReplicateModel[]>([]);
+  const [replicateVideoImageModel, setReplicateVideoImageModel] = useState(defaultReplicateVideoImageModel);
+  const [replicateVideoImageModels, setReplicateVideoImageModels] = useState<main.ReplicateModel[]>([]);
   // Each video picker owns its duration options + value, driven by its model's
   // published schema (ListFalVideoDurations). videoDuration (text-to-video) is
   // the canonical value persisted to config.generation.video.duration — the
@@ -1589,6 +1632,14 @@ function App() {
             lipsyncImageModel: falLipsyncImageModel,
             lipsyncVideoModel: falLipsyncVideoModel,
           },
+          replicate: {
+            enabled: replicateHasKey,
+            model: replicateModel,
+            imageEditModel: replicateImageEditModel,
+            upscaleModel: replicateUpscaleModel,
+            videoModel: replicateVideoModel,
+            videoImageModel: replicateVideoImageModel,
+          },
           openaiCompatible: {
             baseURL: openaiCompatibleBaseURL,
             primary: primaryModels['openai-compatible'],
@@ -1618,6 +1669,7 @@ function App() {
           primaryProvider,
           harnessProvider,
           imageProvider,
+          videoProvider,
           transcriptionProvider,
         },
         prompts: {
@@ -1647,7 +1699,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, whisperBinary, whisperModel]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoModel, replicateVideoImageModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, whisperBinary, whisperModel]);
 
   // Re-probe local CLI tools when a binary override changes so the provider
   // dropdown and the video/image-tools status reflect an unsaved override without
@@ -2026,12 +2078,18 @@ function App() {
     harnessProvider,
     harnessModel: harnessModels[harnessProvider],
     imageProvider,
+    videoProvider,
     falModel,
     openaiImageModel: openaiCompatibleModel,
+    replicateModel,
+    replicateImageEditModel,
+    replicateUpscaleModel,
     falImageEditModel,
     falUpscaleModel,
     falVideoModel,
     falVideoImageModel,
+    replicateVideoModel,
+    replicateVideoImageModel,
     falVideoKeyframeModel,
     falVideoExtendModel,
     falVideoMotionModel,
@@ -2053,7 +2111,7 @@ function App() {
     videoDuration,
     videoAspectRatio,
     whisperBinary,
-  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, falModel, openaiCompatibleModel, falImageEditModel, falUpscaleModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, whisperModel, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, whisperBinary]);
+  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, whisperModel, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, whisperBinary]);
 
   const conversationModelSelection = useMemo<ModelSelectionValue>(() => {
     const global = globalModelSelection;
@@ -2065,7 +2123,8 @@ function App() {
       value === 'ollama' || value === 'openrouter' || value === 'openai-compatible';
     const harnessProvider = isChatProvider(overrides.harnessProvider) ? overrides.harnessProvider : global.harnessProvider;
     const primaryProvider = isChatProvider(overrides.primaryProvider) ? overrides.primaryProvider : global.primaryProvider;
-    const imageProvider = overrides.imageProvider === 'fal' || overrides.imageProvider === 'openai-compatible' ? overrides.imageProvider : global.imageProvider;
+    const imageProvider = overrides.imageProvider === 'fal' || overrides.imageProvider === 'replicate' || overrides.imageProvider === 'openai-compatible' ? overrides.imageProvider : global.imageProvider;
+    const videoProvider = overrides.videoProvider === 'replicate' ? 'replicate' : overrides.videoProvider === 'fal' ? 'fal' : global.videoProvider;
     const next: ModelSelectionValue = {
       ...global,
       primaryProvider,
@@ -2073,12 +2132,18 @@ function App() {
       harnessProvider,
       harnessModel: overrides.harnessModel || harnessModels[harnessProvider],
       imageProvider,
+      videoProvider,
       falModel: overrides.imageModel && imageProvider === 'fal' ? overrides.imageModel : global.falModel,
       openaiImageModel: overrides.imageModel && imageProvider === 'openai-compatible' ? overrides.imageModel : global.openaiImageModel,
-      falImageEditModel: overrides.imageEditModel || global.falImageEditModel,
-      falUpscaleModel: overrides.upscaleModel || global.falUpscaleModel,
-      falVideoModel: overrides.videoModel || global.falVideoModel,
-      falVideoImageModel: overrides.videoImageModel || global.falVideoImageModel,
+      replicateModel: overrides.imageModel && imageProvider === 'replicate' ? overrides.imageModel : global.replicateModel,
+      replicateImageEditModel: overrides.imageEditModel && imageProvider === 'replicate' ? overrides.imageEditModel : global.replicateImageEditModel,
+      falImageEditModel: overrides.imageEditModel && imageProvider !== 'replicate' ? overrides.imageEditModel : global.falImageEditModel,
+      replicateUpscaleModel: overrides.upscaleModel && imageProvider === 'replicate' ? overrides.upscaleModel : global.replicateUpscaleModel,
+      falUpscaleModel: overrides.upscaleModel && imageProvider !== 'replicate' ? overrides.upscaleModel : global.falUpscaleModel,
+      falVideoModel: overrides.videoModel && videoProvider === 'fal' ? overrides.videoModel : global.falVideoModel,
+      falVideoImageModel: overrides.videoImageModel && videoProvider === 'fal' ? overrides.videoImageModel : global.falVideoImageModel,
+      replicateVideoModel: overrides.videoModel && videoProvider === 'replicate' ? overrides.videoModel : global.replicateVideoModel,
+      replicateVideoImageModel: overrides.videoImageModel && videoProvider === 'replicate' ? overrides.videoImageModel : global.replicateVideoImageModel,
       falVideoKeyframeModel: overrides.videoKeyframeModel || global.falVideoKeyframeModel,
       falVideoExtendModel: overrides.videoExtendModel || global.falVideoExtendModel,
       falVideoMotionModel: overrides.videoMotionModel || global.falVideoMotionModel,
@@ -2127,12 +2192,18 @@ function App() {
     if (patch.harnessProvider !== undefined) setHarnessProvider(patch.harnessProvider);
     if (patch.harnessModel !== undefined) setHarnessModel(patch.harnessModel);
     if (patch.imageProvider !== undefined) setImageProvider(patch.imageProvider);
+    if (patch.videoProvider !== undefined) setVideoProvider(patch.videoProvider);
     if (patch.falModel !== undefined) setFalModel(patch.falModel);
     if (patch.openaiImageModel !== undefined) setOpenaiCompatibleModel(patch.openaiImageModel);
+    if (patch.replicateModel !== undefined) setReplicateModel(patch.replicateModel);
+    if (patch.replicateImageEditModel !== undefined) setReplicateImageEditModel(patch.replicateImageEditModel);
+    if (patch.replicateUpscaleModel !== undefined) setReplicateUpscaleModel(patch.replicateUpscaleModel);
     if (patch.falImageEditModel !== undefined) setFalImageEditModel(patch.falImageEditModel);
     if (patch.falUpscaleModel !== undefined) setFalUpscaleModel(patch.falUpscaleModel);
     if (patch.falVideoModel !== undefined) setFalVideoModel(patch.falVideoModel);
     if (patch.falVideoImageModel !== undefined) setFalVideoImageModel(patch.falVideoImageModel);
+    if (patch.replicateVideoModel !== undefined) setReplicateVideoModel(patch.replicateVideoModel);
+    if (patch.replicateVideoImageModel !== undefined) setReplicateVideoImageModel(patch.replicateVideoImageModel);
     if (patch.falVideoKeyframeModel !== undefined) setFalVideoKeyframeModel(patch.falVideoKeyframeModel);
     if (patch.falVideoExtendModel !== undefined) setFalVideoExtendModel(patch.falVideoExtendModel);
     if (patch.falVideoMotionModel !== undefined) setFalVideoMotionModel(patch.falVideoMotionModel);
@@ -2175,11 +2246,24 @@ function App() {
     if (draftPatch.harnessProvider !== undefined && patch.harnessModel === undefined) {
       draftPatch.harnessModel = harnessModels[draftPatch.harnessProvider];
     }
-    if (draftPatch.imageProvider !== undefined && patch.falModel === undefined && patch.openaiImageModel === undefined) {
+    if (draftPatch.imageProvider !== undefined && patch.falModel === undefined && patch.openaiImageModel === undefined && patch.replicateModel === undefined) {
       if (draftPatch.imageProvider === 'fal') {
         draftPatch.falModel = falModel;
+      } else if (draftPatch.imageProvider === 'replicate') {
+        draftPatch.replicateModel = replicateModel;
       } else {
         draftPatch.openaiImageModel = openaiCompatibleModel;
+      }
+    }
+    // A video-provider switch carries the new backend's inherited models into
+    // the draft so the paired pickers display them (the image-provider rule).
+    if (draftPatch.videoProvider !== undefined && patch.falVideoModel === undefined && patch.replicateVideoModel === undefined) {
+      if (draftPatch.videoProvider === 'replicate') {
+        draftPatch.replicateVideoModel = replicateVideoModel;
+        draftPatch.replicateVideoImageModel = replicateVideoImageModel;
+      } else {
+        draftPatch.falVideoModel = falVideoModel;
+        draftPatch.falVideoImageModel = falVideoImageModel;
       }
     }
     if (draftPatch.primaryProvider !== undefined && patch.primaryModel === undefined) {
@@ -2198,11 +2282,16 @@ function App() {
         next.add('imageProvider');
         next.delete('imageModel');
       }
-      if (patch.falModel !== undefined || patch.openaiImageModel !== undefined) next.add('imageModel');
-      if (patch.falImageEditModel !== undefined) next.add('imageEditModel');
-      if (patch.falUpscaleModel !== undefined) next.add('upscaleModel');
-      if (patch.falVideoModel !== undefined) next.add('videoModel');
-      if (patch.falVideoImageModel !== undefined) next.add('videoImageModel');
+      if (patch.falModel !== undefined || patch.openaiImageModel !== undefined || patch.replicateModel !== undefined) next.add('imageModel');
+      if (patch.videoProvider !== undefined) {
+        next.add('videoProvider');
+        next.delete('videoModel');
+        next.delete('videoImageModel');
+      }
+      if (patch.falImageEditModel !== undefined || patch.replicateImageEditModel !== undefined) next.add('imageEditModel');
+      if (patch.falUpscaleModel !== undefined || patch.replicateUpscaleModel !== undefined) next.add('upscaleModel');
+      if (patch.falVideoModel !== undefined || patch.replicateVideoModel !== undefined) next.add('videoModel');
+      if (patch.falVideoImageModel !== undefined || patch.replicateVideoImageModel !== undefined) next.add('videoImageModel');
       if (patch.falVideoKeyframeModel !== undefined) next.add('videoKeyframeModel');
       if (patch.falVideoExtendModel !== undefined) next.add('videoExtendModel');
       if (patch.falVideoMotionModel !== undefined) next.add('videoMotionModel');
@@ -2257,14 +2346,25 @@ function App() {
         case 'imageModel':
           if (next.imageProvider === 'fal') {
             next.falModel = global.falModel;
+          } else if (next.imageProvider === 'replicate') {
+            next.replicateModel = global.replicateModel;
           } else {
             next.openaiImageModel = global.openaiImageModel;
           }
           break;
-        case 'imageEditModel': next.falImageEditModel = global.falImageEditModel; break;
-        case 'upscaleModel': next.falUpscaleModel = global.falUpscaleModel; break;
-        case 'videoModel': next.falVideoModel = global.falVideoModel; break;
-        case 'videoImageModel': next.falVideoImageModel = global.falVideoImageModel; break;
+        case 'videoProvider':
+          next.videoProvider = global.videoProvider;
+          break;
+        case 'imageEditModel':
+          next.falImageEditModel = global.falImageEditModel;
+          next.replicateImageEditModel = global.replicateImageEditModel;
+          break;
+        case 'upscaleModel':
+          next.falUpscaleModel = global.falUpscaleModel;
+          next.replicateUpscaleModel = global.replicateUpscaleModel;
+          break;
+        case 'videoModel': next.falVideoModel = global.falVideoModel; next.replicateVideoModel = global.replicateVideoModel; break;
+        case 'videoImageModel': next.falVideoImageModel = global.falVideoImageModel; next.replicateVideoImageModel = global.replicateVideoImageModel; break;
         case 'videoKeyframeModel': next.falVideoKeyframeModel = global.falVideoKeyframeModel; break;
         case 'videoExtendModel': next.falVideoExtendModel = global.falVideoExtendModel; break;
         case 'videoMotionModel': next.falVideoMotionModel = global.falVideoMotionModel; break;
@@ -2352,20 +2452,30 @@ function App() {
   const convDraftVideoImageModel = convModelsDraft?.falVideoImageModel ?? '';
   const convDraftVideoKeyframeModel = convModelsDraft?.falVideoKeyframeModel ?? '';
   const convDraftVideoExtendModel = convModelsDraft?.falVideoExtendModel ?? '';
+  const convDraftVideoProvider = convModelsDraft?.videoProvider ?? videoProvider;
   useEffect(() => {
     if (view !== 'conversation-models') {
       return;
     }
     let cancelled = false;
-    const fetchOptions = async (model: string) => {
+    // The t2v/i2v duration lookups follow the draft's video provider (the
+    // replicate backend reads its own schema cache); keyframe/extend are
+    // fal-only tools and always read fal's.
+    const fetchOptions = async (model: string, provider: 'fal' | 'replicate') => {
+      const fetcher = provider === 'replicate' ? ListReplicateVideoDurations : ListFalVideoDurations;
       try {
-        const durations = await ListFalVideoDurations(model);
+        const durations = await fetcher(model);
         return durations && durations.length ? durations : defaultVideoDurationOptions;
       } catch {
         return defaultVideoDurationOptions;
       }
     };
-    Promise.all([fetchOptions(convDraftVideoModel), fetchOptions(convDraftVideoImageModel), fetchOptions(convDraftVideoKeyframeModel), fetchOptions(convDraftVideoExtendModel)])
+    Promise.all([
+      fetchOptions(convDraftVideoProvider === 'replicate' ? (convModelsDraft?.replicateVideoModel ?? '') : convDraftVideoModel, convDraftVideoProvider),
+      fetchOptions(convDraftVideoProvider === 'replicate' ? (convModelsDraft?.replicateVideoImageModel ?? '') : convDraftVideoImageModel, convDraftVideoProvider),
+      fetchOptions(convDraftVideoKeyframeModel, 'fal'),
+      fetchOptions(convDraftVideoExtendModel, 'fal'),
+    ])
       .then(([video, image, keyframe, extend]) => {
         if (!cancelled) {
           setConvDurationOptions({video, image, keyframe, extend});
@@ -2374,7 +2484,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [view, convDraftVideoModel, convDraftVideoImageModel, convDraftVideoKeyframeModel, convDraftVideoExtendModel]);
+  }, [view, videoProvider, convDraftVideoProvider, convModelsDraft, convDraftVideoModel, convDraftVideoImageModel, convDraftVideoKeyframeModel, convDraftVideoExtendModel]);
 
   const saveComposerPrimaryOverride = async (provider: ChatProviderID, modelValue: string) => {
     if (!activeConversationID) {
@@ -2452,6 +2562,11 @@ function App() {
     openaiCompatibleModels: openaiCompatibleModelOptions,
     falModels,
     falImageEditModels,
+    replicateModels,
+    replicateImageEditModels,
+    replicateUpscaleModels,
+    replicateVideoModels,
+    replicateVideoImageModels,
     falVideoModels,
     falVideoImageModels,
     falVideoKeyframeModels,
@@ -2469,6 +2584,7 @@ function App() {
     falLipsyncVideoModels,
     openRouterHasKey,
     falHasKey,
+    replicateHasKey,
     whisperStatus,
     openCapabilityID,
     setOpenCapabilityID,
@@ -2535,7 +2651,12 @@ function App() {
   // An empty/error result falls back to the generic option set.
   useEffect(() => {
     let cancelled = false;
-    ListFalVideoDurations(falVideoModel)
+    // The fetch follows the routed backend: fal's schema cache on fal,
+    // Replicate's on replicate — the same seam generate_video routes by.
+    const fetchDurations = videoProvider === 'replicate'
+      ? ListReplicateVideoDurations(replicateVideoModel)
+      : ListFalVideoDurations(falVideoModel);
+    fetchDurations
       .then((durations) => {
         if (cancelled) return;
         const opts = durations && durations.length ? durations : defaultVideoDurationOptions;
@@ -2546,11 +2667,14 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [falVideoModel]);
+  }, [videoProvider, falVideoModel, replicateVideoModel]);
 
   useEffect(() => {
     let cancelled = false;
-    ListFalVideoDurations(falVideoImageModel)
+    const fetchDurations = videoProvider === 'replicate'
+      ? ListReplicateVideoDurations(replicateVideoImageModel)
+      : ListFalVideoDurations(falVideoImageModel);
+    fetchDurations
       .then((durations) => {
         if (cancelled) return;
         setVideoDurationImageOptions(durations && durations.length ? durations : defaultVideoDurationOptions);
@@ -2559,7 +2683,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [falVideoImageModel]);
+  }, [videoProvider, falVideoImageModel, replicateVideoImageModel]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2634,9 +2758,15 @@ function App() {
     const nextImageAspectRatio = config.generation?.image?.aspectRatio || defaultImageAspectRatio;
     const nextImageSizePreset = config.generation?.image?.sizePreset || defaultImageSizePreset;
     const nextImageSteps = config.generation?.image?.steps || defaultImageSteps;
-    const nextImageProvider = config.models?.imageProvider === 'fal' ? 'fal' : 'openai-compatible';
+    const nextImageProvider = config.models?.imageProvider === 'fal' ? 'fal' : config.models?.imageProvider === 'replicate' ? 'replicate' : 'openai-compatible';
+    const nextVideoProvider: 'fal' | 'replicate' = config.models?.videoProvider === 'replicate' ? 'replicate' : 'fal';
     const nextOpenAICompatibleBaseURL = config.providers?.openaiCompatible?.baseURL || 'http://localhost:8080';
     const nextOpenAICompatibleModel = config.providers?.openaiCompatible?.model ?? '';
+    const nextReplicateModel = config.providers?.replicate?.model || defaultReplicateImageModel;
+    const nextReplicateImageEditModel = config.providers?.replicate?.imageEditModel || defaultReplicateImageEditModel;
+    const nextReplicateUpscaleModel = config.providers?.replicate?.upscaleModel || defaultReplicateUpscaleModel;
+    const nextReplicateVideoModel = config.providers?.replicate?.videoModel || defaultReplicateVideoModel;
+    const nextReplicateVideoImageModel = config.providers?.replicate?.videoImageModel || defaultReplicateVideoImageModel;
     const nextFalModel = config.providers?.fal?.model || defaultFalImageModel;
     const nextFalImageEditModel = config.providers?.fal?.imageEditModel || defaultFalImageEditModel;
 	const nextFalVideoModel = config.providers?.fal?.videoModel || defaultFalVideoModel;
@@ -2681,8 +2811,14 @@ function App() {
     setImageSizePreset(nextImageSizePreset);
     setImageSteps(nextImageSteps);
     setImageProvider(nextImageProvider);
+    setVideoProvider(nextVideoProvider);
     setOpenaiCompatibleBaseURL(nextOpenAICompatibleBaseURL);
     setOpenaiCompatibleModel(nextOpenAICompatibleModel);
+    setReplicateModel(nextReplicateModel);
+    setReplicateImageEditModel(nextReplicateImageEditModel);
+    setReplicateUpscaleModel(nextReplicateUpscaleModel);
+    setReplicateVideoModel(nextReplicateVideoModel);
+    setReplicateVideoImageModel(nextReplicateVideoImageModel);
     setFalModel(nextFalModel);
     setFalImageEditModel(nextFalImageEditModel);
     setFalVideoModel(nextFalVideoModel);
@@ -2726,6 +2862,12 @@ function App() {
           refreshFalModels();
         }
       }).catch(() => setFalHasKey(false)),
+      HasReplicateAPIKey().then((hasKey) => {
+        setReplicateHasKey(hasKey);
+        if (hasKey) {
+          refreshReplicateModels();
+        }
+      }).catch(() => setReplicateHasKey(false)),
       DetectLocalTools(new main.LocalToolOverrides()).then((report) => {
         setLocalToolsReport(report);
         // An unset provider auto-resolves in Go (fal when a key exists, else a
@@ -3023,6 +3165,82 @@ function App() {
       setFalStatus('unknown');
       setFalError('');
       setImageProvider((current) => current === 'fal' ? 'openai-compatible' : current);
+      setVideoProvider((current) => current === 'fal' ? 'replicate' : current);
+    } catch (error) {
+      setStatus((current) => current ? {...current, error: String(error)} : current);
+    }
+  }
+
+  async function refreshReplicateModels() {
+    // The Replicate collections are a discovery aid like fal's catalog — a
+    // load failure leaves the field as free text, so swallow the error.
+    try {
+      setReplicateModels(asArray(await ListReplicateModels()));
+    } catch {
+      setReplicateModels([]);
+    }
+    try {
+      setReplicateImageEditModels(asArray(await ListReplicateImageEditModels()));
+    } catch {
+      setReplicateImageEditModels([]);
+    }
+    try {
+      setReplicateUpscaleModels(asArray(await ListReplicateUpscaleModels()));
+    } catch {
+      setReplicateUpscaleModels([]);
+    }
+    try {
+      setReplicateVideoModels(asArray(await ListReplicateVideoModels()));
+    } catch {
+      setReplicateVideoModels([]);
+    }
+    try {
+      setReplicateVideoImageModels(asArray(await ListReplicateVideoImageModels()));
+    } catch {
+      setReplicateVideoImageModels([]);
+    }
+  }
+
+  async function saveReplicateKey() {
+    try {
+      await SaveReplicateAPIKey(replicateAPIKeyInput);
+      setReplicateAPIKeyInput('');
+      const hasKey = await HasReplicateAPIKey();
+      setReplicateHasKey(hasKey);
+      setReplicateStatus('unknown');
+      setReplicateError('');
+      if (hasKey) {
+        await refreshReplicateModels();
+      }
+    } catch (error) {
+      setStatus((current) => current ? {...current, error: String(error)} : current);
+    }
+  }
+
+  async function checkReplicateConnection() {
+    try {
+      await CheckReplicateConnection();
+      setReplicateStatus('connected');
+      setReplicateError('');
+    } catch (error) {
+      setReplicateStatus('error');
+      setReplicateError(formatError(error));
+    }
+  }
+
+  async function clearReplicateKey() {
+    try {
+      await SaveReplicateAPIKey('');
+      setReplicateHasKey(false);
+      setReplicateModels([]);
+      setReplicateImageEditModels([]);
+      setReplicateUpscaleModels([]);
+      setReplicateVideoModels([]);
+      setReplicateVideoImageModels([]);
+      setReplicateStatus('unknown');
+      setReplicateError('');
+      setImageProvider((current) => current === 'replicate' ? 'openai-compatible' : current);
+      setVideoProvider((current) => current === 'replicate' ? 'fal' : current);
     } catch (error) {
       setStatus((current) => current ? {...current, error: String(error)} : current);
     }
@@ -4524,6 +4742,55 @@ function App() {
               </section>
 
               <section className="settings-section">
+                <h3>Replicate</h3>
+                <div className="connection">
+                  <label htmlFor="replicate-key">API Token</label>
+                  <div className="endpoint-row">
+                    <input
+                      id="replicate-key"
+                      type="password"
+                      placeholder={replicateHasKey ? 'Token saved — enter a new token to replace it' : 'r8_...'}
+                      value={replicateAPIKeyInput}
+                      onChange={(event) => setReplicateAPIKeyInput(event.target.value)}
+                    />
+                    <button type="button" className="icon-btn" onClick={saveReplicateKey} disabled={!replicateAPIKeyInput} aria-label="Save token" title="Save token">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                        <polyline points="17 21 17 13 7 13 7 21" />
+                        <polyline points="7 3 7 8 15 8" />
+                      </svg>
+                    </button>
+                    <button type="button" className={`icon-btn${replicateStatus === 'connected' ? ' spinning' : ''}`} onClick={checkReplicateConnection} disabled={!replicateHasKey} aria-label="Check connection" title="Check connection">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.7-3" />
+                        <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.7 3" />
+                        <polyline points="21 4 21 9 16 9" />
+                        <polyline points="3 20 3 15 8 15" />
+                      </svg>
+                    </button>
+                    {replicateHasKey ? (
+                      <button type="button" className="icon-btn" onClick={clearReplicateKey} aria-label="Clear token" title="Clear token">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="3 6 5 6 21 6" />
+                          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                        </svg>
+                      </button>
+                    ) : <span className="icon-btn-placeholder" aria-hidden="true" />}
+                  </div>
+                  <div className={replicateStatus === 'connected' ? 'status online' : 'status offline'}>
+                    <span />
+                    {replicateStatus === 'connected'
+                      ? 'Connected'
+                      : replicateStatus === 'error'
+                        ? `Replicate: ${replicateError}`
+                        : replicateHasKey
+                          ? 'API token saved — not checked'
+                          : 'No token saved.'}
+                  </div>
+                </div>
+              </section>
+
+              <section className="settings-section">
                 <h3>OpenAI-compatible (local)</h3>
                 <div className="connection">
                   <div className="field-label-row">
@@ -5919,13 +6186,19 @@ type ModelSelectionValue = {
   primaryModel: string;
   harnessProvider: ChatProviderID;
   harnessModel: string;
-  imageProvider: 'fal' | 'openai-compatible';
+  imageProvider: 'fal' | 'replicate' | 'openai-compatible';
+  videoProvider: 'fal' | 'replicate';
   falModel: string;
   openaiImageModel: string;
+  replicateModel: string;
+  replicateImageEditModel: string;
+  replicateUpscaleModel: string;
   falImageEditModel: string;
   falUpscaleModel: string;
   falVideoModel: string;
   falVideoImageModel: string;
+  replicateVideoModel: string;
+  replicateVideoImageModel: string;
   falVideoKeyframeModel: string;
   falVideoExtendModel: string;
   falVideoMotionModel: string;
@@ -5979,6 +6252,7 @@ function overrideKeysFromRecord(overrides: main.ConversationModelOverrides | nul
   if (overrides.harnessModel) keys.add('harnessModel');
   if (overrides.imageProvider) keys.add('imageProvider');
   if (overrides.imageModel) keys.add('imageModel');
+  if (overrides.videoProvider) keys.add('videoProvider');
   if (overrides.imageEditModel) keys.add('imageEditModel');
   if (overrides.upscaleModel) keys.add('upscaleModel');
   if (overrides.videoModel) keys.add('videoModel');
@@ -6019,11 +6293,20 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   if (keys.has('harnessProvider')) payload.harnessProvider = draft.harnessProvider;
   if (keys.has('harnessModel')) payload.harnessModel = draft.harnessModel;
   if (keys.has('imageProvider')) payload.imageProvider = draft.imageProvider;
-  if (keys.has('imageModel')) payload.imageModel = draft.imageProvider === 'fal' ? draft.falModel : draft.openaiImageModel;
-  if (keys.has('imageEditModel')) payload.imageEditModel = draft.falImageEditModel;
-  if (keys.has('upscaleModel')) payload.upscaleModel = draft.falUpscaleModel;
-  if (keys.has('videoModel')) payload.videoModel = draft.falVideoModel;
-  if (keys.has('videoImageModel')) payload.videoImageModel = draft.falVideoImageModel;
+  if (keys.has('imageModel')) {
+    payload.imageModel = draft.imageProvider === 'fal'
+      ? draft.falModel
+      : draft.imageProvider === 'replicate'
+        ? draft.replicateModel
+        : draft.openaiImageModel;
+  }
+  if (keys.has('videoProvider')) payload.videoProvider = draft.videoProvider;
+  // The edit/video model overrides ride the provider the draft has selected,
+  // mirroring the backend's provider-conditional overlay.
+  if (keys.has('imageEditModel')) payload.imageEditModel = draft.imageProvider === 'replicate' ? draft.replicateImageEditModel : draft.falImageEditModel;
+  if (keys.has('upscaleModel')) payload.upscaleModel = draft.imageProvider === 'replicate' ? draft.replicateUpscaleModel : draft.falUpscaleModel;
+  if (keys.has('videoModel')) payload.videoModel = draft.videoProvider === 'replicate' ? draft.replicateVideoModel : draft.falVideoModel;
+  if (keys.has('videoImageModel')) payload.videoImageModel = draft.videoProvider === 'replicate' ? draft.replicateVideoImageModel : draft.falVideoImageModel;
   if (keys.has('videoKeyframeModel')) payload.videoKeyframeModel = draft.falVideoKeyframeModel;
   if (keys.has('videoExtendModel')) payload.videoExtendModel = draft.falVideoExtendModel;
   if (keys.has('videoMotionModel')) payload.videoMotionModel = draft.falVideoMotionModel;
@@ -6074,6 +6357,11 @@ function ModelSelectionPanel({
     openaiCompatibleModels: {value: string; label: string}[];
     falModels: main.FalModel[];
     falImageEditModels: main.FalModel[];
+    replicateModels: main.ReplicateModel[];
+    replicateImageEditModels: main.ReplicateModel[];
+    replicateUpscaleModels: main.ReplicateModel[];
+    replicateVideoModels: main.ReplicateModel[];
+    replicateVideoImageModels: main.ReplicateModel[];
     falVideoModels: main.FalModel[];
     falVideoImageModels: main.FalModel[];
     falVideoKeyframeModels: main.FalModel[];
@@ -6091,6 +6379,7 @@ function ModelSelectionPanel({
     falLipsyncVideoModels: main.FalModel[];
     openRouterHasKey: boolean;
     falHasKey: boolean;
+    replicateHasKey: boolean;
     whisperStatus: main.LocalBinaryStatus | null;
     openCapabilityID: string;
     setOpenCapabilityID: (id: string) => void;
@@ -6110,6 +6399,11 @@ function ModelSelectionPanel({
   const primaryOptions = chatModelOptionsFor(value.primaryProvider, catalogs);
   const falImageOptions = falModelOptionList(catalogs.falModels);
   const falImageEditOptions = falModelOptionList(catalogs.falImageEditModels);
+  const replicateImageOptions = falModelOptionList(catalogs.replicateModels);
+  const replicateImageEditOptions = falModelOptionList(catalogs.replicateImageEditModels);
+  const replicateUpscaleOptions = falModelOptionList(catalogs.replicateUpscaleModels);
+  const replicateVideoOptions = falModelOptionList(catalogs.replicateVideoModels);
+  const replicateVideoImageOptions = falModelOptionList(catalogs.replicateVideoImageModels);
   const falUpscaleOptions = falModelOptionList(catalogs.falUpscaleModels);
   const falVideoOptions = falModelOptionList(catalogs.falVideoModels);
   const falVideoImageOptions = falModelOptionList(catalogs.falVideoImageModels);
@@ -6271,9 +6565,10 @@ function ModelSelectionPanel({
               <select
                 id="image-provider"
                 value={value.imageProvider}
-                onChange={(event) => onChange({imageProvider: event.target.value as 'fal' | 'openai-compatible'})}
+                onChange={(event) => onChange({imageProvider: event.target.value as 'fal' | 'replicate' | 'openai-compatible'})}
               >
                 <option value="fal">fal.ai (cloud)</option>
+                <option value="replicate">Replicate (cloud)</option>
                 <option value="openai-compatible">OpenAI-compatible (local)</option>
               </select>
             </div>
@@ -6294,6 +6589,24 @@ function ModelSelectionPanel({
                   <span className="hint">Add a fal.ai API key {keyWhere} before generating images.</span>
                 ) : falImageOptions.length ? null : (
                   <span className="hint">Type a fal.ai endpoint id — the model list couldn't be loaded.</span>
+                )}
+              </div>
+            ) : value.imageProvider === 'replicate' ? (
+              <div className="field">
+                {fieldLabel('replicate-model', 'Replicate Model', 'imageModel')}
+                <ModelCombobox
+                  id="replicate-model"
+                  ariaLabel="Replicate model"
+                  placeholder={defaultReplicateImageModel}
+                  value={value.replicateModel}
+                  onChange={(next) => onChange({replicateModel: next})}
+                  options={replicateImageOptions}
+                  allowCustom
+                />
+                {!catalogs.replicateHasKey ? (
+                  <span className="hint">Add a Replicate API token {keyWhere} before generating images.</span>
+                ) : replicateImageOptions.length ? null : (
+                  <span className="hint">Type an owner/name model id — the model list couldn't be loaded.</span>
                 )}
               </div>
             ) : (
@@ -6328,8 +6641,40 @@ function ModelSelectionPanel({
                 allowCustom
               />
             </div>
+          ) : value.imageProvider === 'replicate' ? (
+            <div className="field">
+              {fieldLabel('replicate-image-edit-model', 'Image-to-Image Model (Replicate)', 'imageEditModel')}
+              <ModelCombobox
+                id="replicate-image-edit-model"
+                ariaLabel="Replicate image-to-image model"
+                placeholder={defaultReplicateImageEditModel}
+                value={value.replicateImageEditModel}
+                onChange={(next) => onChange({replicateImageEditModel: next})}
+                options={replicateImageEditOptions}
+                allowCustom
+              />
+            </div>
           ) : null}
 
+          {value.imageProvider === 'replicate' ? (
+            <div className="field">
+              {fieldLabel('replicate-upscale-model', 'Image-Upscale Model (Replicate)', 'upscaleModel')}
+              <ModelCombobox
+                id="replicate-upscale-model"
+                ariaLabel="Replicate image-upscale model"
+                placeholder={defaultReplicateUpscaleModel}
+                value={value.replicateUpscaleModel}
+                onChange={(next) => onChange({replicateUpscaleModel: next})}
+                options={replicateUpscaleOptions}
+                allowCustom
+              />
+              {!catalogs.replicateHasKey ? (
+                <span className="hint">Add a Replicate API token {keyWhere} to upscale images.</span>
+              ) : replicateUpscaleOptions.length ? null : (
+                <span className="hint">Type an owner/name model id — the model list couldn't be loaded.</span>
+              )}
+            </div>
+          ) : (
           <div className="field">
             {fieldLabel('fal-upscale-model', 'Image-Upscale Model (fal.ai)', 'upscaleModel')}
             <ModelCombobox
@@ -6347,6 +6692,7 @@ function ModelSelectionPanel({
               <span className="hint">Type a fal.ai endpoint id — the model list couldn't be loaded.</span>
             )}
           </div>
+          )}
 
           <div className="three-column">
             <div className="field">
@@ -6384,6 +6730,24 @@ function ModelSelectionPanel({
           <div className="two-column">
             <div className="field">
               <div className="field-label-row">
+                {fieldLabel('video-provider', 'Video Provider', 'videoProvider')}
+                <InfoHint
+                  label="Video provider"
+                  text="Which cloud backend generate_video uses: fal.ai or Replicate. Both serve text-to-video and image-to-video; extend, motion control, and keyframe transitions are fal.ai only (a request for those on Replicate fails with a note suggesting the switch). The video transforms (upscale, reframe, restyle), lip sync, and audio are always fal.ai and configured below regardless of this setting."
+                />
+              </div>
+              <select
+                id="video-provider"
+                value={value.videoProvider}
+                onChange={(event) => onChange({videoProvider: event.target.value as 'fal' | 'replicate'})}
+              >
+                <option value="fal">fal.ai</option>
+                <option value="replicate">Replicate</option>
+              </select>
+            </div>
+
+            <div className="field">
+              <div className="field-label-row">
                 {fieldLabel('video-duration', 'Default Video Duration', 'videoDuration')}
                 <InfoHint
                   label="Default video duration"
@@ -6394,7 +6758,9 @@ function ModelSelectionPanel({
                 {durationOptions.video.map((option) => <option key={option} value={option}>{videoDurationLabels[option] ?? option}</option>)}
               </select>
             </div>
+          </div>
 
+          <div className="two-column">
             <div className="field">
               {fieldLabel('video-aspect', 'Video Aspect Ratio', 'videoAspectRatio')}
               <select id="video-aspect" value={value.videoAspectRatio} onChange={(event) => onChange({videoAspectRatio: event.target.value})}>
@@ -6403,6 +6769,46 @@ function ModelSelectionPanel({
             </div>
           </div>
 
+          {value.videoProvider === 'replicate' ? (
+          <div className="two-column">
+            <div className="field">
+              {fieldLabel('replicate-video-model', 'Text-to-Video Model (Replicate)', 'videoModel')}
+              <ModelCombobox
+                id="replicate-video-model"
+                ariaLabel="Replicate text-to-video model"
+                placeholder={defaultReplicateVideoModel}
+                value={value.replicateVideoModel}
+                onChange={(next) => onChange({replicateVideoModel: next})}
+                options={replicateVideoOptions}
+                allowCustom
+              />
+              {!catalogs.replicateHasKey ? (
+                <span className="hint">Add a Replicate API token {keyWhere} to generate videos.</span>
+              ) : replicateVideoOptions.length ? null : (
+                <span className="hint">Type an owner/name model id.</span>
+              )}
+            </div>
+
+            <div className="field">
+              <div className="field-label-row">
+                {fieldLabel('replicate-video-image-model', 'Image-to-Video Model (Replicate)', 'videoImageModel')}
+                <InfoHint
+                  label="Image-to-video clip lengths"
+                  text={`Supported clip lengths: ${formatSupportedDurations(durationOptions.image)}`}
+                />
+              </div>
+              <ModelCombobox
+                id="replicate-video-image-model"
+                ariaLabel="Replicate image-to-video model"
+                placeholder={defaultReplicateVideoImageModel}
+                value={value.replicateVideoImageModel}
+                onChange={(next) => onChange({replicateVideoImageModel: next})}
+                options={replicateVideoImageOptions}
+                allowCustom
+              />
+            </div>
+          </div>
+          ) : (
           <div className="two-column">
             <div className="field">
               {fieldLabel('fal-video-model', 'Text-to-Video Model (fal.ai)', 'videoModel')}
@@ -6441,7 +6847,10 @@ function ModelSelectionPanel({
               />
             </div>
           </div>
+          )}
 
+          {value.videoProvider === 'fal' ? (
+          <>
           <div className="two-column">
             <div className="field">
               <div className="field-label-row">
@@ -6509,6 +6918,23 @@ function ModelSelectionPanel({
               />
             </div>
           </div>
+          </>
+          ) : (
+          <div className="two-column">
+            <div className="field">
+              {fieldLabel('fal-video-upscale-model', 'Video-Upscale Model (fal.ai)', 'videoUpscaleModel')}
+              <ModelCombobox
+                id="fal-video-upscale-model"
+                ariaLabel="fal.ai video-upscale model"
+                placeholder={defaultFalVideoUpscaleModel}
+                value={value.falVideoUpscaleModel}
+                onChange={(next) => onChange({falVideoUpscaleModel: next})}
+                options={falVideoUpscaleOptions}
+                allowCustom
+              />
+            </div>
+          </div>
+          )}
 
           <div className="two-column">
             <div className="field">
@@ -6769,8 +7195,11 @@ function TurnUsage({run}: {run: HarnessRunView}) {
   }
   // Media generation burns no tokens, so its cost would otherwise be missing
   // from a video/audio-only turn's footer; the harness panel shows the
-  // per-model breakdown (tokens and media rows both).
-  const mediaCost = summarizeRunMediaUsage(run).reduce((sum, row) => sum + row.costMicros, 0);
+  // per-model breakdown (tokens and media rows both). "~" marks a total that
+  // includes unpriceable (Replicate) media.
+  const mediaRows = summarizeRunMediaUsage(run);
+  const mediaCost = mediaRows.reduce((sum, row) => sum + row.costMicros, 0);
+  const anyCostUnknown = mediaRows.some((row) => row.costUnknown);
   const totals = usage.reduce(
     (acc, row) => ({prompt: acc.prompt + row.promptTokens, completion: acc.completion + row.completionTokens, cost: acc.cost + row.costMicros}),
     {prompt: 0, completion: 0, cost: mediaCost},
@@ -6781,7 +7210,9 @@ function TurnUsage({run}: {run: HarnessRunView}) {
         {[
           totals.prompt ? `${formatTokenCount(totals.prompt)} in` : '',
           totals.completion ? `${formatTokenCount(totals.completion)} out` : '',
-          formatCostMicros(totals.cost),
+          formatCostMicros(totals.cost)
+            ? `${anyCostUnknown ? '~' : ''}${formatCostMicros(totals.cost)}`
+            : (anyCostUnknown ? '~?' : ''),
           run.durationMs ? formatDuration(run.durationMs) : '',
         ]
           .filter(Boolean)
@@ -6835,6 +7266,12 @@ function ConversationUsage({usage, media = []}: {usage: ModelUsageRow[]; media?:
   }
   const totalTokens = usage.reduce((sum, row) => sum + row.promptTokens + row.completionTokens, 0);
   const totalCost = usage.reduce((sum, row) => sum + row.costMicros, 0) + media.reduce((sum, row) => sum + row.costMicros, 0);
+  // "~" marks a total with unpriceable (Replicate) media in it: the sum covers
+  // only the costs that were reported.
+  const anyMediaCostUnknown = media.some((row) => row.costUnknown);
+  const costLabel = formatCostMicros(totalCost)
+    ? `${anyMediaCostUnknown ? '~' : ''}${formatCostMicros(totalCost)}`
+    : (anyMediaCostUnknown ? '~?' : '');
   const mediaTotals = media.reduce(
     (acc, row) => ({video: acc.video + row.video, audio: acc.audio + row.audio, image: acc.image + row.image}),
     {video: 0, audio: 0, image: 0},
@@ -6845,7 +7282,7 @@ function ConversationUsage({usage, media = []}: {usage: ModelUsageRow[]; media?:
       <summary title="Token and media-generation usage across this conversation">
         {usage.length ? `${formatTokenCount(totalTokens)} tokens · ${usage.length} model${usage.length === 1 ? '' : 's'}` : 'No token usage'}
         {mediaLabel ? ` · ${mediaLabel}` : ''}
-        {formatCostMicros(totalCost) ? ` · ${formatCostMicros(totalCost)}` : ''}
+        {costLabel ? ` · ${costLabel}` : ''}
       </summary>
       {(usage.length || media.length) ? (
         <div className="conversation-usage-rows">
@@ -6869,7 +7306,9 @@ function ConversationUsage({usage, media = []}: {usage: ModelUsageRow[]; media?:
               </span>
               <span>
                 {mediaCountsLabel(row.video, row.audio, row.image) || '—'}
-                {formatCostMicros(row.costMicros) ? ` · ${formatCostMicros(row.costMicros)}` : ''}
+                {row.costUnknown
+                  ? ' · ?'
+                  : formatCostMicros(row.costMicros) ? ` · ${formatCostMicros(row.costMicros)}` : ''}
               </span>
             </div>
           ))}
@@ -6895,7 +7334,12 @@ function HarnessRunPanel({run}: {run: HarnessRunView}) {
     {video: 0, audio: 0, image: 0, cost: 0},
   );
   const mediaLabel = mediaCountsLabel(mediaTotals.video, mediaTotals.audio, mediaTotals.image);
-  const runCost = formatCostMicros(totals.cost + mediaTotals.cost);
+  // "~" marks a run total with unpriceable (Replicate) media in it — the sum
+  // covers only the costs that were reported.
+  const anyCostUnknown = media.some((row) => row.costUnknown);
+  const runCost = formatCostMicros(totals.cost + mediaTotals.cost)
+    ? `${anyCostUnknown ? '~' : ''}${formatCostMicros(totals.cost + mediaTotals.cost)}`
+    : (anyCostUnknown ? '~?' : '');
   // Prefix-cache signal: compare each model-call step's promptHash against the
   // previous request to the same provider+model. Equal hashes kept the cache
   // warm; a change (marked) invalidated it.
@@ -6956,7 +7400,9 @@ function HarnessRunPanel({run}: {run: HarnessRunView}) {
               </span>
               <span>
                 {mediaCountsLabel(row.video, row.audio, row.image) || '—'}
-                {formatCostMicros(row.costMicros) ? ` · ${formatCostMicros(row.costMicros)}` : ''}
+                {row.costUnknown
+                  ? ' · ?'
+                  : formatCostMicros(row.costMicros) ? ` · ${formatCostMicros(row.costMicros)}` : ''}
               </span>
             </div>
           ))}
@@ -7004,7 +7450,7 @@ function HarnessRunPanel({run}: {run: HarnessRunView}) {
                   <div className={`harness-tool ${tool.status ?? 'pending'}`} key={`${tool.name}-${toolIndex}`}>
                     <div>
                       <strong>{formatToolName(tool.name)}</strong>
-                      <span>{tool.status ?? 'pending'}{typeof tool.exitCode === 'number' ? ` · exit ${tool.exitCode}` : ''}{tool.durationMs ? ` · ${formatDuration(tool.durationMs)}` : ''}{formatCostMicros(tool.costMicros) ? ` · est. ${formatCostMicros(tool.costMicros)}` : ''}</span>
+                      <span>{tool.status ?? 'pending'}{typeof tool.exitCode === 'number' ? ` · exit ${tool.exitCode}` : ''}{tool.durationMs ? ` · ${formatDuration(tool.durationMs)}` : ''}{tool.costUnknown ? ' · est. ?' : formatCostMicros(tool.costMicros) ? ` · est. ${formatCostMicros(tool.costMicros)}` : ''}</span>
                     </div>
                     {tool.permission ? (
                       <span className={tool.permission === 'approved' ? 'harness-flag-ok' : 'harness-flag-warn'}>
@@ -7165,6 +7611,9 @@ type MediaUsageRow = {
   image: number;
   calls: number;
   costMicros: number;
+  // True when any activity in the row was paid but unpriceable (Replicate):
+  // the row renders "?" beside the counts and the totals render "~".
+  costUnknown: boolean;
 };
 
 // Per-model media generation for a single run, folded from tool_call step
@@ -7190,11 +7639,14 @@ function summarizeRunMediaUsage(run?: HarnessRunView): MediaUsageRow[] {
       }
       const provider = tool.provider || '—';
       const key = `${provider}|${tool.model}`;
-      const row = byModel.get(key) ?? {provider, model: tool.model, video: 0, audio: 0, image: 0, calls: 0, costMicros: 0};
+      const row = byModel.get(key) ?? {provider, model: tool.model, video: 0, audio: 0, image: 0, calls: 0, costMicros: 0, costUnknown: false};
       if (kind === 'video' || kind === 'audio' || kind === 'image') {
         row[kind] += tool.mediaCount ?? 0;
       }
       row.costMicros += cost;
+      if (tool.costUnknown) {
+        row.costUnknown = true;
+      }
       row.calls += 1;
       byModel.set(key, row);
     }
@@ -7209,7 +7661,7 @@ function mediaUsageFromToolSummary(tool: MediaToolSummaryView | undefined): Medi
   if (!tool?.model) {
     return [];
   }
-  const row: MediaUsageRow = {provider: legacyMediaProvider(tool.name, tool.model), model: tool.model, video: 0, audio: 0, image: 0, calls: 0, costMicros: 0};
+  const row: MediaUsageRow = {provider: legacyMediaProvider(tool.name, tool.model), model: tool.model, video: 0, audio: 0, image: 0, calls: 0, costMicros: 0, costUnknown: false};
   if (tool.name === 'video_generation') {
     row.video = tool.videoCount ?? 0;
     row.image = tool.imageCount ?? 0;
@@ -7249,11 +7701,15 @@ function summarizeMediaUsage(chat: ChatEntry[]): MediaUsageRow[] {
     const rows = runRows.length ? runRows : mediaUsageFromToolSummary(entry.mediaTool);
     for (const row of rows) {
       const key = `${row.provider}|${row.model}`;
-      const merged = byModel.get(key) ?? {...row, video: 0, audio: 0, image: 0, calls: 0};
+      const merged = byModel.get(key) ?? {...row, video: 0, audio: 0, image: 0, calls: 0, costMicros: 0, costUnknown: false};
       merged.video += row.video;
       merged.audio += row.audio;
       merged.image += row.image;
       merged.calls += row.calls;
+      merged.costMicros += row.costMicros;
+      if (row.costUnknown) {
+        merged.costUnknown = true;
+      }
       byModel.set(key, merged);
     }
   }
@@ -7342,7 +7798,10 @@ function asArray<T>(value: T[] | null | undefined): T[] {
 // than one endpoint: each colliding entry gets its distinguishing id tail
 // (everything after the shared prefix) appended. Non-colliding entries keep
 // their clean display name.
-function falModelOptionList(models: main.FalModel[] | null | undefined): {value: string; label: string}[] {
+// falModelOptionList turns a provider catalog (fal's or Replicate's — both
+// carry {id, displayName}) into combobox options, qualifying display names
+// that collide across owners.
+function falModelOptionList(models: main.FalModel[] | main.ReplicateModel[] | null | undefined): {value: string; label: string}[] {
   const items = asArray(models).map((item) => ({id: item.id || '', base: item.displayName || item.id || ''}));
   // Group by display name to find collisions.
   const counts: Record<string, number> = {};

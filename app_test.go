@@ -5467,12 +5467,12 @@ func TestGenerateImageToolResolutionTier(t *testing.T) {
 func TestUpscaleImageToolRequiresAttachedImage(t *testing.T) {
 	tools := HarnessToolExecutionContext{
 		Config: AppConfig{Models: ConfigModels{ImageProvider: "fal"}},
-		UpscaleImage: func(context.Context, ImageUpscaleRequest) (ollamaGenerateResponse, error) {
+		UpscaleImage: func(context.Context, ImageUpscaleRequest) (ollamaGenerateResponse, []string, error) {
 			t.Fatal("UpscaleImage must not be called without an attached image")
-			return ollamaGenerateResponse{}, nil
+			return ollamaGenerateResponse{}, nil, nil
 		},
 	}
-	def := imageUpscaleToolDefinition()
+	def := imageUpscaleToolDefinition(AppConfig{})
 	_, _, err := def.Execute(t.Context(), tools, HarnessToolCall{Scale: "2x"})
 	if err == nil || !strings.Contains(err.Error(), "attached image") {
 		t.Fatalf("err = %v, want an error mentioning an attached image is required", err)
@@ -5498,12 +5498,12 @@ func TestUpscaleImageToolDefaultsAndScaleMapping(t *testing.T) {
 			tools := HarnessToolExecutionContext{
 				Config:         AppConfig{Models: ConfigModels{ImageProvider: "fal"}},
 				AttachedImages: []string{"data:image/png;base64,ABC"},
-				UpscaleImage: func(_ context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, error) {
+				UpscaleImage: func(_ context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, []string, error) {
 					captured = req
-					return ollamaGenerateResponse{Image: "data:image/png;base64,iVBORw0KGgo=", Done: true}, nil
+					return ollamaGenerateResponse{Image: "data:image/png;base64,iVBORw0KGgo=", Done: true}, nil, nil
 				},
 			}
-			def := imageUpscaleToolDefinition()
+			def := imageUpscaleToolDefinition(AppConfig{})
 			result, summary, err := def.Execute(t.Context(), tools, HarnessToolCall{Scale: tc.scale})
 			if err != nil {
 				t.Fatalf("Execute returned error: %v", err)
@@ -5534,12 +5534,12 @@ func TestUpscaleImageToolHonorsModelOverride(t *testing.T) {
 	tools := HarnessToolExecutionContext{
 		Config:         AppConfig{Models: ConfigModels{ImageProvider: "fal"}, Providers: ConfigProviders{Fal: ConfigFal{UpscaleModel: "fal-ai/clarity-upscaler"}}},
 		AttachedImages: []string{"data:image/png;base64,ABC"},
-		UpscaleImage: func(_ context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, error) {
+		UpscaleImage: func(_ context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, []string, error) {
 			captured = req
-			return ollamaGenerateResponse{Image: "data:image/png;base64,iVBORw0KGgo=", Done: true}, nil
+			return ollamaGenerateResponse{Image: "data:image/png;base64,iVBORw0KGgo=", Done: true}, nil, nil
 		},
 	}
-	def := imageUpscaleToolDefinition()
+	def := imageUpscaleToolDefinition(AppConfig{})
 	if _, _, err := def.Execute(t.Context(), tools, HarnessToolCall{Model: "fal-ai/creative-upscaler"}); err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
@@ -5548,25 +5548,39 @@ func TestUpscaleImageToolHonorsModelOverride(t *testing.T) {
 	}
 }
 
-// TestImageUpscaleConfiguredAndResolver covers the gating (available whenever a
-// fal.ai key is configured, regardless of the image provider) and the resolver's
-// configured→default fallback.
+// TestImageUpscaleConfiguredAndResolver covers the gating (provider-aware:
+// replicate needs its token, every other provider needs a fal.ai key) and the
+// resolver's configured→default fallback on both providers.
 func TestImageUpscaleConfiguredAndResolver(t *testing.T) {
 	keyring.MockInit()
 	if err := saveFalAPIKey("fal-test-key"); err != nil {
 		t.Fatalf("saveFalAPIKey: %v", err)
 	}
-	t.Cleanup(func() { _ = clearFalAPIKey() })
+	t.Cleanup(func() {
+		_ = clearFalAPIKey()
+		_ = clearReplicateAPIKey()
+	})
 
-	// With a key present the tool is offered — independent of image provider.
+	// With a key present the tool is offered on the fal-routed providers.
 	if !imageUpscaleConfigured(AppConfig{Models: ConfigModels{ImageProvider: "fal"}}) {
 		t.Error("imageUpscaleConfigured(fal, with key) = false, want true")
 	}
 	if !imageUpscaleConfigured(AppConfig{Models: ConfigModels{ImageProvider: "ollama"}}) {
 		t.Error("imageUpscaleConfigured(ollama, with key) = false, want true")
 	}
+	// The replicate provider routes upscale to replicate — a fal key alone
+	// must not light the tool up there.
+	if imageUpscaleConfigured(AppConfig{Models: ConfigModels{ImageProvider: "replicate"}}) {
+		t.Error("imageUpscaleConfigured(replicate, only a fal key) = true, want false")
+	}
+	if err := saveReplicateAPIKey("replicate-test-key"); err != nil {
+		t.Fatalf("saveReplicateAPIKey: %v", err)
+	}
+	if !imageUpscaleConfigured(AppConfig{Models: ConfigModels{ImageProvider: "replicate"}}) {
+		t.Error("imageUpscaleConfigured(replicate, with token) = false, want true")
+	}
 
-	// With the key cleared the tool is not offered, again regardless of provider.
+	// With the key cleared the tool is not offered on the fal path.
 	if err := clearFalAPIKey(); err != nil {
 		t.Fatalf("clearFalAPIKey: %v", err)
 	}
@@ -5579,6 +5593,15 @@ func TestImageUpscaleConfiguredAndResolver(t *testing.T) {
 	}
 	if got := resolveDefaultImageUpscaleModel(AppConfig{Providers: ConfigProviders{Fal: ConfigFal{UpscaleModel: "fal-ai/clarity-upscaler"}}}); got != "fal-ai/clarity-upscaler" {
 		t.Errorf("resolveDefaultImageUpscaleModel(configured) = %q, want fal-ai/clarity-upscaler", got)
+	}
+	// The replicate provider resolves its own slot and default.
+	replicateConfig := AppConfig{Models: ConfigModels{ImageProvider: "replicate"}}
+	if got := resolveDefaultImageUpscaleModel(replicateConfig); got != defaultReplicateUpscaleModel {
+		t.Errorf("resolveDefaultImageUpscaleModel(replicate, unset) = %q, want %q", got, defaultReplicateUpscaleModel)
+	}
+	replicateConfig.Providers.Replicate.UpscaleModel = "philz1337x/clarity-upscaler"
+	if got := resolveDefaultImageUpscaleModel(replicateConfig); got != "philz1337x/clarity-upscaler" {
+		t.Errorf("resolveDefaultImageUpscaleModel(replicate, configured) = %q", got)
 	}
 }
 

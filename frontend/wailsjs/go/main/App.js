@@ -18,6 +18,10 @@ export function CheckOllama(arg1) {
   return window['go']['main']['App']['CheckOllama'](arg1);
 }
 
+export function CheckReplicateConnection() {
+  return window['go']['main']['App']['CheckReplicateConnection']();
+}
+
 export function ChooseToolWorkspace(arg1) {
   return window['go']['main']['App']['ChooseToolWorkspace'](arg1);
 }
@@ -76,6 +80,10 @@ export function HasOpenAICompatibleAPIKey() {
 
 export function HasOpenRouterAPIKey() {
   return window['go']['main']['App']['HasOpenRouterAPIKey']();
+}
+
+export function HasReplicateAPIKey() {
+  return window['go']['main']['App']['HasReplicateAPIKey']();
 }
 
 export function ImportLibrary() {
@@ -194,6 +202,30 @@ export function ListProjectConversations(arg1) {
   return window['go']['main']['App']['ListProjectConversations'](arg1);
 }
 
+export function ListReplicateImageEditModels() {
+  return window['go']['main']['App']['ListReplicateImageEditModels']();
+}
+
+export function ListReplicateModels() {
+  return window['go']['main']['App']['ListReplicateModels']();
+}
+
+export function ListReplicateUpscaleModels() {
+  return window['go']['main']['App']['ListReplicateUpscaleModels']();
+}
+
+export function ListReplicateVideoDurations(arg1) {
+  return window['go']['main']['App']['ListReplicateVideoDurations'](arg1);
+}
+
+export function ListReplicateVideoImageModels() {
+  return window['go']['main']['App']['ListReplicateVideoImageModels']();
+}
+
+export function ListReplicateVideoModels() {
+  return window['go']['main']['App']['ListReplicateVideoModels']();
+}
+
 export function ListToolFiles(arg1) {
   return window['go']['main']['App']['ListToolFiles'](arg1);
 }
@@ -256,6 +288,10 @@ export function SaveOpenAICompatibleAPIKey(arg1) {
 
 export function SaveOpenRouterAPIKey(arg1) {
   return window['go']['main']['App']['SaveOpenRouterAPIKey'](arg1);
+}
+
+export function SaveReplicateAPIKey(arg1) {
+  return window['go']['main']['App']['SaveReplicateAPIKey'](arg1);
 }
 
 export function SaveTranscript(arg1) {

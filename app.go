@@ -167,6 +167,7 @@ type ConfigProviders struct {
 	Ollama           ConfigOllama           `json:"ollama"`
 	OpenRouter       ConfigOpenRouter       `json:"openrouter"`
 	Fal              ConfigFal              `json:"fal"`
+	Replicate        ConfigReplicate        `json:"replicate"`
 	OpenAICompatible ConfigOpenAICompatible `json:"openaiCompatible"`
 	Local            ConfigLocalProviders   `json:"local"`
 }
@@ -257,6 +258,29 @@ type ConfigFal struct {
 	LipsyncVideoModel string `json:"lipsyncVideoModel,omitempty"`
 }
 
+// ConfigReplicate configures the Replicate image/video-generation backend —
+// the cloud sibling of ConfigFal for generate_image, upscale_image (which
+// follows ImageProvider), and generate_video. The API token lives in the OS
+// keychain (see keychain.go), not in config — Enabled mirrors the key's
+// presence for the frontend, like ConfigFal. The video transforms
+// (video upscale/reframe/restyle), lipsync, and audio stay fal-only.
+type ConfigReplicate struct {
+	Enabled bool `json:"enabled"`
+	// Model is the text-to-image model (an owner/name slug, e.g.
+	// "black-forest-labs/flux-schnell"); ImageEditModel is the image-to-image
+	// model used when the user attaches a source image to transform.
+	Model          string `json:"model,omitempty"`
+	ImageEditModel string `json:"imageEditModel,omitempty"`
+	// VideoModel is the text-to-video model; VideoImageModel is the
+	// image-to-video model used when the user attaches an image to animate.
+	VideoModel      string `json:"videoModel,omitempty"`
+	VideoImageModel string `json:"videoImageModel,omitempty"`
+	// UpscaleModel is the image upscaler upscale_image uses when replicate is
+	// the image provider — upscale follows ImageProvider, so fal's
+	// UpscaleModel serves on every other provider.
+	UpscaleModel string `json:"upscaleModel,omitempty"`
+}
+
 // ConfigOpenAICompatible addresses a local server that speaks OpenAI's API
 // shape (LocalAI, a diffusers shim, ...): chat via /v1/chat/completions and
 // images via /v1/images/generations. Primary/Harness are chat models for the
@@ -338,6 +362,11 @@ type ConfigModels struct {
 	// selection existed, so it normalizes to "ollama" — see mergeAppConfig.
 	HarnessProvider string `json:"harnessProvider,omitempty"`
 	ImageProvider   string `json:"imageProvider,omitempty"`
+	// VideoProvider selects the generate_video backend: "fal" (the historical
+	// only backend) or "replicate". Absent in configs written before the
+	// second video provider existed, so it normalizes to "fal" — every
+	// existing setup keeps its behavior exactly. Normalized in mergeAppConfig.
+	VideoProvider string `json:"videoProvider,omitempty"`
 	// TranscriptionProvider selects the transcribe_audio backend: "fal"
 	// (fal.ai speech-to-text) or "local-whisper" (the locally installed
 	// whisper CLI — see local_tools.go). Empty auto-resolves at use time:
@@ -1119,6 +1148,13 @@ type HarnessToolActivity struct {
 	// captured. Zero when the backend is local (Ollama, openai-compatible) or
 	// pricing was unavailable; failed calls carry none, matching MediaCount.
 	CostMicros int64 `json:"costMicros,omitempty"`
+	// CostUnknown marks a media generation whose cost could not be determined
+	// — the Replicate backend reports no price (no pricing API, no cost in
+	// the prediction response), so its rows render "?" in the money column
+	// instead of the empty slot a genuinely free local call renders. Absent
+	// (false) everywhere else, including turns persisted before the field
+	// existed. The turn total still sums only known costs.
+	CostUnknown bool `json:"costUnknown,omitempty"`
 	// Permission records how the permission gate resolved (approved/denied/
 	// timeout/cancelled) and how long it waited, when the call was gated.
 	// Zipped from HarnessToolResult's json:"-" side-channel at the same
@@ -2421,6 +2457,105 @@ func (a *App) CheckFalConnection() error {
 	return newFalClient(a.client, key).VerifyKey(ctx)
 }
 
+func (a *App) SaveReplicateAPIKey(apiKey string) error {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return clearReplicateAPIKey()
+	}
+	return saveReplicateAPIKey(apiKey)
+}
+
+func (a *App) HasReplicateAPIKey() (bool, error) {
+	key, err := loadReplicateAPIKey()
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(key) != "", nil
+}
+
+// CheckReplicateConnection validates the stored Replicate API token with a
+// cheap authenticated ping (GET /v1/account, no generation). Returns an error
+// describing why the token is rejected, or nil when it resolves. Used by the
+// Settings "Check Connection" button, mirroring CheckFalConnection.
+func (a *App) CheckReplicateConnection() error {
+	key, err := loadReplicateAPIKey()
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(key) == "" {
+		return errReplicateKeyNotConfigured
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return newReplicateClient(a.client, key).VerifyKey(ctx)
+}
+
+// ListReplicateModels returns the official models of Replicate's
+// text-to-image collection for the Settings image-model picker — the
+// Replicate counterpart of ListFalModels. Requires a stored token (the client
+// attaches it to every request), so call it after the key is saved.
+func (a *App) ListReplicateModels() ([]ReplicateModel, error) {
+	return a.listReplicateCollection(replicateTextToImageCollection)
+}
+
+// ListReplicateImageEditModels returns the official models of Replicate's
+// image-editing collection for the Settings image-edit-model picker.
+func (a *App) ListReplicateImageEditModels() ([]ReplicateModel, error) {
+	return a.listReplicateCollection(replicateImageEditingCollection)
+}
+
+// ListReplicateUpscaleModels returns the official models of Replicate's
+// super-resolution collection for the Settings image-upscale-model picker,
+// shown when replicate is the image provider (upscale follows it).
+func (a *App) ListReplicateUpscaleModels() ([]ReplicateModel, error) {
+	return a.listReplicateCollection(replicateSuperResolutionCollection)
+}
+
+// ListReplicateVideoModels returns the official models of Replicate's
+// text-to-video collection for the Settings video-model picker.
+func (a *App) ListReplicateVideoModels() ([]ReplicateModel, error) {
+	return a.listReplicateCollection(replicateTextToVideoCollection)
+}
+
+// ListReplicateVideoImageModels returns the official models of Replicate's
+// image-to-video collection for the Settings image-to-video model picker.
+func (a *App) ListReplicateVideoImageModels() ([]ReplicateModel, error) {
+	return a.listReplicateCollection(replicateImageToVideoCollection)
+}
+
+// listReplicateCollection is the shared body of the Replicate catalog listers:
+// load the token, fetch one collection with a bounded timeout. Collections are
+// pre-bucketed server-side, so there is no pagination to walk.
+func (a *App) listReplicateCollection(slug string) ([]ReplicateModel, error) {
+	key, err := loadReplicateAPIKey()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return newReplicateClient(a.client, key).ListCollectionModels(ctx, slug)
+}
+
+// ListReplicateVideoDurations returns the duration values the given Replicate
+// video model accepts, read from its input schema — the Replicate counterpart
+// of ListFalVideoDurations. Returns an empty slice (not an error) when the
+// schema is unavailable or the model has no enum-constrained duration control
+// (most Replicate video models take a free number of seconds), so the UI falls
+// back to a generic option set.
+func (a *App) ListReplicateVideoDurations(model string) ([]string, error) {
+	config, err := loadAppConfig()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	opts := replicateVideoDurationOptions(ctx, a.client, config.Storage.Root, model)
+	if opts == nil {
+		return []string{}, nil
+	}
+	return opts, nil
+}
+
 // ListOpenAICompatibleModels returns the model ids advertised by the local
 // OpenAI-compatible image server (GET /v1/models) for the Settings model
 // picker. Takes the endpoint explicitly because the user may still be editing
@@ -3478,10 +3613,20 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	// ImageProvider selects the generate_image backend. Normalize unknown or
 	// empty values to the Ollama default so the tool path never sees a stray id.
 	switch strings.TrimSpace(config.Models.ImageProvider) {
-	case "ollama", "fal", "openai-compatible":
+	case "ollama", "fal", "replicate", "openai-compatible":
 		config.Models.ImageProvider = strings.TrimSpace(config.Models.ImageProvider)
 	default:
 		config.Models.ImageProvider = defaults.Models.ImageProvider
+	}
+	// VideoProvider selects the generate_video backend ("fal" | "replicate").
+	// Normalize unknown or empty values to "fal": an absent field means a
+	// config written before the second video provider existed, which must keep
+	// routing to fal exactly as before.
+	switch strings.TrimSpace(config.Models.VideoProvider) {
+	case "fal", "replicate":
+		config.Models.VideoProvider = strings.TrimSpace(config.Models.VideoProvider)
+	default:
+		config.Models.VideoProvider = "fal"
 	}
 	// TranscriptionProvider selects the transcribe_audio backend ("fal" |
 	// "local-whisper"). Unknown or empty normalizes to "" — empty
@@ -3503,6 +3648,11 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	config.Providers.Local.FFprobe.Binary = strings.TrimSpace(config.Providers.Local.FFprobe.Binary)
 	if config.Models.ImageProvider == "fal" && strings.TrimSpace(config.Providers.Fal.Model) == "" {
 		config.Providers.Fal.Model = defaultFalImageModel
+	}
+	// Same seed for the Replicate image path: selecting it as the image
+	// provider without a model leaves the picker empty, so pin the default.
+	if config.Models.ImageProvider == "replicate" && strings.TrimSpace(config.Providers.Replicate.Model) == "" {
+		config.Providers.Replicate.Model = defaultReplicateImageModel
 	}
 	// Seed the sound-effects endpoint for configs written before the
 	// generate_speech/generate_sound split: an AudioModel already configured for

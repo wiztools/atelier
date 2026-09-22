@@ -94,7 +94,12 @@ type HarnessToolExecutionContext struct {
 	// without any cloud provider configured.
 	TranscribeAudio      func(ctx context.Context, req TranscribeAudioRequest) (GeneratedTranscript, error)
 	TranscribeAudioLocal func(ctx context.Context, req TranscribeAudioRequest) (GeneratedTranscript, error)
-	UpscaleImage         func(ctx context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, error)
+	// UpscaleImage raises an attached image's resolution via the configured
+	// cloud upscaler — fal by default, Replicate when replicate is the image
+	// provider (upscale follows ImageProvider). The notices slot carries the
+	// Replicate resolver's caveats (e.g. an out-of-enum scale factor dropped
+	// for the model's own default); the fal path returns nil.
+	UpscaleImage func(ctx context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, []string, error)
 	// UpscaleVideo raises an attached clip's resolution via fal's video-upscaler
 	// endpoints. It returns a video (same transport as GenerateVideo) plus
 	// resolver notices — the video sibling of UpscaleImage.
@@ -279,7 +284,7 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 	videoAudioCapable := false
 	if videoGenerationConfigured(config) {
 		videoAudioCapable = videoModelSupportsAudio(ctx, config, app)
-		definitions = append(definitions, videoGenerationToolDefinition(videoAudioCapable))
+		definitions = append(definitions, videoGenerationToolDefinition(config, videoAudioCapable))
 	}
 	if speechGenerationConfigured(config) {
 		definitions = append(definitions, speechGenerationToolDefinition(videoAudioCapable))
@@ -307,7 +312,7 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 		definitions = append(definitions, lipsyncToolDefinition(videoAudioCapable))
 	}
 	if imageUpscaleConfigured(config) {
-		definitions = append(definitions, imageUpscaleToolDefinition())
+		definitions = append(definitions, imageUpscaleToolDefinition(config))
 	}
 	if videoUpscaleConfigured(config) {
 		definitions = append(definitions, videoUpscaleToolDefinition())
@@ -340,6 +345,14 @@ func videoModelSupportsAudio(ctx context.Context, config AppConfig, app *App) bo
 	if app == nil || app.client == nil {
 		return false
 	}
+	// The Replicate backend reports false: the audio-capable introspection
+	// below reads fal's schema dialect and fal's model slots, and guessing a
+	// Replicate model's audio capability would let the planner promise
+	// narration the model can't render. Fail-closed to the generic
+	// description, the same posture as an unavailable schema.
+	if videoGenerationProvider(config) == "replicate" {
+		return false
+	}
 	cache := newFalSchemaCache(app.client, config.Storage.Root)
 	overrides := loadFalOverrides(config.Storage.Root)
 	for _, model := range []string{
@@ -361,14 +374,18 @@ func videoModelSupportsAudio(ctx context.Context, config AppConfig, app *App) bo
 
 // imageGenerationConfigured reports whether any image-generation backend is
 // ready to serve a generate_image call: the Ollama image model is set, fal.ai
-// is the selected image provider with a model configured, or the local
-// OpenAI-compatible image server has a model configured.
+// or Replicate is the selected image provider with a model configured, or the
+// local OpenAI-compatible image server has a model configured.
 func imageGenerationConfigured(config AppConfig) bool {
 	if strings.TrimSpace(config.Providers.Ollama.Models.Image) != "" {
 		return true
 	}
 	if strings.TrimSpace(config.Models.ImageProvider) == "fal" &&
 		strings.TrimSpace(config.Providers.Fal.Model) != "" {
+		return true
+	}
+	if strings.TrimSpace(config.Models.ImageProvider) == "replicate" &&
+		strings.TrimSpace(config.Providers.Replicate.Model) != "" {
 		return true
 	}
 	return strings.TrimSpace(config.Models.ImageProvider) == "openai-compatible" &&
@@ -385,6 +402,12 @@ func resolveDefaultImageModel(config AppConfig) string {
 		}
 		return defaultFalImageModel
 	}
+	if strings.TrimSpace(config.Models.ImageProvider) == "replicate" {
+		if model := strings.TrimSpace(config.Providers.Replicate.Model); model != "" {
+			return model
+		}
+		return defaultReplicateImageModel
+	}
 	if strings.TrimSpace(config.Models.ImageProvider) == "openai-compatible" {
 		return strings.TrimSpace(config.Providers.OpenAICompatible.Model)
 	}
@@ -393,16 +416,23 @@ func resolveDefaultImageModel(config AppConfig) string {
 
 // resolveDefaultImageEditModel returns the image-to-image model the
 // generate_image tool uses when the user attached a source image to transform.
-// Mirrors resolveDefaultImageModel: fal exposes image-to-image as a dedicated
-// endpoint, while Ollama reuses its single image model (it accepts source images
-// inline via the request's images field). The OpenAI-compatible server is
-// ollama-style — one model for both, with source images riding the request.
+// Mirrors resolveDefaultImageModel: fal and Replicate expose image-to-image as
+// dedicated models, while Ollama reuses its single image model (it accepts
+// source images inline via the request's images field). The OpenAI-compatible
+// server is ollama-style — one model for both, with source images riding the
+// request.
 func resolveDefaultImageEditModel(config AppConfig) string {
 	if strings.TrimSpace(config.Models.ImageProvider) == "fal" {
 		if model := strings.TrimSpace(config.Providers.Fal.ImageEditModel); model != "" {
 			return model
 		}
 		return defaultFalImageEditModel
+	}
+	if strings.TrimSpace(config.Models.ImageProvider) == "replicate" {
+		if model := strings.TrimSpace(config.Providers.Replicate.ImageEditModel); model != "" {
+			return model
+		}
+		return defaultReplicateImageEditModel
 	}
 	if strings.TrimSpace(config.Models.ImageProvider) == "openai-compatible" {
 		return strings.TrimSpace(config.Providers.OpenAICompatible.Model)
@@ -423,20 +453,36 @@ func falKeyConfigured() bool {
 	return err == nil && strings.TrimSpace(key) != ""
 }
 
+// replicateKeyConfigured is the Replicate sibling of falKeyConfigured, gating
+// the Replicate-routed generate_video path on live keychain state.
+func replicateKeyConfigured() bool {
+	key, err := loadReplicateAPIKey()
+	return err == nil && strings.TrimSpace(key) != ""
+}
+
 // imageUpscaleConfigured reports whether the upscale_image tool should be
-// offered: fal is the only upscale backend (Ollama has none). The tool is
-// available whenever a fal.ai API key is configured, regardless of which
-// provider is selected for image generation — upscaling is fal-only and
-// independent of generate_image's backend, so an Ollama-configured conversation
-// can still upscale via fal.
+// offered, routing by imageGenerationProvider: the replicate path needs its
+// token, every other provider runs fal and needs a fal.ai key. The key check
+// avoids offering a tool guaranteed to fail at call time with a
+// key-not-configured error.
 func imageUpscaleConfigured(config AppConfig) bool {
+	if imageGenerationProvider(config) == "replicate" {
+		return replicateKeyConfigured()
+	}
 	return falKeyConfigured()
 }
 
-// resolveDefaultImageUpscaleModel returns the upscaler endpoint the upscale_image
-// tool uses when the call doesn't override it. fal-only; falls back to the
-// const default when the user hasn't picked one in Settings.
+// resolveDefaultImageUpscaleModel returns the upscaler model the upscale_image
+// tool uses when the call doesn't override it, routing by the image provider —
+// fal's endpoint on every provider but replicate. Falls back to the const
+// default when the user hasn't picked one in Settings.
 func resolveDefaultImageUpscaleModel(config AppConfig) string {
+	if imageGenerationProvider(config) == "replicate" {
+		if model := strings.TrimSpace(config.Providers.Replicate.UpscaleModel); model != "" {
+			return model
+		}
+		return defaultReplicateUpscaleModel
+	}
 	if model := strings.TrimSpace(config.Providers.Fal.UpscaleModel); model != "" {
 		return model
 	}
@@ -501,11 +547,20 @@ func resolveDefaultVideoRestyleModel(config AppConfig) string {
 }
 
 // videoGenerationConfigured reports whether the generate_video tool should be
-// offered: a fal video model must be configured AND a fal.ai key must be
-// present. fal is the only video backend (Ollama has no text-to-video models).
-// The key check avoids offering a tool that is guaranteed to fail at call time
-// with errFalKeyNotConfigured.
+// offered, routing by videoGenerationProvider: the fal path needs a fal video
+// model configured AND a fal.ai key present (the historical gate), the
+// Replicate path needs a Replicate video model configured AND its key. The key
+// checks avoid offering a tool that is guaranteed to fail at call time with a
+// key-not-configured error. The video transforms (upscale/reframe/restyle),
+// lipsync, and audio stay fal-only and keep their own fal-key gates.
 func videoGenerationConfigured(config AppConfig) bool {
+	if videoGenerationProvider(config) == "replicate" {
+		if strings.TrimSpace(config.Providers.Replicate.VideoModel) == "" &&
+			strings.TrimSpace(config.Providers.Replicate.VideoImageModel) == "" {
+			return false
+		}
+		return replicateKeyConfigured()
+	}
 	if strings.TrimSpace(config.Providers.Fal.VideoModel) == "" &&
 		strings.TrimSpace(config.Providers.Fal.VideoImageModel) == "" {
 		return false
@@ -514,8 +569,15 @@ func videoGenerationConfigured(config AppConfig) bool {
 }
 
 // resolveDefaultVideoModel returns the text-to-video model the generate_video
-// tool uses when the call doesn't override it.
+// tool uses when the call doesn't override it, routing by
+// videoGenerationProvider.
 func resolveDefaultVideoModel(config AppConfig) string {
+	if videoGenerationProvider(config) == "replicate" {
+		if model := strings.TrimSpace(config.Providers.Replicate.VideoModel); model != "" {
+			return model
+		}
+		return defaultReplicateVideoModel
+	}
 	if model := strings.TrimSpace(config.Providers.Fal.VideoModel); model != "" {
 		return model
 	}
@@ -523,8 +585,15 @@ func resolveDefaultVideoModel(config AppConfig) string {
 }
 
 // resolveDefaultVideoImageModel returns the image-to-video model used to animate
-// an attached image.
+// an attached image, routing by videoGenerationProvider like
+// resolveDefaultVideoModel.
 func resolveDefaultVideoImageModel(config AppConfig) string {
+	if videoGenerationProvider(config) == "replicate" {
+		if model := strings.TrimSpace(config.Providers.Replicate.VideoImageModel); model != "" {
+			return model
+		}
+		return defaultReplicateVideoImageModel
+	}
 	if model := strings.TrimSpace(config.Providers.Fal.VideoImageModel); model != "" {
 		return model
 	}
@@ -682,7 +751,7 @@ func videoGenerationDescription(audioCapable bool) string {
 	return base
 }
 
-func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
+func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "generate_video",
 		Title:       "Generate video",
@@ -775,6 +844,15 @@ func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 						return nil, "video generation unavailable", errors.New(`source "motion" is set but needs both an image and a video; attach or @-mention both`)
 					}
 				}
+			}
+			// The Replicate backend serves text-to-video and image-to-video
+			// only. Fail video-source and keyframe turns up front with the
+			// remedy in the message (errReplicateVideoSourceUnsupported)
+			// rather than selecting a fal slot that would 404 at Replicate —
+			// the resolver holds the same line for requests that carry a
+			// planner-specified model.
+			if videoGenerationProvider(tools.Config) == "replicate" && (keyframes || len(attachedVideos) > 0) {
+				return nil, "video generation unavailable", errReplicateVideoSourceUnsupported
 			}
 			model := strings.TrimSpace(call.Model)
 			if model == "" {
@@ -902,7 +980,12 @@ func videoGenerationToolDefinition(audioCapable bool) HarnessToolDefinition {
 		Activity: func(result HarnessToolResult) HarnessToolActivity {
 			activity := defaultHarnessToolActivity(result)
 			if typed, ok := result.Result.(ToolVideoResult); ok {
-				activity.Command = []string{"fal", "generate", typed.Model}
+				// The command's provider token is the routed backend, not a
+				// hardcoded "fal" — video generation runs on either cloud
+				// backend now, and the ledger's provider column agrees with
+				// the gateway's routing (videoGenerationProvider reads the
+				// same config).
+				activity.Command = []string{videoGenerationProvider(config), "generate", typed.Model}
 			}
 			return activity
 		},
@@ -1905,13 +1988,15 @@ func generateImageParamSchema() map[string]any {
 
 // imageUpscaleToolDefinition exposes the upscale_image tool. It takes an
 // attached image and returns a higher-resolution version via the configured
-// fal upscaler. fal-only (no Ollama path); the attached-image requirement is
-// enforced in Execute because Validate only sees the call, not tools.
-func imageUpscaleToolDefinition() HarnessToolDefinition {
+// cloud upscaler — fal.ai, or Replicate when replicate is the image provider
+// (upscale follows ImageProvider). No Ollama path; the attached-image
+// requirement is enforced in Execute because Validate only sees the call, not
+// tools.
+func imageUpscaleToolDefinition(config AppConfig) HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "upscale_image",
 		Title:       "Upscale image",
-		Description: "Use this when the user asks to upscale, increase the resolution of, or make a higher-resolution version of an attached image. Requires an attached image. fal.ai only — runs unattended like image generation.",
+		Description: "Use this when the user asks to upscale, increase the resolution of, or make a higher-resolution version of an attached image. Requires an attached image. Runs unattended like image generation on the configured cloud image provider (fal.ai or Replicate).",
 		Example:     `{"name":"upscale_image","scale":"2x"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: imageUpscaleParamSchema(),
@@ -1942,7 +2027,7 @@ func imageUpscaleToolDefinition() HarnessToolDefinition {
 			if strings.TrimSpace(call.Scale) == "4x" {
 				scale = 4.0
 			}
-			payload, err := tools.UpscaleImage(ctx, ImageUpscaleRequest{
+			payload, notices, err := tools.UpscaleImage(ctx, ImageUpscaleRequest{
 				Model: model,
 				Image: attachedImage,
 				Scale: scale,
@@ -1961,14 +2046,17 @@ func imageUpscaleToolDefinition() HarnessToolDefinition {
 			if len(images) == 0 {
 				return nil, "image upscaling returned no image", errors.New("upscale model returned no image data")
 			}
-			output := ToolImageResult{Model: model, Count: len(images), Images: images, CostMicros: payload.CostMicros}
+			output := ToolImageResult{Model: model, Count: len(images), Images: images, CostMicros: payload.CostMicros, Notices: notices}
 			summary := fmt.Sprintf("upscaled the attached image to %dx with %s", int(scale), model)
 			return output, summary, nil
 		},
 		Activity: func(result HarnessToolResult) HarnessToolActivity {
 			activity := defaultHarnessToolActivity(result)
 			if typed, ok := result.Result.(ToolImageResult); ok {
-				activity.Command = []string{"fal", "upscale", typed.Model}
+				// The command's provider token is the routed backend — upscale
+				// follows the image provider, the same seam
+				// toolActivityFromResult attributes by.
+				activity.Command = []string{imageGenerationProvider(config), "upscale", typed.Model}
 			}
 			return activity
 		},

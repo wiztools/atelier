@@ -156,6 +156,7 @@ export namespace main {
 	    primaryProvider?: string;
 	    harnessProvider?: string;
 	    imageProvider?: string;
+	    videoProvider?: string;
 	    transcriptionProvider?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -167,6 +168,7 @@ export namespace main {
 	        this.primaryProvider = source["primaryProvider"];
 	        this.harnessProvider = source["harnessProvider"];
 	        this.imageProvider = source["imageProvider"];
+	        this.videoProvider = source["videoProvider"];
 	        this.transcriptionProvider = source["transcriptionProvider"];
 	    }
 	}
@@ -288,6 +290,28 @@ export namespace main {
 	        this.model = source["model"];
 	    }
 	}
+	export class ConfigReplicate {
+	    enabled: boolean;
+	    model?: string;
+	    imageEditModel?: string;
+	    videoModel?: string;
+	    videoImageModel?: string;
+	    upscaleModel?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConfigReplicate(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.model = source["model"];
+	        this.imageEditModel = source["imageEditModel"];
+	        this.videoModel = source["videoModel"];
+	        this.videoImageModel = source["videoImageModel"];
+	        this.upscaleModel = source["upscaleModel"];
+	    }
+	}
 	export class ConfigFal {
 	    enabled: boolean;
 	    model?: string;
@@ -406,6 +430,7 @@ export namespace main {
 	    ollama: ConfigOllama;
 	    openrouter: ConfigOpenRouter;
 	    fal: ConfigFal;
+	    replicate: ConfigReplicate;
 	    openaiCompatible: ConfigOpenAICompatible;
 	    local: ConfigLocalProviders;
 	
@@ -418,6 +443,7 @@ export namespace main {
 	        this.ollama = this.convertValues(source["ollama"], ConfigOllama);
 	        this.openrouter = this.convertValues(source["openrouter"], ConfigOpenRouter);
 	        this.fal = this.convertValues(source["fal"], ConfigFal);
+	        this.replicate = this.convertValues(source["replicate"], ConfigReplicate);
 	        this.openaiCompatible = this.convertValues(source["openaiCompatible"], ConfigOpenAICompatible);
 	        this.local = this.convertValues(source["local"], ConfigLocalProviders);
 	    }
@@ -597,10 +623,11 @@ export namespace main {
 	    harnessModel?: string;
 	    imageProvider?: string;
 	    imageModel?: string;
-	    imageEditModel?: string;
-	    upscaleModel?: string;
+	    videoProvider?: string;
 	    videoModel?: string;
 	    videoImageModel?: string;
+	    imageEditModel?: string;
+	    upscaleModel?: string;
 	    videoExtendModel?: string;
 	    videoMotionModel?: string;
 	    videoKeyframeModel?: string;
@@ -635,10 +662,11 @@ export namespace main {
 	        this.harnessModel = source["harnessModel"];
 	        this.imageProvider = source["imageProvider"];
 	        this.imageModel = source["imageModel"];
-	        this.imageEditModel = source["imageEditModel"];
-	        this.upscaleModel = source["upscaleModel"];
+	        this.videoProvider = source["videoProvider"];
 	        this.videoModel = source["videoModel"];
 	        this.videoImageModel = source["videoImageModel"];
+	        this.imageEditModel = source["imageEditModel"];
+	        this.upscaleModel = source["upscaleModel"];
 	        this.videoExtendModel = source["videoExtendModel"];
 	        this.videoMotionModel = source["videoMotionModel"];
 	        this.videoKeyframeModel = source["videoKeyframeModel"];
@@ -736,6 +764,7 @@ export namespace main {
 	        this.conversationId = source["conversationId"];
 	    }
 	}
+	
 	
 	
 	
@@ -1632,6 +1661,30 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.deletedConversations = source["deletedConversations"];
 	        this.deletedAssets = source["deletedAssets"];
+	    }
+	}
+	export class ReplicateModel {
+	    id: string;
+	    displayName: string;
+	    category: string;
+	    description: string;
+	    status: string;
+	    tags: string[];
+	    thumbnailUrl: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ReplicateModel(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.displayName = source["displayName"];
+	        this.category = source["category"];
+	        this.description = source["description"];
+	        this.status = source["status"];
+	        this.tags = source["tags"];
+	        this.thumbnailUrl = source["thumbnailUrl"];
 	    }
 	}
 	export class SaveAudioRequest {

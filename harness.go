@@ -724,6 +724,29 @@ var toolErrorRemediationRules = []toolErrorRemediationRule{
 		notice:    "fal.ai is rate-limiting this account — wait a moment and try again.",
 		coveredBy: []string{"rate limit"},
 	},
+	// The Replicate rules mirror the fal shapes onto the replicate client's
+	// own error prefixes (replicate_client.go do()), including the prepaid
+	// credit lock (402) fal expresses as "exhausted balance".
+	{
+		match:     func(errLower string) bool { return strings.Contains(errLower, "replicate api key is not configured") },
+		notice:    "No Replicate API token is configured — add one in Settings → Providers to use the Replicate backend.",
+		coveredBy: []string{"api token", "api key"},
+	},
+	{
+		match:     func(errLower string) bool { return strings.Contains(errLower, "replicate authentication failed") },
+		notice:    "Replicate rejected the API token — re-enter it in Settings → Providers.",
+		coveredBy: []string{"api token", "api key"},
+	},
+	{
+		match:     func(errLower string) bool { return strings.Contains(errLower, "replicate credit exhausted") },
+		notice:    "Replicate declined the request — the account is out of prepaid credit. Top up at replicate.com/account/billing, then try again.",
+		coveredBy: []string{"replicate.com/account/billing", "credit"},
+	},
+	{
+		match:     func(errLower string) bool { return strings.Contains(errLower, "replicate rate limited") },
+		notice:    "Replicate is rate-limiting this account — wait a moment and try again.",
+		coveredBy: []string{"rate limit"},
+	},
 }
 
 // toolErrorRemediationNotice extracts actionable remedies from failed tool
@@ -3449,19 +3472,31 @@ func (h *HarnessEngine) toolActivityFromResult(result HarnessToolResult) Harness
 		activity = defaultHarnessToolActivity(result)
 	}
 	// Media provider attribution rides the engine layer, not the per-tool
-	// builders: video/audio generation is fal-only, and generate_image routes
-	// by config.Models.ImageProvider — the same field the tool gateway reads —
-	// which the builders don't receive. A failed call has no result payload,
-	// so no case matches and Provider stays empty. A builder that already
-	// named its provider (the ffmpeg tools stamp "ffmpeg") wins — the engine
-	// layer cannot know which backend a local tool ran on.
+	// builders: generate_video routes by config.Models.VideoProvider — the
+	// same field the tool gateway reads, via videoGenerationProvider — while
+	// audio generation and the video transforms (upscale/reframe/restyle,
+	// lipsync) remain fal-only, and generate_image routes by
+	// config.Models.ImageProvider; the builders don't receive config. A failed
+	// call has no result payload, so no case matches and Provider stays empty.
+	// A builder that already named its provider (the ffmpeg tools stamp
+	// "ffmpeg") wins — the engine layer cannot know which backend a local tool
+	// ran on.
 	if activity.Provider == "" {
 		switch result.Result.(type) {
-		case ToolVideoResult, ToolAudioResult:
+		case ToolVideoResult:
+			activity.Provider = videoGenerationProvider(h.config)
+		case ToolAudioResult:
 			activity.Provider = "fal"
 		case ToolImageResult:
 			activity.Provider = imageGenerationProvider(h.config)
 		}
+	}
+	// Replicate media generation is paid but unpriceable here — no pricing
+	// API, no cost on the prediction — so mark the row unknown rather than
+	// letting it render as a free call. CostMicros stays 0 and the turn total
+	// keeps summing only known costs.
+	if activity.Provider == "replicate" && activity.MediaKind != "" && activity.CostMicros == 0 {
+		activity.CostUnknown = true
 	}
 	return activity
 }
