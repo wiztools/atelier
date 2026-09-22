@@ -114,6 +114,10 @@ export function ListReplicateVideoImageModels():Promise<Array<main.ReplicateMode
 
 export function ListReplicateVideoModels():Promise<Array<main.ReplicateModel>>;
 
+export function ListReplicateVideoReframeModels():Promise<Array<main.ReplicateModel>>;
+
+export function ListReplicateVideoRestyleModels():Promise<Array<main.ReplicateModel>>;
+
 export function ListReplicateVideoUpscaleModels():Promise<Array<main.ReplicateModel>>;
 
 export function ListToolFiles(arg1:main.ToolFileListRequest):Promise<main.ToolFileListResult>;

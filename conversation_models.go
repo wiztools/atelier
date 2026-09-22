@@ -345,10 +345,30 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 		}
 	}
 	if o.VideoReframeModel != "" {
-		config.Providers.Fal.VideoReframeModel = o.VideoReframeModel
+		// The reframe override follows the effective video provider, the
+		// upscale rule.
+		videoProvider := o.VideoProvider
+		if videoProvider == "" {
+			videoProvider = config.Models.VideoProvider
+		}
+		if videoProvider == "replicate" {
+			config.Providers.Replicate.VideoReframeModel = o.VideoReframeModel
+		} else {
+			config.Providers.Fal.VideoReframeModel = o.VideoReframeModel
+		}
 	}
 	if o.VideoRestyleModel != "" {
-		config.Providers.Fal.VideoRestyleModel = o.VideoRestyleModel
+		// The restyle override follows the effective video provider, the
+		// upscale rule.
+		videoProvider := o.VideoProvider
+		if videoProvider == "" {
+			videoProvider = config.Models.VideoProvider
+		}
+		if videoProvider == "replicate" {
+			config.Providers.Replicate.VideoRestyleModel = o.VideoRestyleModel
+		} else {
+			config.Providers.Fal.VideoRestyleModel = o.VideoRestyleModel
+		}
 	}
 	if o.AudioModel != "" {
 		config.Providers.Fal.AudioModel = o.AudioModel

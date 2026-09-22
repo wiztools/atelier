@@ -1794,6 +1794,10 @@ func synonymsFor(category, canon string) []string {
 		return replicateUpscaleSynonyms[canon]
 	case "replicate-video-upscale":
 		return replicateVideoUpscaleSynonyms[canon]
+	case "replicate-video-restyle":
+		return replicateVideoRestyleSynonyms[canon]
+	case "replicate-video-reframe":
+		return replicateVideoReframeSynonyms[canon]
 	}
 	return nil
 }

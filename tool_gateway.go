@@ -444,6 +444,31 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			return generated, genErr
 		}
 		gateway.tools.ReframeVideo = func(ctx context.Context, req VideoReframeRequest) (GeneratedVideo, error) {
+			// Reframe follows the video provider: replicate routes there, every
+			// other provider stays on fal — the same seam generate_video reads.
+			if videoGenerationProvider(config) == "replicate" {
+				apiKey, err := loadReplicateAPIKey()
+				if err != nil {
+					return GeneratedVideo{}, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return GeneratedVideo{}, errReplicateKeyNotConfigured
+				}
+				client := newReplicateClient(app.client, apiKey)
+				if resolved, err := client.ResolveMediaURL(ctx, req.Video, "video/mp4", "source-video.mp4"); err == nil {
+					req.Video = resolved
+				}
+				schema := replicateSchemaCache.Get(ctx, req.Model)
+				input, notices, err := resolveReplicateVideoReframeInput(schema, req)
+				if err != nil {
+					return GeneratedVideo{Notices: notices}, err
+				}
+				// Reframing returns a video, so it reuses the GenerateVideo
+				// transport — the same pattern as the fal path below.
+				generated, genErr := client.GenerateVideo(ctx, req.Model, input)
+				generated.Notices = notices
+				return generated, genErr
+			}
 			apiKey, err := loadFalAPIKey()
 			if err != nil {
 				return GeneratedVideo{}, err
@@ -483,6 +508,40 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			return generated, genErr
 		}
 		gateway.tools.RestyleVideo = func(ctx context.Context, req VideoRestyleRequest) (GeneratedVideo, error) {
+			// Restyle follows the video provider: replicate routes there, every
+			// other provider stays on fal — the same seam generate_video reads.
+			if videoGenerationProvider(config) == "replicate" {
+				apiKey, err := loadReplicateAPIKey()
+				if err != nil {
+					return GeneratedVideo{}, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return GeneratedVideo{}, errReplicateKeyNotConfigured
+				}
+				client := newReplicateClient(app.client, apiKey)
+				if resolved, err := client.ResolveMediaURL(ctx, req.Video, "video/mp4", "source-video.mp4"); err == nil {
+					req.Video = resolved
+				}
+				// Reference images are normalized to a model-decodable format
+				// first (model_image_compat.go) — a HEIC character sheet can't
+				// ride a Replicate reference input any better than fal's.
+				req.Images = ensureModelSafeImages(ctx, config, req.Images)
+				for i, img := range req.Images {
+					if resolved, err := client.ResolveMediaURL(ctx, img, "image/png", fmt.Sprintf("style-reference-%d.png", i)); err == nil {
+						req.Images[i] = resolved
+					}
+				}
+				schema := replicateSchemaCache.Get(ctx, req.Model)
+				input, notices, err := resolveReplicateVideoRestyleInput(schema, req)
+				if err != nil {
+					return GeneratedVideo{Notices: notices}, err
+				}
+				// Restyling returns a video, so it reuses the GenerateVideo
+				// transport — the same pattern as the fal path below.
+				generated, genErr := client.GenerateVideo(ctx, req.Model, input)
+				generated.Notices = notices
+				return generated, genErr
+			}
 			apiKey, err := loadFalAPIKey()
 			if err != nil {
 				return GeneratedVideo{}, err

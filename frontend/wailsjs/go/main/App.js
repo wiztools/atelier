@@ -226,6 +226,14 @@ export function ListReplicateVideoModels() {
   return window['go']['main']['App']['ListReplicateVideoModels']();
 }
 
+export function ListReplicateVideoReframeModels() {
+  return window['go']['main']['App']['ListReplicateVideoReframeModels']();
+}
+
+export function ListReplicateVideoRestyleModels() {
+  return window['go']['main']['App']['ListReplicateVideoRestyleModels']();
+}
+
 export function ListReplicateVideoUpscaleModels() {
   return window['go']['main']['App']['ListReplicateVideoUpscaleModels']();
 }

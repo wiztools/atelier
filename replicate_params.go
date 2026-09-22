@@ -534,3 +534,169 @@ func dataURLVideoShortEdge(reference string) (int, bool) {
 	}
 	return int(short), true
 }
+
+// replicateVideoRestyleSynonyms lists, per canonical param, the native input
+// names Replicate's restyle-class (video-to-video edit) models use — Kling 3
+// Omni's reference images, wan-2.7-videoedit's instruction editing, and
+// luma/modify-video's mode-selectable style transfer.
+var replicateVideoRestyleSynonyms = map[string][]string{
+	"prompt":         {"prompt"},
+	"sourceVideo":    {"video", "input_video", "video_url"},
+	"sourceImage":    {"images", "image_urls", "reference_images", "reference_image_urls", "image"},
+	"negativePrompt": {"negative_prompt"},
+	"resolution":     {"resolution"},
+	// mode selects the editing posture on models that expose one
+	// (luma/modify-video: adhere | flex | reimagine).
+	"mode": {"mode", "style_mode"},
+}
+
+// resolveReplicateVideoRestyleInput maps a canonical VideoRestyleRequest onto
+// the Replicate restyler model's native input schema — the replicate sibling
+// of resolveVideoRestyleBody. The source clip is a hard requirement (the
+// tool's entire purpose); reference images ride the model's declared image
+// input and drop with a notice when there is none; a mode enum listing
+// "reimagine" gets it by default, the style-transfer intent (the
+// characterOrientation/task guided-default pattern). A nil schema yields a
+// minimal {prompt, video, images?} fallback.
+func resolveReplicateVideoRestyleInput(schema *ModelInputSchema, req VideoRestyleRequest) (map[string]any, []string, error) {
+	prompt := strings.TrimSpace(req.Prompt)
+	video := falVideoURL(strings.TrimSpace(req.Video))
+	sourceImages := make([]string, 0, len(req.Images))
+	for _, img := range req.Images {
+		if u := falImageURL(strings.TrimSpace(img)); u != "" {
+			sourceImages = append(sourceImages, u)
+		}
+	}
+	ov := Overrides{}
+	if schema == nil {
+		body := map[string]any{"prompt": prompt, "video": video}
+		if len(sourceImages) > 0 {
+			body["images"] = sourceImages
+		}
+		return body, nil, nil
+	}
+	body := map[string]any{}
+	var notices []string
+	if path, prop, ok := findNative(schema, ov, "replicate-video-restyle", req.Model, "sourceVideo"); !ok {
+		return nil, notices, fmt.Errorf("the selected model %q has no video input to restyle", req.Model)
+	} else {
+		setBodyPath(schema, body, path, coerceVideos(prop, []string{video}))
+	}
+	if path, prop, ok := findNative(schema, ov, "replicate-video-restyle", req.Model, "prompt"); ok {
+		setBodyPath(schema, body, path, coerceVideoValue(prop, prompt))
+	} else {
+		body["prompt"] = prompt
+	}
+	if len(sourceImages) > 0 {
+		if path, prop, ok := findNative(schema, ov, "replicate-video-restyle", req.Model, "sourceImage"); ok {
+			if prop.Kind != schemaArray && len(sourceImages) > 1 {
+				return nil, notices, fmt.Errorf(
+					"model %q accepts a single reference image; %d were attached. Attach fewer references or switch to a model that declares an image array.",
+					req.Model, len(sourceImages))
+			}
+			if prop.Kind == schemaArray && prop.MaxItems > 0 && len(sourceImages) > prop.MaxItems {
+				return nil, notices, fmt.Errorf(
+					"model %q accepts at most %d reference image(s); %d were attached.",
+					req.Model, prop.MaxItems, len(sourceImages))
+			}
+			setBodyPath(schema, body, path, coerceImages(prop, sourceImages))
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no reference-image input; the attached image(s) were ignored.",
+				req.Model))
+		}
+	}
+	if negative := strings.TrimSpace(req.NegativePrompt); negative != "" {
+		if path, prop, ok := findNative(schema, ov, "replicate-video-restyle", req.Model, "negativePrompt"); ok {
+			setBodyPath(schema, body, path, coerceVideoValue(prop, negative))
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no negative-prompt control; ignoring the requested negative prompt.",
+				req.Model))
+		}
+	}
+	if res := strings.TrimSpace(req.Resolution); res != "" {
+		if path, prop, ok := findNative(schema, ov, "replicate-video-restyle", req.Model, "resolution"); ok {
+			if canonical, allowed := enumValueFor(prop, res); allowed {
+				setBodyPath(schema, body, path, coerceVideoValue(prop, canonical))
+			} else {
+				notices = append(notices, fmt.Sprintf(
+					"The selected model %q does not accept resolution %q; using the model's default tier.",
+					req.Model, res))
+			}
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no resolution control; using the model's default tier.",
+				req.Model))
+		}
+	}
+	if path, prop, ok := findNative(schema, ov, "replicate-video-restyle", req.Model, "mode"); ok {
+		if valueAllowedByEnum(prop, "reimagine") {
+			setBodyPath(schema, body, path, coerceVideoValue(prop, "reimagine"))
+		}
+	}
+	return body, notices, nil
+}
+
+// replicateVideoReframeSynonyms lists, per canonical param, the native input
+// names Replicate's generative-reframe models use (luma/reframe-video).
+var replicateVideoReframeSynonyms = map[string][]string{
+	"sourceVideo": {"video", "input_video", "video_url"},
+	"aspectRatio": {"aspect_ratio"},
+	"resolution":  {"resolution"},
+	"prompt":      {"prompt"},
+}
+
+// resolveReplicateVideoReframeInput maps a canonical VideoReframeRequest onto
+// the Replicate reframer model's native input schema — the replicate sibling
+// of resolveVideoReframeBody. A nil schema yields the minimal {video,
+// aspect_ratio?} fallback.
+func resolveReplicateVideoReframeInput(schema *ModelInputSchema, req VideoReframeRequest) (map[string]any, []string, error) {
+	video := falVideoURL(strings.TrimSpace(req.Video))
+	ov := Overrides{}
+	if schema == nil {
+		body := map[string]any{"video": video}
+		if aspect := strings.TrimSpace(req.AspectRatio); aspect != "" {
+			body["aspect_ratio"] = aspect
+		}
+		return body, nil, nil
+	}
+	body := map[string]any{}
+	var notices []string
+	if path, prop, ok := findNative(schema, ov, "replicate-video-reframe", req.Model, "sourceVideo"); !ok {
+		return nil, notices, fmt.Errorf("the selected model %q has no video input to reframe", req.Model)
+	} else {
+		setBodyPath(schema, body, path, coerceVideos(prop, []string{video}))
+	}
+	if aspect := strings.TrimSpace(req.AspectRatio); aspect != "" {
+		if path, prop, ok := findNative(schema, ov, "replicate-video-reframe", req.Model, "aspectRatio"); ok {
+			if canonical, allowed := enumValueFor(prop, aspect); allowed {
+				setBodyPath(schema, body, path, coerceVideoValue(prop, canonical))
+			} else {
+				notices = append(notices, fmt.Sprintf(
+					"The selected model %q does not accept aspect ratio %q; ignoring it and letting the model choose.",
+					req.Model, aspect))
+			}
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no aspect-ratio control; the reframe keeps the source's shape.",
+				req.Model))
+		}
+	}
+	if res := strings.TrimSpace(req.Resolution); res != "" {
+		if path, prop, ok := findNative(schema, ov, "replicate-video-reframe", req.Model, "resolution"); ok {
+			if canonical, allowed := enumValueFor(prop, res); allowed {
+				setBodyPath(schema, body, path, coerceVideoValue(prop, canonical))
+			} else {
+				notices = append(notices, fmt.Sprintf(
+					"The selected model %q does not accept resolution %q; using the model's default tier.",
+					req.Model, res))
+			}
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no resolution control; using the model's default tier.",
+				req.Model))
+		}
+	}
+	return body, notices, nil
+}

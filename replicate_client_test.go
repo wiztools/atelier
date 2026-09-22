@@ -857,3 +857,110 @@ func TestReplicateGatewayUpscaleVideoRouting(t *testing.T) {
 		t.Fatalf("Command = %v, want [replicate upscale <model>]", activity.Command)
 	}
 }
+
+// TestReplicateGatewayRestyleReframeRouting drives both transform branches on
+// the replicate path end to end: schema-driven input (reference images, the
+// mode default), the shared GenerateVideo transport, and the routing helpers.
+func TestReplicateGatewayRestyleReframeRouting(t *testing.T) {
+	keyring.MockInit()
+	t.Cleanup(func() { _ = clearReplicateAPIKey() })
+	if err := saveReplicateAPIKey("replicate-test-key"); err != nil {
+		t.Fatalf("saveReplicateAPIKey: %v", err)
+	}
+
+	restyleSchema := `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"prompt":{"type":"string"},
+		"video":{"type":"string"},
+		"image_urls":{"type":"array","items":{"type":"string"}}
+	}}}}}`
+	reframeSchema := `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"video":{"type":"string"},
+		"aspect_ratio":{"type":"string","enum":["16:9","9:16"]}
+	}}}}}`
+	predictions := replicatePredictionHandler(t,
+		nil,
+		`"https://replicate.delivery/out/edit.mp4"`,
+		"/out/edit.mp4", tinyReplicateMP4, "video/mp4")
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodGet && req.URL.Path == "/v1/models/kwaivgi/kling-v3-omni-video" {
+			return jsonResp(`{"latest_version":{"openapi_schema":` + restyleSchema + `}}`), nil
+		}
+		if req.Method == http.MethodGet && req.URL.Path == "/v1/models/luma/reframe-video" {
+			return jsonResp(`{"latest_version":{"openapi_schema":` + reframeSchema + `}}`), nil
+		}
+		if req.Method == http.MethodPost && (strings.HasSuffix(req.URL.Path, "/predictions")) {
+			var body struct {
+				Input map[string]any `json:"input"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Fatalf("decode prediction body: %v", err)
+			}
+			if strings.Contains(req.URL.Path, "kling") {
+				refs, ok := body.Input["image_urls"].([]any)
+				if !ok || len(refs) != 1 || !strings.HasPrefix(refs[0].(string), "data:image/png;base64,") {
+					t.Fatalf("image_urls = %v, want the reference forwarded", body.Input["image_urls"])
+				}
+			}
+			if strings.Contains(req.URL.Path, "reframe") && body.Input["aspect_ratio"] != "9:16" {
+				t.Fatalf("aspect_ratio = %v", body.Input["aspect_ratio"])
+			}
+			return jsonResp(`{"id":"pred-1","status":"starting"}`), nil
+		}
+		return predictions.RoundTrip(req)
+	})
+	app := &App{client: &http.Client{Transport: transport}}
+	config := defaultAppConfig()
+	config.Storage.Root = t.TempDir()
+	config.Models.VideoProvider = "replicate"
+	config.Providers.Replicate.VideoRestyleModel = "kwaivgi/kling-v3-omni-video"
+	config.Providers.Replicate.VideoReframeModel = "luma/reframe-video"
+	gateway := newToolGateway(app, config)
+
+	restyled, err := gateway.tools.RestyleVideo(context.Background(), VideoRestyleRequest{
+		Model:  "kwaivgi/kling-v3-omni-video",
+		Video:  "data:video/mp4;base64,QUFB",
+		Prompt: "anime style",
+		Images: []string{"data:image/png;base64," + tinyPNG},
+	})
+	if err != nil {
+		t.Fatalf("RestyleVideo: %v", err)
+	}
+	if len(restyled.Data) == 0 || restyled.CostMicros != 0 {
+		t.Fatalf("restyled = %d bytes, cost %d", len(restyled.Data), restyled.CostMicros)
+	}
+
+	reframed, err := gateway.tools.ReframeVideo(context.Background(), VideoReframeRequest{
+		Model:       "luma/reframe-video",
+		Video:       "data:video/mp4;base64,QUFB",
+		AspectRatio: "9:16",
+	})
+	if err != nil {
+		t.Fatalf("ReframeVideo: %v", err)
+	}
+	if len(reframed.Data) == 0 {
+		t.Fatal("no video bytes returned")
+	}
+
+	if !videoRestyleConfigured(config) || !videoReframeConfigured(config) {
+		t.Fatal("both transform gates should hold on the replicate path with a token")
+	}
+	if got := resolveDefaultVideoRestyleModel(config); got != "kwaivgi/kling-v3-omni-video" {
+		t.Fatalf("resolveDefaultVideoRestyleModel = %q", got)
+	}
+	if got := resolveDefaultVideoReframeModel(config); got != "luma/reframe-video" {
+		t.Fatalf("resolveDefaultVideoReframeModel = %q", got)
+	}
+	// Both activity commands attribute to the routed provider.
+	for _, pair := range []struct {
+		def  HarnessToolDefinition
+		verb string
+	}{
+		{videoRestyleToolDefinition(config), "restyle"},
+		{videoReframeToolDefinition(config), "reframe"},
+	} {
+		activity := pair.def.Activity(HarnessToolResult{Status: "completed", Result: ToolVideoResult{Model: "owner/m", Count: 1}})
+		if len(activity.Command) != 3 || activity.Command[0] != "replicate" || activity.Command[1] != pair.verb {
+			t.Fatalf("Command = %v, want [replicate %s <model>]", activity.Command, pair.verb)
+		}
+	}
+}

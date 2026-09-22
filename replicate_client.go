@@ -47,6 +47,15 @@ const (
 	// resolveReplicateVideoUpscaleInput derives from the source clip's own
 	// frame size × the requested factor.
 	defaultReplicateVideoUpscaleModel = "topazlabs/video-upscale"
+	// defaultReplicateVideoRestyleModel is the video restyler used when none
+	// is configured — Kling 3.0 Omni, edited via natural-language instruction
+	// with up to seven reference images: the closest counterpart to fal's
+	// Kling o3 video-to-video/edit, the restyle default.
+	defaultReplicateVideoRestyleModel = "kwaivgi/kling-v3-omni-video"
+	// defaultReplicateVideoReframeModel is the generative video reframer used
+	// when none is configured — Luma's official reframe endpoint (720p, clips
+	// up to 30s), the same model family fal's reframe roster carries.
+	defaultReplicateVideoReframeModel = "luma/reframe-video"
 	// replicatePollInterval is the delay between prediction status checks,
 	// matching fal's cadence.
 	replicatePollInterval = 1500 * time.Millisecond
@@ -70,6 +79,10 @@ const (
 	// (isReplicateVideoUpscaleModel), the fal pattern of partitioning a broad
 	// category.
 	replicateEnhanceVideosCollection = "ai-enhance-videos"
+	// replicateVideoEditingCollection likewise mixes the restyle/reframe
+	// endpoints with audio, lipsync, and utility models; its two listers
+	// post-filter by id markers.
+	replicateVideoEditingCollection = "video-editing"
 	// maxReplicateTransientRetries is the number of times do() re-issues a
 	// request after a transient 5xx, matching the fal client's posture.
 	maxReplicateTransientRetries = 1

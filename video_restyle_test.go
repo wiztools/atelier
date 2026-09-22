@@ -19,7 +19,7 @@ func TestRestyleVideoToolRequiresAttachedVideo(t *testing.T) {
 			return GeneratedVideo{}, nil
 		},
 	}
-	def := videoRestyleToolDefinition()
+	def := videoRestyleToolDefinition(AppConfig{})
 	_, _, err := def.Execute(t.Context(), tools, HarnessToolCall{Content: "anime style"})
 	if err == nil || !strings.Contains(err.Error(), "attached video") {
 		t.Fatalf("err = %v, want an error mentioning an attached video is required", err)
@@ -30,7 +30,7 @@ func TestRestyleVideoToolRequiresAttachedVideo(t *testing.T) {
 // the tool's entire purpose, so an omitted one is a plan correction rather
 // than a runtime guess.
 func TestRestyleVideoValidate(t *testing.T) {
-	def := videoRestyleToolDefinition()
+	def := videoRestyleToolDefinition(AppConfig{})
 	if errors := def.Validate("toolCalls[0]", HarnessToolCall{}); len(errors) == 0 || !strings.Contains(errors[0], ".content is required") {
 		t.Errorf("restyle without a prompt = %v, want the required error", errors)
 	}
@@ -54,7 +54,7 @@ func TestRestyleVideoToolDefaultsAndMapping(t *testing.T) {
 			return GeneratedVideo{Data: []byte("fake-mp4"), MimeType: "video/mp4", SourceURL: "https://fal.example/v.mp4"}, nil
 		},
 	}
-	def := videoRestyleToolDefinition()
+	def := videoRestyleToolDefinition(AppConfig{})
 	result, summary, err := def.Execute(t.Context(), tools, HarnessToolCall{
 		Content:        "hand-drawn anime style",
 		NegativePrompt: "text, watermark",
@@ -119,7 +119,7 @@ func TestRestyleVideoToolHonorsModelOverride(t *testing.T) {
 			return GeneratedVideo{Data: []byte("fake-mp4"), MimeType: "video/mp4"}, nil
 		},
 	}
-	def := videoRestyleToolDefinition()
+	def := videoRestyleToolDefinition(AppConfig{})
 	result, _, err := def.Execute(t.Context(), tools, HarnessToolCall{Content: "anime", Model: "fal-ai/ltx-2.3-22b/video-to-video"})
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
@@ -394,7 +394,7 @@ func TestIsFalVideoRestyleModel(t *testing.T) {
 // paragraph must name restyle_video so a tooled restyle turn reaches the
 // planner instead of prose.
 func TestTriagePromptRoutesRestylingToVideoMode(t *testing.T) {
-	registry := newHarnessToolRegistry([]HarnessToolDefinition{videoRestyleToolDefinition()})
+	registry := newHarnessToolRegistry([]HarnessToolDefinition{videoRestyleToolDefinition(AppConfig{})})
 	prompt := triageSystemPrompt(registry, nil, "/tmp/ws")
 	if !strings.Contains(prompt, "restyle_video") {
 		t.Fatalf("video-mode guidance should name restyle_video:\n%s", prompt)

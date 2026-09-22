@@ -260,11 +260,11 @@ type ConfigFal struct {
 
 // ConfigReplicate configures the Replicate image/video-generation backend —
 // the cloud sibling of ConfigFal for generate_image, upscale_image (which
-// follows ImageProvider), generate_video, and upscale_video (which follows
-// VideoProvider). The API token lives in the OS keychain (see keychain.go),
-// not in config — Enabled mirrors the key's presence for the frontend, like
-// ConfigFal. The remaining video transforms (reframe/restyle), lipsync, and
-// audio stay fal-only.
+// follow ImageProvider), generate_video, and upscale_video/restyle_video/
+// reframe_video (which follow VideoProvider). The API token lives in the OS
+// keychain (see keychain.go), not in config — Enabled mirrors the key's
+// presence for the frontend, like ConfigFal. Lipsync and audio stay
+// fal-only.
 type ConfigReplicate struct {
 	Enabled bool `json:"enabled"`
 	// Model is the text-to-image model (an owner/name slug, e.g.
@@ -284,6 +284,12 @@ type ConfigReplicate struct {
 	// replicate is the video provider — video upscale follows VideoProvider,
 	// so fal's VideoUpscaleModel serves on fal.
 	VideoUpscaleModel string `json:"videoUpscaleModel,omitempty"`
+	// VideoRestyleModel is the video restyler restyle_video uses, and
+	// VideoReframeModel the generative reframer reframe_video uses — both
+	// follow VideoProvider like VideoUpscaleModel, with fal's slots serving
+	// on fal.
+	VideoRestyleModel string `json:"videoRestyleModel,omitempty"`
+	VideoReframeModel string `json:"videoReframeModel,omitempty"`
 }
 
 // ConfigOpenAICompatible addresses a local server that speaks OpenAI's API
@@ -2549,6 +2555,60 @@ func isReplicateVideoUpscaleModel(model ReplicateModel) bool {
 		}
 	}
 	return false
+}
+
+// ListReplicateVideoRestyleModels returns the restyle-class (video-to-video
+// edit) models of Replicate's video-editing collection for the Settings
+// restyle-model picker, shown when replicate is the video provider (restyle
+// follows it). The collection mixes in audio, lipsync, and utility models, so
+// entries are post-filtered by id markers.
+func (a *App) ListReplicateVideoRestyleModels() ([]ReplicateModel, error) {
+	return a.listReplicateVideoEditingCollection(isReplicateVideoRestyleModel)
+}
+
+// ListReplicateVideoReframeModels returns the generative reframe models of
+// the same collection for the Settings reframe-model picker, shown when
+// replicate is the video provider (reframe follows it).
+func (a *App) ListReplicateVideoReframeModels() ([]ReplicateModel, error) {
+	return a.listReplicateVideoEditingCollection(isReplicateVideoReframeModel)
+}
+
+// listReplicateVideoEditingCollection fetches the video-editing collection and
+// keeps the entries matching keep — the shared partitioned-picker body behind
+// the restyle and reframe listers.
+func (a *App) listReplicateVideoEditingCollection(keep func(ReplicateModel) bool) ([]ReplicateModel, error) {
+	models, err := a.listReplicateCollection(replicateVideoEditingCollection)
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]ReplicateModel, 0, len(models))
+	for _, model := range models {
+		if keep(model) {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered, nil
+}
+
+// isReplicateVideoRestyleModel reports whether a collection entry looks like a
+// restyle-class editor: the id carries one of the edit/modify markers. Matches
+// kwaivgi/kling-v3-omni-video (natural-language editing with reference
+// images), wan-video/wan-2.7-videoedit, and luma/modify-video; skips the
+// collection's reframe, extend, audio, and utility entries.
+func isReplicateVideoRestyleModel(model ReplicateModel) bool {
+	lower := strings.ToLower(model.ID)
+	for _, marker := range []string{"videoedit", "video-edit", "modify-video", "omni-video"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// isReplicateVideoReframeModel reports whether a collection entry is a
+// generative reframer — luma/reframe-video and siblings.
+func isReplicateVideoReframeModel(model ReplicateModel) bool {
+	return strings.Contains(strings.ToLower(model.ID), "reframe")
 }
 
 // ListReplicateVideoModels returns the official models of Replicate's

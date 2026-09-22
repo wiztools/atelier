@@ -298,6 +298,8 @@ export namespace main {
 	    videoImageModel?: string;
 	    upscaleModel?: string;
 	    videoUpscaleModel?: string;
+	    videoRestyleModel?: string;
+	    videoReframeModel?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigReplicate(source);
@@ -312,6 +314,8 @@ export namespace main {
 	        this.videoImageModel = source["videoImageModel"];
 	        this.upscaleModel = source["upscaleModel"];
 	        this.videoUpscaleModel = source["videoUpscaleModel"];
+	        this.videoRestyleModel = source["videoRestyleModel"];
+	        this.videoReframeModel = source["videoReframeModel"];
 	    }
 	}
 	export class ConfigFal {

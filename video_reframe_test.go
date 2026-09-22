@@ -19,7 +19,7 @@ func TestReframeVideoToolRequiresAttachedVideo(t *testing.T) {
 			return GeneratedVideo{}, nil
 		},
 	}
-	def := videoReframeToolDefinition()
+	def := videoReframeToolDefinition(AppConfig{})
 	_, _, err := def.Execute(t.Context(), tools, HarnessToolCall{AspectRatio: "9:16"})
 	if err == nil || !strings.Contains(err.Error(), "attached video") {
 		t.Fatalf("err = %v, want an error mentioning an attached video is required", err)
@@ -30,7 +30,7 @@ func TestReframeVideoToolRequiresAttachedVideo(t *testing.T) {
 // ratio is the tool's entire purpose, so an omitted one is a plan correction
 // rather than a runtime guess.
 func TestReframeVideoValidate(t *testing.T) {
-	def := videoReframeToolDefinition()
+	def := videoReframeToolDefinition(AppConfig{})
 	if errors := def.Validate("toolCalls[0]", HarnessToolCall{}); len(errors) == 0 || !strings.Contains(errors[0], ".aspectRatio is required") {
 		t.Errorf("reframe without an aspect ratio = %v, want the required error", errors)
 	}
@@ -64,7 +64,7 @@ func TestReframeVideoToolDefaultsAndMapping(t *testing.T) {
 					return GeneratedVideo{Data: []byte("fake-mp4"), MimeType: "video/mp4", SourceURL: "https://fal.example/v.mp4"}, nil
 				},
 			}
-			def := videoReframeToolDefinition()
+			def := videoReframeToolDefinition(AppConfig{})
 			result, summary, err := def.Execute(t.Context(), tools, tc.call)
 			if err != nil {
 				t.Fatalf("Execute returned error: %v", err)
@@ -109,7 +109,7 @@ func TestReframeVideoToolHonorsModelOverride(t *testing.T) {
 			return GeneratedVideo{Data: []byte("fake-mp4"), MimeType: "video/mp4"}, nil
 		},
 	}
-	def := videoReframeToolDefinition()
+	def := videoReframeToolDefinition(AppConfig{})
 	result, _, err := def.Execute(t.Context(), tools, HarnessToolCall{AspectRatio: "9:16", Model: "luma/agent/ray/v3.2/reframe"})
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)

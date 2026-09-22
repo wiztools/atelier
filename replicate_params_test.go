@@ -313,6 +313,8 @@ func TestConversationModelOverridesReplicateRouting(t *testing.T) {
 		ImageEditModel:    "black-forest-labs/flux-kontext-pro",
 		UpscaleModel:      "nightmareai/real-esrgan",
 		VideoUpscaleModel: "topazlabs/video-upscale",
+		VideoRestyleModel: "kwaivgi/kling-v3-omni-video",
+		VideoReframeModel: "luma/reframe-video",
 	})
 	if err != nil {
 		t.Fatalf("overlayModelOverrides: %v", err)
@@ -340,6 +342,13 @@ func TestConversationModelOverridesReplicateRouting(t *testing.T) {
 	// The video-upscale override follows the effective video provider.
 	if overlaid.Providers.Replicate.VideoUpscaleModel != "topazlabs/video-upscale" {
 		t.Fatalf("replicate VideoUpscaleModel = %q", overlaid.Providers.Replicate.VideoUpscaleModel)
+	}
+	// So do the restyle and reframe overrides.
+	if overlaid.Providers.Replicate.VideoRestyleModel != "kwaivgi/kling-v3-omni-video" {
+		t.Fatalf("replicate VideoRestyleModel = %q", overlaid.Providers.Replicate.VideoRestyleModel)
+	}
+	if overlaid.Providers.Replicate.VideoReframeModel != "luma/reframe-video" {
+		t.Fatalf("replicate VideoReframeModel = %q", overlaid.Providers.Replicate.VideoReframeModel)
 	}
 	// A video model override with no provider pin inherits the config's
 	// effective provider (replicate, set above).
@@ -618,5 +627,157 @@ func TestReplicateVideoUpscaleListerFilter(t *testing.T) {
 		if isReplicateVideoUpscaleModel(ReplicateModel{ID: id}) {
 			t.Errorf("isReplicateVideoUpscaleModel(%q) = true, want false", id)
 		}
+	}
+}
+
+func TestResolveReplicateVideoRestyleInput(t *testing.T) {
+	schema := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"prompt":{"type":"string"},
+		"video":{"type":"string"},
+		"image_urls":{"type":"array","items":{"type":"string"},"maxItems":7},
+		"negative_prompt":{"type":"string"},
+		"resolution":{"type":"string","enum":["720p","1080p"]}
+	}}}}}`)
+	input, notices, err := resolveReplicateVideoRestyleInput(schema, VideoRestyleRequest{
+		Model:          "kwaivgi/kling-v3-omni-video",
+		Video:          "data:video/mp4;base64,QUFB",
+		Prompt:         "anime style",
+		Images:         []string{"data:image/png;base64," + tinyPNG, "data:image/png;base64," + tinyPNG},
+		NegativePrompt: "blur",
+		Resolution:     "1080p",
+	})
+	if err != nil {
+		t.Fatalf("restyle: %v", err)
+	}
+	if len(notices) != 0 {
+		t.Fatalf("notices = %v", notices)
+	}
+	if input["prompt"] != "anime style" || input["negative_prompt"] != "blur" || input["resolution"] != "1080p" {
+		t.Fatalf("input = %v", input)
+	}
+	refs, ok := input["image_urls"].([]any)
+	if !ok || len(refs) != 2 {
+		t.Fatalf("image_urls = %v, want both references", input["image_urls"])
+	}
+
+	// A mode enum listing "reimagine" gets it by default (luma/modify-video).
+	modeSchema := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"prompt":{"type":"string"},
+		"video":{"type":"string"},
+		"mode":{"type":"string","enum":["adhere","flex","reimagine"]}
+	}}}}}`)
+	input, _, err = resolveReplicateVideoRestyleInput(modeSchema, VideoRestyleRequest{
+		Model:  "luma/modify-video",
+		Video:  "data:video/mp4;base64,QUFB",
+		Prompt: "claymation",
+	})
+	if err != nil {
+		t.Fatalf("mode: %v", err)
+	}
+	if input["mode"] != "reimagine" {
+		t.Fatalf("mode = %v, want the guided reimagine default", input["mode"])
+	}
+
+	// References on a model without an image input drop with a notice.
+	noRefSchema := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"prompt":{"type":"string"},
+		"video":{"type":"string"}
+	}}}}}`)
+	input, notices, err = resolveReplicateVideoRestyleInput(noRefSchema, VideoRestyleRequest{
+		Model:  "owner/model",
+		Video:  "data:video/mp4;base64,QUFB",
+		Prompt: "x",
+		Images: []string{"data:image/png;base64," + tinyPNG},
+	})
+	if err != nil {
+		t.Fatalf("no-ref: %v", err)
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "reference-image input") {
+		t.Fatalf("notices = %v", notices)
+	}
+
+	// No video input is a hard error; nil schema falls back minimally.
+	noVideoSchema := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{"prompt":{"type":"string"}}}}}}`)
+	if _, _, err := resolveReplicateVideoRestyleInput(noVideoSchema, VideoRestyleRequest{Model: "owner/model", Video: "data:video/mp4;base64,QUFB", Prompt: "x"}); err == nil || !strings.Contains(err.Error(), "no video input") {
+		t.Fatalf("err = %v, want the no-video-input refusal", err)
+	}
+	input, _, err = resolveReplicateVideoRestyleInput(nil, VideoRestyleRequest{Model: "owner/model", Video: "data:video/mp4;base64,QUFB", Prompt: "x"})
+	if err != nil || input["prompt"] != "x" || input["video"] != "data:video/mp4;base64,QUFB" {
+		t.Fatalf("nil-schema fallback = %v, %v", input, err)
+	}
+}
+
+func TestResolveReplicateVideoReframeInput(t *testing.T) {
+	schema := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"video":{"type":"string"},
+		"aspect_ratio":{"type":"string","enum":["16:9","9:16","1:1","4:5"]},
+		"resolution":{"type":"string","enum":["720p"]}
+	}}}}}`)
+	input, notices, err := resolveReplicateVideoReframeInput(schema, VideoReframeRequest{
+		Model:       "luma/reframe-video",
+		Video:       "data:video/mp4;base64,QUFB",
+		AspectRatio: "9:16",
+		Resolution:  "720p",
+	})
+	if err != nil {
+		t.Fatalf("reframe: %v", err)
+	}
+	if len(notices) != 0 || input["aspect_ratio"] != "9:16" || input["resolution"] != "720p" {
+		t.Fatalf("input = %v, notices = %v", input, notices)
+	}
+
+	// Out-of-enum ratio drops with a notice.
+	input, notices, err = resolveReplicateVideoReframeInput(schema, VideoReframeRequest{
+		Model:       "luma/reframe-video",
+		Video:       "data:video/mp4;base64,QUFB",
+		AspectRatio: "21:9",
+	})
+	if err != nil {
+		t.Fatalf("enum: %v", err)
+	}
+	if _, exists := input["aspect_ratio"]; exists || len(notices) != 1 {
+		t.Fatalf("input = %v, notices = %v, want the drop", input, notices)
+	}
+
+	// No video input is a hard error; nil schema falls back minimally.
+	noVideoSchema := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{"prompt":{"type":"string"}}}}}}`)
+	if _, _, err := resolveReplicateVideoReframeInput(noVideoSchema, VideoReframeRequest{Model: "owner/model", Video: "data:video/mp4;base64,QUFB"}); err == nil || !strings.Contains(err.Error(), "no video input") {
+		t.Fatalf("err = %v, want the refusal", err)
+	}
+	input, _, err = resolveReplicateVideoReframeInput(nil, VideoReframeRequest{Model: "owner/model", Video: "data:video/mp4;base64,QUFB", AspectRatio: "9:16"})
+	if err != nil || input["aspect_ratio"] != "9:16" {
+		t.Fatalf("nil-schema fallback = %v, %v", input, err)
+	}
+}
+
+// TestReplicateVideoEditingListerFilters pins the video-editing collection's
+// two partitions.
+func TestReplicateVideoEditingListerFilters(t *testing.T) {
+	for _, id := range []string{
+		"kwaivgi/kling-v3-omni-video",
+		"wan-video/wan-2.7-videoedit",
+		"luma/modify-video",
+	} {
+		if !isReplicateVideoRestyleModel(ReplicateModel{ID: id}) {
+			t.Errorf("isReplicateVideoRestyleModel(%q) = false, want true", id)
+		}
+	}
+	for _, id := range []string{
+		"luma/reframe-video",
+		"xai/grok-imagine-video-extension",
+		"zsxkib/mmaudio",
+		"heygen/lipsync-speed",
+		"lucataco/trim-video",
+		"kwaivgi/kling-v3-video",
+	} {
+		if isReplicateVideoRestyleModel(ReplicateModel{ID: id}) {
+			t.Errorf("isReplicateVideoRestyleModel(%q) = true, want false", id)
+		}
+	}
+	if !isReplicateVideoReframeModel(ReplicateModel{ID: "luma/reframe-video"}) {
+		t.Error("isReplicateVideoReframeModel(luma/reframe-video) = false, want true")
+	}
+	if isReplicateVideoReframeModel(ReplicateModel{ID: "lucataco/trim-video"}) {
+		t.Error("isReplicateVideoReframeModel(lucataco/trim-video) = true, want false")
 	}
 }

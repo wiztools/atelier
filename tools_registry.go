@@ -100,19 +100,22 @@ type HarnessToolExecutionContext struct {
 	// Replicate resolver's caveats (e.g. an out-of-enum scale factor dropped
 	// for the model's own default); the fal path returns nil.
 	UpscaleImage func(ctx context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, []string, error)
-	// UpscaleVideo raises an attached clip's resolution via fal's video-upscaler
-	// endpoints. It returns a video (same transport as GenerateVideo) plus
-	// resolver notices — the video sibling of UpscaleImage.
+	// UpscaleVideo raises an attached clip's resolution via the configured
+	// cloud video upscaler — fal, or Replicate when replicate is the video
+	// provider (video upscale follows VideoProvider). It returns a video (same
+	// transport as GenerateVideo) plus resolver notices — the video sibling of
+	// UpscaleImage.
 	UpscaleVideo func(ctx context.Context, req VideoUpscaleRequest) (GeneratedVideo, error)
-	// ReframeVideo converts an attached clip to a new aspect ratio via fal's
-	// generative reframe endpoints — outpainting the added canvas rather than
-	// cropping it. It returns a video (same transport as GenerateVideo) plus
-	// resolver notices, like UpscaleVideo.
+	// ReframeVideo converts an attached clip to a new aspect ratio via the
+	// configured generative reframer — outpainting the added canvas rather
+	// than cropping it — following VideoProvider like UpscaleVideo. It returns
+	// a video (same transport as GenerateVideo) plus resolver notices.
 	ReframeVideo func(ctx context.Context, req VideoReframeRequest) (GeneratedVideo, error)
-	// RestyleVideo re-renders an attached clip under a prompt via fal's
-	// video-restyle endpoints — keeping the motion while changing the look
-	// (anime, claymation, a different character). It returns a video (same
-	// transport as GenerateVideo) plus resolver notices, like ReframeVideo.
+	// RestyleVideo re-renders an attached clip under a prompt via the
+	// configured video restyler — keeping the motion while changing the look
+	// (anime, claymation, a different character) — following VideoProvider
+	// like ReframeVideo. It returns a video (same transport as GenerateVideo)
+	// plus resolver notices.
 	RestyleVideo func(ctx context.Context, req VideoRestyleRequest) (GeneratedVideo, error)
 }
 
@@ -318,10 +321,10 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 		definitions = append(definitions, videoUpscaleToolDefinition(config))
 	}
 	if videoReframeConfigured(config) {
-		definitions = append(definitions, videoReframeToolDefinition())
+		definitions = append(definitions, videoReframeToolDefinition(config))
 	}
 	if videoRestyleConfigured(config) {
-		definitions = append(definitions, videoRestyleToolDefinition())
+		definitions = append(definitions, videoRestyleToolDefinition(config))
 	}
 	return newHarnessToolRegistry(definitions)
 }
@@ -516,39 +519,54 @@ func resolveDefaultVideoUpscaleModel(config AppConfig) string {
 	return defaultFalVideoUpscaleModel
 }
 
-// videoReframeConfigured mirrors videoUpscaleConfigured for the reframe_video
-// tool: fal is the only generative-reframe backend and the default endpoint
-// always applies, so the gate is purely the fal key — like upscale_video,
-// transcribe_audio, and lip_sync, no model needs to be configured first.
+// videoReframeConfigured mirrors imageUpscaleConfigured's provider-aware
+// routing for the reframe_video tool: replicate needs its token, every other
+// provider runs fal and needs a fal.ai key.
 func videoReframeConfigured(config AppConfig) bool {
+	if videoGenerationProvider(config) == "replicate" {
+		return replicateKeyConfigured()
+	}
 	return falKeyConfigured()
 }
 
-// resolveDefaultVideoReframeModel returns the reframe endpoint the
-// reframe_video tool uses when the call doesn't override it. fal-only; falls
-// back to the const default (LTX-2.3 Reframe) when the user hasn't picked one
-// in Settings.
+// resolveDefaultVideoReframeModel returns the reframe model the reframe_video
+// tool uses when the call doesn't override it, routing by the video provider —
+// fal's endpoint on every provider but replicate. Falls back to the const
+// default when the user hasn't picked one in Settings.
 func resolveDefaultVideoReframeModel(config AppConfig) string {
+	if videoGenerationProvider(config) == "replicate" {
+		if model := strings.TrimSpace(config.Providers.Replicate.VideoReframeModel); model != "" {
+			return model
+		}
+		return defaultReplicateVideoReframeModel
+	}
 	if model := strings.TrimSpace(config.Providers.Fal.VideoReframeModel); model != "" {
 		return model
 	}
 	return defaultFalVideoReframeModel
 }
 
-// videoRestyleConfigured mirrors videoUpscaleConfigured for the restyle_video
-// tool: fal is the only video-restyle backend and the default endpoint always
-// applies, so the gate is purely the fal key — like upscale_video,
-// reframe_video, transcribe_audio, and lip_sync, no model needs to be
-// configured first.
+// videoRestyleConfigured mirrors imageUpscaleConfigured's provider-aware
+// routing for the restyle_video tool: replicate needs its token, every other
+// provider runs fal and needs a fal.ai key.
 func videoRestyleConfigured(config AppConfig) bool {
+	if videoGenerationProvider(config) == "replicate" {
+		return replicateKeyConfigured()
+	}
 	return falKeyConfigured()
 }
 
-// resolveDefaultVideoRestyleModel returns the restyle endpoint the
-// restyle_video tool uses when the call doesn't override it. fal-only; falls
-// back to the const default (Kling o3 video-to-video edit) when the user
-// hasn't picked one in Settings.
+// resolveDefaultVideoRestyleModel returns the restyle model the restyle_video
+// tool uses when the call doesn't override it, routing by the video provider —
+// fal's endpoint on every provider but replicate. Falls back to the const
+// default when the user hasn't picked one in Settings.
 func resolveDefaultVideoRestyleModel(config AppConfig) string {
+	if videoGenerationProvider(config) == "replicate" {
+		if model := strings.TrimSpace(config.Providers.Replicate.VideoRestyleModel); model != "" {
+			return model
+		}
+		return defaultReplicateVideoRestyleModel
+	}
 	if model := strings.TrimSpace(config.Providers.Fal.VideoRestyleModel); model != "" {
 		return model
 	}
@@ -560,8 +578,9 @@ func resolveDefaultVideoRestyleModel(config AppConfig) string {
 // model configured AND a fal.ai key present (the historical gate), the
 // Replicate path needs a Replicate video model configured AND its key. The key
 // checks avoid offering a tool that is guaranteed to fail at call time with a
-// key-not-configured error. The video transforms (upscale/reframe/restyle),
-// lipsync, and audio stay fal-only and keep their own fal-key gates.
+// key-not-configured error. Lipsync and audio stay fal-only; the video
+// transforms (upscale/reframe/restyle) follow VideoProvider and keep their own
+// provider-aware gates.
 func videoGenerationConfigured(config AppConfig) bool {
 	if videoGenerationProvider(config) == "replicate" {
 		if strings.TrimSpace(config.Providers.Replicate.VideoModel) == "" &&
@@ -2176,16 +2195,17 @@ func videoUpscaleParamSchema() map[string]any {
 // Reels/Shorts/TikTok, or widening a portrait clip), the outpainting sibling
 // of upscale_video's resolution transform. Where transform_video's local crop
 // trims the frame and its blur/pad modes cover the added canvas with a
-// blurred copy or black bars, this tool GENERATES the added scene content.
-// fal-only; the attached-video requirement is enforced in Execute because
-// Validate only sees the call, not tools. The result rides the same
-// ToolVideoResult pipeline as generate_video, so artifacts, history,
+// blurred copy or black bars, this tool GENERATES the added scene content —
+// on fal, or on Replicate when replicate is the video provider (reframe
+// follows VideoProvider). The attached-video requirement is enforced in
+// Execute because Validate only sees the call, not tools. The result rides
+// the same ToolVideoResult pipeline as generate_video, so artifacts, history,
 // carry-forward, and the chat reply's video card all work unchanged.
-func videoReframeToolDefinition() HarnessToolDefinition {
+func videoReframeToolDefinition(config AppConfig) HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "reframe_video",
 		Title:       "Reframe video",
-		Description: "Use this when the user asks to convert an attached video to a different aspect ratio and wants the added canvas area GENERATED — turn a 16:9 clip into 9:16 vertical for Reels/Shorts/TikTok (or 1:1/4:5), or widen a portrait clip — keeping the original footage intact while outpainting what the new shape adds. Requires an attached video. fal.ai only — runs unattended like video generation, takes a minute or more on longer clips, and inputs are capped around 60 seconds. When center-cropping is acceptable, or a blurred or black background behind the untouched full frame is fine, prefer the local free transform_video (aspectRatio with mode crop/blur/pad) instead.",
+		Description: "Use this when the user asks to convert an attached video to a different aspect ratio and wants the added canvas area GENERATED — turn a 16:9 clip into 9:16 vertical for Reels/Shorts/TikTok (or 1:1/4:5), or widen a portrait clip — keeping the original footage intact while outpainting what the new shape adds. Requires an attached video. Runs unattended like video generation on the configured cloud video provider (fal.ai or Replicate), takes a minute or more on longer clips, and inputs are capped around 60 seconds. When center-cropping is acceptable, or a blurred or black background behind the untouched full frame is fine, prefer the local free transform_video (aspectRatio with mode crop/blur/pad) instead.",
 		Example:     `{"name":"reframe_video","aspectRatio":"9:16"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: videoReframeParamSchema(),
@@ -2239,7 +2259,10 @@ func videoReframeToolDefinition() HarnessToolDefinition {
 		Activity: func(result HarnessToolResult) HarnessToolActivity {
 			activity := defaultHarnessToolActivity(result)
 			if typed, ok := result.Result.(ToolVideoResult); ok {
-				activity.Command = []string{"fal", "reframe", typed.Model}
+				// The command's provider token is the routed backend — reframe
+				// follows the video provider, the same seam
+				// toolActivityFromResult attributes by.
+				activity.Command = []string{videoGenerationProvider(config), "reframe", typed.Model}
 			}
 			return activity
 		},
@@ -2263,18 +2286,19 @@ func videoReframeParamSchema() map[string]any {
 // style transfer of an attached clip: the motion is kept while the look is
 // re-rendered under a prompt (anime, claymation, a different art style or
 // characters). The generative sibling of reframe_video's shape transform:
-// reframe changes the canvas, restyle changes the content. fal-only; the
-// attached-video requirement is enforced in Execute because Validate only
-// sees the call, not tools. The result rides the same ToolVideoResult
-// pipeline as generate_video, so artifacts, history, carry-forward, and the
-// chat reply's video card all work unchanged.
-func videoRestyleToolDefinition() HarnessToolDefinition {
+// reframe changes the canvas, restyle changes the content — on fal, or on
+// Replicate when replicate is the video provider (restyle follows
+// VideoProvider). The attached-video requirement is enforced in Execute
+// because Validate only sees the call, not tools. The result rides the same
+// ToolVideoResult pipeline as generate_video, so artifacts, history,
+// carry-forward, and the chat reply's video card all work unchanged.
+func videoRestyleToolDefinition(config AppConfig) HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "restyle_video",
 		Title:       "Restyle video",
 		Risk:        HarnessToolRiskRead,
 		Example:     `{"name":"restyle_video","content":"redraw the clip in hand-drawn anime style"}`,
-		Description: "Use this when the user asks to change the LOOK of an attached video while keeping its motion and timing — restyle it into anime, claymation, or another art style, change the characters' appearance, or re-render the clip with a different visual treatment. Requires an attached video and a description of the new look. fal.ai only — runs unattended like video generation, takes a minute or more, and input clips are capped (commonly around 3-15 seconds). This is generation, not a local filter: every frame is re-rendered by the model. Attached images ride as style/appearance references on models that accept them (e.g. a character sheet for \"make him look like this\"); models without a reference-image input ignore them with a notice. The restyled clip keeps the original audio where the model supports it.",
+		Description: "Use this when the user asks to change the LOOK of an attached video while keeping its motion and timing — restyle it into anime, claymation, or another art style, change the characters' appearance, or re-render the clip with a different visual treatment. Requires an attached video and a description of the new look. Runs unattended like video generation on the configured cloud video provider (fal.ai or Replicate), takes a minute or more, and input clips are capped (commonly around 3-15 seconds). This is generation, not a local filter: every frame is re-rendered by the model. Attached images ride as style/appearance references on models that accept them (e.g. a character sheet for \"make him look like this\"); models without a reference-image input ignore them with a notice. The restyled clip keeps the original audio where the model supports it.",
 		ParamSchema: videoRestyleParamSchema(),
 		Validate: func(prefix string, call HarnessToolCall) []string {
 			if strings.TrimSpace(call.Content) == "" {
@@ -2328,7 +2352,10 @@ func videoRestyleToolDefinition() HarnessToolDefinition {
 		Activity: func(result HarnessToolResult) HarnessToolActivity {
 			activity := defaultHarnessToolActivity(result)
 			if typed, ok := result.Result.(ToolVideoResult); ok {
-				activity.Command = []string{"fal", "restyle", typed.Model}
+				// The command's provider token is the routed backend — restyle
+				// follows the video provider, the same seam
+				// toolActivityFromResult attributes by.
+				activity.Command = []string{videoGenerationProvider(config), "restyle", typed.Model}
 			}
 			return activity
 		},
