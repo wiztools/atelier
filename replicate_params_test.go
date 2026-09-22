@@ -305,13 +305,14 @@ func TestConversationModelOverridesReplicateRouting(t *testing.T) {
 	config.Providers.Fal.UpscaleModel = "fal-ai/esrgan"
 
 	overlaid, _, err := overlayModelOverrides(config, ChatRequest{}, ConversationModelOverrides{
-		VideoProvider:   "replicate",
-		VideoModel:      "wan-video/wan-2.5-t2v",
-		VideoImageModel: "wan-video/wan-2.5-i2v",
-		ImageProvider:   "replicate",
-		ImageModel:      "black-forest-labs/flux-schnell",
-		ImageEditModel:  "black-forest-labs/flux-kontext-pro",
-		UpscaleModel:    "nightmareai/real-esrgan",
+		VideoProvider:     "replicate",
+		VideoModel:        "wan-video/wan-2.5-t2v",
+		VideoImageModel:   "wan-video/wan-2.5-i2v",
+		ImageProvider:     "replicate",
+		ImageModel:        "black-forest-labs/flux-schnell",
+		ImageEditModel:    "black-forest-labs/flux-kontext-pro",
+		UpscaleModel:      "nightmareai/real-esrgan",
+		VideoUpscaleModel: "topazlabs/video-upscale",
 	})
 	if err != nil {
 		t.Fatalf("overlayModelOverrides: %v", err)
@@ -335,6 +336,10 @@ func TestConversationModelOverridesReplicateRouting(t *testing.T) {
 	}
 	if overlaid.Providers.Fal.UpscaleModel != "fal-ai/esrgan" {
 		t.Fatalf("fal UpscaleModel = %q, want untouched", overlaid.Providers.Fal.UpscaleModel)
+	}
+	// The video-upscale override follows the effective video provider.
+	if overlaid.Providers.Replicate.VideoUpscaleModel != "topazlabs/video-upscale" {
+		t.Fatalf("replicate VideoUpscaleModel = %q", overlaid.Providers.Replicate.VideoUpscaleModel)
 	}
 	// A video model override with no provider pin inherits the config's
 	// effective provider (replicate, set above).
@@ -437,5 +442,181 @@ func TestResolveReplicateUpscaleInput(t *testing.T) {
 	}
 	if len(notices) != 1 || !strings.Contains(notices[0], "does not accept scale 4") {
 		t.Fatalf("notices = %v, want the enum-drop notice", notices)
+	}
+}
+
+func TestVideoUpscaleTierHelpers(t *testing.T) {
+	for _, tc := range []struct {
+		member string
+		want   int
+		ok     bool
+	}{
+		{"1080p", 1080, true},
+		{"480P", 480, true},
+		{"4k", 2160, true},
+		{"8k", 4320, true},
+		{"auto", 0, false},
+		{"", 0, false},
+	} {
+		if got, ok := videoUpscaleTierPixels(tc.member); ok != tc.ok || got != tc.want {
+			t.Errorf("videoUpscaleTierPixels(%q) = %d,%v want %d,%v", tc.member, got, ok, tc.want, tc.ok)
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		members []string
+		target  float64
+		want    string
+		capped  bool
+	}{
+		{"snap up to nearest", []string{"720p", "1080p", "4k"}, 960, "1080p", false},
+		{"exact match", []string{"720p", "1080p", "4k"}, 2160, "4k", false},
+		{"below lowest stays lowest", []string{"720p", "1080p", "4k"}, 360, "720p", false},
+		{"above all caps at top", []string{"720p", "1080p", "4k"}, 4320, "4k", true},
+		{"unparseable members ignored", []string{"auto", "1080p", "4k"}, 800, "1080p", false},
+		{"nothing parseable", []string{"auto", "match"}, 800, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, capped, ok := videoUpscaleTierForTarget(tc.members, tc.target)
+			if tc.want == "" {
+				if ok {
+					t.Fatalf("ok = true, want false")
+				}
+				return
+			}
+			if !ok || got != tc.want || capped != tc.capped {
+				t.Fatalf("videoUpscaleTierForTarget(%v, %v) = %q,%v,%v want %q,%v,true", tc.members, tc.target, got, capped, ok, tc.want, tc.capped)
+			}
+		})
+	}
+}
+
+func TestResolveReplicateVideoUpscaleInput(t *testing.T) {
+	// Factor shape: the schema declares a native factor field.
+	factorSchema := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"video":{"type":"string"},
+		"scale_factor":{"type":"number"}
+	}}}}}`)
+	input, sourceKey, notices, err := resolveReplicateVideoUpscaleInput(factorSchema, VideoUpscaleRequest{
+		Model: "owner/factor-upscaler",
+		Video: "data:video/mp4;base64,QUFB",
+		Scale: 4,
+	})
+	if err != nil {
+		t.Fatalf("factor shape: %v", err)
+	}
+	if len(notices) != 0 {
+		t.Fatalf("notices = %v", notices)
+	}
+	if sourceKey != "video" || input["video"] != "data:video/mp4;base64,QUFB" {
+		t.Fatalf("source = %q/%v", sourceKey, input["video"])
+	}
+	if input["scale_factor"] != float64(4) {
+		t.Fatalf("scale_factor = %v (%T)", input["scale_factor"], input["scale_factor"])
+	}
+
+	// Tier shape: a probeable inline clip derives the tier from its own frame
+	// size × factor (1920×1080 × 2 → 2160 → "4k").
+	tierSchema := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"video":{"type":"string"},
+		"target_resolution":{"type":"string","enum":["720p","1080p","4k"]}
+	}}}}}`)
+	inline1080p := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(mp4FixtureWithVideoTrack(1920, 1080))
+	input, _, notices, err = resolveReplicateVideoUpscaleInput(tierSchema, VideoUpscaleRequest{
+		Model: "topazlabs/video-upscale",
+		Video: inline1080p,
+		Scale: 2,
+	})
+	if err != nil {
+		t.Fatalf("tier shape: %v", err)
+	}
+	if len(notices) != 0 {
+		t.Fatalf("notices = %v, want none for an exact tier match", notices)
+	}
+	if input["target_resolution"] != "4k" {
+		t.Fatalf("target_resolution = %v, want 4k", input["target_resolution"])
+	}
+
+	// A factor past the top tier caps with a notice.
+	input, _, notices, err = resolveReplicateVideoUpscaleInput(tierSchema, VideoUpscaleRequest{
+		Model: "topazlabs/video-upscale",
+		Video: inline1080p,
+		Scale: 4,
+	})
+	if err != nil {
+		t.Fatalf("tier cap: %v", err)
+	}
+	if input["target_resolution"] != "4k" || len(notices) != 1 || !strings.Contains(notices[0], "capping") {
+		t.Fatalf("input = %v, notices = %v, want the 4k cap notice", input, notices)
+	}
+
+	// A hosted-URL source can't be probed for the tier — degrade with a
+	// notice, never guess.
+	input, _, notices, err = resolveReplicateVideoUpscaleInput(tierSchema, VideoUpscaleRequest{
+		Model: "topazlabs/video-upscale",
+		Video: "https://cdn.example/clip.mp4",
+		Scale: 2,
+	})
+	if err != nil {
+		t.Fatalf("tier unprobeable: %v", err)
+	}
+	if _, exists := input["target_resolution"]; exists {
+		t.Fatal("an underivable tier must not be sent")
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "couldn't be read") {
+		t.Fatalf("notices = %v, want the unprobeable notice", notices)
+	}
+
+	// Nil schema falls back to the minimal factor body.
+	input, sourceKey, _, err = resolveReplicateVideoUpscaleInput(nil, VideoUpscaleRequest{Model: "owner/model", Video: "data:video/mp4;base64,QUFB"})
+	if err != nil {
+		t.Fatalf("nil schema: %v", err)
+	}
+	if sourceKey != "video" || input["scale"] != float64(2) {
+		t.Fatalf("nil-schema fallback = %q/%v", sourceKey, input)
+	}
+
+	// A model with no video input is a hard error.
+	noVideoSchema := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{"prompt":{"type":"string"}}}}}}`)
+	_, _, _, err = resolveReplicateVideoUpscaleInput(noVideoSchema, VideoUpscaleRequest{Model: "owner/model", Video: "data:video/mp4;base64,QUFB"})
+	if err == nil || !strings.Contains(err.Error(), "no video input") {
+		t.Fatalf("err = %v, want the no-video-input refusal", err)
+	}
+
+	// Neither a factor nor a tier field: degrade with a notice.
+	neitherSchema := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{"video":{"type":"string"}}}}}}`)
+	_, _, notices, err = resolveReplicateVideoUpscaleInput(neitherSchema, VideoUpscaleRequest{Model: "owner/model", Video: "data:video/mp4;base64,QUFB"})
+	if err != nil {
+		t.Fatalf("neither shape: %v", err)
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "no scale control") {
+		t.Fatalf("notices = %v", notices)
+	}
+}
+
+// TestReplicateVideoUpscaleListerFilter pins the ai-enhance-videos partition:
+// upscaler ids stay, the collection's restoration/interpolation entries go.
+func TestReplicateVideoUpscaleListerFilter(t *testing.T) {
+	keep := []string{
+		"topazlabs/video-upscale",
+		"philz1337x/crystal-video-upscaler",
+		"lucataco/real-esrgan-video",
+		"tencentarc/animesr",
+		"pollinations/real-basicvsr-video-superresolution",
+	}
+	for _, id := range keep {
+		if !isReplicateVideoUpscaleModel(ReplicateModel{ID: id}) {
+			t.Errorf("isReplicateVideoUpscaleModel(%q) = false, want true", id)
+		}
+	}
+	for _, id := range []string{
+		"pbarker/gfpgan-video",
+		"arielreplicate/deoldify_video",
+		"google/film-frame-interpolation",
+		"xai/grok-imagine-video-extension",
+	} {
+		if isReplicateVideoUpscaleModel(ReplicateModel{ID: id}) {
+			t.Errorf("isReplicateVideoUpscaleModel(%q) = true, want false", id)
+		}
 	}
 }

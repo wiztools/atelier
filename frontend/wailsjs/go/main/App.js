@@ -226,6 +226,10 @@ export function ListReplicateVideoModels() {
   return window['go']['main']['App']['ListReplicateVideoModels']();
 }
 
+export function ListReplicateVideoUpscaleModels() {
+  return window['go']['main']['App']['ListReplicateVideoUpscaleModels']();
+}
+
 export function ListToolFiles(arg1) {
   return window['go']['main']['App']['ListToolFiles'](arg1);
 }

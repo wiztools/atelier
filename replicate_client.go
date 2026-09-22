@@ -41,6 +41,12 @@ const (
 	// (image + scale + optional face enhancement), the same lineage as fal's
 	// default esrgan endpoint.
 	defaultReplicateUpscaleModel = "nightmareai/real-esrgan"
+	// defaultReplicateVideoUpscaleModel is the video upscaler used when none
+	// is configured — Topaz's official video upscaler. Unlike the factor-based
+	// upscalers it takes a target resolution tier (720p/1080p/4k), which
+	// resolveReplicateVideoUpscaleInput derives from the source clip's own
+	// frame size × the requested factor.
+	defaultReplicateVideoUpscaleModel = "topazlabs/video-upscale"
 	// replicatePollInterval is the delay between prediction status checks,
 	// matching fal's cadence.
 	replicatePollInterval = 1500 * time.Millisecond
@@ -58,6 +64,12 @@ const (
 	replicateTextToVideoCollection     = "text-to-video"
 	replicateImageToVideoCollection    = "image-to-video"
 	replicateSuperResolutionCollection = "super-resolution"
+	// replicateEnhanceVideosCollection is not upscale-only — Replicate files
+	// upscalers alongside face restoration, colorization, and frame
+	// interpolation — so its lister post-filters for upscaler ids
+	// (isReplicateVideoUpscaleModel), the fal pattern of partitioning a broad
+	// category.
+	replicateEnhanceVideosCollection = "ai-enhance-videos"
 	// maxReplicateTransientRetries is the number of times do() re-issues a
 	// request after a transient 5xx, matching the fal client's posture.
 	maxReplicateTransientRetries = 1

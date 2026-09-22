@@ -315,7 +315,7 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 		definitions = append(definitions, imageUpscaleToolDefinition(config))
 	}
 	if videoUpscaleConfigured(config) {
-		definitions = append(definitions, videoUpscaleToolDefinition())
+		definitions = append(definitions, videoUpscaleToolDefinition(config))
 	}
 	if videoReframeConfigured(config) {
 		definitions = append(definitions, videoReframeToolDefinition())
@@ -489,18 +489,27 @@ func resolveDefaultImageUpscaleModel(config AppConfig) string {
 	return defaultFalUpscaleModel
 }
 
-// videoUpscaleConfigured mirrors imageUpscaleConfigured for the upscale_video
-// tool: fal is the only video-upscale backend and the default endpoint always
-// applies, so the gate is purely the fal key — like transcribe_audio and
-// lip_sync, no model needs to be configured first.
+// videoUpscaleConfigured mirrors imageUpscaleConfigured's provider-aware
+// routing for the upscale_video tool: replicate needs its token, every other
+// provider runs fal and needs a fal.ai key.
 func videoUpscaleConfigured(config AppConfig) bool {
+	if videoGenerationProvider(config) == "replicate" {
+		return replicateKeyConfigured()
+	}
 	return falKeyConfigured()
 }
 
-// resolveDefaultVideoUpscaleModel returns the video-upscaler endpoint the
-// upscale_video tool uses when the call doesn't override it. fal-only; falls
-// back to the const default when the user hasn't picked one in Settings.
+// resolveDefaultVideoUpscaleModel returns the video-upscaler model the
+// upscale_video tool uses when the call doesn't override it, routing by the
+// video provider — fal's endpoint on every provider but replicate. Falls back
+// to the const default when the user hasn't picked one in Settings.
 func resolveDefaultVideoUpscaleModel(config AppConfig) string {
+	if videoGenerationProvider(config) == "replicate" {
+		if model := strings.TrimSpace(config.Providers.Replicate.VideoUpscaleModel); model != "" {
+			return model
+		}
+		return defaultReplicateVideoUpscaleModel
+	}
 	if model := strings.TrimSpace(config.Providers.Fal.VideoUpscaleModel); model != "" {
 		return model
 	}
@@ -2077,16 +2086,17 @@ func imageUpscaleParamSchema() map[string]any {
 
 // videoUpscaleToolDefinition exposes the upscale_video tool — the video sibling
 // of upscale_image. It takes an attached clip and returns a
-// higher-resolution version via the configured fal video upscaler (a
-// video-to-video transform). fal-only; the attached-video requirement is
-// enforced in Execute because Validate only sees the call, not tools. The result
-// rides the same ToolVideoResult pipeline as generate_video, so artifacts,
-// history, and the chat reply's video card all work unchanged.
-func videoUpscaleToolDefinition() HarnessToolDefinition {
+// higher-resolution version via the configured cloud video upscaler — fal.ai,
+// or Replicate when replicate is the video provider (video upscale follows
+// VideoProvider). The attached-video requirement is enforced in Execute
+// because Validate only sees the call, not tools. The result rides the same
+// ToolVideoResult pipeline as generate_video, so artifacts, history, and the
+// chat reply's video card all work unchanged.
+func videoUpscaleToolDefinition(config AppConfig) HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "upscale_video",
 		Title:       "Upscale video",
-		Description: "Use this when the user asks to upscale, increase the resolution of, or make a higher-resolution or 4K version of an attached video clip. Requires an attached video. fal.ai only — runs unattended like video generation. Upscaling runs for a minute or more on longer clips.",
+		Description: "Use this when the user asks to upscale, increase the resolution of, or make a higher-resolution or 4K version of an attached video clip. Requires an attached video. Runs unattended like video generation on the configured cloud video provider (fal.ai or Replicate). Upscaling runs for a minute or more on longer clips.",
 		Example:     `{"name":"upscale_video","scale":"2x"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: videoUpscaleParamSchema(),
@@ -2139,7 +2149,10 @@ func videoUpscaleToolDefinition() HarnessToolDefinition {
 		Activity: func(result HarnessToolResult) HarnessToolActivity {
 			activity := defaultHarnessToolActivity(result)
 			if typed, ok := result.Result.(ToolVideoResult); ok {
-				activity.Command = []string{"fal", "upscale", typed.Model}
+				// The command's provider token is the routed backend — video
+				// upscale follows the video provider, the same seam
+				// toolActivityFromResult attributes by.
+				activity.Command = []string{videoGenerationProvider(config), "upscale", typed.Model}
 			}
 			return activity
 		},

@@ -379,6 +379,37 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			return resp, nil, err
 		}
 		gateway.tools.UpscaleVideo = func(ctx context.Context, req VideoUpscaleRequest) (GeneratedVideo, error) {
+			// Video upscale follows the video provider: replicate routes there,
+			// every other provider stays on fal — the same seam generate_video
+			// reads.
+			if videoGenerationProvider(config) == "replicate" {
+				apiKey, err := loadReplicateAPIKey()
+				if err != nil {
+					return GeneratedVideo{}, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return GeneratedVideo{}, errReplicateKeyNotConfigured
+				}
+				client := newReplicateClient(app.client, apiKey)
+				schema := replicateSchemaCache.Get(ctx, req.Model)
+				// The resolver probes the source clip's frame size from the
+				// inline data URL for tier-based models, so it runs BEFORE the
+				// media upload swaps the value for a hosted URL.
+				input, sourceKey, notices, err := resolveReplicateVideoUpscaleInput(schema, req)
+				if err != nil {
+					return GeneratedVideo{Notices: notices}, err
+				}
+				if sourceKey != "" {
+					if resolved, err := client.ResolveMediaURL(ctx, req.Video, "video/mp4", "source-video.mp4"); err == nil && resolved != "" {
+						input[sourceKey] = resolved
+					}
+				}
+				// Upscaling returns a video, so it reuses the GenerateVideo
+				// transport — the same pattern as the fal path below.
+				generated, genErr := client.GenerateVideo(ctx, req.Model, input)
+				generated.Notices = notices
+				return generated, genErr
+			}
 			apiKey, err := loadFalAPIKey()
 			if err != nil {
 				return GeneratedVideo{}, err

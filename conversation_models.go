@@ -331,7 +331,18 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 		config.Providers.Fal.VideoKeyframeModel = o.VideoKeyframeModel
 	}
 	if o.VideoUpscaleModel != "" {
-		config.Providers.Fal.VideoUpscaleModel = o.VideoUpscaleModel
+		// The video-upscale override follows the effective video provider —
+		// upscale_video routes by it, the image-upscale rule one dimension
+		// over.
+		videoProvider := o.VideoProvider
+		if videoProvider == "" {
+			videoProvider = config.Models.VideoProvider
+		}
+		if videoProvider == "replicate" {
+			config.Providers.Replicate.VideoUpscaleModel = o.VideoUpscaleModel
+		} else {
+			config.Providers.Fal.VideoUpscaleModel = o.VideoUpscaleModel
+		}
 	}
 	if o.VideoReframeModel != "" {
 		config.Providers.Fal.VideoReframeModel = o.VideoReframeModel

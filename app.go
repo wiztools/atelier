@@ -260,10 +260,11 @@ type ConfigFal struct {
 
 // ConfigReplicate configures the Replicate image/video-generation backend —
 // the cloud sibling of ConfigFal for generate_image, upscale_image (which
-// follows ImageProvider), and generate_video. The API token lives in the OS
-// keychain (see keychain.go), not in config — Enabled mirrors the key's
-// presence for the frontend, like ConfigFal. The video transforms
-// (video upscale/reframe/restyle), lipsync, and audio stay fal-only.
+// follows ImageProvider), generate_video, and upscale_video (which follows
+// VideoProvider). The API token lives in the OS keychain (see keychain.go),
+// not in config — Enabled mirrors the key's presence for the frontend, like
+// ConfigFal. The remaining video transforms (reframe/restyle), lipsync, and
+// audio stay fal-only.
 type ConfigReplicate struct {
 	Enabled bool `json:"enabled"`
 	// Model is the text-to-image model (an owner/name slug, e.g.
@@ -279,6 +280,10 @@ type ConfigReplicate struct {
 	// the image provider — upscale follows ImageProvider, so fal's
 	// UpscaleModel serves on every other provider.
 	UpscaleModel string `json:"upscaleModel,omitempty"`
+	// VideoUpscaleModel is the video upscaler upscale_video uses when
+	// replicate is the video provider — video upscale follows VideoProvider,
+	// so fal's VideoUpscaleModel serves on fal.
+	VideoUpscaleModel string `json:"videoUpscaleModel,omitempty"`
 }
 
 // ConfigOpenAICompatible addresses a local server that speaks OpenAI's API
@@ -2509,6 +2514,41 @@ func (a *App) ListReplicateImageEditModels() ([]ReplicateModel, error) {
 // shown when replicate is the image provider (upscale follows it).
 func (a *App) ListReplicateUpscaleModels() ([]ReplicateModel, error) {
 	return a.listReplicateCollection(replicateSuperResolutionCollection)
+}
+
+// ListReplicateVideoUpscaleModels returns the video upscalers of Replicate's
+// ai-enhance-videos collection for the Settings video-upscale-model picker,
+// shown when replicate is the video provider (video upscale follows it). The
+// collection mixes upscalers with face restoration, colorization, and frame
+// interpolation, so entries are post-filtered by id markers — the fal pattern
+// of partitioning a broad category for a picker.
+func (a *App) ListReplicateVideoUpscaleModels() ([]ReplicateModel, error) {
+	models, err := a.listReplicateCollection(replicateEnhanceVideosCollection)
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]ReplicateModel, 0, len(models))
+	for _, model := range models {
+		if isReplicateVideoUpscaleModel(model) {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered, nil
+}
+
+// isReplicateVideoUpscaleModel reports whether a collection entry looks like a
+// video upscaler: the id (owner/name, lowercased) carries one of the upscale
+// family markers. Matches topazlabs/video-upscale, the crystal and esrgan
+// video upscalers, and the super-resolution (animesr/basicvsr) models; skips
+// the collection's face restoration, colorization, and interpolation entries.
+func isReplicateVideoUpscaleModel(model ReplicateModel) bool {
+	lower := strings.ToLower(model.ID)
+	for _, marker := range []string{"upscale", "esrgan", "animesr", "superresolution", "super-resolution", "basicvsr"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // ListReplicateVideoModels returns the official models of Replicate's

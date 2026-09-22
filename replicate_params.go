@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -379,4 +380,157 @@ func resolveReplicateUpscaleInput(schema *ModelInputSchema, req ImageUpscaleRequ
 		}
 	}
 	return body, notices, nil
+}
+
+// replicateVideoUpscaleSynonyms lists, per canonical param, the native input
+// names Replicate video upscalers use. Models split into two amount shapes:
+// factor-based upscalers declare scale/scale_factor/upscale_factor, while
+// tier-based ones (topazlabs/video-upscale) declare a target resolution field
+// — both are listed and the schema picks whichever the model declares.
+var replicateVideoUpscaleSynonyms = map[string][]string{
+	"sourceVideo": {"video", "input_video", "video_url"},
+	"scale":       {"scale", "scale_factor", "upscale_factor"},
+	"resolution":  {"resolution", "target_resolution", "output_resolution"},
+}
+
+// resolveReplicateVideoUpscaleInput maps a canonical VideoUpscaleRequest onto
+// the Replicate video-upscaler model's native input schema, returning the
+// prediction input, the native field name the source clip landed on (so the
+// gateway can swap in the hosted URL after a Files-API upload), user-facing
+// notices, and an error for a hard capability mismatch. A nil schema yields
+// the minimal {video, scale} fallback every factor-based upscaler accepts.
+//
+// The amount maps two ways: a declared factor field takes the numeric factor;
+// a declared resolution-tier field (Topaz) derives the tier from the source
+// clip's own frame size × factor — read from the data URL's MP4 container
+// while the bytes are still inline — snapped UP to the nearest declared tier
+// so an upscale never lands below the request. A hosted-URL source can't be
+// probed and an enum-free tier can't be chosen; both degrade with a notice to
+// the model's own default rather than a guess.
+func resolveReplicateVideoUpscaleInput(schema *ModelInputSchema, req VideoUpscaleRequest) (map[string]any, string, []string, error) {
+	video := falVideoURL(strings.TrimSpace(req.Video))
+	scale := req.Scale
+	if scale <= 0 {
+		scale = 2
+	}
+	ov := Overrides{}
+	if schema == nil {
+		return map[string]any{"video": video, "scale": scale}, "video", nil, nil
+	}
+	body := map[string]any{}
+	var notices []string
+	// The source clip is the tool's entire purpose: an unmapped video input is
+	// a hard error, not a graceful drop (the resolveLipsyncBody rule).
+	sourceKey := ""
+	if path, prop, ok := findNative(schema, ov, "replicate-video-upscale", req.Model, "sourceVideo"); ok {
+		sourceKey = path
+		setBodyPath(schema, body, path, coerceVideos(prop, []string{video}))
+	} else {
+		return nil, "", notices, fmt.Errorf("the selected model %q has no video input to upscale", req.Model)
+	}
+	if path, prop, ok := findNative(schema, ov, "replicate-video-upscale", req.Model, "scale"); ok {
+		if value := fmt.Sprintf("%v", scale); !valueAllowedByEnum(prop, value) {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q does not accept scale %v; using the model's default factor.",
+				req.Model, scale))
+		} else {
+			setBodyPath(schema, body, path, coerceVideoValue(prop, scale))
+		}
+		return body, sourceKey, notices, nil
+	}
+	// No factor field: try the tier shape before giving up on the amount.
+	if path, prop, ok := findNative(schema, ov, "replicate-video-upscale", req.Model, "resolution"); ok {
+		shortEdge, probeable := dataURLVideoShortEdge(req.Video)
+		if !probeable {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q takes a target resolution rather than a scale factor, and the source clip's frame size couldn't be read; using the model's default resolution.",
+				req.Model))
+			return body, sourceKey, notices, nil
+		}
+		tier, capped, ok := videoUpscaleTierForTarget(prop.Enum, float64(shortEdge)*scale)
+		if !ok {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q declares no recognizable resolution tiers; using the model's default resolution.",
+				req.Model))
+			return body, sourceKey, notices, nil
+		}
+		if capped {
+			notices = append(notices, fmt.Sprintf(
+				"The requested %vx exceeds %q's top resolution tier; capping at %s.",
+				scale, req.Model, tier))
+		}
+		setBodyPath(schema, body, path, coerceVideoValue(prop, tier))
+		return body, sourceKey, notices, nil
+	}
+	notices = append(notices, fmt.Sprintf(
+		"The selected model %q has no scale control; upscaling with the model's own default factor.",
+		req.Model))
+	return body, sourceKey, notices, nil
+}
+
+// videoUpscaleTierPixels reads a resolution-tier enum member's pixel height:
+// "1080p"/"480P" → 1080/480, "4k" → 2160, "8k" → 4320 (k tiers count 540p
+// per k). ok is false for anything unparseable.
+func videoUpscaleTierPixels(member string) (int, bool) {
+	m := strings.ToLower(strings.TrimSpace(member))
+	if strings.HasSuffix(m, "p") {
+		if n, err := strconv.Atoi(strings.TrimSuffix(m, "p")); err == nil && n > 0 {
+			return n, true
+		}
+	}
+	if strings.HasSuffix(m, "k") {
+		if n, err := strconv.Atoi(strings.TrimSuffix(m, "k")); err == nil && n > 0 {
+			return n * 540, true
+		}
+	}
+	return 0, false
+}
+
+// videoUpscaleTierForTarget picks the enum member whose pixel height is the
+// smallest one at or above target — an upscale never lands below the request.
+// When target exceeds every tier, the largest tier is returned with capped =
+// true; ok is false when no member parses.
+func videoUpscaleTierForTarget(members []string, target float64) (tier string, capped, ok bool) {
+	best := ""
+	bestPixels := 0
+	for _, member := range members {
+		pixels, parseable := videoUpscaleTierPixels(member)
+		if !parseable {
+			continue
+		}
+		if float64(pixels) >= target && (best == "" || pixels < bestPixels) {
+			best = member
+			bestPixels = pixels
+		}
+	}
+	if best != "" {
+		return best, false, true
+	}
+	// Target above every tier: take the largest.
+	for _, member := range members {
+		if pixels, parseable := videoUpscaleTierPixels(member); parseable && pixels > bestPixels {
+			best = member
+			bestPixels = pixels
+		}
+	}
+	return best, best != "", best != ""
+}
+
+// dataURLVideoShortEdge reads an inline MP4's frame height (the smaller
+// resolution axis is what tiers measure against). probeable is false for
+// hosted URLs and undecodable containers — the caller degrades with a notice.
+func dataURLVideoShortEdge(reference string) (int, bool) {
+	data, _, err := decodeMediaDataURL(strings.TrimSpace(reference))
+	if err != nil || len(data) == 0 {
+		return 0, false
+	}
+	width, height, ok := mp4VideoDimensions(data)
+	if !ok || width <= 0 || height <= 0 {
+		return 0, false
+	}
+	short := height
+	if width < height {
+		short = width
+	}
+	return int(short), true
 }

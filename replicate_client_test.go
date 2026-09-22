@@ -769,3 +769,91 @@ func TestReplicateGatewayUpscaleRouting(t *testing.T) {
 		t.Fatalf("resolveDefaultImageUpscaleModel = %q", got)
 	}
 }
+
+// TestReplicateGatewayUpscaleVideoRouting drives the gateway's UpscaleVideo
+// replicate branch: schema-driven input, the source swap for a hosted URL on
+// an oversized clip, and the shared GenerateVideo transport.
+func TestReplicateGatewayUpscaleVideoRouting(t *testing.T) {
+	keyring.MockInit()
+	t.Cleanup(func() { _ = clearReplicateAPIKey() })
+	if err := saveReplicateAPIKey("replicate-test-key"); err != nil {
+		t.Fatalf("saveReplicateAPIKey: %v", err)
+	}
+
+	schemaJSON := `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"video":{"type":"string"},
+		"scale":{"type":"number"}
+	}}}}}`
+	predictions := replicatePredictionHandler(t,
+		nil,
+		`"https://replicate.delivery/out/up.mp4"`,
+		"/out/up.mp4", tinyReplicateMP4, "video/mp4")
+	var sawHosted bool
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/v1/models/owner/vup":
+			return jsonResp(`{"latest_version":{"openapi_schema":` + schemaJSON + `}}`), nil
+		case req.Method == http.MethodPost && req.URL.Path == "/v1/files":
+			sawHosted = true
+			return jsonResp(`{"urls":{"get":"https://replicate.delivery/files/src"}}`), nil
+		case req.Method == http.MethodPost && req.URL.Path == "/v1/models/owner/vup/predictions":
+			var body struct {
+				Input map[string]any `json:"input"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Fatalf("decode prediction body: %v", err)
+			}
+			if got, ok := body.Input["video"].(string); !ok || !strings.HasPrefix(got, "https://replicate.delivery/files/src") {
+				t.Fatalf("input.video = %v, want the hosted upload URL", body.Input["video"])
+			}
+			if body.Input["scale"] != float64(2) && body.Input["scale"] != 2 {
+				t.Fatalf("input.scale = %v (%T)", body.Input["scale"], body.Input["scale"])
+			}
+			return jsonResp(`{"id":"pred-1","status":"starting"}`), nil
+		default:
+			return predictions.RoundTrip(req)
+		}
+	})
+	app := &App{client: &http.Client{Transport: transport}}
+	config := defaultAppConfig()
+	config.Storage.Root = t.TempDir()
+	config.Models.VideoProvider = "replicate"
+	config.Providers.Replicate.VideoUpscaleModel = "owner/vup"
+	gateway := newToolGateway(app, config)
+
+	// An oversized inline clip forces the Files-API upload path.
+	bigClip := make([]byte, replicateInlineMediaMaxBytes+64)
+	for i := range bigClip {
+		bigClip[i] = 0x61
+	}
+	generated, err := gateway.tools.UpscaleVideo(context.Background(), VideoUpscaleRequest{
+		Model: "owner/vup",
+		Video: "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(bigClip),
+		Scale: 2,
+	})
+	if err != nil {
+		t.Fatalf("UpscaleVideo: %v", err)
+	}
+	if len(generated.Data) == 0 {
+		t.Fatal("no video bytes returned")
+	}
+	if generated.CostMicros != 0 {
+		t.Fatalf("CostMicros = %d, want 0 (unknown on replicate)", generated.CostMicros)
+	}
+	if !sawHosted {
+		t.Fatal("the oversized source should have uploaded through the Files API")
+	}
+	if !videoUpscaleConfigured(config) {
+		t.Fatal("videoUpscaleConfigured should hold on the replicate path with a token")
+	}
+	if got := resolveDefaultVideoUpscaleModel(config); got != "owner/vup" {
+		t.Fatalf("resolveDefaultVideoUpscaleModel = %q", got)
+	}
+
+	// The tool activity command attributes to the routed provider.
+	definition := videoUpscaleToolDefinition(config)
+	activity := definition.Activity(HarnessToolResult{Status: "completed", Result: ToolVideoResult{Model: "owner/vup", Count: 1}})
+	if len(activity.Command) != 3 || activity.Command[0] != "replicate" {
+		t.Fatalf("Command = %v, want [replicate upscale <model>]", activity.Command)
+	}
+}

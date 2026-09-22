@@ -19,7 +19,7 @@ func TestUpscaleVideoToolRequiresAttachedVideo(t *testing.T) {
 			return GeneratedVideo{}, nil
 		},
 	}
-	def := videoUpscaleToolDefinition()
+	def := videoUpscaleToolDefinition(AppConfig{})
 	_, _, err := def.Execute(t.Context(), tools, HarnessToolCall{Scale: "2x"})
 	if err == nil || !strings.Contains(err.Error(), "attached video") {
 		t.Fatalf("err = %v, want an error mentioning an attached video is required", err)
@@ -51,7 +51,7 @@ func TestUpscaleVideoToolDefaultsAndScaleMapping(t *testing.T) {
 					return GeneratedVideo{Data: []byte("fake-mp4"), MimeType: "video/mp4", SourceURL: "https://fal.example/v.mp4"}, nil
 				},
 			}
-			def := videoUpscaleToolDefinition()
+			def := videoUpscaleToolDefinition(AppConfig{})
 			result, summary, err := def.Execute(t.Context(), tools, HarnessToolCall{Scale: tc.scale})
 			if err != nil {
 				t.Fatalf("Execute returned error: %v", err)
@@ -93,7 +93,7 @@ func TestUpscaleVideoToolHonorsModelOverride(t *testing.T) {
 			return GeneratedVideo{Data: []byte("fake-mp4"), MimeType: "video/mp4"}, nil
 		},
 	}
-	def := videoUpscaleToolDefinition()
+	def := videoUpscaleToolDefinition(AppConfig{})
 	result, _, err := def.Execute(t.Context(), tools, HarnessToolCall{Model: "fal-ai/seedvr/upscale/video"})
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
@@ -114,18 +114,37 @@ func TestUpscaleVideoToolHonorsModelOverride(t *testing.T) {
 	}
 }
 
-// TestVideoUpscaleConfiguredAndResolver covers the gating (available whenever a
-// fal.ai key is configured, like transcribe_audio and lip_sync — the default
-// endpoint always applies) and the resolver's configured→default fallback.
+// TestVideoUpscaleConfiguredAndResolver covers the gating (provider-aware:
+// replicate needs its token, every other provider needs a fal.ai key) and the
+// resolver's configured→default fallback on both providers.
 func TestVideoUpscaleConfiguredAndResolver(t *testing.T) {
 	keyring.MockInit()
 	if err := saveFalAPIKey("fal-test-key"); err != nil {
 		t.Fatalf("saveFalAPIKey: %v", err)
 	}
-	t.Cleanup(func() { _ = clearFalAPIKey() })
+	t.Cleanup(func() {
+		_ = clearFalAPIKey()
+		_ = clearReplicateAPIKey()
+	})
 
 	if !videoUpscaleConfigured(AppConfig{}) {
 		t.Error("videoUpscaleConfigured(with key) = false, want true")
+	}
+	// The replicate provider routes video upscale to replicate — a fal key
+	// alone must not light the tool up there, and its resolver picks the
+	// replicate slot/default.
+	replicateConfig := AppConfig{Models: ConfigModels{VideoProvider: "replicate"}}
+	if videoUpscaleConfigured(replicateConfig) {
+		t.Error("videoUpscaleConfigured(replicate, only a fal key) = true, want false")
+	}
+	if got := resolveDefaultVideoUpscaleModel(replicateConfig); got != defaultReplicateVideoUpscaleModel {
+		t.Errorf("resolveDefaultVideoUpscaleModel(replicate, unset) = %q, want %q", got, defaultReplicateVideoUpscaleModel)
+	}
+	if err := saveReplicateAPIKey("replicate-test-key"); err != nil {
+		t.Fatalf("saveReplicateAPIKey: %v", err)
+	}
+	if !videoUpscaleConfigured(replicateConfig) {
+		t.Error("videoUpscaleConfigured(replicate, with token) = false, want true")
 	}
 	configured := resolveDefaultVideoUpscaleModel(AppConfig{
 		Providers: ConfigProviders{Fal: ConfigFal{VideoUpscaleModel: "clarityai/crystal-video-upscaler"}},
