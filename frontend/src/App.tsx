@@ -6383,6 +6383,28 @@ function ModelSelectionPanel({
         <div className="settings-rows">
           <div className="two-column">
             <div className="field">
+              <div className="field-label-row">
+                {fieldLabel('video-duration', 'Default Video Duration', 'videoDuration')}
+                <InfoHint
+                  label="Default video duration"
+                  text="Applies to all video modes as the default clip length. Your request can override it per generation."
+                />
+              </div>
+              <select id="video-duration" value={value.videoDuration} onChange={(event) => onChange({videoDuration: event.target.value})}>
+                {durationOptions.video.map((option) => <option key={option} value={option}>{videoDurationLabels[option] ?? option}</option>)}
+              </select>
+            </div>
+
+            <div className="field">
+              {fieldLabel('video-aspect', 'Video Aspect Ratio', 'videoAspectRatio')}
+              <select id="video-aspect" value={value.videoAspectRatio} onChange={(event) => onChange({videoAspectRatio: event.target.value})}>
+                {videoAspectRatioOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div className="two-column">
+            <div className="field">
               {fieldLabel('fal-video-model', 'Text-to-Video Model (fal.ai)', 'videoModel')}
               <ModelCombobox
                 id="fal-video-model"
@@ -6402,21 +6424,6 @@ function ModelSelectionPanel({
 
             <div className="field">
               <div className="field-label-row">
-                {fieldLabel('video-duration', 'Default Video Duration', 'videoDuration')}
-                <InfoHint
-                  label="Default video duration"
-                  text="Applies to all video modes as the default clip length. Your request can override it per generation."
-                />
-              </div>
-              <select id="video-duration" value={value.videoDuration} onChange={(event) => onChange({videoDuration: event.target.value})}>
-                {durationOptions.video.map((option) => <option key={option} value={option}>{videoDurationLabels[option] ?? option}</option>)}
-              </select>
-            </div>
-          </div>
-
-          <div className="two-column">
-            <div className="field">
-              <div className="field-label-row">
                 {fieldLabel('fal-video-image-model', 'Image-to-Video Model (fal.ai)', 'videoImageModel')}
                 <InfoHint
                   label="Image-to-video clip lengths"
@@ -6433,7 +6440,9 @@ function ModelSelectionPanel({
                 allowCustom
               />
             </div>
+          </div>
 
+          <div className="two-column">
             <div className="field">
               <div className="field-label-row">
                 {fieldLabel('fal-video-keyframe-model', 'Keyframes (Start→End) Model (fal.ai)', 'videoKeyframeModel')}
@@ -6452,9 +6461,7 @@ function ModelSelectionPanel({
                 allowCustom
               />
             </div>
-          </div>
 
-          <div className="two-column">
             <div className="field">
               <div className="field-label-row">
                 {fieldLabel('fal-video-extend-model', 'Video-Extend Model (fal.ai)', 'videoExtendModel')}
@@ -6475,75 +6482,72 @@ function ModelSelectionPanel({
             </div>
           </div>
 
-          <div className="field">
-            {fieldLabel('fal-video-motion-model', 'Motion-Control Model (fal.ai)', 'videoMotionModel')}
-            <ModelCombobox
-              id="fal-video-motion-model"
-              ariaLabel="fal.ai motion-control model"
-              placeholder={defaultFalVideoMotionModel}
-              value={value.falVideoMotionModel}
-              onChange={(next) => onChange({falVideoMotionModel: next})}
-              options={falVideoMotionOptions}
-              allowCustom
-            />
-          </div>
-
-          <div className="field">
-            {fieldLabel('fal-video-upscale-model', 'Video-Upscale Model (fal.ai)', 'videoUpscaleModel')}
-            <ModelCombobox
-              id="fal-video-upscale-model"
-              ariaLabel="fal.ai video-upscale model"
-              placeholder={defaultFalVideoUpscaleModel}
-              value={value.falVideoUpscaleModel}
-              onChange={(next) => onChange({falVideoUpscaleModel: next})}
-              options={falVideoUpscaleOptions}
-              allowCustom
-            />
-          </div>
-
-          <div className="field">
-            <div className="field-label-row">
-              {fieldLabel('fal-video-reframe-model', 'Video-Reframe Model (fal.ai)', 'videoReframeModel')}
-              <InfoHint
-                label="Video reframing"
-                text="Converts an attached clip to a new aspect ratio (16:9 → 9:16 vertical for Reels/Shorts/TikTok) by generating the missing canvas area instead of cropping — the reframe_video tool's endpoint. Billed per second of the input clip; clips up to 60 seconds. For free local alternatives, transform_video can center-crop or fill the added canvas with a blurred copy or black bars."
+          <div className="two-column">
+            <div className="field">
+              {fieldLabel('fal-video-motion-model', 'Motion-Control Model (fal.ai)', 'videoMotionModel')}
+              <ModelCombobox
+                id="fal-video-motion-model"
+                ariaLabel="fal.ai motion-control model"
+                placeholder={defaultFalVideoMotionModel}
+                value={value.falVideoMotionModel}
+                onChange={(next) => onChange({falVideoMotionModel: next})}
+                options={falVideoMotionOptions}
+                allowCustom
               />
             </div>
-            <ModelCombobox
-              id="fal-video-reframe-model"
-              ariaLabel="fal.ai video-reframe model"
-              placeholder={defaultFalVideoReframeModel}
-              value={value.falVideoReframeModel}
-              onChange={(next) => onChange({falVideoReframeModel: next})}
-              options={falVideoReframeOptions}
-              allowCustom
-            />
-          </div>
 
-          <div className="field">
-            <div className="field-label-row">
-              {fieldLabel('fal-video-restyle-model', 'Video-Restyle Model (fal.ai)', 'videoRestyleModel')}
-              <InfoHint
-                label="Video restyling"
-                text="Re-renders an attached clip under a style prompt while keeping its motion — anime, claymation, a different look or characters (the restyle_video tool's endpoint). Attaching an image alongside the clip rides as a style/appearance reference on models that accept one. Generation, not a local filter: billed like video generation (commonly per second), and input clips are capped by the model (around 3–15 seconds on Kling, 2–10 on Wan)."
+            <div className="field">
+              {fieldLabel('fal-video-upscale-model', 'Video-Upscale Model (fal.ai)', 'videoUpscaleModel')}
+              <ModelCombobox
+                id="fal-video-upscale-model"
+                ariaLabel="fal.ai video-upscale model"
+                placeholder={defaultFalVideoUpscaleModel}
+                value={value.falVideoUpscaleModel}
+                onChange={(next) => onChange({falVideoUpscaleModel: next})}
+                options={falVideoUpscaleOptions}
+                allowCustom
               />
             </div>
-            <ModelCombobox
-              id="fal-video-restyle-model"
-              ariaLabel="fal.ai video-restyle model"
-              placeholder={defaultFalVideoRestyleModel}
-              value={value.falVideoRestyleModel}
-              onChange={(next) => onChange({falVideoRestyleModel: next})}
-              options={falVideoRestyleOptions}
-              allowCustom
-            />
           </div>
 
-          <div className="field">
-            {fieldLabel('video-aspect', 'Video Aspect Ratio', 'videoAspectRatio')}
-            <select id="video-aspect" value={value.videoAspectRatio} onChange={(event) => onChange({videoAspectRatio: event.target.value})}>
-              {videoAspectRatioOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-            </select>
+          <div className="two-column">
+            <div className="field">
+              <div className="field-label-row">
+                {fieldLabel('fal-video-reframe-model', 'Video-Reframe Model (fal.ai)', 'videoReframeModel')}
+                <InfoHint
+                  label="Video reframing"
+                  text="Converts an attached clip to a new aspect ratio (16:9 → 9:16 vertical for Reels/Shorts/TikTok) by generating the missing canvas area instead of cropping — the reframe_video tool's endpoint. Billed per second of the input clip; clips up to 60 seconds. For free local alternatives, transform_video can center-crop or fill the added canvas with a blurred copy or black bars."
+                />
+              </div>
+              <ModelCombobox
+                id="fal-video-reframe-model"
+                ariaLabel="fal.ai video-reframe model"
+                placeholder={defaultFalVideoReframeModel}
+                value={value.falVideoReframeModel}
+                onChange={(next) => onChange({falVideoReframeModel: next})}
+                options={falVideoReframeOptions}
+                allowCustom
+              />
+            </div>
+
+            <div className="field">
+              <div className="field-label-row">
+                {fieldLabel('fal-video-restyle-model', 'Video-Restyle Model (fal.ai)', 'videoRestyleModel')}
+                <InfoHint
+                  label="Video restyling"
+                  text="Re-renders an attached clip under a style prompt while keeping its motion — anime, claymation, a different look or characters (the restyle_video tool's endpoint). Attaching an image alongside the clip rides as a style/appearance reference on models that accept one. Generation, not a local filter: billed like video generation (commonly per second), and input clips are capped by the model (around 3–15 seconds on Kling, 2–10 on Wan)."
+                />
+              </div>
+              <ModelCombobox
+                id="fal-video-restyle-model"
+                ariaLabel="fal.ai video-restyle model"
+                placeholder={defaultFalVideoRestyleModel}
+                value={value.falVideoRestyleModel}
+                onChange={(next) => onChange({falVideoRestyleModel: next})}
+                options={falVideoRestyleOptions}
+                allowCustom
+              />
+            </div>
           </div>
         </div>
       </section>
