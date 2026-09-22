@@ -294,9 +294,9 @@ export namespace main {
 	    imageEditModel?: string;
 	    videoModel?: string;
 	    videoImageModel?: string;
-	    videoKeyframeModel?: string;
 	    videoExtendModel?: string;
 	    videoMotionModel?: string;
+	    videoKeyframeModel?: string;
 	    audioModel?: string;
 	    soundEffectsModel?: string;
 	    audioCloneModel?: string;
@@ -318,9 +318,9 @@ export namespace main {
 	        this.imageEditModel = source["imageEditModel"];
 	        this.videoModel = source["videoModel"];
 	        this.videoImageModel = source["videoImageModel"];
-	        this.videoKeyframeModel = source["videoKeyframeModel"];
 	        this.videoExtendModel = source["videoExtendModel"];
 	        this.videoMotionModel = source["videoMotionModel"];
+	        this.videoKeyframeModel = source["videoKeyframeModel"];
 	        this.audioModel = source["audioModel"];
 	        this.soundEffectsModel = source["soundEffectsModel"];
 	        this.audioCloneModel = source["audioCloneModel"];
@@ -597,9 +597,9 @@ export namespace main {
 	    upscaleModel?: string;
 	    videoModel?: string;
 	    videoImageModel?: string;
-	    videoKeyframeModel?: string;
 	    videoExtendModel?: string;
 	    videoMotionModel?: string;
+	    videoKeyframeModel?: string;
 	    videoUpscaleModel?: string;
 	    audioModel?: string;
 	    soundEffectsModel?: string;
@@ -633,9 +633,9 @@ export namespace main {
 	        this.upscaleModel = source["upscaleModel"];
 	        this.videoModel = source["videoModel"];
 	        this.videoImageModel = source["videoImageModel"];
-	        this.videoKeyframeModel = source["videoKeyframeModel"];
 	        this.videoExtendModel = source["videoExtendModel"];
 	        this.videoMotionModel = source["videoMotionModel"];
+	        this.videoKeyframeModel = source["videoKeyframeModel"];
 	        this.videoUpscaleModel = source["videoUpscaleModel"];
 	        this.audioModel = source["audioModel"];
 	        this.soundEffectsModel = source["soundEffectsModel"];
@@ -1182,6 +1182,7 @@ export namespace main {
 	    generateAudio?: boolean;
 	    useVideoAs?: string;
 	    source?: string;
+	    imageRole?: string;
 	    faceFrom?: string;
 	    aspectRatio?: string;
 	    duration?: string;
@@ -1240,6 +1241,7 @@ export namespace main {
 	        this.generateAudio = source["generateAudio"];
 	        this.useVideoAs = source["useVideoAs"];
 	        this.source = source["source"];
+	        this.imageRole = source["imageRole"];
 	        this.faceFrom = source["faceFrom"];
 	        this.aspectRatio = source["aspectRatio"];
 	        this.duration = source["duration"];
