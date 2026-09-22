@@ -158,6 +158,10 @@ export function ListFalVideoMotionModels() {
   return window['go']['main']['App']['ListFalVideoMotionModels']();
 }
 
+export function ListFalVideoReframeModels() {
+  return window['go']['main']['App']['ListFalVideoReframeModels']();
+}
+
 export function ListFalVideoUpscaleModels() {
   return window['go']['main']['App']['ListFalVideoUpscaleModels']();
 }

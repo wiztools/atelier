@@ -369,6 +369,26 @@ func aspectCropDimensions(width, height, aspectWidth, aspectHeight int) (int, in
 	return cropWidth, cropHeight
 }
 
+// aspectFillDimensions computes the target-aspect canvas a width×height source
+// lands on under a fill mode (transform_video's blur/pad): the canvas keeps the
+// source's long edge, so the contained frame never loses resolution — 1920×1080
+// filled to 9:16 lands on the standard 1080×1920 vertical frame with the source
+// pillarboxed inside at 1080 wide. The fill sibling of aspectCropDimensions,
+// which instead keeps the short edge and trims.
+func aspectFillDimensions(width, height, aspectWidth, aspectHeight int) (int, int) {
+	if width <= 0 || height <= 0 || aspectWidth <= 0 || aspectHeight <= 0 {
+		return width, height
+	}
+	long := width
+	if height > long {
+		long = height
+	}
+	if aspectWidth >= aspectHeight {
+		return long, int(math.Round(float64(long) * float64(aspectHeight) / float64(aspectWidth)))
+	}
+	return int(math.Round(float64(long) * float64(aspectWidth) / float64(aspectHeight))), long
+}
+
 // ---------------------------------------------------------------------------
 // Arg builders (pure — pinned by tests)
 // ---------------------------------------------------------------------------

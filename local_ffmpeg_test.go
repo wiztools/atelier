@@ -318,6 +318,29 @@ func TestVideoTransformFilters(t *testing.T) {
 			"vflip", "flipped vertical"},
 		{"odd crop floors to even", HarnessToolCall{AspectRatio: "1:1"}, 1000, 333,
 			"crop=332:332", "cropped to 1:1 (center 332x332)"},
+		{"explicit crop mode matches the default", HarnessToolCall{AspectRatio: "4:5", Mode: "crop"}, 1920, 1080,
+			"crop=864:1080", "cropped to 4:5 (center 864x1080)"},
+		{"blur fill to aspect", HarnessToolCall{AspectRatio: "9:16", Mode: "blur"}, 1920, 1080,
+			"split=2[bg][fg];[bg]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=27[bgf];[fg]scale=1080:606[fgf];[bgf][fgf]overlay=(W-w)/2:(H-h)/2",
+			"filled to 9:16 (1080x1920) with a blurred background"},
+		{"pad fill to aspect", HarnessToolCall{AspectRatio: "9:16", Mode: "pad"}, 1920, 1080,
+			"scale=1080:606,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
+			"padded to 9:16 (1080x1920) (black bars)"},
+		{"blur fill widening a portrait clip", HarnessToolCall{AspectRatio: "16:9", Mode: "blur"}, 1080, 1920,
+			"split=2[bg][fg];[bg]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,gblur=sigma=27[bgf];[fg]scale=606:1080[fgf];[bgf][fgf]overlay=(W-w)/2:(H-h)/2",
+			"filled to 16:9 (1920x1080) with a blurred background"},
+		{"blur fill to exact pixels", HarnessToolCall{Mode: "blur", Width: 1080, Height: 1920}, 1920, 1080,
+			"split=2[bg][fg];[bg]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=27[bgf];[fg]scale=1080:606[fgf];[bgf][fgf]overlay=(W-w)/2:(H-h)/2",
+			"filled to 1080x1920 with a blurred background"},
+		{"pad fill to exact pixels", HarnessToolCall{Mode: "pad", Width: 720, Height: 720}, 1920, 1080,
+			"scale=720:404,pad=720:720:(ow-iw)/2:(oh-ih)/2",
+			"padded to 720x720 (black bars)"},
+		{"fill composes with a later resize", HarnessToolCall{AspectRatio: "9:16", Mode: "pad", Width: 720}, 1920, 1080,
+			"scale=1080:606,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,scale=720:-2",
+			"padded to 9:16 (1080x1920) (black bars), resized to 720 pixels wide"},
+		{"fill composes with rotate and speed", HarnessToolCall{AspectRatio: "9:16", Mode: "blur", Rotate: 180, Speed: 2}, 1920, 1080,
+			"split=2[bg][fg];[bg]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=27[bgf];[fg]scale=1080:606[fgf];[bgf][fgf]overlay=(W-w)/2:(H-h)/2,transpose=1,transpose=1,setpts=PTS/2",
+			"filled to 9:16 (1080x1920) with a blurred background, rotated 180°, 2x playback speed"},
 		{"speed up only", HarnessToolCall{Speed: 3}, 0, 0,
 			"setpts=PTS/3", "3x playback speed"},
 		{"slow motion only", HarnessToolCall{Speed: 0.5}, 0, 0,
@@ -500,7 +523,22 @@ func TestFFmpegToolValidation(t *testing.T) {
 		t.Errorf("transform with a bad rotate = %v", errors)
 	}
 	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Flip: "diagonal"}); len(errors) == 0 || !strings.Contains(errors[0], `.flip must be "horizontal" or "vertical"`) {
-		t.Errorf("transform with a bad flip = %v", errors)
+		t.Errorf("transform with a bad flip = %v, want the flip enum error", errors)
+	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Mode: "zoom"}); len(errors) == 0 || !strings.Contains(errors[0], `.mode must be "crop", "blur", or "pad"`) {
+		t.Errorf("transform with a bad mode = %v, want the mode enum error", errors)
+	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Mode: "blur", Width: 1080}); len(errors) == 0 || !strings.Contains(errors[0], "need a shape target") {
+		t.Errorf("transform blur with a lone width = %v, want the shape-target error", errors)
+	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Mode: "pad", Rotate: 90}); len(errors) == 0 || !strings.Contains(errors[0], "need a shape target") {
+		t.Errorf("transform pad with only rotate = %v, want the shape-target error", errors)
+	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Mode: "blur", AspectRatio: "9:16"}); len(errors) != 0 {
+		t.Errorf("valid blur transform = %v, want none", errors)
+	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Mode: "pad", Width: 720, Height: 720}); len(errors) != 0 {
+		t.Errorf("valid pad both-dims transform = %v, want none", errors)
 	}
 	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Speed: 10}); len(errors) == 0 || !strings.Contains(errors[0], ".speed must be a playback multiplier between 0.25 and 8") {
 		t.Errorf("transform with an out-of-range speed = %v, want the range error", errors)

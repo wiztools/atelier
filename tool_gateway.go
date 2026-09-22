@@ -311,6 +311,45 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			generated.Notices = notices
 			return generated, genErr
 		}
+		gateway.tools.ReframeVideo = func(ctx context.Context, req VideoReframeRequest) (GeneratedVideo, error) {
+			apiKey, err := loadFalAPIKey()
+			if err != nil {
+				return GeneratedVideo{}, err
+			}
+			if strings.TrimSpace(apiKey) == "" {
+				return GeneratedVideo{}, errFalKeyNotConfigured
+			}
+			client := newFalClient(app.client, apiKey)
+			// Pre-resolve the source clip with the force-host variant, the same
+			// rule as upscale: an attached video almost always exceeds fal's
+			// inline base64 limit, and the reframe endpoints sit in the same
+			// data-URI-rejecting camp downstream. Fail-soft: on upload failure
+			// the inline data URI is sent and fal's error surfaces verbatim.
+			if resolved, err := client.resolveMediaURLHosted(ctx, req.Video, "video/mp4", "source-video.mp4"); err == nil {
+				req.Video = resolved
+			}
+			schema := schemaCache.Get(ctx, req.Model)
+			body, notices, err := resolveVideoReframeBody(schema, req, falOverrides)
+			if err != nil {
+				return GeneratedVideo{Notices: notices}, err
+			}
+			// Reframing returns a video, so it reuses the GenerateVideo transport
+			// (the same pattern as UpscaleVideo / GenerateLipsync).
+			generated, genErr := client.GenerateVideo(ctx, req.Model, body)
+			if genErr == nil {
+				// Reframe endpoints (LTX-2.3) bill per second of the INPUT clip,
+				// and a reframe preserves length, so the rendered clip's own
+				// container carries the billed duration — measurable here, where
+				// upscale's source seconds were not.
+				hints := falBillingHints{Requests: 1}
+				if seconds, ok := falVideoBilledSeconds(generated.Data, ""); ok {
+					hints.Seconds = seconds
+				}
+				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
+			}
+			generated.Notices = notices
+			return generated, genErr
+		}
 		gateway.tools.GenerateAudio = func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error) {
 			apiKey, err := loadFalAPIKey()
 			if err != nil {

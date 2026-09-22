@@ -52,6 +52,15 @@ const (
 	// upscale_factor (topaz); resolveVideoUpscaleBody maps canonical scale onto
 	// whichever the configured endpoint declares.
 	defaultFalVideoUpscaleModel = "fal-ai/video-upscaler"
+	// defaultFalVideoReframeModel is the generative video-reframe endpoint used
+	// when none is configured — LTX-2.3 Reframe converts an attached clip to a
+	// new aspect ratio by outpainting the added canvas instead of cropping it
+	// (video_url + aspect_ratio + resolution, clips up to 60 seconds, billed per
+	// second of the input clip). Alternatives the picker surfaces: Luma Ray 2
+	// and Ray 3.2 reframe (more ratios, an optional prompt);
+	// resolveVideoReframeBody maps the canonical ratio/resolution onto whichever
+	// endpoint is configured.
+	defaultFalVideoReframeModel = "fal-ai/ltx-2.3/reframe"
 	// defaultFalAudioModel is the text-to-speech endpoint used by the
 	// generate_speech tool when none is configured.
 	defaultFalAudioModel = "fal-ai/elevenlabs/tts/multilingual-v2"

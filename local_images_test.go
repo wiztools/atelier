@@ -339,6 +339,35 @@ func TestAspectCropDimensions(t *testing.T) {
 	}
 }
 
+// TestAspectFillDimensions pins the fill-mode canvas math: the canvas keeps
+// the source's long edge, so the contained frame never loses resolution and
+// the common cases land on the platform-standard frames (1080x1920 vertical).
+func TestAspectFillDimensions(t *testing.T) {
+	cases := []struct {
+		name                            string
+		width, height, aspectW, aspectH int
+		wantW, wantH                    int
+	}{
+		{"9:16 from 1920x1080", 1920, 1080, 9, 16, 1080, 1920},
+		{"1:1 from 1920x1080", 1920, 1080, 1, 1, 1920, 1920},
+		{"4:5 from 1920x1080", 1920, 1080, 4, 5, 1536, 1920},
+		{"16:9 from 1080x1920", 1080, 1920, 16, 9, 1920, 1080},
+		{"4:5 from 1080x1920 keeps full height", 1080, 1920, 4, 5, 1536, 1920},
+		{"same aspect unchanged", 1920, 1080, 16, 9, 1920, 1080},
+		{"clamps degenerate", 0, 0, 4, 5, 0, 0},
+	}
+	for _, tc := range cases {
+		gotW, gotH := aspectFillDimensions(tc.width, tc.height, tc.aspectW, tc.aspectH)
+		if gotW != tc.wantW || gotH != tc.wantH {
+			t.Errorf("%s: aspectFillDimensions = %dx%d, want %dx%d", tc.name, gotW, gotH, tc.wantW, tc.wantH)
+		}
+	}
+	// Rounding stays the caller's concern (evenDown lands at the -vf builder).
+	if gotW, gotH := aspectFillDimensions(1000, 333, 9, 16); gotW != 563 || gotH != 1000 {
+		t.Errorf("rounding: aspectFillDimensions = %dx%d, want 563x1000", gotW, gotH)
+	}
+}
+
 func TestParseAspectRatioAndScale(t *testing.T) {
 	for token, ok := range map[string]bool{"16:9": true, "1:1": true, "4:5": true, "0:9": false, "9": false, "16:9:2": false, "": false, "-1:2": false, "x:y": false} {
 		if _, _, got := parseAspectRatio(token); got != ok {

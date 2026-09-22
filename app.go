@@ -236,6 +236,12 @@ type ConfigFal struct {
 	// tool (fal-only, like UpscaleModel) — a video-to-video transform, so the
 	// picker partitions fal's video-to-video category by "upscal".
 	VideoUpscaleModel string `json:"videoUpscaleModel,omitempty"`
+	// VideoReframeModel is the generative video-reframe endpoint used by the
+	// reframe_video tool (fal-only, like VideoUpscaleModel) — a video-to-video
+	// transform that changes an attached clip's aspect ratio by outpainting the
+	// added canvas (16:9 → 9:16 for Reels/Shorts) instead of cropping, so the
+	// picker partitions fal's video-to-video category by "reframe".
+	VideoReframeModel string `json:"videoReframeModel,omitempty"`
 	// LipsyncImageModel is the audio-to-video lip sync endpoint used when the
 	// user attaches an audio clip plus an image (a talking head).
 	// LipsyncVideoModel is the video-to-video lip sync endpoint used when the
@@ -625,6 +631,19 @@ type VideoUpscaleRequest struct {
 	Model string  `json:"model"`
 	Video string  `json:"video"`
 	Scale float64 `json:"scale,omitempty"`
+}
+
+// VideoReframeRequest is the input to fal's generative video reframer — the
+// outpainting sibling of VideoUpscaleRequest. Video is the source clip (a URL
+// or base64 data URI), AspectRatio the target shape ("9:16"), Resolution the
+// optional output tier ("720p"/"1080p"; empty lets the model apply its own
+// default). The result is a GeneratedVideo, carried through the same artifact
+// pipeline as generate_video.
+type VideoReframeRequest struct {
+	Model       string `json:"model"`
+	Video       string `json:"video"`
+	AspectRatio string `json:"aspectRatio,omitempty"`
+	Resolution  string `json:"resolution,omitempty"`
 }
 
 // VideoGenerateRequest is the input to a video generation (text-to-video,
@@ -2780,9 +2799,9 @@ func (a *App) ListFalVideoMotionModels() ([]FalModel, error) {
 // isFalVideoUpscaleModel reports whether a fal catalog entry is a video
 // upscaler — one that raises an attached clip's resolution (RealESRGAN
 // per-frame, Topaz, Crystal, SeedVR). fal files these under the broad
-// video-to-video category alongside extend, lipsync, and motion, so the id and
-// tags are checked for "upscal" — the same marker isFalUpscaleModel uses on the
-// image side. Together the four predicates partition video-to-video.
+// video-to-video category alongside extend, lipsync, motion, and reframe, so
+// the id and tags are checked for "upscal" — the same marker isFalUpscaleModel
+// uses on the image side. Together the five predicates partition video-to-video.
 func isFalVideoUpscaleModel(model FalModel) bool {
 	if strings.Contains(strings.ToLower(model.ID), "upscal") {
 		return true
@@ -2799,8 +2818,8 @@ func isFalVideoUpscaleModel(model FalModel) bool {
 // Settings video-upscale-model picker (the upscale_video tool's endpoint) —
 // endpoints that raise an attached video's resolution. fal files these under the
 // video-to-video category, fetched and kept only when isFalVideoUpscaleModel
-// matches. Shares its category with the extend/lipsync/motion pickers; the four
-// filters partition it.
+// matches. Shares its category with the extend/lipsync/motion/reframe pickers;
+// the five filters partition it.
 func (a *App) ListFalVideoUpscaleModels() ([]FalModel, error) {
 	key, err := loadFalAPIKey()
 	if err != nil {
@@ -2819,6 +2838,51 @@ func (a *App) ListFalVideoUpscaleModels() ([]FalModel, error) {
 		}
 	}
 	return upscale, nil
+}
+
+// isFalVideoReframeModel reports whether a fal catalog entry is a generative
+// video reframer — one that converts an attached clip to a new aspect ratio by
+// outpainting the added canvas (LTX-2.3 Reframe, Luma Ray 2 / Ray 3.2 reframe)
+// rather than cropping or upscaling it. fal files these under the broad
+// video-to-video category, so the id and tags are checked for "reframe" —
+// alongside the extend/lipsync/motion/upscale markers, the five predicates
+// partition video-to-video.
+func isFalVideoReframeModel(model FalModel) bool {
+	if strings.Contains(strings.ToLower(model.ID), "reframe") {
+		return true
+	}
+	for _, tag := range model.Tags {
+		if strings.Contains(strings.ToLower(tag), "reframe") {
+			return true
+		}
+	}
+	return false
+}
+
+// ListFalVideoReframeModels returns fal's video-reframe catalog for the
+// Settings video-reframe-model picker (the reframe_video tool's endpoint) —
+// endpoints that generatively convert an attached clip to a new aspect ratio.
+// fal files these under the video-to-video category, fetched and kept only when
+// isFalVideoReframeModel matches. Shares its category with the
+// extend/lipsync/motion/upscale pickers; the five filters partition it.
+func (a *App) ListFalVideoReframeModels() ([]FalModel, error) {
+	key, err := loadFalAPIKey()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	models, err := newFalClient(a.client, key).ListModels(ctx, falVideoToVideoCategory, 0)
+	if err != nil {
+		return nil, err
+	}
+	reframe := make([]FalModel, 0, len(models))
+	for _, model := range models {
+		if isFalVideoReframeModel(model) {
+			reframe = append(reframe, model)
+		}
+	}
+	return reframe, nil
 }
 
 // isFalSpeechModel reports whether a fal catalog entry is a text-to-speech

@@ -99,6 +99,11 @@ type HarnessToolExecutionContext struct {
 	// endpoints. It returns a video (same transport as GenerateVideo) plus
 	// resolver notices — the video sibling of UpscaleImage.
 	UpscaleVideo func(ctx context.Context, req VideoUpscaleRequest) (GeneratedVideo, error)
+	// ReframeVideo converts an attached clip to a new aspect ratio via fal's
+	// generative reframe endpoints — outpainting the added canvas rather than
+	// cropping it. It returns a video (same transport as GenerateVideo) plus
+	// resolver notices, like UpscaleVideo.
+	ReframeVideo func(ctx context.Context, req VideoReframeRequest) (GeneratedVideo, error)
 }
 
 // ToolImageResult carries generated images as data URLs. The Images field is
@@ -302,6 +307,9 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 	if videoUpscaleConfigured(config) {
 		definitions = append(definitions, videoUpscaleToolDefinition())
 	}
+	if videoReframeConfigured(config) {
+		definitions = append(definitions, videoReframeToolDefinition())
+	}
 	return newHarnessToolRegistry(definitions)
 }
 
@@ -443,6 +451,25 @@ func resolveDefaultVideoUpscaleModel(config AppConfig) string {
 		return model
 	}
 	return defaultFalVideoUpscaleModel
+}
+
+// videoReframeConfigured mirrors videoUpscaleConfigured for the reframe_video
+// tool: fal is the only generative-reframe backend and the default endpoint
+// always applies, so the gate is purely the fal key — like upscale_video,
+// transcribe_audio, and lip_sync, no model needs to be configured first.
+func videoReframeConfigured(config AppConfig) bool {
+	return falKeyConfigured()
+}
+
+// resolveDefaultVideoReframeModel returns the reframe endpoint the
+// reframe_video tool uses when the call doesn't override it. fal-only; falls
+// back to the const default (LTX-2.3 Reframe) when the user hasn't picked one
+// in Settings.
+func resolveDefaultVideoReframeModel(config AppConfig) string {
+	if model := strings.TrimSpace(config.Providers.Fal.VideoReframeModel); model != "" {
+		return model
+	}
+	return defaultFalVideoReframeModel
 }
 
 // videoGenerationConfigured reports whether the generate_video tool should be
@@ -2012,6 +2039,94 @@ func videoUpscaleParamSchema() map[string]any {
 			"model": stringParam("Optional video upscale model override."),
 		},
 		"required": []string{},
+	}
+}
+
+// videoReframeToolDefinition exposes the reframe_video tool — generative
+// aspect-ratio conversion of an attached clip (16:9 → 9:16 for
+// Reels/Shorts/TikTok, or widening a portrait clip), the outpainting sibling
+// of upscale_video's resolution transform. Where transform_video's local crop
+// trims the frame and its blur/pad modes cover the added canvas with a
+// blurred copy or black bars, this tool GENERATES the added scene content.
+// fal-only; the attached-video requirement is enforced in Execute because
+// Validate only sees the call, not tools. The result rides the same
+// ToolVideoResult pipeline as generate_video, so artifacts, history,
+// carry-forward, and the chat reply's video card all work unchanged.
+func videoReframeToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "reframe_video",
+		Title:       "Reframe video",
+		Description: "Use this when the user asks to convert an attached video to a different aspect ratio and wants the added canvas area GENERATED — turn a 16:9 clip into 9:16 vertical for Reels/Shorts/TikTok (or 1:1/4:5), or widen a portrait clip — keeping the original footage intact while outpainting what the new shape adds. Requires an attached video. fal.ai only — runs unattended like video generation, takes a minute or more on longer clips, and inputs are capped around 60 seconds. When center-cropping is acceptable, or a blurred or black background behind the untouched full frame is fine, prefer the local free transform_video (aspectRatio with mode crop/blur/pad) instead.",
+		Example:     `{"name":"reframe_video","aspectRatio":"9:16"}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: videoReframeParamSchema(),
+		Validate: func(prefix string, call HarnessToolCall) []string {
+			if strings.TrimSpace(call.AspectRatio) == "" {
+				return []string{prefix + `.aspectRatio is required for reframe_video — name the target shape like "9:16" or "16:9"`}
+			}
+			return nil
+		},
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			if tools.ReframeVideo == nil {
+				return nil, "video reframing unavailable", errors.New("video reframing is not available in this context")
+			}
+			attachedVideo := firstAttachedVideo(tools.AttachedVideos)
+			if attachedVideo == "" {
+				return nil, "video reframing requires an attached video", errors.New("reframe_video requires an attached video — ask the user to attach one first")
+			}
+			model := strings.TrimSpace(call.Model)
+			if model == "" {
+				model = resolveDefaultVideoReframeModel(tools.Config)
+			}
+			if model == "" {
+				return nil, "video reframing unavailable", errors.New("no video reframe model is configured")
+			}
+			aspect := strings.TrimSpace(call.AspectRatio)
+			generated, err := tools.ReframeVideo(ctx, VideoReframeRequest{
+				Model:       model,
+				Video:       attachedVideo,
+				AspectRatio: aspect,
+				Resolution:  strings.TrimSpace(call.Resolution),
+			})
+			if err != nil {
+				return nil, "video reframing failed", err
+			}
+			if len(generated.Data) == 0 {
+				return nil, "video reframing returned no video", errors.New("reframe model returned no video data")
+			}
+			tempPath, err := writeTempVideo(generated)
+			if err != nil {
+				return nil, "video reframing failed", err
+			}
+			output := ToolVideoResult{
+				Model:      model,
+				Count:      1,
+				Videos:     []ToolVideoFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
+				Notices:    generated.Notices,
+				CostMicros: generated.CostMicros,
+			}
+			return output, fmt.Sprintf("reframed the attached video to %s with %s", aspect, model), nil
+		},
+		Activity: func(result HarnessToolResult) HarnessToolActivity {
+			activity := defaultHarnessToolActivity(result)
+			if typed, ok := result.Result.(ToolVideoResult); ok {
+				activity.Command = []string{"fal", "reframe", typed.Model}
+			}
+			return activity
+		},
+	}
+}
+
+func videoReframeParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"aspectRatio": enumParam(`Required — the target shape: "9:16" for vertical (Reels/Shorts/TikTok), "16:9" to widen a portrait clip, "1:1", "4:5", "5:4", "4:3", "3:4", "3:2", "2:3", or "21:9". The model generates the added canvas area; the ratio must be one the configured model lists (unsupported ones fail with the model's supported set).`, "1:1", "4:5", "5:4", "9:16", "16:9", "4:3", "3:4", "3:2", "2:3", "21:9"),
+			"resolution":  enumParam(`Optional — the output resolution tier, "720p" or "1080p" (omit for the model's default).`, "720p", "1080p"),
+			"model":       stringParam("Optional video reframe model override."),
+		},
+		"required": []string{"aspectRatio"},
 	}
 }
 

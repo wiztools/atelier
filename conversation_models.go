@@ -37,6 +37,7 @@ type ConversationModelOverrides struct {
 	VideoMotionModel   string `json:"videoMotionModel,omitempty"`
 	VideoKeyframeModel string `json:"videoKeyframeModel,omitempty"`
 	VideoUpscaleModel  string `json:"videoUpscaleModel,omitempty"`
+	VideoReframeModel  string `json:"videoReframeModel,omitempty"`
 	AudioModel         string `json:"audioModel,omitempty"`
 	SoundEffectsModel  string `json:"soundEffectsModel,omitempty"`
 	AudioCloneModel    string `json:"audioCloneModel,omitempty"`
@@ -78,7 +79,7 @@ func normalizeConversationModelOverrides(o ConversationModelOverrides) Conversat
 		&o.HarnessProvider, &o.HarnessModel,
 		&o.ImageProvider, &o.ImageModel,
 		&o.ImageEditModel, &o.UpscaleModel,
-		&o.VideoModel, &o.VideoImageModel, &o.VideoExtendModel, &o.VideoMotionModel, &o.VideoKeyframeModel, &o.VideoUpscaleModel,
+		&o.VideoModel, &o.VideoImageModel, &o.VideoExtendModel, &o.VideoMotionModel, &o.VideoKeyframeModel, &o.VideoUpscaleModel, &o.VideoReframeModel,
 		&o.AudioModel, &o.SoundEffectsModel, &o.AudioCloneModel, &o.AudioExtendModel, &o.TranscribeModel,
 		&o.LipsyncImageModel, &o.LipsyncVideoModel,
 		&o.TranscriptionProvider, &o.WhisperModel, &o.WhisperBinary,
@@ -272,6 +273,9 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 	}
 	if o.VideoUpscaleModel != "" {
 		config.Providers.Fal.VideoUpscaleModel = o.VideoUpscaleModel
+	}
+	if o.VideoReframeModel != "" {
+		config.Providers.Fal.VideoReframeModel = o.VideoReframeModel
 	}
 	if o.AudioModel != "" {
 		config.Providers.Fal.AudioModel = o.AudioModel

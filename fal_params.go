@@ -1540,6 +1540,72 @@ func resolveVideoUpscaleBody(schema *ModelInputSchema, req VideoUpscaleRequest, 
 	return body, notices, nil
 }
 
+// resolveVideoReframeBody maps a VideoReframeRequest onto the model's native
+// input schema, returning the fal body and user-facing notices. Both the
+// source clip and the target aspect ratio are the tool's entire purpose, so an
+// unmapped video input OR aspect-ratio input is fatal (mirroring
+// resolveVideoUpscaleBody's source rule): a reframe endpoint that can't be
+// told the target shape can't reframe, and sending anyway would 422 downstream
+// or run with the model's default ratio — the wrong deliverable. An
+// out-of-enum ratio is fatal too, naming the model's supported set: unlike
+// generate_video's drop-with-notice guard (where the model's own default is a
+// legitimate fallback), a reframe that silently picks a different ratio is
+// not what the user asked for. Resolution is degradable — endpoints apply
+// their own default tier — so a missing or unsupported tier stays a notice.
+// A nil schema yields the legacy {video_url, aspect_ratio} body plus a notice.
+func resolveVideoReframeBody(schema *ModelInputSchema, req VideoReframeRequest, ov Overrides) (map[string]any, []string, error) {
+	video := falVideoURL(strings.TrimSpace(req.Video))
+	aspect := strings.TrimSpace(req.AspectRatio)
+
+	if schema == nil {
+		body := map[string]any{"video_url": video, "aspect_ratio": aspect}
+		if res := strings.TrimSpace(req.Resolution); res != "" {
+			body["resolution"] = res
+		}
+		return body, []string{"Couldn't load the model's parameter schema; sent the source video and aspect ratio with default field names."}, nil
+	}
+
+	body := map[string]any{}
+	var notices []string
+
+	if path, prop, ok := findNative(schema, ov, "video", req.Model, "sourceVideo"); ok {
+		setBodyPath(schema, body, path, coerceVideoValue(prop, video))
+	} else {
+		return nil, notices, fmt.Errorf(
+			"the reframe model %q has no video input — it cannot reframe an attached video; pick a reframe model in Settings",
+			req.Model)
+	}
+	if path, prop, ok := findNative(schema, ov, "video", req.Model, "aspectRatio"); ok {
+		if canonical, allowed := enumValueFor(prop, aspect); allowed {
+			setBodyPath(schema, body, path, coerceVideoValue(prop, canonical))
+		} else {
+			return nil, notices, fmt.Errorf(
+				"the reframe model %q does not accept aspect ratio %q — it supports %s; pick a supported ratio or a different reframe model in Settings",
+				req.Model, aspect, strings.Join(prop.Enum, ", "))
+		}
+	} else {
+		return nil, notices, fmt.Errorf(
+			"the reframe model %q has no aspect-ratio input — it cannot be told the target shape; pick a reframe model in Settings",
+			req.Model)
+	}
+	if res := strings.TrimSpace(req.Resolution); res != "" {
+		if path, prop, ok := findNative(schema, ov, "video", req.Model, "resolution"); ok {
+			if canonical, allowed := enumValueFor(prop, res); allowed {
+				setBodyPath(schema, body, path, coerceVideoValue(prop, canonical))
+			} else {
+				notices = append(notices, fmt.Sprintf(
+					"The selected model %q does not support resolution %q; using the model's default tier.",
+					req.Model, res))
+			}
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no resolution control; using the model's default tier.",
+				req.Model))
+		}
+	}
+	return body, notices, nil
+}
+
 // findNative resolves canon → native dot-path via override, top-level scan, then
 // one-level nested scan. Returns the matched leaf property for coercion.
 // category selects the synonym table and override namespace ("audio", "image",

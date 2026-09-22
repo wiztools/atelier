@@ -80,6 +80,8 @@ export function ListFalVideoModels():Promise<Array<main.FalModel>>;
 
 export function ListFalVideoMotionModels():Promise<Array<main.FalModel>>;
 
+export function ListFalVideoReframeModels():Promise<Array<main.FalModel>>;
+
 export function ListFalVideoUpscaleModels():Promise<Array<main.FalModel>>;
 
 export function ListLibraries():Promise<Array<main.LibrarySummary>>;

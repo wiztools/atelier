@@ -304,6 +304,7 @@ export namespace main {
 	    transcribeModel?: string;
 	    upscaleModel?: string;
 	    videoUpscaleModel?: string;
+	    videoReframeModel?: string;
 	    lipsyncImageModel?: string;
 	    lipsyncVideoModel?: string;
 	
@@ -328,6 +329,7 @@ export namespace main {
 	        this.transcribeModel = source["transcribeModel"];
 	        this.upscaleModel = source["upscaleModel"];
 	        this.videoUpscaleModel = source["videoUpscaleModel"];
+	        this.videoReframeModel = source["videoReframeModel"];
 	        this.lipsyncImageModel = source["lipsyncImageModel"];
 	        this.lipsyncVideoModel = source["lipsyncVideoModel"];
 	    }
@@ -601,6 +603,7 @@ export namespace main {
 	    videoMotionModel?: string;
 	    videoKeyframeModel?: string;
 	    videoUpscaleModel?: string;
+	    videoReframeModel?: string;
 	    audioModel?: string;
 	    soundEffectsModel?: string;
 	    audioCloneModel?: string;
@@ -637,6 +640,7 @@ export namespace main {
 	        this.videoMotionModel = source["videoMotionModel"];
 	        this.videoKeyframeModel = source["videoKeyframeModel"];
 	        this.videoUpscaleModel = source["videoUpscaleModel"];
+	        this.videoReframeModel = source["videoReframeModel"];
 	        this.audioModel = source["audioModel"];
 	        this.soundEffectsModel = source["soundEffectsModel"];
 	        this.audioCloneModel = source["audioCloneModel"];

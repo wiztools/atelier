@@ -324,35 +324,54 @@ func ffmpegTransformArgs(input, videoFilters, audioFilters, output string) []str
 
 // videoTransformFilters resolves one transform_video call into its -vf chain
 // plus the op phrases for the summary, applying the ops in transform_image's
-// order: aspectRatio crop, then width/height resize, then rotate, then flip
-// (rotation is not aspect-aware — it turns the finished frame), then the
-// playback-speed rescale (setpts only touches timestamps, so it composes with
-// any geometry). srcWidth and srcHeight are the source clip's dimensions and
-// must be positive whenever aspectRatio is set; the other branches need no
-// source geometry. With both width and height and no aspectRatio, the cover
-// idiom (force_original_aspect_ratio=increase + crop) lands on exactly those
-// pixels while center-trimming the overflowing side — the shape is never
-// stretched.
+// order: aspectRatio crop (or, with mode blur/pad, the fill that lands the
+// frame on a target-aspect canvas), then width/height resize, then rotate,
+// then flip (rotation is not aspect-aware — it turns the finished frame), then
+// the playback-speed rescale (setpts only touches timestamps, so it composes
+// with any geometry). srcWidth and srcHeight are the source clip's dimensions
+// and must be positive whenever aspectRatio or a fill mode is set; the other
+// branches need no source geometry. With both width and height and no
+// aspectRatio, the default cover idiom
+// (force_original_aspect_ratio=increase + crop) lands on exactly those pixels
+// while center-trimming the overflowing side — mode blur/pad instead contains
+// the frame on exactly those pixels and fills the remainder. The shape is
+// never stretched.
 func videoTransformFilters(call HarnessToolCall, srcWidth, srcHeight int) (string, []string) {
 	var chain []string
 	var ops []string
 	aspect := strings.TrimSpace(call.AspectRatio)
+	mode := strings.TrimSpace(call.Mode)
+	fill := transformFillMode(call)
 	if aspect != "" {
 		aspectWidth, aspectHeight, _ := parseAspectRatio(aspect)
-		cropWidth, cropHeight := aspectCropDimensions(srcWidth, srcHeight, aspectWidth, aspectHeight)
-		cropWidth, cropHeight = evenDown(cropWidth), evenDown(cropHeight)
-		chain = append(chain, fmt.Sprintf("crop=%d:%d", cropWidth, cropHeight))
-		ops = append(ops, fmt.Sprintf("cropped to %s (center %dx%d)", aspect, cropWidth, cropHeight))
+		if fill {
+			canvasWidth, canvasHeight := aspectFillDimensions(srcWidth, srcHeight, aspectWidth, aspectHeight)
+			canvasWidth, canvasHeight = evenDown(canvasWidth), evenDown(canvasHeight)
+			chain = append(chain, fillFilterChain(mode, srcWidth, srcHeight, canvasWidth, canvasHeight))
+			ops = append(ops, fillOpPhrase(mode, aspect, canvasWidth, canvasHeight))
+		} else {
+			cropWidth, cropHeight := aspectCropDimensions(srcWidth, srcHeight, aspectWidth, aspectHeight)
+			cropWidth, cropHeight = evenDown(cropWidth), evenDown(cropHeight)
+			chain = append(chain, fmt.Sprintf("crop=%d:%d", cropWidth, cropHeight))
+			ops = append(ops, fmt.Sprintf("cropped to %s (center %dx%d)", aspect, cropWidth, cropHeight))
+		}
 	}
 	switch {
 	case call.Width > 0 && call.Height > 0:
-		if aspect == "" {
-			chain = append(chain, fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d",
-				call.Width, call.Height, call.Width, call.Height))
+		if fill && aspect == "" {
+			// The fill already names the exact canvas, so no separate resize
+			// phrase — the frame was contained onto exactly these pixels.
+			chain = append(chain, fillFilterChain(mode, srcWidth, srcHeight, call.Width, call.Height))
+			ops = append(ops, fillOpPhrase(mode, "", call.Width, call.Height))
 		} else {
-			chain = append(chain, fmt.Sprintf("scale=%d:%d", call.Width, call.Height))
+			if aspect == "" {
+				chain = append(chain, fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d",
+					call.Width, call.Height, call.Width, call.Height))
+			} else {
+				chain = append(chain, fmt.Sprintf("scale=%d:%d", call.Width, call.Height))
+			}
+			ops = append(ops, fmt.Sprintf("resized to %dx%d", call.Width, call.Height))
 		}
-		ops = append(ops, fmt.Sprintf("resized to %dx%d", call.Width, call.Height))
 	case call.Width > 0:
 		chain = append(chain, fmt.Sprintf("scale=%d:-2", call.Width))
 		ops = append(ops, fmt.Sprintf("resized to %d pixels wide", call.Width))
@@ -642,6 +661,74 @@ func aspectCorrectionNotice(correction aspectCorrection) string {
 // 1000x333 clip cropped to 1:1 is 333x333).
 func evenDown(value int) int {
 	return value - value%2
+}
+
+// containScaleDimensions scales width×height to the largest even-pixel frame
+// that fits inside canvasWidth×canvasHeight without changing aspect — the
+// fill modes' foreground. Truncation before evenDown keeps the frame inside
+// the canvas even when the exact scale lands on a rounding boundary.
+func containScaleDimensions(width, height, canvasWidth, canvasHeight int) (int, int) {
+	if width <= 0 || height <= 0 || canvasWidth <= 0 || canvasHeight <= 0 {
+		return width, height
+	}
+	scale := math.Min(float64(canvasWidth)/float64(width), float64(canvasHeight)/float64(height))
+	fittedWidth := evenDown(int(float64(width) * scale))
+	fittedHeight := evenDown(int(float64(height) * scale))
+	if fittedWidth < 2 {
+		fittedWidth = 2
+	}
+	if fittedHeight < 2 {
+		fittedHeight = 2
+	}
+	return fittedWidth, fittedHeight
+}
+
+// transformFillMode reports whether the call's mode asks transform_video to
+// fill the added canvas (blur/pad) instead of cropping it away.
+func transformFillMode(call HarnessToolCall) bool {
+	mode := strings.TrimSpace(call.Mode)
+	return mode == "blur" || mode == "pad"
+}
+
+// fillFilterChain builds the blur/pad filter graph that lands a width×height
+// source on a canvasWidth×canvasHeight canvas without cropping: the foreground
+// is contained (even-pixel, aspect-preserving) and centered; blur fills the
+// remaining canvas with an enlarged, heavily blurred copy of the frame (the
+// standard vertical-video background), pad letterboxes with black bars. The
+// graph's internal labels let it sit inside a longer -vf chain or a
+// filter_complex segment — its input and output stay unlabeled.
+func fillFilterChain(mode string, srcWidth, srcHeight, canvasWidth, canvasHeight int) string {
+	fgWidth, fgHeight := containScaleDimensions(srcWidth, srcHeight, canvasWidth, canvasHeight)
+	if mode == "pad" {
+		return fmt.Sprintf("scale=%d:%d,pad=%d:%d:(ow-iw)/2:(oh-ih)/2",
+			fgWidth, fgHeight, canvasWidth, canvasHeight)
+	}
+	sigma := canvasWidth / 40
+	if canvasHeight < canvasWidth {
+		sigma = canvasHeight / 40
+	}
+	if sigma < 10 {
+		sigma = 10
+	}
+	return fmt.Sprintf("split=2[bg][fg];"+
+		"[bg]scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,gblur=sigma=%d[bgf];"+
+		"[fg]scale=%d:%d[fgf];"+
+		"[bgf][fgf]overlay=(W-w)/2:(H-h)/2",
+		canvasWidth, canvasHeight, canvasWidth, canvasHeight, sigma, fgWidth, fgHeight)
+}
+
+// fillOpPhrase renders the op phrase for a fill: "filled to 9:16 (1080x1920)
+// with a blurred background" / "padded to 1080x1920 (black bars)". An empty
+// aspect names a canvas that came from explicit width+height.
+func fillOpPhrase(mode, aspect string, canvasWidth, canvasHeight int) string {
+	shape := fmt.Sprintf("%dx%d", canvasWidth, canvasHeight)
+	if aspect != "" {
+		shape = fmt.Sprintf("%s (%s)", aspect, shape)
+	}
+	if mode == "pad" {
+		return "padded to " + shape + " (black bars)"
+	}
+	return "filled to " + shape + " with a blurred background"
 }
 
 // concatListFileContents renders the concat demuxer's playlist: one
@@ -1309,7 +1396,7 @@ func transformVideoToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "transform_video",
 		Title:       "Transform video",
-		Description: "Use this when the user asks to change the shape or size of an attached video — crop it to an aspect ratio, downscale or resize it to specific pixel dimensions (for example a clip too large for a video model's input limit), rotate a sideways clip, mirror it — or to speed up or slow down its playback, in whole or in part. It crops to a shape, not a region of time — cutting a segment out is split_video. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). aspectRatio crops (from the center) to a W:H ratio like \"1:1\" or \"16:9\", trimming the longer side; width and height resize — both together produces exactly those pixels (center-cropped to the target shape, never stretched), one alone preserves aspect; rotate is 90, 180, or 270 clockwise; flip is \"horizontal\" or \"vertical\"; speed is a playback multiplier — 3 plays three times as fast, 0.5 at half speed (slow motion), between 0.25 and 8, with the audio tempo-adjusted to stay in sync (pitch preserved). Alone, speed applies to the WHOLE clip; with the optional start and end bounds (timestamps in seconds or clock form, like split_video's) it applies to that PORTION only — speed 3 with start 10 and end 20 plays 10–20s at 3x while everything before and after keeps its normal speed (e.g. \"make the middle of this clip twice as fast\", \"slow-mo the dive between 3s and 7s\"). At least one operation is required. The video is re-encoded to H.264 with its audio kept. The result is attached to the assistant reply and becomes the conversation's newest video.",
+		Description: "Use this when the user asks to change the shape or size of an attached video — crop it to an aspect ratio, convert it between shapes (e.g. a 16:9 clip to 9:16 vertical for Reels/Shorts/TikTok, or to 1:1), downscale or resize it to specific pixel dimensions (for example a clip too large for a video model's input limit), rotate a sideways clip, mirror it — or to speed up or slow down its playback, in whole or in part. It crops to a shape, not a region of time — cutting a segment out is split_video. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). aspectRatio changes the shape to a W:H ratio like \"1:1\", \"4:5\", \"9:16\", or \"16:9\"; mode picks how the new shape is reached — \"crop\" (the default) trims the longer side from the center, \"blur\" fills the added canvas with an enlarged, heavily blurred copy of the frame (the standard vertical-video background; keeps the whole frame visible), \"pad\" letterboxes with black bars; to have new scene content GENERATED in the added area instead of bars or blur, use reframe_video. width and height resize — both together lands on exactly those pixels (reaching them via the same mode: center-cropped by default, blur/pad-filled otherwise, never stretched), one alone preserves aspect; rotate is 90, 180, or 270 clockwise; flip is \"horizontal\" or \"vertical\"; speed is a playback multiplier — 3 plays three times as fast, 0.5 at half speed (slow motion), between 0.25 and 8, with the audio tempo-adjusted to stay in sync (pitch preserved). Alone, speed applies to the WHOLE clip; with the optional start and end bounds (timestamps in seconds or clock form, like split_video's) it applies to that PORTION only — speed 3 with start 10 and end 20 plays 10–20s at 3x while everything before and after keeps its normal speed (e.g. \"make the middle of this clip twice as fast\", \"slow-mo the dive between 3s and 7s\"). At least one operation is required. The video is re-encoded to H.264 with its audio kept. The result is attached to the assistant reply and becomes the conversation's newest video.",
 		Example:     `{"name":"transform_video","width":1280,"height":720}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: transformVideoParamSchema(),
@@ -1319,6 +1406,14 @@ func transformVideoToolDefinition() HarnessToolDefinition {
 				if _, _, ok := parseAspectRatio(aspect); !ok {
 					return []string{prefix + `.aspectRatio must be a W:H ratio like "1:1" or "16:9" for transform_video`}
 				}
+			}
+			switch strings.TrimSpace(call.Mode) {
+			case "", "crop", "blur", "pad":
+			default:
+				return []string{prefix + `.mode must be "crop", "blur", or "pad" for transform_video`}
+			}
+			if transformFillMode(call) && aspect == "" && (call.Width <= 0 || call.Height <= 0) {
+				return []string{prefix + `.mode "blur" and "pad" need a shape target for transform_video — aspectRatio, or width and height together (a lone width or height only resizes)`}
 			}
 			if call.Width < 0 || call.Height < 0 {
 				return []string{prefix + ".width and .height must be positive pixel counts for transform_video"}
@@ -1380,7 +1475,7 @@ func transformVideoToolDefinition() HarnessToolDefinition {
 				return nil, "transform failed", err
 			}
 			srcWidth, srcHeight := 0, 0
-			if aspect := strings.TrimSpace(call.AspectRatio); aspect != "" {
+			if strings.TrimSpace(call.AspectRatio) != "" || transformFillMode(call) {
 				srcWidth, srcHeight, err = transformVideoSourceDimensions(ctx, tools.Config, input, source)
 				if err != nil {
 					return nil, "transform failed", err
@@ -1702,9 +1797,10 @@ func transformVideoParamSchema() map[string]any {
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
-			"aspectRatio": stringParam(`Optional — crop (from the center) to a W:H ratio like "1:1", "4:5", "9:16", "16:9" (trims the longer side), applied before any resize.`),
-			"width":       intParam("Optional — resize to this pixel width (with height, exactly those pixels via center-crop; alone, aspect-preserving). Must be even."),
-			"height":      intParam("Optional — resize to this pixel height (with width, exactly those pixels via center-crop; alone, aspect-preserving). Must be even."),
+			"aspectRatio": stringParam(`Optional — change the shape to a W:H ratio like "1:1", "4:5", "9:16", "16:9"; how the new shape is reached is set by mode. Applied before any resize.`),
+			"mode":        stringParam(`Optional — how aspectRatio (or width+height together) is reached: "crop" (the default) trims the longer side from the center; "blur" fills the added canvas with an enlarged, heavily blurred copy of the frame (the standard vertical-video background); "pad" letterboxes with black bars. To have new scene content generated in the added area, use reframe_video.`),
+			"width":       intParam("Optional — resize to this pixel width (with height, exactly those pixels via mode's shape rule; alone, aspect-preserving). Must be even."),
+			"height":      intParam("Optional — resize to this pixel height (with width, exactly those pixels via mode's shape rule; alone, aspect-preserving). Must be even."),
 			"rotate":      intParam(`Optional — rotate clockwise: 90, 180, or 270.`),
 			"flip":        stringParam(`Optional — "horizontal" or "vertical".`),
 			"speed":       numberParam("Optional — playback-speed multiplier: 3 plays three times as fast, 0.5 at half speed (slow motion). Between 0.25 and 8, not 1. The audio is tempo-adjusted to stay in sync. Alone it applies to the whole clip; with start/end it applies to that portion only."),
