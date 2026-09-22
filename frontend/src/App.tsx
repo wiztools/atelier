@@ -6350,17 +6350,24 @@ function ModelSelectionPanel({
             </div>
 
             <div className="field">
-              {fieldLabel('video-duration', 'Default Video Duration', 'videoDuration')}
+              {fieldLabel('video-duration', 'Default Video Duration', 'videoDuration')}{' '}
+              <InfoHint
+                label="Default video duration"
+                text="Applies to all video modes as the default clip length. Your request can override it per generation."
+              />
               <select id="video-duration" value={value.videoDuration} onChange={(event) => onChange({videoDuration: event.target.value})}>
                 {durationOptions.video.map((option) => <option key={option} value={option}>{videoDurationLabels[option] ?? option}</option>)}
               </select>
-              <span className="hint">Applies to all modes; your request can override it.</span>
             </div>
           </div>
 
           <div className="two-column">
             <div className="field">
-              {fieldLabel('fal-video-image-model', 'Image-to-Video Model (fal.ai)', 'videoImageModel')}
+              {fieldLabel('fal-video-image-model', 'Image-to-Video Model (fal.ai)', 'videoImageModel')}{' '}
+              <InfoHint
+                label="Image-to-video clip lengths"
+                text={`Supported clip lengths: ${formatSupportedDurations(durationOptions.image)}`}
+              />
               <ModelCombobox
                 id="fal-video-image-model"
                 ariaLabel="fal.ai image-to-video model"
@@ -6370,11 +6377,14 @@ function ModelSelectionPanel({
                 options={falVideoImageOptions}
                 allowCustom
               />
-              <span className="hint">Supports: {formatSupportedDurations(durationOptions.image)}</span>
             </div>
 
             <div className="field">
-              {fieldLabel('fal-video-keyframe-model', 'Keyframes (Start→End) Model (fal.ai)', 'videoKeyframeModel')}
+              {fieldLabel('fal-video-keyframe-model', 'Keyframes (Start→End) Model (fal.ai)', 'videoKeyframeModel')}{' '}
+              <InfoHint
+                label="Keyframe clip lengths"
+                text={`Supported clip lengths: ${formatSupportedDurations(durationOptions.keyframe)}`}
+              />
               <ModelCombobox
                 id="fal-video-keyframe-model"
                 ariaLabel="fal.ai keyframe model"
@@ -6384,13 +6394,16 @@ function ModelSelectionPanel({
                 options={falVideoKeyframeOptions}
                 allowCustom
               />
-              <span className="hint">Supports: {formatSupportedDurations(durationOptions.keyframe)}</span>
             </div>
           </div>
 
           <div className="two-column">
             <div className="field">
-              {fieldLabel('fal-video-extend-model', 'Video-Extend Model (fal.ai)', 'videoExtendModel')}
+              {fieldLabel('fal-video-extend-model', 'Video-Extend Model (fal.ai)', 'videoExtendModel')}{' '}
+              <InfoHint
+                label="Video-extend clip lengths"
+                text={`Supported clip lengths: ${formatSupportedDurations(durationOptions.extend)}`}
+              />
               <ModelCombobox
                 id="fal-video-extend-model"
                 ariaLabel="fal.ai video-extend model"
@@ -6400,7 +6413,6 @@ function ModelSelectionPanel({
                 options={falVideoExtendOptions}
                 allowCustom
               />
-              <span className="hint">Supports: {formatSupportedDurations(durationOptions.extend)}</span>
             </div>
           </div>
 
