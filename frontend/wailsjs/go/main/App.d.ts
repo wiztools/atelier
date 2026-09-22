@@ -74,6 +74,8 @@ export function ListFalVideoExtendModels():Promise<Array<main.FalModel>>;
 
 export function ListFalVideoImageModels():Promise<Array<main.FalModel>>;
 
+export function ListFalVideoKeyframeModels():Promise<Array<main.FalModel>>;
+
 export function ListFalVideoModels():Promise<Array<main.FalModel>>;
 
 export function ListFalVideoMotionModels():Promise<Array<main.FalModel>>;

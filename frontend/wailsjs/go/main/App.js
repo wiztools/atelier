@@ -146,6 +146,10 @@ export function ListFalVideoImageModels() {
   return window['go']['main']['App']['ListFalVideoImageModels']();
 }
 
+export function ListFalVideoKeyframeModels() {
+  return window['go']['main']['App']['ListFalVideoKeyframeModels']();
+}
+
 export function ListFalVideoModels() {
   return window['go']['main']['App']['ListFalVideoModels']();
 }

@@ -294,6 +294,7 @@ export namespace main {
 	    imageEditModel?: string;
 	    videoModel?: string;
 	    videoImageModel?: string;
+	    videoKeyframeModel?: string;
 	    videoExtendModel?: string;
 	    videoMotionModel?: string;
 	    audioModel?: string;
@@ -317,6 +318,7 @@ export namespace main {
 	        this.imageEditModel = source["imageEditModel"];
 	        this.videoModel = source["videoModel"];
 	        this.videoImageModel = source["videoImageModel"];
+	        this.videoKeyframeModel = source["videoKeyframeModel"];
 	        this.videoExtendModel = source["videoExtendModel"];
 	        this.videoMotionModel = source["videoMotionModel"];
 	        this.audioModel = source["audioModel"];
@@ -595,6 +597,7 @@ export namespace main {
 	    upscaleModel?: string;
 	    videoModel?: string;
 	    videoImageModel?: string;
+	    videoKeyframeModel?: string;
 	    videoExtendModel?: string;
 	    videoMotionModel?: string;
 	    videoUpscaleModel?: string;
@@ -630,6 +633,7 @@ export namespace main {
 	        this.upscaleModel = source["upscaleModel"];
 	        this.videoModel = source["videoModel"];
 	        this.videoImageModel = source["videoImageModel"];
+	        this.videoKeyframeModel = source["videoKeyframeModel"];
 	        this.videoExtendModel = source["videoExtendModel"];
 	        this.videoMotionModel = source["videoMotionModel"];
 	        this.videoUpscaleModel = source["videoUpscaleModel"];

@@ -2476,6 +2476,20 @@ func (a *App) ListFalVideoImageModels() ([]FalModel, error) {
 	return newFalClient(a.client, key).ListModels(ctx, falImageToVideoCategory, 0)
 }
 
+// ListFalVideoKeyframeModels returns fal's image-to-video catalog for the
+// Settings keyframe-model picker. Keyframe (start→end transition) endpoints are
+// image-to-video models with an end-frame input, so they share the
+// image-to-video category with ListFalVideoImageModels.
+func (a *App) ListFalVideoKeyframeModels() ([]FalModel, error) {
+	key, err := loadFalAPIKey()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return newFalClient(a.client, key).ListModels(ctx, falImageToVideoCategory, 0)
+}
+
 // ListFalUpscaleModels returns fal's image-upscaler catalog for the Settings
 // upscale-model picker. fal is the only upscale backend (Ollama has none). fal
 // files upscalers under the broader image-to-image category (alongside

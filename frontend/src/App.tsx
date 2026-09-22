@@ -31,6 +31,7 @@ import {
   ListFalImageEditModels,
   ListFalVideoModels,
   ListFalVideoImageModels,
+  ListFalVideoKeyframeModels,
   ListFalVideoExtendModels,
   ListFalVideoMotionModels,
   ListFalVideoUpscaleModels,
@@ -317,6 +318,7 @@ const defaultFalImageModel = 'fal-ai/flux/schnell';
 const defaultFalImageEditModel = 'fal-ai/flux/dev/image-to-image';
 const defaultFalVideoModel = 'fal-ai/kling-video/v2/master/text-to-video';
 const defaultFalVideoImageModel = 'fal-ai/kling-video/v2/master/image-to-video';
+const defaultFalVideoKeyframeModel = 'fal-ai/bytedance/seedance-2.0/image-to-video';
 const defaultFalVideoExtendModel = 'fal-ai/veo3.1/extend-video';
 const defaultFalVideoMotionModel = 'fal-ai/kling-video/v2.6/pro/motion-control';
 const defaultFalVideoUpscaleModel = 'fal-ai/video-upscaler';
@@ -968,6 +970,8 @@ function App() {
   const [falVideoModels, setFalVideoModels] = useState<main.FalModel[]>([]);
   const [falVideoImageModel, setFalVideoImageModel] = useState(defaultFalVideoImageModel);
   const [falVideoImageModels, setFalVideoImageModels] = useState<main.FalModel[]>([]);
+  const [falVideoKeyframeModel, setFalVideoKeyframeModel] = useState(defaultFalVideoKeyframeModel);
+  const [falVideoKeyframeModels, setFalVideoKeyframeModels] = useState<main.FalModel[]>([]);
   const [falVideoExtendModel, setFalVideoExtendModel] = useState(defaultFalVideoExtendModel);
   const [falVideoExtendModels, setFalVideoExtendModels] = useState<main.FalModel[]>([]);
   const [falVideoMotionModel, setFalVideoMotionModel] = useState(defaultFalVideoMotionModel);
@@ -1538,6 +1542,7 @@ function App() {
             imageEditModel: falImageEditModel,
             videoModel: falVideoModel,
             videoImageModel: falVideoImageModel,
+            videoKeyframeModel: falVideoKeyframeModel,
             videoExtendModel: falVideoExtendModel,
             videoMotionModel: falVideoMotionModel,
             videoUpscaleModel: falVideoUpscaleModel,
@@ -1608,7 +1613,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, whisperBinary, whisperModel]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, whisperBinary, whisperModel]);
 
   // Re-probe local CLI tools when a binary override changes so the provider
   // dropdown and the video/image-tools status reflect an unsaved override without
@@ -1993,6 +1998,7 @@ function App() {
     falUpscaleModel,
     falVideoModel,
     falVideoImageModel,
+    falVideoKeyframeModel,
     falVideoExtendModel,
     falVideoMotionModel,
     falVideoUpscaleModel,
@@ -2013,7 +2019,7 @@ function App() {
     videoDurationExtend,
     videoAspectRatio,
     whisperBinary,
-  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, falModel, openaiCompatibleModel, falImageEditModel, falUpscaleModel, falVideoModel, falVideoImageModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, whisperModel, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoDurationImage, videoDurationExtend, videoAspectRatio, whisperBinary]);
+  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, falModel, openaiCompatibleModel, falImageEditModel, falUpscaleModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, whisperModel, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoDurationImage, videoDurationExtend, videoAspectRatio, whisperBinary]);
 
   const conversationModelSelection = useMemo<ModelSelectionValue>(() => {
     const global = globalModelSelection;
@@ -2039,6 +2045,7 @@ function App() {
       falUpscaleModel: overrides.upscaleModel || global.falUpscaleModel,
       falVideoModel: overrides.videoModel || global.falVideoModel,
       falVideoImageModel: overrides.videoImageModel || global.falVideoImageModel,
+      falVideoKeyframeModel: overrides.videoKeyframeModel || global.falVideoKeyframeModel,
       falVideoExtendModel: overrides.videoExtendModel || global.falVideoExtendModel,
       falVideoMotionModel: overrides.videoMotionModel || global.falVideoMotionModel,
       falVideoUpscaleModel: overrides.videoUpscaleModel || global.falVideoUpscaleModel,
@@ -2092,6 +2099,7 @@ function App() {
     if (patch.falUpscaleModel !== undefined) setFalUpscaleModel(patch.falUpscaleModel);
     if (patch.falVideoModel !== undefined) setFalVideoModel(patch.falVideoModel);
     if (patch.falVideoImageModel !== undefined) setFalVideoImageModel(patch.falVideoImageModel);
+    if (patch.falVideoKeyframeModel !== undefined) setFalVideoKeyframeModel(patch.falVideoKeyframeModel);
     if (patch.falVideoExtendModel !== undefined) setFalVideoExtendModel(patch.falVideoExtendModel);
     if (patch.falVideoMotionModel !== undefined) setFalVideoMotionModel(patch.falVideoMotionModel);
     if (patch.falVideoUpscaleModel !== undefined) setFalVideoUpscaleModel(patch.falVideoUpscaleModel);
@@ -2161,6 +2169,7 @@ function App() {
       if (patch.falUpscaleModel !== undefined) next.add('upscaleModel');
       if (patch.falVideoModel !== undefined) next.add('videoModel');
       if (patch.falVideoImageModel !== undefined) next.add('videoImageModel');
+      if (patch.falVideoKeyframeModel !== undefined) next.add('videoKeyframeModel');
       if (patch.falVideoExtendModel !== undefined) next.add('videoExtendModel');
       if (patch.falVideoMotionModel !== undefined) next.add('videoMotionModel');
       if (patch.falVideoUpscaleModel !== undefined) next.add('videoUpscaleModel');
@@ -2220,6 +2229,7 @@ function App() {
         case 'upscaleModel': next.falUpscaleModel = global.falUpscaleModel; break;
         case 'videoModel': next.falVideoModel = global.falVideoModel; break;
         case 'videoImageModel': next.falVideoImageModel = global.falVideoImageModel; break;
+        case 'videoKeyframeModel': next.falVideoKeyframeModel = global.falVideoKeyframeModel; break;
         case 'videoExtendModel': next.falVideoExtendModel = global.falVideoExtendModel; break;
         case 'videoMotionModel': next.falVideoMotionModel = global.falVideoMotionModel; break;
         case 'videoUpscaleModel': next.falVideoUpscaleModel = global.falVideoUpscaleModel; break;
@@ -2374,6 +2384,7 @@ function App() {
   const falVideoModelOptions = useMemo(() => falModelOptionList(falVideoModels), [falVideoModels]);
 
   const falVideoImageModelOptions = useMemo(() => falModelOptionList(falVideoImageModels), [falVideoImageModels]);
+  const falVideoKeyframeModelOptions = useMemo(() => falModelOptionList(falVideoKeyframeModels), [falVideoKeyframeModels]);
 
   const falVideoExtendModelOptions = useMemo(() => falModelOptionList(falVideoExtendModels), [falVideoExtendModels]);
   const falVideoMotionModelOptions = useMemo(() => falModelOptionList(falVideoMotionModels), [falVideoMotionModels]);
@@ -2401,6 +2412,7 @@ function App() {
     falImageEditModels,
     falVideoModels,
     falVideoImageModels,
+    falVideoKeyframeModels,
     falVideoExtendModels,
     falVideoMotionModels,
     falVideoUpscaleModels,
@@ -2576,6 +2588,7 @@ function App() {
     const nextFalImageEditModel = config.providers?.fal?.imageEditModel || defaultFalImageEditModel;
 	const nextFalVideoModel = config.providers?.fal?.videoModel || defaultFalVideoModel;
 	const nextFalVideoImageModel = config.providers?.fal?.videoImageModel || defaultFalVideoImageModel;
+	const nextFalVideoKeyframeModel = config.providers?.fal?.videoKeyframeModel || defaultFalVideoKeyframeModel;
 	const nextFalVideoExtendModel = config.providers?.fal?.videoExtendModel || defaultFalVideoExtendModel;
 	const nextFalVideoMotionModel = config.providers?.fal?.videoMotionModel || defaultFalVideoMotionModel;
 	const nextFalVideoUpscaleModel = config.providers?.fal?.videoUpscaleModel || defaultFalVideoUpscaleModel;
@@ -2619,6 +2632,7 @@ function App() {
     setFalImageEditModel(nextFalImageEditModel);
     setFalVideoModel(nextFalVideoModel);
     setFalVideoImageModel(nextFalVideoImageModel);
+    setFalVideoKeyframeModel(nextFalVideoKeyframeModel);
     setFalVideoExtendModel(nextFalVideoExtendModel);
     setFalVideoMotionModel(nextFalVideoMotionModel);
     setFalVideoUpscaleModel(nextFalVideoUpscaleModel);
@@ -2813,6 +2827,11 @@ function App() {
       setFalVideoImageModels([]);
     }
     try {
+      setFalVideoKeyframeModels(asArray(await ListFalVideoKeyframeModels()));
+    } catch {
+      setFalVideoKeyframeModels([]);
+    }
+    try {
       setFalVideoExtendModels(asArray(await ListFalVideoExtendModels()));
     } catch {
       setFalVideoExtendModels([]);
@@ -2928,6 +2947,7 @@ function App() {
       setFalModels([]);
       setFalVideoModels([]);
       setFalVideoImageModels([]);
+      setFalVideoKeyframeModels([]);
       setFalVideoExtendModels([]);
       setFalAudioModels([]);
       setFalSoundEffectModels([]);
@@ -5840,6 +5860,7 @@ type ModelSelectionValue = {
   falUpscaleModel: string;
   falVideoModel: string;
   falVideoImageModel: string;
+  falVideoKeyframeModel: string;
   falVideoExtendModel: string;
   falVideoMotionModel: string;
   falVideoUpscaleModel: string;
@@ -5896,6 +5917,7 @@ function overrideKeysFromRecord(overrides: main.ConversationModelOverrides | nul
   if (overrides.upscaleModel) keys.add('upscaleModel');
   if (overrides.videoModel) keys.add('videoModel');
   if (overrides.videoImageModel) keys.add('videoImageModel');
+  if (overrides.videoKeyframeModel) keys.add('videoKeyframeModel');
   if (overrides.videoExtendModel) keys.add('videoExtendModel');
   if (overrides.videoMotionModel) keys.add('videoMotionModel');
   if (overrides.videoUpscaleModel) keys.add('videoUpscaleModel');
@@ -5934,6 +5956,7 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   if (keys.has('upscaleModel')) payload.upscaleModel = draft.falUpscaleModel;
   if (keys.has('videoModel')) payload.videoModel = draft.falVideoModel;
   if (keys.has('videoImageModel')) payload.videoImageModel = draft.falVideoImageModel;
+  if (keys.has('videoKeyframeModel')) payload.videoKeyframeModel = draft.falVideoKeyframeModel;
   if (keys.has('videoExtendModel')) payload.videoExtendModel = draft.falVideoExtendModel;
   if (keys.has('videoMotionModel')) payload.videoMotionModel = draft.falVideoMotionModel;
   if (keys.has('videoUpscaleModel')) payload.videoUpscaleModel = draft.falVideoUpscaleModel;
@@ -5983,6 +6006,7 @@ function ModelSelectionPanel({
     falImageEditModels: main.FalModel[];
     falVideoModels: main.FalModel[];
     falVideoImageModels: main.FalModel[];
+    falVideoKeyframeModels: main.FalModel[];
     falVideoExtendModels: main.FalModel[];
     falVideoMotionModels: main.FalModel[];
     falVideoUpscaleModels: main.FalModel[];
@@ -6017,6 +6041,7 @@ function ModelSelectionPanel({
   const falUpscaleOptions = falModelOptionList(catalogs.falUpscaleModels);
   const falVideoOptions = falModelOptionList(catalogs.falVideoModels);
   const falVideoImageOptions = falModelOptionList(catalogs.falVideoImageModels);
+  const falVideoKeyframeOptions = falModelOptionList(catalogs.falVideoKeyframeModels);
   const falVideoExtendOptions = falModelOptionList(catalogs.falVideoExtendModels);
   const falVideoMotionOptions = falModelOptionList(catalogs.falVideoMotionModels);
   const falVideoUpscaleOptions = falModelOptionList(catalogs.falVideoUpscaleModels);
@@ -6319,6 +6344,19 @@ function ModelSelectionPanel({
                 value={value.falVideoImageModel}
                 onChange={(next) => onChange({falVideoImageModel: next})}
                 options={falVideoImageOptions}
+                allowCustom
+              />
+            </div>
+
+            <div className="field">
+              {fieldLabel('fal-video-keyframe-model', 'Keyframes (Start→End) Model (fal.ai)', 'videoKeyframeModel')}
+              <ModelCombobox
+                id="fal-video-keyframe-model"
+                ariaLabel="fal.ai keyframe model"
+                placeholder={defaultFalVideoKeyframeModel}
+                value={value.falVideoKeyframeModel}
+                onChange={(next) => onChange({falVideoKeyframeModel: next})}
+                options={falVideoKeyframeOptions}
                 allowCustom
               />
             </div>
