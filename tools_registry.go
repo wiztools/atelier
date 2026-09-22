@@ -104,6 +104,11 @@ type HarnessToolExecutionContext struct {
 	// cropping it. It returns a video (same transport as GenerateVideo) plus
 	// resolver notices, like UpscaleVideo.
 	ReframeVideo func(ctx context.Context, req VideoReframeRequest) (GeneratedVideo, error)
+	// RestyleVideo re-renders an attached clip under a prompt via fal's
+	// video-restyle endpoints — keeping the motion while changing the look
+	// (anime, claymation, a different character). It returns a video (same
+	// transport as GenerateVideo) plus resolver notices, like ReframeVideo.
+	RestyleVideo func(ctx context.Context, req VideoRestyleRequest) (GeneratedVideo, error)
 }
 
 // ToolImageResult carries generated images as data URLs. The Images field is
@@ -310,6 +315,9 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 	if videoReframeConfigured(config) {
 		definitions = append(definitions, videoReframeToolDefinition())
 	}
+	if videoRestyleConfigured(config) {
+		definitions = append(definitions, videoRestyleToolDefinition())
+	}
 	return newHarnessToolRegistry(definitions)
 }
 
@@ -470,6 +478,26 @@ func resolveDefaultVideoReframeModel(config AppConfig) string {
 		return model
 	}
 	return defaultFalVideoReframeModel
+}
+
+// videoRestyleConfigured mirrors videoUpscaleConfigured for the restyle_video
+// tool: fal is the only video-restyle backend and the default endpoint always
+// applies, so the gate is purely the fal key — like upscale_video,
+// reframe_video, transcribe_audio, and lip_sync, no model needs to be
+// configured first.
+func videoRestyleConfigured(config AppConfig) bool {
+	return falKeyConfigured()
+}
+
+// resolveDefaultVideoRestyleModel returns the restyle endpoint the
+// restyle_video tool uses when the call doesn't override it. fal-only; falls
+// back to the const default (Kling o3 video-to-video edit) when the user
+// hasn't picked one in Settings.
+func resolveDefaultVideoRestyleModel(config AppConfig) string {
+	if model := strings.TrimSpace(config.Providers.Fal.VideoRestyleModel); model != "" {
+		return model
+	}
+	return defaultFalVideoRestyleModel
 }
 
 // videoGenerationConfigured reports whether the generate_video tool should be
@@ -2127,6 +2155,96 @@ func videoReframeParamSchema() map[string]any {
 			"model":       stringParam("Optional video reframe model override."),
 		},
 		"required": []string{"aspectRatio"},
+	}
+}
+
+// videoRestyleToolDefinition exposes the restyle_video tool — video-to-video
+// style transfer of an attached clip: the motion is kept while the look is
+// re-rendered under a prompt (anime, claymation, a different art style or
+// characters). The generative sibling of reframe_video's shape transform:
+// reframe changes the canvas, restyle changes the content. fal-only; the
+// attached-video requirement is enforced in Execute because Validate only
+// sees the call, not tools. The result rides the same ToolVideoResult
+// pipeline as generate_video, so artifacts, history, carry-forward, and the
+// chat reply's video card all work unchanged.
+func videoRestyleToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "restyle_video",
+		Title:       "Restyle video",
+		Risk:        HarnessToolRiskRead,
+		Example:     `{"name":"restyle_video","content":"redraw the clip in hand-drawn anime style"}`,
+		Description: "Use this when the user asks to change the LOOK of an attached video while keeping its motion and timing — restyle it into anime, claymation, or another art style, change the characters' appearance, or re-render the clip with a different visual treatment. Requires an attached video and a description of the new look. fal.ai only — runs unattended like video generation, takes a minute or more, and input clips are capped (commonly around 3-15 seconds). This is generation, not a local filter: every frame is re-rendered by the model. Attached images ride as style/appearance references on models that accept them (e.g. a character sheet for \"make him look like this\"); models without a reference-image input ignore them with a notice. The restyled clip keeps the original audio where the model supports it.",
+		ParamSchema: videoRestyleParamSchema(),
+		Validate: func(prefix string, call HarnessToolCall) []string {
+			if strings.TrimSpace(call.Content) == "" {
+				return []string{prefix + `.content is required for restyle_video — describe the new look, e.g. "hand-drawn anime style" or "claymation, stop-motion feel"`}
+			}
+			return nil
+		},
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			if tools.RestyleVideo == nil {
+				return nil, "video restyling unavailable", errors.New("video restyling is not available in this context")
+			}
+			attachedVideo := firstAttachedVideo(tools.AttachedVideos)
+			if attachedVideo == "" {
+				return nil, "video restyling requires an attached video", errors.New("restyle_video requires an attached video — ask the user to attach one first")
+			}
+			model := strings.TrimSpace(call.Model)
+			if model == "" {
+				model = resolveDefaultVideoRestyleModel(tools.Config)
+			}
+			if model == "" {
+				return nil, "video restyling unavailable", errors.New("no video restyle model is configured")
+			}
+			generated, err := tools.RestyleVideo(ctx, VideoRestyleRequest{
+				Model:          model,
+				Video:          attachedVideo,
+				Prompt:         strings.TrimSpace(call.Content),
+				Images:         tools.AttachedImages,
+				NegativePrompt: strings.TrimSpace(call.NegativePrompt),
+				Resolution:     strings.TrimSpace(call.Resolution),
+			})
+			if err != nil {
+				return nil, "video restyling failed", err
+			}
+			if len(generated.Data) == 0 {
+				return nil, "video restyling returned no video", errors.New("restyle model returned no video data")
+			}
+			tempPath, err := writeTempVideo(generated)
+			if err != nil {
+				return nil, "video restyling failed", err
+			}
+			output := ToolVideoResult{
+				Model:      model,
+				Prompt:     strings.TrimSpace(call.Content),
+				Count:      1,
+				Videos:     []ToolVideoFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
+				Notices:    generated.Notices,
+				CostMicros: generated.CostMicros,
+			}
+			return output, fmt.Sprintf("restyled the attached video with %s", model), nil
+		},
+		Activity: func(result HarnessToolResult) HarnessToolActivity {
+			activity := defaultHarnessToolActivity(result)
+			if typed, ok := result.Result.(ToolVideoResult); ok {
+				activity.Command = []string{"fal", "restyle", typed.Model}
+			}
+			return activity
+		},
+	}
+}
+
+func videoRestyleParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"content":        stringParam(`Required — the new look, as a style instruction: "hand-drawn anime style", "claymation / stop-motion", "1990s VHS camcorder footage". Describe the target style or character change, not a new scene — the attached clip's motion and timing are kept.`),
+			"negativePrompt": stringParam(`Optional — describe what to keep out of the restyled clip (e.g. "text, watermark, extra limbs"). Ignored with a notice on models without a negative-prompt control.`),
+			"resolution":     enumParam(`Optional — the output resolution tier, "720p" or "1080p" (omit for the model's default; ignored with a notice when the model has no tier control).`, "720p", "1080p"),
+			"model":          stringParam("Optional video restyle model override."),
+		},
+		"required": []string{"content"},
 	}
 }
 

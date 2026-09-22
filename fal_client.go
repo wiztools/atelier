@@ -61,6 +61,17 @@ const (
 	// resolveVideoReframeBody maps the canonical ratio/resolution onto whichever
 	// endpoint is configured.
 	defaultFalVideoReframeModel = "fal-ai/ltx-2.3/reframe"
+	// defaultFalVideoRestyleModel is the video-restyle endpoint used when none is
+	// configured — Kling o3 video-to-video edit re-renders an attached clip
+	// under a prompt while keeping its motion: anime, claymation, a different
+	// look or characters (video_url + prompt required, inputs 3–15s / ≤200MB,
+	// optional reference images for appearance, original audio kept by default).
+	// Alternatives the picker surfaces: the o3 standard/4k tiers, Wan 2.7
+	// edit-video (2–10s inputs, a resolution tier and match-input duration), and
+	// the LTX-2.3-22B video-to-video family; resolveVideoRestyleBody maps the
+	// canonical prompt/resolution/references onto whichever endpoint is
+	// configured.
+	defaultFalVideoRestyleModel = "fal-ai/kling-video/o3/pro/video-to-video/edit"
 	// defaultFalAudioModel is the text-to-speech endpoint used by the
 	// generate_speech tool when none is configured.
 	defaultFalAudioModel = "fal-ai/elevenlabs/tts/multilingual-v2"

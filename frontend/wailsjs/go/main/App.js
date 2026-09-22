@@ -162,6 +162,10 @@ export function ListFalVideoReframeModels() {
   return window['go']['main']['App']['ListFalVideoReframeModels']();
 }
 
+export function ListFalVideoRestyleModels() {
+  return window['go']['main']['App']['ListFalVideoRestyleModels']();
+}
+
 export function ListFalVideoUpscaleModels() {
   return window['go']['main']['App']['ListFalVideoUpscaleModels']();
 }

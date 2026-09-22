@@ -242,6 +242,13 @@ type ConfigFal struct {
 	// added canvas (16:9 → 9:16 for Reels/Shorts) instead of cropping, so the
 	// picker partitions fal's video-to-video category by "reframe".
 	VideoReframeModel string `json:"videoReframeModel,omitempty"`
+	// VideoRestyleModel is the video-restyle endpoint used by the restyle_video
+	// tool (fal-only, like VideoReframeModel) — a video-to-video transform that
+	// re-renders an attached clip under a prompt while keeping its motion (anime,
+	// claymation, a different look or characters), so the picker partitions fal's
+	// video-to-video category by the general edit/style markers minus the other
+	// five families.
+	VideoRestyleModel string `json:"videoRestyleModel,omitempty"`
 	// LipsyncImageModel is the audio-to-video lip sync endpoint used when the
 	// user attaches an audio clip plus an image (a talking head).
 	// LipsyncVideoModel is the video-to-video lip sync endpoint used when the
@@ -644,6 +651,24 @@ type VideoReframeRequest struct {
 	Video       string `json:"video"`
 	AspectRatio string `json:"aspectRatio,omitempty"`
 	Resolution  string `json:"resolution,omitempty"`
+}
+
+// VideoRestyleRequest is the input to fal's video restyler — the style-transfer
+// sibling of VideoReframeRequest. Video is the source clip (a URL or base64
+// data URI) whose motion is kept, Prompt the new-look instruction ("anime
+// style", "claymation", "turn the hero into a rubber duck"), and Images
+// optional style/appearance reference frames (a character sheet, a look) that
+// ride when the model declares an image input — the "a different character"
+// combination. Resolution is the optional output tier; NegativePrompt is
+// dropped with a notice on models without one. The result is a GeneratedVideo,
+// carried through the same artifact pipeline as generate_video.
+type VideoRestyleRequest struct {
+	Model          string   `json:"model"`
+	Video          string   `json:"video"`
+	Prompt         string   `json:"prompt,omitempty"`
+	Images         []string `json:"images,omitempty"`
+	NegativePrompt string   `json:"negativePrompt,omitempty"`
+	Resolution     string   `json:"resolution,omitempty"`
 }
 
 // VideoGenerateRequest is the input to a video generation (text-to-video,
@@ -2801,7 +2826,7 @@ func (a *App) ListFalVideoMotionModels() ([]FalModel, error) {
 // per-frame, Topaz, Crystal, SeedVR). fal files these under the broad
 // video-to-video category alongside extend, lipsync, motion, and reframe, so
 // the id and tags are checked for "upscal" — the same marker isFalUpscaleModel
-// uses on the image side. Together the five predicates partition video-to-video.
+// uses on the image side. Together the six predicates partition video-to-video.
 func isFalVideoUpscaleModel(model FalModel) bool {
 	if strings.Contains(strings.ToLower(model.ID), "upscal") {
 		return true
@@ -2818,8 +2843,8 @@ func isFalVideoUpscaleModel(model FalModel) bool {
 // Settings video-upscale-model picker (the upscale_video tool's endpoint) —
 // endpoints that raise an attached video's resolution. fal files these under the
 // video-to-video category, fetched and kept only when isFalVideoUpscaleModel
-// matches. Shares its category with the extend/lipsync/motion/reframe pickers;
-// the five filters partition it.
+// matches. Shares its category with the extend/lipsync/motion/reframe/restyle
+// pickers; the six filters partition it.
 func (a *App) ListFalVideoUpscaleModels() ([]FalModel, error) {
 	key, err := loadFalAPIKey()
 	if err != nil {
@@ -2845,7 +2870,7 @@ func (a *App) ListFalVideoUpscaleModels() ([]FalModel, error) {
 // outpainting the added canvas (LTX-2.3 Reframe, Luma Ray 2 / Ray 3.2 reframe)
 // rather than cropping or upscaling it. fal files these under the broad
 // video-to-video category, so the id and tags are checked for "reframe" —
-// alongside the extend/lipsync/motion/upscale markers, the five predicates
+// alongside the extend/lipsync/motion/upscale markers, the six predicates
 // partition video-to-video.
 func isFalVideoReframeModel(model FalModel) bool {
 	if strings.Contains(strings.ToLower(model.ID), "reframe") {
@@ -2864,7 +2889,7 @@ func isFalVideoReframeModel(model FalModel) bool {
 // endpoints that generatively convert an attached clip to a new aspect ratio.
 // fal files these under the video-to-video category, fetched and kept only when
 // isFalVideoReframeModel matches. Shares its category with the
-// extend/lipsync/motion/upscale pickers; the five filters partition it.
+// extend/lipsync/motion/upscale/restyle pickers; the six filters partition it.
 func (a *App) ListFalVideoReframeModels() ([]FalModel, error) {
 	key, err := loadFalAPIKey()
 	if err != nil {
@@ -2883,6 +2908,89 @@ func (a *App) ListFalVideoReframeModels() ([]FalModel, error) {
 		}
 	}
 	return reframe, nil
+}
+
+// falVideoRestyleMarkers are the id-only markers of a general prompt-driven
+// restyle endpoint — one that re-renders an attached clip under a text
+// instruction (Kling o3 video-to-video/edit, Wan edit-video, Ray modify, Sora
+// remix, the open-weight */video-to-video family). Matched on the id, never
+// the tags: fal's catalog tags are noisy across this category (unrelated
+// entries share "stylized, transform"), while the ids are precise.
+var falVideoRestyleMarkers = []string{
+	"video-to-video", "v2v", "edit-video", "video-edit", "restyle", "stylize", "style-transfer", "modify", "remix",
+}
+
+// falVideoOtherFamilyMarkers are the id/tags markers of the video-to-video
+// category entries that are NOT general restyle endpoints: the five families
+// the other pickers partition (extend, lipsync, motion, upscale, reframe) plus
+// the utility transforms (background removal, inpainting, depth/pose control,
+// interpolation, relighting, sound...). A restyle candidate carrying any of
+// these belongs to that family instead.
+var falVideoOtherFamilyMarkers = []string{
+	"extend", "lipsync", "motion", "upscal", "reframe",
+	"audio", "sound", "sfx", "music", "talk",
+	"background", "removal", "erase", "subtitle", "caption",
+	"inpaint", "outpaint", "depth", "pose", "interpolat", "rife",
+	"denoise", "deblur", "colorize", "colorization", "hdr", "relight", "recamera",
+	"sam-", "segment", "mask", "ffmpeg", "trim", "reverse", "blend",
+	"vton", "dreamactor", "realtime", "webrtc", "green-screen",
+	"clean-plate", "day-to-night", "water-simulation", "decompress", "sdr",
+}
+
+// isFalVideoRestyleModel reports whether a fal catalog entry is a general
+// video restyler — one that re-renders an attached clip under a prompt while
+// keeping its motion, rather than one of the five partitioned families
+// (extend, lipsync, motion, upscale, reframe) or a utility transform. The
+// positive markers are id-only (catalog tags are noisy here); the exclusion
+// markers check id and tags, mirroring the five sibling predicates so together
+// the six filters partition fal's video-to-video category.
+func isFalVideoRestyleModel(model FalModel) bool {
+	id := strings.ToLower(model.ID)
+	for _, marker := range falVideoOtherFamilyMarkers {
+		if strings.Contains(id, marker) {
+			return false
+		}
+	}
+	for _, tag := range model.Tags {
+		lower := strings.ToLower(tag)
+		for _, marker := range falVideoOtherFamilyMarkers {
+			if strings.Contains(lower, marker) {
+				return false
+			}
+		}
+	}
+	for _, marker := range falVideoRestyleMarkers {
+		if strings.Contains(id, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// ListFalVideoRestyleModels returns fal's video-restyle catalog for the
+// Settings video-restyle-model picker (the restyle_video tool's endpoint) —
+// endpoints that re-render an attached clip under a prompt. fal files these
+// under the video-to-video category, fetched and kept only when
+// isFalVideoRestyleModel matches. Shares its category with the
+// extend/lipsync/motion/upscale/reframe pickers; the six filters partition it.
+func (a *App) ListFalVideoRestyleModels() ([]FalModel, error) {
+	key, err := loadFalAPIKey()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	models, err := newFalClient(a.client, key).ListModels(ctx, falVideoToVideoCategory, 0)
+	if err != nil {
+		return nil, err
+	}
+	restyle := make([]FalModel, 0, len(models))
+	for _, model := range models {
+		if isFalVideoRestyleModel(model) {
+			restyle = append(restyle, model)
+		}
+	}
+	return restyle, nil
 }
 
 // isFalSpeechModel reports whether a fal catalog entry is a text-to-speech

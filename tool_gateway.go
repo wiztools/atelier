@@ -350,6 +350,56 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			generated.Notices = notices
 			return generated, genErr
 		}
+		gateway.tools.RestyleVideo = func(ctx context.Context, req VideoRestyleRequest) (GeneratedVideo, error) {
+			apiKey, err := loadFalAPIKey()
+			if err != nil {
+				return GeneratedVideo{}, err
+			}
+			if strings.TrimSpace(apiKey) == "" {
+				return GeneratedVideo{}, errFalKeyNotConfigured
+			}
+			client := newFalClient(app.client, apiKey)
+			// Pre-resolve the source clip with the force-host variant, the same
+			// rule as reframe: an attached video almost always exceeds fal's
+			// inline base64 limit, and the restyle endpoints sit in the same
+			// data-URI-rejecting camp downstream. Fail-soft: on upload failure
+			// the inline data URI is sent and fal's error surfaces verbatim.
+			if resolved, err := client.resolveMediaURLHosted(ctx, req.Video, "video/mp4", "source-video.mp4"); err == nil {
+				req.Video = resolved
+			}
+			// Reference images are normalized to a model-decodable format first
+			// (model_image_compat.go) — a HEIC character sheet can't ride fal's
+			// image_urls any better than a face source can — and always hosted,
+			// the lipsync rule: restyle endpoints reject inline data URIs
+			// downstream too, and a reference is cheap to upload.
+			req.Images = ensureModelSafeImages(ctx, config, req.Images)
+			for i, img := range req.Images {
+				if resolved, err := client.resolveMediaURLHosted(ctx, img, "image/png", fmt.Sprintf("style-reference-%d.png", i)); err == nil {
+					req.Images[i] = resolved
+				}
+			}
+			schema := schemaCache.Get(ctx, req.Model)
+			body, notices, err := resolveVideoRestyleBody(schema, req, falOverrides)
+			if err != nil {
+				return GeneratedVideo{Notices: notices}, err
+			}
+			// Restyling returns a video, so it reuses the GenerateVideo transport
+			// (the same pattern as ReframeVideo / UpscaleVideo).
+			generated, genErr := client.GenerateVideo(ctx, req.Model, body)
+			if genErr == nil {
+				// Restyle preserves length (Kling o3 and Wan re-render the
+				// input's duration), so the rendered clip's own container
+				// carries the billed duration — the same rule as reframe.
+				// Flat per-video and per-request models price off Requests.
+				hints := falBillingHints{Requests: 1}
+				if seconds, ok := falVideoBilledSeconds(generated.Data, ""); ok {
+					hints.Seconds = seconds
+				}
+				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
+			}
+			generated.Notices = notices
+			return generated, genErr
+		}
 		gateway.tools.GenerateAudio = func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error) {
 			apiKey, err := loadFalAPIKey()
 			if err != nil {

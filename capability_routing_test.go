@@ -274,8 +274,8 @@ func TestTriagePromptListsAudioTools(t *testing.T) {
 func TestTriagePromptBaresVideoExtendAsVideoMode(t *testing.T) {
 	registry := newHarnessToolRegistry([]HarnessToolDefinition{videoGenerationToolDefinition(false)})
 	prompt := triageSystemPrompt(registry, nil, "/tmp/ws")
-	if !strings.Contains(prompt, "create, animate, extend, or render a video") {
-		t.Fatalf("video-mode enumeration should name extension:\n%s", prompt)
+	if !strings.Contains(prompt, "create, animate, extend, restyle, or render a video") {
+		t.Fatalf("video-mode enumeration should name extension and restyling:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "there is no separate extend_video tool") {
 		t.Fatalf("video-mode guidance should preempt the invented-tool-name reasoning:\n%s", prompt)

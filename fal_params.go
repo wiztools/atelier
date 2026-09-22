@@ -1606,6 +1606,110 @@ func resolveVideoReframeBody(schema *ModelInputSchema, req VideoReframeRequest, 
 	return body, notices, nil
 }
 
+// resolveVideoRestyleBody maps a VideoRestyleRequest onto the model's native
+// input schema, returning the fal body and user-facing notices. The source clip
+// and the prompt are the tool's entire purpose, so an unmapped video input OR
+// prompt input is fatal (mirroring resolveVideoReframeBody's rules): a restyle
+// endpoint that can't be told the new look can't restyle, and sending anyway
+// would 422 downstream or re-render with the model's default style — the wrong
+// deliverable. Reference images, resolution, and the negative prompt are
+// degradable — they refine the look rather than define it — so a model without
+// the matching input drops that side with a notice. A nil schema yields the
+// legacy {video_url, prompt} body plus a notice.
+func resolveVideoRestyleBody(schema *ModelInputSchema, req VideoRestyleRequest, ov Overrides) (map[string]any, []string, error) {
+	video := falVideoURL(strings.TrimSpace(req.Video))
+	prompt := strings.TrimSpace(req.Prompt)
+	images := make([]string, 0, 4)
+	for _, img := range req.Images {
+		if u := falImageURL(strings.TrimSpace(img)); u != "" {
+			images = append(images, u)
+		}
+	}
+
+	if schema == nil {
+		body := map[string]any{"video_url": video, "prompt": prompt}
+		if negative := strings.TrimSpace(req.NegativePrompt); negative != "" {
+			body["negative_prompt"] = negative
+		}
+		if res := strings.TrimSpace(req.Resolution); res != "" {
+			body["resolution"] = res
+		}
+		return body, []string{"Couldn't load the model's parameter schema; sent the source video and style prompt with default field names."}, nil
+	}
+
+	body := map[string]any{}
+	var notices []string
+
+	if path, prop, ok := findNative(schema, ov, "video", req.Model, "sourceVideo"); ok {
+		setBodyPath(schema, body, path, coerceVideoValue(prop, video))
+	} else {
+		return nil, notices, fmt.Errorf(
+			"the restyle model %q has no video input — it cannot restyle an attached video; pick a restyle model in Settings",
+			req.Model)
+	}
+	if path, prop, ok := findNative(schema, ov, "video", req.Model, "prompt"); ok {
+		setBodyPath(schema, body, path, coerceVideoValue(prop, prompt))
+	} else {
+		return nil, notices, fmt.Errorf(
+			"the restyle model %q has no prompt input — it cannot be told the new look; pick a restyle model in Settings",
+			req.Model)
+	}
+	// Reference images refine the look (a character sheet, a style frame) rather
+	// than define it, so a model without an image input drops them with a
+	// notice and the prompt carries the style alone. A scalar image input takes
+	// the first image only; a maxItems-capped array is trimmed to the cap —
+	// notices rather than the hard errors resolveVideoBody raises for its
+	// primary sources.
+	if len(images) > 0 {
+		if path, prop, ok := findNative(schema, ov, "video", req.Model, "sourceImage"); ok {
+			switch {
+			case prop.Kind != schemaArray && len(images) > 1:
+				setBodyPath(schema, body, path, coerceVideoValue(prop, images[0]))
+				notices = append(notices, fmt.Sprintf(
+					"The selected model %q accepts a single reference image; the first of %d was sent.",
+					req.Model, len(images)))
+			case prop.Kind == schemaArray && prop.MaxItems > 0 && len(images) > prop.MaxItems:
+				setBodyPath(schema, body, path, coerceImages(prop, images[:prop.MaxItems]))
+				notices = append(notices, fmt.Sprintf(
+					"The selected model %q accepts at most %d reference image(s); the first %d were sent.",
+					req.Model, prop.MaxItems, prop.MaxItems))
+			default:
+				setBodyPath(schema, body, path, coerceImages(prop, images))
+			}
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no reference-image input; the attached image(s) were ignored and the style comes from the prompt alone.",
+				req.Model))
+		}
+	}
+	if negative := strings.TrimSpace(req.NegativePrompt); negative != "" {
+		if path, prop, ok := findNative(schema, ov, "video", req.Model, "negativePrompt"); ok {
+			setBodyPath(schema, body, path, coerceVideoValue(prop, negative))
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no negative-prompt control; ignoring the requested negative prompt.",
+				req.Model))
+		}
+	}
+	if res := strings.TrimSpace(req.Resolution); res != "" {
+		if path, prop, ok := findNative(schema, ov, "video", req.Model, "resolution"); ok {
+			if canonical, allowed := enumValueFor(prop, res); allowed {
+				setBodyPath(schema, body, path, coerceVideoValue(prop, canonical))
+			} else {
+				notices = append(notices, fmt.Sprintf(
+					"The selected model %q does not support resolution %q; using the model's default tier.",
+					req.Model, res))
+			}
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no resolution control; using the model's default tier.",
+				req.Model))
+		}
+	}
+	return body, notices, nil
+}
+
+// category selects the synonym table and override namespace ("audio", "image",
 // findNative resolves canon → native dot-path via override, top-level scan, then
 // one-level nested scan. Returns the matched leaf property for coercion.
 // category selects the synonym table and override namespace ("audio", "image",

@@ -458,9 +458,17 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		}
 	}
 	// A triage-flagged local media edit with no ffmpeg CLI configured can
-	// never be served this turn; the flag routes the install guidance into the
-	// final model's messages (and a deterministic fallback onto the reply).
-	preparation.LocalMediaEditUnavailable = decision.MediaEdit && !ffmpegToolsConfigured(h.config)
+	// never be served by the LOCAL tools; the flag routes the install guidance
+	// into the final model's messages (and a deterministic fallback onto the
+	// reply). The flag stands down when the turn's tools actually delivered a
+	// video: the fal video-to-video tools (reframe_video, restyle_video,
+	// upscale_video) run without ffmpeg, and "local video editing isn't
+	// available" is factually wrong beside a freshly delivered clip — the
+	// same stand-down mediaEditFallbackNotice applies when the reply already
+	// named ffmpeg. A half-served turn (a local edit failed, a fal transform
+	// succeeded) loses the blockquote but keeps the failure in tool evidence,
+	// where the final model already sees it.
+	preparation.LocalMediaEditUnavailable = decision.MediaEdit && !ffmpegToolsConfigured(h.config) && !turnDeliveredVideo(preparation.ToolResults)
 	// Same first-run UX for image edits: the note names whichever backend is
 	// missing (ImageMagick for watermark/collage/adjust/optimize — and every
 	// image tool on non-macOS platforms, where it also serves the basic
@@ -766,6 +774,24 @@ func cleanupVideoTempFiles(videos []ToolVideoFile) {
 			os.Remove(path)
 		}
 	}
+}
+
+// turnDeliveredVideo reports whether any of the turn's tool results completed
+// with a video payload — generate_video, extend via generate_video, or the fal
+// video-to-video transforms (upscale_video, reframe_video, restyle_video).
+// The ffmpeg-unavailable edit note and its deterministic blockquote stand down
+// on such turns: those fal tools need no ffmpeg, so a delivered clip disproves
+// "no tool can perform it" regardless of which tool the user's words described.
+func turnDeliveredVideo(results []HarnessToolResult) bool {
+	for _, result := range results {
+		if result.Status != "completed" {
+			continue
+		}
+		if typed, ok := result.Result.(ToolVideoResult); ok && typed.Count > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func cleanupAudioTempFiles(audios []ToolAudioFile) {
