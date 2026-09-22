@@ -341,6 +341,31 @@ const defaultVideoAspectRatio = '16:9';
 // notice by the backend enum-guard. Labels map raw values to friendlier option
 // text — 'auto' reads better than a bare token.
 const defaultVideoDurationOptions = ['auto', '5', '10', '15', '30'];
+
+// formatSupportedDurations turns a fal duration enum (e.g. ['auto','4','5',…,'15'])
+// into a compact caption like "auto, 4–15 s": non-numeric values (auto) are kept
+// in order, consecutive integer runs are collapsed into ranges, and a trailing
+// " s" is added when any numeric value is present.
+function formatSupportedDurations(options: string[]): string {
+  const nonNumeric: string[] = [];
+  const numbers: number[] = [];
+  for (const opt of options) {
+    const n = Number(opt);
+    if (opt !== '' && Number.isFinite(n) && String(n) === opt.trim()) numbers.push(n);
+    else if (opt) nonNumeric.push(opt);
+  }
+  numbers.sort((a, b) => a - b);
+  const ranges: string[] = [];
+  for (let i = 0; i < numbers.length; ) {
+    let j = i;
+    while (j + 1 < numbers.length && numbers[j + 1] === numbers[j] + 1) j++;
+    ranges.push(i === j ? String(numbers[i]) : `${numbers[i]}–${numbers[j]}`);
+    i = j + 1;
+  }
+  const parts = [...nonNumeric, ...ranges];
+  if (parts.length === 0) return '';
+  return parts.join(', ') + (numbers.length ? ' s' : '');
+}
 const videoDurationLabels: Record<string, string> = { auto: 'Auto' };
 const videoAspectRatioOptions = ['16:9', '9:16', '1:1'];
 
@@ -1014,10 +1039,9 @@ function App() {
   // actually-selected model with a notice, so the image/extend pickers are a
   // per-model discovery/preview aid that stays correct where the value is valid.
   const [videoDuration, setVideoDuration] = useState(defaultVideoDuration);
-  const [videoDurationImage, setVideoDurationImage] = useState(defaultVideoDuration);
-  const [videoDurationExtend, setVideoDurationExtend] = useState(defaultVideoDuration);
   const [videoDurationOptions, setVideoDurationOptions] = useState<string[]>(defaultVideoDurationOptions);
   const [videoDurationImageOptions, setVideoDurationImageOptions] = useState<string[]>(defaultVideoDurationOptions);
+  const [videoDurationKeyframeOptions, setVideoDurationKeyframeOptions] = useState<string[]>(defaultVideoDurationOptions);
   const [videoDurationExtendOptions, setVideoDurationExtendOptions] = useState<string[]>(defaultVideoDurationOptions);
   const [videoAspectRatio, setVideoAspectRatio] = useState(defaultVideoAspectRatio);
   const [system, setSystem] = useState('You are Atelier, a precise local AI collaborator.');
@@ -2015,11 +2039,9 @@ function App() {
     imageSizePreset,
     imageSteps,
     videoDuration,
-    videoDurationImage,
-    videoDurationExtend,
     videoAspectRatio,
     whisperBinary,
-  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, falModel, openaiCompatibleModel, falImageEditModel, falUpscaleModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, whisperModel, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoDurationImage, videoDurationExtend, videoAspectRatio, whisperBinary]);
+  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, falModel, openaiCompatibleModel, falImageEditModel, falUpscaleModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, whisperModel, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, whisperBinary]);
 
   const conversationModelSelection = useMemo<ModelSelectionValue>(() => {
     const global = globalModelSelection;
@@ -2063,8 +2085,6 @@ function App() {
       imageSizePreset: overrides.imageSizePreset || global.imageSizePreset,
       imageSteps: overrides.imageSteps || global.imageSteps,
       videoDuration: overrides.videoDuration || global.videoDuration,
-      videoDurationImage: global.videoDurationImage,
-      videoDurationExtend: global.videoDurationExtend,
       videoAspectRatio: overrides.videoAspectRatio || global.videoAspectRatio,
     };
     return next;
@@ -2116,8 +2136,6 @@ function App() {
     if (patch.imageSizePreset !== undefined) setImageSizePreset(patch.imageSizePreset);
     if (patch.imageSteps !== undefined) setImageSteps(patch.imageSteps);
     if (patch.videoDuration !== undefined) setVideoDuration(patch.videoDuration);
-    if (patch.videoDurationImage !== undefined) setVideoDurationImage(patch.videoDurationImage);
-    if (patch.videoDurationExtend !== undefined) setVideoDurationExtend(patch.videoDurationExtend);
     if (patch.videoAspectRatio !== undefined) setVideoAspectRatio(patch.videoAspectRatio);
     if (patch.whisperBinary !== undefined) setWhisperBinary(patch.whisperBinary);
   };
@@ -2304,13 +2322,15 @@ function App() {
   // fetch-and-fallback as the global pickers; the current draft value is kept
   // selectable at render time even when the model's schema doesn't list it,
   // so the select never silently shows a value the conversation won't use.
-  const [convDurationOptions, setConvDurationOptions] = useState<{video: string[]; image: string[]; extend: string[]}>({
+  const [convDurationOptions, setConvDurationOptions] = useState<{video: string[]; image: string[]; keyframe: string[]; extend: string[]}>({
     video: defaultVideoDurationOptions,
     image: defaultVideoDurationOptions,
+    keyframe: defaultVideoDurationOptions,
     extend: defaultVideoDurationOptions,
   });
   const convDraftVideoModel = convModelsDraft?.falVideoModel ?? '';
   const convDraftVideoImageModel = convModelsDraft?.falVideoImageModel ?? '';
+  const convDraftVideoKeyframeModel = convModelsDraft?.falVideoKeyframeModel ?? '';
   const convDraftVideoExtendModel = convModelsDraft?.falVideoExtendModel ?? '';
   useEffect(() => {
     if (view !== 'conversation-models') {
@@ -2325,16 +2345,16 @@ function App() {
         return defaultVideoDurationOptions;
       }
     };
-    Promise.all([fetchOptions(convDraftVideoModel), fetchOptions(convDraftVideoImageModel), fetchOptions(convDraftVideoExtendModel)])
-      .then(([video, image, extend]) => {
+    Promise.all([fetchOptions(convDraftVideoModel), fetchOptions(convDraftVideoImageModel), fetchOptions(convDraftVideoKeyframeModel), fetchOptions(convDraftVideoExtendModel)])
+      .then(([video, image, keyframe, extend]) => {
         if (!cancelled) {
-          setConvDurationOptions({video, image, extend});
+          setConvDurationOptions({video, image, keyframe, extend});
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [view, convDraftVideoModel, convDraftVideoImageModel, convDraftVideoExtendModel]);
+  }, [view, convDraftVideoModel, convDraftVideoImageModel, convDraftVideoKeyframeModel, convDraftVideoExtendModel]);
 
   const saveComposerPrimaryOverride = async (provider: ChatProviderID, modelValue: string) => {
     if (!activeConversationID) {
@@ -2509,9 +2529,7 @@ function App() {
     ListFalVideoDurations(falVideoImageModel)
       .then((durations) => {
         if (cancelled) return;
-        const opts = durations && durations.length ? durations : defaultVideoDurationOptions;
-        setVideoDurationImageOptions(opts);
-        setVideoDurationImage((current) => (opts.includes(current) ? current : opts[0] ?? defaultVideoDuration));
+        setVideoDurationImageOptions(durations && durations.length ? durations : defaultVideoDurationOptions);
       })
       .catch(() => setVideoDurationImageOptions(defaultVideoDurationOptions));
     return () => {
@@ -2521,12 +2539,23 @@ function App() {
 
   useEffect(() => {
     let cancelled = false;
+    ListFalVideoDurations(falVideoKeyframeModel)
+      .then((durations) => {
+        if (cancelled) return;
+        setVideoDurationKeyframeOptions(durations && durations.length ? durations : defaultVideoDurationOptions);
+      })
+      .catch(() => setVideoDurationKeyframeOptions(defaultVideoDurationOptions));
+    return () => {
+      cancelled = true;
+    };
+  }, [falVideoKeyframeModel]);
+
+  useEffect(() => {
+    let cancelled = false;
     ListFalVideoDurations(falVideoExtendModel)
       .then((durations) => {
         if (cancelled) return;
-        const opts = durations && durations.length ? durations : defaultVideoDurationOptions;
-        setVideoDurationExtendOptions(opts);
-        setVideoDurationExtend((current) => (opts.includes(current) ? current : opts[0] ?? defaultVideoDuration));
+        setVideoDurationExtendOptions(durations && durations.length ? durations : defaultVideoDurationOptions);
       })
       .catch(() => setVideoDurationExtendOptions(defaultVideoDurationOptions));
     return () => {
@@ -2652,11 +2681,6 @@ function App() {
     setFalLipsyncVideoModel(nextFalLipsyncVideoModel);
     setFalUpscaleModel(nextFalUpscaleModel);
     setVideoDuration(nextVideoDuration);
-    // The backend persists one shared video duration; seed the image/extend
-    // pickers from it too. Their per-picker effects correct to a value valid
-    // for the selected model once its options load.
-    setVideoDurationImage(nextVideoDuration);
-    setVideoDurationExtend(nextVideoDuration);
     setVideoAspectRatio(nextVideoAspectRatio);
     setConfigLoaded(true);
     await Promise.all([
@@ -4673,7 +4697,7 @@ function App() {
                 value={globalModelSelection}
                 onChange={patchSettingsModelSelection}
                 catalogs={modelSelectionCatalogs}
-                durationOptions={{video: videoDurationOptions, image: videoDurationImageOptions, extend: videoDurationExtendOptions}}
+                durationOptions={{video: videoDurationOptions, image: videoDurationImageOptions, keyframe: videoDurationKeyframeOptions, extend: videoDurationExtendOptions}}
               />
               </>
               ) : null}
@@ -4731,8 +4755,9 @@ function App() {
                   const shown = convModelsDraft ?? conversationModelSelection;
                   return {
                     video: withCurrent(convDurationOptions.video, shown.videoDuration),
-                    image: withCurrent(convDurationOptions.image, shown.videoDurationImage),
-                    extend: withCurrent(convDurationOptions.extend, shown.videoDurationExtend),
+                    image: convDurationOptions.image,
+                    keyframe: convDurationOptions.keyframe,
+                    extend: convDurationOptions.extend,
                   };
                 })()}
                 overriddenKeys={convModelsKeys}
@@ -5877,8 +5902,6 @@ type ModelSelectionValue = {
   imageSizePreset: string;
   imageSteps: number;
   videoDuration: string;
-  videoDurationImage: string;
-  videoDurationExtend: string;
   videoAspectRatio: string;
   whisperBinary: string;
 };
@@ -6023,7 +6046,7 @@ function ModelSelectionPanel({
     openCapabilityID: string;
     setOpenCapabilityID: (id: string) => void;
   };
-  durationOptions: {video: string[]; image: string[]; extend: string[]};
+  durationOptions: {video: string[]; image: string[]; keyframe: string[]; extend: string[]};
   overriddenKeys?: ReadonlySet<string>;
   onResetField?: (key: string) => void;
 }) {
@@ -6327,10 +6350,11 @@ function ModelSelectionPanel({
             </div>
 
             <div className="field">
-              {fieldLabel('video-duration', 'Text-to-Video Duration', 'videoDuration')}
+              {fieldLabel('video-duration', 'Default Video Duration', 'videoDuration')}
               <select id="video-duration" value={value.videoDuration} onChange={(event) => onChange({videoDuration: event.target.value})}>
                 {durationOptions.video.map((option) => <option key={option} value={option}>{videoDurationLabels[option] ?? option}</option>)}
               </select>
+              <span className="hint">Applies to all modes; your request can override it.</span>
             </div>
           </div>
 
@@ -6346,6 +6370,7 @@ function ModelSelectionPanel({
                 options={falVideoImageOptions}
                 allowCustom
               />
+              <span className="hint">Supports: {formatSupportedDurations(durationOptions.image)}</span>
             </div>
 
             <div className="field">
@@ -6359,13 +6384,7 @@ function ModelSelectionPanel({
                 options={falVideoKeyframeOptions}
                 allowCustom
               />
-            </div>
-
-            <div className="field">
-              <label htmlFor="video-duration-image">Image-to-Video Duration</label>
-              <select id="video-duration-image" value={value.videoDurationImage} onChange={(event) => onChange({videoDurationImage: event.target.value})}>
-                {durationOptions.image.map((option) => <option key={option} value={option}>{videoDurationLabels[option] ?? option}</option>)}
-              </select>
+              <span className="hint">Supports: {formatSupportedDurations(durationOptions.keyframe)}</span>
             </div>
           </div>
 
@@ -6381,13 +6400,7 @@ function ModelSelectionPanel({
                 options={falVideoExtendOptions}
                 allowCustom
               />
-            </div>
-
-            <div className="field">
-              <label htmlFor="video-duration-extend">Video-Extend Duration</label>
-              <select id="video-duration-extend" value={value.videoDurationExtend} onChange={(event) => onChange({videoDurationExtend: event.target.value})}>
-                {durationOptions.extend.map((option) => <option key={option} value={option}>{videoDurationLabels[option] ?? option}</option>)}
-              </select>
+              <span className="hint">Supports: {formatSupportedDurations(durationOptions.extend)}</span>
             </div>
           </div>
 
