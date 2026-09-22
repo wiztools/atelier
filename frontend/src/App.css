@@ -2799,6 +2799,7 @@ button:disabled {
    control bar. Definite pixel height (not aspect-ratio) so the children's
    percentage heights resolve. */
 .asset-preview {
+  position: relative;
   height: 200px;
   display: flex;
   align-items: center;
@@ -2851,6 +2852,40 @@ button:disabled {
   font-style: italic;
   color: #6f7477;
   text-align: center;
+}
+
+/* Composer-reference affordance on every asset card: hover-revealed over the
+   preview's top-right corner (keyboard focus reveals it too — the button stays
+   in tab order). Anchors to .asset-preview (position: relative above) and sits
+   above the media so its clicks never fall through to the zoom button. The
+   '@' glyph mirrors the composer's mention chips: clicking inserts the same
+   token typing '@' would. Semi-opaque dark base so it reads over any media. */
+.asset-reference-button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid #3a3e41;
+  border-radius: 50%;
+  background: rgba(20, 22, 24, 0.88);
+  color: #d9d7cf;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.asset-card:hover .asset-reference-button,
+.asset-reference-button:focus-visible {
+  opacity: 1;
 }
 
 .asset-card figcaption {

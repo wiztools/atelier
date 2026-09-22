@@ -3555,6 +3555,30 @@ function App() {
     });
   }
 
+  // insertAssetReference is the panel-side counterpart of acceptMention: it
+  // puts the asset's @-mention token into the prompt for the user who picked
+  // the asset visually in the panel instead of typing toward it. A still-open
+  // @-token at the end of the text is replaced (the user started a mention,
+  // then browsed); otherwise the token is appended. Same resolution path as
+  // typed mentions — nothing is recorded here, the composer text stays the
+  // single source of truth. Hex labels are token-safe, so no quoted form.
+  function insertAssetReference(asset: main.ConversationAsset) {
+    const token = `@${assetMentionLabel(asset)} `;
+    const open = detectMentionAt(prompt, prompt.length);
+    const base = (open ? prompt.slice(0, open.at) : prompt).replace(/\s+$/, '');
+    const next = base ? `${base} ${token}` : token;
+    setPrompt(next);
+    // Focus the composer with the caret after the inserted token, the same
+    // restore acceptMention does.
+    requestAnimationFrame(() => {
+      const el = chatPromptRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(next.length, next.length);
+      }
+    });
+  }
+
   function handleChatPromptKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (mentionOpen) {
       const matches = mentionMatchesRef.current;
@@ -5150,6 +5174,19 @@ function App() {
                     ) : (
                       <span className="asset-missing">Artifact file is missing on disk</span>
                     )}
+                    {/* Sibling of the media (never nested inside the image
+                        zoom button — a button cannot contain a button) so the
+                        hover reveal overlays every preview variant without
+                        stealing the zoom/play gestures. */}
+                    <button
+                      type="button"
+                      className="asset-reference-button"
+                      onClick={() => insertAssetReference(asset)}
+                      aria-label="Reference this asset in the composer"
+                      title="Reference this asset in the composer"
+                    >
+                      <span aria-hidden="true">@</span>
+                    </button>
                   </div>
                   <figcaption>
                     <span className="asset-kind">{asset.kind}</span>
