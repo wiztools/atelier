@@ -182,6 +182,41 @@ func TestResolveReplicateVideoInput(t *testing.T) {
 	}
 }
 
+// replicateWan27VideoModelSchema mirrors wan-video/wan-2.7-i2v's declared
+// inputs: the 2.7 revision renamed the source image from "image" to
+// "first_frame" and added first_clip/last_frame for clip continuation and
+// last-frame keyframes.
+const replicateWan27VideoModelSchema = `{"components":{"schemas":{"Input":{"type":"object","properties":{
+	"prompt":{"type":"string"},
+	"duration":{"type":"integer","default":5,"minimum":2,"maximum":15},
+	"first_frame":{"type":"string","format":"uri","nullable":true},
+	"first_clip":{"type":"string","format":"uri","nullable":true},
+	"last_frame":{"type":"string","format":"uri","nullable":true},
+	"resolution":{"type":"string","enum":["480p","720p","1080p"],"default":"1080p"}
+}}}}}`
+
+// TestResolveReplicateVideoInputWan27FirstFrame pins the synonym for wan 2.7's
+// renamed input: before it landed, the unmapped image was dropped and the
+// prediction failed server-side demanding first_frame/first_clip
+// (conv_d5f5177320da74a0ce3caebb).
+func TestResolveReplicateVideoInputWan27FirstFrame(t *testing.T) {
+	schema := parseReplicateFixtureSchema(t, replicateWan27VideoModelSchema)
+	input, notices, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
+		Model:  "wan-video/wan-2.7-i2v",
+		Prompt: "folks with scissors for hands go about their day",
+		Images: []string{"data:image/png;base64," + tinyPNG},
+	})
+	if err != nil {
+		t.Fatalf("resolveReplicateVideoInput: %v", err)
+	}
+	if len(notices) != 0 {
+		t.Fatalf("notices = %v, want none", notices)
+	}
+	if got, ok := input["first_frame"].(string); !ok || !strings.HasPrefix(got, "data:image/png;base64,") {
+		t.Fatalf("first_frame = %v", input["first_frame"])
+	}
+}
+
 func TestResolveReplicateVideoInputSourceRatioInheritance(t *testing.T) {
 	schema := parseReplicateFixtureSchema(t, replicateVideoModelSchema)
 	// A config-derived ratio (AspectRatioExplicit false) on an
@@ -221,6 +256,26 @@ func TestResolveReplicateVideoInputRefusals(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "keyframe") {
 		t.Fatalf("keyframes err = %v", err)
+	}
+}
+
+// TestResolveReplicateVideoInputUnmappedSourceImageRefused pins the hard
+// error for a source image the model's schema can't map: Replicate would
+// accept the prediction (every input nullable) and the model would fail
+// server-side, so the refusal must surface locally with the remedy.
+func TestResolveReplicateVideoInputUnmappedSourceImageRefused(t *testing.T) {
+	doc := `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"prompt":{"type":"string"},
+		"duration":{"type":"number"}
+	}}}}}`
+	schema := parseReplicateFixtureSchema(t, doc)
+	_, _, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
+		Model:  "owner/model",
+		Prompt: "animate",
+		Images: []string{"data:image/png;base64," + tinyPNG},
+	})
+	if err == nil || !strings.Contains(err.Error(), "no source-image input") {
+		t.Fatalf("err = %v, want the unmapped-source-image refusal", err)
 	}
 }
 

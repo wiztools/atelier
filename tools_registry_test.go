@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 )
@@ -73,26 +72,32 @@ func TestGenerateVideoParamSchemaExposesDuration(t *testing.T) {
 }
 
 // TestVideoToolSummaryMatchesDeliveredSources pins the video summary against
-// what the resolver actually delivered, not what was attached: when the
-// selected model drops an attached source with a "has no source-video input"
-// notice, the summary must not claim a motion transfer that never carried the
-// video. In conv_16bf42ce64997fad02f769a9 the contradictory pair ("transferred
-// the attached video's motion..." + "the attached video was ignored") both
-// reached the final model as evidence and it repeated both claims.
+// what the call actually delivered. A model whose schema can't accept an
+// attached side refuses in the resolvers (fal and Replicate hold the same
+// line), so a successful call used everything attached and the summary can
+// phrase delivery straight from the attachments. Before those refusals, a
+// dropped side degraded with a notice and the summary must not have claimed a
+// motion transfer that never carried the video — in conv_16bf42ce64997fad02f769a9
+// the contradictory pair ("transferred the attached video's motion..." + "the
+// attached video was ignored") both reached the final model as evidence and it
+// repeated both claims. The one remaining way a side goes unused is the tool
+// layer's own source-mode trimming (source:"video" drops the images before
+// the call), which the attachments the executor sees already reflect.
 func TestVideoToolSummaryMatchesDeliveredSources(t *testing.T) {
 	const model = "bytedance/seedance-2.0/reference-to-video"
 	def := videoGenerationToolDefinition(AppConfig{}, false)
-	exec := func(notices []string) HarnessToolExecutionContext {
+	exec := func(images, videos []string) HarnessToolExecutionContext {
 		return HarnessToolExecutionContext{
-			AttachedImages: []string{"data:image/png;base64,AAA", "data:image/png;base64,BBB"},
-			AttachedVideos: []string{"data:video/mp4;base64,CCC"},
+			AttachedImages: images,
+			AttachedVideos: videos,
 			GenerateVideo: func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
-				return GeneratedVideo{Data: []byte("mp4"), MimeType: "video/mp4", SourceURL: "https://example.com/v.mp4", Notices: notices}, nil
+				return GeneratedVideo{Data: []byte("mp4"), MimeType: "video/mp4", SourceURL: "https://example.com/v.mp4"}, nil
 			},
 		}
 	}
 
-	_, summary, err := def.Execute(context.Background(), exec(nil),
+	_, summary, err := def.Execute(context.Background(),
+		exec([]string{"data:image/png;base64,AAA", "data:image/png;base64,BBB"}, []string{"data:video/mp4;base64,CCC"}),
 		HarnessToolCall{Name: "generate_video", Model: model, Content: "fly to the moon"})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -101,14 +106,14 @@ func TestVideoToolSummaryMatchesDeliveredSources(t *testing.T) {
 		t.Fatalf("summary = %q, want the motion-transfer phrasing when both sources are delivered", summary)
 	}
 
-	videoDropped := []string{fmt.Sprintf("The selected model %q has no source-video input; the attached video was ignored.", model)}
-	_, summary, err = def.Execute(context.Background(), exec(videoDropped),
+	_, summary, err = def.Execute(context.Background(),
+		exec([]string{"data:image/png;base64,AAA", "data:image/png;base64,BBB"}, nil),
 		HarnessToolCall{Name: "generate_video", Model: model, Content: "fly to the moon"})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 	if summary != "combined 2 attached images into a video with "+model {
-		t.Fatalf("summary = %q, want the images-only phrasing when the video was dropped by notice", summary)
+		t.Fatalf("summary = %q, want the images-only phrasing when no video is attached", summary)
 	}
 }
 

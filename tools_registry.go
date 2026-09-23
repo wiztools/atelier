@@ -984,12 +984,17 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 					"%d videos were attached but this mode uses only the first; pass useVideoAs:\"reference\" to send every attached video as reference media.",
 					len(attachedVideos)))
 			}
-			// The summary must describe what the resolver actually delivered, not
-			// what was attached: a model lacking one side's input drops that side
-			// with a notice, and the branches below already fall through to an
-			// honest phrasing when a side was dropped.
-			videoUsed := len(requestVideos) > 0 && !noticeSaysSourceVideoDropped(generated.Notices)
-			imagesUsed := len(attachedImages) > 0 && !noticeSaysSourceImageDropped(generated.Notices)
+			// The summary describes what the resolver actually delivered, not
+			// just what was attached — and the two can no longer diverge: a
+			// model whose schema can't accept an attached side refuses up front
+			// in the resolvers (the fal and Replicate siblings hold the same
+			// line), so a successful call used everything sent. Before those
+			// refusals, a dropped side needed notice-matching here so the
+			// summary couldn't claim "transferred the attached video's motion"
+			// beside a "the attached video was ignored" caveat
+			// (conv_16bf42ce64997fad02f769a9).
+			videoUsed := len(requestVideos) > 0
+			imagesUsed := len(attachedImages) > 0
 			summary := fmt.Sprintf("generated a video with %s", model)
 			if videoRole == "reference" && (videoUsed || imagesUsed) {
 				summary = fmt.Sprintf("used %s as references for a new video with %s",

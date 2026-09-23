@@ -441,36 +441,23 @@ func TestResolveImageBodyNanoBananaEdit(t *testing.T) {
 	}
 }
 
-// TestResolveImageBodyNoSourceImageInput verifies the resolver degrades cleanly
-// when a model has NO source-image field at all (e.g. fal-ai/nano-banana-pro,
-// which is text-to-image only). Rather than fabricate an image_url/image_urls
-// that fal will reject with a 422, the resolver emits a text-to-image body and
-// surfaces a notice so the user understands their attachment was ignored.
+// TestResolveImageBodyNoSourceImageInput verifies the resolver refuses when a
+// model has NO source-image field at all (e.g. fal-ai/nano-banana-pro, which
+// is text-to-image only): attached images route to the image-to-image slot,
+// and fal accepts the submit without the frame — generating from the prompt
+// alone — so the mismatch must fail locally with the remedy instead of
+// delivering a degraded result beside an easy-to-miss notice (the wan 2.7
+// lesson, conv_d5f5177320da74a0ce3caebb).
 func TestResolveImageBodyNoSourceImageInput(t *testing.T) {
-	body, notices, _ := resolveImageBody(loadSchema(t, "nano-banana-pro"),
+	_, _, err := resolveImageBody(loadSchema(t, "nano-banana-pro"),
 		ImageGenerateRequest{
 			Model:  "fal-ai/nano-banana-pro",
 			Prompt: "cartoon character reference sheet",
 			Images: []string{"data:image/png;base64,ABC"},
 		},
 		builtinFalOverrides())
-	if _, present := body["image_url"]; present {
-		t.Fatalf("image_url must not be set when the model has no source-image field; got %v", body["image_url"])
-	}
-	if _, present := body["image_urls"]; present {
-		t.Fatalf("image_urls must not be set when the model has no source-image field; got %v", body["image_urls"])
-	}
-	if body["prompt"] != "cartoon character reference sheet" {
-		t.Fatalf("prompt = %v, want the request prompt", body["prompt"])
-	}
-	if body["num_images"] != 1 {
-		t.Fatalf("num_images = %v, want 1", body["num_images"])
-	}
-	if len(notices) != 1 {
-		t.Fatalf("expected one notice about the ignored attachment, got %v", notices)
-	}
-	if !strings.Contains(notices[0], "no source-image input") {
-		t.Fatalf("notice = %q, want it to mention the missing source-image input", notices[0])
+	if err == nil || !strings.Contains(err.Error(), "no source-image input") {
+		t.Fatalf("err = %v, want the unmapped-source-image refusal", err)
 	}
 }
 
@@ -1160,6 +1147,35 @@ func TestResolveVideoBodyReferenceURLsNaming(t *testing.T) {
 	}
 }
 
+// TestResolveVideoBodyUnmappedSourceRefusals pins the hard errors for a source
+// side the model's schema can't map: fal accepts the submit without it, so the
+// model would fail demanding its field or generate media the attachments never
+// shaped. Before these refusals the sides dropped with a notice and the call
+// proceeded — the fal sibling of the wan 2.7 incident
+// (conv_d5f5177320da74a0ce3caebb).
+func TestResolveVideoBodyUnmappedSourceRefusals(t *testing.T) {
+	_, _, err := resolveVideoBody(loadSchema(t, "veo3.1"),
+		VideoGenerateRequest{
+			Model:  "google/veo3.1",
+			Prompt: "animate",
+			Images: []string{"data:image/png;base64,ABC"},
+		},
+		builtinFalOverrides())
+	if err == nil || !strings.Contains(err.Error(), "no source-image input") {
+		t.Fatalf("image err = %v, want the unmapped-source-image refusal", err)
+	}
+	_, _, err = resolveVideoBody(loadSchema(t, "seedance-2.0-image-to-video"),
+		VideoGenerateRequest{
+			Model:  "fal-ai/bytedance/seedance-2.0/image-to-video",
+			Prompt: "extend",
+			Videos: []string{"data:video/mp4;base64,ABC"},
+		},
+		builtinFalOverrides())
+	if err == nil || !strings.Contains(err.Error(), "no source-video input") {
+		t.Fatalf("video err = %v, want the unmapped-source-video refusal", err)
+	}
+}
+
 // TestResolveVideoBodySilentRequestOnModelWithoutToggle reproduces the
 // conv_e30f67cc834d4e98e1a49631 regression: a user asks for "no audio"
 // (generateAudio:false) against a model that emits synchronized audio by
@@ -1209,11 +1225,34 @@ func TestResolveVideoBodyDefaultAudioOnModelWithoutToggleNoNotice(t *testing.T) 
 }
 
 // TestResolveVideoBodyVeoExtend verifies the extend path: an attached video maps
-// onto the model's video_url field, and an attached image — which an extend
-// model has no input for — is dropped with a notice rather than silently
-// ignored (source media maps per side; the model declares only video_url).
+// onto the model's video_url field. An image+video turn is motion-control
+// shape, and an extend model declares no image input — fal would accept the
+// submit and quietly lose the image, so the combination refuses instead of
+// degrading to a plain extend.
 func TestResolveVideoBodyVeoExtend(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "veo3.1-extend-video"),
+	body, notices, err := resolveVideoBody(loadSchema(t, "veo3.1-extend-video"),
+		VideoGenerateRequest{
+			Model:  "fal-ai/veo3.1/extend-video",
+			Prompt: "the camera continues panning across the valley",
+			Video:  "data:video/mp4;base64,AAA",
+		},
+		builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("resolveVideoBody error: %v", err)
+	}
+	if body["prompt"] != "the camera continues panning across the valley" {
+		t.Fatalf("prompt = %v", body["prompt"])
+	}
+	if got, ok := body["video_url"].(string); !ok || !strings.HasPrefix(got, "data:video/") {
+		t.Fatalf("video_url = %v, want the attached video data URI", body["video_url"])
+	}
+	if _, present := body["image_url"]; present {
+		t.Fatalf("image_url must not be set when extending a video; got %v", body["image_url"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("expected no notices on a clean extend, got %v", notices)
+	}
+	_, _, err = resolveVideoBody(loadSchema(t, "veo3.1-extend-video"),
 		VideoGenerateRequest{
 			Model:  "fal-ai/veo3.1/extend-video",
 			Prompt: "the camera continues panning across the valley",
@@ -1221,21 +1260,8 @@ func TestResolveVideoBodyVeoExtend(t *testing.T) {
 			Image:  "data:image/png;base64,BBB",
 		},
 		builtinFalOverrides())
-	if body["prompt"] != "the camera continues panning across the valley" {
-		t.Fatalf("prompt = %v", body["prompt"])
-	}
-	if got, ok := body["video_url"].(string); !ok || !strings.HasPrefix(got, "data:video/") {
-		t.Fatalf("video_url = %v, want the attached video data URI", body["video_url"])
-	}
-	// image_url must NOT appear: the extend model has no image input.
-	if _, present := body["image_url"]; present {
-		t.Fatalf("image_url must not be set when extending a video; got %v", body["image_url"])
-	}
-	if len(notices) != 1 {
-		t.Fatalf("expected one notice (image dropped, extend model has no image input), got %v", notices)
-	}
-	if !strings.Contains(notices[0], "no source-image input") {
-		t.Fatalf("notice = %q, want it to say the model has no source-image input", notices[0])
+	if err == nil || !strings.Contains(err.Error(), "no source-image input") {
+		t.Fatalf("err = %v, want the unmapped-source-image refusal for an image+video turn on an extend model", err)
 	}
 }
 
@@ -1888,24 +1914,20 @@ func TestResolveVideoBodyNoSchema(t *testing.T) {
 }
 
 // TestResolveVideoBodyNoSourceInput verifies that a model lacking a source-video
-// field degrades cleanly with a notice when the user attached a video to extend.
+// field refuses when the user attached a video to extend: fal would accept the
+// submit without the clip, so the extend must fail locally with the remedy
+// rather than generating an unrelated text-to-video clip beside a notice.
 func TestResolveVideoBodyNoSourceInput(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "veo3.1"),
+	_, _, err := resolveVideoBody(loadSchema(t, "veo3.1"),
 		VideoGenerateRequest{
 			Model:  "fal-ai/veo3.1",
 			Prompt: "extend this clip",
 			Video:  "data:video/mp4;base64,AAA",
 		},
 		builtinFalOverrides())
-	// veo3.1 (text-to-video) has no video_url field — the video is dropped.
-	if _, present := body["video_url"]; present {
-		t.Fatalf("video_url must not be set on a model with no source-video input; got %v", body["video_url"])
-	}
-	if len(notices) != 1 {
-		t.Fatalf("expected one source-video-ignored notice, got %v", notices)
-	}
-	if !strings.Contains(notices[0], "source-video") {
-		t.Fatalf("notice = %q, want it to mention the ignored source video", notices[0])
+	// veo3.1 (text-to-video) has no video_url field — the extend can't run.
+	if err == nil || !strings.Contains(err.Error(), "no source-video input") {
+		t.Fatalf("err = %v, want the unmapped-source-video refusal", err)
 	}
 }
 

@@ -637,9 +637,15 @@ func resolveImageBody(schema *ModelInputSchema, req ImageGenerateRequest, ov Ove
 	if len(sourceImages) > 0 {
 		path, prop, ok := findNative(schema, ov, "image", req.Model, "sourceImage")
 		if !ok {
-			notices = append(notices, fmt.Sprintf(
-				"The selected model %q has no source-image input; the attached image(s) were ignored.",
-				req.Model))
+			// The image is the request's whole purpose — attached images route
+			// to the image-to-image slot — and fal accepts the submit without
+			// it, so the model would generate from the prompt alone. Refuse
+			// instead of delivering an image the attachment never shaped (the
+			// wan 2.7 lesson, conv_d5f5177320da74a0ce3caebb); the video
+			// resolver holds the same line.
+			return nil, notices, fmt.Errorf(
+				"the selected model %q has no source-image input to edit; pick a different image edit model in Settings → Models",
+				req.Model)
 		} else {
 			// Guardrail: multiple images into a scalar-image model is a hard
 			// error — silently dropping the rest would hide a real capability
@@ -1171,10 +1177,11 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 	// Source media: a video alone is an extend (video-to-video), images alone are
 	// image-to-video / reference-to-video, and BOTH together are motion control —
 	// the model animates the image's subject with the video's motion, so each
-	// side maps onto its own native field. A model lacking one side's input drops
-	// that side with a notice rather than silently ignoring it (an extend model
-	// sent an image+video turn says so instead of quietly losing the image).
-	// The resolved props feed the reference-token legend below.
+	// side maps onto its own native field. A side the model's schema can't map
+	// is a hard error, not a graceful drop: fal accepts the submit without it,
+	// so the model would fail demanding its field or generate media the
+	// attachments never shaped. The resolved props feed the reference-token
+	// legend below.
 	var sourceVideoProp, sourceImageProp SchemaProperty
 	if len(sourceVideos) > 0 {
 		if path, prop, ok := findNative(schema, ov, "video", req.Model, "sourceVideo"); ok {
@@ -1195,17 +1202,22 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 			sourceVideoProp = prop
 			setBodyPath(schema, body, path, coerceVideos(prop, sourceVideos))
 		} else {
-			notices = append(notices, fmt.Sprintf(
-				"The selected model %q has no source-video input; the attached video(s) were ignored.",
-				req.Model))
+			// The video is the request's whole purpose on an extend/motion/
+			// reference turn — the gateway routes the matching model slot — so
+			// submitting without it either fails server-side or extends
+			// nothing. The replicate sibling resolver holds the same line.
+			return nil, notices, fmt.Errorf(
+				"the selected model %q has no source-video input to extend or reference; pick a different video model in Settings → Models",
+				req.Model)
 		}
 	}
 	// Keyframe mode: the first source image is the opening frame (image_url via
 	// sourceImage), the last is the closing frame (the model's end-frame field).
 	// The tool layer already guaranteed exactly two images. If the model has no
 	// end-frame input, drop the closing frame with a notice and let the request
-	// run as plain image-to-video from the opening frame — the same spirit as the
-	// "no source-video input" degradation elsewhere.
+	// run as plain image-to-video from the opening frame — a partial loss that
+	// still honors the opening frame, unlike a fully unmapped source side,
+	// which refuses above.
 	if req.Keyframes && len(sourceImages) >= 2 {
 		endFrame := sourceImages[len(sourceImages)-1]
 		if path, prop, ok := findNative(schema, ov, "video", req.Model, "endImage"); ok {
@@ -1220,9 +1232,14 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 	if len(sourceImages) > 0 {
 		path, prop, ok := findNative(schema, ov, "video", req.Model, "sourceImage")
 		if !ok {
-			notices = append(notices, fmt.Sprintf(
-				"The selected model %q has no source-image input; the attached image(s) were ignored.",
-				req.Model))
+			// Same refusal as an unmapped video side: the image is the whole
+			// purpose of an image-to-video / motion / reference turn, and fal
+			// accepts the submit without it — the model then fails demanding
+			// its field or animates nothing of the user's frame (the wan 2.7
+			// lesson, conv_d5f5177320da74a0ce3caebb).
+			return nil, notices, fmt.Errorf(
+				"the selected model %q has no source-image input to animate from; pick a different image-to-video model in Settings → Models",
+				req.Model)
 		} else {
 			// Guardrail: multiple images into a scalar-image model is a hard error.
 			// The model only accepts one frame; silently dropping the rest would
@@ -1312,29 +1329,6 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 		}
 	}
 	return body, notices, nil
-}
-
-// noticeSaysSourceVideoDropped / noticeSaysSourceImageDropped report whether the
-// resolver's notices include the caveat for a source side the selected model
-// couldn't accept. The video tool's summary matches on these so it describes
-// what was actually delivered — a summary claiming "transferred the attached
-// video's motion" riding next to "the attached video was ignored" hands the
-// final model contradictory evidence (conv_16bf42ce64997fad02f769a9).
-func noticeSaysSourceVideoDropped(notices []string) bool {
-	return noticesMention(notices, "has no source-video input")
-}
-
-func noticeSaysSourceImageDropped(notices []string) bool {
-	return noticesMention(notices, "has no source-image input")
-}
-
-func noticesMention(notices []string, fragment string) bool {
-	for _, n := range notices {
-		if strings.Contains(n, fragment) {
-			return true
-		}
-	}
-	return false
 }
 
 // advertisesReferenceTokens reports whether a source field's own schema

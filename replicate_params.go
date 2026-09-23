@@ -32,9 +32,11 @@ var replicateImageSynonyms = map[string][]string{
 
 // replicateVideoSynonyms lists, per canonical param, the native input names
 // Replicate video models use. Image-to-video models name the first frame
-// "image" (wan i2v, kling) or "first_frame_image" (seedance i2v); both are
-// listed. Duration is usually a free number (seconds) rather than fal's enum
-// strings, and coerceVideoValue's type-driven numeric coercion handles that.
+// "image" (wan 2.5 i2v, kling), "first_frame_image" (seedance i2v), or
+// "first_frame" (wan 2.7 i2v renamed it when it grew first_clip/last_frame
+// for clip continuation and last-frame keyframes); all are listed. Duration is
+// usually a free number (seconds) rather than fal's enum strings, and
+// coerceVideoValue's type-driven numeric coercion handles that.
 var replicateVideoSynonyms = map[string][]string{
 	"prompt":         {"prompt"},
 	"duration":       {"duration"},
@@ -42,7 +44,7 @@ var replicateVideoSynonyms = map[string][]string{
 	"resolution":     {"resolution"},
 	"fps":            {"fps", "frame_rate"},
 	"negativePrompt": {"negative_prompt"},
-	"sourceImage":    {"image", "first_frame_image", "start_image", "image_url", "image_urls"},
+	"sourceImage":    {"image", "first_frame", "first_frame_image", "start_image", "image_url", "image_urls"},
 	"sourceVideo":    {"video", "video_url"},
 	"generateAudio":  {"generate_audio", "generate_audio_enabled"},
 }
@@ -177,8 +179,11 @@ func resolveReplicateImageInput(schema *ModelInputSchema, req ImageGenerateReque
 // reference) and keyframe transitions fail up front with
 // errReplicateVideoSourceUnsupported: the Replicate backend routes only
 // text-to-video and image-to-video in this phase, and a deterministic error
-// with the remedy in the message beats a downstream 422. A nil schema yields a
-// minimal {prompt, image?} body plus a notice.
+// with the remedy in the message beats a downstream 422. An attached source
+// image the schema can't map onto a native input is a hard error for the same
+// reason — every field is nullable, so Replicate would accept the prediction
+// and the model would fail server-side demanding its image input. A nil schema
+// yields a minimal {prompt, image?} body plus a notice.
 func resolveReplicateVideoInput(schema *ModelInputSchema, req VideoGenerateRequest) (map[string]any, []string, error) {
 	if len(req.SourceVideos()) > 0 {
 		return nil, nil, errReplicateVideoSourceUnsupported
@@ -314,9 +319,15 @@ func resolveReplicateVideoInput(schema *ModelInputSchema, req VideoGenerateReque
 	if len(sourceImages) > 0 {
 		path, prop, ok := findNative(schema, ov, "replicate-video", req.Model, "sourceImage")
 		if !ok {
-			notices = append(notices, fmt.Sprintf(
-				"The selected model %q has no source-image input; the attached image(s) were ignored.",
-				req.Model))
+			// The image is the request's whole purpose — the gateway routes
+			// image-to-video slots here — and every field is nullable, so
+			// Replicate accepts the prediction and the model fails server-side
+			// with a confusing native-input complaint (conv_d5f5177320da74a0ce3caebb:
+			// wan 2.7's first_frame before its synonym landed). The
+			// upscale/restyle resolvers hold the same line for their sources.
+			return nil, notices, fmt.Errorf(
+				"the selected model %q has no source-image input to animate from; pick a different image-to-video model in Settings → Models",
+				req.Model)
 		} else {
 			if prop.Kind != schemaArray && len(sourceImages) > 1 {
 				return nil, notices, fmt.Errorf(
