@@ -217,6 +217,35 @@ func TestResolveReplicateVideoInputWan27FirstFrame(t *testing.T) {
 	}
 }
 
+// TestResolveReplicateVideoInputAutoDurationResolvesToModelDefault pins the
+// Replicate side of the fal "auto"-duration fix: wan 2.7's duration is an
+// enum-less integer (2–15, default 5), so the canonical "auto" must resolve to
+// the model's own default — field omitted, notice naming the default — rather
+// than being sent as a string the prediction would reject.
+func TestResolveReplicateVideoInputAutoDurationResolvesToModelDefault(t *testing.T) {
+	schema := parseReplicateFixtureSchema(t, replicateWan27VideoModelSchema)
+	input, notices, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
+		Model:  "wan-video/wan-2.7-i2v",
+		Prompt: "folks with scissors for hands go about their day",
+		Images: []string{"data:image/png;base64," + tinyPNG},
+		// The configured global default can be "auto" (Seedance's value) even
+		// while a Replicate model is routed.
+		Duration: "auto",
+	})
+	if err != nil {
+		t.Fatalf("resolveReplicateVideoInput: %v", err)
+	}
+	if _, exists := input["duration"]; exists {
+		t.Fatalf("duration \"auto\" must resolve to the model's own default (field omitted), got %v", input["duration"])
+	}
+	if len(notices) != 1 {
+		t.Fatalf("expected exactly the auto-duration notice, got %v", notices)
+	}
+	if !strings.Contains(notices[0], "no auto duration") || !strings.Contains(notices[0], "5 seconds") {
+		t.Fatalf("notice = %q, want it to name the model's 5-second default", notices[0])
+	}
+}
+
 func TestResolveReplicateVideoInputSourceRatioInheritance(t *testing.T) {
 	schema := parseReplicateFixtureSchema(t, replicateVideoModelSchema)
 	// A config-derived ratio (AspectRatioExplicit false) on an
@@ -346,6 +375,33 @@ func TestReplicateVideoDurationOptions(t *testing.T) {
 	// The cached schema lands in the replicate-namespaced directory.
 	if _, err := os.Stat(filepath.Join(root, "schema-cache", "replicate", "owner_model.json")); err != nil {
 		t.Fatalf("replicate cache file missing: %v", err)
+	}
+}
+
+// TestReplicateVideoDurationOptionsIntegerRange: an enum-less integer duration
+// with declared bounds synthesizes its picker range (wan 2.7's 2–15) instead of
+// returning nil and dropping the Settings picker onto the generic fallback that
+// lists "auto".
+func TestReplicateVideoDurationOptionsIntegerRange(t *testing.T) {
+	doc := `{"latest_version":{"openapi_schema":{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"prompt":{"type":"string"},
+		"duration":{"type":"integer","default":5,"minimum":2,"maximum":15}
+	}}}}}}}`
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/v1/models/owner/model" {
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+		}
+		return jsonResp(doc), nil
+	})}
+	root := t.TempDir()
+	keyring.MockInit()
+	t.Cleanup(func() { _ = clearReplicateAPIKey() })
+	if err := saveReplicateAPIKey("k"); err != nil {
+		t.Fatalf("saveReplicateAPIKey: %v", err)
+	}
+	opts := replicateVideoDurationOptions(context.Background(), httpClient, root, "owner/model")
+	if len(opts) != 14 || opts[0] != "2" || opts[13] != "15" {
+		t.Fatalf("opts = %v, want 2..15 (14 values, no \"auto\")", opts)
 	}
 }
 

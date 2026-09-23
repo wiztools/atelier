@@ -35,9 +35,10 @@ func newReplicateSchemaCache(httpClient *http.Client, storageRoot string) *Schem
 // Replicate video model accepts, drawn from its input schema's duration
 // property — the replicate sibling of videoDurationOptions (fal_schema.go),
 // reading through the replicate synonym table so the lookup matches the one
-// resolveReplicateVideoInput performs at submit time. Models with a free
-// numeric duration (no enum) return nil; callers fall back to a generic
-// option set.
+// resolveReplicateVideoInput performs at submit time. Enum durations return
+// their members; an enum-less numeric duration with declared bounds returns
+// the synthesized integer range (durationOptionsForProperty); anything else
+// returns nil and callers fall back to a generic option set.
 func replicateVideoDurationOptions(ctx context.Context, client *http.Client, storageRoot, model string) []string {
 	model = strings.TrimSpace(model)
 	if model == "" {
@@ -46,7 +47,7 @@ func replicateVideoDurationOptions(ctx context.Context, client *http.Client, sto
 	cache := newReplicateSchemaCache(client, storageRoot)
 	schema := cache.Get(ctx, model)
 	if _, prop, ok := findNative(schema, Overrides{}, "replicate-video", model, "duration"); ok {
-		return prop.Enum
+		return durationOptionsForProperty(prop)
 	}
 	return nil
 }

@@ -225,12 +225,13 @@ func resolveReplicateVideoInput(schema *ModelInputSchema, req VideoGenerateReque
 	if duration := strings.TrimSpace(req.Duration); duration != "" {
 		// Enum guard first (some models list fixed durations), then the shared
 		// type-driven coercion — Replicate durations are usually free numbers,
-		// so coerceVideoValue turns "5" into 5 against a number-typed field.
+		// so coerceVideoValue turns "5" into 5 against a number-typed field. The
+		// guard's type leg resolves "auto" on those numeric fields: there is no
+		// auto member to send, so the field is dropped and the model's own
+		// default applies (videoDurationSendable, the fal-side fix).
 		if path, prop, ok := findNative(schema, ov, "replicate-video", req.Model, "duration"); ok {
-			if !valueAllowedByEnum(prop, duration) {
-				notices = append(notices, fmt.Sprintf(
-					"The selected model %q does not accept duration %q; ignoring it and letting the model choose.",
-					req.Model, duration))
+			if !videoDurationSendable(prop, duration) {
+				notices = append(notices, videoDurationDroppedNotice(req.Model, duration, prop))
 			} else {
 				setBodyPath(schema, body, path, coerceVideoValue(prop, duration))
 			}

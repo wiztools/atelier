@@ -1,8 +1,14 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // === Video duration "auto" option ===
@@ -51,8 +57,8 @@ func TestResolveVideoBodyAutoDurationDroppedForKling(t *testing.T) {
 	if len(notices) != 1 {
 		t.Fatalf("expected one duration-dropped notice, got %v", notices)
 	}
-	if !strings.Contains(notices[0], "does not accept duration") || !strings.Contains(notices[0], "auto") {
-		t.Fatalf("notice should name the rejected duration value, got %q", notices[0])
+	if !strings.Contains(notices[0], "no auto duration") {
+		t.Fatalf("notice should explain the missing auto option, got %q", notices[0])
 	}
 }
 
@@ -192,8 +198,8 @@ func TestResolveVideoBodyAutoDroppedForIntegerEnum(t *testing.T) {
 	if len(notices) != 1 {
 		t.Fatalf("expected one duration-dropped notice, got %v", notices)
 	}
-	if !strings.Contains(notices[0], "does not accept duration") || !strings.Contains(notices[0], "auto") {
-		t.Fatalf("notice should name the rejected duration value, got %q", notices[0])
+	if !strings.Contains(notices[0], "no auto duration") {
+		t.Fatalf("notice should explain the missing auto option, got %q", notices[0])
 	}
 }
 
@@ -218,6 +224,88 @@ func TestNumericEnumSurvivesParsing(t *testing.T) {
 	for i, v := range want {
 		if prop.Enum[i] != v {
 			t.Errorf("enum[%d] = %q, want %q (full: %v)", i, prop.Enum[i], v, prop.Enum)
+		}
+	}
+}
+
+// === Picker options for enum-less numeric durations ===
+//
+// minimax/h3's duration is a bare integer (5–15, no enum), so the picker
+// lookup used to return nil and the Settings screen fell back to the generic
+// offline option set — advertising "auto" (which the model 422s on) and a
+// 5/10/15/30 ladder that isn't the model's range. The synthesis below lists
+// the declared integer range instead.
+
+// TestDurationOptionsForProperty pins the synthesis rules standalone: an enum
+// lists its members; an enum-less numeric duration with declared bounds lists
+// its integer range; anything unlistable stays nil so callers keep the
+// generic fallback.
+func TestDurationOptionsForProperty(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	cases := []struct {
+		name string
+		prop SchemaProperty
+		want []string
+	}{
+		{"enum wins", SchemaProperty{Enum: []string{"auto", "5", "10"}}, []string{"auto", "5", "10"}},
+		{"integer range", SchemaProperty{Type: "integer", Minimum: f(5), Maximum: f(15)},
+			[]string{"5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"}},
+		{"fractional bounds floor to integers", SchemaProperty{Type: "number", Minimum: f(2.5), Maximum: f(7.5)},
+			[]string{"3", "4", "5", "6", "7"}},
+		{"unbounded numeric", SchemaProperty{Type: "number"}, nil},
+		{"string without enum", SchemaProperty{Type: "string"}, nil},
+		{"range too wide to list", SchemaProperty{Type: "integer", Minimum: f(0), Maximum: f(120)}, nil},
+		{"inverted bounds", SchemaProperty{Type: "integer", Minimum: f(15), Maximum: f(5)}, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := durationOptionsForProperty(c.prop)
+			if len(got) != len(c.want) {
+				t.Fatalf("durationOptionsForProperty = %v, want %v", got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Fatalf("durationOptionsForProperty = %v, want %v", got, c.want)
+				}
+			}
+		})
+	}
+}
+
+// TestVideoDurationOptionsSynthesizesIntegerRange drives the Settings-picker
+// lookup end to end for minimax/h3's published duration shape — a bare integer
+// with bounds and no enum — seeded through the real disk cache. The picker must
+// list the model's true 5–15 range and must NOT offer "auto", which the nil
+// return's generic fallback used to advertise.
+func TestVideoDurationOptionsSynthesizesIntegerRange(t *testing.T) {
+	doc := `{"components":{"schemas":{"H3ReferenceToVideoInput":{"type":"object","required":["prompt"],"properties":{
+		"prompt":{"type":"string"},
+		"duration":{"type":"integer","minimum":5,"maximum":15,"default":5,"description":"The duration of the video in seconds."}
+	}}}}}`
+	root := t.TempDir()
+	entry, err := json.Marshal(cachedSchema{FetchedAt: time.Now(), Raw: json.RawMessage(doc)})
+	if err != nil {
+		t.Fatalf("marshal cache entry: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "schema-cache"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "schema-cache", "minimax_h3_reference-to-video.json"), entry, 0o644); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+	// The seeded copy is fresh, so the transport must never fire.
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("unexpected fetch: %s %s", req.Method, req.URL)
+		return nil, nil
+	})}
+	opts := videoDurationOptions(context.Background(), httpClient, root, "minimax/h3/reference-to-video")
+	want := []string{"5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"}
+	if len(opts) != len(want) {
+		t.Fatalf("opts = %v, want %v (the model's real range, no \"auto\")", opts, want)
+	}
+	for i := range want {
+		if opts[i] != want[i] {
+			t.Fatalf("opts = %v, want %v", opts, want)
 		}
 	}
 }

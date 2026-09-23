@@ -1496,6 +1496,80 @@ func TestResolveVideoBodyExtendDurationOutOfEnumDropped(t *testing.T) {
 	}
 }
 
+// TestResolveVideoBodyAutoDurationResolvesToModelDefault reproduces
+// conv_2c4fa3a2fb515a792869ca1c / conv_c72f1ce6470a957fb4df62eb: minimax/h3's
+// published duration input is a bare integer (5–15, default 5) with no enum, so
+// the canonical "auto" (the configured default — Seedance's let-the-model-
+// decide value) passed the enum guard vacuously and reached fal as the string
+// "auto", 422ing int_parsing. "auto" must resolve to the model's own default —
+// the field is omitted and the notice names the default — while a numeric
+// duration still sends, coerced to the schema's integer type, and a model whose
+// enum lists "auto" (Seedance) keeps sending it verbatim.
+func TestResolveVideoBodyAutoDurationResolvesToModelDefault(t *testing.T) {
+	schema := &ModelInputSchema{
+		Properties: map[string]SchemaProperty{
+			"prompt": {Name: "prompt", Kind: schemaScalar},
+			// minimax/h3's published shape: integer, no enum.
+			"duration": {Name: "duration", Kind: schemaScalar, Type: "integer", Default: float64(5)},
+		},
+		order: []string{"prompt", "duration"},
+	}
+	body, notices, _ := resolveVideoBody(schema,
+		VideoGenerateRequest{
+			Model:    "minimax/h3/reference-to-video",
+			Prompt:   "the character examines her missing teeth in the mirror",
+			Duration: "auto",
+		},
+		builtinFalOverrides())
+	if _, present := body["duration"]; present {
+		t.Fatalf("duration \"auto\" must resolve to the model's own default (field omitted), got %v", body["duration"])
+	}
+	if len(notices) != 1 {
+		t.Fatalf("expected exactly the auto-duration notice, got %v", notices)
+	}
+	if !strings.Contains(notices[0], "no auto duration") || !strings.Contains(notices[0], "5 seconds") {
+		t.Fatalf("notice = %q, want it to name the model's 5-second default", notices[0])
+	}
+
+	// A numeric duration still sends, as the schema's integer type.
+	body, notices, _ = resolveVideoBody(schema,
+		VideoGenerateRequest{
+			Model:    "minimax/h3/reference-to-video",
+			Prompt:   "the character examines her missing teeth in the mirror",
+			Duration: "8",
+		},
+		builtinFalOverrides())
+	if body["duration"] != 8 {
+		t.Fatalf("duration = %v (%T), want integer 8", body["duration"], body["duration"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("a sendable duration must not emit notices, got %v", notices)
+	}
+
+	// Seedance keeps its own "auto": a string-typed enum listing it still sends
+	// the member verbatim.
+	seedance := &ModelInputSchema{
+		Properties: map[string]SchemaProperty{
+			"prompt":   {Name: "prompt", Kind: schemaScalar},
+			"duration": {Name: "duration", Kind: schemaScalar, Enum: []string{"auto", "4", "5", "6", "8", "10", "15"}},
+		},
+		order: []string{"prompt", "duration"},
+	}
+	body, notices, _ = resolveVideoBody(seedance,
+		VideoGenerateRequest{
+			Model:    "bytedance/seedance-2.0/text-to-video",
+			Prompt:   "a lantern drifting over the lake",
+			Duration: "auto",
+		},
+		builtinFalOverrides())
+	if body["duration"] != "auto" {
+		t.Fatalf("Seedance duration = %v, want its \"auto\" enum member sent verbatim", body["duration"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("an in-enum duration must not emit notices, got %v", notices)
+	}
+}
+
 // TestResolveVideoBodyExtendExplicitRatioNoToggle reproduces
 // conv_484449cf8fe4a13c1ffa6bb4: an explicit aspect ratio on an extend model
 // that has no aspect_ratio input (xai/grok-imagine-video/extend-video). The

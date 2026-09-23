@@ -1023,15 +1023,15 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 
 	if duration := strings.TrimSpace(req.Duration); duration != "" {
 		if path, prop, ok := findNative(schema, ov, "video", req.Model, "duration"); ok {
-			// Guard against values the model's duration enum doesn't accept before
-			// sending — "auto" is Seedance-only, while Kling accepts just ["5","10"]
-			// and other models have their own fixed sets. Passing an out-of-enum
-			// value through would 422 at fal. Drop it with a notice so the request
-			// still runs (the model picks its own default) rather than failing.
-			if !valueAllowedByEnum(prop, duration) {
-				notices = append(notices, fmt.Sprintf(
-					"The selected model %q does not accept duration %q; ignoring it and letting the model choose.",
-					req.Model, duration))
+			// Guard against unsendable durations before sending — "auto" is
+			// Seedance-only, Kling accepts just ["5","10"], and an enum-less
+			// numeric field (minimax/h3's integer 5–15) has no "auto" member at
+			// all. Passing any of those through would 422 at fal. Drop "auto"
+			// with a notice that names the model's own default so the request
+			// still runs; anything else unsendable drops the same way it always
+			// did.
+			if !videoDurationSendable(prop, duration) {
+				notices = append(notices, videoDurationDroppedNotice(req.Model, duration, prop))
 			} else {
 				setBodyPath(schema, body, path, coerceVideoValue(prop, duration))
 			}
@@ -1417,6 +1417,59 @@ func enumValueFor(prop SchemaProperty, value string) (canonical string, ok bool)
 		}
 	}
 	return "", false
+}
+
+// videoDurationSendable reports whether a canonical duration value can be sent
+// on the model's native duration property: it must pass the property's enum
+// when one is declared, and parse as a number when the property is
+// integer/number-typed. The type leg is the fix for enum-less numeric durations
+// — minimax/h3 declares duration as a bare integer (5–15, default 5), so
+// Seedance-style "auto" passed the enum guard vacuously, rode coerceVideoValue
+// through unchanged, and reached fal as a string that 422'd int_parsing
+// (conv_2c4fa3a2fb515a792869ca1c, conv_c72f1ce6470a957fb4df62eb). String-typed
+// durations (Veo "8s", Kling "5", Seedance's own "auto" enum member) keep
+// flowing through the enum leg untouched.
+func videoDurationSendable(prop SchemaProperty, duration string) bool {
+	if !valueAllowedByEnum(prop, duration) {
+		return false
+	}
+	if prop.Type == "integer" || prop.Type == "number" {
+		_, err := strconv.ParseFloat(strings.TrimSpace(duration), 64)
+		return err == nil
+	}
+	return true
+}
+
+// videoDurationDroppedNotice explains a dropped duration. "auto" is a
+// resolution rather than a rejection — the model picks its own length when the
+// field is omitted, and the schema's declared default is named so the user
+// knows what the clip will get — while any other value reads as the plain
+// refusal the enum guard has always emitted.
+func videoDurationDroppedNotice(model, duration string, prop SchemaProperty) string {
+	if duration == "auto" {
+		if def := schemaDefaultSeconds(prop); def != "" {
+			return fmt.Sprintf("The selected model %q has no auto duration; using its default of %s seconds.", model, def)
+		}
+		return fmt.Sprintf("The selected model %q has no auto duration; letting the model choose the clip length.", model)
+	}
+	return fmt.Sprintf("The selected model %q does not accept duration %q; ignoring it and letting the model choose.", model, duration)
+}
+
+// schemaDefaultSeconds renders a duration property's declared default as
+// notice-facing seconds text ("5"), or "" when none is declared. JSON decoding
+// lands schema numbers as float64; FormatFloat's shortest form prints integral
+// values without a trailing .0.
+func schemaDefaultSeconds(prop SchemaProperty) string {
+	switch v := prop.Default.(type) {
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case int:
+		return strconv.Itoa(v)
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		return ""
+	}
 }
 
 // resolveLipsyncBody maps a LipsyncGenerateRequest onto the model's native input

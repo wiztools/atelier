@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -45,6 +47,12 @@ type SchemaProperty struct {
 	Nested   map[string]SchemaProperty // populated when Kind == schemaObject
 	Items    *SchemaProperty           // populated when Kind == schemaArray (may be nil)
 	MaxItems int                       // populated when Kind == schemaArray; 0 = unset
+	// Minimum and Maximum carry the OpenAPI numeric bounds when declared, so a
+	// free numeric duration (no enum) can be presented as its real range —
+	// minimax/h3's integer 5–15 — instead of falling back to the generic
+	// offline option set. Nil when the property declares no bound.
+	Minimum *float64
+	Maximum *float64
 }
 
 // ModelInputSchema is the parsed input model for one fal endpoint.
@@ -90,6 +98,8 @@ type openAPIProp struct {
 	MaxItems   int                        `json:"maxItems"`
 	AnyOf      []json.RawMessage          `json:"anyOf"`
 	OneOf      []json.RawMessage          `json:"oneOf"`
+	Minimum    *float64                   `json:"minimum"`
+	Maximum    *float64                   `json:"maximum"`
 	// Description is documented at the property level (not inside union
 	// branches), so it must survive the union unwrap to stay usable.
 	Description string `json:"description"`
@@ -172,10 +182,18 @@ func toSchemaProperty(name string, raw json.RawMessage) SchemaProperty {
 			if unwrapped.Description == "" {
 				unwrapped.Description = p.Description
 			}
+			// Bounds are documented on the branch or the parent depending on
+			// the doc; either way the unwrapped property should carry them.
+			if unwrapped.Minimum == nil {
+				unwrapped.Minimum = p.Minimum
+			}
+			if unwrapped.Maximum == nil {
+				unwrapped.Maximum = p.Maximum
+			}
 			return unwrapped
 		}
 	}
-	sp := SchemaProperty{Name: name, Kind: schemaScalar, Type: p.Type, Description: p.Description, Enum: enumStrings(p.Enum)}
+	sp := SchemaProperty{Name: name, Kind: schemaScalar, Type: p.Type, Description: p.Description, Enum: enumStrings(p.Enum), Minimum: p.Minimum, Maximum: p.Maximum}
 	if len(p.Default) > 0 {
 		var d any
 		if err := json.Unmarshal(p.Default, &d); err == nil {
@@ -405,16 +423,55 @@ func sanitizeModelID(model string) string {
 	return strings.NewReplacer("/", "_", ":", "_", " ", "_").Replace(model)
 }
 
+// durationOptionsSynthesisCap bounds the range a picker will list for an
+// enum-less numeric duration: anything wider than a minute of seconds is a
+// free-form input, not a choosable ladder, and stays on the generic fallback.
+const durationOptionsSynthesisCap = 60
+
+// durationOptionsForProperty renders the picker-facing duration values for a
+// model's native duration property: the enum when one is declared (Seedance's
+// "auto" plus seconds, Kling's fixed set), else the integer range synthesized
+// from the declared bounds. The synthesis closes the gap that left minimax/h3
+// — duration a bare integer 5–15, no enum — returning nil, which the frontend
+// cannot distinguish from an unloaded schema and answers with the generic
+// offline fallback: a picker and a "Supported clip lengths" hover that list
+// "auto" the model rejects and seconds it doesn't offer. Nil when neither
+// shape is available (no duration control, unbounded numeric, or a range too
+// wide to list).
+func durationOptionsForProperty(prop SchemaProperty) []string {
+	if len(prop.Enum) > 0 {
+		return prop.Enum
+	}
+	if prop.Type != "integer" && prop.Type != "number" {
+		return nil
+	}
+	if prop.Minimum == nil || prop.Maximum == nil {
+		return nil
+	}
+	lo, hi := int(math.Ceil(*prop.Minimum)), int(math.Floor(*prop.Maximum))
+	if hi < lo || hi-lo > durationOptionsSynthesisCap {
+		return nil
+	}
+	opts := make([]string, 0, hi-lo+1)
+	for v := lo; v <= hi; v++ {
+		opts = append(opts, strconv.Itoa(v))
+	}
+	return opts
+}
+
 // videoDurationOptions returns the duration values the given fal video model
-// accepts, drawn from its published input schema's duration enum (e.g.
-// ["auto","4",...,"15"] for Seedance, ["5","10"] for Kling). It mirrors the
-// lookup resolveVideoBody performs at submit time, so the Settings duration
-// picker can show exactly the values the selected model won't 422 on.
+// accepts, drawn from its published input schema's duration input: the enum
+// when one is declared (e.g. ["auto","4",...,"15"] for Seedance, ["5","10"]
+// for Kling), else the synthesized integer range for an enum-less numeric
+// duration (minimax/h3's 5–15). It mirrors the lookup resolveVideoBody
+// performs at submit time, so the Settings duration picker can show exactly
+// the values the selected model won't 422 on.
 //
 // Returns nil when the schema is unavailable (offline, fetch failed, no key)
-// or the model has no duration control — callers fall back to a generic option
-// set rather than blocking the UI. Nil-safe throughout: a nil schema, nil app,
-// or empty model all yield nil. findNative is nil-schema-safe (returns false).
+// or the model has no listable duration control — callers fall back to a
+// generic option set rather than blocking the UI. Nil-safe throughout: a nil
+// schema, nil app, or empty model all yield nil. findNative is nil-schema-safe
+// (returns false).
 func videoDurationOptions(ctx context.Context, client *http.Client, storageRoot, model string) []string {
 	model = strings.TrimSpace(model)
 	if model == "" {
@@ -424,7 +481,7 @@ func videoDurationOptions(ctx context.Context, client *http.Client, storageRoot,
 	overrides := loadFalOverrides(storageRoot)
 	schema := cache.Get(ctx, model)
 	if _, prop, ok := findNative(schema, overrides, "video", model, "duration"); ok {
-		return prop.Enum
+		return durationOptionsForProperty(prop)
 	}
 	return nil
 }
