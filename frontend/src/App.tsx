@@ -374,6 +374,26 @@ const defaultVideoAspectRatio = '16:9';
 // text — 'auto' reads better than a bare token.
 const defaultVideoDurationOptions = ['auto', '5', '10', '15', '30'];
 
+// The duration picker's ladder always reaches 30s even when the selected
+// model's published schema caps lower: modern models generate 30s clips while
+// their schemas lag, and the picker must not hide the option. A value the
+// model truly rejects is dropped with a notice by the backend's enum/bounds
+// guard (videoDurationSendable + videoDurationDroppedNotice), so the wider
+// ladder never 422s a generation. Picker-only — the "Supported clip lengths"
+// hovers keep reading the raw schema set.
+const maxSelectableVideoDuration = 30;
+function videoDurationPickerOptions(options: string[]): string[] {
+  let max = 0;
+  for (const option of options) {
+    const n = Number(option);
+    if (option !== '' && Number.isFinite(n) && String(n) === option.trim()) max = Math.max(max, n);
+  }
+  if (max <= 0 || max >= maxSelectableVideoDuration) return options;
+  const widened = [...options];
+  for (let v = Math.floor(max) + 1; v <= maxSelectableVideoDuration; v++) widened.push(String(v));
+  return widened;
+}
+
 // formatSupportedDurations turns a fal duration enum (e.g. ['auto','4','5',…,'15'])
 // into a compact caption like "auto, 4–15 s": non-numeric values (auto) are kept
 // in order, consecutive integer runs are collapsed into ranges, and a trailing
@@ -6860,7 +6880,7 @@ function ModelSelectionPanel({
                 />
               </div>
               <select id="video-duration" value={value.videoDuration} onChange={(event) => onChange({videoDuration: event.target.value})}>
-                {durationOptions.video.map((option) => <option key={option} value={option}>{videoDurationLabels[option] ?? option}</option>)}
+                {videoDurationPickerOptions(durationOptions.video).map((option) => <option key={option} value={option}>{videoDurationLabels[option] ?? option}</option>)}
               </select>
             </div>
 

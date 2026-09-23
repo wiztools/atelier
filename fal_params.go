@@ -1502,21 +1502,34 @@ func enumValueFor(prop SchemaProperty, value string) (canonical string, ok bool)
 
 // videoDurationSendable reports whether a canonical duration value can be sent
 // on the model's native duration property: it must pass the property's enum
-// when one is declared, and parse as a number when the property is
-// integer/number-typed. The type leg is the fix for enum-less numeric durations
-// — minimax/h3 declares duration as a bare integer (5–15, default 5), so
-// Seedance-style "auto" passed the enum guard vacuously, rode coerceVideoValue
-// through unchanged, and reached fal as a string that 422'd int_parsing
-// (conv_2c4fa3a2fb515a792869ca1c, conv_c72f1ce6470a957fb4df62eb). String-typed
-// durations (Veo "8s", Kling "5", Seedance's own "auto" enum member) keep
-// flowing through the enum leg untouched.
+// when one is declared, and parse as a number within the declared bounds when
+// the property is integer/number-typed. The type leg is the fix for enum-less
+// numeric durations — minimax/h3 declares duration as a bare integer (5–15,
+// default 5), so Seedance-style "auto" passed the enum guard vacuously, rode
+// coerceVideoValue through unchanged, and reached fal as a string that 422'd
+// int_parsing (conv_2c4fa3a2fb515a792869ca1c, conv_c72f1ce6470a957fb4df62eb).
+// The bounds leg keeps the picker's widened 30s ladder from 422ing on
+// bounded-numeric models (wan-2.7-i2v's integer 2–15): an out-of-range value
+// drops with a notice like an out-of-enum one, instead of failing the
+// generation server-side. String-typed durations (Veo "8s", Kling "5",
+// Seedance's own "auto" enum member) keep flowing through the enum leg
+// untouched.
 func videoDurationSendable(prop SchemaProperty, duration string) bool {
 	if !valueAllowedByEnum(prop, duration) {
 		return false
 	}
 	if prop.Type == "integer" || prop.Type == "number" {
-		_, err := strconv.ParseFloat(strings.TrimSpace(duration), 64)
-		return err == nil
+		v, err := strconv.ParseFloat(strings.TrimSpace(duration), 64)
+		if err != nil {
+			return false
+		}
+		if prop.Minimum != nil && v < *prop.Minimum {
+			return false
+		}
+		if prop.Maximum != nil && v > *prop.Maximum {
+			return false
+		}
+		return true
 	}
 	return true
 }

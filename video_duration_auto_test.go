@@ -179,6 +179,28 @@ func TestResolveVideoBodyIntegerDurationSentAsNumber(t *testing.T) {
 	}
 }
 
+// TestVideoDurationSendableRespectsNumericBounds pins the bounds leg of the
+// duration guard: a bounded numeric duration with no enum (wan-2.7-i2v's
+// integer 2–15) must reject an out-of-range value, so the picker's widened 30s
+// ladder drops with a notice instead of sending a value the provider would
+// 422 the whole generation on.
+func TestVideoDurationSendableRespectsNumericBounds(t *testing.T) {
+	min, max := 2.0, 15.0
+	prop := SchemaProperty{Type: "integer", Minimum: &min, Maximum: &max}
+	if videoDurationSendable(prop, "30") {
+		t.Errorf("30 must be unsendable on an integer duration capped at %v", max)
+	}
+	if videoDurationSendable(prop, "1") {
+		t.Errorf("1 must be unsendable on an integer duration floored at %v", min)
+	}
+	if !videoDurationSendable(prop, "15") {
+		t.Errorf("15 must be sendable within [%v,%v]", min, max)
+	}
+	if !videoDurationSendable(prop, "8") {
+		t.Errorf("8 must be sendable within [%v,%v]", min, max)
+	}
+}
+
 // TestResolveVideoBodyAutoDroppedForIntegerEnum asserts that once numeric enum
 // values survive parsing, the enum guard catches a non-numeric "auto" against
 // an integer enum and drops it with a notice (rather than sending it and 422ing
