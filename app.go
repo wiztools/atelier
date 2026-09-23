@@ -2434,6 +2434,24 @@ func (a *App) HasOpenRouterAPIKey() (bool, error) {
 	return strings.TrimSpace(key) != "", nil
 }
 
+// CheckOpenRouterConnection validates the stored OpenRouter API key with a
+// cheap authenticated ping (GET /api/v1/key, no tokens spent), mirroring
+// CheckFalConnection. The public /models list cannot serve as this check — it
+// returns 200 even for an invalid key, so a green model-list fetch proved
+// reachability, never the key.
+func (a *App) CheckOpenRouterConnection() error {
+	key, err := loadOpenRouterAPIKey()
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(key) == "" {
+		return errOpenRouterKeyNotConfigured
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return newOpenRouterClient(a.client, key).VerifyKey(ctx)
+}
+
 func (a *App) SaveFalAPIKey(apiKey string) error {
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
@@ -2453,8 +2471,9 @@ func (a *App) HasFalAPIKey() (bool, error) {
 // CheckFalConnection validates the stored fal.ai API key with a cheap
 // authenticated ping (no generation). Returns an error describing why the key
 // is rejected, or nil when it resolves. Used by the Settings "Check Connection"
-// button — the OpenRouter equivalent doubles as a model list, but fal's model
-// field is free text, so this only confirms the key works.
+// button and the startup key check, like its OpenRouter and Replicate
+// counterparts — the model catalogs are discovery aids and never double as
+// key checks.
 func (a *App) CheckFalConnection() error {
 	key, err := loadFalAPIKey()
 	if err != nil {

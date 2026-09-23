@@ -10,6 +10,8 @@ export function CheckForUpdates():Promise<main.UpdateStatus>;
 
 export function CheckOllama(arg1:string):Promise<main.OllamaStatus>;
 
+export function CheckOpenRouterConnection():Promise<void>;
+
 export function CheckReplicateConnection():Promise<void>;
 
 export function ChooseToolWorkspace(arg1:string):Promise<string>;

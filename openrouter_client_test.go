@@ -36,6 +36,52 @@ func TestOpenRouterClientListModels(t *testing.T) {
 	}
 }
 
+// TestOpenRouterClientVerifyKeySucceeds pins that the key check pings the
+// authenticated /key endpoint — NOT the public /models list, which returns 200
+// even for an invalid key and therefore proves nothing about the key.
+func TestOpenRouterClientVerifyKeySucceeds(t *testing.T) {
+	client := newOpenRouterClient(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.Method != http.MethodGet || req.URL.Path != "/api/v1/key" {
+				t.Fatalf("VerifyKey should GET /api/v1/key, got %s %s", req.Method, req.URL.Path)
+			}
+			if got := req.Header.Get("Authorization"); got != "Bearer sk-or-test" {
+				t.Fatalf("Authorization header = %q, want Bearer sk-or-test", got)
+			}
+			body := `{"data":{"label":"atelier","usage":0.01}}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     http.Header{},
+			}, nil
+		}),
+	}, "sk-or-test")
+	if err := client.VerifyKey(context.Background()); err != nil {
+		t.Fatalf("VerifyKey returned error: %v", err)
+	}
+}
+
+func TestOpenRouterClientVerifyKeyRejectsInvalidKey(t *testing.T) {
+	client := newOpenRouterClient(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Status:     "401 Unauthorized",
+				Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"Invalid API key"}}`)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+			}, nil
+		}),
+	}, "sk-or-test")
+	err := client.VerifyKey(context.Background())
+	if err == nil {
+		t.Fatal("expected an authentication error, got nil")
+	}
+	if !strings.Contains(err.Error(), "authentication failed") {
+		t.Errorf("expected auth-failed message, got %q", err.Error())
+	}
+}
+
 // TestOpenRouterListModelsParsesCapabilities verifies the model list derives
 // capability flags from architecture.input_modalities and supported_parameters,
 // so the harness can decide whether to forward audio/video and whether the model

@@ -18,6 +18,10 @@ export function CheckOllama(arg1) {
   return window['go']['main']['App']['CheckOllama'](arg1);
 }
 
+export function CheckOpenRouterConnection() {
+  return window['go']['main']['App']['CheckOpenRouterConnection']();
+}
+
 export function CheckReplicateConnection() {
   return window['go']['main']['App']['CheckReplicateConnection']();
 }

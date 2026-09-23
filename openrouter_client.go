@@ -84,6 +84,19 @@ func (client OpenRouterClient) ListModels(ctx context.Context) ([]ModelInfo, err
 	return models, nil
 }
 
+// VerifyKey confirms the API key is accepted by OpenRouter without spending
+// tokens. GET /key is an authenticated account endpoint (401 for a bad key) —
+// unlike GET /models, which is public and returns 200 even for an invalid key,
+// so the model-list fetch cannot double as a key check.
+func (client OpenRouterClient) VerifyKey(ctx context.Context) error {
+	resp, err := client.do(ctx, http.MethodGet, "/key", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return nil
+}
+
 // openRouterCapabilities derives the capability list the harness consults from
 // the parsed model metadata: "tools" when SupportedParameters advertises it,
 // and "audio"/"video"/"image" when Architecture.InputModalities includes them.

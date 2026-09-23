@@ -6,6 +6,7 @@ import './App.css';
 import {
   CancelStream,
   CheckFalConnection,
+  CheckOpenRouterConnection,
   CheckReplicateConnection,
   CheckForUpdates,
   CheckOllama,
@@ -2892,22 +2893,30 @@ function App() {
     await Promise.all([
       refreshConversations(),
       refreshOllama(nextBaseURL),
+      // Every provider with a stored key gets the same startup pair: a catalog
+      // refresh (discovery aid, errors swallowed) and a cheap authenticated key
+      // ping that sets the Settings status light — so all three lights mean the
+      // same thing ("last key validation") instead of OpenRouter's meaning
+      // "public model list reachable".
       HasOpenRouterAPIKey().then((hasKey) => {
         setOpenRouterHasKey(hasKey);
         if (hasKey) {
           refreshOpenRouterModels();
+          checkOpenRouterConnection();
         }
       }).catch(() => setOpenRouterHasKey(false)),
       HasFalAPIKey().then((hasKey) => {
         setFalHasKey(hasKey);
         if (hasKey) {
           refreshFalModels();
+          checkFalConnection();
         }
       }).catch(() => setFalHasKey(false)),
       HasReplicateAPIKey().then((hasKey) => {
         setReplicateHasKey(hasKey);
         if (hasKey) {
           refreshReplicateModels();
+          checkReplicateConnection();
         }
       }).catch(() => setReplicateHasKey(false)),
       DetectLocalTools(new main.LocalToolOverrides()).then((report) => {
@@ -3027,9 +3036,22 @@ function App() {
   }
 
   async function refreshOpenRouterModels() {
+    // The catalog is a discovery aid like fal's and Replicate's collections
+    // (the model field stays free text without it), and OpenRouter's /models
+    // endpoint is public — it returns 200 even for an invalid key — so neither
+    // its success nor its failure says anything about the key. The status light
+    // comes from checkOpenRouterConnection's authenticated /key ping; swallow
+    // catalog errors and keep the last-good list on a transient blip.
     try {
-      const nextModels = asArray(await ListPrimaryModels('openrouter', ''));
-      setOpenRouterModels(nextModels);
+      setOpenRouterModels(asArray(await ListPrimaryModels('openrouter', '')));
+    } catch {
+      // Keep whatever list is already loaded; a cold-load failure just leaves it empty.
+    }
+  }
+
+  async function checkOpenRouterConnection() {
+    try {
+      await CheckOpenRouterConnection();
       setOpenRouterStatus('connected');
       setOpenRouterError('');
     } catch (error) {
@@ -3138,7 +3160,12 @@ function App() {
       setOpenRouterAPIKeyInput('');
       const hasKey = await HasOpenRouterAPIKey();
       setOpenRouterHasKey(hasKey);
-      await refreshOpenRouterModels();
+      setOpenRouterStatus('unknown');
+      setOpenRouterError('');
+      if (hasKey) {
+        await refreshOpenRouterModels();
+        await checkOpenRouterConnection();
+      }
     } catch (error) {
       setOpenRouterStatus('error');
       setOpenRouterError(formatError(error));
@@ -3172,6 +3199,7 @@ function App() {
       setFalError('');
       if (hasKey) {
         await refreshFalModels();
+        await checkFalConnection();
       }
     } catch (error) {
       setStatus((current) => current ? {...current, error: String(error)} : current);
@@ -3268,6 +3296,7 @@ function App() {
       setReplicateError('');
       if (hasKey) {
         await refreshReplicateModels();
+        await checkReplicateConnection();
       }
     } catch (error) {
       setStatus((current) => current ? {...current, error: String(error)} : current);
@@ -4724,7 +4753,7 @@ function App() {
                         <polyline points="7 3 7 8 15 8" />
                       </svg>
                     </button>
-                    <button type="button" className={`icon-btn${openRouterStatus === 'connected' ? ' spinning' : ''}`} onClick={refreshOpenRouterModels} disabled={!openRouterHasKey} aria-label="Check connection" title="Check connection">
+                    <button type="button" className={`icon-btn${openRouterStatus === 'connected' ? ' spinning' : ''}`} onClick={checkOpenRouterConnection} disabled={!openRouterHasKey} aria-label="Check connection" title="Check connection">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.7-3" />
                         <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.7 3" />
@@ -4744,10 +4773,12 @@ function App() {
                   <div className={openRouterStatus === 'connected' ? 'status online' : 'status offline'}>
                     <span />
                     {openRouterStatus === 'connected'
-                      ? `Connected — ${openRouterModels.length} models available`
+                      ? 'Connected'
                       : openRouterStatus === 'error'
                         ? `OpenRouter: ${openRouterError}`
-                        : 'Not checked'}
+                        : openRouterHasKey
+                          ? 'API key saved — not checked'
+                          : 'No key saved.'}
                   </div>
                 </div>
               </section>
