@@ -251,11 +251,18 @@ func resolveReplicateVideoInput(schema *ModelInputSchema, req VideoGenerateReque
 		} else if path, prop, ok := findNative(schema, ov, "replicate-video", req.Model, "aspectRatio"); ok {
 			if canonical, allowed := enumValueFor(prop, aspect); allowed {
 				setBodyPath(schema, body, path, coerceVideoValue(prop, canonical))
-			} else {
+			} else if !isAutoAspectRatio(aspect) {
+				// "auto" is the defer sentinel (the fal-side rule): a model
+				// whose enum lacks it falls back to its own default, which is
+				// exactly the request — silent, where a concrete ratio's drop
+				// gets a notice.
 				notices = append(notices, fmt.Sprintf(
 					"The selected model %q does not accept aspect ratio %q; ignoring it and letting the model choose.",
 					req.Model, aspect))
 			}
+		} else if isAutoAspectRatio(aspect) {
+			// "auto" asked the model to decide; one with no aspect_ratio input
+			// does exactly that with its own default — nothing to report.
 		} else if len(sourceImages) > 0 {
 			notices = append(notices, fmt.Sprintf(
 				"The selected model %q derives the output aspect ratio from the source image and has no aspect_ratio input, so the explicit %q request is only honored if the source image already matches; Atelier did not reshape the image.",

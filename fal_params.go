@@ -979,10 +979,14 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 		if duration := strings.TrimSpace(req.Duration); duration != "" {
 			body["duration"] = duration
 		}
-		if aspect := strings.TrimSpace(req.AspectRatio); aspect != "" {
+		if aspect := strings.TrimSpace(req.AspectRatio); aspect != "" && !isAutoAspectRatio(aspect) {
 			// Same gate as the schema-driven branch: for image-to-video and
 			// extend, only send aspect_ratio when the planner explicitly set it;
 			// otherwise let the model inherit the source media's orientation.
+			// "auto" is withheld too — without a schema there is no enum to
+			// check it against, and fal 422s on an unknown enum member, while
+			// the model's own default already delivers the defer the sentinel
+			// asks for.
 			if (len(sourceImages) == 0 && sourceVideo == "") || req.AspectRatioExplicit {
 				body["aspect_ratio"] = aspect
 			}
@@ -1041,7 +1045,42 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 				req.Model))
 		}
 	}
-	if aspect := strings.TrimSpace(req.AspectRatio); aspect != "" {
+	// Reference-guided turns attach guidance media, not the canvas: the
+	// model's schema-declared source input is reference-style — a plural,
+	// prompt-addressed array (image_urls, reference_image_urls, video_urls)
+	// whose own description documents @ImageN/@VideoN tokens or guidance — so
+	// the attached images are character sheets and style references whose
+	// shape must not set the output orientation. On those turns the
+	// configured default replaces the gateway's image-derived ratio AND is
+	// sent, because reference models don't inherit orientation from their
+	// reference media (conv_8b8bffd58dcb383ee1cbfeae: a 2752x1536 landscape
+	// character sheet produced a 720x1280 portrait clip when no ratio reached
+	// fal and seedance-2.5's aspect_ratio "auto" ignored the reference).
+	// Frame turns (image-to-video, keyframes), extends, and motion control
+	// keep the inherit rule — their output continues the source frame or clip
+	// (conv_26cc3f515d6d645b316763cb). Classification reads the schema's own
+	// declared input, not the override-resolved wire path: builtin overrides
+	// fix wire-format drift (kling v2 i2v routes image_url bytes onto
+	// image_urls) without changing what the media means.
+	referenceGuided := false
+	if len(sourceImages) > 0 && len(sourceVideos) == 0 && !req.Keyframes {
+		if name, prop, ok := findNative(schema, Overrides{}, "video", req.Model, "sourceImage"); ok {
+			referenceGuided = referenceStyleMediaInput(name, prop)
+		}
+	}
+	if len(sourceVideos) > 0 && req.VideoRole == "reference" && !req.ExtendSource {
+		if name, prop, ok := findNative(schema, Overrides{}, "video", req.Model, "sourceVideo"); ok {
+			referenceGuided = referenceStyleMediaInput(name, prop)
+		}
+	}
+	aspect := strings.TrimSpace(req.AspectRatio)
+	if !req.AspectRatioExplicit && referenceGuided {
+		// The gateway's image-derived ratio describes the reference media,
+		// not the requested canvas — withdraw it in favor of the configured
+		// default, the user's standing orientation preference.
+		aspect = strings.TrimSpace(req.ConfigAspectRatio)
+	}
+	if aspect != "" {
 		// Image-to-video and extend-video models derive orientation from their
 		// source media — the source frame for image-to-video, the source clip
 		// for extend — so an aspect_ratio derived from config (or a detected
@@ -1050,11 +1089,13 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 		// conv_26cc3f515d6d645b316763cb: a 9:16 portrait image came back 16:9
 		// because the config default was sent). Only send aspect_ratio for a
 		// sourced request when it was explicitly requested by the planner,
-		// which legitimately overrides the source. Text-to-video always sends
-		// it (the configured default is the only signal there). This mirrors
-		// resolveImageBody's parity rule for image-to-image (fal_params.go:248-290).
+		// which legitimately overrides the source — or when the source media
+		// is reference guidance, which sets no orientation of its own to
+		// conflict with. Text-to-video always sends it (the configured default
+		// is the only signal there). This mirrors resolveImageBody's parity
+		// rule for image-to-image (fal_params.go:248-290).
 		sourcePresent := len(sourceImages) > 0 || sourceVideo != ""
-		if sourcePresent && !req.AspectRatioExplicit {
+		if sourcePresent && !req.AspectRatioExplicit && !referenceGuided {
 			// skip — inherit the source media's orientation
 		} else if path, prop, ok := findNative(schema, ov, "video", req.Model, "aspectRatio"); ok {
 			// Enum guard, same as duration/resolution/fps: the planner's ratio
@@ -1062,15 +1103,22 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 			// minimax accepts only adaptive/21:9/16:9/4:3/1:1/3:4/9:16), and
 			// passing an out-of-enum ratio through would 422 at fal. Drop it
 			// with a notice so the request still runs on the model's own
-			// default (minimax: "adaptive", which follows the source media).
+			// default (minimax: "adaptive", which follows the source media) —
+			// except "auto", the defer sentinel: a model whose enum lacks it
+			// falls back to its own default, which is exactly the request, so
+			// that drop stays silent.
 			if canonical, allowed := enumValueFor(prop, aspect); allowed {
 				setBodyPath(schema, body, path, coerceVideoValue(prop, canonical))
-			} else {
+			} else if !isAutoAspectRatio(aspect) {
 				notices = append(notices, fmt.Sprintf(
 					"The selected model %q does not accept aspect ratio %q; ignoring it and letting the model choose.",
 					req.Model, aspect))
 			}
-		} else if sourceVideo != "" {
+		} else if isAutoAspectRatio(aspect) {
+			// "auto" asked the model to decide; one with no aspect_ratio input
+			// does exactly that with its own default — the request, not a
+			// mismatch worth a notice.
+		} else if sourceVideo != "" && !referenceGuided {
 			// Extend with an explicit ratio, but the model has no aspect_ratio
 			// input. Its output ratio is NOT uncontrolled — it is inherited
 			// from the source clip — so "no aspect-ratio control" is wrong here
@@ -1081,7 +1129,7 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 			notices = append(notices, fmt.Sprintf(
 				"The selected model %q derives the output aspect ratio from the source video and has no aspect_ratio input, so the explicit %q request is only honored if the source video already matches; Atelier did not reshape the video.",
 				req.Model, aspect))
-		} else if len(sourceImages) > 0 {
+		} else if len(sourceImages) > 0 && !referenceGuided {
 			// Image-to-video with an explicit ratio, but the model has no
 			// aspect_ratio input. Its output ratio is NOT uncontrolled — it is
 			// inherited from the source frame — so "no aspect-ratio control" is
@@ -1094,8 +1142,9 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 				"The selected model %q derives the output aspect ratio from the source image and has no aspect_ratio input, so the explicit %q request is only honored if the source image already matches; Atelier did not reshape the image.",
 				req.Model, aspect))
 		} else {
-			// Text-to-video with no aspect_ratio input: the ratio genuinely
-			// can't be carried — the model picks its own default orientation.
+			// Text-to-video with no aspect_ratio input — and reference-guided
+			// turns, whose guidance media sets no orientation of its own: in
+			// both the model picks its own default orientation.
 			notices = append(notices, fmt.Sprintf(
 				"The selected model %q has no aspect-ratio control; ignoring the requested aspect ratio.",
 				req.Model))
@@ -1340,6 +1389,38 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 // convention light up with no code change.
 func advertisesReferenceTokens(prop SchemaProperty) bool {
 	return strings.Contains(prop.Description, "@Image") || strings.Contains(prop.Description, "@Video")
+}
+
+// referenceStyleMediaInput reports whether a model's schema-declared source
+// input treats its media as reference guidance rather than the canvas the
+// output continues. Frame inputs are singular and say so (image_url, video_url
+// — "the URL of the starting frame image"); reference inputs are plural,
+// prompt-addressed arrays (image_urls, reference_image_urls, video_urls)
+// whose descriptions either document the @ImageN/@VideoN token syntax or
+// describe guidance. A plural-named input whose description talks about frames
+// still counts as a frame input — the name is a naming convention, the
+// description is the model's own semantics.
+func referenceStyleMediaInput(name string, prop SchemaProperty) bool {
+	if advertisesReferenceTokens(prop) {
+		return true
+	}
+	if idx := strings.LastIndex(name, "."); idx >= 0 {
+		name = name[idx+1:]
+	}
+	switch name {
+	case "image_urls", "video_urls", "reference_image_urls", "reference_video_urls":
+		return !strings.Contains(strings.ToLower(prop.Description), "frame")
+	}
+	return false
+}
+
+// isAutoAspectRatio reports whether a requested aspect ratio is the
+// "let the model decide" sentinel rather than a concrete shape — seedance's
+// own aspect_ratio enum vocabulary. On models that can't take it the request
+// is satisfied by the model's own default, so an unsendable "auto" drops
+// silently where a concrete ratio drops with a notice.
+func isAutoAspectRatio(aspect string) bool {
+	return strings.EqualFold(strings.TrimSpace(aspect), "auto")
 }
 
 // coerceVideoValue adapts a canonical video value to the native property's type.

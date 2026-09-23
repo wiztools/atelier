@@ -399,7 +399,12 @@ function formatSupportedDurations(options: string[]): string {
   return parts.join(', ') + (numbers.length ? ' s' : '');
 }
 const videoDurationLabels: Record<string, string> = { auto: 'Auto' };
-const videoAspectRatioOptions = ['16:9', '9:16', '1:1'];
+// 'auto' defers the output shape to the model (its aspect_ratio default) —
+// reference-guided and text-to-video turns read this setting; image-to-video
+// and extend inherit the attached media's orientation. Label maps the raw
+// value to friendlier option text, like videoDurationLabels.
+const videoAspectRatioOptions = ['16:9', '9:16', '1:1', 'auto'];
+const videoAspectRatioLabels: Record<string, string> = { auto: 'Auto (model decides)' };
 
 // Coerce a numeric settings input to a positive integer, falling back to the
 // backend default when the field is cleared or otherwise invalid. Mirrors the
@@ -6860,9 +6865,15 @@ function ModelSelectionPanel({
             </div>
 
             <div className="field">
-              {fieldLabel('video-aspect', 'Video Aspect Ratio', 'videoAspectRatio')}
+              <div className="field-label-row">
+                {fieldLabel('video-aspect', 'Video Aspect Ratio', 'videoAspectRatio')}
+                <InfoHint
+                  label="Video aspect ratio"
+                  text="The standing output shape for video generation. Image-to-video and extend inherit the attached image's or clip's orientation; reference media (character sheets, style references) and text-to-video use this setting. Auto defers the choice to the model — models without an aspect control use their own default."
+                />
+              </div>
               <select id="video-aspect" value={value.videoAspectRatio} onChange={(event) => onChange({videoAspectRatio: event.target.value})}>
-                {videoAspectRatioOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                {videoAspectRatioOptions.map((option) => <option key={option} value={option}>{videoAspectRatioLabels[option] ?? option}</option>)}
               </select>
             </div>
           </div>

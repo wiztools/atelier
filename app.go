@@ -732,6 +732,25 @@ type VideoGenerateRequest struct {
 	// dropped so the model inherits the frame. Tagged json:"-" — it is an
 	// internal signal, never serialized or surfaced to the frontend.
 	AspectRatioExplicit bool `json:"-"`
+	// ConfigAspectRatio carries the Settings → Generation → Video aspect
+	// ratio, the user's standing orientation preference. On reference-guided
+	// turns — where the model's source images are guidance (character sheets,
+	// style references) rather than the canvas — the fal resolver withdraws
+	// the gateway's image-derived ratio and sends this instead: reference
+	// models don't inherit orientation from their reference media
+	// (conv_8b8bffd58dcb383ee1cbfeae: a 2752x1536 landscape character sheet
+	// produced a 720x1280 portrait clip when no ratio reached fal and
+	// seedance-2.5's "auto" default ignored the reference). May be "auto" —
+	// the let-the-model-decide sentinel. Tagged json:"-" — internal
+	// provenance, like AspectRatioExplicit.
+	ConfigAspectRatio string `json:"-"`
+	// VideoRole mirrors generate_video's useVideoAs ("" / "motion" default,
+	// "reference") so resolveVideoBody can tell reference-video turns from
+	// extends and motion control without re-deriving the diagnosis: reference
+	// videos are guidance (their shape must not set the output orientation),
+	// an extend continues its source clip, and motion control follows the
+	// motion video. Tagged json:"-" — internal intent signal, like ExtendSource.
+	VideoRole string `json:"-"`
 	// ExtendSource is true only when the tool layer diagnosed the turn as a
 	// continuation of the attached clip — a video-only, non-reference turn routed
 	// to the video-extend model — mirroring how AspectRatioExplicit carries the
