@@ -302,3 +302,30 @@ func TestHarnessDeclinesVideoExtensionWithoutTool(t *testing.T) {
 		t.Fatalf("assistant reply must carry the deterministic decline notice naming the remedy; got:\n%s", text)
 	}
 }
+
+// TestTriagePromptRoutesSemanticImageEditsToImageMode pins the image sibling
+// of the RESTYLING carve-out: the imageEdit sentence must carve content
+// changes out — altering what an image shows (proportions, elements,
+// appearance) is generation, and the local CLI image tools are no remedy for
+// it — so a "make the head smaller" turn routes to image mode with
+// generate_image and the attachment as reference instead of collapsing to
+// text. conv_d53a86bd51bd5740ed30e683: the edit was routed to text on the
+// theory that image tools only transform whole images, and the final model —
+// which never saw the stripped attachment — asked for the image it had been
+// sent.
+func TestTriagePromptRoutesSemanticImageEditsToImageMode(t *testing.T) {
+	registry := newHarnessToolRegistry([]HarnessToolDefinition{imageGenerationToolDefinition(AppConfig{})})
+	prompt := triageSystemPrompt(registry, nil, "/tmp/ws")
+	if !strings.Contains(prompt, "generate_image") {
+		t.Fatalf("image-mode guidance should name generate_image:\n%s", prompt)
+	}
+	for _, want := range []string{
+		"CONTENT CHANGES are not one of these",
+		`never imageEdit`,
+		"edit reference",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("imageEdit guidance missing %q:\n%s", want, prompt)
+		}
+	}
+}
