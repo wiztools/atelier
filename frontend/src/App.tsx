@@ -3987,13 +3987,34 @@ function App() {
 
   // insertAssetReference is the panel-side counterpart of acceptMention: it
   // puts the asset's @-mention token into the prompt for the user who picked
-  // the asset visually in the panel instead of typing toward it. A still-open
-  // @-token at the end of the text is replaced (the user started a mention,
-  // then browsed); otherwise the token is appended. Same resolution path as
-  // typed mentions — nothing is recorded here, the composer text stays the
-  // single source of truth. Hex labels are token-safe, so no quoted form.
+  // the asset visually in the panel instead of typing toward it. When the
+  // composer holds the caret the token inserts AT the caret (replacing the
+  // selection, or a still-open @-token the caret sits in — the user started a
+  // mention, then browsed); only with focus elsewhere is it appended at the
+  // end. Same resolution path as typed mentions — nothing is recorded here,
+  // the composer text stays the single source of truth. Hex labels are
+  // token-safe, so no quoted form.
   function insertAssetReference(asset: main.ConversationAsset) {
     const token = `@${assetMentionLabel(asset)} `;
+    closeMention();
+    const el = chatPromptRef.current;
+    if (el && document.activeElement === el) {
+      const selStart = el.selectionStart ?? prompt.length;
+      const selEnd = el.selectionEnd ?? selStart;
+      // A collapsed caret ending an open @-token consumes that token (the
+      // acceptMention replacement); a real selection is replaced as-is.
+      const open = selStart === selEnd ? detectMentionAt(prompt, selEnd) : null;
+      const start = open ? open.at : selStart;
+      const before = prompt.slice(0, start);
+      const next = `${before}${token}${prompt.slice(selEnd)}`;
+      setPrompt(next);
+      const caret = (before + token).length;
+      requestAnimationFrame(() => {
+        el.focus();
+        el.setSelectionRange(caret, caret);
+      });
+      return;
+    }
     const open = detectMentionAt(prompt, prompt.length);
     const base = (open ? prompt.slice(0, open.at) : prompt).replace(/\s+$/, '');
     const next = base ? `${base} ${token}` : token;
@@ -5672,6 +5693,13 @@ function App() {
                     <button
                       type="button"
                       className="asset-reference-button"
+                      // Suppress the mousedown default so the click can't
+                      // steal focus from the composer: engines that focus
+                      // buttons on mousedown (Chromium) would blur the
+                      // textarea before onClick fires, defeating the
+                      // caret-position insert in insertAssetReference.
+                      // Keyboard focus (Tab) is unaffected.
+                      onMouseDown={(event) => event.preventDefault()}
                       onClick={() => insertAssetReference(asset)}
                       aria-label="Reference this asset in the composer"
                       title="Reference this asset in the composer"
