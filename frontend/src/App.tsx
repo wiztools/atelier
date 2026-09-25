@@ -54,6 +54,7 @@ import {
   ListReplicateVideoUpscaleModels,
   ListReplicateVideoRestyleModels,
   ListReplicateVideoReframeModels,
+  ListReplicateVideoExtendModels,
   ListReplicateVideoModels,
   ListReplicateVideoImageModels,
   ListReplicateVideoDurations,
@@ -362,6 +363,7 @@ const defaultReplicateUpscaleModel = 'nightmareai/real-esrgan';
 const defaultReplicateVideoUpscaleModel = 'topazlabs/video-upscale';
 const defaultReplicateVideoRestyleModel = 'kwaivgi/kling-v3-omni-video';
 const defaultReplicateVideoReframeModel = 'luma/reframe-video';
+const defaultReplicateVideoExtendModel = 'xai/grok-imagine-video-extension';
 const defaultVideoDuration = '5';
 const defaultVideoAspectRatio = '16:9';
 // 'auto' lets the video model size the clip to the prompt (Seedance supports it;
@@ -1096,10 +1098,10 @@ function App() {
   const [falLipsyncVideoModels, setFalLipsyncVideoModels] = useState<main.FalModel[]>([]);
   const [falUpscaleModel, setFalUpscaleModel] = useState(defaultFalUpscaleModel);
   const [falUpscaleModels, setFalUpscaleModels] = useState<main.FalModel[]>([]);
-  // Replicate backend state — the key row, the four generation slots, and
-  // their catalogs. Only the slots the backend routes to Replicate live here
-  // (text-to-image, image edit, text-to-video, image-to-video); the transforms
-  // and audio stay fal-only.
+  // Replicate backend state — the key row, the generation slots (text-to-image,
+  // image edit, text-to-video, image-to-video, video extend), and the
+  // transform slots that follow VideoProvider (upscale, reframe, restyle),
+  // plus their catalogs. Audio stays fal-only.
   const [replicateAPIKeyInput, setReplicateAPIKeyInput] = useState('');
   const [replicateHasKey, setReplicateHasKey] = useState(false);
   const [replicateStatus, setReplicateStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
@@ -1116,6 +1118,8 @@ function App() {
   const [replicateVideoRestyleModels, setReplicateVideoRestyleModels] = useState<main.ReplicateModel[]>([]);
   const [replicateVideoReframeModel, setReplicateVideoReframeModel] = useState(defaultReplicateVideoReframeModel);
   const [replicateVideoReframeModels, setReplicateVideoReframeModels] = useState<main.ReplicateModel[]>([]);
+  const [replicateVideoExtendModel, setReplicateVideoExtendModel] = useState(defaultReplicateVideoExtendModel);
+  const [replicateVideoExtendModels, setReplicateVideoExtendModels] = useState<main.ReplicateModel[]>([]);
   const [replicateVideoModel, setReplicateVideoModel] = useState(defaultReplicateVideoModel);
   const [replicateVideoModels, setReplicateVideoModels] = useState<main.ReplicateModel[]>([]);
   const [replicateVideoImageModel, setReplicateVideoImageModel] = useState(defaultReplicateVideoImageModel);
@@ -1678,6 +1682,7 @@ function App() {
             videoUpscaleModel: replicateVideoUpscaleModel,
             videoRestyleModel: replicateVideoRestyleModel,
             videoReframeModel: replicateVideoReframeModel,
+            videoExtendModel: replicateVideoExtendModel,
             videoModel: replicateVideoModel,
             videoImageModel: replicateVideoImageModel,
           },
@@ -1740,7 +1745,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoModel, replicateVideoImageModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, whisperBinary, whisperModel]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, whisperBinary, whisperModel]);
 
   // Re-probe local CLI tools when a binary override changes so the provider
   // dropdown and the video/image-tools status reflect an unsaved override without
@@ -2128,6 +2133,7 @@ function App() {
     replicateVideoUpscaleModel,
     replicateVideoRestyleModel,
     replicateVideoReframeModel,
+    replicateVideoExtendModel,
     falImageEditModel,
     falUpscaleModel,
     falVideoModel,
@@ -2155,7 +2161,7 @@ function App() {
     videoDuration,
     videoAspectRatio,
     whisperBinary,
-  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, falImageEditModel, falUpscaleModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, whisperModel, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, whisperBinary]);
+  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falImageEditModel, falUpscaleModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, whisperModel, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, whisperBinary]);
 
   const conversationModelSelection = useMemo<ModelSelectionValue>(() => {
     const global = globalModelSelection;
@@ -2193,9 +2199,10 @@ function App() {
       replicateVideoUpscaleModel: overrides.videoUpscaleModel && videoProvider === 'replicate' ? overrides.videoUpscaleModel : global.replicateVideoUpscaleModel,
       replicateVideoRestyleModel: overrides.videoRestyleModel && videoProvider === 'replicate' ? overrides.videoRestyleModel : global.replicateVideoRestyleModel,
       replicateVideoReframeModel: overrides.videoReframeModel && videoProvider === 'replicate' ? overrides.videoReframeModel : global.replicateVideoReframeModel,
+      replicateVideoExtendModel: overrides.videoExtendModel && videoProvider === 'replicate' ? overrides.videoExtendModel : global.replicateVideoExtendModel,
       replicateVideoImageModel: overrides.videoImageModel && videoProvider === 'replicate' ? overrides.videoImageModel : global.replicateVideoImageModel,
       falVideoKeyframeModel: overrides.videoKeyframeModel || global.falVideoKeyframeModel,
-      falVideoExtendModel: overrides.videoExtendModel || global.falVideoExtendModel,
+      falVideoExtendModel: overrides.videoExtendModel && videoProvider !== 'replicate' ? overrides.videoExtendModel : global.falVideoExtendModel,
       falVideoMotionModel: overrides.videoMotionModel || global.falVideoMotionModel,
       falAudioModel: overrides.audioModel || global.falAudioModel,
       falAudioCloneModel: overrides.audioCloneModel || global.falAudioCloneModel,
@@ -2248,6 +2255,7 @@ function App() {
     if (patch.replicateVideoUpscaleModel !== undefined) setReplicateVideoUpscaleModel(patch.replicateVideoUpscaleModel);
     if (patch.replicateVideoRestyleModel !== undefined) setReplicateVideoRestyleModel(patch.replicateVideoRestyleModel);
     if (patch.replicateVideoReframeModel !== undefined) setReplicateVideoReframeModel(patch.replicateVideoReframeModel);
+    if (patch.replicateVideoExtendModel !== undefined) setReplicateVideoExtendModel(patch.replicateVideoExtendModel);
     if (patch.falImageEditModel !== undefined) setFalImageEditModel(patch.falImageEditModel);
     if (patch.falUpscaleModel !== undefined) setFalUpscaleModel(patch.falUpscaleModel);
     if (patch.falVideoModel !== undefined) setFalVideoModel(patch.falVideoModel);
@@ -2311,9 +2319,11 @@ function App() {
       if (draftPatch.videoProvider === 'replicate') {
         draftPatch.replicateVideoModel = replicateVideoModel;
         draftPatch.replicateVideoImageModel = replicateVideoImageModel;
+        draftPatch.replicateVideoExtendModel = replicateVideoExtendModel;
       } else {
         draftPatch.falVideoModel = falVideoModel;
         draftPatch.falVideoImageModel = falVideoImageModel;
+        draftPatch.falVideoExtendModel = falVideoExtendModel;
       }
     }
     if (draftPatch.primaryProvider !== undefined && patch.primaryModel === undefined) {
@@ -2343,7 +2353,7 @@ function App() {
       if (patch.falVideoModel !== undefined || patch.replicateVideoModel !== undefined) next.add('videoModel');
       if (patch.falVideoImageModel !== undefined || patch.replicateVideoImageModel !== undefined) next.add('videoImageModel');
       if (patch.falVideoKeyframeModel !== undefined) next.add('videoKeyframeModel');
-      if (patch.falVideoExtendModel !== undefined) next.add('videoExtendModel');
+      if (patch.falVideoExtendModel !== undefined || patch.replicateVideoExtendModel !== undefined) next.add('videoExtendModel');
       if (patch.falVideoMotionModel !== undefined) next.add('videoMotionModel');
       if (patch.falVideoUpscaleModel !== undefined || patch.replicateVideoUpscaleModel !== undefined) next.add('videoUpscaleModel');
       if (patch.falVideoReframeModel !== undefined || patch.replicateVideoReframeModel !== undefined) next.add('videoReframeModel');
@@ -2416,7 +2426,10 @@ function App() {
         case 'videoModel': next.falVideoModel = global.falVideoModel; next.replicateVideoModel = global.replicateVideoModel; break;
         case 'videoImageModel': next.falVideoImageModel = global.falVideoImageModel; next.replicateVideoImageModel = global.replicateVideoImageModel; break;
         case 'videoKeyframeModel': next.falVideoKeyframeModel = global.falVideoKeyframeModel; break;
-        case 'videoExtendModel': next.falVideoExtendModel = global.falVideoExtendModel; break;
+        case 'videoExtendModel':
+          next.falVideoExtendModel = global.falVideoExtendModel;
+          next.replicateVideoExtendModel = global.replicateVideoExtendModel;
+          break;
         case 'videoMotionModel': next.falVideoMotionModel = global.falVideoMotionModel; break;
         case 'videoUpscaleModel':
           next.falVideoUpscaleModel = global.falVideoUpscaleModel;
@@ -2510,16 +2523,20 @@ function App() {
   const convDraftVideoModel = convModelsDraft?.falVideoModel ?? '';
   const convDraftVideoImageModel = convModelsDraft?.falVideoImageModel ?? '';
   const convDraftVideoKeyframeModel = convModelsDraft?.falVideoKeyframeModel ?? '';
-  const convDraftVideoExtendModel = convModelsDraft?.falVideoExtendModel ?? '';
   const convDraftVideoProvider = convModelsDraft?.videoProvider ?? videoProvider;
+  // Extend routes by the draft's video provider like the t2v/i2v pair;
+  // keyframes stay fal-only.
+  const convDraftVideoExtendModel = convDraftVideoProvider === 'replicate'
+    ? (convModelsDraft?.replicateVideoExtendModel ?? '')
+    : (convModelsDraft?.falVideoExtendModel ?? '');
   useEffect(() => {
     if (view !== 'conversation-models') {
       return;
     }
     let cancelled = false;
-    // The t2v/i2v duration lookups follow the draft's video provider (the
-    // replicate backend reads its own schema cache); keyframe/extend are
-    // fal-only tools and always read fal's.
+    // The t2v/i2v/extend duration lookups follow the draft's video provider
+    // (the replicate backend reads its own schema cache); keyframes are a
+    // fal-only tool and always read fal's.
     const fetchOptions = async (model: string, provider: 'fal' | 'replicate') => {
       const fetcher = provider === 'replicate' ? ListReplicateVideoDurations : ListFalVideoDurations;
       try {
@@ -2533,7 +2550,7 @@ function App() {
       fetchOptions(convDraftVideoProvider === 'replicate' ? (convModelsDraft?.replicateVideoModel ?? '') : convDraftVideoModel, convDraftVideoProvider),
       fetchOptions(convDraftVideoProvider === 'replicate' ? (convModelsDraft?.replicateVideoImageModel ?? '') : convDraftVideoImageModel, convDraftVideoProvider),
       fetchOptions(convDraftVideoKeyframeModel, 'fal'),
-      fetchOptions(convDraftVideoExtendModel, 'fal'),
+      fetchOptions(convDraftVideoExtendModel, convDraftVideoProvider),
     ])
       .then(([video, image, keyframe, extend]) => {
         if (!cancelled) {
@@ -2627,6 +2644,7 @@ function App() {
     replicateVideoUpscaleModels,
     replicateVideoRestyleModels,
     replicateVideoReframeModels,
+    replicateVideoExtendModels,
     replicateVideoModels,
     replicateVideoImageModels,
     falVideoModels,
@@ -2762,7 +2780,12 @@ function App() {
 
   useEffect(() => {
     let cancelled = false;
-    ListFalVideoDurations(falVideoExtendModel)
+    // The extend picker's durations follow the routed backend like the t2v/i2v
+    // pickers above.
+    const fetchDurations = videoProvider === 'replicate'
+      ? ListReplicateVideoDurations(replicateVideoExtendModel)
+      : ListFalVideoDurations(falVideoExtendModel);
+    fetchDurations
       .then((durations) => {
         if (cancelled) return;
         setVideoDurationExtendOptions(durations && durations.length ? durations : defaultVideoDurationOptions);
@@ -2771,7 +2794,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [falVideoExtendModel]);
+  }, [videoProvider, falVideoExtendModel, replicateVideoExtendModel]);
 
   useEffect(() => {
     // Only re-run when the option list itself changes (provider switch, or
@@ -2830,6 +2853,7 @@ function App() {
     const nextReplicateVideoUpscaleModel = config.providers?.replicate?.videoUpscaleModel || defaultReplicateVideoUpscaleModel;
     const nextReplicateVideoRestyleModel = config.providers?.replicate?.videoRestyleModel || defaultReplicateVideoRestyleModel;
     const nextReplicateVideoReframeModel = config.providers?.replicate?.videoReframeModel || defaultReplicateVideoReframeModel;
+    const nextReplicateVideoExtendModel = config.providers?.replicate?.videoExtendModel || defaultReplicateVideoExtendModel;
     const nextReplicateVideoModel = config.providers?.replicate?.videoModel || defaultReplicateVideoModel;
     const nextReplicateVideoImageModel = config.providers?.replicate?.videoImageModel || defaultReplicateVideoImageModel;
     const nextFalModel = config.providers?.fal?.model || defaultFalImageModel;
@@ -2885,6 +2909,7 @@ function App() {
     setReplicateVideoUpscaleModel(nextReplicateVideoUpscaleModel);
     setReplicateVideoRestyleModel(nextReplicateVideoRestyleModel);
     setReplicateVideoReframeModel(nextReplicateVideoReframeModel);
+    setReplicateVideoExtendModel(nextReplicateVideoExtendModel);
     setReplicateVideoModel(nextReplicateVideoModel);
     setReplicateVideoImageModel(nextReplicateVideoImageModel);
     setFalModel(nextFalModel);
@@ -3298,6 +3323,11 @@ function App() {
       setReplicateVideoReframeModels(asArray(await ListReplicateVideoReframeModels()));
     } catch {
       setReplicateVideoReframeModels([]);
+    }
+    try {
+      setReplicateVideoExtendModels(asArray(await ListReplicateVideoExtendModels()));
+    } catch {
+      setReplicateVideoExtendModels([]);
     }
     try {
       setReplicateVideoModels(asArray(await ListReplicateVideoModels()));
@@ -6340,6 +6370,7 @@ type ModelSelectionValue = {
   replicateVideoUpscaleModel: string;
   replicateVideoRestyleModel: string;
   replicateVideoReframeModel: string;
+  replicateVideoExtendModel: string;
   falImageEditModel: string;
   falUpscaleModel: string;
   falVideoModel: string;
@@ -6455,7 +6486,7 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   if (keys.has('videoModel')) payload.videoModel = draft.videoProvider === 'replicate' ? draft.replicateVideoModel : draft.falVideoModel;
   if (keys.has('videoImageModel')) payload.videoImageModel = draft.videoProvider === 'replicate' ? draft.replicateVideoImageModel : draft.falVideoImageModel;
   if (keys.has('videoKeyframeModel')) payload.videoKeyframeModel = draft.falVideoKeyframeModel;
-  if (keys.has('videoExtendModel')) payload.videoExtendModel = draft.falVideoExtendModel;
+  if (keys.has('videoExtendModel')) payload.videoExtendModel = draft.videoProvider === 'replicate' ? draft.replicateVideoExtendModel : draft.falVideoExtendModel;
   if (keys.has('videoMotionModel')) payload.videoMotionModel = draft.falVideoMotionModel;
   if (keys.has('videoUpscaleModel')) payload.videoUpscaleModel = draft.videoProvider === 'replicate' ? draft.replicateVideoUpscaleModel : draft.falVideoUpscaleModel;
   if (keys.has('videoReframeModel')) payload.videoReframeModel = draft.videoProvider === 'replicate' ? draft.replicateVideoReframeModel : draft.falVideoReframeModel;
@@ -6510,6 +6541,7 @@ function ModelSelectionPanel({
     replicateVideoUpscaleModels: main.ReplicateModel[];
     replicateVideoRestyleModels: main.ReplicateModel[];
     replicateVideoReframeModels: main.ReplicateModel[];
+    replicateVideoExtendModels: main.ReplicateModel[];
     replicateVideoModels: main.ReplicateModel[];
     replicateVideoImageModels: main.ReplicateModel[];
     falVideoModels: main.FalModel[];
@@ -6555,6 +6587,7 @@ function ModelSelectionPanel({
   const replicateVideoUpscaleOptions = falModelOptionList(catalogs.replicateVideoUpscaleModels);
   const replicateVideoRestyleOptions = falModelOptionList(catalogs.replicateVideoRestyleModels);
   const replicateVideoReframeOptions = falModelOptionList(catalogs.replicateVideoReframeModels);
+  const replicateVideoExtendOptions = falModelOptionList(catalogs.replicateVideoExtendModels);
   const replicateVideoOptions = falModelOptionList(catalogs.replicateVideoModels);
   const replicateVideoImageOptions = falModelOptionList(catalogs.replicateVideoImageModels);
   const falUpscaleOptions = falModelOptionList(catalogs.falUpscaleModels);
@@ -6885,7 +6918,7 @@ function ModelSelectionPanel({
               {fieldLabel('video-provider', 'Video Provider', 'videoProvider')}
               <InfoHint
                 label="Video provider"
-                text="Which cloud backend generate_video uses: fal.ai or Replicate. Both serve text-to-video and image-to-video; extend, motion control, and keyframe transitions are fal.ai only (a request for those on Replicate fails with a note suggesting the switch). The video transforms (upscale, reframe, restyle) follow this provider too; lip sync and audio are always fal.ai and configured below regardless of this setting."
+                text="Which cloud backend generate_video uses: fal.ai or Replicate. Both serve text-to-video, image-to-video, and extending an attached clip; motion control and keyframe transitions are fal.ai only (a request for those on Replicate fails with a note suggesting the switch). The video transforms (upscale, reframe, restyle) follow this provider too; lip sync and audio are always fal.ai and configured below regardless of this setting."
               />
             </div>
             <select
@@ -7100,6 +7133,25 @@ function ModelSelectionPanel({
               ) : replicateVideoUpscaleOptions.length ? null : (
                 <span className="hint">Type an owner/name model id — the model list couldn't be loaded.</span>
               )}
+            </div>
+
+            <div className="field">
+              <div className="field-label-row">
+                {fieldLabel('replicate-video-extend-model', 'Video-Extend Model (Replicate)', 'videoExtendModel')}
+                <InfoHint
+                  label="Video-extend clip lengths"
+                  text={`Supported clip lengths: ${formatSupportedDurations(durationOptions.extend)}`}
+                />
+              </div>
+              <ModelCombobox
+                id="replicate-video-extend-model"
+                ariaLabel="Replicate video-extend model"
+                placeholder={defaultReplicateVideoExtendModel}
+                value={value.replicateVideoExtendModel}
+                onChange={(next) => onChange({replicateVideoExtendModel: next})}
+                options={replicateVideoExtendOptions}
+                allowCustom
+              />
             </div>
           </div>
           )}

@@ -112,6 +112,8 @@ export function ListReplicateUpscaleModels():Promise<Array<main.ReplicateModel>>
 
 export function ListReplicateVideoDurations(arg1:string):Promise<Array<string>>;
 
+export function ListReplicateVideoExtendModels():Promise<Array<main.ReplicateModel>>;
+
 export function ListReplicateVideoImageModels():Promise<Array<main.ReplicateModel>>;
 
 export function ListReplicateVideoModels():Promise<Array<main.ReplicateModel>>;

@@ -34,9 +34,10 @@ var replicateImageSynonyms = map[string][]string{
 // Replicate video models use. Image-to-video models name the first frame
 // "image" (wan 2.5 i2v, kling), "first_frame_image" (seedance i2v), or
 // "first_frame" (wan 2.7 i2v renamed it when it grew first_clip/last_frame
-// for clip continuation and last-frame keyframes); all are listed. Duration is
-// usually a free number (seconds) rather than fal's enum strings, and
-// coerceVideoValue's type-driven numeric coercion handles that.
+// for clip continuation and last-frame keyframes); all are listed. Extend
+// models name their source clip "video" (grok-imagine-video-extension);
+// duration is usually a free number (seconds) rather than fal's enum strings,
+// and coerceVideoValue's type-driven numeric coercion handles that.
 var replicateVideoSynonyms = map[string][]string{
 	"prompt":         {"prompt"},
 	"duration":       {"duration"},
@@ -45,16 +46,19 @@ var replicateVideoSynonyms = map[string][]string{
 	"fps":            {"fps", "frame_rate"},
 	"negativePrompt": {"negative_prompt"},
 	"sourceImage":    {"image", "first_frame", "first_frame_image", "start_image", "image_url", "image_urls"},
-	"sourceVideo":    {"video", "video_url"},
+	"sourceVideo":    {"video", "input_video", "video_url"},
 	"generateAudio":  {"generate_audio", "generate_audio_enabled"},
 }
 
 // errReplicateVideoSourceUnsupported is the deterministic, planner-readable
-// refusal for video-source turns on the Replicate backend: phase one routes
-// only text-to-video and image-to-video there, so an extend / motion /
-// reference-with-video request fails up front with the remedy in the message
-// rather than surfacing as a confusing downstream 422.
-var errReplicateVideoSourceUnsupported = errors.New("the Replicate video backend supports text-to-video and image-to-video only; it cannot generate from an attached video (extend, motion transfer, or video reference) — switch Video Provider to fal.ai in Settings → Models")
+// refusal for the video-source turns the Replicate backend cannot serve:
+// motion control (image + video) and reference-guided generation from an
+// attached video still route to fal.ai only, and keyframe transitions have
+// their own refusal below. Extend turns (a video-only, non-reference request)
+// are the carve-out — they route to the Replicate extend model
+// (Providers.Replicate.VideoExtendModel) and map their source clip onto the
+// model's video input like any other source media.
+var errReplicateVideoSourceUnsupported = errors.New("the Replicate video backend supports text-to-video, image-to-video, and extending an attached clip; it cannot transfer a video's motion onto an image or use attached videos as generation references — switch Video Provider to fal.ai in Settings → Models")
 
 // resolveReplicateImageInput maps a canonical ImageGenerateRequest onto the
 // Replicate model's native input schema, returning the prediction input,
@@ -175,17 +179,25 @@ func resolveReplicateImageInput(schema *ModelInputSchema, req ImageGenerateReque
 
 // resolveReplicateVideoInput maps a canonical VideoGenerateRequest onto the
 // Replicate model's native input schema — the Replicate sibling of
-// resolveVideoBody. Video-source turns (extend, motion transfer, video
-// reference) and keyframe transitions fail up front with
-// errReplicateVideoSourceUnsupported: the Replicate backend routes only
-// text-to-video and image-to-video in this phase, and a deterministic error
-// with the remedy in the message beats a downstream 422. An attached source
-// image the schema can't map onto a native input is a hard error for the same
-// reason — every field is nullable, so Replicate would accept the prediction
-// and the model would fail server-side demanding its image input. A nil schema
-// yields a minimal {prompt, image?} body plus a notice.
+// resolveVideoBody. Extend turns (ExtendSource: a video-only, non-reference
+// request) map their source clip onto the model's declared video input, with
+// an unmapped video a hard error for the same reason as an unmapped image:
+// every field is nullable, so Replicate would accept the prediction and the
+// model would fail server-side demanding its video input. Motion control and
+// video-reference turns (a source video without the extend diagnosis) and
+// keyframe transitions still fail up front with
+// errReplicateVideoSourceUnsupported — a deterministic error with the remedy
+// in the message beats a downstream 422. An attached source image the schema
+// can't map onto a native input is a hard error too. A nil schema yields a
+// minimal {prompt, image?/video?} body plus a notice.
 func resolveReplicateVideoInput(schema *ModelInputSchema, req VideoGenerateRequest) (map[string]any, []string, error) {
-	if len(req.SourceVideos()) > 0 {
+	sourceVideos := make([]string, 0, 1)
+	for _, video := range req.SourceVideos() {
+		if u := falVideoURL(strings.TrimSpace(video)); u != "" {
+			sourceVideos = append(sourceVideos, u)
+		}
+	}
+	if len(sourceVideos) > 0 && !req.ExtendSource {
 		return nil, nil, errReplicateVideoSourceUnsupported
 	}
 	if req.Keyframes {
@@ -207,9 +219,17 @@ func resolveReplicateVideoInput(schema *ModelInputSchema, req VideoGenerateReque
 				"model %q could not be queried for its parameter schema and accepts at most one image; %d were attached.",
 				req.Model, len(sourceImages))
 		}
+		if len(sourceVideos) > 1 {
+			return nil, nil, fmt.Errorf(
+				"model %q could not be queried for its parameter schema and accepts at most one video; %d were attached.",
+				req.Model, len(sourceVideos))
+		}
 		body := map[string]any{"prompt": prompt}
 		if len(sourceImages) == 1 {
 			body["image"] = sourceImages[0]
+		}
+		if len(sourceVideos) == 1 {
+			body["video"] = sourceVideos[0]
 		}
 		return body, []string{"Couldn't load the model's parameter schema; generated with defaults and may have dropped an unsupported video input."}, nil
 	}
@@ -242,12 +262,13 @@ func resolveReplicateVideoInput(schema *ModelInputSchema, req VideoGenerateReque
 		}
 	}
 	if aspect := strings.TrimSpace(req.AspectRatio); aspect != "" {
-		// Image-to-video derives orientation from the source frame, so a
-		// config/detected default is redundant and conflicting (the fal-side
-		// rule, conv_26cc3f515d6d645b316763cb); only an explicit planner
-		// request overrides it. Text-to-video always sends the ratio.
-		if len(sourceImages) > 0 && !req.AspectRatioExplicit {
-			// skip — inherit the source frame's orientation
+		// Image-to-video derives orientation from the source frame and an
+		// extend from the source clip, so a config/detected default is
+		// redundant and conflicting (the fal-side rule, conv_26cc3f515d6d645b);
+		// only an explicit planner request overrides it. Text-to-video always
+		// sends the ratio.
+		if (len(sourceImages) > 0 || len(sourceVideos) > 0) && !req.AspectRatioExplicit {
+			// skip — inherit the source media's orientation
 		} else if path, prop, ok := findNative(schema, ov, "replicate-video", req.Model, "aspectRatio"); ok {
 			if canonical, allowed := enumValueFor(prop, aspect); allowed {
 				setBodyPath(schema, body, path, coerceVideoValue(prop, canonical))
@@ -349,6 +370,26 @@ func resolveReplicateVideoInput(schema *ModelInputSchema, req VideoGenerateReque
 			}
 			setBodyPath(schema, body, path, coerceImages(prop, sourceImages))
 		}
+	}
+	if len(sourceVideos) > 0 {
+		// The extend turn's whole purpose is the source clip — the same hard
+		// refusal as an unmapped source image (grok's extension endpoint names
+		// it "video"; the synonym table also covers input_video/video_url for
+		// future extenders). The executor caps extend at one clip with a
+		// notice, so the multi-video error is a defensive backstop for direct
+		// callers.
+		path, prop, ok := findNative(schema, ov, "replicate-video", req.Model, "sourceVideo")
+		if !ok {
+			return nil, notices, fmt.Errorf(
+				"the selected model %q has no source-video input to extend from; pick a different video-extend model in Settings → Models",
+				req.Model)
+		}
+		if prop.Kind != schemaArray && len(sourceVideos) > 1 {
+			return nil, notices, fmt.Errorf(
+				"model %q accepts a single video; %d were attached.",
+				req.Model, len(sourceVideos))
+		}
+		setBodyPath(schema, body, path, coerceVideos(prop, sourceVideos))
 	}
 	return body, notices, nil
 }

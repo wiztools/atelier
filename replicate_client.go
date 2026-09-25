@@ -56,6 +56,11 @@ const (
 	// when none is configured — Luma's official reframe endpoint (720p, clips
 	// up to 30s), the same model family fal's reframe roster carries.
 	defaultReplicateVideoReframeModel = "luma/reframe-video"
+	// defaultReplicateVideoExtendModel is the video-extension model used when
+	// none is configured — Grok Imagine's extension endpoint, which continues
+	// an attached clip (2–15s source, 2–10s added) and returns the stitched
+	// original-plus-extension, the same deliverable fal's Veo extend produces.
+	defaultReplicateVideoExtendModel = "xai/grok-imagine-video-extension"
 	// replicatePollInterval is the delay between prediction status checks,
 	// matching fal's cadence.
 	replicatePollInterval = 1500 * time.Millisecond

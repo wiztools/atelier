@@ -629,10 +629,18 @@ func resolveDefaultVideoImageModel(config AppConfig) string {
 }
 
 // resolveDefaultVideoExtendModel returns the video-extend model used to continue
-// an attached video clip (Veo extend). Unlike the text/image video models there
-// is no dedicated fal listing category for extend endpoints, so the default is a
-// known-good endpoint and the user can override it in config.
+// an attached video clip, routing by videoGenerationProvider like the other
+// video slots — fal's Veo extend endpoint on fal, Grok Imagine's extension
+// endpoint on replicate. Neither backend has a dedicated listing category for
+// extend endpoints, so both defaults are known-good ids the user can override
+// in Settings.
 func resolveDefaultVideoExtendModel(config AppConfig) string {
+	if videoGenerationProvider(config) == "replicate" {
+		if model := strings.TrimSpace(config.Providers.Replicate.VideoExtendModel); model != "" {
+			return model
+		}
+		return defaultReplicateVideoExtendModel
+	}
 	if model := strings.TrimSpace(config.Providers.Fal.VideoExtendModel); model != "" {
 		return model
 	}
@@ -873,13 +881,15 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 					}
 				}
 			}
-			// The Replicate backend serves text-to-video and image-to-video
-			// only. Fail video-source and keyframe turns up front with the
-			// remedy in the message (errReplicateVideoSourceUnsupported)
-			// rather than selecting a fal slot that would 404 at Replicate —
-			// the resolver holds the same line for requests that carry a
-			// planner-specified model.
-			if videoGenerationProvider(tools.Config) == "replicate" && (keyframes || len(attachedVideos) > 0) {
+			// The Replicate backend serves text-to-video, image-to-video, and
+			// extend (a video-only, non-reference turn continues the clip on the
+			// extend model). Motion control, video-reference turns, and keyframes
+			// still fail up front with the remedy in the message
+			// (errReplicateVideoSourceUnsupported) rather than selecting a fal
+			// slot that would 404 at Replicate — the resolver holds the same
+			// line for requests that carry a planner-specified model.
+			extendTurn := len(attachedVideos) > 0 && len(attachedImages) == 0 && videoRole != "reference"
+			if videoGenerationProvider(tools.Config) == "replicate" && (keyframes || (len(attachedVideos) > 0 && !extendTurn)) {
 				return nil, "video generation unavailable", errReplicateVideoSourceUnsupported
 			}
 			model := strings.TrimSpace(call.Model)
@@ -941,6 +951,8 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 			// models (seedance-2.5's task enum) must run their extension task
 			// rather than the reference default. Motion control carries an image
 			// side, and useVideoAs:"reference" sends guidance — both stay false.
+			// It is the same extendTurn flag the Replicate gate above reads, so
+			// the executor's diagnosis and the resolver's can't disagree.
 			videoReq := VideoGenerateRequest{
 				Model:               model,
 				Prompt:              strings.TrimSpace(call.Content),
@@ -949,7 +961,7 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 				AspectRatioExplicit: explicit,
 				ConfigAspectRatio:   tools.Config.Generation.Video.AspectRatio,
 				VideoRole:           videoRole,
-				ExtendSource:        len(requestVideos) > 0 && len(attachedImages) == 0 && videoRole != "reference",
+				ExtendSource:        extendTurn,
 				Keyframes:           keyframes,
 				NegativePrompt:      strings.TrimSpace(call.NegativePrompt),
 				Resolution:          strings.TrimSpace(call.Resolution),

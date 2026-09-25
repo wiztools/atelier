@@ -288,6 +288,70 @@ func TestResolveReplicateVideoInputRefusals(t *testing.T) {
 	}
 }
 
+// TestResolveReplicateVideoInputExtendMapsGrokExtension pins the extend
+// carve-out: a video-only ExtendSource request maps its clip onto the model's
+// declared video input (grok-imagine-video-extension names it "video"),
+// coerces the canonical duration string onto the number field, and skips the
+// config-derived aspect ratio so the source clip's orientation governs — the
+// fal-side inherit rule. A model without a video input refuses the extend the
+// same way an image-to-video model refuses an unmapped image.
+func TestResolveReplicateVideoInputExtendMapsGrokExtension(t *testing.T) {
+	schema := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"prompt":{"type":"string"},
+		"video":{"type":"string"},
+		"duration":{"type":"number","default":6,"minimum":2,"maximum":10}
+	}}}}}`)
+	input, notices, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
+		Model:        "xai/grok-imagine-video-extension",
+		Prompt:       "the robot keeps walking",
+		Duration:     "5",
+		AspectRatio:  "16:9",
+		Videos:       []string{"data:video/mp4;base64,QUJDRA=="},
+		ExtendSource: true,
+	})
+	if err != nil {
+		t.Fatalf("resolveReplicateVideoInput: %v", err)
+	}
+	if len(notices) != 0 {
+		t.Fatalf("notices = %v, want none", notices)
+	}
+	if got, ok := input["video"].(string); !ok || !strings.HasPrefix(got, "data:video/mp4;base64,") {
+		t.Fatalf("video = %v, want the source clip data URL", input["video"])
+	}
+	if input["duration"] != float64(5) {
+		t.Fatalf("duration = %v (%T), want numeric 5", input["duration"], input["duration"])
+	}
+	if _, exists := input["aspect_ratio"]; exists {
+		t.Fatal("a non-explicit aspect ratio must not be sent on an extend — the source clip's orientation governs")
+	}
+
+	// An extend onto a model with no video input is a hard refusal.
+	noVideoSchema := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{"prompt":{"type":"string"}}}}}}`)
+	_, _, err = resolveReplicateVideoInput(noVideoSchema, VideoGenerateRequest{
+		Model:        "owner/model",
+		Prompt:       "extend",
+		Videos:       []string{"data:video/mp4;base64,QUJDRA=="},
+		ExtendSource: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "no source-video input") {
+		t.Fatalf("err = %v, want the no-video-input refusal", err)
+	}
+
+	// The nil-schema fallback still carries the clip.
+	input, _, err = resolveReplicateVideoInput(nil, VideoGenerateRequest{
+		Model:        "owner/model",
+		Prompt:       "extend",
+		Videos:       []string{"data:video/mp4;base64,QUJDRA=="},
+		ExtendSource: true,
+	})
+	if err != nil {
+		t.Fatalf("nil-schema extend: %v", err)
+	}
+	if got, ok := input["video"].(string); !ok || !strings.HasPrefix(got, "data:video/mp4;base64,") {
+		t.Fatalf("nil-schema video = %v", input["video"])
+	}
+}
+
 // TestResolveReplicateVideoInputUnmappedSourceImageRefused pins the hard
 // error for a source image the model's schema can't map: Replicate would
 // accept the prediction (every input nullable) and the model would fail
@@ -412,6 +476,7 @@ func TestConversationModelOverridesReplicateRouting(t *testing.T) {
 	config := defaultAppConfig()
 	config.Providers.Fal.VideoModel = "fal-ai/kling-video/v2/master/text-to-video"
 	config.Providers.Fal.VideoImageModel = "fal-ai/kling-video/v2/master/image-to-video"
+	config.Providers.Fal.VideoExtendModel = "fal-ai/veo3.1/extend-video"
 	config.Providers.Fal.ImageEditModel = "fal-ai/flux/dev/image-to-image"
 	config.Providers.Fal.UpscaleModel = "fal-ai/esrgan"
 
@@ -419,6 +484,7 @@ func TestConversationModelOverridesReplicateRouting(t *testing.T) {
 		VideoProvider:     "replicate",
 		VideoModel:        "wan-video/wan-2.5-t2v",
 		VideoImageModel:   "wan-video/wan-2.5-i2v",
+		VideoExtendModel:  "xai/grok-imagine-video-extension",
 		ImageProvider:     "replicate",
 		ImageModel:        "black-forest-labs/flux-schnell",
 		ImageEditModel:    "black-forest-labs/flux-kontext-pro",
@@ -453,6 +519,13 @@ func TestConversationModelOverridesReplicateRouting(t *testing.T) {
 	// The video-upscale override follows the effective video provider.
 	if overlaid.Providers.Replicate.VideoUpscaleModel != "topazlabs/video-upscale" {
 		t.Fatalf("replicate VideoUpscaleModel = %q", overlaid.Providers.Replicate.VideoUpscaleModel)
+	}
+	// So does the extend override, and the fal slot is untouched.
+	if overlaid.Providers.Replicate.VideoExtendModel != "xai/grok-imagine-video-extension" {
+		t.Fatalf("replicate VideoExtendModel = %q", overlaid.Providers.Replicate.VideoExtendModel)
+	}
+	if overlaid.Providers.Fal.VideoExtendModel != "fal-ai/veo3.1/extend-video" {
+		t.Fatalf("fal VideoExtendModel = %q, want untouched", overlaid.Providers.Fal.VideoExtendModel)
 	}
 	// So do the restyle and reframe overrides.
 	if overlaid.Providers.Replicate.VideoRestyleModel != "kwaivgi/kling-v3-omni-video" {

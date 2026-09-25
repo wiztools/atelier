@@ -31,9 +31,11 @@ type ConversationModelOverrides struct {
 	// VideoProvider overrides generate_video's backend ("fal" |
 	// "replicate"); VideoModel/VideoImageModel land on the slots the
 	// effective video provider reads, mirroring the ImageProvider/ImageModel
-	// pair. The remaining fal endpoint fields still map 1:1 onto ConfigFal —
-	// their tools (video transforms, lipsync, audio) are fal-only with no
-	// provider dimension.
+	// pair. VideoExtendModel and the transform slots (upscale, reframe,
+	// restyle) follow the effective video provider the same way — their
+	// resolvers route by it. The remaining fal endpoint fields still map 1:1
+	// onto ConfigFal — their tools (keyframes, motion control, lipsync,
+	// audio) are fal-only with no provider dimension.
 	VideoProvider      string `json:"videoProvider,omitempty"`
 	VideoModel         string `json:"videoModel,omitempty"`
 	VideoImageModel    string `json:"videoImageModel,omitempty"`
@@ -322,7 +324,17 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 		}
 	}
 	if o.VideoExtendModel != "" {
-		config.Providers.Fal.VideoExtendModel = o.VideoExtendModel
+		// The extend override follows the effective video provider — extend
+		// routes by it (resolveDefaultVideoExtendModel), the reframe rule.
+		videoProvider := o.VideoProvider
+		if videoProvider == "" {
+			videoProvider = config.Models.VideoProvider
+		}
+		if videoProvider == "replicate" {
+			config.Providers.Replicate.VideoExtendModel = o.VideoExtendModel
+		} else {
+			config.Providers.Fal.VideoExtendModel = o.VideoExtendModel
+		}
 	}
 	if o.VideoMotionModel != "" {
 		config.Providers.Fal.VideoMotionModel = o.VideoMotionModel

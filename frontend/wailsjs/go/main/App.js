@@ -222,6 +222,10 @@ export function ListReplicateVideoDurations(arg1) {
   return window['go']['main']['App']['ListReplicateVideoDurations'](arg1);
 }
 
+export function ListReplicateVideoExtendModels() {
+  return window['go']['main']['App']['ListReplicateVideoExtendModels']();
+}
+
 export function ListReplicateVideoImageModels() {
   return window['go']['main']['App']['ListReplicateVideoImageModels']();
 }

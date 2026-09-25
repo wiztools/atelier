@@ -296,6 +296,7 @@ export namespace main {
 	    imageEditModel?: string;
 	    videoModel?: string;
 	    videoImageModel?: string;
+	    videoExtendModel?: string;
 	    upscaleModel?: string;
 	    videoUpscaleModel?: string;
 	    videoRestyleModel?: string;
@@ -312,6 +313,7 @@ export namespace main {
 	        this.imageEditModel = source["imageEditModel"];
 	        this.videoModel = source["videoModel"];
 	        this.videoImageModel = source["videoImageModel"];
+	        this.videoExtendModel = source["videoExtendModel"];
 	        this.upscaleModel = source["upscaleModel"];
 	        this.videoUpscaleModel = source["videoUpscaleModel"];
 	        this.videoRestyleModel = source["videoRestyleModel"];

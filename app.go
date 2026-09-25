@@ -273,9 +273,13 @@ type ConfigReplicate struct {
 	Model          string `json:"model,omitempty"`
 	ImageEditModel string `json:"imageEditModel,omitempty"`
 	// VideoModel is the text-to-video model; VideoImageModel is the
-	// image-to-video model used when the user attaches an image to animate.
-	VideoModel      string `json:"videoModel,omitempty"`
-	VideoImageModel string `json:"videoImageModel,omitempty"`
+	// image-to-video model used when the user attaches an image to animate;
+	// VideoExtendModel is the video-extension model used when the user
+	// attaches a video to continue (the extend turn routes here like the
+	// transforms below rather than failing with a provider-switch remedy).
+	VideoModel       string `json:"videoModel,omitempty"`
+	VideoImageModel  string `json:"videoImageModel,omitempty"`
+	VideoExtendModel string `json:"videoExtendModel,omitempty"`
 	// UpscaleModel is the image upscaler upscale_image uses when replicate is
 	// the image provider — upscale follows ImageProvider, so fal's
 	// UpscaleModel serves on every other provider.
@@ -2611,6 +2615,14 @@ func (a *App) ListReplicateVideoReframeModels() ([]ReplicateModel, error) {
 	return a.listReplicateVideoEditingCollection(isReplicateVideoReframeModel)
 }
 
+// ListReplicateVideoExtendModels returns the video-extension models of the
+// same collection for the Settings video-extend-model picker, shown when
+// replicate is the video provider (the extend turn routes there like the
+// transforms, rather than failing with a provider-switch remedy).
+func (a *App) ListReplicateVideoExtendModels() ([]ReplicateModel, error) {
+	return a.listReplicateVideoEditingCollection(isReplicateVideoExtendModel)
+}
+
 // listReplicateVideoEditingCollection fetches the video-editing collection and
 // keeps the entries matching keep — the shared partitioned-picker body behind
 // the restyle and reframe listers.
@@ -2647,6 +2659,17 @@ func isReplicateVideoRestyleModel(model ReplicateModel) bool {
 // generative reframer — luma/reframe-video and siblings.
 func isReplicateVideoReframeModel(model ReplicateModel) bool {
 	return strings.Contains(strings.ToLower(model.ID), "reframe")
+}
+
+// isReplicateVideoExtendModel reports whether a collection entry is a
+// video-extension endpoint — one that continues an attached clip into a longer
+// one and returns the stitched result (xai/grok-imagine-video-extension). The
+// id is checked for "extend" and "continue", the same naming pair the fal
+// partition (isFalVideoExtendModel) recognizes; the video-editing collection
+// holds no audio-extension entries, so the id markers alone partition it.
+func isReplicateVideoExtendModel(model ReplicateModel) bool {
+	lower := strings.ToLower(model.ID)
+	return strings.Contains(lower, "extend") || strings.Contains(lower, "continue")
 }
 
 // ListReplicateVideoModels returns the official models of Replicate's

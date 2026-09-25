@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -570,6 +571,14 @@ func TestReplicateVideoToolGating(t *testing.T) {
 	if got := resolveDefaultVideoImageModel(replicateConfigured); got != defaultReplicateVideoImageModel {
 		t.Fatalf("resolveDefaultVideoImageModel = %q, want the default", got)
 	}
+	if got := resolveDefaultVideoExtendModel(replicateConfigured); got != defaultReplicateVideoExtendModel {
+		t.Fatalf("resolveDefaultVideoExtendModel = %q, want the default", got)
+	}
+	replicateConfigured.Providers.Replicate.VideoExtendModel = "owner/custom-extend"
+	if got := resolveDefaultVideoExtendModel(replicateConfigured); got != "owner/custom-extend" {
+		t.Fatalf("configured resolveDefaultVideoExtendModel = %q", got)
+	}
+	replicateConfigured.Providers.Replicate.VideoExtendModel = ""
 
 	// With no replicate key but a fal key + fal models, the fal default path
 	// still routes — the provider dimension selects the backend.
@@ -592,10 +601,13 @@ func TestReplicateVideoToolGating(t *testing.T) {
 	}
 }
 
-// TestReplicateVideoToolRefusesVideoSource drives the generate_video tool
-// executor on the replicate path: a video-source or keyframe turn fails with
-// the backend refusal before any model is selected.
-func TestReplicateVideoToolRefusesVideoSource(t *testing.T) {
+// TestReplicateVideoToolRoutesExtendRefusesOtherVideoSources drives the
+// generate_video tool executor on the replicate path: an extend turn
+// (attached video, no image, non-reference) proceeds on the Replicate extend
+// model with ExtendSource set, while motion-control, video-reference, and
+// keyframe turns still fail with the backend refusal before any model is
+// selected.
+func TestReplicateVideoToolRoutesExtendRefusesOtherVideoSources(t *testing.T) {
 	keyring.MockInit()
 	t.Cleanup(func() { _ = clearReplicateAPIKey() })
 	if err := saveReplicateAPIKey("replicate-test-key"); err != nil {
@@ -606,30 +618,79 @@ func TestReplicateVideoToolRefusesVideoSource(t *testing.T) {
 	config.Providers.Replicate.VideoModel = "wan-video/wan-2.5-t2v"
 	definition := videoGenerationToolDefinition(config, false)
 
-	newTools := func() HarnessToolExecutionContext {
+	newTools := func(mutate func(*HarnessToolExecutionContext)) HarnessToolExecutionContext {
 		tools := newHarnessToolExecutionContext(config)
-		// The refusal fires before any model is resolved; a GenerateVideo
-		// stub that fails the test proves it never got that far.
-		tools.GenerateVideo = func(context.Context, VideoGenerateRequest) (GeneratedVideo, error) {
-			t.Fatal("GenerateVideo must not be reached on a refused turn")
-			return GeneratedVideo{}, nil
-		}
+		mutate(&tools)
 		return tools
 	}
 
-	tools := newTools()
-	tools.AttachedVideos = []string{"data:video/mp4;base64,AAAA"}
-	_, _, err := definition.Execute(context.Background(), tools, HarnessToolCall{Name: "generate_video", Content: "extend this"})
-	if err == nil || !strings.Contains(err.Error(), "Replicate video backend") {
-		t.Fatalf("err = %v, want the backend refusal", err)
+	// The extend turn reaches generation on the routed extend model — the
+	// sentinel error proves the routing itself succeeded.
+	var saw VideoGenerateRequest
+	extendTools := newTools(func(tools *HarnessToolExecutionContext) {
+		tools.AttachedVideos = []string{"data:video/mp4;base64,AAAA"}
+		tools.GenerateVideo = func(_ context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
+			saw = req
+			return GeneratedVideo{}, errors.New("stop here — routing is the assertion")
+		}
+	})
+	_, _, err := definition.Execute(context.Background(), extendTools, HarnessToolCall{Name: "generate_video", Content: "extend this"})
+	if err == nil || !strings.Contains(err.Error(), "stop here") {
+		t.Fatalf("err = %v, want the stub's sentinel — the extend turn must reach generation", err)
+	}
+	if saw.Model != defaultReplicateVideoExtendModel {
+		t.Fatalf("extend model = %q, want the Replicate extend default %q", saw.Model, defaultReplicateVideoExtendModel)
+	}
+	if !saw.ExtendSource || len(saw.Videos) != 1 {
+		t.Fatalf("extend request = %+v, want ExtendSource with the single attached clip", saw)
+	}
+	if len(saw.Images) != 0 {
+		t.Fatalf("extend request carried %d images", len(saw.Images))
 	}
 
-	tools = newTools()
-	tools.AttachedImages = []string{"data:image/png;base64," + tinyPNG, "data:image/png;base64," + tinyPNG}
-	_, _, err = definition.Execute(context.Background(), tools, HarnessToolCall{Name: "generate_video", Content: "transition", ImageRole: "keyframes"})
-	if err == nil || !strings.Contains(err.Error(), "Replicate video backend") {
-		t.Fatalf("keyframes err = %v, want the backend refusal", err)
+	// The configured Replicate slot wins over the const default.
+	config.Providers.Replicate.VideoExtendModel = "owner/custom-extend"
+	configuredTools := newTools(func(tools *HarnessToolExecutionContext) {
+		tools.Config = config
+		tools.AttachedVideos = []string{"data:video/mp4;base64,AAAA"}
+		tools.GenerateVideo = func(_ context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
+			saw = req
+			return GeneratedVideo{}, errors.New("stop here — routing is the assertion")
+		}
+	})
+	if _, _, err := definition.Execute(context.Background(), configuredTools, HarnessToolCall{Name: "generate_video", Content: "extend this"}); err == nil || !strings.Contains(err.Error(), "stop here") {
+		t.Fatalf("err = %v, want the stub's sentinel", err)
 	}
+	if saw.Model != "owner/custom-extend" {
+		t.Fatalf("configured extend model = %q, want the Replicate slot", saw.Model)
+	}
+	config.Providers.Replicate.VideoExtendModel = ""
+
+	// The refusal cases: the refusal fires before any model is resolved; a
+	// GenerateVideo stub that fails the test proves it never got that far.
+	refuse := func(label string, mutate func(*HarnessToolExecutionContext), call HarnessToolCall) {
+		t.Helper()
+		tools := newTools(func(tools *HarnessToolExecutionContext) {
+			mutate(tools)
+			tools.GenerateVideo = func(context.Context, VideoGenerateRequest) (GeneratedVideo, error) {
+				t.Fatal("GenerateVideo must not be reached on a refused turn")
+				return GeneratedVideo{}, nil
+			}
+		})
+		if _, _, err := definition.Execute(context.Background(), tools, call); err == nil || !strings.Contains(err.Error(), "Replicate video backend") {
+			t.Fatalf("%s err = %v, want the backend refusal", label, err)
+		}
+	}
+	refuse("motion control", func(tools *HarnessToolExecutionContext) {
+		tools.AttachedVideos = []string{"data:video/mp4;base64,AAAA"}
+		tools.AttachedImages = []string{"data:image/png;base64," + tinyPNG}
+	}, HarnessToolCall{Name: "generate_video", Content: "motion"})
+	refuse("video reference", func(tools *HarnessToolExecutionContext) {
+		tools.AttachedVideos = []string{"data:video/mp4;base64,AAAA"}
+	}, HarnessToolCall{Name: "generate_video", Content: "guided by this clip", UseVideoAs: "reference"})
+	refuse("keyframes", func(tools *HarnessToolExecutionContext) {
+		tools.AttachedImages = []string{"data:image/png;base64," + tinyPNG, "data:image/png;base64," + tinyPNG}
+	}, HarnessToolCall{Name: "generate_video", Content: "transition", ImageRole: "keyframes"})
 }
 
 // TestReplicateVideoActivityCommandAttribution checks the activity Command's

@@ -198,13 +198,12 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 					return GeneratedVideo{}, errReplicateKeyNotConfigured
 				}
 				client := newReplicateClient(app.client, apiKey)
-				// Pre-resolve attached source images: oversized payloads upload
+				// Pre-resolve attached source media: oversized payloads upload
 				// through Replicate's Files API so the prediction input stays
-				// within the inline data-URI budget. Source videos are NOT
-				// resolved here — the Replicate backend serves text-to-video
-				// and image-to-video only, and resolveReplicateVideoInput
-				// refuses a video-source request up front with its remedy in
-				// the message.
+				// within the inline data-URI budget. Only extend turns arrive
+				// with a source video (motion control and video-reference
+				// turns are refused up front by the executor and the
+				// resolver), so the videos resolve exactly like the images.
 				for i, img := range req.Images {
 					if resolved, err := client.ResolveMediaURL(ctx, img, "image/png", fmt.Sprintf("source-image-%d.png", i)); err == nil && resolved != "" {
 						req.Images[i] = resolved
@@ -213,6 +212,14 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				if resolved, err := client.ResolveMediaURL(ctx, req.Image, "image/png", "source-image.png"); err == nil {
 					req.Image = resolved
 				}
+				videos := req.SourceVideos()
+				for i := range videos {
+					if resolved, err := client.ResolveMediaURL(ctx, videos[i], "video/mp4", fmt.Sprintf("source-video-%d.mp4", i)); err == nil && resolved != "" {
+						videos[i] = resolved
+					}
+				}
+				req.Videos = videos
+				req.Video = ""
 				schema := replicateSchemaCache.Get(ctx, req.Model)
 				input, notices, err := resolveReplicateVideoInput(schema, req)
 				if err != nil {
