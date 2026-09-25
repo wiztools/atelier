@@ -5712,7 +5712,7 @@ function App() {
                     ) : asset.kind === 'audio' && asset.url ? (
                       <audio src={asset.url} controls preload="metadata" />
                     ) : asset.kind === 'video' && asset.url ? (
-                      <VideoPlayer src={asset.url} />
+                      <LazyPanelVideo src={asset.url} />
                     ) : (
                       <span className="asset-missing">Artifact file is missing on disk</span>
                     )}
@@ -6055,7 +6055,10 @@ function InfoHint(props: {label: string; text: string}) {
 // frame-accurate, so finer digits would be noise. The readout is written
 // straight to the DOM from a requestAnimationFrame loop while playing (React
 // re-renders never touch the span because its JSX children stay static).
-function VideoPlayer({src}: {src: string}) {
+// onPlayingChange, when given, reports play/pause/end transitions so a lazy
+// host (LazyPanelVideo) can keep a playing clip mounted while releasing
+// paused ones.
+function VideoPlayer({src, onPlayingChange}: {src: string; onPlayingChange?: (playing: boolean) => void}) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const readoutRef = useRef<HTMLSpanElement | null>(null);
   const rafRef = useRef(0);
@@ -6088,9 +6091,18 @@ function VideoPlayer({src}: {src: string}) {
         src={src}
         controls
         preload="metadata"
-        onPlay={startTicking}
-        onPause={stopTicking}
-        onEnded={stopTicking}
+        onPlay={() => {
+          startTicking();
+          onPlayingChange?.(true);
+        }}
+        onPause={() => {
+          stopTicking();
+          onPlayingChange?.(false);
+        }}
+        onEnded={() => {
+          stopTicking();
+          onPlayingChange?.(false);
+        }}
         onTimeUpdate={syncReadout}
         onSeeked={syncReadout}
         onLoadedMetadata={syncReadout}
@@ -6099,6 +6111,67 @@ function VideoPlayer({src}: {src: string}) {
       <span ref={readoutRef} className="video-time-readout">
         0:00.000 / 0:00.000
       </span>
+    </div>
+  );
+}
+
+// Panel video cards lazy-mount their player. An eager panel instantiates
+// every clip's media pipeline at once — twenty-plus AVPlayer-backed <video>
+// elements in one WKWebView page — and a burst of concurrent media loads can
+// wedge the page's whole media stack: every later load, chat transcripts
+// included, then stalls at networkState 2 without ever reaching the network,
+// and only a webview restart clears it. Mounting just the cards near the
+// list's scroll viewport bounds that burst, and unmounting paused players
+// scrolled well past the band releases their resources in long sessions. A
+// clip that is playing is never unmounted — its audio keeps rolling while the
+// user browses other assets — and is released on its first pause once out of
+// the band. The observed root is the .assets-list scroller (via closest) so
+// rootMargin extends into the scrolled content, giving a mount lookahead
+// band the viewport root's clipping would not.
+function LazyPanelVideo({src}: {src: string}) {
+  const slotRef = useRef<HTMLDivElement | null>(null);
+  const [mounted, setMounted] = useState(false);
+  const visibleRef = useRef(false);
+  const playingRef = useRef(false);
+
+  useEffect(() => {
+    const slot = slotRef.current;
+    if (!slot) return;
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        visibleRef.current = entry.isIntersecting;
+        if (entry.isIntersecting) {
+          setMounted(true);
+        } else if (!playingRef.current) {
+          setMounted(false);
+        }
+      }
+    }, {root: slot.closest('.assets-list') ?? undefined, rootMargin: '600px 0px'});
+    observer.observe(slot);
+    return () => observer.disconnect();
+  }, []);
+
+  const handlePlayingChange = (playing: boolean) => {
+    playingRef.current = playing;
+    // A pause while already outside the band gets no later observer callback,
+    // so release the player here rather than waiting for the next scroll.
+    if (!playing && !visibleRef.current) {
+      setMounted(false);
+    }
+  };
+
+  return (
+    <div className="panel-video-slot" ref={slotRef}>
+      {mounted ? (
+        <VideoPlayer src={src} onPlayingChange={handlePlayingChange} />
+      ) : (
+        <div className="panel-video-placeholder" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M10 9.2v5.6l4.8-2.8z" fill="currentColor" stroke="none" />
+          </svg>
+        </div>
+      )}
     </div>
   );
 }
