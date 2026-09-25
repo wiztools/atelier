@@ -2901,13 +2901,15 @@ button:disabled {
   text-align: center;
 }
 
-/* Composer-reference affordance on every asset card: hover-revealed over the
-   preview's top-right corner (keyboard focus reveals it too — the button stays
-   in tab order). Anchors to .asset-preview (position: relative above) and sits
-   above the media so its clicks never fall through to the zoom button. The
+/* Hover-revealed affordances on every asset card, anchored to the preview's
+   top-right corner (keyboard focus reveals them too — the buttons stay in tab
+   order). Anchored to .asset-preview (position: relative above) and sitting
+   above the media so their clicks never fall through to the zoom button. The
    '@' glyph mirrors the composer's mention chips: clicking inserts the same
-   token typing '@' would. Semi-opaque dark base so it reads over any media. */
-.asset-reference-button {
+   token typing '@' would; the arrow downloads the artifact through the Save*
+   bindings. Semi-opaque dark base so they read over any media. */
+.asset-reference-button,
+.asset-download-button {
   position: absolute;
   top: 8px;
   right: 8px;
@@ -2930,8 +2932,16 @@ button:disabled {
   transition: opacity 0.12s ease;
 }
 
+/* The download affordance sits one gutter left of the reference button
+   (26px pill + 8px gutter + the corner's 8px inset). */
+.asset-download-button {
+  right: 42px;
+}
+
 .asset-card:hover .asset-reference-button,
-.asset-reference-button:focus-visible {
+.asset-card:hover .asset-download-button,
+.asset-reference-button:focus-visible,
+.asset-download-button:focus-visible {
   opacity: 1;
 }
 

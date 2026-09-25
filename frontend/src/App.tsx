@@ -4282,6 +4282,20 @@ function App() {
     }
   }
 
+  // downloadAsset is the assets-panel download affordance: every Save* binding
+  // accepts the panel's /atelier-artifact URL (each resolves it back to the
+  // artifact bytes on disk), so one per-kind dispatcher covers every card.
+  function downloadAsset(asset: main.ConversationAsset) {
+    if (!asset.url) return;
+    if (asset.kind === 'audio') {
+      return saveGeneratedAudio(asset.url, 0);
+    }
+    if (asset.kind === 'video') {
+      return saveGeneratedVideo(asset.url, 0);
+    }
+    return saveGeneratedImage(asset.url, 0);
+  }
+
   return (
     <main
       ref={shellRef}
@@ -5736,6 +5750,24 @@ function App() {
                     >
                       <span aria-hidden="true">@</span>
                     </button>
+                    {/* Same sibling rule as the reference button; hidden when
+                        the artifact is missing on disk — there is nothing to
+                        save. */}
+                    {asset.url ? (
+                      <button
+                        type="button"
+                        className="asset-download-button"
+                        onClick={() => downloadAsset(asset)}
+                        aria-label="Download asset"
+                        title="Download asset"
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M12 4v11" />
+                          <path d="m7 10 5 5 5-5" />
+                          <path d="M5 20h14" />
+                        </svg>
+                      </button>
+                    ) : null}
                   </div>
                   <figcaption>
                     <span className="asset-kind">{asset.kind}</span>
