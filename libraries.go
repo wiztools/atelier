@@ -40,8 +40,16 @@ type Project struct {
 	ID            string `json:"id"`
 	LibraryID     string `json:"libraryId"`
 	Name          string `json:"name"`
-	CreatedAt     string `json:"createdAt"`
-	UpdatedAt     string `json:"updatedAt"`
+	// Notes is the user-authored instruction block for the project ("render
+	// all video requests at 9:16 in pixar style 3D animation"). It is read
+	// live at turn start (resolveTurnProjectNotes) and injected into the
+	// harness planner prompt for every conversation in the project — never
+	// pinned onto the conversation record, so an edited note applies on the
+	// next turn and a moved conversation follows its new project. Absent on
+	// older records = none, no schema bump.
+	Notes     string `json:"notes,omitempty"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
 }
 
 // ProjectSummary is the API-facing project record for the sidebar tree.
@@ -49,6 +57,7 @@ type ProjectSummary struct {
 	ID        string `json:"id"`
 	LibraryID string `json:"libraryId"`
 	Name      string `json:"name"`
+	Notes     string `json:"notes,omitempty"`
 	CreatedAt string `json:"createdAt"`
 	UpdatedAt string `json:"updatedAt"`
 }
@@ -254,6 +263,7 @@ func projectSummaryFrom(project Project) ProjectSummary {
 		ID:        project.ID,
 		LibraryID: project.LibraryID,
 		Name:      project.Name,
+		Notes:     project.Notes,
 		CreatedAt: project.CreatedAt,
 		UpdatedAt: project.UpdatedAt,
 	}
@@ -341,6 +351,24 @@ func renameProject(storage ConfigStorage, projectID, name string) (ProjectSummar
 		return ProjectSummary{}, err
 	}
 	project.Name = normalizedName
+	project.UpdatedAt = time.Now().Format(time.RFC3339)
+	if err := writeJSONFile(path, project); err != nil {
+		return ProjectSummary{}, err
+	}
+	return projectSummaryFrom(project), nil
+}
+
+// setProjectNotes replaces the project's instruction block. Notes are trimmed;
+// an empty string clears them (no project note rides the prompts). Uniquely
+// among project mutators there is no name validation — the block is freeform
+// guidance, and its length is capped at injection time (resolveTurnProjectNotes),
+// not here, so the record keeps everything the user wrote.
+func setProjectNotes(storage ConfigStorage, projectID, notes string) (ProjectSummary, error) {
+	project, path, err := findProject(storage, projectID)
+	if err != nil {
+		return ProjectSummary{}, err
+	}
+	project.Notes = strings.TrimSpace(notes)
 	project.UpdatedAt = time.Now().Format(time.RFC3339)
 	if err := writeJSONFile(path, project); err != nil {
 		return ProjectSummary{}, err

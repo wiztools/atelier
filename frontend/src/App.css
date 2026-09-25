@@ -2627,6 +2627,90 @@ button:disabled {
   font-size: 12px;
 }
 
+/* ProjectNotesDialog rides the move-dialog overlay chrome; its body swaps the
+   filter+list for a hint, a textarea, and a save row. */
+.project-notes-dialog {
+  width: min(440px, calc(100vw - 56px));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #3b3f42;
+  border-radius: 8px;
+  background: #202326;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+}
+
+.project-notes-hint {
+  margin: 0;
+  color: #9ea5a3;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.project-notes-input {
+  min-height: 140px;
+  resize: vertical;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.project-notes-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.project-notes-count {
+  color: #9ea5a3;
+  font-size: 11px;
+}
+
+.project-notes-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.project-notes-buttons button {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid #3b3f42;
+  border-radius: 6px;
+  background: transparent;
+  color: #d9d7cf;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.project-notes-buttons button:hover:not(:disabled) {
+  background: #2c3033;
+}
+
+.project-notes-buttons button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.project-notes-save {
+  border-color: #4f5b52 !important;
+  background: #35443b !important;
+  color: #e6efe8 !important;
+}
+
+.project-notes-save:hover:not(:disabled) {
+  background: #3e5146 !important;
+}
+
+/* The ✎ marker beside a project name when its instruction block is set — the
+   only visible trace that chats in the project are being shaped by notes. */
+.project-notes-mark {
+  flex: 0 0 auto;
+  color: #8fa98f;
+  font-size: 11px;
+}
+
+
 .raw-output {
   width: min(920px, 100%);
 }

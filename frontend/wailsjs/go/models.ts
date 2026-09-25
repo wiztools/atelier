@@ -1431,6 +1431,7 @@ export namespace main {
 	    id: string;
 	    libraryId: string;
 	    name: string;
+	    notes?: string;
 	    createdAt: string;
 	    updatedAt: string;
 	
@@ -1443,6 +1444,7 @@ export namespace main {
 	        this.id = source["id"];
 	        this.libraryId = source["libraryId"];
 	        this.name = source["name"];
+	        this.notes = source["notes"];
 	        this.createdAt = source["createdAt"];
 	        this.updatedAt = source["updatedAt"];
 	    }

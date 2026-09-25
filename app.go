@@ -560,6 +560,14 @@ type ChatRequest struct {
 	// turn's media. IDs only — no media bytes ever ride this field, so
 	// nothing enters model context through it.
 	ReferencedAssetIDs []string `json:"referencedAssetIds,omitempty"`
+	// ProjectNotes carries the instruction block of the project this turn's
+	// conversation belongs to, resolved server-side at turn start
+	// (resolveTurnProjectNotes) and never sent by the frontend. It rides the
+	// request because req already flows unchanged into the triage and planner
+	// prompt builders; json:"-" keeps it off the wire and out of the frontend
+	// bindings, since a client-set note would bypass the project record (the
+	// single source the project editor writes).
+	ProjectNotes string `json:"-"`
 }
 
 type ChatStreamStart struct {
@@ -1378,6 +1386,17 @@ func (a *App) RenameProject(projectID string, name string) (ProjectSummary, erro
 	return renameProject(config.Storage, projectID, name)
 }
 
+// SetProjectNotes replaces a project's instruction block — standing guidance
+// the harness injects into its planner prompt for every conversation in the
+// project (resolveTurnProjectNotes). An empty string clears it.
+func (a *App) SetProjectNotes(projectID string, notes string) (ProjectSummary, error) {
+	config, err := loadReadyConfig()
+	if err != nil {
+		return ProjectSummary{}, err
+	}
+	return setProjectNotes(config.Storage, projectID, notes)
+}
+
 // DeleteProject hard-deletes a project and every conversation in it, with the
 // same streaming refusal as DeleteLibrary.
 func (a *App) DeleteProject(projectID string) (DeleteProjectResult, error) {
@@ -1797,6 +1816,11 @@ func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Resolve the project's instruction block onto the request — the same
+	// seam as the workspace/model overrides, but read live every turn (see
+	// resolveTurnProjectNotes). From here req.ProjectNotes reaches the triage
+	// and planner prompts unchanged, so no further plumbing is needed.
+	req.ProjectNotes = resolveTurnProjectNotes(config, req)
 	engine := newHarnessEngine(config, a)
 	if strings.TrimSpace(req.Model) == "" {
 		req.Model = strings.TrimSpace(config.Providers.Ollama.Models.Primary)
@@ -3616,6 +3640,58 @@ func resolveTurnProject(config AppConfig, req ChatRequest) (string, error) {
 		return "", err
 	}
 	return projectID, nil
+}
+
+// projectNotesMaxChars bounds the instruction block injected into the planner
+// prompt — the same order as plainTranscriptArtifactChars. A longer note is
+// capped at injection, never rejected: the project record keeps everything
+// the user wrote, the prompt keeps what fits.
+const projectNotesMaxChars = 4000
+
+// resolveTurnProjectNotes resolves the instruction block of the project the
+// turn's conversation belongs to, so project-level conventions ("render all
+// video requests at 9:16 in pixar style") reach the harness prompts through
+// req.ProjectNotes. Turn 1 reads the request's ProjectID (already validated by
+// resolveTurnProject); turn 2+ ignores it and reads the record's, like every
+// other per-conversation fact. Unlike the workspace, the notes are re-read
+// LIVE on every turn: the block is editable at the project level and a moved
+// conversation must follow its new project (MoveConversationToProject), so
+// pinning it at creation would freeze stale guidance. Fail-soft throughout —
+// an unreadable record or a missing project yields no note rather than a
+// failed turn (deleteProject removes member conversations, so the miss path is
+// corruption or a racing delete, not a user state worth failing on).
+func resolveTurnProjectNotes(config AppConfig, req ChatRequest) string {
+	projectID := strings.TrimSpace(req.ProjectID)
+	if strings.TrimSpace(req.ConversationID) != "" {
+		projectID = readConversationProjectID(config.Storage, req.ConversationID)
+	}
+	if projectID == "" {
+		return ""
+	}
+	project, _, err := findProject(config.Storage, projectID)
+	if err != nil {
+		return ""
+	}
+	// The no-ellipsis variant: the cap is the whole block's budget, so the
+	// injected section never grows a suffix beyond projectNotesMaxChars.
+	return truncateRunesEllipsis(strings.TrimSpace(project.Notes), projectNotesMaxChars, "")
+}
+
+// readConversationProjectID loads a conversation record solely to read its
+// project membership — the same second small JSON read pattern as
+// readConversationWorkspace (loadForAppend reads the record again during the
+// append). Empty on any failure: the caller treats a miss as "no project
+// note", never an error.
+func readConversationProjectID(storage ConfigStorage, conversationID string) string {
+	path, err := findConversationPath(storage, conversationID)
+	if err != nil {
+		return ""
+	}
+	var conversation HistoryConversation
+	if err := readJSONFile(path, &conversation); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(conversation.ProjectID)
 }
 
 // readConversationWorkspace loads a conversation record solely to read its

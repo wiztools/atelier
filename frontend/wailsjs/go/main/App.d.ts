@@ -170,6 +170,8 @@ export function SetConversationModelOverrides(arg1:string,arg2:main.Conversation
 
 export function SetOllamaBaseURL(arg1:string):Promise<void>;
 
+export function SetProjectNotes(arg1:string,arg2:string):Promise<main.ProjectSummary>;
+
 export function StreamChat(arg1:main.ChatRequest):Promise<main.ChatStreamStart>;
 
 export function UpdateConversationTitle(arg1:string,arg2:string):Promise<main.ConversationSummary>;

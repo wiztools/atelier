@@ -2271,7 +2271,42 @@ When "needsTools" is false, "toolCalls" must be []. Prefer read-only calls unles
 	if strings.TrimSpace(toolTask) != "" {
 		system += "\n\nThe primary model triaged this turn and requested tool evidence:\n" + strings.TrimSpace(toolTask)
 	}
+	system += projectInstructionsSection(req.ProjectNotes)
 	return system
+}
+
+// projectInstructionsSection renders the conversation's project instruction
+// block for the planner prompt — the one place standing project conventions
+// ("render all video requests at 9:16 in pixar style 3D animation") become
+// tool-call shaping: the planner authors generate_image/generate_video calls,
+// so it is the model that must fold the note into the call's prompt text and
+// structural params (aspectRatio). The precedence rule is stated explicitly so
+// a project-wide default never overrides a turn that asks for something else.
+// Appended last for recency — the planner is the weakest model in the loop and
+// the block must not be buried under the tool catalog. Empty notes render no
+// section, keeping the prompt byte-identical for un-noted projects.
+func projectInstructionsSection(notes string) string {
+	notes = strings.TrimSpace(notes)
+	if notes == "" {
+		return ""
+	}
+	return "\n\nProject instructions, set by the user for every conversation in this project. Apply them to every tool call they are relevant to (for generation calls: style and subject guidance belongs in the prompt, shape guidance in aspectRatio) and reflect them in the brief. An explicit instruction in the user's message this turn always overrides them.\n\n" + notes
+}
+
+// projectInstructionsEvidenceNote is the final-model twin of
+// projectInstructionsSection: it tells the primary model, in the message
+// stream (never the system prompt — message #0 must stay byte-identical so
+// the prefix cache survives), which project-wide conventions shaped this
+// turn's tool calls, so its narration matches the delivered media ("rendered
+// vertical per your project standard") instead of contradicting it. Delivered
+// only on tooled turns — a pure text answer has nothing the conventions
+// shaped, and the note would be standing noise in every project conversation.
+func projectInstructionsEvidenceNote(notes string) string {
+	notes = strings.TrimSpace(notes)
+	if notes == "" {
+		return ""
+	}
+	return "[Project instructions applied to this turn's tool calls]\n" + notes
 }
 
 // plannerSystemPromptNative is the native tool-calling variant: it keeps the
@@ -2295,6 +2330,7 @@ The filesystem tools and run_command operate on real files on this machine; path
 	if strings.TrimSpace(toolTask) != "" {
 		system += "\n\nThe primary model triaged this turn and requested tool evidence:\n" + strings.TrimSpace(toolTask)
 	}
+	system += projectInstructionsSection(req.ProjectNotes)
 	return system
 }
 
@@ -2431,6 +2467,14 @@ func (h *HarnessEngine) preparedResponseRequest(ctx context.Context, req ChatReq
 		}
 	} else if note != "" {
 		messages = append(messages, ChatMessage{Role: "user", Content: note})
+	}
+	// The project's instruction block rides the same trailing-note channel
+	// when tools ran: the primary model learns the conventions the planner
+	// applied (shape, style) so its answer acknowledges them rather than
+	// contradicting the delivered media. See projectInstructionsEvidenceNote
+	// for why un-tooled turns stay note-free.
+	if evidenceNote := projectInstructionsEvidenceNote(req.ProjectNotes); evidenceNote != "" && len(preparation.ToolResults) > 0 {
+		messages = append(messages, ChatMessage{Role: "user", Content: evidenceNote})
 	}
 	// A local media edit with no ffmpeg CLI rides its own trailing user
 	// message, mirroring the no-tools note path: the final model learns why the

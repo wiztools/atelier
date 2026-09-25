@@ -338,6 +338,10 @@ export function SetOllamaBaseURL(arg1) {
   return window['go']['main']['App']['SetOllamaBaseURL'](arg1);
 }
 
+export function SetProjectNotes(arg1, arg2) {
+  return window['go']['main']['App']['SetProjectNotes'](arg1, arg2);
+}
+
 export function StreamChat(arg1) {
   return window['go']['main']['App']['StreamChat'](arg1);
 }

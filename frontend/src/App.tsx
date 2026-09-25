@@ -77,6 +77,7 @@ import {
   SaveAudio,
   SaveConfig,
   SetConversationModelOverrides,
+  SetProjectNotes,
   SaveFalAPIKey,
   SaveReplicateAPIKey,
   SaveOpenAICompatibleAPIKey,
@@ -309,6 +310,10 @@ const defaultBaseURL = 'http://localhost:11434';
 // conversation or evidence. Must stay in sync with the Go default so a config
 // saved without a visit to the field hydrates to the same value.
 const defaultOllamaNumCtx = 16384;
+// Mirrors Go's projectNotesMaxChars (app.go): the textarea's maxLength. The
+// backend caps the injected block at the same bound, so a value at the limit
+// is never silently trimmed at turn time.
+const projectNotesMaxLength = 4000;
 const numCtxOptions = [8192, 12288, 16384, 32768];
 function numCtxLabel(value: number): string {
   return `${Math.round(value / 1024)}K (${value} tokens)`;
@@ -495,6 +500,13 @@ function useLibraries(env: LibrariesEnvironment) {
   const [openContainerMenuID, setOpenContainerMenuID] = useState('');
   const [confirmDeleteContainerID, setConfirmDeleteContainerID] = useState('');
   const [containerBusy, setContainerBusy] = useState(false);
+  // Project notes: notesDialogProject is the project whose instruction editor
+  // overlay is open (null = closed) and notesDraft the textarea's live text;
+  // notesSaving disables the actions while SetProjectNotes round-trips. The
+  // tree refresh after a save re-renders the row's active-notes marker.
+  const [notesDialogProject, setNotesDialogProject] = useState<main.ProjectSummary | null>(null);
+  const [notesDraft, setNotesDraft] = useState('');
+  const [notesSaving, setNotesSaving] = useState(false);
   // Library export/import: exportPlan holds the pre-flight for the ⋮ menu's
   // two-step confirm (counts, size, missing assets); importingLibrary disables
   // the header button while an archive is being verified and written;
@@ -657,6 +669,38 @@ function useLibraries(env: LibrariesEnvironment) {
       bumpLibrariesRefresh();
     } catch (error) {
       env.reportError(error);
+    }
+  }
+
+  // The project-notes editor: opened from the project's ⋮ menu seeded with
+  // the stored block, saved through SetProjectNotes. The backend reads notes
+  // live at every turn start, so a save applies to the project's very next
+  // message — no per-conversation sync needed.
+  function openProjectNotes(project: main.ProjectSummary) {
+    setOpenContainerMenuID('');
+    setNotesDialogProject(project);
+    setNotesDraft(project.notes || '');
+  }
+
+  function closeProjectNotes() {
+    setNotesDialogProject(null);
+    setNotesDraft('');
+  }
+
+  async function saveProjectNotes() {
+    const project = notesDialogProject;
+    if (!project || notesSaving) {
+      return;
+    }
+    setNotesSaving(true);
+    try {
+      await SetProjectNotes(project.id, notesDraft);
+      closeProjectNotes();
+      bumpLibrariesRefresh();
+    } catch (error) {
+      env.reportError(error);
+    } finally {
+      setNotesSaving(false);
     }
   }
 
@@ -980,11 +1024,18 @@ function useLibraries(env: LibrariesEnvironment) {
     confirmExportLibrary,
     importLibrary,
     applySidebarState,
+    notesDialogProject,
+    notesDraft,
+    notesSaving,
+    openProjectNotes,
+    closeProjectNotes,
+    saveProjectNotes,
     // Field bindings for the tree's inline inputs (ContainerNameInput's
     // onChange) — the one place raw setters are the natural API.
     setNewLibraryName,
     setNewProjectName,
     setEditingContainerName,
+    setNotesDraft,
   };
 }
 
@@ -1341,7 +1392,8 @@ function App() {
     startNewChatInProject, revealConversationInProject, handleNewConversationAction, handleNewProjectAction, moveConversation,
     forgetConversation, toggleLibrariesOpen, cancelCreatingLibrary, cancelCreatingProject, armContainerDelete,
     armLibraryExport, confirmExportLibrary, importLibrary, applySidebarState,
-    setNewLibraryName, setNewProjectName, setEditingContainerName,
+    notesDialogProject, notesDraft, notesSaving, openProjectNotes, closeProjectNotes, saveProjectNotes,
+    setNewLibraryName, setNewProjectName, setEditingContainerName, setNotesDraft,
   } = useLibraries({
     activeConversationID,
     activeConversationProjectID,
@@ -4584,6 +4636,15 @@ function App() {
                                             >
                                               <span className={`tree-chevron${projectOpen ? ' open' : ''}`} aria-hidden="true">▸</span>
                                               <span className="container-name">{project.name}</span>
+                                              {project.notes ? (
+                                                <span
+                                                  className="project-notes-mark"
+                                                  title={`Project notes active: ${project.notes}`}
+                                                  aria-label="Project notes active"
+                                                >
+                                                  ✎
+                                                </span>
+                                              ) : null}
                                             </button>
                                             <div className="history-actions">
                                               <button
@@ -4603,6 +4664,7 @@ function App() {
                                               >
                                                 <button onClick={() => void startNewChatInProject(project.id, library.id)}>New Chat</button>
                                                 <button onClick={() => startEditingContainer(project.id, project.name)}>Rename</button>
+                                                <button onClick={() => openProjectNotes(project)}>Notes…</button>
                                                 {confirmDeleteContainerID === project.id ? (
                                                   <button className="menu-danger" disabled={containerBusy} onClick={() => void confirmDeleteContainer(project.id)}>
                                                     Delete project and its chats?
@@ -5800,6 +5862,16 @@ function App() {
           </div>
         </div>
       ) : null}
+      {notesDialogProject ? (
+        <ProjectNotesDialog
+          project={notesDialogProject}
+          value={notesDraft}
+          saving={notesSaving}
+          onChange={setNotesDraft}
+          onSave={() => void saveProjectNotes()}
+          onClose={closeProjectNotes}
+        />
+      ) : null}
       {moveDialogConversation ? (
         <MoveConversationDialog
           conversation={moveDialogConversation}
@@ -6061,6 +6133,79 @@ function MoveConversationDialog(props: {
             </div>
           ))}
           {!hasTargets ? <div className="move-dialog-empty">No matching projects.</div> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ProjectNotesDialog edits a project's standing instruction block — the note
+// the harness injects into its planner prompt for every conversation in the
+// project, shaping generation calls (aspect ratios, styles) until the user's
+// message says otherwise. Modal chrome mirrors MoveConversationDialog: Escape
+// and an overlay press close, the body stops that press's propagation, and
+// Cmd/Ctrl+Enter saves from the textarea.
+function ProjectNotesDialog(props: {
+  project: main.ProjectSummary;
+  value: string;
+  saving: boolean;
+  onChange: (value: string) => void;
+  onSave: () => void;
+  onClose: () => void;
+}) {
+  const remaining = projectNotesMaxLength - props.value.length;
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        props.onClose();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [props.onClose]);
+
+  return (
+    <div className="move-dialog-overlay" role="presentation" onClick={props.onClose}>
+      <div
+        className="project-notes-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Notes for ${props.project.name}`}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="move-dialog-head">
+          <span className="move-dialog-title">Project notes</span>
+          <span className="move-dialog-subtitle" title={props.project.name}>{props.project.name}</span>
+        </div>
+        <p className="project-notes-hint">
+          Standing guidance the workshop applies to every chat in this project — e.g. “render all
+          video requests at 9:16 in pixar style 3D animation”. An explicit instruction in a message
+          still wins.
+        </p>
+        <textarea
+          className="project-notes-input"
+          value={props.value}
+          maxLength={projectNotesMaxLength}
+          onChange={(event) => props.onChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
+              props.onSave();
+            }
+          }}
+          placeholder="Project instructions…"
+          aria-label="Project instructions"
+          autoFocus
+        />
+        <div className="project-notes-actions">
+          <span className="project-notes-count">{remaining} characters left</span>
+          <div className="project-notes-buttons">
+            <button type="button" onClick={props.onClose} disabled={props.saving}>Cancel</button>
+            <button type="button" className="project-notes-save" onClick={props.onSave} disabled={props.saving}>
+              {props.saving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
         </div>
       </div>
     </div>
