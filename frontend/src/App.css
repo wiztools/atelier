@@ -2845,11 +2845,17 @@ button:disabled {
 }
 
 /* The preview box has a definite pixel height; give the readout its own row
-   so letterboxed video shrinks instead of the readout being cropped. */
+   so letterboxed video shrinks instead of the readout being cropped. The
+   video row must be minmax(0, 1fr), never a bare 1fr: 1fr means
+   minmax(auto, 1fr), whose automatic minimum is the video's aspect-preserving
+   content height — a portrait clip at 336px wide floors the row at ~600px,
+   blowing past the 200px window (overflow: hidden then clips the control bar
+   out of reach, so the clip can never be played). minmax(0, 1fr) lets the row
+   shrink and height:100% + object-fit:contain letterbox the frame. */
 .asset-preview .video-player {
   width: 100%;
   height: 100%;
-  grid-template-rows: 1fr auto;
+  grid-template-rows: minmax(0, 1fr) auto;
 }
 
 .asset-preview audio {
