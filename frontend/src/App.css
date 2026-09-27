@@ -3037,22 +3037,34 @@ button:disabled {
   opacity: 1;
 }
 
+/* The caption's two runs (kind label, origin meta) share one line while they
+   fit — space-between keeps the label left and the meta right. Long metas
+   (generated titles run ~75 chars) once packed the runs together at the left
+   ("Videogenerated · …", reading as one garbled string) and clipped the tail
+   mid-character at the card edge, because a too-wide meta degenerates
+   space-between to flex-start. flex-wrap moves an oversized meta to its own
+   second line instead of colliding with the label; min-width: 0 (a nowrap
+   flex item's automatic minimum is its full text width) is what lets it
+   shrink and ellipsize when even that line overflows a narrow panel. */
 .asset-card figcaption {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
+  gap: 4px 8px;
   padding: 8px 10px;
   font-size: 12px;
   color: #9ea5a3;
 }
 
 .asset-kind {
+  flex: none;
   color: #d9d7cf;
   text-transform: capitalize;
 }
 
 .asset-meta {
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
