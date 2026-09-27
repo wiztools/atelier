@@ -371,6 +371,12 @@ const defaultReplicateVideoReframeModel = 'luma/reframe-video';
 const defaultReplicateVideoExtendModel = 'xai/grok-imagine-video-extension';
 const defaultVideoDuration = '5';
 const defaultVideoAspectRatio = '16:9';
+// '' (the default) lets the video model pick its own resolution — the
+// pre-setting behavior; the backend drops a tier the selected model's enum
+// doesn't list with a notice, so the fixed ladder never 422s a generation.
+const defaultVideoResolution = '';
+const videoResolutionOptions = ['', '480p', '720p', '1080p', '4k'];
+const videoResolutionLabels: Record<string, string> = {'': 'Auto (model chooses)'};
 // 'auto' lets the video model size the clip to the prompt (Seedance supports it;
 // other models drop it with a notice via the backend enum-guard). These are the
 // generic fallback options shown when a model's published schema can't be
@@ -1188,6 +1194,7 @@ function App() {
   const [videoDurationKeyframeOptions, setVideoDurationKeyframeOptions] = useState<string[]>(defaultVideoDurationOptions);
   const [videoDurationExtendOptions, setVideoDurationExtendOptions] = useState<string[]>(defaultVideoDurationOptions);
   const [videoAspectRatio, setVideoAspectRatio] = useState(defaultVideoAspectRatio);
+  const [videoResolution, setVideoResolution] = useState(defaultVideoResolution);
   const [system, setSystem] = useState('You are Atelier, a precise local AI collaborator.');
   const [prompt, setPrompt] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -1782,6 +1789,7 @@ function App() {
           video: {
             duration: videoDuration,
             aspectRatio: videoAspectRatio,
+            resolution: videoResolution || undefined,
           },
         },
         tools: toolConfig ?? undefined,
@@ -1797,7 +1805,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, whisperBinary, whisperModel]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel]);
 
   // Re-probe local CLI tools when a binary override changes so the provider
   // dropdown and the video/image-tools status reflect an unsaved override without
@@ -2212,8 +2220,9 @@ function App() {
     imageSteps,
     videoDuration,
     videoAspectRatio,
+    videoResolution,
     whisperBinary,
-  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falImageEditModel, falUpscaleModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, whisperModel, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, whisperBinary]);
+  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falImageEditModel, falUpscaleModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, whisperModel, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, whisperBinary]);
 
   const conversationModelSelection = useMemo<ModelSelectionValue>(() => {
     const global = globalModelSelection;
@@ -2271,6 +2280,7 @@ function App() {
       imageSteps: overrides.imageSteps || global.imageSteps,
       videoDuration: overrides.videoDuration || global.videoDuration,
       videoAspectRatio: overrides.videoAspectRatio || global.videoAspectRatio,
+      videoResolution: overrides.videoResolution || global.videoResolution,
     };
     return next;
   }, [globalModelSelection, uiModelOverrides, primaryModels, harnessModels]);
@@ -2334,6 +2344,7 @@ function App() {
     if (patch.imageSteps !== undefined) setImageSteps(patch.imageSteps);
     if (patch.videoDuration !== undefined) setVideoDuration(patch.videoDuration);
     if (patch.videoAspectRatio !== undefined) setVideoAspectRatio(patch.videoAspectRatio);
+    if (patch.videoResolution !== undefined) setVideoResolution(patch.videoResolution);
     if (patch.whisperBinary !== undefined) setWhisperBinary(patch.whisperBinary);
   };
 
@@ -2423,6 +2434,7 @@ function App() {
       if (patch.imageSteps !== undefined) next.add('imageSteps');
       if (patch.videoDuration !== undefined) next.add('videoDuration');
       if (patch.videoAspectRatio !== undefined) next.add('videoAspectRatio');
+      if (patch.videoResolution !== undefined) next.add('videoResolution');
       if (patch.falLipsyncImageModel !== undefined) next.add('lipsyncImageModel');
       if (patch.falLipsyncVideoModel !== undefined) next.add('lipsyncVideoModel');
       return next;
@@ -2508,6 +2520,7 @@ function App() {
         case 'imageSteps': next.imageSteps = global.imageSteps; break;
         case 'videoDuration': next.videoDuration = global.videoDuration; break;
         case 'videoAspectRatio': next.videoAspectRatio = global.videoAspectRatio; break;
+        case 'videoResolution': next.videoResolution = global.videoResolution; break;
         case 'lipsyncImageModel': next.falLipsyncImageModel = global.falLipsyncImageModel; break;
         case 'lipsyncVideoModel': next.falLipsyncVideoModel = global.falLipsyncVideoModel; break;
       }
@@ -2935,6 +2948,7 @@ function App() {
     const nextFalUpscaleModel = config.providers?.fal?.upscaleModel || defaultFalUpscaleModel;
     const nextVideoDuration = config.generation?.video?.duration || defaultVideoDuration;
     const nextVideoAspectRatio = config.generation?.video?.aspectRatio || defaultVideoAspectRatio;
+    const nextVideoResolution = config.generation?.video?.resolution || defaultVideoResolution;
 
     setStartupError('');
     setStorageConfig(config.storage ?? null);
@@ -2991,6 +3005,7 @@ function App() {
     setFalUpscaleModel(nextFalUpscaleModel);
     setVideoDuration(nextVideoDuration);
     setVideoAspectRatio(nextVideoAspectRatio);
+    setVideoResolution(nextVideoResolution);
     setConfigLoaded(true);
     await Promise.all([
       refreshConversations(),
@@ -6685,6 +6700,7 @@ type ModelSelectionValue = {
   imageSteps: number;
   videoDuration: string;
   videoAspectRatio: string;
+  videoResolution: string;
   whisperBinary: string;
 };
 
@@ -6742,6 +6758,7 @@ function overrideKeysFromRecord(overrides: main.ConversationModelOverrides | nul
   if (overrides.imageSteps) keys.add('imageSteps');
   if (overrides.videoDuration) keys.add('videoDuration');
   if (overrides.videoAspectRatio) keys.add('videoAspectRatio');
+  if (overrides.videoResolution) keys.add('videoResolution');
   if (overrides.lipsyncImageModel) keys.add('lipsyncImageModel');
   if (overrides.lipsyncVideoModel) keys.add('lipsyncVideoModel');
   return keys;
@@ -6792,6 +6809,7 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   if (keys.has('imageSteps')) payload.imageSteps = draft.imageSteps;
   if (keys.has('videoDuration')) payload.videoDuration = draft.videoDuration;
   if (keys.has('videoAspectRatio')) payload.videoAspectRatio = draft.videoAspectRatio;
+  if (keys.has('videoResolution')) payload.videoResolution = draft.videoResolution;
   if (keys.has('lipsyncImageModel')) payload.lipsyncImageModel = draft.falLipsyncImageModel;
   if (keys.has('lipsyncVideoModel')) payload.lipsyncVideoModel = draft.falLipsyncVideoModel;
   return main.ConversationModelOverrides.createFrom(payload);
@@ -7219,7 +7237,7 @@ function ModelSelectionPanel({
             </select>
           </div>
 
-          <div className="two-column">
+          <div className="three-column">
             <div className="field">
               <div className="field-label-row">
                 {fieldLabel('video-duration', 'Default Video Duration', 'videoDuration')}
@@ -7243,6 +7261,19 @@ function ModelSelectionPanel({
               </div>
               <select id="video-aspect" value={value.videoAspectRatio} onChange={(event) => onChange({videoAspectRatio: event.target.value})}>
                 {videoAspectRatioOptions.map((option) => <option key={option} value={option}>{videoAspectRatioLabels[option] ?? option}</option>)}
+              </select>
+            </div>
+
+            <div className="field">
+              <div className="field-label-row">
+                {fieldLabel('video-resolution', 'Video Resolution', 'videoResolution')}
+                <InfoHint
+                  label="Video resolution"
+                  text="The default output resolution tier for video generation — the fallback when a request doesn't state one. Tiers vary by model: a tier the selected model doesn't support is ignored with a notice and the model's own default is used. Auto lets the model choose. Higher tiers cost more on per-second and token-billed models."
+                />
+              </div>
+              <select id="video-resolution" value={value.videoResolution} onChange={(event) => onChange({videoResolution: event.target.value})}>
+                {videoResolutionOptions.map((option) => <option key={option} value={option}>{videoResolutionLabels[option] ?? option}</option>)}
               </select>
             </div>
           </div>

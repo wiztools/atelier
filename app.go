@@ -417,12 +417,21 @@ type ConfigImageGeneration struct {
 	Height int `json:"height,omitempty"`
 }
 
-// ConfigVideoGeneration holds the two user-facing text-to-video knobs. Duration
-// and AspectRatio are fal enum strings ("5"/"10", "16:9"/"9:16"/"1:1"); other
-// fal parameters (negative prompt, cfg scale) use the model's own defaults.
+// ConfigVideoGeneration holds the user-facing text-to-video knobs. Duration
+// and AspectRatio are fal enum strings ("5"/"10", "16:9"/"9:16"/"1:1");
+// Resolution is a tier ("480p"/"720p"/"1080p"/"4k", empty = let the model
+// choose); other fal parameters (negative prompt, cfg scale) use the model's
+// own defaults.
 type ConfigVideoGeneration struct {
 	Duration    string `json:"duration"`
 	AspectRatio string `json:"aspectRatio"`
+	// Resolution is the default output resolution tier for generate_video —
+	// the fallback when a call states no resolution, mirroring
+	// ConfigImageGeneration.SizePreset. Empty (the default) lets the model
+	// choose, the pre-setting behavior. Tiers vary by model; the provider
+	// resolvers drop a tier the selected model's enum doesn't list with a
+	// notice rather than 422ing.
+	Resolution string `json:"resolution,omitempty"`
 }
 
 type ConfigTools struct {
@@ -729,8 +738,9 @@ type VideoRestyleRequest struct {
 // resolveVideoBody; the transport (FalClient.GenerateVideo) receives only the
 // resolved body. Images is the source frame(s) for image-to-video or
 // reference-to-video; Video is the source clip for a Veo extend endpoint.
-// Resolution and FPS are planner-only knobs (no persisted config default) —
-// they are dropped with a notice when the selected model has no matching input.
+// Resolution falls back to the Settings → Generation → Video tier when the
+// planner states none; FPS is a planner-only knob — both are dropped with
+// a notice when the selected model has no matching input.
 type VideoGenerateRequest struct {
 	Model       string `json:"model"`
 	Prompt      string `json:"prompt"`
@@ -783,8 +793,8 @@ type VideoGenerateRequest struct {
 	// Resolution is an optional output resolution tier (a fal enum string, e.g.
 	// "720p", "1080p", "4k"). Tiers vary by model; resolveVideoBody drops a tier
 	// the selected model's enum doesn't list with a notice rather than 422ing at
-	// fal. Omit to let the model use its own default. Planner-only, like
-	// NegativePrompt — there is no persisted config default for it.
+	// fal. Empty lets the model use its own default. The executor fills it from
+	// the Settings → Generation → Video tier when the planner states none.
 	Resolution string `json:"resolution,omitempty"`
 	// FPS is an optional output frame rate (e.g. "24", "30", "60"). Some video
 	// models expose an fps/frame_rate input; resolveVideoBody drops a value the
@@ -3931,6 +3941,11 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	if strings.TrimSpace(config.Generation.Video.AspectRatio) == "" {
 		config.Generation.Video.AspectRatio = defaults.Generation.Video.AspectRatio
 	}
+	// Canonicalize the tier (trim + lowercase) and drop unknown values: empty
+	// means "let the model choose", so a junk hand-edited config.json value
+	// must become empty rather than ride a request the resolvers would notice
+	// about on every video turn.
+	config.Generation.Video.Resolution = normalizeVideoResolutionTier(config.Generation.Video.Resolution)
 	config.Tools = mergeToolsConfig(config.Tools, defaults.Tools)
 	config.UI.Mode = defaults.UI.Mode
 	if strings.TrimSpace(config.Updates.ManifestURL) == "" {

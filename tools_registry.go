@@ -946,6 +946,16 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 			if duration == "" {
 				duration = tools.Config.Generation.Video.Duration
 			}
+			// Resolution precedence mirrors the image tool's tier rule: an
+			// explicit resolution on the call wins; otherwise the configured
+			// default tier applies. The config value is canonicalized here as
+			// well as in mergeAppConfig because per-conversation overrides and
+			// tests build configs without that pass; "" (unset) keeps the
+			// model's own default, the pre-setting behavior.
+			resolution := strings.TrimSpace(call.Resolution)
+			if resolution == "" {
+				resolution = normalizeVideoResolutionTier(tools.Config.Generation.Video.Resolution)
+			}
 			// ExtendSource records the extend diagnosis for the resolver: a
 			// video-only, non-reference turn continues the clip, so multi-task
 			// models (seedance-2.5's task enum) must run their extension task
@@ -964,7 +974,7 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 				ExtendSource:        extendTurn,
 				Keyframes:           keyframes,
 				NegativePrompt:      strings.TrimSpace(call.NegativePrompt),
-				Resolution:          strings.TrimSpace(call.Resolution),
+				Resolution:          resolution,
 				FPS:                 strings.TrimSpace(call.FPS),
 				Images:              attachedImages,
 				Videos:              requestVideos,
@@ -2457,6 +2467,21 @@ func normalizeImageResolutionTier(tier string) string {
 	return ""
 }
 
+// normalizeVideoResolutionTier canonicalizes a video resolution tier ("480p",
+// "720p", "1080p", "4k") from config input, lowercased and trimmed. Anything
+// else yields "" so callers fall back to letting the model choose rather than
+// forwarding an unknown value to a provider. Deliberately strict — the planner's
+// per-call resolution param stays a free string, so a model with an exotic tier
+// outside this set is still reachable per call; the Settings picker offers only
+// these four.
+func normalizeVideoResolutionTier(tier string) string {
+	switch strings.ToLower(strings.TrimSpace(tier)) {
+	case "480p", "720p", "1080p", "4k":
+		return strings.ToLower(strings.TrimSpace(tier))
+	}
+	return ""
+}
+
 // imageSizePresetLongEdge returns the long-edge pixel budget for a resolution
 // tier. These are vetted values (the Settings Size dropdown lists them) so
 // neither the model nor the user can request an out-of-budget generation by
@@ -2502,7 +2527,7 @@ func generateVideoParamSchema() map[string]any {
 			"negativePrompt": stringParam("Optional — describe what to keep out of the clip (e.g. \"blurry, text, watermark\")."),
 			"aspectRatio":    enumParam("Optional — the output video shape, or \"auto\" to let the model decide. When the model exposes an aspect_ratio input this is sent directly; otherwise image-to-video models inherit the ratio from the source image, so the explicit ratio is only honored if that image already matches (the image is not reshaped). Omit to inherit the attached image's orientation (image-to-video), the attached clip's (extend), or the configured default (reference media and text-to-video).", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9", "auto"),
 			"duration":       stringParam("Optional — the target clip length in seconds (e.g. \"5\", \"8\"). Forwarded only when the model exposes a duration input; an unsupported value is dropped with a notice and the model's default is used. For an extend (an attached video) the value is the length of the *extension*, not the total output length — so \"5\" adds 5s to the source clip. Omit to use the configured default length (or the model's default when extending)."),
-			"resolution":     stringParam("Optional — the output video resolution tier (e.g. \"480p\", \"720p\", \"1080p\", \"4k\"). Tiers vary by model, so an unsupported value is ignored with a notice and the model's default is used. Omit to let the model choose."),
+			"resolution":     stringParam("Optional — the output video resolution tier (e.g. \"480p\", \"720p\", \"1080p\", \"4k\"). Tiers vary by model, so an unsupported value is ignored with a notice and the model's default is used. Omit to use the configured default resolution (or let the model choose when no default is set)."),
 			"fps":            stringParam("Optional — the output frame rate in frames per second (e.g. \"24\", \"30\", \"60\"). Only some video models expose an fps/frame_rate input; an unsupported value (or a model with no such input) is ignored with a notice and the model's default is used. Omit to let the model choose."),
 			"generateAudio":  boolParam("Optional — set false to render a silent clip on models that would otherwise add audio. Some models generate audio by default yet expose no way to disable it; on those, a false value cannot be honored and the user is notified."),
 			"useVideoAs":     enumParam("Optional — how an attached video is used. \"motion\" (the default) treats it as a source: with an image also attached, the video's motion is transferred onto the image's subject; with a video alone, the clip is extended. \"reference\" instead treats every attached image and video as references — characters, style, or scenes guiding a brand-new clip — which is the right choice whenever the user cites the attachments as examples to follow rather than the clip to continue or copy motion from.", "motion", "reference"),

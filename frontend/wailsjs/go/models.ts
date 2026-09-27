@@ -77,6 +77,7 @@ export namespace main {
 	export class ConfigVideoGeneration {
 	    duration: string;
 	    aspectRatio: string;
+	    resolution?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigVideoGeneration(source);
@@ -86,6 +87,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.duration = source["duration"];
 	        this.aspectRatio = source["aspectRatio"];
+	        this.resolution = source["resolution"];
 	    }
 	}
 	export class ConfigImageGeneration {
@@ -657,6 +659,7 @@ export namespace main {
 	    imageSteps?: number;
 	    videoDuration?: string;
 	    videoAspectRatio?: string;
+	    videoResolution?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConversationModelOverrides(source);
@@ -696,6 +699,7 @@ export namespace main {
 	        this.imageSteps = source["imageSteps"];
 	        this.videoDuration = source["videoDuration"];
 	        this.videoAspectRatio = source["videoAspectRatio"];
+	        this.videoResolution = source["videoResolution"];
 	    }
 	}
 	export class ChatRequest {

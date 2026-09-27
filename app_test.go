@@ -324,6 +324,11 @@ func TestMergeAppConfigFillsDefaults(t *testing.T) {
 	if config.Generation.Video.Duration != defaultFalVideoDuration || config.Generation.Video.AspectRatio != defaultFalVideoAspectRatio {
 		t.Fatalf("video generation defaults = %+v, want %s / %s", config.Generation.Video, defaultFalVideoDuration, defaultFalVideoAspectRatio)
 	}
+	// Resolution's default is deliberately empty — "let the model choose", the
+	// pre-setting behavior — so an unset config must not grow a tier here.
+	if config.Generation.Video.Resolution != "" {
+		t.Fatalf("video generation resolution default = %q, want empty (model chooses)", config.Generation.Video.Resolution)
+	}
 	if config.Providers.Ollama.NumCtx != defaultOllamaNumCtx {
 		t.Fatalf("numCtx = %d, want default %d", config.Providers.Ollama.NumCtx, defaultOllamaNumCtx)
 	}

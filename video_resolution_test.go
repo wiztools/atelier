@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -142,5 +143,105 @@ func TestResolveVideoBodyResolutionCaseMismatchStillDropped(t *testing.T) {
 	}
 	if len(notices) != 1 || !strings.Contains(notices[0], "does not accept resolution") || !strings.Contains(notices[0], "720p") {
 		t.Fatalf("expected one resolution-dropped notice naming 720p, got %v", notices)
+	}
+}
+
+// === Config default precedence (Settings → Generation → Video) ===
+//
+// Resolution now has a persisted config default beside the planner's per-call
+// knob, mirroring the image tool's tier rule: an explicit resolution on the
+// call wins; otherwise the configured tier applies; an unset (empty) config
+// keeps the pre-setting behavior — the model's own default. The config value
+// is canonicalized at the executor because per-conversation overrides and
+// tests build configs without mergeAppConfig's normalization pass.
+
+// TestNormalizeVideoResolutionTier pins the canonical set: the four tiers the
+// Settings picker offers, case-insensitive and trimmed; anything else —
+// including tiers other models might speak ("1440p") and image vocabulary
+// ("2k") — normalizes to "" (let the model choose) rather than riding a
+// request the resolvers would notice about every turn.
+func TestNormalizeVideoResolutionTier(t *testing.T) {
+	cases := map[string]string{
+		"480p":    "480p",
+		"1080p":   "1080p",
+		"  4K ":   "4k",
+		"1080P":   "1080p",
+		"":        "",
+		"2k":      "",
+		"1440p":   "",
+		"auto":    "",
+		"1080 px": "",
+	}
+	for input, want := range cases {
+		if got := normalizeVideoResolutionTier(input); got != want {
+			t.Fatalf("normalizeVideoResolutionTier(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+// TestGenerateVideoResolutionPrecedence drives the generate_video executor with
+// a stubbed gateway to pin the request-building precedence: explicit call tier
+// beats config, config fills an omitted tier, and a junk config value
+// (normalize-empty) leaves the request unset instead of forwarding garbage.
+func TestGenerateVideoResolutionPrecedence(t *testing.T) {
+	cases := []struct {
+		name          string
+		callTier      string
+		configTier    string
+		wantRequested string
+	}{
+		{name: "explicit call tier beats config", callTier: "4k", configTier: "1080p", wantRequested: "4k"},
+		{name: "config tier fills an omitted call tier", callTier: "", configTier: "1080p", wantRequested: "1080p"},
+		{name: "unset config keeps the model default", callTier: "", configTier: "", wantRequested: ""},
+		{name: "junk config tier is dropped, not forwarded", callTier: "", configTier: "2k", wantRequested: ""},
+		{name: "uppercase config tier is canonicalized", callTier: "", configTier: " 720P ", wantRequested: "720p"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := defaultAppConfig()
+			config.Providers.Fal.VideoModel = "bytedance/seedance-2.0/text-to-video"
+			config.Generation.Video.Resolution = tc.configTier
+
+			var gotReq VideoGenerateRequest
+			def := videoGenerationToolDefinition(AppConfig{}, false)
+			exec := HarnessToolExecutionContext{
+				Config: config,
+				GenerateVideo: func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
+					gotReq = req
+					return GeneratedVideo{Data: []byte("mp4"), MimeType: "video/mp4", SourceURL: "https://example.com/v.mp4"}, nil
+				},
+			}
+			_, _, err := def.Execute(context.Background(), exec, HarnessToolCall{
+				Name:       "generate_video",
+				Content:    "a drone shot over a misty forest",
+				Resolution: tc.callTier,
+			})
+			if err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+			if gotReq.Resolution != tc.wantRequested {
+				t.Fatalf("request resolution = %q, want %q", gotReq.Resolution, tc.wantRequested)
+			}
+		})
+	}
+}
+
+// TestMergeAppConfigVideoResolutionCanonicalized pins the merge-side pass: a
+// hand-edited config.json tier is lowercased onto the canonical set, and an
+// unknown value becomes empty — empty means "let the model choose", so there
+// is no defaults-fill the way Duration/AspectRatio have one.
+func TestMergeAppConfigVideoResolutionCanonicalized(t *testing.T) {
+	cases := map[string]string{
+		"1080P": "1080p",
+		"4k":    "4k",
+		"2k":    "",
+		"hi":    "",
+		"":      "",
+	}
+	for input, want := range cases {
+		config := mergeAppConfig(AppConfig{Generation: ConfigGeneration{Video: ConfigVideoGeneration{Resolution: input}}})
+		if got := config.Generation.Video.Resolution; got != want {
+			t.Fatalf("mergeAppConfig resolution %q = %q, want %q", input, got, want)
+		}
 	}
 }

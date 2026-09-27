@@ -71,6 +71,7 @@ type ConversationModelOverrides struct {
 	ImageSteps       int    `json:"imageSteps,omitempty"`
 	VideoDuration    string `json:"videoDuration,omitempty"`
 	VideoAspectRatio string `json:"videoAspectRatio,omitempty"`
+	VideoResolution  string `json:"videoResolution,omitempty"`
 }
 
 // conversationModelOverridesActive reports whether any field is set — the
@@ -93,7 +94,7 @@ func normalizeConversationModelOverrides(o ConversationModelOverrides) Conversat
 		&o.AudioModel, &o.SoundEffectsModel, &o.AudioCloneModel, &o.AudioExtendModel, &o.TranscribeModel,
 		&o.LipsyncImageModel, &o.LipsyncVideoModel,
 		&o.TranscriptionProvider, &o.WhisperModel, &o.WhisperBinary,
-		&o.ImageAspectRatio, &o.ImageSizePreset, &o.VideoDuration, &o.VideoAspectRatio,
+		&o.ImageAspectRatio, &o.ImageSizePreset, &o.VideoDuration, &o.VideoAspectRatio, &o.VideoResolution,
 	}
 	for _, field := range fields {
 		*field = strings.TrimSpace(*field)
@@ -426,6 +427,9 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 	}
 	if o.VideoAspectRatio != "" {
 		config.Generation.Video.AspectRatio = o.VideoAspectRatio
+	}
+	if o.VideoResolution != "" {
+		config.Generation.Video.Resolution = o.VideoResolution
 	}
 	return config, req, nil
 }
