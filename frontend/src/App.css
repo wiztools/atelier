@@ -2991,9 +2991,11 @@ button:disabled {
    above the media so their clicks never fall through to the zoom button. The
    '@' glyph mirrors the composer's mention chips: clicking inserts the same
    token typing '@' would; the arrow downloads the artifact through the Save*
-   bindings. Semi-opaque dark base so they read over any media. */
+   bindings; the chat bubble opens the owning conversation at the origin turn.
+   Semi-opaque dark base so they read over any media. */
 .asset-reference-button,
-.asset-download-button {
+.asset-download-button,
+.asset-conversation-button {
   position: absolute;
   top: 8px;
   right: 8px;
@@ -3016,16 +3018,22 @@ button:disabled {
   transition: opacity 0.12s ease;
 }
 
-/* The download affordance sits one gutter left of the reference button
-   (26px pill + 8px gutter + the corner's 8px inset). */
+/* Each further affordance sits one gutter left of the previous (26px pill +
+   8px gutter + the corner's 8px inset): download at 42px, conversation at 76px. */
 .asset-download-button {
   right: 42px;
 }
 
+.asset-conversation-button {
+  right: 76px;
+}
+
 .asset-card:hover .asset-reference-button,
 .asset-card:hover .asset-download-button,
+.asset-card:hover .asset-conversation-button,
 .asset-reference-button:focus-visible,
-.asset-download-button:focus-visible {
+.asset-download-button:focus-visible,
+.asset-conversation-button:focus-visible {
   opacity: 1;
 }
 

@@ -4348,6 +4348,21 @@ function App() {
     return saveGeneratedImage(asset.url, 0);
   }
 
+  // openAssetConversation is the assets-panel navigation affordance: it opens
+  // the conversation that owns the asset with the origin turn focused, so the
+  // click lands on the message that attached or produced the media. In library
+  // scope that switches chats; within a conversation the focus turn makes it a
+  // jump-to-source shortcut. openConversationSummary only reads the id (it
+  // re-fetches the detail), so a synthesized summary carries the asset's own
+  // conversationId/Title.
+  function openAssetConversation(asset: main.ConversationAsset) {
+    if (!asset.conversationId) return;
+    openConversationSummary(
+      main.ConversationSummary.createFrom({ id: asset.conversationId, title: asset.conversationTitle || '' }),
+      asset.originTurnId || '',
+    );
+  }
+
   return (
     <main
       ref={shellRef}
@@ -5827,6 +5842,29 @@ function App() {
                           <path d="M12 4v11" />
                           <path d="m7 10 5 5 5-5" />
                           <path d="M5 20h14" />
+                        </svg>
+                      </button>
+                    ) : null}
+                    {/* Navigation needs no artifact on disk — unlike download,
+                        a missing file still has a conversation to jump to. */}
+                    {asset.conversationId ? (
+                      <button
+                        type="button"
+                        className="asset-conversation-button"
+                        onClick={() => openAssetConversation(asset)}
+                        aria-label={
+                          composerLibraryID && asset.conversationId !== activeConversationID
+                            ? `Open ${asset.conversationTitle || 'conversation'}`
+                            : 'Jump to this asset in the conversation'
+                        }
+                        title={
+                          composerLibraryID && asset.conversationId !== activeConversationID
+                            ? `Open in ${asset.conversationTitle || 'conversation'}`
+                            : 'Jump to the turn that produced this asset'
+                        }
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
                         </svg>
                       </button>
                     ) : null}
