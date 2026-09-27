@@ -214,6 +214,11 @@ type falBillingHints struct {
 	// megapixel of output. Computed from what was actually rendered (see
 	// falVideoBilledMegapixels / imageResultMegapixels).
 	Megapixels float64
+	// PriceMultiplier scales the computed price after quantity × unit price,
+	// for fal-documented conditional discounts. The seedance reference-to-video
+	// family multiplies by 0.6 whenever the call carries video inputs (see
+	// falVideoReferenceDiscount); 0 means no multiplier applies.
+	PriceMultiplier float64
 }
 
 // quantityForUnit maps a billing unit onto the hint that prices it.
@@ -362,6 +367,9 @@ func estimateFalCostMicros(ctx context.Context, cache *falPricingCache, httpClie
 		return 0
 	}
 	cost := quote.UnitPrice * quantity * 1e6
+	if hints.PriceMultiplier > 0 && hints.PriceMultiplier <= 1 {
+		cost *= hints.PriceMultiplier
+	}
 	if math.IsNaN(cost) || math.IsInf(cost, 0) || cost <= 0 {
 		return 0
 	}
@@ -488,21 +496,71 @@ func falVideoTokenCount(resolution, aspect string, seconds float64) float64 {
 //   - Resolution defaults live in the model's schema ("720p" for seedance),
 //     and a tier the model's enum rejects is dropped by resolveVideoBody —
 //     schemaStringInput reproduces that resolution either way.
-//   - Seconds come from the generated clip's own MP4 container (exact, and the
-//     only source when the duration was "auto"), falling back to the requested
-//     duration.
-//   - Video inputs add their own duration to fal's token formula; the gateway
-//     never probes source clips, so a turn with video inputs estimates nothing
-//     rather than half the bill. Image inputs contribute no seconds.
+//   - Output seconds come from the generated clip's own MP4 container (exact,
+//     and the only source when the duration was "auto"), falling back to the
+//     requested duration — the caller resolves them via falVideoBilledSeconds.
+//   - Video inputs add their own duration to fal's token formula
+//     (input_video_duration + output_duration, billed alongside the output per
+//     fal's model pages); their seconds are parsed from the staged data URLs
+//     before the gateway hosts them (falVideoSourceSeconds). With no local
+//     bytes the input half is unknowable, so the estimate is skipped rather
+//     than covering only the output. Image inputs contribute no seconds.
 //
 // Zero means "not computable" — quantityForUnit then skips the cost.
-func falVideoTokenEstimate(schema *ModelInputSchema, req VideoGenerateRequest, seconds float64) float64 {
-	if len(req.SourceVideos()) > 0 || seconds <= 0 {
+func falVideoTokenEstimate(schema *ModelInputSchema, req VideoGenerateRequest, sourceSeconds, outputSeconds float64) float64 {
+	if outputSeconds <= 0 {
 		return 0
+	}
+	seconds := outputSeconds
+	if len(req.SourceVideos()) > 0 {
+		if sourceSeconds <= 0 {
+			return 0
+		}
+		seconds += sourceSeconds
 	}
 	resolution := schemaStringInput(schema, "resolution", req.Resolution)
 	aspect := schemaStringInput(schema, "aspect_ratio", req.AspectRatio)
 	return falVideoTokenCount(resolution, aspect, seconds)
+}
+
+// falVideoSourceSeconds sums the billed input duration across a turn's source
+// clips — the input_video_duration term of fal's token formula. The harness
+// stages source media as base64 data URLs, so the gateway captures this BEFORE
+// resolveMediaURL hosts oversized payloads on fal's CDN; a hosted URL's bytes
+// are no longer local, and pricing never fetches. ok is false when any clip's
+// duration can't be read: a partial sum would bill only the parsed clips, so
+// the whole estimate is skipped (the activity then carries CostUnknown).
+func falVideoSourceSeconds(videos []string) (float64, bool) {
+	if len(videos) == 0 {
+		return 0, false
+	}
+	total := 0.0
+	for _, video := range videos {
+		data, _, err := decodeMediaDataURL(video)
+		if err != nil {
+			return 0, false
+		}
+		seconds, ok := mp4DurationSeconds(data)
+		if !ok || seconds <= 0 {
+			return 0, false
+		}
+		total += seconds
+	}
+	return total, true
+}
+
+// falVideoReferenceDiscount returns the price multiplier fal applies when a
+// call carries video inputs, documented on the seedance reference-to-video
+// model pages: seedance-2.0 ("If video inputs are provided the price is
+// multiplied by 0.6") and seedance-2.5 ("If any video references are provided,
+// the price is multiplied by 0.6", applied to input and output seconds alike).
+// Scoped to the family whose pages state it — a discount is never guessed onto
+// another model's quote. Zero means none.
+func falVideoReferenceDiscount(model string) float64 {
+	if strings.HasPrefix(strings.TrimSpace(model), "bytedance/seedance-2.") {
+		return 0.6
+	}
+	return 0
 }
 
 // falVideoBilledMegapixels computes the megapixel quantity an MP-billed video

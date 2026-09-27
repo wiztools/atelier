@@ -3538,8 +3538,15 @@ func (h *HarnessEngine) toolActivityFromResult(result HarnessToolResult) Harness
 	// Replicate media generation is paid but unpriceable here — no pricing
 	// API, no cost on the prediction — so mark the row unknown rather than
 	// letting it render as a free call. CostMicros stays 0 and the turn total
-	// keeps summing only known costs.
-	if activity.Provider == "replicate" && activity.MediaKind != "" && activity.CostMicros == 0 {
+	// keeps summing only known costs. A fal media call that priced to zero is
+	// the same story one layer down: the estimate is fail-soft (pricing cache
+	// miss, a billing unit the request can't state, source durations never
+	// locally readable), so it marks unknown too — the row renders "est. ?"
+	// and the total gets the "~" prefix instead of reading as free. Local
+	// providers (ollama, openai-compatible) generate no dollar cost by nature
+	// and stay unmarked.
+	if activity.MediaKind != "" && activity.CostMicros == 0 &&
+		(activity.Provider == "replicate" || activity.Provider == "fal") {
 		activity.CostUnknown = true
 	}
 	return activity

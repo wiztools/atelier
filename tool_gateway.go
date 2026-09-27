@@ -244,6 +244,11 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			// SourceVideos() unifies the legacy scalar Video into the slice, so
 			// the resolver and transport below see one list.
 			videos := req.SourceVideos()
+			// The source clips' billed input duration is parsed from the staged
+			// data URLs BEFORE hosting replaces them with fal CDN URLs whose
+			// bytes are no longer local (fal's token formula bills
+			// input_video_duration alongside output_duration).
+			sourceSeconds, _ := falVideoSourceSeconds(videos)
 			for i := range videos {
 				if resolved, err := client.resolveMediaURL(ctx, videos[i], "video/mp4", fmt.Sprintf("source-video-%d.mp4", i)); err == nil && resolved != "" {
 					videos[i] = resolved
@@ -278,14 +283,27 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 					// fal's token formula with the effective resolution tier.
 					if seconds, ok := falVideoBilledSeconds(generated.Data, req.Duration); ok {
 						hints.Seconds = seconds
-						hints.Tokens = falVideoTokenEstimate(schema, req, seconds)
+						hints.Tokens = falVideoTokenEstimate(schema, req, 0, seconds)
 					}
-				} else if seconds, ok := falDurationSeconds(req.Duration); ok {
-					// Video-source turns (extend/motion): the rendered clip
-					// contains the source footage, so probing it would
-					// overstate what a per-second model bills — Duration
-					// names the billed extension length here.
-					hints.Seconds = seconds
+				} else {
+					// Video-source turns (extend/motion/reference): per-second
+					// models read Duration, the billed extension length — the
+					// rendered clip contains the source footage, so probing it
+					// would overstate the bill. Token-billed models (seedance)
+					// bill input_video_duration + output_duration per fal's
+					// formula: the parsed source seconds plus the rendered
+					// clip's own container, both measurable, so the estimate
+					// covers the whole bill (zero source seconds — bytes never
+					// local — skips it inside falVideoTokenEstimate).
+					if seconds, ok := falDurationSeconds(req.Duration); ok {
+						hints.Seconds = seconds
+					}
+					if seconds, ok := falVideoBilledSeconds(generated.Data, req.Duration); ok {
+						hints.Tokens = falVideoTokenEstimate(schema, req, sourceSeconds, seconds)
+					}
+					// fal's seedance reference-to-video pages multiply the
+					// price by 0.6 whenever the call carries video inputs.
+					hints.PriceMultiplier = falVideoReferenceDiscount(req.Model)
 				}
 				// Megapixel-billed models (ltx-2.3-22b) read the rendered
 				// frame size from the container plus the generated frame count

@@ -638,6 +638,48 @@ func TestToolActivitiesRecordMediaProviderAttribution(t *testing.T) {
 	}
 }
 
+func TestToolActivitiesMarkUnknownCost(t *testing.T) {
+	// A priced fal call stays clear; one that priced to zero (the estimate is
+	// fail-soft: source durations never locally readable, pricing cache miss,
+	// a billing unit the request can't state) marks unknown so the row renders
+	// "est. ?" and the total gets the "~" prefix instead of reading as free —
+	// the conv_859908bf story, where a ~$3.41 seedance render showed nothing.
+	engine := newHarnessEngine(defaultAppConfig())
+	activities := engine.toolActivities([]HarnessToolResult{
+		{Name: "generate_video", Status: "completed", Result: ToolVideoResult{Model: "bytedance/seedance-2.5/reference-to-video", Count: 1, CostMicros: 3406061}},
+		{Name: "generate_video", Status: "completed", Result: ToolVideoResult{Model: "bytedance/seedance-2.5/reference-to-video", Count: 1}},
+	}, []HarnessToolCall{
+		{Name: "generate_video", Content: "a scissor world"},
+		{Name: "generate_video", Content: "a scissor world"},
+	})
+	if activities[0].CostUnknown {
+		t.Fatal("priced fal activity should not be marked cost-unknown")
+	}
+	if !activities[1].CostUnknown {
+		t.Fatal("unpriced fal media activity should be marked cost-unknown, not free")
+	}
+
+	// Replicate keeps its existing marker (no pricing API at all)...
+	config := defaultAppConfig()
+	config.Models.VideoProvider = "replicate"
+	replicate := newHarnessEngine(config).toolActivities([]HarnessToolResult{
+		{Name: "generate_video", Status: "completed", Result: ToolVideoResult{Model: "xai/grok-imagine-video-extension", Count: 1}},
+	}, []HarnessToolCall{{Name: "generate_video", Content: "x"}})
+	if !replicate[0].CostUnknown {
+		t.Fatal("replicate media activity should stay cost-unknown")
+	}
+	// ...and local providers (ollama) generate no dollar cost by nature, so
+	// they stay unmarked rather than claiming an unknown price.
+	config.Models.VideoProvider = ""
+	config.Models.ImageProvider = ""
+	local := newHarnessEngine(config).toolActivities([]HarnessToolResult{
+		{Name: "generate_image", Status: "completed", Result: ToolImageResult{Model: "llava", Count: 1}},
+	}, []HarnessToolCall{{Name: "generate_image", Content: "x"}})
+	if local[0].CostUnknown {
+		t.Fatal("ollama image activity carries no dollar cost and should stay unmarked")
+	}
+}
+
 // persistedHarnessRun reads the harness run off the Nth (1-based) assistant
 // turn's ProviderResponse in the conversation's sole record.
 func persistedHarnessRun(t *testing.T, config AppConfig, assistantIndex int) map[string]any {

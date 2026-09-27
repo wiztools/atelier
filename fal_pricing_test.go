@@ -517,25 +517,74 @@ func TestFalVideoTokenEstimate(t *testing.T) {
 	// The motivating turn: image-to-video, no resolution/duration from the
 	// planner — schema default 720p, 10s rendered → 216,000 tokens.
 	req := VideoGenerateRequest{Prompt: "tornado", Images: []string{"data:image/png;base64,AAAA"}}
-	if got := falVideoTokenEstimate(schema, req, 10); got != 216000 {
+	if got := falVideoTokenEstimate(schema, req, 0, 10); got != 216000 {
 		t.Fatalf("token estimate = %v, want 216000", got)
 	}
-	// Video inputs add their own unprobed duration to fal's formula — no
-	// estimate rather than half the bill.
+	// The conv_859908bf turn: seedance-2.5 reference-to-video over a 2.25s
+	// source clip, 10.030998s rendered at the 720p default. fal's formula
+	// bills input + output duration: 900 × (2.25 + 10.030998) × 24 =
+	// 265,269.5568 tokens — the estimate this turn used to skip entirely.
 	reqWithVideo := req
 	reqWithVideo.Videos = []string{"data:video/mp4;base64,AAAA"}
-	if got := falVideoTokenEstimate(schema, reqWithVideo, 10); got != 0 {
-		t.Fatalf("video-input turn should estimate 0 tokens, got %v", got)
+	if got := falVideoTokenEstimate(schema, reqWithVideo, 2.25, 10.030998); got != 265269.5568 {
+		t.Fatalf("video-source token estimate = %v, want 265269.5568", got)
+	}
+	// A video-input turn whose source durations are unknown (bytes never
+	// local) skips rather than billing only the output half.
+	if got := falVideoTokenEstimate(schema, reqWithVideo, 0, 10); got != 0 {
+		t.Fatalf("video-input turn with unknown source seconds should estimate 0 tokens, got %v", got)
 	}
 	// Unknown rendered duration ("auto" and no parseable container): skip.
-	if got := falVideoTokenEstimate(schema, req, 0); got != 0 {
+	if got := falVideoTokenEstimate(schema, req, 0, 0); got != 0 {
 		t.Fatalf("unknown duration should estimate 0 tokens, got %v", got)
 	}
 	// A resolution tier the model's enum rejects bills at the model default.
 	rejected := req
 	rejected.Resolution = "2160p"
-	if got := falVideoTokenEstimate(schema, rejected, 10); got != 216000 {
+	if got := falVideoTokenEstimate(schema, rejected, 0, 10); got != 216000 {
 		t.Fatalf("enum-rejected tier should fall to 720p default (216000 tokens), got %v", got)
+	}
+}
+
+func TestFalVideoSourceSeconds(t *testing.T) {
+	dataURL := func(data []byte) string {
+		return "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(data)
+	}
+	// Two parseable clips sum: 8s + 2.25s.
+	got, ok := falVideoSourceSeconds([]string{
+		dataURL(mp4FixtureWithDuration(0, 1000, 8000)),
+		dataURL(mp4FixtureWithDuration(0, 1000, 2250)),
+	})
+	if !ok || got != 10.25 {
+		t.Fatalf("source seconds = (%v, %v), want (10.25, true)", got, ok)
+	}
+	for name, videos := range map[string][]string{
+		"hosted url":     {"https://v3.fal.media/files/x.mp4"},
+		"non-mp4 bytes":  {dataURL([]byte("not a video at all"))},
+		"unparseable":    {dataURL(tinyMP4())},
+		"one of two":     {dataURL(mp4FixtureWithDuration(0, 1000, 8000)), "https://v3.fal.media/files/x.mp4"},
+		"empty list":     nil,
+		"empty data url": {""},
+	} {
+		if seconds, ok := falVideoSourceSeconds(videos); ok || seconds != 0 {
+			t.Fatalf("%s: source seconds = (%v, %v), want (0, false) — a partial sum must not bill", name, seconds, ok)
+		}
+	}
+}
+
+func TestFalVideoReferenceDiscount(t *testing.T) {
+	for model, want := range map[string]float64{
+		"bytedance/seedance-2.0/reference-to-video":  0.6,
+		"bytedance/seedance-2.5/reference-to-video":  0.6,
+		" bytedance/seedance-2.5/reference-to-video": 0.6,
+		"bytedance/seedance-1.5/reference-to-video":  0,
+		"fal-ai/kling-video/v2.6/pro/motion-control": 0,
+		"fal-ai/ltx-2.3-22b/extend-video":            0,
+		"":                                           0,
+	} {
+		if got := falVideoReferenceDiscount(model); got != want {
+			t.Fatalf("falVideoReferenceDiscount(%q) = %v, want %v", model, got, want)
+		}
 	}
 }
 
@@ -697,6 +746,7 @@ func (transport *falPricingTransport) RoundTrip(req *http.Request) (*http.Respon
 			`{"endpoint_id":"fal-ai/flux/schnell","unit_price":0.003,"unit":"image","currency":"USD"},` +
 			`{"endpoint_id":"fal-ai/kling-video/v2/master/text-to-video","unit_price":0.07,"unit":"second","currency":"USD"},` +
 			`{"endpoint_id":"bytedance/seedance-2.0/reference-to-video","unit_price":0.014,"unit":"1000 tokens","currency":"USD"},` +
+			`{"endpoint_id":"bytedance/seedance-2.5/reference-to-video","unit_price":0.0214,"unit":"1000 tokens","currency":"USD"},` +
 			`{"endpoint_id":"bytedance/seedream/v5/pro/edit","unit_price":0.0675,"unit":"units","currency":"USD"},` +
 			`{"endpoint_id":"fal-ai/f5-tts","unit_price":0.05,"unit":"1000 characters","currency":"USD"},` +
 			`{"endpoint_id":"fal-ai/nonusd/model","unit_price":1,"unit":"image","currency":"EUR"}` +
@@ -807,6 +857,30 @@ func TestEstimateFalCostMicros(t *testing.T) {
 	got = estimateFalCostMicros(ctx, cache, client, "key", "bytedance/seedance-2.0/reference-to-video", nil, falBillingHints{Tokens: 216000, Requests: 1})
 	if got != 3024000 {
 		t.Fatalf("token-billed estimate = %d, want 3024000", got)
+	}
+	// The video-reference discount multiplies the price after quantity ×
+	// unit price: $3.024 × 0.6 = $1.8144.
+	got = estimateFalCostMicros(ctx, cache, client, "key", "bytedance/seedance-2.0/reference-to-video", nil, falBillingHints{Tokens: 216000, Requests: 1, PriceMultiplier: 0.6})
+	if got != 1814400 {
+		t.Fatalf("discounted token estimate = %d, want 1814400", got)
+	}
+	// The conv_859908bf bill, end to end: a seedance-2.5 reference-to-video
+	// turn over a 2.25s source clip that rendered 10.030998s at the 720p
+	// default — 265,269.5568 tokens at $0.0214/1000, ×0.6 video-reference
+	// discount = $3.406061. Before this pricing path existed the turn reported
+	// only the text-model's $0.000067.
+	schema := &ModelInputSchema{Properties: map[string]SchemaProperty{
+		"resolution":   {Name: "resolution", Enum: []string{"480p", "720p", "1080p"}, Default: "720p"},
+		"aspect_ratio": {Name: "aspect_ratio", Enum: []string{"auto", "16:9", "9:16"}, Default: "auto"},
+	}}
+	videoReq := VideoGenerateRequest{Prompt: "scissor-land", Videos: []string{"data:video/mp4;base64,AAAA"}}
+	got = estimateFalCostMicros(ctx, cache, client, "key", "bytedance/seedance-2.5/reference-to-video", nil, falBillingHints{
+		Requests:        1,
+		Tokens:          falVideoTokenEstimate(schema, videoReq, 2.25, 10.030998),
+		PriceMultiplier: falVideoReferenceDiscount("bytedance/seedance-2.5/reference-to-video"),
+	})
+	if got != 3406061 {
+		t.Fatalf("conv_859908bf estimate = %d, want 3406061", got)
 	}
 	// Unit-billed: seedream v5 prices "units" per generated image
 	// (conv_26ef0c4f) — 1 unit × $0.0675 = $0.0675.
@@ -960,6 +1034,83 @@ func TestGatewayGenerateVideoPricesTokenBilledModel(t *testing.T) {
 	// 216,000 tokens × $0.014/1000 = $3.024 — fal's published rate card.
 	if generated.CostMicros != 3024000 {
 		t.Fatalf("CostMicros = %d, want 3024000 (216000 tokens at $0.014/1000)", generated.CostMicros)
+	}
+}
+
+// TestGatewayGenerateVideoPricesTokenBilledVideoSourceTurn is the regression
+// shape of conv_859908bf: a seedance-2.5 reference-to-video turn over an
+// attached 2.25s source clip that rendered 10.030998s at the 720p default.
+// fal's token formula bills input_video_duration + output_duration, and the
+// model page multiplies the price by 0.6 when video references ride: 900 ×
+// 12.280998 × 24 = 265,269.5568 tokens at $0.0214/1000 × 0.6 = $3.406061.
+// Before the source-duration capture existed this turn priced to zero and the
+// ledger showed only the text model's $0.000067.
+func TestGatewayGenerateVideoPricesTokenBilledVideoSourceTurn(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	keyring.MockInit()
+	if err := saveFalAPIKey("fal-test-key"); err != nil {
+		t.Fatalf("saveFalAPIKey: %v", err)
+	}
+	t.Cleanup(func() { _ = clearFalAPIKey() })
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig: %v", err)
+	}
+
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case strings.HasPrefix(req.URL.Path, "/v1/models/pricing"):
+			return jsonResponse(`{"prices":[` +
+				`{"endpoint_id":"bytedance/seedance-2.5/reference-to-video","unit_price":0.0214,"unit":"1000 tokens","currency":"USD"}` +
+				`],"next_cursor":null,"has_more":false}`), nil
+		case strings.Contains(req.URL.Path, "/api/openapi/"):
+			// Minimal seedance-2.5 reference-to-video-shaped schema: prompt +
+			// the video_url source slot, with the resolution/aspect_ratio
+			// defaults the token estimate falls back to.
+			return jsonResponse(`{"components":{"schemas":{"Seedance25Input":{"type":"object","required":["prompt"],` +
+				`"properties":{"prompt":{"type":"string"},"video_url":{"type":"string"},` +
+				`"resolution":{"type":"string","enum":["480p","720p","1080p"],"default":"720p"},` +
+				`"aspect_ratio":{"type":"string","enum":["auto","16:9","9:16"],"default":"auto"},` +
+				`"task":{"type":"string","enum":["reference","editing","extension"],"default":"reference"}}}}}}`), nil
+		}
+		if strings.Contains(req.URL.Host, "fal.run") {
+			switch {
+			case req.Method == http.MethodPost:
+				return jsonResponse(`{"request_id":"req-tok-2"}`), nil
+			case strings.HasSuffix(req.URL.Path, "/status"):
+				return jsonResponse(`{"status":"COMPLETED"}`), nil
+			case strings.HasSuffix(req.URL.Path, "/requests/req-tok-2"):
+				return jsonResponse(`{"video":{"url":"https://queue.fal.run/dl/token-video-source.mp4","content_type":"video/mp4"}}`), nil
+			default:
+				// The clip download: a 10.030998-second container — the
+				// output_duration term of the formula.
+				return mp4Resp(mp4FixtureWithDuration(0, 1000000, 10030998), "video/mp4"), nil
+			}
+		}
+		t.Fatalf("unexpected request %s %s", req.Method, req.URL)
+		return nil, nil
+	})
+
+	gateway := newToolGateway(app, config)
+	generated, err := gateway.tools.GenerateVideo(context.Background(), VideoGenerateRequest{
+		Model:  "bytedance/seedance-2.5/reference-to-video",
+		Prompt: "The girl stops walking and looks around Scissor-land.",
+		Videos: []string{"data:video/mp4;base64," + base64.StdEncoding.EncodeToString(mp4FixtureWithDuration(0, 1000, 2250))},
+	})
+	if err != nil {
+		t.Fatalf("GenerateVideo: %v", err)
+	}
+	if generated.CostMicros != 3406061 {
+		t.Fatalf("CostMicros = %d, want 3406061 (265269.5568 tokens at $0.0214/1000, ×0.6 video-reference discount)", generated.CostMicros)
 	}
 }
 
