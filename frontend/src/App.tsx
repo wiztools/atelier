@@ -6357,7 +6357,9 @@ function VideoPlayer({src, onPlayingChange}: {src: string; onPlayingChange?: (pl
 // user browses other assets — and is released on its first pause once out of
 // the band. The observed root is the .assets-list scroller (via closest) so
 // rootMargin extends into the scrolled content, giving a mount lookahead
-// band the viewport root's clipping would not.
+// band the viewport root's clipping would not. Panel playback is also
+// exclusive: a clip that starts pauses every other mounted video in the
+// panel, so starting one never layers a second clip's audio over the first.
 function LazyPanelVideo({src}: {src: string}) {
   const slotRef = useRef<HTMLDivElement | null>(null);
   const [mounted, setMounted] = useState(false);
@@ -6383,6 +6385,17 @@ function LazyPanelVideo({src}: {src: string}) {
 
   const handlePlayingChange = (playing: boolean) => {
     playingRef.current = playing;
+    // Exclusive playback: a clip that begins pauses every other mounted
+    // video in the panel before either audibly advances. Walking the DOM
+    // (rather than keeping a registry) scopes the policy to this panel —
+    // transcript players are untouched — and sees exactly the videos the
+    // lazy mount has instantiated right now.
+    if (playing) {
+      const panel = slotRef.current?.closest('.assets-panel');
+      panel?.querySelectorAll<HTMLVideoElement>('video').forEach((video) => {
+        if (!video.paused && !slotRef.current?.contains(video)) video.pause();
+      });
+    }
     // A pause while already outside the band gets no later observer callback,
     // so release the player here rather than waiting for the next scroll.
     if (!playing && !visibleRef.current) {
