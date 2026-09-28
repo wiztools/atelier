@@ -7310,7 +7310,7 @@ function ModelSelectionPanel({
             </div>
 
             <div className="field">
-              {fieldLabel('image-size', 'Size', 'imageSizePreset')}
+              {fieldLabel('image-size', 'Resolution', 'imageSizePreset')}
               <select id="image-size" value={value.imageSizePreset} onChange={(event) => onChange({imageSizePreset: event.target.value})}>
                 {imageSizeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
@@ -7355,19 +7355,6 @@ function ModelSelectionPanel({
           <div className="three-column">
             <div className="field">
               <div className="field-label-row">
-                {fieldLabel('video-duration', 'Default Video Duration', 'videoDuration')}
-                <InfoHint
-                  label="Default video duration"
-                  text="Applies to all video modes as the default clip length. Your request can override it per generation."
-                />
-              </div>
-              <select id="video-duration" value={value.videoDuration} onChange={(event) => onChange({videoDuration: event.target.value})}>
-                {videoDurationPickerOptions(durationOptions.video).map((option) => <option key={option} value={option}>{videoDurationLabels[option] ?? option}</option>)}
-              </select>
-            </div>
-
-            <div className="field">
-              <div className="field-label-row">
                 {fieldLabel('video-aspect', 'Video Aspect Ratio', 'videoAspectRatio')}
                 <InfoHint
                   label="Video aspect ratio"
@@ -7389,6 +7376,19 @@ function ModelSelectionPanel({
               </div>
               <select id="video-resolution" value={value.videoResolution} onChange={(event) => onChange({videoResolution: event.target.value})}>
                 {videoResolutionOptions.map((option) => <option key={option} value={option}>{videoResolutionLabels[option] ?? option}</option>)}
+              </select>
+            </div>
+
+            <div className="field">
+              <div className="field-label-row">
+                {fieldLabel('video-duration', 'Default Video Duration', 'videoDuration')}
+                <InfoHint
+                  label="Default video duration"
+                  text="Applies to all video modes as the default clip length. Your request can override it per generation."
+                />
+              </div>
+              <select id="video-duration" value={value.videoDuration} onChange={(event) => onChange({videoDuration: event.target.value})}>
+                {videoDurationPickerOptions(durationOptions.video).map((option) => <option key={option} value={option}>{videoDurationLabels[option] ?? option}</option>)}
               </select>
             </div>
           </div>
