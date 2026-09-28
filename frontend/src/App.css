@@ -2346,6 +2346,38 @@ button:disabled {
   width: 100%;
 }
 
+/* Wraps the <video> so the poster <img> overlay (see VideoPlayer) can be
+   positioned exactly over the video's box. Grid-sized to its content: the
+   video keeps defining the stage's intrinsic size, so every context's video
+   sizing rules keep working unchanged through the wrapper. min-width/min-
+   height 0 keep grid contexts (asset-preview's minmax(0,1fr) row) able to
+   shrink the stage — without it the wrapper reintroduces the min-content
+   floor that rule exists to remove. */
+.video-stage {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* The poster overlay paints the thumbnail above the not-yet-playing video.
+   pointer-events none keeps the control bar and click-to-play reachable
+   through it; object-fit contain letterboxes exactly like the video frame
+   would. Hidden via JS on first play/seek or load error. */
+.video-poster-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.chat-user-videos .video-poster-overlay,
+.chat-video-card .video-poster-overlay {
+  border-radius: 8px;
+}
+
 .video-time-readout {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
@@ -2956,8 +2988,11 @@ button:disabled {
 
 /* Shown while a panel video card sits far outside the scroll viewport: the
    clip is deliberately not loaded yet (see LazyPanelVideo), so the window
-   shows a quiet play glyph instead of a frame. */
+   shows the persisted poster frame when one exists (the vid_<hex>_poster.jpg
+   convention, video_poster.go) with a quiet play glyph on top, or just the
+   glyph for pre-poster history. */
 .panel-video-placeholder {
+  position: relative;
   width: 100%;
   height: 100%;
   display: flex;
@@ -2966,7 +3001,19 @@ button:disabled {
   color: #4c5257;
 }
 
+/* The poster letterboxes exactly like the mounted video would (contain, not
+   cover) so the card doesn't change shape when the player mounts. */
+.panel-video-poster {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
 .panel-video-placeholder svg {
+  position: relative;
+  z-index: 1;
   width: 34px;
   height: 34px;
 }

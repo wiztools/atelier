@@ -60,7 +60,7 @@ func TestTurn1StoresRequestWorkspace(t *testing.T) {
 	}
 	config.Tools.Filesystem.Root = root
 
-	id, err := writePendingChatConversation(config, ChatRequest{
+	id, _, err := writePendingChatConversation(config, ChatRequest{
 		Workspace: chosen,
 		Model:     "m",
 		Messages:  []ChatMessage{{Role: "user", Content: "hi"}},
@@ -94,7 +94,7 @@ func TestTurn1FallsBackToDefault(t *testing.T) {
 		t.Fatalf("turn-1 default workspace = %q, want %q", root, defaultRoot)
 	}
 
-	id, err := writePendingChatConversation(config, ChatRequest{
+	id, _, err := writePendingChatConversation(config, ChatRequest{
 		Model:    "m",
 		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
 	})
@@ -122,7 +122,7 @@ func TestTurn2PlusIsImmutable(t *testing.T) {
 		t.Fatalf("MkdirAll pinned returned error: %v", err)
 	}
 	config.Tools.Filesystem.Root = pinned
-	id, err := writePendingChatConversation(config, ChatRequest{
+	id, _, err := writePendingChatConversation(config, ChatRequest{
 		Model:    "m",
 		Messages: []ChatMessage{{Role: "user", Content: "first"}},
 	})
@@ -236,7 +236,7 @@ func TestListSurfacesWorkspace(t *testing.T) {
 
 	chosen := filepath.Join(home, "list-project")
 	config.Tools.Filesystem.Root = chosen
-	id, err := writePendingChatConversation(config, ChatRequest{
+	id, _, err := writePendingChatConversation(config, ChatRequest{
 		Model:    "m",
 		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
 	})

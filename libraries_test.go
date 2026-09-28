@@ -384,7 +384,7 @@ func TestTurn1PinsProjectIDAndTurn2IgnoresRequest(t *testing.T) {
 	if _, err := resolveTurnProject(config, ChatRequest{ProjectID: project.ID}); err != nil {
 		t.Fatalf("resolveTurnProject returned error: %v", err)
 	}
-	id, err := writePendingChatConversation(config, ChatRequest{
+	id, _, err := writePendingChatConversation(config, ChatRequest{
 		Model:     "m",
 		ProjectID: project.ID,
 		Messages:  []ChatMessage{{Role: "user", Content: "hi"}},
@@ -401,7 +401,7 @@ func TestTurn1PinsProjectIDAndTurn2IgnoresRequest(t *testing.T) {
 	}
 
 	// Turn 2+ sends a bogus project on the request; the record must not move.
-	if _, err := appendChatUserTurn(config, ChatRequest{
+	if _, _, err := appendChatUserTurn(config, ChatRequest{
 		ConversationID: id,
 		ProjectID:      "proj_elsewhere",
 		Model:          "m",

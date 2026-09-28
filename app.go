@@ -582,6 +582,12 @@ type ChatRequest struct {
 type ChatStreamStart struct {
 	RequestID      string `json:"requestID"`
 	ConversationID string `json:"conversationId"`
+	// UserVideos carries the just-persisted user-turn video attachments'
+	// hydrated "/atelier-artifact" URLs in attachment order, so the live
+	// transcript can swap its composer data: URLs for artifact srcs the
+	// moment the turn starts — the poster frame derives from the artifact
+	// path, never a data URL, and the base64 payload leaves the UI state.
+	UserVideos []string `json:"userVideos,omitempty"`
 }
 
 type ChatStreamEvent struct {
@@ -1844,7 +1850,7 @@ func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {
 		requestID = fmt.Sprintf("chat-%d", time.Now().UnixNano())
 	}
 
-	conversationID, err := engine.StartChatTurn(req)
+	conversationID, userVideoURLs, err := engine.StartChatTurn(req)
 	if err != nil {
 		return nil, err
 	}
@@ -1866,7 +1872,7 @@ func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {
 		engine.RunChatStream(streamCtx, requestID, req, true)
 	}()
 
-	return &ChatStreamStart{RequestID: requestID, ConversationID: conversationID}, nil
+	return &ChatStreamStart{RequestID: requestID, ConversationID: conversationID, UserVideos: userVideoURLs}, nil
 }
 
 func (a *App) CancelStream(requestID string) {
@@ -4156,7 +4162,7 @@ func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, 
 		ModelOverrides: requestModelOverrides(req),
 	}
 
-	userTurn, assistantTurn, err := buildChatTurnPair(workspace.ID, 1, nowText, req, assistantContent, assistantThinking, model, provider, reason, tokens, workspace.ArtifactsDir, config.Storage, run, strings.TrimSpace(req.ProjectID))
+	userTurn, assistantTurn, _, err := buildChatTurnPair(workspace.ID, 1, nowText, req, assistantContent, assistantThinking, model, provider, reason, tokens, workspace.ArtifactsDir, config.Storage, config, run, strings.TrimSpace(req.ProjectID))
 	if err != nil {
 		return "", err
 	}
@@ -4167,13 +4173,17 @@ func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, 
 	return workspace.ID, nil
 }
 
-func writePendingChatConversation(config AppConfig, req ChatRequest) (string, error) {
+// writePendingChatConversation also returns the persisted video attachments'
+// hydrated "/atelier-artifact" URLs (in attachment order) so the streaming
+// start result can hand the live transcript artifact srcs — the poster-frame
+// swap the composer's data: URLs cannot carry.
+func writePendingChatConversation(config AppConfig, req ChatRequest) (string, []string, error) {
 	now := time.Now()
 	nowText := now.Format(time.RFC3339)
 	store := newHistoryStore(config.Storage)
 	workspace, err := store.newWorkspace(now)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	userPrompt := lastUserPrompt(req.Messages)
@@ -4200,24 +4210,24 @@ func writePendingChatConversation(config AppConfig, req ChatRequest) (string, er
 		ProjectID:      strings.TrimSpace(req.ProjectID),
 		ModelOverrides: requestModelOverrides(req),
 	}
-	userTurn, err := buildChatUserTurn(workspace.ID, 1, nowText, req, workspace.ArtifactsDir, config.Storage, strings.TrimSpace(req.ProjectID))
+	userTurn, videoURLs, err := buildChatUserTurn(workspace.ID, 1, nowText, req, workspace.ArtifactsDir, config.Storage, config, strings.TrimSpace(req.ProjectID))
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	if err := store.writeSnapshot(workspace, conversation, userTurn); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return workspace.ID, nil
+	return workspace.ID, videoURLs, nil
 }
 
-func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt string, req ChatRequest, assistantContent, assistantThinking, model, provider, reason string, tokens int, artifactsDir string, storage ConfigStorage, run HarnessRun, projectID string) (HistoryTurn, HistoryTurn, error) {
-	userTurn, err := buildChatUserTurn(conversationID, firstTurnNumber, createdAt, req, artifactsDir, storage, projectID)
+func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt string, req ChatRequest, assistantContent, assistantThinking, model, provider, reason string, tokens int, artifactsDir string, storage ConfigStorage, config AppConfig, run HarnessRun, projectID string) (HistoryTurn, HistoryTurn, []string, error) {
+	userTurn, videoURLs, err := buildChatUserTurn(conversationID, firstTurnNumber, createdAt, req, artifactsDir, storage, config, projectID)
 	if err != nil {
-		return HistoryTurn{}, HistoryTurn{}, err
+		return HistoryTurn{}, HistoryTurn{}, nil, err
 	}
 	assistantTurn := buildChatAssistantTurn(conversationID, firstTurnNumber+1, createdAt, assistantContent, assistantThinking, model, provider, reason, tokens, run, "")
-	return userTurn, assistantTurn, nil
+	return userTurn, assistantTurn, videoURLs, nil
 }
 
 // buildChatUserTurn persists the user's turn. projectID is the conversation's
@@ -4225,10 +4235,10 @@ func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt str
 // exists) and the loaded record's ProjectID on appends — so @-mention
 // resolution can widen into the library even on the very first turn, when the
 // conversation being built is not yet on disk for getConversation to read.
-func buildChatUserTurn(conversationID string, turnNumber int, createdAt string, req ChatRequest, artifactsDir string, storage ConfigStorage, projectID string) (HistoryTurn, error) {
-	userContent, err := historyContentForMessage(lastUserMessage(req.Messages), artifactsDir)
+func buildChatUserTurn(conversationID string, turnNumber int, createdAt string, req ChatRequest, artifactsDir string, storage ConfigStorage, config AppConfig, projectID string) (HistoryTurn, []string, error) {
+	userContent, videoURLs, err := historyContentForMessage(lastUserMessage(req.Messages), artifactsDir, config)
 	if err != nil {
-		return HistoryTurn{}, err
+		return HistoryTurn{}, nil, err
 	}
 	// @-mentioned assets are persisted as references to the existing artifact
 	// entries — same ArtifactID and relative Path, no byte copy — so the next
@@ -4261,7 +4271,7 @@ func buildChatUserTurn(conversationID string, turnNumber int, createdAt string, 
 	if selectedModel := strings.TrimSpace(req.SelectedModel); selectedModel != "" && selectedModel != req.Model {
 		userTurn.Request["selectedModel"] = selectedModel
 	}
-	return userTurn, nil
+	return userTurn, videoURLs, nil
 }
 
 // harnessRunCostMicros totals a run's USD-millionth cost: every model-call
@@ -4325,7 +4335,7 @@ func appendChatConversation(config AppConfig, req ChatRequest, assistantContent,
 		return "", err
 	}
 	nowText := time.Now().Format(time.RFC3339)
-	userTurn, assistantTurn, err := buildChatTurnPair(conversationID, loaded.NextTurnNumber, nowText, req, assistantContent, assistantThinking, model, provider, reason, tokens, loaded.ArtifactsDir, config.Storage, run, loaded.Conversation.ProjectID)
+	userTurn, assistantTurn, _, err := buildChatTurnPair(conversationID, loaded.NextTurnNumber, nowText, req, assistantContent, assistantThinking, model, provider, reason, tokens, loaded.ArtifactsDir, config.Storage, config, run, loaded.Conversation.ProjectID)
 	if err != nil {
 		return "", err
 	}
@@ -4345,29 +4355,31 @@ func appendChatConversation(config AppConfig, req ChatRequest, assistantContent,
 	return conversationID, nil
 }
 
-func appendChatUserTurn(config AppConfig, req ChatRequest) (string, error) {
+// appendChatUserTurn also returns the persisted video attachments' hydrated
+// "/atelier-artifact" URLs (in attachment order) — see writePendingChatConversation.
+func appendChatUserTurn(config AppConfig, req ChatRequest) (string, []string, error) {
 	conversationID := strings.TrimSpace(req.ConversationID)
 	store := newHistoryStore(config.Storage)
 	loaded, err := store.loadForAppend(conversationID, "chat", "a chat", config.Tools.Filesystem.Root)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	nowText := time.Now().Format(time.RFC3339)
-	userTurn, err := buildChatUserTurn(conversationID, loaded.NextTurnNumber, nowText, req, loaded.ArtifactsDir, config.Storage, loaded.Conversation.ProjectID)
+	userTurn, videoURLs, err := buildChatUserTurn(conversationID, loaded.NextTurnNumber, nowText, req, loaded.ArtifactsDir, config.Storage, config, loaded.Conversation.ProjectID)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	loaded.Conversation.UpdatedAt = nowText
 	loaded.Conversation.Stats.TurnCount++
 	loaded.Conversation.Stats.ArtifactCount += countMessageAttachments([]ChatMessage{lastUserMessage(req.Messages)})
 	if err := store.writeConversation(loaded.Path, loaded.Conversation); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if err := store.writeTurn(loaded.TurnsDir, userTurn); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return conversationID, nil
+	return conversationID, videoURLs, nil
 }
 
 func appendChatAssistantTurn(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, tokens int, run HarnessRun, errorText string) error {
@@ -4508,7 +4520,7 @@ func appendChatAssistantTurnWithTurnMedia(config AppConfig, conversationID, assi
 			urls := chatTurnMediaURLs{}
 			tool := map[string]any{}
 			if len(media.videos) > 0 {
-				videoContents, videoURLs, err := writeChatVideoArtifacts(artifactsDir, media.videos)
+				videoContents, videoURLs, err := writeChatVideoArtifacts(config, artifactsDir, media.videos)
 				if err != nil {
 					return chatAssistantTurnMediaOutput{}, err
 				}
@@ -4519,7 +4531,7 @@ func appendChatAssistantTurnWithTurnMedia(config AppConfig, conversationID, assi
 				tool["videoCount"] = len(videoContents)
 			}
 			if len(media.audios) > 0 {
-				audioContents, audioURLs, err := writeChatAudioArtifacts(artifactsDir, media.audios)
+				audioContents, audioURLs, err := writeChatAudioArtifacts(config, artifactsDir, media.audios)
 				if err != nil {
 					return chatAssistantTurnMediaOutput{}, err
 				}
@@ -4547,7 +4559,7 @@ func appendChatAssistantTurnWithTurnMedia(config AppConfig, conversationID, assi
 				tool["imageCount"] = len(imageContents)
 			}
 			if len(media.transcripts) > 0 {
-				transcriptContents, transcriptURLs, err := writeChatTranscriptArtifacts(artifactsDir, media.transcripts)
+				transcriptContents, transcriptURLs, err := writeChatTranscriptArtifacts(config, artifactsDir, media.transcripts)
 				if err != nil {
 					return chatAssistantTurnMediaOutput{}, err
 				}
@@ -4587,12 +4599,12 @@ func appendChatAssistantTurnWithVideos(config AppConfig, conversationID, assista
 // entries plus the "/atelier-artifact" URLs the live UI renders. A temp file
 // that can't be resolved to a video is skipped rather than aborting the whole
 // turn save. Thin wrapper over the shared media-artifact writer.
-func writeChatVideoArtifacts(artifactsDir string, videos []ToolVideoFile) ([]HistoryContent, []string, error) {
+func writeChatVideoArtifacts(config AppConfig, artifactsDir string, videos []ToolVideoFile) ([]HistoryContent, []string, error) {
 	files := make([]mediaArtifactEntry, len(videos))
 	for i, v := range videos {
 		files[i] = mediaArtifactEntry{tempPath: v.TempPath, mimeType: v.MimeType}
 	}
-	return writeChatMediaArtifacts(artifactsDir, files, "vid", "video", videoExtensionForMediaType)
+	return writeChatMediaArtifacts(config, artifactsDir, files, "vid", "video", videoExtensionForMediaType)
 }
 
 // writeChatMediaArtifacts is the shared body for moving generated video/audio
@@ -4609,7 +4621,7 @@ type mediaArtifactEntry struct {
 	mimeType string
 }
 
-func writeChatMediaArtifacts(artifactsDir string, files []mediaArtifactEntry, kindTag, contentType string, extensionFn func(string) string) ([]HistoryContent, []string, error) {
+func writeChatMediaArtifacts(config AppConfig, artifactsDir string, files []mediaArtifactEntry, kindTag, contentType string, extensionFn func(string) string) ([]HistoryContent, []string, error) {
 	if len(files) == 0 {
 		return nil, nil, nil
 	}
@@ -4633,6 +4645,12 @@ func writeChatMediaArtifacts(artifactsDir string, files []mediaArtifactEntry, ki
 		destPath := filepath.Join(absArtifactsDir, filename)
 		if err := moveFile(tempPath, destPath); err != nil {
 			return nil, nil, err
+		}
+		if contentType == "video" {
+			// Poster frame for the <video> poster/panel placeholder
+			// (video_poster.go). Best-effort: a missing poster degrades the
+			// thumbnail, never the save.
+			generateVideoPoster(config, destPath)
 		}
 		contents = append(contents, HistoryContent{
 			Type:       contentType,
@@ -4660,12 +4678,12 @@ func appendChatAssistantTurnWithAudios(config AppConfig, conversationID, assista
 // artifacts directory as aud_<hex>.<ext> and returns the history
 // content entries plus the "/atelier-artifact" URLs the live UI renders. Thin
 // wrapper over the shared media-artifact writer, mirroring writeChatVideoArtifacts.
-func writeChatAudioArtifacts(artifactsDir string, audios []ToolAudioFile) ([]HistoryContent, []string, error) {
+func writeChatAudioArtifacts(config AppConfig, artifactsDir string, audios []ToolAudioFile) ([]HistoryContent, []string, error) {
 	files := make([]mediaArtifactEntry, len(audios))
 	for i, a := range audios {
 		files[i] = mediaArtifactEntry{tempPath: a.TempPath, mimeType: a.MimeType}
 	}
-	return writeChatMediaArtifacts(artifactsDir, files, "aud", "audio", audioExtensionForMediaType)
+	return writeChatMediaArtifacts(config, artifactsDir, files, "aud", "audio", audioExtensionForMediaType)
 }
 
 // writeChatTranscriptArtifacts moves each transcript's temp file into the
@@ -4674,12 +4692,12 @@ func writeChatAudioArtifacts(artifactsDir string, audios []ToolAudioFile) ([]His
 // follows the staged file's mime type — .vtt for the WebVTT rendering of a
 // timestamped transcript, .txt for an oversized plain transcript. Thin wrapper
 // over the shared media-artifact writer, mirroring writeChatAudioArtifacts.
-func writeChatTranscriptArtifacts(artifactsDir string, transcripts []ToolTranscriptFile) ([]HistoryContent, []string, error) {
+func writeChatTranscriptArtifacts(config AppConfig, artifactsDir string, transcripts []ToolTranscriptFile) ([]HistoryContent, []string, error) {
 	files := make([]mediaArtifactEntry, len(transcripts))
 	for i, t := range transcripts {
 		files[i] = mediaArtifactEntry{tempPath: t.TempPath, mimeType: t.MimeType}
 	}
-	return writeChatMediaArtifacts(artifactsDir, files, "trc", "transcript", transcriptExtensionForMimeType)
+	return writeChatMediaArtifacts(config, artifactsDir, files, "trc", "transcript", transcriptExtensionForMimeType)
 }
 
 // transcriptExtensionForMimeType maps a staged transcript's mime type onto its
@@ -5237,26 +5255,33 @@ func tempVideoFileAsDataURL(tempPath, mimeType string) (string, error) {
 	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
-func historyContentForMessage(message ChatMessage, artifactsDir string) ([]HistoryContent, error) {
+// historyContentForMessage persists a message's attachments as artifacts and
+// returns the content entries plus, for video attachments, their hydrated
+// "/atelier-artifact" URLs in attachment order — the swap-in srcs the live
+// transcript uses to replace the composer's data: URLs the moment the turn
+// persists (a data URL can carry no poster; the artifact URL can, and it
+// drops the multi-MB base64 payload from the UI state).
+func historyContentForMessage(message ChatMessage, artifactsDir string, config AppConfig) ([]HistoryContent, []string, error) {
 	contents := []HistoryContent{}
+	videoURLs := []string{}
 	if strings.TrimSpace(message.Content) != "" {
 		contents = append(contents, HistoryContent{Type: "text", Text: message.Content})
 	}
 	if len(message.Images) > 0 || len(message.Audios) > 0 || len(message.Videos) > 0 {
 		if err := os.MkdirAll(artifactsDir, 0755); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	for _, image := range message.Images {
 		data, extension, err := decodeImagePayload(image)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		artifactID := randomID("img")
 		filename := artifactID + extension
 		artifactPath := filepath.Join(artifactsDir, filename)
 		if err := os.WriteFile(artifactPath, data, 0644); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		contents = append(contents, HistoryContent{
 			Type:       "image",
@@ -5268,13 +5293,13 @@ func historyContentForMessage(message ChatMessage, artifactsDir string) ([]Histo
 	for _, audio := range message.Audios {
 		data, extension, err := decodeAudioPayload(audio)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		artifactID := randomID("aud")
 		filename := artifactID + extension
 		artifactPath := filepath.Join(artifactsDir, filename)
 		if err := os.WriteFile(artifactPath, data, 0644); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		contents = append(contents, HistoryContent{
 			Type:       "audio",
@@ -5286,14 +5311,23 @@ func historyContentForMessage(message ChatMessage, artifactsDir string) ([]Histo
 	for _, video := range message.Videos {
 		data, extension, err := decodeVideoPayload(video)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		artifactID := randomID("vid")
 		filename := artifactID + extension
 		artifactPath := filepath.Join(artifactsDir, filename)
 		if err := os.WriteFile(artifactPath, data, 0644); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		// Poster frame beside an attached clip, same as generated ones
+		// (video_poster.go). Best-effort — attachment persistence never
+		// depends on a thumbnail extractor resolving.
+		generateVideoPoster(config, artifactPath)
+		absArtifactPath, err := filepath.Abs(artifactPath)
+		if err != nil {
+			absArtifactPath = artifactPath
+		}
+		videoURLs = append(videoURLs, artifactPrefix+absArtifactPath)
 		contents = append(contents, HistoryContent{
 			Type:       "video",
 			ArtifactID: artifactID,
@@ -5302,9 +5336,9 @@ func historyContentForMessage(message ChatMessage, artifactsDir string) ([]Histo
 		})
 	}
 	if len(contents) == 0 {
-		return []HistoryContent{{Type: "text", Text: ""}}, nil
+		return []HistoryContent{{Type: "text", Text: ""}}, nil, nil
 	}
-	return contents, nil
+	return contents, videoURLs, nil
 }
 
 // countMessageAttachments counts image, audio, and video attachments across

@@ -3768,7 +3768,7 @@ function App() {
   // retryFailedTurn for a retry. Extracted so both paths share one error path.
   // referencedAssetIds carries @-mentioned asset IDs; the retry path omits it
   // and the backend's latest-wins walk picks up the persisted mention refs.
-  async function executeChatStream(opts: {requestID: string; requestMessages: main.ChatMessage[]; referencedAssetIds?: string[]}) {
+  async function executeChatStream(opts: {requestID: string; requestMessages: main.ChatMessage[]; referencedAssetIds?: string[]; userEntryId?: string}) {
     const {requestID} = opts;
     // Captured before any await: whether this send creates a brand-new
     // conversation — the same turn-1 condition that gates the workspace/
@@ -3804,6 +3804,21 @@ function App() {
       }));
       markConversationInFlight(start.conversationId, start.requestID, 'chat');
       setActiveConversationID(start.conversationId);
+      // The just-persisted upload URLs ride the start result
+      // (ChatStreamStart.userVideos): swap the user entry's composer data:
+      // URLs for the artifact srcs the moment the turn begins. A poster frame
+      // derives from the artifact path, never a data URL, and the swap drops
+      // the multi-MB base64 payload from the transcript state. Positional —
+      // both sides list the same attachments in composer order; a count
+      // mismatch (a decode failure persisted fewer) leaves the data URLs.
+      const persistedVideos = asArray(start.userVideos);
+      if (opts.userEntryId && persistedVideos.length) {
+        setChat((entries) => entries.map((entry) =>
+          entry.id === opts.userEntryId && entry.videos?.length === persistedVideos.length
+            ? {...entry, videos: entry.videos.map((video, index) => video.startsWith('data:') ? persistedVideos[index] : video)}
+            : entry,
+        ));
+      }
       // The conversation now carries its own membership — the pending context
       // has done its job. Captured before the clear: it names where the new
       // row appears in the sidebar tree.
@@ -3909,7 +3924,7 @@ function App() {
       userEntry,
       {id: `assistant-${requestID}`, role: 'assistant', content: '', streaming: true, provider: primaryProvider},
     ]);
-    await executeChatStream({requestID, requestMessages, referencedAssetIds});
+    await executeChatStream({requestID, requestMessages, referencedAssetIds, userEntryId: userEntry.id});
   }
 
   // retryFailedTurn resends the user message preceding a failed assistant entry,
@@ -6279,6 +6294,23 @@ function InfoHint(props: {label: string; text: string}) {
   );
 }
 
+// posterURLForVideoSrc derives the poster-frame URL for a video src by the
+// vid_<hex>_poster.jpg convention the Go writer produces beside every
+// persisted video artifact (video_poster.go) — generateVideoPoster swaps the
+// clip's extension for _poster.jpg in the same directory, so the swap here is
+// its mirror. Only /atelier-artifact URLs carry the convention: a data URL
+// (an in-flight attachment, not yet an artifact) or a foreign URL returns '',
+// and a poster that 404s (history from before posters existed, or no
+// extractor resolved at save time) renders as nothing — the video/placeholder
+// shows exactly as it did without one.
+function posterURLForVideoSrc(src: string): string {
+  if (!src.startsWith('/atelier-artifact/')) return '';
+  const slash = src.lastIndexOf('/');
+  const dot = src.lastIndexOf('.');
+  if (dot <= slash) return '';
+  return src.slice(0, dot) + '_poster.jpg';
+}
+
 // The native <video controls> time readout belongs to WKWebView and can't be
 // reformatted, so VideoPlayer floats its own precise m:ss.mmm readout under
 // the frame. Milliseconds rather than microseconds: playback position is only
@@ -6288,10 +6320,25 @@ function InfoHint(props: {label: string; text: string}) {
 // onPlayingChange, when given, reports play/pause/end transitions so a lazy
 // host (LazyPanelVideo) can keep a playing clip mounted while releasing
 // paused ones.
+//
+// The poster is painted as a plain <img> overlay above the video rather than
+// trusted to the native poster attribute: WKWebView's attribute handling is
+// state-dependent (a freshly-mounted preload="metadata" video shows it, an
+// element whose src or poster lands after mount may not), while an img with
+// the same URL paints unconditionally. The overlay drops on first play or
+// seek (a decoded frame takes over), on load error (pre-poster history keeps
+// today's plain video), and resets when the derived URL changes (the upload
+// swap re-renders the same mount from a data: URL to the artifact URL).
 function VideoPlayer({src, onPlayingChange}: {src: string; onPlayingChange?: (playing: boolean) => void}) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const readoutRef = useRef<HTMLSpanElement | null>(null);
   const rafRef = useRef(0);
+  const posterURL = posterURLForVideoSrc(src);
+  const [posterHidden, setPosterHidden] = useState(false);
+
+  useEffect(() => {
+    setPosterHidden(false);
+  }, [posterURL]);
 
   const syncReadout = () => {
     const video = videoRef.current;
@@ -6316,28 +6363,45 @@ function VideoPlayer({src, onPlayingChange}: {src: string; onPlayingChange?: (pl
 
   return (
     <div className="video-player">
-      <video
-        ref={videoRef}
-        src={src}
-        controls
-        preload="metadata"
-        onPlay={() => {
-          startTicking();
-          onPlayingChange?.(true);
-        }}
-        onPause={() => {
-          stopTicking();
-          onPlayingChange?.(false);
-        }}
-        onEnded={() => {
-          stopTicking();
-          onPlayingChange?.(false);
-        }}
-        onTimeUpdate={syncReadout}
-        onSeeked={syncReadout}
-        onLoadedMetadata={syncReadout}
-        onDurationChange={syncReadout}
-      />
+      <div className="video-stage">
+        <video
+          ref={videoRef}
+          src={src}
+          controls
+          preload="metadata"
+          poster={posterURL || undefined}
+          onPlay={() => {
+            startTicking();
+            setPosterHidden(true);
+            onPlayingChange?.(true);
+          }}
+          onPause={() => {
+            stopTicking();
+            onPlayingChange?.(false);
+          }}
+          onEnded={() => {
+            stopTicking();
+            onPlayingChange?.(false);
+          }}
+          onSeeked={() => {
+            syncReadout();
+            // A seek decodes a frame even before first play — the overlay
+            // must step aside for it.
+            setPosterHidden(true);
+          }}
+          onTimeUpdate={syncReadout}
+          onLoadedMetadata={syncReadout}
+          onDurationChange={syncReadout}
+        />
+        {posterURL && !posterHidden && (
+          <img
+            className="video-poster-overlay"
+            src={posterURL}
+            alt=""
+            onError={() => setPosterHidden(true)}
+          />
+        )}
+      </div>
       <span ref={readoutRef} className="video-time-readout">
         0:00.000 / 0:00.000
       </span>
@@ -6363,8 +6427,14 @@ function VideoPlayer({src, onPlayingChange}: {src: string; onPlayingChange?: (pl
 function LazyPanelVideo({src}: {src: string}) {
   const slotRef = useRef<HTMLDivElement | null>(null);
   const [mounted, setMounted] = useState(false);
+  const [posterFailed, setPosterFailed] = useState(false);
   const visibleRef = useRef(false);
   const playingRef = useRef(false);
+  // The unmounted card has no <video> to paint a frame, so the poster image
+  // carries the thumbnail (posterURLForVideoSrc) with the play glyph on top.
+  // A 404 (pre-poster history, extractor absent at save time) falls back to
+  // the bare glyph via onError — cheaper than pre-checking existence.
+  const posterURL = posterFailed ? '' : posterURLForVideoSrc(src);
 
   useEffect(() => {
     const slot = slotRef.current;
@@ -6409,6 +6479,14 @@ function LazyPanelVideo({src}: {src: string}) {
         <VideoPlayer src={src} onPlayingChange={handlePlayingChange} />
       ) : (
         <div className="panel-video-placeholder" aria-hidden="true">
+          {posterURL && (
+            <img
+              className="panel-video-poster"
+              src={posterURL}
+              alt=""
+              onError={() => setPosterFailed(true)}
+            />
+          )}
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
             <circle cx="12" cy="12" r="9" />
             <path d="M10 9.2v5.6l4.8-2.8z" fill="currentColor" stroke="none" />

@@ -765,6 +765,7 @@ export namespace main {
 	export class ChatStreamStart {
 	    requestID: string;
 	    conversationId: string;
+	    userVideos?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ChatStreamStart(source);
@@ -774,6 +775,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.requestID = source["requestID"];
 	        this.conversationId = source["conversationId"];
+	        this.userVideos = source["userVideos"];
 	    }
 	}
 	
