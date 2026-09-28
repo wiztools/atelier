@@ -7303,14 +7303,14 @@ function ModelSelectionPanel({
 
           <div className="three-column">
             <div className="field">
-              {fieldLabel('image-aspect', 'Aspect Ratio', 'imageAspectRatio')}
+              {fieldLabel('image-aspect', 'Image Aspect Ratio', 'imageAspectRatio')}
               <select id="image-aspect" value={value.imageAspectRatio} onChange={(event) => onChange({imageAspectRatio: event.target.value})}>
                 {imageAspectRatioOptions.map((option) => <option key={option} value={option}>{option}</option>)}
               </select>
             </div>
 
             <div className="field">
-              {fieldLabel('image-size', 'Resolution', 'imageSizePreset')}
+              {fieldLabel('image-size', 'Image Resolution', 'imageSizePreset')}
               <select id="image-size" value={value.imageSizePreset} onChange={(event) => onChange({imageSizePreset: event.target.value})}>
                 {imageSizeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
