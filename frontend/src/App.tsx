@@ -6321,14 +6321,19 @@ function posterURLForVideoSrc(src: string): string {
 // host (LazyPanelVideo) can keep a playing clip mounted while releasing
 // paused ones.
 //
-// The poster is painted as a plain <img> overlay above the video rather than
-// trusted to the native poster attribute: WKWebView's attribute handling is
-// state-dependent (a freshly-mounted preload="metadata" video shows it, an
-// element whose src or poster lands after mount may not), while an img with
-// the same URL paints unconditionally. The overlay drops on first play or
-// seek (a decoded frame takes over), on load error (pre-poster history keeps
-// today's plain video), and resets when the derived URL changes (the upload
-// swap re-renders the same mount from a data: URL to the artifact URL).
+// The poster is painted as an explicit affordance above the not-yet-playing
+// video — the thumbnail plus a centered play glyph, the whole thing a button
+// that starts playback — rather than trusted to the native poster attribute:
+// WKWebView's attribute handling is state-dependent (a freshly-mounted
+// preload="metadata" video shows it, an element whose src or poster lands
+// after mount may not), and a bare image over the video reads as a still,
+// not a clip. While the overlay is up the native controls are hidden — the
+// overlay is the single play affordance; chrome and glyph together read as
+// two play buttons. Click plays; the overlay drops on first play, on load
+// error (pre-poster history keeps today's plain video), on a video error
+// (controls need to be reachable), and resets when the derived URL changes
+// (the upload swap re-renders the same mount from a data: URL to the
+// artifact URL). In every dropped state the native controls are on.
 function VideoPlayer({src, onPlayingChange}: {src: string; onPlayingChange?: (playing: boolean) => void}) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const readoutRef = useRef<HTMLSpanElement | null>(null);
@@ -6367,7 +6372,11 @@ function VideoPlayer({src, onPlayingChange}: {src: string; onPlayingChange?: (pl
         <video
           ref={videoRef}
           src={src}
-          controls
+          // Native chrome is hidden while the poster overlay is up so the
+          // overlay is the ONE play affordance — controls and an overlay
+          // glyph together read as two play buttons. Controls take over the
+          // moment the overlay drops (first play, or a failed/error state).
+          controls={posterHidden || !posterURL}
           preload="metadata"
           poster={posterURL || undefined}
           onPlay={() => {
@@ -6389,17 +6398,32 @@ function VideoPlayer({src, onPlayingChange}: {src: string; onPlayingChange?: (pl
             // must step aside for it.
             setPosterHidden(true);
           }}
+          onError={() => {
+            // An undecodable clip must expose its controls/error state, not
+            // a poster the click-through can never move.
+            setPosterHidden(true);
+          }}
           onTimeUpdate={syncReadout}
           onLoadedMetadata={syncReadout}
           onDurationChange={syncReadout}
         />
         {posterURL && !posterHidden && (
-          <img
+          <button
+            type="button"
             className="video-poster-overlay"
-            src={posterURL}
-            alt=""
-            onError={() => setPosterHidden(true)}
-          />
+            aria-label="Play video"
+            onClick={() => void videoRef.current?.play().catch(() => {})}
+          >
+            <img
+              src={posterURL}
+              alt=""
+              onError={() => setPosterHidden(true)}
+            />
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M10 9.2v5.6l4.8-2.8z" fill="currentColor" stroke="none" />
+            </svg>
+          </button>
         )}
       </div>
       <span ref={readoutRef} className="video-time-readout">

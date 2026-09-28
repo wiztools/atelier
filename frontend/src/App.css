@@ -2360,17 +2360,59 @@ button:disabled {
   min-height: 0;
 }
 
-/* The poster overlay paints the thumbnail above the not-yet-playing video.
-   pointer-events none keeps the control bar and click-to-play reachable
-   through it; object-fit contain letterboxes exactly like the video frame
-   would. Hidden via JS on first play/seek or load error. */
+/* The poster overlay is the pre-play affordance: the thumbnail fills the
+   video's box (contain — letterboxed exactly like the frame would be) with a
+   centered play glyph on a translucent disc, and the whole overlay is a
+   button that starts playback. It never covers the controls while they
+   matter: clicking it plays, and the overlay is dismissed (first play/seek,
+   load error, video error) the moment real controls or a decoded frame take
+   over. Same glyph language as LazyPanelVideo's unmounted placeholder. */
 .video-poster-overlay {
+  position: absolute;
+  inset: 0;
+  /* height:auto overrides the global `button { height: 36px }` rule — with
+     the explicit height, top:0 + bottom:0 is over-constrained and bottom
+     loses, collapsing the overlay (and the poster img inside it) into a
+     36px strip at the stage top with the glyph stranded in it. auto lets
+     the inset stretch it over the whole video box. */
+  height: auto;
+  width: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: #e8ebec;
+}
+
+.video-poster-overlay img {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: contain;
-  pointer-events: none;
+  border-radius: inherit;
+}
+
+.video-poster-overlay svg {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  padding: 10px;
+  border-radius: 50%;
+  /* Opaque enough to read as a button over dark posters (at 0.55 the disc
+     vanished into night scenes and left a floating white ring), with a faint
+     rim so it stays visible over bright ones too. */
+  background: rgba(12, 14, 15, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(232, 235, 236, 0.22);
+  transition: background 120ms ease, transform 120ms ease;
+}
+
+.video-poster-overlay:hover svg {
+  background: rgba(12, 14, 15, 0.85);
+  transform: scale(1.06);
 }
 
 .chat-user-videos .video-poster-overlay,
