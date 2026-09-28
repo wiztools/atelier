@@ -40,11 +40,22 @@ const (
 // the tool-evidence user message, or as a trailing user message when no tools
 // ran), never appended to the system prompt: a per-turn change in message #0
 // would invalidate the entire prefix cache. See toolEvidenceNote.
-const toolEvidenceSystemNote = "Atelier ran workspace tools for this turn. Their observations appear at the end of the conversation. Treat them as evidence: report failures honestly and do not claim an action succeeded unless an observation shows it. You cannot call tools yourself; if the user asked for an action that no observation confirms, say plainly that it was not completed. A tool observation's \"notices\" field holds authoritative caveats that are shown to the user verbatim; account for their meaning (never claim a dropped capability succeeded) but do not quote them."
+//
+// The plain-prose sentence exists because the observation message ends the
+// conversation with a JSON blob, and models with ReAct-style agent data in
+// their post-training can parrot the "next protocol step" instead of
+// answering: google/gemma-4-31b-it replied {"action": "generate_video",
+// "action_input": ...} on 3 of its 13 video turns
+// (conv_829b7b19a758bd413eaf7a13, conv_92326645ac847c43aecda18d,
+// conv_fb75bbe88bb754644f71f55a) — an action-record dialect Atelier never
+// showed it, with tool params in a shape no Atelier call uses. The
+// instruction names the exact shape so pattern-matching models recognize it
+// as forbidden rather than infer it as expected.
+const toolEvidenceSystemNote = "Atelier ran workspace tools for this turn. Their observations appear at the end of the conversation. Treat them as evidence: report failures honestly and do not claim an action succeeded unless an observation shows it. You cannot call tools yourself, and your reply must be plain prose for the user — never JSON, a tool call, or an action record such as {\"action\": ..., \"action_input\": ...}: the tools have already run, so describe their outcome in words. If the user asked for an action that no observation confirms, say plainly that it was not completed. A tool observation's \"notices\" field holds authoritative caveats that are shown to the user verbatim; account for their meaning (never claim a dropped capability succeeded) but do not quote them."
 
 const invalidPlanSystemNote = "Atelier could not produce a valid tool plan for this turn, so no tools ran. You cannot call tools or execute commands. Do not run commands, paste commands as if executed, or claim any tool action succeeded. If the user asked for a tool action, report plainly that it could not be completed."
 
-const invalidPlanAfterToolsSystemNote = "Atelier ran workspace tools for this turn, but its latest tool plan was invalid, so the most recently requested action did not run. Tool observations appear at the end of the conversation. Treat them as evidence: report failures honestly and do not claim an action succeeded unless an observation shows it. You cannot call tools yourself; if the user asked for an action that no observation confirms, say plainly that it was not completed."
+const invalidPlanAfterToolsSystemNote = "Atelier ran workspace tools for this turn, but its latest tool plan was invalid, so the most recently requested action did not run. Tool observations appear at the end of the conversation. Treat them as evidence: report failures honestly and do not claim an action succeeded unless an observation shows it. You cannot call tools yourself, and your reply must be plain prose for the user — never JSON, a tool call, or an action record such as {\"action\": ..., \"action_input\": ...}: the tools have already run, so describe their outcome in words. If the user asked for an action that no observation confirms, say plainly that it was not completed."
 
 type HarnessEngine struct {
 	config AppConfig
