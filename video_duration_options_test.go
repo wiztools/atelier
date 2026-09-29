@@ -111,3 +111,28 @@ func TestVideoDurationOptions_NilForBlankModel(t *testing.T) {
 		}
 	}
 }
+
+// TestSoundEffectDurationOptions_SynthesizesRange seeds the disk schema cache
+// with the real elevenlabs sound-effects v2 schema — whose duration_seconds is
+// an enum-less nullable anyOf number (0.5–22), not an enum — and asserts the
+// audio-category accessor synthesizes the integer ladder 1–22 the Settings
+// audio picker offers. findNative resolves duration_seconds through the audio
+// synonym table, the same lookup resolveAudioBody performs at submit time; the
+// video category's table doesn't know that key, so it must yield nil on the
+// same schema.
+func TestSoundEffectDurationOptions_SynthesizesRange(t *testing.T) {
+	dir := t.TempDir()
+	const model = "fal-ai/elevenlabs/sound-effects/v2"
+	writeSchemaFixture(t, filepath.Join(dir, "schema-cache"), model, "sfx-v2-real")
+
+	opts := modelDurationOptions(context.Background(), &http.Client{}, dir, model, "audio")
+	if opts == nil {
+		t.Fatal("expected non-nil duration options for a numeric duration range")
+	}
+	if len(opts) != 22 || opts[0] != "1" || opts[len(opts)-1] != "22" {
+		t.Fatalf("expected the synthesized ladder 1..22, got %v", opts)
+	}
+	if videoOpts := modelDurationOptions(context.Background(), &http.Client{}, dir, model, "video"); videoOpts != nil {
+		t.Fatalf("video category must not resolve the sound model's duration_seconds, got %v", videoOpts)
+	}
+}

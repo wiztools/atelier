@@ -399,6 +399,7 @@ type ConfigPrompts struct {
 type ConfigGeneration struct {
 	Image ConfigImageGeneration `json:"image"`
 	Video ConfigVideoGeneration `json:"video"`
+	Audio ConfigAudioGeneration `json:"audio"`
 }
 
 type ConfigImageGeneration struct {
@@ -432,6 +433,16 @@ type ConfigVideoGeneration struct {
 	// resolvers drop a tier the selected model's enum doesn't list with a
 	// notice rather than 422ing.
 	Resolution string `json:"resolution,omitempty"`
+}
+
+// ConfigAudioGeneration holds the user-facing audio generation knobs. Duration
+// is seconds as a string ("10"), or "auto" (the default) to let the model
+// decide the clip length from the prompt — the generate_sound fallback when a
+// call states no duration, mirroring ConfigVideoGeneration.Duration. Speech
+// (generate_speech) deliberately has no duration: its length follows the
+// spoken text.
+type ConfigAudioGeneration struct {
+	Duration string `json:"duration"`
 }
 
 type ConfigTools struct {
@@ -2853,6 +2864,25 @@ func (a *App) ListFalVideoDurations(model string) ([]string, error) {
 	return opts, nil
 }
 
+// ListFalSoundEffectDurations returns the duration values the given fal sound
+// model accepts, for the Settings audio duration picker — the audio sibling of
+// ListFalVideoDurations, mirroring resolveAudioBody's duration lookup so the
+// picker lists only values the model won't 422 on (elevenlabs declares a
+// numeric 0.5–22 range, so the synthesized ladder is 1–22).
+func (a *App) ListFalSoundEffectDurations(model string) ([]string, error) {
+	config, err := loadAppConfig()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	opts := modelDurationOptions(ctx, a.client, config.Storage.Root, model, "audio")
+	if opts == nil {
+		return []string{}, nil
+	}
+	return opts, nil
+}
+
 // ListFalVideoImageModels returns fal's image-to-video catalog for the Settings
 // image-to-video model picker (used to animate an attached image).
 func (a *App) ListFalVideoImageModels() ([]FalModel, error) {
@@ -3800,6 +3830,9 @@ func defaultAppConfig() AppConfig {
 				Duration:    defaultFalVideoDuration,
 				AspectRatio: defaultFalVideoAspectRatio,
 			},
+			Audio: ConfigAudioGeneration{
+				Duration: defaultFalSoundDuration,
+			},
 		},
 		Tools: ConfigTools{
 			Filesystem: ConfigFilesystemTool{
@@ -3946,6 +3979,13 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	}
 	if strings.TrimSpace(config.Generation.Video.AspectRatio) == "" {
 		config.Generation.Video.AspectRatio = defaults.Generation.Video.AspectRatio
+	}
+	// "auto" is a meaningful value (the model decides), so only an absent field
+	// backfills — the pre-setting behavior for configs written before the
+	// audio group existed.
+	config.Generation.Audio.Duration = strings.TrimSpace(config.Generation.Audio.Duration)
+	if config.Generation.Audio.Duration == "" {
+		config.Generation.Audio.Duration = defaults.Generation.Audio.Duration
 	}
 	// Canonicalize the tier (trim + lowercase) and drop unknown values: empty
 	// means "let the model choose", so a junk hand-edited config.json value

@@ -43,6 +43,7 @@ import {
   ListFalVideoDurations,
   ListFalSpeechModels,
   ListFalSoundEffectModels,
+  ListFalSoundEffectDurations,
   ListFalAudioExtendModels,
   ListFalTranscribeModels,
   ListFalUpscaleModels,
@@ -432,6 +433,14 @@ function formatSupportedDurations(options: string[]): string {
   return parts.join(', ') + (numbers.length ? ' s' : '');
 }
 const videoDurationLabels: Record<string, string> = { auto: 'Auto' };
+// 'auto' sends no duration and the sound model picks the clip length from the
+// prompt (elevenlabs' documented null behavior) — the pre-setting default, so
+// the setting changes nothing until the user opts into a fixed length. The
+// fallback ladder tops out at 22s, elevenlabs sound-effects' ceiling; each
+// picker fetches the selected model's own range via ListFalSoundEffectDurations.
+const defaultSoundDuration = 'auto';
+const defaultSoundDurationOptions = ['auto', '5', '10', '15', '22'];
+const soundDurationLabels: Record<string, string> = { auto: 'Auto (model decides)' };
 // 'auto' defers the output shape to the model (its aspect_ratio default) —
 // reference-guided and text-to-video turns read this setting; image-to-video
 // and extend inherit the attached media's orientation. Label maps the raw
@@ -1195,6 +1204,10 @@ function App() {
   const [videoDurationExtendOptions, setVideoDurationExtendOptions] = useState<string[]>(defaultVideoDurationOptions);
   const [videoAspectRatio, setVideoAspectRatio] = useState(defaultVideoAspectRatio);
   const [videoResolution, setVideoResolution] = useState(defaultVideoResolution);
+  // soundDuration is the generate_sound default clip length, persisted to
+  // config.generation.audio.duration and fetched per-model like videoDuration.
+  const [soundDuration, setSoundDuration] = useState(defaultSoundDuration);
+  const [soundDurationOptions, setSoundDurationOptions] = useState<string[]>(defaultSoundDurationOptions);
   const [system, setSystem] = useState('You are Atelier, a precise local AI collaborator.');
   const [prompt, setPrompt] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -1791,6 +1804,9 @@ function App() {
             aspectRatio: videoAspectRatio,
             resolution: videoResolution || undefined,
           },
+          audio: {
+            duration: soundDuration,
+          },
         },
         tools: toolConfig ?? undefined,
         ui: {
@@ -1805,7 +1821,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel]);
 
   // Re-probe local CLI tools when a binary override changes so the provider
   // dropdown and the video/image-tools status reflect an unsaved override without
@@ -2221,8 +2237,9 @@ function App() {
     videoDuration,
     videoAspectRatio,
     videoResolution,
+    soundDuration,
     whisperBinary,
-  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falImageEditModel, falUpscaleModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, whisperModel, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, whisperBinary]);
+  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falImageEditModel, falUpscaleModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, whisperModel, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, whisperBinary]);
 
   const conversationModelSelection = useMemo<ModelSelectionValue>(() => {
     const global = globalModelSelection;
@@ -2281,6 +2298,7 @@ function App() {
       videoDuration: overrides.videoDuration || global.videoDuration,
       videoAspectRatio: overrides.videoAspectRatio || global.videoAspectRatio,
       videoResolution: overrides.videoResolution || global.videoResolution,
+      soundDuration: overrides.soundDuration || global.soundDuration,
     };
     return next;
   }, [globalModelSelection, uiModelOverrides, primaryModels, harnessModels]);
@@ -2345,6 +2363,7 @@ function App() {
     if (patch.videoDuration !== undefined) setVideoDuration(patch.videoDuration);
     if (patch.videoAspectRatio !== undefined) setVideoAspectRatio(patch.videoAspectRatio);
     if (patch.videoResolution !== undefined) setVideoResolution(patch.videoResolution);
+    if (patch.soundDuration !== undefined) setSoundDuration(patch.soundDuration);
     if (patch.whisperBinary !== undefined) setWhisperBinary(patch.whisperBinary);
   };
 
@@ -2435,6 +2454,7 @@ function App() {
       if (patch.videoDuration !== undefined) next.add('videoDuration');
       if (patch.videoAspectRatio !== undefined) next.add('videoAspectRatio');
       if (patch.videoResolution !== undefined) next.add('videoResolution');
+      if (patch.soundDuration !== undefined) next.add('soundDuration');
       if (patch.falLipsyncImageModel !== undefined) next.add('lipsyncImageModel');
       if (patch.falLipsyncVideoModel !== undefined) next.add('lipsyncVideoModel');
       return next;
@@ -2521,6 +2541,7 @@ function App() {
         case 'videoDuration': next.videoDuration = global.videoDuration; break;
         case 'videoAspectRatio': next.videoAspectRatio = global.videoAspectRatio; break;
         case 'videoResolution': next.videoResolution = global.videoResolution; break;
+        case 'soundDuration': next.soundDuration = global.soundDuration; break;
         case 'lipsyncImageModel': next.falLipsyncImageModel = global.falLipsyncImageModel; break;
         case 'lipsyncVideoModel': next.falLipsyncVideoModel = global.falLipsyncVideoModel; break;
       }
@@ -2579,11 +2600,12 @@ function App() {
   // fetch-and-fallback as the global pickers; the current draft value is kept
   // selectable at render time even when the model's schema doesn't list it,
   // so the select never silently shows a value the conversation won't use.
-  const [convDurationOptions, setConvDurationOptions] = useState<{video: string[]; image: string[]; keyframe: string[]; extend: string[]}>({
+  const [convDurationOptions, setConvDurationOptions] = useState<{video: string[]; image: string[]; keyframe: string[]; extend: string[]; sound: string[]}>({
     video: defaultVideoDurationOptions,
     image: defaultVideoDurationOptions,
     keyframe: defaultVideoDurationOptions,
     extend: defaultVideoDurationOptions,
+    sound: defaultSoundDurationOptions,
   });
   const convDraftVideoModel = convModelsDraft?.falVideoModel ?? '';
   const convDraftVideoImageModel = convModelsDraft?.falVideoImageModel ?? '';
@@ -2594,6 +2616,7 @@ function App() {
   const convDraftVideoExtendModel = convDraftVideoProvider === 'replicate'
     ? (convModelsDraft?.replicateVideoExtendModel ?? '')
     : (convModelsDraft?.falVideoExtendModel ?? '');
+  const convDraftSoundEffectsModel = convModelsDraft?.falSoundEffectsModel ?? '';
   useEffect(() => {
     if (view !== 'conversation-models') {
       return;
@@ -2611,21 +2634,31 @@ function App() {
         return defaultVideoDurationOptions;
       }
     };
+    const fetchSoundOptions = async () => {
+      try {
+        const durations = await ListFalSoundEffectDurations(convDraftSoundEffectsModel);
+        const schemaOpts = durations && durations.length ? durations : defaultSoundDurationOptions;
+        return schemaOpts.includes('auto') ? schemaOpts : ['auto', ...schemaOpts];
+      } catch {
+        return defaultSoundDurationOptions;
+      }
+    };
     Promise.all([
       fetchOptions(convDraftVideoProvider === 'replicate' ? (convModelsDraft?.replicateVideoModel ?? '') : convDraftVideoModel, convDraftVideoProvider),
       fetchOptions(convDraftVideoProvider === 'replicate' ? (convModelsDraft?.replicateVideoImageModel ?? '') : convDraftVideoImageModel, convDraftVideoProvider),
       fetchOptions(convDraftVideoKeyframeModel, 'fal'),
       fetchOptions(convDraftVideoExtendModel, convDraftVideoProvider),
+      fetchSoundOptions(),
     ])
-      .then(([video, image, keyframe, extend]) => {
+      .then(([video, image, keyframe, extend, sound]) => {
         if (!cancelled) {
-          setConvDurationOptions({video, image, keyframe, extend});
+          setConvDurationOptions({video, image, keyframe, extend, sound});
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [view, videoProvider, convDraftVideoProvider, convModelsDraft, convDraftVideoModel, convDraftVideoImageModel, convDraftVideoKeyframeModel, convDraftVideoExtendModel]);
+  }, [view, videoProvider, convDraftVideoProvider, convModelsDraft, convDraftVideoModel, convDraftVideoImageModel, convDraftVideoKeyframeModel, convDraftVideoExtendModel, convDraftSoundEffectsModel]);
 
   const saveComposerPrimaryOverride = async (provider: ChatProviderID, modelValue: string) => {
     if (!activeConversationID) {
@@ -2814,6 +2847,28 @@ function App() {
     };
   }, [videoProvider, falVideoModel, replicateVideoModel]);
 
+  // Sound duration options follow the selected sound-effects model the same
+  // way: ListFalSoundEffectDurations returns the model's accepted durations
+  // (elevenlabs' numeric 0.5–22 range synthesizes the ladder 1..22). 'auto' is
+  // always offered first — the synthesized ladder carries only numbers, and
+  // auto is the send-no-duration escape hatch the backend honors everywhere.
+  // An empty/error result falls back to the generic option set, like video.
+  useEffect(() => {
+    let cancelled = false;
+    ListFalSoundEffectDurations(falSoundEffectsModel)
+      .then((durations) => {
+        if (cancelled) return;
+        const schemaOpts = durations && durations.length ? durations : defaultSoundDurationOptions;
+        const opts = schemaOpts.includes('auto') ? schemaOpts : ['auto', ...schemaOpts];
+        setSoundDurationOptions(opts);
+        setSoundDuration((current) => (opts.includes(current) ? current : defaultSoundDuration));
+      })
+      .catch(() => setSoundDurationOptions(defaultSoundDurationOptions));
+    return () => {
+      cancelled = true;
+    };
+  }, [falSoundEffectsModel]);
+
   useEffect(() => {
     let cancelled = false;
     const fetchDurations = videoProvider === 'replicate'
@@ -2949,6 +3004,7 @@ function App() {
     const nextVideoDuration = config.generation?.video?.duration || defaultVideoDuration;
     const nextVideoAspectRatio = config.generation?.video?.aspectRatio || defaultVideoAspectRatio;
     const nextVideoResolution = config.generation?.video?.resolution || defaultVideoResolution;
+    const nextSoundDuration = config.generation?.audio?.duration || defaultSoundDuration;
 
     setStartupError('');
     setStorageConfig(config.storage ?? null);
@@ -2967,6 +3023,7 @@ function App() {
     setImageSteps(nextImageSteps);
     setImageProvider(nextImageProvider);
     setVideoProvider(nextVideoProvider);
+    setSoundDuration(nextSoundDuration);
     setOpenaiCompatibleBaseURL(nextOpenAICompatibleBaseURL);
     setOpenaiCompatibleModel(nextOpenAICompatibleModel);
     setReplicateModel(nextReplicateModel);
@@ -5293,7 +5350,7 @@ function App() {
                 value={globalModelSelection}
                 onChange={patchSettingsModelSelection}
                 catalogs={modelSelectionCatalogs}
-                durationOptions={{video: videoDurationOptions, image: videoDurationImageOptions, keyframe: videoDurationKeyframeOptions, extend: videoDurationExtendOptions}}
+                durationOptions={{video: videoDurationOptions, image: videoDurationImageOptions, keyframe: videoDurationKeyframeOptions, extend: videoDurationExtendOptions, sound: soundDurationOptions}}
               />
               </>
               ) : null}
@@ -5354,6 +5411,7 @@ function App() {
                     image: convDurationOptions.image,
                     keyframe: convDurationOptions.keyframe,
                     extend: convDurationOptions.extend,
+                    sound: withCurrent(convDurationOptions.sound, shown.soundDuration),
                   };
                 })()}
                 overriddenKeys={convModelsKeys}
@@ -6816,6 +6874,7 @@ type ModelSelectionValue = {
   videoDuration: string;
   videoAspectRatio: string;
   videoResolution: string;
+  soundDuration: string;
   whisperBinary: string;
 };
 
@@ -6874,6 +6933,7 @@ function overrideKeysFromRecord(overrides: main.ConversationModelOverrides | nul
   if (overrides.videoDuration) keys.add('videoDuration');
   if (overrides.videoAspectRatio) keys.add('videoAspectRatio');
   if (overrides.videoResolution) keys.add('videoResolution');
+  if (overrides.soundDuration) keys.add('soundDuration');
   if (overrides.lipsyncImageModel) keys.add('lipsyncImageModel');
   if (overrides.lipsyncVideoModel) keys.add('lipsyncVideoModel');
   return keys;
@@ -6925,6 +6985,7 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   if (keys.has('videoDuration')) payload.videoDuration = draft.videoDuration;
   if (keys.has('videoAspectRatio')) payload.videoAspectRatio = draft.videoAspectRatio;
   if (keys.has('videoResolution')) payload.videoResolution = draft.videoResolution;
+  if (keys.has('soundDuration')) payload.soundDuration = draft.soundDuration;
   if (keys.has('lipsyncImageModel')) payload.lipsyncImageModel = draft.falLipsyncImageModel;
   if (keys.has('lipsyncVideoModel')) payload.lipsyncVideoModel = draft.falLipsyncVideoModel;
   return main.ConversationModelOverrides.createFrom(payload);
@@ -6987,7 +7048,7 @@ function ModelSelectionPanel({
     openCapabilityID: string;
     setOpenCapabilityID: (id: string) => void;
   };
-  durationOptions: {video: string[]; image: string[]; keyframe: string[]; extend: string[]};
+  durationOptions: {video: string[]; image: string[]; keyframe: string[]; extend: string[]; sound: string[]};
   overriddenKeys?: ReadonlySet<string>;
   onResetField?: (key: string) => void;
 }) {
@@ -7712,6 +7773,18 @@ function ModelSelectionPanel({
               options={falSoundEffectOptions}
               allowCustom
             />
+          </div>
+          <div className="field">
+            <div className="field-label-row">
+              {fieldLabel('sound-duration', 'Default Sound Duration', 'soundDuration')}
+              <InfoHint
+                label="Default sound duration"
+                text="Applies to music and sound-effect generation when a request doesn't state a length. Auto leaves the clip length to the model — it decides from the prompt. A request naming a length always wins, and speech generation is unaffected (its length follows the spoken text)."
+              />
+            </div>
+            <select id="sound-duration" value={value.soundDuration} onChange={(event) => onChange({soundDuration: event.target.value})}>
+              {durationOptions.sound.map((option) => <option key={option} value={option}>{soundDurationLabels[option] ?? option}</option>)}
+            </select>
           </div>
           <div className="field">
             {fieldLabel('fal-audio-extend-model', 'Audio Extend Model (fal.ai)', 'audioExtendModel')}

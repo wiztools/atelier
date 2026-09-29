@@ -74,6 +74,18 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class ConfigAudioGeneration {
+	    duration: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConfigAudioGeneration(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.duration = source["duration"];
+	    }
+	}
 	export class ConfigVideoGeneration {
 	    duration: string;
 	    aspectRatio: string;
@@ -113,6 +125,7 @@ export namespace main {
 	export class ConfigGeneration {
 	    image: ConfigImageGeneration;
 	    video: ConfigVideoGeneration;
+	    audio: ConfigAudioGeneration;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigGeneration(source);
@@ -122,6 +135,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.image = this.convertValues(source["image"], ConfigImageGeneration);
 	        this.video = this.convertValues(source["video"], ConfigVideoGeneration);
+	        this.audio = this.convertValues(source["audio"], ConfigAudioGeneration);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -660,6 +674,7 @@ export namespace main {
 	    videoDuration?: string;
 	    videoAspectRatio?: string;
 	    videoResolution?: string;
+	    soundDuration?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConversationModelOverrides(source);
@@ -700,6 +715,7 @@ export namespace main {
 	        this.videoDuration = source["videoDuration"];
 	        this.videoAspectRatio = source["videoAspectRatio"];
 	        this.videoResolution = source["videoResolution"];
+	        this.soundDuration = source["soundDuration"];
 	    }
 	}
 	export class ChatRequest {
@@ -778,6 +794,7 @@ export namespace main {
 	        this.userVideos = source["userVideos"];
 	    }
 	}
+	
 	
 	
 	

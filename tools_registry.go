@@ -1378,10 +1378,21 @@ func soundEffectsGenerationToolDefinition() HarnessToolDefinition {
 			return nil
 		},
 		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			// Duration precedence mirrors generate_video's: an explicit duration
+			// on the call wins; otherwise the configured default applies. "auto"
+			// (or empty) sends no duration and the model decides the clip length
+			// from the prompt — the pre-setting behavior.
+			duration := strings.TrimSpace(call.Duration)
+			if duration == "" {
+				duration = strings.TrimSpace(tools.Config.Generation.Audio.Duration)
+			}
+			if duration == "" || strings.EqualFold(duration, "auto") {
+				duration = ""
+			}
 			return audioGenerationExecute(ctx, tools, AudioGenerateRequest{
 				Model:          strings.TrimSpace(call.Model),
 				Prompt:         call.Content,
-				Duration:       strings.TrimSpace(call.Duration),
+				Duration:       duration,
 				NegativePrompt: strings.TrimSpace(call.NegativePrompt),
 				Loop:           call.Loop,
 				Style:          strings.TrimSpace(call.Style),
@@ -2563,6 +2574,7 @@ func generateSoundParamSchema() map[string]any {
 			"content": stringParam("A description of the music or sound effect to create."),
 			"model":   stringParam("Optional fal.ai sound model override."),
 			"duration": stringParam("Optional — target clip length in seconds (e.g. \"10\"). " +
+				"Omit to use the configured default length; pass \"auto\" to let the model decide from the prompt. " +
 				"Ignored by models that don't expose a duration control."),
 			"negativePrompt": stringParam("Optional — describe what to keep out of the audio (e.g. \"vocals, percussion\"). " +
 				"Ignored by models without a negative-prompt control."),

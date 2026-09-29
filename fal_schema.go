@@ -460,19 +460,28 @@ func durationOptionsForProperty(prop SchemaProperty) []string {
 }
 
 // videoDurationOptions returns the duration values the given fal video model
-// accepts, drawn from its published input schema's duration input: the enum
-// when one is declared (e.g. ["auto","4",...,"15"] for Seedance, ["5","10"]
-// for Kling), else the synthesized integer range for an enum-less numeric
-// duration (minimax/h3's 5–15). It mirrors the lookup resolveVideoBody
-// performs at submit time, so the Settings duration picker can show exactly
-// the values the selected model won't 422 on.
+// accepts. It mirrors the lookup resolveVideoBody performs at submit time, so
+// the Settings duration picker can show exactly the values the selected model
+// won't 422 on.
+func videoDurationOptions(ctx context.Context, client *http.Client, storageRoot, model string) []string {
+	return modelDurationOptions(ctx, client, storageRoot, model, "video")
+}
+
+// modelDurationOptions is the shared core behind the per-category duration
+// listers: it reads the model's published input schema's duration input — the
+// enum when one is declared (e.g. ["auto","4",...,"15"] for Seedance, ["5",
+// "10"] for Kling), else the synthesized integer range for an enum-less
+// numeric duration (minimax/h3's 5–15; elevenlabs sound-effects' 1–22) —
+// through the same synonym table its resolver uses at submit time, so the
+// Settings duration pickers show exactly the values the selected model won't
+// 422 on. category selects that table ("video" or "audio").
 //
 // Returns nil when the schema is unavailable (offline, fetch failed, no key)
 // or the model has no listable duration control — callers fall back to a
 // generic option set rather than blocking the UI. Nil-safe throughout: a nil
 // schema, nil app, or empty model all yield nil. findNative is nil-schema-safe
 // (returns false).
-func videoDurationOptions(ctx context.Context, client *http.Client, storageRoot, model string) []string {
+func modelDurationOptions(ctx context.Context, client *http.Client, storageRoot, model, category string) []string {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return nil
@@ -480,7 +489,7 @@ func videoDurationOptions(ctx context.Context, client *http.Client, storageRoot,
 	cache := newFalSchemaCache(client, storageRoot)
 	overrides := loadFalOverrides(storageRoot)
 	schema := cache.Get(ctx, model)
-	if _, prop, ok := findNative(schema, overrides, "video", model, "duration"); ok {
+	if _, prop, ok := findNative(schema, overrides, category, model, "duration"); ok {
 		return durationOptionsForProperty(prop)
 	}
 	return nil

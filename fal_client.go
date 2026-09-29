@@ -125,6 +125,11 @@ const (
 	// when the planner passes no duration — a sensible bed-extension default
 	// (ace-step's own extend_after_duration default is also 30).
 	defaultFalAudioExtendSeconds = "30"
+	// defaultFalSoundDuration is the generate_sound duration setting's default:
+	// "auto" sends no duration and the model picks the clip length from the
+	// prompt (elevenlabs' documented null behavior), so the setting changes
+	// nothing until the user opts into a fixed length.
+	defaultFalSoundDuration = "auto"
 	// falPollInterval is the delay between queue status checks.
 	falPollInterval = 1500 * time.Millisecond
 	// falVideoMaxBytes caps a downloaded video. Generated clips are typically a

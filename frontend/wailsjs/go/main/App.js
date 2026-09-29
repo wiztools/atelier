@@ -130,6 +130,10 @@ export function ListFalModels() {
   return window['go']['main']['App']['ListFalModels']();
 }
 
+export function ListFalSoundEffectDurations(arg1) {
+  return window['go']['main']['App']['ListFalSoundEffectDurations'](arg1);
+}
+
 export function ListFalSoundEffectModels() {
   return window['go']['main']['App']['ListFalSoundEffectModels']();
 }

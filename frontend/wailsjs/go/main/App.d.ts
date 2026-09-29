@@ -66,6 +66,8 @@ export function ListFalLipsyncVideoModels():Promise<Array<main.FalModel>>;
 
 export function ListFalModels():Promise<Array<main.FalModel>>;
 
+export function ListFalSoundEffectDurations(arg1:string):Promise<Array<string>>;
+
 export function ListFalSoundEffectModels():Promise<Array<main.FalModel>>;
 
 export function ListFalSpeechModels():Promise<Array<main.FalModel>>;

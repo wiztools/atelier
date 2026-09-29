@@ -66,12 +66,15 @@ type ConversationModelOverrides struct {
 	// negatives away). VideoDuration is the one canonical duration the backend
 	// reads for all three video paths; the Models tab's image-to-video and
 	// extend duration pickers are frontend-only previews and ride no payload.
+	// SoundDuration is generate_sound's default length ("auto" = the model
+	// decides).
 	ImageAspectRatio string `json:"imageAspectRatio,omitempty"`
 	ImageSizePreset  string `json:"imageSizePreset,omitempty"`
 	ImageSteps       int    `json:"imageSteps,omitempty"`
 	VideoDuration    string `json:"videoDuration,omitempty"`
 	VideoAspectRatio string `json:"videoAspectRatio,omitempty"`
 	VideoResolution  string `json:"videoResolution,omitempty"`
+	SoundDuration    string `json:"soundDuration,omitempty"`
 }
 
 // conversationModelOverridesActive reports whether any field is set — the
@@ -94,7 +97,7 @@ func normalizeConversationModelOverrides(o ConversationModelOverrides) Conversat
 		&o.AudioModel, &o.SoundEffectsModel, &o.AudioCloneModel, &o.AudioExtendModel, &o.TranscribeModel,
 		&o.LipsyncImageModel, &o.LipsyncVideoModel,
 		&o.TranscriptionProvider, &o.WhisperModel, &o.WhisperBinary,
-		&o.ImageAspectRatio, &o.ImageSizePreset, &o.VideoDuration, &o.VideoAspectRatio, &o.VideoResolution,
+		&o.ImageAspectRatio, &o.ImageSizePreset, &o.VideoDuration, &o.VideoAspectRatio, &o.VideoResolution, &o.SoundDuration,
 	}
 	for _, field := range fields {
 		*field = strings.TrimSpace(*field)
@@ -430,6 +433,9 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 	}
 	if o.VideoResolution != "" {
 		config.Generation.Video.Resolution = o.VideoResolution
+	}
+	if o.SoundDuration != "" {
+		config.Generation.Audio.Duration = o.SoundDuration
 	}
 	return config, req, nil
 }

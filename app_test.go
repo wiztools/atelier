@@ -7329,6 +7329,70 @@ func TestSoundEffectsGenerationToolGating(t *testing.T) {
 	}
 }
 
+// TestMergeAppConfigAudioDurationDefault pins the audio duration setting's
+// backfill: "auto" (the model decides) is the default an absent field
+// backfills to, an explicit length survives verbatim, and whitespace trims —
+// mirroring the video duration backfill.
+func TestMergeAppConfigAudioDurationDefault(t *testing.T) {
+	empty := AppConfig{}
+	if merged := mergeAppConfig(empty); merged.Generation.Audio.Duration != defaultFalSoundDuration {
+		t.Fatalf("empty config should backfill to %q, got %q", defaultFalSoundDuration, merged.Generation.Audio.Duration)
+	}
+	explicit := defaultAppConfig()
+	explicit.Generation.Audio.Duration = "22"
+	if merged := mergeAppConfig(explicit); merged.Generation.Audio.Duration != "22" {
+		t.Fatalf("explicit duration must survive merge, got %q", merged.Generation.Audio.Duration)
+	}
+	padded := defaultAppConfig()
+	padded.Generation.Audio.Duration = " 10 "
+	if merged := mergeAppConfig(padded); merged.Generation.Audio.Duration != "10" {
+		t.Fatalf("duration should trim, got %q", merged.Generation.Audio.Duration)
+	}
+}
+
+// TestSoundEffectsDurationPrecedence pins generate_sound's duration rule: an
+// explicit duration on the call wins over the configured default; "auto" (on
+// either the call or the config, or an empty pre-merge config) sends no
+// duration so the model decides the clip length — the pre-setting behavior.
+func TestSoundEffectsDurationPrecedence(t *testing.T) {
+	cases := []struct {
+		name       string
+		callDur    string
+		configDur  string
+		wantToWire string
+	}{
+		{"call wins", "12", "22", "12"},
+		{"config applies", "", "22", "22"},
+		{"config auto sends nothing", "", "auto", ""},
+		{"empty config sends nothing", "", "", ""},
+		{"call auto escapes config", "auto", "22", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var sawDuration string
+			config := defaultAppConfig()
+			config.Generation.Audio.Duration = tc.configDur
+			tools := HarnessToolExecutionContext{
+				Config: config,
+				GenerateAudio: func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error) {
+					sawDuration = req.Duration
+					return GeneratedAudio{Data: []byte("fake-mp3"), MimeType: "audio/mpeg"}, nil
+				},
+			}
+			call := HarnessToolCall{Name: "generate_sound", Content: "soft rain"}
+			if tc.callDur != "" {
+				call.Duration = tc.callDur
+			}
+			if _, _, err := soundEffectsGenerationToolDefinition().Execute(context.Background(), tools, call); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if sawDuration != tc.wantToWire {
+				t.Fatalf("GenerateAudio saw duration %q, want %q", sawDuration, tc.wantToWire)
+			}
+		})
+	}
+}
+
 // TestMergeAppConfigSeedsSoundEffectsModel pins the one-time migration for
 // configs written before the speech/sound split: a configured AudioModel means
 // the old combined generate_audio tool was in use, so the sound-effects default
