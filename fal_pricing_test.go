@@ -727,6 +727,33 @@ func TestFalDurationSeconds(t *testing.T) {
 	}
 }
 
+// TestAudioBillingSeconds pins the per-second audio billing quantity: the
+// rendered clip's own duration (what fal actually charged) wins over the
+// requested length, the request stands in when the bytes don't probe, and
+// neither known means not-ok — the cost is skipped rather than guessed.
+func TestAudioBillingSeconds(t *testing.T) {
+	rendered := 10 * 1152.0 / 44100 // buildMP3(10): ten 1152-sample frames at 44.1kHz
+	for _, tt := range []struct {
+		name      string
+		requested string
+		rendered  []byte
+		want      float64
+		wantOK    bool
+	}{
+		{"rendered wins over requested", "5", buildMP3(10), rendered, true},
+		{"requested stands in for junk bytes", "7.5", []byte("not audio"), 7.5, true},
+		{"requested with no bytes", "5", nil, 5, true},
+		{"neither known", "", nil, 0, false},
+		{"auto duration with no bytes", "auto", nil, 0, false},
+	} {
+		got, ok := audioBillingSeconds(tt.requested, tt.rendered)
+		if ok != tt.wantOK || got != tt.want {
+			t.Fatalf("audioBillingSeconds(%q, %d bytes) [%s] = (%v, %v), want (%v, %v)",
+				tt.requested, len(tt.rendered), tt.name, got, ok, tt.want, tt.wantOK)
+		}
+	}
+}
+
 // falPricingTransport serves one pricing payload and counts requests.
 type falPricingTransport struct {
 	requests  int
@@ -749,6 +776,7 @@ func (transport *falPricingTransport) RoundTrip(req *http.Request) (*http.Respon
 			`{"endpoint_id":"bytedance/seedance-2.5/reference-to-video","unit_price":0.0214,"unit":"1000 tokens","currency":"USD"},` +
 			`{"endpoint_id":"bytedance/seedream/v5/pro/edit","unit_price":0.0675,"unit":"units","currency":"USD"},` +
 			`{"endpoint_id":"fal-ai/f5-tts","unit_price":0.05,"unit":"1000 characters","currency":"USD"},` +
+			`{"endpoint_id":"fal-ai/elevenlabs/sound-effects/v2","unit_price":0.002,"unit":"second","currency":"USD"},` +
 			`{"endpoint_id":"fal-ai/nonusd/model","unit_price":1,"unit":"image","currency":"EUR"}` +
 			`],"next_cursor":null,"has_more":false}`
 	}
@@ -892,6 +920,13 @@ func TestEstimateFalCostMicros(t *testing.T) {
 	got = estimateFalCostMicros(ctx, cache, client, "key", "fal-ai/f5-tts", nil, falBillingHints{Characters: 120, Requests: 1})
 	if got != 6000 {
 		t.Fatalf("character-billed estimate = %d, want 6000", got)
+	}
+	// Per-second sound generation (the conv_a3fecc876e6360a50ed6e8b5 bill): the
+	// elevenlabs sound-effects model rendered a 3s clip at $0.002/s = $0.006 —
+	// before the audio path carried a Seconds hint the turn read "?" for it.
+	got = estimateFalCostMicros(ctx, cache, client, "key", "fal-ai/elevenlabs/sound-effects/v2", nil, falBillingHints{Seconds: 3, Requests: 1})
+	if got != 6000 {
+		t.Fatalf("per-second audio estimate = %d, want 6000", got)
 	}
 	// Fail-soft: nil cache, empty key, unknown endpoint, and an unpriceable
 	// unit (per-second model with no duration hint) all yield 0.

@@ -420,6 +420,21 @@ func falDurationSeconds(duration string) (float64, bool) {
 	return parsed, true
 }
 
+// audioBillingSeconds resolves the length a per-second audio model bills (the
+// elevenlabs sound-effects family prices per second of generated audio): the
+// rendered clip's own duration first — fal charges the output it actually
+// produced, which is the only source when the model decided the length itself
+// (an "auto" duration turn, conv_a3fecc876e6360a50ed6e8b5 billed "?" until
+// this existed) — then the requested duration as a stand-in when the bytes
+// don't probe. ok is false when neither is known: the cost is skipped rather
+// than guessed, the shared fail-soft rule.
+func audioBillingSeconds(requested string, rendered []byte) (float64, bool) {
+	if seconds, ok := probeAudioDuration(rendered); ok && seconds > 0 {
+		return seconds, true
+	}
+	return falDurationSeconds(requested)
+}
+
 // falVideoTokenFPS is the fixed frame-rate factor in fal's documented token
 // formula for token-billed video models (seedance-2.x):
 //

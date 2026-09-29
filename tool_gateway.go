@@ -638,12 +638,17 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			body, notices := resolveAudioBody(schema, req, falOverrides)
 			generated, err := client.GenerateAudio(ctx, req.Model, body)
 			if err == nil {
-				// Character-billed TTS models price the spoken text; per-request
-				// models ignore the character count via the unit mapping.
-				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, falBillingHints{
+				// Character-billed TTS models price the spoken text; per-second
+				// sound models (elevenlabs) the rendered clip's own length;
+				// flat per-request models ignore both via the unit mapping.
+				hints := falBillingHints{
 					Requests:   1,
 					Characters: len([]rune(req.Prompt)),
-				})
+				}
+				if seconds, ok := audioBillingSeconds(req.Duration, generated.Data); ok {
+					hints.Seconds = seconds
+				}
+				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
 			}
 			generated.Notices = notices
 			return generated, err
