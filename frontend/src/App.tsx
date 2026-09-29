@@ -5554,7 +5554,7 @@ function App() {
                       {entry.role === 'user' && entry.audios?.length ? (
                         <div className="chat-user-audios">
                           {entry.audios.map((audio, index) => (
-                            <audio key={`${entry.id}-audio-${index}`} src={audio} controls preload="metadata" />
+                            <AudioPlayer key={`${entry.id}-audio-${index}`} src={audio} />
                           ))}
                         </div>
                       ) : null}
@@ -5581,7 +5581,7 @@ function App() {
                         <div className="chat-audio-results">
                           {entry.audios.map((audio, index) => (
                             <figure key={`${entry.id}-audio-${index}`} className="chat-audio-card">
-                              <audio src={audio} controls preload="metadata" />
+                              <AudioPlayer src={audio} />
                               <figcaption>
                                 <button type="button" onClick={() => saveGeneratedAudio(audio, index)}>Download audio</button>
                               </figcaption>
@@ -5908,7 +5908,7 @@ function App() {
                         <img src={asset.url} alt="" loading="lazy" />
                       </button>
                     ) : asset.kind === 'audio' && asset.url ? (
-                      <audio src={asset.url} controls preload="metadata" />
+                      <AudioPlayer src={asset.url} />
                     ) : asset.kind === 'video' && asset.url ? (
                       <LazyPanelVideo src={asset.url} />
                     ) : (
@@ -6504,6 +6504,60 @@ function VideoPlayer({src, onPlayingChange}: {src: string; onPlayingChange?: (pl
         )}
       </div>
       <span ref={readoutRef} className="video-time-readout">
+        0:00.000 / 0:00.000
+      </span>
+    </div>
+  );
+}
+
+// The audio sibling of VideoPlayer's time readout: WKWebView's native
+// <audio controls> readout can't be reformatted either, so the same precise
+// m:ss.mmm current/total line rides beneath the control bar. Like the video
+// readout it is written straight to the DOM from a requestAnimationFrame
+// loop while playing — onTimeUpdate alone fires far too coarsely for the
+// millisecond digits — and stays selectable so a position can be copied.
+function AudioPlayer({src}: {src: string}) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const readoutRef = useRef<HTMLSpanElement | null>(null);
+  const rafRef = useRef(0);
+
+  const syncReadout = () => {
+    const audio = audioRef.current;
+    const readout = readoutRef.current;
+    if (!audio || !readout) return;
+    readout.textContent = `${preciseMediaTime(audio.currentTime)} / ${preciseMediaTime(audio.duration)}`;
+  };
+  const tick = () => {
+    syncReadout();
+    rafRef.current = requestAnimationFrame(tick);
+  };
+  const startTicking = () => {
+    cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(tick);
+  };
+  const stopTicking = () => {
+    cancelAnimationFrame(rafRef.current);
+    syncReadout();
+  };
+
+  useEffect(() => () => cancelAnimationFrame(rafRef.current), []);
+
+  return (
+    <div className="audio-player">
+      <audio
+        ref={audioRef}
+        src={src}
+        controls
+        preload="metadata"
+        onPlay={startTicking}
+        onPause={stopTicking}
+        onEnded={stopTicking}
+        onSeeked={syncReadout}
+        onTimeUpdate={syncReadout}
+        onLoadedMetadata={syncReadout}
+        onDurationChange={syncReadout}
+      />
+      <span ref={readoutRef} className="audio-time-readout">
         0:00.000 / 0:00.000
       </span>
     </div>

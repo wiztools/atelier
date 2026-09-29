@@ -2338,8 +2338,7 @@ button:disabled {
 }
 
 /* VideoPlayer: native controls plus a precise m:ss.mmm readout under the
-   frame. The readout is selectable so a timestamp can be copied straight
-   into tool requests (screenshot at, split start/end). */
+   frame (readout styling shared with AudioPlayer below). */
 .video-player {
   display: grid;
   gap: 4px;
@@ -2420,12 +2419,30 @@ button:disabled {
   border-radius: 8px;
 }
 
-.video-time-readout {
+/* VideoPlayer/AudioPlayer: the shared m:ss.mmm current/total readout —
+   selectable so a timestamp can be copied straight into tool requests
+   (screenshot at, split start/end). */
+.video-time-readout,
+.audio-time-readout {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: #9ea5a3;
   user-select: text;
   -webkit-user-select: text;
+}
+
+/* AudioPlayer: the audio sibling of VideoPlayer — native controls with the
+   same readout beneath them. The wrapper carries the width; the audio
+   element fills it. */
+.audio-player {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+}
+
+.audio-player audio {
+  display: block;
+  width: 100%;
 }
 
 .chat-user-videos {
@@ -2443,6 +2460,18 @@ button:disabled {
 }
 
 .chat-user-videos .video-player {
+  width: min(100%, 620px);
+}
+
+/* Attached audio gets the same stacking and 620px cap as attached video, so
+   the readout lines up with the video players' width. */
+.chat-user-audios {
+  display: grid;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.chat-user-audios .audio-player {
   width: min(100%, 620px);
 }
 
@@ -2482,10 +2511,6 @@ button:disabled {
   margin: 0;
   display: grid;
   gap: 8px;
-}
-
-.chat-audio-card audio {
-  width: 100%;
 }
 
 .chat-audio-card figcaption {
@@ -3060,8 +3085,9 @@ button:disabled {
   height: 34px;
 }
 
-.asset-preview audio {
-  display: block;
+/* The inset rides the AudioPlayer wrapper (the audio element inside fills
+   it), so the readout's left edge aligns with the control bar's. */
+.asset-preview .audio-player {
   width: calc(100% - 28px);
 }
 
