@@ -7702,7 +7702,7 @@ function ModelSelectionPanel({
             />
           </div>
           <div className="field">
-            {fieldLabel('fal-sound-effects-model', 'Music &amp; Sound Effects Model (fal.ai)', 'soundEffectsModel')}
+            {fieldLabel('fal-sound-effects-model', 'Music & Sound Effects Model (fal.ai)', 'soundEffectsModel')}
             <ModelCombobox
               id="fal-sound-effects-model"
               ariaLabel="fal.ai sound effects model"
