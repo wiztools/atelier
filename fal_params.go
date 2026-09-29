@@ -420,7 +420,7 @@ func resolveAudioExtendBody(schema *ModelInputSchema, req AudioExtendRequest, ov
 			body["lyrics"] = lyrics
 		}
 		if !extSet {
-			extSeconds = 30
+			extSeconds = defaultFalAudioExtendSeconds
 		}
 		if extSeconds > aceStepOutpaintMaxSeconds {
 			notices = append(notices, fmt.Sprintf("Capped the extension at %ds: fal-ai/ace-step/audio-outpaint accepts at most %ds per side.", aceStepOutpaintMaxSeconds, aceStepOutpaintMaxSeconds))
@@ -471,7 +471,7 @@ func resolveAudioExtendBody(schema *ModelInputSchema, req AudioExtendRequest, ov
 			return nil, notices, fmt.Errorf("could not determine the source clip's length, which %q needs to place its mask; try \"fal-ai/ace-step/audio-outpaint\" or \"sonauto/v2/extend\", which extend without it", req.Model)
 		}
 		if !extSet {
-			extSeconds = 30
+			extSeconds = defaultFalAudioExtendSeconds
 		}
 		sourceLen := roundSeconds(req.SourceDurationSeconds)
 		ext := roundSeconds(extSeconds)

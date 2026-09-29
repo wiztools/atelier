@@ -67,14 +67,16 @@ type ConversationModelOverrides struct {
 	// reads for all three video paths; the Models tab's image-to-video and
 	// extend duration pickers are frontend-only previews and ride no payload.
 	// SoundDuration is generate_sound's default length ("auto" = the model
-	// decides).
-	ImageAspectRatio string `json:"imageAspectRatio,omitempty"`
-	ImageSizePreset  string `json:"imageSizePreset,omitempty"`
-	ImageSteps       int    `json:"imageSteps,omitempty"`
-	VideoDuration    string `json:"videoDuration,omitempty"`
-	VideoAspectRatio string `json:"videoAspectRatio,omitempty"`
-	VideoResolution  string `json:"videoResolution,omitempty"`
-	SoundDuration    string `json:"soundDuration,omitempty"`
+	// decides); AudioExtendDuration is extend_audio's default ADDED length
+	// ("auto" = each extend model's own behavior).
+	ImageAspectRatio    string `json:"imageAspectRatio,omitempty"`
+	ImageSizePreset     string `json:"imageSizePreset,omitempty"`
+	ImageSteps          int    `json:"imageSteps,omitempty"`
+	VideoDuration       string `json:"videoDuration,omitempty"`
+	VideoAspectRatio    string `json:"videoAspectRatio,omitempty"`
+	VideoResolution     string `json:"videoResolution,omitempty"`
+	SoundDuration       string `json:"soundDuration,omitempty"`
+	AudioExtendDuration string `json:"audioExtendDuration,omitempty"`
 }
 
 // conversationModelOverridesActive reports whether any field is set — the
@@ -97,7 +99,7 @@ func normalizeConversationModelOverrides(o ConversationModelOverrides) Conversat
 		&o.AudioModel, &o.SoundEffectsModel, &o.AudioCloneModel, &o.AudioExtendModel, &o.TranscribeModel,
 		&o.LipsyncImageModel, &o.LipsyncVideoModel,
 		&o.TranscriptionProvider, &o.WhisperModel, &o.WhisperBinary,
-		&o.ImageAspectRatio, &o.ImageSizePreset, &o.VideoDuration, &o.VideoAspectRatio, &o.VideoResolution, &o.SoundDuration,
+		&o.ImageAspectRatio, &o.ImageSizePreset, &o.VideoDuration, &o.VideoAspectRatio, &o.VideoResolution, &o.SoundDuration, &o.AudioExtendDuration,
 	}
 	for _, field := range fields {
 		*field = strings.TrimSpace(*field)
@@ -436,6 +438,9 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 	}
 	if o.SoundDuration != "" {
 		config.Generation.Audio.Duration = o.SoundDuration
+	}
+	if o.AudioExtendDuration != "" {
+		config.Generation.Audio.ExtendDuration = o.AudioExtendDuration
 	}
 	return config, req, nil
 }

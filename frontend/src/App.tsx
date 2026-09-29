@@ -441,6 +441,14 @@ const videoDurationLabels: Record<string, string> = { auto: 'Auto' };
 const defaultSoundDuration = 'auto';
 const defaultSoundDurationOptions = ['auto', '5', '10', '15', '22'];
 const soundDurationLabels: Record<string, string> = { auto: 'Auto (model decides)' };
+// 'auto' keeps each extend model's own behavior (the inpaint/outpaint models'
+// built-in 30s; sonauto decides from the audio). Static ladder — the extend
+// models' length inputs are flavor-specific masks/side fields with no shared
+// schema key to read, and each flavor validates its own cap (sonauto clamps
+// 2–85s, ace-step caps at 107s, the inpaint model errors past 190s total).
+const defaultAudioExtendDuration = 'auto';
+const audioExtendDurationOptions = ['auto', '10', '20', '30', '60', '90', '120'];
+const audioExtendDurationLabels: Record<string, string> = { auto: 'Auto (model default)' };
 // 'auto' defers the output shape to the model (its aspect_ratio default) —
 // reference-guided and text-to-video turns read this setting; image-to-video
 // and extend inherit the attached media's orientation. Label maps the raw
@@ -1208,6 +1216,9 @@ function App() {
   // config.generation.audio.duration and fetched per-model like videoDuration.
   const [soundDuration, setSoundDuration] = useState(defaultSoundDuration);
   const [soundDurationOptions, setSoundDurationOptions] = useState<string[]>(defaultSoundDurationOptions);
+  // audioExtendDuration is extend_audio's default ADDED length, persisted to
+  // config.generation.audio.extendDuration; its option ladder is static.
+  const [audioExtendDuration, setAudioExtendDuration] = useState(defaultAudioExtendDuration);
   const [system, setSystem] = useState('You are Atelier, a precise local AI collaborator.');
   const [prompt, setPrompt] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -1806,6 +1817,7 @@ function App() {
           },
           audio: {
             duration: soundDuration,
+            extendDuration: audioExtendDuration,
           },
         },
         tools: toolConfig ?? undefined,
@@ -1821,7 +1833,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel]);
 
   // Re-probe local CLI tools when a binary override changes so the provider
   // dropdown and the video/image-tools status reflect an unsaved override without
@@ -2238,8 +2250,9 @@ function App() {
     videoAspectRatio,
     videoResolution,
     soundDuration,
+    audioExtendDuration,
     whisperBinary,
-  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falImageEditModel, falUpscaleModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, whisperModel, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, whisperBinary]);
+  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falImageEditModel, falUpscaleModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, whisperModel, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration, whisperBinary]);
 
   const conversationModelSelection = useMemo<ModelSelectionValue>(() => {
     const global = globalModelSelection;
@@ -2299,6 +2312,7 @@ function App() {
       videoAspectRatio: overrides.videoAspectRatio || global.videoAspectRatio,
       videoResolution: overrides.videoResolution || global.videoResolution,
       soundDuration: overrides.soundDuration || global.soundDuration,
+      audioExtendDuration: overrides.audioExtendDuration || global.audioExtendDuration,
     };
     return next;
   }, [globalModelSelection, uiModelOverrides, primaryModels, harnessModels]);
@@ -2364,6 +2378,7 @@ function App() {
     if (patch.videoAspectRatio !== undefined) setVideoAspectRatio(patch.videoAspectRatio);
     if (patch.videoResolution !== undefined) setVideoResolution(patch.videoResolution);
     if (patch.soundDuration !== undefined) setSoundDuration(patch.soundDuration);
+    if (patch.audioExtendDuration !== undefined) setAudioExtendDuration(patch.audioExtendDuration);
     if (patch.whisperBinary !== undefined) setWhisperBinary(patch.whisperBinary);
   };
 
@@ -2455,6 +2470,7 @@ function App() {
       if (patch.videoAspectRatio !== undefined) next.add('videoAspectRatio');
       if (patch.videoResolution !== undefined) next.add('videoResolution');
       if (patch.soundDuration !== undefined) next.add('soundDuration');
+      if (patch.audioExtendDuration !== undefined) next.add('audioExtendDuration');
       if (patch.falLipsyncImageModel !== undefined) next.add('lipsyncImageModel');
       if (patch.falLipsyncVideoModel !== undefined) next.add('lipsyncVideoModel');
       return next;
@@ -2542,6 +2558,7 @@ function App() {
         case 'videoAspectRatio': next.videoAspectRatio = global.videoAspectRatio; break;
         case 'videoResolution': next.videoResolution = global.videoResolution; break;
         case 'soundDuration': next.soundDuration = global.soundDuration; break;
+        case 'audioExtendDuration': next.audioExtendDuration = global.audioExtendDuration; break;
         case 'lipsyncImageModel': next.falLipsyncImageModel = global.falLipsyncImageModel; break;
         case 'lipsyncVideoModel': next.falLipsyncVideoModel = global.falLipsyncVideoModel; break;
       }
@@ -3005,6 +3022,7 @@ function App() {
     const nextVideoAspectRatio = config.generation?.video?.aspectRatio || defaultVideoAspectRatio;
     const nextVideoResolution = config.generation?.video?.resolution || defaultVideoResolution;
     const nextSoundDuration = config.generation?.audio?.duration || defaultSoundDuration;
+    const nextAudioExtendDuration = config.generation?.audio?.extendDuration || defaultAudioExtendDuration;
 
     setStartupError('');
     setStorageConfig(config.storage ?? null);
@@ -3024,6 +3042,7 @@ function App() {
     setImageProvider(nextImageProvider);
     setVideoProvider(nextVideoProvider);
     setSoundDuration(nextSoundDuration);
+    setAudioExtendDuration(nextAudioExtendDuration);
     setOpenaiCompatibleBaseURL(nextOpenAICompatibleBaseURL);
     setOpenaiCompatibleModel(nextOpenAICompatibleModel);
     setReplicateModel(nextReplicateModel);
@@ -6875,6 +6894,7 @@ type ModelSelectionValue = {
   videoAspectRatio: string;
   videoResolution: string;
   soundDuration: string;
+  audioExtendDuration: string;
   whisperBinary: string;
 };
 
@@ -6934,6 +6954,7 @@ function overrideKeysFromRecord(overrides: main.ConversationModelOverrides | nul
   if (overrides.videoAspectRatio) keys.add('videoAspectRatio');
   if (overrides.videoResolution) keys.add('videoResolution');
   if (overrides.soundDuration) keys.add('soundDuration');
+  if (overrides.audioExtendDuration) keys.add('audioExtendDuration');
   if (overrides.lipsyncImageModel) keys.add('lipsyncImageModel');
   if (overrides.lipsyncVideoModel) keys.add('lipsyncVideoModel');
   return keys;
@@ -6986,6 +7007,7 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   if (keys.has('videoAspectRatio')) payload.videoAspectRatio = draft.videoAspectRatio;
   if (keys.has('videoResolution')) payload.videoResolution = draft.videoResolution;
   if (keys.has('soundDuration')) payload.soundDuration = draft.soundDuration;
+  if (keys.has('audioExtendDuration')) payload.audioExtendDuration = draft.audioExtendDuration;
   if (keys.has('lipsyncImageModel')) payload.lipsyncImageModel = draft.falLipsyncImageModel;
   if (keys.has('lipsyncVideoModel')) payload.lipsyncVideoModel = draft.falLipsyncVideoModel;
   return main.ConversationModelOverrides.createFrom(payload);
@@ -7797,6 +7819,18 @@ function ModelSelectionPanel({
               options={falAudioExtendOptions}
               allowCustom
             />
+          </div>
+          <div className="field">
+            <div className="field-label-row">
+              {fieldLabel('audio-extend-duration', 'Default Extension Length', 'audioExtendDuration')}
+              <InfoHint
+                label="Default extension length"
+                text="Seconds extend_audio adds to a clip when a request doesn't state a length. Auto keeps each extend model's own behavior — the inpaint/outpaint models' built-in 30s, or sonauto deciding from the audio. A request naming a length always wins; each model caps what it accepts."
+              />
+            </div>
+            <select id="audio-extend-duration" value={value.audioExtendDuration} onChange={(event) => onChange({audioExtendDuration: event.target.value})}>
+              {audioExtendDurationOptions.map((option) => <option key={option} value={option}>{audioExtendDurationLabels[option] ?? option}</option>)}
+            </select>
           </div>
         </div>
         {!catalogs.falHasKey ? (

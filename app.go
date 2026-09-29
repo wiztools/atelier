@@ -440,9 +440,12 @@ type ConfigVideoGeneration struct {
 // decide the clip length from the prompt — the generate_sound fallback when a
 // call states no duration, mirroring ConfigVideoGeneration.Duration. Speech
 // (generate_speech) deliberately has no duration: its length follows the
-// spoken text.
+// spoken text. ExtendDuration is extend_audio's default ADDED length — "auto"
+// (the default) keeps each extend model's own behavior (the inpaint/outpaint
+// flavors' built-in 30s; sonauto decides from the audio).
 type ConfigAudioGeneration struct {
-	Duration string `json:"duration"`
+	Duration       string `json:"duration"`
+	ExtendDuration string `json:"extendDuration"`
 }
 
 type ConfigTools struct {
@@ -3831,7 +3834,8 @@ func defaultAppConfig() AppConfig {
 				AspectRatio: defaultFalVideoAspectRatio,
 			},
 			Audio: ConfigAudioGeneration{
-				Duration: defaultFalSoundDuration,
+				Duration:       defaultFalSoundDuration,
+				ExtendDuration: defaultFalAudioExtendDuration,
 			},
 		},
 		Tools: ConfigTools{
@@ -3986,6 +3990,10 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	config.Generation.Audio.Duration = strings.TrimSpace(config.Generation.Audio.Duration)
 	if config.Generation.Audio.Duration == "" {
 		config.Generation.Audio.Duration = defaults.Generation.Audio.Duration
+	}
+	config.Generation.Audio.ExtendDuration = strings.TrimSpace(config.Generation.Audio.ExtendDuration)
+	if config.Generation.Audio.ExtendDuration == "" {
+		config.Generation.Audio.ExtendDuration = defaults.Generation.Audio.ExtendDuration
 	}
 	// Canonicalize the tier (trim + lowercase) and drop unknown values: empty
 	// means "let the model choose", so a junk hand-edited config.json value

@@ -1448,6 +1448,16 @@ func extendAudioToolDefinition() HarnessToolDefinition {
 				Lyrics:         strings.TrimSpace(call.Lyrics),
 				SourceAudio:    source,
 			}
+			// Duration precedence mirrors generate_sound's: an explicit length on
+			// the call wins; otherwise the configured default applies; "auto" (or
+			// empty) sends nothing and each extend flavor keeps its own behavior —
+			// the mapped models' built-in default, sonauto deciding from the audio.
+			if req.Duration == "" {
+				req.Duration = strings.TrimSpace(tools.Config.Generation.Audio.ExtendDuration)
+			}
+			if strings.EqualFold(req.Duration, "auto") {
+				req.Duration = ""
+			}
 			if req.Model == "" {
 				req.Model = resolveDefaultAudioExtendModel(tools.Config)
 			}
@@ -2599,7 +2609,8 @@ func extendAudioParamSchema() map[string]any {
 				"When the user gave no direction beyond the length, pass \"continue in the same style\"."),
 			"model": stringParam("Optional fal.ai extend model override — \"fal-ai/ace-step/audio-outpaint\" or \"sonauto/v2/extend\" for music with vocals. Omit for the configured default (suits ambience and sound effects)."),
 			"duration": stringParam("Optional — the length of audio to ADD in seconds (e.g. \"20\"), not the total output length. " +
-				"Omit for the default 30s (sonauto decides on its own when omitted)."),
+				"Omit to use the configured default extension length; pass \"auto\" to keep the model's own default " +
+				"(sonauto decides on its own then)."),
 			"direction": enumParam("Optional — where the generated audio is added. \"after\" (the default) appends to the clip's end; "+
 				"\"before\" prepends to its start.", "after", "before"),
 			"negativePrompt": stringParam("Optional — describe what to keep out of the added audio (e.g. \"vocals, percussion\"). " +

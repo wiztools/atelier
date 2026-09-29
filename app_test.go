@@ -7329,24 +7329,77 @@ func TestSoundEffectsGenerationToolGating(t *testing.T) {
 	}
 }
 
-// TestMergeAppConfigAudioDurationDefault pins the audio duration setting's
-// backfill: "auto" (the model decides) is the default an absent field
-// backfills to, an explicit length survives verbatim, and whitespace trims —
-// mirroring the video duration backfill.
+// TestMergeAppConfigAudioDurationDefault pins the audio duration settings'
+// backfill: "auto" is the default an absent field backfills to (the model
+// decides the clip length; each extend model keeps its own behavior), an
+// explicit length survives verbatim, and whitespace trims — mirroring the
+// video duration backfill.
 func TestMergeAppConfigAudioDurationDefault(t *testing.T) {
 	empty := AppConfig{}
-	if merged := mergeAppConfig(empty); merged.Generation.Audio.Duration != defaultFalSoundDuration {
-		t.Fatalf("empty config should backfill to %q, got %q", defaultFalSoundDuration, merged.Generation.Audio.Duration)
+	merged := mergeAppConfig(empty)
+	if merged.Generation.Audio.Duration != defaultFalSoundDuration {
+		t.Fatalf("empty config should backfill duration to %q, got %q", defaultFalSoundDuration, merged.Generation.Audio.Duration)
+	}
+	if merged.Generation.Audio.ExtendDuration != defaultFalAudioExtendDuration {
+		t.Fatalf("empty config should backfill extendDuration to %q, got %q", defaultFalAudioExtendDuration, merged.Generation.Audio.ExtendDuration)
 	}
 	explicit := defaultAppConfig()
 	explicit.Generation.Audio.Duration = "22"
-	if merged := mergeAppConfig(explicit); merged.Generation.Audio.Duration != "22" {
-		t.Fatalf("explicit duration must survive merge, got %q", merged.Generation.Audio.Duration)
+	explicit.Generation.Audio.ExtendDuration = "45"
+	merged = mergeAppConfig(explicit)
+	if merged.Generation.Audio.Duration != "22" || merged.Generation.Audio.ExtendDuration != "45" {
+		t.Fatalf("explicit durations must survive merge, got %q/%q", merged.Generation.Audio.Duration, merged.Generation.Audio.ExtendDuration)
 	}
 	padded := defaultAppConfig()
 	padded.Generation.Audio.Duration = " 10 "
-	if merged := mergeAppConfig(padded); merged.Generation.Audio.Duration != "10" {
-		t.Fatalf("duration should trim, got %q", merged.Generation.Audio.Duration)
+	padded.Generation.Audio.ExtendDuration = " 20 "
+	if merged := mergeAppConfig(padded); merged.Generation.Audio.Duration != "10" || merged.Generation.Audio.ExtendDuration != "20" {
+		t.Fatalf("durations should trim, got %q/%q", merged.Generation.Audio.Duration, merged.Generation.Audio.ExtendDuration)
+	}
+}
+
+// TestAudioExtendDurationPrecedence pins extend_audio's duration rule: an
+// explicit length on the call wins over the configured default; "auto" (on
+// either the call or the config, or an empty pre-merge config) sends nothing,
+// so each extend flavor keeps its own behavior — the mapped models' built-in
+// default, sonauto deciding from the audio.
+func TestAudioExtendDurationPrecedence(t *testing.T) {
+	cases := []struct {
+		name       string
+		callDur    string
+		configDur  string
+		wantToWire string
+	}{
+		{"call wins", "45", "20", "45"},
+		{"config applies", "", "20", "20"},
+		{"config auto sends nothing", "", "auto", ""},
+		{"empty config sends nothing", "", "", ""},
+		{"call auto escapes config", "auto", "20", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var sawDuration string
+			config := defaultAppConfig()
+			config.Generation.Audio.ExtendDuration = tc.configDur
+			tools := HarnessToolExecutionContext{
+				Config:         config,
+				AttachedAudios: []string{"data:audio/mpeg;base64,QQ=="},
+				GenerateAudioExtend: func(ctx context.Context, req AudioExtendRequest) (GeneratedAudio, error) {
+					sawDuration = req.Duration
+					return GeneratedAudio{Data: []byte("fake-mp3"), MimeType: "audio/mpeg"}, nil
+				},
+			}
+			call := HarnessToolCall{Name: "extend_audio", Content: "continue in the same style"}
+			if tc.callDur != "" {
+				call.Duration = tc.callDur
+			}
+			if _, _, err := extendAudioToolDefinition().Execute(context.Background(), tools, call); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if sawDuration != tc.wantToWire {
+				t.Fatalf("GenerateAudioExtend saw duration %q, want %q", sawDuration, tc.wantToWire)
+			}
+		})
 	}
 }
 

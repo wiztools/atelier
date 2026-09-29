@@ -76,6 +76,7 @@ export namespace main {
 	}
 	export class ConfigAudioGeneration {
 	    duration: string;
+	    extendDuration: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigAudioGeneration(source);
@@ -84,6 +85,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.duration = source["duration"];
+	        this.extendDuration = source["extendDuration"];
 	    }
 	}
 	export class ConfigVideoGeneration {
@@ -675,6 +677,7 @@ export namespace main {
 	    videoAspectRatio?: string;
 	    videoResolution?: string;
 	    soundDuration?: string;
+	    audioExtendDuration?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConversationModelOverrides(source);
@@ -716,6 +719,7 @@ export namespace main {
 	        this.videoAspectRatio = source["videoAspectRatio"];
 	        this.videoResolution = source["videoResolution"];
 	        this.soundDuration = source["soundDuration"];
+	        this.audioExtendDuration = source["audioExtendDuration"];
 	    }
 	}
 	export class ChatRequest {

@@ -121,15 +121,22 @@ const (
 	// agree on a single source of truth.
 	defaultFalVideoDuration    = "5"
 	defaultFalVideoAspectRatio = "16:9"
-	// defaultFalAudioExtendSeconds is how much audio the extend_audio tool adds
-	// when the planner passes no duration — a sensible bed-extension default
-	// (ace-step's own extend_after_duration default is also 30).
-	defaultFalAudioExtendSeconds = "30"
+	// defaultFalAudioExtendSeconds is the built-in fallback the mapped extend
+	// flavors apply when no length reaches them — the inpaint/outpaint resolvers
+	// read it (ace-step's own extend_after_duration default is also 30), and the
+	// Default Extension Length setting's "auto" keeps it as each model's own
+	// behavior.
+	defaultFalAudioExtendSeconds = 30.0
 	// defaultFalSoundDuration is the generate_sound duration setting's default:
 	// "auto" sends no duration and the model picks the clip length from the
 	// prompt (elevenlabs' documented null behavior), so the setting changes
 	// nothing until the user opts into a fixed length.
 	defaultFalSoundDuration = "auto"
+	// defaultFalAudioExtendDuration is the Default Extension Length setting's
+	// default: "auto" sends no length, so each extend model keeps its own
+	// behavior (the mapped flavors' defaultFalAudioExtendSeconds; sonauto
+	// decides from the audio) — the pre-setting behavior.
+	defaultFalAudioExtendDuration = "auto"
 	// falPollInterval is the delay between queue status checks.
 	falPollInterval = 1500 * time.Millisecond
 	// falVideoMaxBytes caps a downloaded video. Generated clips are typically a
