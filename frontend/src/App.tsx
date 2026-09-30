@@ -5822,11 +5822,12 @@ function App() {
                             options={composerModelOptions}
                             allowCustom={composerProvider === 'openai-compatible'}
                           />
-                          {composerProvider === 'ollama' ? (
+                          {composerProvider === 'ollama' || composerProvider === 'openrouter' ? (
                             <ModelCapabilityLink
                               id="primary-model"
                               modelName={composerModel}
-                              models={models}
+                              models={composerProvider === 'ollama' ? models : undefined}
+                              openRouterModels={composerProvider === 'openrouter' ? openRouterModels : undefined}
                               openID={openCapabilityID}
                               setOpenID={setOpenCapabilityID}
                               variant="icon"
@@ -6806,19 +6807,33 @@ function ModelCapabilityLink({
   id,
   modelName,
   models,
+  openRouterModels,
   openID,
   setOpenID,
   variant = 'text',
 }: {
   id: string;
   modelName: string;
-  models: main.OllamaModel[];
+  models?: main.OllamaModel[];
+  openRouterModels?: main.ModelInfo[];
   openID: string;
   setOpenID: (id: string) => void;
   variant?: 'text' | 'icon';
 }) {
-  const selectedModel = asArray(models).find((item) => item.name === modelName);
-  const capabilityLabels = selectedModel ? modelCapabilityLabels(selectedModel) : [];
+  // Exactly one catalog is passed: the Ollama model list (keyed by name) or
+  // the OpenRouter one (keyed by id). They carry different capability
+  // vocabularies — OpenRouter's "image" is an input modality, while the
+  // Ollama mapping reads "image" as image generation — so label derivation
+  // follows the catalog rather than sharing one path.
+  const isOllama = openRouterModels === undefined;
+  const ollamaModel = isOllama ? asArray(models).find((item) => item.name === modelName) : undefined;
+  const routerModel = isOllama ? undefined : asArray(openRouterModels).find((item) => item.id === modelName);
+  const selectedModel = ollamaModel ?? routerModel;
+  const capabilityLabels = ollamaModel
+    ? modelCapabilityLabels(ollamaModel)
+    : routerModel
+      ? openRouterCapabilityLabels(routerModel)
+      : [];
   const isOpen = openID === id;
   const panelID = `${id}-capability-panel`;
   const isIcon = variant === 'icon';
@@ -6853,7 +6868,7 @@ function ModelCapabilityLink({
           >
             ×
           </button>
-          <div className="model-capability-title">{modelName || 'No model selected'}</div>
+          <div className="model-capability-title">{routerModel?.displayName || modelName || 'No model selected'}</div>
           {selectedModel ? (
             <>
               <div className="capability-chips">
@@ -6861,29 +6876,37 @@ function ModelCapabilityLink({
                   <span key={capability}>{capability}</span>
                 )) : <span>Capabilities not reported</span>}
               </div>
-              <dl>
-                {selectedModel.family ? (
-                  <>
-                    <dt>Family</dt>
-                    <dd>{selectedModel.family}</dd>
-                  </>
-                ) : null}
-                {selectedModel.parameter ? (
-                  <>
-                    <dt>Parameters</dt>
-                    <dd>{selectedModel.parameter}</dd>
-                  </>
-                ) : null}
-                {selectedModel.size ? (
-                  <>
-                    <dt>Size</dt>
-                    <dd>{formatModelSize(selectedModel.size)}</dd>
-                  </>
-                ) : null}
-              </dl>
+              {ollamaModel ? (
+                <dl>
+                  {ollamaModel.family ? (
+                    <>
+                      <dt>Family</dt>
+                      <dd>{ollamaModel.family}</dd>
+                    </>
+                  ) : null}
+                  {ollamaModel.parameter ? (
+                    <>
+                      <dt>Parameters</dt>
+                      <dd>{ollamaModel.parameter}</dd>
+                    </>
+                  ) : null}
+                  {ollamaModel.size ? (
+                    <>
+                      <dt>Size</dt>
+                      <dd>{formatModelSize(ollamaModel.size)}</dd>
+                    </>
+                  ) : null}
+                </dl>
+              ) : null}
+              {routerModel?.contextLength ? (
+                <dl>
+                  <dt>Context</dt>
+                  <dd>{formatContextLength(routerModel.contextLength)} tokens</dd>
+                </dl>
+              ) : null}
             </>
           ) : (
-            <p>This model is not in the current Ollama model list.</p>
+            <p>This model is not in the current {isOllama ? 'Ollama' : 'OpenRouter'} model list.</p>
           )}
         </div>
       ) : null}
@@ -7244,11 +7267,12 @@ function ModelSelectionPanel({
                     options={primaryOptions}
                     allowCustom={value.primaryProvider === 'openai-compatible'}
                   />
-                  {value.primaryProvider === 'ollama' ? (
+                  {value.primaryProvider === 'ollama' || value.primaryProvider === 'openrouter' ? (
                     <ModelCapabilityLink
                       id="conv-primary-model"
                       modelName={value.primaryModel}
-                      models={catalogs.models}
+                      models={value.primaryProvider === 'ollama' ? catalogs.models : undefined}
+                      openRouterModels={value.primaryProvider === 'openrouter' ? catalogs.openRouterModels : undefined}
                       openID={catalogs.openCapabilityID}
                       setOpenID={catalogs.setOpenCapabilityID}
                       variant="icon"
@@ -7284,15 +7308,27 @@ function ModelSelectionPanel({
                     />
                   </>
                 ) : (
-                  <ModelCombobox
-                    id="harness-model"
-                    ariaLabel="Harness model"
-                    placeholder="Type to filter models..."
-                    value={value.harnessModel}
-                    onChange={(next) => onChange({harnessModel: next})}
-                    options={chatOptions}
-                    allowCustom={value.harnessProvider === 'openai-compatible'}
-                  />
+                  <>
+                    <ModelCombobox
+                      id="harness-model"
+                      ariaLabel="Harness model"
+                      placeholder="Type to filter models..."
+                      value={value.harnessModel}
+                      onChange={(next) => onChange({harnessModel: next})}
+                      options={chatOptions}
+                      allowCustom={value.harnessProvider === 'openai-compatible'}
+                    />
+                    {value.harnessProvider === 'openrouter' ? (
+                      <ModelCapabilityLink
+                        id="settings-tools"
+                        modelName={value.harnessModel}
+                        openRouterModels={catalogs.openRouterModels}
+                        openID={catalogs.openCapabilityID}
+                        setOpenID={catalogs.setOpenCapabilityID}
+                        variant="icon"
+                      />
+                    ) : null}
+                  </>
                 )}
               </div>
             </div>
@@ -8024,6 +8060,47 @@ function modelCapabilityLabels(model: main.OllamaModel): string[] {
     labels.add('Image generation');
   }
   return Array.from(labels);
+}
+
+// openRouterCapabilityLabels maps the capability vocabulary the Go side
+// derives from OpenRouter's catalog (input modalities plus native tool
+// support, openrouter_client.go) onto panel chips. It must NOT reuse
+// modelCapabilityLabels: that mapping reads "image" as image generation
+// (Ollama's vocabulary), while OpenRouter's "image" is an input modality —
+// the vision capability a chat turn's attached images ride on.
+function openRouterCapabilityLabels(model: main.ModelInfo): string[] {
+  const labels = new Set<string>();
+  for (const capability of asArray(model.capabilities)) {
+    const normalized = capability.toLowerCase().trim();
+    if (normalized === 'image') {
+      labels.add('Image input');
+      continue;
+    }
+    if (normalized === 'audio') {
+      labels.add('Audio input');
+      continue;
+    }
+    if (normalized === 'video') {
+      labels.add('Video input');
+      continue;
+    }
+    labels.add(formatCapability(capability));
+  }
+  return Array.from(labels);
+}
+
+function formatContextLength(context: number): string {
+  if (!Number.isFinite(context) || context <= 0) {
+    return '';
+  }
+  if (context >= 1000000) {
+    const millions = context / 1000000;
+    return `${millions >= 10 ? Math.round(millions) : Math.round(millions * 10) / 10}M`;
+  }
+  if (context >= 1000) {
+    return `${Math.round(context / 1000)}K`;
+  }
+  return String(context);
 }
 
 function formatModelSize(size: number): string {
