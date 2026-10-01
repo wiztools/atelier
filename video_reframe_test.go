@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -291,5 +293,145 @@ func TestReframeVideoResultForwardFeedsAttachment(t *testing.T) {
 	}}
 	if media := forwardableMediaFromResults([]HarnessToolResult{result}); media != nil {
 		t.Fatalf("media = %+v, want nil — an unreadable temp file must not forward", media)
+	}
+}
+
+// TestNoteReframeDurationMismatch pins the reframe duration guard: a rendered
+// clip that drifts past reframeDurationToleranceSeconds from its staged source
+// gains exactly one notice naming both durations and the frame-exact local
+// alternative; rounding-sized drift, an unreadable source, or an unparseable
+// output container all stay quiet, and earlier notices survive the append.
+func TestNoteReframeDurationMismatch(t *testing.T) {
+	cases := []struct {
+		name         string
+		source       float64
+		sourceOK     bool
+		output       []byte
+		existing     []string
+		wantContains []string
+	}{
+		{
+			name:         "shorter re-render is flagged",
+			source:       15.083,
+			sourceOK:     true,
+			output:       mp4FixtureWithDuration(0, 1000, 14208),
+			existing:     []string{"pre-existing notice"},
+			wantContains: []string{"14.2s", "15.1s", "transform_video"},
+		},
+		{
+			name:         "longer re-render is flagged",
+			source:       10,
+			sourceOK:     true,
+			output:       mp4FixtureWithDuration(0, 24000, 297600),
+			wantContains: []string{"12.4s", "10.0s"},
+		},
+		{name: "within tolerance stays quiet", source: 10, sourceOK: true, output: mp4FixtureWithDuration(0, 1000, 10300)},
+		{name: "exactly at tolerance stays quiet", source: 10, sourceOK: true, output: mp4FixtureWithDuration(0, 1000, 10500)},
+		{name: "unreadable source skips the guard", source: 15, sourceOK: false, output: mp4FixtureWithDuration(0, 1000, 14208)},
+		{name: "non-positive source skips the guard", source: 0, sourceOK: true, output: mp4FixtureWithDuration(0, 1000, 14208)},
+		{name: "unparseable output skips the guard", source: 15, sourceOK: true, output: tinyMP4()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			generated := GeneratedVideo{Data: tc.output, Notices: tc.existing}
+			noteReframeDurationMismatch(&generated, tc.source, tc.sourceOK)
+			if len(tc.wantContains) == 0 {
+				if len(generated.Notices) != len(tc.existing) {
+					t.Fatalf("notices = %v, want none added", generated.Notices)
+				}
+				return
+			}
+			if len(generated.Notices) != len(tc.existing)+1 {
+				t.Fatalf("notices = %v, want exactly one added", generated.Notices)
+			}
+			notice := generated.Notices[len(generated.Notices)-1]
+			for _, want := range tc.wantContains {
+				if !strings.Contains(notice, want) {
+					t.Errorf("notice %q missing %q", notice, want)
+				}
+			}
+		})
+	}
+}
+
+// TestReframeBilledSeconds pins the fal reframe estimate's input-seconds rule:
+// the endpoints bill per second of the INPUT clip, so a readable staged source
+// wins even when the rendered container disagrees; the rendered clip is the
+// fallback, and two unreadable containers price nothing.
+func TestReframeBilledSeconds(t *testing.T) {
+	output := mp4FixtureWithDuration(0, 1000, 14208) // 14.208s
+	if got, ok := reframeBilledSeconds(15.083, true, output); !ok || got != 15.083 {
+		t.Fatalf("reframeBilledSeconds(readable source) = (%v, %v), want (15.083, true)", got, ok)
+	}
+	if got, ok := reframeBilledSeconds(0, false, output); !ok || got != 14.208 {
+		t.Fatalf("reframeBilledSeconds(unreadable source) = (%v, %v), want (14.208, true)", got, ok)
+	}
+	if _, ok := reframeBilledSeconds(0, false, tinyMP4()); ok {
+		t.Fatal("reframeBilledSeconds with both containers unreadable should price nothing")
+	}
+}
+
+// TestReframeVideoDurationGuardReplicate drives the replicate reframe branch
+// end to end with real container durations: a rendered clip 0.875s short of
+// its source comes back with exactly the guard's notice, and a
+// within-tolerance render stays quiet.
+func TestReframeVideoDurationGuardReplicate(t *testing.T) {
+	keyring.MockInit()
+	t.Cleanup(func() { _ = clearReplicateAPIKey() })
+	if err := saveReplicateAPIKey("replicate-test-key"); err != nil {
+		t.Fatalf("saveReplicateAPIKey: %v", err)
+	}
+	reframeSchema := `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"video":{"type":"string"},
+		"aspect_ratio":{"type":"string","enum":["16:9","9:16"]}
+	}}}}}`
+	for _, tc := range []struct {
+		name       string
+		sourceDur  uint32 // mvhd duration at timescale 1000
+		outputDur  uint32
+		wantNotice bool
+	}{
+		{name: "short render is flagged", sourceDur: 15083, outputDur: 14208, wantNotice: true},
+		{name: "within-tolerance render stays quiet", sourceDur: 10000, outputDur: 10200, wantNotice: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			predictions := replicatePredictionHandler(t, nil,
+				`"https://replicate.delivery/out/reframed.mp4"`, "/out/reframed.mp4",
+				mp4FixtureWithDuration(0, 1000, tc.outputDur), "video/mp4")
+			transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.Method == http.MethodGet && req.URL.Path == "/v1/models/luma/reframe-video" {
+					return jsonResp(`{"latest_version":{"openapi_schema":` + reframeSchema + `}}`), nil
+				}
+				return predictions.RoundTrip(req)
+			})
+			app := &App{client: &http.Client{Transport: transport}}
+			config := defaultAppConfig()
+			config.Storage.Root = t.TempDir()
+			config.Models.VideoProvider = "replicate"
+			config.Providers.Replicate.VideoReframeModel = "luma/reframe-video"
+			gateway := newToolGateway(app, config)
+
+			source := base64.StdEncoding.EncodeToString(mp4FixtureWithDuration(0, 1000, tc.sourceDur))
+			generated, err := gateway.tools.ReframeVideo(context.Background(), VideoReframeRequest{
+				Model:       "luma/reframe-video",
+				Video:       "data:video/mp4;base64," + source,
+				AspectRatio: "9:16",
+			})
+			if err != nil {
+				t.Fatalf("ReframeVideo: %v", err)
+			}
+			if tc.wantNotice {
+				if len(generated.Notices) != 1 {
+					t.Fatalf("notices = %v, want exactly the duration guard's notice", generated.Notices)
+				}
+				for _, want := range []string{"14.2s", "15.1s", "transform_video"} {
+					if !strings.Contains(generated.Notices[0], want) {
+						t.Errorf("notice %q missing %q", generated.Notices[0], want)
+					}
+				}
+			} else if len(generated.Notices) != 0 {
+				t.Fatalf("notices = %v, want none", generated.Notices)
+			}
+		})
 	}
 }

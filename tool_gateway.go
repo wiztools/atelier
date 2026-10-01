@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -73,6 +74,49 @@ func videoGenerationProvider(config AppConfig) string {
 	default:
 		return "fal"
 	}
+}
+
+// reframeDurationToleranceSeconds is how far a reframe's rendered clip may
+// drift from its source before the mismatch is flagged. Container and keyframe
+// rounding move a duration by a frame or two; anything past half a second is
+// the model re-timing the footage, not rounding it.
+const reframeDurationToleranceSeconds = 0.5
+
+// noteReframeDurationMismatch is the reframe duration guard: generative
+// reframers (LTX-2.3, Luma Ray) re-render every frame and decide the output
+// length themselves — their schemas carry no duration input to pin it, and
+// conv_0d756d03's 15.08s source came back 14.2s from ltx-2.3/reframe. When the
+// rendered clip's own container disagrees with the staged source beyond the
+// tolerance, a notice rides the result so the reply says so instead of leaving
+// it to be discovered on playback. Fail-soft everywhere: an unreadable source
+// or an unparseable output container skips the guard, like the pricing
+// estimate. The tool description already points frame-exact needs at the local
+// transform_video (crop/blur/pad), which the notice names as the alternative.
+func noteReframeDurationMismatch(generated *GeneratedVideo, sourceSeconds float64, sourceReadable bool) {
+	if !sourceReadable || sourceSeconds <= 0 {
+		return
+	}
+	outputSeconds, ok := mp4DurationSeconds(generated.Data)
+	if !ok || outputSeconds <= 0 {
+		return
+	}
+	if math.Abs(outputSeconds-sourceSeconds) <= reframeDurationToleranceSeconds {
+		return
+	}
+	generated.Notices = append(generated.Notices, fmt.Sprintf(
+		"The reframed clip runs %.1fs against the source's %.1fs — the reframe model re-rendered the footage and returned a different duration. For a frame-exact shape change, use the local transform_video tool (crop, blur, or pad) instead.",
+		outputSeconds, sourceSeconds))
+}
+
+// reframeBilledSeconds picks the input duration the fal reframe estimate bills:
+// the endpoints bill per second of the INPUT clip, so the staged source's own
+// container is the truth. The rendered clip stays the fallback for a source
+// that couldn't be parsed — the two can drift (noteReframeDurationMismatch).
+func reframeBilledSeconds(sourceSeconds float64, sourceReadable bool, output []byte) (float64, bool) {
+	if sourceReadable && sourceSeconds > 0 {
+		return sourceSeconds, true
+	}
+	return falVideoBilledSeconds(output, "")
 }
 
 func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry) ToolGateway {
@@ -469,6 +513,13 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			return generated, genErr
 		}
 		gateway.tools.ReframeVideo = func(ctx context.Context, req VideoReframeRequest) (GeneratedVideo, error) {
+			// The duration guard (and the input-seconds billing) need the
+			// source clip's own length, readable only while it is staged
+			// inline — the branches below replace req.Video with a hosted URL
+			// whose bytes are no longer local. Fail-soft: an unparseable
+			// source disables the guard and falls back to the rendered clip
+			// for billing, the same rule as pricing.
+			sourceSeconds, sourceReadable := falVideoSourceSeconds([]string{req.Video})
 			// Reframe follows the video provider: replicate routes there, every
 			// other provider stays on fal — the same seam generate_video reads.
 			if videoGenerationProvider(config) == "replicate" {
@@ -492,6 +543,9 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				// transport — the same pattern as the fal path below.
 				generated, genErr := client.GenerateVideo(ctx, req.Model, input)
 				generated.Notices = notices
+				if genErr == nil {
+					noteReframeDurationMismatch(&generated, sourceSeconds, sourceReadable)
+				}
 				return generated, genErr
 			}
 			apiKey, err := loadFalAPIKey()
@@ -519,17 +573,21 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			// (the same pattern as UpscaleVideo / GenerateLipsync).
 			generated, genErr := client.GenerateVideo(ctx, req.Model, body)
 			if genErr == nil {
-				// Reframe endpoints (LTX-2.3) bill per second of the INPUT clip,
-				// and a reframe preserves length, so the rendered clip's own
-				// container carries the billed duration — measurable here, where
-				// upscale's source seconds were not.
+				// Reframe endpoints (LTX-2.3) bill per second of the INPUT
+				// clip, so the staged source's own container is the billed
+				// quantity — the rendered clip was long the proxy on the
+				// preserve-length assumption, but the model can drift
+				// (conv_0d756d03: 15.08s in, 14.2s out, ~6% underbilled).
 				hints := falBillingHints{Requests: 1}
-				if seconds, ok := falVideoBilledSeconds(generated.Data, ""); ok {
+				if seconds, ok := reframeBilledSeconds(sourceSeconds, sourceReadable, generated.Data); ok {
 					hints.Seconds = seconds
 				}
 				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
 			}
 			generated.Notices = notices
+			if genErr == nil {
+				noteReframeDurationMismatch(&generated, sourceSeconds, sourceReadable)
+			}
 			return generated, genErr
 		}
 		gateway.tools.RestyleVideo = func(ctx context.Context, req VideoRestyleRequest) (GeneratedVideo, error) {
