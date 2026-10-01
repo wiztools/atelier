@@ -5408,9 +5408,9 @@ function App() {
 
               {settingsTab === 'others' ? (
               <section className="settings-section">
+                <h3>System</h3>
                 <div className="field">
-                  <label htmlFor="system">System</label>
-                  <textarea id="system" value={system} onChange={(event) => setSystem(event.target.value)} />
+                  <textarea id="system" aria-label="System" value={system} onChange={(event) => setSystem(event.target.value)} />
                 </div>
               </section>
               ) : null}
