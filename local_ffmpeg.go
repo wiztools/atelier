@@ -1,6 +1,6 @@
 package main
 
-// Local ffmpeg tools: the seven video/audio transform tools that run on the
+// Local ffmpeg tools: the nine video/audio transform tools that run on the
 // locally installed ffmpeg CLI (see local_tools.go for binary detection and
 // the shared runners). They follow the media-tool conventions of
 // tools_registry.go — attachment-driven sources (the turn's media slots carry
@@ -45,7 +45,7 @@ func ffmpegToolsConfigured(config AppConfig) bool {
 // configured. It tells the model what actually happened (the capability is
 // absent, not broken) and the exact remedy to relay, so a from-knowledge
 // answer can't masquerade as a failed edit or hand the user a raw CLI recipe.
-const localMediaEditUnavailableNote = "Atelier note: the user's latest request asks for a local video edit — capturing a frame, splitting or trimming a clip, joining clips, cropping/resizing/rotating a clip, or extracting/replacing audio — but no ffmpeg CLI was detected on this machine, so Atelier has no tool that can perform it. Do not claim the edit was done and do not attempt it through other tools. Tell the user plainly that local video editing needs a one-time install: install ffmpeg with `brew install ffmpeg` (or set an explicit binary in Settings → Video Tools); Atelier detects it automatically on the next message."
+const localMediaEditUnavailableNote = "Atelier note: the user's latest request asks for a local media edit — capturing a frame, splitting or trimming a clip or audio recording, joining clips or audio files, cropping/resizing/rotating a clip, or extracting/replacing audio — but no ffmpeg CLI was detected on this machine, so Atelier has no tool that can perform it. Do not claim the edit was done and do not attempt it through other tools. Tell the user plainly that local media editing needs a one-time install: install ffmpeg with `brew install ffmpeg` (or set an explicit binary in Settings → Video Tools); Atelier detects it automatically on the next message."
 
 // mediaEditFallbackNotice returns the deterministic one-line blockquote for
 // the chat reply when the final model's answer did not already mention ffmpeg
@@ -58,17 +58,20 @@ func mediaEditFallbackNotice(unavailable bool, assistantContent string) string {
 	if strings.Contains(strings.ToLower(assistantContent), "ffmpeg") {
 		return ""
 	}
-	return "> ⚠️ Local video editing isn't available yet — install ffmpeg (`brew install ffmpeg`, or set the binary in Settings → Video Tools) and Atelier picks it up automatically."
+	return "> ⚠️ Local media editing isn't available yet — install ffmpeg (`brew install ffmpeg`, or set the binary in Settings → Video Tools) and Atelier picks it up automatically."
 }
 
 // ffmpegToolDefinitions assembles the ffmpeg-backed tool catalog. probe_media
 // additionally needs ffprobe (detected separately — it powers the JSON report);
-// the transform tools degrade without it (they re-encode rather than probe).
+// the transform tools degrade without it (they re-encode rather than probe),
+// and join_audios' auto mode re-encodes rather than comparing unprobed clips.
 func ffmpegToolDefinitions(config AppConfig) []HarnessToolDefinition {
 	definitions := []HarnessToolDefinition{
 		screenshotVideoToolDefinition(),
 		splitVideoToolDefinition(),
+		splitAudioToolDefinition(),
 		joinVideosToolDefinition(),
+		joinAudiosToolDefinition(),
 		extractAudioToolDefinition(),
 		replaceAudioToolDefinition(),
 		transformVideoToolDefinition(),
@@ -197,6 +200,13 @@ func stageMediaDataURL(dir, base, dataURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return stageMediaBytes(dir, base, data, mediaType)
+}
+
+// stageMediaBytes is the decoded form of stageMediaDataURL: callers that
+// already hold the bytes (and need the media type for a codec-aware output
+// decision) stage without decoding twice.
+func stageMediaBytes(dir, base string, data []byte, mediaType string) (string, error) {
 	path := filepath.Join(dir, base+stagedMediaExtension(mediaType))
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return "", err
@@ -276,6 +286,48 @@ func ffmpegJoinArgs(listFile string, streamCopy bool, output string) []string {
 			"-c:a", "aac", "-b:a", "192k")
 	}
 	return append(args, "-movflags", "+faststart", output)
+}
+
+// audioMP3FallbackArgs is the shared re-encode target for the audio tools'
+// unknown-codec fallbacks (extract_audio's vocabulary: MP3 192kbps).
+var audioMP3FallbackArgs = []string{"-c:a", "libmp3lame", "-b:a", "192k"}
+
+// ffmpegSplitAudioArgs cuts a segment out of an audio file with stream copy —
+// no re-encode, no quality loss. -ss/-t sit AFTER -i (output seeking): audio
+// has no keyframes to snap to, and packet-boundary output seeking stays
+// accurate even on VBR MP3s whose input seek would estimate by bitrate. -vn
+// drops embedded cover art; -avoid_negative_ts make_zero keeps the cut's
+// timestamps starting at zero. codecArgs (empty = -c:a copy) carries the
+// unknown-mime fallback's MP3 re-encode.
+func ffmpegSplitAudioArgs(input, startRaw string, durationSeconds float64, codecArgs []string, output string) []string {
+	args := []string{"-i", input}
+	if startRaw != "" {
+		args = append(args, "-ss", startRaw)
+	}
+	if durationSeconds > 0 {
+		args = append(args, "-t", strconv.FormatFloat(durationSeconds, 'f', -1, 64))
+	}
+	args = append(args, "-vn")
+	if len(codecArgs) == 0 {
+		args = append(args, "-c:a", "copy")
+	} else {
+		args = append(args, codecArgs...)
+	}
+	return append(args, "-avoid_negative_ts", "make_zero", output)
+}
+
+// ffmpegJoinAudioArgs concatenates audio files via the concat demuxer (listFile
+// holds the clips in sequence order). copy keeps every stream byte-identical
+// (requires matching codec, sample rate, and channel count); re-encode
+// normalizes to the codec args the caller derived from the first clip.
+func ffmpegJoinAudioArgs(listFile, output string, streamCopy bool, codecArgs []string) []string {
+	args := []string{"-f", "concat", "-safe", "0", "-i", listFile, "-vn"}
+	if streamCopy {
+		args = append(args, "-c:a", "copy")
+	} else {
+		args = append(args, codecArgs...)
+	}
+	return append(args, output)
 }
 
 // ffmpegExtractAudioArgs pulls the audio track: copy streams the codec as-is
@@ -762,6 +814,8 @@ type ToolProbeResult struct {
 	FPS                float64 `json:"fps,omitempty"`
 	VideoCodec         string  `json:"videoCodec,omitempty"`
 	AudioCodec         string  `json:"audioCodec,omitempty"`
+	SampleRate         int     `json:"sampleRate,omitempty"`
+	Channels           int     `json:"channels,omitempty"`
 	Format             string  `json:"format,omitempty"`
 	BitRate            string  `json:"bitrate,omitempty"`
 	SizeBytes          int64   `json:"sizeBytes,omitempty"`
@@ -795,6 +849,8 @@ type ffprobeReport struct {
 		AvgFrameRate       string            `json:"avg_frame_rate"`
 		SampleAspectRatio  string            `json:"sample_aspect_ratio"`
 		DisplayAspectRatio string            `json:"display_aspect_ratio"`
+		SampleRate         string            `json:"sample_rate"`
+		Channels           int               `json:"channels"`
 		SideDataList       []ffprobeSideData `json:"side_data_list"`
 		Tags               map[string]string `json:"tags"`
 	} `json:"streams"`
@@ -845,6 +901,14 @@ func probeStagedMedia(ctx context.Context, config AppConfig, path, kind string) 
 		case "audio":
 			if result.AudioCodec == "" {
 				result.AudioCodec = stream.CodecName
+			}
+			if result.SampleRate == 0 {
+				if rate, err := strconv.Atoi(strings.TrimSpace(stream.SampleRate)); err == nil {
+					result.SampleRate = rate
+				}
+			}
+			if result.Channels == 0 {
+				result.Channels = stream.Channels
 			}
 		}
 	}
@@ -929,6 +993,20 @@ func concatCompatible(a, b ToolProbeResult) bool {
 		a.Width == b.Width && a.Height == b.Height &&
 		absFloat(a.FPS-b.FPS) < 0.01 &&
 		a.AudioCodec == b.AudioCodec
+}
+
+// concatCompatibleAudio is the audio-file sibling: the concat demuxer's
+// stream-copy join needs the same codec AND the same container timing shape —
+// a 44.1kHz clip spliced into 48kHz plays sped-up/slowed-down, and a mono
+// into stereo shifts every later clip. A clip without an audio stream (probe
+// missed it) never copies, mirroring concatCompatible's video-codec guard.
+func concatCompatibleAudio(a, b ToolProbeResult) bool {
+	if a.AudioCodec == "" || b.AudioCodec == "" {
+		return false
+	}
+	return a.AudioCodec == b.AudioCodec &&
+		a.SampleRate == b.SampleRate &&
+		a.Channels == b.Channels
 }
 
 // mp4Family reports whether a probed clip's container can hold copied H.264
@@ -1087,7 +1165,7 @@ func splitVideoToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "split_video",
 		Title:       "Split video",
-		Description: "Use this when the user asks to cut, trim, split, or crop out a portion of an attached video — keep a segment, drop the beginning or end, or split off the tail. Each call keeps exactly ONE segment and attaches one clip: to split a clip into parts, plan one call per part in the same plan — splitting a clip at 10s is two calls, {\"end\":\"10\"} for the first part and {\"start\":\"10\"} for the second, not one call. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). start and end are timestamps in seconds (\"10\", \"12.5\") or clock (\"00:01:30\"); omit start for the beginning of the clip, omit end for through the end. mode \"accurate\" (the default) re-encodes so the cut lands on the exact frame; \"fast\" copies the streams without re-encoding — instant and lossless, but cuts land on the video's keyframes so the clip may begin slightly before the requested start (the right choice for long videos and for clips from the same generator). The resulting clip is attached to the assistant reply and becomes the conversation's newest video.",
+		Description: "Use this when the user asks to cut, trim, split, or crop out a portion of an attached video — keep a segment, drop the beginning or end, or split off the tail (for an audio file, use split_audio instead). Each call keeps exactly ONE segment and attaches one clip: to split a clip into parts, plan one call per part in the same plan — splitting a clip at 10s is two calls, {\"end\":\"10\"} for the first part and {\"start\":\"10\"} for the second, not one call. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). start and end are timestamps in seconds (\"10\", \"12.5\") or clock (\"00:01:30\"); omit start for the beginning of the clip, omit end for through the end. mode \"accurate\" (the default) re-encodes so the cut lands on the exact frame; \"fast\" copies the streams without re-encoding — instant and lossless, but cuts land on the video's keyframes so the clip may begin slightly before the requested start (the right choice for long videos and for clips from the same generator). The resulting clip is attached to the assistant reply and becomes the conversation's newest video.",
 		Example:     `{"name":"split_video","start":"10","end":"25"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: splitVideoParamSchema(),
@@ -1156,13 +1234,122 @@ func splitVideoToolDefinition() HarnessToolDefinition {
 	}
 }
 
+// splitAudioToolDefinition exposes split_audio: cut a segment out of the
+// attached audio file (trim away the rest) — the audio sibling of
+// split_video, and simpler: audio has no keyframes, so one stream-copy mode
+// serves every format and the cut loses nothing. Like split_video, one call
+// keeps exactly one segment.
+func splitAudioToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "split_audio",
+		Title:       "Split audio",
+		Description: "Use this when the user asks to cut, trim, split, or crop out a portion of an attached AUDIO file — keep a segment of a recording, drop the beginning or end, or split off the tail (for a video clip, use split_video instead). Each call keeps exactly ONE segment and attaches one audio file: to split a recording into parts, plan one call per part in the same plan — splitting at 10s is two calls, {\"end\":\"10\"} for the first part and {\"start\":\"10\"} for the second, not one call. Requires an attached audio clip (one attached or @-mentioned this turn, or the conversation's newest audio). start and end are timestamps in seconds (\"10\", \"12.5\") or clock (\"00:01:30\"); omit start for the beginning of the file, omit end for through the end (an end past the file's length just runs to the end). The audio is stream-copied with no re-encoding, so there is no quality loss and the output keeps the source's format; cuts land on the codec's frame boundaries (a few milliseconds — inaudible). The resulting clip is attached to the assistant reply and becomes the conversation's newest audio.",
+		Example:     `{"name":"split_audio","start":"10","end":"25"}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: splitAudioParamSchema(),
+		Validate: func(prefix string, call HarnessToolCall) []string {
+			start, hasStart := parseMediaTimestamp(call.Start)
+			end, hasEnd := parseMediaTimestamp(call.End)
+			if strings.TrimSpace(call.Start) != "" && !hasStart {
+				return []string{prefix + `.start must be a timestamp in seconds ("10") or clock ("00:01:30") for split_audio`}
+			}
+			if strings.TrimSpace(call.End) != "" && !hasEnd {
+				return []string{prefix + `.end must be a timestamp in seconds ("25") or clock ("00:00:25") for split_audio`}
+			}
+			if hasStart && hasEnd && end <= start {
+				return []string{prefix + ".end must be after start for split_audio"}
+			}
+			return nil
+		},
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			source := firstAttachedAudio(tools.AttachedAudios)
+			if source == "" {
+				return nil, "split requires an attached audio clip", errors.New("split_audio requires an attached audio clip — ask the user to attach one first")
+			}
+			startRaw := strings.TrimSpace(call.Start)
+			endRaw := strings.TrimSpace(call.End)
+			duration := 0.0
+			if endRaw != "" {
+				end, _ := parseMediaTimestamp(endRaw)
+				start, _ := parseMediaTimestamp(startRaw)
+				duration = end - start
+			}
+			staging, err := os.MkdirTemp("", "atelier-ffmpeg-*")
+			if err != nil {
+				return nil, "split failed", err
+			}
+			defer os.RemoveAll(staging)
+			data, mediaType, err := decodeMediaDataURL(source)
+			if err != nil {
+				return nil, "split failed", err
+			}
+			input, err := stageMediaBytes(staging, "input", data, mediaType)
+			if err != nil {
+				return nil, "split failed", err
+			}
+			ext, mimeType, codecArgs, targetNotice := splitAudioTarget(mediaType)
+			staged := filepath.Join(staging, "split"+ext)
+			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegSplitAudioArgs(input, startRaw, duration, codecArgs, staged)); err != nil {
+				return nil, "split failed", err
+			}
+			tempPath, err := promoteStagedOutput(staged, "atelier-audio-*", ext)
+			if err != nil {
+				return nil, "split failed", err
+			}
+			output := ToolAudioResult{
+				Model:  ffmpegModelName,
+				Prompt: splitPrompt(startRaw, endRaw),
+				Count:  1,
+				Audios: []ToolAudioFile{{TempPath: tempPath, MimeType: mimeType}},
+			}
+			if targetNotice != "" {
+				output.Notices = append(output.Notices, targetNotice)
+			}
+			return output, fmt.Sprintf("split the attached audio%s with ffmpeg (%s)", splitRangePhrase(startRaw, endRaw), splitAudioModePhrase(codecArgs)), nil
+		},
+		Activity: ffmpegActivity("split-audio"),
+	}
+}
+
+// splitAudioTarget picks the split output container from the attachment's
+// media type: stream copy keeps the source codec in its own container, so the
+// output extension mirrors the input. An unrecognized audio type falls back
+// to MP3 192kbps re-encoding with a notice — copying into a container the
+// codec cannot live in would fail at ffmpeg time (extract_audio's fallback
+// vocabulary).
+func splitAudioTarget(mediaType string) (ext, mimeType string, codecArgs []string, notice string) {
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "audio/mpeg":
+		return ".mp3", "audio/mpeg", nil, ""
+	case "audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave":
+		return ".wav", "audio/wav", nil, ""
+	case "audio/mp4", "audio/x-m4a", "audio/aac":
+		return ".m4a", "audio/mp4", nil, ""
+	case "audio/flac", "audio/x-flac":
+		return ".flac", "audio/flac", nil, ""
+	case "audio/ogg", "audio/opus", "audio/vorbis":
+		return ".ogg", "audio/ogg", nil, ""
+	default:
+		return ".mp3", "audio/mpeg", audioMP3FallbackArgs, "the audio format could not be identified from the attachment, so it was converted to MP3 192kbps."
+	}
+}
+
+// splitAudioModePhrase labels the split for the tool summary: copy (the
+// normal path) vs the MP3 fallback re-encode.
+func splitAudioModePhrase(codecArgs []string) string {
+	if len(codecArgs) == 0 {
+		return "stream copy"
+	}
+	return "converted to MP3"
+}
+
 // joinVideosToolDefinition exposes join_videos: concatenate attached clips
 // into one, honoring attachment order as the sequence.
 func joinVideosToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "join_videos",
 		Title:       "Join videos",
-		Description: "Use this when the user asks to combine, concatenate, merge, stitch, or join multiple video clips into one. Requires at least two videos attached or @-mentioned this turn — the clips are joined in EXACTLY the order they were attached or mentioned; that order is the sequence, so tell the user to reorder the attachments if they want a different one (older conversation clips are not picked up automatically). mode \"auto\" (the default) copies the streams untouched when every clip matches in codec, resolution, frame rate, and audio (fast, lossless — clips from the same generator always match) and re-encodes otherwise; \"copy\" forces stream copy; \"reencode\" forces re-encoding. The joined video is attached to the assistant reply and becomes the conversation's newest video.",
+		Description: "Use this when the user asks to combine, concatenate, merge, stitch, or join multiple video clips into one (for audio files, use join_audios instead). Requires at least two videos attached or @-mentioned this turn — the clips are joined in EXACTLY the order they were attached or mentioned; that order is the sequence, so tell the user to reorder the attachments if they want a different one (older conversation clips are not picked up automatically). mode \"auto\" (the default) copies the streams untouched when every clip matches in codec, resolution, frame rate, and audio (fast, lossless — clips from the same generator always match) and re-encodes otherwise; \"copy\" forces stream copy; \"reencode\" forces re-encoding. The joined video is attached to the assistant reply and becomes the conversation's newest video.",
 		Example:     `{"name":"join_videos"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: joinVideosParamSchema(),
@@ -1245,6 +1432,165 @@ func joinCopyMode(ctx context.Context, config AppConfig, mode string, inputs []s
 		}
 	}
 	return true, "the clips matched in codec, resolution, frame rate, and audio, so they were joined by stream copy (lossless, no re-encoding)."
+}
+
+// joinAudiosToolDefinition exposes join_audios: concatenate attached audio
+// files into one, honoring attachment order as the sequence — the audio
+// sibling of join_videos. Completes split_audio's story: "remove the middle
+// section" is two splits plus the join of the kept parts.
+func joinAudiosToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "join_audios",
+		Title:       "Join audio",
+		Description: "Use this when the user asks to combine, concatenate, merge, stitch, or join multiple AUDIO files into one — stitch voice memos or podcast chapters into a single recording, or reassemble the parts a split_audio call kept (for video clips, use join_videos instead). Requires at least two audio clips attached or @-mentioned this turn — they are joined in EXACTLY the order they were attached or mentioned; that order is the sequence, so tell the user to reorder the attachments if they want a different one. mode \"auto\" (the default) copies the streams untouched when every clip matches in codec, sample rate, and channel count (fast, lossless) and re-encodes to the FIRST clip's format otherwise; \"copy\" forces stream copy; \"reencode\" forces re-encoding. The joined audio is attached to the assistant reply and becomes the conversation's newest audio.",
+		Example:     `{"name":"join_audios"}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: joinAudiosParamSchema(),
+		Validate: func(prefix string, call HarnessToolCall) []string {
+			switch strings.TrimSpace(call.Mode) {
+			case "", "auto", "copy", "reencode":
+				return nil
+			default:
+				return []string{prefix + `.mode must be "auto", "copy", or "reencode" for join_audios`}
+			}
+		},
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			sources := nonEmptyAudios(tools.AttachedAudios)
+			if len(sources) < 2 {
+				return nil, "join needs at least two audio clips", errors.New("join_audios needs at least two audio clips — ask the user to attach or @-mention the audio files to join, in sequence order")
+			}
+			staging, err := os.MkdirTemp("", "atelier-ffmpeg-*")
+			if err != nil {
+				return nil, "join failed", err
+			}
+			defer os.RemoveAll(staging)
+			inputs := make([]string, 0, len(sources))
+			for i, source := range sources {
+				input, err := stageMediaDataURL(staging, fmt.Sprintf("input-%03d", i+1), source)
+				if err != nil {
+					return nil, "join failed", err
+				}
+				inputs = append(inputs, input)
+			}
+			listFile := filepath.Join(staging, "concat.txt")
+			if err := os.WriteFile(listFile, []byte(concatListFileContents(inputs)), 0o644); err != nil {
+				return nil, "join failed", err
+			}
+			streamCopy, probes, notice := joinAudioCopyMode(ctx, tools.Config, call.Mode, inputs)
+			// Copy keeps the first clip's own container; a re-encode normalizes
+			// to the target derived from the first probed clip (MP3 when no
+			// probe survived).
+			ext, mimeType := filepath.Ext(inputs[0]), audioMimeForExtension(filepath.Ext(inputs[0]))
+			codecArgs := []string(nil)
+			if !streamCopy {
+				if len(probes) > 0 {
+					var targetNotice string
+					ext, mimeType, codecArgs, targetNotice = joinAudioReencodeTarget(probes[0])
+					if targetNotice != "" {
+						notice = strings.TrimSpace(notice + " " + targetNotice)
+					}
+				} else {
+					ext, mimeType, codecArgs = ".mp3", "audio/mpeg", audioMP3FallbackArgs
+				}
+			}
+			staged := filepath.Join(staging, "joined"+ext)
+			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegJoinAudioArgs(listFile, staged, streamCopy, codecArgs)); err != nil {
+				return nil, "join failed", err
+			}
+			tempPath, err := promoteStagedOutput(staged, "atelier-audio-*", ext)
+			if err != nil {
+				return nil, "join failed", err
+			}
+			output := ToolAudioResult{
+				Model:  ffmpegModelName,
+				Prompt: fmt.Sprintf("joined %d audio clips in attachment order", len(sources)),
+				Count:  1,
+				Audios: []ToolAudioFile{{TempPath: tempPath, MimeType: mimeType}},
+			}
+			if notice != "" {
+				output.Notices = append(output.Notices, notice)
+			}
+			return output, fmt.Sprintf("joined %d audio clips in attachment order with ffmpeg (%s)", len(sources), joinModePhrase(streamCopy)), nil
+		},
+		Activity: ffmpegActivity("join-audios"),
+	}
+}
+
+// joinAudioCopyMode decides whether the audio join can stream-copy: an
+// explicit mode wins; "auto" probes every clip and copies only when all match
+// in codec, sample rate, and channel count (the concat demuxer's copy
+// requirements). The notice explains what auto decided (or why it could not),
+// because a silent re-encode of a long recording is a long wait. The probed
+// clips ride back for the re-encode target; an empty slice means the target
+// falls back to MP3.
+func joinAudioCopyMode(ctx context.Context, config AppConfig, mode string, inputs []string) (streamCopy bool, probes []ToolProbeResult, notice string) {
+	switch strings.TrimSpace(mode) {
+	case "copy":
+		return true, nil, ""
+	case "reencode":
+		probe, err := probeStagedMedia(ctx, config, inputs[0], "audio")
+		if err != nil {
+			return false, nil, "the first clip's codec could not be probed, so the join was converted to MP3 192kbps; install ffprobe (it ships with ffmpeg) to keep the first clip's format instead."
+		}
+		return false, []ToolProbeResult{probe}, ""
+	}
+	probes = make([]ToolProbeResult, 0, len(inputs))
+	for _, input := range inputs {
+		probe, err := probeStagedMedia(ctx, config, input, "audio")
+		if err != nil {
+			return false, nil, "the clips' formats could not be compared (ffprobe failed), so the join was re-encoded to be safe; pass mode \"copy\" to force a stream copy."
+		}
+		probes = append(probes, probe)
+	}
+	for i := 1; i < len(probes); i++ {
+		if !concatCompatibleAudio(probes[0], probes[i]) {
+			return false, probes, "the clips differ in codec, sample rate, or channel count, so the join was re-encoded into the first clip's format."
+		}
+	}
+	return true, probes, "the clips matched in codec, sample rate, and channel count, so they were joined by stream copy (lossless, no re-encoding)."
+}
+
+// joinAudioReencodeTarget normalizes a mismatched join to the FIRST clip's
+// codec, so matching-family sources keep their format and quality (two WAVs
+// with different rates do not degrade to a lossy codec). An unrecognized or
+// unprobed codec falls back to MP3 with a notice (extract_audio's vocabulary).
+func joinAudioReencodeTarget(probe ToolProbeResult) (ext, mimeType string, codecArgs []string, notice string) {
+	switch {
+	case strings.HasPrefix(probe.AudioCodec, "pcm"):
+		return ".wav", "audio/wav", []string{"-c:a", "pcm_s16le"}, ""
+	case probe.AudioCodec == "mp3":
+		return ".mp3", "audio/mpeg", []string{"-c:a", "libmp3lame", "-b:a", "192k"}, ""
+	case probe.AudioCodec == "aac":
+		return ".m4a", "audio/mp4", []string{"-c:a", "aac", "-b:a", "192k"}, ""
+	case probe.AudioCodec == "flac":
+		return ".flac", "audio/flac", []string{"-c:a", "flac"}, ""
+	case probe.AudioCodec == "opus":
+		return ".ogg", "audio/ogg", []string{"-c:a", "libopus", "-b:a", "192k"}, ""
+	case probe.AudioCodec == "vorbis":
+		return ".ogg", "audio/ogg", []string{"-c:a", "libvorbis", "-b:a", "192k"}, ""
+	case probe.AudioCodec == "":
+		return ".mp3", "audio/mpeg", audioMP3FallbackArgs, "the first clip's codec could not be identified, so the join was converted to MP3 192kbps."
+	default:
+		return ".mp3", "audio/mpeg", audioMP3FallbackArgs, fmt.Sprintf("the first clip's codec (%s) has no re-encode mapping here, so the join was converted to MP3 192kbps.", probe.AudioCodec)
+	}
+}
+
+// audioMimeForExtension maps a staged audio file's extension onto the MIME
+// type the artifact carries — the reverse of the copy path, where the output
+// container is the first clip's own extension.
+func audioMimeForExtension(ext string) string {
+	switch strings.ToLower(strings.TrimSpace(ext)) {
+	case ".wav":
+		return "audio/wav"
+	case ".m4a":
+		return "audio/mp4"
+	case ".ogg":
+		return "audio/ogg"
+	case ".flac":
+		return "audio/flac"
+	default:
+		return "audio/mpeg"
+	}
 }
 
 // extractAudioToolDefinition exposes extract_audio: pull the audio track out
@@ -1769,6 +2115,29 @@ func joinVideosParamSchema() map[string]any {
 		"additionalProperties": false,
 		"properties": map[string]any{
 			"mode": enumParam("Optional — \"auto\" (the default) copies when every clip matches and re-encodes otherwise; \"copy\" forces a lossless stream copy; \"reencode\" forces re-encoding.", "auto", "copy", "reencode"),
+		},
+		"required": []string{},
+	}
+}
+
+func splitAudioParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"start": stringParam("Optional — where the kept segment begins, in seconds (\"10\") or clock (\"00:01:30\"). Omit for the beginning of the file."),
+			"end":   stringParam("Optional — where the kept segment ends (exclusive), in seconds (\"25\") or clock (\"00:00:25\"). Omit for through the end."),
+		},
+		"required": []string{},
+	}
+}
+
+func joinAudiosParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"mode": enumParam("Optional — \"auto\" (the default) copies when every clip matches in codec, sample rate, and channel count, and re-encodes to the first clip's format otherwise; \"copy\" forces a lossless stream copy; \"reencode\" forces re-encoding.", "auto", "copy", "reencode"),
 		},
 		"required": []string{},
 	}

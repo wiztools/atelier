@@ -679,6 +679,18 @@ func nonEmptyVideos(videos []string) []string {
 	return out
 }
 
+// nonEmptyAudios is the audio sibling of nonEmptyVideos — the shape
+// join_audios consumes (order preserved: attachment order is the sequence).
+func nonEmptyAudios(audios []string) []string {
+	out := make([]string, 0, len(audios))
+	for _, a := range audios {
+		if s := strings.TrimSpace(a); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // historyMediaForSource re-reads the conversation's most recent artifact of
 // the planner-requested source kind when the turn's slots don't carry it —
 // the explicit-source counterpart of the harness's cross-turn fallback. Used

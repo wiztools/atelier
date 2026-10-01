@@ -60,6 +60,15 @@ cat <<'JSON'
 JSON
 `
 
+// fakeFFprobeFailScript fakes an ffprobe that always fails: it drives the
+// probe-failure fallbacks deterministically — an absent ffprobe override
+// would let a real ffprobe on PATH probe the fixtures (and two genuine WAVs
+// genuinely match, so the copy path would win instead of the fallback).
+const fakeFFprobeFailScript = `#!/bin/sh
+echo "ffprobe: injected failure" >&2
+exit 1
+`
+
 // fakeFFprobeDriftScript fakes an ffprobe whose SECOND call reports different
 // dimensions — drives the join auto-mode's re-encode branch.
 const fakeFFprobeDriftScript = `#!/bin/sh
@@ -109,6 +118,13 @@ func videoDataURL(payload string) string {
 	// fixture survives attachment persistence like a real clip.
 	frame := append([]byte{0, 0, 0, 0x20, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}, []byte(payload)...)
 	return "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(frame)
+}
+
+// audioDataURL wraps a payload in an audio attachment data URL with the given
+// media type — split_audio's container mapping is driven by exactly this
+// header (wavDataURL in local_tools_test.go covers the .wav happy path).
+func audioDataURL(mimeType, payload string) string {
+	return "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString([]byte(payload))
 }
 
 // fakeFFmpegArgs reads the args the fake ffmpeg recorded (one per line),
@@ -251,6 +267,16 @@ func TestFFmpegArgBuilders(t *testing.T) {
 			"-f concat -safe 0 -i list.txt -c copy -movflags +faststart out.mp4"},
 		{"join reencode", ffmpegJoinArgs("list.txt", false, "out.mp4"),
 			"-f concat -safe 0 -i list.txt -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -movflags +faststart out.mp4"},
+		{"split audio bounded copy", ffmpegSplitAudioArgs("in.wav", "10", 15, nil, "out.wav"),
+			"-i in.wav -ss 10 -t 15 -vn -c:a copy -avoid_negative_ts make_zero out.wav"},
+		{"split audio full file copy", ffmpegSplitAudioArgs("in.mp3", "", 0, nil, "out.mp3"),
+			"-i in.mp3 -vn -c:a copy -avoid_negative_ts make_zero out.mp3"},
+		{"split audio fallback re-encode", ffmpegSplitAudioArgs("in.bin", "00:01:30", 5.5, audioMP3FallbackArgs, "out.mp3"),
+			"-i in.bin -ss 00:01:30 -t 5.5 -vn -c:a libmp3lame -b:a 192k -avoid_negative_ts make_zero out.mp3"},
+		{"join audios copy", ffmpegJoinAudioArgs("list.txt", "out.wav", true, nil),
+			"-f concat -safe 0 -i list.txt -vn -c:a copy out.wav"},
+		{"join audios reencode", ffmpegJoinAudioArgs("list.txt", "out.m4a", false, []string{"-c:a", "aac", "-b:a", "192k"}),
+			"-f concat -safe 0 -i list.txt -vn -c:a aac -b:a 192k out.m4a"},
 		{"extract copy", ffmpegExtractAudioArgs("in.mp4", "out.m4a", true),
 			"-i in.mp4 -vn -c:a copy out.m4a"},
 		{"extract convert", ffmpegExtractAudioArgs("in.mp4", "out.mp3", false),
@@ -507,6 +533,24 @@ func TestFFmpegToolValidation(t *testing.T) {
 	}
 	if errors := join.Validate("toolCalls[0]", HarnessToolCall{Mode: "copy"}); len(errors) != 0 {
 		t.Errorf("join copy mode = %v, want none", errors)
+	}
+
+	splitAudio := splitAudioToolDefinition()
+	if errors := splitAudio.Validate("toolCalls[0]", HarnessToolCall{Start: "banana"}); len(errors) == 0 || !strings.Contains(errors[0], ".start must be a timestamp") {
+		t.Errorf("split_audio with a bad start = %v", errors)
+	}
+	if errors := splitAudio.Validate("toolCalls[0]", HarnessToolCall{Start: "10", End: "5"}); len(errors) == 0 || !strings.Contains(errors[0], ".end must be after start") {
+		t.Errorf("split_audio with end before start = %v", errors)
+	}
+	if errors := splitAudio.Validate("toolCalls[0]", HarnessToolCall{Start: "00:00:10", End: "25"}); len(errors) != 0 {
+		t.Errorf("valid split_audio (mixed clock and seconds) = %v, want none", errors)
+	}
+	joinAudios := joinAudiosToolDefinition()
+	if errors := joinAudios.Validate("toolCalls[0]", HarnessToolCall{Mode: "turbo"}); len(errors) == 0 || !strings.Contains(errors[0], `.mode must be "auto"`) {
+		t.Errorf("join_audios with a bad mode = %v", errors)
+	}
+	if errors := joinAudios.Validate("toolCalls[0]", HarnessToolCall{Mode: "reencode"}); len(errors) != 0 {
+		t.Errorf("join_audios reencode mode = %v, want none", errors)
 	}
 
 	transform := transformVideoToolDefinition()
@@ -1121,6 +1165,273 @@ func TestFFmpegJoinAutoMode(t *testing.T) {
 			t.Fatalf("result = %+v, want the two-clip error", result)
 		}
 	})
+}
+
+// TestSplitAudioTarget pins the container mapping: a known attachment media
+// type stream-copies into its own container (every WAV spelling collapses to
+// .wav), and an unrecognized type falls back to MP3 re-encoding with a notice.
+func TestSplitAudioTarget(t *testing.T) {
+	cases := []struct {
+		mediaType string
+		wantExt   string
+		wantMime  string
+		wantCopy  bool
+	}{
+		{"audio/mpeg", ".mp3", "audio/mpeg", true},
+		{"audio/wav", ".wav", "audio/wav", true},
+		{"audio/x-wav", ".wav", "audio/wav", true},
+		{"audio/wave", ".wav", "audio/wav", true},
+		{"audio/vnd.wave", ".wav", "audio/wav", true},
+		{"audio/mp4", ".m4a", "audio/mp4", true},
+		{"audio/x-m4a", ".m4a", "audio/mp4", true},
+		{"audio/aac", ".m4a", "audio/mp4", true},
+		{"audio/flac", ".flac", "audio/flac", true},
+		{"audio/x-flac", ".flac", "audio/flac", true},
+		{"audio/ogg", ".ogg", "audio/ogg", true},
+		{"audio/opus", ".ogg", "audio/ogg", true},
+		{"audio/vorbis", ".ogg", "audio/ogg", true},
+		{"audio/amr", ".mp3", "audio/mpeg", false},
+		{"", ".mp3", "audio/mpeg", false},
+	}
+	for _, tc := range cases {
+		ext, mime, codecArgs, notice := splitAudioTarget(tc.mediaType)
+		if ext != tc.wantExt || mime != tc.wantMime {
+			t.Errorf("splitAudioTarget(%q) = %s/%s, want %s/%s", tc.mediaType, ext, mime, tc.wantExt, tc.wantMime)
+		}
+		if tc.wantCopy && len(codecArgs) != 0 {
+			t.Errorf("splitAudioTarget(%q) re-encodes, want a stream copy", tc.mediaType)
+		}
+		if !tc.wantCopy && len(codecArgs) == 0 {
+			t.Errorf("splitAudioTarget(%q) copies, want the MP3 fallback", tc.mediaType)
+		}
+		if !tc.wantCopy && !strings.Contains(notice, "converted to MP3") {
+			t.Errorf("splitAudioTarget(%q) notice = %q, want the conversion explanation", tc.mediaType, notice)
+		}
+		if tc.wantCopy && notice != "" {
+			t.Errorf("splitAudioTarget(%q) notice = %q, want none", tc.mediaType, notice)
+		}
+	}
+}
+
+// TestJoinAudioReencodeTarget pins the first-clip-codec normalization: a known
+// codec re-encodes into its own container, any pcm_* variant lands on WAV, and
+// an unrecognized or missing codec falls back to MP3 with a notice.
+func TestJoinAudioReencodeTarget(t *testing.T) {
+	cases := []struct {
+		codec    string
+		wantExt  string
+		wantMime string
+		wantArgs string
+	}{
+		{"pcm_s16le", ".wav", "audio/wav", "-c:a pcm_s16le"},
+		{"pcm_f32le", ".wav", "audio/wav", "-c:a pcm_s16le"},
+		{"mp3", ".mp3", "audio/mpeg", "-c:a libmp3lame -b:a 192k"},
+		{"aac", ".m4a", "audio/mp4", "-c:a aac -b:a 192k"},
+		{"flac", ".flac", "audio/flac", "-c:a flac"},
+		{"opus", ".ogg", "audio/ogg", "-c:a libopus -b:a 192k"},
+		{"vorbis", ".ogg", "audio/ogg", "-c:a libvorbis -b:a 192k"},
+	}
+	for _, tc := range cases {
+		ext, mime, codecArgs, notice := joinAudioReencodeTarget(ToolProbeResult{AudioCodec: tc.codec})
+		if ext != tc.wantExt || mime != tc.wantMime {
+			t.Errorf("joinAudioReencodeTarget(%q) = %s/%s, want %s/%s", tc.codec, ext, mime, tc.wantExt, tc.wantMime)
+		}
+		if notice != "" {
+			t.Errorf("joinAudioReencodeTarget(%q) notice = %q, want none", tc.codec, notice)
+		}
+		if got := strings.Join(codecArgs, " "); got != tc.wantArgs {
+			t.Errorf("joinAudioReencodeTarget(%q) args = %q, want %q", tc.codec, got, tc.wantArgs)
+		}
+	}
+	for _, codec := range []string{"", "amr", "alac"} {
+		ext, mime, codecArgs, notice := joinAudioReencodeTarget(ToolProbeResult{AudioCodec: codec})
+		if ext != ".mp3" || mime != "audio/mpeg" {
+			t.Errorf("joinAudioReencodeTarget(%q) = %s/%s, want the MP3 fallback", codec, ext, mime)
+		}
+		if got := strings.Join(codecArgs, " "); got != "-c:a libmp3lame -b:a 192k" {
+			t.Errorf("joinAudioReencodeTarget(%q) args = %q, want the MP3 fallback", codec, got)
+		}
+		if !strings.Contains(notice, "converted to MP3") {
+			t.Errorf("joinAudioReencodeTarget(%q) notice = %q, want the conversion explanation", codec, notice)
+		}
+	}
+}
+
+// TestConcatCompatibleAudio pins the copy-join gate: codec, sample rate, and
+// channel count must all match, and a probe without an audio stream never
+// copies.
+func TestConcatCompatibleAudio(t *testing.T) {
+	base := ToolProbeResult{AudioCodec: "mp3", SampleRate: 44100, Channels: 2}
+	if !concatCompatibleAudio(base, base) {
+		t.Errorf("identical probes should be compatible")
+	}
+	for name, mutate := range map[string]func(*ToolProbeResult){
+		"codec differs":       func(p *ToolProbeResult) { p.AudioCodec = "aac" },
+		"sample rate differs": func(p *ToolProbeResult) { p.SampleRate = 48000 },
+		"channels differ":     func(p *ToolProbeResult) { p.Channels = 1 },
+		"no audio stream":     func(p *ToolProbeResult) { p.AudioCodec = "" },
+	} {
+		mutated := base
+		mutate(&mutated)
+		if concatCompatibleAudio(base, mutated) {
+			t.Errorf("%s should be incompatible", name)
+		}
+	}
+}
+
+func TestFFmpegSplitAudioExecutes(t *testing.T) {
+	t.Run("wav copies with no re-encode", func(t *testing.T) {
+		// No ffprobe configured on purpose: split_audio never probes.
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, "")
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedAudios: []string{wavDataURL()},
+		}, "split_audio", HarnessToolCall{Start: "10", End: "25"})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, ok := result.Result.(ToolAudioResult)
+		if !ok || typed.Model != ffmpegModelName || len(typed.Audios) != 1 {
+			t.Fatalf("result payload = %+v", result.Result)
+		}
+		defer os.Remove(typed.Audios[0].TempPath)
+		if !strings.HasSuffix(typed.Audios[0].TempPath, ".wav") || typed.Audios[0].MimeType != "audio/wav" {
+			t.Fatalf("audio file = %+v, want a copied .wav", typed.Audios[0])
+		}
+		args := fakeFFmpegArgs(t, bin)
+		if !strings.Contains(args, "-ss 10 -t 15") || !strings.Contains(args, "-vn -c:a copy") || strings.Contains(args, "libmp3lame") {
+			t.Fatalf("split args = %q, want an output-seeked stream copy", args)
+		}
+		if len(result.Notices) != 0 {
+			t.Fatalf("notices = %v, want none for a copy", result.Notices)
+		}
+	})
+	t.Run("unbounded call keeps the whole file", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, "")
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedAudios: []string{wavDataURL()},
+		}, "split_audio", HarnessToolCall{})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed := result.Result.(ToolAudioResult)
+		defer os.Remove(typed.Audios[0].TempPath)
+		if args := fakeFFmpegArgs(t, bin); strings.Contains(args, "-ss ") || strings.Contains(args, "-t ") {
+			t.Fatalf("split args = %q, want no seek or duration", args)
+		}
+	})
+	t.Run("unidentified format falls back to mp3 with a notice", func(t *testing.T) {
+		config, _ := ffmpegTestConfig(t, fakeFFmpegScript, "")
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedAudios: []string{audioDataURL("audio/amr", "AMR-FAKE")},
+		}, "split_audio", HarnessToolCall{Start: "5"})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed := result.Result.(ToolAudioResult)
+		defer os.Remove(typed.Audios[0].TempPath)
+		if !strings.HasSuffix(typed.Audios[0].TempPath, ".mp3") || typed.Audios[0].MimeType != "audio/mpeg" {
+			t.Fatalf("audio file = %+v, want a converted .mp3", typed.Audios[0])
+		}
+		if len(result.Notices) == 0 || !strings.Contains(result.Notices[0], "converted to MP3") {
+			t.Fatalf("notices = %v, want the conversion explanation", result.Notices)
+		}
+	})
+	t.Run("requires an attached audio clip", func(t *testing.T) {
+		config, _ := ffmpegTestConfig(t, fakeFFmpegScript, "")
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{}, "split_audio", HarnessToolCall{})
+		if result.Status == "completed" || !strings.Contains(result.Error, "requires an attached audio clip") {
+			t.Fatalf("result = %+v, want the attachment error", result)
+		}
+	})
+}
+
+func TestFFmpegJoinAudiosExecutes(t *testing.T) {
+	t.Run("matching clips stream-copy in attachment order", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedAudios: []string{wavDataURL(), wavDataURL()},
+		}, "join_audios", HarnessToolCall{})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, ok := result.Result.(ToolAudioResult)
+		if !ok || len(typed.Audios) != 1 || typed.Audios[0].MimeType != "audio/wav" {
+			t.Fatalf("result payload = %+v", result.Result)
+		}
+		defer os.Remove(typed.Audios[0].TempPath)
+		if !strings.HasSuffix(typed.Audios[0].TempPath, ".wav") {
+			t.Fatalf("audio file = %q, want the first clip's .wav container", typed.Audios[0].TempPath)
+		}
+		list, err := os.ReadFile(filepath.Join(bin, "concat-list.txt"))
+		if err != nil {
+			t.Fatalf("the fake ffmpeg never captured a concat list: %v", err)
+		}
+		lines := strings.Split(strings.TrimSpace(string(list)), "\n")
+		if len(lines) != 2 || !strings.Contains(lines[0], "input-001.wav") || !strings.Contains(lines[1], "input-002.wav") {
+			t.Fatalf("concat order = %q, want attachment order (001.wav before 002.wav)", list)
+		}
+		args := fakeFFmpegArgs(t, bin)
+		if !strings.Contains(args, "-vn -c:a copy") || strings.Contains(args, "libmp3lame") {
+			t.Fatalf("join args = %q, want a stream copy for matching clips", args)
+		}
+		if len(result.Notices) == 0 || !strings.Contains(result.Notices[0], "stream copy") {
+			t.Fatalf("notices = %v, want the copy explanation", result.Notices)
+		}
+	})
+	t.Run("needs at least two clips", func(t *testing.T) {
+		config, _ := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedAudios: []string{wavDataURL()},
+		}, "join_audios", HarnessToolCall{})
+		if result.Status == "completed" || !strings.Contains(result.Error, "at least two") {
+			t.Fatalf("result = %+v, want the two-clip error", result)
+		}
+	})
+	t.Run("when probing fails re-encodes to the MP3 fallback", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeFailScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedAudios: []string{wavDataURL(), wavDataURL()},
+		}, "join_audios", HarnessToolCall{})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed := result.Result.(ToolAudioResult)
+		defer os.Remove(typed.Audios[0].TempPath)
+		if !strings.HasSuffix(typed.Audios[0].TempPath, ".mp3") || typed.Audios[0].MimeType != "audio/mpeg" {
+			t.Fatalf("audio file = %+v, want the MP3 fallback", typed.Audios[0])
+		}
+		args := fakeFFmpegArgs(t, bin)
+		if !strings.Contains(args, "-c:a libmp3lame -b:a 192k") {
+			t.Fatalf("join args = %q, want the MP3 re-encode", args)
+		}
+		if len(result.Notices) == 0 || !strings.Contains(result.Notices[0], "could not be compared") {
+			t.Fatalf("notices = %v, want the probe-failure explanation", result.Notices)
+		}
+	})
+}
+
+// TestFFmpegAudioSiblingCrossReferences pins the planner-facing cross-links:
+// the video split/join tools point at their audio siblings and vice versa, and
+// split_audio carries split_video's one-segment-per-call contract.
+func TestFFmpegAudioSiblingCrossReferences(t *testing.T) {
+	if desc := splitVideoToolDefinition().Description; !strings.Contains(desc, "split_audio") {
+		t.Errorf("split_video description should reference split_audio")
+	}
+	if desc := joinVideosToolDefinition().Description; !strings.Contains(desc, "join_audios") {
+		t.Errorf("join_videos description should reference join_audios")
+	}
+	splitAudio := splitAudioToolDefinition().Description
+	if !strings.Contains(splitAudio, "split_video") {
+		t.Errorf("split_audio description should reference split_video")
+	}
+	for _, fragment := range []string{"ONE segment", "same plan"} {
+		if !strings.Contains(splitAudio, fragment) {
+			t.Errorf("split_audio description = %q, want it to include %q", splitAudio, fragment)
+		}
+	}
+	if desc := joinAudiosToolDefinition().Description; !strings.Contains(desc, "join_videos") {
+		t.Errorf("join_audios description should reference join_videos")
+	}
 }
 
 func TestFFmpegExtractAudioExecutes(t *testing.T) {
