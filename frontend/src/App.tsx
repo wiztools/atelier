@@ -449,6 +449,9 @@ const soundDurationLabels: Record<string, string> = { auto: 'Auto (model decides
 const defaultAudioExtendDuration = 'auto';
 const audioExtendDurationOptions = ['auto', '10', '20', '30', '60', '90', '120'];
 const audioExtendDurationLabels: Record<string, string> = { auto: 'Auto (model default)' };
+// Mirrors Go's defaultMediaGenerationTimeoutSeconds (900s) — the Settings input
+// edits minutes, the config field stores seconds.
+const defaultMediaTimeoutSeconds = 900;
 // 'auto' defers the output shape to the model (its aspect_ratio default) —
 // reference-guided and text-to-video turns read this setting; image-to-video
 // and extend inherit the attached media's orientation. Label maps the raw
@@ -1219,6 +1222,10 @@ function App() {
   // audioExtendDuration is extend_audio's default ADDED length, persisted to
   // config.generation.audio.extendDuration; its option ladder is static.
   const [audioExtendDuration, setAudioExtendDuration] = useState(defaultAudioExtendDuration);
+  // mediaTimeoutMinutes is the per-call bound for queued media generations
+  // (fal / Replicate), persisted to config.generation.mediaTimeoutSeconds —
+  // the UI edits minutes, the config stores seconds.
+  const [mediaTimeoutMinutes, setMediaTimeoutMinutes] = useState(Math.round(defaultMediaTimeoutSeconds / 60));
   const [system, setSystem] = useState('You are Atelier, a precise local AI collaborator.');
   const [prompt, setPrompt] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -1819,6 +1826,7 @@ function App() {
             duration: soundDuration,
             extendDuration: audioExtendDuration,
           },
+          mediaTimeoutSeconds: mediaTimeoutMinutes * 60,
         },
         tools: toolConfig ?? undefined,
         ui: {
@@ -3023,6 +3031,8 @@ function App() {
     const nextVideoResolution = config.generation?.video?.resolution || defaultVideoResolution;
     const nextSoundDuration = config.generation?.audio?.duration || defaultSoundDuration;
     const nextAudioExtendDuration = config.generation?.audio?.extendDuration || defaultAudioExtendDuration;
+    const nextMediaTimeoutSeconds = config.generation?.mediaTimeoutSeconds ?? 0;
+    const nextMediaTimeoutMinutes = Math.max(1, Math.round((nextMediaTimeoutSeconds > 0 ? nextMediaTimeoutSeconds : defaultMediaTimeoutSeconds) / 60));
 
     setStartupError('');
     setStorageConfig(config.storage ?? null);
@@ -3043,6 +3053,7 @@ function App() {
     setVideoProvider(nextVideoProvider);
     setSoundDuration(nextSoundDuration);
     setAudioExtendDuration(nextAudioExtendDuration);
+    setMediaTimeoutMinutes(nextMediaTimeoutMinutes);
     setOpenaiCompatibleBaseURL(nextOpenAICompatibleBaseURL);
     setOpenaiCompatibleModel(nextOpenAICompatibleModel);
     setReplicateModel(nextReplicateModel);
@@ -5357,6 +5368,27 @@ function App() {
                 </div>
                 <div className="storage-hint">
                   Atelier checks for updates automatically once a day and installs only when you choose to.
+                </div>
+              </section>
+              <section className="settings-section">
+                <h3>Media generation</h3>
+                <div className="field-label-row">
+                  <label htmlFor="media-timeout">Generation timeout</label>
+                  <InfoHint
+                    label="What the timeout covers"
+                    text="Bounds each fal.ai or Replicate generation (image, video, audio, upscale, and the video transforms) from submit to delivered file, so an unavailable provider can't hold a turn open indefinitely. On timeout, a job that finished anyway is still delivered; one still running is cancelled so it stops billing. Local tools (ffmpeg, whisper) are unaffected."
+                  />
+                </div>
+                <div className="endpoint-row">
+                  <input
+                    id="media-timeout"
+                    type="number"
+                    min={1}
+                    max={240}
+                    value={mediaTimeoutMinutes}
+                    onChange={(event) => setMediaTimeoutMinutes(Math.min(240, Math.max(1, Math.round(Number(event.target.value) || Math.round(defaultMediaTimeoutSeconds / 60)))))}
+                  />
+                  <span className="hint">minutes</span>
                 </div>
               </section>
               </>

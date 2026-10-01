@@ -171,8 +171,13 @@ type FalClient struct {
 	// uploads in one turn (e.g. lip sync sends both audio and video) reuse one
 	// token rather than re-authenticating per file. fal tokens last ~30 days, so
 	// the cache is conservative; on any auth failure the caller re-fetches.
-	cdnToken     string
-	cdnBaseURL   string
+	cdnToken   string
+	cdnBaseURL string
+	// jobSink, when set, receives the queue handle of every submitted job —
+	// the hook runMediaGeneration uses to diagnose and stop a job that
+	// outlives the local timeout (media_timeout.go). Callers set it to a
+	// *mediaJob they own, right after constructing the client.
+	jobSink      *mediaJob
 	cdnTokenType string
 }
 
@@ -207,6 +212,7 @@ type falSubmitResponse struct {
 	RequestID   string `json:"request_id"`
 	StatusURL   string `json:"status_url"`
 	ResponseURL string `json:"response_url"`
+	CancelURL   string `json:"cancel_url"`
 }
 
 // falStatusResponse is returned by GET {base}/{model}/requests/{id}/status.
@@ -447,36 +453,42 @@ func (client FalClient) GenerateImage(ctx context.Context, model string, body ma
 		return ollamaGenerateResponse{}, nil, errors.New("fal submit returned no request id")
 	}
 	statusURL, resultURL := falQueueURLs(submit, model, requestID)
+	client.recordMediaJob(model, submit, requestID, statusURL, resultURL)
 
 	if err := client.waitForCompletion(ctx, statusURL); err != nil {
 		return ollamaGenerateResponse{}, nil, err
 	}
 
+	response, err := client.imagesFromJob(ctx, resultURL, model)
+	return response, nil, err
+}
+
+// imagesFromJob fetches a completed fal result and downloads every image as a
+// base64 data URL packed into a synthetic ollamaGenerateResponse — the shared
+// shape GenerateImage and UpscaleImage produce. Returns nil raw: the fal
+// client has already downloaded each result URL into the base64 data URLs
+// above. Passing the raw fal JSON up would let the tool's
+// collectImagesFromJSON backstop re-harvest the source URLs (https://...)
+// alongside the data URLs; those URLs then fail to decode at artifact-write
+// time and the whole turn save aborts with an orphaned file.
+func (client FalClient) imagesFromJob(ctx context.Context, resultURL, model string) (ollamaGenerateResponse, error) {
 	result, _, err := client.fetchResult(ctx, resultURL)
 	if err != nil {
-		return ollamaGenerateResponse{}, nil, err
+		return ollamaGenerateResponse{}, err
 	}
-
 	dataURLs, err := client.downloadImages(ctx, result.Images)
 	if err != nil {
-		return ollamaGenerateResponse{}, nil, err
+		return ollamaGenerateResponse{}, err
 	}
 	if len(dataURLs) == 0 {
-		return ollamaGenerateResponse{}, nil, errors.New("fal result returned no images")
+		return ollamaGenerateResponse{}, errors.New("fal result returned no images")
 	}
-
-	response := ollamaGenerateResponse{
+	return ollamaGenerateResponse{
 		Model:  model,
 		Image:  dataURLs[0],
 		Images: dataURLs,
 		Done:   true,
-	}
-	// Return nil raw: the fal client has already downloaded each result URL
-	// into the base64 data URLs above. Passing the raw fal JSON up would let
-	// the tool's collectImagesFromJSON backstop re-harvest the source URLs
-	// (https://...) alongside the data URLs; those URLs then fail to decode at
-	// artifact-write time and the whole turn save aborts with an orphaned file.
-	return response, nil, nil
+	}, nil
 }
 
 // UpscaleImage submits an attached image to the configured fal upscaler
@@ -508,30 +520,13 @@ func (client FalClient) UpscaleImage(ctx context.Context, req ImageUpscaleReques
 		return ollamaGenerateResponse{}, errors.New("fal submit returned no request id")
 	}
 	statusURL, resultURL := falQueueURLs(submit, model, requestID)
+	client.recordMediaJob(model, submit, requestID, statusURL, resultURL)
 
 	if err := client.waitForCompletion(ctx, statusURL); err != nil {
 		return ollamaGenerateResponse{}, err
 	}
 
-	result, _, err := client.fetchResult(ctx, resultURL)
-	if err != nil {
-		return ollamaGenerateResponse{}, err
-	}
-
-	dataURLs, err := client.downloadImages(ctx, result.Images)
-	if err != nil {
-		return ollamaGenerateResponse{}, err
-	}
-	if len(dataURLs) == 0 {
-		return ollamaGenerateResponse{}, errors.New("fal upscale returned no images")
-	}
-
-	return ollamaGenerateResponse{
-		Model:  model,
-		Image:  dataURLs[0],
-		Images: dataURLs,
-		Done:   true,
-	}, nil
+	return client.imagesFromJob(ctx, resultURL, model)
 }
 
 // firstNonEmpty returns the first entry of values that is non-empty after
@@ -824,11 +819,19 @@ func (client FalClient) GenerateVideo(ctx context.Context, model string, body ma
 		return GeneratedVideo{}, errors.New("fal submit returned no request id")
 	}
 	statusURL, resultURL := falQueueURLs(submit, model, requestID)
+	client.recordMediaJob(model, submit, requestID, statusURL, resultURL)
 
 	if err := client.waitForCompletion(ctx, statusURL); err != nil {
 		return GeneratedVideo{}, err
 	}
 
+	return client.videoFromJob(ctx, resultURL)
+}
+
+// videoFromJob fetches a completed fal result and downloads its video output
+// as raw bytes — the shared tail of GenerateVideo and the timeout policy's
+// RecoverVideoJob (media_timeout.go).
+func (client FalClient) videoFromJob(ctx context.Context, resultURL string) (GeneratedVideo, error) {
 	result, raw, err := client.fetchResult(ctx, resultURL)
 	if err != nil {
 		return GeneratedVideo{}, err
@@ -878,11 +881,18 @@ func (client FalClient) GenerateAudio(ctx context.Context, model string, body ma
 		return GeneratedAudio{}, errors.New("fal submit returned no request id")
 	}
 	statusURL, resultURL := falQueueURLs(submit, model, requestID)
+	client.recordMediaJob(model, submit, requestID, statusURL, resultURL)
 
 	if err := client.waitForCompletion(ctx, statusURL); err != nil {
 		return GeneratedAudio{}, err
 	}
 
+	return client.audioFromJob(ctx, resultURL)
+}
+
+// audioFromJob fetches a completed fal result and downloads its audio output —
+// the shared tail of GenerateAudio and the timeout policy's RecoverAudioJob.
+func (client FalClient) audioFromJob(ctx context.Context, resultURL string) (GeneratedAudio, error) {
 	result, raw, err := client.fetchResult(ctx, resultURL)
 	if err != nil {
 		return GeneratedAudio{}, err
@@ -960,6 +970,9 @@ func (client FalClient) TranscribeAudio(ctx context.Context, req TranscribeAudio
 		return GeneratedTranscript{}, errors.New("fal submit returned no request id")
 	}
 	statusURL, resultURL := falQueueURLs(submit, model, requestID)
+	// Transcription gets the job handle for the timeout policy's cancel-only
+	// path — transcripts are cheap to redo, so there is no recover step.
+	client.recordMediaJob(model, submit, requestID, statusURL, resultURL)
 
 	if err := client.waitForCompletion(ctx, statusURL); err != nil {
 		return GeneratedTranscript{}, err
@@ -1099,6 +1112,26 @@ func falQueueURLs(submit falSubmitResponse, model, requestID string) (statusURL,
 	return statusURL, resultURL
 }
 
+// recordMediaJob publishes a submitted job's queue handle to the client's
+// jobSink when the caller runs under runMediaGeneration (media_timeout.go) —
+// without a sink the call behaves exactly as before the timeout policy existed.
+func (client FalClient) recordMediaJob(model string, submit falSubmitResponse, requestID, statusURL, resultURL string) {
+	if client.jobSink == nil {
+		return
+	}
+	cancelURL := strings.TrimSpace(submit.CancelURL)
+	if cancelURL == "" {
+		cancelURL = strings.TrimSuffix(statusURL, "/status") + "/cancel"
+	}
+	*client.jobSink = mediaJob{
+		Provider:  "fal",
+		ID:        requestID,
+		StatusURL: statusURL,
+		ResultURL: resultURL,
+		CancelURL: cancelURL,
+	}
+}
+
 // falAppPath returns the fal application path — the first two segments of an
 // endpoint id (e.g. "fal-ai/kling-video" from
 // "fal-ai/kling-video/v2/master/image-to-video"). fal's queue status and result
@@ -1154,6 +1187,163 @@ func (client FalClient) waitForCompletion(ctx context.Context, statusURL string)
 		case <-time.After(falPollInterval):
 		}
 	}
+}
+
+// jobStatus polls a submitted job's status endpoint once and normalizes the
+// answer into mediaJobState. detail carries fal's error text (or last log
+// line) for failed jobs, so the timeout policy can quote it.
+func (client FalClient) jobStatus(ctx context.Context, job mediaJob) (mediaJobState, string, error) {
+	statusURL := strings.TrimSpace(job.StatusURL)
+	if statusURL == "" {
+		return mediaJobUnknown, "", errors.New("fal job has no status url")
+	}
+	resp, err := client.do(ctx, "", http.MethodGet, statusURL, nil)
+	if err != nil {
+		return mediaJobUnknown, "", err
+	}
+	defer resp.Body.Close()
+	var status falStatusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return mediaJobUnknown, "", err
+	}
+	switch strings.ToUpper(strings.TrimSpace(status.Status)) {
+	case "COMPLETED":
+		return mediaJobCompleted, "", nil
+	case "FAILED":
+		msg := strings.TrimSpace(status.Error)
+		if msg == "" && len(status.Logs) > 0 {
+			msg = status.Logs[len(status.Logs)-1].Message
+		}
+		return mediaJobFailed, msg, nil
+	case "":
+		return mediaJobUnknown, "", errors.New("fal status response was missing a status field")
+	default:
+		// IN_QUEUE / IN_PROGRESS, and unknown non-empty statuses, are still
+		// in progress — the same rule waitForCompletion applies.
+		return mediaJobRunning, "", nil
+	}
+}
+
+// CancelMediaJob PUTs the job's cancel URL (fal documents the queue cancel at
+// exactly this route). fal answers 202 CANCELLATION_REQUESTED while a cancel
+// is in flight, 400 ALREADY_COMPLETED when the job finished first, and 404 for
+// an unknown request id — all three mean nothing is running anymore, which is
+// the outcome the caller wanted, so all are reported as success; the recovery
+// methods re-check the status when the completed case matters. Everything else
+// (network errors, 5xx) is a real failure.
+func (client FalClient) CancelMediaJob(ctx context.Context, job mediaJob) error {
+	cancelURL := strings.TrimSpace(job.CancelURL)
+	if cancelURL == "" && job.StatusURL != "" {
+		cancelURL = strings.TrimSuffix(strings.TrimSpace(job.StatusURL), "/status") + "/cancel"
+	}
+	if cancelURL == "" {
+		return errors.New("fal job has no cancel url")
+	}
+	// do() maps every 4xx to an error, but the cancel's own 4xx codes carry
+	// outcome semantics — read the raw response instead.
+	noFollow := *client.httpClient
+	noFollow.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, _, err := client.doOnce(ctx, &noFollow, http.MethodPut, cancelURL, cancelURL, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusAccepted, resp.StatusCode == http.StatusBadRequest, resp.StatusCode == http.StatusNotFound:
+		return nil
+	case resp.StatusCode >= 400:
+		return fmt.Errorf("fal cancel returned %s", resp.Status)
+	}
+	return nil
+}
+
+// RecoverVideoJob resolves a video job that outlived the local timeout: a
+// completed job is fetched and delivered (the bill stands either way), a
+// failed or cancelled one is reported, and a still-running one is cancelled
+// and re-checked — fal answers 400 ALREADY_COMPLETED when the cancel races a
+// completion, and the finished clip is fetched in that case too. Error texts
+// are self-contained; runMediaGeneration prefixes only the timeout.
+func (client FalClient) RecoverVideoJob(ctx context.Context, job mediaJob) (GeneratedVideo, error) {
+	state, detail, err := client.jobStatus(ctx, job)
+	if err == nil {
+		switch state {
+		case mediaJobCompleted:
+			return client.videoFromJob(ctx, job.ResultURL)
+		case mediaJobFailed:
+			msg := detail
+			if msg == "" {
+				msg = "fal reported a failed generation"
+			}
+			return GeneratedVideo{}, fmt.Errorf("the fal job %s then failed: %s", job.ID, msg)
+		case mediaJobCanceled:
+			return GeneratedVideo{}, fmt.Errorf("the fal job %s was cancelled", job.ID)
+		}
+	}
+	if cerr := client.CancelMediaJob(ctx, job); cerr != nil {
+		return GeneratedVideo{}, fmt.Errorf("the fal job %s could not be cancelled (%s) and may still be running on fal's side", job.ID, cerr)
+	}
+	if state, _, err := client.jobStatus(ctx, job); err == nil && state == mediaJobCompleted {
+		// The cancel raced a completion — the generation is billed either
+		// way, so fetch rather than discard.
+		return client.videoFromJob(ctx, job.ResultURL)
+	}
+	return GeneratedVideo{}, fmt.Errorf("the fal job %s was cancelled after the timeout", job.ID)
+}
+
+// RecoverImageJob is RecoverVideoJob for image results (generate_image and
+// upscale_image share the same ollamaGenerateResponse shape). model labels the
+// recovered response — the job handle alone doesn't carry it, and the tool
+// layer attributes activities by the result's model.
+func (client FalClient) RecoverImageJob(ctx context.Context, job mediaJob, model string) (ollamaGenerateResponse, error) {
+	state, detail, err := client.jobStatus(ctx, job)
+	if err == nil {
+		switch state {
+		case mediaJobCompleted:
+			return client.imagesFromJob(ctx, job.ResultURL, model)
+		case mediaJobFailed:
+			msg := detail
+			if msg == "" {
+				msg = "fal reported a failed generation"
+			}
+			return ollamaGenerateResponse{}, fmt.Errorf("the fal job %s then failed: %s", job.ID, msg)
+		case mediaJobCanceled:
+			return ollamaGenerateResponse{}, fmt.Errorf("the fal job %s was cancelled", job.ID)
+		}
+	}
+	if cerr := client.CancelMediaJob(ctx, job); cerr != nil {
+		return ollamaGenerateResponse{}, fmt.Errorf("the fal job %s could not be cancelled (%s) and may still be running on fal's side", job.ID, cerr)
+	}
+	if state, _, err := client.jobStatus(ctx, job); err == nil && state == mediaJobCompleted {
+		return client.imagesFromJob(ctx, job.ResultURL, model)
+	}
+	return ollamaGenerateResponse{}, fmt.Errorf("the fal job %s was cancelled after the timeout", job.ID)
+}
+
+// RecoverAudioJob is RecoverVideoJob for audio results (generate_audio and the
+// audio extend/share the GeneratedAudio shape).
+func (client FalClient) RecoverAudioJob(ctx context.Context, job mediaJob) (GeneratedAudio, error) {
+	state, detail, err := client.jobStatus(ctx, job)
+	if err == nil {
+		switch state {
+		case mediaJobCompleted:
+			return client.audioFromJob(ctx, job.ResultURL)
+		case mediaJobFailed:
+			msg := detail
+			if msg == "" {
+				msg = "fal reported a failed generation"
+			}
+			return GeneratedAudio{}, fmt.Errorf("the fal job %s then failed: %s", job.ID, msg)
+		case mediaJobCanceled:
+			return GeneratedAudio{}, fmt.Errorf("the fal job %s was cancelled", job.ID)
+		}
+	}
+	if cerr := client.CancelMediaJob(ctx, job); cerr != nil {
+		return GeneratedAudio{}, fmt.Errorf("the fal job %s could not be cancelled (%s) and may still be running on fal's side", job.ID, cerr)
+	}
+	if state, _, err := client.jobStatus(ctx, job); err == nil && state == mediaJobCompleted {
+		return client.audioFromJob(ctx, job.ResultURL)
+	}
+	return GeneratedAudio{}, fmt.Errorf("the fal job %s was cancelled after the timeout", job.ID)
 }
 
 func (client FalClient) fetchResult(ctx context.Context, resultURL string) (falResultResponse, []byte, error) {

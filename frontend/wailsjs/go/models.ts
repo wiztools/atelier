@@ -128,6 +128,7 @@ export namespace main {
 	    image: ConfigImageGeneration;
 	    video: ConfigVideoGeneration;
 	    audio: ConfigAudioGeneration;
+	    mediaTimeoutSeconds?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigGeneration(source);
@@ -138,6 +139,7 @@ export namespace main {
 	        this.image = this.convertValues(source["image"], ConfigImageGeneration);
 	        this.video = this.convertValues(source["video"], ConfigVideoGeneration);
 	        this.audio = this.convertValues(source["audio"], ConfigAudioGeneration);
+	        this.mediaTimeoutSeconds = source["mediaTimeoutSeconds"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

@@ -96,6 +96,11 @@ const (
 type ReplicateClient struct {
 	httpClient *http.Client
 	apiKey     string
+	// jobSink, when set, receives the queue handle of every created
+	// prediction — the hook runMediaGeneration uses to diagnose and stop a
+	// prediction that outlives the local timeout (media_timeout.go). Callers
+	// set it to a *mediaJob they own, right after constructing the client.
+	jobSink *mediaJob
 }
 
 func newReplicateClient(httpClient *http.Client, apiKey string) ReplicateClient {
@@ -135,6 +140,16 @@ func (client ReplicateClient) GenerateImage(ctx context.Context, model string, i
 	if err != nil {
 		return ollamaGenerateResponse{}, err
 	}
+	return client.imagesFromPrediction(ctx, prediction, model)
+}
+
+// imagesFromPrediction downloads a succeeded image prediction's outputs as
+// base64 data URLs packed into a synthetic ollamaGenerateResponse — the same
+// shape FalClient.GenerateImage produces, and the shared tail of GenerateImage
+// and UpscaleImage plus the timeout policy's RecoverImageJob. Output URLs
+// expire an hour after the prediction completes, so this runs inside the
+// calling flow, never lazily.
+func (client ReplicateClient) imagesFromPrediction(ctx context.Context, prediction replicatePrediction, model string) (ollamaGenerateResponse, error) {
 	dataURLs, err := client.downloadImages(ctx, replicateImageURLCandidates(prediction.Output))
 	if err != nil {
 		return ollamaGenerateResponse{}, err
@@ -150,7 +165,6 @@ func (client ReplicateClient) GenerateImage(ctx context.Context, model string, i
 	}, nil
 }
 
-// GenerateVideo submits an already-native input object (built by
 // resolveReplicateVideoInput), polls until the prediction succeeds, and
 // downloads the output clip as raw bytes — the shared GeneratedVideo shape,
 // so every video consumer (artifacts, carry-forward, telemetry) is unchanged.
@@ -169,6 +183,12 @@ func (client ReplicateClient) GenerateVideo(ctx context.Context, model string, i
 	if err != nil {
 		return GeneratedVideo{}, err
 	}
+	return client.videoFromPrediction(ctx, prediction)
+}
+
+// videoFromPrediction downloads a succeeded video prediction's output clip —
+// the shared tail of GenerateVideo and the timeout policy's RecoverVideoJob.
+func (client ReplicateClient) videoFromPrediction(ctx context.Context, prediction replicatePrediction) (GeneratedVideo, error) {
 	videoURL := replicateVideoURL(prediction.Output)
 	if videoURL == "" {
 		return GeneratedVideo{}, errors.New("replicate prediction returned no video")
@@ -192,6 +212,15 @@ func (client ReplicateClient) runPrediction(ctx context.Context, model string, i
 	}
 	if strings.TrimSpace(prediction.ID) == "" {
 		return replicatePrediction{}, errors.New("replicate prediction response returned no id")
+	}
+	if client.jobSink != nil {
+		*client.jobSink = mediaJob{
+			Provider:  "replicate",
+			ID:        prediction.ID,
+			StatusURL: "/v1/predictions/" + prediction.ID,
+			ResultURL: "/v1/predictions/" + prediction.ID,
+			CancelURL: "/v1/predictions/" + prediction.ID + "/cancel",
+		}
 	}
 	if err := client.waitForPrediction(ctx, prediction.ID); err != nil {
 		return replicatePrediction{}, err
@@ -264,6 +293,94 @@ func (client ReplicateClient) waitForPrediction(ctx context.Context, id string) 
 		case <-time.After(replicatePollInterval):
 		}
 	}
+}
+
+// CancelPrediction POSTs the prediction cancel route. Cancellation is
+// best-effort on Replicate's side — queued predictions are removed,
+// in-progress ones receive a cancellation signal — and a prediction that
+// already terminated answers 4xx. Every 4xx means "nothing is running
+// anymore" (the outcome the caller wanted), so they are swallowed here; the
+// recovery methods re-check the status when the completed case matters.
+// Network errors and 5xx are real failures. The request bypasses do()
+// deliberately: do() maps every 4xx to an error, and the cancel's own 4xx
+// codes carry outcome semantics rather than failures.
+func (client ReplicateClient) CancelPrediction(ctx context.Context, id string) error {
+	if strings.TrimSpace(client.apiKey) == "" {
+		return errReplicateKeyNotConfigured
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, replicateAPIBaseURL+"/v1/predictions/"+strings.TrimSpace(id)+"/cancel", nil)
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+client.apiKey)
+	resp, err := client.httpClient.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 500 {
+		return fmt.Errorf("replicate cancel returned %s", resp.Status)
+	}
+	return nil
+}
+
+// CancelMediaJob adapts CancelPrediction to runMediaGeneration's job-based
+// cancel signature, mirroring FalClient.CancelMediaJob.
+func (client ReplicateClient) CancelMediaJob(ctx context.Context, job mediaJob) error {
+	return client.CancelPrediction(ctx, job.ID)
+}
+
+// RecoverVideoJob resolves a prediction that outlived the local timeout: a
+// succeeded prediction's clip is fetched and delivered immediately (output
+// URLs expire about an hour after completion, so this is the last window the
+// asset exists), a failed or canceled one is reported, and a still-running one
+// is cancelled and re-checked — a cancel racing a completion yields succeeded,
+// and the finished clip is fetched in that case too. Error texts are
+// self-contained; runMediaGeneration prefixes only the timeout.
+func (client ReplicateClient) RecoverVideoJob(ctx context.Context, job mediaJob) (GeneratedVideo, error) {
+	prediction, err := client.fetchPrediction(ctx, job.ID)
+	if err == nil {
+		switch strings.ToLower(strings.TrimSpace(prediction.Status)) {
+		case "succeeded":
+			return client.videoFromPrediction(ctx, prediction)
+		case "failed":
+			return GeneratedVideo{}, fmt.Errorf("the replicate prediction %s then failed: %s", job.ID, replicateFailureMessage(prediction))
+		case "canceled":
+			return GeneratedVideo{}, fmt.Errorf("the replicate prediction %s was canceled", job.ID)
+		}
+	}
+	if cerr := client.CancelPrediction(ctx, job.ID); cerr != nil {
+		return GeneratedVideo{}, fmt.Errorf("the replicate prediction %s could not be canceled (%s) and may still be running", job.ID, cerr)
+	}
+	if prediction, err := client.fetchPrediction(ctx, job.ID); err == nil && strings.EqualFold(strings.TrimSpace(prediction.Status), "succeeded") {
+		return client.videoFromPrediction(ctx, prediction)
+	}
+	return GeneratedVideo{}, fmt.Errorf("the replicate prediction %s was canceled after the timeout", job.ID)
+}
+
+// RecoverImageJob is RecoverVideoJob for image results (generate_image and
+// upscale_image share the same ollamaGenerateResponse shape). model labels the
+// recovered response — the job handle alone doesn't carry it, and the tool
+// layer attributes activities by the result's model.
+func (client ReplicateClient) RecoverImageJob(ctx context.Context, job mediaJob, model string) (ollamaGenerateResponse, error) {
+	prediction, err := client.fetchPrediction(ctx, job.ID)
+	if err == nil {
+		switch strings.ToLower(strings.TrimSpace(prediction.Status)) {
+		case "succeeded":
+			return client.imagesFromPrediction(ctx, prediction, model)
+		case "failed":
+			return ollamaGenerateResponse{}, fmt.Errorf("the replicate prediction %s then failed: %s", job.ID, replicateFailureMessage(prediction))
+		case "canceled":
+			return ollamaGenerateResponse{}, fmt.Errorf("the replicate prediction %s was canceled", job.ID)
+		}
+	}
+	if cerr := client.CancelPrediction(ctx, job.ID); cerr != nil {
+		return ollamaGenerateResponse{}, fmt.Errorf("the replicate prediction %s could not be canceled (%s) and may still be running", job.ID, cerr)
+	}
+	if prediction, err := client.fetchPrediction(ctx, job.ID); err == nil && strings.EqualFold(strings.TrimSpace(prediction.Status), "succeeded") {
+		return client.imagesFromPrediction(ctx, prediction, model)
+	}
+	return ollamaGenerateResponse{}, fmt.Errorf("the replicate prediction %s was canceled after the timeout", job.ID)
 }
 
 // replicateFailureMessage renders a failed prediction's error field, which may
@@ -496,19 +613,7 @@ func (client ReplicateClient) UpscaleImage(ctx context.Context, model string, in
 	if err != nil {
 		return ollamaGenerateResponse{}, err
 	}
-	dataURLs, err := client.downloadImages(ctx, replicateImageURLCandidates(prediction.Output))
-	if err != nil {
-		return ollamaGenerateResponse{}, err
-	}
-	if len(dataURLs) == 0 {
-		return ollamaGenerateResponse{}, errors.New("replicate prediction returned no images")
-	}
-	return ollamaGenerateResponse{
-		Model:  model,
-		Image:  dataURLs[0],
-		Images: dataURLs,
-		Done:   true,
-	}, nil
+	return client.imagesFromPrediction(ctx, prediction, model)
 }
 
 // ResolveMediaURL normalizes a media reference for Replicate, uploading it

@@ -400,6 +400,13 @@ type ConfigGeneration struct {
 	Image ConfigImageGeneration `json:"image"`
 	Video ConfigVideoGeneration `json:"video"`
 	Audio ConfigAudioGeneration `json:"audio"`
+	// MediaTimeoutSeconds bounds one queued media generation (fal / Replicate —
+	// image, video, audio, upscale, and the video transforms) from submit to
+	// delivered bytes. On timeout the shared policy (media_timeout.go) recovers
+	// a job that completed anyway and cancels one still running; it never
+	// bounds the synchronous backends or the local CLI tools. Zero inherits the
+	// default — normalized in mergeAppConfig.
+	MediaTimeoutSeconds int `json:"mediaTimeoutSeconds,omitempty"`
 }
 
 type ConfigImageGeneration struct {
@@ -3837,6 +3844,7 @@ func defaultAppConfig() AppConfig {
 				Duration:       defaultFalSoundDuration,
 				ExtendDuration: defaultFalAudioExtendDuration,
 			},
+			MediaTimeoutSeconds: defaultMediaGenerationTimeoutSeconds,
 		},
 		Tools: ConfigTools{
 			Filesystem: ConfigFilesystemTool{
@@ -3994,6 +4002,12 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	config.Generation.Audio.ExtendDuration = strings.TrimSpace(config.Generation.Audio.ExtendDuration)
 	if config.Generation.Audio.ExtendDuration == "" {
 		config.Generation.Audio.ExtendDuration = defaults.Generation.Audio.ExtendDuration
+	}
+	// A non-positive timeout is not "unbounded" — an absent field (config
+	// written before the knob existed) and a junk value both land on the
+	// default, so no queued generation is ever left without a bound.
+	if config.Generation.MediaTimeoutSeconds <= 0 {
+		config.Generation.MediaTimeoutSeconds = defaults.Generation.MediaTimeoutSeconds
 	}
 	// Canonicalize the tier (trim + lowercase) and drop unknown values: empty
 	// means "let the model choose", so a junk hand-edited config.json value

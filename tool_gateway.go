@@ -170,8 +170,22 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				if err != nil {
 					return ollamaGenerateResponse{}, nil, nil, err
 				}
-				resp, raw, genErr := client.GenerateImage(ctx, req.Model, body)
+				job := &mediaJob{}
+				client.jobSink = job
+				resp, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (ollamaGenerateResponse, error) {
+						r, _, err := client.GenerateImage(jctx, req.Model, body)
+						return r, err
+					},
+					client.CancelMediaJob,
+					func(jctx context.Context, j mediaJob) (ollamaGenerateResponse, error) {
+						return client.RecoverImageJob(jctx, j, req.Model)
+					},
+				)
 				if genErr == nil {
+					if recovered {
+						notices = append(notices, mediaGenerationRecoveredNotice)
+					}
 					// Cost is priced from what the response actually delivered
 					// (image count, rendered megapixels for MP-billed models),
 					// not what the plan asked for.
@@ -185,7 +199,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 						Megapixels: imageResultMegapixels(resp.Images, resp.Image),
 					})
 				}
-				return resp, raw, notices, genErr
+				return resp, nil, notices, genErr
 			}
 			if provider == "openai-compatible" {
 				apiKey, err := loadOpenAICompatibleAPIKey()
@@ -221,7 +235,20 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				if err != nil {
 					return ollamaGenerateResponse{}, nil, nil, err
 				}
-				resp, genErr := client.GenerateImage(ctx, req.Model, input)
+				job := &mediaJob{}
+				client.jobSink = job
+				resp, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (ollamaGenerateResponse, error) {
+						return client.GenerateImage(jctx, req.Model, input)
+					},
+					client.CancelMediaJob,
+					func(jctx context.Context, j mediaJob) (ollamaGenerateResponse, error) {
+						return client.RecoverImageJob(jctx, j, req.Model)
+					},
+				)
+				if genErr == nil && recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
 				return resp, nil, notices, genErr
 			}
 			resp, raw, err := app.ollamaClient(config.Providers.Ollama.BaseURL).GenerateImage(ctx, req)
@@ -269,7 +296,18 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				if err != nil {
 					return GeneratedVideo{}, err
 				}
-				generated, genErr := client.GenerateVideo(ctx, req.Model, input)
+				job := &mediaJob{}
+				client.jobSink = job
+				generated, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (GeneratedVideo, error) {
+						return client.GenerateVideo(jctx, req.Model, input)
+					},
+					client.CancelMediaJob,
+					client.RecoverVideoJob,
+				)
+				if genErr == nil && recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
 				generated.Notices = notices
 				return generated, genErr
 			}
@@ -315,8 +353,19 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			if err != nil {
 				return GeneratedVideo{}, err
 			}
-			generated, genErr := client.GenerateVideo(ctx, req.Model, body)
+			job := &mediaJob{}
+			client.jobSink = job
+			generated, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+				func(jctx context.Context) (GeneratedVideo, error) {
+					return client.GenerateVideo(jctx, req.Model, body)
+				},
+				client.CancelMediaJob,
+				client.RecoverVideoJob,
+			)
 			if genErr == nil {
+				if recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
 				hints := falBillingHints{Requests: 1}
 				if len(req.SourceVideos()) == 0 {
 					// Pure generation: the rendered clip's own container is
@@ -397,8 +446,19 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				return GeneratedVideo{Notices: notices}, err
 			}
 			// Lip sync returns a video, so it reuses the GenerateVideo transport.
-			generated, genErr := client.GenerateVideo(ctx, req.Model, body)
+			job := &mediaJob{}
+			client.jobSink = job
+			generated, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+				func(jctx context.Context) (GeneratedVideo, error) {
+					return client.GenerateVideo(jctx, req.Model, body)
+				},
+				client.CancelMediaJob,
+				client.RecoverVideoJob,
+			)
 			if genErr == nil {
+				if recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
 				// Output length ≈ the driving audio's length, which the
 				// gateway never knows — per-second lipsync endpoints get no
 				// estimate rather than a guessed duration.
@@ -431,7 +491,20 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				if err != nil {
 					return ollamaGenerateResponse{}, notices, err
 				}
-				resp, genErr := client.UpscaleImage(ctx, req.Model, input)
+				job := &mediaJob{}
+				client.jobSink = job
+				resp, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (ollamaGenerateResponse, error) {
+						return client.UpscaleImage(jctx, req.Model, input)
+					},
+					client.CancelMediaJob,
+					func(jctx context.Context, j mediaJob) (ollamaGenerateResponse, error) {
+						return client.RecoverImageJob(jctx, j, req.Model)
+					},
+				)
+				if genErr == nil && recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
 				return resp, notices, genErr
 			}
 			apiKey, err := loadFalAPIKey()
@@ -441,11 +514,26 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			if strings.TrimSpace(apiKey) == "" {
 				return ollamaGenerateResponse{}, nil, errFalKeyNotConfigured
 			}
-			resp, err := newFalClient(app.client, apiKey).UpscaleImage(ctx, req)
+			client := newFalClient(app.client, apiKey)
+			job := &mediaJob{}
+			client.jobSink = job
+			resp, recovered, err := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+				func(jctx context.Context) (ollamaGenerateResponse, error) {
+					return client.UpscaleImage(jctx, req)
+				},
+				client.CancelMediaJob,
+				func(jctx context.Context, j mediaJob) (ollamaGenerateResponse, error) {
+					return client.RecoverImageJob(jctx, j, req.Model)
+				},
+			)
+			var notices []string
+			if err == nil && recovered {
+				notices = append(notices, mediaGenerationRecoveredNotice)
+			}
 			if err == nil {
 				resp.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, falBillingHints{Images: 1, Requests: 1})
 			}
-			return resp, nil, err
+			return resp, notices, err
 		}
 		gateway.tools.UpscaleVideo = func(ctx context.Context, req VideoUpscaleRequest) (GeneratedVideo, error) {
 			// Video upscale follows the video provider: replicate routes there,
@@ -475,7 +563,18 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				}
 				// Upscaling returns a video, so it reuses the GenerateVideo
 				// transport — the same pattern as the fal path below.
-				generated, genErr := client.GenerateVideo(ctx, req.Model, input)
+				job := &mediaJob{}
+				client.jobSink = job
+				generated, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (GeneratedVideo, error) {
+						return client.GenerateVideo(jctx, req.Model, input)
+					},
+					client.CancelMediaJob,
+					client.RecoverVideoJob,
+				)
+				if genErr == nil && recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
 				generated.Notices = notices
 				return generated, genErr
 			}
@@ -503,8 +602,19 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			}
 			// Upscaling returns a video, so it reuses the GenerateVideo transport
 			// (the same pattern as GenerateLipsync).
-			generated, genErr := client.GenerateVideo(ctx, req.Model, body)
+			job := &mediaJob{}
+			client.jobSink = job
+			generated, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+				func(jctx context.Context) (GeneratedVideo, error) {
+					return client.GenerateVideo(jctx, req.Model, body)
+				},
+				client.CancelMediaJob,
+				client.RecoverVideoJob,
+			)
 			if genErr == nil {
+				if recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
 				// Per-second upscalers bill the source clip's length, which the
 				// gateway never probed — no estimate rather than a guess.
 				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, falBillingHints{Requests: 1})
@@ -541,7 +651,18 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				}
 				// Reframing returns a video, so it reuses the GenerateVideo
 				// transport — the same pattern as the fal path below.
-				generated, genErr := client.GenerateVideo(ctx, req.Model, input)
+				job := &mediaJob{}
+				client.jobSink = job
+				generated, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (GeneratedVideo, error) {
+						return client.GenerateVideo(jctx, req.Model, input)
+					},
+					client.CancelMediaJob,
+					client.RecoverVideoJob,
+				)
+				if genErr == nil && recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
 				generated.Notices = notices
 				if genErr == nil {
 					noteReframeDurationMismatch(&generated, sourceSeconds, sourceReadable)
@@ -571,8 +692,19 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			}
 			// Reframing returns a video, so it reuses the GenerateVideo transport
 			// (the same pattern as UpscaleVideo / GenerateLipsync).
-			generated, genErr := client.GenerateVideo(ctx, req.Model, body)
+			job := &mediaJob{}
+			client.jobSink = job
+			generated, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+				func(jctx context.Context) (GeneratedVideo, error) {
+					return client.GenerateVideo(jctx, req.Model, body)
+				},
+				client.CancelMediaJob,
+				client.RecoverVideoJob,
+			)
 			if genErr == nil {
+				if recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
 				// Reframe endpoints (LTX-2.3) bill per second of the INPUT
 				// clip, so the staged source's own container is the billed
 				// quantity — the rendered clip was long the proxy on the
@@ -621,7 +753,18 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				}
 				// Restyling returns a video, so it reuses the GenerateVideo
 				// transport — the same pattern as the fal path below.
-				generated, genErr := client.GenerateVideo(ctx, req.Model, input)
+				job := &mediaJob{}
+				client.jobSink = job
+				generated, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (GeneratedVideo, error) {
+						return client.GenerateVideo(jctx, req.Model, input)
+					},
+					client.CancelMediaJob,
+					client.RecoverVideoJob,
+				)
+				if genErr == nil && recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
 				generated.Notices = notices
 				return generated, genErr
 			}
@@ -659,8 +802,19 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			}
 			// Restyling returns a video, so it reuses the GenerateVideo transport
 			// (the same pattern as ReframeVideo / UpscaleVideo).
-			generated, genErr := client.GenerateVideo(ctx, req.Model, body)
+			job := &mediaJob{}
+			client.jobSink = job
+			generated, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+				func(jctx context.Context) (GeneratedVideo, error) {
+					return client.GenerateVideo(jctx, req.Model, body)
+				},
+				client.CancelMediaJob,
+				client.RecoverVideoJob,
+			)
 			if genErr == nil {
+				if recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
 				// Restyle preserves length (Kling o3 and Wan re-render the
 				// input's duration), so the rendered clip's own container
 				// carries the billed duration — the same rule as reframe.
@@ -694,8 +848,19 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			}
 			schema := schemaCache.Get(ctx, req.Model)
 			body, notices := resolveAudioBody(schema, req, falOverrides)
-			generated, err := client.GenerateAudio(ctx, req.Model, body)
+			job := &mediaJob{}
+			client.jobSink = job
+			generated, recovered, err := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+				func(jctx context.Context) (GeneratedAudio, error) {
+					return client.GenerateAudio(jctx, req.Model, body)
+				},
+				client.CancelMediaJob,
+				client.RecoverAudioJob,
+			)
 			if err == nil {
+				if recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
 				// Character-billed TTS models price the spoken text; per-second
 				// sound models (elevenlabs) the rendered clip's own length;
 				// flat per-request models ignore both via the unit mapping.
@@ -741,7 +906,18 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			if err != nil {
 				return GeneratedAudio{Notices: notices}, err
 			}
-			generated, err := client.GenerateAudio(ctx, req.Model, body)
+			job := &mediaJob{}
+			client.jobSink = job
+			generated, recovered, err := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+				func(jctx context.Context) (GeneratedAudio, error) {
+					return client.GenerateAudio(jctx, req.Model, body)
+				},
+				client.CancelMediaJob,
+				client.RecoverAudioJob,
+			)
+			if err == nil && recovered {
+				notices = append(notices, mediaGenerationRecoveredNotice)
+			}
 			if err == nil {
 				// Duration is the ADDED length — what a per-second model bills.
 				hints := falBillingHints{Requests: 1}
@@ -773,7 +949,18 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			if resolved, err := client.resolveMediaURL(ctx, req.Audio, "audio/mpeg", "audio.mp3"); err == nil {
 				req.Audio = resolved
 			}
-			generated, err := client.TranscribeAudio(ctx, req)
+			// Transcription rides the timeout policy cancel-only: an abandoned
+			// wizper job is stopped, but there is no recover step — a
+			// transcript is cheap to redo.
+			job := &mediaJob{}
+			client.jobSink = job
+			generated, _, err := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+				func(jctx context.Context) (GeneratedTranscript, error) {
+					return client.TranscribeAudio(jctx, req)
+				},
+				client.CancelMediaJob,
+				nil,
+			)
 			if err == nil {
 				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
 			}
