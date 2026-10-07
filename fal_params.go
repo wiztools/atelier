@@ -266,8 +266,7 @@ var lipsyncSynonyms = map[string][]string{
 // generic source mapping a missing mask field is a hard refusal, never a
 // silently unmasked edit. imageSize carries the output size where the
 // endpoint takes pixels (qwen-image-edit/inpaint's image_size object);
-// preset-enum endpoints get a drop-with-notice instead, since the composite
-// needs the output at the source's dimensions. outputFormat covers the two
+// preset-enum endpoints get a drop-with-notice instead. outputFormat covers the two
 // names the verified endpoints use (output_format, fast-sdxl's format) so
 // lossless PNG output can be requested enum-gated.
 var inpaintSynonyms = map[string][]string{
@@ -331,13 +330,7 @@ func resolveInpaintBody(schema *ModelInputSchema, req ImageInpaintRequest, ov Ov
 	}
 	setBodyPath(schema, body, maskPath, coerceImages(maskProp, []string{mask}))
 
-	// Output size: the composite requires the result at the source's exact
-	// dimensions. Pixel-object endpoints (qwen-image-edit/inpaint's
-	// image_size) get the source dimensions explicitly; preset-enum endpoints
-	// can't express them, which is surfaced as a notice now and, if the
-	// output still lands at a different size, as the operation's failure —
-	// never a silent resize. Lossless PNG output is requested wherever the
-	// model declares a format enum listing it.
+	// Request source dimensions where supported; keep the model's actual output.
 	if req.Width > 0 && req.Height > 0 {
 		if sizePath, sizeProp, hasSize := findNative(schema, ov, "inpaint", req.Model, "imageSize"); hasSize {
 			switch {
@@ -345,7 +338,7 @@ func resolveInpaintBody(schema *ModelInputSchema, req ImageInpaintRequest, ov Ov
 				setBodyPath(schema, body, sizePath, map[string]any{"width": req.Width, "height": req.Height})
 			default:
 				notices = append(notices, fmt.Sprintf(
-					"The selected model %q picks its output size from presets rather than pixels — the output must land at %dx%d for the preserved region to composite, or the operation will fail.",
+					"The selected model %q picks its output size from presets rather than pixels — the requested %dx%d cannot be sent exactly; the result will keep the model’s output dimensions.",
 					req.Model, req.Width, req.Height))
 			}
 		}

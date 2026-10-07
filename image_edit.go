@@ -3,8 +3,7 @@ package main
 // The image-edit operation model: the kind-discriminated record every
 // submitted edit persists (the plan's "operation record"), plus the pure-Go
 // media core the inpaint operation needs — source normalization (orientation
-// baked, compositor-decodable bytes), mask validation, and the pixel-exact
-// composite that guarantees unchanged pixels outside the selection. Session
+// baked, decodable bytes) and mask validation. Session
 // persistence and the bound methods live in edit_session.go; the provider
 // adapters live beside their siblings (fal_params.go, replicate_params.go).
 //
@@ -144,17 +143,17 @@ func (op EditOperation) operationPayload() (*InpaintOperationParams, bool) {
 	return nil, false
 }
 
-// editComposableExtensions lists the image containers the pure-Go compositor
+// editComposableExtensions lists the image containers the pure-Go decoder
 // decodes (stdlib image/png, image/jpeg, image/gif — go.mod carries no image
 // libraries). Sources outside this set — WebP and every CLI-decoded container
 // (HEIC/AVIF/TIFF/BMP/JP2) — are baked to JPEG by normalizeEditSourceBytes so
-// mask alignment and compositing always see the same pixels.
+// mask alignment and diagnostics always see the same pixels.
 var editComposableExtensions = map[string]bool{
 	".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
 }
 
 // normalizeEditSourceBytes prepares one source image for the editor pipeline:
-// orientation baked into the pixels and the bytes decodable by the compositor.
+// orientation baked into the pixels and the bytes decodable by Go.
 // Upright PNG/JPEG sources pass through byte-identical. GIFs and oriented
 // JPEGs become PNGs in Go; other containers (WebP/HEIC/AVIF/TIFF/BMP/JP2)
 // use the resolved basic image backend to become JPEG. Because
@@ -162,7 +161,7 @@ var editComposableExtensions = map[string]bool{
 // re-checks the result's own orientation flag and, if it survived, applies the
 // rotation in pure Go (bakeJPEGOrientation) — the final bytes always read
 // upright, so the mask the user painted on the upright preview aligns with the
-// pixels every later stage (provider submit, composite) sees.
+// pixels every later stage (provider submit, diagnostics) sees.
 func normalizeEditSourceBytes(ctx context.Context, config AppConfig, data []byte, extension string) ([]byte, string, error) {
 	extension = strings.ToLower(strings.TrimSpace(extension))
 	if extension == "" {
@@ -414,7 +413,7 @@ func imageTransverse(img image.Image) image.Image {
 
 // decodeComposableImage decodes PNG/JPEG/GIF bytes — exactly the containers
 // normalizeEditSourceBytes emits. WebP and the CLI-decoded containers are
-// rejected here (they should never reach the compositor; the bake step owns
+// rejected here (they should never reach this decoder; the bake step owns
 // them).
 func decodeComposableImage(data []byte) (image.Image, error) {
 	decoded, _, err := image.Decode(bytes.NewReader(data))
@@ -437,7 +436,7 @@ func editImageDimensions(data []byte) (width, height int, ok bool) {
 // source's pixel dimensions (the one coordinate system — display, encoding,
 // and validation share it), and a nonempty selection (at least one pixel with
 // any selection strength; a full-image selection is valid). It returns the
-// decoded mask image for the compositor. Zero-remote-call rule: every check
+// decoded mask image for diagnostics. Zero-remote-call rule: every check
 // here runs before any provider submit.
 func validateInpaintMask(maskData []byte, sourceWidth, sourceHeight int) (image.Image, error) {
 	maskImg, err := png.Decode(bytes.NewReader(maskData))
@@ -492,101 +491,6 @@ func maskErrReason(err error) string {
 		msg = msg[idx+2:]
 	}
 	return msg
-}
-
-// compositeInpaintResult blends the model's result over the source through the
-// selection mask and returns lossless PNG bytes. Pixels where the mask is
-// fully unselected come from the source bit-exact (the strict
-// preserved-region promise, including for whole-image-regenerating models);
-// fully selected pixels come from the result; the anti-aliased brush edge
-// blends linearly by the mask's strength. Source and result must already be
-// verified to share the mask's dimensions — compositeInpaintResult returns
-// sized results only, never resizing.
-func compositeInpaintResult(sourceData, resultData, maskData []byte) ([]byte, error) {
-	source, err := decodeComposableImage(sourceData)
-	if err != nil {
-		return nil, fmt.Errorf("could not decode the source image for compositing: %w", err)
-	}
-	result, err := decodeComposableImage(resultData)
-	if err != nil {
-		return nil, fmt.Errorf("could not decode the generated image for compositing: %w", err)
-	}
-	mask, err := png.Decode(bytes.NewReader(maskData))
-	if err != nil {
-		return nil, fmt.Errorf("could not decode the selection mask for compositing: %w", err)
-	}
-	srcBounds := source.Bounds()
-	if result.Bounds().Dx() != srcBounds.Dx() || result.Bounds().Dy() != srcBounds.Dy() {
-		return nil, fmt.Errorf("the generated image is %dx%d but the source is %dx%d — pixels cannot be composited without resizing, and resizing would break the preserved region",
-			result.Bounds().Dx(), result.Bounds().Dy(), srcBounds.Dx(), srcBounds.Dy())
-	}
-	if mask.Bounds().Dx() != srcBounds.Dx() || mask.Bounds().Dy() != srcBounds.Dy() {
-		return nil, fmt.Errorf("the selection mask is %dx%d but the source is %dx%d",
-			mask.Bounds().Dx(), mask.Bounds().Dy(), srcBounds.Dx(), srcBounds.Dy())
-	}
-	out := image.NewRGBA(image.Rect(0, 0, srcBounds.Dx(), srcBounds.Dy()))
-	for y := 0; y < srcBounds.Dy(); y++ {
-		for x := 0; x < srcBounds.Dx(); x++ {
-			srcX, srcY := srcBounds.Min.X+x, srcBounds.Min.Y+y
-			strength := maskPixelStrength(mask.At(mask.Bounds().Min.X+x, mask.Bounds().Min.Y+y))
-			switch {
-			case strength == 0:
-				out.Set(x, y, source.At(srcX, srcY))
-			case strength >= 255:
-				out.Set(x, y, result.At(result.Bounds().Min.X+x, result.Bounds().Min.Y+y))
-			default:
-				out.Set(x, y, blendImagePixel(source.At(srcX, srcY), result.At(result.Bounds().Min.X+x, result.Bounds().Min.Y+y), float64(strength)/255))
-			}
-		}
-	}
-	encoded := &bytes.Buffer{}
-	if err := png.Encode(encoded, out); err != nil {
-		return nil, err
-	}
-	return encoded.Bytes(), nil
-}
-
-// inpaintScaleTolerance is how far the output's aspect ratio may drift from
-// the source's while still counting as a uniform rescale of the same shape.
-const inpaintScaleTolerance = 0.02
-
-// alignInpaintOutputScale bridges the gap between the strict composite (which
-// needs the result at the source's exact dimensions) and models that quietly
-// rescale large inputs: fal's FLUX.1 Fill [pro] returned 1440x960 for a
-// 1536x1024 source — the same shape, uniformly scaled down, with nothing in
-// the schema declaring it. When the output matches the source's aspect ratio
-// within tolerance, it is bilinearly rescaled back to the source's dimensions
-// and a notice explains why that is safe: preserved pixels come from the
-// SOURCE bit-exactly either way (the composite copies them), so only the
-// generated region rides the interpolation. A differently-shaped output is
-// returned untouched — the composite will refuse it, as before.
-func alignInpaintOutputScale(sourceData, resultData []byte) ([]byte, string, bool) {
-	srcW, srcH, ok := editImageDimensions(sourceData)
-	if !ok {
-		return resultData, "", false
-	}
-	outW, outH, ok := editImageDimensions(resultData)
-	if !ok || (outW == srcW && outH == srcH) {
-		return resultData, "", false
-	}
-	srcRatio := float64(srcW) / float64(srcH)
-	outRatio := float64(outW) / float64(outH)
-	if math.Abs(srcRatio-outRatio) > srcRatio*inpaintScaleTolerance {
-		return resultData, "", false
-	}
-	result, err := decodeComposableImage(resultData)
-	if err != nil {
-		return resultData, "", false
-	}
-	rescaled := resizeImageBilinear(result, srcW, srcH)
-	encoded := &bytes.Buffer{}
-	if err := png.Encode(encoded, rescaled); err != nil {
-		return resultData, "", false
-	}
-	notice := fmt.Sprintf(
-		"The model returned %dx%d — the same shape as the %dx%d source, uniformly scaled to %.2fx. The generated region was scaled back to the source's size before compositing; the preserved pixels are unaffected (they come from the source either way).",
-		outW, outH, srcW, srcH, float64(srcW)/float64(outW))
-	return encoded.Bytes(), notice, true
 }
 
 // resizeImageBilinear rescales an image to width×height with bilinear
@@ -649,23 +553,4 @@ func resizeImageBilinear(src image.Image, width, height int) *image.RGBA {
 		}
 	}
 	return out
-}
-
-// blendImagePixel mixes one source and one result pixel at mask strength t
-// (0–1). Both sides arrive as premultiplied color.Color values (their RGBA()
-// already folded alpha in), so channel-wise linear interpolation of the
-// recovered 8-bit values — alpha included — is the correct blend; for the
-// opaque pixels that dominate real sources it is the plain straight mix.
-func blendImagePixel(src, res color.Color, t float64) color.Color {
-	sr, sg, sb, sa := src.RGBA()
-	rr, rg, rb, ra := res.RGBA()
-	mix := func(s, r uint32) uint8 {
-		return uint8(float64(uint8(s>>8))*(1-t) + float64(uint8(r>>8))*t)
-	}
-	return color.RGBA{
-		R: mix(sr, rr),
-		G: mix(sg, rg),
-		B: mix(sb, rb),
-		A: mix(sa, ra),
-	}
 }

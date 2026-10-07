@@ -779,8 +779,7 @@ var replicateInpaintSynonyms = map[string][]string{
 // resolveInpaintBody. The mask is the operation: a model without a mask input
 // is refused up front rather than sent an unmasked edit, the same line the
 // fal resolver holds. PNG output is requested wherever the model declares an
-// output_format enum listing it (the composite re-encodes losslessly anyway,
-// but a lossless model output keeps the generated region clean), and the
+// output_format enum listing it to retain lossless model output, and the
 // dev model's megapixels is pinned to match_input so the output tracks the
 // source instead of its ~1MP default.
 func resolveReplicateInpaintInput(schema *ModelInputSchema, req ImageInpaintRequest) (map[string]any, []string, error) {
@@ -829,25 +828,4 @@ func resolveReplicateInpaintInput(schema *ModelInputSchema, req ImageInpaintRequ
 		setBodyPath(schema, body, path, "match_input")
 	}
 	return body, notices, nil
-}
-
-// replicateInpaintSizeConstraint is the flux-fill-dev pre-flight: its runtime
-// scales inputs whose width/height are not multiples of 32 and caps them at
-// 1440x1440, so its output cannot land at the source's dimensions for any
-// other shape — and the composite refuses to resize. Those requests fail
-// BEFORE the prediction is created (no money moves) with the model that
-// handles arbitrary shapes named.
-func replicateInpaintSizeConstraint(model string, width, height int) error {
-	if !strings.Contains(strings.ToLower(model), "flux-fill-dev") {
-		return nil
-	}
-	if width <= 0 || height <= 0 {
-		return nil
-	}
-	if width%32 == 0 && height%32 == 0 && width <= 1440 && height <= 1440 {
-		return nil
-	}
-	return fmt.Errorf(
-		"the configured model %q scales inputs to multiples of 32 and caps them at 1440x1440, so it cannot return %dx%d and the preserved region could not be composited — switch the Inpainting model to \"black-forest-labs/flux-fill-pro\", which inpaints at the source's size",
-		model, width, height)
 }

@@ -60,7 +60,7 @@ Drop a `SKILL.md` file into `~/.agents/skills/<name>/` or `~/.atelier/skills/<na
 **Image editing (AI inpainting)**
 - **Edit with AI** — every generated or attached image can be opened in an editor where painting a selection marks the pixels an AI model may change. Brush and Subtract (Option-drag) with undo/redo, zoom/pan, and a before/after compare.
 - Each edit session is a child conversation of the original chat, keeping the full operation chain (prompt, selection, provider/model, cost) and the source image untouched. A chosen result can be copied back into the original conversation with **Add to original chat**.
-- Runs on a verified mask-capable model for the configured **Inpaint Provider** (fal.ai by default, Replicate supported) — pick the model in Settings → Models → Inpainting. Pixels outside the selection are guaranteed to survive: the result is composited through the mask locally, and a model output at any other size fails the operation rather than resizing. Editing costs whatever the provider bills and is shown on each iteration.
+- Runs on a verified mask-capable model for the configured **Inpaint Provider** (fal.ai by default, Replicate supported) — pick the model in Settings → Models → Inpainting. The selection guides the model; its full output is kept, including changes outside the selection. A notice reports detected outside-selection changes and output-size differences; the result retains the model’s original pixels and dimensions. Editing costs whatever the provider bills and is shown on each iteration.
 
 **Agent loop & tooling**
 - Skills — see [Skills](#skills) below.

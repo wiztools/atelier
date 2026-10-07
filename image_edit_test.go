@@ -148,71 +148,6 @@ func TestValidateInpaintMask(t *testing.T) {
 	}
 }
 
-func TestCompositeInpaintResult(t *testing.T) {
-	// Source: distinct color per pixel so "bit-exact outside the mask" is
-	// provable for every preserved pixel, including the border.
-	source := image.NewRGBA(image.Rect(0, 0, 4, 4))
-	for y := 0; y < 4; y++ {
-		for x := 0; x < 4; x++ {
-			source.Set(x, y, color.RGBA{R: uint8(x * 60), G: uint8(y * 60), B: 9, A: 255})
-		}
-	}
-	result := editSolidImage(4, 4, color.RGBA{R: 255, G: 0, B: 0, A: 255})
-	// Mask: fully selected top-left 2x2, a half-strength pixel at (2,0), and
-	// everything else preserved.
-	mask := image.NewRGBA(image.Rect(0, 0, 4, 4))
-	for y := 0; y < 2; y++ {
-		for x := 0; x < 2; x++ {
-			mask.Set(x, y, color.White)
-		}
-	}
-	mask.Set(2, 0, color.Gray{Y: 128})
-	sourceData := editTestPNG(t, source)
-	resultData := editTestPNG(t, result)
-	maskData := editTestPNG(t, mask)
-
-	out, err := compositeInpaintResult(sourceData, resultData, maskData)
-	if err != nil {
-		t.Fatalf("compositeInpaintResult: %v", err)
-	}
-	decoded, err := png.Decode(bytes.NewReader(out))
-	if err != nil {
-		t.Fatalf("composite output is not PNG: %v", err)
-	}
-	if decoded.Bounds().Dx() != 4 || decoded.Bounds().Dy() != 4 {
-		t.Fatalf("composite output dims %v", decoded.Bounds())
-	}
-	for y := 0; y < 4; y++ {
-		for x := 0; x < 4; x++ {
-			got := decoded.At(x, y)
-			switch {
-			case x < 2 && y < 2:
-				if got != result.At(x, y) {
-					t.Fatalf("selected pixel (%d,%d) = %v, want result %v", x, y, got, result.At(x, y))
-				}
-			case x == 2 && y == 0:
-				r, _, _, _ := got.RGBA()
-				if r8 := r >> 8; r8 <= uint32(x*60) || r8 >= 255 {
-					t.Fatalf("edge pixel (%d,%d) is not blended between source (%d) and result (255): %d", x, y, x*60, r8)
-				}
-			default:
-				if got != source.At(x, y) {
-					t.Fatalf("preserved pixel (%d,%d) = %v, want source %v", x, y, got, source.At(x, y))
-				}
-			}
-		}
-	}
-}
-
-func TestCompositeInpaintResultRejectsMismatchedOutput(t *testing.T) {
-	source := editTestPNG(t, editSolidImage(4, 4, color.Black))
-	result := editTestPNG(t, editSolidImage(2, 2, color.White))
-	mask := editTestPNG(t, editSolidImage(4, 4, color.White))
-	if _, err := compositeInpaintResult(source, result, mask); err == nil {
-		t.Fatal("a size-changing result must be rejected, not silently resized")
-	}
-}
-
 func TestExecuteCropOperationCopiesPixelsAndAlpha(t *testing.T) {
 	source := image.NewNRGBA(image.Rect(0, 0, 4, 3))
 	for y := 0; y < 3; y++ {
@@ -340,47 +275,6 @@ func TestNormalizeEditSourceBytesPassthrough(t *testing.T) {
 	}
 	if ext != ".jpg" || !bytes.Equal(got, jpegData.Bytes()) {
 		t.Fatalf("unrotated jpeg must pass through byte-identical (ext %q)", ext)
-	}
-}
-
-func TestAlignInpaintOutputScale(t *testing.T) {
-	// A 1536x1024 source with a 1440x960 (uniformly scaled, same 3:2 shape)
-	// output is rescaled back to the source's dims with a notice — the live
-	// flux-pro fill behavior on large sources.
-	source := editTestPNG(t, editSolidImage(48, 32, color.RGBA{R: 200, G: 100, A: 255}))
-	output := editTestPNG(t, editSolidImage(45, 30, color.RGBA{B: 90, A: 255}))
-	aligned, notice, scaled := alignInpaintOutputScale(source, output)
-	if !scaled {
-		t.Fatal("uniformly scaled output should be aligned")
-	}
-	if notice == "" {
-		t.Fatal("alignment must carry an explanatory notice")
-	}
-	w, h, ok := editImageDimensions(aligned)
-	if !ok || w != 48 || h != 32 {
-		t.Fatalf("aligned dims = %dx%d (ok=%v), want 48x32", w, h, ok)
-	}
-	// The aligned result composites cleanly against the full-res mask.
-	mask := editTestPNG(t, editSolidImage(48, 32, color.White))
-	if _, err := compositeInpaintResult(source, aligned, mask); err != nil {
-		t.Fatalf("composite after alignment: %v", err)
-	}
-
-	// A differently-shaped output is passed through untouched — the composite
-	// refuses it, as before.
-	distorted := editTestPNG(t, editSolidImage(30, 30, color.Black))
-	passthrough, notice, scaled := alignInpaintOutputScale(source, distorted)
-	if scaled || notice != "" {
-		t.Fatal("aspect-mismatched output must not be rescaled")
-	}
-	if _, err := compositeInpaintResult(source, passthrough, mask); err == nil {
-		t.Fatal("composite must still refuse a differently-shaped output")
-	}
-
-	// Matching dims are a no-op.
-	same := editTestPNG(t, editSolidImage(48, 32, color.RGBA{B: 90, A: 255}))
-	if _, notice, scaled := alignInpaintOutputScale(source, same); scaled || notice != "" {
-		t.Fatal("matching dims need no alignment")
 	}
 }
 

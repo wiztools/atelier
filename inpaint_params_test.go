@@ -102,7 +102,7 @@ func TestResolveInpaintBodyEnumSizeNotices(t *testing.T) {
 		t.Fatal("a preset-enum size input must not receive pixels")
 	}
 	if len(notices) != 1 {
-		t.Fatalf("enum size must notice the composite risk, got %v", notices)
+		t.Fatalf("enum size must notice that exact dimensions cannot be requested, got %v", notices)
 	}
 }
 
@@ -166,30 +166,6 @@ func TestResolveReplicateInpaintInput(t *testing.T) {
 	}
 	if body["output_format"] != "png" {
 		t.Fatalf("output_format = %v, want png", body["output_format"])
-	}
-}
-
-func TestReplicateInpaintSizeConstraint(t *testing.T) {
-	cases := []struct {
-		name   string
-		model  string
-		width  int
-		height int
-		want   bool // true = refused
-	}{
-		{"dev accepts 32-multiples within cap", "black-forest-labs/flux-fill-dev", 1024, 768, false},
-		{"dev refuses off-grid width", "black-forest-labs/flux-fill-dev", 1023, 768, true},
-		{"dev refuses oversized", "black-forest-labs/flux-fill-dev", 2048, 1152, true},
-		{"pro accepts anything", "black-forest-labs/flux-fill-pro", 1023, 2048, false},
-		{"other models untouched", "some/model", 100, 100, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := replicateInpaintSizeConstraint(tc.model, tc.width, tc.height)
-			if (err != nil) != tc.want {
-				t.Fatalf("replicateInpaintSizeConstraint = %v, want refused=%v", err, tc.want)
-			}
-		})
 	}
 }
 

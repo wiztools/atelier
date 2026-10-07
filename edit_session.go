@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"image/color"
 	"image/png"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -139,8 +140,7 @@ type EditSessionState struct {
 // ImageInpaintRequest is the canonical inpaint call the provider adapters map
 // onto their model's native inputs. Source and mask ride as data URLs (or
 // hosted URLs once resolved); Width/Height are the normalized source's pixel
-// dimensions, sent where the model accepts an explicit output size so the
-// result can composite without resizing.
+// dimensions, sent where the model accepts an explicit output size.
 type ImageInpaintRequest struct {
 	Model       string `json:"model"`
 	Prompt      string `json:"prompt"`
@@ -171,12 +171,12 @@ func verifiedInpaintModels(provider string) []InpaintModelOption {
 	case "replicate":
 		return []InpaintModelOption{
 			{ID: defaultReplicateInpaintModel, Label: "FLUX.1 Fill [pro]", Note: "Official, actively maintained. Black areas preserved, white areas filled; the mask must match the image size."},
-			{ID: "black-forest-labs/flux-fill-dev", Label: "FLUX.1 Fill [dev]", Note: "Official, open weights, cheaper. Inputs snap to 32-pixel multiples and cap at 1440×1440 — other shapes are refused before the call because their output could not composite."},
+			{ID: "black-forest-labs/flux-fill-dev", Label: "FLUX.1 Fill [dev]", Note: "Official, open weights, cheaper. Inputs snap to 32-pixel multiples and cap at 1440×1440; the result keeps the model’s output dimensions."},
 		}
 	default:
 		return []InpaintModelOption{
-			{ID: defaultFalInpaintModel, Label: "FLUX.1 Fill [pro]", Note: "Follows the source's shape; fal downscales large inputs (a 1536×1024 source came back 1440×960) and the editor scales the result back uniformly before compositing. Billed per megapixel."},
-			{ID: "fal-ai/qwen-image-edit/inpaint", Label: "Qwen Image Edit (inpaint)", Note: "Takes an explicit pixel output size and a negative prompt. Its mask behavior is unverified — live runs showed edits landing OUTSIDE the selection (discarded by the composite), so prefer a Fill model for masked edits."},
+			{ID: defaultFalInpaintModel, Label: "FLUX.1 Fill [pro]", Note: "Follows the source’s shape, but fal may downscale large inputs. The result keeps the model’s output dimensions. Billed per megapixel."},
+			{ID: "fal-ai/qwen-image-edit/inpaint", Label: "Qwen Image Edit (inpaint)", Note: "Takes an explicit pixel output size and a negative prompt. May change pixels outside the selection; the full result is kept with a notice."},
 			{ID: "fal-ai/flux-lora-fill", Label: "FLUX.1 Fill [dev] + LoRA", Note: "Open weights, cheaper; pastes the original back outside the mask by default."},
 			{ID: "fal-ai/fast-sdxl/inpainting", Label: "Fast SDXL Inpainting", Note: "Classic SDXL inpainting; the output size is sent explicitly as pixels."},
 		}
@@ -451,7 +451,7 @@ func (a *App) SubmitImageEdit(req ImageEditSubmitRequest) (EditOperationState, e
 			return EditOperationState{}, errors.New("an input artifact can only be selected within an existing edit session")
 		}
 		// First submit: the source is resolved in its OWNING conversation
-		// (the parent), normalized (orientation baked, compositor-decodable),
+		// (the parent), normalized (orientation baked, Go-decodable),
 		// and copied into a fresh child that owns it from here on.
 		sourceArtifactID := strings.TrimSpace(req.SourceArtifactID)
 		if parentID == "" || sourceArtifactID == "" {
@@ -684,7 +684,7 @@ func (a *App) registerImageEditOperation(sessionID, operationID string) (context
 }
 
 // executeImageEditOperation dispatches one operation and persists each state
-// transition. Only inpainting uses the provider and outside-mask composite.
+// transition. Inpainting keeps the provider output and reports changes outside the mask.
 func (a *App) executeImageEditOperation(ctx context.Context, cancel context.CancelFunc, config AppConfig, sessionID, turnID string, op EditOperation, inputData, maskData []byte) {
 	defer func() {
 		a.editOpsMu.Lock()
@@ -782,29 +782,18 @@ func (a *App) executeImageEditOperation(ctx context.Context, cancel context.Canc
 			op.Status = editOperationStatusCancelled
 		}
 		op.Error = execErr.Error()
-	case execErr == nil && op.Kind == editOperationKindInpaint:
-		// Strict outside-mask preservation: the composite runs before anything
-		// is persisted as a result. A differently-shaped output fails the
-		// operation (inputs retained for retry); a UNIFORMLY rescaled output
-		// (fal's fill pro downscales large inputs, schema be damned) is
-		// rescaled back with a notice — safe because preserved pixels come
-		// from the source bit-exactly either way.
-		resultData, scaleNotice, scaled := alignInpaintOutputScale(inputData, resultData)
-		if scaled {
-			op.Notices = append(op.Notices, scaleNotice)
+	case execErr == nil && (op.Kind == editOperationKindInpaint || op.Kind == editOperationKindCrop):
+		// Keep the provider's complete output. The selection is guidance;
+		// outside-mask changes are reported, never removed from the result.
+		if op.Kind == editOperationKindInpaint {
+			op.Notices = append(op.Notices, inpaintChangeNotices(inputData, resultData, maskData)...)
 		}
-		composited, err := compositeInpaintResult(inputData, resultData, maskData)
-		if err != nil {
+		width, height, valid := editImageDimensions(resultData)
+		if !valid {
 			op.Status = editOperationStatusFailed
-			op.Error = err.Error()
+			op.Error = "the edit returned an invalid image"
 			break
 		}
-		// The composite is strict by construction; what it cannot say is
-		// whether the model actually changed anything. Compare the model's
-		// raw output against the source through the mask and surface the two
-		// silent-failure shapes as notices (change-nothing inside =
-		// capability/prompt; big edits outside = inverted-polarity evidence).
-		op.Notices = append(op.Notices, inpaintChangeNotices(inputData, resultData, maskData)...)
 		loaded, loadErr := loadForEditAppend(config.Storage, sessionID)
 		if loadErr != nil {
 			op.Status = editOperationStatusFailed
@@ -812,41 +801,15 @@ func (a *App) executeImageEditOperation(ctx context.Context, cancel context.Canc
 			break
 		}
 		contents, writeErr := writeChatImageArtifacts(loaded.ArtifactsDir, ImageGenerateRequest{
-			Width:  op.Inpaint.MaskWidth,
-			Height: op.Inpaint.MaskHeight,
-		}, []string{"data:image/png;base64," + base64.StdEncoding.EncodeToString(composited)})
+			Width:  width,
+			Height: height,
+		}, []string{imageDataURLForBytes(resultData)})
 		if writeErr != nil || len(contents) == 0 {
 			op.Status = editOperationStatusFailed
 			if writeErr == nil {
-				writeErr = errors.New("the composite produced no image")
+				writeErr = errors.New("the edit produced no image")
 			}
 			op.Error = fmt.Sprintf("the edit ran but its result could not be saved: %v", writeErr)
-			break
-		}
-		result := contents[0]
-		op.Status = editOperationStatusCompleted
-		op.ResultArtifactID = result.ArtifactID
-		op.ResultPath = result.Path
-		op.ResultMimeType = result.MimeType
-		op.ResultWidth = result.Width
-		op.ResultHeight = result.Height
-	case execErr == nil && op.Kind == editOperationKindCrop:
-		loaded, loadErr := loadForEditAppend(config.Storage, sessionID)
-		if loadErr != nil {
-			op.Status = editOperationStatusFailed
-			op.Error = fmt.Sprintf("the crop ran but its result could not be saved: %v", loadErr)
-			break
-		}
-		contents, writeErr := writeChatImageArtifacts(loaded.ArtifactsDir, ImageGenerateRequest{
-			Width:  op.Crop.Width,
-			Height: op.Crop.Height,
-		}, []string{"data:image/png;base64," + base64.StdEncoding.EncodeToString(resultData)})
-		if writeErr != nil || len(contents) == 0 {
-			op.Status = editOperationStatusFailed
-			if writeErr == nil {
-				writeErr = errors.New("the crop produced no image")
-			}
-			op.Error = fmt.Sprintf("the crop ran but its result could not be saved: %v", writeErr)
 			break
 		}
 		result := contents[0]
@@ -882,7 +845,7 @@ func editOperationContents(op EditOperation) []HistoryContent {
 // recorded provider and returns the model's raw output bytes plus cost
 // attribution. Both verified defaults speak Atelier's canonical mask polarity
 // (white = editable), so no inversion rides this path — see
-// inpaintMaskPolarity in fal_params.go.
+// the mask export in frontend/src/editor/MaskBrushTool.ts.
 func (a *App) executeInpaintProvider(ctx context.Context, config AppConfig, op EditOperation, inputData, maskData []byte) (resultData []byte, costMicros int64, costUnknown bool, notices []string, err error) {
 	params, ok := op.operationPayload()
 	if !ok {
@@ -904,9 +867,6 @@ func (a *App) executeInpaintProvider(ctx context.Context, config AppConfig, op E
 		}
 		if strings.TrimSpace(apiKey) == "" {
 			return nil, 0, false, nil, errReplicateKeyNotConfigured
-		}
-		if err := replicateInpaintSizeConstraint(op.Model, req.Width, req.Height); err != nil {
-			return nil, 0, false, nil, err
 		}
 		client := newReplicateClient(a.client, apiKey)
 		if resolved, rerr := client.ResolveMediaURL(ctx, req.SourceImage, "image/jpeg", "edit-source.jpg"); rerr == nil && resolved != "" {
@@ -1568,21 +1528,10 @@ func sweepInterruptedEditOps(storage ConfigStorage) {
 	})
 }
 
-// inpaintChangeNotices compares the model's RAW output against the source
-// through the mask and returns diagnostic notices for the two silent-failure
-// shapes a "completed" inpaint can have:
-//
-//   - the selected region came back essentially unchanged (mean per-channel
-//     difference under noise level) — a capability/prompt problem, not a
-//     pipeline one: fill-style models respond to a description of the desired
-//     content, not an action;
-//   - the model changed pixels WELL outside the selection (mean difference
-//     far above re-render noise) — those were discarded by the strict
-//     composite, and the pattern is the signature of a model treating the
-//     mask with inverted polarity.
-//
-// Sampled every 2px, fail-soft (any decode problem returns nil), notice-only:
-// the composite remains the delivered result either way.
+// inpaintChangeNotices reports unchanged selections and substantial changes
+// outside the selection. A comparison copy is resized for near-matching aspect
+// ratios; the saved provider output is never resized or composited. Different
+// shapes cannot be compared reliably and receive a size notice instead.
 func inpaintChangeNotices(sourceData, resultData, maskData []byte) []string {
 	source, err := decodeComposableImage(sourceData)
 	if err != nil {
@@ -1597,34 +1546,49 @@ func inpaintChangeNotices(sourceData, resultData, maskData []byte) []string {
 		return nil
 	}
 	width, height := source.Bounds().Dx(), source.Bounds().Dy()
-	if result.Bounds().Dx() != width || result.Bounds().Dy() != height {
+	if mask.Bounds().Dx() != width || mask.Bounds().Dy() != height {
 		return nil
+	}
+	var notices []string
+	outWidth, outHeight := result.Bounds().Dx(), result.Bounds().Dy()
+	resized := outWidth != width || outHeight != height
+	if resized {
+		notices = append(notices, fmt.Sprintf("The model returned %dx%d for the %dx%d source. The result keeps the model's original dimensions.", outWidth, outHeight, width, height))
+		sourceRatio := float64(width) / float64(height)
+		outputRatio := float64(outWidth) / float64(outHeight)
+		if math.Abs(sourceRatio-outputRatio) > sourceRatio*0.02 {
+			return append(notices, "The output shape differs from the source, so changes outside the selection could not be checked reliably. The full model output was kept.")
+		}
+		result = resizeImageBilinear(result, width, height)
 	}
 	const (
 		insideUnchangedThreshold = 3.0
 		outsideDriftThreshold    = 12.0
 	)
-	var insideSum, outsideSum float64
-	var insideN, outsideN int
-	for y := 0; y < height; y += 2 {
-		for x := 0; x < width; x += 2 {
+	var insideSum float64
+	var insideN int
+	outsideChanged := false
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
 			strength := maskPixelStrength(mask.At(mask.Bounds().Min.X+x, mask.Bounds().Min.Y+y))
 			diff := imagePixelMeanDiff(source.At(source.Bounds().Min.X+x, source.Bounds().Min.Y+y), result.At(result.Bounds().Min.X+x, result.Bounds().Min.Y+y))
 			if strength > 0 {
 				insideSum += diff
 				insideN++
 			} else {
-				outsideSum += diff
-				outsideN++
+				outsideChanged = outsideChanged || diff > outsideDriftThreshold
 			}
 		}
 	}
-	var notices []string
 	if insideN > 0 && insideSum/float64(insideN) < insideUnchangedThreshold {
-		notices = append(notices, "The model returned the selected region essentially unchanged — this reads as a prompt/model limitation, not a pipeline fault. Fill-style inpainting responds to a description of what the region should CONTAIN (\"an unlit vintage lamp, dark glass\") rather than an action (\"turn off this light\"), and the selection should cover the whole lamp, not just its glow.")
+		notices = append(notices, "The model returned the selected region essentially unchanged. The full model output was kept.")
 	}
-	if outsideN > 0 && outsideSum/float64(outsideN) > outsideDriftThreshold {
-		notices = append(notices, "The model also changed pixels well outside the selection; those were discarded by the preserved-region composite. That pattern usually means this model treats the mask with inverted polarity — if edits keep landing outside, switch to a model with a verified mask contract and report this one.")
+	if outsideChanged {
+		notice := "The model changed pixels outside the selection. These changes were kept in the result."
+		if resized {
+			notice = "The model output differs outside the selection after aligning dimensions for comparison; resizing may contribute to these differences. The full model output was kept."
+		}
+		notices = append(notices, notice)
 	}
 	return notices
 }

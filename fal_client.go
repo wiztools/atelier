@@ -99,8 +99,8 @@ const (
 	// fal's registry-backed OpenAPI route: the schema lives at
 	// fal-ai/flux-pro/v1/fill; the once-advertised "fill-masking" id is NOT
 	// registered). Required prompt + image_url + mask_url; there is no
-	// image_size input — the output follows the source's dimensions, exactly
-	// what compositeInpaintResult needs — and fal documents that fill operates
+	// image_size input — the output generally follows the source's shape,
+	// and fal documents that fill operates
 	// through mask-based editing, "preserves everything outside the mask
 	// untouched". White mask regions are the fill area (fal's mask-painter
 	// convention), matching Atelier's canonical polarity. The image-edit

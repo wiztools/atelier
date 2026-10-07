@@ -345,14 +345,14 @@ func TestSubmitImageEditRejectsConcurrentSubmit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first submit returned error: %v", err)
 	}
-	// Register the op as live (the goroutine may or may not have started yet)
-	// and refuse a second submit for the same session.
+	// Reserve a separate live operation so the first operation’s completion
+	// cannot remove the concurrency guard during this assertion.
 	app.editOpsMu.Lock()
-	app.editOps[state.Operation.ID] = &editOpRun{conversationID: state.SessionConversationID, cancel: func() {}}
+	app.editOps["concurrent-test-op"] = &editOpRun{conversationID: state.SessionConversationID, cancel: func() {}}
 	app.editOpsMu.Unlock()
 	defer func() {
 		app.editOpsMu.Lock()
-		delete(app.editOps, state.Operation.ID)
+		delete(app.editOps, "concurrent-test-op")
 		app.editOpsMu.Unlock()
 	}()
 
@@ -666,7 +666,7 @@ func TestInpaintChangeNotices(t *testing.T) {
 	mask := editTestPNG(t, maskImg)
 
 	// Model returned the source verbatim: the unchanged-selection notice
-	// fires, the polarity one does not (nothing changed outside).
+	// fires, the outside-change notice does not (nothing changed outside).
 	same := source
 	notices := inpaintChangeNotices(source, same, mask)
 	if len(notices) != 1 || !bytes.Contains([]byte(notices[0]), []byte("essentially unchanged")) {
@@ -674,8 +674,7 @@ func TestInpaintChangeNotices(t *testing.T) {
 	}
 
 	// Model edited the COMPLEMENT (everything outside the selection went
-	// black): both diagnostics fire — the kept region is unchanged AND the
-	// discarded outside work is the inverted-polarity signature.
+	// black): both diagnostics fire; outside changes are kept.
 	inverted := editSolidImage(32, 32, color.Black)
 	for y := 0; y < 8; y++ {
 		for x := 0; x < 8; x++ {
@@ -683,8 +682,8 @@ func TestInpaintChangeNotices(t *testing.T) {
 		}
 	}
 	notices = inpaintChangeNotices(source, editTestPNG(t, inverted), mask)
-	if len(notices) != 2 {
-		t.Fatalf("inverted-polarity output notices = %v", notices)
+	if len(notices) != 2 || !strings.Contains(notices[1], "changes were kept") || strings.Contains(notices[1], "polarity") {
+		t.Fatalf("outside-change notices = %v", notices)
 	}
 
 	// Model edited the selection (white block area now dark) and left the
@@ -699,9 +698,22 @@ func TestInpaintChangeNotices(t *testing.T) {
 		t.Fatalf("edited-selection notices = %v", notices)
 	}
 
-	// Dimension mismatch is a fail-soft nil (the composite already failed
-	// loudly elsewhere).
-	if notices := inpaintChangeNotices(source, editTestFixturePNG(t, 8, 8, color.Black), mask); notices != nil {
-		t.Fatalf("mismatched dims should return nil, got %v", notices)
+	// A small change outside the mask must not be diluted by the whole image.
+	edited.Set(31, 31, color.White)
+	if notices := inpaintChangeNotices(source, editTestPNG(t, edited), mask); len(notices) != 1 || !strings.Contains(notices[0], "changes were kept") {
+		t.Fatalf("localized outside change notices = %v", notices)
+	}
+
+	// Size differences are accepted and compared on a temporary aligned copy.
+	if notices := inpaintChangeNotices(source, editTestFixturePNG(t, 8, 8, color.Black), mask); len(notices) != 2 || !strings.Contains(notices[0], "original dimensions") || !strings.Contains(notices[1], "resizing may contribute") {
+		t.Fatalf("resized output notices = %v", notices)
+	}
+	// Different shapes cannot be meaningfully compared through the source mask.
+	if notices := inpaintChangeNotices(source, editTestFixturePNG(t, 8, 16, color.Black), mask); len(notices) != 2 || !strings.Contains(notices[1], "could not be checked") {
+		t.Fatalf("different shape notices = %v", notices)
+	}
+	// A malformed mask fails soft rather than causing an out-of-bounds comparison.
+	if notices := inpaintChangeNotices(source, source, editTestFixturePNG(t, 1, 1, color.White)); notices != nil {
+		t.Fatalf("mismatched mask notices = %v", notices)
 	}
 }
