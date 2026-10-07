@@ -103,6 +103,25 @@ type openAPIProp struct {
 	// Description is documented at the property level (not inside union
 	// branches), so it must survive the union unwrap to stay usable.
 	Description string `json:"description"`
+	// Ref is a $ref to another component schema ("#/components/schemas/X").
+	// fal's shared shapes (ImageSize, the standard enums) ride $refs — an
+	// unresolved ref parses as an empty scalar, so the parser resolves them
+	// against the doc's components (one level, depth-guarded).
+	Ref string `json:"$ref"`
+}
+
+// schemaRefComponentsDepth bounds how deep a $ref chain is followed — a
+// component referencing a component referencing... — so a cyclic doc cannot
+// recurse forever.
+const schemaRefComponentsDepth = 4
+
+// schemaRefTarget resolves "#/components/schemas/ImageSize" against the doc's
+// component schemas.
+func schemaRefTarget(ref string, components map[string]json.RawMessage) (json.RawMessage, bool) {
+	if components == nil {
+		return nil, false
+	}
+	return components[strings.TrimPrefix(ref, "#/components/schemas/")], true
 }
 
 type openAPIModel struct {
@@ -162,14 +181,28 @@ func parseModelInputSchema(raw []byte) (*ModelInputSchema, error) {
 	}
 	schema := &ModelInputSchema{Properties: map[string]SchemaProperty{}, order: order}
 	for _, name := range order {
-		schema.Properties[name] = toSchemaProperty(name, model.Properties[name])
+		schema.Properties[name] = toSchemaProperty(name, model.Properties[name], doc.Components.Schemas, 0)
 	}
 	return schema, nil
 }
 
-func toSchemaProperty(name string, raw json.RawMessage) SchemaProperty {
+func toSchemaProperty(name string, raw json.RawMessage, components map[string]json.RawMessage, depth int) SchemaProperty {
 	var p openAPIProp
 	_ = json.Unmarshal(raw, &p)
+	// Resolve $ref properties one level at a time (depth-guarded): fal's
+	// shared shapes ride $refs, and an unresolved ref parses as an empty
+	// scalar — qwen-image-edit/inpaint's image_size is anyOf[$ref ImageSize,
+	// enum presets, null], and without resolution the object branch is
+	// invisible so the exact-pixel form could never be sent.
+	if p.Ref != "" && depth < schemaRefComponentsDepth {
+		if target, ok := schemaRefTarget(p.Ref, components); ok {
+			resolved := toSchemaProperty(name, target, components, depth+1)
+			if resolved.Description == "" {
+				resolved.Description = p.Description
+			}
+			return resolved
+		}
+	}
 	// Unwrap anyOf/oneOf before parsing. fal declares optional fields as
 	// anyOf:[{<concrete type>}, {type:"null"}] (nullable unions); without this
 	// unwrap, the property has no top-level "type" and parses as an empty
@@ -177,8 +210,17 @@ func toSchemaProperty(name string, raw json.RawMessage) SchemaProperty {
 	// (Kling o3/pro image_urls dropped the attached image this way). Recursion
 	// terminates because the chosen branch has a concrete type.
 	if p.Type == "" {
+		// A union mixing a preset enum with a {width,height} object — fal's
+		// standard ImageSize shape — parses as OBJECT-CAPABLE with the enum
+		// presets carried along. Collapsing to the first concrete branch (the
+		// enum) hid the object form and made the inpaint resolver refuse to
+		// send exact pixels, so qwen-image-edit/inpaint returned 1248x832 for
+		// a 1536x1024 source and the composite failed after a billed call.
+		if sp, ok := parseSizeUnion(name, p, components, depth); ok {
+			return sp
+		}
 		if branch := unwrapUnion(p); branch != nil {
-			unwrapped := toSchemaProperty(name, branch)
+			unwrapped := toSchemaProperty(name, branch, components, depth)
 			if unwrapped.Description == "" {
 				unwrapped.Description = p.Description
 			}
@@ -208,7 +250,7 @@ func toSchemaProperty(name string, raw json.RawMessage) SchemaProperty {
 		sp.Kind = schemaArray
 		sp.MaxItems = p.MaxItems
 		if len(p.Items) > 0 {
-			item := toSchemaProperty(name, p.Items)
+			item := toSchemaProperty(name, p.Items, components, depth)
 			sp.Items = &item
 		}
 		return sp
@@ -217,7 +259,7 @@ func toSchemaProperty(name string, raw json.RawMessage) SchemaProperty {
 		sp.Kind = schemaObject
 		sp.Nested = map[string]SchemaProperty{}
 		for subName, subRaw := range p.Properties {
-			sp.Nested[subName] = toSchemaProperty(subName, subRaw)
+			sp.Nested[subName] = toSchemaProperty(subName, subRaw, components, depth)
 		}
 	}
 	return sp
@@ -239,6 +281,7 @@ func toSchemaProperty(name string, raw json.RawMessage) SchemaProperty {
 // "type" other than "null" — null-type and $ref-only (type-less) branches are
 // skipped. Every fal union surveyed (17 live schemas + test fixtures) has at
 // least one such branch.
+// unwrapUnion returns the first branch with a concrete type.
 func unwrapUnion(p openAPIProp) json.RawMessage {
 	branches := p.AnyOf
 	if len(branches) == 0 {
@@ -257,6 +300,59 @@ func unwrapUnion(p openAPIProp) json.RawMessage {
 		return branch
 	}
 	return nil
+}
+
+// parseSizeUnion detects an anyOf/oneOf union that mixes a string-enum branch
+// with an object branch declaring width and height — fal's standard ImageSize
+// union — and renders it as ONE object-typed property that carries the enum
+// presets. Preset guards (valueAllowedByEnum) keep working against Enum, and
+// resolvers that need exact pixels (the inpaint image_size) can send the
+// object form the model actually accepts. $ref branches are resolved against
+// the doc's components before classification: qwen-image-edit/inpaint declares
+// image_size as anyOf[$ref ImageSize, enum presets, null], and the ref'd
+// ImageSize component IS the object branch. ok is false for every other union
+// shape, which falls through to the first-branch unwrap.
+func parseSizeUnion(name string, p openAPIProp, components map[string]json.RawMessage, depth int) (SchemaProperty, bool) {
+	branches := make([]json.RawMessage, 0, len(p.AnyOf)+len(p.OneOf))
+	branches = append(branches, p.AnyOf...)
+	branches = append(branches, p.OneOf...)
+	var enumBranch *openAPIProp
+	var objectBranch json.RawMessage
+	for _, branch := range branches {
+		var sub openAPIProp
+		if json.Unmarshal(branch, &sub) != nil {
+			continue
+		}
+		branchRaw := branch
+		if sub.Ref != "" && depth < schemaRefComponentsDepth {
+			// A $ref branch (qwen's image_size → ImageSize) must be resolved
+			// before classification: the ref itself carries no type or
+			// properties.
+			if target, ok := schemaRefTarget(sub.Ref, components); ok {
+				var resolved openAPIProp
+				if json.Unmarshal(target, &resolved) == nil {
+					sub = resolved
+					branchRaw = target
+				}
+			}
+		}
+		switch {
+		case sub.Type == "object" || len(sub.Properties) > 0:
+			if _, hasWidth := sub.Properties["width"]; hasWidth {
+				if _, hasHeight := sub.Properties["height"]; hasHeight {
+					objectBranch = branchRaw
+				}
+			}
+		case sub.Type == "string" && len(sub.Enum) > 0:
+			enumBranch = &sub
+		}
+	}
+	if objectBranch == nil || enumBranch == nil {
+		return SchemaProperty{}, false
+	}
+	sp := toSchemaProperty(name, objectBranch, components, depth+1)
+	sp.Enum = enumStrings(enumBranch.Enum)
+	return sp, true
 }
 
 // enumStrings renders an OpenAPI enum (which may be strings OR numbers — fal's

@@ -760,3 +760,94 @@ func resolveReplicateVideoReframeInput(schema *ModelInputSchema, req VideoRefram
 	}
 	return body, notices, nil
 }
+
+// replicateInpaintSynonyms lists, per canonical param, the native input names
+// the Replicate mask-inpainting models use (the image editor's category —
+// resolveReplicateInpaintInput). The fill family names its canvas "image" and
+// its selection "mask"; output_format and megapixels are the size/format
+// controls the dev model carries.
+var replicateInpaintSynonyms = map[string][]string{
+	"prompt":       {"prompt"},
+	"sourceImage":  {"image", "input_image", "image_url"},
+	"mask":         {"mask", "mask_url", "mask_image"},
+	"outputFormat": {"output_format"},
+	"megapixels":   {"megapixels"},
+}
+
+// resolveReplicateInpaintInput maps the canonical ImageInpaintRequest onto a
+// Replicate mask-inpainting model's input schema — the Replicate sibling of
+// resolveInpaintBody. The mask is the operation: a model without a mask input
+// is refused up front rather than sent an unmasked edit, the same line the
+// fal resolver holds. PNG output is requested wherever the model declares an
+// output_format enum listing it (the composite re-encodes losslessly anyway,
+// but a lossless model output keeps the generated region clean), and the
+// dev model's megapixels is pinned to match_input so the output tracks the
+// source instead of its ~1MP default.
+func resolveReplicateInpaintInput(schema *ModelInputSchema, req ImageInpaintRequest) (map[string]any, []string, error) {
+	prompt := strings.TrimSpace(req.Prompt)
+	source := falImageURL(strings.TrimSpace(req.SourceImage))
+	mask := falImageURL(strings.TrimSpace(req.MaskImage))
+	if source == "" {
+		return nil, nil, errors.New("inpainting requires a source image")
+	}
+	if mask == "" {
+		return nil, nil, errors.New("inpainting requires a selection mask")
+	}
+
+	ov := Overrides{}
+	if schema == nil {
+		return map[string]any{
+			"prompt": prompt,
+			"image":  source,
+			"mask":   mask,
+		}, []string{"Couldn't load the model's parameter schema; sent the canonical inpaint fields (image/mask) and defaults."}, nil
+	}
+
+	body := map[string]any{}
+	var notices []string
+
+	if path, prop, ok := findNative(schema, ov, "replicate-inpaint", req.Model, "prompt"); ok {
+		setBodyPath(schema, body, path, coerceImageValue(prop, prompt))
+	} else {
+		return nil, notices, fmt.Errorf("the selected model %q has no prompt input; pick a verified inpainting model in Settings → Models → Inpainting", req.Model)
+	}
+	path, prop, ok := findNative(schema, ov, "replicate-inpaint", req.Model, "sourceImage")
+	if !ok {
+		return nil, notices, fmt.Errorf("the selected model %q has no source-image input; pick a verified inpainting model in Settings → Models → Inpainting", req.Model)
+	}
+	setBodyPath(schema, body, path, coerceImages(prop, []string{source}))
+	maskPath, maskProp, ok := findNative(schema, ov, "replicate-inpaint", req.Model, "mask")
+	if !ok {
+		return nil, notices, fmt.Errorf("the selected model %q has no mask input — it cannot honor the painted selection; pick a verified mask-capable model in Settings → Models → Inpainting", req.Model)
+	}
+	setBodyPath(schema, body, maskPath, coerceImages(maskProp, []string{mask}))
+
+	if path, prop, ok := findNative(schema, ov, "replicate-inpaint", req.Model, "outputFormat"); ok && valueAllowedByEnum(prop, "png") {
+		setBodyPath(schema, body, path, "png")
+	}
+	if path, prop, ok := findNative(schema, ov, "replicate-inpaint", req.Model, "megapixels"); ok && valueAllowedByEnum(prop, "match_input") {
+		setBodyPath(schema, body, path, "match_input")
+	}
+	return body, notices, nil
+}
+
+// replicateInpaintSizeConstraint is the flux-fill-dev pre-flight: its runtime
+// scales inputs whose width/height are not multiples of 32 and caps them at
+// 1440x1440, so its output cannot land at the source's dimensions for any
+// other shape — and the composite refuses to resize. Those requests fail
+// BEFORE the prediction is created (no money moves) with the model that
+// handles arbitrary shapes named.
+func replicateInpaintSizeConstraint(model string, width, height int) error {
+	if !strings.Contains(strings.ToLower(model), "flux-fill-dev") {
+		return nil
+	}
+	if width <= 0 || height <= 0 {
+		return nil
+	}
+	if width%32 == 0 && height%32 == 0 && width <= 1440 && height <= 1440 {
+		return nil
+	}
+	return fmt.Errorf(
+		"the configured model %q scales inputs to multiples of 32 and caps them at 1440x1440, so it cannot return %dx%d and the preserved region could not be composited — switch the Inpainting model to \"black-forest-labs/flux-fill-pro\", which inpaints at the source's size",
+		model, width, height)
+}

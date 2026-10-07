@@ -57,6 +57,10 @@ func builtinFalOverrides() Overrides {
 	return Overrides{byCategory: map[string]map[string]map[string]overrideEntry{
 		"audio": {},
 		"image": {},
+		// The image editor's mask-inpainting category (resolveInpaintBody):
+		// empty by default, present so user overrides in fal-overrides.json
+		// have a home.
+		"inpaint": {},
 		// fal-ai/kling-video/v2/master/image-to-video: the published schema
 		// declares image_url (a single string), but the runtime rejects it with
 		// 422 "image_urls: Input should be a valid list" and demands an array.
@@ -253,6 +257,103 @@ var lipsyncSynonyms = map[string][]string{
 	"sourceAudio": {"audio_url", "audio_file_url", "audio"},
 	"sourceImage": {"image_url", "image_urls"},
 	"sourceVideo": {"video_url", "video_urls"},
+}
+
+// inpaintSynonyms lists, per canonical param, the native key names to look for
+// in a mask-inpainting endpoint's schema (the image editor's category —
+// resolveInpaintBody). sourceImage is the canvas being edited (fill declares
+// image_url); mask is the selection — the operation's whole point, so unlike
+// generic source mapping a missing mask field is a hard refusal, never a
+// silently unmasked edit. imageSize carries the output size where the
+// endpoint takes pixels (qwen-image-edit/inpaint's image_size object);
+// preset-enum endpoints get a drop-with-notice instead, since the composite
+// needs the output at the source's dimensions. outputFormat covers the two
+// names the verified endpoints use (output_format, fast-sdxl's format) so
+// lossless PNG output can be requested enum-gated.
+var inpaintSynonyms = map[string][]string{
+	"prompt":       {"prompt"},
+	"sourceImage":  {"image_url", "image_urls", "image"},
+	"mask":         {"mask_url", "mask", "mask_image_url"},
+	"imageSize":    {"image_size", "size"},
+	"outputFormat": {"output_format", "format"},
+}
+
+// resolveInpaintBody maps the canonical ImageInpaintRequest onto a mask-
+// inpainting endpoint's native input schema — the image editor's sibling of
+// resolveImageBody. The mask is the operation: an endpoint without a mask
+// input is refused up front (before any money moves) rather than sent an
+// unmasked edit, and the same holds for a missing source-image or prompt
+// field. A nil schema (unavailable) yields the literal canonical body
+// (image_url/mask_url/image_size) plus a notice.
+func resolveInpaintBody(schema *ModelInputSchema, req ImageInpaintRequest, ov Overrides) (map[string]any, []string, error) {
+	prompt := strings.TrimSpace(req.Prompt)
+	source := falImageURL(strings.TrimSpace(req.SourceImage))
+	mask := falImageURL(strings.TrimSpace(req.MaskImage))
+	if source == "" {
+		return nil, nil, errors.New("inpainting requires a source image")
+	}
+	if mask == "" {
+		return nil, nil, errors.New("inpainting requires a selection mask")
+	}
+
+	if schema == nil {
+		body := map[string]any{
+			"prompt":    prompt,
+			"image_url": source,
+			"mask_url":  mask,
+		}
+		if req.Width > 0 && req.Height > 0 {
+			body["image_size"] = map[string]any{"width": req.Width, "height": req.Height}
+		}
+		return body, []string{"Couldn't load the model's parameter schema; sent the canonical inpaint fields (image_url/mask_url) and defaults."}, nil
+	}
+
+	body := map[string]any{}
+	var notices []string
+
+	if path, prop, ok := findNative(schema, ov, "inpaint", req.Model, "prompt"); ok {
+		setBodyPath(schema, body, path, coerceImageValue(prop, prompt))
+	} else {
+		return nil, notices, fmt.Errorf("the selected model %q has no prompt input; pick a verified inpainting model in Settings → Models → Inpainting", req.Model)
+	}
+	path, prop, ok := findNative(schema, ov, "inpaint", req.Model, "sourceImage")
+	if !ok {
+		// The source image is the request's whole purpose; fal accepts the
+		// submit without it and the model would generate from the prompt
+		// alone — refuse instead (the wan lesson, same line the image and
+		// video resolvers hold).
+		return nil, notices, fmt.Errorf("the selected model %q has no source-image input; pick a verified inpainting model in Settings → Models → Inpainting", req.Model)
+	}
+	setBodyPath(schema, body, path, coerceImages(prop, []string{source}))
+	maskPath, maskProp, ok := findNative(schema, ov, "inpaint", req.Model, "mask")
+	if !ok {
+		return nil, notices, fmt.Errorf("the selected model %q has no mask input — it cannot honor the painted selection; pick a verified mask-capable model in Settings → Models → Inpainting", req.Model)
+	}
+	setBodyPath(schema, body, maskPath, coerceImages(maskProp, []string{mask}))
+
+	// Output size: the composite requires the result at the source's exact
+	// dimensions. Pixel-object endpoints (qwen-image-edit/inpaint's
+	// image_size) get the source dimensions explicitly; preset-enum endpoints
+	// can't express them, which is surfaced as a notice now and, if the
+	// output still lands at a different size, as the operation's failure —
+	// never a silent resize. Lossless PNG output is requested wherever the
+	// model declares a format enum listing it.
+	if req.Width > 0 && req.Height > 0 {
+		if sizePath, sizeProp, hasSize := findNative(schema, ov, "inpaint", req.Model, "imageSize"); hasSize {
+			switch {
+			case sizeProp.Kind == schemaObject:
+				setBodyPath(schema, body, sizePath, map[string]any{"width": req.Width, "height": req.Height})
+			default:
+				notices = append(notices, fmt.Sprintf(
+					"The selected model %q picks its output size from presets rather than pixels — the output must land at %dx%d for the preserved region to composite, or the operation will fail.",
+					req.Model, req.Width, req.Height))
+			}
+		}
+	}
+	if path, prop, ok := findNative(schema, ov, "inpaint", req.Model, "outputFormat"); ok && valueAllowedByEnum(prop, "png") {
+		setBodyPath(schema, body, path, "png")
+	}
+	return body, notices, nil
 }
 
 type canonicalValue struct {
@@ -1927,8 +2028,12 @@ func synonymsFor(category, canon string) []string {
 		return videoSynonyms[canon]
 	case "lipsync":
 		return lipsyncSynonyms[canon]
+	case "inpaint":
+		return inpaintSynonyms[canon]
 	case "replicate-image":
 		return replicateImageSynonyms[canon]
+	case "replicate-inpaint":
+		return replicateInpaintSynonyms[canon]
 	case "replicate-video":
 		return replicateVideoSynonyms[canon]
 	case "replicate-upscale":

@@ -94,6 +94,19 @@ const (
 	// are selected per-call via the model override; all three are mapped by
 	// resolveAudioExtendBody.
 	defaultFalAudioExtendModel = "fal-ai/stable-audio-25/inpaint"
+	// defaultFalInpaintModel is the image editor's mask-inpainting endpoint
+	// when none is configured — FLUX.1 Fill [pro] (verified 2026-10 against
+	// fal's registry-backed OpenAPI route: the schema lives at
+	// fal-ai/flux-pro/v1/fill; the once-advertised "fill-masking" id is NOT
+	// registered). Required prompt + image_url + mask_url; there is no
+	// image_size input — the output follows the source's dimensions, exactly
+	// what compositeInpaintResult needs — and fal documents that fill operates
+	// through mask-based editing, "preserves everything outside the mask
+	// untouched". White mask regions are the fill area (fal's mask-painter
+	// convention), matching Atelier's canonical polarity. The image-edit
+	// sibling of defaultFalImageEditModel; resolveInpaintBody maps the
+	// canonical source/mask/prompt onto it.
+	defaultFalInpaintModel = "fal-ai/flux-pro/v1/fill"
 	// defaultFalTranscribeModel is the speech-to-text endpoint used when none is
 	// configured — fal's optimized Whisper v3 edition. Accepts audio_url as a
 	// hosted URL or an inline data URI, so no fal storage upload is needed.

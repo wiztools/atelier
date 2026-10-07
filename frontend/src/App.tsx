@@ -58,6 +58,9 @@ import {
   ListReplicateVideoExtendModels,
   ListReplicateVideoModels,
   ListReplicateVideoImageModels,
+  ListInpaintModels,
+  ListEditSession,
+  ResolveEditSource,
   ListReplicateVideoDurations,
   ListLibraries,
   ListLibraryAssets,
@@ -90,11 +93,14 @@ import {
 } from '../wailsjs/go/main/App';
 import {main} from '../wailsjs/go/models';
 import {EventsOff, EventsOn} from '../wailsjs/runtime/runtime';
+import {ImageEditor, ImageEditorHandle} from './editor/ImageEditor';
 
 type View = 'app' | 'settings' | 'conversation-models';
 type SettingsTab = 'providers' | 'models' | 'others';
 type ChatProviderID = 'ollama' | 'openrouter' | 'openai-compatible';
-type ConversationKind = 'chat';
+// 'edit' marks an image-editor session child conversation: the sidebar lists
+// it, but opening it routes to the editor workspace, not the chat transcript.
+type ConversationKind = 'chat' | 'edit';
 
 type ChatEntry = {
   id: string;
@@ -342,6 +348,9 @@ const imageSizePresetOptions: ImageSizePreset[] = [
 ];
 const defaultFalImageModel = 'fal-ai/flux/schnell';
 const defaultFalImageEditModel = 'fal-ai/flux/dev/image-to-image';
+// The editor's mask-inpainting default mirrors the Go const (fal_client.go is
+// the source of truth; the verified contract lives there).
+const defaultFalInpaintModel = 'fal-ai/flux-pro/v1/fill';
 const defaultFalVideoModel = 'fal-ai/kling-video/v2/master/text-to-video';
 const defaultFalVideoImageModel = 'fal-ai/kling-video/v2/master/image-to-video';
 const defaultFalVideoKeyframeModel = 'fal-ai/bytedance/seedance-2.0/image-to-video';
@@ -366,6 +375,7 @@ const defaultReplicateImageEditModel = 'black-forest-labs/flux-kontext-pro';
 const defaultReplicateVideoModel = 'wan-video/wan-2.5-t2v';
 const defaultReplicateVideoImageModel = 'wan-video/wan-2.5-i2v';
 const defaultReplicateUpscaleModel = 'nightmareai/real-esrgan';
+const defaultReplicateInpaintModel = 'black-forest-labs/flux-fill-pro';
 const defaultReplicateVideoUpscaleModel = 'topazlabs/video-upscale';
 const defaultReplicateVideoRestyleModel = 'kwaivgi/kling-v3-omni-video';
 const defaultReplicateVideoReframeModel = 'luma/reframe-video';
@@ -1117,6 +1127,13 @@ function App() {
   // A config written before the second backend existed says "fal" via the Go
   // merge, so the state mirrors that default.
   const [videoProvider, setVideoProvider] = useState<'fal' | 'replicate'>('fal');
+  // The image editor's mask-inpainting backend — independent of ImageProvider
+  // on purpose (the plan's Inpainting section): a user's ordinary image
+  // generator and their verified mask-capable editor model need not share a
+  // cloud. Defaults mirror the Go merge (fal).
+  const [inpaintProvider, setInpaintProvider] = useState<'fal' | 'replicate'>('fal');
+  const [falInpaintModel, setFalInpaintModel] = useState(defaultFalInpaintModel);
+  const [replicateInpaintModel, setReplicateInpaintModel] = useState(defaultReplicateInpaintModel);
   const [openaiCompatibleBaseURL, setOpenaiCompatibleBaseURL] = useState('http://localhost:8080');
   const [openaiCompatibleModel, setOpenaiCompatibleModel] = useState('');
   const [openaiCompatibleModels, setOpenaiCompatibleModels] = useState<string[]>([]);
@@ -1367,6 +1384,15 @@ function App() {
   // same posture as draftWorkspace.
   const [draftModelOverrides, setDraftModelOverrides] = useState<main.ConversationModelOverrides | null>(null);
   const [previewImage, setPreviewImage] = useState('');
+  // The edit context the preview's Edit button uses: the conversation whose
+  // card opened the preview plus the artifact id parsed from its URL. Null
+  // for data: URLs (the image isn't persisted yet, so there is nothing to
+  // seed an edit from).
+  const [previewEditContext, setPreviewEditContext] = useState<{conversationID: string; artifactID: string} | null>(null);
+  // The image editor workspace: a draft seeded from a source image (no
+  // conversation exists yet) or a reopened session. Rendering it replaces the
+  // chat transcript area, like the settings screens do.
+  const [editorHandle, setEditorHandle] = useState<ImageEditorHandle | null>(null);
   const [purgeBusy, setPurgeBusy] = useState(false);
   const [confirmPurgeArchived, setConfirmPurgeArchived] = useState(false);
   const [purgeStatus, setPurgeStatus] = useState('');
@@ -1761,6 +1787,7 @@ function App() {
             audioExtendModel: falAudioExtendModel,
             transcribeModel: falTranscribeModel,
             upscaleModel: falUpscaleModel,
+            inpaintModel: falInpaintModel,
             lipsyncImageModel: falLipsyncImageModel,
             lipsyncVideoModel: falLipsyncVideoModel,
           },
@@ -1769,6 +1796,7 @@ function App() {
             model: replicateModel,
             imageEditModel: replicateImageEditModel,
             upscaleModel: replicateUpscaleModel,
+            inpaintModel: replicateInpaintModel,
             videoUpscaleModel: replicateVideoUpscaleModel,
             videoRestyleModel: replicateVideoRestyleModel,
             videoReframeModel: replicateVideoReframeModel,
@@ -1806,6 +1834,7 @@ function App() {
           harnessProvider,
           imageProvider,
           videoProvider,
+          inpaintProvider,
           transcriptionProvider,
         },
         prompts: {
@@ -1841,7 +1870,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel]);
+  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel]);
 
   // Re-probe local CLI tools when a binary override changes so the provider
   // dropdown and the video/image-tools status reflect an unsaved override without
@@ -2221,17 +2250,20 @@ function App() {
     harnessModel: harnessModels[harnessProvider],
     imageProvider,
     videoProvider,
+    inpaintProvider,
     falModel,
     openaiImageModel: openaiCompatibleModel,
     replicateModel,
     replicateImageEditModel,
     replicateUpscaleModel,
+    falImageEditModel,
+    falUpscaleModel,
+    falInpaintModel,
+    replicateInpaintModel,
     replicateVideoUpscaleModel,
     replicateVideoRestyleModel,
     replicateVideoReframeModel,
     replicateVideoExtendModel,
-    falImageEditModel,
-    falUpscaleModel,
     falVideoModel,
     falVideoImageModel,
     replicateVideoModel,
@@ -2260,7 +2292,7 @@ function App() {
     soundDuration,
     audioExtendDuration,
     whisperBinary,
-  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falImageEditModel, falUpscaleModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, whisperModel, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration, whisperBinary]);
+  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, inpaintProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, whisperModel, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration, whisperBinary]);
 
   const conversationModelSelection = useMemo<ModelSelectionValue>(() => {
     const global = globalModelSelection;
@@ -2274,6 +2306,7 @@ function App() {
     const primaryProvider = isChatProvider(overrides.primaryProvider) ? overrides.primaryProvider : global.primaryProvider;
     const imageProvider = overrides.imageProvider === 'fal' || overrides.imageProvider === 'replicate' || overrides.imageProvider === 'openai-compatible' ? overrides.imageProvider : global.imageProvider;
     const videoProvider = overrides.videoProvider === 'replicate' ? 'replicate' : overrides.videoProvider === 'fal' ? 'fal' : global.videoProvider;
+    const inpaintProvider = overrides.inpaintProvider === 'replicate' ? 'replicate' : overrides.inpaintProvider === 'fal' ? 'fal' : global.inpaintProvider;
     const next: ModelSelectionValue = {
       ...global,
       primaryProvider,
@@ -2282,6 +2315,7 @@ function App() {
       harnessModel: overrides.harnessModel || harnessModels[harnessProvider],
       imageProvider,
       videoProvider,
+      inpaintProvider,
       falModel: overrides.imageModel && imageProvider === 'fal' ? overrides.imageModel : global.falModel,
       openaiImageModel: overrides.imageModel && imageProvider === 'openai-compatible' ? overrides.imageModel : global.openaiImageModel,
       replicateModel: overrides.imageModel && imageProvider === 'replicate' ? overrides.imageModel : global.replicateModel,
@@ -2289,6 +2323,8 @@ function App() {
       falImageEditModel: overrides.imageEditModel && imageProvider !== 'replicate' ? overrides.imageEditModel : global.falImageEditModel,
       replicateUpscaleModel: overrides.upscaleModel && imageProvider === 'replicate' ? overrides.upscaleModel : global.replicateUpscaleModel,
       falUpscaleModel: overrides.upscaleModel && imageProvider !== 'replicate' ? overrides.upscaleModel : global.falUpscaleModel,
+      falInpaintModel: overrides.inpaintModel && inpaintProvider !== 'replicate' ? overrides.inpaintModel : global.falInpaintModel,
+      replicateInpaintModel: overrides.inpaintModel && inpaintProvider === 'replicate' ? overrides.inpaintModel : global.replicateInpaintModel,
       falVideoModel: overrides.videoModel && videoProvider === 'fal' ? overrides.videoModel : global.falVideoModel,
       falVideoImageModel: overrides.videoImageModel && videoProvider === 'fal' ? overrides.videoImageModel : global.falVideoImageModel,
       falVideoUpscaleModel: overrides.videoUpscaleModel && videoProvider !== 'replicate' ? overrides.videoUpscaleModel : global.falVideoUpscaleModel,
@@ -2349,6 +2385,9 @@ function App() {
     if (patch.harnessModel !== undefined) setHarnessModel(patch.harnessModel);
     if (patch.imageProvider !== undefined) setImageProvider(patch.imageProvider);
     if (patch.videoProvider !== undefined) setVideoProvider(patch.videoProvider);
+    if (patch.inpaintProvider !== undefined) setInpaintProvider(patch.inpaintProvider);
+    if (patch.falInpaintModel !== undefined) setFalInpaintModel(patch.falInpaintModel);
+    if (patch.replicateInpaintModel !== undefined) setReplicateInpaintModel(patch.replicateInpaintModel);
     if (patch.falModel !== undefined) setFalModel(patch.falModel);
     if (patch.openaiImageModel !== undefined) setOpenaiCompatibleModel(patch.openaiImageModel);
     if (patch.replicateModel !== undefined) setReplicateModel(patch.replicateModel);
@@ -2455,6 +2494,11 @@ function App() {
       }
       if (patch.falImageEditModel !== undefined || patch.replicateImageEditModel !== undefined) next.add('imageEditModel');
       if (patch.falUpscaleModel !== undefined || patch.replicateUpscaleModel !== undefined) next.add('upscaleModel');
+      if (patch.inpaintProvider !== undefined) {
+        next.add('inpaintProvider');
+        next.delete('inpaintModel');
+      }
+      if (patch.falInpaintModel !== undefined || patch.replicateInpaintModel !== undefined) next.add('inpaintModel');
       if (patch.falVideoModel !== undefined || patch.replicateVideoModel !== undefined) next.add('videoModel');
       if (patch.falVideoImageModel !== undefined || patch.replicateVideoImageModel !== undefined) next.add('videoImageModel');
       if (patch.falVideoKeyframeModel !== undefined) next.add('videoKeyframeModel');
@@ -2530,6 +2574,13 @@ function App() {
         case 'upscaleModel':
           next.falUpscaleModel = global.falUpscaleModel;
           next.replicateUpscaleModel = global.replicateUpscaleModel;
+          break;
+        case 'inpaintProvider':
+          next.inpaintProvider = global.inpaintProvider;
+          break;
+        case 'inpaintModel':
+          next.falInpaintModel = global.falInpaintModel;
+          next.replicateInpaintModel = global.replicateInpaintModel;
           break;
         case 'videoModel': next.falVideoModel = global.falVideoModel; next.replicateVideoModel = global.replicateVideoModel; break;
         case 'videoImageModel': next.falVideoImageModel = global.falVideoImageModel; next.replicateVideoImageModel = global.replicateVideoImageModel; break;
@@ -3026,6 +3077,9 @@ function App() {
 	const nextFalLipsyncImageModel = config.providers?.fal?.lipsyncImageModel || defaultFalLipsyncImageModel;
 	const nextFalLipsyncVideoModel = config.providers?.fal?.lipsyncVideoModel || defaultFalLipsyncVideoModel;
     const nextFalUpscaleModel = config.providers?.fal?.upscaleModel || defaultFalUpscaleModel;
+    const nextInpaintProvider: 'fal' | 'replicate' = config.models?.inpaintProvider === 'replicate' ? 'replicate' : 'fal';
+    const nextFalInpaintModel = config.providers?.fal?.inpaintModel || defaultFalInpaintModel;
+    const nextReplicateInpaintModel = config.providers?.replicate?.inpaintModel || defaultReplicateInpaintModel;
     const nextVideoDuration = config.generation?.video?.duration || defaultVideoDuration;
     const nextVideoAspectRatio = config.generation?.video?.aspectRatio || defaultVideoAspectRatio;
     const nextVideoResolution = config.generation?.video?.resolution || defaultVideoResolution;
@@ -3051,6 +3105,9 @@ function App() {
     setImageSteps(nextImageSteps);
     setImageProvider(nextImageProvider);
     setVideoProvider(nextVideoProvider);
+    setInpaintProvider(nextInpaintProvider);
+    setFalInpaintModel(nextFalInpaintModel);
+    setReplicateInpaintModel(nextReplicateInpaintModel);
     setSoundDuration(nextSoundDuration);
     setAudioExtendDuration(nextAudioExtendDuration);
     setMediaTimeoutMinutes(nextMediaTimeoutMinutes);
@@ -3653,7 +3710,62 @@ function App() {
   }, [activeStream]);
 
   async function startNewChat() {
+    // Starting a new conversation leaves the editor — an unsaved draft has no
+    // conversation to return to.
+    closeImageEditor();
     await resetWorkspace();
+  }
+
+  // editArtifactIDFromURL extracts an img_<hex> artifact id from a hydrated
+  // /atelier-artifact URL. Only persisted images are editable — data: URLs
+  // (the live transcript's inline form) parse to null and hide the Edit
+  // affordances rather than guessing identity.
+  function editArtifactIDFromURL(url: string): string | null {
+    const prefix = '/atelier-artifact/';
+    if (!url || !url.startsWith(prefix)) {
+      return null;
+    }
+    const file = url.slice(prefix.length).split(/[?#]/)[0].split('/').pop() ?? '';
+    const stem = file.replace(/\.[^.]+$/, '');
+    return stem.startsWith('img_') ? stem : null;
+  }
+
+  async function openImageEditor(conversationID: string, artifactID: string) {
+    try {
+      const source = await ResolveEditSource(conversationID, artifactID);
+      setEditorHandle({source, sessionID: ''});
+      setView('app');
+    } catch (error) {
+      setStartupError(formatError(error));
+    }
+  }
+
+  // openEditSession reopens a saved edit session — the sidebar/search path
+  // for Kind "edit" conversations. The handle seeds from the loaded session's
+  // own source copy, so the editor can submit iterations without guessing.
+  async function openEditSession(sessionID: string) {
+    try {
+      const state = await ListEditSession(sessionID);
+      setEditorHandle({
+        source: main.EditSourceInfo.createFrom({
+          conversationId: state.parentConversationId || state.source.conversationId,
+          conversationTitle: state.parentTitle,
+          artifactId: state.source.artifactId,
+          url: state.source.url,
+          width: state.source.width,
+          height: state.source.height,
+        }),
+        sessionID,
+      });
+      setView('app');
+    } catch (error) {
+      setStartupError(formatError(error));
+    }
+  }
+
+  function closeImageEditor() {
+    setEditorHandle(null);
+    setPreviewEditContext(null);
   }
 
   // focusTurnID, when set, scrolls the opened transcript to that turn's
@@ -3663,6 +3775,11 @@ function App() {
     // no re-fetch or transcript re-render. Search-result jumps re-enter with
     // focusTurnID and must still run to scroll to the requested turn.
     if (!focusTurnID && (conversation.id === activeConversationID || openingConversationRef.current === conversation.id)) {
+      return;
+    }
+    // Edit sessions are not chats: route them to the editor workspace.
+    if (conversation.kind === 'edit') {
+      await openEditSession(conversation.id);
       return;
     }
     openingConversationRef.current = conversation.id;
@@ -4485,17 +4602,17 @@ function App() {
       ref={shellRef}
       className={[
         'shell',
-        view !== 'app' ? 'settings-open' : '',
+        view !== 'app' || editorHandle ? 'settings-open' : '',
         resizingSidebar ? 'resizing resizing-sidebar' : '',
         resizingAssets ? 'resizing resizing-assets' : '',
         view === 'app' && assetsPanelOpen ? 'assets-open' : '',
       ].filter(Boolean).join(' ')}
-      style={view !== 'app' ? undefined : {
+      style={view !== 'app' || editorHandle ? undefined : {
         '--sidebar-width': `${sidebarWidth}px`,
         '--assets-width': `${assetsWidth}px`,
       } as Record<string, string>}
     >
-      {view !== 'app' ? null : (
+      {view !== 'app' || editorHandle ? null : (
         <aside className="sidebar">
           <div className="sidebar-main">
             <div className="brand">
@@ -4849,7 +4966,7 @@ function App() {
           </button>
         </aside>
       )}
-      {view !== 'app' ? null : (
+      {view !== 'app' || editorHandle ? null : (
         <div
           className="sidebar-resizer"
           role="separator"
@@ -4933,7 +5050,28 @@ function App() {
             ))}
           </div>
         ) : null}
-        {view === 'settings' ? (
+        {editorHandle && view === 'app' ? (
+          <ImageEditor
+            handle={editorHandle}
+            defaultProvider={inpaintProvider}
+            falDefaultModel={falInpaintModel}
+            replicateDefaultModel={replicateInpaintModel}
+            falHasKey={falHasKey}
+            replicateHasKey={replicateHasKey}
+            onClose={closeImageEditor}
+            onOpenParent={(parentConversationID) => {
+              closeImageEditor();
+              void openConversationSummary(main.ConversationSummary.createFrom({
+                id: parentConversationID,
+                kind: 'chat',
+                title: '',
+              }));
+            }}
+            onSessionCreated={() => {
+              void refreshConversations();
+            }}
+          />
+        ) : view === 'settings' ? (
           <>
             <div className="toolbar">
               <button className="back-button" onClick={() => setView('app')}>← Back</button>
@@ -5557,12 +5695,25 @@ function App() {
                                   className="chat-image-preview"
                                   type="button"
                                   aria-label={`Open generated image ${index + 1}`}
-                                  onClick={() => setPreviewImage(image)}
+                                  onClick={() => {
+                                    setPreviewImage(image);
+                                    setPreviewEditContext(editArtifactIDFromURL(image) && activeConversationID
+                                      ? {conversationID: activeConversationID, artifactID: editArtifactIDFromURL(image)!}
+                                      : null);
+                                  }}
                                 >
                                   <img src={image} alt="Generated result" />
                                 </button>
                                 <figcaption>
                                   <button type="button" onClick={() => saveGeneratedImage(image, index)}>Download image</button>
+                                  {activeConversationID && editArtifactIDFromURL(image) ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => void openImageEditor(activeConversationID, editArtifactIDFromURL(image)!)}
+                                    >
+                                      Edit with AI
+                                    </button>
+                                  ) : null}
                                 </figcaption>
                               </figure>
                             ))}
@@ -5575,7 +5726,12 @@ function App() {
                                 className="thumb-button"
                                 type="button"
                                 aria-label={`Open attached image ${index + 1}`}
-                                onClick={() => setPreviewImage(image)}
+                                onClick={() => {
+                                  setPreviewImage(image);
+                                  setPreviewEditContext(editArtifactIDFromURL(image) && activeConversationID
+                                    ? {conversationID: activeConversationID, artifactID: editArtifactIDFromURL(image)!}
+                                    : null);
+                                }}
                               >
                                 <img src={image} alt="" />
                               </button>
@@ -5889,7 +6045,7 @@ function App() {
           </>
         )}
       </section>
-      {view !== 'app' || !assetsPanelOpen ? null : (
+      {view !== 'app' || editorHandle || !assetsPanelOpen ? null : (
         <div
           className="assets-resizer"
           role="separator"
@@ -5901,7 +6057,7 @@ function App() {
           }}
         />
       )}
-      {view !== 'app' || !assetsPanelOpen ? null : (
+      {view !== 'app' || editorHandle || !assetsPanelOpen ? null : (
         <aside className="assets-panel" aria-label={composerLibraryID ? 'Library assets' : 'Conversation assets'}>
           <div className="assets-panel-header">
             <span className="assets-panel-title">
@@ -5934,7 +6090,12 @@ function App() {
                       <button
                         type="button"
                         className="asset-image-button"
-                        onClick={() => setPreviewImage(asset.url || '')}
+                        onClick={() => {
+                          setPreviewImage(asset.url || '');
+                          setPreviewEditContext(editArtifactIDFromURL(asset.url || '') && asset.conversationId
+                            ? {conversationID: asset.conversationId, artifactID: editArtifactIDFromURL(asset.url || '') ?? asset.id}
+                            : null);
+                        }}
                         aria-label="Preview image asset"
                         title="Preview image asset"
                       >
@@ -5982,6 +6143,20 @@ function App() {
                           <path d="M12 4v11" />
                           <path d="m7 10 5 5 5-5" />
                           <path d="M5 20h14" />
+                        </svg>
+                      </button>
+                    ) : null}
+                    {asset.kind === 'image' && asset.url && asset.conversationId ? (
+                      <button
+                        type="button"
+                        className="asset-edit-button"
+                        onClick={() => void openImageEditor(asset.conversationId, asset.id)}
+                        aria-label="Edit image with AI"
+                        title="Edit image with AI"
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M12 20h9" />
+                          <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
                         </svg>
                       </button>
                     ) : null}
@@ -6036,6 +6211,22 @@ function App() {
             <button className="image-preview-download" type="button" aria-label="Download image" title="Download" onClick={() => saveGeneratedImage(previewImage, 0)}>
               ↓
             </button>
+            {previewEditContext ? (
+              <button
+                className="image-preview-edit"
+                type="button"
+                aria-label="Edit image with AI"
+                title="Edit image with AI"
+                onClick={() => {
+                  const context = previewEditContext;
+                  setPreviewImage('');
+                  setPreviewEditContext(null);
+                  void openImageEditor(context.conversationID, context.artifactID);
+                }}
+              >
+                ✎
+              </button>
+            ) : null}
             <img src={previewImage} alt="Attached preview" />
           </div>
         </div>
@@ -6966,17 +7157,20 @@ type ModelSelectionValue = {
   harnessModel: string;
   imageProvider: 'fal' | 'replicate' | 'openai-compatible';
   videoProvider: 'fal' | 'replicate';
+  inpaintProvider: 'fal' | 'replicate';
   falModel: string;
   openaiImageModel: string;
   replicateModel: string;
   replicateImageEditModel: string;
   replicateUpscaleModel: string;
+  falImageEditModel: string;
+  falUpscaleModel: string;
+  falInpaintModel: string;
+  replicateInpaintModel: string;
   replicateVideoUpscaleModel: string;
   replicateVideoRestyleModel: string;
   replicateVideoReframeModel: string;
   replicateVideoExtendModel: string;
-  falImageEditModel: string;
-  falUpscaleModel: string;
   falVideoModel: string;
   falVideoImageModel: string;
   replicateVideoModel: string;
@@ -7040,6 +7234,8 @@ function overrideKeysFromRecord(overrides: main.ConversationModelOverrides | nul
   if (overrides.videoProvider) keys.add('videoProvider');
   if (overrides.imageEditModel) keys.add('imageEditModel');
   if (overrides.upscaleModel) keys.add('upscaleModel');
+  if (overrides.inpaintProvider) keys.add('inpaintProvider');
+  if (overrides.inpaintModel) keys.add('inpaintModel');
   if (overrides.videoModel) keys.add('videoModel');
   if (overrides.videoImageModel) keys.add('videoImageModel');
   if (overrides.videoKeyframeModel) keys.add('videoKeyframeModel');
@@ -7093,6 +7289,8 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   // mirroring the backend's provider-conditional overlay.
   if (keys.has('imageEditModel')) payload.imageEditModel = draft.imageProvider === 'replicate' ? draft.replicateImageEditModel : draft.falImageEditModel;
   if (keys.has('upscaleModel')) payload.upscaleModel = draft.imageProvider === 'replicate' ? draft.replicateUpscaleModel : draft.falUpscaleModel;
+  if (keys.has('inpaintProvider')) payload.inpaintProvider = draft.inpaintProvider;
+  if (keys.has('inpaintModel')) payload.inpaintModel = draft.inpaintProvider === 'replicate' ? draft.replicateInpaintModel : draft.falInpaintModel;
   if (keys.has('videoModel')) payload.videoModel = draft.videoProvider === 'replicate' ? draft.replicateVideoModel : draft.falVideoModel;
   if (keys.has('videoImageModel')) payload.videoImageModel = draft.videoProvider === 'replicate' ? draft.replicateVideoImageModel : draft.falVideoImageModel;
   if (keys.has('videoKeyframeModel')) payload.videoKeyframeModel = draft.falVideoKeyframeModel;
@@ -7218,6 +7416,26 @@ function ModelSelectionPanel({
   const falTranscribeOptions = falModelOptionList(catalogs.falTranscribeModels);
   const falLipsyncImageOptions = falModelOptionList(catalogs.falLipsyncImageModels);
   const falLipsyncVideoOptions = falModelOptionList(catalogs.falLipsyncVideoModels);
+
+  // The inpainting catalog is a small VERIFIED list (a curated Go-side table,
+  // not the broad image-edit category), so the panel fetches it directly
+  // instead of riding the big shared catalogs fetch.
+  const [inpaintCatalogs, setInpaintCatalogs] = useState<{fal: main.InpaintModelOption[]; replicate: main.InpaintModelOption[]}>({fal: [], replicate: []});
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([ListInpaintModels('fal'), ListInpaintModels('replicate')])
+      .then(([falList, replicateList]) => {
+        if (!cancelled) {
+          setInpaintCatalogs({fal: falList, replicate: replicateList});
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const falInpaintOptions = inpaintCatalogs.fal.map((option) => ({value: option.id, label: option.label}));
+  const replicateInpaintOptions = inpaintCatalogs.replicate.map((option) => ({value: option.id, label: option.label}));
 
   const imageSizeOptions = useMemo(() => {
     const parts = value.imageAspectRatio.split(':').map((item) => Number(item));
@@ -7537,12 +7755,66 @@ function ModelSelectionPanel({
       </section>
 
       <section className="settings-section">
+        <h3>Inpainting</h3>
+        <div className="settings-rows">
+          <div className="two-column">
+            <div className="field">
+              {fieldLabel('inpaint-provider', 'Inpaint Provider', 'inpaintProvider')}
+              <select
+                id="inpaint-provider"
+                value={value.inpaintProvider}
+                onChange={(event) => onChange({inpaintProvider: event.target.value as 'fal' | 'replicate'})}
+              >
+                <option value="fal">fal.ai (cloud)</option>
+                <option value="replicate">Replicate (cloud)</option>
+              </select>
+            </div>
+            {value.inpaintProvider === 'replicate' ? (
+              <div className="field">
+                {fieldLabel('replicate-inpaint-model', 'Inpaint Model (Replicate)', 'inpaintModel')}
+                <select
+                  id="replicate-inpaint-model"
+                  value={value.replicateInpaintModel}
+                  onChange={(event) => onChange({replicateInpaintModel: event.target.value})}
+                >
+                  {replicateInpaintOptions.some((option) => option.value === value.replicateInpaintModel) ? null : (
+                    <option value={value.replicateInpaintModel}>{value.replicateInpaintModel}</option>
+                  )}
+                  {replicateInpaintOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+                {!catalogs.replicateHasKey ? (
+                  <span className="hint">Add a Replicate API token {keyWhere} to inpaint images.</span>
+                ) : null}
+              </div>
+            ) : (
+              <div className="field">
+                {fieldLabel('fal-inpaint-model', 'Inpaint Model (fal.ai)', 'inpaintModel')}
+                <select
+                  id="fal-inpaint-model"
+                  value={value.falInpaintModel}
+                  onChange={(event) => onChange({falInpaintModel: event.target.value})}
+                >
+                  {falInpaintOptions.some((option) => option.value === value.falInpaintModel) ? null : (
+                    <option value={value.falInpaintModel}>{value.falInpaintModel}</option>
+                  )}
+                  {falInpaintOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+                {!catalogs.falHasKey ? (
+                  <span className="hint">Add a fal.ai API key {keyWhere} to inpaint images.</span>
+                ) : null}
+              </div>
+            )}
+          </div>
+          <span className="hint">Only models with a verified mask contract are listed — the editor refuses any model that cannot honor the painted selection.</span>
+        </div>
+      </section>
+
+      <section className="settings-section">
         <h3>Video</h3>
         <div className="settings-rows">
           <div className="field">
             <div className="field-label-row">
-              {fieldLabel('video-provider', 'Video Provider', 'videoProvider')}
-              <InfoHint
+              {fieldLabel('video-provider', 'Video Provider', 'videoProvider')}              <InfoHint
                 label="Video provider"
                 text="Which cloud backend generate_video uses: fal.ai or Replicate. Both serve text-to-video, image-to-video, and extending an attached clip; motion control and keyframe transitions are fal.ai only (a request for those on Replicate fails with a note suggesting the switch). The video transforms (upscale, reframe, restyle) follow this provider too; lip sync and audio are always fal.ai and configured below regardless of this setting."
               />

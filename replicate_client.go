@@ -61,6 +61,18 @@ const (
 	// an attached clip (2–15s source, 2–10s added) and returns the stitched
 	// original-plus-extension, the same deliverable fal's Veo extend produces.
 	defaultReplicateVideoExtendModel = "xai/grok-imagine-video-extension"
+	// defaultReplicateInpaintModel is the image editor's mask-inpainting model
+	// when none is configured — the Replicate sibling of defaultFalInpaintModel.
+	// FLUX.1 Fill [pro] (official, actively maintained): prompt + image
+	// required, mask optional-but-always-sent — "Black areas will be preserved
+	// while white areas will be inpainted", the same polarity Atelier's
+	// canonical mask paints, so no inversion at the adapter. The mask must
+	// match the image's size; the output is a single image URI. Its dev
+	// sibling (flux-fill-dev) is picker-selectable but carries two size traps
+	// resolveReplicateInpaintInput handles: input dims snap to multiples of 32
+	// with a 1440x1440 cap, and its megapixels default is "1" — the adapter
+	// sends match_input so the output tracks the source instead.
+	defaultReplicateInpaintModel = "black-forest-labs/flux-fill-pro"
 	// replicatePollInterval is the delay between prediction status checks,
 	// matching fal's cadence.
 	replicatePollInterval = 1500 * time.Millisecond

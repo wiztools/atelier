@@ -63,6 +63,12 @@ type App struct {
 	// shares the TTL window; nil on bare &App{} literals, which the estimator
 	// treats as "no pricing available" (fail-soft zero).
 	falPricing *falPricingCache
+	// editOps tracks the image editor's in-flight operations keyed by
+	// operation ID (edit_session.go): the one-op-per-session guard,
+	// CancelImageEdit's handle, and the "is it live?" check orphaned
+	// queued/running records consult. editOpsMu guards the map.
+	editOps   map[string]*editOpRun
+	editOpsMu sync.Mutex
 	// imageToImage* cache fal's image-to-image catalog (~400 models) shared by
 	// the Settings upscale and image-edit pickers, so the two listers don't each
 	// re-page the whole category and race the request timeout — a slow page used
@@ -90,6 +96,7 @@ func NewApp() *App {
 		streams:             map[string]context.CancelFunc{},
 		streamConversations: map[string]string{},
 		permissions:         map[string]chan bool{},
+		editOps:             map[string]*editOpRun{},
 		falPricing:          newFalPricingCache(),
 	}
 	app.toolPermission = app.requestToolPermission
@@ -105,6 +112,10 @@ func (a *App) startup(ctx context.Context) {
 	if config, err := loadAppConfig(); err == nil {
 		_ = ensureStorageDirs(config.Storage)
 		a.baseURL = config.Providers.Ollama.BaseURL
+		// A previous process may have died mid-edit: downgrade its orphaned
+		// queued/running operations to failed so reopened sessions never show
+		// a phantom in-flight edit (edit_session.go).
+		sweepInterruptedEditOps(config.Storage)
 	}
 	a.startUpdateScheduler(ctx)
 }
@@ -233,6 +244,10 @@ type ConfigFal struct {
 	TranscribeModel string `json:"transcribeModel,omitempty"`
 	// UpscaleModel is the image upscaler endpoint (fal-only; Ollama has none).
 	UpscaleModel string `json:"upscaleModel,omitempty"`
+	// InpaintModel is the mask-inpainting endpoint the image editor uses when
+	// fal is the InpaintProvider — a model whose verified contract takes a
+	// source image plus a selection mask (see image_edit.go).
+	InpaintModel string `json:"inpaintModel,omitempty"`
 	// VideoUpscaleModel is the video upscaler endpoint used by the upscale_video
 	// tool (fal-only, like UpscaleModel) — a video-to-video transform, so the
 	// picker partitions fal's video-to-video category by "upscal".
@@ -284,6 +299,10 @@ type ConfigReplicate struct {
 	// the image provider — upscale follows ImageProvider, so fal's
 	// UpscaleModel serves on every other provider.
 	UpscaleModel string `json:"upscaleModel,omitempty"`
+	// InpaintModel is the mask-inpainting model the image editor uses when
+	// replicate is the InpaintProvider — the Replicate sibling of
+	// ConfigFal.InpaintModel.
+	InpaintModel string `json:"inpaintModel,omitempty"`
 	// VideoUpscaleModel is the video upscaler upscale_video uses when
 	// replicate is the video provider — video upscale follows VideoProvider,
 	// so fal's VideoUpscaleModel serves on fal.
@@ -390,6 +409,12 @@ type ConfigModels struct {
 	// behaviour exactly while a fal-less machine with whisper installed
 	// still lights up. Normalized in mergeAppConfig.
 	TranscriptionProvider string `json:"transcriptionProvider,omitempty"`
+	// InpaintProvider selects the image editor's mask-inpainting backend:
+	// "fal" (the default) or "replicate". Independent of ImageProvider on
+	// purpose — a user's ordinary image generator and their verified
+	// mask-capable editor model need not share a backend. Normalized in
+	// mergeAppConfig like VideoProvider.
+	InpaintProvider string `json:"inpaintProvider,omitempty"`
 }
 
 type ConfigPrompts struct {
@@ -1069,6 +1094,10 @@ type HistoryConversation struct {
 	// pattern). No schema bump: absent and nil both read as "follow global
 	// config".
 	ModelOverrides *ConversationModelOverrides `json:"modelOverrides,omitempty"`
+	// EditSession pins an edit-session child conversation (Kind "edit") to
+	// the image it edits — see EditSessionMeta (edit_session.go). Nil on chat
+	// conversations; no schema bump (absent reads as "not an edit session").
+	EditSession *EditSessionMeta `json:"editSession,omitempty"`
 }
 
 type HistoryProvider struct {
@@ -3826,6 +3855,9 @@ func defaultAppConfig() AppConfig {
 			PrimaryProvider: "ollama",
 			HarnessProvider: "ollama",
 			ImageProvider:   "ollama",
+			// InpaintProvider defaults to fal: the editor's first verified
+			// mask-capable catalog lives there (image_edit.go).
+			InpaintProvider: "fal",
 		},
 		Prompts: ConfigPrompts{
 			System: "You are Atelier, a precise local AI collaborator.",
@@ -3938,6 +3970,16 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	default:
 		config.Models.TranscriptionProvider = ""
 	}
+	// InpaintProvider selects the image editor's mask-inpainting backend
+	// ("fal" | "replicate"). Unknown or empty normalizes to "fal", the
+	// default: an absent field means a config written before the editor
+	// existed, which must keep routing there.
+	switch strings.TrimSpace(config.Models.InpaintProvider) {
+	case "fal", "replicate":
+		config.Models.InpaintProvider = strings.TrimSpace(config.Models.InpaintProvider)
+	default:
+		config.Models.InpaintProvider = "fal"
+	}
 	// Local CLI tool settings carry no forced defaults: an empty binary means
 	// PATH auto-detection and an empty model means the CLI's own default.
 	config.Providers.Local.Whisper.Binary = strings.TrimSpace(config.Providers.Local.Whisper.Binary)
@@ -3951,6 +3993,14 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	// provider without a model leaves the picker empty, so pin the default.
 	if config.Models.ImageProvider == "replicate" && strings.TrimSpace(config.Providers.Replicate.Model) == "" {
 		config.Providers.Replicate.Model = defaultReplicateImageModel
+	}
+	// Seed the editor's inpaint endpoint the same way: a provider selected
+	// without a model would leave the editor's Generate permanently disabled.
+	if config.Models.InpaintProvider == "fal" && strings.TrimSpace(config.Providers.Fal.InpaintModel) == "" {
+		config.Providers.Fal.InpaintModel = defaultFalInpaintModel
+	}
+	if config.Models.InpaintProvider == "replicate" && strings.TrimSpace(config.Providers.Replicate.InpaintModel) == "" {
+		config.Providers.Replicate.InpaintModel = defaultReplicateInpaintModel
 	}
 	// Seed the sound-effects endpoint for configs written before the
 	// generate_speech/generate_sound split: an AudioModel already configured for

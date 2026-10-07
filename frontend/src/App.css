@@ -3527,3 +3527,509 @@ button:disabled {
   background: rgba(203, 92, 92, 0.08);
   font-size: 12px;
 }
+
+/* ---- Image editor (frontend/src/editor/) ---- */
+
+.image-preview-edit {
+  position: absolute;
+  top: 10px;
+  right: 94px;
+  z-index: 1;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 999px;
+  background: rgba(18, 20, 21, 0.9);
+  color: #f3f0e8;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.asset-edit-button {
+  position: absolute;
+  top: 8px;
+  right: 110px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid #3a3e41;
+  border-radius: 50%;
+  background: rgba(20, 22, 24, 0.88);
+  color: #d9d7cf;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.asset-card:hover .asset-edit-button,
+.asset-edit-button:focus-visible {
+  opacity: 1;
+}
+
+.image-editor {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  padding: 16px 20px;
+  gap: 12px;
+  /* The editor fills the viewport; the Edits section scrolls internally. */
+  overflow: hidden;
+  /* The workspace grid rows are "toolbar auto | content 1fr" — designed for
+     views with a toolbar child. The editor renders without one, so it must
+     span BOTH rows or it lands in the auto row, sized by content, with dead
+     space below (the divider-drag then has nothing to give either side). */
+  grid-row: 1 / -1;
+}
+
+.editor-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  /* Never let a squeeze clip the close button and breadcrumb. */
+  flex: 0 0 auto;
+}
+
+.editor-back {
+  border: 1px solid #3a3e41;
+  border-radius: 8px;
+  background: transparent;
+  color: #f3f0e8;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.editor-breadcrumb {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.editor-crumb-title {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.editor-crumb-link {
+  border: none;
+  background: transparent;
+  color: #8ab4f8;
+  cursor: pointer;
+  padding: 0;
+  font-size: 13px;
+}
+
+.editor-crumb-missing,
+.editor-crumb-draft {
+  font-size: 12px;
+  color: #9a978f;
+}
+
+.editor-header-status {
+  margin-left: auto;
+}
+
+.editor-busy {
+  font-size: 13px;
+  color: #e8c46a;
+}
+
+.editor-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 14px;
+  /* No explicit min-height: the flex auto-minimum already keeps the body at
+     its content's floor (stage minimum + the brush tools row) — an explicit
+     smaller floor let the body shrink past it and the tools row slid under
+     the resize divider. */
+  flex: 1 1 auto;
+}
+
+.editor-canvas-column {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.editor-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 220px;
+  overflow: hidden;
+  border: 1px solid #3a3e41;
+  border-radius: 10px;
+  background:
+    repeating-conic-gradient(#1d2023 0% 25%, #17191c 0% 50%) 0 0 / 24px 24px;
+  touch-action: none;
+}
+
+.editor-stage-content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+}
+
+.editor-stage-image {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  user-select: none;
+}
+
+.editor-stage-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.editor-stage-controls {
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 1px solid #3a3e41;
+  border-radius: 8px;
+  background: rgba(18, 20, 21, 0.9);
+}
+
+.editor-stage-controls button {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #f3f0e8;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.editor-stage-zoom {
+  font-size: 12px;
+  color: #9a978f;
+  min-width: 42px;
+  text-align: center;
+}
+
+.editor-canvas-tools {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+
+.editor-tool-group {
+  display: inline-flex;
+  border: 1px solid #3a3e41;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.editor-tool-group button {
+  border: none;
+  background: transparent;
+  color: #d9d7cf;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.editor-tool-group button.active {
+  background: #2c3138;
+  color: #f3f0e8;
+}
+
+.editor-tool-group button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.editor-brush-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #d9d7cf;
+}
+
+.editor-brush-size input {
+  width: 140px;
+}
+
+.editor-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid #3a3e41;
+  border-radius: 10px;
+  padding: 14px;
+  align-self: start;
+}
+
+.editor-inspector .hint {
+  font-size: 12px;
+  color: #9a978f;
+}
+
+.editor-generate {
+  border: none;
+  border-radius: 8px;
+  background: #3563c4;
+  color: #ffffff;
+  font-weight: 600;
+  padding: 10px 14px;
+  cursor: pointer;
+}
+
+.editor-generate:disabled {
+  background: #2a2f36;
+  color: #7b7973;
+  cursor: default;
+}
+
+.editor-cancel {
+  border: 1px solid #3a3e41;
+  border-radius: 8px;
+  background: transparent;
+  color: #f3f0e8;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+.editor-error {
+  color: #e88a7a;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.editor-session-note {
+  font-size: 12px;
+  color: #9a978f;
+  border-top: 1px solid #3a3e41;
+  padding-top: 10px;
+}
+
+.editor-results {
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  /* Height is driven by the divider drag (inline style); collapsed renders
+     the slim restore bar instead of the footer. */
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* The horizontal divider between the canvas body and the Edits panel: drag
+   to resize (up grows the panel), double-click to collapse. */
+.editor-results-resizer {
+  flex: 0 0 auto;
+  height: 6px;
+  border-top: 1px solid #3a3e41;
+  cursor: row-resize;
+}
+
+.editor-results-resizer:hover,
+.editor-results-resizer.active {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.image-editor.resizing-results {
+  cursor: row-resize;
+  user-select: none;
+}
+
+/* The collapsed Edits panel's slim restore bar. */
+.editor-results-restore {
+  flex: 0 0 auto;
+  border: none;
+  border-top: 1px solid #3a3e41;
+  background: transparent;
+  color: #9a978f;
+  text-align: left;
+  padding: 6px 2px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.editor-results-restore:hover {
+  color: #f3f0e8;
+}
+
+/* The scroll pane: the "Edits" heading stays pinned above it, the op list
+   (newest first) and the before/after compare scroll inside. */
+.editor-results-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.editor-results-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.editor-results-header h4 {
+  margin: 0;
+}
+
+.editor-results-empty {
+  color: #9a978f;
+  font-size: 13px;
+}
+
+.editor-op-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.editor-op {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 8px;
+  border: 1px solid #3a3e41;
+  border-radius: 10px;
+}
+
+.editor-op.selected {
+  border-color: #3563c4;
+}
+
+.editor-op-thumb {
+  width: 64px;
+  height: 64px;
+  padding: 0;
+  border: 1px solid #3a3e41;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #17191c;
+  cursor: pointer;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+}
+
+.editor-op-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.editor-op-thumb-empty {
+  font-size: 11px;
+  color: #9a978f;
+  padding: 4px;
+  text-align: center;
+}
+
+.editor-op-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.editor-op-title {
+  font-size: 13px;
+  color: #f3f0e8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.editor-op-sub {
+  font-size: 12px;
+  color: #9a978f;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.editor-op-notice {
+  font-size: 12px;
+  color: #e8c46a;
+}
+
+.editor-op-actions {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.editor-op-actions button {
+  border: 1px solid #3a3e41;
+  border-radius: 8px;
+  background: transparent;
+  color: #f3f0e8;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.editor-op-actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.editor-op-retry-hint {
+  font-size: 12px;
+  color: #9a978f;
+}
+
+.editor-compare {
+  display: flex;
+  gap: 12px;
+  /* Inline expansion: rendered in the list immediately below the selected
+     op (an <li> sibling), moving with the selection. */
+}
+
+.editor-op-compare {
+  padding: 2px 8px 10px;
+}
+
+.editor-compare figure {
+  margin: 0;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.editor-compare img {
+  width: 100%;
+  max-height: 240px;
+  object-fit: contain;
+  border: 1px solid #3a3e41;
+  border-radius: 8px;
+  background: #17191c;
+}
+
+.editor-compare figcaption {
+  font-size: 12px;
+  color: #9a978f;
+  margin-top: 4px;
+}

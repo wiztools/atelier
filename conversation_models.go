@@ -36,11 +36,18 @@ type ConversationModelOverrides struct {
 	// resolvers route by it. The remaining fal endpoint fields still map 1:1
 	// onto ConfigFal — their tools (keyframes, motion control, lipsync,
 	// audio) are fal-only with no provider dimension.
-	VideoProvider      string `json:"videoProvider,omitempty"`
-	VideoModel         string `json:"videoModel,omitempty"`
-	VideoImageModel    string `json:"videoImageModel,omitempty"`
-	ImageEditModel     string `json:"imageEditModel,omitempty"`
-	UpscaleModel       string `json:"upscaleModel,omitempty"`
+	VideoProvider   string `json:"videoProvider,omitempty"`
+	VideoModel      string `json:"videoModel,omitempty"`
+	VideoImageModel string `json:"videoImageModel,omitempty"`
+	ImageEditModel  string `json:"imageEditModel,omitempty"`
+	UpscaleModel    string `json:"upscaleModel,omitempty"`
+	// InpaintProvider/InpaintModel override the image editor's mask-inpainting
+	// backend and model, independent of the ordinary image pair the way
+	// Models.InpaintProvider is independent of ImageProvider. The model lands
+	// on the slot the effective inpaint provider reads (fal InpaintModel /
+	// replicate InpaintModel).
+	InpaintProvider    string `json:"inpaintProvider,omitempty"`
+	InpaintModel       string `json:"inpaintModel,omitempty"`
 	VideoExtendModel   string `json:"videoExtendModel,omitempty"`
 	VideoMotionModel   string `json:"videoMotionModel,omitempty"`
 	VideoKeyframeModel string `json:"videoKeyframeModel,omitempty"`
@@ -95,6 +102,7 @@ func normalizeConversationModelOverrides(o ConversationModelOverrides) Conversat
 		&o.ImageProvider, &o.ImageModel,
 		&o.VideoProvider, &o.VideoModel, &o.VideoImageModel,
 		&o.ImageEditModel, &o.UpscaleModel,
+		&o.InpaintProvider, &o.InpaintModel,
 		&o.VideoExtendModel, &o.VideoMotionModel, &o.VideoKeyframeModel, &o.VideoUpscaleModel, &o.VideoReframeModel, &o.VideoRestyleModel,
 		&o.AudioModel, &o.SoundEffectsModel, &o.AudioCloneModel, &o.AudioExtendModel, &o.TranscribeModel,
 		&o.LipsyncImageModel, &o.LipsyncVideoModel,
@@ -130,6 +138,10 @@ func validateConversationModelOverrides(o ConversationModelOverrides) error {
 		case "videoProvider":
 			if value != "" && value != "fal" && value != "replicate" {
 				return fmt.Errorf("unknown video provider %q", value)
+			}
+		case "inpaintProvider":
+			if value != "" && value != "fal" && value != "replicate" {
+				return fmt.Errorf("unknown inpaint provider %q", value)
 			}
 		case "transcriptionProvider":
 			if value != "" && value != transcriptionProviderFal && value != transcriptionProviderLocalWhisper {
@@ -327,6 +339,27 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 			config.Providers.Replicate.UpscaleModel = o.UpscaleModel
 		} else {
 			config.Providers.Fal.UpscaleModel = o.UpscaleModel
+		}
+	}
+	if o.InpaintProvider != "" {
+		// The inpaint provider overrides the editor's backend directly — it is
+		// its own dimension (fal | replicate), validated at mutator time like
+		// ImageProvider.
+		config.Models.InpaintProvider = o.InpaintProvider
+	}
+	if o.InpaintModel != "" {
+		// The inpaint-model override follows the effective inpaint provider —
+		// the UpscaleModel recipe one dimension over: the editor routes by
+		// InpaintProvider, so a Replicate-pinned conversation inpaints with
+		// its Replicate model.
+		inpaintProvider := o.InpaintProvider
+		if inpaintProvider == "" {
+			inpaintProvider = config.Models.InpaintProvider
+		}
+		if inpaintProvider == "replicate" {
+			config.Providers.Replicate.InpaintModel = o.InpaintModel
+		} else {
+			config.Providers.Fal.InpaintModel = o.InpaintModel
 		}
 	}
 	if o.VideoExtendModel != "" {

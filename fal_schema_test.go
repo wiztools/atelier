@@ -426,3 +426,99 @@ func TestSchemaCacheFetchUsesConfiguredKey(t *testing.T) {
 		t.Fatalf("expected request to carry the configured key, got Authorization=%q", gotAuth)
 	}
 }
+
+// TestParseModelInputSchemaSizeUnion verifies fal's standard ImageSize union
+// (anyOf: preset enum | {width,height} object) parses as ONE object-capable
+// property that keeps the enum presets. Collapsing such a union to its first
+// branch (the enum) hid the object form, so the inpaint resolver refused to
+// send exact pixels and qwen-image-edit/inpaint returned 1248x832 for a
+// 1536x1024 source — a billed call the compositor then had to refuse.
+func TestParseModelInputSchemaSizeUnion(t *testing.T) {
+	doc := `{"components":{"schemas":{"XInput":{"type":"object","properties":{
+		"image_size":{"anyOf":[
+			{"type":"string","enum":["square_hd","square","auto"]},
+			{"type":"object","properties":{"width":{"type":"integer"},"height":{"type":"integer"}}}
+		]},
+		"prompt":{"type":"string"}
+	}}}}}`
+	schema, err := parseModelInputSchema([]byte(doc))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	size, ok := schema.property("image_size")
+	if !ok {
+		t.Fatal("expected image_size property")
+	}
+	if size.Kind != schemaObject {
+		t.Fatalf("image_size.Kind = %v, want schemaObject (the union is object-capable)", size.Kind)
+	}
+	if len(size.Enum) != 3 || size.Enum[0] != "square_hd" {
+		t.Fatalf("image_size.Enum = %v, want the preset enum preserved", size.Enum)
+	}
+	if _, ok := size.Nested["width"]; !ok {
+		t.Fatalf("expected nested width, got %+v", size.Nested)
+	}
+	if _, ok := size.Nested["height"]; !ok {
+		t.Fatalf("expected nested height, got %+v", size.Nested)
+	}
+
+	// A nullable enum union without an object branch stays a scalar enum —
+	// the qwen fix must not swallow the plain optional-field shape.
+	doc2 := `{"components":{"schemas":{"YInput":{"type":"object","properties":{
+		"resolution":{"anyOf":[
+			{"type":"string","enum":["1K","2K"]},
+			{"type":"null"}
+		]}
+	}}}}}`
+	schema2, err := parseModelInputSchema([]byte(doc2))
+	if err != nil {
+		t.Fatalf("parse nullable union: %v", err)
+	}
+	res, ok := schema2.property("resolution")
+	if !ok || res.Kind != schemaScalar || len(res.Enum) != 2 {
+		t.Fatalf("nullable enum union = %+v (ok=%v), want scalar with enum preserved", res, ok)
+	}
+}
+
+// TestParseModelInputSchemaSizeUnionWithRef pins the shape fal actually
+// serves for qwen-image-edit/inpaint: image_size is
+// anyOf[{$ref: ImageSize}, {enum presets}, {null}], and the object branch
+// lives BEHIND the $ref. Without ref resolution the union collapses to the
+// enum branch and exact pixels are never sent — the exact 1248x832-vs-
+// 1536x1024 failure observed live.
+func TestParseModelInputSchemaSizeUnionWithRef(t *testing.T) {
+	doc := `{"components":{"schemas":{
+		"QwenImageEditInpaintInput":{"type":"object","properties":{
+			"prompt":{"type":"string"},
+			"image_size":{"anyOf":[
+				{"$ref":"#/components/schemas/ImageSize"},
+				{"type":"string","enum":["square_hd","square","auto"]},
+				{"type":"null"}
+			]}
+		}},
+		"ImageSize":{"type":"object","properties":{
+			"width":{"type":"integer","exclusiveMinimum":0,"default":512},
+			"height":{"type":"integer","exclusiveMinimum":0,"default":512}
+		}}
+	}}}`
+	schema, err := parseModelInputSchema([]byte(doc))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	size, ok := schema.property("image_size")
+	if !ok {
+		t.Fatal("expected image_size property")
+	}
+	if size.Kind != schemaObject {
+		t.Fatalf("image_size.Kind = %v, want schemaObject (the $ref'd ImageSize is the object branch)", size.Kind)
+	}
+	if len(size.Enum) != 3 || size.Enum[0] != "square_hd" {
+		t.Fatalf("image_size.Enum = %v, want the sibling preset enum preserved", size.Enum)
+	}
+	if _, ok := size.Nested["width"]; !ok {
+		t.Fatalf("expected nested width from the resolved $ref, got %+v", size.Nested)
+	}
+	if _, ok := size.Nested["height"]; !ok {
+		t.Fatalf("expected nested height from the resolved $ref, got %+v", size.Nested)
+	}
+}
