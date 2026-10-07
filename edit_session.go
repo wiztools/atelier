@@ -19,7 +19,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -70,6 +72,7 @@ type EditSourceInfo struct {
 	MimeType          string `json:"mimeType,omitempty"`
 	Width             int    `json:"width,omitempty"`
 	Height            int    `json:"height,omitempty"`
+	SourceDigest      string `json:"sourceDigest,omitempty"`
 }
 
 // ImageEditSubmitRequest is one submitted editor operation. The first submit
@@ -87,9 +90,14 @@ type ImageEditSubmitRequest struct {
 	Prompt          string `json:"prompt,omitempty"`
 	// MaskPng is the selection mask as a PNG data URL at the source's pixel
 	// dimensions — white = editable, black = preserved.
-	MaskPng  string `json:"maskPng,omitempty"`
-	Provider string `json:"provider,omitempty"`
-	Model    string `json:"model,omitempty"`
+	MaskPng  string               `json:"maskPng,omitempty"`
+	Provider string               `json:"provider,omitempty"`
+	Model    string               `json:"model,omitempty"`
+	Crop     *CropOperationParams `json:"crop,omitempty"`
+	// SourceDigest is the SHA-256 digest ResolveEditSource returned for the
+	// parent-side artifact. First submit checks it before copying the source so
+	// a normalized preview cannot crop stale bytes after an external change.
+	SourceDigest string `json:"sourceDigest,omitempty"`
 }
 
 // EditOperationState is the immediate response to a submit: the (possibly
@@ -210,7 +218,27 @@ func (a *App) ResolveEditSource(conversationID, artifactID string) (EditSourceIn
 	if !ok {
 		return EditSourceInfo{}, fmt.Errorf("image %q not found in conversation %s", artifactID, conversationID)
 	}
-	return editSourceInfoFor(config.Storage, conversationID, detail.Conversation.Title, originTurnID, content)
+	cleanupEditSourcePreviews()
+	return editSourceInfoForPreview(config, conversationID, detail.Conversation.Title, originTurnID, content)
+}
+
+// ReleaseEditSourcePreview removes a normalized temporary preview returned by
+// ResolveEditSource. URLs that do not name Atelier's temp preview directory are
+// ignored, so callers can pass the current canvas URL unconditionally.
+func (a *App) ReleaseEditSourcePreview(previewURL string) error {
+	path := strings.TrimPrefix(strings.TrimSpace(previewURL), artifactPrefix)
+	dir := editSourcePreviewDir()
+	if path == previewURL || path == "" {
+		return nil
+	}
+	clean := filepath.Clean(path)
+	if filepath.Dir(clean) != dir || !strings.HasPrefix(filepath.Base(clean), "editpreview") {
+		return nil
+	}
+	if err := os.Remove(clean); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // editSourceInfoFor hydrates one image content entry into an EditSourceInfo —
@@ -241,7 +269,81 @@ func editSourceInfoFor(storage ConfigStorage, conversationID, title, originTurnI
 		MimeType:          mimeType,
 		Width:             width,
 		Height:            height,
+		SourceDigest:      editSourceDigest(data),
 	}, nil
+}
+
+// editSourceInfoForPreview returns the same identity as editSourceInfoFor, but
+// the URL/dimensions point at the normalized upright pixels the first
+// operation will copy into the edit session. That keeps crop coordinates
+// aligned for EXIF-rotated and backend-normalized sources without creating a
+// durable draft conversation.
+func editSourceInfoForPreview(config AppConfig, conversationID, title, originTurnID string, content HistoryContent) (EditSourceInfo, error) {
+	info, err := editSourceInfoFor(config.Storage, conversationID, title, originTurnID, content)
+	if err != nil {
+		return EditSourceInfo{}, err
+	}
+	absPath, err := contentArtifactPath(config.Storage, conversationID, content)
+	if err != nil {
+		return EditSourceInfo{}, err
+	}
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return EditSourceInfo{}, err
+	}
+	normalized, ext, err := normalizeEditSourceBytes(context.Background(), config, data, strings.ToLower(filepath.Ext(absPath)))
+	if err != nil {
+		return EditSourceInfo{}, err
+	}
+	width, height, ok := editImageDimensions(normalized)
+	if !ok {
+		return EditSourceInfo{}, errors.New("could not read the normalized image's dimensions")
+	}
+	info.Width = width
+	info.Height = height
+	info.MimeType = mediaTypeForExtension(ext)
+	if bytes.Equal(normalized, data) {
+		return info, nil
+	}
+	dir := editSourcePreviewDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return EditSourceInfo{}, err
+	}
+	filename := randomID("editpreview") + ext
+	path := filepath.Join(dir, filename)
+	if err := os.WriteFile(path, normalized, 0o644); err != nil {
+		return EditSourceInfo{}, err
+	}
+	info.URL = artifactPrefix + path
+	return info, nil
+}
+
+func editSourceDigest(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func editSourcePreviewDir() string {
+	return filepath.Join(os.TempDir(), "atelier-edit-previews")
+}
+
+func cleanupEditSourcePreviews() {
+	dir := editSourcePreviewDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-24 * time.Hour)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "editpreview") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		info, err := entry.Info()
+		if err == nil && info.ModTime().Before(cutoff) {
+			_ = os.Remove(path)
+		}
+	}
 }
 
 // findImageContent locates an image content entry by artifact ID (or relative
@@ -293,40 +395,47 @@ func (a *App) SubmitImageEdit(req ImageEditSubmitRequest) (EditOperationState, e
 	if err != nil {
 		return EditOperationState{}, err
 	}
+	a.editSubmitMu.Lock()
+	defer a.editSubmitMu.Unlock()
+
 	kind := strings.TrimSpace(req.Kind)
 	if kind == "" {
 		kind = editOperationKindInpaint
 	}
-	if kind != editOperationKindInpaint {
+	if kind != editOperationKindInpaint && kind != editOperationKindCrop {
 		return EditOperationState{}, fmt.Errorf("unsupported edit operation kind %q", kind)
 	}
 
-	// Effective provider/model pair: the request's explicit pair wins; each
-	// half falls back to the effective provider's configured default so a
-	// half-specified pair still resolves. The recorded pair is what executes.
 	provider := strings.TrimSpace(req.Provider)
 	model := strings.TrimSpace(req.Model)
-	switch provider {
-	case "":
-		provider = config.Models.InpaintProvider
-	case "fal", "replicate":
-	default:
-		return EditOperationState{}, fmt.Errorf("unknown inpaint provider %q — choose fal.ai or Replicate", provider)
-	}
-	if model == "" {
-		if provider == "replicate" {
-			model = config.Providers.Replicate.InpaintModel
-		} else {
-			model = config.Providers.Fal.InpaintModel
-		}
-	}
-	if model == "" {
-		return EditOperationState{}, fmt.Errorf("no inpainting model configured for %s — pick one in Settings → Models → Inpainting", provider)
-	}
-
 	prompt := strings.TrimSpace(req.Prompt)
-	if prompt == "" {
-		return EditOperationState{}, errors.New("a prompt describing the change is required for inpainting")
+	if kind == editOperationKindInpaint {
+		// Effective provider/model pair: the request's explicit pair wins; each
+		// half falls back to the effective provider's configured default so a
+		// half-specified pair still resolves. The recorded pair is what executes.
+		switch provider {
+		case "":
+			provider = config.Models.InpaintProvider
+		case "fal", "replicate":
+		default:
+			return EditOperationState{}, fmt.Errorf("unknown inpaint provider %q — choose fal.ai or Replicate", provider)
+		}
+		if model == "" {
+			if provider == "replicate" {
+				model = config.Providers.Replicate.InpaintModel
+			} else {
+				model = config.Providers.Fal.InpaintModel
+			}
+		}
+		if model == "" {
+			return EditOperationState{}, fmt.Errorf("no inpainting model configured for %s — pick one in Settings → Models → Inpainting", provider)
+		}
+		if prompt == "" {
+			return EditOperationState{}, errors.New("a prompt describing the change is required for inpainting")
+		}
+	} else {
+		provider = ""
+		model = ""
 	}
 
 	parentID := strings.TrimSpace(req.ParentConversationID)
@@ -336,7 +445,11 @@ func (a *App) SubmitImageEdit(req ImageEditSubmitRequest) (EditOperationState, e
 
 	sessionID := strings.TrimSpace(req.SessionConversationID)
 	createdSession := false
+	var sourceNotices []string
 	if sessionID == "" {
+		if strings.TrimSpace(req.InputArtifactID) != "" {
+			return EditOperationState{}, errors.New("an input artifact can only be selected within an existing edit session")
+		}
 		// First submit: the source is resolved in its OWNING conversation
 		// (the parent), normalized (orientation baked, compositor-decodable),
 		// and copied into a fresh child that owns it from here on.
@@ -363,9 +476,37 @@ func (a *App) SubmitImageEdit(req ImageEditSubmitRequest) (EditOperationState, e
 		if !isImageBytes(sourceRaw) {
 			return EditOperationState{}, errors.New("the source artifact is not a supported image")
 		}
+		if digest := strings.TrimSpace(req.SourceDigest); digest != "" && digest != editSourceDigest(sourceRaw) {
+			return EditOperationState{}, errors.New("the source image changed after the editor opened — reopen it and try again")
+		}
+		if imageExtensionForBytes(sourceRaw) == ".gif" {
+			sourceNotices = append(sourceNotices, "GIF sources are edited as a still image from the first frame.")
+		}
 		normalized, ext, err := normalizeEditSourceBytes(ctx, config, sourceRaw, strings.ToLower(filepath.Ext(sourcePath)))
 		if err != nil {
 			return EditOperationState{}, err
+		}
+		width, height, ok := editImageDimensions(normalized)
+		if !ok {
+			return EditOperationState{}, errors.New("could not read the image's dimensions")
+		}
+		if kind == editOperationKindInpaint {
+			mask, _, err := decodeMediaDataURL(req.MaskPng)
+			if err != nil || len(mask) == 0 {
+				return EditOperationState{}, errors.New("the selection mask is missing or unreadable — paint a selection before generating")
+			}
+			if _, err := validateInpaintMask(mask, width, height); err != nil {
+				return EditOperationState{}, err
+			}
+		}
+		if kind == editOperationKindCrop {
+			crop := req.Crop
+			if crop == nil {
+				return EditOperationState{}, errors.New("crop parameters are required")
+			}
+			if err := validateCropParams(crop, width, height); err != nil {
+				return EditOperationState{}, err
+			}
 		}
 		sessionID, _, err = createEditSession(store, config, parentDetail, sourceContent, sourceTurnID, normalized, ext, nowText)
 		if err != nil {
@@ -424,36 +565,49 @@ func (a *App) SubmitImageEdit(req ImageEditSubmitRequest) (EditOperationState, e
 		return EditOperationState{}, errors.New("could not read the image's dimensions")
 	}
 
-	// Mask validation — the last zero-cost gate before anything is persisted
-	// or billed.
-	maskData, _, err := decodeMediaDataURL(req.MaskPng)
-	if err != nil || len(maskData) == 0 {
-		return EditOperationState{}, errors.New("the selection mask is missing or unreadable — paint a selection before generating")
-	}
-	if _, err := validateInpaintMask(maskData, inputWidth, inputHeight); err != nil {
-		return EditOperationState{}, err
-	}
-
-	// Persist: mask artifact, then the operation turn (queued).
+	var maskData []byte
 	op := EditOperation{
 		ID:              randomID("editop"),
 		Kind:            kind,
 		Status:          editOperationStatusQueued,
 		CreatedAt:       nowText,
 		InputArtifactID: inputArtifactID,
-		Provider:        provider,
-		Model:           model,
-		Inpaint: &InpaintOperationParams{
+		Notices:         sourceNotices,
+	}
+	if kind == editOperationKindInpaint {
+		// Mask validation — the last zero-cost gate before anything is
+		// persisted or billed.
+		maskData, _, err = decodeMediaDataURL(req.MaskPng)
+		if err != nil || len(maskData) == 0 {
+			return EditOperationState{}, errors.New("the selection mask is missing or unreadable — paint a selection before generating")
+		}
+		if _, err := validateInpaintMask(maskData, inputWidth, inputHeight); err != nil {
+			return EditOperationState{}, err
+		}
+		op.Provider = provider
+		op.Model = model
+		op.Inpaint = &InpaintOperationParams{
 			Prompt:    prompt,
 			MaskWidth: inputWidth, MaskHeight: inputHeight,
-		},
+		}
+		maskID := randomID("msk")
+		if err := os.WriteFile(filepath.Join(loaded.ArtifactsDir, maskID+".png"), maskData, 0o644); err != nil {
+			return EditOperationState{}, err
+		}
+		op.Inpaint.MaskArtifactID = maskID
+		op.Inpaint.MaskPath = filepath.ToSlash(filepath.Join("artifacts", maskID+".png"))
+	} else {
+		crop := req.Crop
+		if crop == nil {
+			return EditOperationState{}, errors.New("crop parameters are required")
+		}
+		if err := validateCropParams(crop, inputWidth, inputHeight); err != nil {
+			return EditOperationState{}, err
+		}
+		copied := *crop
+		op.Backend = "local"
+		op.Crop = &copied
 	}
-	maskID := randomID("msk")
-	if err := os.WriteFile(filepath.Join(loaded.ArtifactsDir, maskID+".png"), maskData, 0o644); err != nil {
-		return EditOperationState{}, err
-	}
-	op.Inpaint.MaskArtifactID = maskID
-	op.Inpaint.MaskPath = filepath.ToSlash(filepath.Join("artifacts", maskID+".png"))
 
 	turn := HistoryTurn{
 		SchemaVersion:  1,
@@ -466,6 +620,18 @@ func (a *App) SubmitImageEdit(req ImageEditSubmitRequest) (EditOperationState, e
 		Model:          model,
 		Request:        map[string]any{"operation": op},
 	}
+	// Reserve the run before publishing its queued turn. Readers must never
+	// mistake a just-submitted operation for an interrupted run.
+	opCtx, opCancel := a.registerImageEditOperation(sessionID, op.ID)
+	launched := false
+	defer func() {
+		if !launched {
+			a.editOpsMu.Lock()
+			delete(a.editOps, op.ID)
+			a.editOpsMu.Unlock()
+			opCancel()
+		}
+	}()
 	loaded.Conversation.UpdatedAt = nowText
 	loaded.Conversation.Stats.TurnCount++
 	if err := store.writeConversation(loaded.Path, loaded.Conversation); err != nil {
@@ -477,7 +643,8 @@ func (a *App) SubmitImageEdit(req ImageEditSubmitRequest) (EditOperationState, e
 
 	// Execute in the background; SubmitImageEdit returns the queued state
 	// immediately and every transition lands via the atelier:edit-op event.
-	go a.executeImageEditOperation(config, sessionID, turn.ID, op, inputData, maskData)
+	launched = true
+	go a.executeImageEditOperation(opCtx, opCancel, config, sessionID, turn.ID, op, inputData, maskData)
 
 	sourceURL := ""
 	if createdSession {
@@ -506,15 +673,19 @@ func (a *App) SubmitImageEdit(req ImageEditSubmitRequest) (EditOperationState, e
 	}, nil
 }
 
-// executeImageEditOperation runs one persisted operation to a terminal state,
-// persisting and emitting at every transition. It owns the cancellation
-// registration (CancelImageEdit), the provider execution, the strict
-// outside-mask composite, and the result artifact write.
-func (a *App) executeImageEditOperation(config AppConfig, sessionID, turnID string, op EditOperation, inputData, maskData []byte) {
+// registerImageEditOperation reserves the run before its queued turn becomes
+// visible to readers; CancelImageEdit can act as soon as submission returns.
+func (a *App) registerImageEditOperation(sessionID, operationID string) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.editOpsMu.Lock()
-	a.editOps[op.ID] = &editOpRun{conversationID: sessionID, cancel: cancel}
+	a.editOps[operationID] = &editOpRun{conversationID: sessionID, cancel: cancel}
 	a.editOpsMu.Unlock()
+	return ctx, cancel
+}
+
+// executeImageEditOperation dispatches one operation and persists each state
+// transition. Only inpainting uses the provider and outside-mask composite.
+func (a *App) executeImageEditOperation(ctx context.Context, cancel context.CancelFunc, config AppConfig, sessionID, turnID string, op EditOperation, inputData, maskData []byte) {
 	defer func() {
 		a.editOpsMu.Lock()
 		delete(a.editOps, op.ID)
@@ -523,18 +694,25 @@ func (a *App) executeImageEditOperation(config AppConfig, sessionID, turnID stri
 	}()
 
 	store := newHistoryStore(config.Storage)
-	persistAndEmit := func(op EditOperation) {
+	persistAndEmit := func(op EditOperation) error {
 		loaded, err := loadForEditAppend(config.Storage, sessionID)
 		if err != nil {
+			op.Status = editOperationStatusFailed
+			op.Error = fmt.Sprintf("the edit state could not be saved: %v", err)
 			a.emitEditOperation(sessionID, op)
-			return
+			return err
 		}
 		loaded.Conversation.UpdatedAt = time.Now().Format(time.RFC3339)
 		if op.Status == editOperationStatusCompleted {
 			loaded.Conversation.Stats.ArtifactCount++
 		}
-		_ = store.writeConversation(loaded.Path, loaded.Conversation)
-		_ = store.writeTurn(loaded.TurnsDir, HistoryTurn{
+		if err := store.writeConversation(loaded.Path, loaded.Conversation); err != nil {
+			op.Status = editOperationStatusFailed
+			op.Error = fmt.Sprintf("the edit state could not be saved: %v", err)
+			a.emitEditOperation(sessionID, op)
+			return err
+		}
+		if err := store.writeTurn(loaded.TurnsDir, HistoryTurn{
 			SchemaVersion:  1,
 			ID:             turnID,
 			ConversationID: sessionID,
@@ -545,7 +723,12 @@ func (a *App) executeImageEditOperation(config AppConfig, sessionID, turnID stri
 			Model:          op.Model,
 			Request:        map[string]any{"operation": op},
 			Content:        editOperationContents(op),
-		})
+		}); err != nil {
+			op.Status = editOperationStatusFailed
+			op.Error = fmt.Sprintf("the edit state could not be saved: %v", err)
+			a.emitEditOperation(sessionID, op)
+			return err
+		}
 		// ResultPath is relative to the CONVERSATION directory (the
 		// HistoryContent.Path convention); joining it against the artifacts
 		// directory would double the segment and 404 the preview.
@@ -553,12 +736,41 @@ func (a *App) executeImageEditOperation(config AppConfig, sessionID, turnID stri
 			op.ResultURL = artifactPrefix + filepath.Join(filepath.Dir(loaded.Path), filepath.FromSlash(op.ResultPath))
 		}
 		a.emitEditOperation(sessionID, op)
+		return nil
 	}
 
 	op.Status = editOperationStatusRunning
-	persistAndEmit(op)
+	if err := persistAndEmit(op); err != nil {
+		return
+	}
 
-	resultData, costMicros, costUnknown, notices, execErr := a.executeInpaintProvider(ctx, config, op, inputData, maskData)
+	var (
+		resultData  []byte
+		costMicros  int64
+		costUnknown bool
+		notices     = append([]string(nil), op.Notices...)
+		execErr     error
+	)
+	switch op.Kind {
+	case editOperationKindInpaint:
+		var providerNotices []string
+		resultData, costMicros, costUnknown, providerNotices, execErr = a.executeInpaintProvider(ctx, config, op, inputData, maskData)
+		notices = append(notices, providerNotices...)
+	case editOperationKindCrop:
+		if op.Crop == nil {
+			execErr = errors.New("operation carries no crop payload")
+		} else {
+			if imageExtensionForBytes(inputData) == ".gif" {
+				notices = append(notices, "Animated GIF sources are cropped as a still image from the decoded first frame.")
+			}
+			resultData, execErr = executeCropOperation(inputData, *op.Crop)
+		}
+	default:
+		execErr = fmt.Errorf("unsupported edit operation kind %q", op.Kind)
+	}
+	if execErr == nil && ctx.Err() != nil {
+		execErr = ctx.Err()
+	}
 	op.CompletedAt = time.Now().Format(time.RFC3339)
 	op.Notices = notices
 	op.CostMicros = costMicros
@@ -570,7 +782,7 @@ func (a *App) executeImageEditOperation(config AppConfig, sessionID, turnID stri
 			op.Status = editOperationStatusCancelled
 		}
 		op.Error = execErr.Error()
-	case execErr == nil:
+	case execErr == nil && op.Kind == editOperationKindInpaint:
 		// Strict outside-mask preservation: the composite runs before anything
 		// is persisted as a result. A differently-shaped output fails the
 		// operation (inputs retained for retry); a UNIFORMLY rescaled output
@@ -618,8 +830,34 @@ func (a *App) executeImageEditOperation(config AppConfig, sessionID, turnID stri
 		op.ResultMimeType = result.MimeType
 		op.ResultWidth = result.Width
 		op.ResultHeight = result.Height
+	case execErr == nil && op.Kind == editOperationKindCrop:
+		loaded, loadErr := loadForEditAppend(config.Storage, sessionID)
+		if loadErr != nil {
+			op.Status = editOperationStatusFailed
+			op.Error = fmt.Sprintf("the crop ran but its result could not be saved: %v", loadErr)
+			break
+		}
+		contents, writeErr := writeChatImageArtifacts(loaded.ArtifactsDir, ImageGenerateRequest{
+			Width:  op.Crop.Width,
+			Height: op.Crop.Height,
+		}, []string{"data:image/png;base64," + base64.StdEncoding.EncodeToString(resultData)})
+		if writeErr != nil || len(contents) == 0 {
+			op.Status = editOperationStatusFailed
+			if writeErr == nil {
+				writeErr = errors.New("the crop produced no image")
+			}
+			op.Error = fmt.Sprintf("the crop ran but its result could not be saved: %v", writeErr)
+			break
+		}
+		result := contents[0]
+		op.Status = editOperationStatusCompleted
+		op.ResultArtifactID = result.ArtifactID
+		op.ResultPath = result.Path
+		op.ResultMimeType = result.MimeType
+		op.ResultWidth = result.Width
+		op.ResultHeight = result.Height
 	}
-	persistAndEmit(op)
+	_ = persistAndEmit(op)
 }
 
 // editOperationContents builds the turn content for an operation turn: the
@@ -1025,7 +1263,7 @@ func appendEditAdoptionTurn(config AppConfig, parentID string, meta *EditSession
 		}
 		return ConversationSummary{}, err
 	}
-	text := fmt.Sprintf("Added from the edit session of this conversation (inpaint: %s).", truncateEditAdoptionPrompt(op.Inpaint.Prompt))
+	text := fmt.Sprintf("Added from the edit session of this conversation (%s).", editOperationAdoptionSummary(op))
 	turnContents := append([]HistoryContent{{Type: "text", Text: text}}, contents...)
 	turn := HistoryTurn{
 		SchemaVersion:  1,
@@ -1043,6 +1281,7 @@ func appendEditAdoptionTurn(config AppConfig, parentID string, meta *EditSession
 				"kind":        op.Kind,
 				"provider":    op.Provider,
 				"model":       op.Model,
+				"backend":     op.Backend,
 			},
 		},
 	}
@@ -1066,6 +1305,27 @@ func truncateEditAdoptionPrompt(prompt string) string {
 		return string(runes)
 	}
 	return string(runes[:77]) + "…"
+}
+
+func editOperationAdoptionSummary(op EditOperation) string {
+	switch op.Kind {
+	case editOperationKindCrop:
+		if op.Crop == nil {
+			return "crop"
+		}
+		ratio := strings.TrimSpace(op.Crop.AspectRatio)
+		if ratio == "" {
+			ratio = "free"
+		}
+		return fmt.Sprintf("crop: %s, %d × %d", ratio, op.Crop.Width, op.Crop.Height)
+	case editOperationKindInpaint:
+		if op.Inpaint == nil {
+			return "inpaint"
+		}
+		return fmt.Sprintf("inpaint: %s", truncateEditAdoptionPrompt(op.Inpaint.Prompt))
+	default:
+		return op.Kind
+	}
 }
 
 // markEditOperationAdopted / clearEditOperationAdopted rewrite the op record's

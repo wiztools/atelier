@@ -1,6 +1,8 @@
 import {useCallback, useEffect, useLayoutEffect, useRef, useState} from 'react';
 import {fitTransform, ViewTransform, zoomAround} from './coordinates';
 import {MaskPoint, MaskStroke, drawOverlay} from './MaskBrushTool';
+import {CropTool} from './CropTool';
+import {CropRect} from './cropGeometry';
 
 // CanvasStage hosts the image being edited: the zoom/pan/fit surface, the
 // overlay canvas that renders the selection, and the pointer routing that
@@ -13,6 +15,8 @@ import {MaskPoint, MaskStroke, drawOverlay} from './MaskBrushTool';
 // (the parent reads the modifier from the stroke events).
 
 type StageProps = {
+  crop?: {rect: CropRect; ratio: number | null; onChange: (rect: CropRect) => void; onCommit: (rect: CropRect) => void};
+  disabled?: boolean;
   imageUrl: string;
   imageWidth: number;
   imageHeight: number;
@@ -35,10 +39,11 @@ export function CanvasStage(props: StageProps) {
   const [box, setBox] = useState({width: 0, height: 0});
   const panState = useRef<{x: number; y: number; offsetX: number; offsetY: number} | null>(null);
   const painting = useRef(false);
+  const [cropping, setCropping] = useState(false);
 
   // Fit whenever the image or the box changes.
   useLayoutEffect(() => {
-    if (!props.imageWidth || !props.imageHeight || !box.width || !box.height) {
+    if (cropping || !props.imageWidth || !props.imageHeight || !box.width || !box.height) {
       return;
     }
     setView(fitTransform(props.imageWidth, props.imageHeight, box.width, box.height));
@@ -70,7 +75,7 @@ export function CanvasStage(props: StageProps) {
       canvas.height = props.imageHeight;
     }
     drawOverlay(canvas, props.maskCanvas, props.liveStroke, props.cursor, props.brushRadius / view.scale);
-  }, [props.maskCanvas, props.maskVersion, props.liveStroke, props.cursor, props.brushRadius, props.imageWidth, props.imageHeight, view.scale]);
+  }, [props.maskCanvas, props.maskVersion, props.liveStroke, props.cursor, props.brushRadius, props.imageWidth, props.imageHeight, view.scale, !!props.crop]);
 
   // Pointer → image pixels. The bounding rect is measured AFTER the stage's
   // translate+scale transform, so normalizing the pointer by the rect's size
@@ -96,6 +101,7 @@ export function CanvasStage(props: StageProps) {
 
   const onWheel = (event: React.WheelEvent) => {
     event.preventDefault();
+    if (cropping) return;
     if (event.ctrlKey || event.metaKey) {
       const rect = containerRef.current?.getBoundingClientRect();
       if (!rect) {
@@ -109,6 +115,7 @@ export function CanvasStage(props: StageProps) {
   };
 
   const onPointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (props.disabled) return;
     const point = pointerToImage(event);
     if (event.button === 1 || event.button === 2 || (event.button === 0 && event.shiftKey)) {
       panState.current = {x: event.clientX, y: event.clientY, offsetX: view.offsetX, offsetY: view.offsetY};
@@ -156,6 +163,7 @@ export function CanvasStage(props: StageProps) {
   };
 
   const zoomBy = (factor: number) => {
+    if (cropping) return;
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) {
       return;
@@ -164,6 +172,7 @@ export function CanvasStage(props: StageProps) {
   };
 
   const fit = () => {
+    if (cropping) return;
     if (props.imageWidth && props.imageHeight && box.width && box.height) {
       setView(fitTransform(props.imageWidth, props.imageHeight, box.width, box.height));
     }
@@ -174,6 +183,20 @@ export function CanvasStage(props: StageProps) {
       className="editor-stage"
       ref={containerRef}
       onWheel={onWheel}
+      onPointerDownCapture={(event) => {
+        if (!props.crop || props.disabled || cropping || !(event.button === 1 || event.button === 2 || (event.button === 0 && event.shiftKey))) return;
+        panState.current = {x: event.clientX, y: event.clientY, offsetX: view.offsetX, offsetY: view.offsetY};
+        event.currentTarget.setPointerCapture(event.pointerId);
+        event.preventDefault(); event.stopPropagation();
+      }}
+      onPointerMoveCapture={(event) => {
+        if (!props.crop || !panState.current) return;
+        const pan = panState.current;
+        setView((current) => ({...current, offsetX: pan.offsetX + event.clientX - pan.x, offsetY: pan.offsetY + event.clientY - pan.y}));
+        event.stopPropagation();
+      }}
+      onPointerUpCapture={() => {if (props.crop) panState.current = null;}}
+      onPointerCancel={() => {panState.current = null; painting.current = false;}}
       onContextMenu={(event) => event.preventDefault()}
     >
       <div
@@ -190,7 +213,8 @@ export function CanvasStage(props: StageProps) {
           alt=""
           draggable={false}
         />
-        <canvas
+        {props.crop ? <CropTool rect={props.crop.rect} ratio={props.crop.ratio} width={props.imageWidth} height={props.imageHeight}
+          scale={view.scale} disabled={!!props.disabled} onChange={props.crop.onChange} onCommit={props.crop.onCommit} onGesture={setCropping} /> : <canvas
           className="editor-stage-overlay"
           ref={overlayRef}
           onPointerDown={onPointerDown}
@@ -198,7 +222,7 @@ export function CanvasStage(props: StageProps) {
           onPointerUp={onPointerUp}
           onPointerLeave={() => props.onCursor(null)}
           style={{cursor: 'crosshair'}}
-        />
+        />}
       </div>
       <div className="editor-stage-controls">
         <button type="button" onClick={() => zoomBy(1.25)} aria-label="Zoom in" title="Zoom in">+</button>

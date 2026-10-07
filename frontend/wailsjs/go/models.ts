@@ -1200,6 +1200,30 @@ export namespace main {
 		}
 	}
 	
+	export class CropOperationParams {
+	    x: number;
+	    y: number;
+	    width: number;
+	    height: number;
+	    sourceWidth: number;
+	    sourceHeight: number;
+	    aspectRatio?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new CropOperationParams(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.x = source["x"];
+	        this.y = source["y"];
+	        this.width = source["width"];
+	        this.height = source["height"];
+	        this.sourceWidth = source["sourceWidth"];
+	        this.sourceHeight = source["sourceHeight"];
+	        this.aspectRatio = source["aspectRatio"];
+	    }
+	}
 	export class DeleteLibraryResult {
 	    deletedProjects: number;
 	    deletedConversations: number;
@@ -1271,6 +1295,7 @@ export namespace main {
 	    error?: string;
 	    notices?: string[];
 	    inpaint?: InpaintOperationParams;
+	    crop?: CropOperationParams;
 	    adoptedAt?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -1299,6 +1324,7 @@ export namespace main {
 	        this.error = source["error"];
 	        this.notices = source["notices"];
 	        this.inpaint = this.convertValues(source["inpaint"], InpaintOperationParams);
+	        this.crop = this.convertValues(source["crop"], CropOperationParams);
 	        this.adoptedAt = source["adoptedAt"];
 	    }
 	
@@ -1366,6 +1392,7 @@ export namespace main {
 	    mimeType?: string;
 	    width?: number;
 	    height?: number;
+	    sourceDigest?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new EditSourceInfo(source);
@@ -1381,6 +1408,7 @@ export namespace main {
 	        this.mimeType = source["mimeType"];
 	        this.width = source["width"];
 	        this.height = source["height"];
+	        this.sourceDigest = source["sourceDigest"];
 	    }
 	}
 	export class EditSessionState {
@@ -1628,6 +1656,8 @@ export namespace main {
 	    maskPng?: string;
 	    provider?: string;
 	    model?: string;
+	    crop?: CropOperationParams;
+	    sourceDigest?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ImageEditSubmitRequest(source);
@@ -1644,7 +1674,27 @@ export namespace main {
 	        this.maskPng = source["maskPng"];
 	        this.provider = source["provider"];
 	        this.model = source["model"];
+	        this.crop = this.convertValues(source["crop"], CropOperationParams);
+	        this.sourceDigest = source["sourceDigest"];
 	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class InpaintModelOption {
 	    id: string;

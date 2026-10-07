@@ -29,9 +29,12 @@ import (
 	"strings"
 )
 
-// Edit operation kinds. v1 implements inpaint; crop is the designated next
-// kind (its payload struct lands with its executor).
-const editOperationKindInpaint = "inpaint"
+// Edit operation kinds. Inpaint is provider-backed; crop is deterministic and
+// runs locally against the session-owned source pixels.
+const (
+	editOperationKindInpaint = "inpaint"
+	editOperationKindCrop    = "crop"
+)
 
 // Edit operation statuses. queued/running are transient (the in-flight edit);
 // completed/failed/cancelled are terminal. A queued/running op found without
@@ -99,6 +102,7 @@ type EditOperation struct {
 	// Kind payloads — exactly one is non-nil. A nil payload with an unknown
 	// Kind is rendered as an opaque entry (forward compatibility).
 	Inpaint *InpaintOperationParams `json:"inpaint,omitempty"`
+	Crop    *CropOperationParams    `json:"crop,omitempty"`
 	// AdoptedAt records when this operation's result was added to the parent
 	// conversation (AddEditResultToConversation) — the idempotency mark that
 	// keeps repeated clicks from duplicating parent entries.
@@ -115,6 +119,20 @@ type InpaintOperationParams struct {
 	MaskPath       string `json:"maskPath,omitempty"`
 	MaskWidth      int    `json:"maskWidth,omitempty"`
 	MaskHeight     int    `json:"maskHeight,omitempty"`
+}
+
+// CropOperationParams is the deterministic crop payload. Coordinates are
+// integer upright image pixels in the input artifact's coordinate space.
+// SourceWidth/SourceHeight are a stale-preview guard: the submitter must name
+// the dimensions it used to derive the rectangle.
+type CropOperationParams struct {
+	X            int    `json:"x"`
+	Y            int    `json:"y"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
+	SourceWidth  int    `json:"sourceWidth"`
+	SourceHeight int    `json:"sourceHeight"`
+	AspectRatio  string `json:"aspectRatio,omitempty"`
 }
 
 // operationPayload returns the op's kind payload for validation and adapter
@@ -137,9 +155,9 @@ var editComposableExtensions = map[string]bool{
 
 // normalizeEditSourceBytes prepares one source image for the editor pipeline:
 // orientation baked into the pixels and the bytes decodable by the compositor.
-// Composable sources with no EXIF rotation pass through byte-identical (zero
-// quality loss); everything else — WebP, the CLI-decoded containers, a
-// rotated JPEG — is baked to JPEG on the resolved basic image backend. Because
+// Upright PNG/JPEG sources pass through byte-identical. GIFs and oriented
+// JPEGs become PNGs in Go; other containers (WebP/HEIC/AVIF/TIFF/BMP/JP2)
+// use the resolved basic image backend to become JPEG. Because
 // ImageMagick does not reliably bake EXIF orientation on conversion, the bake
 // re-checks the result's own orientation flag and, if it survived, applies the
 // rotation in pure Go (bakeJPEGOrientation) — the final bytes always read
@@ -153,7 +171,21 @@ func normalizeEditSourceBytes(ctx context.Context, config AppConfig, data []byte
 	if extension == "" {
 		return nil, "", errors.New("unsupported image payload")
 	}
-	if editComposableExtensions[extension] && jpegEXIFOrientation(data) <= 1 {
+	orientation := jpegEXIFOrientation(data)
+	if extension == ".gif" || orientation > 1 {
+		// Freeze GIFs on their first frame and bake JPEG orientation before
+		// previewing. PNG keeps the decoded pixels without another lossy encode.
+		decoded, err := decodeComposableImage(data)
+		if err != nil {
+			return nil, "", fmt.Errorf("could not decode the source image: %w", err)
+		}
+		out := &bytes.Buffer{}
+		if err := png.Encode(out, applyEXIFOrientation(decoded, orientation)); err != nil {
+			return nil, "", err
+		}
+		return out.Bytes(), ".png", nil
+	}
+	if editComposableExtensions[extension] && orientation <= 1 {
 		return data, extension, nil
 	}
 	converted, err := convertImageBytesForModel(ctx, config, data, extension)

@@ -146,6 +146,8 @@ export function RandomEmptyStatePrompt():Promise<main.EmptyStatePrompt>;
 
 export function ReadToolFile(arg1:main.ToolFileReadRequest):Promise<main.ToolFileReadResult>;
 
+export function ReleaseEditSourcePreview(arg1:string):Promise<void>;
+
 export function RenameLibrary(arg1:string,arg2:string):Promise<main.LibrarySummary>;
 
 export function RenameProject(arg1:string,arg2:string):Promise<main.ProjectSummary>;

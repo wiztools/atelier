@@ -69,6 +69,10 @@ type App struct {
 	// queued/running records consult. editOpsMu guards the map.
 	editOps   map[string]*editOpRun
 	editOpsMu sync.Mutex
+	// editSubmitMu serializes submit-time validation, persistence, and
+	// in-flight registration. Without it, two quick submits into the same
+	// session could both pass the running check before either registered.
+	editSubmitMu sync.Mutex
 	// imageToImage* cache fal's image-to-image catalog (~400 models) shared by
 	// the Settings upscale and image-edit pickers, so the two listers don't each
 	// re-page the whole category and race the request timeout — a slow page used

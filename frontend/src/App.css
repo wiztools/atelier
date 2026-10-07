@@ -4033,3 +4033,51 @@ button:disabled {
   color: #9a978f;
   margin-top: 4px;
 }
+
+.editor-tool-selector {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid #3a3e41;
+  border-radius: 8px;
+  background: #17191c;
+}
+.editor-tool-selector button {
+  flex: 1;
+  border: 0;
+  border-radius: 5px;
+  padding: 8px 12px;
+  color: #9a978f;
+  background: transparent;
+  cursor: pointer;
+}
+.editor-tool-selector button.active {background: #34393d; color: #f3f0e8;}
+.editor-crop-ratio-row {display: flex; gap: 8px;}
+.editor-crop-ratio-row select {flex: 1; min-width: 0;}
+.editor-crop-ratio-row button {
+  border: 1px solid #3a3e41;
+  border-radius: 6px;
+  padding: 0 12px;
+  background: transparent;
+  color: #f3f0e8;
+  cursor: pointer;
+}
+.editor-crop-summary {display: flex; flex-direction: column; gap: 6px;}
+.editor-crop-summary strong {font-size: 18px; font-weight: 600;}
+.editor-crop-summary span {font-size: 12px; color: #9a978f;}
+.editor-crop-overlay {position: absolute; inset: 0; cursor: move; touch-action: none;}
+.editor-crop-overlay svg {display: block; pointer-events: none;}
+.editor-crop-handle {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.editor-crop-handle span {display: block; background: #fff; box-shadow: 0 0 0 1px #17191c;}
+.editor-crop-handle:focus-visible span {background: #8ab4f8;}
+.editor-tool-selector button:disabled, .editor-crop-ratio-row button:disabled {opacity: .45; cursor: default;}

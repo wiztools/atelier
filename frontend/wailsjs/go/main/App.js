@@ -290,6 +290,10 @@ export function ReadToolFile(arg1) {
   return window['go']['main']['App']['ReadToolFile'](arg1);
 }
 
+export function ReleaseEditSourcePreview(arg1) {
+  return window['go']['main']['App']['ReleaseEditSourcePreview'](arg1);
+}
+
 export function RenameLibrary(arg1, arg2) {
   return window['go']['main']['App']['RenameLibrary'](arg1, arg2);
 }

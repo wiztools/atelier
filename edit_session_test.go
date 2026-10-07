@@ -162,7 +162,7 @@ func TestSubmitImageEditValidatesBeforePersisting(t *testing.T) {
 		{"dimension mismatch", func(r *ImageEditSubmitRequest) { r.MaskPng = editTestMaskDataURL(t, 4, 4) }},
 		{"unknown provider", func(r *ImageEditSubmitRequest) { r.Provider = "openai" }},
 		{"unknown artifact", func(r *ImageEditSubmitRequest) { r.SourceArtifactID = "img_missing0001" }},
-		{"unknown kind", func(r *ImageEditSubmitRequest) { r.Kind = "crop" }},
+		{"unknown kind", func(r *ImageEditSubmitRequest) { r.Kind = "straighten" }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -175,6 +175,59 @@ func TestSubmitImageEditValidatesBeforePersisting(t *testing.T) {
 				t.Fatalf("invalid request created conversation dirs: %d → %d", before, got)
 			}
 		})
+	}
+}
+
+func TestSubmitImageEditCropCompletesLocally(t *testing.T) {
+	config := editTestHome(t)
+	artifactID := writeEditParentFixture(t, config, "conv_edit_crop1", "Parent", "")
+	app := editTestOfflineApp()
+
+	state, err := app.SubmitImageEdit(ImageEditSubmitRequest{
+		Kind:                 editOperationKindCrop,
+		ParentConversationID: "conv_edit_crop1",
+		SourceArtifactID:     artifactID,
+		Crop: &CropOperationParams{
+			X: 2, Y: 1, Width: 3, Height: 4,
+			SourceWidth: 8, SourceHeight: 8,
+			AspectRatio: "free",
+		},
+	})
+	if err != nil {
+		t.Fatalf("SubmitImageEdit crop returned error: %v", err)
+	}
+	op := waitForEditTerminal(t, config.Storage, state.SessionConversationID, state.Operation.ID)
+	if op.Status != editOperationStatusCompleted {
+		t.Fatalf("crop op status = %q (%s), want completed", op.Status, op.Error)
+	}
+	if op.Crop == nil || op.Inpaint != nil || op.Provider != "" || op.Model != "" || op.Backend != "local" {
+		t.Fatalf("crop op attribution/payload = %+v", op)
+	}
+	if op.ResultWidth != 3 || op.ResultHeight != 4 || op.ResultArtifactID == "" {
+		t.Fatalf("crop result = %+v", op)
+	}
+	detail, err := getConversation(config.Storage, state.SessionConversationID)
+	if err != nil {
+		t.Fatalf("session record: %v", err)
+	}
+	resultContent, _, ok := findImageContent(detail, op.ResultArtifactID)
+	if !ok {
+		t.Fatal("completed crop result is not a session image")
+	}
+	resultPath, err := contentArtifactPath(config.Storage, state.SessionConversationID, resultContent)
+	if err != nil {
+		t.Fatalf("result path: %v", err)
+	}
+	resultData, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	resultImg, err := png.Decode(bytes.NewReader(resultData))
+	if err != nil {
+		t.Fatalf("crop result is not PNG: %v", err)
+	}
+	if resultImg.Bounds().Dx() != 3 || resultImg.Bounds().Dy() != 4 {
+		t.Fatalf("crop result bounds = %v", resultImg.Bounds())
 	}
 }
 
