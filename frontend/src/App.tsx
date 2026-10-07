@@ -5711,7 +5711,7 @@ function App() {
                                       type="button"
                                       onClick={() => void openImageEditor(activeConversationID, editArtifactIDFromURL(image)!)}
                                     >
-                                      Edit with AI
+                                      Edit
                                     </button>
                                   ) : null}
                                 </figcaption>

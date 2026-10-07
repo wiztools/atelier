@@ -2323,6 +2323,7 @@ button:disabled {
 
 .chat-image-card figcaption {
   display: flex;
+  gap: 8px;
   justify-content: flex-start;
 }
 
