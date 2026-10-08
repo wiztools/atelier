@@ -52,6 +52,8 @@ Everything is **one flat Go package (`main`) at the repo root**. There are no su
 
 Frontend: `frontend/src/App.tsx` is the entire UI (single component, ~React 18 + `react-markdown`). It talks to Go only through the generated `wailsjs/` bindings and Wails runtime events.
 
+**The edit workspace shares one shell** (`frontend/src/editor/`): `EditorHeader` (close button, breadcrumb with session state, busy label) and `EditsPanel` (the resizable, collapsible Edits footer — drag/keyboard divider, collapse-snap to a restore bar, one localStorage height key across editors, scroll-contained list pane) are the common chrome the image and video editors both compose. An editor brings its own stage, inspector contents, and op rows (thumbs/actions/compare are media-specific children, never unified), and states its content floor via `bodyReservePx` so the panel's height clamp trades against the right floor (image 430 default; video 640 — its timeline row is taller). The next editor (audio, …) reuses this shell instead of re-deriving the layout; editor-shared CSS lives in App.css under the `editor-*` classes, with each editor's media-specific rules in its own file scoped by its section class (`videoEditor.css` under `.video-editor`).
+
 ## Architecture & Control Flow
 
 A chat turn flows through `App.StreamChat` → `HarnessEngine.RunChatStream`:

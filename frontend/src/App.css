@@ -3572,7 +3572,14 @@ button:disabled {
   opacity: 1;
 }
 
-.image-editor {
+/* The editor shell's outer section — shared by every editor (image, video).
+   Each editor adds its own class name for its media-specific rules. */
+.image-editor,
+.video-editor {
+  /* No global border-box exists; without this the 32px of vertical padding
+     rides OUTSIDE height:100% and pushes the section's bottom edge past the
+     workspace, clipping the Edits footer. */
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -3582,8 +3589,8 @@ button:disabled {
   /* The editor fills the viewport; the Edits section scrolls internally. */
   overflow: hidden;
   /* The workspace grid rows are "toolbar auto | content 1fr" — designed for
-     views with a toolbar child. The editor renders without one, so it must
-     span BOTH rows or it lands in the auto row, sized by content, with dead
+     views with a toolbar child. The editors render without one, so they must
+     span BOTH rows or they land in the auto row, sized by content, with dead
      space below (the divider-drag then has nothing to give either side). */
   grid-row: 1 / -1;
 }
@@ -3853,7 +3860,9 @@ button:disabled {
   background: rgba(255, 255, 255, 0.07);
 }
 
-.image-editor.resizing-results {
+/* While the divider drag is live, EditsPanel tags <body> so the whole
+   document drags (the mouse travels over the stage, not just the divider). */
+body.editor-results-resizing {
   cursor: row-resize;
   user-select: none;
 }

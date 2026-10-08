@@ -1,12 +1,16 @@
-.video-editor {
-  display: flex;
-  flex-direction: column;
+/* Video-editor-specific chrome. The shared shell — outer section, body grid
+   (`.editor-body`), header, inspector, and the Edits footer — lives in
+   App.css and the EditsPanel/EditorHeader components; only what the video
+   stage and timeline need is declared here. */
+
+/* The shared `.editor-body` keeps its flex content floor in the image editor
+   (canvas has no intrinsic height). Here the output frame's aspect-ratio
+   transfers its width into a large content height, which would become the
+   body's automatic flex minimum — the body would refuse to shrink and push
+   the Edits panel out of the viewport. The body yields instead; the panel's
+   height clamp (EditsPanel bodyReservePx) is what protects the stage floor. */
+.video-editor .editor-body {
   min-height: 0;
-  height: 100%;
-  padding: 16px 20px;
-  gap: 12px;
-  overflow: hidden;
-  grid-row: 1 / -1;
 }
 
 .video-preparation-status {
@@ -24,14 +28,8 @@
   color: #d9d7cf;
 }
 
-.video-editor .video-editor-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
-  gap: 14px;
-}
-
+/* The main column stacks the stage pair over the timeline; the shared
+   `.editor-body` grid gives it the inspector column on the right. */
 .video-editor .video-editor-main {
   min-width: 0;
   min-height: 0;
@@ -121,7 +119,12 @@
 }
 
 .video-editor .video-timeline {
-  flex: 0 0 auto;
+  /* Shrinkable with internal scroll: when a short window gives the body less
+     than its content floor, the timeline compresses (its controls stay
+     reachable by scrolling) instead of sliding under the Edits panel. */
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   display: grid;
   gap: 8px;
   border: 1px solid #3a3e41;
@@ -130,35 +133,82 @@
   background: #17191c;
 }
 
-.video-editor .video-transport {
+/* One compact controls row above the track: play/pause, time readout, add
+   marker (icons), then the selected marker's time and interpolation as
+   mini-fields and delete as an icon. */
+.video-editor .video-timeline-controls {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
 }
 
-.video-editor .video-transport button,
-.video-editor .video-marker-controls button {
+.video-editor .video-timeline-controls button {
+  height: 24px;
   border: 1px solid #3a3e41;
   border-radius: 7px;
   background: transparent;
   color: #f3f0e8;
-  padding: 6px 10px;
+  padding: 0 7px;
+  font-size: 12px;
   cursor: pointer;
 }
 
-.video-editor .video-transport button:disabled,
-.video-editor .video-marker-controls button:disabled {
+.video-editor .video-timeline-controls button:disabled {
   opacity: .45;
   cursor: default;
 }
 
-.video-editor .video-transport span {
+.video-editor .video-icon-button {
+  min-width: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.video-editor .video-timeline-time {
   color: #9a978f;
   font-size: 12px;
+  /* Steady width while the time ticks. */
+  min-width: 46px;
+  font-variant-numeric: tabular-nums;
+}
+
+.video-editor .video-mini-field {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #9a978f;
+  font-size: 11px;
+}
+
+.video-editor .video-mini-field input,
+.video-editor .video-mini-field select {
+  width: 72px;
+  height: 24px;
+  padding: 0 6px;
+  font-size: 12px;
+}
+
+.video-editor .video-mini-field select {
+  /* "Smooth" plus the disclosure arrow. */
+  width: 82px;
+}
+
+/* The playhead slider rides the global 36px input height; compact it to the
+   rest of the row so the timeline's content fits without internal scroll. */
+.video-editor .video-timeline > input[type="range"] {
+  height: 22px;
+  margin: 0;
+  padding: 0 10px;
 }
 
 .video-editor .video-timeline-track {
   position: relative;
+  /* Border-box so the 58px design height includes the border ring. */
+  box-sizing: border-box;
   height: 58px;
   overflow: hidden;
   border: 1px solid #303438;
@@ -217,26 +267,6 @@
   box-shadow: 0 0 0 3px rgba(138, 180, 248, .32);
 }
 
-.video-editor .video-marker-controls {
-  display: flex;
-  align-items: end;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.video-editor .video-marker-controls label {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  color: #9a978f;
-  font-size: 12px;
-}
-
-.video-editor .video-marker-controls input,
-.video-editor .video-marker-controls select {
-  width: 98px;
-}
-
 .video-editor .video-inspector {
   align-self: stretch;
   overflow-y: auto;
@@ -258,14 +288,6 @@
   font-size: 12px;
 }
 
-.video-editor .video-results {
-  flex: 0 0 210px;
-  min-height: 150px;
-  overflow-y: auto;
-  border-top: 1px solid #3a3e41;
-  padding-top: 8px;
-}
-
 .video-editor .video-op-thumb video {
   width: 100%;
   height: 100%;
@@ -285,7 +307,7 @@
 }
 
 @media (max-width: 980px) {
-  .video-editor .video-editor-body,
+  .video-editor .editor-body,
   .video-editor .video-stage {
     grid-template-columns: 1fr;
   }

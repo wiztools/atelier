@@ -78,13 +78,60 @@ export function VideoTimeline(props: {
 
   return (
     <div className="video-timeline">
-      <div className="video-transport">
-        <button type="button" onClick={props.onTogglePlay} aria-label={props.playing ? 'Pause video' : 'Play video'} title={props.playing ? 'Pause' : 'Play'}>
-          {props.playing ? 'Pause' : 'Play'}
+      <div className="video-timeline-controls">
+        <button
+          type="button"
+          className="video-icon-button"
+          onClick={props.onTogglePlay}
+          aria-label={props.playing ? 'Pause video' : 'Play video'}
+          title={props.playing ? 'Pause' : 'Play'}
+        >
+          {props.playing ? '❚❚' : '▶'}
         </button>
-        <span>{formatTime(props.currentTime)}</span>
-        <button type="button" onClick={props.onAddMarker} disabled={props.busy || props.params.markers.length >= 100}>
-          Add marker
+        <span className="video-timeline-time">{formatTime(props.currentTime)}</span>
+        <button
+          type="button"
+          className="video-icon-button"
+          onClick={props.onAddMarker}
+          disabled={props.busy || props.params.markers.length >= 100}
+          aria-label="Add a framing marker at the playhead"
+          title="Add marker at the playhead"
+        >
+          ⚑+
+        </button>
+        <label className="video-mini-field">
+          Time
+          <input
+            type="number"
+            min={0}
+            max={duration}
+            step={0.1}
+            value={selectedMarker?.timeSeconds ?? 0}
+            disabled={props.busy || props.selectedMarkerIndex === 0}
+            onChange={(event) => props.onCommitMarkerTime(props.selectedMarkerIndex, Number(event.target.value))}
+          />
+        </label>
+        <label className="video-mini-field">
+          Move
+          <select
+            value={selectedMarker?.interpolationToNext ?? 'smooth'}
+            disabled={props.busy || !selectedMarker}
+            onChange={(event) => props.onSetInterpolation(props.selectedMarkerIndex, event.target.value as VideoReframeInterpolation)}
+          >
+            <option value="smooth">Smooth</option>
+            <option value="linear">Linear</option>
+            <option value="hold">Hold</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          className="video-icon-button"
+          disabled={props.busy || props.selectedMarkerIndex <= 0}
+          onClick={() => props.onDeleteMarker(props.selectedMarkerIndex)}
+          aria-label="Delete the selected marker"
+          title="Delete marker"
+        >
+          ⚑-
         </button>
       </div>
       <div
@@ -124,35 +171,6 @@ export function VideoTimeline(props: {
       </div>
       <input type="range" min={0} max={duration} step={0.001} value={props.currentTime}
         aria-label="Video playhead" onChange={(event) => props.onSeek(Number(event.currentTarget.value))} />
-      <div className="video-marker-controls">
-        <label>
-          Time
-          <input
-            type="number"
-            min={0}
-            max={duration}
-            step={0.1}
-            value={selectedMarker?.timeSeconds ?? 0}
-            disabled={props.busy || props.selectedMarkerIndex === 0}
-            onChange={(event) => props.onCommitMarkerTime(props.selectedMarkerIndex, Number(event.target.value))}
-          />
-        </label>
-        <label>
-          Move
-          <select
-            value={selectedMarker?.interpolationToNext ?? 'smooth'}
-            disabled={props.busy || !selectedMarker}
-            onChange={(event) => props.onSetInterpolation(props.selectedMarkerIndex, event.target.value as VideoReframeInterpolation)}
-          >
-            <option value="smooth">Smooth</option>
-            <option value="linear">Linear</option>
-            <option value="hold">Hold</option>
-          </select>
-        </label>
-        <button type="button" disabled={props.busy || props.selectedMarkerIndex <= 0} onClick={() => props.onDeleteMarker(props.selectedMarkerIndex)}>
-          Delete marker
-        </button>
-      </div>
     </div>
   );
 }

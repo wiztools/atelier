@@ -2,6 +2,8 @@ import {Fragment, useEffect, useMemo, useRef, useState} from 'react';
 import * as AppBindings from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
 import {EventsOff, EventsOn} from '../../wailsjs/runtime/runtime';
+import {EditsPanel} from './EditsPanel';
+import {EditorHeader} from './EditorHeader';
 import {VideoStage} from './VideoStage';
 import {VideoTimeline} from './VideoTimeline';
 import {mergeVideoEditOperations as mergeOperations, terminalVideoEditStatus as terminalStatus} from './videoEditState';
@@ -116,6 +118,11 @@ function sourceForParams(source: VideoEditSourceInfo): {width: number; height: n
 function releaseVideoPreview(url: string): void {
   void AppBindings.ReleaseVideoEditSourcePreview(url).catch(() => {});
 }
+
+// The Edits panel's height clamp needs this editor's content floor: header +
+// stage minimum (260px) + the timeline row + paddings, plus slack to match
+// the image editor's proportions. The panel never grows past it.
+const editsPanelBodyReservePx = 640;
 
 export function VideoEditor(props: {
   handle: VideoEditorHandle;
@@ -481,32 +488,19 @@ export function VideoEditor(props: {
 
   return (
     <section className="video-editor">
-      <header className="editor-header">
-        <button type="button" className="editor-back" onClick={props.onClose} aria-label="Close editor">
-          ← Close
-        </button>
-        <div className="editor-breadcrumb">
-          <span className="editor-crumb-title">Video Editor</span>
-          {sessionID ? (
-            session?.parentAvailable ? (
-              <button type="button" className="editor-crumb-link" onClick={() => props.onOpenParent(session?.parentConversationId ?? parentID)}>
-                Open original chat
-              </button>
-            ) : (
-              <span className="editor-crumb-missing">original unavailable</span>
-            )
-          ) : (
-            <span className="editor-crumb-draft">unsaved draft</span>
-          )}
-        </div>
-        <div className="editor-header-status">
-          {busy ? <span className="editor-busy">{runningOp?.progress ? `${Math.round(runningOp.progress * 100)}%` : 'rendering…'}</span> : null}
-        </div>
-      </header>
+      <EditorHeader
+        title="Video Editor"
+        sessionID={sessionID || undefined}
+        parentAvailable={session?.parentAvailable}
+        parentConversationID={session?.parentConversationId ?? parentID}
+        busyLabel={busy ? (runningOp?.progress ? `${Math.round(runningOp.progress * 100)}%` : 'rendering…') : ''}
+        onClose={props.onClose}
+        onOpenParent={props.onOpenParent}
+      />
 
       {loadError ? <div className="editor-error">{loadError}</div> : null}
 
-      <div className="video-editor-body">
+      <div className="editor-body">
         <div className="video-editor-main">
           <VideoStage
             sourceUrl={source.url}
@@ -603,16 +597,14 @@ export function VideoEditor(props: {
         </aside>
       </div>
 
-      <footer className="video-results">
-        <div className="editor-results-header">
-          <h4>Edits</h4>
-          {adoptError ? <span className="editor-error">{adoptError}</span> : null}
-        </div>
-        {ops.length === 0 ? (
-          <p className="editor-results-empty">No renders yet.</p>
-        ) : (
-          <ul className="editor-op-list">
-            {orderedOps.map((op) => (
+      <EditsPanel
+        count={ops.length}
+        emptyText="No renders yet."
+        adoptError={adoptError ? <span className="editor-error">{adoptError}</span> : null}
+        bodyReservePx={editsPanelBodyReservePx}
+      >
+        <ul className="editor-op-list">
+          {orderedOps.map((op) => (
               <Fragment key={op.id}>
                 <li className={`editor-op editor-op-${op.status}${compareOpID === op.id ? ' selected' : ''}`}>
                   <button
@@ -661,9 +653,8 @@ export function VideoEditor(props: {
                 ) : null}
               </Fragment>
             ))}
-          </ul>
-        )}
-      </footer>
+        </ul>
+      </EditsPanel>
     </section>
   );
 }

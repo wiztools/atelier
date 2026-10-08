@@ -2,6 +2,8 @@ import {Fragment, useCallback, useEffect, useMemo, useRef, useState} from 'react
 import {AddEditResultToConversation, CancelImageEdit, ListEditSession, ListInpaintModels, ReleaseEditSourcePreview, SubmitImageEdit} from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
 import {EventsOff, EventsOn} from '../../wailsjs/runtime/runtime';
+import {EditsPanel} from './EditsPanel';
+import {EditorHeader} from './EditorHeader';
 import {CanvasStage} from './CanvasStage';
 import {MaskPoint, MaskStroke, exportMaskPNG, maskHasSelection, repaintMask} from './MaskBrushTool';
 import {CropRect, fitCrop, moveCrop, pixelCrop} from './cropGeometry';
@@ -9,10 +11,10 @@ import {CropRect, fitCrop, moveCrop, pixelCrop} from './cropGeometry';
 // ImageEditor is the edit workspace: canvas stage + mask brush on the left,
 // the operation inspector on the right, the operation chain along the bottom.
 // It is deliberately the shell only — canvas mechanics live in CanvasStage,
-// mask mechanics in MaskBrushTool, and submission in one pipeline here. A
-// future video editor reuses this shell with its own stage; the pieces that
-// stay media-neutral are the draft state, the submit pipeline, and the result
-// strip (see the plan's workspace architecture).
+// mask mechanics in MaskBrushTool, and submission in one pipeline here. The
+// shared chrome — the header bar and the resizable Edits footer — lives in
+// EditorHeader/EditsPanel; the video editor composes the same shell with its
+// own stage.
 //
 // Lifecycle: opening from an image card is an unsaved draft (no conversation
 // exists; closing costs nothing). The first applied edit creates the session
@@ -151,15 +153,9 @@ export function ImageEditor(props: {
   const [adoptError, setAdoptError] = useState('');
   const [compareOpID, setCompareOpID] = useState('');
 
-  // The Edits panel's height: draggable via the divider above it, persisted
-  // in localStorage (the sidebar-width convention), and collapsible —
-  // dragging the divider down past the floor snaps the panel shut, leaving a
-  // slim restore bar.
+  // The Edits panel's scroll pane: the compare-scroll effect scrolls it
+  // directly (contained), the panel itself owns the height/collapse logic.
   const resultsScrollRef = useRef<HTMLDivElement | null>(null);
-  const [resultsHeight, setResultsHeight] = useState(loadEditorResultsHeight);
-  const [resultsCollapsed, setResultsCollapsed] = useState(false);
-  const [resizingResults, setResizingResults] = useState(false);
-  const resultsDragRef = useRef<{startY: number; startHeight: number} | null>(null);
 
   const ops = session?.operations ?? [];
   // Newest iteration first: the list is chronological (the op chain advances
@@ -168,39 +164,6 @@ export function ImageEditor(props: {
   const orderedOps = useMemo(() => [...ops].reverse(), [ops]);
   const runningOpID = session?.runningOperationId ?? '';
   const busy = submitting || runningOpID !== '';
-
-  // Edits-panel drag: the divider sits between the canvas body and the
-  // footer, so moving the mouse UP grows the panel. Dropping near the floor
-  // snaps it collapsed; the height keeps the last usable value for restore.
-  useEffect(() => {
-    if (!resizingResults) {
-      return;
-    }
-    const onMove = (event: MouseEvent) => {
-      const drag = resultsDragRef.current;
-      if (!drag) {
-        return;
-      }
-      const next = clampEditorResultsHeight(drag.startHeight + (drag.startY - event.clientY));
-      if (next <= minEditorResultsHeight + collapseSnapSlack) {
-        setResultsCollapsed(true);
-        setResizingResults(false);
-        return;
-      }
-      setResultsHeight(next);
-    };
-    const onUp = () => setResizingResults(false);
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-    return () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
-  }, [resizingResults]);
-
-  useEffect(() => {
-    window.localStorage.setItem('atelier.editorResultsHeight', String(resultsHeight));
-  }, [resultsHeight]);
 
   // Bring the inline before/after expansion into view when the selection
   // changes — it renders below the clicked op, which may be off-screen.
@@ -595,31 +558,16 @@ export function ImageEditor(props: {
   }
 
   return (
-    <section className={`image-editor${resizingResults ? ' resizing-results' : ''}`}>
-      <header className="editor-header">
-        <button type="button" className="editor-back" onClick={props.onClose} aria-label="Close editor">
-          ← Close
-        </button>
-        <div className="editor-breadcrumb">
-          <span className="editor-crumb-title">
-            {session?.parentTitle || handle.source.conversationTitle || 'Image edit'}
-          </span>
-          {sessionID ? (
-            session?.parentAvailable ? (
-              <button type="button" className="editor-crumb-link" onClick={() => props.onOpenParent(session?.parentConversationId ?? parentID)}>
-                Open original chat
-              </button>
-            ) : (
-              <span className="editor-crumb-missing">original unavailable</span>
-            )
-          ) : (
-            <span className="editor-crumb-draft">unsaved draft</span>
-          )}
-        </div>
-        <div className="editor-header-status">
-          {busy ? <span className="editor-busy">edit in progress…</span> : null}
-        </div>
-      </header>
+    <section className="image-editor">
+      <EditorHeader
+        title={session?.parentTitle || handle.source.conversationTitle || 'Image edit'}
+        sessionID={sessionID || undefined}
+        parentAvailable={session?.parentAvailable}
+        parentConversationID={session?.parentConversationId ?? parentID}
+        busyLabel={busy ? 'edit in progress…' : ''}
+        onClose={props.onClose}
+        onOpenParent={props.onOpenParent}
+      />
 
       {loadError ? <div className="editor-error">{loadError}</div> : null}
 
@@ -785,59 +733,16 @@ export function ImageEditor(props: {
         </aside>
       </div>
 
-      {resultsCollapsed ? (
-        <button
-          type="button"
-          className="editor-results-restore"
-          onClick={() => setResultsCollapsed(false)}
-          title="Show the edits panel"
-        >
-          ▲ Edits{ops.length ? ` (${ops.length})` : ''}
-        </button>
-      ) : (
-        <>
-          <div
-            className={`editor-results-resizer${resizingResults ? ' active' : ''}`}
-            role="separator"
-            aria-orientation="horizontal"
-            aria-label="Resize edits panel"
-            tabIndex={0}
-            onMouseDown={(event) => {
-              event.preventDefault();
-              resultsDragRef.current = {startY: event.clientY, startHeight: resultsHeight};
-              setResizingResults(true);
-            }}
-            onDoubleClick={() => setResultsCollapsed(true)}
-            onKeyDown={(event) => {
-              if (event.key === 'ArrowUp') {
-                event.preventDefault();
-                setResultsCollapsed(false);
-                setResultsHeight(clampEditorResultsHeight(resultsHeight + 32));
-              }
-              if (event.key === 'ArrowDown') {
-                event.preventDefault();
-                const next = clampEditorResultsHeight(resultsHeight - 32);
-                if (next <= minEditorResultsHeight) {
-                  setResultsCollapsed(true);
-                } else {
-                  setResultsHeight(next);
-                }
-              }
-            }}
-          />
-          <footer className="editor-results" style={{height: resultsHeight}}>
-            <div className="editor-results-header">
-              <h4>Edits</h4>
-              {adoptError ? <span className="editor-error">{adoptError}</span> : null}
-        </div>
-        <div className="editor-results-scroll" ref={resultsScrollRef}>
-          {ops.length === 0 ? (
-            <p className="editor-results-empty">{tool === 'crop' ? 'No edits yet — adjust the crop and apply.' : 'No edits yet — paint a selection and generate.'}</p>
-          ) : (
-            <ul className="editor-op-list">
-              {orderedOps.map((op) => (
-              <Fragment key={op.id}>
-              <li className={`editor-op editor-op-${op.status}${compareOpID === op.id ? ' selected' : ''}`}>
+      <EditsPanel
+        count={ops.length}
+        emptyText={tool === 'crop' ? 'No edits yet — adjust the crop and apply.' : 'No edits yet — paint a selection and generate.'}
+        adoptError={adoptError ? <span className="editor-error">{adoptError}</span> : null}
+        scrollRef={resultsScrollRef}
+      >
+        <ul className="editor-op-list">
+          {orderedOps.map((op) => (
+          <Fragment key={op.id}>
+          <li className={`editor-op editor-op-${op.status}${compareOpID === op.id ? ' selected' : ''}`}>
                 <button
                   type="button"
                   className="editor-op-thumb"
@@ -901,12 +806,8 @@ export function ImageEditor(props: {
               ) : null}
               </Fragment>
             ))}
-            </ul>
-          )}
-        </div>
-      </footer>
-        </>
-      )}
+        </ul>
+      </EditsPanel>
     </section>
   );
 }
@@ -923,27 +824,4 @@ function formatEditorError(error: unknown): string {
   } catch {
     return String(error);
   }
-}
-
-// Edits-panel sizing: the divider drag and the persisted height. The floor
-// plus the snap slack define where a downward drag collapses the panel
-// entirely (leaving the slim restore bar).
-const minEditorResultsHeight = 120;
-const collapseSnapSlack = 24;
-const defaultEditorResultsHeight = 260;
-
-function clampEditorResultsHeight(height: number): number {
-  // The ceiling leaves room for the header, the canvas column's content floor
-  // (stage minimum + tools row), the divider, and the editor's padding — past
-  // that the footer would start clipping instead of trading space.
-  const max = Math.max(minEditorResultsHeight, window.innerHeight - 430);
-  return Math.round(Math.max(minEditorResultsHeight, Math.min(height, max)));
-}
-
-function loadEditorResultsHeight(): number {
-  const stored = Number(window.localStorage.getItem('atelier.editorResultsHeight'));
-  if (Number.isFinite(stored) && stored >= minEditorResultsHeight) {
-    return clampEditorResultsHeight(stored);
-  }
-  return defaultEditorResultsHeight;
 }
