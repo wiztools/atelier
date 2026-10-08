@@ -155,8 +155,19 @@ func main() {
 			// button on the <video controls> bar is a no-op (Wails leaves it
 			// off by default). Required so generated/attached videos can go
 			// fullscreen from their own control bar. macOS 12.3+ only.
+			//
+			// EnableAutoplayWithoutUserAction relaxes WKWebView's default
+			// mediaTypesRequiringUserActionForPlayback=.all, which rejects any
+			// programmatic play() made outside the click's call stack. The
+			// editors toggle playback from React state (a useEffect calls
+			// play() after the click task ends) and from the space key, so
+			// without this the Video Editor's play button silently no-ops —
+			// play() rejects with NotAllowedError and the state flips back.
+			// Nothing in the frontend sets the autoplay attribute; this only
+			// permits play()/pause() the code calls itself.
 			Preferences: &mac.Preferences{
-				FullscreenEnabled: mac.Enabled,
+				FullscreenEnabled:               mac.Enabled,
+				EnableAutoplayWithoutUserAction: mac.Enabled,
 			},
 		},
 		AssetServer: &assetserver.Options{
