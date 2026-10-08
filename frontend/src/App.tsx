@@ -5841,30 +5841,29 @@ function App() {
                           <div className="chat-image-results">
                             {entry.images.map((image, index) => (
                               <figure key={`${entry.id}-image-${index}`} className="chat-image-card">
-                                <button
-                                  className="chat-image-preview"
-                                  type="button"
-                                  aria-label={`Open generated image ${index + 1}`}
-                                  onClick={() => {
-                                    setPreviewImage(image);
-                                    setPreviewEditContext(editArtifactIDFromURL(image) && activeConversationID
-                                      ? {conversationID: activeConversationID, artifactID: editArtifactIDFromURL(image)!}
-                                      : null);
-                                  }}
-                                >
-                                  <img src={image} alt="Generated result" />
-                                </button>
-                                <figcaption>
-                                  <button type="button" onClick={() => saveGeneratedImage(image, index)}>Download image</button>
-                                  {activeConversationID && editArtifactIDFromURL(image) ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => void openImageEditor(activeConversationID, editArtifactIDFromURL(image)!)}
-                                    >
-                                      Edit
-                                    </button>
-                                  ) : null}
-                                </figcaption>
+                                <div className="chat-media-stage">
+                                  <button
+                                    className="chat-image-preview"
+                                    type="button"
+                                    aria-label={`Open generated image ${index + 1}`}
+                                    onClick={() => {
+                                      setPreviewImage(image);
+                                      setPreviewEditContext(editArtifactIDFromURL(image) && activeConversationID
+                                        ? {conversationID: activeConversationID, artifactID: editArtifactIDFromURL(image)!}
+                                        : null);
+                                    }}
+                                  >
+                                    <img src={image} alt="Generated result" />
+                                  </button>
+                                  <InlineMediaActions
+                                    downloadTitle="Download image"
+                                    onDownload={() => saveGeneratedImage(image, index)}
+                                    editTitle="Edit image with AI"
+                                    onEdit={activeConversationID && editArtifactIDFromURL(image)
+                                      ? () => void openImageEditor(activeConversationID, editArtifactIDFromURL(image)!)
+                                      : null}
+                                  />
+                                </div>
                               </figure>
                             ))}
                           </div>
@@ -5892,7 +5891,17 @@ function App() {
                       {entry.role === 'user' && entry.audios?.length ? (
                         <div className="chat-user-audios">
                           {entry.audios.map((audio, index) => (
-                            <AudioPlayer key={`${entry.id}-audio-${index}`} src={audio} />
+                            <div key={`${entry.id}-audio-${index}`} className="chat-media-stage">
+                              <AudioPlayer src={audio} />
+                              {/* The Save* bindings read artifact paths, not data:
+                                  URLs, so a just-attached clip (the live transcript's
+                                  inline form) hides download until the persisted
+                                  artifact URL replaces it. */}
+                              <InlineMediaActions
+                                downloadTitle="Download audio"
+                                onDownload={audio.startsWith('/atelier-artifact/') ? () => saveGeneratedAudio(audio, index) : null}
+                              />
+                            </div>
                           ))}
                         </div>
                       ) : null}
@@ -5900,11 +5909,18 @@ function App() {
                         <div className="chat-user-videos">
                           {entry.videos.map((video, index) => (
                             <figure key={`${entry.id}-video-${index}`} className="chat-video-card">
-                              <VideoPlayer src={video} />
-                              {activeConversationID && videoArtifactIDFromURL(video) ? (
-                                <figcaption><button type="button" disabled={videoEditorOpening}
-                                  onClick={() => void openVideoEditor(activeConversationID, videoArtifactIDFromURL(video)!)}>Edit video</button></figcaption>
-                              ) : null}
+                              <div className="chat-media-stage">
+                                <VideoPlayer src={video} />
+                                <InlineMediaActions
+                                  downloadTitle="Download video"
+                                  onDownload={videoArtifactIDFromURL(video) ? () => saveGeneratedVideo(video, index) : null}
+                                  editTitle="Edit video"
+                                  editDisabled={videoEditorOpening}
+                                  onEdit={activeConversationID && videoArtifactIDFromURL(video)
+                                    ? () => void openVideoEditor(activeConversationID, videoArtifactIDFromURL(video)!)
+                                    : null}
+                                />
+                              </div>
                             </figure>
                           ))}
                         </div>
@@ -5913,14 +5929,18 @@ function App() {
                         <div className="chat-video-results">
                           {entry.videos.map((video, index) => (
                             <figure key={`${entry.id}-video-${index}`} className="chat-video-card">
-                              <VideoPlayer src={video} />
-                              <figcaption>
-                                <button type="button" onClick={() => saveGeneratedVideo(video, index)}>Download video</button>
-                                {activeConversationID && videoArtifactIDFromURL(video) ? (
-                                  <button type="button" disabled={videoEditorOpening}
-                                    onClick={() => void openVideoEditor(activeConversationID, videoArtifactIDFromURL(video)!)}>Edit video</button>
-                                ) : null}
-                              </figcaption>
+                              <div className="chat-media-stage">
+                                <VideoPlayer src={video} />
+                                <InlineMediaActions
+                                  downloadTitle="Download video"
+                                  onDownload={() => saveGeneratedVideo(video, index)}
+                                  editTitle="Edit video"
+                                  editDisabled={videoEditorOpening}
+                                  onEdit={activeConversationID && videoArtifactIDFromURL(video)
+                                    ? () => void openVideoEditor(activeConversationID, videoArtifactIDFromURL(video)!)
+                                    : null}
+                                />
+                              </div>
                             </figure>
                           ))}
                         </div>
@@ -5929,10 +5949,13 @@ function App() {
                         <div className="chat-audio-results">
                           {entry.audios.map((audio, index) => (
                             <figure key={`${entry.id}-audio-${index}`} className="chat-audio-card">
-                              <AudioPlayer src={audio} />
-                              <figcaption>
-                                <button type="button" onClick={() => saveGeneratedAudio(audio, index)}>Download audio</button>
-                              </figcaption>
+                              <div className="chat-media-stage">
+                                <AudioPlayer src={audio} />
+                                <InlineMediaActions
+                                  downloadTitle="Download audio"
+                                  onDownload={() => saveGeneratedAudio(audio, index)}
+                                />
+                              </div>
                             </figure>
                           ))}
                         </div>
@@ -6392,7 +6415,11 @@ function App() {
               ×
             </button>
             <button className="image-preview-download" type="button" aria-label="Download image" title="Download" onClick={() => saveGeneratedImage(previewImage, 0)}>
-              ↓
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 4v11" />
+                <path d="m7 10 5 5 5-5" />
+                <path d="M5 20h14" />
+              </svg>
             </button>
             {previewEditContext ? (
               <button
@@ -6407,7 +6434,10 @@ function App() {
                   void openImageEditor(context.conversationID, context.artifactID);
                 }}
               >
-                ✎
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M12 20h9" />
+                  <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                </svg>
               </button>
             ) : null}
             <img src={previewImage} alt="Attached preview" />
@@ -6793,6 +6823,60 @@ function posterURLForVideoSrc(src: string): string {
   const dot = src.lastIndexOf('.');
   if (dot <= slash) return '';
   return src.slice(0, dot) + '_poster.jpg';
+}
+
+// The hover-revealed affordance cluster on the chat transcript's inline media
+// cards: the download/edit pair the maximized image preview floats, moved onto
+// the asset's own viewport so the caption row of labeled buttons goes away.
+// Same icon vocabulary as the assets panel's hover pills (arrow = download,
+// pencil = edit); the cluster anchors to the card's top-right corner via the
+// .chat-media-stage wrapper and renders as a SIBLING of the media, never a
+// child — a button cannot contain a button, and a sibling's click can't fall
+// through to the zoom/play gesture underneath. onEdit is omitted (not merely
+// hidden) when the media has no editable artifact, so a cluster is never a
+// lone disabled gap; audio has no editor, so it carries download only.
+function InlineMediaActions({downloadTitle, onDownload, editTitle, onEdit, editDisabled}: {
+  downloadTitle: string;
+  onDownload: (() => void) | null;
+  editTitle?: string;
+  onEdit?: (() => void) | null;
+  editDisabled?: boolean;
+}) {
+  if (!onDownload && !onEdit) return null;
+  return (
+    <div className="chat-media-actions">
+      {onEdit ? (
+        <button
+          type="button"
+          className="chat-media-action"
+          disabled={editDisabled}
+          aria-label={editTitle}
+          title={editTitle}
+          onClick={onEdit}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 20h9" />
+            <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+          </svg>
+        </button>
+      ) : null}
+      {onDownload ? (
+        <button
+          type="button"
+          className="chat-media-action"
+          aria-label={downloadTitle}
+          title={downloadTitle}
+          onClick={onDownload}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 4v11" />
+            <path d="m7 10 5 5 5-5" />
+            <path d="M5 20h14" />
+          </svg>
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 // The native <video controls> time readout belongs to WKWebView and can't be

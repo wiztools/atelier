@@ -2321,17 +2321,6 @@ button:disabled {
   background: #0f1112;
 }
 
-.chat-image-card figcaption {
-  display: flex;
-  gap: 8px;
-  justify-content: flex-start;
-}
-
-.chat-image-card figcaption button {
-  height: 32px;
-  font-size: 12px;
-}
-
 .chat-video-results {
   display: grid;
   gap: 12px;
@@ -2491,16 +2480,6 @@ button:disabled {
   background: #0f1112;
 }
 
-.chat-video-card figcaption {
-  display: flex;
-  justify-content: flex-start;
-}
-
-.chat-video-card figcaption button {
-  height: 32px;
-  font-size: 12px;
-}
-
 .chat-audio-results {
   display: grid;
   gap: 12px;
@@ -2514,14 +2493,54 @@ button:disabled {
   gap: 8px;
 }
 
-.chat-audio-card figcaption {
-  display: flex;
-  justify-content: flex-start;
+/* Inline media cards (.chat-image-card / .chat-video-card / .chat-audio-card,
+   plus the user-audio list) float the maximized preview's download/edit pair
+   over the asset's own viewport instead of a caption row of labeled buttons.
+   .chat-media-stage is the positioning context wrapping the media; the
+   cluster reveals on card hover or keyboard focus (the buttons stay in tab
+   order). Opacity alone would leave the hidden buttons still catching clicks
+   meant for the media's corner — zoom on images, play on the poster overlay —
+   so pointer-events drops with the reveal. */
+.chat-media-stage {
+  position: relative;
 }
 
-.chat-audio-card figcaption button {
-  height: 32px;
-  font-size: 12px;
+.chat-media-actions {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  display: flex;
+  gap: 8px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.chat-media-stage:hover .chat-media-actions,
+.chat-media-actions :focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Same pill as the assets panel's hover buttons (26px circle, semi-opaque
+   dark base so it reads over any media); hover feedback rides the global
+   button:hover rule. */
+.chat-media-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid #3a3e41;
+  border-radius: 50%;
+  background: rgba(20, 22, 24, 0.88);
+  color: #d9d7cf;
+}
+
+.chat-media-action:disabled {
+  opacity: 0.5;
 }
 
 /* Transcript artifacts (.vtt/.txt) render as one card per file — a label plus
@@ -2613,14 +2632,15 @@ button:disabled {
   top: 10px;
   right: 52px;
   z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 34px;
   height: 34px;
   padding: 0;
   border-radius: 999px;
   background: rgba(18, 20, 21, 0.9);
   color: #f3f0e8;
-  font-size: 22px;
-  line-height: 1;
 }
 
 /* Move-to-project picker (the ⋮ menu's "Move to…"): the same overlay shape
@@ -3536,14 +3556,15 @@ button:disabled {
   top: 10px;
   right: 94px;
   z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 34px;
   height: 34px;
   padding: 0;
   border-radius: 999px;
   background: rgba(18, 20, 21, 0.9);
   color: #f3f0e8;
-  font-size: 17px;
-  line-height: 1;
 }
 
 .asset-edit-button {
