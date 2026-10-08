@@ -115,7 +115,7 @@ export function ImageEditor(props: {
   const [brushSize, setBrushSize] = useState(28);
   const [brushMode, setBrushMode] = useState<'add' | 'subtract'>('add');
 
-  const [tool, setTool] = useState<'inpaint' | 'crop'>('inpaint');
+  const [tool, setTool] = useState<'inpaint' | 'crop'>('crop');
   const [cropRatio, setCropRatio] = useState('free');
   const [cropRect, setCropRect] = useState<CropRect>(() => fitCrop(handle.source.width || 0, handle.source.height || 0, null));
   const [cropUndo, setCropUndo] = useState<{rect: CropRect; ratio: string}[]>([]);
@@ -641,8 +641,8 @@ export function ImageEditor(props: {
 
         <aside className="editor-inspector">
           <div className="editor-tool-selector" role="group" aria-label="Editing tool">
-            <button type="button" className={tool === 'inpaint' ? 'active' : ''} aria-pressed={tool === 'inpaint'} disabled={busy} onClick={() => setTool('inpaint')}>Inpaint</button>
             <button type="button" className={tool === 'crop' ? 'active' : ''} aria-pressed={tool === 'crop'} disabled={busy} onClick={() => setTool('crop')}>Crop</button>
+            <button type="button" className={tool === 'inpaint' ? 'active' : ''} aria-pressed={tool === 'inpaint'} disabled={busy} onClick={() => setTool('inpaint')}>Inpaint</button>
           </div>
           {tool === 'crop' ? <>
             <div className="field">
