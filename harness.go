@@ -245,13 +245,17 @@ type HarnessToolCall struct {
 	// split_video takes "fast" (stream copy) or "accurate" (re-encode, the
 	// default), join_videos takes "auto" (probe and copy when inputs match,
 	// the default), "copy", or "reencode", and compose_images takes
-	// "watermark" (the default) or "collage". Planner-only, like the other
-	// media inputs — see local_ffmpeg.go and local_images.go.
-	At    string `json:"at,omitempty"`
-	Count int    `json:"count,omitempty"`
-	Start string `json:"start,omitempty"`
-	End   string `json:"end,omitempty"`
-	Mode  string `json:"mode,omitempty"`
+	// "watermark" (the default) or "collage". Columns is contact_sheet_video's
+	// optional grid width — frames per row of the montage (rows derive from
+	// the frame count); an omitted value picks a near-square grid.
+	// Planner-only, like the other media inputs — see local_ffmpeg.go and
+	// local_images.go.
+	At      string `json:"at,omitempty"`
+	Count   int    `json:"count,omitempty"`
+	Start   string `json:"start,omitempty"`
+	End     string `json:"end,omitempty"`
+	Mode    string `json:"mode,omitempty"`
+	Columns int    `json:"columns,omitempty"`
 	// Local image-tool inputs (convert_image, transform_image, compose_images,
 	// adjust_image, optimize_image; see local_images.go). Format names an
 	// output format; Quality is a 1-100 encoding percentage; AspectRatio
@@ -2381,14 +2385,17 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 						// ffmpeg tool inputs (screenshot/split/join, both the
 						// video and audio tools; start/end also scope
 						// transform_video's speed to a portion; count is
-						// screenshot_video's equal-interval batch size). The
-						// values are validated per-tool; the schema only
-						// frees the grammar to emit them.
-						"at":    map[string]any{"type": "string"},
-						"count": map[string]any{"type": "integer"},
-						"start": map[string]any{"type": "string"},
-						"end":   map[string]any{"type": "string"},
-						"mode":  map[string]any{"type": "string"},
+						// screenshot_video's equal-interval batch size and
+						// contact_sheet_video's frame count; columns is
+						// contact_sheet_video's grid width). The values are
+						// validated per-tool; the schema only frees the
+						// grammar to emit them.
+						"at":      map[string]any{"type": "string"},
+						"count":   map[string]any{"type": "integer"},
+						"start":   map[string]any{"type": "string"},
+						"end":     map[string]any{"type": "string"},
+						"mode":    map[string]any{"type": "string"},
+						"columns": map[string]any{"type": "integer"},
 						// Local image tool inputs (convert/transform/compose/
 						// adjust/optimize — see local_images.go). Same
 						// contract: per-tool validation, grammar freedom here.
@@ -3112,6 +3119,10 @@ func setToolCallField(call *HarnessToolCall, key, raw string) {
 		call.Grayscale = raw == "true"
 	case "sepia":
 		call.Sepia = raw == "true"
+	case "count":
+		call.Count = kwargInt(raw)
+	case "columns":
+		call.Columns = kwargInt(raw)
 	}
 }
 

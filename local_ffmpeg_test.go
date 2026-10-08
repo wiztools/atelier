@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -653,6 +654,258 @@ func TestFFmpegScreenshotRequiresVideo(t *testing.T) {
 	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{}, "screenshot_video", HarnessToolCall{At: "1"})
 	if result.Status == "completed" || !strings.Contains(result.Error, "requires an attached video clip") {
 		t.Fatalf("result = %+v, want the attachment error", result)
+	}
+}
+
+// TestContactSheetGrid pins the montage grid math: an omitted column count
+// picks the near-square ceil(√n); an explicit one wins, and rows always cover
+// every frame.
+func TestContactSheetGrid(t *testing.T) {
+	cases := []struct {
+		count             int
+		columns           int
+		wantCols, wantRow int
+	}{
+		{8, 0, 3, 3},
+		{9, 0, 3, 3},
+		{10, 0, 4, 3},
+		{16, 0, 4, 4},
+		{1, 0, 1, 1},
+		{7, 2, 2, 4},
+		{3, 5, 5, 1},
+		{4, -2, 2, 2}, // a negative column count means "derive"
+	}
+	for _, tc := range cases {
+		cols, rows := contactSheetGrid(tc.count, tc.columns)
+		if cols != tc.wantCols || rows != tc.wantRow {
+			t.Errorf("contactSheetGrid(%d, %d) = %dx%d, want %dx%d", tc.count, tc.columns, cols, rows, tc.wantCols, tc.wantRow)
+		}
+	}
+}
+
+// TestContactSheetTimestamps pins the equal-interval sampling: the first frame
+// lands 10% into the clip (AI clips often open on a black frame) and the last
+// never at the clip's very end.
+func TestContactSheetTimestamps(t *testing.T) {
+	timestamps := contactSheetTimestamps(12.5, 8)
+	if len(timestamps) != 8 {
+		t.Fatalf("timestamps = %v, want 8 entries", timestamps)
+	}
+	first, err := strconv.ParseFloat(timestamps[0], 64)
+	if err != nil || math.Abs(first-1.25) > 1e-9 {
+		t.Errorf("first timestamp = %v, want 1.25 (10%% of 12.5)", timestamps[0])
+	}
+	last, err := strconv.ParseFloat(timestamps[7], 64)
+	if err != nil || math.Abs(last-11.09375) > 1e-9 {
+		t.Errorf("last timestamp = %v, want 11.09375", timestamps[7])
+	}
+	if last >= 12.5 {
+		t.Errorf("last timestamp %v must stay inside the clip", timestamps[7])
+	}
+	single := contactSheetTimestamps(12.5, 1)
+	if value, _ := strconv.ParseFloat(single[0], 64); math.Abs(value-1.25) > 1e-9 {
+		t.Errorf("single-frame timestamp = %v, want 1.25", single[0])
+	}
+}
+
+// fakeFFmpegSkipOddScript fakes an ffmpeg whose odd-numbered capture outputs
+// never land (frame_01.jpg, frame_03.jpg, …): it drives contact_sheet_video's
+// missed-frame path — the survivors are renumbered into a gapless sequence and
+// the grid is recomputed from them.
+const fakeFFmpegSkipOddScript = `#!/bin/sh
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+printf '%s\n' "$@" >> "$dir/args.txt"
+prev=""
+out=""
+for a in "$@"; do
+  prev="$a"
+  out="$a"
+done
+case "$out" in
+  */frame_01.jpg|*/frame_03.jpg) exit 0 ;;
+esac
+printf '\377\330\377FAKE-MEDIA' > "$out"
+`
+
+func TestFFmpegContactSheetExecutes(t *testing.T) {
+	config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+	}, "contact_sheet_video", HarnessToolCall{Count: 4})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	typed, ok := result.Result.(ToolImageResult)
+	if !ok || typed.Count != 1 || len(typed.Images) != 1 {
+		t.Fatalf("result payload = %+v", result.Result)
+	}
+	if !strings.HasPrefix(typed.Images[0], "data:image/jpeg;base64,") {
+		t.Fatalf("image payload = %q", typed.Images[0][:40])
+	}
+	args := fakeFFmpegArgs(t, bin)
+	// Four frames at equal intervals over the fake probe's 12.5s, sampling
+	// from 10% in: the first seek lands at 1.25.
+	if !strings.Contains(args, "-ss 1.25") {
+		t.Fatalf("ffmpeg args = %q, want the first -ss seek at 1.25", args)
+	}
+	if strings.Count(args, "-ss ") != 4 {
+		t.Errorf("ffmpeg args = %q, want 4 capture seeks", args)
+	}
+	if !strings.Contains(args, "scale=480:-2,tile=2x2:margin=8:padding=4:color=black") {
+		t.Errorf("ffmpeg args = %q, want the 2x2 tile pass at the cell width", args)
+	}
+	if !strings.Contains(args, "-start_number 0") || !strings.Contains(args, "tile_%03d.jpg") {
+		t.Errorf("ffmpeg args = %q, want the gapless tile sequence input", args)
+	}
+	if !strings.Contains(result.Summary, "2x2 contact sheet of 4 evenly spaced frames") {
+		t.Errorf("summary = %q, want the grid phrase", result.Summary)
+	}
+}
+
+// TestFFmpegContactSheetDefaultsToEightFrames pins the zero-param form: a bare
+// "make a contact sheet" samples 8 frames into a near-square 3x3 grid.
+func TestFFmpegContactSheetDefaultsToEightFrames(t *testing.T) {
+	config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+	}, "contact_sheet_video", HarnessToolCall{})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	args := fakeFFmpegArgs(t, bin)
+	if strings.Count(args, "-ss ") != 8 {
+		t.Errorf("ffmpeg args = %q, want 8 capture seeks", args)
+	}
+	if !strings.Contains(args, "tile=3x3") {
+		t.Errorf("ffmpeg args = %q, want the default 3x3 grid", args)
+	}
+}
+
+func TestFFmpegContactSheetExplicitTimestamps(t *testing.T) {
+	config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+	}, "contact_sheet_video", HarnessToolCall{At: "2,4,6"})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	args := fakeFFmpegArgs(t, bin)
+	for _, want := range []string{"-ss 2", "-ss 4", "-ss 6"} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("ffmpeg args = %q, want %q", args, want)
+		}
+	}
+	// Three explicit frames and no column override: near-square 2x2.
+	if !strings.Contains(args, "tile=2x2") {
+		t.Errorf("ffmpeg args = %q, want the 2x2 grid", args)
+	}
+	if !strings.Contains(result.Summary, "frames at 2, 4, 6") {
+		t.Errorf("summary = %q, want the timestamp phrase", result.Summary)
+	}
+}
+
+// TestFFmpegContactSheetColumns pins the explicit column override: 6 frames at
+// 2 columns tile into a 2x3 grid.
+func TestFFmpegContactSheetColumns(t *testing.T) {
+	config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+	}, "contact_sheet_video", HarnessToolCall{Count: 6, Columns: 2})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	if args := fakeFFmpegArgs(t, bin); !strings.Contains(args, "tile=2x3") {
+		t.Errorf("ffmpeg args = %q, want the 2x3 grid", args)
+	}
+}
+
+// TestFFmpegContactSheetSkipsMissedFrames pins the fail-soft capture: two of
+// four timestamps produce no file, the survivors are renumbered into a gapless
+// sequence, the grid is recomputed (2x1), and the misses are noticed.
+func TestFFmpegContactSheetSkipsMissedFrames(t *testing.T) {
+	config, bin := ffmpegTestConfig(t, fakeFFmpegSkipOddScript, fakeFFprobeScript)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+	}, "contact_sheet_video", HarnessToolCall{Count: 4})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	typed, ok := result.Result.(ToolImageResult)
+	if !ok || typed.Count != 1 || len(typed.Images) != 1 {
+		t.Fatalf("result payload = %+v", result.Result)
+	}
+	if len(typed.Notices) != 2 {
+		t.Fatalf("notices = %v, want one per missed frame", typed.Notices)
+	}
+	args := fakeFFmpegArgs(t, bin)
+	if !strings.Contains(args, "tile=2x1") {
+		t.Errorf("ffmpeg args = %q, want the recomputed 2x1 grid", args)
+	}
+}
+
+func TestFFmpegContactSheetRequiresVideo(t *testing.T) {
+	config, _ := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{}, "contact_sheet_video", HarnessToolCall{Count: 4})
+	if result.Status == "completed" || !strings.Contains(result.Error, "requires an attached video clip") {
+		t.Fatalf("result = %+v, want the attachment error", result)
+	}
+}
+
+// TestFFmpegContactSheetDurationUnavailable pins the planner-facing repair
+// hint: without a readable duration, the error names contact_sheet_video and
+// points at its own explicit-at escape (never screenshot_video's).
+func TestFFmpegContactSheetDurationUnavailable(t *testing.T) {
+	config, _ := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeFailScript)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+	}, "contact_sheet_video", HarnessToolCall{Count: 4})
+	if result.Status == "completed" {
+		t.Fatalf("result = %+v, want the duration error", result)
+	}
+	for _, fragment := range []string{"contact_sheet_video could not read the clip's duration", `{"name":"contact_sheet_video","at":"0,30,60"}`} {
+		if !strings.Contains(result.Error, fragment) {
+			t.Errorf("error = %q, want it to include %q", result.Error, fragment)
+		}
+	}
+}
+
+// TestContactSheetValidation pins contact_sheet_video's per-tool validation:
+// the timestamp grammar, the 16-frame cap shared with screenshot_video, and
+// the column bounds. A call with neither at nor count is valid (the default
+// count applies).
+func TestContactSheetValidation(t *testing.T) {
+	cases := []struct {
+		name     string
+		call     HarnessToolCall
+		fragment string
+	}{
+		{"at needs a timestamp", HarnessToolCall{At: "abc"}, ".at must be a timestamp"},
+		{"at list validated per token", HarnessToolCall{At: "1,2,abc"}, ".at must be a timestamp"},
+		{"at capped", HarnessToolCall{At: "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17"}, ".at lists 17"},
+		{"count capped", HarnessToolCall{Count: 17}, ".count must be between 1 and 16"},
+		{"count non-negative", HarnessToolCall{Count: -1}, ".count must be between 1 and 16"},
+		{"columns capped", HarnessToolCall{Columns: 17}, ".columns must be between 1 and 16"},
+		{"columns non-negative", HarnessToolCall{Columns: -3}, ".columns must be between 1 and 16"},
+	}
+	for _, tc := range cases {
+		errors := contactSheetVideoToolDefinition().Validate("toolCalls[0]", tc.call)
+		if len(errors) == 0 || !strings.Contains(errors[0], tc.fragment) {
+			t.Errorf("%s: validate(%+v) = %v, want %q", tc.name, tc.call, errors, tc.fragment)
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		call HarnessToolCall
+	}{
+		{"default count", HarnessToolCall{}},
+		{"count at the cap", HarnessToolCall{Count: 16}},
+		{"explicit at", HarnessToolCall{At: "4.5"}},
+		{"clock at", HarnessToolCall{At: "00:01:30"}},
+		{"count plus columns", HarnessToolCall{Count: 4, Columns: 2}},
+	} {
+		if errors := contactSheetVideoToolDefinition().Validate("toolCalls[0]", tc.call); len(errors) != 0 {
+			t.Errorf("%s: validate(%+v) = %v, want none", tc.name, tc.call, errors)
+		}
 	}
 }
 
@@ -1780,7 +2033,7 @@ func TestFFmpegRegistryGating(t *testing.T) {
 		t.Fatal("ffmpeg tools must be absent without a detected binary")
 	}
 	names := newRegistryNames(t, map[string]string{"ffmpeg": "/opt/test/bin/ffmpeg"})
-	for _, want := range []string{"screenshot_video", "split_video", "join_videos", "extract_audio", "replace_audio", "transform_video"} {
+	for _, want := range []string{"screenshot_video", "contact_sheet_video", "split_video", "join_videos", "extract_audio", "replace_audio", "transform_video"} {
 		if !containsString(names, want) {
 			t.Errorf("registry with ffmpeg = %v, want %q", names, want)
 		}
@@ -1817,7 +2070,7 @@ func TestHarnessToolPlanSchemaHasFFmpegParams(t *testing.T) {
 	schema := harnessToolPlanSchema(filesystemToolRegistry())
 	items := schema["properties"].(map[string]any)["toolCalls"].(map[string]any)["items"].(map[string]any)
 	properties := items["properties"].(map[string]any)
-	for _, param := range []string{"at", "start", "end", "mode", "speed"} {
+	for _, param := range []string{"at", "count", "start", "end", "mode", "columns", "speed"} {
 		if _, ok := properties[param].(map[string]any); !ok {
 			t.Errorf("plan schema properties missing %q: %+v", param, properties)
 		}
@@ -1826,9 +2079,13 @@ func TestHarnessToolPlanSchemaHasFFmpegParams(t *testing.T) {
 
 func TestApplyKwargsFFmpegParams(t *testing.T) {
 	var call HarnessToolCall
-	applyKwargs(&call, "at='4.5', start='10', end='25', mode='fast', speed=3")
+	applyKwargs(&call, "at='4.5', start='10', end='25', mode='fast', speed=3, count=6, columns=2")
 	if call.At != "4.5" || call.Start != "10" || call.End != "25" || call.Mode != "fast" || call.Speed != 3 {
+		t.Errorf("call = %+v, want the ffmpeg params applied", call)
 		t.Fatalf("applyKwargs = %+v", call)
+	}
+	if call.Count != 6 || call.Columns != 2 {
+		t.Errorf("applyKwargs = %+v, want count=6 and columns=2 applied", call)
 	}
 	var slowed HarnessToolCall
 	applyKwargs(&slowed, "speed='0.5x'")

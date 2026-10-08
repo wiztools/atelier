@@ -1210,11 +1210,11 @@ export namespace main {
 	    sourceWidth: number;
 	    sourceHeight: number;
 	    aspectRatio?: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new CropOperationParams(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.x = source["x"];
@@ -1263,11 +1263,11 @@ export namespace main {
 	    height: number;
 	    timeSeconds: number;
 	    interpolationToNext: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new VideoReframeMarker(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.x = source["x"];
@@ -1281,11 +1281,11 @@ export namespace main {
 	export class VideoReframeOutput {
 	    width: number;
 	    height: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new VideoReframeOutput(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.width = source["width"];
@@ -1296,11 +1296,11 @@ export namespace main {
 	    width: number;
 	    height: number;
 	    durationSeconds: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new VideoReframeSource(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.width = source["width"];
@@ -1314,11 +1314,11 @@ export namespace main {
 	    aspectRatio: string;
 	    output: VideoReframeOutput;
 	    markers: VideoReframeMarker[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new VideoReframeParams(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.version = source["version"];
@@ -1327,7 +1327,7 @@ export namespace main {
 	        this.output = this.convertValues(source["output"], VideoReframeOutput);
 	        this.markers = this.convertValues(source["markers"], VideoReframeMarker);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1649,6 +1649,7 @@ export namespace main {
 	    start?: string;
 	    end?: string;
 	    mode?: string;
+	    columns?: number;
 	    format?: string;
 	    quality?: number;
 	    width?: number;
@@ -1708,6 +1709,7 @@ export namespace main {
 	        this.start = source["start"];
 	        this.end = source["end"];
 	        this.mode = source["mode"];
+	        this.columns = source["columns"];
 	        this.format = source["format"];
 	        this.quality = source["quality"];
 	        this.width = source["width"];
@@ -1783,7 +1785,7 @@ export namespace main {
 	        this.crop = this.convertValues(source["crop"], CropOperationParams);
 	        this.sourceDigest = source["sourceDigest"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -2579,11 +2581,11 @@ export namespace main {
 	    inputArtifactId?: string;
 	    sourceDigest?: string;
 	    reframe?: VideoReframeParams;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new VideoEditSubmitRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.parentConversationId = source["parentConversationId"];
@@ -2593,7 +2595,7 @@ export namespace main {
 	        this.sourceDigest = source["sourceDigest"];
 	        this.reframe = this.convertValues(source["reframe"], VideoReframeParams);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -2612,9 +2614,9 @@ export namespace main {
 		    return a;
 		}
 	}
-
-
-
+	
+	
+	
 
 }
 

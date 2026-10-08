@@ -45,7 +45,7 @@ func ffmpegToolsConfigured(config AppConfig) bool {
 // configured. It tells the model what actually happened (the capability is
 // absent, not broken) and the exact remedy to relay, so a from-knowledge
 // answer can't masquerade as a failed edit or hand the user a raw CLI recipe.
-const localMediaEditUnavailableNote = "Atelier note: the user's latest request asks for a local media edit — capturing a frame, splitting or trimming a clip or audio recording, joining clips or audio files, cropping/resizing/rotating a clip, or extracting/replacing audio — but no ffmpeg CLI was detected on this machine, so Atelier has no tool that can perform it. Do not claim the edit was done and do not attempt it through other tools. Tell the user plainly that local media editing needs a one-time install: install ffmpeg with `brew install ffmpeg` (or set an explicit binary in Settings → Video Tools); Atelier detects it automatically on the next message."
+const localMediaEditUnavailableNote = "Atelier note: the user's latest request asks for a local media edit — capturing a frame or a contact sheet, splitting or trimming a clip or audio recording, joining clips or audio files, cropping/resizing/rotating a clip, or extracting/replacing audio — but no ffmpeg CLI was detected on this machine, so Atelier has no tool that can perform it. Do not claim the edit was done and do not attempt it through other tools. Tell the user plainly that local media editing needs a one-time install: install ffmpeg with `brew install ffmpeg` (or set an explicit binary in Settings → Video Tools); Atelier detects it automatically on the next message."
 
 // mediaEditFallbackNotice returns the deterministic one-line blockquote for
 // the chat reply when the final model's answer did not already mention ffmpeg
@@ -68,6 +68,7 @@ func mediaEditFallbackNotice(unavailable bool, assistantContent string) string {
 func ffmpegToolDefinitions(config AppConfig) []HarnessToolDefinition {
 	definitions := []HarnessToolDefinition{
 		screenshotVideoToolDefinition(),
+		contactSheetVideoToolDefinition(),
 		splitVideoToolDefinition(),
 		splitAudioToolDefinition(),
 		joinVideosToolDefinition(),
@@ -110,7 +111,22 @@ func parseMediaTimestamp(token string) (float64, bool) {
 // capture. The batch form exists so "N frames at equal intervals" is one call
 // instead of N planner calls against the 3-per-round cap; 16 keeps a stray
 // "screenshot every second" request from turning into hundreds of seeks.
+// contact_sheet_video shares the cap for both its frame count and grid width.
 const screenshotTimestampsCap = 16
+
+const (
+	// contactSheetDefaultCount is how many frames contact_sheet_video tiles
+	// when the planner sets neither at nor count — a bare "make a contact
+	// sheet of this clip" still produces a usable overview.
+	contactSheetDefaultCount = 8
+	// contactSheetCellWidth is each cell's scaled width in the composed
+	// sheet: enough detail for a vision model to read a frame, small enough
+	// that a four-column sheet stays ~2K pixels wide.
+	contactSheetCellWidth = 480
+	// contactSheetFirstFrameSkip is how much of the clip's duration the
+	// equal-interval sampling skips at the start (see contactSheetTimestamps).
+	contactSheetFirstFrameSkip = 0.10
+)
 
 // splitTimestampTokens splits a planner-supplied screenshot `at` value into its
 // individual timestamps: a single timestamp passes through alone, a list is
@@ -155,6 +171,43 @@ func screenshotTimestampsPhrase(timestamps []string) string {
 		phrase += ", …"
 	}
 	return phrase
+}
+
+// contactSheetTimestamps spreads count captures across a clip of the given
+// duration, starting 10% in — AI-generated clips often open on a black frame
+// (the same dodge as the video poster extractor), and a black cell in a
+// poster-reference sheet is wasted ink. The last frame lands at
+// skip + (count-1)/count × span, never at the clip's very end (on a looping
+// clip it would duplicate the first). Values are pre-rendered as bare-second
+// strings, the form ffmpeg takes directly.
+func contactSheetTimestamps(durationSeconds float64, count int) []string {
+	first := durationSeconds * contactSheetFirstFrameSkip
+	span := durationSeconds - first
+	timestamps := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		seconds := first + float64(i)*span/float64(count)
+		timestamps = append(timestamps, strconv.FormatFloat(seconds, 'f', -1, 64))
+	}
+	return timestamps
+}
+
+// contactSheetGrid picks the sheet's grid for count captured frames: the
+// caller's columns when set, else the near-square ceil(√n) (8 frames land
+// 3x3, 9 land 3x3, 10 land 4x3). Rows always cover every frame —
+// ceil(count/columns) — and a column count larger than the frame count
+// collapses to a single row.
+func contactSheetGrid(count, columns int) (int, int) {
+	if columns <= 0 {
+		columns = int(math.Ceil(math.Sqrt(float64(count))))
+		if columns < 1 {
+			columns = 1
+		}
+	}
+	rows := (count + columns - 1) / columns
+	if rows < 1 {
+		rows = 1
+	}
+	return columns, rows
 }
 
 // ---------------------------------------------------------------------------
@@ -250,6 +303,21 @@ func ffmpegScreenshotArgs(input, at, output string, displayWidth, displayHeight 
 		args = append(args, "-vf", fmt.Sprintf("scale=%d:%d,setsar=1", displayWidth, displayHeight))
 	}
 	return append(args, "-frames:v", "1", "-q:v", "2", output)
+}
+
+// ffmpegContactSheetArgs tiles a consecutively numbered JPEG sequence into one
+// grid image. -framerate 1 feeds the tile filter one image per timeline
+// second and -frames:v 1 stops after the single composed frame. Every cell is
+// scaled to contactSheetCellWidth (height follows the frame's own aspect,
+// floored even for the chroma) so a 4K source does not balloon the sheet, and
+// the thin black margin/padding keeps adjacent frames readable as separate
+// images.
+func ffmpegContactSheetArgs(sequence string, columns, rows int, output string) []string {
+	return []string{
+		"-framerate", "1", "-start_number", "0", "-i", sequence,
+		"-vf", fmt.Sprintf("scale=%d:-2,tile=%dx%d:margin=8:padding=4:color=black", contactSheetCellWidth, columns, rows),
+		"-frames:v", "1", "-q:v", "2", output,
+	}
 }
 
 // ffmpegSplitArgs cuts a segment. fast copies streams (instant, but cut points
@@ -607,13 +675,14 @@ func transformVideoPortionFacts(ctx context.Context, config AppConfig, input, so
 	return 0, false, errors.New("transform_video could not read the attached clip's duration for the portion speed change — ffprobe is unavailable and the clip is not a readable MP4")
 }
 
-// screenshotClipDuration resolves the attached clip's duration for
-// screenshot_video's equal-interval batch form (count without at). ffprobe
-// answers for any container; the MP4 box sniff (mvhd) covers generation
-// outputs when ffprobe is unavailable — the same fallback shape as
-// transformVideoPortionFacts. The error names the explicit-at escape so the
-// planner can repair into a timestamp list instead of retrying the same call.
-func screenshotClipDuration(ctx context.Context, config AppConfig, input, sourceDataURL string) (float64, error) {
+// clipDurationForEqualIntervals resolves the attached clip's duration for an
+// ffmpeg tool's equal-interval batch form (count without at): ffprobe answers
+// for any container; the MP4 box sniff (mvhd) covers generation outputs when
+// ffprobe is unavailable — the same fallback shape as
+// transformVideoPortionFacts. The error names the calling tool and its
+// explicit-at escape so the planner can repair into a timestamp list instead
+// of retrying the same call.
+func clipDurationForEqualIntervals(ctx context.Context, config AppConfig, input, sourceDataURL, tool string) (float64, error) {
 	if _, ok := resolveLocalFFprobeBinary(config); ok {
 		if probe, err := probeStagedMedia(ctx, config, input, "video"); err == nil && probe.Duration > 0 {
 			return probe.Duration, nil
@@ -624,7 +693,7 @@ func screenshotClipDuration(ctx context.Context, config AppConfig, input, source
 			return seconds, nil
 		}
 	}
-	return 0, errors.New(`screenshot_video could not read the clip's duration for the equal-interval capture (ffprobe is unavailable and the clip is not a readable MP4) — capture explicit timestamps instead, e.g. {"name":"screenshot_video","at":"0,30,60"}`)
+	return 0, fmt.Errorf(`%s could not read the clip's duration for the equal-interval capture (ffprobe is unavailable and the clip is not a readable MP4) — capture explicit timestamps instead, e.g. {"name":"%s","at":"0,30,60"}`, tool, tool)
 }
 
 // aspectCorrection describes an anamorphic clip: frames stored at
@@ -1087,7 +1156,7 @@ func screenshotVideoToolDefinition() HarnessToolDefinition {
 			if at != "" {
 				timestamps = splitTimestampTokens(at)
 			} else {
-				duration, err := screenshotClipDuration(ctx, tools.Config, input, source)
+				duration, err := clipDurationForEqualIntervals(ctx, tools.Config, input, source, "screenshot_video")
 				if err != nil {
 					return nil, "screenshot failed", err
 				}
@@ -1152,6 +1221,150 @@ func screenshotVideoToolDefinition() HarnessToolDefinition {
 			return output, summary, nil
 		},
 		Activity: ffmpegActivity("screenshot"),
+	}
+}
+
+// contactSheetVideoToolDefinition exposes contact_sheet_video: N frames of the
+// attached video tiled into one JPEG — the storyboard-style overview a poster
+// prompt (or any vision model) reads from a single attachment. The frame
+// capture reuses screenshot_video's machinery (duration read, anamorphic
+// resample); the tile pass is one ffmpeg invocation of the tile filter, so the
+// tool needs ffmpeg alone — compose_images' collage, the image-side sibling,
+// additionally needs ImageMagick.
+func contactSheetVideoToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "contact_sheet_video",
+		Title:       "Contact sheet",
+		Description: `Use this when the user asks for a contact sheet, montage, or tiled grid image of an attached video's frames — one JPEG showing N frames side by side, e.g. a storyboard-style overview to reference while designing poster art. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). count sets how many frames (1–16, the default 8); at names explicit timestamps instead — seconds ("42", "12.5") or clock ("00:01:30"), comma-separated for several ("0,9.08,18.17") — captured in that order; at wins when both are set. columns sets the grid width (frames per row); omit it for a near-square grid. Equal-interval sampling starts 10% into the clip, where AI-generated clips often open on a black frame. The sheet is attached to the reply and becomes the conversation's newest image. For separate full-size frames use screenshot_video instead.`,
+		Example:     `{"name":"contact_sheet_video","count":8,"columns":3}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: contactSheetVideoParamSchema(),
+		Validate: func(prefix string, call HarnessToolCall) []string {
+			if at := strings.TrimSpace(call.At); at != "" {
+				tokens := splitTimestampTokens(at)
+				if len(tokens) == 0 {
+					return []string{prefix + ".at must be a timestamp in seconds (\"42\") or clock (\"00:01:30\") for contact_sheet_video, or a comma-separated list of them; omit at to capture count frames at equal intervals"}
+				}
+				if len(tokens) > screenshotTimestampsCap {
+					return []string{fmt.Sprintf("%s.at lists %d timestamps; contact_sheet_video captures at most %d per call", prefix, len(tokens), screenshotTimestampsCap)}
+				}
+				for _, token := range tokens {
+					if _, ok := parseMediaTimestamp(token); !ok {
+						return []string{prefix + ".at must be a timestamp in seconds (\"42\") or clock (\"00:01:30\") for contact_sheet_video, or a comma-separated list of them"}
+					}
+				}
+			} else if call.Count < 0 || call.Count > screenshotTimestampsCap {
+				return []string{fmt.Sprintf("%s.count must be between 1 and %d for contact_sheet_video (omitted means the default %d)", prefix, screenshotTimestampsCap, contactSheetDefaultCount)}
+			}
+			if call.Columns < 0 || call.Columns > screenshotTimestampsCap {
+				return []string{fmt.Sprintf("%s.columns must be between 1 and %d for contact_sheet_video (omitted means a near-square grid)", prefix, screenshotTimestampsCap)}
+			}
+			return nil
+		},
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			source := firstAttachedVideo(tools.AttachedVideos)
+			if source == "" {
+				return nil, "contact sheet requires an attached video clip", errors.New("contact_sheet_video requires an attached video clip — ask the user to attach one first")
+			}
+			staging, err := os.MkdirTemp("", "atelier-ffmpeg-*")
+			if err != nil {
+				return nil, "contact sheet failed", err
+			}
+			defer os.RemoveAll(staging)
+			input, err := stageMediaDataURL(staging, "input", source)
+			if err != nil {
+				return nil, "contact sheet failed", err
+			}
+			// Resolve the frame list: explicit timestamps in the planner's
+			// order, or count frames spread across the clip — the duration
+			// read here, not by a probe_media round.
+			at := strings.TrimSpace(call.At)
+			var timestamps []string
+			if at != "" {
+				timestamps = splitTimestampTokens(at)
+			} else {
+				count := call.Count
+				if count <= 0 {
+					count = contactSheetDefaultCount
+				}
+				duration, err := clipDurationForEqualIntervals(ctx, tools.Config, input, source, "contact_sheet_video")
+				if err != nil {
+					return nil, "contact sheet failed", err
+				}
+				timestamps = contactSheetTimestamps(duration, count)
+			}
+			// Anamorphic capture correction: the same fail-soft resample
+			// screenshot_video applies, so every cell shows the frame a
+			// player would show rather than the squeezed storage frame.
+			correction, aspectCorrected := screenshotAspectCorrection(ctx, tools.Config, input, source)
+			var captured []string
+			var missed []string
+			for i, timestamp := range timestamps {
+				framePath := filepath.Join(staging, fmt.Sprintf("frame_%02d.jpg", i+1))
+				captureErr := runLocalFFmpeg(ctx, tools.Config, ffmpegScreenshotArgs(input, timestamp, framePath, correction.DisplayWidth, correction.DisplayHeight))
+				if captureErr == nil {
+					var data []byte
+					if data, captureErr = os.ReadFile(framePath); captureErr == nil && len(data) == 0 {
+						captureErr = errors.New("the frame file was empty")
+					}
+				}
+				if captureErr != nil {
+					// One bad timestamp (past the clip's end, say) must not
+					// discard the frames that did capture — the grid is
+					// recomputed from the survivors below.
+					missed = append(missed, timestamp)
+					continue
+				}
+				captured = append(captured, framePath)
+			}
+			if len(captured) == 0 {
+				return nil, "contact sheet failed", fmt.Errorf("contact_sheet_video captured no frames at %s", screenshotTimestampsPhrase(timestamps))
+			}
+			// The tile filter reads an image2 sequence, which stops at the
+			// first gap — a missed timestamp leaves one in the capture names,
+			// so the survivors are renamed into a fresh zero-based sequence.
+			for i, path := range captured {
+				seqPath := filepath.Join(staging, fmt.Sprintf("tile_%03d.jpg", i))
+				if err := os.Rename(path, seqPath); err != nil {
+					return nil, "contact sheet failed", err
+				}
+			}
+			columns, rows := contactSheetGrid(len(captured), call.Columns)
+			sheetPath := filepath.Join(staging, "contact_sheet.jpg")
+			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegContactSheetArgs(filepath.Join(staging, "tile_%03d.jpg"), columns, rows, sheetPath)); err != nil {
+				return nil, "contact sheet failed", err
+			}
+			data, err := os.ReadFile(sheetPath)
+			if err != nil {
+				return nil, "contact sheet failed", err
+			}
+			if len(data) == 0 {
+				return nil, "contact sheet failed", errors.New("the contact sheet file was empty")
+			}
+			var notices []string
+			if aspectCorrected {
+				notices = append(notices, aspectCorrectionNotice(correction))
+			}
+			for _, timestamp := range missed {
+				notices = append(notices, fmt.Sprintf("no frame was captured at %s — the timestamp is likely past the end of the clip", timestamp))
+			}
+			prompt := fmt.Sprintf("contact sheet of %d evenly spaced frames", len(captured))
+			summary := fmt.Sprintf("built a %dx%d contact sheet of %d evenly spaced frames from the attached video with ffmpeg", columns, rows, len(captured))
+			if at != "" {
+				phrase := screenshotTimestampsPhrase(timestamps)
+				prompt = fmt.Sprintf("contact sheet of %d frames at %s", len(captured), phrase)
+				summary = fmt.Sprintf("built a %dx%d contact sheet of %d frames at %s from the attached video with ffmpeg", columns, rows, len(captured), phrase)
+			}
+			output := ToolImageResult{
+				Model:   ffmpegModelName,
+				Prompt:  prompt,
+				Count:   1,
+				Images:  []string{"data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(data)},
+				Notices: notices,
+			}
+			return output, summary, nil
+		},
+		Activity: ffmpegActivity("contact sheet"),
 	}
 }
 
@@ -2091,6 +2304,19 @@ func screenshotVideoParamSchema() map[string]any {
 		"properties": map[string]any{
 			"at":    stringParam(`The timestamp of the frame to capture — seconds ("42", "12.5") or clock ("00:01:30"); "0" is the first frame. May be a comma-separated list to capture several specific frames in one call ("0,9.08,18.17"). Either at or count is required; at wins when both are set.`),
 			"count": intParam(fmt.Sprintf(`How many frames to capture at equal intervals across the whole clip (1–%d) — the tool reads the clip's duration itself, so no probe is needed. The batch form for "N screenshots at equal intervals"; omit at. Either at or count is required; at wins when both are set.`, screenshotTimestampsCap)),
+		},
+		"required": []string{},
+	}
+}
+
+func contactSheetVideoParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"count":   intParam(fmt.Sprintf(`How many frames to tile (1–%d; omitted means the default %d) — captured at equal intervals across the whole clip, starting 10%% in so AI-generated clips' black opening frames are skipped. The tool reads the clip's duration itself, so no probe is needed. Omit when at is set.`, screenshotTimestampsCap, contactSheetDefaultCount)),
+			"at":      stringParam(`Optional — explicit frame timestamps instead of equal intervals, in seconds ("42", "12.5") or clock ("00:01:30"); comma-separate for several ("0,9.08,18.17"), captured in that order. Wins when both at and count are set.`),
+			"columns": intParam(fmt.Sprintf(`Optional — grid width in frames per row (1–%d); rows derive from the frame count. Omit for a near-square grid.`, screenshotTimestampsCap)),
 		},
 		"required": []string{},
 	}
