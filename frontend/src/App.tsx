@@ -61,6 +61,9 @@ import {
   ListInpaintModels,
   ListEditSession,
   ResolveEditSource,
+  ResolveVideoEditSource,
+  CancelVideoEditSource,
+  ReleaseVideoEditSourcePreview,
   ListReplicateVideoDurations,
   ListLibraries,
   ListLibraryAssets,
@@ -94,6 +97,7 @@ import {
 import {main} from '../wailsjs/go/models';
 import {EventsOff, EventsOn} from '../wailsjs/runtime/runtime';
 import {ImageEditor, ImageEditorHandle} from './editor/ImageEditor';
+import {VideoEditor, VideoEditorHandle} from './editor/VideoEditor';
 
 type View = 'app' | 'settings' | 'conversation-models';
 type SettingsTab = 'providers' | 'models' | 'others';
@@ -1393,6 +1397,15 @@ function App() {
   // conversation exists yet) or a reopened session. Rendering it replaces the
   // chat transcript area, like the settings screens do.
   const [editorHandle, setEditorHandle] = useState<ImageEditorHandle | null>(null);
+  const [videoEditorHandle, setVideoEditorHandle] = useState<VideoEditorHandle | null>(null);
+  const [videoEditorOpening, setVideoEditorOpening] = useState(false);
+  const [videoEditorError, setVideoEditorError] = useState('');
+  const [discardVideoDraft, setDiscardVideoDraft] = useState(false);
+  const videoEditorDirty = useRef(false);
+  const videoNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
+  const videoOpenGeneration = useRef(0);
+  const videoOpeningIdentity = useRef<{conversationID: string; artifactID: string} | null>(null);
+  const editorOpen = !!editorHandle || !!videoEditorHandle;
   const [purgeBusy, setPurgeBusy] = useState(false);
   const [confirmPurgeArchived, setConfirmPurgeArchived] = useState(false);
   const [purgeStatus, setPurgeStatus] = useState('');
@@ -3702,14 +3715,15 @@ function App() {
       }
       if ((event.metaKey || event.ctrlKey) && event.key === ',') {
         event.preventDefault();
-        setView('settings');
+        void openSettings();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeStream]);
+  }, [activeStream, videoEditorHandle]);
 
   async function startNewChat() {
+    if (!(await confirmLeaveVideoEditor())) return;
     // Starting a new conversation leaves the editor — an unsaved draft has no
     // conversation to return to.
     closeImageEditor();
@@ -3730,9 +3744,87 @@ function App() {
     return stem.startsWith('img_') ? stem : null;
   }
 
+  function videoArtifactIDFromURL(url: string): string | null {
+    if (!url.startsWith('/atelier-artifact/')) return null;
+    const filename = url.split(/[?#]/)[0].split('/').pop() || '';
+    const stem = filename.replace(/\.[^.]+$/, '');
+    return /^vid_[a-zA-Z0-9]+$/.test(stem) ? stem : null;
+  }
+
+  function confirmLeaveVideoEditor(): Promise<boolean> {
+    if (!videoEditorHandle || !videoEditorDirty.current) return Promise.resolve(true);
+    if (videoNavigationResolver.current) return Promise.resolve(false);
+    setDiscardVideoDraft(true);
+    return new Promise((resolve) => { videoNavigationResolver.current = resolve; });
+  }
+
+  function resolveVideoNavigation(discard: boolean) {
+    setDiscardVideoDraft(false);
+    const resolve = videoNavigationResolver.current;
+    videoNavigationResolver.current = null;
+    resolve?.(discard);
+  }
+
+  async function openSettings() {
+    if (!(await confirmLeaveVideoEditor())) return;
+    closeImageEditor();
+    setView('settings');
+  }
+
+  async function leaveVideoEditorThen(action: () => void) {
+    if (!(await confirmLeaveVideoEditor())) return;
+    if (videoEditorHandle) closeImageEditor();
+    action();
+  }
+
+  async function openVideoEditor(conversationID: string, artifactID: string) {
+    if (!(await confirmLeaveVideoEditor())) return;
+    cancelVideoPreparation();
+    const generation = ++videoOpenGeneration.current;
+    videoOpeningIdentity.current = {conversationID, artifactID};
+    setVideoEditorOpening(true);
+    setVideoEditorError('');
+    try {
+      const owner = await GetConversation(conversationID);
+      if (generation !== videoOpenGeneration.current) return;
+      if (owner.conversation.kind === 'edit') {
+        await openEditSession(conversationID);
+        return;
+      }
+      const source = await ResolveVideoEditSource(conversationID, artifactID);
+      if (generation !== videoOpenGeneration.current) {
+        void ReleaseVideoEditSourcePreview(source.url);
+        for (const thumbnail of source.thumbnails ?? []) void ReleaseVideoEditSourcePreview(thumbnail);
+        return;
+      }
+      setEditorHandle(null);
+      videoEditorDirty.current = false;
+      setVideoEditorHandle({source, sessionID: ''});
+      setView('app');
+    } catch (error) {
+      if (generation === videoOpenGeneration.current) setVideoEditorError(formatError(error));
+    } finally {
+      if (generation === videoOpenGeneration.current) {
+        setVideoEditorOpening(false);
+        videoOpeningIdentity.current = null;
+      }
+    }
+  }
+
+  function cancelVideoPreparation() {
+    videoOpenGeneration.current++;
+    setVideoEditorOpening(false);
+    const identity = videoOpeningIdentity.current;
+    videoOpeningIdentity.current = null;
+    if (identity) void CancelVideoEditSource(identity.conversationID, identity.artifactID).catch(() => {});
+  }
+
   async function openImageEditor(conversationID: string, artifactID: string) {
+    if (!(await confirmLeaveVideoEditor())) return;
     try {
       const source = await ResolveEditSource(conversationID, artifactID);
+      setVideoEditorHandle(null);
+      videoEditorDirty.current = false;
       setEditorHandle({source, sessionID: ''});
       setView('app');
     } catch (error) {
@@ -3746,6 +3838,17 @@ function App() {
   async function openEditSession(sessionID: string) {
     try {
       const state = await ListEditSession(sessionID);
+      if (state.source.mediaKind === 'video') {
+        setEditorHandle(null);
+        videoEditorDirty.current = false;
+        setVideoEditorHandle({source: main.EditSourceInfo.createFrom({...state.source,
+          conversationId: state.parentConversationId || state.source.conversationId,
+          conversationTitle: state.parentTitle,
+        }), sessionID});
+        setView('app');
+        return;
+      }
+      setVideoEditorHandle(null);
       setEditorHandle({
         source: main.EditSourceInfo.createFrom({
           conversationId: state.parentConversationId || state.source.conversationId,
@@ -3764,6 +3867,9 @@ function App() {
   }
 
   function closeImageEditor() {
+    cancelVideoPreparation();
+    setVideoEditorHandle(null);
+    videoEditorDirty.current = false;
     setEditorHandle(null);
     setPreviewEditContext(null);
   }
@@ -3771,10 +3877,11 @@ function App() {
   // focusTurnID, when set, scrolls the opened transcript to that turn's
   // message — used by history search results to land on the match.
   async function openConversationSummary(conversation: main.ConversationSummary, focusTurnID = '') {
+    if (!(await confirmLeaveVideoEditor())) return;
     // Skip redundant opens: the row being viewed (or already loading) needs
     // no re-fetch or transcript re-render. Search-result jumps re-enter with
     // focusTurnID and must still run to scroll to the requested turn.
-    if (!focusTurnID && (conversation.id === activeConversationID || openingConversationRef.current === conversation.id)) {
+    if (!focusTurnID && !editorOpen && (conversation.id === activeConversationID || openingConversationRef.current === conversation.id)) {
       return;
     }
     // Edit sessions are not chats: route them to the editor workspace.
@@ -3788,6 +3895,7 @@ function App() {
       // composition — the panel and mention scope follow its own project.
       setPendingProject(null);
       const detail = await GetConversation(conversation.id);
+      closeImageEditor();
       setView('app');
       hydrateChatConversation(detail);
       if (focusTurnID) {
@@ -4195,9 +4303,9 @@ function App() {
   const newConversationActionRef = useRef(() => {});
   const newLibraryActionRef = useRef(() => {});
   const newProjectActionRef = useRef(() => {});
-  newConversationActionRef.current = handleNewConversationAction;
-  newLibraryActionRef.current = startCreatingLibrary;
-  newProjectActionRef.current = handleNewProjectAction;
+  newConversationActionRef.current = () => {void leaveVideoEditorThen(handleNewConversationAction);};
+  newLibraryActionRef.current = () => {void leaveVideoEditorThen(startCreatingLibrary);};
+  newProjectActionRef.current = () => {void leaveVideoEditorThen(handleNewProjectAction);};
 
   // mentionCandidates is the autocomplete pool: this turn's attachments first
   // (most immediate), then the referable assets newest-first. In a project
@@ -4602,17 +4710,17 @@ function App() {
       ref={shellRef}
       className={[
         'shell',
-        view !== 'app' || editorHandle ? 'settings-open' : '',
+        view !== 'app' || editorOpen ? 'settings-open' : '',
         resizingSidebar ? 'resizing resizing-sidebar' : '',
         resizingAssets ? 'resizing resizing-assets' : '',
         view === 'app' && assetsPanelOpen ? 'assets-open' : '',
       ].filter(Boolean).join(' ')}
-      style={view !== 'app' || editorHandle ? undefined : {
+      style={view !== 'app' || editorOpen ? undefined : {
         '--sidebar-width': `${sidebarWidth}px`,
         '--assets-width': `${assetsWidth}px`,
       } as Record<string, string>}
     >
-      {view !== 'app' || editorHandle ? null : (
+      {view !== 'app' || editorOpen ? null : (
         <aside className="sidebar">
           <div className="sidebar-main">
             <div className="brand">
@@ -4957,7 +5065,7 @@ function App() {
             </div>
           </div>
 
-          <button className="settings-button" onClick={() => setView('settings')}>
+          <button className="settings-button" onClick={() => void openSettings()}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
@@ -4966,7 +5074,7 @@ function App() {
           </button>
         </aside>
       )}
-      {view !== 'app' || editorHandle ? null : (
+      {view !== 'app' || editorOpen ? null : (
         <div
           className="sidebar-resizer"
           role="separator"
@@ -4980,6 +5088,22 @@ function App() {
       )}
 
       <section className="workspace">
+        {videoEditorOpening ? (
+          <div className="video-preparation-status" role="status">
+            <span>Preparing video for editing…</span>
+            <button type="button" onClick={() => {
+              cancelVideoPreparation();
+            }}>Cancel</button>
+          </div>
+        ) : null}
+        {videoEditorError ? (
+          <div className="startup-error" role="alert">
+            <strong>Could not open Video Editor.</strong>
+            <span>{videoEditorError}</span>
+            <button type="button" onClick={() => {setVideoEditorError(''); void openSettings();}}>Open Settings</button>
+            <button type="button" onClick={() => setVideoEditorError('')}>Dismiss</button>
+          </div>
+        ) : null}
         {startupError ? (
           <div className="startup-error">
             <strong>Atelier started with a local data warning.</strong>
@@ -5070,6 +5194,32 @@ function App() {
             onSessionCreated={() => {
               void refreshConversations();
             }}
+          />
+        ) : videoEditorHandle && view === 'app' ? (
+          <VideoEditor
+            key={videoEditorHandle.sessionID || videoEditorHandle.source.artifactId}
+            handle={videoEditorHandle}
+            onClose={() => {void confirmLeaveVideoEditor().then((discard) => {if (discard) closeImageEditor();});}}
+            onOpenParent={(conversationID) => {
+              void confirmLeaveVideoEditor().then((discard) => {
+                if (!discard) return;
+                closeImageEditor();
+                void openConversationSummary(main.ConversationSummary.createFrom({id: conversationID, kind: 'chat', title: ''}));
+              });
+            }}
+            onSessionCreated={() => {void refreshConversations();}}
+            onResultAdded={() => {
+              void refreshConversations();
+              setAssetsRefreshTick((tick) => tick + 1);
+              const parentID = videoEditorHandle.source.conversationId;
+              if (activeConversationIDRef.current === parentID) {
+                void GetConversation(parentID).then((detail) => {
+                  if (activeConversationIDRef.current === parentID) hydrateChatConversation(detail);
+                }).catch((error) => setStartupError(formatError(error)));
+              }
+            }}
+            onDirtyChange={(dirty) => {videoEditorDirty.current = dirty;}}
+            onOpenSettings={() => {void openSettings();}}
           />
         ) : view === 'settings' ? (
           <>
@@ -5749,7 +5899,13 @@ function App() {
                       {entry.role === 'user' && entry.videos?.length ? (
                         <div className="chat-user-videos">
                           {entry.videos.map((video, index) => (
-                            <VideoPlayer key={`${entry.id}-video-${index}`} src={video} />
+                            <figure key={`${entry.id}-video-${index}`} className="chat-video-card">
+                              <VideoPlayer src={video} />
+                              {activeConversationID && videoArtifactIDFromURL(video) ? (
+                                <figcaption><button type="button" disabled={videoEditorOpening}
+                                  onClick={() => void openVideoEditor(activeConversationID, videoArtifactIDFromURL(video)!)}>Edit video</button></figcaption>
+                              ) : null}
+                            </figure>
                           ))}
                         </div>
                       ) : null}
@@ -5760,6 +5916,10 @@ function App() {
                               <VideoPlayer src={video} />
                               <figcaption>
                                 <button type="button" onClick={() => saveGeneratedVideo(video, index)}>Download video</button>
+                                {activeConversationID && videoArtifactIDFromURL(video) ? (
+                                  <button type="button" disabled={videoEditorOpening}
+                                    onClick={() => void openVideoEditor(activeConversationID, videoArtifactIDFromURL(video)!)}>Edit video</button>
+                                ) : null}
                               </figcaption>
                             </figure>
                           ))}
@@ -6045,7 +6205,7 @@ function App() {
           </>
         )}
       </section>
-      {view !== 'app' || editorHandle || !assetsPanelOpen ? null : (
+      {view !== 'app' || editorOpen || !assetsPanelOpen ? null : (
         <div
           className="assets-resizer"
           role="separator"
@@ -6057,7 +6217,7 @@ function App() {
           }}
         />
       )}
-      {view !== 'app' || editorHandle || !assetsPanelOpen ? null : (
+      {view !== 'app' || editorOpen || !assetsPanelOpen ? null : (
         <aside className="assets-panel" aria-label={composerLibraryID ? 'Library assets' : 'Conversation assets'}>
           <div className="assets-panel-header">
             <span className="assets-panel-title">
@@ -6160,6 +6320,16 @@ function App() {
                         </svg>
                       </button>
                     ) : null}
+                    {asset.kind === 'video' && asset.url && asset.conversationId ? (
+                      <button type="button" className="asset-edit-button" disabled={videoEditorOpening}
+                        onClick={() => void openVideoEditor(asset.conversationId, asset.id)}
+                        aria-label="Edit video" title="Edit video">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M12 20h9" />
+                          <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                        </svg>
+                      </button>
+                    ) : null}
                     {/* Navigation needs no artifact on disk — unlike download,
                         a missing file still has a conversation to jump to. */}
                     {asset.conversationId ? (
@@ -6196,6 +6366,19 @@ function App() {
           </div>
         </aside>
       )}
+      {discardVideoDraft ? (
+        <div className="move-dialog-overlay" role="presentation" onClick={() => resolveVideoNavigation(false)}>
+          <div className="move-dialog" role="dialog" aria-modal="true" aria-labelledby="discard-video-title"
+            onClick={(event) => event.stopPropagation()} onKeyDown={(event) => {
+              if (event.key === 'Escape') {event.stopPropagation(); resolveVideoNavigation(false);}
+            }}>
+            <strong id="discard-video-title">Discard framing changes?</strong>
+            <p>Your unrendered framing changes will be lost. Saved edits remain available.</p>
+            <button type="button" autoFocus onClick={() => resolveVideoNavigation(false)}>Keep editing</button>
+            <button type="button" onClick={() => resolveVideoNavigation(true)}>Discard changes</button>
+          </div>
+        </div>
+      ) : null}
       {previewImage ? (
         <div className="image-preview-overlay" role="presentation" onClick={() => setPreviewImage('')}>
           <div

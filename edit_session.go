@@ -60,20 +60,27 @@ type EditSessionMeta struct {
 	// breadcrumb still reads correctly when the parent is later renamed or
 	// deleted.
 	SourceTitleSnapshot string `json:"sourceTitleSnapshot,omitempty"`
+	// MediaKind is "image" for legacy and current image sessions, "video" for
+	// Video Editor sessions. Empty is treated as image for old records.
+	MediaKind string `json:"mediaKind,omitempty"`
 }
 
 // EditSourceInfo is what the editor needs to open a source image: identity,
 // a renderable URL, and display dimensions.
 type EditSourceInfo struct {
-	ConversationID    string `json:"conversationId"`
-	ConversationTitle string `json:"conversationTitle,omitempty"`
-	OriginTurnID      string `json:"originTurnId,omitempty"`
-	ArtifactID        string `json:"artifactId"`
-	URL               string `json:"url"`
-	MimeType          string `json:"mimeType,omitempty"`
-	Width             int    `json:"width,omitempty"`
-	Height            int    `json:"height,omitempty"`
-	SourceDigest      string `json:"sourceDigest,omitempty"`
+	ConversationID    string   `json:"conversationId"`
+	ConversationTitle string   `json:"conversationTitle,omitempty"`
+	OriginTurnID      string   `json:"originTurnId,omitempty"`
+	ArtifactID        string   `json:"artifactId"`
+	URL               string   `json:"url"`
+	MimeType          string   `json:"mimeType,omitempty"`
+	Width             int      `json:"width,omitempty"`
+	Height            int      `json:"height,omitempty"`
+	MediaKind         string   `json:"mediaKind,omitempty"`
+	DurationSeconds   float64  `json:"durationSeconds,omitempty"`
+	SourceDigest      string   `json:"sourceDigest,omitempty"`
+	Thumbnails        []string `json:"thumbnails,omitempty"`
+	Notices           []string `json:"notices,omitempty"`
 }
 
 // ImageEditSubmitRequest is one submitted editor operation. The first submit
@@ -226,6 +233,23 @@ func (a *App) ResolveEditSource(conversationID, artifactID string) (EditSourceIn
 // ResolveEditSource. URLs that do not name Atelier's temp preview directory are
 // ignored, so callers can pass the current canvas URL unconditionally.
 func (a *App) ReleaseEditSourcePreview(previewURL string) error {
+	return a.ReleaseVideoEditSourcePreview(previewURL)
+}
+
+// ReleaseVideoEditSourcePreview removes a normalized temporary preview returned
+// by either editor source resolver. URLs outside Atelier's guarded preview
+// directory are ignored.
+func (a *App) ReleaseVideoEditSourcePreview(previewURL string) error {
+	a.editSubmitMu.Lock()
+	defer a.editSubmitMu.Unlock()
+	a.videoPreviewMu.Lock()
+	for key, info := range a.videoSourcePreviews {
+		if info.URL == previewURL {
+			delete(a.videoSourcePreviews, key)
+			removeVideoPreviewFiles(info)
+		}
+	}
+	a.videoPreviewMu.Unlock()
 	path := strings.TrimPrefix(strings.TrimSpace(previewURL), artifactPrefix)
 	dir := editSourcePreviewDir()
 	if path == previewURL || path == "" {
@@ -269,6 +293,7 @@ func editSourceInfoFor(storage ConfigStorage, conversationID, title, originTurnI
 		MimeType:          mimeType,
 		Width:             width,
 		Height:            height,
+		MediaKind:         "image",
 		SourceDigest:      editSourceDigest(data),
 	}, nil
 }
@@ -350,9 +375,17 @@ func cleanupEditSourcePreviews() {
 // path fallback) across a conversation's turns, returning the owning turn id
 // for provenance. Newest entry wins, matching assetContentIndex.
 func findImageContent(detail ConversationDetail, artifactID string) (HistoryContent, string, bool) {
+	return findMediaContent(detail, artifactID, "image")
+}
+
+func findVideoContent(detail ConversationDetail, artifactID string) (HistoryContent, string, bool) {
+	return findMediaContent(detail, artifactID, "video")
+}
+
+func findMediaContent(detail ConversationDetail, artifactID, mediaKind string) (HistoryContent, string, bool) {
 	for i := len(detail.Turns) - 1; i >= 0; i-- {
 		for _, content := range detail.Turns[i].Content {
-			if content.Type != "image" {
+			if content.Type != mediaKind {
 				continue
 			}
 			if content.ArtifactID == artifactID || (content.ArtifactID == "" && content.Path == artifactID) {
@@ -369,12 +402,20 @@ func findImageContent(detail ConversationDetail, artifactID string) (HistoryCont
 // assistant-role, so the first user turn is always the source turn the
 // creation path wrote.
 func firstSessionSourceImage(detail ConversationDetail) (HistoryContent, string, bool) {
+	return firstSessionSourceMedia(detail, "image")
+}
+
+func firstSessionSourceVideo(detail ConversationDetail) (HistoryContent, string, bool) {
+	return firstSessionSourceMedia(detail, "video")
+}
+
+func firstSessionSourceMedia(detail ConversationDetail, mediaKind string) (HistoryContent, string, bool) {
 	for _, turn := range detail.Turns {
 		if turn.Role != "user" {
 			continue
 		}
 		for _, content := range turn.Content {
-			if content.Type == "image" && content.ArtifactID != "" {
+			if content.Type == mediaKind && content.ArtifactID != "" {
 				return content, turn.ID, true
 			}
 		}
@@ -831,14 +872,22 @@ func editOperationContents(op EditOperation) []HistoryContent {
 	if op.Status != editOperationStatusCompleted || op.ResultArtifactID == "" {
 		return []HistoryContent{}
 	}
+	contentType := editResultMediaKind(op)
 	return []HistoryContent{{
-		Type:       "image",
+		Type:       contentType,
 		ArtifactID: op.ResultArtifactID,
 		Path:       op.ResultPath,
 		MimeType:   op.ResultMimeType,
 		Width:      op.ResultWidth,
 		Height:     op.ResultHeight,
 	}}
+}
+
+func editResultMediaKind(op EditOperation) string {
+	if strings.HasPrefix(op.ResultMimeType, "video/") || op.Kind == editOperationKindReframe {
+		return "video"
+	}
+	return "image"
 }
 
 // executeInpaintProvider dispatches the canonical inpaint request to the
@@ -1059,18 +1108,21 @@ func (a *App) ListEditSession(sessionConversationID string) (EditSessionState, e
 	}
 
 	state := EditSessionState{
-		ConversationID:        sessionID,
-		ParentConversationID:  meta.ParentConversationID,
-		ParentTitle:           meta.SourceTitleSnapshot,
-		InpaintProvider:       config.Models.InpaintProvider,
-		InpaintFalModel:       config.Providers.Fal.InpaintModel,
-		InpaintReplicateModel: config.Providers.Replicate.InpaintModel,
+		ConversationID:       sessionID,
+		ParentConversationID: meta.ParentConversationID,
+		ParentTitle:          meta.SourceTitleSnapshot,
 	}
-	if falKey, err := loadFalAPIKey(); err == nil && strings.TrimSpace(falKey) != "" {
-		state.FalConfigured = true
-	}
-	if repKey, err := loadReplicateAPIKey(); err == nil && strings.TrimSpace(repKey) != "" {
-		state.ReplicateConfigured = true
+	mediaKind := editSessionMediaKind(meta)
+	if mediaKind == "image" {
+		state.InpaintProvider = config.Models.InpaintProvider
+		state.InpaintFalModel = config.Providers.Fal.InpaintModel
+		state.InpaintReplicateModel = config.Providers.Replicate.InpaintModel
+		if falKey, err := loadFalAPIKey(); err == nil && strings.TrimSpace(falKey) != "" {
+			state.FalConfigured = true
+		}
+		if repKey, err := loadReplicateAPIKey(); err == nil && strings.TrimSpace(repKey) != "" {
+			state.ReplicateConfigured = true
+		}
 	}
 	// Parent breadcrumb: a record that loads and is not deleted means the
 	// original is reachable; its live title wins over the snapshot.
@@ -1084,10 +1136,23 @@ func (a *App) ListEditSession(sessionConversationID string) (EditSessionState, e
 	// image entry. The meta's SourceArtifactID is PARENT-side provenance (the
 	// artifact the image came from), not the copy's id — the copy was written
 	// under a fresh one.
-	if content, turnID, ok := firstSessionSourceImage(detail); ok {
-		if info, err := editSourceInfoFor(config.Storage, sessionID, state.ParentTitle, turnID, content); err == nil {
+	if mediaKind == "video" {
+		if content, turnID, ok := firstSessionSourceVideo(detail); ok {
+			info, err := videoEditSourceInfoFor(config.Storage, sessionID, state.ParentTitle, turnID, content, nil)
+			if err != nil {
+				return EditSessionState{}, fmt.Errorf("could not open the saved video source: %w", err)
+			}
 			info.ConversationID = sessionID
 			state.Source = info
+		} else {
+			return EditSessionState{}, errors.New("the saved video source is missing")
+		}
+	} else {
+		if content, turnID, ok := firstSessionSourceImage(detail); ok {
+			if info, err := editSourceInfoFor(config.Storage, sessionID, state.ParentTitle, turnID, content); err == nil {
+				info.ConversationID = sessionID
+				state.Source = info
+			}
 		}
 	}
 
@@ -1134,6 +1199,8 @@ func (a *App) AddEditResultToConversation(sessionConversationID, operationID str
 	if err != nil {
 		return ConversationSummary{}, err
 	}
+	a.editSubmitMu.Lock()
+	defer a.editSubmitMu.Unlock()
 	sessionID := strings.TrimSpace(sessionConversationID)
 	operationID = strings.TrimSpace(operationID)
 	if sessionID == "" || operationID == "" {
@@ -1175,12 +1242,13 @@ func (a *App) AddEditResultToConversation(sessionConversationID, operationID str
 		return ConversationSummary{}, fmt.Errorf("the original conversation is unavailable: %w", err)
 	}
 
-	// Read the session-owned result bytes.
-	resultContent, _, ok := findImageContent(detail, op.ResultArtifactID)
+	mediaKind := editResultMediaKind(op)
+	// Read the session-owned result.
+	resultContent, _, ok := findMediaContent(detail, op.ResultArtifactID, mediaKind)
 	if !ok {
 		return ConversationSummary{}, errors.New("the result artifact is missing from the session")
 	}
-	resultURL, err := readArtifactAsDataURL(config.Storage, sessionID, resultContent)
+	resultPath, err := contentArtifactPath(config.Storage, sessionID, resultContent)
 	if err != nil {
 		return ConversationSummary{}, fmt.Errorf("could not read the result: %w", err)
 	}
@@ -1191,7 +1259,7 @@ func (a *App) AddEditResultToConversation(sessionConversationID, operationID str
 	if err := markEditOperationAdopted(config.Storage, sessionID, operationID); err != nil {
 		return ConversationSummary{}, err
 	}
-	summary, adoptErr := appendEditAdoptionTurn(config, parentID, meta, op, resultURL)
+	summary, adoptErr := appendEditAdoptionTurn(config, parentID, meta, op, resultPath, sessionID)
 	if adoptErr != nil {
 		_ = clearEditOperationAdopted(config.Storage, sessionID, operationID)
 		return ConversationSummary{}, adoptErr
@@ -1206,23 +1274,38 @@ func (a *App) AddEditResultToConversation(sessionConversationID, operationID str
 // operation record. Deliberately not built on appendChatAssistantTurnWithImages:
 // its providerResponse.tool metadata would render a bogus "image generation"
 // row in the parent's media ledger for a copy that generated nothing.
-func appendEditAdoptionTurn(config AppConfig, parentID string, meta *EditSessionMeta, op EditOperation, resultDataURL string) (ConversationSummary, error) {
+func appendEditAdoptionTurn(config AppConfig, parentID string, meta *EditSessionMeta, op EditOperation, resultPath, sessionID string) (ConversationSummary, error) {
 	store := newHistoryStore(config.Storage)
 	loaded, err := store.loadForAppend(parentID, "chat", "a chat", config.Tools.Filesystem.Root)
 	if err != nil {
 		return ConversationSummary{}, err
 	}
 	nowText := time.Now().Format(time.RFC3339)
-	contents, err := writeChatImageArtifacts(loaded.ArtifactsDir, ImageGenerateRequest{
-		Width:  op.ResultWidth,
-		Height: op.ResultHeight,
-	}, []string{resultDataURL})
+	var contents []HistoryContent
+	if editResultMediaKind(op) == "video" {
+		tempCopy, copyErr := copyEditResultToTemp(resultPath, ".mp4")
+		if copyErr != nil {
+			return ConversationSummary{}, copyErr
+		}
+		defer os.Remove(tempCopy)
+		contents, _, err = writeChatVideoArtifacts(config, loaded.ArtifactsDir, []ToolVideoFile{{TempPath: tempCopy, MimeType: "video/mp4"}})
+	} else {
+		data, readErr := os.ReadFile(resultPath)
+		if readErr != nil {
+			return ConversationSummary{}, readErr
+		}
+		contents, err = writeChatImageArtifacts(loaded.ArtifactsDir, ImageGenerateRequest{
+			Width:  op.ResultWidth,
+			Height: op.ResultHeight,
+		}, []string{imageDataURLForBytes(data)})
+	}
 	if err != nil || len(contents) == 0 {
 		if err == nil {
 			err = errors.New("the result could not be copied")
 		}
 		return ConversationSummary{}, err
 	}
+	contents[0].Width, contents[0].Height = op.ResultWidth, op.ResultHeight
 	text := fmt.Sprintf("Added from the edit session of this conversation (%s).", editOperationAdoptionSummary(op))
 	turnContents := append([]HistoryContent{{Type: "text", Text: text}}, contents...)
 	turn := HistoryTurn{
@@ -1235,7 +1318,7 @@ func appendEditAdoptionTurn(config AppConfig, parentID string, meta *EditSession
 		Content:        turnContents,
 		ProviderResponse: map[string]any{
 			"editAdoption": map[string]any{
-				"sessionId":   loaded.Conversation.ID,
+				"sessionId":   sessionID,
 				"sessionKind": editConversationKind,
 				"operationId": op.ID,
 				"kind":        op.Kind,
@@ -1269,6 +1352,11 @@ func truncateEditAdoptionPrompt(prompt string) string {
 
 func editOperationAdoptionSummary(op EditOperation) string {
 	switch op.Kind {
+	case editOperationKindReframe:
+		if op.Reframe == nil {
+			return "reframe"
+		}
+		return fmt.Sprintf("reframe: %s, %d × %d", op.Reframe.AspectRatio, op.ResultWidth, op.ResultHeight)
 	case editOperationKindCrop:
 		if op.Crop == nil {
 			return "crop"
@@ -1411,6 +1499,7 @@ func createEditSession(store HistoryStore, config AppConfig, parentDetail Conver
 // the first user turn's image entry. It is never the parent's artifact id
 // the lineage meta records: the child owns a renamed copy.
 func latestCanvasArtifactID(detail ConversationDetail) string {
+	mediaKind := editSessionMediaKind(detail.Conversation.EditSession)
 	for i := len(detail.Turns) - 1; i >= 0; i-- {
 		if op, ok := editOperationFromTurn(detail.Turns[i]); ok && op.Status == editOperationStatusCompleted && op.ResultArtifactID != "" {
 			return op.ResultArtifactID
@@ -1421,12 +1510,19 @@ func latestCanvasArtifactID(detail ConversationDetail) string {
 			continue
 		}
 		for _, content := range turn.Content {
-			if content.Type == "image" && content.ArtifactID != "" {
+			if content.Type == mediaKind && content.ArtifactID != "" {
 				return content.ArtifactID
 			}
 		}
 	}
 	return ""
+}
+
+func editSessionMediaKind(meta *EditSessionMeta) string {
+	if meta != nil && strings.TrimSpace(meta.MediaKind) == "video" {
+		return "video"
+	}
+	return "image"
 }
 
 // loadedEditConversation is loadForAppend's shape for edit sessions — the

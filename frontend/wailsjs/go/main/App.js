@@ -14,6 +14,14 @@ export function CancelStream(arg1) {
   return window['go']['main']['App']['CancelStream'](arg1);
 }
 
+export function CancelVideoEdit(arg1, arg2) {
+  return window['go']['main']['App']['CancelVideoEdit'](arg1, arg2);
+}
+
+export function CancelVideoEditSource(arg1, arg2) {
+  return window['go']['main']['App']['CancelVideoEditSource'](arg1, arg2);
+}
+
 export function CheckFalConnection() {
   return window['go']['main']['App']['CheckFalConnection']();
 }
@@ -294,6 +302,10 @@ export function ReleaseEditSourcePreview(arg1) {
   return window['go']['main']['App']['ReleaseEditSourcePreview'](arg1);
 }
 
+export function ReleaseVideoEditSourcePreview(arg1) {
+  return window['go']['main']['App']['ReleaseVideoEditSourcePreview'](arg1);
+}
+
 export function RenameLibrary(arg1, arg2) {
   return window['go']['main']['App']['RenameLibrary'](arg1, arg2);
 }
@@ -308,6 +320,14 @@ export function ResolveEditSource(arg1, arg2) {
 
 export function ResolveToolPermission(arg1, arg2) {
   return window['go']['main']['App']['ResolveToolPermission'](arg1, arg2);
+}
+
+export function ResolveVideoEditInput(arg1, arg2) {
+  return window['go']['main']['App']['ResolveVideoEditInput'](arg1, arg2);
+}
+
+export function ResolveVideoEditSource(arg1, arg2) {
+  return window['go']['main']['App']['ResolveVideoEditSource'](arg1, arg2);
 }
 
 export function RunToolCommand(arg1) {
@@ -376,6 +396,10 @@ export function StreamChat(arg1) {
 
 export function SubmitImageEdit(arg1) {
   return window['go']['main']['App']['SubmitImageEdit'](arg1);
+}
+
+export function SubmitVideoEdit(arg1) {
+  return window['go']['main']['App']['SubmitVideoEdit'](arg1);
 }
 
 export function UpdateConversationTitle(arg1, arg2) {

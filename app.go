@@ -63,12 +63,15 @@ type App struct {
 	// shares the TTL window; nil on bare &App{} literals, which the estimator
 	// treats as "no pricing available" (fail-soft zero).
 	falPricing *falPricingCache
-	// editOps tracks the image editor's in-flight operations keyed by
+	// editOps tracks the editors' in-flight operations keyed by
 	// operation ID (edit_session.go): the one-op-per-session guard,
 	// CancelImageEdit's handle, and the "is it live?" check orphaned
 	// queued/running records consult. editOpsMu guards the map.
-	editOps   map[string]*editOpRun
-	editOpsMu sync.Mutex
+	editOps             map[string]*editOpRun
+	editOpsMu           sync.Mutex
+	videoPreviewMu      sync.Mutex
+	videoPreviewJobs    map[string]*videoPreviewJob
+	videoSourcePreviews map[string]EditSourceInfo
 	// editSubmitMu serializes submit-time validation, persistence, and
 	// in-flight registration. Without it, two quick submits into the same
 	// session could both pass the running check before either registered.
@@ -101,6 +104,8 @@ func NewApp() *App {
 		streamConversations: map[string]string{},
 		permissions:         map[string]chan bool{},
 		editOps:             map[string]*editOpRun{},
+		videoPreviewJobs:    map[string]*videoPreviewJob{},
+		videoSourcePreviews: map[string]EditSourceInfo{},
 		falPricing:          newFalPricingCache(),
 	}
 	app.toolPermission = app.requestToolPermission
@@ -121,6 +126,8 @@ func (a *App) startup(ctx context.Context) {
 		// a phantom in-flight edit (edit_session.go).
 		sweepInterruptedEditOps(config.Storage)
 	}
+	cleanupEditSourcePreviews()
+	cleanupVideoEditStaging()
 	a.startUpdateScheduler(ctx)
 }
 
@@ -1371,6 +1378,11 @@ func (a *App) SearchConversations(query string, options SearchOptions) (SearchRe
 }
 
 func (a *App) DeleteConversation(conversationID string) error {
+	a.editSubmitMu.Lock()
+	defer a.editSubmitMu.Unlock()
+	if a.editOpRunning(conversationID) {
+		return errors.New("an edit is still running in this conversation; finish or cancel it before deleting")
+	}
 	config, err := loadAppConfig()
 	if err != nil {
 		return err
@@ -1379,6 +1391,11 @@ func (a *App) DeleteConversation(conversationID string) error {
 }
 
 func (a *App) PurgeArchivedConversations() (PurgeArchivedResult, error) {
+	a.editSubmitMu.Lock()
+	defer a.editSubmitMu.Unlock()
+	if a.anyEditOperationActive() {
+		return PurgeArchivedResult{}, errors.New("an edit is still running; finish or cancel it before purging archived conversations")
+	}
 	config, err := loadAppConfig()
 	if err != nil {
 		return PurgeArchivedResult{}, err
@@ -1387,6 +1404,11 @@ func (a *App) PurgeArchivedConversations() (PurgeArchivedResult, error) {
 }
 
 func (a *App) UpdateConversationTitle(conversationID string, title string) (ConversationSummary, error) {
+	a.editSubmitMu.Lock()
+	defer a.editSubmitMu.Unlock()
+	if a.editOpRunning(conversationID) {
+		return ConversationSummary{}, errors.New("an edit is still running in this conversation; finish or cancel it before renaming")
+	}
 	config, err := loadAppConfig()
 	if err != nil {
 		return ConversationSummary{}, err
@@ -1426,6 +1448,8 @@ func (a *App) RenameLibrary(libraryID string, name string) (LibrarySummary, erro
 // conversation is streaming: an in-flight append would write turns into a
 // directory this call just removed.
 func (a *App) DeleteLibrary(libraryID string) (DeleteLibraryResult, error) {
+	a.editSubmitMu.Lock()
+	defer a.editSubmitMu.Unlock()
 	config, err := loadReadyConfig()
 	if err != nil {
 		return DeleteLibraryResult{}, err
@@ -1470,6 +1494,8 @@ func (a *App) SetProjectNotes(projectID string, notes string) (ProjectSummary, e
 // DeleteProject hard-deletes a project and every conversation in it, with the
 // same streaming refusal as DeleteLibrary.
 func (a *App) DeleteProject(projectID string) (DeleteProjectResult, error) {
+	a.editSubmitMu.Lock()
+	defer a.editSubmitMu.Unlock()
 	config, err := loadReadyConfig()
 	if err != nil {
 		return DeleteProjectResult{}, err
@@ -1507,11 +1533,13 @@ func (a *App) ListLibraryAssets(libraryID string) ([]ConversationAsset, error) {
 // streaming — the append path rewrites conversation.json from its own load,
 // and a concurrent move would clobber one of the two writes.
 func (a *App) MoveConversationToProject(conversationID string, projectID string) (ConversationSummary, error) {
+	a.editSubmitMu.Lock()
+	defer a.editSubmitMu.Unlock()
 	config, err := loadReadyConfig()
 	if err != nil {
 		return ConversationSummary{}, err
 	}
-	if a.conversationStreaming(conversationID) {
+	if a.conversationStreaming(conversationID) || a.editOpRunning(conversationID) {
 		return ConversationSummary{}, errors.New("this conversation is still running; wait for it to finish before moving it")
 	}
 	return moveConversationToProject(config.Storage, conversationID, projectID)
@@ -1602,29 +1630,58 @@ func (a *App) ImportLibrary() (LibraryImportResult, error) {
 }
 
 // conversationsStreamingInProjects reports whether any conversation belonging
-// to one of projectIDs has an active stream. On a walk error it falls back to
-// anyStreamActive — deletion is destructive, so uncertainty blocks rather
-// than allows.
+// to one of projectIDs has an active stream or edit. On a walk error it checks
+// all active work — deletion is destructive, so uncertainty blocks it.
 func (a *App) conversationsStreamingInProjects(storage ConfigStorage, projectIDs map[string]bool) bool {
 	ids, err := projectConversationIDs(storage, projectIDs)
 	if err != nil {
-		return a.anyStreamActive()
+		return a.anyStreamActive() || a.anyEditOperationActive()
 	}
 	if len(ids) == 0 {
 		return false
 	}
 	a.streamsMu.Lock()
-	defer a.streamsMu.Unlock()
 	active := make(map[string]bool, len(a.streamConversations))
 	for _, conversationID := range a.streamConversations {
 		active[conversationID] = true
 	}
+	a.streamsMu.Unlock()
+	a.editOpsMu.Lock()
+	for _, operation := range a.editOps {
+		active[operation.conversationID] = true
+	}
+	a.editOpsMu.Unlock()
 	for _, id := range ids {
 		if active[id] {
 			return true
 		}
 	}
 	return false
+}
+
+func (a *App) anyEditOperationActive() bool {
+	a.editOpsMu.Lock()
+	defer a.editOpsMu.Unlock()
+	return len(a.editOps) > 0
+}
+
+// Stop local child processes before Wails exits. If persistence cannot finish
+// before shutdown, the existing startup sweep marks the operation interrupted.
+func (a *App) shutdown(_ context.Context) {
+	a.videoPreviewMu.Lock()
+	for _, job := range a.videoPreviewJobs {
+		job.cancel()
+	}
+	a.videoPreviewMu.Unlock()
+	a.editOpsMu.Lock()
+	for _, operation := range a.editOps {
+		operation.cancel()
+	}
+	a.editOpsMu.Unlock()
+	deadline := time.Now().Add(2 * time.Second)
+	for a.anyEditOperationActive() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // conversationStreaming reports whether this one conversation has an active

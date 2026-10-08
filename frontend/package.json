@@ -7,6 +7,7 @@
     "dev": "vite",
     "test:crop": "node test/run-crop-tests.cjs",
     "test:video-reframe": "node test/run-video-reframe-tests.cjs",
+    "test:video-timeline": "node test/run-video-timeline-tests.cjs",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },

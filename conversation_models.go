@@ -531,11 +531,13 @@ func setHarnessModelSlot(config *AppConfig, provider, model string) {
 // writes. This is the one sanctioned mutation of ModelOverrides after
 // creation, like MoveConversationToProject for ProjectID.
 func (a *App) SetConversationModelOverrides(conversationID string, overrides ConversationModelOverrides) (ConversationSummary, error) {
+	a.editSubmitMu.Lock()
+	defer a.editSubmitMu.Unlock()
 	config, err := loadReadyConfig()
 	if err != nil {
 		return ConversationSummary{}, err
 	}
-	if a.conversationStreaming(conversationID) {
+	if a.conversationStreaming(conversationID) || a.editOpRunning(conversationID) {
 		return ConversationSummary{}, errors.New("this conversation is still running; wait for it to finish before changing its model overrides")
 	}
 	normalized := normalizeConversationModelOverrides(overrides)

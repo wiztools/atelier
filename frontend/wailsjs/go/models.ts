@@ -947,6 +947,7 @@ export namespace main {
 	    sourceTurnId?: string;
 	    sourceArtifactId?: string;
 	    sourceTitleSnapshot?: string;
+	    mediaKind?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new EditSessionMeta(source);
@@ -958,6 +959,7 @@ export namespace main {
 	        this.sourceTurnId = source["sourceTurnId"];
 	        this.sourceArtifactId = source["sourceArtifactId"];
 	        this.sourceTitleSnapshot = source["sourceTitleSnapshot"];
+	        this.mediaKind = source["mediaKind"];
 	    }
 	}
 	export class HistoryConversationStats {
@@ -1254,6 +1256,96 @@ export namespace main {
 	        this.deletedAssets = source["deletedAssets"];
 	    }
 	}
+	export class VideoReframeMarker {
+	    x: number;
+	    y: number;
+	    width: number;
+	    height: number;
+	    timeSeconds: number;
+	    interpolationToNext: string;
+
+	    static createFrom(source: any = {}) {
+	        return new VideoReframeMarker(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.x = source["x"];
+	        this.y = source["y"];
+	        this.width = source["width"];
+	        this.height = source["height"];
+	        this.timeSeconds = source["timeSeconds"];
+	        this.interpolationToNext = source["interpolationToNext"];
+	    }
+	}
+	export class VideoReframeOutput {
+	    width: number;
+	    height: number;
+
+	    static createFrom(source: any = {}) {
+	        return new VideoReframeOutput(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.width = source["width"];
+	        this.height = source["height"];
+	    }
+	}
+	export class VideoReframeSource {
+	    width: number;
+	    height: number;
+	    durationSeconds: number;
+
+	    static createFrom(source: any = {}) {
+	        return new VideoReframeSource(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.width = source["width"];
+	        this.height = source["height"];
+	        this.durationSeconds = source["durationSeconds"];
+	    }
+	}
+	export class VideoReframeParams {
+	    version: number;
+	    source: VideoReframeSource;
+	    aspectRatio: string;
+	    output: VideoReframeOutput;
+	    markers: VideoReframeMarker[];
+
+	    static createFrom(source: any = {}) {
+	        return new VideoReframeParams(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.version = source["version"];
+	        this.source = this.convertValues(source["source"], VideoReframeSource);
+	        this.aspectRatio = source["aspectRatio"];
+	        this.output = this.convertValues(source["output"], VideoReframeOutput);
+	        this.markers = this.convertValues(source["markers"], VideoReframeMarker);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class InpaintOperationParams {
 	    prompt?: string;
 	    maskArtifactId?: string;
@@ -1286,6 +1378,7 @@ export namespace main {
 	    resultMimeType?: string;
 	    resultWidth?: number;
 	    resultHeight?: number;
+	    resultDurationSeconds?: number;
 	    resultUrl?: string;
 	    provider?: string;
 	    model?: string;
@@ -1294,8 +1387,10 @@ export namespace main {
 	    costUnknown?: boolean;
 	    error?: string;
 	    notices?: string[];
+	    progress?: number;
 	    inpaint?: InpaintOperationParams;
 	    crop?: CropOperationParams;
+	    reframe?: VideoReframeParams;
 	    adoptedAt?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -1315,6 +1410,7 @@ export namespace main {
 	        this.resultMimeType = source["resultMimeType"];
 	        this.resultWidth = source["resultWidth"];
 	        this.resultHeight = source["resultHeight"];
+	        this.resultDurationSeconds = source["resultDurationSeconds"];
 	        this.resultUrl = source["resultUrl"];
 	        this.provider = source["provider"];
 	        this.model = source["model"];
@@ -1323,8 +1419,10 @@ export namespace main {
 	        this.costUnknown = source["costUnknown"];
 	        this.error = source["error"];
 	        this.notices = source["notices"];
+	        this.progress = source["progress"];
 	        this.inpaint = this.convertValues(source["inpaint"], InpaintOperationParams);
 	        this.crop = this.convertValues(source["crop"], CropOperationParams);
+	        this.reframe = this.convertValues(source["reframe"], VideoReframeParams);
 	        this.adoptedAt = source["adoptedAt"];
 	    }
 	
@@ -1392,7 +1490,11 @@ export namespace main {
 	    mimeType?: string;
 	    width?: number;
 	    height?: number;
+	    mediaKind?: string;
+	    durationSeconds?: number;
 	    sourceDigest?: string;
+	    thumbnails?: string[];
+	    notices?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new EditSourceInfo(source);
@@ -1408,7 +1510,11 @@ export namespace main {
 	        this.mimeType = source["mimeType"];
 	        this.width = source["width"];
 	        this.height = source["height"];
+	        this.mediaKind = source["mediaKind"];
+	        this.durationSeconds = source["durationSeconds"];
 	        this.sourceDigest = source["sourceDigest"];
+	        this.thumbnails = source["thumbnails"];
+	        this.notices = source["notices"];
 	    }
 	}
 	export class EditSessionState {
@@ -2466,6 +2572,49 @@ export namespace main {
 	        this.error = source["error"];
 	    }
 	}
+	export class VideoEditSubmitRequest {
+	    parentConversationId: string;
+	    sourceArtifactId: string;
+	    sessionConversationId?: string;
+	    inputArtifactId?: string;
+	    sourceDigest?: string;
+	    reframe?: VideoReframeParams;
+
+	    static createFrom(source: any = {}) {
+	        return new VideoEditSubmitRequest(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.parentConversationId = source["parentConversationId"];
+	        this.sourceArtifactId = source["sourceArtifactId"];
+	        this.sessionConversationId = source["sessionConversationId"];
+	        this.inputArtifactId = source["inputArtifactId"];
+	        this.sourceDigest = source["sourceDigest"];
+	        this.reframe = this.convertValues(source["reframe"], VideoReframeParams);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+
+
 
 }
 

@@ -33,6 +33,7 @@ import (
 const (
 	editOperationKindInpaint = "inpaint"
 	editOperationKindCrop    = "crop"
+	editOperationKindReframe = "video-reframe"
 )
 
 // Edit operation statuses. queued/running are transient (the in-flight edit);
@@ -78,13 +79,14 @@ type EditOperation struct {
 	// "Use as source". ResultArtifactID/ResultPath locate the output (empty
 	// while queued/running/failed). ResultURL is response-only, hydrated by
 	// the readers (ListEditSession, the persist site) — never persisted.
-	InputArtifactID  string `json:"inputArtifactId,omitempty"`
-	ResultArtifactID string `json:"resultArtifactId,omitempty"`
-	ResultPath       string `json:"resultPath,omitempty"`
-	ResultMimeType   string `json:"resultMimeType,omitempty"`
-	ResultWidth      int    `json:"resultWidth,omitempty"`
-	ResultHeight     int    `json:"resultHeight,omitempty"`
-	ResultURL        string `json:"resultUrl,omitempty"`
+	InputArtifactID       string  `json:"inputArtifactId,omitempty"`
+	ResultArtifactID      string  `json:"resultArtifactId,omitempty"`
+	ResultPath            string  `json:"resultPath,omitempty"`
+	ResultMimeType        string  `json:"resultMimeType,omitempty"`
+	ResultWidth           int     `json:"resultWidth,omitempty"`
+	ResultHeight          int     `json:"resultHeight,omitempty"`
+	ResultDurationSeconds float64 `json:"resultDurationSeconds,omitempty"`
+	ResultURL             string  `json:"resultUrl,omitempty"`
 	// Executor attribution. Provider/Model record the effective pair for AI
 	// ops (whether inherited or pinned); Backend names the local CLI label for
 	// deterministic ops (the basicImageActivity convention). CostMicros is the
@@ -96,12 +98,14 @@ type EditOperation struct {
 	CostMicros  int64  `json:"costMicros,omitempty"`
 	CostUnknown bool   `json:"costUnknown,omitempty"`
 	// Error/Notices carry failure text and deterministic caveats verbatim.
-	Error   string   `json:"error,omitempty"`
-	Notices []string `json:"notices,omitempty"`
+	Error    string   `json:"error,omitempty"`
+	Notices  []string `json:"notices,omitempty"`
+	Progress float64  `json:"progress,omitempty"`
 	// Kind payloads — exactly one is non-nil. A nil payload with an unknown
 	// Kind is rendered as an opaque entry (forward compatibility).
 	Inpaint *InpaintOperationParams `json:"inpaint,omitempty"`
 	Crop    *CropOperationParams    `json:"crop,omitempty"`
+	Reframe *VideoReframeParams     `json:"reframe,omitempty"`
 	// AdoptedAt records when this operation's result was added to the parent
 	// conversation (AddEditResultToConversation) — the idempotency mark that
 	// keeps repeated clicks from duplicating parent entries.

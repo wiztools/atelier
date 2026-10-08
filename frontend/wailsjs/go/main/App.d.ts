@@ -8,6 +8,10 @@ export function CancelImageEdit(arg1:string,arg2:string):Promise<void>;
 
 export function CancelStream(arg1:string):Promise<void>;
 
+export function CancelVideoEdit(arg1:string,arg2:string):Promise<void>;
+
+export function CancelVideoEditSource(arg1:string,arg2:string):Promise<void>;
+
 export function CheckFalConnection():Promise<void>;
 
 export function CheckForUpdates():Promise<main.UpdateStatus>;
@@ -148,6 +152,8 @@ export function ReadToolFile(arg1:main.ToolFileReadRequest):Promise<main.ToolFil
 
 export function ReleaseEditSourcePreview(arg1:string):Promise<void>;
 
+export function ReleaseVideoEditSourcePreview(arg1:string):Promise<void>;
+
 export function RenameLibrary(arg1:string,arg2:string):Promise<main.LibrarySummary>;
 
 export function RenameProject(arg1:string,arg2:string):Promise<main.ProjectSummary>;
@@ -155,6 +161,10 @@ export function RenameProject(arg1:string,arg2:string):Promise<main.ProjectSumma
 export function ResolveEditSource(arg1:string,arg2:string):Promise<main.EditSourceInfo>;
 
 export function ResolveToolPermission(arg1:string,arg2:boolean):Promise<void>;
+
+export function ResolveVideoEditInput(arg1:string,arg2:string):Promise<main.EditSourceInfo>;
+
+export function ResolveVideoEditSource(arg1:string,arg2:string):Promise<main.EditSourceInfo>;
 
 export function RunToolCommand(arg1:main.ToolCommandRequest):Promise<main.ToolCommandResult>;
 
@@ -189,6 +199,8 @@ export function SetProjectNotes(arg1:string,arg2:string):Promise<main.ProjectSum
 export function StreamChat(arg1:main.ChatRequest):Promise<main.ChatStreamStart>;
 
 export function SubmitImageEdit(arg1:main.ImageEditSubmitRequest):Promise<main.EditOperationState>;
+
+export function SubmitVideoEdit(arg1:main.VideoEditSubmitRequest):Promise<main.EditOperationState>;
 
 export function UpdateConversationTitle(arg1:string,arg2:string):Promise<main.ConversationSummary>;
 
