@@ -59,6 +59,7 @@ export function VideoStage(props: {
   const videoRef = useRef<FrameVideo | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
+  const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const frameRef = useRef<number | null>(null);
   const rafRef = useRef<number | null>(null);
   const dragRef = useRef<{startX: number; startY: number; rect: VideoReframeRect; latest: VideoReframeRect; time: number} | null>(null);
@@ -123,7 +124,10 @@ export function VideoStage(props: {
       if (stopped) return;
       const time = metadata?.mediaTime ?? video.currentTime ?? 0;
       if (!video.seeking) {
-        if (!dragRef.current) props.onTimeChange(time);
+        // While paused the playhead state is authoritative — echoing the
+        // frame-snapped media time back would cancel programmatic seeks
+        // (frame-step, marker hops) that land inside the current frame.
+        if (props.playing && !dragRef.current) props.onTimeChange(time);
         draw(time);
       }
       if (video.requestVideoFrameCallback) {
@@ -144,11 +148,84 @@ export function VideoStage(props: {
       frameRef.current = null;
       rafRef.current = null;
     };
-  }, [props.params, props.sourceUrl, dragRect]);
+  }, [props.params, props.sourceUrl, dragRect, props.playing]);
 
   useEffect(() => {
     draw();
   }, [props.params, dragRect, props.currentTime, props.sourceUrl]);
+
+  // The crop overlay draws on a canvas instead of SVG: WKWebView leaves stale
+  // semi-transparent stroke pixels behind when the SVG is mutated rapidly above
+  // the video surface (e.g. marker hops). clearRect + full redraw of one bitmap
+  // has no incremental invalidation to get wrong.
+  const drawOverlay = () => {
+    const canvas = overlayCanvasRef.current;
+    const overlay = overlayRef.current;
+    if (!canvas || !overlay) return;
+    const bounds = overlay.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const pixelWidth = Math.max(1, Math.round(bounds.width * dpr));
+    const pixelHeight = Math.max(1, Math.round(bounds.height * dpr));
+    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+      canvas.width = pixelWidth;
+      canvas.height = pixelHeight;
+    }
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    if (bounds.width <= 0 || bounds.height <= 0) return;
+    const scale = Math.min(bounds.width / props.params.source.width, bounds.height / props.params.source.height);
+    context.setTransform(
+      dpr * scale, 0, 0, dpr * scale,
+      dpr * (bounds.width - props.params.source.width * scale) / 2,
+      dpr * (bounds.height - props.params.source.height * scale) / 2,
+    );
+    const rect = displayedRect;
+    context.beginPath();
+    context.rect(0, 0, props.params.source.width, props.params.source.height);
+    context.rect(rect.x, rect.y, rect.width, rect.height);
+    context.fillStyle = 'rgba(0,0,0,.58)';
+    context.fill('evenodd');
+    context.strokeStyle = '#ffffff';
+    context.lineWidth = 1.5 / scale;
+    context.strokeRect(rect.x, rect.y, rect.width, rect.height);
+    context.strokeStyle = 'rgba(255,255,255,.55)';
+    context.lineWidth = 1 / scale;
+    context.beginPath();
+    for (const i of [1, 2]) {
+      context.moveTo(rect.x + rect.width * i / 3, rect.y);
+      context.lineTo(rect.x + rect.width * i / 3, rect.y + rect.height);
+      context.moveTo(rect.x, rect.y + rect.height * i / 3);
+      context.lineTo(rect.x + rect.width, rect.y + rect.height * i / 3);
+    }
+    context.stroke();
+    const selected = props.params.markers[props.selectedMarkerIndex];
+    if (selected) {
+      context.beginPath();
+      context.arc(selected.x + selected.width / 2, selected.y + selected.height / 2, 12 / scale, 0, Math.PI * 2);
+      context.fillStyle = '#8ab4f8';
+      context.fill();
+      context.strokeStyle = '#101214';
+      context.lineWidth = 3 / scale;
+      context.stroke();
+    }
+  };
+
+  const drawOverlayRef = useRef(() => {});
+  drawOverlayRef.current = drawOverlay;
+
+  useEffect(() => {
+    drawOverlay();
+  }, [props.params, dragRect, props.currentTime, props.sourceUrl, props.selectedMarkerIndex]);
+
+  useEffect(() => {
+    const overlay = overlayRef.current;
+    if (!overlay || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => drawOverlayRef.current());
+    observer.observe(overlay);
+    return () => observer.disconnect();
+  }, []);
 
   function beginDrag(event: React.PointerEvent<HTMLDivElement>) {
     if (props.busy || event.button !== 0) return;
@@ -224,19 +301,11 @@ export function VideoStage(props: {
             onPointerCancel={() => finishDrag(true)}
             onLostPointerCapture={() => finishDrag(true)}
           >
-            <svg width="100%" height="100%" viewBox={`0 0 ${props.params.source.width} ${props.params.source.height}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-              <path fill="rgba(0,0,0,.58)" fillRule="evenodd" d={`M0 0H${props.params.source.width}V${props.params.source.height}H0Z M${displayedRect.x} ${displayedRect.y}h${displayedRect.width}v${displayedRect.height}h-${displayedRect.width}Z`} />
-              <rect x={displayedRect.x} y={displayedRect.y} width={displayedRect.width} height={displayedRect.height} fill="transparent" stroke="white" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
-              {[1, 2].map((i) => (
-                <g key={i} stroke="rgba(255,255,255,.55)" strokeWidth="1" style={{pointerEvents: 'none'}}>
-                  <line x1={displayedRect.x + displayedRect.width * i / 3} y1={displayedRect.y} x2={displayedRect.x + displayedRect.width * i / 3} y2={displayedRect.y + displayedRect.height} vectorEffect="non-scaling-stroke" />
-                  <line x1={displayedRect.x} y1={displayedRect.y + displayedRect.height * i / 3} x2={displayedRect.x + displayedRect.width} y2={displayedRect.y + displayedRect.height * i / 3} vectorEffect="non-scaling-stroke" />
-                </g>
-              ))}
-              {selectedMarker ? (
-                <circle cx={selectedMarker.x + selectedMarker.width / 2} cy={selectedMarker.y + selectedMarker.height / 2} r="12" fill="#8ab4f8" stroke="#101214" strokeWidth="3" vectorEffect="non-scaling-stroke" onClick={() => props.onSelectMarker(props.selectedMarkerIndex)} />
-              ) : null}
-            </svg>
+            <canvas
+              ref={overlayCanvasRef}
+              className="video-stage-overlay-canvas"
+              onClick={() => props.onSelectMarker(props.selectedMarkerIndex)}
+            />
           </div>
         </div>
       </div>

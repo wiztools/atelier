@@ -78,9 +78,18 @@
   inset: 0;
   cursor: move;
   touch-action: none;
+  /* Own compositing layer: WKWebView repaints the semi-transparent SVG
+     incrementally above the video surface, and rapid marker hops leave
+     stale stroke pixels behind. Promoting the layer forces a full repaint. */
+  transform: translateZ(0);
+  will-change: transform;
 }
 
-.video-editor .video-stage-overlay svg {
+.video-editor .video-stage-overlay canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   display: block;
 }
 
