@@ -47,10 +47,12 @@ export function VideoStage(props: {
   params: VideoReframeParams;
   currentTime: number;
   playing: boolean;
+  muted: boolean;
   busy: boolean;
   selectedMarkerIndex: number;
   onTimeChange: (timeSeconds: number) => void;
   onPlayingChange: (playing: boolean) => void;
+  onMutedChange: (muted: boolean) => void;
   onCommitFraming: (timeSeconds: number, rect: VideoReframeRect) => void;
   onSelectMarker: (index: number) => void;
 }) {
@@ -97,7 +99,17 @@ export function VideoStage(props: {
     const video = videoRef.current;
     if (!video) return;
     if (props.playing) {
-      void video.play().catch(() => props.onPlayingChange(false));
+      video.play().catch(() => {
+        if (video.muted) {
+          props.onPlayingChange(false);
+          return;
+        }
+        // Playback policy can refuse unmuted playback outside a user gesture —
+        // fall back to a silent retry instead of a dead play button.
+        video.muted = true;
+        props.onMutedChange(true);
+        void video.play().catch(() => props.onPlayingChange(false));
+      });
     } else {
       video.pause();
     }
@@ -192,7 +204,7 @@ export function VideoStage(props: {
             className="video-stage-source"
             src={props.sourceUrl}
             playsInline
-            muted
+            muted={props.muted}
             preload="auto"
             onLoadedMetadata={() => {
               if (videoRef.current) videoRef.current.currentTime = props.currentTime;

@@ -25,11 +25,13 @@ export function VideoTimeline(props: {
   params: VideoReframeParams;
   currentTime: number;
   playing: boolean;
+  muted: boolean;
   busy: boolean;
   selectedMarkerIndex: number;
   thumbnails: string[];
   onSeek: (timeSeconds: number) => void;
   onTogglePlay: () => void;
+  onToggleMuted: () => void;
   onAddMarker: () => void;
   onSelectMarker: (index: number) => void;
   onMoveMarker: (index: number, timeSeconds: number) => void;
@@ -87,6 +89,15 @@ export function VideoTimeline(props: {
           title={props.playing ? 'Pause' : 'Play'}
         >
           {props.playing ? '❚❚' : '▶'}
+        </button>
+        <button
+          type="button"
+          className="video-icon-button"
+          onClick={props.onToggleMuted}
+          aria-label={props.muted ? 'Unmute preview' : 'Mute preview'}
+          title={props.muted ? 'Unmute' : 'Mute'}
+        >
+          {props.muted ? '🔇' : '🔊'}
         </button>
         <span className="video-timeline-time">{formatTime(props.currentTime)}</span>
         <button

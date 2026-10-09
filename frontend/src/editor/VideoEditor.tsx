@@ -144,6 +144,7 @@ export function VideoEditor(props: {
   const [selectedMarkerIndex, setSelectedMarkerIndex] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [previewMuted, setPreviewMuted] = useState(false);
   const [undoStack, setUndoStack] = useState<VideoReframeParams[]>([]);
   const [redoStack, setRedoStack] = useState<VideoReframeParams[]>([]);
   const [loadError, setLoadError] = useState('');
@@ -520,10 +521,12 @@ export function VideoEditor(props: {
             params={params}
             currentTime={currentTime}
             playing={playing}
+            muted={previewMuted}
             busy={busy}
             selectedMarkerIndex={selectedMarkerIndex}
             onTimeChange={(time) => setCurrentTime(Math.min(params.source.durationSeconds, Math.max(0, time)))}
             onPlayingChange={setPlaying}
+            onMutedChange={setPreviewMuted}
             onCommitFraming={commitFraming}
             onSelectMarker={setSelectedMarkerIndex}
           />
@@ -531,6 +534,7 @@ export function VideoEditor(props: {
             params={params}
             currentTime={currentTime}
             playing={playing}
+            muted={previewMuted}
             busy={busy}
             selectedMarkerIndex={selectedMarkerIndex}
             thumbnails={source.thumbnails || []}
@@ -539,6 +543,7 @@ export function VideoEditor(props: {
               setCurrentTime(Math.min(params.source.durationSeconds, Math.max(0, time)));
             }}
             onTogglePlay={() => setPlaying((value) => !value)}
+            onToggleMuted={() => setPreviewMuted((value) => !value)}
             onAddMarker={() => commitFraming(currentTime, evaluateVideoReframe(params, currentTime))}
             onSelectMarker={setSelectedMarkerIndex}
             onMoveMarker={moveMarker}
