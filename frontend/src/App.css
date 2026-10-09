@@ -3652,12 +3652,23 @@ button:disabled {
 }
 
 .editor-back {
-  border: 1px solid #3a3e41;
-  border-radius: 8px;
+  /* Ghost nav affordance, not a standard action button. box-sizing is load-
+     bearing: the global button rule's height:36px is content-box, so vertical
+     padding here would render outside it (the 50px-tall button bug). */
+  box-sizing: border-box;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 6px;
   background: transparent;
-  color: #f3f0e8;
-  padding: 6px 12px;
+  color: #b5b1a8;
+  padding: 0 8px;
   cursor: pointer;
+}
+
+.editor-back:hover {
+  border-color: #3a3e41;
+  background: #25292b;
+  color: #f3f0e8;
 }
 
 .editor-breadcrumb {
