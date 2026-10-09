@@ -4060,6 +4060,32 @@ body.editor-results-resizing {
   color: #9a978f;
 }
 
+/* Per-edit kebab: the row's overflow-menu trigger (EditKebabMenu). Its menu
+   renders in the shared portaled .history-menu.anchored styling. */
+.editor-op-kebab {
+  width: 26px;
+  height: 30px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #9ea5a3;
+  font-size: 16px;
+  line-height: 1;
+  border-radius: 6px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.editor-op-kebab:hover {
+  color: #f3f0e8;
+  background: #303438;
+}
+
+.editor-op-kebab:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .editor-compare {
   display: flex;
   gap: 12px;

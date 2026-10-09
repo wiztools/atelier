@@ -32,6 +32,8 @@ export function CreateProject(arg1:string,arg2:string):Promise<main.ProjectSumma
 
 export function DeleteConversation(arg1:string):Promise<void>;
 
+export function DeleteEditOperation(arg1:string,arg2:string):Promise<void>;
+
 export function DeleteLibrary(arg1:string):Promise<main.DeleteLibraryResult>;
 
 export function DeleteProject(arg1:string):Promise<main.DeleteProjectResult>;

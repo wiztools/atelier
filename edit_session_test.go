@@ -717,3 +717,162 @@ func TestInpaintChangeNotices(t *testing.T) {
 		t.Fatalf("mismatched mask notices = %v", notices)
 	}
 }
+
+func TestDeleteEditOperationRemovesTurnAndArtifacts(t *testing.T) {
+	config := editTestHome(t)
+	writeEditParentFixture(t, config, "conv_edit_del1", "Parent", "")
+	sourceID, resultID, opID := writeEditSessionFixture(t, config, "conv_edit_del1", "conv_edit_sdel1")
+	app := NewApp()
+
+	sessionDir := filepath.Join(config.Storage.History, "conversations", "2026", "10", "conv_edit_sdel1")
+	turnPath := filepath.Join(sessionDir, "turns", "turn_000002.json")
+	resultPath := filepath.Join(sessionDir, "artifacts", resultID+".png")
+	maskPath := filepath.Join(sessionDir, "artifacts", "msk_conv_edit_sdel1.png")
+	sourcePath := filepath.Join(sessionDir, "artifacts", sourceID+".png")
+	// The fixture records the mask on the op record without writing the file.
+	if err := os.WriteFile(maskPath, editTestFixturePNG(t, 8, 8, color.White), 0o644); err != nil {
+		t.Fatalf("write mask fixture: %v", err)
+	}
+	for _, path := range []string{turnPath, resultPath, maskPath, sourcePath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("fixture file missing: %s", path)
+		}
+	}
+
+	if err := app.DeleteEditOperation("conv_edit_sdel1", opID); err != nil {
+		t.Fatalf("DeleteEditOperation returned error: %v", err)
+	}
+	for _, path := range []string{turnPath, resultPath, maskPath} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("deleted edit's file still on disk: %s", path)
+		}
+	}
+	if _, err := os.Stat(sourcePath); err != nil {
+		t.Fatalf("the session's source copy must survive the delete: %s", sourcePath)
+	}
+	detail, err := getConversation(config.Storage, "conv_edit_sdel1")
+	if err != nil {
+		t.Fatalf("session record: %v", err)
+	}
+	if detail.Conversation.Stats.TurnCount != 1 || detail.Conversation.Stats.ArtifactCount != 1 {
+		t.Fatalf("stats after delete = %+v, want 1/1", detail.Conversation.Stats)
+	}
+	state, err := app.ListEditSession("conv_edit_sdel1")
+	if err != nil {
+		t.Fatalf("ListEditSession: %v", err)
+	}
+	if len(state.Operations) != 0 {
+		t.Fatalf("operations after delete = %d, want 0", len(state.Operations))
+	}
+	// The session itself stays usable, and a repeat delete fails cleanly.
+	if err := app.DeleteEditOperation("conv_edit_sdel1", opID); err == nil {
+		t.Fatal("deleting an already-deleted operation must fail")
+	}
+}
+
+func TestDeleteEditOperationNumberingSurvivesGap(t *testing.T) {
+	config := editTestHome(t)
+	artifactID := writeEditParentFixture(t, config, "conv_edit_del2", "Parent", "")
+	sourceID, _, opID := writeEditSessionFixture(t, config, "conv_edit_del2", "conv_edit_sdel2")
+	app := editTestOfflineApp()
+
+	// A second op turn sits above the fixture's turn_000002, so deleting the
+	// first op leaves the highest-numbered turn in place — the exact shape
+	// that turns a count-based next number into an overwrite.
+	secondOp := EditOperation{
+		ID: "editop_sdel2_second", Kind: editOperationKindCrop, Status: editOperationStatusFailed,
+		CreatedAt: "2026-10-02T10:02:00Z", CompletedAt: "2026-10-02T10:02:10Z",
+		InputArtifactID: sourceID, Error: "offline",
+		Crop: &CropOperationParams{X: 0, Y: 0, Width: 4, Height: 4, SourceWidth: 8, SourceHeight: 8},
+	}
+	secondTurn := HistoryTurn{
+		SchemaVersion: 1, ID: "turn_000003", ConversationID: "conv_edit_sdel2",
+		CreatedAt: secondOp.CreatedAt, Kind: editConversationKind, Role: "assistant",
+		Request: map[string]any{"operation": secondOp},
+		Content: editOperationContents(secondOp),
+	}
+	turnsDir := filepath.Join(config.Storage.History, "conversations", "2026", "10", "conv_edit_sdel2", "turns")
+	if err := writeJSONFile(filepath.Join(turnsDir, "turn_000003.json"), secondTurn); err != nil {
+		t.Fatalf("write second op turn: %v", err)
+	}
+
+	if err := app.DeleteEditOperation("conv_edit_sdel2", opID); err != nil {
+		t.Fatalf("DeleteEditOperation returned error: %v", err)
+	}
+	loaded, err := loadForEditAppend(config.Storage, "conv_edit_sdel2")
+	if err != nil {
+		t.Fatalf("loadForEditAppend: %v", err)
+	}
+	if loaded.NextTurnNumber != 4 {
+		t.Fatalf("NextTurnNumber after gap = %d, want 4", loaded.NextTurnNumber)
+	}
+
+	// The next append must land past the gap, never on the surviving turn.
+	state, err := app.SubmitImageEdit(ImageEditSubmitRequest{
+		ParentConversationID:  "conv_edit_del2",
+		SourceArtifactID:      artifactID,
+		SessionConversationID: "conv_edit_sdel2",
+		Prompt:                "make it night",
+		MaskPng:               editTestMaskDataURL(t, 8, 8),
+	})
+	if err != nil {
+		t.Fatalf("iteration submit returned error: %v", err)
+	}
+	defer waitForEditTerminal(t, config.Storage, "conv_edit_sdel2", state.Operation.ID)
+	var survivor HistoryTurn
+	if err := readJSONFile(filepath.Join(turnsDir, "turn_000003.json"), &survivor); err != nil {
+		t.Fatalf("read turn_000003 after new submit: %v", err)
+	}
+	if op, ok := editOperationFromTurn(survivor); !ok || op.ID != secondOp.ID {
+		t.Fatalf("the surviving turn was overwritten: %+v", survivor)
+	}
+	var latest HistoryTurn
+	if err := readJSONFile(filepath.Join(turnsDir, "turn_000004.json"), &latest); err != nil {
+		t.Fatalf("new op turn missing at turn_000004: %v", err)
+	}
+	if op, ok := editOperationFromTurn(latest); !ok || op.ID != state.Operation.ID {
+		t.Fatalf("turn_000004 does not carry the new operation: %+v", latest)
+	}
+}
+
+func TestDeleteEditOperationRefusesWhileBusy(t *testing.T) {
+	config := editTestHome(t)
+	writeEditParentFixture(t, config, "conv_edit_del3", "Parent", "")
+	_, _, opID := writeEditSessionFixture(t, config, "conv_edit_del3", "conv_edit_sdel3")
+	app := NewApp()
+
+	// A live op in the session blocks every delete: the executor may be
+	// rewriting the conversation record concurrently.
+	app.editOpsMu.Lock()
+	app.editOps["busy-op"] = &editOpRun{conversationID: "conv_edit_sdel3", cancel: func() {}}
+	app.editOpsMu.Unlock()
+	if err := app.DeleteEditOperation("conv_edit_sdel3", opID); err == nil || !strings.Contains(err.Error(), "running") {
+		t.Fatalf("delete must be refused while the session has a live op, got %v", err)
+	}
+	app.editOpsMu.Lock()
+	delete(app.editOps, "busy-op")
+	app.editOpsMu.Unlock()
+
+	// With the session idle, a queued/running TARGET is still refused —
+	// cancel it first.
+	turnPath := filepath.Join(config.Storage.History, "conversations", "2026", "10", "conv_edit_sdel3", "turns", "turn_000002.json")
+	var turn HistoryTurn
+	if err := readJSONFile(turnPath, &turn); err != nil {
+		t.Fatalf("read op turn: %v", err)
+	}
+	op, _ := editOperationFromTurn(turn)
+	op.Status = editOperationStatusRunning
+	turn.Request = map[string]any{"operation": op}
+	if err := writeJSONFile(turnPath, turn); err != nil {
+		t.Fatalf("rewrite op turn as running: %v", err)
+	}
+	if err := app.DeleteEditOperation("conv_edit_sdel3", opID); err == nil || !strings.Contains(err.Error(), "cancel") {
+		t.Fatalf("delete of a running operation must be refused, got %v", err)
+	}
+	if _, err := os.Stat(turnPath); err != nil {
+		t.Fatalf("refused delete removed the turn file: %v", err)
+	}
+	if err := app.DeleteEditOperation("conv_edit_sdel3", "editop_unknown1"); err == nil {
+		t.Fatal("unknown operation id must fail")
+	}
+}

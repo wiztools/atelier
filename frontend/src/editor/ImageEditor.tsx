@@ -1,8 +1,9 @@
 import {Fragment, useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {AddEditResultToConversation, CancelImageEdit, ListEditSession, ListInpaintModels, ReleaseEditSourcePreview, SubmitImageEdit} from '../../wailsjs/go/main/App';
+import {AddEditResultToConversation, CancelImageEdit, DeleteEditOperation, ListEditSession, ListInpaintModels, ReleaseEditSourcePreview, SubmitImageEdit} from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
 import {EventsOff, EventsOn} from '../../wailsjs/runtime/runtime';
 import {EditsPanel} from './EditsPanel';
+import {EditKebabMenu} from './EditKebabMenu';
 import {EditorHeader} from './EditorHeader';
 import {CanvasStage} from './CanvasStage';
 import {MaskPoint, MaskStroke, exportMaskPNG, maskHasSelection, repaintMask} from './MaskBrushTool';
@@ -151,6 +152,8 @@ export function ImageEditor(props: {
   const [submitError, setSubmitError] = useState('');
   const [adoptingID, setAdoptingID] = useState('');
   const [adoptError, setAdoptError] = useState('');
+  const [deletingID, setDeletingID] = useState('');
+  const [deleteError, setDeleteError] = useState('');
   const [compareOpID, setCompareOpID] = useState('');
 
   // The Edits panel's scroll pane: the compare-scroll effect scrolls it
@@ -557,6 +560,54 @@ export function ImageEditor(props: {
     }
   }
 
+  // Delete one edit from the session — its turn and the files it owns. The
+  // backend copies results on adoption, so "Added" parent entries survive.
+  // When the deleted result is what the canvas shows, fall back to the newest
+  // surviving completed result, else the session's own source copy (the
+  // sourceKey change resets the mask strokes via the canvas effect).
+  async function deleteOp(op: main.EditOperation) {
+    if (!sessionID || deletingID) {
+      return;
+    }
+    setDeletingID(op.id);
+    setDeleteError('');
+    try {
+      await DeleteEditOperation(sessionID, op.id);
+      eventOperations.current.delete(op.id);
+      const remaining = ops.filter((item) => item.id !== op.id);
+      setSession((current) => {
+        if (!current) {
+          return current;
+        }
+        const operations = current.operations.filter((item) => item.id !== op.id);
+        return main.EditSessionState.createFrom({...current, operations,
+          runningOperationId: operations.find((item) => !terminalStatus(item.status))?.id || ''});
+      });
+      setCompareOpID((current) => (current === op.id ? '' : current));
+      if (op.resultArtifactId && canvas.artifactID === op.resultArtifactId) {
+        let next: {url: string; width: number; height: number; artifactID: string; sourceKey: string} | null = null;
+        for (let i = remaining.length - 1; i >= 0 && !next; i--) {
+          const item = remaining[i];
+          if (item.status === 'completed' && item.resultArtifactId && item.resultUrl) {
+            next = {url: item.resultUrl, width: item.resultWidth || canvas.width, height: item.resultHeight || canvas.height, artifactID: item.resultArtifactId, sourceKey: item.resultArtifactId};
+          }
+        }
+        const source = session?.source;
+        if (!next && source?.url && source.artifactId) {
+          next = {url: source.url, width: source.width ?? 0, height: source.height ?? 0, artifactID: source.artifactId, sourceKey: source.artifactId};
+        }
+        if (next) {
+          setCanvas(next);
+          setCompareOpID('');
+        }
+      }
+    } catch (error) {
+      setDeleteError(formatEditorError(error));
+    } finally {
+      setDeletingID('');
+    }
+  }
+
   return (
     <section className="image-editor">
       <EditorHeader
@@ -736,7 +787,12 @@ export function ImageEditor(props: {
       <EditsPanel
         count={ops.length}
         emptyText={tool === 'crop' ? 'No edits yet — adjust the crop and apply.' : 'No edits yet — paint a selection and generate.'}
-        adoptError={adoptError ? <span className="editor-error">{adoptError}</span> : null}
+        adoptError={
+          <>
+            {adoptError ? <span className="editor-error">{adoptError}</span> : null}
+            {deleteError ? <span className="editor-error">{deleteError}</span> : null}
+          </>
+        }
         scrollRef={resultsScrollRef}
       >
         <ul className="editor-op-list">
@@ -789,6 +845,12 @@ export function ImageEditor(props: {
                     <span className="editor-op-retry-hint">{op.kind === 'crop' ? 'Adjust and apply to retry' : 'Adjust and generate to retry'}</span>
                   ) : null}
                 </div>
+                <EditKebabMenu
+                  label={`Options for ${operationTitle(op)}`}
+                  disabled={busy || !sessionID || !terminalStatus(op.status) || deletingID !== ''}
+                  deleteInProgress={deletingID === op.id}
+                  onDelete={() => void deleteOp(op)}
+                />
               </li>
               {compareOpID === op.id && op.status === 'completed' && op.resultUrl ? (
                 <li className="editor-op-compare" id={`editor-compare-${op.id}`}>

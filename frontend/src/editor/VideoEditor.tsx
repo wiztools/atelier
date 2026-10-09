@@ -3,6 +3,7 @@ import * as AppBindings from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
 import {EventsOff, EventsOn} from '../../wailsjs/runtime/runtime';
 import {EditsPanel} from './EditsPanel';
+import {EditKebabMenu} from './EditKebabMenu';
 import {EditorHeader} from './EditorHeader';
 import {VideoStage} from './VideoStage';
 import {VideoTimeline} from './VideoTimeline';
@@ -151,6 +152,8 @@ export function VideoEditor(props: {
   const [submitError, setSubmitError] = useState('');
   const [adoptError, setAdoptError] = useState('');
   const [adoptingID, setAdoptingID] = useState('');
+  const [deletingID, setDeletingID] = useState('');
+  const [deleteError, setDeleteError] = useState('');
   const [compareOpID, setCompareOpID] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(Boolean(props.handle.sessionID));
@@ -500,6 +503,48 @@ export function VideoEditor(props: {
     }
   }
 
+  // Delete one edit from the session — its turn and the files it owns (the
+  // clip, its poster, its filmstrip tiles). When the deleted result is the
+  // clip on the stage, fall back to the session's own source copy with
+  // defaults re-derived for it (the same rebase "Use as source" performs);
+  // the filmstrip thumbnails re-resolve in the background.
+  async function deleteOp(op: VideoEditOperation) {
+    if (!sessionID || deletingID) return;
+    setDeletingID(op.id);
+    setDeleteError('');
+    try {
+      await AppBindings.DeleteEditOperation(sessionID, op.id);
+      eventOperations.current.delete(op.id);
+      setSession((current) => {
+        if (!current) return current;
+        const operations = current.operations.filter((item) => item.id !== op.id);
+        return {...current, operations, runningOperationId: operations.find((item) => !terminalStatus(item.status))?.id || ''};
+      });
+      setCompareOpID((current) => (current === op.id ? '' : current));
+      if (op.resultArtifactId && source.artifactId === op.resultArtifactId) {
+        const fallback = session?.source;
+        if (fallback?.artifactId && fallback.url) {
+          const next = defaultVideoReframeParams(sourceForParams(fallback), params.aspectRatio);
+          setSource({...fallback, thumbnails: [], notices: []});
+          setParams(next);
+          setBaseline(next);
+          setUndoStack([]);
+          setRedoStack([]);
+          setSelectedMarkerIndex(0);
+          setCurrentTime(0);
+          setPlaying(false);
+          void AppBindings.ResolveVideoEditInput(sessionID, fallback.artifactId)
+            .then((resolved) => setSource(resolved))
+            .catch(() => {});
+        }
+      }
+    } catch (error) {
+      setDeleteError(formatEditorError(error));
+    } finally {
+      setDeletingID('');
+    }
+  }
+
   return (
     <section className="video-editor">
       <EditorHeader
@@ -618,7 +663,12 @@ export function VideoEditor(props: {
       <EditsPanel
         count={ops.length}
         emptyText="No renders yet."
-        adoptError={adoptError ? <span className="editor-error">{adoptError}</span> : null}
+        adoptError={
+          <>
+            {adoptError ? <span className="editor-error">{adoptError}</span> : null}
+            {deleteError ? <span className="editor-error">{deleteError}</span> : null}
+          </>
+        }
         bodyReservePx={editsPanelBodyReservePx}
       >
         <ul className="editor-op-list">
@@ -661,6 +711,12 @@ export function VideoEditor(props: {
                       <span className="editor-op-retry-hint">Adjust and render again</span>
                     ) : null}
                   </div>
+                  <EditKebabMenu
+                    label={`Options for ${operationTitle(op)}`}
+                    disabled={busy || !sessionID || !terminalStatus(op.status) || deletingID !== ''}
+                    deleteInProgress={deletingID === op.id}
+                    onDelete={() => void deleteOp(op)}
+                  />
                 </li>
                 {compareOpID === op.id && op.resultUrl ? (
                   <li className="editor-op-compare">

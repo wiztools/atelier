@@ -30,6 +30,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1076,6 +1077,95 @@ func (a *App) editOpRunning(sessionID string) bool {
 	return false
 }
 
+// DeleteEditOperation removes one edit from a session: its turn file and the
+// artifact files the operation owns — the result (image or video, with the
+// poster and filmstrip siblings the media conventions write beside a clip)
+// and an inpaint op's selection mask. What an operation consumed is never
+// deleted (it is the session's source copy or an earlier op's result), and a
+// result adopted into the parent conversation is a copy, so both survive. A
+// later op that consumed the deleted result keeps its own output; only its
+// before-reference dangles. Refused while any operation in the session is
+// running — the executor rewrites the conversation record, and a concurrent
+// record write would clobber one of the two — and for a target that is itself
+// queued/running (cancel it first). Deletion leaves a numbering gap in the
+// turns directory, which nextEditTurnNumber absorbs.
+func (a *App) DeleteEditOperation(sessionConversationID, operationID string) error {
+	config, err := loadReadyConfig()
+	if err != nil {
+		return err
+	}
+	a.editSubmitMu.Lock()
+	defer a.editSubmitMu.Unlock()
+	sessionID := strings.TrimSpace(sessionConversationID)
+	operationID = strings.TrimSpace(operationID)
+	if sessionID == "" || operationID == "" {
+		return errors.New("a session and operation id are required")
+	}
+	loaded, err := loadForEditAppend(config.Storage, sessionID)
+	if err != nil {
+		return err
+	}
+	if a.editOpRunning(sessionID) {
+		return errors.New("an edit operation is running in this session — wait for it to finish or cancel it first")
+	}
+	detail, err := getConversation(config.Storage, sessionID)
+	if err != nil {
+		return err
+	}
+	for _, turn := range detail.Turns {
+		op, ok := editOperationFromTurn(turn)
+		if !ok || op.ID != operationID {
+			continue
+		}
+		if op.Status == editOperationStatusQueued || op.Status == editOperationStatusRunning {
+			return errors.New("this edit is still running — cancel it first")
+		}
+		if err := os.Remove(filepath.Join(loaded.TurnsDir, turn.ID+".json")); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		removeEditOperationFiles(filepath.Dir(loaded.Path), op)
+		loaded.Conversation.UpdatedAt = time.Now().Format(time.RFC3339)
+		loaded.Conversation.Stats.TurnCount = max(0, loaded.Conversation.Stats.TurnCount-1)
+		if op.Status == editOperationStatusCompleted && op.ResultArtifactID != "" {
+			loaded.Conversation.Stats.ArtifactCount = max(0, loaded.Conversation.Stats.ArtifactCount-1)
+		}
+		return newHistoryStore(config.Storage).writeConversation(loaded.Path, loaded.Conversation)
+	}
+	return fmt.Errorf("operation %s not found in session %s", operationID, sessionID)
+}
+
+// removeEditOperationFiles deletes the artifact files one operation owns,
+// best-effort: the result plus the poster/filmstrip siblings written beside a
+// video clip (absent for images), and the inpaint selection mask. Missing
+// files are the expected case for failed operations.
+func removeEditOperationFiles(conversationDir string, op EditOperation) {
+	remove := func(relSlash string) {
+		if relSlash == "" {
+			return
+		}
+		_ = os.Remove(filepath.Join(conversationDir, filepath.FromSlash(relSlash)))
+	}
+	if op.ResultPath != "" {
+		remove(op.ResultPath)
+		resultAbs := filepath.Join(conversationDir, filepath.FromSlash(op.ResultPath))
+		stem := strings.TrimSuffix(resultAbs, filepath.Ext(resultAbs))
+		_ = os.Remove(stem + "_poster.jpg")
+		entries, err := os.ReadDir(filepath.Dir(stem))
+		if err == nil {
+			prefix := filepath.Base(stem) + "_thumb_"
+			for _, entry := range entries {
+				name := entry.Name()
+				if strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ".jpg") {
+					_ = os.Remove(filepath.Join(filepath.Dir(stem), name))
+				}
+			}
+		}
+	}
+	if op.Inpaint != nil {
+		remove(op.Inpaint.MaskPath)
+	}
+}
+
 // emitEditOperation fires the live-state event when a UI is attached. URL
 // hydration happens at the persist site, where the artifacts dir is known.
 func (a *App) emitEditOperation(sessionID string, op EditOperation) {
@@ -1563,8 +1653,31 @@ func loadForEditAppend(storage ConfigStorage, sessionID string) (loadedEditConve
 		TurnsDir:       turnsDir,
 		ArtifactsDir:   filepath.Join(conversationDir, "artifacts"),
 		Conversation:   conversation,
-		NextTurnNumber: countTurnFiles(turnsDir) + 1,
+		NextTurnNumber: nextEditTurnNumber(turnsDir),
 	}, nil
+}
+
+// nextEditTurnNumber returns one past the highest turn number on disk. Edit
+// sessions can delete operation turns (DeleteEditOperation), leaving gaps, so
+// a file count would eventually drop below the highest surviving number and
+// the next append would overwrite that turn.
+func nextEditTurnNumber(turnsDir string) int {
+	next := 1
+	entries, err := os.ReadDir(turnsDir)
+	if err != nil {
+		return next
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		raw := strings.TrimSuffix(entry.Name(), ".json")
+		raw = strings.TrimPrefix(raw, "turn_")
+		if n, err := strconv.Atoi(raw); err == nil && n >= next {
+			next = n + 1
+		}
+	}
+	return next
 }
 
 // editOperationFromTurn extracts the op record from a turn's Request map

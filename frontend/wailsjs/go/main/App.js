@@ -62,6 +62,10 @@ export function DeleteConversation(arg1) {
   return window['go']['main']['App']['DeleteConversation'](arg1);
 }
 
+export function DeleteEditOperation(arg1, arg2) {
+  return window['go']['main']['App']['DeleteEditOperation'](arg1, arg2);
+}
+
 export function DeleteLibrary(arg1) {
   return window['go']['main']['App']['DeleteLibrary'](arg1);
 }
