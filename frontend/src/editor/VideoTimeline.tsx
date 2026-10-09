@@ -110,6 +110,16 @@ export function VideoTimeline(props: {
         >
           ⚑+
         </button>
+        <button
+          type="button"
+          className="video-icon-button"
+          disabled={props.busy || props.selectedMarkerIndex <= 0}
+          onClick={() => props.onDeleteMarker(props.selectedMarkerIndex)}
+          aria-label="Delete the selected marker"
+          title="Delete marker"
+        >
+          ⚑-
+        </button>
         <label className="video-mini-field">
           Time
           <input
@@ -134,16 +144,6 @@ export function VideoTimeline(props: {
             <option value="hold">Hold</option>
           </select>
         </label>
-        <button
-          type="button"
-          className="video-icon-button"
-          disabled={props.busy || props.selectedMarkerIndex <= 0}
-          onClick={() => props.onDeleteMarker(props.selectedMarkerIndex)}
-          aria-label="Delete the selected marker"
-          title="Delete marker"
-        >
-          ⚑-
-        </button>
       </div>
       <div
         ref={trackRef}
