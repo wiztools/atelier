@@ -249,8 +249,6 @@ export function VideoTimeline(props: {
           />
         ))}
       </div>
-      <input type="range" min={0} max={duration} step={0.001} value={props.currentTime}
-        aria-label="Video playhead" onChange={(event) => props.onSeek(Number(event.currentTarget.value))} />
     </div>
   );
 }

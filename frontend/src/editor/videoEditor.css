@@ -8,7 +8,8 @@
    transfers its width into a large content height, which would become the
    body's automatic flex minimum — the body would refuse to shrink and push
    the Edits panel out of the viewport. The body yields instead; the panel's
-   height clamp (EditsPanel bodyReservePx) is what protects the stage floor. */
+   height clamp (EditsPanel bodyReservePx) is what protects the body floor —
+   the timeline, which never compresses, plus the stage around it. */
 .video-editor .editor-body {
   min-height: 0;
 }
@@ -24,8 +25,11 @@
 }
 
 .video-editor .video-stage {
+  /* The squeeze absorber: the timeline below is unsquishable, so a short
+     window compresses the preview (object-fit: contain degrades gracefully)
+     instead of clipping the timeline's controls or track. */
   flex: 1 1 auto;
-  min-height: 260px;
+  min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(260px, .56fr);
   gap: 12px;
@@ -113,12 +117,9 @@
 }
 
 .video-editor .video-timeline {
-  /* Shrinkable with internal scroll: when a short window gives the body less
-     than its content floor, the timeline compresses (its controls stay
-     reachable by scrolling) instead of sliding under the Edits panel. */
-  flex: 0 1 auto;
-  min-height: 0;
-  overflow-y: auto;
+  /* Always its natural height — never compressed, never internally scrolled.
+     A short window compresses the stage above instead (see .video-stage). */
+  flex: 0 0 auto;
   display: grid;
   gap: 8px;
   border: 1px solid #3a3e41;
@@ -189,14 +190,6 @@
 .video-editor .video-mini-field select {
   /* "Smooth" plus the disclosure arrow. */
   width: 82px;
-}
-
-/* The playhead slider rides the global 36px input height; compact it to the
-   rest of the row so the timeline's content fits without internal scroll. */
-.video-editor .video-timeline > input[type="range"] {
-  height: 22px;
-  margin: 0;
-  padding: 0 10px;
 }
 
 .video-editor .video-timeline-track {
