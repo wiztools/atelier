@@ -923,10 +923,6 @@ button:disabled {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
 }
 
-.back-button {
-  width: auto;
-}
-
 .settings-screen {
   min-height: 0;
   overflow: auto;
@@ -3664,10 +3660,13 @@ button:disabled {
   flex: 0 0 auto;
 }
 
-.editor-back {
-  /* Ghost nav affordance, not a standard action button. box-sizing is load-
-     bearing: the global button rule's height:36px is content-box, so vertical
-     padding here would render outside it (the 50px-tall button bug). */
+/* Ghost nav affordance shared by the editor Close and the toolbar Back
+   buttons (Settings and conversation models) — quiet until hovered, matching
+   the crumb-link vocabulary instead of a standard action button. box-sizing
+   is load-bearing: the global button rule's height:36px is content-box, so
+   vertical padding here would render outside it (the 50px-tall button bug). */
+.editor-back,
+.back-button {
   box-sizing: border-box;
   height: 28px;
   border: 1px solid transparent;
@@ -3678,7 +3677,8 @@ button:disabled {
   cursor: pointer;
 }
 
-.editor-back:hover {
+.editor-back:hover,
+.back-button:hover {
   border-color: #3a3e41;
   background: #25292b;
   color: #f3f0e8;
