@@ -129,7 +129,7 @@ func (a *App) ResolveVideoEditInput(sessionID, artifactID string) (EditSourceInf
 	if err == nil {
 		path, pathErr := contentArtifactPath(config.Storage, sessionID, content)
 		if pathErr == nil {
-			info.Thumbnails = videoEditThumbnails(context.Background(), config, path, info.DurationSeconds, 12)
+			info.Thumbnails = videoEditThumbnailURLs(context.Background(), config, path, info.DurationSeconds, 12)
 		}
 	}
 	return info, err
@@ -158,7 +158,7 @@ func videoEditSourceInfoForPreview(ctx context.Context, config AppConfig, conver
 	info.SourceDigest = digest
 	info.Notices = append(info.Notices, notices...)
 	info.URL = artifactPrefix + preview
-	info.Thumbnails = videoEditThumbnails(ctx, config, preview, probe.Duration, 12)
+	info.Thumbnails = videoEditThumbnailURLs(ctx, config, preview, probe.Duration, 12)
 	if ctx.Err() != nil {
 		removeVideoPreviewFiles(info)
 		return EditSourceInfo{}, ctx.Err()
@@ -288,9 +288,21 @@ func normalizeVideoEditSource(ctx context.Context, config AppConfig, input strin
 	return output, probe, notices, nil
 }
 
-func videoEditThumbnails(ctx context.Context, config AppConfig, input string, duration float64, maxCount int) []string {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+// videoEditThumbnailBudget bounds one thumbnail-strip generation pass. With
+// the deterministic per-artifact naming below, an expired budget leaves the
+// missing tiles to a later resolve instead of losing them.
+const videoEditThumbnailBudget = 30 * time.Second
+
+// videoEditThumbnailURLs returns filmstrip thumbnail URLs for a video file.
+// Poster-style (the video_poster.go convention), the tiles are
+// <stem>_thumb_NN.jpg siblings of the source itself: thumbnails for a session
+// artifact live as long as the artifact, so reopening an editor or
+// re-resolving a source (restore, use-as-source, edit-framing) is a stat
+// check instead of twelve ffmpeg spawns, and an interrupted strip resumes
+// where it stopped. ReleaseVideoEditSourcePreview only deletes files in the
+// editpreview scratch dir, so artifact-side tiles survive an editor close by
+// design; scratch-dir tiles still ride the info's release.
+func videoEditThumbnailURLs(ctx context.Context, config AppConfig, input string, duration float64, maxCount int) []string {
 	if duration <= 0 || maxCount <= 0 {
 		return nil
 	}
@@ -301,22 +313,67 @@ func videoEditThumbnails(ctx context.Context, config AppConfig, input string, du
 	if duration < float64(count) {
 		count = max(1, int(duration))
 	}
-	dir := editSourcePreviewDir()
-	urls := make([]string, 0, count)
-	for i := 0; i < count; i++ {
+	stem := strings.TrimSuffix(input, filepath.Ext(input))
+	paths := make([]string, count)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("%s_thumb_%02d.jpg", stem, i+1)
+	}
+	pruneVideoEditThumbnails(stem, paths)
+	ctx, cancel := context.WithTimeout(ctx, videoEditThumbnailBudget)
+	defer cancel()
+	for i, path := range paths {
 		if ctx.Err() != nil {
 			break
 		}
+		if videoEditThumbnailPresent(path) {
+			continue
+		}
 		at := duration * (float64(i) + 0.5) / float64(count)
-		out := filepath.Join(dir, randomID("editpreview-thumb")+".jpg")
-		err := runLocalFFmpeg(ctx, config, []string{"-nostdin", "-y", "-ss", strconv.FormatFloat(at, 'f', 3, 64), "-i", input, "-frames:v", "1", "-vf", "scale='min(240,iw)':-2", "-q:v", "4", out})
-		if err == nil {
-			urls = append(urls, artifactPrefix+out)
-		} else {
-			_ = os.Remove(out)
+		err := runLocalFFmpeg(ctx, config, []string{"-nostdin", "-y", "-ss", strconv.FormatFloat(at, 'f', 3, 64), "-i", input, "-frames:v", "1", "-vf", "scale='min(240,iw)':-2", "-q:v", "4", path})
+		if err != nil {
+			_ = os.Remove(path)
+		}
+	}
+	urls := make([]string, 0, count)
+	for _, path := range paths {
+		if videoEditThumbnailPresent(path) {
+			urls = append(urls, artifactPrefix+path)
 		}
 	}
 	return urls
+}
+
+// videoEditThumbnailPresent treats a zero-byte file as absent: an ffmpeg run
+// killed mid-encode leaves exactly that, and the tile must regenerate.
+func videoEditThumbnailPresent(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Size() > 0
+}
+
+// pruneVideoEditThumbnails deletes strip tiles left by an earlier generation
+// whose tile count differed (a re-probed duration), so the deterministic
+// naming never strands orphans beside the clip.
+func pruneVideoEditThumbnails(stem string, expected []string) {
+	dir := filepath.Dir(stem)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	prefix := filepath.Base(stem) + "_thumb_"
+	wanted := make(map[string]bool, len(expected))
+	for _, path := range expected {
+		wanted[path] = true
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".jpg") {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		if !wanted[path] {
+			_ = os.Remove(path)
+		}
+	}
 }
 
 func (a *App) SubmitVideoEdit(req VideoEditSubmitRequest) (EditOperationState, error) {

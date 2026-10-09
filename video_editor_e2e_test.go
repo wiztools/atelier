@@ -105,7 +105,12 @@ func TestVideoEditorRealPipeline(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer app.ReleaseVideoEditSourcePreview(info.URL)
+			defer func() {
+				_ = app.ReleaseVideoEditSourcePreview(info.URL)
+				for _, url := range info.Thumbnails {
+					_ = app.ReleaseVideoEditSourcePreview(url)
+				}
+			}()
 			if info.MediaKind != "video" || info.Width <= 0 || info.Height <= 0 || info.DurationSeconds <= 0 || len(info.Thumbnails) > 30 {
 				t.Fatalf("invalid editor source: %+v", info)
 			}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,7 +62,12 @@ JSON
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = app.ReleaseVideoEditSourcePreview(info.URL) })
+	t.Cleanup(func() {
+		_ = app.ReleaseVideoEditSourcePreview(info.URL)
+		for _, url := range info.Thumbnails {
+			_ = app.ReleaseVideoEditSourcePreview(url)
+		}
+	})
 	crop, err := fitVideoReframeCrop(info.Width, info.Height, "9:16")
 	if err != nil {
 		t.Fatal(err)
@@ -137,9 +143,43 @@ func TestVideoEditRejectsStaleSourceBeforeSessionCreation(t *testing.T) {
 	if err := app.ReleaseVideoEditSourcePreview(info.URL); err != nil {
 		t.Fatal(err)
 	}
+	for _, url := range info.Thumbnails {
+		if err := app.ReleaseVideoEditSourcePreview(url); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, url := range append([]string{info.URL}, info.Thumbnails...) {
 		if _, err := os.Stat(strings.TrimPrefix(url, artifactPrefix)); !os.IsNotExist(err) {
 			t.Fatalf("preview resource leaked: %s, %v", url, err)
+		}
+	}
+}
+
+// TestVideoEditSourceReleaseIsFileScoped pins the release contract: one
+// released URL deletes exactly its own file. A live editor may still be
+// rendering the generation's siblings (React's dev StrictMode unmount replay
+// fires releases while the component survives), so the old whole-generation
+// cascade must not come back.
+func TestVideoEditSourceReleaseIsFileScoped(t *testing.T) {
+	app, _, _, _, info, _ := videoSessionTestApp(t, "success")
+	if err := app.ReleaseVideoEditSourcePreview(info.URL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(strings.TrimPrefix(info.URL, artifactPrefix)); !os.IsNotExist(err) {
+		t.Fatalf("released preview survived: %v", err)
+	}
+	if len(info.Thumbnails) == 0 {
+		t.Fatal("resolve produced no thumbnails to scope-test")
+	}
+	for _, url := range info.Thumbnails {
+		if _, err := os.Stat(strings.TrimPrefix(url, artifactPrefix)); err != nil {
+			t.Fatalf("sibling tile was cascaded away: %s, %v", url, err)
+		}
+		if err := app.ReleaseVideoEditSourcePreview(url); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(strings.TrimPrefix(url, artifactPrefix)); !os.IsNotExist(err) {
+			t.Fatalf("released tile survived: %s, %v", url, err)
 		}
 	}
 }
@@ -160,5 +200,85 @@ func TestVideoEditProgressRunnerCancellation(t *testing.T) {
 	})
 	if err == nil || updates == 0 || time.Since(start) > 3*time.Second {
 		t.Fatalf("runner did not promptly cancel: updates=%d, err=%v", updates, err)
+	}
+}
+
+func TestVideoEditThumbnailURLsPersistBesideSource(t *testing.T) {
+	withRealLocalLookup(t)
+	config := editTestHome(t)
+	bin := t.TempDir()
+	calls := filepath.Join(t.TempDir(), "thumb-calls")
+	t.Setenv("THUMB_CALLS", calls)
+	ffmpeg := writeFakeWhisper(t, bin, "ffmpeg", `#!/bin/sh
+echo x >> "$THUMB_CALLS"
+out=""
+for arg in "$@"; do out="$arg"; done
+printf THUMB > "$out"
+`)
+	config.Providers.Local.FFmpeg.Binary = ffmpeg
+	if err := writeAppConfig(config); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	source := filepath.Join(dir, "vid_test.mp4")
+	if err := os.WriteFile(source, []byte("SOURCE"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	generated := videoEditThumbnailURLs(context.Background(), config, source, 4, 12)
+	if len(generated) != 4 {
+		t.Fatalf("short strip: %v", generated)
+	}
+	for i, url := range generated {
+		want := filepath.Join(dir, fmt.Sprintf("vid_test_thumb_%02d.jpg", i+1))
+		if url != artifactPrefix+want {
+			t.Fatalf("tile %d named %q, want %q", i, url, want)
+		}
+		if info, err := os.Stat(want); err != nil || info.Size() == 0 {
+			t.Fatalf("tile %d missing on disk: %v", i+1, err)
+		}
+	}
+
+	// A repeat resolve is a stat check: even a broken ffmpeg cannot hurt it.
+	config.Providers.Local.FFmpeg.Binary = filepath.Join(bin, "missing-ffmpeg")
+	cached := videoEditThumbnailURLs(context.Background(), config, source, 4, 12)
+	if strings.Join(cached, "\n") != strings.Join(generated, "\n") {
+		t.Fatalf("cache hit changed the strip: %v", cached)
+	}
+
+	// Missing and zero-byte tiles regenerate; present ones are not re-spawned.
+	config.Providers.Local.FFmpeg.Binary = ffmpeg
+	if err := os.Remove(filepath.Join(dir, "vid_test_thumb_02.jpg")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "vid_test_thumb_03.jpg"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(calls)
+	if resumed := videoEditThumbnailURLs(context.Background(), config, source, 4, 12); len(resumed) != 4 {
+		t.Fatalf("resumed strip short: %v", resumed)
+	}
+	invocations, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(invocations), "x"); got != 2 {
+		t.Fatalf("resume regenerated %d tiles, want 2", got)
+	}
+
+	// A stray tile from an earlier wider strip is pruned.
+	stray := filepath.Join(dir, "vid_test_thumb_09.jpg")
+	if err := os.WriteFile(stray, []byte("OLD"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	videoEditThumbnailURLs(context.Background(), config, source, 4, 12)
+	if _, err := os.Stat(stray); !os.IsNotExist(err) {
+		t.Fatalf("stale tile survived: %v", err)
+	}
+
+	for _, invalid := range [][2]float64{{0, 12}, {4, 0}, {-1, -1}} {
+		if got := videoEditThumbnailURLs(context.Background(), config, source, invalid[0], int(invalid[1])); got != nil {
+			t.Fatalf("invalid input %v produced %v", invalid, got)
+		}
 	}
 }

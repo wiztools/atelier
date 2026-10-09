@@ -158,6 +158,7 @@ export function VideoEditor(props: {
   const hydratedSession = useRef('');
   const markerMoveBaseline = useRef<VideoReframeParams | null>(null);
   const previewResources = useRef(new Set<string>([props.handle.source.url, ...(props.handle.source.thumbnails || [])]));
+  const pendingReleases = useRef(new Map<string, number>());
 
   const ops = session?.operations ?? [];
   const runningOpID = session?.runningOperationId ?? '';
@@ -180,8 +181,20 @@ export function VideoEditor(props: {
     previewResources.current.add(source.url);
     for (const thumbnail of source.thumbnails || []) previewResources.current.add(thumbnail);
   }, [source]);
-  useEffect(() => () => {
-    for (const url of previewResources.current) releaseVideoPreview(url);
+  useEffect(() => {
+    // Defer the cleanup release so StrictMode's setup/cleanup replay cannot
+    // delete preview files the remounted editor still displays.
+    pendingReleases.current.forEach((timer) => clearTimeout(timer));
+    pendingReleases.current.clear();
+    return () => {
+      for (const url of previewResources.current) {
+        if (pendingReleases.current.has(url)) continue;
+        pendingReleases.current.set(url, window.setTimeout(() => {
+          pendingReleases.current.delete(url);
+          releaseVideoPreview(url);
+        }, 0));
+      }
+    };
   }, []);
 
   useEffect(() => {

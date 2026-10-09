@@ -236,9 +236,13 @@ func (a *App) ReleaseEditSourcePreview(previewURL string) error {
 	return a.ReleaseVideoEditSourcePreview(previewURL)
 }
 
-// ReleaseVideoEditSourcePreview removes a normalized temporary preview returned
-// by either editor source resolver. URLs outside Atelier's guarded preview
-// directory are ignored.
+// ReleaseVideoEditSourcePreview removes one preview file returned by either
+// editor source resolver. The videoSourcePreviews entry matching the URL is
+// forgotten so the submit path cannot reuse a released preview, but deletion
+// is scoped to the named file: a sibling release must never cascade into the
+// generation's other files, which a live editor may still be rendering (for
+// example under React's dev StrictMode unmount replay). URLs outside
+// Atelier's guarded preview directory are ignored.
 func (a *App) ReleaseVideoEditSourcePreview(previewURL string) error {
 	a.editSubmitMu.Lock()
 	defer a.editSubmitMu.Unlock()
@@ -246,7 +250,7 @@ func (a *App) ReleaseVideoEditSourcePreview(previewURL string) error {
 	for key, info := range a.videoSourcePreviews {
 		if info.URL == previewURL {
 			delete(a.videoSourcePreviews, key)
-			removeVideoPreviewFiles(info)
+			break
 		}
 	}
 	a.videoPreviewMu.Unlock()
