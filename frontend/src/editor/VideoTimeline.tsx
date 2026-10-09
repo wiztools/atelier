@@ -44,6 +44,8 @@ export function VideoTimeline(props: {
   const dragMarker = useRef<number | null>(null);
   const duration = props.params.source.durationSeconds;
   const selectedMarker = props.params.markers[props.selectedMarkerIndex];
+  const markerEpsilon = 0.001;
+  const frameStepSeconds = 1 / 30;
 
   function seek(event: React.PointerEvent<HTMLDivElement>) {
     if (dragMarker.current !== null) return;
@@ -78,6 +80,33 @@ export function VideoTimeline(props: {
     dragMarker.current = null;
   }
 
+  function markerStepTarget(direction: -1 | 1): number | null {
+    if (direction === -1) {
+      for (let index = props.params.markers.length - 1; index >= 0; index--) {
+        if (props.params.markers[index].timeSeconds < props.currentTime - markerEpsilon) return index;
+      }
+      return null;
+    }
+    for (let index = 0; index < props.params.markers.length; index++) {
+      if (props.params.markers[index].timeSeconds > props.currentTime + markerEpsilon) return index;
+    }
+    return null;
+  }
+
+  function stepMarker(direction: -1 | 1) {
+    const index = markerStepTarget(direction);
+    const marker = index === null ? undefined : props.params.markers[index];
+    if (index === null || !marker) return;
+    props.onSelectMarker(index);
+    props.onSeek(marker.timeSeconds);
+  }
+
+  function stepFrame(direction: -1 | 1) {
+    const next = clamp(props.currentTime + direction * frameStepSeconds, 0, duration);
+    if (next === props.currentTime) return;
+    props.onSeek(next);
+  }
+
   return (
     <div className="video-timeline">
       <div className="video-timeline-controls">
@@ -99,7 +128,47 @@ export function VideoTimeline(props: {
         >
           {props.muted ? '🔇' : '🔊'}
         </button>
+        <button
+          type="button"
+          className="video-icon-button"
+          onClick={() => stepMarker(-1)}
+          disabled={props.busy || markerStepTarget(-1) === null}
+          aria-label="Seek to the previous marker"
+          title="Previous marker"
+        >
+          |◀
+        </button>
+        <button
+          type="button"
+          className="video-icon-button"
+          onClick={() => stepFrame(-1)}
+          disabled={props.busy || props.currentTime <= 0}
+          aria-label="Step the playhead back one frame"
+          title="Step back one frame"
+        >
+          ◀◀
+        </button>
         <span className="video-timeline-time">{formatTime(props.currentTime)}</span>
+        <button
+          type="button"
+          className="video-icon-button"
+          onClick={() => stepFrame(1)}
+          disabled={props.busy || props.currentTime >= duration}
+          aria-label="Step the playhead forward one frame"
+          title="Step forward one frame"
+        >
+          ▶▶
+        </button>
+        <button
+          type="button"
+          className="video-icon-button"
+          onClick={() => stepMarker(1)}
+          disabled={props.busy || markerStepTarget(1) === null}
+          aria-label="Seek to the next marker"
+          title="Next marker"
+        >
+          ▶|
+        </button>
         <button
           type="button"
           className="video-icon-button"
