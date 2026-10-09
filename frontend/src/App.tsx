@@ -8050,7 +8050,13 @@ function ModelSelectionPanel({
       </section>
 
       <section className="settings-section">
-        <h3>Inpainting</h3>
+        <h3>
+          Inpainting{' '}
+          <InfoHint
+            label="Inpainting"
+            text="Only models with a verified mask contract are listed — the editor refuses any model that cannot honor the painted selection."
+          />
+        </h3>
         <div className="settings-rows">
           <div className="two-column">
             <div className="field">
@@ -8100,7 +8106,6 @@ function ModelSelectionPanel({
               </div>
             )}
           </div>
-          <span className="hint">Only models with a verified mask contract are listed — the editor refuses any model that cannot honor the painted selection.</span>
         </div>
       </section>
 
