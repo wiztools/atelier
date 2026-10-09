@@ -86,6 +86,9 @@ export function ImageEditor(props: {
   replicateDefaultModel: string;
   falHasKey: boolean;
   replicateHasKey: boolean;
+  // True while the editor is hidden beneath another screen (Settings). Detaches
+  // the global shortcuts; all edit state stays.
+  suspended?: boolean;
   onClose: () => void;
   onOpenParent: (conversationID: string) => void;
   onSessionCreated: (sessionID: string) => void;
@@ -410,6 +413,7 @@ export function ImageEditor(props: {
   // Keyboard: brush controls, sized for the editor and inert in text fields.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (props.suspended) return;
       const target = event.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable)) {
         return;
@@ -451,7 +455,7 @@ export function ImageEditor(props: {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [undo, redo, tool, busy, cropRect, cropRatio, cropUndo, cropRedo, canvas.width, canvas.height, sessionID, prompt, provider, falModel, replicateModel, strokes]);
+  }, [props.suspended, undo, redo, tool, busy, cropRect, cropRatio, cropUndo, cropRedo, canvas.width, canvas.height, sessionID, prompt, provider, falModel, replicateModel, strokes]);
 
   const effectiveModel = provider === 'replicate' ? replicateModel : falModel;
   const providerKeyed = provider === 'replicate' ? props.replicateHasKey : props.falHasKey;

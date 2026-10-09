@@ -127,6 +127,9 @@ const editsPanelBodyReservePx = 640;
 
 export function VideoEditor(props: {
   handle: VideoEditorHandle;
+  // True while the editor is hidden beneath another screen (Settings). Pauses
+  // preview playback and detaches the global shortcuts; all edit state stays.
+  suspended?: boolean;
   onClose: () => void;
   onOpenParent: (conversationID: string) => void;
   onSessionCreated: (sessionID: string) => void;
@@ -176,6 +179,10 @@ export function VideoEditor(props: {
   useEffect(() => {
     props.onDirtyChange?.(dirty);
   }, [dirty, props.onDirtyChange]);
+
+  useEffect(() => {
+    if (props.suspended) setPlaying(false);
+  }, [props.suspended]);
 
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -456,6 +463,7 @@ export function VideoEditor(props: {
 
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
+      if (props.suspended) return;
       const target = event.target as HTMLElement | null;
       if (event.defaultPrevented || target?.closest('[role="dialog"]') || target?.isContentEditable ||
         (target && ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(target.tagName))) return;
@@ -474,7 +482,7 @@ export function VideoEditor(props: {
     };
     window.addEventListener('keydown', keydown);
     return () => window.removeEventListener('keydown', keydown);
-  }, [params, busy, undoStack, redoStack, selectedMarkerIndex]);
+  }, [props.suspended, params, busy, undoStack, redoStack, selectedMarkerIndex]);
 
   async function addToOriginal(op: VideoEditOperation) {
     if (!sessionID || op.adoptedAt) return;

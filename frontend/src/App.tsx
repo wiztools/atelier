@@ -3771,9 +3771,10 @@ function App() {
     resolve?.(discard);
   }
 
-  async function openSettings() {
-    if (!(await confirmLeaveVideoEditor())) return;
-    closeImageEditor();
+  function openSettings() {
+    // Settings overlays the editors (hidden, not unmounted) so Back returns to
+    // the exact edit in progress — uncommitted tweaks included — and there is
+    // nothing to discard-confirm.
     setView('settings');
   }
 
@@ -3807,7 +3808,9 @@ function App() {
       setEditorHandle(null);
       videoEditorDirty.current = false;
       setVideoEditorHandle({source, sessionID: ''});
-      setView('app');
+      // Preparation can complete while the user is in Settings; loading the
+      // editor must not yank them out of it — Back will reveal it.
+      setView((current) => (current === 'settings' ? current : 'app'));
     } catch (error) {
       if (generation === videoOpenGeneration.current) setVideoEditorError(formatError(error));
     } finally {
@@ -3846,7 +3849,7 @@ function App() {
       setVideoEditorHandle(null);
       videoEditorDirty.current = false;
       setEditorHandle({source, sessionID: ''});
-      setView('app');
+      setView((current) => (current === 'settings' ? current : 'app'));
     } catch (error) {
       if (generation === imageOpenGeneration.current) setStartupError(formatError(error));
     } finally {
@@ -3867,7 +3870,7 @@ function App() {
           conversationId: state.parentConversationId || state.source.conversationId,
           conversationTitle: state.parentTitle,
         }), sessionID});
-        setView('app');
+        setView((current) => (current === 'settings' ? current : 'app'));
         return;
       }
       setVideoEditorHandle(null);
@@ -3882,7 +3885,7 @@ function App() {
         }),
         sessionID,
       });
-      setView('app');
+      setView((current) => (current === 'settings' ? current : 'app'));
     } catch (error) {
       setStartupError(formatError(error));
     }
@@ -5111,7 +5114,7 @@ function App() {
       )}
 
       <section className="workspace">
-        {editorOpening ? (
+        {editorOpening && view === 'app' ? (
           <div className="editor-preparation-status" role="status">
             <span>{videoEditorOpening ? 'Preparing video for editing…' : 'Preparing image for editing…'}</span>
             {videoEditorOpening ? (
@@ -5121,7 +5124,7 @@ function App() {
             ) : null}
           </div>
         ) : null}
-        {videoEditorError ? (
+        {videoEditorError && view === 'app' ? (
           <div className="startup-error" role="alert">
             <strong>Could not open Video Editor.</strong>
             <span>{videoEditorError}</span>
@@ -5199,54 +5202,61 @@ function App() {
             ))}
           </div>
         ) : null}
-        {editorHandle && view === 'app' ? (
-          <ImageEditor
-            handle={editorHandle}
-            defaultProvider={inpaintProvider}
-            falDefaultModel={falInpaintModel}
-            replicateDefaultModel={replicateInpaintModel}
-            falHasKey={falHasKey}
-            replicateHasKey={replicateHasKey}
-            onClose={closeImageEditor}
-            onOpenParent={(parentConversationID) => {
-              closeImageEditor();
-              void openConversationSummary(main.ConversationSummary.createFrom({
-                id: parentConversationID,
-                kind: 'chat',
-                title: '',
-              }));
-            }}
-            onSessionCreated={() => {
-              void refreshConversations();
-            }}
-          />
-        ) : videoEditorHandle && view === 'app' ? (
-          <VideoEditor
-            key={videoEditorHandle.sessionID || videoEditorHandle.source.artifactId}
-            handle={videoEditorHandle}
-            onClose={() => {void confirmLeaveVideoEditor().then((discard) => {if (discard) closeImageEditor();});}}
-            onOpenParent={(conversationID) => {
-              void confirmLeaveVideoEditor().then((discard) => {
-                if (!discard) return;
+        {editorHandle ? (
+          <div className="editor-slot" hidden={view !== 'app'}>
+            <ImageEditor
+              handle={editorHandle}
+              defaultProvider={inpaintProvider}
+              falDefaultModel={falInpaintModel}
+              replicateDefaultModel={replicateInpaintModel}
+              falHasKey={falHasKey}
+              replicateHasKey={replicateHasKey}
+              suspended={view !== 'app'}
+              onClose={closeImageEditor}
+              onOpenParent={(parentConversationID) => {
                 closeImageEditor();
-                void openConversationSummary(main.ConversationSummary.createFrom({id: conversationID, kind: 'chat', title: ''}));
-              });
-            }}
-            onSessionCreated={() => {void refreshConversations();}}
-            onResultAdded={() => {
-              void refreshConversations();
-              setAssetsRefreshTick((tick) => tick + 1);
-              const parentID = videoEditorHandle.source.conversationId;
-              if (activeConversationIDRef.current === parentID) {
-                void GetConversation(parentID).then((detail) => {
-                  if (activeConversationIDRef.current === parentID) hydrateChatConversation(detail);
-                }).catch((error) => setStartupError(formatError(error)));
-              }
-            }}
-            onDirtyChange={(dirty) => {videoEditorDirty.current = dirty;}}
-            onOpenSettings={() => {void openSettings();}}
-          />
-        ) : view === 'settings' ? (
+                void openConversationSummary(main.ConversationSummary.createFrom({
+                  id: parentConversationID,
+                  kind: 'chat',
+                  title: '',
+                }));
+              }}
+              onSessionCreated={() => {
+                void refreshConversations();
+              }}
+            />
+          </div>
+        ) : videoEditorHandle ? (
+          <div className="editor-slot" hidden={view !== 'app'}>
+            <VideoEditor
+              key={videoEditorHandle.sessionID || videoEditorHandle.source.artifactId}
+              handle={videoEditorHandle}
+              suspended={view !== 'app'}
+              onClose={() => {void confirmLeaveVideoEditor().then((discard) => {if (discard) closeImageEditor();});}}
+              onOpenParent={(conversationID) => {
+                void confirmLeaveVideoEditor().then((discard) => {
+                  if (!discard) return;
+                  closeImageEditor();
+                  void openConversationSummary(main.ConversationSummary.createFrom({id: conversationID, kind: 'chat', title: ''}));
+                });
+              }}
+              onSessionCreated={() => {void refreshConversations();}}
+              onResultAdded={() => {
+                void refreshConversations();
+                setAssetsRefreshTick((tick) => tick + 1);
+                const parentID = videoEditorHandle.source.conversationId;
+                if (activeConversationIDRef.current === parentID) {
+                  void GetConversation(parentID).then((detail) => {
+                    if (activeConversationIDRef.current === parentID) hydrateChatConversation(detail);
+                  }).catch((error) => setStartupError(formatError(error)));
+                }
+              }}
+              onDirtyChange={(dirty) => {videoEditorDirty.current = dirty;}}
+              onOpenSettings={() => {void openSettings();}}
+            />
+          </div>
+        ) : null}
+        {view === 'settings' ? (
           <>
             <div className="toolbar">
               <button className="back-button" onClick={() => setView('app')}>← Back</button>
@@ -5784,7 +5794,7 @@ function App() {
               {convModelsError ? <div className="conversation-models-error">{convModelsError}</div> : null}
             </div>
           </>
-        ) : (
+        ) : !editorOpen ? (
           <>
             <div className="toolbar">
               <div className="toolbar-left">
@@ -6252,7 +6262,7 @@ function App() {
               </div>
             </div>
           </>
-        )}
+        ) : null}
       </section>
       {view !== 'app' || editorOpen || !assetsPanelOpen ? null : (
         <div

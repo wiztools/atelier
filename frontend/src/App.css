@@ -3620,6 +3620,19 @@ button:disabled {
   cursor: default;
 }
 
+/* Wrapper that keeps an editor mounted while another screen (Settings) shows
+   in the workspace: Back must return to the exact edit in progress, so the
+   editor hides instead of unmounting. display:contents lets the editor
+   section keep its own workspace-grid placement; the [hidden] override wins
+   over the author display rule (the UA's bare [hidden] rule would not). */
+.editor-slot {
+  display: contents;
+}
+
+.editor-slot[hidden] {
+  display: none;
+}
+
 /* The editor shell's outer section — shared by every editor (image, video).
    Each editor adds its own class name for its media-specific rules. */
 .image-editor,
