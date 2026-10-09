@@ -1399,12 +1399,18 @@ function App() {
   const [editorHandle, setEditorHandle] = useState<ImageEditorHandle | null>(null);
   const [videoEditorHandle, setVideoEditorHandle] = useState<VideoEditorHandle | null>(null);
   const [videoEditorOpening, setVideoEditorOpening] = useState(false);
+  const [imageEditorOpening, setImageEditorOpening] = useState(false);
   const [videoEditorError, setVideoEditorError] = useState('');
   const [discardVideoDraft, setDiscardVideoDraft] = useState(false);
   const videoEditorDirty = useRef(false);
   const videoNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
   const videoOpenGeneration = useRef(0);
   const videoOpeningIdentity = useRef<{conversationID: string; artifactID: string} | null>(null);
+  const imageOpenGeneration = useRef(0);
+  // Either editor's source resolve in flight — every edit button disables on
+  // it, so a slow open can't collect repeated clicks (or race the other
+  // editor's later-landing handle into view).
+  const editorOpening = imageEditorOpening || videoEditorOpening;
   const editorOpen = !!editorHandle || !!videoEditorHandle;
   const [purgeBusy, setPurgeBusy] = useState(false);
   const [confirmPurgeArchived, setConfirmPurgeArchived] = useState(false);
@@ -3780,6 +3786,7 @@ function App() {
   async function openVideoEditor(conversationID: string, artifactID: string) {
     if (!(await confirmLeaveVideoEditor())) return;
     cancelVideoPreparation();
+    cancelImagePreparation();
     const generation = ++videoOpenGeneration.current;
     videoOpeningIdentity.current = {conversationID, artifactID};
     setVideoEditorOpening(true);
@@ -3819,16 +3826,31 @@ function App() {
     if (identity) void CancelVideoEditSource(identity.conversationID, identity.artifactID).catch(() => {});
   }
 
+  function cancelImagePreparation() {
+    // The image resolve has no backend cancellation (unlike the video
+    // source's CancelVideoEditSource) — dropping the generation only makes
+    // the finished resolve's result land nowhere.
+    imageOpenGeneration.current++;
+    setImageEditorOpening(false);
+  }
+
   async function openImageEditor(conversationID: string, artifactID: string) {
     if (!(await confirmLeaveVideoEditor())) return;
+    cancelVideoPreparation();
+    cancelImagePreparation();
+    const generation = ++imageOpenGeneration.current;
+    setImageEditorOpening(true);
     try {
       const source = await ResolveEditSource(conversationID, artifactID);
+      if (generation !== imageOpenGeneration.current) return;
       setVideoEditorHandle(null);
       videoEditorDirty.current = false;
       setEditorHandle({source, sessionID: ''});
       setView('app');
     } catch (error) {
-      setStartupError(formatError(error));
+      if (generation === imageOpenGeneration.current) setStartupError(formatError(error));
+    } finally {
+      if (generation === imageOpenGeneration.current) setImageEditorOpening(false);
     }
   }
 
@@ -3868,6 +3890,7 @@ function App() {
 
   function closeImageEditor() {
     cancelVideoPreparation();
+    cancelImagePreparation();
     setVideoEditorHandle(null);
     videoEditorDirty.current = false;
     setEditorHandle(null);
@@ -5088,12 +5111,14 @@ function App() {
       )}
 
       <section className="workspace">
-        {videoEditorOpening ? (
-          <div className="video-preparation-status" role="status">
-            <span>Preparing video for editing…</span>
-            <button type="button" onClick={() => {
-              cancelVideoPreparation();
-            }}>Cancel</button>
+        {editorOpening ? (
+          <div className="editor-preparation-status" role="status">
+            <span>{videoEditorOpening ? 'Preparing video for editing…' : 'Preparing image for editing…'}</span>
+            {videoEditorOpening ? (
+              <button type="button" onClick={() => {
+                cancelVideoPreparation();
+              }}>Cancel</button>
+            ) : null}
           </div>
         ) : null}
         {videoEditorError ? (
@@ -5859,6 +5884,7 @@ function App() {
                                     downloadTitle="Download image"
                                     onDownload={() => saveGeneratedImage(image, index)}
                                     editTitle="Edit image with AI"
+                                    editDisabled={editorOpening}
                                     onEdit={activeConversationID && editArtifactIDFromURL(image)
                                       ? () => void openImageEditor(activeConversationID, editArtifactIDFromURL(image)!)
                                       : null}
@@ -5915,7 +5941,7 @@ function App() {
                                   downloadTitle="Download video"
                                   onDownload={videoArtifactIDFromURL(video) ? () => saveGeneratedVideo(video, index) : null}
                                   editTitle="Edit video"
-                                  editDisabled={videoEditorOpening}
+                                  editDisabled={editorOpening}
                                   onEdit={activeConversationID && videoArtifactIDFromURL(video)
                                     ? () => void openVideoEditor(activeConversationID, videoArtifactIDFromURL(video)!)
                                     : null}
@@ -5935,7 +5961,7 @@ function App() {
                                   downloadTitle="Download video"
                                   onDownload={() => saveGeneratedVideo(video, index)}
                                   editTitle="Edit video"
-                                  editDisabled={videoEditorOpening}
+                                  editDisabled={editorOpening}
                                   onEdit={activeConversationID && videoArtifactIDFromURL(video)
                                     ? () => void openVideoEditor(activeConversationID, videoArtifactIDFromURL(video)!)
                                     : null}
@@ -6333,6 +6359,7 @@ function App() {
                       <button
                         type="button"
                         className="asset-edit-button"
+                        disabled={editorOpening}
                         onClick={() => void openImageEditor(asset.conversationId, asset.id)}
                         aria-label="Edit image with AI"
                         title="Edit image with AI"
@@ -6344,7 +6371,7 @@ function App() {
                       </button>
                     ) : null}
                     {asset.kind === 'video' && asset.url && asset.conversationId ? (
-                      <button type="button" className="asset-edit-button" disabled={videoEditorOpening}
+                      <button type="button" className="asset-edit-button" disabled={editorOpening}
                         onClick={() => void openVideoEditor(asset.conversationId, asset.id)}
                         aria-label="Edit video" title="Edit video">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -6425,6 +6452,7 @@ function App() {
               <button
                 className="image-preview-edit"
                 type="button"
+                disabled={editorOpening}
                 aria-label="Edit image with AI"
                 title="Edit image with AI"
                 onClick={() => {
