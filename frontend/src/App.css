@@ -3647,10 +3647,14 @@ button:disabled {
   display: none;
 }
 
-/* The editor shell's outer section — shared by every editor (image, video).
-   Each editor adds its own class name for its media-specific rules. */
-.image-editor,
-.video-editor {
+/* The editor shell's outer section — shared by every editor. Keyed to the
+   `.editor-slot` mount instead of an enumeration of editor classes (an
+   enumeration is how the audio editor shipped without padding): every editor
+   renders as the direct child of an `.editor-slot` wrapper in App.tsx — that
+   mount is mandatory, it's what keeps editors alive while Settings overlays
+   them — so a new editor inherits this chrome by construction. Each editor
+   keeps its own class for its media-specific rules. */
+.editor-slot > section {
   /* No global border-box exists; without this the 32px of vertical padding
      rides OUTSIDE height:100% and pushes the section's bottom edge past the
      workspace, clipping the Edits footer. */
