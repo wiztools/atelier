@@ -31,10 +31,11 @@ import (
 // Edit operation kinds. Inpaint is provider-backed; crop is deterministic and
 // runs locally against the session-owned source pixels.
 const (
-	editOperationKindInpaint = "inpaint"
-	editOperationKindCrop    = "crop"
-	editOperationKindReframe = "video-reframe"
-	editOperationKindTrim    = "video-trim"
+	editOperationKindInpaint   = "inpaint"
+	editOperationKindCrop      = "crop"
+	editOperationKindReframe   = "video-reframe"
+	editOperationKindTrim      = "video-trim"
+	editOperationKindAudioTrim = "audio-trim"
 )
 
 // Edit operation statuses. queued/running are transient (the in-flight edit);
@@ -104,10 +105,11 @@ type EditOperation struct {
 	Progress float64  `json:"progress,omitempty"`
 	// Kind payloads — exactly one is non-nil. A nil payload with an unknown
 	// Kind is rendered as an opaque entry (forward compatibility).
-	Inpaint *InpaintOperationParams `json:"inpaint,omitempty"`
-	Crop    *CropOperationParams    `json:"crop,omitempty"`
-	Reframe *VideoReframeParams     `json:"reframe,omitempty"`
-	Trim    *VideoTrimParams        `json:"trim,omitempty"`
+	Inpaint   *InpaintOperationParams `json:"inpaint,omitempty"`
+	Crop      *CropOperationParams    `json:"crop,omitempty"`
+	Reframe   *VideoReframeParams     `json:"reframe,omitempty"`
+	Trim      *VideoTrimParams        `json:"trim,omitempty"`
+	AudioTrim *AudioTrimParams        `json:"audioTrim,omitempty"`
 	// AdoptedAt records when this operation's result was added to the parent
 	// conversation (AddEditResultToConversation) — the idempotency mark that
 	// keeps repeated clicks from duplicating parent entries.

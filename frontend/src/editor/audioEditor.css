@@ -1,0 +1,295 @@
+/* Audio-editor-specific chrome. The shared shell — outer section, body grid
+   (`.editor-body`), header, inspector, and the Edits footer — lives in
+   App.css and the EditsPanel/EditorHeader components; only what the audio
+   stage and timeline need is declared here, mirroring the video editor's
+   structure (the same floors and squeeze behavior, minus geometry). */
+
+/* The shared `.editor-body` keeps its flex content floor in the image editor
+   (canvas has no intrinsic height). The waveform canvas would transfer its
+   width into a large content height the same way the video frame does; the
+   body yields instead and the panel's height clamp (EditsPanel bodyReservePx)
+   protects the floor. */
+.audio-editor .editor-body {
+  min-height: 0;
+}
+
+/* The main column stacks the stage over the timeline; the shared
+   `.editor-body` grid gives it the inspector column on the right. */
+.audio-editor .audio-editor-main {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.audio-editor .audio-stage {
+  /* The squeeze absorber: the timeline below is unsquishable, so a short
+     window compresses the waveform instead of clipping the timeline's
+     controls or track. */
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.audio-editor .audio-stage-panel {
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.audio-editor .audio-stage-panel-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: #d9d7cf;
+  font-size: 12px;
+}
+
+.audio-editor .audio-stage-panel-title span:last-child {
+  color: #9a978f;
+}
+
+.audio-editor .audio-stage-media-frame {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow: hidden;
+  border: 1px solid #3a3e41;
+  border-radius: 10px;
+  background:
+    repeating-conic-gradient(#1d2023 0% 25%, #17191c 0% 50%) 0 0 / 24px 24px;
+}
+
+.audio-editor .audio-stage-waveform {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.audio-editor .audio-stage-waveform-note {
+  position: absolute;
+  bottom: 10px;
+  left: 10px;
+  color: #9a978f;
+  font-size: 12px;
+}
+
+/* The audio element drives playback but stays out of the stage's visuals —
+   the transport lives in the timeline row, like the video stage's. */
+.audio-editor .audio-stage-source {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.audio-editor .audio-stage-preview-error {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  border: 1px solid #6a3b36;
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: rgba(32, 18, 18, .92);
+  color: #e88a7a;
+  font-size: 12px;
+}
+
+.audio-editor .audio-timeline {
+  /* Always its natural height — never compressed, never internally scrolled.
+     A short window compresses the stage above instead (see .audio-stage). */
+  flex: 0 0 auto;
+  display: grid;
+  gap: 8px;
+  border: 1px solid #3a3e41;
+  border-radius: 10px;
+  padding: 10px;
+  background: #17191c;
+}
+
+/* One compact controls row above the track: play/pause, mute, cut hops,
+   steps, the time readout, then the cut commands and the selected cut's
+   time as a mini-field. */
+.audio-editor .audio-timeline-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.audio-editor .audio-timeline-controls button {
+  height: 24px;
+  border: 1px solid #3a3e41;
+  border-radius: 7px;
+  background: transparent;
+  color: #f3f0e8;
+  padding: 0 7px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.audio-editor .audio-timeline-controls button:disabled {
+  opacity: .45;
+  cursor: default;
+}
+
+.audio-editor .audio-icon-button {
+  min-width: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.audio-editor .audio-timeline-time {
+  color: #9a978f;
+  font-size: 12px;
+  /* Steady width while the time ticks. */
+  min-width: 46px;
+  font-variant-numeric: tabular-nums;
+}
+
+.audio-editor .audio-mini-field {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #9a978f;
+  font-size: 11px;
+}
+
+.audio-editor .audio-mini-field input {
+  width: 72px;
+  height: 24px;
+  padding: 0 6px;
+  font-size: 12px;
+}
+
+.audio-editor .audio-timeline-track {
+  position: relative;
+  /* Border-box so the 58px design height includes the border ring. */
+  box-sizing: border-box;
+  height: 58px;
+  overflow: hidden;
+  border: 1px solid #303438;
+  border-radius: 8px;
+  background: #101214;
+  cursor: pointer;
+}
+
+.audio-editor .audio-timeline-waveform {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  opacity: .82;
+}
+
+.audio-editor .audio-timeline-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-1px);
+  background: #f0c35f;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .35);
+}
+
+.audio-editor .audio-timeline-marker {
+  position: absolute;
+  top: 8px;
+  width: 14px;
+  height: 42px;
+  transform: translateX(-7px);
+  border: 1px solid #101214;
+  border-radius: 999px;
+  padding: 0;
+  background: #8ab4f8;
+  cursor: grab;
+}
+
+.audio-editor .audio-timeline-marker.selected {
+  box-shadow: 0 0 0 3px rgba(138, 180, 248, .32);
+}
+
+/* Cut & trim: markers echo the video trim's shape in the cut color, and
+   removed audio dims the waveform under diagonal stripes. The overlays sit
+   under the playhead and markers and never take pointers — region commands
+   target the playhead, clicks fall through to seeking. */
+.audio-editor .audio-timeline-marker.cut {
+  background: #e06c5b;
+}
+
+.audio-editor .audio-timeline-marker.cut.selected {
+  box-shadow: 0 0 0 3px rgba(224, 108, 91, .32);
+}
+
+.audio-editor .audio-timeline-region {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(45deg, rgba(16, 18, 20, .78) 0 7px, rgba(96, 46, 38, .55) 7px 14px);
+  box-shadow: inset 1px 0 0 rgba(224, 108, 91, .5), inset -1px 0 0 rgba(224, 108, 91, .5);
+}
+
+.audio-editor .audio-inspector {
+  align-self: stretch;
+  overflow-y: auto;
+}
+
+.audio-editor .audio-framing-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.audio-editor .audio-framing-summary strong {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.audio-editor .audio-framing-summary span {
+  color: #9a978f;
+  font-size: 12px;
+}
+
+.audio-editor .editor-op-thumb audio {
+  width: 100%;
+  height: 100%;
+}
+
+.audio-editor .editor-op-thumb-glyph {
+  font-size: 22px;
+  color: #7d8a99;
+}
+
+.audio-editor .audio-result-preview {
+  padding: 4px 8px 10px;
+}
+
+.audio-editor .audio-result-preview audio {
+  width: 100%;
+  border: 1px solid #3a3e41;
+  border-radius: 8px;
+  background: #101214;
+}
+
+@media (max-width: 980px) {
+  .audio-editor .editor-body {
+    grid-template-columns: 1fr;
+  }
+
+  .audio-editor .audio-inspector {
+    align-self: auto;
+  }
+}

@@ -564,6 +564,109 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class AudioTrimSegment {
+	    startSeconds: number;
+	    endSeconds: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new AudioTrimSegment(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.startSeconds = source["startSeconds"];
+	        this.endSeconds = source["endSeconds"];
+	    }
+	}
+	export class AudioTrimSource {
+	    durationSeconds: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new AudioTrimSource(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.durationSeconds = source["durationSeconds"];
+	    }
+	}
+	export class AudioTrimParams {
+	    version: number;
+	    source: AudioTrimSource;
+	    segments: AudioTrimSegment[];
+	
+	    static createFrom(source: any = {}) {
+	        return new AudioTrimParams(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.version = source["version"];
+	        this.source = this.convertValues(source["source"], AudioTrimSource);
+	        this.segments = this.convertValues(source["segments"], AudioTrimSegment);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class AudioEditSubmitRequest {
+	    parentConversationId: string;
+	    sourceArtifactId: string;
+	    sessionConversationId?: string;
+	    inputArtifactId?: string;
+	    sourceDigest?: string;
+	    trim?: AudioTrimParams;
+	
+	    static createFrom(source: any = {}) {
+	        return new AudioEditSubmitRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.parentConversationId = source["parentConversationId"];
+	        this.sourceArtifactId = source["sourceArtifactId"];
+	        this.sessionConversationId = source["sessionConversationId"];
+	        this.inputArtifactId = source["inputArtifactId"];
+	        this.sourceDigest = source["sourceDigest"];
+	        this.trim = this.convertValues(source["trim"], AudioTrimParams);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
+	
 	export class ToolFunction {
 	    name: string;
 	    arguments: number[];
@@ -1440,6 +1543,7 @@ export namespace main {
 	    crop?: CropOperationParams;
 	    reframe?: VideoReframeParams;
 	    trim?: VideoTrimParams;
+	    audioTrim?: AudioTrimParams;
 	    adoptedAt?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -1473,6 +1577,7 @@ export namespace main {
 	        this.crop = this.convertValues(source["crop"], CropOperationParams);
 	        this.reframe = this.convertValues(source["reframe"], VideoReframeParams);
 	        this.trim = this.convertValues(source["trim"], VideoTrimParams);
+	        this.audioTrim = this.convertValues(source["audioTrim"], AudioTrimParams);
 	        this.adoptedAt = source["adoptedAt"];
 	    }
 	
@@ -1626,6 +1731,7 @@ export namespace main {
 	    conversationId: string;
 	    imageArtifactIds?: string[];
 	    videoArtifactIds?: string[];
+	    audioArtifactIds?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new EditorLaunchResult(source);
@@ -1636,6 +1742,7 @@ export namespace main {
 	        this.conversationId = source["conversationId"];
 	        this.imageArtifactIds = source["imageArtifactIds"];
 	        this.videoArtifactIds = source["videoArtifactIds"];
+	        this.audioArtifactIds = source["audioArtifactIds"];
 	    }
 	}
 	export class EmptyStatePrompt {

@@ -6,6 +6,10 @@ export function AddEditResultToConversation(arg1, arg2) {
   return window['go']['main']['App']['AddEditResultToConversation'](arg1, arg2);
 }
 
+export function CancelAudioEdit(arg1, arg2) {
+  return window['go']['main']['App']['CancelAudioEdit'](arg1, arg2);
+}
+
 export function CancelImageEdit(arg1, arg2) {
   return window['go']['main']['App']['CancelImageEdit'](arg1, arg2);
 }
@@ -322,6 +326,14 @@ export function RenameProject(arg1, arg2) {
   return window['go']['main']['App']['RenameProject'](arg1, arg2);
 }
 
+export function ResolveAudioEditInput(arg1, arg2) {
+  return window['go']['main']['App']['ResolveAudioEditInput'](arg1, arg2);
+}
+
+export function ResolveAudioEditSource(arg1, arg2) {
+  return window['go']['main']['App']['ResolveAudioEditSource'](arg1, arg2);
+}
+
 export function ResolveEditSource(arg1, arg2) {
   return window['go']['main']['App']['ResolveEditSource'](arg1, arg2);
 }
@@ -400,6 +412,10 @@ export function SetProjectNotes(arg1, arg2) {
 
 export function StreamChat(arg1) {
   return window['go']['main']['App']['StreamChat'](arg1);
+}
+
+export function SubmitAudioEdit(arg1) {
+  return window['go']['main']['App']['SubmitAudioEdit'](arg1);
 }
 
 export function SubmitImageEdit(arg1) {

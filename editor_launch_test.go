@@ -345,10 +345,10 @@ func TestOpenEditorToolRequiresConversationAndHook(t *testing.T) {
 func TestOpenEditorToolValidatesMode(t *testing.T) {
 	config := newEditorLaunchTestConfig(t)
 	definition := openEditorDefinition(t, config)
-	if errs := definition.Validate("toolCalls[0]", HarnessToolCall{Name: "open_editor", Mode: "audio"}); len(errs) == 0 {
-		t.Fatalf("Validate accepted mode \"audio\"")
+	if errs := definition.Validate("toolCalls[0]", HarnessToolCall{Name: "open_editor", Mode: "sheet"}); len(errs) == 0 {
+		t.Fatalf("Validate accepted mode \"sheet\"")
 	}
-	for _, mode := range []string{"", "image", "video"} {
+	for _, mode := range []string{"", "image", "video", "audio"} {
 		if errs := definition.Validate("toolCalls[0]", HarnessToolCall{Name: "open_editor", Mode: mode}); len(errs) != 0 {
 			t.Fatalf("Validate rejected mode %q: %v", mode, errs)
 		}

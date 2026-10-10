@@ -4,6 +4,8 @@ import {main} from '../models';
 
 export function AddEditResultToConversation(arg1:string,arg2:string):Promise<main.ConversationSummary>;
 
+export function CancelAudioEdit(arg1:string,arg2:string):Promise<void>;
+
 export function CancelImageEdit(arg1:string,arg2:string):Promise<void>;
 
 export function CancelStream(arg1:string):Promise<void>;
@@ -162,6 +164,10 @@ export function RenameLibrary(arg1:string,arg2:string):Promise<main.LibrarySumma
 
 export function RenameProject(arg1:string,arg2:string):Promise<main.ProjectSummary>;
 
+export function ResolveAudioEditInput(arg1:string,arg2:string):Promise<main.EditSourceInfo>;
+
+export function ResolveAudioEditSource(arg1:string,arg2:string):Promise<main.EditSourceInfo>;
+
 export function ResolveEditSource(arg1:string,arg2:string):Promise<main.EditSourceInfo>;
 
 export function ResolveToolPermission(arg1:string,arg2:boolean):Promise<void>;
@@ -201,6 +207,8 @@ export function SetOllamaBaseURL(arg1:string):Promise<void>;
 export function SetProjectNotes(arg1:string,arg2:string):Promise<main.ProjectSummary>;
 
 export function StreamChat(arg1:main.ChatRequest):Promise<main.ChatStreamStart>;
+
+export function SubmitAudioEdit(arg1:main.AudioEditSubmitRequest):Promise<main.EditOperationState>;
 
 export function SubmitImageEdit(arg1:main.ImageEditSubmitRequest):Promise<main.EditOperationState>;
 

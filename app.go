@@ -128,6 +128,7 @@ func (a *App) startup(ctx context.Context) {
 	}
 	cleanupEditSourcePreviews()
 	cleanupVideoEditStaging()
+	cleanupAudioEditStaging()
 	a.startUpdateScheduler(ctx)
 }
 

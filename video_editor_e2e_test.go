@@ -325,3 +325,102 @@ func TestVideoTrimRealPipeline(t *testing.T) {
 	}
 	t.Logf("trim: kept %.3fs of %.3fs, dims %dx%d; session/reopen/adoption verified", resultSource.DurationSeconds, info.DurationSeconds, resultSource.Width, resultSource.Height)
 }
+
+// TestAudioTrimRealPipeline drives the audio trim kind through the real
+// pipeline: a generated sine tone as the conversation artifact, a mid-clip
+// delete (two kept segments), then the usual render/attribution/reopen/
+// adoption checks with the kept duration and audio-only output verified.
+func TestAudioTrimRealPipeline(t *testing.T) {
+	if os.Getenv("ATELIER_TEST_FFMPEG") != "1" {
+		t.Skip("set ATELIER_TEST_FFMPEG=1 to verify real audio trim normalization/render/persistence")
+	}
+	withRealLocalLookup(t)
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ffprobe, err := exec.LookPath("ffprobe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := editTestHome(t)
+	config.Providers.Local.FFmpeg.Binary = ffmpeg
+	config.Providers.Local.FFprobe.Binary = ffprobe
+	if err := writeAppConfig(config); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	input := filepath.Join(dir, "source.m4a")
+	videoReframeRealCommand(t, ffmpeg, "-v", "error", "-nostdin",
+		"-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:duration=4", "-c:a", "aac", input)
+	parentID := randomID("conv")
+	artifactID := writeRealAudioEditorParent(t, config, parentID, input)
+	app := editTestOfflineApp()
+	defer app.shutdown(t.Context())
+	info, err := app.ResolveAudioEditSource(parentID, artifactID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.MediaKind != "audio" || info.DurationSeconds <= 0 || info.SourceDigest == "" {
+		t.Fatalf("invalid audio editor source: %+v", info)
+	}
+	// Keep 0.5–1.5s and 2.0–3.5s: a head trim, a mid-clip delete, and a tail
+	// trim in one submission — 2.5s expected.
+	params := AudioTrimParams{Version: 1, Source: AudioTrimSource{DurationSeconds: info.DurationSeconds},
+		Segments: []AudioTrimSegment{{StartSeconds: 0.5, EndSeconds: 1.5}, {StartSeconds: 2.0, EndSeconds: 3.5}}}
+	state, err := app.SubmitAudioEdit(AudioEditSubmitRequest{ParentConversationID: parentID, SourceArtifactID: artifactID, SourceDigest: info.SourceDigest, Trim: &params})
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := waitForEditTerminal(t, config.Storage, state.SessionConversationID, state.Operation.ID)
+	if op.Status != editOperationStatusCompleted {
+		t.Fatalf("render %s: %s", op.Status, op.Error)
+	}
+	if op.Backend != "ffmpeg" || op.Provider != "" || op.Model != "" || op.CostMicros != 0 || op.CostUnknown || op.AudioTrim == nil || op.Trim != nil {
+		t.Fatalf("incorrect local attribution/payload: %+v", op)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for app.editOpRunning(state.SessionConversationID) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	resultSource, err := app.ResolveAudioEditInput(state.SessionConversationID, op.ResultArtifactID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if math.Abs(resultSource.DurationSeconds-2.5) > 0.15 {
+		t.Fatalf("kept duration %.4f, want ~2.5", resultSource.DurationSeconds)
+	}
+	probe := videoReframeProbeFile(t, ffprobe, strings.TrimPrefix(resultSource.URL, artifactPrefix), false)
+	audioFound, videoFound := false, false
+	for _, stream := range probe.Streams {
+		switch stream.CodecType {
+		case "audio":
+			audioFound = true
+		case "video":
+			videoFound = true
+		}
+	}
+	if !audioFound || videoFound {
+		t.Fatalf("render is not audio-only (audio=%v video=%v)", audioFound, videoFound)
+	}
+	reopened, err := app.ListEditSession(state.SessionConversationID)
+	if err != nil || len(reopened.Operations) != 1 || reopened.Operations[0].AudioTrim == nil {
+		t.Fatalf("reopen failed: %+v, %v", reopened, err)
+	}
+	if _, err := app.AddEditResultToConversation(state.SessionConversationID, op.ID); err != nil {
+		t.Fatal(err)
+	}
+	parentDetail, err := getConversation(config.Storage, parentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adoption := parentDetail.Turns[len(parentDetail.Turns)-1].ProviderResponse["editAdoption"].(map[string]any)
+	if adoption["kind"] != editOperationKindAudioTrim || !strings.Contains(editOperationAdoptionSummary(op), "trim: 2 segment(s), 2.5s kept") {
+		t.Fatalf("adoption lost audio trim provenance/summary: %v / %q", adoption["kind"], editOperationAdoptionSummary(op))
+	}
+	assets, err := listConversationAssets(config.Storage, parentID)
+	if err != nil || len(assets) != 2 || assets[1].Kind != "audio" {
+		t.Fatalf("adopted audio missing: %+v, %v", assets, err)
+	}
+	t.Logf("audio trim: kept %.3fs of %.3fs; session/reopen/adoption verified", resultSource.DurationSeconds, info.DurationSeconds)
+}

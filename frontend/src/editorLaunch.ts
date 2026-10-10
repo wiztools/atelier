@@ -10,7 +10,7 @@
 // Abstention is decidable without understanding what the leftover content
 // means — that is what keeps this path safe to bypass the model with.
 
-export type EditorLaunchKind = 'image' | 'video';
+export type EditorLaunchKind = 'image' | 'video' | 'audio';
 export type ComposerAttachmentKind = 'image' | 'audio' | 'video';
 
 const openCommand = /^(?:please\s+)?open\b/;
@@ -31,6 +31,22 @@ const mediaKinds: Record<string, EditorLaunchKind> = {
   movie: 'video',
   movies: 'video',
   mp4: 'video',
+  audio: 'audio',
+  audios: 'audio',
+  sound: 'audio',
+  sounds: 'audio',
+  recording: 'audio',
+  recordings: 'audio',
+  track: 'audio',
+  tracks: 'audio',
+  song: 'audio',
+  songs: 'audio',
+  voice: 'audio',
+  memo: 'audio',
+  memos: 'audio',
+  mp3: 'audio',
+  wav: 'audio',
+  m4a: 'audio',
 };
 
 // The closed vocabulary. Politeness particles are admitted; content words are
@@ -48,8 +64,8 @@ const trailingPoliteness = new Set(['for', 'me', 'please']);
 //
 // The kind resolves from the media word directly before "editor" ("video
 // editor"), else any media word in the message ("open this image in the
-// editor"), else — no media word at all — the single attached image or video.
-// The resolved kind must match exactly one attached asset; ambiguity or a
+// editor"), else — no media word at all — the single attached asset. The
+// resolved kind must match exactly one attached asset; ambiguity or a
 // mismatch (the "image editor" named with only a video attached) abstains.
 export function detectEditorLaunchIntent(text: string, attachmentKinds: ComposerAttachmentKind[]): EditorLaunchKind | null {
   const normalized = text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -106,10 +122,9 @@ export function detectEditorLaunchIntent(text: string, attachmentKinds: Composer
   if (requested) {
     return attachedCount(requested) === 1 ? requested : null;
   }
-  const images = attachedCount('image');
-  const videos = attachedCount('video');
-  if (images + videos === 1) {
-    return images === 1 ? 'image' : 'video';
+  const attached = attachmentKinds.filter((item) => item === 'image' || item === 'video' || item === 'audio');
+  if (attached.length === 1) {
+    return attached[0];
   }
   return null;
 }

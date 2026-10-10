@@ -62,7 +62,8 @@ type EditSessionMeta struct {
 	// deleted.
 	SourceTitleSnapshot string `json:"sourceTitleSnapshot,omitempty"`
 	// MediaKind is "image" for legacy and current image sessions, "video" for
-	// Video Editor sessions. Empty is treated as image for old records.
+	// Video Editor sessions, "audio" for Audio Editor sessions. Empty is
+	// treated as image for old records.
 	MediaKind string `json:"mediaKind,omitempty"`
 }
 
@@ -892,6 +893,9 @@ func editResultMediaKind(op EditOperation) string {
 	if strings.HasPrefix(op.ResultMimeType, "video/") || op.Kind == editOperationKindReframe || op.Kind == editOperationKindTrim {
 		return "video"
 	}
+	if strings.HasPrefix(op.ResultMimeType, "audio/") || op.Kind == editOperationKindAudioTrim {
+		return "audio"
+	}
 	return "image"
 }
 
@@ -1227,8 +1231,8 @@ func (a *App) ListEditSession(sessionConversationID string) (EditSessionState, e
 	}
 
 	// The session's own source copy is structural: the first user turn's
-	// image entry. The meta's SourceArtifactID is PARENT-side provenance (the
-	// artifact the image came from), not the copy's id — the copy was written
+	// media entry. The meta's SourceArtifactID is PARENT-side provenance (the
+	// artifact the media came from), not the copy's id — the copy was written
 	// under a fresh one.
 	if mediaKind == "video" {
 		if content, turnID, ok := firstSessionSourceVideo(detail); ok {
@@ -1240,6 +1244,17 @@ func (a *App) ListEditSession(sessionConversationID string) (EditSessionState, e
 			state.Source = info
 		} else {
 			return EditSessionState{}, errors.New("the saved video source is missing")
+		}
+	} else if mediaKind == "audio" {
+		if content, turnID, ok := firstSessionSourceAudio(detail); ok {
+			info, err := audioEditSourceInfoFor(config.Storage, sessionID, state.ParentTitle, turnID, content)
+			if err != nil {
+				return EditSessionState{}, fmt.Errorf("could not open the saved audio source: %w", err)
+			}
+			info.ConversationID = sessionID
+			state.Source = info
+		} else {
+			return EditSessionState{}, errors.New("the saved audio source is missing")
 		}
 	} else {
 		if content, turnID, ok := firstSessionSourceImage(detail); ok {
@@ -1383,6 +1398,17 @@ func appendEditAdoptionTurn(config AppConfig, parentID string, meta *EditSession
 		}
 		defer os.Remove(tempCopy)
 		contents, _, err = writeChatVideoArtifacts(config, loaded.ArtifactsDir, []ToolVideoFile{{TempPath: tempCopy, MimeType: "video/mp4"}})
+	} else if editResultMediaKind(op) == "audio" {
+		extension := filepath.Ext(resultPath)
+		if extension == "" {
+			extension = ".m4a"
+		}
+		tempCopy, copyErr := copyEditResultToTemp(resultPath, extension)
+		if copyErr != nil {
+			return ConversationSummary{}, copyErr
+		}
+		defer os.Remove(tempCopy)
+		contents, _, err = writeChatAudioArtifacts(config, loaded.ArtifactsDir, []ToolAudioFile{{TempPath: tempCopy, MimeType: op.ResultMimeType}})
 	} else {
 		data, readErr := os.ReadFile(resultPath)
 		if readErr != nil {
@@ -1456,6 +1482,11 @@ func editOperationAdoptionSummary(op EditOperation) string {
 			return "trim"
 		}
 		return fmt.Sprintf("trim: %s", videoTrimSummary(*op.Trim))
+	case editOperationKindAudioTrim:
+		if op.AudioTrim == nil {
+			return "trim"
+		}
+		return fmt.Sprintf("trim: %s", audioTrimSummary(*op.AudioTrim))
 	case editOperationKindCrop:
 		if op.Crop == nil {
 			return "crop"
@@ -1618,8 +1649,13 @@ func latestCanvasArtifactID(detail ConversationDetail) string {
 }
 
 func editSessionMediaKind(meta *EditSessionMeta) string {
-	if meta != nil && strings.TrimSpace(meta.MediaKind) == "video" {
-		return "video"
+	if meta != nil {
+		switch strings.TrimSpace(meta.MediaKind) {
+		case "video":
+			return "video"
+		case "audio":
+			return "audio"
+		}
 	}
 	return "image"
 }

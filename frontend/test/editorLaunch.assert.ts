@@ -8,26 +8,31 @@ function kinds(...items: Array<'image' | 'audio' | 'video'>): Array<'image' | 'a
   return items;
 }
 
-// The two canonical phrasings.
+// The canonical phrasings.
 assert(detectEditorLaunchIntent('Open this image in image editor', kinds('image')) === 'image', 'canonical image phrasing');
 assert(detectEditorLaunchIntent('Open in video editor', kinds('video')) === 'video', 'canonical video phrasing');
+assert(detectEditorLaunchIntent('Open in audio editor', kinds('audio')) === 'audio', 'canonical audio phrasing');
 
 // Punctuation, case, and articles.
 assert(detectEditorLaunchIntent('open this image in the image editor.', kinds('image')) === 'image', 'punctuation and articles');
 assert(detectEditorLaunchIntent('Please open that clip in the clip editor', kinds('video')) === 'video', 'please prefix');
 assert(detectEditorLaunchIntent('Open the editor', kinds('video')) === 'video', 'no media word resolves from the single attachment');
 assert(detectEditorLaunchIntent('Open up this photo in the editor', kinds('image')) === 'image', 'media word anywhere in the message');
+assert(detectEditorLaunchIntent('Open this recording in the editor', kinds('audio')) === 'audio', 'audio media word resolves');
+assert(detectEditorLaunchIntent('Open the sound editor for me', kinds('audio')) === 'audio', 'trailing politeness binds for audio');
 
 // The word before "editor" wins over other media words.
 assert(detectEditorLaunchIntent('open the video in the image editor', kinds('image', 'video')) === 'image', 'editor noun names the kind');
 
 // Mismatch between the named editor and the attachment falls through.
 assert(detectEditorLaunchIntent('Open this image in the video editor', kinds('image')) === null, 'named editor without a matching attachment');
+assert(detectEditorLaunchIntent('Open this image in the audio editor', kinds('image')) === null, 'audio editor named without audio');
 
 // Ambiguity falls through.
 assert(detectEditorLaunchIntent('Open in the editor', kinds('image', 'video')) === null, 'two media attachments without a kind word');
 assert(detectEditorLaunchIntent('Open this image in image editor', kinds('image', 'image')) === null, 'two candidates for the named kind');
-assert(detectEditorLaunchIntent('Open in the editor', kinds('audio')) === null, 'audio alone is not an editor asset');
+assert(detectEditorLaunchIntent('Open in the editor', kinds('audio', 'image')) === null, 'audio plus image without a kind word abstains');
+assert(detectEditorLaunchIntent('Open in the editor', kinds('audio')) === 'audio', 'audio alone opens the audio editor');
 
 // Nothing attached is a normal chat turn.
 assert(detectEditorLaunchIntent('Open this image in image editor', kinds()) === null, 'no attachment');
