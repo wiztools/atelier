@@ -183,7 +183,7 @@ export function VideoEditor(props: {
   const [redoStack, setRedoStack] = useState<VideoReframeParams[]>([]);
   // The trim/cut tool's parallel draft. Both tools keep their state when the
   // other is active, exactly like the image editor's crop/inpaint pair.
-  const [tool, setTool] = useState<'reframe' | 'trim'>('reframe');
+  const [tool, setTool] = useState<'reframe' | 'trim'>('trim');
   const [trimDraft, setTrimDraft] = useState<VideoTrimDraft>(() => defaultVideoTrimDraft());
   const [trimBaseline, setTrimBaseline] = useState<VideoTrimDraft>(() => defaultVideoTrimDraft());
   const [selectedCutIndex, setSelectedCutIndex] = useState(-1);
@@ -851,8 +851,8 @@ export function VideoEditor(props: {
 
         <aside className="editor-inspector video-inspector">
           <div className="editor-tool-selector" role="group" aria-label="Editing tool">
-            <button type="button" className={tool === 'reframe' ? 'active' : ''} aria-pressed={tool === 'reframe'} disabled={busy} onClick={() => setTool('reframe')}>Reframe</button>
             <button type="button" className={tool === 'trim' ? 'active' : ''} aria-pressed={tool === 'trim'} disabled={busy} onClick={() => setTool('trim')}>Trim &amp; cut</button>
+            <button type="button" className={tool === 'reframe' ? 'active' : ''} aria-pressed={tool === 'reframe'} disabled={busy} onClick={() => setTool('reframe')}>Reframe</button>
           </div>
           {tool === 'trim' ? <>
             <div className="video-framing-summary" aria-live="polite">
