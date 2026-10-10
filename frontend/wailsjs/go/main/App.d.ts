@@ -26,6 +26,8 @@ export function ChooseToolWorkspace(arg1:string):Promise<string>;
 
 export function ClearOpenAICompatibleAPIKey():Promise<void>;
 
+export function CreateEditorConversation(arg1:main.ChatRequest):Promise<main.EditorLaunchResult>;
+
 export function CreateLibrary(arg1:string):Promise<main.LibrarySummary>;
 
 export function CreateProject(arg1:string,arg2:string):Promise<main.ProjectSummary>;

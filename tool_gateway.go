@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -965,6 +966,15 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
 			}
 			return generated, err
+		}
+		// open_editor's side effect is the UI directive, not local work — the
+		// event IS the execution, so an undeliverable launch fails the call
+		// rather than letting evidence claim an editor that never opened.
+		gateway.tools.OpenEditor = func(kind, conversationID, artifactID string) error {
+			if !app.emitEditorLaunchEvent(EditorLaunchEvent{Kind: kind, ConversationID: conversationID, ArtifactID: artifactID}) {
+				return errors.New("the editor launch could not be delivered — no UI is attached")
+			}
+			return nil
 		}
 	}
 	// Local whisper transcription needs neither an API key nor an HTTP client,

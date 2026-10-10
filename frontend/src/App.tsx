@@ -12,6 +12,7 @@ import {
   CheckOllama,
   ChooseToolWorkspace,
   ClearOpenAICompatibleAPIKey,
+  CreateEditorConversation,
   CreateLibrary,
   CreateProject,
   DeleteConversation,
@@ -98,6 +99,7 @@ import {main} from '../wailsjs/go/models';
 import {EventsOff, EventsOn} from '../wailsjs/runtime/runtime';
 import {ImageEditor, ImageEditorHandle} from './editor/ImageEditor';
 import {VideoEditor, VideoEditorHandle} from './editor/VideoEditor';
+import {detectEditorLaunchIntent} from './editorLaunch';
 
 type View = 'app' | 'settings' | 'conversation-models';
 type SettingsTab = 'providers' | 'models' | 'others';
@@ -1407,6 +1409,10 @@ function App() {
   const videoOpenGeneration = useRef(0);
   const videoOpeningIdentity = useRef<{conversationID: string; artifactID: string} | null>(null);
   const imageOpenGeneration = useRef(0);
+  // Mirror of editorOpen for the atelier:editor-launch listener (an empty-deps
+  // effect): a mid-stream AI launch must not replace an editor already on
+  // screen — an unsaved video draft is never discarded by a tool-timed open.
+  const editorOpenRef = useRef(false);
   // Either editor's source resolve in flight — every edit button disables on
   // it, so a slow open can't collect repeated clicks (or race the other
   // editor's later-landing handle into view).
@@ -2008,6 +2014,35 @@ function App() {
     };
     EventsOn('atelier:tool-permission', onToolPermission);
     return () => EventsOff('atelier:tool-permission');
+  }, []);
+
+  // AI-routed editor launches: the harness's open_editor tool fired (its
+  // evidence line names what was opened) and the named conversation's asset
+  // should appear in the matching editor. Two guards keep a mid-stream launch
+  // from hijacking the workspace: the event's conversation must be the one on
+  // screen, and an already-open editor is never replaced — an unsaved draft is
+  // not discarded by a tool-timed open, and the reply's evidence still tells
+  // the user what was opened. Mirrors the chat:chunk pattern — refs only, so
+  // the empty-deps subscription never fires a stale closure.
+  useEffect(() => {
+    const onEditorLaunch = (event: {conversationId?: string; artifactId?: string; kind?: string}) => {
+      const conversationID = event?.conversationId ?? '';
+      const artifactID = event?.artifactId ?? '';
+      const kind = event?.kind;
+      if (!conversationID || !artifactID || (kind !== 'image' && kind !== 'video')) {
+        return;
+      }
+      if (conversationID !== activeConversationIDRef.current || editorOpenRef.current) {
+        return;
+      }
+      if (kind === 'video') {
+        void openVideoEditor(conversationID, artifactID);
+      } else {
+        void openImageEditor(conversationID, artifactID);
+      }
+    };
+    EventsOn('atelier:editor-launch', onEditorLaunch);
+    return () => EventsOff('atelier:editor-launch');
   }, []);
 
   // Update availability mirrors the tool-permission pattern: setState only, no
@@ -3664,6 +3699,9 @@ function App() {
   useEffect(() => {
     activeConversationIDRef.current = activeConversationID;
   }, [activeConversationID]);
+  useEffect(() => {
+    editorOpenRef.current = editorOpen;
+  }, [editorOpen]);
 
   // Snapshot the current composer (prompt + attachments) under the conversation
   // being left, so it can be restored when returning. Empty drafts are deleted
@@ -4203,6 +4241,18 @@ function App() {
       return;
     }
 
+    // Editor-launch prompts ("Open this image in image editor") are UI
+    // navigation, not chat: on a brand-new conversation they route straight to
+    // the editor — no model call, no assistant turn. Inside an existing
+    // conversation the same words stay a normal chat turn.
+    if (!activeConversationID) {
+      const editorKind = detectEditorLaunchIntent(trimmed, attachments.map((item) => item.kind));
+      if (editorKind) {
+        await launchEditorConversation(editorKind, trimmed);
+        return;
+      }
+    }
+
     const userEntry: ChatEntry = {
       id: `user-${Date.now()}`,
       role: 'user',
@@ -4263,6 +4313,83 @@ function App() {
       {id: `assistant-${requestID}`, role: 'assistant', content: '', streaming: true, provider: primaryProvider},
     ]);
     await executeChatStream({requestID, requestMessages, referencedAssetIds, userEntryId: userEntry.id});
+  }
+
+  // launchEditorConversation implements the editor-launch prompts submitChat
+  // detects ("Open this image in image editor"): persist a new conversation
+  // holding the user turn with the attachment — the same turn-1 creation path
+  // a chat send uses, so workspace/project/override pinning and artifact
+  // persistence are identical — then open the matching editor on the persisted
+  // artifact, the editors' one identity input. On a creation failure the
+  // composer keeps its contents: nothing was persisted, so the send must look
+  // like it never happened.
+  async function launchEditorConversation(kind: 'image' | 'video', trimmed: string) {
+    const referencedAssetIds = [
+      ...new Set(
+        parseComposerMentions(trimmed, mentionBindingPool()).flatMap((segment) =>
+          segment.mention?.assetID ? [segment.mention.assetID] : [],
+        ),
+      ),
+    ];
+    const imagePayloads = attachments.filter((item) => item.kind === 'image').map((item) => item.payload).filter(Boolean);
+    const videoPayloads = attachments.filter((item) => item.kind === 'video').map((item) => item.payload).filter(Boolean);
+    let result: main.EditorLaunchResult;
+    try {
+      result = await CreateEditorConversation(main.ChatRequest.createFrom({
+        provider: composerProvider,
+        model: composerModel,
+        selectedModel: composerModel,
+        system,
+        messages: [{
+          role: 'user',
+          content: trimmed,
+          ...(imagePayloads.length ? {images: imagePayloads} : {}),
+          ...(videoPayloads.length ? {videos: videoPayloads} : {}),
+        } as main.ChatMessage],
+        // Same turn-1-only lifecycle fields a streamed first turn carries.
+        ...(draftWorkspace ? {workspace: draftWorkspace} : {}),
+        ...(pendingProjectRef.current?.projectID ? {projectId: pendingProjectRef.current.projectID} : {}),
+        ...(draftModelOverrides ? {modelOverrides: draftModelOverrides} : {}),
+        ...(referencedAssetIds.length ? {referencedAssetIds} : {}),
+      }));
+    } catch (error) {
+      setStartupError(formatError(error));
+      return;
+    }
+    // The launch is on disk — the composer contents are being sent, not
+    // stashed; drop the new-chat draft so it isn't resurrected.
+    setPrompt('');
+    setAttachments([]);
+    delete composerDraftsRef.current[activeConversationIDRef.current];
+    try {
+      await refreshConversations();
+      // Same reveal choreography as a streamed first turn: the new row is
+      // selected via the hydration below, so expand the sidebar section that
+      // owns it to make the selection visible.
+      const createdInProject = pendingProjectRef.current;
+      setPendingProject(null);
+      if (draftModelOverrides) {
+        setDraftModelOverrides(null);
+      }
+      if (createdInProject?.projectID && createdInProject?.libraryID) {
+        revealConversationInProject(createdInProject);
+      } else {
+        setChatsOpen(true);
+      }
+      const detail = await GetConversation(result.conversationId);
+      hydrateChatConversation(detail);
+      const artifactId = (kind === 'image' ? result.imageArtifactIds : result.videoArtifactIds)?.[0];
+      if (!artifactId) {
+        throw new Error('the attached asset was not persisted');
+      }
+      if (kind === 'image') {
+        await openImageEditor(result.conversationId, artifactId);
+      } else {
+        await openVideoEditor(result.conversationId, artifactId);
+      }
+    } catch (error) {
+      setStartupError(formatError(error));
+    }
   }
 
   // retryFailedTurn resends the user message preceding a failed assistant entry,

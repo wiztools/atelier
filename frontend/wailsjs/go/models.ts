@@ -1572,6 +1572,22 @@ export namespace main {
 		}
 	}
 	
+	export class EditorLaunchResult {
+	    conversationId: string;
+	    imageArtifactIds?: string[];
+	    videoArtifactIds?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new EditorLaunchResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.conversationId = source["conversationId"];
+	        this.imageArtifactIds = source["imageArtifactIds"];
+	        this.videoArtifactIds = source["videoArtifactIds"];
+	    }
+	}
 	export class EmptyStatePrompt {
 	    heading: string;
 	    sub: string;

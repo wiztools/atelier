@@ -70,8 +70,9 @@ type HarnessToolExecutionContext struct {
 	// Storage and ConversationID let generate_video re-read the conversation's
 	// most recent artifact of a kind when the planner's explicit source names
 	// one the slots don't carry (a bare follow-up whose fallback resolved to a
-	// video, while the user asked to animate "the image"). Empty on the
-	// direct/UI tool path, where there is no conversation to consult.
+	// video, while the user asked to animate "the image"). open_editor reads
+	// them the same way — its whole job is naming a persisted artifact. Empty
+	// on the direct/UI tool path, where there is no conversation to consult.
 	Storage        ConfigStorage
 	ConversationID string
 	GenerateImage  func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, []string, error)
@@ -117,6 +118,12 @@ type HarnessToolExecutionContext struct {
 	// like ReframeVideo. It returns a video (same transport as GenerateVideo)
 	// plus resolver notices.
 	RestyleVideo func(ctx context.Context, req VideoRestyleRequest) (GeneratedVideo, error)
+	// OpenEditor delivers the open_editor tool's UI directive: the named
+	// conversation's artifact should open in the built-in editor of the given
+	// kind. The gateway wires it to the atelier:editor-launch Wails event (see
+	// editor_launch.go); nil in contexts with no UI to launch into, where the
+	// tool fails rather than silently claiming an editor it cannot open.
+	OpenEditor func(kind, conversationID, artifactID string) error
 }
 
 // ToolImageResult carries generated images as data URLs. The Images field is
@@ -281,6 +288,10 @@ func newHarnessToolExecutionContext(config AppConfig) HarnessToolExecutionContex
 // at most once per stream against the disk-backed cache (7-day TTL).
 func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App) HarnessToolRegistry {
 	definitions := filesystemToolDefinitions(config.Tools.Filesystem)
+	// open_editor is unconditional: the built-in editors are a UI surface with
+	// no keys, CLI, or model behind them, so an editor-open ask is always
+	// servable (see editor_launch.go).
+	definitions = append(definitions, openEditorToolDefinition())
 	if imageGenerationConfigured(config) {
 		definitions = append(definitions, imageGenerationToolDefinition(config))
 	}

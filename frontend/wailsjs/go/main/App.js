@@ -50,6 +50,10 @@ export function ClearOpenAICompatibleAPIKey() {
   return window['go']['main']['App']['ClearOpenAICompatibleAPIKey']();
 }
 
+export function CreateEditorConversation(arg1) {
+  return window['go']['main']['App']['CreateEditorConversation'](arg1);
+}
+
 export function CreateLibrary(arg1) {
   return window['go']['main']['App']['CreateLibrary'](arg1);
 }
