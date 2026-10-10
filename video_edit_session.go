@@ -24,6 +24,7 @@ type VideoEditSubmitRequest struct {
 	InputArtifactID       string              `json:"inputArtifactId,omitempty"`
 	SourceDigest          string              `json:"sourceDigest,omitempty"`
 	Reframe               *VideoReframeParams `json:"reframe,omitempty"`
+	Trim                  *VideoTrimParams    `json:"trim,omitempty"`
 }
 
 type videoPreviewJob struct {
@@ -383,12 +384,27 @@ func (a *App) SubmitVideoEdit(req VideoEditSubmitRequest) (EditOperationState, e
 	}
 	a.editSubmitMu.Lock()
 	defer a.editSubmitMu.Unlock()
-	if req.Reframe == nil {
-		return EditOperationState{}, errors.New("reframe parameters are required")
+	if req.Reframe == nil && req.Trim == nil {
+		return EditOperationState{}, errors.New("reframe or trim parameters are required")
 	}
-	reframe, err := validateVideoReframe(*req.Reframe)
-	if err != nil {
-		return EditOperationState{}, err
+	if req.Reframe != nil && req.Trim != nil {
+		return EditOperationState{}, errors.New("submit either reframe or trim parameters, not both")
+	}
+	var reframe *VideoReframeParams
+	var trim *VideoTrimParams
+	if req.Reframe != nil {
+		validated, err := validateVideoReframe(*req.Reframe)
+		if err != nil {
+			return EditOperationState{}, err
+		}
+		reframe = &validated
+	}
+	if req.Trim != nil {
+		validated, err := validateVideoTrim(*req.Trim)
+		if err != nil {
+			return EditOperationState{}, err
+		}
+		trim = &validated
 	}
 	parentID := strings.TrimSpace(req.ParentConversationID)
 	sessionID := strings.TrimSpace(req.SessionConversationID)
@@ -450,11 +466,8 @@ func (a *App) SubmitVideoEdit(req VideoEditSubmitRequest) (EditOperationState, e
 		if err != nil {
 			return EditOperationState{}, err
 		}
-		if reframe.Source.Width != probe.Width || reframe.Source.Height != probe.Height {
-			return EditOperationState{}, fmt.Errorf("the submitted framing targets %dx%d, but the normalized source is %dx%d — reopen the editor", reframe.Source.Width, reframe.Source.Height, probe.Width, probe.Height)
-		}
-		if absDurationDelta(reframe.Source.DurationSeconds, probe.Duration) > 0.25 {
-			return EditOperationState{}, errors.New("the submitted framing duration no longer matches the normalized source — reopen the editor")
+		if err := checkVideoEditSourceMatch(reframe, trim, probe, "the normalized source", "reopen the editor"); err != nil {
+			return EditOperationState{}, err
 		}
 		sessionID, sourceURL, err = createVideoEditSession(store, config, parentDetail, sourceContent, sourceTurnID, normalized, probe, notices, nowText)
 		if err != nil {
@@ -499,8 +512,8 @@ func (a *App) SubmitVideoEdit(req VideoEditSubmitRequest) (EditOperationState, e
 	if err != nil {
 		return EditOperationState{}, err
 	}
-	if reframe.Source.Width != probe.Width || reframe.Source.Height != probe.Height || absDurationDelta(reframe.Source.DurationSeconds, probe.Duration) > 0.25 {
-		return EditOperationState{}, errors.New("the submitted framing no longer matches the selected video source — use the result as source again and retry")
+	if err := checkVideoEditSourceMatch(reframe, trim, probe, "the selected video source", "use the result as source again and retry"); err != nil {
+		return EditOperationState{}, err
 	}
 	op := EditOperation{
 		ID:              randomID("editop"),
@@ -509,7 +522,12 @@ func (a *App) SubmitVideoEdit(req VideoEditSubmitRequest) (EditOperationState, e
 		CreatedAt:       nowText,
 		InputArtifactID: inputArtifactID,
 		Backend:         "ffmpeg",
-		Reframe:         &reframe,
+		Reframe:         reframe,
+	}
+	if trim != nil {
+		op.Kind = editOperationKindTrim
+		op.Reframe = nil
+		op.Trim = trim
 	}
 	turn := HistoryTurn{
 		SchemaVersion:  1,
@@ -539,8 +557,31 @@ func (a *App) SubmitVideoEdit(req VideoEditSubmitRequest) (EditOperationState, e
 		return EditOperationState{}, err
 	}
 	launched = true
-	go a.executeVideoEditOperation(opCtx, opCancel, config, sessionID, turn.ID, op, inputPath, probe.AudioCodec != "", probe.Duration)
+	go a.executeVideoEditOperation(opCtx, opCancel, config, sessionID, turn.ID, op, inputPath, probe)
 	return EditOperationState{SessionConversationID: sessionID, CreatedSession: createdSession, Operation: op, SourceURL: sourceURL}, nil
+}
+
+// checkVideoEditSourceMatch refuses a submit whose parameters were derived from
+// a different copy of the source than the one that will render — a stale draft
+// must fail with guidance instead of cutting or framing the wrong pixels.
+func checkVideoEditSourceMatch(reframe *VideoReframeParams, trim *VideoTrimParams, probe ToolProbeResult, where, remedy string) error {
+	if reframe != nil {
+		if reframe.Source.Width != probe.Width || reframe.Source.Height != probe.Height {
+			return fmt.Errorf("the submitted framing targets %dx%d, but %s is %dx%d — %s", reframe.Source.Width, reframe.Source.Height, where, probe.Width, probe.Height, remedy)
+		}
+		if absDurationDelta(reframe.Source.DurationSeconds, probe.Duration) > 0.25 {
+			return fmt.Errorf("the submitted framing duration no longer matches %s — %s", where, remedy)
+		}
+	}
+	if trim != nil {
+		if trim.Source.Width != probe.Width || trim.Source.Height != probe.Height {
+			return fmt.Errorf("the submitted trim targets %dx%d, but %s is %dx%d — %s", trim.Source.Width, trim.Source.Height, where, probe.Width, probe.Height, remedy)
+		}
+		if absDurationDelta(trim.Source.DurationSeconds, probe.Duration) > 0.25 {
+			return fmt.Errorf("the submitted trim duration no longer matches %s — %s", where, remedy)
+		}
+	}
+	return nil
 }
 
 func (a *App) CancelVideoEdit(sessionConversationID, operationID string) error {
@@ -602,13 +643,15 @@ func createVideoEditSession(store HistoryStore, config AppConfig, parentDetail C
 	return workspace.ID, artifactPrefix + dest, nil
 }
 
-func (a *App) executeVideoEditOperation(ctx context.Context, cancel context.CancelFunc, config AppConfig, sessionID, turnID string, op EditOperation, inputPath string, hasAudio bool, duration float64) {
+func (a *App) executeVideoEditOperation(ctx context.Context, cancel context.CancelFunc, config AppConfig, sessionID, turnID string, op EditOperation, inputPath string, probe ToolProbeResult) {
 	defer func() {
 		a.editOpsMu.Lock()
 		delete(a.editOps, op.ID)
 		a.editOpsMu.Unlock()
 		cancel()
 	}()
+	hasAudio := probe.AudioCodec != ""
+	processDuration := probe.Duration
 	store := newHistoryStore(config.Storage)
 	persistAndEmit := func(next EditOperation) error {
 		a.editSubmitMu.Lock()
@@ -669,9 +712,26 @@ func (a *App) executeVideoEditOperation(ctx context.Context, cancel context.Canc
 	}
 	defer os.RemoveAll(staging)
 	staged := filepath.Join(staging, "reframed.mp4")
-	args, err := videoReframeFFmpegArgs(*op.Reframe, inputPath, staged, 0, hasAudio)
+	var args []string
+	var buildErr error
+	switch {
+	case op.Reframe != nil:
+		args, buildErr = videoReframeFFmpegArgs(*op.Reframe, inputPath, staged, 0, hasAudio)
+	case op.Trim != nil:
+		// ffmpeg only processes the kept footage, so the progress denominator
+		// and the expected result duration are the kept seconds, not the
+		// source's.
+		staged = filepath.Join(staging, "trimmed.mp4")
+		args, buildErr = videoTrimFFmpegArgs(*op.Trim, inputPath, staged, hasAudio)
+		if buildErr == nil {
+			processDuration, buildErr = videoTrimKeptSeconds(*op.Trim)
+		}
+	default:
+		buildErr = fmt.Errorf("operation %s carries no render payload", op.Kind)
+	}
+	err = buildErr
 	if err == nil {
-		err = runLocalFFmpegProgress(ctx, config, duration, args, func(progress float64) {
+		err = runLocalFFmpegProgress(ctx, config, processDuration, args, func(progress float64) {
 			op.Progress = progress
 			a.emitEditOperation(sessionID, op)
 		})
@@ -683,9 +743,8 @@ func (a *App) executeVideoEditOperation(ctx context.Context, cancel context.Canc
 		resultProbe, probeErr := probeStagedMedia(ctx, config, staged, "video")
 		if probeErr != nil {
 			err = fmt.Errorf("could not verify the rendered video: %w", probeErr)
-		} else if resultProbe.Width != op.Reframe.Output.Width || resultProbe.Height != op.Reframe.Output.Height ||
-			absDurationDelta(resultProbe.Duration, duration) > 0.1 || (hasAudio && resultProbe.AudioCodec == "") {
-			err = errors.New("the rendered video did not preserve the requested dimensions, duration, or audio")
+		} else {
+			err = verifyVideoEditResult(op, resultProbe, probe, hasAudio, processDuration)
 		}
 	}
 	op.CompletedAt = time.Now().Format(time.RFC3339)
@@ -728,14 +787,44 @@ func (a *App) executeVideoEditOperation(ctx context.Context, cancel context.Canc
 	op.ResultArtifactID = result.ArtifactID
 	op.ResultPath = result.Path
 	op.ResultMimeType = result.MimeType
-	op.ResultWidth = op.Reframe.Output.Width
-	op.ResultHeight = op.Reframe.Output.Height
-	op.ResultDurationSeconds = duration
+	switch {
+	case op.Reframe != nil:
+		op.ResultWidth = op.Reframe.Output.Width
+		op.ResultHeight = op.Reframe.Output.Height
+		op.ResultDurationSeconds = probe.Duration
+	case op.Trim != nil:
+		// Trim changes time, never geometry.
+		op.ResultWidth = probe.Width
+		op.ResultHeight = probe.Height
+		op.ResultDurationSeconds = processDuration
+	}
 	if err := persistAndEmit(op); err != nil {
 		resultPath := filepath.Join(loaded.ArtifactsDir, filepath.Base(result.Path))
 		_ = os.Remove(resultPath)
 		_ = os.Remove(strings.TrimSuffix(resultPath, filepath.Ext(resultPath)) + "_poster.jpg")
 	}
+}
+
+// verifyVideoEditResult refuses a render that did not preserve what its
+// operation promised: reframe keeps duration and swaps geometry, trim keeps
+// geometry and lands on the kept duration — both keep the audio track.
+func verifyVideoEditResult(op EditOperation, result, source ToolProbeResult, hasAudio bool, expectedDuration float64) error {
+	if hasAudio && result.AudioCodec == "" {
+		return errors.New("the rendered video lost the audio track")
+	}
+	if op.Reframe != nil {
+		if result.Width != op.Reframe.Output.Width || result.Height != op.Reframe.Output.Height || absDurationDelta(result.Duration, source.Duration) > 0.1 {
+			return errors.New("the rendered video did not preserve the requested dimensions, duration, or audio")
+		}
+		return nil
+	}
+	if op.Trim != nil {
+		if result.Width != source.Width || result.Height != source.Height || absDurationDelta(result.Duration, expectedDuration) > 0.25 {
+			return errors.New("the rendered video did not preserve the requested dimensions, duration, or audio")
+		}
+		return nil
+	}
+	return fmt.Errorf("operation %s carries no render payload", op.Kind)
 }
 
 func runLocalFFmpegProgress(ctx context.Context, config AppConfig, duration float64, args []string, onProgress func(float64)) error {

@@ -1,24 +1,10 @@
 import {useRef} from 'react';
 import {VideoReframeInterpolation, VideoReframeParams} from './videoReframe';
+import {formatTime, pointerTime, useMarkerDrag, VideoTimelineControls} from './VideoTimelineControls';
 
 function clamp(value: number, min: number, max: number): number {
   if (max < min) return min;
   return Math.min(max, Math.max(min, value));
-}
-
-function formatTime(value: number): string {
-  const seconds = Math.max(0, Number.isFinite(value) ? value : 0);
-  const whole = Math.floor(seconds);
-  const minutes = Math.floor(whole / 60);
-  const rest = whole % 60;
-  const fraction = Math.floor((seconds - whole) * 10);
-  return `${minutes}:${String(rest).padStart(2, '0')}.${fraction}`;
-}
-
-function pointerTime(event: React.PointerEvent, element: HTMLElement, duration: number): number {
-  const bounds = element.getBoundingClientRect();
-  const x = clamp(event.clientX - bounds.left, 0, bounds.width);
-  return bounds.width > 0 ? x * duration / bounds.width : 0;
 }
 
 export function VideoTimeline(props: {
@@ -41,14 +27,16 @@ export function VideoTimeline(props: {
   onSetInterpolation: (index: number, interpolation: VideoReframeInterpolation) => void;
 }) {
   const trackRef = useRef<HTMLDivElement | null>(null);
-  const dragMarker = useRef<number | null>(null);
+  const drag = useMarkerDrag({
+    onMove: props.onMoveMarker,
+    onCommit: props.onCommitMarkerTime,
+    onCancel: props.onCancelMarkerMove,
+  });
   const duration = props.params.source.durationSeconds;
   const selectedMarker = props.params.markers[props.selectedMarkerIndex];
-  const markerEpsilon = 0.001;
-  const frameStepSeconds = 1 / 30;
 
   function seek(event: React.PointerEvent<HTMLDivElement>) {
-    if (dragMarker.current !== null) return;
+    if (drag.active()) return;
     const track = trackRef.current;
     if (!track) return;
     props.onSeek(pointerTime(event, track, duration));
@@ -58,117 +46,22 @@ export function VideoTimeline(props: {
     event.stopPropagation();
     props.onSelectMarker(index);
     if (index === 0 || props.busy) return;
-    dragMarker.current = index;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    event.preventDefault();
-  }
-
-  function moveMarker(event: React.PointerEvent<HTMLButtonElement>) {
-    event.stopPropagation();
-    if (dragMarker.current === null) return;
-    const track = trackRef.current;
-    if (!track) return;
-    props.onMoveMarker(dragMarker.current, pointerTime(event, track, duration));
-    event.preventDefault();
-  }
-
-  function endMarkerDrag(event: React.PointerEvent<HTMLButtonElement>) {
-    if (dragMarker.current !== null) {
-      const track = trackRef.current;
-      if (track) props.onCommitMarkerTime(dragMarker.current, pointerTime(event, track, duration));
-    }
-    dragMarker.current = null;
-  }
-
-  function markerStepTarget(direction: -1 | 1): number | null {
-    if (direction === -1) {
-      for (let index = props.params.markers.length - 1; index >= 0; index--) {
-        if (props.params.markers[index].timeSeconds < props.currentTime - markerEpsilon) return index;
-      }
-      return null;
-    }
-    for (let index = 0; index < props.params.markers.length; index++) {
-      if (props.params.markers[index].timeSeconds > props.currentTime + markerEpsilon) return index;
-    }
-    return null;
-  }
-
-  function stepMarker(direction: -1 | 1) {
-    const index = markerStepTarget(direction);
-    const marker = index === null ? undefined : props.params.markers[index];
-    if (index === null || !marker) return;
-    props.onSelectMarker(index);
-    props.onSeek(marker.timeSeconds);
-  }
-
-  function stepFrame(direction: -1 | 1) {
-    const next = clamp(props.currentTime + direction * frameStepSeconds, 0, duration);
-    if (next === props.currentTime) return;
-    props.onSeek(next);
+    drag.start(index, event);
   }
 
   return (
     <div className="video-timeline">
-      <div className="video-timeline-controls">
-        <button
-          type="button"
-          className="video-icon-button"
-          onClick={props.onTogglePlay}
-          aria-label={props.playing ? 'Pause video' : 'Play video'}
-          title={props.playing ? 'Pause' : 'Play'}
-        >
-          {props.playing ? '❚❚' : '▶'}
-        </button>
-        <button
-          type="button"
-          className="video-icon-button"
-          onClick={props.onToggleMuted}
-          aria-label={props.muted ? 'Unmute preview' : 'Mute preview'}
-          title={props.muted ? 'Unmute' : 'Mute'}
-        >
-          {props.muted ? '🔇' : '🔊'}
-        </button>
-        <button
-          type="button"
-          className="video-icon-button"
-          onClick={() => stepMarker(-1)}
-          disabled={props.busy || markerStepTarget(-1) === null}
-          aria-label="Seek to the previous marker"
-          title="Previous marker"
-        >
-          |◀
-        </button>
-        <button
-          type="button"
-          className="video-icon-button"
-          onClick={() => stepFrame(-1)}
-          disabled={props.busy || props.currentTime <= 0}
-          aria-label="Step the playhead back one frame"
-          title="Step back one frame"
-        >
-          ◀◀
-        </button>
-        <span className="video-timeline-time">{formatTime(props.currentTime)}</span>
-        <button
-          type="button"
-          className="video-icon-button"
-          onClick={() => stepFrame(1)}
-          disabled={props.busy || props.currentTime >= duration}
-          aria-label="Step the playhead forward one frame"
-          title="Step forward one frame"
-        >
-          ▶▶
-        </button>
-        <button
-          type="button"
-          className="video-icon-button"
-          onClick={() => stepMarker(1)}
-          disabled={props.busy || markerStepTarget(1) === null}
-          aria-label="Seek to the next marker"
-          title="Next marker"
-        >
-          ▶|
-        </button>
+      <VideoTimelineControls
+        playing={props.playing}
+        muted={props.muted}
+        busy={props.busy}
+        currentTime={props.currentTime}
+        duration={duration}
+        stepTargets={props.params.markers.map((marker) => marker.timeSeconds)}
+        onTogglePlay={props.onTogglePlay}
+        onToggleMuted={props.onToggleMuted}
+        onSeek={props.onSeek}
+      >
         <button
           type="button"
           className="video-icon-button"
@@ -213,7 +106,7 @@ export function VideoTimeline(props: {
             <option value="hold">Hold</option>
           </select>
         </label>
-      </div>
+      </VideoTimelineControls>
       <div
         ref={trackRef}
         className="video-timeline-track"
@@ -240,10 +133,10 @@ export function VideoTimeline(props: {
               props.onSeek(marker.timeSeconds);
             }}
             onPointerDown={(event) => startMarkerDrag(index, event)}
-            onPointerMove={moveMarker}
-            onPointerUp={endMarkerDrag}
-            onPointerCancel={() => {if (dragMarker.current !== null) props.onCancelMarkerMove(); dragMarker.current = null;}}
-            onLostPointerCapture={() => {if (dragMarker.current !== null) props.onCancelMarkerMove(); dragMarker.current = null;}}
+            onPointerMove={(event) => drag.move(event, trackRef.current, duration)}
+            onPointerUp={(event) => drag.end(event, trackRef.current, duration)}
+            onPointerCancel={() => {drag.cancel();}}
+            onLostPointerCapture={() => {drag.cancel();}}
             aria-label={`Framing marker at ${formatTime(marker.timeSeconds)}`}
             title={index === 0 ? 'Start marker' : 'Drag to retime marker'}
           />

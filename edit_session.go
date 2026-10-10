@@ -889,7 +889,7 @@ func editOperationContents(op EditOperation) []HistoryContent {
 }
 
 func editResultMediaKind(op EditOperation) string {
-	if strings.HasPrefix(op.ResultMimeType, "video/") || op.Kind == editOperationKindReframe {
+	if strings.HasPrefix(op.ResultMimeType, "video/") || op.Kind == editOperationKindReframe || op.Kind == editOperationKindTrim {
 		return "video"
 	}
 	return "image"
@@ -1451,6 +1451,11 @@ func editOperationAdoptionSummary(op EditOperation) string {
 			return "reframe"
 		}
 		return fmt.Sprintf("reframe: %s, %d × %d", op.Reframe.AspectRatio, op.ResultWidth, op.ResultHeight)
+	case editOperationKindTrim:
+		if op.Trim == nil {
+			return "trim"
+		}
+		return fmt.Sprintf("trim: %s", videoTrimSummary(*op.Trim))
 	case editOperationKindCrop:
 		if op.Crop == nil {
 			return "crop"

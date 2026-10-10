@@ -1256,6 +1256,54 @@ export namespace main {
 	        this.deletedAssets = source["deletedAssets"];
 	    }
 	}
+	export class VideoTrimSegment {
+	    startSeconds: number;
+	    endSeconds: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new VideoTrimSegment(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.startSeconds = source["startSeconds"];
+	        this.endSeconds = source["endSeconds"];
+	    }
+	}
+	export class VideoTrimParams {
+	    version: number;
+	    source: VideoReframeSource;
+	    segments: VideoTrimSegment[];
+	
+	    static createFrom(source: any = {}) {
+	        return new VideoTrimParams(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.version = source["version"];
+	        this.source = this.convertValues(source["source"], VideoReframeSource);
+	        this.segments = this.convertValues(source["segments"], VideoTrimSegment);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class VideoReframeMarker {
 	    x: number;
 	    y: number;
@@ -1391,6 +1439,7 @@ export namespace main {
 	    inpaint?: InpaintOperationParams;
 	    crop?: CropOperationParams;
 	    reframe?: VideoReframeParams;
+	    trim?: VideoTrimParams;
 	    adoptedAt?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -1423,6 +1472,7 @@ export namespace main {
 	        this.inpaint = this.convertValues(source["inpaint"], InpaintOperationParams);
 	        this.crop = this.convertValues(source["crop"], CropOperationParams);
 	        this.reframe = this.convertValues(source["reframe"], VideoReframeParams);
+	        this.trim = this.convertValues(source["trim"], VideoTrimParams);
 	        this.adoptedAt = source["adoptedAt"];
 	    }
 	
@@ -2597,6 +2647,7 @@ export namespace main {
 	    inputArtifactId?: string;
 	    sourceDigest?: string;
 	    reframe?: VideoReframeParams;
+	    trim?: VideoTrimParams;
 	
 	    static createFrom(source: any = {}) {
 	        return new VideoEditSubmitRequest(source);
@@ -2610,6 +2661,7 @@ export namespace main {
 	        this.inputArtifactId = source["inputArtifactId"];
 	        this.sourceDigest = source["sourceDigest"];
 	        this.reframe = this.convertValues(source["reframe"], VideoReframeParams);
+	        this.trim = this.convertValues(source["trim"], VideoTrimParams);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -2630,6 +2682,8 @@ export namespace main {
 		    return a;
 		}
 	}
+	
+	
 	
 	
 	

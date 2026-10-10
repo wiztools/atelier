@@ -34,6 +34,7 @@ const (
 	editOperationKindInpaint = "inpaint"
 	editOperationKindCrop    = "crop"
 	editOperationKindReframe = "video-reframe"
+	editOperationKindTrim    = "video-trim"
 )
 
 // Edit operation statuses. queued/running are transient (the in-flight edit);
@@ -106,6 +107,7 @@ type EditOperation struct {
 	Inpaint *InpaintOperationParams `json:"inpaint,omitempty"`
 	Crop    *CropOperationParams    `json:"crop,omitempty"`
 	Reframe *VideoReframeParams     `json:"reframe,omitempty"`
+	Trim    *VideoTrimParams        `json:"trim,omitempty"`
 	// AdoptedAt records when this operation's result was added to the parent
 	// conversation (AddEditResultToConversation) — the idempotency mark that
 	// keeps repeated clicks from duplicating parent entries.

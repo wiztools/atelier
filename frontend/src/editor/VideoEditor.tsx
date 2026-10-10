@@ -7,6 +7,8 @@ import {EditKebabMenu} from './EditKebabMenu';
 import {EditorHeader} from './EditorHeader';
 import {VideoStage} from './VideoStage';
 import {VideoTimeline} from './VideoTimeline';
+import {VideoTrimStage} from './VideoTrimStage';
+import {VideoTrimTimeline} from './VideoTrimTimeline';
 import {mergeVideoEditOperations as mergeOperations, terminalVideoEditStatus as terminalStatus} from './videoEditState';
 import {
   VideoReframeAspectRatio,
@@ -31,6 +33,23 @@ import {
   upsertVideoReframeMarker,
   videoReframeAspects,
 } from './videoTimelineModel';
+import {
+  VideoTrimDraft,
+  VideoTrimParams,
+  addCut,
+  defaultVideoTrimDraft,
+  deleteCut,
+  draftFromSegments,
+  keptSeconds,
+  moveCut,
+  regionIndexAt,
+  sameTrimDraft,
+  segmentsFromDraft,
+  skipRangesForPlayback,
+  toggleRegionRemoved,
+  trimRegionBounds,
+  validateVideoTrimParams,
+} from './videoTrimModel';
 import './videoEditor.css';
 
 type VideoEditSourceInfo = main.EditSourceInfo;
@@ -40,8 +59,9 @@ export type VideoEditorHandle = {
   sessionID?: string;
 };
 
-type VideoEditOperation = Omit<main.EditOperation, 'convertValues' | 'reframe'> & {
+type VideoEditOperation = Omit<main.EditOperation, 'convertValues' | 'reframe' | 'trim'> & {
   reframe?: main.VideoReframeParams | VideoReframeParams;
+  trim?: main.VideoTrimParams | VideoTrimParams;
 };
 
 type VideoEditSessionState = Omit<main.EditSessionState, 'source' | 'operations' | 'convertValues'> & {
@@ -60,7 +80,8 @@ type VideoEditSubmitRequest = {
   sessionConversationId: string;
   inputArtifactId: string;
   sourceDigest?: string;
-  reframe: VideoReframeParams;
+  reframe?: VideoReframeParams;
+  trim?: VideoTrimParams;
 };
 
 const editEventOp = 'atelier:edit-op';
@@ -85,6 +106,15 @@ function formatTime(value: number): string {
 function operationTitle(op: VideoEditOperation): string {
   if (op.kind === 'video-reframe' && op.reframe) {
     return `Reframe · ${op.reframe.aspectRatio} · ${op.reframe.output.width} x ${op.reframe.output.height}`;
+  }
+  if (op.kind === 'video-trim' && op.trim) {
+    try {
+      const segments = validateVideoTrimParams(op.trim).segments;
+      const kept = segments.reduce((total, segment) => total + segment.endSeconds - segment.startSeconds, 0);
+      return `Trim · ${kept.toFixed(1)}s · ${segments.length} ${segments.length === 1 ? 'segment' : 'segments'}`;
+    } catch {
+      return 'Trim';
+    }
   }
   return op.kind || 'Video edit';
 }
@@ -151,6 +181,14 @@ export function VideoEditor(props: {
   const [previewMuted, setPreviewMuted] = useState(false);
   const [undoStack, setUndoStack] = useState<VideoReframeParams[]>([]);
   const [redoStack, setRedoStack] = useState<VideoReframeParams[]>([]);
+  // The trim/cut tool's parallel draft. Both tools keep their state when the
+  // other is active, exactly like the image editor's crop/inpaint pair.
+  const [tool, setTool] = useState<'reframe' | 'trim'>('reframe');
+  const [trimDraft, setTrimDraft] = useState<VideoTrimDraft>(() => defaultVideoTrimDraft());
+  const [trimBaseline, setTrimBaseline] = useState<VideoTrimDraft>(() => defaultVideoTrimDraft());
+  const [selectedCutIndex, setSelectedCutIndex] = useState(-1);
+  const [trimUndoStack, setTrimUndoStack] = useState<VideoTrimDraft[]>([]);
+  const [trimRedoStack, setTrimRedoStack] = useState<VideoTrimDraft[]>([]);
   const [loadError, setLoadError] = useState('');
   const [submitError, setSubmitError] = useState('');
   const [adoptError, setAdoptError] = useState('');
@@ -164,6 +202,7 @@ export function VideoEditor(props: {
   const submitLock = useRef(false);
   const hydratedSession = useRef('');
   const markerMoveBaseline = useRef<VideoReframeParams | null>(null);
+  const cutMoveBaseline = useRef<VideoTrimDraft | null>(null);
   const previewResources = useRef(new Set<string>([props.handle.source.url, ...(props.handle.source.thumbnails || [])]));
   const pendingReleases = useRef(new Map<string, number>());
 
@@ -171,10 +210,21 @@ export function VideoEditor(props: {
   const runningOpID = session?.runningOperationId ?? '';
   const busy = loading || submitting || runningOpID !== '';
   const outputNotice = outputForVideoPreset(params, outputPreset).notices;
-  const dirty = useMemo(() => !sameVideoParams(params, baseline), [params, baseline]);
+  const duration = params.source.durationSeconds;
+  const dirty = useMemo(
+    () => (tool === 'trim' ? !sameTrimDraft(trimDraft, trimBaseline) : !sameVideoParams(params, baseline)),
+    [tool, params, baseline, trimDraft, trimBaseline],
+  );
   const orderedOps = useMemo(() => [...ops].reverse(), [ops]);
   const runningOp = runningOpID ? ops.find((op) => op.id === runningOpID) : undefined;
   const selectedRect = selectedVideoRect(params, currentTime, selectedMarkerIndex);
+  // Trim-tool derived views. trimSegments is the submission payload; trimNoOp
+  // disables the render button while nothing is actually marked for removal.
+  const trimSegments = useMemo(() => segmentsFromDraft(trimDraft, duration), [trimDraft, duration]);
+  const trimRegions = useMemo(() => trimRegionBounds(trimDraft, duration), [trimDraft, duration]);
+  const playheadRegion = regionIndexAt(trimDraft, duration, currentTime);
+  const trimKept = useMemo(() => keptSeconds(trimDraft, duration), [trimDraft, duration]);
+  const trimNoOp = trimSegments.length === 1 && trimSegments[0].startSeconds <= 0.001 && trimSegments[0].endSeconds >= duration - 0.001;
 
   useEffect(() => {
     props.onDirtyChange?.(dirty);
@@ -216,8 +266,9 @@ export function VideoEditor(props: {
       .then(async (state) => {
         if (cancelled) return;
         const merged = mergeOperations(state.operations || [], Array.from(eventOperations.current.values()).filter((op) => (state.operations || []).some((item) => item.id === op.id)));
-        const restored = [...merged].reverse().find((op) => op.reframe);
-        const nextSource = await AppBindings.ResolveVideoEditInput(sessionID, restored?.inputArtifactId || state.source.artifactId) as VideoEditSourceInfo;
+        const restoredReframe = [...merged].reverse().find((op) => op.reframe);
+        const restoredTrim = [...merged].reverse().find((op) => op.trim);
+        const nextSource = await AppBindings.ResolveVideoEditInput(sessionID, restoredReframe?.inputArtifactId || restoredTrim?.inputArtifactId || state.source.artifactId) as VideoEditSourceInfo;
         if (cancelled) {
           for (const thumbnail of nextSource.thumbnails || []) releaseVideoPreview(thumbnail);
           return;
@@ -235,10 +286,23 @@ export function VideoEditor(props: {
         });
         setSource(nextSource);
         if (hydratedSession.current !== sessionID) {
-          const next = restored?.reframe ? validateVideoReframe(restored.reframe) : defaultVideoReframeParams(sourceForParams(nextSource));
-          setParams(next);
-          setBaseline(next);
-          setSelectedMarkerIndex(0);
+          // The newest recorded operation names the tool the session was last
+          // edited with; its params restore as the baseline.
+          if (restoredTrim && restoredTrim.trim && (!restoredReframe || merged.indexOf(restoredTrim) > merged.indexOf(restoredReframe))) {
+            const draft = draftFromSegments(validateVideoTrimParams(restoredTrim.trim).segments, sourceForParams(nextSource).durationSeconds);
+            setTool('trim');
+            setTrimDraft(draft);
+            setTrimBaseline(draft);
+            setSelectedCutIndex(-1);
+            setTrimUndoStack([]);
+            setTrimRedoStack([]);
+          } else {
+            const next = restoredReframe?.reframe ? validateVideoReframe(restoredReframe.reframe) : defaultVideoReframeParams(sourceForParams(nextSource));
+            setTool('reframe');
+            setParams(next);
+            setBaseline(next);
+            setSelectedMarkerIndex(0);
+          }
           hydratedSession.current = sessionID;
         }
       })
@@ -352,6 +416,95 @@ export function VideoEditor(props: {
     commit(next, Math.max(0, Math.min(index - 1, next.markers.length - 1)));
   }
 
+  // Trim-tool draft edits — the reframe marker idiom applied to cut markers.
+  function commitTrim(next: VideoTrimDraft) {
+    setTrimUndoStack((list) => [...list.slice(-99), trimDraft]);
+    setTrimRedoStack([]);
+    setTrimDraft(next);
+  }
+
+  function undoTrim() {
+    const previous = trimUndoStack[trimUndoStack.length - 1];
+    if (!previous) return;
+    setTrimRedoStack((list) => [...list, trimDraft]);
+    setTrimUndoStack((list) => list.slice(0, -1));
+    setTrimDraft(previous);
+    setSelectedCutIndex(-1);
+  }
+
+  function redoTrim() {
+    const next = trimRedoStack[trimRedoStack.length - 1];
+    if (!next) return;
+    setTrimUndoStack((list) => [...list, trimDraft]);
+    setTrimRedoStack((list) => list.slice(0, -1));
+    setTrimDraft(next);
+    setSelectedCutIndex(-1);
+  }
+
+  function resetTrimDraft() {
+    commitTrim(defaultVideoTrimDraft());
+    setSelectedCutIndex(-1);
+  }
+
+  function addCutAtPlayhead() {
+    let next: VideoTrimDraft;
+    try {
+      next = addCut(trimDraft, duration, currentTime);
+    } catch {
+      return;
+    }
+    commitTrim(next);
+    let nearest = -1;
+    let distance = Number.POSITIVE_INFINITY;
+    next.cuts.forEach((cut, index) => {
+      const gap = Math.abs(cut.timeSeconds - currentTime);
+      if (gap < distance) {
+        nearest = index;
+        distance = gap;
+      }
+    });
+    setSelectedCutIndex(nearest);
+  }
+
+  function deleteSelectedCut() {
+    if (selectedCutIndex < 0 || selectedCutIndex >= trimDraft.cuts.length) return;
+    const next = deleteCut(trimDraft, selectedCutIndex);
+    commitTrim(next);
+    setSelectedCutIndex(Math.min(selectedCutIndex, next.cuts.length - 1));
+  }
+
+  function togglePlayheadRegion() {
+    commitTrim(toggleRegionRemoved(trimDraft, playheadRegion));
+  }
+
+  function nudgeSelectedCut(frames: number) {
+    if (frames === 0 || selectedCutIndex < 0 || selectedCutIndex >= trimDraft.cuts.length) return;
+    const cut = trimDraft.cuts[selectedCutIndex];
+    commitTrim(moveCut(trimDraft, selectedCutIndex, cut.timeSeconds + frames / 30));
+  }
+
+  function moveCutAt(index: number, timeSeconds: number) {
+    if (!cutMoveBaseline.current) cutMoveBaseline.current = trimDraft;
+    const next = moveCut(trimDraft, index, timeSeconds);
+    setTrimDraft(next);
+    setSelectedCutIndex(Math.min(index, next.cuts.length - 1));
+  }
+
+  function finishCutMove(index: number, timeSeconds: number) {
+    const before = cutMoveBaseline.current || trimDraft;
+    cutMoveBaseline.current = null;
+    const next = moveCut(trimDraft, index, timeSeconds);
+    if (sameTrimDraft(before, next)) return;
+    setTrimUndoStack((list) => [...list.slice(-99), before]);
+    setTrimRedoStack([]);
+    setTrimDraft(next);
+  }
+
+  function cancelCutMove() {
+    if (cutMoveBaseline.current) setTrimDraft(cutMoveBaseline.current);
+    cutMoveBaseline.current = null;
+  }
+
   async function submit() {
     if (submitLock.current || busy) return;
     submitLock.current = true;
@@ -359,13 +512,18 @@ export function VideoEditor(props: {
     setSubmitError('');
     setAdoptError('');
     try {
+      const submittedTrim = tool === 'trim'
+        ? validateVideoTrimParams({version: 1, source: sourceForParams(source), segments: segmentsFromDraft(trimDraft, duration)})
+        : undefined;
+      const submittedReframe = tool === 'trim' ? undefined : validateVideoReframe(params);
       const request: VideoEditSubmitRequest = {
         parentConversationId: parentID,
         sourceArtifactId: sourceArtifactID,
         sessionConversationId: sessionID,
         inputArtifactId: sessionID ? source.artifactId : '',
         sourceDigest: sessionID ? '' : source.sourceDigest,
-        reframe: validateVideoReframe(params),
+        reframe: submittedReframe,
+        trim: submittedTrim,
       };
       const state = await AppBindings.SubmitVideoEdit(main.VideoEditSubmitRequest.createFrom(request));
       const operation = eventOperations.current.get(state.operation.id) || state.operation;
@@ -384,7 +542,8 @@ export function VideoEditor(props: {
           runningOperationId: operations.find((op) => !terminalStatus(op.status))?.id || '',
         };
       });
-      setBaseline(validateVideoReframe(params));
+      if (submittedTrim) setTrimBaseline(trimDraft);
+      if (submittedReframe) setBaseline(submittedReframe);
       if (state.createdSession) {
         hydratedSession.current = state.sessionConversationId;
         setSessionID(state.sessionConversationId);
@@ -433,11 +592,17 @@ export function VideoEditor(props: {
     setSource(nextSource);
     if (previousURL && previousURL !== props.handle.source.url && previousURL !== nextSource.url) releaseVideoPreview(previousURL);
     const nextParams = defaultVideoReframeParams(sourceForParams(nextSource), params.aspectRatio);
+    const nextTrim = defaultVideoTrimDraft();
     setParams(nextParams);
     setBaseline(nextParams);
+    setTrimDraft(nextTrim);
+    setTrimBaseline(nextTrim);
     setUndoStack([]);
     setRedoStack([]);
+    setTrimUndoStack([]);
+    setTrimRedoStack([]);
     setSelectedMarkerIndex(0);
+    setSelectedCutIndex(-1);
     setCurrentTime(0);
     setCompareOpID('');
   }
@@ -448,6 +613,7 @@ export function VideoEditor(props: {
       const input = await AppBindings.ResolveVideoEditInput(sessionID, op.inputArtifactId);
       const next = validateVideoReframe(op.reframe);
       setSource(input);
+      setTool('reframe');
       setParams(next);
       setBaseline(next);
       setSelectedMarkerIndex(0);
@@ -455,6 +621,28 @@ export function VideoEditor(props: {
       setPlaying(false);
       setUndoStack([]);
       setRedoStack([]);
+      setLoadError('');
+    } catch (error) {
+      setLoadError(formatEditorError(error));
+    }
+  }
+
+  // editCuts is editFraming's trim sibling: restore the op's cut set onto its
+  // input clip so the user can adjust and re-render it.
+  async function editCuts(op: VideoEditOperation) {
+    if (!op.trim || !op.inputArtifactId || busy) return;
+    try {
+      const input = await AppBindings.ResolveVideoEditInput(sessionID, op.inputArtifactId);
+      const draft = draftFromSegments(validateVideoTrimParams(op.trim).segments, sourceForParams(input).durationSeconds);
+      setSource(input);
+      setTool('trim');
+      setTrimDraft(draft);
+      setTrimBaseline(draft);
+      setSelectedCutIndex(-1);
+      setCurrentTime(0);
+      setPlaying(false);
+      setTrimUndoStack([]);
+      setTrimRedoStack([]);
       setLoadError('');
     } catch (error) {
       setLoadError(formatEditorError(error));
@@ -469,12 +657,20 @@ export function VideoEditor(props: {
         (target && ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(target.tagName))) return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z' && !busy) {
         event.preventDefault();
-        if (event.shiftKey) redo(); else undo();
+        if (tool === 'trim') {
+          if (event.shiftKey) redoTrim(); else undoTrim();
+        } else if (event.shiftKey) redo(); else undo();
       } else if (event.key === ' ') {
         event.preventDefault();
         setPlaying((value) => !value);
       } else if (event.key.startsWith('Arrow') && !busy) {
         event.preventDefault();
+        if (tool === 'trim') {
+          // Arrows retime the selected cut by one frame (shift: ten).
+          const step = event.shiftKey ? 10 : 1;
+          nudgeSelectedCut(event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0);
+          return;
+        }
         const step = event.shiftKey ? 10 : 1;
         nudgeSelected(event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0,
           event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0);
@@ -482,7 +678,7 @@ export function VideoEditor(props: {
     };
     window.addEventListener('keydown', keydown);
     return () => window.removeEventListener('keydown', keydown);
-  }, [props.suspended, params, busy, undoStack, redoStack, selectedMarkerIndex]);
+  }, [props.suspended, tool, params, busy, undoStack, redoStack, selectedMarkerIndex, trimDraft, trimUndoStack, trimRedoStack, selectedCutIndex]);
 
   async function addToOriginal(op: VideoEditOperation) {
     if (!sessionID || op.adoptedAt) return;
@@ -505,7 +701,7 @@ export function VideoEditor(props: {
   async function download(op: VideoEditOperation) {
     if (!op.resultUrl) return;
     try {
-      await AppBindings.SaveVideo(main.SaveVideoRequest.createFrom({path: op.resultUrl, suggestedName: 'reframed-video.mp4'}));
+      await AppBindings.SaveVideo(main.SaveVideoRequest.createFrom({path: op.resultUrl, suggestedName: op.trim ? 'trimmed-video.mp4' : 'reframed-video.mp4'}));
     } catch (error) {
       setAdoptError(formatEditorError(error));
     }
@@ -533,12 +729,18 @@ export function VideoEditor(props: {
         const fallback = session?.source;
         if (fallback?.artifactId && fallback.url) {
           const next = defaultVideoReframeParams(sourceForParams(fallback), params.aspectRatio);
+          const nextTrim = defaultVideoTrimDraft();
           setSource({...fallback, thumbnails: [], notices: []});
           setParams(next);
           setBaseline(next);
+          setTrimDraft(nextTrim);
+          setTrimBaseline(nextTrim);
           setUndoStack([]);
           setRedoStack([]);
+          setTrimUndoStack([]);
+          setTrimRedoStack([]);
           setSelectedMarkerIndex(0);
+          setSelectedCutIndex(-1);
           setCurrentTime(0);
           setPlaying(false);
           void AppBindings.ResolveVideoEditInput(sessionID, fallback.artifactId)
@@ -569,48 +771,121 @@ export function VideoEditor(props: {
 
       <div className="editor-body">
         <div className="video-editor-main">
-          <VideoStage
-            sourceUrl={source.url}
-            params={params}
-            currentTime={currentTime}
-            playing={playing}
-            muted={previewMuted}
-            busy={busy}
-            selectedMarkerIndex={selectedMarkerIndex}
-            onTimeChange={(time) => setCurrentTime(Math.min(params.source.durationSeconds, Math.max(0, time)))}
-            onPlayingChange={setPlaying}
-            onMutedChange={setPreviewMuted}
-            onCommitFraming={commitFraming}
-            onSelectMarker={setSelectedMarkerIndex}
-          />
-          <VideoTimeline
-            params={params}
-            currentTime={currentTime}
-            playing={playing}
-            muted={previewMuted}
-            busy={busy}
-            selectedMarkerIndex={selectedMarkerIndex}
-            thumbnails={source.thumbnails || []}
-            onSeek={(time) => {
-              setPlaying(false);
-              setCurrentTime(Math.min(params.source.durationSeconds, Math.max(0, time)));
-            }}
-            onTogglePlay={() => setPlaying((value) => !value)}
-            onToggleMuted={() => setPreviewMuted((value) => !value)}
-            onAddMarker={() => commitFraming(currentTime, evaluateVideoReframe(params, currentTime))}
-            onSelectMarker={setSelectedMarkerIndex}
-            onMoveMarker={moveMarker}
-            onCommitMarkerTime={finishMoveMarker}
-            onCancelMarkerMove={cancelMoveMarker}
-            onDeleteMarker={deleteMarker}
-            onSetInterpolation={setInterpolation}
-          />
+          {tool === 'trim' ? (
+            <VideoTrimStage
+              sourceUrl={source.url}
+              currentTime={currentTime}
+              playing={playing}
+              muted={previewMuted}
+              skipRanges={skipRangesForPlayback(trimDraft, duration)}
+              duration={duration}
+              onTimeChange={(time) => setCurrentTime(Math.min(duration, Math.max(0, time)))}
+              onPlayingChange={setPlaying}
+              onMutedChange={setPreviewMuted}
+            />
+          ) : (
+            <VideoStage
+              sourceUrl={source.url}
+              params={params}
+              currentTime={currentTime}
+              playing={playing}
+              muted={previewMuted}
+              busy={busy}
+              selectedMarkerIndex={selectedMarkerIndex}
+              onTimeChange={(time) => setCurrentTime(Math.min(duration, Math.max(0, time)))}
+              onPlayingChange={setPlaying}
+              onMutedChange={setPreviewMuted}
+              onCommitFraming={commitFraming}
+              onSelectMarker={setSelectedMarkerIndex}
+            />
+          )}
+          {tool === 'trim' ? (
+            <VideoTrimTimeline
+              draft={trimDraft}
+              duration={duration}
+              currentTime={currentTime}
+              playing={playing}
+              muted={previewMuted}
+              busy={busy}
+              selectedCutIndex={selectedCutIndex}
+              thumbnails={source.thumbnails || []}
+              onSeek={(time) => {
+                setPlaying(false);
+                setCurrentTime(Math.min(duration, Math.max(0, time)));
+              }}
+              onTogglePlay={() => setPlaying((value) => !value)}
+              onToggleMuted={() => setPreviewMuted((value) => !value)}
+              onAddCut={addCutAtPlayhead}
+              onDeleteCut={deleteSelectedCut}
+              onSelectCut={setSelectedCutIndex}
+              onMoveCut={moveCutAt}
+              onCommitCutTime={finishCutMove}
+              onCancelCutMove={cancelCutMove}
+              onToggleRegionRemoved={togglePlayheadRegion}
+            />
+          ) : (
+            <VideoTimeline
+              params={params}
+              currentTime={currentTime}
+              playing={playing}
+              muted={previewMuted}
+              busy={busy}
+              selectedMarkerIndex={selectedMarkerIndex}
+              thumbnails={source.thumbnails || []}
+              onSeek={(time) => {
+                setPlaying(false);
+                setCurrentTime(Math.min(duration, Math.max(0, time)));
+              }}
+              onTogglePlay={() => setPlaying((value) => !value)}
+              onToggleMuted={() => setPreviewMuted((value) => !value)}
+              onAddMarker={() => commitFraming(currentTime, evaluateVideoReframe(params, currentTime))}
+              onSelectMarker={setSelectedMarkerIndex}
+              onMoveMarker={moveMarker}
+              onCommitMarkerTime={finishMoveMarker}
+              onCancelMarkerMove={cancelMoveMarker}
+              onDeleteMarker={deleteMarker}
+              onSetInterpolation={setInterpolation}
+            />
+          )}
         </div>
 
         <aside className="editor-inspector video-inspector">
           <div className="editor-tool-selector" role="group" aria-label="Editing tool">
-            <button type="button" className="active" aria-pressed="true">Reframe</button>
+            <button type="button" className={tool === 'reframe' ? 'active' : ''} aria-pressed={tool === 'reframe'} disabled={busy} onClick={() => setTool('reframe')}>Reframe</button>
+            <button type="button" className={tool === 'trim' ? 'active' : ''} aria-pressed={tool === 'trim'} disabled={busy} onClick={() => setTool('trim')}>Trim &amp; cut</button>
           </div>
+          {tool === 'trim' ? <>
+            <div className="video-framing-summary" aria-live="polite">
+              <strong>{trimKept.toFixed(1)}s of {duration.toFixed(1)}s kept</strong>
+              <span>{trimSegments.length} kept · {trimRegions.filter((region) => region.removed).length} removed</span>
+            </div>
+            <div className="video-framing-summary">
+              <span>
+                Playhead in region {playheadRegion + 1} of {trimRegions.length} · {formatTime(trimRegions[playheadRegion]?.start ?? 0)} – {formatTime(trimRegions[playheadRegion]?.end ?? 0)}
+                {trimRegions[playheadRegion]?.removed ? ' · removed' : ''}
+              </span>
+            </div>
+            <div className="editor-tool-group">
+              <button type="button" disabled={busy} onClick={togglePlayheadRegion}>
+                {trimRegions[playheadRegion]?.removed ? 'Keep at playhead' : 'Remove at playhead'}
+              </button>
+            </div>
+            <p className="hint">⚑ adds a cut at the playhead, ✂ removes the range it sits in. Playback skips removed footage.</p>
+            <div className="editor-tool-group">
+              <button type="button" disabled={busy || !trimUndoStack.length} onClick={undoTrim}>Undo</button>
+              <button type="button" disabled={busy || !trimRedoStack.length} onClick={redoTrim}>Redo</button>
+              <button type="button" disabled={busy} onClick={resetTrimDraft}>Reset</button>
+            </div>
+            {trimNoOp ? <span className="hint">Nothing is marked for removal yet — add cuts and remove the ranges you don't want.</span> : null}
+            <button
+              type="button"
+              className="editor-generate"
+              disabled={busy || Boolean(loadError) || trimNoOp}
+              onClick={() => void submit()}
+            >
+              {loading ? 'Loading…' : busy ? 'Rendering…' : 'Trim video'}
+            </button>
+          </> : <>
           <div className="field">
             <label htmlFor="video-aspect">Aspect ratio</label>
             <select id="video-aspect" value={params.aspectRatio} disabled={busy} onChange={(event) => changeAspect(event.target.value as VideoReframeAspectRatio)}>
@@ -650,12 +925,13 @@ export function VideoEditor(props: {
             <button type="button" disabled={busy || !redoStack.length} onClick={redo}>Redo</button>
             <button type="button" disabled={busy} onClick={resetDraft}>Reset</button>
           </div>
-          {[...(source.notices || []), ...outputNotice].map((notice, index) => (
-            <span key={index} className="editor-op-notice">{notice}</span>
-          ))}
           <button type="button" className="editor-generate" disabled={busy || Boolean(loadError)} onClick={() => void submit()}>
             {loading ? 'Loading…' : busy ? 'Rendering…' : 'Render video'}
           </button>
+          </>}
+          {[...(source.notices || []), ...(tool === 'reframe' ? outputNotice : [])].map((notice, index) => (
+            <span key={index} className="editor-op-notice">{notice}</span>
+          ))}
           {busy && runningOpID ? (
             <button type="button" className="editor-cancel" onClick={() => void cancelRunning()}>
               Cancel render
@@ -703,6 +979,7 @@ export function VideoEditor(props: {
                   </div>
                   <div className="editor-op-actions">
                     {op.reframe ? <button type="button" disabled={busy} onClick={() => void editFraming(op)}>Edit framing</button> : null}
+                    {op.trim ? <button type="button" disabled={busy} onClick={() => void editCuts(op)}>Edit cuts</button> : null}
                     {op.status === 'completed' ? (
                       <>
                         <button type="button" onClick={() => void useAsSource(op)} disabled={busy || source.artifactId === op.resultArtifactId}>Use as source</button>

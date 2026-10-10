@@ -221,3 +221,107 @@ func TestVideoEditorRealPipeline(t *testing.T) {
 		})
 	}
 }
+
+// TestVideoTrimRealPipeline drives the trim kind through the same real
+// normalization/render/persistence path the reframe editor e2e covers: a
+// PTS-offset source, a mid-clip delete (two kept segments), then the usual
+// session/reopen/adoption checks with geometry expected to survive untouched.
+func TestVideoTrimRealPipeline(t *testing.T) {
+	if os.Getenv("ATELIER_TEST_FFMPEG") != "1" {
+		t.Skip("set ATELIER_TEST_FFMPEG=1 to verify real trim normalization/render/persistence")
+	}
+	withRealLocalLookup(t)
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ffprobe, err := exec.LookPath("ffprobe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := editTestHome(t)
+	config.Providers.Local.FFmpeg.Binary = ffmpeg
+	config.Providers.Local.FFprobe.Binary = ffprobe
+	if err := writeAppConfig(config); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	input := filepath.Join(dir, "source.mp4")
+	// 4s of video plus 3.8s of audio delayed 0.2s behind the video origin —
+	// normalization must rebase both before the cuts apply.
+	videoReframeRealCommand(t, ffmpeg, "-v", "error", "-nostdin",
+		"-f", "lavfi", "-i", "testsrc2=s=160x96:r=20:d=4",
+		"-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:duration=3.8",
+		"-vf", "setpts=PTS+5/TB", "-af", "asetpts=PTS+5.2/TB", "-fps_mode", "passthrough",
+		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-copyts", input)
+	parentID := randomID("conv")
+	artifactID := writeRealVideoEditorParent(t, config, parentID, input)
+	app := editTestOfflineApp()
+	defer app.shutdown(t.Context())
+	info, err := app.ResolveVideoEditSource(parentID, artifactID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = app.ReleaseVideoEditSourcePreview(info.URL)
+		for _, url := range info.Thumbnails {
+			_ = app.ReleaseVideoEditSourcePreview(url)
+		}
+	}()
+	// Keep 0.5–1.5s and 2.0–3.5s: a head trim, a mid-clip delete, and a tail
+	// trim in one submission — 2.5s expected.
+	params := VideoTrimParams{Version: 1, Source: VideoReframeSource{Width: info.Width, Height: info.Height, DurationSeconds: info.DurationSeconds},
+		Segments: []VideoTrimSegment{{StartSeconds: 0.5, EndSeconds: 1.5}, {StartSeconds: 2.0, EndSeconds: 3.5}}}
+	state, err := app.SubmitVideoEdit(VideoEditSubmitRequest{ParentConversationID: parentID, SourceArtifactID: artifactID, SourceDigest: info.SourceDigest, Trim: &params})
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := waitForEditTerminal(t, config.Storage, state.SessionConversationID, state.Operation.ID)
+	if op.Status != editOperationStatusCompleted {
+		t.Fatalf("render %s: %s", op.Status, op.Error)
+	}
+	if op.Backend != "ffmpeg" || op.Provider != "" || op.Model != "" || op.CostMicros != 0 || op.CostUnknown || op.Trim == nil || op.Reframe != nil {
+		t.Fatalf("incorrect local attribution/instructions: %+v", op)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for app.editOpRunning(state.SessionConversationID) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	resultSource, err := app.ResolveVideoEditInput(state.SessionConversationID, op.ResultArtifactID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.ReleaseVideoEditSourcePreview(resultSource.URL)
+	if resultSource.Width != info.Width || resultSource.Height != info.Height {
+		t.Fatalf("trim changed dimensions: %dx%d", resultSource.Width, resultSource.Height)
+	}
+	if math.Abs(resultSource.DurationSeconds-2.5) > 0.15 {
+		t.Fatalf("kept duration %.4f, want ~2.5", resultSource.DurationSeconds)
+	}
+	probe := videoReframeProbeFile(t, ffprobe, strings.TrimPrefix(resultSource.URL, artifactPrefix), false)
+	audioFound := false
+	for _, stream := range probe.Streams {
+		if stream.CodecType == "audio" {
+			audioFound = true
+		}
+	}
+	if !audioFound {
+		t.Fatal("audio track lost in trim")
+	}
+	reopened, err := app.ListEditSession(state.SessionConversationID)
+	if err != nil || len(reopened.Operations) != 1 || reopened.Operations[0].Trim == nil {
+		t.Fatalf("reopen failed: %+v, %v", reopened, err)
+	}
+	if _, err := app.AddEditResultToConversation(state.SessionConversationID, op.ID); err != nil {
+		t.Fatal(err)
+	}
+	parentDetail, err := getConversation(config.Storage, parentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adoption := parentDetail.Turns[len(parentDetail.Turns)-1].ProviderResponse["editAdoption"].(map[string]any)
+	if adoption["kind"] != editOperationKindTrim || !strings.Contains(editOperationAdoptionSummary(op), "trim: 2 segment(s), 2.5s kept") {
+		t.Fatalf("adoption lost trim provenance/summary: %v / %q", adoption["kind"], editOperationAdoptionSummary(op))
+	}
+	t.Logf("trim: kept %.3fs of %.3fs, dims %dx%d; session/reopen/adoption verified", resultSource.DurationSeconds, info.DurationSeconds, resultSource.Width, resultSource.Height)
+}

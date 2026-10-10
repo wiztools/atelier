@@ -254,6 +254,32 @@
   box-shadow: 0 0 0 3px rgba(138, 180, 248, .32);
 }
 
+/* Trim/cut tool: cut markers echo the reframe markers' shape in the cut
+   color, and removed footage dims the filmstrip under diagonal stripes. The
+   overlays sit under the playhead and markers and never take pointers —
+   region commands target the playhead, clicks fall through to seeking. */
+.video-editor .video-timeline-marker.cut {
+  background: #e06c5b;
+}
+
+.video-editor .video-timeline-marker.cut.selected {
+  box-shadow: 0 0 0 3px rgba(224, 108, 91, .32);
+}
+
+.video-editor .video-timeline-region {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(45deg, rgba(16, 18, 20, .78) 0 7px, rgba(96, 46, 38, .55) 7px 14px);
+  box-shadow: inset 1px 0 0 rgba(224, 108, 91, .5), inset -1px 0 0 rgba(224, 108, 91, .5);
+}
+
+/* Trim mode renders no crop output, so the source panel spans the stage. */
+.video-editor .video-stage.solo {
+  grid-template-columns: 1fr;
+}
+
 .video-editor .video-inspector {
   align-self: stretch;
   overflow-y: auto;

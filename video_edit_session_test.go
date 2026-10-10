@@ -184,6 +184,46 @@ func TestVideoEditSourceReleaseIsFileScoped(t *testing.T) {
 	}
 }
 
+// TestVideoTrimSubmitGuards covers the trim kind's submit-side contract with
+// the fake ffmpeg harness: exactly one payload, the stale-source guard, and a
+// queued trim that cancels like a reframe render.
+func TestVideoTrimSubmitGuards(t *testing.T) {
+	app, config, parent, artifact, info, params := videoSessionTestApp(t, "cancel")
+	trim := func(start, end float64, sourceWidth, sourceHeight int, duration float64) *VideoTrimParams {
+		return &VideoTrimParams{
+			Version: 1,
+			Source:  VideoReframeSource{Width: sourceWidth, Height: sourceHeight, DurationSeconds: duration},
+			Segments: []VideoTrimSegment{
+				{StartSeconds: start, EndSeconds: end},
+			},
+		}
+	}
+	if _, err := app.SubmitVideoEdit(VideoEditSubmitRequest{ParentConversationID: parent, SourceArtifactID: artifact, Reframe: &params, Trim: trim(0, 1, info.Width, info.Height, info.DurationSeconds)}); err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("accepted both payloads: %v", err)
+	}
+	stale := trim(0, 1, info.Width+2, info.Height, info.DurationSeconds)
+	if _, err := app.SubmitVideoEdit(VideoEditSubmitRequest{ParentConversationID: parent, SourceArtifactID: artifact, SourceDigest: info.SourceDigest, Trim: stale}); err == nil || !strings.Contains(err.Error(), "trim targets") {
+		t.Fatalf("accepted stale trim source: %v", err)
+	}
+	if _, err := app.SubmitVideoEdit(VideoEditSubmitRequest{ParentConversationID: parent, SourceArtifactID: artifact, SourceDigest: info.SourceDigest, Trim: trim(0, 9, info.Width, info.Height, info.DurationSeconds)}); err == nil {
+		t.Fatal("accepted out-of-range trim segment")
+	}
+	state, err := app.SubmitVideoEdit(VideoEditSubmitRequest{ParentConversationID: parent, SourceArtifactID: artifact, SourceDigest: info.SourceDigest, Trim: trim(0.5, 1.5, info.Width, info.Height, info.DurationSeconds)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Operation.Kind != editOperationKindTrim || state.Operation.Trim == nil || state.Operation.Reframe != nil || state.Operation.Backend != "ffmpeg" {
+		t.Fatalf("incorrect trim operation attribution: %+v", state.Operation)
+	}
+	if err := app.CancelVideoEdit(state.SessionConversationID, state.Operation.ID); err != nil {
+		t.Fatal(err)
+	}
+	op := waitForEditTerminal(t, config.Storage, state.SessionConversationID, state.Operation.ID)
+	if op.Status != editOperationStatusCancelled {
+		t.Fatalf("trim render status %s: %s", op.Status, op.Error)
+	}
+}
+
 func TestVideoEditProgressRunnerCancellation(t *testing.T) {
 	app, config, _, _, _, _ := videoSessionTestApp(t, "cancel")
 	_ = app
