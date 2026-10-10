@@ -2507,6 +2507,24 @@ button:disabled {
   gap: 8px;
 }
 
+/* The audio cards' labeled action row (the transcript card's idiom — audio
+   has no media corner to float pills over, WebKit's control bar owns it).
+   The buttons ride the global button chrome with a compact height; the row
+   reads as the card's footer, left-aligned with the player above it. */
+.chat-audio-actions {
+  display: flex;
+  justify-content: flex-start;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.chat-audio-actions button {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
 /* Inline media cards (.chat-image-card / .chat-video-card / .chat-audio-card,
    plus the user-audio list) float the maximized preview's download/edit pair
    over the asset's own viewport instead of a caption row of labeled buttons.

@@ -6178,16 +6178,14 @@ function App() {
                       {entry.role === 'user' && entry.audios?.length ? (
                         <div className="chat-user-audios">
                           {entry.audios.map((audio, index) => (
-                            <div key={`${entry.id}-audio-${index}`} className="chat-media-stage">
+                            <div key={`${entry.id}-audio-${index}`}>
                               <AudioPlayer src={audio} />
                               {/* The Save* bindings read artifact paths, not data:
                                   URLs, so a just-attached clip (the live transcript's
                                   inline form) hides download until the persisted
                                   artifact URL replaces it. */}
-                              <InlineMediaActions
-                                downloadTitle="Download audio"
+                              <AudioCardActions
                                 onDownload={audio.startsWith('/atelier-artifact/') ? () => saveGeneratedAudio(audio, index) : null}
-                                editTitle="Edit audio"
                                 editDisabled={editorOpening}
                                 onEdit={activeConversationID && audioArtifactIDFromURL(audio)
                                   ? () => void openAudioEditor(activeConversationID, audioArtifactIDFromURL(audio)!)
@@ -6241,18 +6239,14 @@ function App() {
                         <div className="chat-audio-results">
                           {entry.audios.map((audio, index) => (
                             <figure key={`${entry.id}-audio-${index}`} className="chat-audio-card">
-                              <div className="chat-media-stage">
-                                <AudioPlayer src={audio} />
-                                <InlineMediaActions
-                                  downloadTitle="Download audio"
-                                  onDownload={() => saveGeneratedAudio(audio, index)}
-                                  editTitle="Edit audio"
-                                  editDisabled={editorOpening}
-                                  onEdit={activeConversationID && audioArtifactIDFromURL(audio)
-                                    ? () => void openAudioEditor(activeConversationID, audioArtifactIDFromURL(audio)!)
-                                    : null}
-                                />
-                              </div>
+                              <AudioPlayer src={audio} />
+                              <AudioCardActions
+                                onDownload={() => saveGeneratedAudio(audio, index)}
+                                editDisabled={editorOpening}
+                                onEdit={activeConversationID && audioArtifactIDFromURL(audio)
+                                  ? () => void openAudioEditor(activeConversationID, audioArtifactIDFromURL(audio)!)
+                                  : null}
+                              />
                             </figure>
                           ))}
                         </div>
@@ -7183,6 +7177,35 @@ function InlineMediaActions({downloadTitle, onDownload, editTitle, onEdit, editD
             <path d="m7 10 5 5 5-5" />
             <path d="M5 20h14" />
           </svg>
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+// The audio cards' action row: the labeled pair the image/video cards float
+// as hover pills over their media's corner. An audio card's "viewport" is
+// WebKit's own control bar, which packs its time and volume controls into
+// exactly that corner, so audio renders an always-visible row under the
+// player instead — the transcript card's idiom. Each button renders only
+// when its action exists (a data: URL attachment has no persisted artifact
+// to download).
+function AudioCardActions({onDownload, onEdit, editDisabled}: {
+  onDownload: (() => void) | null;
+  onEdit?: (() => void) | null;
+  editDisabled?: boolean;
+}) {
+  if (!onDownload && !onEdit) return null;
+  return (
+    <div className="chat-audio-actions">
+      {onEdit ? (
+        <button type="button" disabled={editDisabled} onClick={onEdit}>
+          Edit audio
+        </button>
+      ) : null}
+      {onDownload ? (
+        <button type="button" onClick={onDownload}>
+          Download
         </button>
       ) : null}
     </div>
