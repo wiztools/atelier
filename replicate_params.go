@@ -20,10 +20,15 @@ import (
 // replicateImageSynonyms lists, per canonical param, the native input names
 // Replicate image models use. The edit models name their source frame "image"
 // (nano-banana, seedream) or "input_image" (flux kontext); both are listed and
-// the schema picks whichever the configured model declares.
+// the schema picks whichever the configured model declares. The plural names
+// close the same gap the fal video table's reference_*_urls entries do: the
+// cached seedream-4.5 spec declares its (array) edit input "image_input" and
+// wan-2.7-image-pro "images" — without those names findNative matched nothing
+// and the resolver dropped the attachment with a "no source-image input"
+// notice while fal 422s demanding its reference.
 var replicateImageSynonyms = map[string][]string{
 	"prompt":            {"prompt"},
-	"sourceImage":       {"image", "input_image", "image_url", "image_urls"},
+	"sourceImage":       {"image", "input_image", "image_url", "image_urls", "images", "image_input"},
 	"aspectRatio":       {"aspect_ratio"},
 	"resolution":        {"resolution"},
 	"numImages":         {"num_outputs"},
@@ -45,7 +50,7 @@ var replicateVideoSynonyms = map[string][]string{
 	"resolution":     {"resolution"},
 	"fps":            {"fps", "frame_rate"},
 	"negativePrompt": {"negative_prompt"},
-	"sourceImage":    {"image", "first_frame", "first_frame_image", "start_image", "image_url", "image_urls"},
+	"sourceImage":    {"image", "first_frame", "first_frame_image", "start_image", "image_url", "image_urls", "images"},
 	"sourceVideo":    {"video", "input_video", "video_url"},
 	"generateAudio":  {"generate_audio", "generate_audio_enabled"},
 }
@@ -151,14 +156,29 @@ func resolveReplicateImageInput(schema *ModelInputSchema, req ImageGenerateReque
 				"The selected model %q has no source-image input; the attached image(s) were ignored.",
 				req.Model))
 		} else {
-			// Same guardrails as the fal image path: multiple images into a
-			// scalar-image model is a hard error (silently dropping the rest
-			// would hide a capability mismatch), and a declared cap rejects
-			// requests above it.
+			// Same guardrails as the fal image path (resolveVideoBody): multiple
+			// images into a scalar-image model is a hard error (silently
+			// dropping the rest would hide a capability mismatch) — unless the
+			// schema also declares an array-shaped reference field further down
+			// the synonym list, in which case the sources rebind there (the
+			// fal-side fix for minimax/h3-max's scalar start-frame beside its
+			// references array). A declared cap rejects requests above it.
 			if prop.Kind != schemaArray && len(sourceImages) > 1 {
-				return nil, notices, fmt.Errorf(
-					"model %q accepts a single image; %d were attached. Use a multi-image edit model (one whose input declares an image array).",
-					req.Model, len(sourceImages))
+				rebound := false
+				if _, pinned := ov.lookup("replicate-image", req.Model, "sourceImage"); !pinned {
+					if altPath, altProp, found := findArrayKindNative(schema, "replicate-image", "sourceImage", path); found {
+						path, prop = altPath, altProp
+						rebound = true
+						notices = append(notices, fmt.Sprintf(
+							"The selected model %q takes multiple references on %q; the attached images were mapped there.",
+							req.Model, path))
+					}
+				}
+				if !rebound {
+					return nil, notices, fmt.Errorf(
+						"model %q accepts a single image; %d were attached. Use a multi-image edit model (one whose input declares an image array).",
+						req.Model, len(sourceImages))
+				}
 			}
 			if prop.Kind == schemaArray && prop.MaxItems > 0 && len(sourceImages) > prop.MaxItems {
 				return nil, notices, fmt.Errorf(
@@ -358,10 +378,24 @@ func resolveReplicateVideoInput(schema *ModelInputSchema, req VideoGenerateReque
 				"the selected model %q has no source-image input to animate from; pick a different image-to-video model in Settings → Models",
 				req.Model)
 		} else {
+			// The scalar guardrail plus its array-rebind escape (the fal
+			// resolveVideoBody twin, and the replicate image-edit site above).
 			if prop.Kind != schemaArray && len(sourceImages) > 1 {
-				return nil, notices, fmt.Errorf(
-					"model %q accepts a single image; %d were attached. Use a multi-image reference model.",
-					req.Model, len(sourceImages))
+				rebound := false
+				if _, pinned := ov.lookup("replicate-video", req.Model, "sourceImage"); !pinned {
+					if altPath, altProp, found := findArrayKindNative(schema, "replicate-video", "sourceImage", path); found {
+						path, prop = altPath, altProp
+						rebound = true
+						notices = append(notices, fmt.Sprintf(
+							"The selected model %q takes multiple references on %q; the attached images were mapped there.",
+							req.Model, path))
+					}
+				}
+				if !rebound {
+					return nil, notices, fmt.Errorf(
+						"model %q accepts a single image; %d were attached. Use a multi-image reference model.",
+						req.Model, len(sourceImages))
+				}
 			}
 			if prop.Kind == schemaArray && prop.MaxItems > 0 && len(sourceImages) > prop.MaxItems {
 				return nil, notices, fmt.Errorf(
@@ -649,10 +683,27 @@ func resolveReplicateVideoRestyleInput(schema *ModelInputSchema, req VideoRestyl
 	}
 	if len(sourceImages) > 0 {
 		if path, prop, ok := findNative(schema, ov, "replicate-video-restyle", req.Model, "sourceImage"); ok {
+			// The scalar guardrail plus its array-rebind escape (the fal
+			// resolveVideoBody twin). This table already lists the plural names
+			// first, so a binding only lands on the scalar "image" when the
+			// schema declares no array at all — the rebind is the belt behind
+			// that ordering.
 			if prop.Kind != schemaArray && len(sourceImages) > 1 {
-				return nil, notices, fmt.Errorf(
-					"model %q accepts a single reference image; %d were attached. Attach fewer references or switch to a model that declares an image array.",
-					req.Model, len(sourceImages))
+				rebound := false
+				if _, pinned := ov.lookup("replicate-video-restyle", req.Model, "sourceImage"); !pinned {
+					if altPath, altProp, found := findArrayKindNative(schema, "replicate-video-restyle", "sourceImage", path); found {
+						path, prop = altPath, altProp
+						rebound = true
+						notices = append(notices, fmt.Sprintf(
+							"The selected model %q takes multiple references on %q; the attached images were mapped there.",
+							req.Model, path))
+					}
+				}
+				if !rebound {
+					return nil, notices, fmt.Errorf(
+						"model %q accepts a single reference image; %d were attached. Attach fewer references or switch to a model that declares an image array.",
+						req.Model, len(sourceImages))
+				}
 			}
 			if prop.Kind == schemaArray && prop.MaxItems > 0 && len(sourceImages) > prop.MaxItems {
 				return nil, notices, fmt.Errorf(

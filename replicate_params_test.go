@@ -133,6 +133,135 @@ func TestResolveReplicateImageInputArrayImages(t *testing.T) {
 	}
 }
 
+// TestResolveReplicateSourceRebindsToArrayField pins the rebind behind the
+// scalar guardrails across the three replicate resolvers that can hold
+// multiple source images — the replicate twin of fal's
+// TestResolveVideoBodyMultiSourceRebindsToArrayField. findNative binds the
+// first synonym present regardless of kind, so a model declaring BOTH a
+// scalar frame input and a references array must send multi-image turns to
+// the array instead of dying on "accepts a single image" (the fal-side
+// minimax/h3-max lesson, conv_55b72dfecbd1eb7f43a68633). The guardrail stays
+// honest: a scalar-only schema still refuses, and the rebound array's
+// maxItems still caps. The extend-side video backstop keeps its plain
+// refusal — the sourceVideo table lists no array names, so there is nothing
+// to rebind onto.
+func TestResolveReplicateSourceRebindsToArrayField(t *testing.T) {
+	twoImages := []string{"data:image/png;base64," + tinyPNG, "data:image/png;base64," + tinyPNG}
+	for _, tc := range []struct {
+		name       string
+		doc        string
+		req        any
+		wantField  string
+		wantLen    int
+		wantErr    string // empty = expect success
+		wantNotice string // empty = expect no notices
+	}{
+		{
+			name: "image edit: two references rebind onto the array beside a scalar canvas",
+			doc: `{"components":{"schemas":{"Input":{"type":"object","properties":{
+				"prompt":{"type":"string"},
+				"image":{"type":"string"},
+				"image_input":{"type":"array","items":{"type":"string"},"maxItems":3}
+			}}}}}`,
+			req:        ImageGenerateRequest{Model: "owner/both-shapes", Prompt: "x", Images: twoImages},
+			wantField:  "image_input",
+			wantLen:    2,
+			wantNotice: "the attached images were mapped there",
+		},
+		{
+			name: "image edit: seedream-4.5's array-only image_input binds directly",
+			doc: `{"components":{"schemas":{"Input":{"type":"object","properties":{
+				"prompt":{"type":"string"},
+				"image_input":{"type":"array","items":{"type":"string"}}
+			}}}}}`,
+			req:       ImageGenerateRequest{Model: "bytedance/seedream-4.5", Prompt: "x", Images: twoImages},
+			wantField: "image_input",
+			wantLen:   2,
+		},
+		{
+			name: "image edit: rebind respects the array's maxItems cap",
+			doc: `{"components":{"schemas":{"Input":{"type":"object","properties":{
+				"prompt":{"type":"string"},
+				"image":{"type":"string"},
+				"image_input":{"type":"array","items":{"type":"string"},"maxItems":1}
+			}}}}}`,
+			req:     ImageGenerateRequest{Model: "owner/capped", Prompt: "x", Images: twoImages},
+			wantErr: "accepts at most 1 image(s)",
+		},
+		{
+			name: "video: two references rebind onto image_urls beside the scalar first frame",
+			doc: `{"components":{"schemas":{"Input":{"type":"object","properties":{
+				"prompt":{"type":"string"},
+				"image":{"type":"string"},
+				"image_urls":{"type":"array","items":{"type":"string"}}
+			}}}}}`,
+			req:        VideoGenerateRequest{Model: "owner/both-shapes", Prompt: "x", Images: twoImages},
+			wantField:  "image_urls",
+			wantLen:    2,
+			wantNotice: "the attached images were mapped there",
+		},
+		{
+			name: "restyle: the array input binds directly (plural names listed first)",
+			doc: `{"components":{"schemas":{"Input":{"type":"object","properties":{
+				"prompt":{"type":"string"},
+				"video":{"type":"string"},
+				"images":{"type":"array","items":{"type":"string"}},
+				"image":{"type":"string"}
+			}}}}}`,
+			req:       VideoRestyleRequest{Model: "owner/both-shapes", Video: "data:video/mp4;base64,QUFB", Prompt: "x", Images: twoImages},
+			wantField: "images",
+			wantLen:   2,
+		},
+		{
+			name: "restyle: scalar-only schema still refuses",
+			doc: `{"components":{"schemas":{"Input":{"type":"object","properties":{
+				"prompt":{"type":"string"},
+				"video":{"type":"string"},
+				"image":{"type":"string"}
+			}}}}}`,
+			req:     VideoRestyleRequest{Model: "owner/scalar-only", Video: "data:video/mp4;base64,QUFB", Prompt: "x", Images: twoImages},
+			wantErr: "accepts a single reference image",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			schema := parseReplicateFixtureSchema(t, tc.doc)
+			var input map[string]any
+			var notices []string
+			var err error
+			switch req := tc.req.(type) {
+			case ImageGenerateRequest:
+				input, notices, err = resolveReplicateImageInput(schema, req)
+			case VideoGenerateRequest:
+				input, notices, err = resolveReplicateVideoInput(schema, req)
+			case VideoRestyleRequest:
+				input, notices, err = resolveReplicateVideoRestyleInput(schema, req)
+			default:
+				t.Fatalf("unhandled request type %T", tc.req)
+			}
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want it to contain %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolve error: %v", err)
+			}
+			got, ok := input[tc.wantField].([]any)
+			if !ok || len(got) != tc.wantLen {
+				t.Fatalf("%s = %v (%T); want %d sources on the array field", tc.wantField, input[tc.wantField], input[tc.wantField], tc.wantLen)
+			}
+			if tc.wantNotice == "" {
+				if len(notices) != 0 {
+					t.Fatalf("expected no notices, got %v", notices)
+				}
+			} else if len(notices) != 1 || !strings.Contains(notices[0], tc.wantNotice) {
+				t.Fatalf("notices = %v, want exactly one naming the rebind (%q)", notices, tc.wantNotice)
+			}
+		})
+	}
+}
+
 func TestResolveReplicateImageInputNilSchemaFallback(t *testing.T) {
 	input, notices, err := resolveReplicateImageInput(nil, ImageGenerateRequest{
 		Model:  "owner/model",

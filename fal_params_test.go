@@ -1087,7 +1087,12 @@ func TestResolveVideoBodyVeoTextToVideo(t *testing.T) {
 // neither field, the resolver dropped the attached image with a "no source-image
 // input" notice, and fal rejected the bare {prompt, duration} body with 422 "At
 // least one reference image, video, or audio must be provided"
-// (conv_b1447b28bb48021702444ca4).
+// (conv_b1447b28bb48021702444ca4). The fixture was re-captured from fal's live
+// endpoint on 2026-10-13: h3-max meanwhile gained a scalar start-frame
+// image_url beside the reference arrays, so a single image now binds that
+// field (synonym order) while the video still lands on the array — and a
+// MULTI-image turn rebinds onto reference_image_urls instead of tripping the
+// scalar guardrail (TestResolveVideoBodyMultiSourceRebindsToArrayField).
 func TestResolveVideoBodyReferenceURLsNaming(t *testing.T) {
 	schema := loadSchema(t, "minimax-h3-max-reference-to-video")
 	for _, tc := range []struct {
@@ -1096,12 +1101,6 @@ func TestResolveVideoBodyReferenceURLsNaming(t *testing.T) {
 		field string
 		want  []string
 	}{
-		{
-			name:  "attached image lands on reference_image_urls",
-			req:   VideoGenerateRequest{Model: "minimax/h3-max/reference-to-video", Prompt: "gentle breeze", Images: []string{"data:image/png;base64,AAA"}},
-			field: "reference_image_urls",
-			want:  []string{"data:image/png;base64,AAA"},
-		},
 		{
 			name:  "attached video lands on reference_video_urls",
 			req:   VideoGenerateRequest{Model: "minimax/h3-max/reference-to-video", Prompt: "gentle breeze", Videos: []string{"data:video/mp4;base64,BBB"}},
@@ -1145,6 +1144,28 @@ func TestResolveVideoBodyReferenceURLsNaming(t *testing.T) {
 			}
 		})
 	}
+	t.Run("single image lands on the start-frame field", func(t *testing.T) {
+		// The live schema's scalar image_url ("first frame") is the first
+		// sourceImage synonym, so a lone attachment binds it — a rebind would
+		// only be right for multi-image turns.
+		body, notices, err := resolveVideoBody(schema,
+			VideoGenerateRequest{Model: "minimax/h3-max/reference-to-video", Prompt: "gentle breeze", Images: []string{"data:image/png;base64,AAA"}},
+			builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("resolveVideoBody error: %v", err)
+		}
+		if body["image_url"] != "data:image/png;base64,AAA" {
+			t.Fatalf("image_url = %v; want the attachment on the start-frame field", body["image_url"])
+		}
+		for _, stray := range []string{"image_urls", "reference_image_urls"} {
+			if _, present := body[stray]; present {
+				t.Fatalf("single image must not leak onto %q; got %v", stray, body[stray])
+			}
+		}
+		if len(notices) != 0 {
+			t.Fatalf("a clean single-image turn must stay quiet, got %v", notices)
+		}
+	})
 }
 
 // TestResolveVideoBodyUnmappedSourceRefusals pins the hard errors for a source
@@ -1153,6 +1174,144 @@ func TestResolveVideoBodyReferenceURLsNaming(t *testing.T) {
 // shaped. Before these refusals the sides dropped with a notice and the call
 // proceeded — the fal sibling of the wan 2.7 incident
 // (conv_d5f5177320da74a0ce3caebb).
+// TestResolveVideoBodyMultiSourceRebindsToArrayField pins the rebind behind
+// the scalar guardrail. minimax/h3-max/reference-to-video's live schema (fal
+// widened it after conv_b1447b28's fixture was captured) declares BOTH a
+// scalar start-frame image_url and the reference_image_urls array (maxItems
+// 9); findNative binds the scalar first, so a three-reference turn — the exact
+// shape conv_55b72dfecbd1eb7f43a68633 refused with "accepts a single image" —
+// must land on the array. The guardrail itself stays honest: a genuinely
+// scalar-only schema still refuses, an explicit fal-overrides.json pin is
+// respected, and the rebound array's maxItems still caps. The video side gets
+// the same rebind against a synthetic both-shapes schema.
+func TestResolveVideoBodyMultiSourceRebindsToArrayField(t *testing.T) {
+	live := loadSchema(t, "minimax-h3-max-reference-to-video")
+	threeImages := []string{"data:image/png;base64,A", "data:image/png;base64,B", "data:image/png;base64,C"}
+	// Scalars beside the arrays, so the synonym walk has a real choice.
+	bothVideoShapes := func() *ModelInputSchema {
+		return &ModelInputSchema{
+			Properties: map[string]SchemaProperty{
+				"prompt":               {Name: "prompt", Kind: schemaScalar},
+				"video_url":            {Name: "video_url", Kind: schemaScalar},
+				"reference_video_urls": {Name: "reference_video_urls", Kind: schemaArray, MaxItems: 3},
+			},
+			order: []string{"prompt", "video_url", "reference_video_urls"},
+		}
+	}
+	scalarVideoOnly := func() *ModelInputSchema {
+		return &ModelInputSchema{
+			Properties: map[string]SchemaProperty{
+				"prompt":    {Name: "prompt", Kind: schemaScalar},
+				"video_url": {Name: "video_url", Kind: schemaScalar},
+			},
+			order: []string{"prompt", "video_url"},
+		}
+	}
+	cappedImageArray := func() *ModelInputSchema {
+		return &ModelInputSchema{
+			Properties: map[string]SchemaProperty{
+				"prompt":               {Name: "prompt", Kind: schemaScalar},
+				"image_url":            {Name: "image_url", Kind: schemaScalar},
+				"reference_image_urls": {Name: "reference_image_urls", Kind: schemaArray, MaxItems: 2},
+			},
+			order: []string{"prompt", "image_url", "reference_image_urls"},
+		}
+	}
+	pinnedOverride := Overrides{byCategory: map[string]map[string]map[string]overrideEntry{
+		"video": {"minimax/h3-max/reference-to-video": {
+			"sourceImage": {Path: "image_url", Kind: "scalar"},
+		}},
+	}}
+	for _, tc := range []struct {
+		name       string
+		schema     func() *ModelInputSchema
+		overrides  Overrides
+		req        VideoGenerateRequest
+		wantErr    string // empty = expect success
+		wantField  string // body key the sources must land on (success cases)
+		wantLen    int
+		wantNotice string // empty = expect no notices
+	}{
+		{
+			name:       "three references rebind onto reference_image_urls",
+			schema:     func() *ModelInputSchema { return live },
+			req:        VideoGenerateRequest{Model: "minimax/h3-max/reference-to-video", Prompt: "one shot", Images: threeImages},
+			wantField:  "reference_image_urls",
+			wantLen:    3,
+			wantNotice: "the attached images were mapped there",
+		},
+		{
+			name: "scalar-only schema still refuses",
+			schema: func() *ModelInputSchema {
+				return &ModelInputSchema{
+					Properties: map[string]SchemaProperty{
+						"prompt":    {Name: "prompt", Kind: schemaScalar},
+						"image_url": {Name: "image_url", Kind: schemaScalar},
+					},
+					order: []string{"prompt", "image_url"},
+				}
+			},
+			req:     VideoGenerateRequest{Model: "acme/scalar-video", Prompt: "one shot", Images: threeImages},
+			wantErr: "accepts a single image",
+		},
+		{
+			name:      "explicit override pin keeps the refusal",
+			schema:    func() *ModelInputSchema { return live },
+			overrides: pinnedOverride,
+			req:       VideoGenerateRequest{Model: "minimax/h3-max/reference-to-video", Prompt: "one shot", Images: threeImages},
+			wantErr:   "accepts a single image",
+		},
+		{
+			name:    "rebound array still enforces maxItems",
+			schema:  cappedImageArray,
+			req:     VideoGenerateRequest{Model: "acme/capped-video", Prompt: "one shot", Images: threeImages},
+			wantErr: "accepts at most 2 image(s)",
+		},
+		{
+			name:       "two videos rebind onto reference_video_urls",
+			schema:     bothVideoShapes,
+			req:        VideoGenerateRequest{Model: "acme/both-video-shapes", Prompt: "one shot", Videos: []string{"data:video/mp4;base64,X", "data:video/mp4;base64,Y"}},
+			wantField:  "reference_video_urls",
+			wantLen:    2,
+			wantNotice: "the attached videos were mapped there",
+		},
+		{
+			name:    "scalar-only video schema still refuses",
+			schema:  scalarVideoOnly,
+			req:     VideoGenerateRequest{Model: "acme/scalar-video", Prompt: "one shot", Videos: []string{"data:video/mp4;base64,X", "data:video/mp4;base64,Y"}},
+			wantErr: "accepts a single video",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			overrides := tc.overrides
+			if overrides.byCategory == nil {
+				overrides = builtinFalOverrides()
+			}
+			body, notices, err := resolveVideoBody(tc.schema(), tc.req, overrides)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want it to contain %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveVideoBody error: %v", err)
+			}
+			got, ok := body[tc.wantField].([]any)
+			if !ok || len(got) != tc.wantLen {
+				t.Fatalf("%s = %v (%T); want %d sources on the rebound array", tc.wantField, body[tc.wantField], body[tc.wantField], tc.wantLen)
+			}
+			if tc.wantNotice == "" {
+				if len(notices) != 0 {
+					t.Fatalf("expected no notices, got %v", notices)
+				}
+			} else if len(notices) != 1 || !strings.Contains(notices[0], tc.wantNotice) {
+				t.Fatalf("notices = %v, want exactly one naming the rebind (%q)", notices, tc.wantNotice)
+			}
+		})
+	}
+}
+
 func TestResolveVideoBodyUnmappedSourceRefusals(t *testing.T) {
 	_, _, err := resolveVideoBody(loadSchema(t, "veo3.1"),
 		VideoGenerateRequest{

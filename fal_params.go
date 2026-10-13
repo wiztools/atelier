@@ -1331,11 +1331,26 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 			// Guardrails mirroring the image side: multiple videos into a
 			// scalar-video model is a hard error (the model only accepts one
 			// clip; silently dropping the rest would hide a capability
-			// mismatch), and a declared maxItems cap rejects requests above it.
+			// mismatch), and a declared maxItems cap rejects requests above it —
+			// unless the schema also declares an array-shaped reference field
+			// further down the synonym list, in which case the sources rebind
+			// there instead of refusing (see the image twin below).
 			if prop.Kind != schemaArray && len(sourceVideos) > 1 {
-				return nil, notices, fmt.Errorf(
-					"model %q accepts a single video; %d were attached. Use a multi-video reference model (e.g. bytedance/seedance-2.5/reference-to-video).",
-					req.Model, len(sourceVideos))
+				rebound := false
+				if _, pinned := ov.lookup("video", req.Model, "sourceVideo"); !pinned {
+					if altPath, altProp, found := findArrayKindNative(schema, "video", "sourceVideo", path); found {
+						path, prop = altPath, altProp
+						rebound = true
+						notices = append(notices, fmt.Sprintf(
+							"The selected model %q takes multiple references on %q; the attached videos were mapped there.",
+							req.Model, path))
+					}
+				}
+				if !rebound {
+					return nil, notices, fmt.Errorf(
+						"model %q accepts a single video; %d were attached. Use a multi-video reference model (e.g. bytedance/seedance-2.5/reference-to-video).",
+						req.Model, len(sourceVideos))
+				}
 			}
 			if prop.Kind == schemaArray && prop.MaxItems > 0 && len(sourceVideos) > prop.MaxItems {
 				return nil, notices, fmt.Errorf(
@@ -1387,11 +1402,29 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 			// Guardrail: multiple images into a scalar-image model is a hard error.
 			// The model only accepts one frame; silently dropping the rest would
 			// hide a real capability mismatch. The error names the model so the
-			// user knows what to change.
+			// user knows what to change. One exception: a schema that ALSO
+			// declares an array-shaped reference field further down the synonym
+			// list (minimax/h3-max: scalar start-frame image_url beside
+			// reference_image_urls, maxItems 9) serves exactly this payload, so
+			// the sources rebind there instead of refusing. An explicit
+			// fal-overrides.json mapping is a deliberate pin — the refusal
+			// stands for it.
 			if prop.Kind != schemaArray && len(sourceImages) > 1 {
-				return nil, notices, fmt.Errorf(
-					"model %q accepts a single image; %d were attached. Use a multi-image model (e.g. bytedance/seedance-2.0/reference-to-video).",
-					req.Model, len(sourceImages))
+				rebound := false
+				if _, pinned := ov.lookup("video", req.Model, "sourceImage"); !pinned {
+					if altPath, altProp, found := findArrayKindNative(schema, "video", "sourceImage", path); found {
+						path, prop = altPath, altProp
+						rebound = true
+						notices = append(notices, fmt.Sprintf(
+							"The selected model %q takes multiple references on %q; the attached images were mapped there.",
+							req.Model, path))
+					}
+				}
+				if !rebound {
+					return nil, notices, fmt.Errorf(
+						"model %q accepts a single image; %d were attached. Use a multi-image model (e.g. bytedance/seedance-2.0/reference-to-video).",
+						req.Model, len(sourceImages))
+				}
 			}
 			// Guardrail: a model declaring maxItems rejects requests above the cap.
 			if prop.Kind == schemaArray && prop.MaxItems > 0 && len(sourceImages) > prop.MaxItems {
@@ -1978,6 +2011,34 @@ func findNative(schema *ModelInputSchema, ov Overrides, category, model, canon s
 			if sub, ok := obj.Nested[name]; ok {
 				return obj.Name + "." + name, sub, true
 			}
+		}
+	}
+	return "", SchemaProperty{}, false
+}
+
+// findArrayKindNative is the multi-source rebind walk behind the video
+// resolver's scalar guardrails. findNative returns the first synonym present
+// regardless of kind, so a model declaring BOTH a scalar start-frame input and
+// a references array — minimax/h3-max/reference-to-video ships image_url
+// ("first frame") beside reference_image_urls (maxItems 9) — binds the scalar,
+// and a multi-image turn its own schema serves was refused as "accepts a
+// single image" (conv_55b72dfecbd1eb7f43a68633; fal had widened the published
+// schema after the captured test fixture, so the suite kept passing on the
+// stale shape). This walk skips the already-bound path and accepts the first
+// remaining array-kind synonym, so the guardrail fires only when no
+// array-shaped input exists anywhere in the schema. The caller checks
+// ov.lookup first: an explicit fal-overrides.json mapping is a deliberate pin
+// and is never second-guessed.
+func findArrayKindNative(schema *ModelInputSchema, category, canon, skip string) (string, SchemaProperty, bool) {
+	if schema == nil {
+		return "", SchemaProperty{}, false
+	}
+	for _, name := range synonymsFor(category, canon) {
+		if name == skip {
+			continue
+		}
+		if prop, ok := schema.property(name); ok && prop.Kind == schemaArray {
+			return name, prop, true
 		}
 	}
 	return "", SchemaProperty{}, false
