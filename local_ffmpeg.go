@@ -306,6 +306,73 @@ func ffmpegScreenshotArgs(input, at, output string, displayWidth, displayHeight 
 	return append(args, "-frames:v", "1", "-q:v", "2", output)
 }
 
+// ffmpegLastFrameArgs grabs the clip's FINAL frame as JPEG: seek one second
+// before the container's end and let the reverse filter emit the tail's last
+// frame first, so -frames:v 1 stops on exactly it. The 1s window clears the
+// audio tail a plain timestamp always trips over (the container duration
+// probe_media reports includes it, so it sits past the last video frame);
+// a clip whose video ends more than a second before its container falls
+// through and keeps the original capture error. displayWidth/displayHeight
+// carry the anamorphic display size exactly like ffmpegScreenshotArgs — the
+// scale runs before reverse, which also shrinks the decoded tail reverse
+// buffers.
+func ffmpegLastFrameArgs(input, output string, displayWidth, displayHeight int) []string {
+	args := []string{"-sseof", "-1", "-i", input}
+	vf := "reverse"
+	if displayWidth > 0 && displayHeight > 0 {
+		vf = fmt.Sprintf("scale=%d:%d,setsar=1,reverse", displayWidth, displayHeight)
+	}
+	args = append(args, "-vf", vf)
+	return append(args, "-frames:v", "1", "-q:v", "2", output)
+}
+
+// isEndTimestampToken reports whether a screenshot/contact-sheet `at` token is
+// the explicit "the clip's final frame" form.
+func isEndTimestampToken(token string) bool {
+	return strings.EqualFold(strings.TrimSpace(token), "end")
+}
+
+// captureFrameAtTimestamp grabs one frame for a screenshot_video /
+// contact_sheet_video timestamp and returns its JPEG bytes. The plain seek
+// runs first; when it produces no frame — the timestamp is at or past the
+// clip's end, which is what the rounded container duration a user (or the
+// planner, off probe_media's report) quotes always is — an end-relative grab
+// supplies the clip's final frame. The second return reports that fallback;
+// on total failure the ORIGINAL seek error comes back, because it names the
+// timestamp behavior while the fallback's error would only name the window.
+func captureFrameAtTimestamp(ctx context.Context, config AppConfig, input, timestamp, framePath string, displayWidth, displayHeight int) ([]byte, bool, error) {
+	if isEndTimestampToken(timestamp) {
+		data, err := runFrameCapture(ctx, config, ffmpegLastFrameArgs(input, framePath, displayWidth, displayHeight), framePath)
+		return data, err == nil, err
+	}
+	data, err := runFrameCapture(ctx, config, ffmpegScreenshotArgs(input, timestamp, framePath, displayWidth, displayHeight), framePath)
+	if err == nil {
+		return data, false, nil
+	}
+	retryData, retryErr := runFrameCapture(ctx, config, ffmpegLastFrameArgs(input, framePath, displayWidth, displayHeight), framePath)
+	if retryErr != nil {
+		return nil, false, err
+	}
+	return retryData, true, nil
+}
+
+// runFrameCapture runs one ffmpeg frame capture and reads the JPEG back — the
+// shared body of the screenshot/contact-sheet capture loops: a nil error
+// always carries the frame bytes.
+func runFrameCapture(ctx context.Context, config AppConfig, args []string, framePath string) ([]byte, error) {
+	if err := runLocalFFmpeg(ctx, config, args); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(framePath)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, errors.New("the frame file was empty")
+	}
+	return data, nil
+}
+
 // ffmpegContactSheetArgs tiles a consecutively numbered JPEG sequence into one
 // grid image. -framerate 1 feeds the tile filter one image per timeline
 // second and -frames:v 1 stops after the single composed frame. Every cell is
@@ -1115,7 +1182,7 @@ func screenshotVideoToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "screenshot_video",
 		Title:       "Screenshot video",
-		Description: "Use this when the user asks to grab a frame, take a screenshot, still, or thumbnail of an attached video. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). at names the frame's timestamp — seconds (\"42\", \"12.5\") or clock (\"00:01:30\") — and may be a comma-separated list to capture several specific frames in ONE call (\"0,9.08,18.17\"). count is the equal-interval batch form: omit at and set count to N to capture N frames spread evenly across the whole clip — the tool reads the duration itself, so prefer it for \"N screenshots/screenshots at equal intervals\" requests and plan it as a single call with no probe_media round. When both are set, at wins. Frames are captured at the clip's display size — a clip that stores frames squeezed and stretches them on playback (non-square pixels) is resampled so its frames come out correctly shaped. Each captured JPEG frame is attached to the assistant reply and becomes the conversation's newest image.",
+		Description: "Use this when the user asks to grab a frame, take a screenshot, still, or thumbnail of an attached video. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). at names the frame's timestamp — seconds (\"42\", \"12.5\") or clock (\"00:01:30\") — or \"end\" for the clip's final frame (the right form for a \"last frame\" screenshot ask; the count form can't express it), and may be a comma-separated list to capture several specific frames in ONE call (\"0,9.08,18.17\"). A timestamp at or past the clip's end — including the rounded duration probe_media reports, which includes the audio tail — captures the clip's final frame instead of failing, with a notice. count is the equal-interval batch form: omit at and set count to N to capture N frames spread evenly across the whole clip — the tool reads the duration itself, so prefer it for \"N screenshots/screenshots at equal intervals\" requests and plan it as a single call with no probe_media round. When both are set, at wins. Frames are captured at the clip's display size — a clip that stores frames squeezed and stretches them on playback (non-square pixels) is resampled so its frames come out correctly shaped. Each captured JPEG frame is attached to the assistant reply and becomes the conversation's newest image.",
 		Example:     `{"name":"screenshot_video","at":"4.5"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: screenshotVideoParamSchema(),
@@ -1138,8 +1205,10 @@ func screenshotVideoToolDefinition() HarnessToolDefinition {
 				return []string{fmt.Sprintf("%s.at lists %d timestamps; screenshot_video captures at most %d per call", prefix, len(tokens), screenshotTimestampsCap)}
 			}
 			for _, token := range tokens {
-				if _, ok := parseMediaTimestamp(token); !ok {
-					return []string{prefix + ".at must be a timestamp in seconds (\"42\") or clock (\"00:01:30\") for screenshot_video, or a comma-separated list of them"}
+				if !isEndTimestampToken(token) {
+					if _, ok := parseMediaTimestamp(token); !ok {
+						return []string{prefix + `.at must be a timestamp in seconds ("42") or clock ("00:01:30") for screenshot_video, or "end" for the clip's final frame, or a comma-separated list of them`}
+					}
 				}
 			}
 			return nil
@@ -1181,22 +1250,20 @@ func screenshotVideoToolDefinition() HarnessToolDefinition {
 			correction, aspectCorrected := screenshotAspectCorrection(ctx, tools.Config, input, source)
 			images := make([]string, 0, len(timestamps))
 			var missed []string
+			var endSubstituted []string
 			for i, timestamp := range timestamps {
 				framePath := filepath.Join(staging, fmt.Sprintf("frame_%02d.jpg", i+1))
-				captureErr := runLocalFFmpeg(ctx, tools.Config, ffmpegScreenshotArgs(input, timestamp, framePath, correction.DisplayWidth, correction.DisplayHeight))
+				data, finalFrame, captureErr := captureFrameAtTimestamp(ctx, tools.Config, input, timestamp, framePath, correction.DisplayWidth, correction.DisplayHeight)
 				if captureErr == nil {
-					var data []byte
-					if data, captureErr = os.ReadFile(framePath); captureErr == nil && len(data) == 0 {
-						captureErr = errors.New("the frame file was empty")
-					}
-					if captureErr == nil {
-						images = append(images, "data:image/jpeg;base64,"+base64.StdEncoding.EncodeToString(data))
+					images = append(images, "data:image/jpeg;base64,"+base64.StdEncoding.EncodeToString(data))
+					if finalFrame && !isEndTimestampToken(timestamp) {
+						endSubstituted = append(endSubstituted, timestamp)
 					}
 				}
 				if captureErr != nil {
 					// A single-frame call keeps the historical hard error; in a
-					// batch, one bad timestamp (past the clip's end, say)
-					// must not discard the frames that did capture.
+					// batch, one bad timestamp (the final-frame fallback already
+					// tried) must not discard the frames that did capture.
 					if len(timestamps) == 1 {
 						return nil, "screenshot failed", fmt.Errorf("ffmpeg produced no frame at %s: %v", timestamp, captureErr)
 					}
@@ -1208,6 +1275,10 @@ func screenshotVideoToolDefinition() HarnessToolDefinition {
 			}
 			prompt := "frame at " + timestamps[0]
 			summary := fmt.Sprintf("captured the frame at %s from the attached video with ffmpeg", timestamps[0])
+			if isEndTimestampToken(timestamps[0]) {
+				prompt = "the clip's final frame"
+				summary = "captured the clip's final frame from the attached video with ffmpeg"
+			}
 			if len(timestamps) > 1 {
 				prompt = fmt.Sprintf("%d frames at %s", len(timestamps), screenshotTimestampsPhrase(timestamps))
 				summary = fmt.Sprintf("captured %d of %d frames from the attached video with ffmpeg", len(images), len(timestamps))
@@ -1218,6 +1289,9 @@ func screenshotVideoToolDefinition() HarnessToolDefinition {
 			var notices []string
 			if aspectCorrected {
 				notices = append(notices, aspectCorrectionNotice(correction))
+			}
+			for _, timestamp := range endSubstituted {
+				notices = append(notices, fmt.Sprintf("no frame exists at %s — the timestamp is at or past the end of the clip — so the clip's final frame was captured instead", timestamp))
 			}
 			for _, timestamp := range missed {
 				notices = append(notices, fmt.Sprintf("no frame was captured at %s — the timestamp is likely past the end of the clip", timestamp))
@@ -1246,7 +1320,7 @@ func contactSheetVideoToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "contact_sheet_video",
 		Title:       "Contact sheet",
-		Description: `Use this when the user asks for a contact sheet, montage, or tiled grid image of an attached video's frames — one JPEG showing N frames side by side, e.g. a storyboard-style overview to reference while designing poster art. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). count sets how many frames (1–16, the default 8); at names explicit timestamps instead — seconds ("42", "12.5") or clock ("00:01:30"), comma-separated for several ("0,9.08,18.17") — captured in that order; at wins when both are set. columns sets the grid width (frames per row); omit it for a near-square grid. Equal-interval sampling starts 10% into the clip, where AI-generated clips often open on a black frame. The sheet is attached to the reply and becomes the conversation's newest image. For separate full-size frames use screenshot_video instead.`,
+		Description: `Use this when the user asks for a contact sheet, montage, or tiled grid image of an attached video's frames — one JPEG showing N frames side by side, e.g. a storyboard-style overview to reference while designing poster art. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). count sets how many frames (1–16, the default 8); at names explicit timestamps instead — seconds ("42", "12.5") or clock ("00:01:30") or "end" for the clip's final frame, comma-separated for several ("0,9.08,18.17") — captured in that order; at wins when both are set. A timestamp at or past the clip's end captures the clip's final frame instead of failing, with a notice. columns sets the grid width (frames per row); omit it for a near-square grid. Equal-interval sampling starts 10% into the clip, where AI-generated clips often open on a black frame. The sheet is attached to the reply and becomes the conversation's newest image. For separate full-size frames use screenshot_video instead.`,
 		Example:     `{"name":"contact_sheet_video","count":8,"columns":3}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: contactSheetVideoParamSchema(),
@@ -1260,8 +1334,10 @@ func contactSheetVideoToolDefinition() HarnessToolDefinition {
 					return []string{fmt.Sprintf("%s.at lists %d timestamps; contact_sheet_video captures at most %d per call", prefix, len(tokens), screenshotTimestampsCap)}
 				}
 				for _, token := range tokens {
-					if _, ok := parseMediaTimestamp(token); !ok {
-						return []string{prefix + ".at must be a timestamp in seconds (\"42\") or clock (\"00:01:30\") for contact_sheet_video, or a comma-separated list of them"}
+					if !isEndTimestampToken(token) {
+						if _, ok := parseMediaTimestamp(token); !ok {
+							return []string{prefix + `.at must be a timestamp in seconds ("42") or clock ("00:01:30") for contact_sheet_video, or "end" for the clip's final frame, or a comma-separated list of them; omit at to capture count frames at equal intervals`}
+						}
 					}
 				}
 			} else if call.Count < 0 || call.Count > screenshotTimestampsCap {
@@ -1310,19 +1386,19 @@ func contactSheetVideoToolDefinition() HarnessToolDefinition {
 			correction, aspectCorrected := screenshotAspectCorrection(ctx, tools.Config, input, source)
 			var captured []string
 			var missed []string
+			var endSubstituted []string
 			for i, timestamp := range timestamps {
 				framePath := filepath.Join(staging, fmt.Sprintf("frame_%02d.jpg", i+1))
-				captureErr := runLocalFFmpeg(ctx, tools.Config, ffmpegScreenshotArgs(input, timestamp, framePath, correction.DisplayWidth, correction.DisplayHeight))
+				_, finalFrame, captureErr := captureFrameAtTimestamp(ctx, tools.Config, input, timestamp, framePath, correction.DisplayWidth, correction.DisplayHeight)
 				if captureErr == nil {
-					var data []byte
-					if data, captureErr = os.ReadFile(framePath); captureErr == nil && len(data) == 0 {
-						captureErr = errors.New("the frame file was empty")
+					if finalFrame && !isEndTimestampToken(timestamp) {
+						endSubstituted = append(endSubstituted, timestamp)
 					}
 				}
 				if captureErr != nil {
-					// One bad timestamp (past the clip's end, say) must not
-					// discard the frames that did capture — the grid is
-					// recomputed from the survivors below.
+					// One bad timestamp (the final-frame fallback already
+					// tried) must not discard the frames that did capture —
+					// the grid is recomputed from the survivors below.
 					missed = append(missed, timestamp)
 					continue
 				}
@@ -1355,6 +1431,9 @@ func contactSheetVideoToolDefinition() HarnessToolDefinition {
 			var notices []string
 			if aspectCorrected {
 				notices = append(notices, aspectCorrectionNotice(correction))
+			}
+			for _, timestamp := range endSubstituted {
+				notices = append(notices, fmt.Sprintf("no frame exists at %s — the timestamp is at or past the end of the clip — so the clip's final frame was captured instead", timestamp))
 			}
 			for _, timestamp := range missed {
 				notices = append(notices, fmt.Sprintf("no frame was captured at %s — the timestamp is likely past the end of the clip", timestamp))
@@ -2445,7 +2524,7 @@ func screenshotVideoParamSchema() map[string]any {
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
-			"at":    stringParam(`The timestamp of the frame to capture — seconds ("42", "12.5") or clock ("00:01:30"); "0" is the first frame. May be a comma-separated list to capture several specific frames in one call ("0,9.08,18.17"). Either at or count is required; at wins when both are set.`),
+			"at":    stringParam(`The timestamp of the frame to capture — seconds ("42", "12.5") or clock ("00:01:30"); "0" is the first frame and "end" is the clip's final frame. May be a comma-separated list to capture several specific frames in one call ("0,9.08,18.17"). Either at or count is required; at wins when both are set.`),
 			"count": intParam(fmt.Sprintf(`How many frames to capture at equal intervals across the whole clip (1–%d) — the tool reads the clip's duration itself, so no probe is needed. The batch form for "N screenshots at equal intervals"; omit at. Either at or count is required; at wins when both are set.`, screenshotTimestampsCap)),
 		},
 		"required": []string{},
@@ -2458,7 +2537,7 @@ func contactSheetVideoParamSchema() map[string]any {
 		"additionalProperties": false,
 		"properties": map[string]any{
 			"count":   intParam(fmt.Sprintf(`How many frames to tile (1–%d; omitted means the default %d) — captured at equal intervals across the whole clip, starting 10%% in so AI-generated clips' black opening frames are skipped. The tool reads the clip's duration itself, so no probe is needed. Omit when at is set.`, screenshotTimestampsCap, contactSheetDefaultCount)),
-			"at":      stringParam(`Optional — explicit frame timestamps instead of equal intervals, in seconds ("42", "12.5") or clock ("00:01:30"); comma-separate for several ("0,9.08,18.17"), captured in that order. Wins when both at and count are set.`),
+			"at":      stringParam(`Optional — explicit frame timestamps instead of equal intervals, in seconds ("42", "12.5") or clock ("00:01:30") or "end" for the clip's final frame; comma-separate for several ("0,9.08,18.17"), captured in that order. Wins when both at and count are set.`),
 			"columns": intParam(fmt.Sprintf(`Optional — grid width in frames per row (1–%d); rows derive from the frame count. Omit for a near-square grid.`, screenshotTimestampsCap)),
 		},
 		"required": []string{},

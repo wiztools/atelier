@@ -44,6 +44,54 @@ done
 printf '\377\330\377FAKE-MEDIA' > "$out"
 `
 
+// fakeFFmpegNoMidSeekScript fakes the past-the-end shape: the only plain seek
+// that decodes a frame is -ss 0 (a timestamp at/past the stream's end produces
+// zero frames) while the end-relative grab always succeeds — driving
+// screenshot_video's / contact_sheet_video's final-frame fallback without
+// faking it for live timestamps too. Args are recorded like fakeFFmpegScript.
+const fakeFFmpegNoMidSeekScript = `#!/bin/sh
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+printf '%s\n' "$@" >> "$dir/args.txt"
+prev=""
+out=""
+mode="seek"
+for a in "$@"; do
+  if [ "$prev" = "-sseof" ]; then mode="end"; fi
+  prev="$a"
+  out="$a"
+done
+if [ "$mode" = "end" ]; then
+  printf '\377\330\377FAKE-MEDIA' > "$out"
+  exit 0
+fi
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-ss" ] && [ "$a" = "0" ]; then
+    printf '\377\330\377FAKE-MEDIA' > "$out"
+    exit 0
+  fi
+  prev="$a"
+done
+echo "fake ffmpeg: no filtered frames for output stream" >&2
+exit 1
+`
+
+// fakeFFmpegAlwaysFailsScript fakes a source no capture can read (a corrupt
+// file, say). Its two distinct failure messages let a test pin that the
+// final-frame fallback surfaces the ORIGINAL seek error, not the fallback's.
+const fakeFFmpegAlwaysFailsScript = `#!/bin/sh
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+printf '%s\n' "$@" >> "$dir/args.txt"
+for a in "$@"; do
+  if [ "$a" = "-sseof" ]; then
+    echo "fake ffmpeg: end-relative grab failed" >&2
+    exit 1
+  fi
+done
+echo "fake ffmpeg: no filtered frames for output stream" >&2
+exit 1
+`
+
 // fakeFFprobeScript fakes ffprobe with one fixed, well-formed JSON report:
 // h264 1920x1080 ~29.97fps + aac in an MP4-family container, 12.5 seconds.
 const fakeFFprobeScript = `#!/bin/sh
@@ -258,6 +306,10 @@ func TestFFmpegArgBuilders(t *testing.T) {
 			"-ss 4.5 -i in.mp4 -frames:v 1 -q:v 2 out.jpg"},
 		{"screenshot resamples anamorphic", ffmpegScreenshotArgs("in.mp4", "4.5", "out.jpg", 1280, 720),
 			"-ss 4.5 -i in.mp4 -vf scale=1280:720,setsar=1 -frames:v 1 -q:v 2 out.jpg"},
+		{"last frame square pixels", ffmpegLastFrameArgs("in.mp4", "out.jpg", 0, 0),
+			"-sseof -1 -i in.mp4 -vf reverse -frames:v 1 -q:v 2 out.jpg"},
+		{"last frame resamples anamorphic", ffmpegLastFrameArgs("in.mp4", "out.jpg", 1280, 720),
+			"-sseof -1 -i in.mp4 -vf scale=1280:720,setsar=1,reverse -frames:v 1 -q:v 2 out.jpg"},
 		{"split accurate full", ffmpegSplitArgs("in.mp4", "10", 15, false, "out.mp4"),
 			"-ss 10 -i in.mp4 -t 15 -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -movflags +faststart out.mp4"},
 		{"split accurate to end", ffmpegSplitArgs("in.mp4", "", 0, false, "out.mp4"),
@@ -501,6 +553,15 @@ func TestFFmpegToolValidation(t *testing.T) {
 	if errors := screenshot.Validate("toolCalls[0]", HarnessToolCall{At: "0,9.08,banana"}); len(errors) == 0 || !strings.Contains(errors[0], "comma-separated list") {
 		t.Errorf("screenshot with a bad at list token = %v, want the list-form timestamp error", errors)
 	}
+	if errors := screenshot.Validate("toolCalls[0]", HarnessToolCall{At: "end"}); len(errors) != 0 {
+		t.Errorf("screenshot with at end = %v, want none", errors)
+	}
+	if errors := screenshot.Validate("toolCalls[0]", HarnessToolCall{At: "0,end"}); len(errors) != 0 {
+		t.Errorf("screenshot with an at list containing end = %v, want none", errors)
+	}
+	if errors := screenshot.Validate("toolCalls[0]", HarnessToolCall{At: "endx"}); len(errors) == 0 || !strings.Contains(errors[0], ".at must be a timestamp") {
+		t.Errorf("screenshot with endx = %v, want the timestamp error", errors)
+	}
 	if errors := screenshot.Validate("toolCalls[0]", HarnessToolCall{Count: 10}); len(errors) != 0 {
 		t.Errorf("screenshot with count = %v, want none", errors)
 	}
@@ -655,6 +716,34 @@ func TestSplitVideoDescriptionTeachesOneSegmentPerCall(t *testing.T) {
 	}
 }
 
+// TestScreenshotDescriptionTeachesEndToken pins the planner-facing contract
+// conv_defa533b380d7131939a59b4 left on the tool: "last frame" asks route to
+// at "end" (the count form's count=1 lands at t=0 — the FIRST frame), and a
+// past-end timestamp falls back to the final frame rather than failing.
+func TestScreenshotDescriptionTeachesEndToken(t *testing.T) {
+	desc := screenshotVideoToolDefinition().Description
+	for _, fragment := range []string{`"end"`, "final frame", "last frame"} {
+		if !strings.Contains(desc, fragment) {
+			t.Fatalf("screenshot_video description = %q, want it to include %q", desc, fragment)
+		}
+	}
+}
+
+// TestContactSheetValidatesEndToken pins that the shared end-token grammar
+// reaches the contact sheet's `at` too.
+func TestContactSheetValidatesEndToken(t *testing.T) {
+	sheet := contactSheetVideoToolDefinition()
+	if errors := sheet.Validate("toolCalls[0]", HarnessToolCall{At: "end"}); len(errors) != 0 {
+		t.Errorf("contact sheet with at end = %v, want none", errors)
+	}
+	if errors := sheet.Validate("toolCalls[0]", HarnessToolCall{At: "0,end"}); len(errors) != 0 {
+		t.Errorf("contact sheet with an at list containing end = %v, want none", errors)
+	}
+	if errors := sheet.Validate("toolCalls[0]", HarnessToolCall{At: "endx"}); len(errors) == 0 || !strings.Contains(errors[0], ".at must be a timestamp") {
+		t.Errorf("contact sheet with endx = %v, want the timestamp error", errors)
+	}
+}
+
 func TestFFmpegScreenshotExecutes(t *testing.T) {
 	config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
 	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
@@ -681,6 +770,108 @@ func TestFFmpegScreenshotRequiresVideo(t *testing.T) {
 	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{}, "screenshot_video", HarnessToolCall{At: "1"})
 	if result.Status == "completed" || !strings.Contains(result.Error, "requires an attached video clip") {
 		t.Fatalf("result = %+v, want the attachment error", result)
+	}
+}
+
+// TestFFmpegScreenshotPastEndFallsBackToFinalFrame pins conv_defa533b's fix:
+// "capture the frame at 25.71" against a 25.708s clip — the quoted container
+// duration sits past the last video frame, so the plain seek decodes nothing —
+// must land on the clip's final frame with a substitution notice, not fail.
+func TestFFmpegScreenshotPastEndFallsBackToFinalFrame(t *testing.T) {
+	config, bin := ffmpegTestConfig(t, fakeFFmpegNoMidSeekScript, fakeFFprobeScript)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+	}, "screenshot_video", HarnessToolCall{At: "25.71"})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	typed, ok := result.Result.(ToolImageResult)
+	if !ok || typed.Count != 1 || len(typed.Images) != 1 {
+		t.Fatalf("result payload = %+v", result.Result)
+	}
+	if len(typed.Notices) != 1 || !strings.Contains(typed.Notices[0], "final frame was captured instead") {
+		t.Fatalf("notices = %v, want the final-frame substitution", typed.Notices)
+	}
+	args := fakeFFmpegArgs(t, bin)
+	if !strings.Contains(args, "-sseof -1") || !strings.Contains(args, "reverse") {
+		t.Fatalf("ffmpeg args = %q, want the end-relative reverse grab", args)
+	}
+}
+
+// TestFFmpegScreenshotEndToken pins the explicit form: at "end" is the
+// planner's affordance for "last frame screenshot" asks (the count form's
+// count=1 lands at t=0) — one end-relative grab, the final-frame prompt and
+// summary, and no past-end notice, because the substitution IS the requested
+// semantics.
+func TestFFmpegScreenshotEndToken(t *testing.T) {
+	config, bin := ffmpegTestConfig(t, fakeFFmpegNoMidSeekScript, fakeFFprobeScript)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+	}, "screenshot_video", HarnessToolCall{At: "end"})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	typed, ok := result.Result.(ToolImageResult)
+	if !ok || typed.Count != 1 || len(typed.Images) != 1 {
+		t.Fatalf("result payload = %+v", result.Result)
+	}
+	if len(typed.Notices) != 0 {
+		t.Fatalf("notices = %v, want none (end is the requested semantics)", typed.Notices)
+	}
+	if typed.Prompt != "the clip's final frame" {
+		t.Fatalf("prompt = %q, want the final-frame wording", typed.Prompt)
+	}
+	if !strings.Contains(result.Summary, "final frame") {
+		t.Fatalf("summary = %q, want the final-frame wording", result.Summary)
+	}
+	args := fakeFFmpegArgs(t, bin)
+	if !strings.Contains(args, "-sseof -1") || strings.Contains(args, "-ss ") {
+		t.Fatalf("ffmpeg args = %q, want exactly one end-relative grab and no plain seek", args)
+	}
+}
+
+// TestFFmpegScreenshotBatchMixedTimestamps pins the batch path: a live
+// timestamp and a past-end one in one call capture BOTH frames — the past-end
+// one via the final-frame substitution, with its notice — rather than
+// dropping a frame.
+func TestFFmpegScreenshotBatchMixedTimestamps(t *testing.T) {
+	config, bin := ffmpegTestConfig(t, fakeFFmpegNoMidSeekScript, fakeFFprobeScript)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+	}, "screenshot_video", HarnessToolCall{At: "0,25.71"})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	typed, ok := result.Result.(ToolImageResult)
+	if !ok || typed.Count != 2 || len(typed.Images) != 2 {
+		t.Fatalf("result payload = %+v", result.Result)
+	}
+	if len(typed.Notices) != 1 || !strings.Contains(typed.Notices[0], "no frame exists at 25.71") {
+		t.Fatalf("notices = %v, want the 25.71 substitution", typed.Notices)
+	}
+	args := fakeFFmpegArgs(t, bin)
+	if !strings.Contains(args, "-ss 0") || !strings.Contains(args, "-ss 25.71") || !strings.Contains(args, "-sseof -1") {
+		t.Fatalf("ffmpeg args = %q, want the plain seeks and the end-relative grab", args)
+	}
+}
+
+// TestFFmpegScreenshotFallbackFailureKeepsSeekError pins the error contract:
+// when even the end-relative grab fails (a corrupt source, say), the reported
+// error is the ORIGINAL seek failure — it names the timestamp behavior the
+// user asked about — never the fallback's own.
+func TestFFmpegScreenshotFallbackFailureKeepsSeekError(t *testing.T) {
+	config, _ := ffmpegTestConfig(t, fakeFFmpegAlwaysFailsScript, fakeFFprobeScript)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+	}, "screenshot_video", HarnessToolCall{At: "25.71"})
+	if result.Status == "completed" {
+		t.Fatalf("result = %+v, want failure", result)
+	}
+	if !strings.Contains(result.Error, "no filtered frames for output stream") {
+		t.Fatalf("error = %q, want the original seek failure", result.Error)
+	}
+	if strings.Contains(result.Error, "end-relative grab failed") {
+		t.Fatalf("error = %q, the fallback error must not replace the seek error", result.Error)
 	}
 }
 
