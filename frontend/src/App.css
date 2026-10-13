@@ -711,6 +711,19 @@ label {
   visibility: visible;
 }
 
+/* The airplane-mode variant (AirplaneHint): same hover mechanics, but the
+   icon is the plane glyph in the mode's amber, without the circle — it marks
+   a policy state on the section heading, not an explanation invite. */
+.airplane-hint .info-hint-icon {
+  width: auto;
+  height: auto;
+  border: none;
+  border-radius: 0;
+  color: #d5a64f;
+  font-style: normal;
+  font-weight: 400;
+}
+
 input,
 select,
 textarea {
@@ -3543,6 +3556,48 @@ button:disabled {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Airplane mode --------------------------------------------------------- */
+
+/* The always-visible mode toggle in the chat toolbar (toolbar-right, beside
+   usage and the assets toggles). Clicking flips airplane mode; the state
+   persists through the debounced settings save. Gray like its neighbors when
+   off, amber and near-solid when on — a status the neutral toggles beside it
+   don't carry. */
+.assets-toggle.airplane-indicator.on {
+  color: #d5a64f;
+  opacity: 0.95;
+}
+
+.assets-toggle.airplane-indicator.on:hover {
+  opacity: 1;
+}
+
+/* The Providers-tab toggle row. */
+.airplane-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.airplane-toggle input {
+  accent-color: #d5a64f;
+}
+
+/* Cloud sections the mode disables stay visible but inert — the point is to
+   show what's being withheld, with each section's hint naming why. */
+.settings-section.airplane-blocked {
+  opacity: 0.55;
+}
+
+.settings-section.airplane-blocked .connection,
+.settings-section.airplane-blocked .settings-rows {
+  pointer-events: none;
+  user-select: none;
+}
+
 
 /* Per-conversation model overrides ------------------------------------- */
 

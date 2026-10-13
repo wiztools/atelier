@@ -91,7 +91,16 @@ func newProviderRegistry(app *App) ProviderRegistry {
 }
 
 func (registry ProviderRegistry) Resolve(providerID, baseURL string) (ChatProvider, error) {
-	switch resolvedProvider(ChatRequest{Provider: providerID}) {
+	resolved := resolvedProvider(ChatRequest{Provider: providerID})
+	// Airplane mode's outer belt: the engine refuses blocked roles up front,
+	// but Resolve is also reached directly (title generation, model lists),
+	// and the on-disk flag may have flipped since the turn's config snapshot.
+	if diskConfig, airplane := airplaneDiskConfig(); airplane {
+		if err := airplaneChatProviderError(diskConfig, resolved, baseURL); err != nil {
+			return nil, err
+		}
+	}
+	switch resolved {
 	case "ollama":
 		return newOllamaProvider(registry.app.ollamaClient(baseURL)), nil
 	case "openrouter":

@@ -395,7 +395,7 @@ func TestIsFalVideoRestyleModel(t *testing.T) {
 // planner instead of prose.
 func TestTriagePromptRoutesRestylingToVideoMode(t *testing.T) {
 	registry := newHarnessToolRegistry([]HarnessToolDefinition{videoRestyleToolDefinition(AppConfig{})})
-	prompt := triageSystemPrompt(registry, nil, "/tmp/ws")
+	prompt := triageSystemPrompt(registry, nil, "/tmp/ws", false)
 	if !strings.Contains(prompt, "restyle_video") {
 		t.Fatalf("video-mode guidance should name restyle_video:\n%s", prompt)
 	}

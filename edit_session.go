@@ -452,6 +452,14 @@ func (a *App) SubmitImageEdit(req ImageEditSubmitRequest) (EditOperationState, e
 	if kind != editOperationKindInpaint && kind != editOperationKindCrop {
 		return EditOperationState{}, fmt.Errorf("unsupported edit operation kind %q", kind)
 	}
+	// Inpainting is provider-backed (fal/Replicate) with no local backend, so
+	// airplane mode refuses it up front — before the provider/model pair even
+	// resolves. Crop stays: it is local sips/ImageMagick work.
+	if kind == editOperationKindInpaint {
+		if err := airplaneInpaintError(config); err != nil {
+			return EditOperationState{}, err
+		}
+	}
 
 	provider := strings.TrimSpace(req.Provider)
 	model := strings.TrimSpace(req.Model)

@@ -145,6 +145,11 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 		falOverrides := loadFalOverrides(config.Storage.Root)
 		replicateSchemaCache := newReplicateSchemaCache(app.client, config.Storage.Root)
 		gateway.tools.GenerateImage = func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, []string, error) {
+			// Airplane mode refuses the cloud-routed backends (fal, Replicate)
+			// before any source normalization; a local backend falls through.
+			if err := airplaneMediaError(config, "generate_image"); err != nil {
+				return ollamaGenerateResponse{}, nil, nil, err
+			}
 			// Source images must decode at the model: an attached HEIC/AVIF/
 			// TIFF/BMP/JP2 becomes JPEG here (model_image_compat.go) for every
 			// backend below — fal, openai-compatible, and Ollama alike.
@@ -256,6 +261,10 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			return resp, raw, nil, err
 		}
 		gateway.tools.GenerateVideo = func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
+			// Cloud-only (fal or Replicate): airplane mode refuses the call.
+			if err := airplaneMediaError(config, "generate_video"); err != nil {
+				return GeneratedVideo{}, err
+			}
 			// Source media is normalized to a model-decodable format for every
 			// backend (model_image_compat.go) before the provider branch — the
 			// same rule GenerateImage applies at the top of its closure.
@@ -410,6 +419,10 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			return generated, genErr
 		}
 		gateway.tools.GenerateLipsync = func(ctx context.Context, req LipsyncGenerateRequest) (GeneratedVideo, error) {
+			// fal-only: airplane mode refuses the call.
+			if err := airplaneMediaError(config, "lip_sync"); err != nil {
+				return GeneratedVideo{}, err
+			}
 			apiKey, err := loadFalAPIKey()
 			if err != nil {
 				return GeneratedVideo{}, err
@@ -469,6 +482,10 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			return generated, genErr
 		}
 		gateway.tools.UpscaleImage = func(ctx context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, []string, error) {
+			// Cloud-only (Ollama has no upscaler): airplane mode refuses the call.
+			if err := airplaneMediaError(config, "upscale_image"); err != nil {
+				return ollamaGenerateResponse{}, nil, err
+			}
 			// The source image is normalized to a model-decodable format for
 			// every backend (model_image_compat.go) before the provider branch.
 			req.Image = ensureModelSafeImage(ctx, config, req.Image)
@@ -537,6 +554,10 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			return resp, notices, err
 		}
 		gateway.tools.UpscaleVideo = func(ctx context.Context, req VideoUpscaleRequest) (GeneratedVideo, error) {
+			// Cloud-only (fal or Replicate): airplane mode refuses the call.
+			if err := airplaneMediaError(config, "upscale_video"); err != nil {
+				return GeneratedVideo{}, err
+			}
 			// Video upscale follows the video provider: replicate routes there,
 			// every other provider stays on fal — the same seam generate_video
 			// reads.
@@ -624,6 +645,11 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			return generated, genErr
 		}
 		gateway.tools.ReframeVideo = func(ctx context.Context, req VideoReframeRequest) (GeneratedVideo, error) {
+			// Cloud-only (fal or Replicate): airplane mode refuses the call —
+			// the local transform_video covers shape changes by crop/blur/pad.
+			if err := airplaneMediaError(config, "reframe_video"); err != nil {
+				return GeneratedVideo{}, err
+			}
 			// The duration guard (and the input-seconds billing) need the
 			// source clip's own length, readable only while it is staged
 			// inline — the branches below replace req.Video with a hosted URL
@@ -724,6 +750,10 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			return generated, genErr
 		}
 		gateway.tools.RestyleVideo = func(ctx context.Context, req VideoRestyleRequest) (GeneratedVideo, error) {
+			// Cloud-only (fal or Replicate): airplane mode refuses the call.
+			if err := airplaneMediaError(config, "restyle_video"); err != nil {
+				return GeneratedVideo{}, err
+			}
 			// Restyle follows the video provider: replicate routes there, every
 			// other provider stays on fal — the same seam generate_video reads.
 			if videoGenerationProvider(config) == "replicate" {
@@ -830,6 +860,10 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			return generated, genErr
 		}
 		gateway.tools.GenerateAudio = func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error) {
+			// fal-only (speech and sound effects): airplane mode refuses the call.
+			if err := airplaneMediaError(config, "audio generation"); err != nil {
+				return GeneratedAudio{}, err
+			}
 			apiKey, err := loadFalAPIKey()
 			if err != nil {
 				return GeneratedAudio{}, err
@@ -878,6 +912,10 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			return generated, err
 		}
 		gateway.tools.GenerateAudioExtend = func(ctx context.Context, req AudioExtendRequest) (GeneratedAudio, error) {
+			// fal-only: airplane mode refuses the call.
+			if err := airplaneMediaError(config, "extend_audio"); err != nil {
+				return GeneratedAudio{}, err
+			}
 			apiKey, err := loadFalAPIKey()
 			if err != nil {
 				return GeneratedAudio{}, err
@@ -931,6 +969,12 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			return generated, err
 		}
 		gateway.tools.TranscribeAudio = func(ctx context.Context, req TranscribeAudioRequest) (GeneratedTranscript, error) {
+			// fal-only: airplane mode refuses the call (the resolver routes to
+			// the local whisper backend in that mode, so this wrapper is the
+			// belt behind the executor's dispatch).
+			if err := airplaneMediaError(config, "transcribe_audio"); err != nil {
+				return GeneratedTranscript{}, err
+			}
 			apiKey, err := loadFalAPIKey()
 			if err != nil {
 				return GeneratedTranscript{}, err

@@ -391,6 +391,16 @@ func videoModelSupportsAudio(ctx context.Context, config AppConfig, app *App) bo
 // or Replicate is the selected image provider with a model configured, or the
 // local OpenAI-compatible image server has a model configured.
 func imageGenerationConfigured(config AppConfig) bool {
+	// Airplane mode keeps local image backends (Ollama, the OpenAI-compatible
+	// server) and drops the cloud-routed ones — no silent rerouting to a
+	// different backend than the user configured.
+	if airplaneModeActive(config) {
+		switch imageGenerationProvider(config) {
+		case "ollama", "openai-compatible":
+		default:
+			return false
+		}
+	}
 	if strings.TrimSpace(config.Providers.Ollama.Models.Image) != "" {
 		return true
 	}
@@ -480,6 +490,11 @@ func replicateKeyConfigured() bool {
 // avoids offering a tool guaranteed to fail at call time with a
 // key-not-configured error.
 func imageUpscaleConfigured(config AppConfig) bool {
+	// Cloud-only (fal endpoint, or Replicate when it routes the image
+	// provider): airplane mode drops the tool.
+	if airplaneModeActive(config) {
+		return false
+	}
 	if imageGenerationProvider(config) == "replicate" {
 		return replicateKeyConfigured()
 	}
@@ -507,6 +522,10 @@ func resolveDefaultImageUpscaleModel(config AppConfig) string {
 // routing for the upscale_video tool: replicate needs its token, every other
 // provider runs fal and needs a fal.ai key.
 func videoUpscaleConfigured(config AppConfig) bool {
+	// Cloud-only: airplane mode drops the tool.
+	if airplaneModeActive(config) {
+		return false
+	}
 	if videoGenerationProvider(config) == "replicate" {
 		return replicateKeyConfigured()
 	}
@@ -534,6 +553,11 @@ func resolveDefaultVideoUpscaleModel(config AppConfig) string {
 // routing for the reframe_video tool: replicate needs its token, every other
 // provider runs fal and needs a fal.ai key.
 func videoReframeConfigured(config AppConfig) bool {
+	// Cloud-only: airplane mode drops the tool (the local transform_video
+	// covers shape changes by crop/blur/pad).
+	if airplaneModeActive(config) {
+		return false
+	}
 	if videoGenerationProvider(config) == "replicate" {
 		return replicateKeyConfigured()
 	}
@@ -561,6 +585,10 @@ func resolveDefaultVideoReframeModel(config AppConfig) string {
 // routing for the restyle_video tool: replicate needs its token, every other
 // provider runs fal and needs a fal.ai key.
 func videoRestyleConfigured(config AppConfig) bool {
+	// Cloud-only: airplane mode drops the tool.
+	if airplaneModeActive(config) {
+		return false
+	}
 	if videoGenerationProvider(config) == "replicate" {
 		return replicateKeyConfigured()
 	}
@@ -593,6 +621,11 @@ func resolveDefaultVideoRestyleModel(config AppConfig) string {
 // transforms (upscale/reframe/restyle) follow VideoProvider and keep their own
 // provider-aware gates.
 func videoGenerationConfigured(config AppConfig) bool {
+	// Cloud-only: fal and Replicate are the only video backends, so airplane
+	// mode drops the tool outright.
+	if airplaneModeActive(config) {
+		return false
+	}
 	if videoGenerationProvider(config) == "replicate" {
 		if strings.TrimSpace(config.Providers.Replicate.VideoModel) == "" &&
 			strings.TrimSpace(config.Providers.Replicate.VideoImageModel) == "" {
@@ -1101,6 +1134,10 @@ func writeTempVideo(video GeneratedVideo) (string, error) {
 // present. fal is the only audio backend. The key check avoids offering a tool
 // that is guaranteed to fail at call time with errFalKeyNotConfigured.
 func speechGenerationConfigured(config AppConfig) bool {
+	// fal-only: airplane mode drops the tool.
+	if airplaneModeActive(config) {
+		return false
+	}
 	if strings.TrimSpace(config.Providers.Fal.AudioModel) == "" {
 		return false
 	}
@@ -1111,6 +1148,10 @@ func speechGenerationConfigured(config AppConfig) bool {
 // generate_sound tool (music and sound effects). mergeAppConfig seeds the
 // default once AudioModel is set, so anyone with speech configured gets both.
 func soundEffectsGenerationConfigured(config AppConfig) bool {
+	// fal-only: airplane mode drops the tool.
+	if airplaneModeActive(config) {
+		return false
+	}
 	if strings.TrimSpace(config.Providers.Fal.SoundEffectsModel) == "" {
 		return false
 	}
@@ -1151,6 +1192,10 @@ func resolveDefaultSoundEffectsModel(config AppConfig) string {
 // applies (stable-audio-25/inpaint), so the gate is purely the fal key — like
 // transcribe_audio and lip_sync, no model needs to be configured first.
 func audioExtendConfigured(config AppConfig) bool {
+	// fal-only: airplane mode drops the tool.
+	if airplaneModeActive(config) {
+		return false
+	}
 	return falKeyConfigured()
 }
 
@@ -1181,6 +1226,14 @@ const (
 // state (key presence, PATH detection) so the tool gate, the planner-facing
 // description, and the gateway wiring cannot disagree.
 func resolveTranscriptionProvider(config AppConfig) string {
+	// Airplane mode never leaves the machine for transcription: the fal
+	// backend (pinned or auto-resolved) is ignored and the local whisper CLI
+	// is the only backend. With no whisper binary installed this still returns
+	// local-whisper — transcribeAudioConfigured then keeps the tool unoffered,
+	// and the Settings report names the backend that would run once installed.
+	if airplaneModeActive(config) {
+		return transcriptionProviderLocalWhisper
+	}
 	switch strings.TrimSpace(config.Models.TranscriptionProvider) {
 	case transcriptionProviderFal, transcriptionProviderLocalWhisper:
 		return strings.TrimSpace(config.Models.TranscriptionProvider)
@@ -1205,7 +1258,9 @@ func transcribeAudioConfigured(config AppConfig) bool {
 		_, ok := resolveLocalWhisperBinary(config)
 		return ok
 	}
-	return falKeyConfigured()
+	// The fal backend needs its key — and is unreachable in airplane mode,
+	// which resolveTranscriptionProvider never resolves to.
+	return !airplaneModeActive(config) && falKeyConfigured()
 }
 
 // resolveDefaultTranscribeModel returns the speech-to-text model the
@@ -1231,6 +1286,10 @@ func resolveDefaultLocalWhisperModel(config AppConfig) string {
 // video and video-to-video endpoints are known-good), so the gate is purely the
 // fal key — like transcribe_audio, no model needs to be configured first.
 func lipsyncConfigured(config AppConfig) bool {
+	// fal-only: airplane mode drops the tool.
+	if airplaneModeActive(config) {
+		return false
+	}
 	return falKeyConfigured()
 }
 

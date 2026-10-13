@@ -17,9 +17,14 @@ import (
 // the machine running `go test` happens to have a whisper installed — tool
 // gates would become machine-dependent. Tests that exercise the local path
 // restore the real lookup via withRealLocalLookup/stubLocalLookup
-// (local_tools_test.go).
+// (local_tools_test.go). It pins airplaneDiskConfig the same way, so
+// ProviderRegistry.Resolve and checkForUpdates stay machine-independent — the
+// developer's own config.json must not decide whether a test sees airplane
+// mode on. Tests that exercise the airplane path re-pin via
+// pinAirplaneDiskConfig (airplane_mode_test.go).
 func TestMain(m *testing.M) {
 	localBinaryLookPath = func(string) (string, error) { return "", exec.ErrNotFound }
+	airplaneDiskConfig = func() (AppConfig, bool) { return AppConfig{}, false }
 	os.Exit(m.Run())
 }
 

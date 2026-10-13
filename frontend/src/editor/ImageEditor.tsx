@@ -89,6 +89,9 @@ export function ImageEditor(props: {
   // True while the editor is hidden beneath another screen (Settings). Detaches
   // the global shortcuts; all edit state stays.
   suspended?: boolean;
+  // Airplane mode: inpainting is provider-backed (fal/Replicate) with no local
+  // backend, so the tool is hidden — crop is local work and stays.
+  airplaneMode?: boolean;
   onClose: () => void;
   onOpenParent: (conversationID: string) => void;
   onSessionCreated: (sessionID: string) => void;
@@ -337,7 +340,10 @@ export function ImageEditor(props: {
   }
   function cancelCrop() {
     setCropRect(fitCrop(canvas.width, canvas.height, null));
-    setCropRatio('free'); setCropUndo([]); setCropRedo([]); setTool('inpaint');
+    setCropRatio('free'); setCropUndo([]); setCropRedo([]);
+    // Airplane mode hides the inpaint tool, so "cancel crop" stays on crop
+    // instead of returning to the inpaint brush.
+    if (!props.airplaneMode) setTool('inpaint');
   }
 
   // Mask painting: strokes accumulate in image space — the overlay renders
@@ -479,7 +485,7 @@ export function ImageEditor(props: {
       return;
     }
     const mask = maskCanvasRef.current;
-    if (tool === 'inpaint' && !mask) return;
+    if (tool === 'inpaint' && (props.airplaneMode || !mask)) return;
     submitLock.current = true;
     setSubmitting(true);
     setSubmitError('');
@@ -696,8 +702,12 @@ export function ImageEditor(props: {
 
         <aside className="editor-inspector">
           <div className="editor-tool-selector" role="group" aria-label="Editing tool">
-            <button type="button" className={tool === 'crop' ? 'active' : ''} aria-pressed={tool === 'crop'} disabled={busy} onClick={() => setTool('crop')}>Crop</button>
-            <button type="button" className={tool === 'inpaint' ? 'active' : ''} aria-pressed={tool === 'inpaint'} disabled={busy} onClick={() => setTool('inpaint')}>Inpaint</button>
+            <button type="button" className={tool === 'crop' || props.airplaneMode ? 'active' : ''} aria-pressed={tool === 'crop'} disabled={busy} onClick={() => setTool('crop')}>Crop</button>
+            {props.airplaneMode ? (
+              <button type="button" disabled title="Inpainting needs a cloud provider — unavailable while airplane mode is on.">Inpaint</button>
+            ) : (
+              <button type="button" className={tool === 'inpaint' ? 'active' : ''} aria-pressed={tool === 'inpaint'} disabled={busy} onClick={() => setTool('inpaint')}>Inpaint</button>
+            )}
           </div>
           {tool === 'crop' ? <>
             <div className="field">

@@ -156,15 +156,21 @@ func (a *App) beforeClose(ctx context.Context) (prevent bool) {
 }
 
 type AppConfig struct {
-	Version    int              `json:"version"`
-	Storage    ConfigStorage    `json:"storage"`
-	Providers  ConfigProviders  `json:"providers"`
-	Models     ConfigModels     `json:"models"`
-	Prompts    ConfigPrompts    `json:"prompts"`
-	Generation ConfigGeneration `json:"generation"`
-	Tools      ConfigTools      `json:"tools"`
-	UI         ConfigUI         `json:"ui"`
-	Updates    ConfigUpdates    `json:"updates"`
+	Version int `json:"version"`
+	// AirplaneMode is the offline guarantee: while on, Atelier itself never
+	// contacts a cloud service. Chat runs on local Ollama/OpenAI-compatible
+	// endpoints (loopback-verified), media generation and transcription
+	// reduce to their local backends, and update checks stand down. The
+	// enforcement seams live in airplane_mode.go.
+	AirplaneMode bool             `json:"airplaneMode"`
+	Storage      ConfigStorage    `json:"storage"`
+	Providers    ConfigProviders  `json:"providers"`
+	Models       ConfigModels     `json:"models"`
+	Prompts      ConfigPrompts    `json:"prompts"`
+	Generation   ConfigGeneration `json:"generation"`
+	Tools        ConfigTools      `json:"tools"`
+	UI           ConfigUI         `json:"ui"`
+	Updates      ConfigUpdates    `json:"updates"`
 }
 
 // ConfigUpdates configures the self-updater. ManifestURL is overridable so the
@@ -2418,6 +2424,13 @@ func (a *App) generateConversationTitle(config AppConfig, req ChatRequest, assis
 	userPrompt := lastUserPrompt(req.Messages)
 	fallback := titleFromPrompt(userPrompt)
 	if strings.TrimSpace(req.Model) == "" || strings.TrimSpace(userPrompt) == "" {
+		return fallback
+	}
+	// Airplane mode: the title call would leave the machine whenever the
+	// primary model is a cloud one — skip straight to the prompt-derived
+	// fallback. Resolve would refuse the provider anyway; this keeps the skip
+	// deliberate instead of relying on an error shaped like a failure.
+	if airplaneModeActive(config) {
 		return fallback
 	}
 

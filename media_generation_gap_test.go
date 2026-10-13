@@ -17,7 +17,7 @@ import (
 // conv_20a0df2b2db9b4e9ea5a1ad9, where a small model answered "Video Extension
 // initiated … queued … rendering shortly" for a clip that never existed.
 func TestMediaGenUnavailableNoteForbidsFabrication(t *testing.T) {
-	note := mediaGenUnavailableNote("video")
+	note := mediaGenUnavailableNote("video", false)
 	if note == "" {
 		t.Fatal("expected a note for video mode, got empty")
 	}
@@ -31,8 +31,25 @@ func TestMediaGenUnavailableNoteForbidsFabrication(t *testing.T) {
 	if !strings.Contains(note, "Settings → Providers") {
 		t.Errorf("note must name the remedy (Settings → Providers): %q", note)
 	}
-	if mediaGenUnavailableNote("text") != "" {
+	if mediaGenUnavailableNote("text", false) != "" {
 		t.Errorf("non-generation mode should yield no note")
+	}
+}
+
+// TestMediaGenUnavailableNoteAirplaneNamesTheMode asserts the airplane variant
+// blames airplane mode and never suggests adding a fal.ai key — that remedy
+// would be false advice while the mode blocks every cloud provider.
+func TestMediaGenUnavailableNoteAirplaneNamesTheMode(t *testing.T) {
+	note := mediaGenUnavailableNote("video", true)
+	lower := strings.ToLower(note)
+	if !strings.Contains(lower, "airplane mode") {
+		t.Errorf("airplane note must name the mode as the cause: %q", note)
+	}
+	if strings.Contains(lower, "fal.ai") {
+		t.Errorf("airplane note must not suggest adding a fal.ai key: %q", note)
+	}
+	if !strings.Contains(lower, "do not claim") {
+		t.Errorf("airplane note must forbid fabricating success: %q", note)
 	}
 }
 
@@ -41,15 +58,25 @@ func TestMediaGenUnavailableNoteForbidsFabrication(t *testing.T) {
 // the remedy, suppressed once the answer already covers it, and empty when the
 // capability is available.
 func TestMediaGenFallbackNotice(t *testing.T) {
-	if got := mediaGenFallbackNotice(false, "video", "anything"); got != "" {
+	if got := mediaGenFallbackNotice(false, "video", "anything", false); got != "" {
 		t.Errorf("available capability should yield no notice, got %q", got)
 	}
-	notice := mediaGenFallbackNotice(true, "video", "Sure, I'll get right on that.")
+	notice := mediaGenFallbackNotice(true, "video", "Sure, I'll get right on that.", false)
 	if notice == "" || !strings.Contains(notice, "Settings → Providers") {
 		t.Errorf("missing capability with a silent answer should name the remedy, got %q", notice)
 	}
-	if got := mediaGenFallbackNotice(true, "video", "You need to add a fal.ai key first."); got != "" {
+	if got := mediaGenFallbackNotice(true, "video", "You need to add a fal.ai key first.", false); got != "" {
 		t.Errorf("answer already naming the remedy should suppress the notice, got %q", got)
+	}
+	if got := mediaGenFallbackNotice(true, "video", "Airplane mode is on, so I cannot generate video.", true); got != "" {
+		t.Errorf("airplane answer naming the mode should suppress the notice, got %q", got)
+	}
+	airplaneNotice := mediaGenFallbackNotice(true, "video", "Sure, I'll get right on that.", true)
+	if airplaneNotice == "" || !strings.Contains(strings.ToLower(airplaneNotice), "airplane mode") {
+		t.Errorf("airplane notice must name the mode, got %q", airplaneNotice)
+	}
+	if strings.Contains(airplaneNotice, "fal.ai") {
+		t.Errorf("airplane notice must not suggest adding a fal.ai key, got %q", airplaneNotice)
 	}
 }
 
@@ -315,7 +342,7 @@ func TestHarnessDeclinesVideoExtensionWithoutTool(t *testing.T) {
 // sent.
 func TestTriagePromptRoutesSemanticImageEditsToImageMode(t *testing.T) {
 	registry := newHarnessToolRegistry([]HarnessToolDefinition{imageGenerationToolDefinition(AppConfig{})})
-	prompt := triageSystemPrompt(registry, nil, "/tmp/ws")
+	prompt := triageSystemPrompt(registry, nil, "/tmp/ws", false)
 	if !strings.Contains(prompt, "generate_image") {
 		t.Fatalf("image-mode guidance should name generate_image:\n%s", prompt)
 	}

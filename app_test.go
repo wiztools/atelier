@@ -5873,13 +5873,13 @@ func TestDecodeTriageDecisionAcceptsBareAndFencedJSON(t *testing.T) {
 
 func TestTriageSystemPromptListsToolsSkillsAndRoot(t *testing.T) {
 	registry := filesystemToolRegistry()
-	prompt := triageSystemPrompt(registry, []SkillIndexEntry{{Name: "cleanup", Description: "Tidy the workspace"}}, "/tmp/workspace")
+	prompt := triageSystemPrompt(registry, []SkillIndexEntry{{Name: "cleanup", Description: "Tidy the workspace"}}, "/tmp/workspace", false)
 	for _, want := range []string{"read_file", "run_command", "cleanup: Tidy the workspace", "/tmp/workspace", "needsTools", "responseMode"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("triage prompt missing %q:\n%s", want, prompt)
 		}
 	}
-	if prompt2 := triageSystemPrompt(registry, nil, "/tmp/workspace"); !strings.Contains(prompt2, "(none)") {
+	if prompt2 := triageSystemPrompt(registry, nil, "/tmp/workspace", false); !strings.Contains(prompt2, "(none)") {
 		t.Fatalf("triage prompt without skills should list (none):\n%s", prompt2)
 	}
 }

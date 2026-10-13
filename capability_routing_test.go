@@ -198,7 +198,7 @@ func TestRegistryVideoAudioCapableReflectsDescription(t *testing.T) {
 // broader tool description legitimately mentions "Veo extend".
 func TestTriageSystemPromptRoutingHintConditional(t *testing.T) {
 	capable := newHarnessToolRegistry([]HarnessToolDefinition{videoGenerationToolDefinition(AppConfig{}, true)})
-	with := triageSystemPrompt(capable, nil, "/tmp/ws")
+	with := triageSystemPrompt(capable, nil, "/tmp/ws", false)
 	if !strings.Contains(with, "route to generate_video alone") {
 		t.Fatalf("triage prompt should include the narration-routing hint when video is audio-capable")
 	}
@@ -221,7 +221,7 @@ func TestTriageSystemPromptRoutingHintConditional(t *testing.T) {
 	}
 
 	notCapable := newHarnessToolRegistry([]HarnessToolDefinition{videoGenerationToolDefinition(AppConfig{}, false)})
-	without := triageSystemPrompt(notCapable, nil, "/tmp/ws")
+	without := triageSystemPrompt(notCapable, nil, "/tmp/ws", false)
 	if strings.Contains(without, "route to generate_video alone") {
 		t.Fatalf("triage prompt must omit the routing hint when video is not audio-capable")
 	}
@@ -244,7 +244,7 @@ func TestTriagePromptListsAudioTools(t *testing.T) {
 			t.Fatalf("tool catalog missing %q:\n%s", want, catalog)
 		}
 	}
-	prompt := triageSystemPrompt(registry, nil, "/tmp/ws")
+	prompt := triageSystemPrompt(registry, nil, "/tmp/ws", false)
 	if !strings.Contains(prompt, "generate_speech, generate_sound, or extend_audio tool") {
 		t.Fatalf("audio-mode guidance should name all three audio tools:\n%s", prompt)
 	}
@@ -273,7 +273,7 @@ func TestTriagePromptListsAudioTools(t *testing.T) {
 // video-mode enumeration itself names extension.
 func TestTriagePromptBaresVideoExtendAsVideoMode(t *testing.T) {
 	registry := newHarnessToolRegistry([]HarnessToolDefinition{videoGenerationToolDefinition(AppConfig{}, false)})
-	prompt := triageSystemPrompt(registry, nil, "/tmp/ws")
+	prompt := triageSystemPrompt(registry, nil, "/tmp/ws", false)
 	if !strings.Contains(prompt, "create, animate, extend, restyle, or render a video") {
 		t.Fatalf("video-mode enumeration should name extension and restyling:\n%s", prompt)
 	}
@@ -296,7 +296,7 @@ func TestTriagePromptBaresVideoExtendAsVideoMode(t *testing.T) {
 // media).
 func TestTriagePromptExplainsAvailableMediaNote(t *testing.T) {
 	registry := newHarnessToolRegistry([]HarnessToolDefinition{videoGenerationToolDefinition(AppConfig{}, false)})
-	prompt := triageSystemPrompt(registry, nil, "/tmp/ws")
+	prompt := triageSystemPrompt(registry, nil, "/tmp/ws", false)
 	for _, want := range []string{
 		`"[Available media: ...]"`,
 		"resolved from @-mentioned assets or the conversation's recent artifacts",
@@ -842,7 +842,7 @@ func TestTriagePromptRoutesTranscriptionToText(t *testing.T) {
 		extendAudioToolDefinition(),
 		transcribeAudioToolDefinition(defaultAppConfig()),
 	})
-	prompt := triageSystemPrompt(registry, nil, "/tmp/ws")
+	prompt := triageSystemPrompt(registry, nil, "/tmp/ws", false)
 	for _, want := range []string{
 		"A transcript is a text deliverable",
 		"GENERATE a new audio clip",

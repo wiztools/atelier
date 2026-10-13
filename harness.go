@@ -371,6 +371,24 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	queued := run.appendStep("queued", 1, "", "", "turn accepted by harness")
 	run.completeStep(queued, "completed", "", 0, "")
 
+	// Airplane mode refuses the turn up front when either chat role would
+	// have to leave the machine, before the harness-provider check below —
+	// the same deterministic-failure posture: retrying cannot succeed until
+	// the config changes, so burning triage on it would tell the user
+	// nothing they could not have been told immediately.
+	if err := airplaneChatProviderError(h.config, primaryProvider, req.BaseURL); err != nil {
+		run.complete("failed", "airplane_mode_blocked")
+		h.saveFailedAssistantTurn(conversationID, err.Error(), req.Model, primaryProvider, run)
+		h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
+		return
+	}
+	if err := airplaneChatProviderError(h.config, harness.provider, req.BaseURL); err != nil {
+		run.complete("failed", "airplane_mode_blocked")
+		h.saveFailedAssistantTurn(conversationID, err.Error(), harness.model, harness.provider, run)
+		h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: err.Error(), Done: true})
+		return
+	}
+
 	// A misconfigured harness provider fails every call for the same reason, so
 	// report it now rather than degrading through triage and the planner first.
 	if err := h.harnessProviderUnavailable(harness, req.BaseURL); err != nil {
@@ -605,7 +623,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			toolNotices = imageNotice
 		}
 	}
-	if genNotice := mediaGenFallbackNotice(preparation.MediaGenUnavailable, preparation.MediaGenMode, assistantContent); genNotice != "" {
+	if genNotice := mediaGenFallbackNotice(preparation.MediaGenUnavailable, preparation.MediaGenMode, assistantContent, airplaneModeActive(h.config)); genNotice != "" {
 		if toolNotices != "" {
 			toolNotices += "\n" + genNotice
 		} else {
@@ -2516,7 +2534,7 @@ func (h *HarnessEngine) preparedResponseRequest(ctx context.Context, req ChatReq
 	// trailing-note channel: the final model learns the media cannot be produced
 	// and what to tell the user, instead of inventing a queued-render reply.
 	if preparation.MediaGenUnavailable {
-		if note := mediaGenUnavailableNote(preparation.MediaGenMode); note != "" {
+		if note := mediaGenUnavailableNote(preparation.MediaGenMode, airplaneModeActive(h.config)); note != "" {
 			messages = append(messages, ChatMessage{Role: "user", Content: note})
 		}
 	}

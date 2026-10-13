@@ -82,11 +82,19 @@ func generationMediaKindPhrase(mode string) string {
 // triage routed the turn to a generation mode but no matching generate_* tool
 // is configured. It states the capability is absent (not broken) and the exact
 // remedy to relay, so the model cannot pass off a from-knowledge answer as a
-// queued render. Empty for non-generation modes.
-func mediaGenUnavailableNote(mode string) string {
+// queued render. Empty for non-generation modes. The airplane variant names
+// airplane mode as the cause — "add a fal.ai key" would be false advice while
+// the mode blocks every cloud provider.
+func mediaGenUnavailableNote(mode string, airplane bool) string {
 	kind := generationMediaKindPhrase(mode)
 	if kind == "" {
 		return ""
+	}
+	if airplane {
+		return "Atelier note: the user's latest request asks Atelier to generate or extend " + kind +
+			", but airplane mode is on, so Atelier will not contact a cloud provider and has no local tool that can do it. " +
+			"Do not claim the " + kind + " was created, queued, or is rendering, and do not attempt it through other tools. " +
+			"Tell the user plainly that " + kind + " generation needs a cloud provider, which airplane mode blocks: turning it off in Settings → Providers re-enables it."
 	}
 	return "Atelier note: the user's latest request asks Atelier to generate or extend " + kind +
 		", but no " + kind + " generation model is configured on this machine, so Atelier has no tool that can do it. " +
@@ -100,7 +108,7 @@ func mediaGenUnavailableNote(mode string) string {
 // answer did not already name the remedy — mirroring mediaEditFallbackNotice.
 // Empty when the capability is available, the mode is not a generation mode, or
 // the answer already covered the remedy.
-func mediaGenFallbackNotice(unavailable bool, mode string, assistantContent string) string {
+func mediaGenFallbackNotice(unavailable bool, mode string, assistantContent string, airplane bool) string {
 	if !unavailable {
 		return ""
 	}
@@ -109,6 +117,12 @@ func mediaGenFallbackNotice(unavailable bool, mode string, assistantContent stri
 		return ""
 	}
 	lower := strings.ToLower(assistantContent)
+	if airplane {
+		if strings.Contains(lower, "airplane mode") {
+			return ""
+		}
+		return "> ⚠️ " + kind + " generation is unavailable while airplane mode is on — turn it off in Settings → Providers to use cloud " + kind + " models."
+	}
 	if strings.Contains(lower, "fal.ai") || strings.Contains(lower, "settings → providers") {
 		return ""
 	}

@@ -326,6 +326,17 @@ func (a *App) checkForUpdates(ctx context.Context, notify bool) UpdateStatus {
 		ctx = context.Background()
 	}
 	current := strings.TrimSpace(version)
+	// Airplane mode stands the updater down: the manifest fetch is a cloud
+	// call like any other, manual or scheduled (the scheduler lands here too).
+	// The error state surfaces in Settings with the remedy instead of the
+	// check silently doing nothing.
+	if _, airplane := airplaneDiskConfig(); airplane {
+		return UpdateStatus{
+			State:          updateStateError,
+			CurrentVersion: current,
+			Error:          "Airplane mode is on — update checks are disabled. Turn airplane mode off in Settings → Providers to check for updates.",
+		}
+	}
 	fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	manifest, err := a.fetchUpdateManifest(fetchCtx)
 	cancel()

@@ -520,6 +520,7 @@ export namespace main {
 	}
 	export class AppConfig {
 	    version: number;
+	    airplaneMode: boolean;
 	    storage: ConfigStorage;
 	    providers: ConfigProviders;
 	    models: ConfigModels;
@@ -536,6 +537,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.version = source["version"];
+	        this.airplaneMode = source["airplaneMode"];
 	        this.storage = this.convertValues(source["storage"], ConfigStorage);
 	        this.providers = this.convertValues(source["providers"], ConfigProviders);
 	        this.models = this.convertValues(source["models"], ConfigModels);

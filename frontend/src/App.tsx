@@ -1107,6 +1107,11 @@ function App() {
   };
   const [imageModel, setImageModel] = useState('');
   const [primaryProvider, setPrimaryProvider] = useState<ChatProviderID>('ollama');
+  // Airplane mode: the offline guarantee (airplane_mode.go). While on, the
+  // backend refuses every cloud call, so the UI restricts the provider
+  // pickers to the local ones and hides the cloud-only surfaces rather than
+  // letting turns fail mysteriously.
+  const [airplaneMode, setAirplaneMode] = useState(false);
   // The primary model is remembered per provider so switching providers
   // restores that provider's last selection (falling back to the first
   // available model when the remembered one isn't in the current list).
@@ -1785,6 +1790,7 @@ function App() {
     const timeout = window.setTimeout(() => {
       SaveConfig(main.AppConfig.createFrom({
         version: 1,
+        airplaneMode,
         storage: storageConfig ?? undefined,
         providers: {
           ollama: {
@@ -1902,7 +1908,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel]);
+  }, [airplaneMode, baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel]);
 
   // Re-probe local CLI tools when a binary override changes so the provider
   // dropdown and the video/image-tools status reflect an unsaved override without
@@ -2139,6 +2145,9 @@ function App() {
         setUpdateCheckStatus(`Atelier ${status.latestVersion} is available — install from the banner.`);
       } else if (status.state === 'current') {
         setUpdateCheckStatus(`Atelier is up to date (${status.currentVersion}).`);
+      } else if (status.error?.startsWith('Airplane mode')) {
+        // A policy refusal, not a failure — surface it as-is.
+        setUpdateCheckStatus(status.error);
       } else {
         setUpdateCheckStatus(`Update check failed: ${status.error || 'unknown error'}`);
       }
@@ -3081,6 +3090,7 @@ function App() {
     const config = await GetConfig();
     const nextBaseURL = config.providers?.ollama?.baseURL || defaultBaseURL;
     const nextNumCtx = config.providers?.ollama?.numCtx || defaultOllamaNumCtx;
+    const nextAirplaneMode = Boolean(config.airplaneMode);
     const nextPrimaryModel = config.providers?.ollama?.models?.primary ?? '';
     const nextOpenRouterModel = config.providers?.openrouter?.primary ?? '';
     const nextOpenAICompatiblePrimary = config.providers?.openaiCompatible?.primary ?? '';
@@ -3157,6 +3167,7 @@ function App() {
     setUpdatesConfig(config.updates ?? null);
     setBaseURL(nextBaseURL);
     setOllamaNumCtx(nextNumCtx);
+    setAirplaneMode(nextAirplaneMode);
     setPrimaryModels({ollama: nextPrimaryModel, openrouter: nextOpenRouterModel, 'openai-compatible': nextOpenAICompatiblePrimary});
     setPrimaryProvider(nextPrimaryProvider);
     setHarnessModels({ollama: nextHarnessModel, openrouter: nextOpenRouterHarness, 'openai-compatible': nextOpenAICompatibleHarness});
@@ -5434,6 +5445,7 @@ function App() {
               replicateDefaultModel={replicateInpaintModel}
               falHasKey={falHasKey}
               replicateHasKey={replicateHasKey}
+              airplaneMode={airplaneMode}
               suspended={view !== 'app'}
               onClose={closeImageEditor}
               onOpenParent={(parentConversationID) => {
@@ -5546,6 +5558,27 @@ function App() {
               {settingsTab === 'providers' ? (
               <>
               <section className="settings-section">
+                <h3>
+                  Airplane Mode{' '}
+                  <InfoHint
+                    label="About airplane mode"
+                    text="While on, Atelier itself never contacts a cloud service: chat runs on local Ollama and OpenAI-compatible endpoints (loopback-verified), cloud image/video/audio generation is unavailable, transcription uses the local whisper CLI, the image editor's inpaint is disabled, and update checks stand down. run_command stays available — airplane mode is not a sandbox."
+                  />
+                </h3>
+                <div className="settings-rows">
+                  <label className="airplane-toggle">
+                    <input
+                      type="checkbox"
+                      checked={airplaneMode}
+                      onChange={(event) => setAirplaneMode(event.target.checked)}
+                      aria-label="Airplane mode — block all cloud providers"
+                    />
+                    <span>Block all cloud providers — local models and tools only</span>
+                  </label>
+                </div>
+              </section>
+
+              <section className="settings-section">
                 <h3>Provider</h3>
                 <div className="connection">
                   <label htmlFor="base-url">Ollama endpoint</label>
@@ -5592,8 +5625,13 @@ function App() {
                 </div>
               </section>
 
-              <section className="settings-section">
-                <h3>OpenRouter</h3>
+              <section className={airplaneMode ? 'settings-section airplane-blocked' : 'settings-section'}>
+                <h3>
+                  OpenRouter{' '}
+                  {airplaneMode ? (
+                    <AirplaneHint label="OpenRouter unavailable" text="Unavailable while airplane mode is on — turn it off above to configure." />
+                  ) : null}
+                </h3>
                 <div className="connection">
                   <label htmlFor="openrouter-key">API Key</label>
                   <div className="endpoint-row">
@@ -5641,8 +5679,13 @@ function App() {
                 </div>
               </section>
 
-              <section className="settings-section">
-                <h3>fal.ai</h3>
+              <section className={airplaneMode ? 'settings-section airplane-blocked' : 'settings-section'}>
+                <h3>
+                  fal.ai{' '}
+                  {airplaneMode ? (
+                    <AirplaneHint label="fal.ai unavailable" text="Unavailable while airplane mode is on — turn it off above to configure." />
+                  ) : null}
+                </h3>
                 <div className="connection">
                   <label htmlFor="fal-key">API Key</label>
                   <div className="endpoint-row">
@@ -5690,8 +5733,13 @@ function App() {
                 </div>
               </section>
 
-              <section className="settings-section">
-                <h3>Replicate</h3>
+              <section className={airplaneMode ? 'settings-section airplane-blocked' : 'settings-section'}>
+                <h3>
+                  Replicate{' '}
+                  {airplaneMode ? (
+                    <AirplaneHint label="Replicate unavailable" text="Unavailable while airplane mode is on — turn it off above to configure." />
+                  ) : null}
+                </h3>
                 <div className="connection">
                   <label htmlFor="replicate-key">API Token</label>
                   <div className="endpoint-row">
@@ -5976,6 +6024,7 @@ function App() {
                 onChange={patchSettingsModelSelection}
                 catalogs={modelSelectionCatalogs}
                 durationOptions={{video: videoDurationOptions, image: videoDurationImageOptions, keyframe: videoDurationKeyframeOptions, extend: videoDurationExtendOptions, sound: soundDurationOptions}}
+                airplaneMode={airplaneMode}
               />
               </>
               ) : null}
@@ -6041,6 +6090,7 @@ function App() {
                 })()}
                 overriddenKeys={convModelsKeys}
                 onResetField={resetConversationModelField}
+                airplaneMode={airplaneMode}
               />
               {convModelsError ? <div className="conversation-models-error">{convModelsError}</div> : null}
             </div>
@@ -6056,6 +6106,25 @@ function App() {
                 ) : null}
               </div>
               <div className="toolbar-right">
+                {/* Always visible: a one-click toggle for airplane mode (the
+                    Settings → Providers checkbox remains the explanatory home).
+                    Amber while the mode is on, neutral gray when off — the
+                    tooltip names the current state and the action. The flip
+                    persists through the debounced settings save. */}
+                <button
+                  type="button"
+                  className={`assets-toggle airplane-indicator${airplaneMode ? ' on' : ''}`}
+                  onClick={() => setAirplaneMode((current) => !current)}
+                  aria-pressed={airplaneMode}
+                  aria-label={airplaneMode ? 'Airplane mode is on — click to turn it off' : 'Airplane mode is off — click to turn it on'}
+                  title={airplaneMode
+                    ? 'Airplane mode is on — Atelier contacts no cloud provider. Click to turn it off.'
+                    : 'Airplane mode is off — cloud providers are available. Click to turn it on.'}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z" />
+                  </svg>
+                </button>
                 <ConversationUsage usage={modelUsage} media={mediaUsage} />
                 <button
                   type="button"
@@ -6467,7 +6536,7 @@ function App() {
                             onChange={(event) => selectComposerProvider(event.target.value as ChatProviderID)}
                           >
                             <option value="ollama">Ollama</option>
-                            <option value="openrouter">OpenRouter</option>
+                            <option value="openrouter" disabled={airplaneMode}>OpenRouter</option>
                             <option value="openai-compatible">OpenAI-compatible (local)</option>
                           </select>
                         </div>
@@ -7106,6 +7175,23 @@ function InfoHint(props: {label: string; text: string}) {
   return (
     <span className="info-hint" tabIndex={0} role="note" aria-label={props.label}>
       <span className="info-hint-icon" aria-hidden="true">i</span>
+      <span className="info-hint-pop" role="tooltip">{props.text}</span>
+    </span>
+  );
+}
+
+// AirplaneHint is the airplane-mode sibling of InfoHint: the same hover
+// mechanics, an airplane glyph instead of the "i", carrying the standing
+// unavailability message so a disabled cloud section stays scannable — the
+// copy rides the hover instead of standing on the screen.
+function AirplaneHint(props: {label: string; text: string}) {
+  return (
+    <span className="info-hint airplane-hint" tabIndex={0} role="note" aria-label={props.label}>
+      <span className="info-hint-icon" aria-hidden="true">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z" />
+        </svg>
+      </span>
       <span className="info-hint-pop" role="tooltip">{props.text}</span>
     </span>
   );
@@ -7935,10 +8021,14 @@ function ModelSelectionPanel({
   durationOptions,
   overriddenKeys,
   onResetField,
+  airplaneMode,
 }: {
   variant: 'settings' | 'conversation';
   value: ModelSelectionValue;
   onChange: (patch: Partial<ModelSelectionValue>) => void;
+  // Airplane mode: cloud providers and cloud-only sections render disabled or
+  // hidden — the backend refuses them (airplane_mode.go), the panel explains.
+  airplaneMode: boolean;
   catalogs: {
     models: main.OllamaModel[];
     modelOptions: string[];
@@ -8037,6 +8127,11 @@ function ModelSelectionPanel({
   const falInpaintOptions = inpaintCatalogs.fal.map((option) => ({value: option.id, label: option.label}));
   const replicateInpaintOptions = inpaintCatalogs.replicate.map((option) => ({value: option.id, label: option.label}));
 
+  // Airplane mode: a cloud-routed image provider can't serve generate_image
+  // (the tool gate drops it), so the model pickers yield to an explanation
+  // instead of offering models the backend will refuse to call.
+  const imageProviderBlocked = airplaneMode && value.imageProvider !== 'openai-compatible';
+
   const imageSizeOptions = useMemo(() => {
     const parts = value.imageAspectRatio.split(':').map((item) => Number(item));
     const valid = parts.length === 2 && parts.every((item) => Number.isFinite(item) && item > 0);
@@ -8091,9 +8186,12 @@ function ModelSelectionPanel({
       <label htmlFor={id}>{label}</label>
       <select id={id} value={provider} onChange={(event) => onPick(event.target.value as ChatProviderID)}>
         <option value="ollama">Ollama</option>
-        <option value="openrouter" disabled={!catalogs.openRouterHasKey}>OpenRouter</option>
+        <option value="openrouter" disabled={!catalogs.openRouterHasKey || airplaneMode}>OpenRouter</option>
         <option value="openai-compatible">OpenAI-compatible (local)</option>
       </select>
+      {airplaneMode && provider === 'openrouter' ? (
+        <span className="hint">Airplane mode refuses turns to OpenRouter — switch to a local provider.</span>
+      ) : null}
     </div>
   );
 
@@ -8191,19 +8289,27 @@ function ModelSelectionPanel({
         <div className="settings-rows">
           <div className="two-column">
             <div className="field">
-              {fieldLabel('image-provider', 'Image Provider', 'imageProvider')}
+              <div className="field-label-row">
+                {fieldLabel('image-provider', 'Image Provider', 'imageProvider')}
+                {airplaneMode && imageProviderBlocked ? (
+                  <AirplaneHint
+                    label="Image provider unavailable"
+                    text="The configured cloud provider is unavailable while airplane mode is on — pick a local provider to configure a model."
+                  />
+                ) : null}
+              </div>
               <select
                 id="image-provider"
                 value={value.imageProvider}
                 onChange={(event) => onChange({imageProvider: event.target.value as 'fal' | 'replicate' | 'openai-compatible'})}
               >
-                <option value="fal">fal.ai (cloud)</option>
-                <option value="replicate">Replicate (cloud)</option>
+                <option value="fal" disabled={airplaneMode}>fal.ai (cloud)</option>
+                <option value="replicate" disabled={airplaneMode}>Replicate (cloud)</option>
                 <option value="openai-compatible">OpenAI-compatible (local)</option>
               </select>
             </div>
 
-            {value.imageProvider === 'fal' ? (
+            {imageProviderBlocked ? null : value.imageProvider === 'fal' ? (
               <div className="field">
                 {fieldLabel('fal-model', 'fal.ai Model', 'imageModel')}
                 <ModelCombobox
@@ -8258,7 +8364,7 @@ function ModelSelectionPanel({
             )}
           </div>
 
-          {value.imageProvider === 'fal' ? (
+          {imageProviderBlocked ? null : value.imageProvider === 'fal' ? (
             <div className="field">
               {fieldLabel('fal-image-edit-model', 'Image-to-Image Model (fal.ai)', 'imageEditModel')}
               <ModelCombobox
@@ -8286,7 +8392,8 @@ function ModelSelectionPanel({
             </div>
           ) : null}
 
-          {value.imageProvider === 'replicate' ? (
+          {/* Upscaling is cloud-only (fal or Replicate): airplane mode drops it. */}
+          {airplaneMode ? null : value.imageProvider === 'replicate' ? (
             <div className="field">
               {fieldLabel('replicate-upscale-model', 'Image-Upscale Model (Replicate)', 'upscaleModel')}
               <ModelCombobox
@@ -8361,6 +8468,12 @@ function ModelSelectionPanel({
             label="Inpainting"
             text="Only models with a verified mask contract are listed — the editor refuses any model that cannot honor the painted selection."
           />
+          {airplaneMode ? (
+            <AirplaneHint
+              label="Inpainting unavailable"
+              text="Inpainting runs on a cloud provider, which airplane mode blocks — the image editor's crop tool stays available."
+            />
+          ) : null}
         </h3>
         <div className="settings-rows">
           <div className="two-column">
@@ -8415,7 +8528,15 @@ function ModelSelectionPanel({
       </section>
 
       <section className="settings-section">
-        <h3>Video</h3>
+        <h3>
+          Video{' '}
+          {airplaneMode ? (
+            <AirplaneHint
+              label="Video generation unavailable"
+              text="Video generation runs on a cloud provider (fal.ai or Replicate), which airplane mode blocks. The local video tools — trim, crop, screenshot, split, join, convert — still work in chat and the video editor."
+            />
+          ) : null}
+        </h3>
         <div className="settings-rows">
           <div className="field">
             <div className="field-label-row">
@@ -8757,7 +8878,15 @@ function ModelSelectionPanel({
       </section>
 
       <section className="settings-section">
-        <h3>Audio</h3>
+        <h3>
+          Audio{' '}
+          {airplaneMode ? (
+            <AirplaneHint
+              label="Audio generation unavailable"
+              text="Speech, music, sound effects, and audio extension run on fal.ai, which airplane mode blocks. The local audio tools — trim, cut, split, join, convert — still work in chat and the audio editor."
+            />
+          ) : null}
+        </h3>
         <div className="two-column">
           <div className="field">
             {fieldLabel('fal-audio-model', 'Speech Model (TTS, fal.ai)', 'audioModel')}
@@ -8832,7 +8961,7 @@ function ModelSelectionPanel({
             </select>
           </div>
         </div>
-        {!catalogs.falHasKey ? (
+        {!airplaneMode && !catalogs.falHasKey ? (
           <span className="hint">Add a fal.ai API key {keyWhere} to generate speech, music, or sound effects.</span>
         ) : null}
       </section>
@@ -8842,13 +8971,21 @@ function ModelSelectionPanel({
         <div className="settings-rows">
           <div className="two-column">
             <div className="field">
-              {fieldLabel('transcription-provider', 'Transcription Provider', 'transcriptionProvider')}
+              <div className="field-label-row">
+                {fieldLabel('transcription-provider', 'Transcription Provider', 'transcriptionProvider')}
+                {airplaneMode ? (
+                  <AirplaneHint
+                    label="Transcription pinned to local whisper"
+                    text="Airplane mode always transcribes locally — the fal.ai preference returns when it's off."
+                  />
+                ) : null}
+              </div>
               <select
                 id="transcription-provider"
-                value={value.transcriptionProvider}
+                value={airplaneMode ? 'local-whisper' : value.transcriptionProvider}
                 onChange={(event) => onChange({transcriptionProvider: event.target.value as 'fal' | 'local-whisper'})}
               >
-                <option value="fal">fal.ai (cloud)</option>
+                <option value="fal" disabled={airplaneMode}>fal.ai (cloud)</option>
                 <option
                   value="local-whisper"
                   disabled={!catalogs.whisperStatus?.available && value.transcriptionProvider !== 'local-whisper'}
@@ -8856,12 +8993,12 @@ function ModelSelectionPanel({
                   Whisper (local)
                 </option>
               </select>
-              {!catalogs.whisperStatus?.available && value.transcriptionProvider !== 'local-whisper' ? (
+              {!airplaneMode && !catalogs.whisperStatus?.available && value.transcriptionProvider !== 'local-whisper' ? (
                 <span className="hint">{catalogs.whisperStatus?.detail ?? 'Detecting local tools…'}</span>
               ) : null}
             </div>
 
-            {value.transcriptionProvider === 'local-whisper' ? (
+            {airplaneMode || value.transcriptionProvider === 'local-whisper' ? (
               <div className="field">
                 <div className="field-label-row">
                   {fieldLabel('whisper-model', 'Whisper Model', 'whisperModel')}
@@ -8895,7 +9032,7 @@ function ModelSelectionPanel({
             )}
           </div>
 
-          {value.transcriptionProvider === 'local-whisper' ? (
+          {value.transcriptionProvider === 'local-whisper' || airplaneMode ? (
             <div className="field">
               <div className="field-label-row">
                 {fieldLabel('whisper-binary', 'Whisper Binary', 'whisperBinary')}
@@ -8917,7 +9054,15 @@ function ModelSelectionPanel({
       </section>
 
       <section className="settings-section">
-        <h3>Lip Sync</h3>
+        <h3>
+          Lip Sync{' '}
+          {airplaneMode ? (
+            <AirplaneHint
+              label="Lip sync unavailable"
+              text="Lip sync runs on fal.ai, which airplane mode blocks."
+            />
+          ) : null}
+        </h3>
         <div className="settings-rows">
           <div className="two-column">
             <div className="field">
@@ -8946,7 +9091,7 @@ function ModelSelectionPanel({
               />
             </div>
           </div>
-          {!catalogs.falHasKey ? (
+          {!airplaneMode && !catalogs.falHasKey ? (
             <span className="hint">Add a fal.ai API key {keyWhere} to use lip sync.</span>
           ) : null}
         </div>
