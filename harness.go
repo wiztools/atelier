@@ -257,8 +257,10 @@ type HarnessToolCall struct {
 	Mode    string `json:"mode,omitempty"`
 	Columns int    `json:"columns,omitempty"`
 	// Local image-tool inputs (convert_image, transform_image, compose_images,
-	// adjust_image, optimize_image; see local_images.go). Format names an
-	// output format; Quality is a 1-100 encoding percentage; AspectRatio
+	// adjust_image, optimize_image; see local_images.go) and the audio sibling
+	// convert_audio (local_ffmpeg.go). Format names an output format; Quality
+	// is a 1-100 encoding percentage (convert_audio maps it onto a bitrate
+	// tier for mp3/m4a/ogg). AspectRatio
 	// (reused from generate_image — here the center-crop shape, e.g. "4:5")
 	// drives transform_image's crop; Width/Height/Rotate/Flip are
 	// transform_image's geometry ops; Position and Opacity place and fade a
@@ -2397,7 +2399,9 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 						"mode":    map[string]any{"type": "string"},
 						"columns": map[string]any{"type": "integer"},
 						// Local image tool inputs (convert/transform/compose/
-						// adjust/optimize — see local_images.go). Same
+						// adjust/optimize — see local_images.go) shared with
+						// convert_audio, the format-converting audio sibling
+						// (local_ffmpeg.go). Same
 						// contract: per-tool validation, grammar freedom here.
 						// aspectRatio and scale are shared with generate_image
 						// and upscale_image (string shapes there); the geometry

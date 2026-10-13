@@ -282,6 +282,10 @@ func TestFFmpegArgBuilders(t *testing.T) {
 			"-i in.mp4 -vn -c:a copy out.m4a"},
 		{"extract convert", ffmpegExtractAudioArgs("in.mp4", "out.mp3", false),
 			"-i in.mp4 -vn -c:a libmp3lame -b:a 192k out.mp3"},
+		{"convert audio mp3 default bitrate", ffmpegConvertAudioArgs("in.m4a", "out.mp3", []string{"-c:a", "libmp3lame", "-b:a", "192k"}),
+			"-i in.m4a -vn -c:a libmp3lame -b:a 192k out.mp3"},
+		{"convert audio lossless", ffmpegConvertAudioArgs("in.mp3", "out.wav", []string{"-c:a", "pcm_s16le"}),
+			"-i in.mp3 -vn -c:a pcm_s16le out.wav"},
 		{"replace copy video", ffmpegReplaceAudioArgs("v.mp4", "a.mp3", true, "out.mp4"),
 			"-i v.mp4 -i a.mp3 -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 192k -shortest -movflags +faststart out.mp4"},
 		{"replace reencode video", ffmpegReplaceAudioArgs("v.webm", "a.mp3", false, "out.mp4"),
@@ -552,6 +556,29 @@ func TestFFmpegToolValidation(t *testing.T) {
 	}
 	if errors := joinAudios.Validate("toolCalls[0]", HarnessToolCall{Mode: "reencode"}); len(errors) != 0 {
 		t.Errorf("join_audios reencode mode = %v, want none", errors)
+	}
+
+	convertAudio := convertAudioToolDefinition()
+	if errors := convertAudio.Validate("toolCalls[0]", HarnessToolCall{}); len(errors) == 0 || !strings.Contains(errors[0], ".format is required for convert_audio") {
+		t.Errorf("convert_audio without a format = %v, want the required-format error", errors)
+	}
+	if errors := convertAudio.Validate("toolCalls[0]", HarnessToolCall{Format: "aac"}); len(errors) == 0 || !strings.Contains(errors[0], `.format must be one of "mp3"`) {
+		t.Errorf("convert_audio with an unsupported format = %v, want the format enum error", errors)
+	}
+	if errors := convertAudio.Validate("toolCalls[0]", HarnessToolCall{Format: "MP3"}); len(errors) != 0 {
+		t.Errorf("convert_audio with an uppercase format = %v, want none (formats normalize)", errors)
+	}
+	if errors := convertAudio.Validate("toolCalls[0]", HarnessToolCall{Format: "mp3", Quality: 101}); len(errors) == 0 || !strings.Contains(errors[0], ".quality must be 1-100") {
+		t.Errorf("convert_audio with an out-of-range quality = %v, want the range error", errors)
+	}
+	if errors := convertAudio.Validate("toolCalls[0]", HarnessToolCall{Format: "wav", Quality: 85}); len(errors) == 0 || !strings.Contains(errors[0], ".quality applies to mp3, m4a, or ogg output only") {
+		t.Errorf("convert_audio with quality on a lossless format = %v, want the lossless-quality error", errors)
+	}
+	if errors := convertAudio.Validate("toolCalls[0]", HarnessToolCall{Format: "flac"}); len(errors) != 0 {
+		t.Errorf("valid convert_audio flac = %v, want none", errors)
+	}
+	if errors := convertAudio.Validate("toolCalls[0]", HarnessToolCall{Format: "mp3", Quality: 95}); len(errors) != 0 {
+		t.Errorf("valid convert_audio mp3 with quality = %v, want none", errors)
 	}
 
 	transform := transformVideoToolDefinition()
@@ -1464,6 +1491,129 @@ func TestSplitAudioTarget(t *testing.T) {
 			t.Errorf("splitAudioTarget(%q) notice = %q, want none", tc.mediaType, notice)
 		}
 	}
+}
+
+// TestConvertAudioTarget pins the format mapping and the quality→bitrate
+// tiers: the lossy formats carry their tier's bitrate (omitted quality lands
+// on the house 192k default), the lossless ones take no bitrate at all.
+func TestConvertAudioTarget(t *testing.T) {
+	cases := []struct {
+		format   string
+		quality  int
+		wantExt  string
+		wantMime string
+		wantArgs string
+	}{
+		{"mp3", 0, ".mp3", "audio/mpeg", "-c:a libmp3lame -b:a 192k"},
+		{"mp3", 95, ".mp3", "audio/mpeg", "-c:a libmp3lame -b:a 320k"},
+		{"mp3", 70, ".mp3", "audio/mpeg", "-c:a libmp3lame -b:a 256k"},
+		{"mp3", 40, ".mp3", "audio/mpeg", "-c:a libmp3lame -b:a 192k"},
+		{"mp3", 10, ".mp3", "audio/mpeg", "-c:a libmp3lame -b:a 128k"},
+		{"m4a", 0, ".m4a", "audio/mp4", "-c:a aac -b:a 192k"},
+		{"m4a", 95, ".m4a", "audio/mp4", "-c:a aac -b:a 320k"},
+		{"ogg", 0, ".ogg", "audio/ogg", "-c:a libvorbis -b:a 192k"},
+		{"ogg", 10, ".ogg", "audio/ogg", "-c:a libvorbis -b:a 128k"},
+		{"wav", 0, ".wav", "audio/wav", "-c:a pcm_s16le"},
+		{"flac", 0, ".flac", "audio/flac", "-c:a flac"},
+	}
+	for _, tc := range cases {
+		ext, mime, codecArgs := convertAudioTarget(tc.format, tc.quality)
+		if ext != tc.wantExt || mime != tc.wantMime {
+			t.Errorf("convertAudioTarget(%q, %d) = %s/%s, want %s/%s", tc.format, tc.quality, ext, mime, tc.wantExt, tc.wantMime)
+		}
+		if got := strings.Join(codecArgs, " "); got != tc.wantArgs {
+			t.Errorf("convertAudioTarget(%q, %d) args = %q, want %q", tc.format, tc.quality, got, tc.wantArgs)
+		}
+	}
+}
+
+// TestConvertAudioTargetPhrase pins the evidence phrasing: lossy targets name
+// their bitrate tier, the lossless ones stay bare.
+func TestConvertAudioTargetPhrase(t *testing.T) {
+	if got := convertAudioTargetPhrase("mp3", 0); got != "mp3 (192 kbps)" {
+		t.Errorf("convertAudioTargetPhrase(mp3, 0) = %q, want \"mp3 (192 kbps)\"", got)
+	}
+	if got := convertAudioTargetPhrase("mp3", 95); got != "mp3 (320 kbps)" {
+		t.Errorf("convertAudioTargetPhrase(mp3, 95) = %q, want \"mp3 (320 kbps)\"", got)
+	}
+	if got := convertAudioTargetPhrase("wav", 0); got != "wav" {
+		t.Errorf("convertAudioTargetPhrase(wav, 0) = %q, want \"wav\"", got)
+	}
+}
+
+// TestFFmpegConvertAudioExecutes drives convert_audio against the fake ffmpeg:
+// the whole file transcodes under the requested format's codec args (-vn
+// always, bitrate per the quality tier), the output rides ToolAudioResult with
+// the target container's MIME, and the summary names format and bitrate.
+func TestFFmpegConvertAudioExecutes(t *testing.T) {
+	t.Run("m4a to mp3 at the default bitrate", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedAudios: []string{audioDataURL("audio/mp4", "MEMO")},
+		}, "convert_audio", HarnessToolCall{Format: "mp3"})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, ok := result.Result.(ToolAudioResult)
+		if !ok || typed.Model != ffmpegModelName || len(typed.Audios) != 1 {
+			t.Fatalf("result payload = %+v", result.Result)
+		}
+		defer os.Remove(typed.Audios[0].TempPath)
+		if typed.Audios[0].MimeType != "audio/mpeg" {
+			t.Fatalf("mimeType = %q, want audio/mpeg", typed.Audios[0].MimeType)
+		}
+		data, err := os.ReadFile(typed.Audios[0].TempPath)
+		if err != nil || !strings.HasPrefix(string(data), "\xff\xd8\xffFAKE-MEDIA") {
+			t.Fatalf("output file = %q (%v), want the fake ffmpeg payload", data, err)
+		}
+		args := fakeFFmpegArgs(t, bin)
+		if !strings.Contains(args, "-vn -c:a libmp3lame -b:a 192k") {
+			t.Fatalf("convert args = %q, want the default-bitrate MP3 re-encode with -vn", args)
+		}
+		if !strings.Contains(result.Summary, "converted the attached audio to mp3 (192 kbps)") {
+			t.Fatalf("summary = %q, want the format+bitrate phrase", result.Summary)
+		}
+	})
+	t.Run("quality rides as the bitrate tier", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedAudios: []string{audioDataURL("audio/x-m4a", "MEMO")},
+		}, "convert_audio", HarnessToolCall{Format: "MP3", Quality: 95})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		args := fakeFFmpegArgs(t, bin)
+		if !strings.Contains(args, "-c:a libmp3lame -b:a 320k") {
+			t.Fatalf("convert args = %q, want the 320k tier for quality 95", args)
+		}
+	})
+	t.Run("lossless flac takes no bitrate", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedAudios: []string{audioDataURL("audio/mpeg", "SONG")},
+		}, "convert_audio", HarnessToolCall{Format: "flac"})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed := result.Result.(ToolAudioResult)
+		defer os.Remove(typed.Audios[0].TempPath)
+		if typed.Audios[0].MimeType != "audio/flac" {
+			t.Fatalf("mimeType = %q, want audio/flac", typed.Audios[0].MimeType)
+		}
+		args := fakeFFmpegArgs(t, bin)
+		if !strings.Contains(args, "-vn -c:a flac") || strings.Contains(args, "-b:a") {
+			t.Fatalf("convert args = %q, want a bare flac encode with no bitrate", args)
+		}
+	})
+	t.Run("needs an attached audio file", func(t *testing.T) {
+		config, _ := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedAudios: []string{""},
+		}, "convert_audio", HarnessToolCall{Format: "mp3"})
+		if result.Status == "completed" || !strings.Contains(result.Error, "requires an attached audio file") {
+			t.Fatalf("result = %+v, want the attachment error", result)
+		}
+	})
 }
 
 // TestJoinAudioReencodeTarget pins the first-clip-codec normalization: a known

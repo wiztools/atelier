@@ -1,6 +1,6 @@
 package main
 
-// Local ffmpeg tools: the nine video/audio transform tools that run on the
+// Local ffmpeg tools: the video/audio transform tools that run on the
 // locally installed ffmpeg CLI (see local_tools.go for binary detection and
 // the shared runners). They follow the media-tool conventions of
 // tools_registry.go — attachment-driven sources (the turn's media slots carry
@@ -45,7 +45,7 @@ func ffmpegToolsConfigured(config AppConfig) bool {
 // configured. It tells the model what actually happened (the capability is
 // absent, not broken) and the exact remedy to relay, so a from-knowledge
 // answer can't masquerade as a failed edit or hand the user a raw CLI recipe.
-const localMediaEditUnavailableNote = "Atelier note: the user's latest request asks for a local media edit — capturing a frame or a contact sheet, splitting or trimming a clip or audio recording, joining clips or audio files, cropping/resizing/rotating a clip, or extracting/replacing audio — but no ffmpeg CLI was detected on this machine, so Atelier has no tool that can perform it. Do not claim the edit was done and do not attempt it through other tools. Tell the user plainly that local media editing needs a one-time install: install ffmpeg with `brew install ffmpeg` (or set an explicit binary in Settings → Video Tools); Atelier detects it automatically on the next message."
+const localMediaEditUnavailableNote = "Atelier note: the user's latest request asks for a local media edit — capturing a frame or a contact sheet, splitting or trimming a clip or audio recording, joining clips or audio files, converting an audio file's format, cropping/resizing/rotating a clip, or extracting/replacing audio — but no ffmpeg CLI was detected on this machine, so Atelier has no tool that can perform it. Do not claim the edit was done and do not attempt it through other tools. Tell the user plainly that local media editing needs a one-time install: install ffmpeg with `brew install ffmpeg` (or set an explicit binary in Settings → Video Tools); Atelier detects it automatically on the next message."
 
 // mediaEditFallbackNotice returns the deterministic one-line blockquote for
 // the chat reply when the final model's answer did not already mention ffmpeg
@@ -75,6 +75,7 @@ func ffmpegToolDefinitions(config AppConfig) []HarnessToolDefinition {
 		joinAudiosToolDefinition(),
 		extractAudioToolDefinition(),
 		replaceAudioToolDefinition(),
+		convertAudioToolDefinition(),
 		transformVideoToolDefinition(),
 	}
 	if _, ok := resolveLocalFFprobeBinary(config); ok {
@@ -408,6 +409,16 @@ func ffmpegExtractAudioArgs(input, output string, streamCopy bool) []string {
 	} else {
 		args = append(args, "-c:a", "libmp3lame", "-b:a", "192k")
 	}
+	return append(args, output)
+}
+
+// ffmpegConvertAudioArgs transcodes the whole input into the target format
+// (codecArgs carry the encoder and bitrate). -vn drops embedded cover art —
+// an MP3 with album art carries a video stream ffmpeg would otherwise try to
+// mux into the output.
+func ffmpegConvertAudioArgs(input, output string, codecArgs []string) []string {
+	args := []string{"-i", input, "-vn"}
+	args = append(args, codecArgs...)
 	return append(args, output)
 }
 
@@ -1874,6 +1885,138 @@ func extractAudioTarget(ctx context.Context, config AppConfig, input string) (ex
 	}
 }
 
+// convertAudioToolDefinition exposes convert_audio: re-encode the attached
+// audio file into another format — the audio sibling of convert_image, and
+// the tool a "convert to mp3" ask routes to.
+func convertAudioToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "convert_audio",
+		Title:       "Convert audio",
+		Description: "Use this when the user asks to convert an attached AUDIO file to another format or codec — make an MP3 out of an M4A/AAC recording, a WAV or FLAC copy for lossless editing or archiving, an OGG for the web (for a video's soundtrack, use extract_audio; to cut a segment out, use split_audio). Requires an attached audio file (one attached or @-mentioned this turn, or the conversation's newest audio). format is one of \"mp3\", \"wav\", \"m4a\", \"flac\", \"ogg\". quality is optional 1-100 for the lossy formats — higher is a higher bitrate (90+ ≈ 320 kbps, 70 ≈ 256, 40 ≈ 192, the default, below ≈ 128) — and does not apply to wav or flac, which are lossless. The converted file is attached to the assistant reply and becomes the conversation's newest audio.",
+		Example:     `{"name":"convert_audio","format":"mp3"}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: convertAudioParamSchema(),
+		Validate: func(prefix string, call HarnessToolCall) []string {
+			format := convertAudioFormat(call.Format)
+			if format == "" {
+				return []string{prefix + `.format is required for convert_audio ("mp3", "wav", "m4a", "flac", or "ogg")`}
+			}
+			if !convertAudioFormats[format] {
+				return []string{prefix + `.format must be one of "mp3", "wav", "m4a", "flac", "ogg" for convert_audio`}
+			}
+			if call.Quality != 0 {
+				if call.Quality < 1 || call.Quality > 100 {
+					return []string{prefix + ".quality must be 1-100 for convert_audio"}
+				}
+				if !convertAudioQualityFormats[format] {
+					return []string{prefix + ".quality applies to mp3, m4a, or ogg output only — omit it for " + format + " (lossless)"}
+				}
+			}
+			return nil
+		},
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			source := firstAttachedAudio(tools.AttachedAudios)
+			if source == "" {
+				return nil, "conversion requires an attached audio file", errors.New("convert_audio requires an attached audio file — ask the user to attach one first")
+			}
+			format := convertAudioFormat(call.Format)
+			quality := call.Quality
+			staging, err := os.MkdirTemp("", "atelier-ffmpeg-*")
+			if err != nil {
+				return nil, "conversion failed", err
+			}
+			defer os.RemoveAll(staging)
+			input, err := stageMediaDataURL(staging, "input", source)
+			if err != nil {
+				return nil, "conversion failed", err
+			}
+			ext, mimeType, codecArgs := convertAudioTarget(format, quality)
+			staged := filepath.Join(staging, "converted"+ext)
+			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegConvertAudioArgs(input, staged, codecArgs)); err != nil {
+				return nil, "conversion failed", err
+			}
+			tempPath, err := promoteStagedOutput(staged, "atelier-audio-*", ext)
+			if err != nil {
+				return nil, "conversion failed", err
+			}
+			return ToolAudioResult{
+				Model:  ffmpegModelName,
+				Prompt: "converted to " + convertAudioTargetPhrase(format, quality),
+				Count:  1,
+				Audios: []ToolAudioFile{{TempPath: tempPath, MimeType: mimeType}},
+			}, fmt.Sprintf("converted the attached audio to %s with ffmpeg", convertAudioTargetPhrase(format, quality)), nil
+		},
+		Activity: ffmpegActivity("convert-audio"),
+	}
+}
+
+// convertAudioFormats are the output formats convert_audio accepts — the same
+// containers splitAudioTarget maps attachments onto.
+var convertAudioFormats = map[string]bool{
+	"mp3": true, "wav": true, "m4a": true, "flac": true, "ogg": true,
+}
+
+// convertAudioQualityFormats are the lossy formats convert_audio's quality
+// setting applies to; wav and flac are lossless and have no quality knob.
+var convertAudioQualityFormats = map[string]bool{
+	"mp3": true, "m4a": true, "ogg": true,
+}
+
+// convertAudioFormat normalizes the planner's format input: trimmed and
+// lowercased, so "MP3" and " mp3 " land on "mp3". Empty stays empty (the
+// required-format validation error).
+func convertAudioFormat(raw string) string {
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+// convertAudioBitrate maps the quality input onto a streaming bitrate tier
+// for the lossy targets. Zero (omitted) lands on the house default 192k —
+// the rate extract_audio's fallback, join_audios' re-encode, and
+// splitAudioTarget's fallback all standardize on.
+func convertAudioBitrate(quality int) int {
+	switch {
+	case quality <= 0:
+		return 192
+	case quality >= 90:
+		return 320
+	case quality >= 70:
+		return 256
+	case quality >= 40:
+		return 192
+	default:
+		return 128
+	}
+}
+
+// convertAudioTarget builds the output shape for the requested format: the
+// container, its MIME type, and the codec args. Lossy formats carry the
+// quality tier's bitrate; wav and flac are lossless and take none.
+func convertAudioTarget(format string, quality int) (ext, mimeType string, codecArgs []string) {
+	bitrate := strconv.Itoa(convertAudioBitrate(quality)) + "k"
+	switch format {
+	case "wav":
+		return ".wav", "audio/wav", []string{"-c:a", "pcm_s16le"}
+	case "flac":
+		return ".flac", "audio/flac", []string{"-c:a", "flac"}
+	case "m4a":
+		return ".m4a", "audio/mp4", []string{"-c:a", "aac", "-b:a", bitrate}
+	case "ogg":
+		return ".ogg", "audio/ogg", []string{"-c:a", "libvorbis", "-b:a", bitrate}
+	default:
+		return ".mp3", "audio/mpeg", []string{"-c:a", "libmp3lame", "-b:a", bitrate}
+	}
+}
+
+// convertAudioTargetPhrase names the conversion result for the evidence
+// prompt and summary: "mp3 (192 kbps)" for the lossy targets, bare format
+// for the lossless ones.
+func convertAudioTargetPhrase(format string, quality int) string {
+	if !convertAudioQualityFormats[format] {
+		return format
+	}
+	return fmt.Sprintf("%s (%d kbps)", format, convertAudioBitrate(quality))
+}
+
 // replaceAudioToolDefinition exposes replace_audio: lay a new audio track
 // under the attached video (narration, music, sound over a clip).
 func replaceAudioToolDefinition() HarnessToolDefinition {
@@ -2375,6 +2518,18 @@ func extractAudioParamSchema() map[string]any {
 		"additionalProperties": false,
 		"properties":           map[string]any{},
 		"required":             []string{},
+	}
+}
+
+func convertAudioParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"format":  enumParam(`The output format: "mp3", "wav", "m4a", "flac", or "ogg".`, "mp3", "wav", "m4a", "flac", "ogg"),
+			"quality": intParam(`Optional 1-100 for the lossy formats (mp3, m4a, ogg): higher means a higher bitrate (90+ ≈ 320 kbps, 70 ≈ 256, 40 ≈ 192 — the default, below ≈ 128). Omit for wav or flac — lossless has no quality knob.`),
+		},
+		"required": []string{"format"},
 	}
 }
 
