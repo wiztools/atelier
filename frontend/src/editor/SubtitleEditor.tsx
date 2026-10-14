@@ -224,14 +224,16 @@ export function SubtitleEditor(props: {
     }
   }, [mediaTime, loopCue, activeIndex, offset, doc]);
 
+  // seekToCue positions the linked media at the cue's start — through the
+  // session offset, the same mapping the active-cue highlight uses — without
+  // playing: Space starts playback from there, and loop-cue reviews the line.
   const seekToCue = (index: number) => {
     const cue = doc.cues[index];
     if (!cue) return;
-    const element = mediaRef.current;
     setSelected(index);
+    const element = mediaRef.current;
     if (element) {
       element.currentTime = Math.max(0, cue.startSeconds + offset);
-      void element.play().catch(() => {});
     }
   };
 
@@ -519,13 +521,14 @@ export function SubtitleEditor(props: {
                 key={index}
                 data-cue-index={index}
                 className={`subtitle-cue${index === selected ? ' selected' : ''}${index === activeIndex ? ' active' : ''}`}
-                onClick={() => setSelected(index)}
+                onClick={() => seekToCue(index)}
               >
                 <span className="subtitle-cue-index">{index + 1}</span>
                 <div className="subtitle-cue-times">
                   <button
                     type="button"
                     className="subtitle-cue-time"
+                    onClick={(event) => event.stopPropagation()}
                     title="Edit start time (or press [ / ] with the cue selected)"
                     onBlur={(event) => commitTime(index, 'start', event.currentTarget.textContent || '')}
                     onKeyDown={(event) => {
@@ -543,6 +546,7 @@ export function SubtitleEditor(props: {
                   <button
                     type="button"
                     className="subtitle-cue-time"
+                    onClick={(event) => event.stopPropagation()}
                     title="Edit end time (or press { / } with the cue selected)"
                     onBlur={(event) => commitTime(index, 'end', event.currentTarget.textContent || '')}
                     onKeyDown={(event) => {
@@ -561,6 +565,7 @@ export function SubtitleEditor(props: {
                   <textarea
                     className="subtitle-cue-text editing"
                     autoFocus
+                    onClick={(event) => event.stopPropagation()}
                     defaultValue={cue.text}
                     onBlur={(event) => commitText(index, event.target.value)}
                     onKeyDown={(event) => {
@@ -577,7 +582,7 @@ export function SubtitleEditor(props: {
                     {cue.text || <em>(empty — double-click to edit)</em>}
                   </button>
                 )}
-                <div className="subtitle-cue-actions">
+                <div className="subtitle-cue-actions" onClick={(event) => event.stopPropagation()}>
                   <button type="button" title="Split at playhead-mapped time" onClick={() => {
                     const element = mediaRef.current;
                     const at = element ? Math.max(cue.startSeconds, Math.min(cue.endSeconds, element.currentTime - offset)) : (cue.startSeconds + cue.endSeconds) / 2;
