@@ -2466,6 +2466,24 @@ export namespace main {
 	        this.expandedProjects = source["expandedProjects"];
 	    }
 	}
+	export class StagedMediaUpload {
+	    path: string;
+	    url: string;
+	    size: number;
+	    mediaType: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new StagedMediaUpload(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.url = source["url"];
+	        this.size = source["size"];
+	        this.mediaType = source["mediaType"];
+	    }
+	}
 	
 	export class ToolCommandRequest {
 	    command: string;

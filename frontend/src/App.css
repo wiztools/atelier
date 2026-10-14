@@ -2343,6 +2343,22 @@ button:disabled {
   max-width: 220px;
 }
 
+/* Staging progress rows (large dropped/picked media streaming to the backend
+   in chunks before their attachment chips exist). */
+.composer-staging {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.composer-staging-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #9a9a92;
+}
+
 .attachment-strip img,
 .thumb-row img {
   width: 38px;

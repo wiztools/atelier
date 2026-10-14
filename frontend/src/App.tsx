@@ -95,6 +95,10 @@ import {
   SaveTranscript,
   StreamChat,
   UpdateConversationTitle,
+  AppendMediaUploadChunk,
+  BeginMediaUpload,
+  CompleteMediaUpload,
+  DiscardMediaUpload,
 } from '../wailsjs/go/main/App';
 import {main} from '../wailsjs/go/models';
 import {EventsOff, EventsOn} from '../wailsjs/runtime/runtime';
@@ -307,19 +311,44 @@ type Attachment = {
   // backend keeps the full data URL for AttachedVideo consumers. The kind
   // drives chip rendering and request building in submitChat.
   kind: 'image' | 'audio' | 'video';
+  // Set when the file was too large to carry as a data URL: it was streamed
+  // to the backend in chunks at attach time (stageMediaFileAsAttachment) and
+  // src/payload are the staged /atelier-artifact/ URL. The backend adopts the
+  // staged file into the conversation at turn persistence; stagedPath exists
+  // so removing the chip can discard the never-sent upload.
+  stagedPath?: string;
 };
 
-// A per-conversation composer snapshot, held in memory for the session so
-// switching conversations or pressing Cmd+N restores what was being typed.
-// Attachments are already base64 data URLs at attach time (see readImageFile),
-// so a draft is just serializable state keyed by conversationID. The empty
-// string key belongs to the not-yet-saved "new chat" composer.
+// One row of the composer's staging progress: a large media file currently
+// streaming to the backend before its attachment chip exists.
+type StagingAttachment = {
+  key: string;
+  name: string;
+  kind: 'audio' | 'video';
+  fraction: number;
+};
+
+  // A per-conversation composer snapshot, held in memory for the session so
+  // switching conversations or pressing Cmd+N restores what was being typed.
+  // Attachments are already base64 data URLs at attach time (see readImageFile),
+  // so a draft is just serializable state keyed by conversationID. The empty
+  // string key belongs to the not-yet-saved "new chat" composer.
 type ComposerDraft = {
   prompt: string;
   attachments: Attachment[];
 };
 
 const defaultBaseURL = 'http://localhost:11434';
+// Attachments above mediaStageThresholdBytes are staged to disk in chunks
+// (stageMediaFileAsAttachment) instead of carried as data URLs. 24MiB keeps
+// the data-URL path for everything it is proven to serve (larger attachments
+// persisted fine as ~32MB of base64 in the request JSON) and moves anything
+// bigger off the WebView/bridge/JSON pipeline that cannot carry it.
+const mediaStageThresholdBytes = 24 * 1024 * 1024;
+// Raw bytes per staging chunk — ~11MB of base64 per IPC call: small enough
+// that no single bridge message or JSON allocation gets large, large enough
+// that a 700MB clip is ~90 calls instead of thousands.
+const mediaUploadChunkBytes = 8 * 1024 * 1024;
 // Mirrors Go's defaultOllamaNumCtx (app.go): 16K because planner prompts
 // carry the tool catalog (~5K tokens in native tool mode) before any
 // conversation or evidence. Must stay in sync with the Go default so a config
@@ -1259,6 +1288,11 @@ function App() {
   const [system, setSystem] = useState('You are Atelier, a precise local AI collaborator.');
   const [prompt, setPrompt] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // In-progress staged uploads (large dropped/picked media): the composer
+  // shows a per-file progress row while the chunks stream to the backend,
+  // which for a multi-hundred-MB clip takes seconds — long enough to need
+  // visible feedback before the attachment chip exists.
+  const [stagingAttachments, setStagingAttachments] = useState<StagingAttachment[]>([]);
   const [composerDragging, setComposerDragging] = useState(false);
   const composerDragDepth = useRef(0);
   // @-mention autocomplete state. mentionOpen/mentionIndex drive renders;
@@ -4284,17 +4318,18 @@ function App() {
       markConversationInFlight(start.conversationId, start.requestID, 'chat');
       setActiveConversationID(start.conversationId);
       // The just-persisted upload URLs ride the start result
-      // (ChatStreamStart.userVideos): swap the user entry's composer data:
-      // URLs for the artifact srcs the moment the turn begins. A poster frame
-      // derives from the artifact path, never a data URL, and the swap drops
-      // the multi-MB base64 payload from the transcript state. Positional —
-      // both sides list the same attachments in composer order; a count
-      // mismatch (a decode failure persisted fewer) leaves the data URLs.
+      // (ChatStreamStart.userVideos): swap the user entry's srcs for the
+      // artifact srcs the moment the turn begins. A data: URL can carry no
+      // poster, and a staged upload's URL points at a transient staging file
+      // the backend's age sweep eventually reclaims — both must repoint to
+      // the persisted artifact. Positional — both sides list the same
+      // attachments in composer order; a count mismatch (a decode failure
+      // persisted fewer) leaves the original srcs.
       const persistedVideos = asArray(start.userVideos);
       if (opts.userEntryId && persistedVideos.length) {
         setChat((entries) => entries.map((entry) =>
           entry.id === opts.userEntryId && entry.videos?.length === persistedVideos.length
-            ? {...entry, videos: entry.videos.map((video, index) => video.startsWith('data:') ? persistedVideos[index] : video)}
+            ? {...entry, videos: persistedVideos}
             : entry,
         ));
       }
@@ -4380,7 +4415,12 @@ function App() {
       ),
     ];
     const requestID = `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const audioAttachments = attachments.filter((item) => item.kind === 'audio').map((item) => item.payload).filter(Boolean);
+    // Only data: URLs are valid model-input parts; a staged upload's artifact
+    // URL is not (the backend resolves the bytes from disk for the tools).
+    const audioAttachments = attachments
+      .filter((item) => item.kind === 'audio')
+      .map((item) => item.payload)
+      .filter((payload) => payload.startsWith('data:'));
     const imageAttachments = attachments.filter((item) => item.kind === 'image').map((item) => item.payload).filter(Boolean);
     const videoAttachments = attachments.filter((item) => item.kind === 'video').map((item) => item.payload).filter(Boolean);
     const requestMessages: main.ChatMessage[] = [
@@ -4793,12 +4833,54 @@ function App() {
     }
   }
 
+  // attachFiles routes files through readFileAsAttachment, tracking staging
+  // progress for the large media that stage to disk. nameFor supplies the
+  // synthetic name for files without one (pasted bytes, anonymous drops); the
+  // staging rows are keyed per call so parallel drops don't cross-talk.
+  async function attachFiles(files: File[], nameFor?: (file: File, index: number) => string) {
+    const stagingKeys = files.map((file, index): {key: string; kind: 'audio' | 'video'} | null => {
+      const kind = file.type.startsWith('audio/') ? 'audio' : file.type.startsWith('video/') ? 'video' : null;
+      if (!kind || file.size <= mediaStageThresholdBytes) {
+        return null;
+      }
+      return {key: `staging-${Date.now()}-${index}`, kind};
+    });
+    stagingKeys.forEach((entry, index) => {
+      if (entry) {
+        setStagingAttachments((items) => [...items, {key: entry.key, name: files[index].name, kind: entry.kind, fraction: 0}]);
+      }
+    });
+    try {
+      const next = await Promise.all(
+        files.map((file, index) => {
+          const entry = stagingKeys[index];
+          const onProgress = entry
+            ? (fraction: number) =>
+                setStagingAttachments((items) => items.map((item) => (item.key === entry.key ? {...item, fraction} : item)))
+            : undefined;
+          return readFileAsAttachment(file, nameFor?.(file, index), onProgress).finally(() => {
+            if (entry) {
+              setStagingAttachments((items) => items.filter((item) => item.key !== entry.key));
+            }
+          });
+        }),
+      );
+      appendAttachments(next);
+    } catch (error) {
+      stagingKeys.forEach((entry) => {
+        if (entry) {
+          setStagingAttachments((items) => items.filter((item) => item.key !== entry.key));
+        }
+      });
+      console.error('attaching files failed', error);
+    }
+  }
+
   async function addFiles(files: FileList | null) {
     if (!files) {
       return;
     }
-    const next = await Promise.all(Array.from(files).map((file) => readFileAsAttachment(file)));
-    appendAttachments(next);
+    await attachFiles(Array.from(files));
   }
 
   // appendAttachments merges new attachments into the list, renaming any whose
@@ -4828,13 +4910,10 @@ function App() {
     // Keep the pasted bytes out of the text field and route them to attachments.
     event.preventDefault();
     const stamp = Date.now();
-    const next = await Promise.all(
-      mediaFiles.map((file, index) => {
-        const extension = file.name.includes('.') ? '' : mediaExtensionForType(file.type);
-        return readFileAsAttachment(file, `pasted-${stamp}-${index + 1}${file.name ? `-${file.name}` : extension}`);
-      }),
-    );
-    appendAttachments(next);
+    await attachFiles(mediaFiles, (file, index) => {
+      const extension = file.name.includes('.') ? '' : mediaExtensionForType(file.type);
+      return `pasted-${stamp}-${index + 1}${file.name ? `-${file.name}` : extension}`;
+    });
   }
 
   function composerHasMediaDrag(event: React.DragEvent<HTMLDivElement>): boolean {
@@ -4883,13 +4962,10 @@ function App() {
     // Keep the browser from navigating to the dropped file and route it to attachments.
     event.preventDefault();
     const stamp = Date.now();
-    const next = await Promise.all(
-      mediaFiles.map((file, index) => {
-        const extension = file.name.includes('.') ? '' : mediaExtensionForType(file.type);
-        return readFileAsAttachment(file, file.name || `dropped-${stamp}-${index + 1}${extension}`);
-      }),
+    await attachFiles(
+      mediaFiles,
+      (file, index) => file.name || `dropped-${stamp}-${index + 1}${file.name.includes('.') ? '' : mediaExtensionForType(file.type)}`,
     );
-    appendAttachments(next);
   }
 
   async function saveGeneratedImage(image: string, index: number) {
@@ -6407,10 +6483,30 @@ function App() {
                 {composerDragging ? (
                   <div className="composer-drop-overlay">Drop media to attach</div>
                 ) : null}
+                {asArray(stagingAttachments).length ? (
+                  <div className="composer-staging">
+                    {asArray(stagingAttachments).map((item) => (
+                      <span key={item.key} className="composer-staging-row">
+                        <span aria-hidden="true">{item.kind === 'audio' ? '♪' : '▶'}</span>
+                        Staging {item.name}… {Math.round(item.fraction * 100)}%
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
                 {asArray(attachments).length ? (
                   <div className="attachment-strip">
                     {asArray(attachments).map((item) => (
-                      <button key={item.name} onClick={() => setAttachments((items) => items.filter((next) => next.name !== item.name))}>
+                      <button
+                        key={item.name}
+                        onClick={() => {
+                          // A staged upload that never rides a turn would
+                          // otherwise live out the sweep window on disk.
+                          if (item.stagedPath) {
+                            void DiscardMediaUpload(item.stagedPath).catch(() => {});
+                          }
+                          setAttachments((items) => items.filter((next) => next.name !== item.name));
+                        }}
+                      >
                         {item.kind === 'audio' ? (
                           <span className="attachment-audio-chip" aria-hidden="true">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -10099,14 +10195,67 @@ async function readVideoFile(file: File, nameOverride?: string): Promise<Attachm
 // route to readAudioFile, video files to readVideoFile; everything else (images
 // today, and an unknown type the OS picker let through) routes to readImageFile,
 // which produced the historical behavior.
-async function readFileAsAttachment(file: File, nameOverride?: string): Promise<Attachment> {
-  if (file.type.startsWith('audio/')) {
-    return readAudioFile(file, nameOverride);
-  }
-  if (file.type.startsWith('video/')) {
-    return readVideoFile(file, nameOverride);
+//
+// Audio/video past mediaStageThresholdBytes never become data URLs at all: the
+// base64 payload would have to cross the Wails bridge inside the StreamChat
+// JSON — a 700MB clip becomes a ~933MB string that the WebView cannot
+// stringify, the bridge cannot carry, and a <video> element cannot load. They
+// are staged to disk in chunks instead (media_upload.go) and carry the staged
+// artifact URL, which renders, plays, and persists like any other artifact.
+async function readFileAsAttachment(file: File, nameOverride?: string, onProgress?: (fraction: number) => void): Promise<Attachment> {
+  if (file.type.startsWith('audio/') || file.type.startsWith('video/')) {
+    const kind = file.type.startsWith('audio/') ? 'audio' : 'video';
+    if (file.size > mediaStageThresholdBytes) {
+      return stageMediaFileAsAttachment(file, kind, nameOverride, onProgress);
+    }
+    return kind === 'audio' ? readAudioFile(file, nameOverride) : readVideoFile(file, nameOverride);
   }
   return readImageFile(file, nameOverride);
+}
+
+// bytesToBase64 encodes an ArrayBuffer in 0x8000-char slices — the largest
+// argument btoa's String.fromCharCode spread accepts without blowing the
+// engine's argument limit.
+function bytesToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const parts: string[] = [];
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    parts.push(String.fromCharCode(...bytes.subarray(offset, offset + 0x8000)));
+  }
+  return btoa(parts.join(''));
+}
+
+// stageMediaFileAsAttachment streams a large media file to the backend in
+// base64 chunks (mediaUploadChunkBytes each, so no single IPC call grows past
+// a few MB) and attaches the completed /atelier-artifact/ URL. The upload ID
+// sequencing is strict — begin, appends, complete — and a thrown error aborts
+// the attachment: the composer keeps the rest of the drop and the uploads
+// sweep eventually reclaims the partial file.
+async function stageMediaFileAsAttachment(file: File, kind: 'audio' | 'video', nameOverride?: string, onProgress?: (fraction: number) => void): Promise<Attachment> {
+  const uploadID = await BeginMediaUpload(nameOverride ?? file.name, kind);
+  try {
+    for (let offset = 0; offset < file.size; offset += mediaUploadChunkBytes) {
+      const slice = file.slice(offset, Math.min(offset + mediaUploadChunkBytes, file.size));
+      const chunk = bytesToBase64(await slice.arrayBuffer());
+      await AppendMediaUploadChunk(uploadID, chunk);
+      onProgress?.(Math.min((offset + mediaUploadChunkBytes) / file.size, 1));
+    }
+    const staged = await CompleteMediaUpload(uploadID);
+    return {
+      name: nameOverride ?? file.name,
+      src: staged.url,
+      payload: staged.url,
+      kind,
+      stagedPath: staged.path,
+    };
+  } catch (error) {
+    // A failed staging (disk error, vanished file) discards the partial file
+    // right away — DiscardMediaUpload also resolves in-flight upload IDs —
+    // and the caller surfaces the error while the drop continues with the
+    // remaining files.
+    await DiscardMediaUpload(uploadID).catch(() => {});
+    throw error;
+  }
 }
 
 // uniqueAttachmentName returns a name that does not collide with any existing

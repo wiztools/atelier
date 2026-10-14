@@ -6,6 +6,14 @@ export function AddEditResultToConversation(arg1, arg2) {
   return window['go']['main']['App']['AddEditResultToConversation'](arg1, arg2);
 }
 
+export function AppendMediaUploadChunk(arg1, arg2) {
+  return window['go']['main']['App']['AppendMediaUploadChunk'](arg1, arg2);
+}
+
+export function BeginMediaUpload(arg1, arg2) {
+  return window['go']['main']['App']['BeginMediaUpload'](arg1, arg2);
+}
+
 export function CancelAudioEdit(arg1, arg2) {
   return window['go']['main']['App']['CancelAudioEdit'](arg1, arg2);
 }
@@ -54,6 +62,10 @@ export function ClearOpenAICompatibleAPIKey() {
   return window['go']['main']['App']['ClearOpenAICompatibleAPIKey']();
 }
 
+export function CompleteMediaUpload(arg1) {
+  return window['go']['main']['App']['CompleteMediaUpload'](arg1);
+}
+
 export function CreateEditorConversation(arg1) {
   return window['go']['main']['App']['CreateEditorConversation'](arg1);
 }
@@ -84,6 +96,10 @@ export function DeleteProject(arg1) {
 
 export function DetectLocalTools(arg1) {
   return window['go']['main']['App']['DetectLocalTools'](arg1);
+}
+
+export function DiscardMediaUpload(arg1) {
+  return window['go']['main']['App']['DiscardMediaUpload'](arg1);
 }
 
 export function ExecuteTool(arg1) {

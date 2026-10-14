@@ -11,6 +11,8 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -688,7 +690,23 @@ func (client FalClient) resolveMediaURLWith(ctx context.Context, reference, defa
 	// Extract the raw bytes + media type from either a data URI or bare base64.
 	var data []byte
 	var mediaType string
-	if strings.HasPrefix(reference, "data:") {
+	if path, ok := artifactMediaPath(reference); ok {
+		// A local artifact (hydrated history, or a large staged upload the
+		// request carries instead of a data URL). Read the bytes and flow into
+		// the same inline-vs-upload decision below.
+		mediaType = mediaTypeForExtension(strings.ToLower(filepath.Ext(path)))
+		if mediaType == "" {
+			mediaType = defaultMediaType
+		}
+		fileData, err := os.ReadFile(path)
+		if err != nil {
+			return reference, nil // unreadable — pass through, let fal reject
+		}
+		data = fileData
+		if detected := http.DetectContentType(data); strings.HasPrefix(detected, strings.SplitN(defaultMediaType, "/", 2)[0]+"/") {
+			mediaType = detected
+		}
+	} else if strings.HasPrefix(reference, "data:") {
 		comma := strings.Index(reference, ",")
 		if comma < 0 {
 			return reference, nil // malformed data URI — let fal reject it
@@ -772,6 +790,18 @@ func falAudioURL(audio string) string {
 	if strings.HasPrefix(audio, "http://") || strings.HasPrefix(audio, "https://") || strings.HasPrefix(audio, "data:") {
 		return audio
 	}
+	// A local artifact URL (a staged upload riding the request) must become a
+	// data URI — fal cannot fetch the app's own URL scheme.
+	if path, ok := artifactMediaPath(audio); ok {
+		if data, err := os.ReadFile(path); err == nil {
+			mediaType := mediaTypeForExtension(strings.ToLower(filepath.Ext(path)))
+			if !strings.HasPrefix(mediaType, "audio/") {
+				mediaType = "audio/mpeg"
+			}
+			return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data)
+		}
+		return ""
+	}
 	mediaType := "audio/mpeg"
 	if data, err := base64.StdEncoding.DecodeString(audio); err == nil {
 		if detected := http.DetectContentType(data); strings.HasPrefix(detected, "audio/") {
@@ -794,6 +824,21 @@ func falVideoURL(video string) string {
 	}
 	if strings.HasPrefix(video, "http://") || strings.HasPrefix(video, "https://") || strings.HasPrefix(video, "data:") {
 		return video
+	}
+	// A local artifact URL (a staged upload riding the request) must become a
+	// data URI — fal cannot fetch the app's own URL scheme. The fal generate
+	// path pre-resolves sources through resolveMediaURL (which hosts oversized
+	// payloads); this free-function shape keeps the lipsync body builder
+	// working the same way.
+	if path, ok := artifactMediaPath(video); ok {
+		if data, err := os.ReadFile(path); err == nil {
+			mediaType := mediaTypeForExtension(strings.ToLower(filepath.Ext(path)))
+			if !strings.HasPrefix(mediaType, "video/") {
+				mediaType = "video/mp4"
+			}
+			return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data)
+		}
+		return ""
 	}
 	mediaType := "video/mp4"
 	if data, err := base64.StdEncoding.DecodeString(video); err == nil {

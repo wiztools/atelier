@@ -63,6 +63,12 @@ type App struct {
 	// shares the TTL window; nil on bare &App{} literals, which the estimator
 	// treats as "no pricing available" (fail-soft zero).
 	falPricing *falPricingCache
+	// mediaUploads tracks in-progress staged uploads (media_upload.go) keyed
+	// by upload ID — the Begin/Append/Complete chunk lifecycle. A session that
+	// never completes (bridge reload, crash) is simply unaddressable; the
+	// uploads sweep reclaims the partial file by age.
+	mediaUploads   map[string]*MediaUploadSession
+	mediaUploadsMu sync.Mutex
 	// editOps tracks the editors' in-flight operations keyed by
 	// operation ID (edit_session.go): the one-op-per-session guard,
 	// CancelImageEdit's handle, and the "is it live?" check orphaned
@@ -5478,6 +5484,18 @@ func historyContentForMessage(message ChatMessage, artifactsDir string, config A
 		})
 	}
 	for _, audio := range message.Audios {
+		// A staged upload is linked into the artifacts dir — no decode, no
+		// second copy of a potentially very large payload; the staged entry
+		// stays so the request's own payload keeps resolving for the tools
+		// (media_upload.go).
+		if stagedPath, isStaged := stagedUploadPath(audio, mediaUploadsDir(config.Storage)); isStaged {
+			content, _, err := adoptStagedUpload(config, stagedPath, artifactsDir, "aud")
+			if err != nil {
+				return nil, nil, err
+			}
+			contents = append(contents, content)
+			continue
+		}
 		data, extension, err := decodeAudioPayload(audio)
 		if err != nil {
 			return nil, nil, err
@@ -5496,6 +5514,20 @@ func historyContentForMessage(message ChatMessage, artifactsDir string, config A
 		})
 	}
 	for _, video := range message.Videos {
+		// Staged-upload adoption, same as audio above.
+		if stagedPath, isStaged := stagedUploadPath(video, mediaUploadsDir(config.Storage)); isStaged {
+			content, artifactPath, err := adoptStagedUpload(config, stagedPath, artifactsDir, "vid")
+			if err != nil {
+				return nil, nil, err
+			}
+			contents = append(contents, content)
+			absArtifactPath, err := filepath.Abs(artifactPath)
+			if err != nil {
+				absArtifactPath = artifactPath
+			}
+			videoURLs = append(videoURLs, artifactPrefix+absArtifactPath)
+			continue
+		}
 		data, extension, err := decodeVideoPayload(video)
 		if err != nil {
 			return nil, nil, err

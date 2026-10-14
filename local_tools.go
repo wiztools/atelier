@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -798,9 +799,27 @@ func decodeAudioDataURL(dataURL string) ([]byte, string, error) {
 // decodeMediaDataURL splits any data:... URL into its bytes and media type —
 // the shared decoder for every local CLI tool's attached media (whisper audio,
 // ffmpeg video/audio). Parameters after the media type (";codecs=opus",
-// ";base64") are ignored; the payload must be standard base64.
+// ";base64") are ignored; the payload must be standard base64. A
+// /atelier-artifact/ URL (hydrated history, or a large staged upload still
+// carried by the request) resolves to the file's bytes on disk, with the media
+// type from its extension.
 func decodeMediaDataURL(dataURL string) ([]byte, string, error) {
 	trimmed := strings.TrimSpace(dataURL)
+	if strings.HasPrefix(trimmed, artifactPrefix+"/") {
+		path := filepath.FromSlash(strings.TrimPrefix(trimmed, artifactPrefix))
+		if strings.Contains(path, "..") {
+			return nil, "", errors.New("attached media artifact path is invalid")
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, "", err
+		}
+		mediaType := mediaTypeForExtension(strings.ToLower(filepath.Ext(path)))
+		if mediaType == "" {
+			mediaType = http.DetectContentType(data)
+		}
+		return data, mediaType, nil
+	}
 	if !strings.HasPrefix(trimmed, "data:") {
 		return nil, "", errors.New("attached media is not a data URL")
 	}

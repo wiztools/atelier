@@ -4,6 +4,10 @@ import {main} from '../models';
 
 export function AddEditResultToConversation(arg1:string,arg2:string):Promise<main.ConversationSummary>;
 
+export function AppendMediaUploadChunk(arg1:string,arg2:string):Promise<void>;
+
+export function BeginMediaUpload(arg1:string,arg2:string):Promise<string>;
+
 export function CancelAudioEdit(arg1:string,arg2:string):Promise<void>;
 
 export function CancelImageEdit(arg1:string,arg2:string):Promise<void>;
@@ -28,6 +32,8 @@ export function ChooseToolWorkspace(arg1:string):Promise<string>;
 
 export function ClearOpenAICompatibleAPIKey():Promise<void>;
 
+export function CompleteMediaUpload(arg1:string):Promise<main.StagedMediaUpload>;
+
 export function CreateEditorConversation(arg1:main.ChatRequest):Promise<main.EditorLaunchResult>;
 
 export function CreateLibrary(arg1:string):Promise<main.LibrarySummary>;
@@ -43,6 +49,8 @@ export function DeleteLibrary(arg1:string):Promise<main.DeleteLibraryResult>;
 export function DeleteProject(arg1:string):Promise<main.DeleteProjectResult>;
 
 export function DetectLocalTools(arg1:main.LocalToolOverrides):Promise<main.LocalToolsReport>;
+
+export function DiscardMediaUpload(arg1:string):Promise<void>;
 
 export function ExecuteTool(arg1:main.ToolExecutionRequest):Promise<main.HarnessToolResult>;
 

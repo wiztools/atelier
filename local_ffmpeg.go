@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -248,13 +249,52 @@ func stagedMediaExtension(mediaType string) string {
 // stageMediaDataURL decodes an attached-media data URL into a real file inside
 // dir (named base+ext by media type) — the ffmpeg sibling of the whisper
 // runner's temp-file decode. ffmpeg and ffprobe read real files, not data
-// URLs.
+// URLs. A /atelier-artifact/ source (hydrated history, or a large staged
+// upload) stream-copies the file instead of round-tripping it through memory —
+// a multi-hundred-MB clip never holds its full bytes in RAM just to land in a
+// temp file.
 func stageMediaDataURL(dir, base, dataURL string) (string, error) {
+	if path, ok := artifactMediaPath(dataURL); ok {
+		mediaType := mediaTypeForExtension(strings.ToLower(filepath.Ext(path)))
+		staged := filepath.Join(dir, base+stagedMediaExtension(mediaType))
+		source, err := os.Open(path)
+		if err != nil {
+			return "", err
+		}
+		defer source.Close()
+		target, err := os.Create(staged)
+		if err != nil {
+			return "", err
+		}
+		if _, err := io.Copy(target, source); err != nil {
+			target.Close()
+			return "", err
+		}
+		if err := target.Close(); err != nil {
+			return "", err
+		}
+		return staged, nil
+	}
 	data, mediaType, err := decodeMediaDataURL(dataURL)
 	if err != nil {
 		return "", err
 	}
 	return stageMediaBytes(dir, base, data, mediaType)
+}
+
+// artifactMediaPath resolves a /atelier-artifact/ URL to its on-disk path,
+// rejecting traversal. The boolean mirrors stagedUploadPath's contract: false
+// simply means "not an artifact URL".
+func artifactMediaPath(dataURL string) (string, bool) {
+	trimmed := strings.TrimSpace(dataURL)
+	if !strings.HasPrefix(trimmed, artifactPrefix+"/") {
+		return "", false
+	}
+	path := filepath.FromSlash(strings.TrimPrefix(trimmed, artifactPrefix))
+	if strings.Contains(path, "..") {
+		return "", false
+	}
+	return path, true
 }
 
 // stageMediaBytes is the decoded form of stageMediaDataURL: callers that
