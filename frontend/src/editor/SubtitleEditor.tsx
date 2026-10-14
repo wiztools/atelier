@@ -84,7 +84,11 @@ export function SubtitleEditor(props: {
   onSavedToConversation?: () => void;
 }) {
   const {source} = props.handle;
-  const sourceArtifactID = useState(source.artifactId)[0];
+  // The revision the editor is currently working from: the imported artifact
+  // at first, then whichever saved revision was last loaded with "Use as
+  // source" — the provenance the next save records.
+  const [activeArtifactID, setActiveArtifactID] = useState(source.artifactId);
+  const [loadingRevision, setLoadingRevision] = useState(false);
   const sourceConversationID = useState(source.conversationId)[0];
 
   const [doc, setDoc] = useState<SubtitleDoc>(() => ({
@@ -240,7 +244,7 @@ export function SubtitleEditor(props: {
     try {
       const result = await AppBindings.SaveSubtitleEdit(main.SaveSubtitleEditRequest.createFrom({
         conversationId: sourceConversationID,
-        sourceArtifactId: sourceArtifactID,
+        sourceArtifactId: activeArtifactID,
         format: exportFormat,
         cues: doc.cues,
       }));
@@ -253,6 +257,33 @@ export function SubtitleEditor(props: {
       setSaveError(formatEditorError(error));
     } finally {
       setSaving(false);
+    }
+  };
+
+  // loadRevision is the save rows' "Use as source": an earlier revision
+  // becomes the editing baseline, the way the media editors adopt a render
+  // result onto the stage. The current doc lands on the undo stack first, so
+  // picking up an old revision is never destructive — Undo returns to it.
+  const loadRevision = async (entry: EditorLogEntry) => {
+    if (loadingRevision || entry.artifactId === activeArtifactID) return;
+    setLoadingRevision(true);
+    setLoadError('');
+    try {
+      const revision = await AppBindings.ResolveSubtitleEditSource(sourceConversationID, entry.artifactId);
+      const format: SubtitleFormat = revision.format === 'srt' ? 'srt' : 'vtt';
+      const next: SubtitleDoc = {format, cues: (revision.cues ?? []).map((cue) => ({...cue}))};
+      setUndoStack((stack) => [...stack, doc].slice(-undoLimit));
+      setRedoStack([]);
+      setDoc(next);
+      setBaseline(cloneSubtitleDoc(next));
+      setExportFormat(format);
+      setActiveArtifactID(revision.artifactId);
+      setSelected(0);
+      setEditingText(false);
+    } catch (error) {
+      setLoadError(formatEditorError(error));
+    } finally {
+      setLoadingRevision(false);
     }
   };
 
@@ -565,7 +596,7 @@ export function SubtitleEditor(props: {
         <aside className="editor-inspector subtitle-inspector">
           <div className="subtitle-framing-summary" aria-live="polite">
             <strong>{doc.cues.length} cues · {spanSeconds.toFixed(1)}s span</strong>
-            <span>{doc.format.toUpperCase()} · imported from {sourceArtifactID.slice(0, 12)}{dirty ? ' · edited' : ''}</span>
+            <span>{doc.format.toUpperCase()} · editing {activeArtifactID.slice(0, 12)}{dirty ? ' · edited' : ''}</span>
           </div>
 
           <div className="subtitle-warnings">
@@ -641,7 +672,17 @@ export function SubtitleEditor(props: {
                 </span>
                 <span className="editor-op-sub" title={entry.url}>{entry.at} → attached to the conversation</span>
               </div>
-              <button type="button" onClick={() => void downloadSaved(entry.url, index)}>Download</button>
+              <div className="editor-op-actions">
+                <button
+                  type="button"
+                  disabled={loadingRevision || entry.artifactId === activeArtifactID}
+                  title={entry.artifactId === activeArtifactID ? 'This revision is already on the stage' : 'Continue editing from this revision'}
+                  onClick={() => void loadRevision(entry)}
+                >
+                  Use as source
+                </button>
+                <button type="button" onClick={() => void downloadSaved(entry.url, index)}>Download</button>
+              </div>
             </li>
           ))}
         </ul>
