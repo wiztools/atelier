@@ -15,8 +15,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // SubtitleCue is one editable caption block on the wire — seconds since the
@@ -39,14 +37,6 @@ type SubtitleSourceInfo struct {
 	Format            string        `json:"format"`
 	Cues              []SubtitleCue `json:"cues"`
 	Warnings          []string      `json:"warnings,omitempty"`
-}
-
-// ExportSubtitlesRequest carries one editor export: the current cue doc and
-// the target format (free choice — a VTT-derived doc can export as SRT).
-type ExportSubtitlesRequest struct {
-	Format        string        `json:"format"`
-	Cues          []SubtitleCue `json:"cues"`
-	SuggestedName string        `json:"suggestedName,omitempty"`
 }
 
 // subtitleCueWarnings renders the review checklist the editor surfaces: the
@@ -153,32 +143,18 @@ func (a *App) ResolveSubtitleEditSource(conversationID, artifactID string) (Subt
 	return info, nil
 }
 
-// ExportSubtitles renders the editor's current cue doc in the requested
-// format and opens the save dialog. The conversation is not touched — export
-// is client-state to disk, the one door the local-until-export model has.
-func (a *App) ExportSubtitles(req ExportSubtitlesRequest) (string, error) {
-	data, extension, err := renderSubtitlesExport(req)
-	if err != nil {
-		return "", err
-	}
-	return a.saveArtifactDialog(data, req.SuggestedName, "atelier-subtitles", extension, "Save subtitles", []runtime.FileFilter{
-		{DisplayName: "Subtitle Files", Pattern: "*.vtt;*.srt"},
-		{DisplayName: "All Files", Pattern: "*.*"},
-	})
-}
-
-// renderSubtitlesExport is ExportSubtitles' pure half: validate the doc and
-// render it in the requested format. Returns the bytes and the file
-// extension the dialog must enforce.
-func renderSubtitlesExport(req ExportSubtitlesRequest) ([]byte, string, error) {
-	format := strings.ToLower(strings.TrimSpace(req.Format))
+// renderSubtitlesForSave is the save path's pure half: validate the cue doc
+// and render it in the requested format. Returns the bytes and the file
+// extension the artifact lands with.
+func renderSubtitlesForSave(format string, wire []SubtitleCue) ([]byte, string, error) {
+	format = strings.ToLower(strings.TrimSpace(format))
 	if format != subtitleFormatVTT && format != subtitleFormatSRT {
-		return nil, "", fmt.Errorf(`export format must be "vtt" or "srt", got %q`, req.Format)
+		return nil, "", fmt.Errorf(`subtitle format must be "vtt" or "srt", got %q`, format)
 	}
-	if len(req.Cues) == 0 {
-		return nil, "", errors.New("no cues to export")
+	if len(wire) == 0 {
+		return nil, "", errors.New("no cues to save")
 	}
-	for i, cue := range req.Cues {
+	for i, cue := range wire {
 		if math.IsNaN(cue.StartSeconds) || math.IsNaN(cue.EndSeconds) || math.IsInf(cue.StartSeconds, 0) || math.IsInf(cue.EndSeconds, 0) {
 			return nil, "", fmt.Errorf("cue %d has a non-finite timestamp", i+1)
 		}
@@ -186,8 +162,8 @@ func renderSubtitlesExport(req ExportSubtitlesRequest) ([]byte, string, error) {
 			return nil, "", fmt.Errorf("cue %d ends before it starts", i+1)
 		}
 	}
-	cues := make([]subtitleCue, len(req.Cues))
-	for i, cue := range req.Cues {
+	cues := make([]subtitleCue, len(wire))
+	for i, cue := range wire {
 		cues[i] = subtitleCue{Start: cue.StartSeconds, End: cue.EndSeconds, Text: cue.Text}
 	}
 	var rendered string
@@ -231,7 +207,7 @@ type SaveSubtitleEditResult struct {
 func (a *App) SaveSubtitleEdit(req SaveSubtitleEditRequest) (SaveSubtitleEditResult, error) {
 	// The render half validates and serializes; the extension it reports is
 	// already baked into the artifact path by writeSubtitleAttachment.
-	data, _, err := renderSubtitlesExport(ExportSubtitlesRequest{Format: req.Format, Cues: req.Cues})
+	data, _, err := renderSubtitlesForSave(req.Format, req.Cues)
 	if err != nil {
 		return SaveSubtitleEditResult{}, err
 	}

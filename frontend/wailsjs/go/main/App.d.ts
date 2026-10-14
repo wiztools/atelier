@@ -56,8 +56,6 @@ export function ExecuteTool(arg1:main.ToolExecutionRequest):Promise<main.Harness
 
 export function ExportLibrary(arg1:string):Promise<main.LibraryExportResult>;
 
-export function ExportSubtitles(arg1:main.ExportSubtitlesRequest):Promise<string>;
-
 export function GetConfig():Promise<main.AppConfig>;
 
 export function GetConversation(arg1:string):Promise<main.ConversationDetail>;

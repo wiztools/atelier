@@ -75,34 +75,34 @@ func TestSubtitleCueWarnings(t *testing.T) {
 	}
 }
 
-func TestRenderSubtitlesExport(t *testing.T) {
+func TestRenderSubtitlesForSave(t *testing.T) {
 	cues := []SubtitleCue{{StartSeconds: 1.5, EndSeconds: 4, Text: "Hello"}}
-	data, extension, err := renderSubtitlesExport(ExportSubtitlesRequest{Format: "srt", Cues: cues})
+	data, extension, err := renderSubtitlesForSave("srt", cues)
 	if err != nil {
-		t.Fatalf("renderSubtitlesExport returned error: %v", err)
+		t.Fatalf("renderSubtitlesForSave returned error: %v", err)
 	}
 	if extension != ".srt" || !strings.Contains(string(data), "00:00:01,500 --> 00:00:04,000") {
-		t.Fatalf("srt export wrong: ext=%s data=%q", extension, string(data))
+		t.Fatalf("srt render wrong: ext=%s data=%q", extension, string(data))
 	}
 
-	data, extension, err = renderSubtitlesExport(ExportSubtitlesRequest{Format: "vtt", Cues: cues})
+	data, extension, err = renderSubtitlesForSave("vtt", cues)
 	if err != nil {
-		t.Fatalf("vtt export returned error: %v", err)
+		t.Fatalf("vtt render returned error: %v", err)
 	}
 	if extension != ".vtt" || !strings.HasPrefix(string(data), "WEBVTT") {
-		t.Fatalf("vtt export wrong: ext=%s data=%q", extension, string(data))
+		t.Fatalf("vtt render wrong: ext=%s data=%q", extension, string(data))
 	}
 
-	if _, _, err := renderSubtitlesExport(ExportSubtitlesRequest{Format: "ass", Cues: cues}); err == nil {
+	if _, _, err := renderSubtitlesForSave("ass", cues); err == nil {
 		t.Fatal("unknown format must fail")
 	}
-	if _, _, err := renderSubtitlesExport(ExportSubtitlesRequest{Format: "vtt"}); err == nil {
+	if _, _, err := renderSubtitlesForSave("vtt", nil); err == nil {
 		t.Fatal("empty doc must fail")
 	}
-	if _, _, err := renderSubtitlesExport(ExportSubtitlesRequest{Format: "vtt", Cues: []SubtitleCue{{StartSeconds: 5, EndSeconds: 1, Text: "x"}}}); err == nil {
+	if _, _, err := renderSubtitlesForSave("vtt", []SubtitleCue{{StartSeconds: 5, EndSeconds: 1, Text: "x"}}); err == nil {
 		t.Fatal("cue ending before its start must fail")
 	}
-	if _, _, err := renderSubtitlesExport(ExportSubtitlesRequest{Format: "vtt", Cues: []SubtitleCue{{StartSeconds: math.NaN(), EndSeconds: 2, Text: "x"}}}); err == nil {
+	if _, _, err := renderSubtitlesForSave("vtt", []SubtitleCue{{StartSeconds: math.NaN(), EndSeconds: 2, Text: "x"}}); err == nil {
 		t.Fatal("non-finite timestamp must fail")
 	}
 }

@@ -32,15 +32,11 @@ export type SubtitleEditorHandle = {
 type SubtitleAsset = main.ConversationAsset;
 
 type EditorLogEntry = {
-  kind: 'export' | 'save';
   format: string;
   cueCount: number;
   at: string;
-  // An export carries the chosen disk path; a save carries the new
-  // conversation artifact's identity instead.
-  path?: string;
-  artifactId?: string;
-  url?: string;
+  artifactId: string;
+  url: string;
 };
 
 // The Edits panel's height clamp needs this editor's content floor: header +
@@ -111,8 +107,6 @@ export function SubtitleEditor(props: {
   const [log, setLog] = useState<EditorLogEntry[]>([]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
-  const [exportError, setExportError] = useState('');
-  const [exporting, setExporting] = useState(false);
 
   const [find, setFind] = useState('');
   const [replace, setReplace] = useState('');
@@ -237,28 +231,6 @@ export function SubtitleEditor(props: {
     }
   };
 
-  const exportDoc = async () => {
-    setExporting(true);
-    setExportError('');
-    try {
-      const path = await AppBindings.ExportSubtitles(main.ExportSubtitlesRequest.createFrom({
-        format: exportFormat,
-        cues: doc.cues,
-        suggestedName: `${source.conversationTitle || 'subtitles'}-${sourceArtifactID}`,
-      }));
-      if (path) {
-        setLog((entries) => [
-          {kind: 'export', format: exportFormat, cueCount: doc.cues.length, path, at: new Date().toLocaleTimeString()},
-          ...entries,
-        ]);
-      }
-    } catch (error) {
-      setExportError(formatEditorError(error));
-    } finally {
-      setExporting(false);
-    }
-  };
-
   // saveDoc commits the edited doc into the conversation: a new trc_ artifact
   // plus a turn recording the edit — the media editors' "render + adopt"
   // door, minus the render. The machine draft is never touched.
@@ -273,7 +245,7 @@ export function SubtitleEditor(props: {
         cues: doc.cues,
       }));
       setLog((entries) => [
-        {kind: 'save', format: result.format, cueCount: result.cueCount, at: new Date().toLocaleTimeString(), artifactId: result.artifactId, url: result.url},
+        {format: result.format, cueCount: result.cueCount, at: new Date().toLocaleTimeString(), artifactId: result.artifactId, url: result.url},
         ...entries,
       ]);
       props.onSavedToConversation?.();
@@ -647,37 +619,29 @@ export function SubtitleEditor(props: {
               type="button"
               className="editor-generate"
               disabled={saving || doc.cues.length === 0}
-              title="Write the edited subtitles back into the conversation as a new artifact — the original stays intact"
+              title="Write the edited subtitles back into the conversation as a new artifact — the original stays intact. Download the saved file from the Edits panel below."
               onClick={() => void saveDoc()}
             >
-              {saving ? 'Saving…' : 'Save to conversation'}
-            </button>
-            <button type="button" disabled={exporting || doc.cues.length === 0} onClick={() => void exportDoc()}>
-              {exporting ? 'Exporting…' : `Export ${exportFormat.toUpperCase()} to disk…`}
+              {saving ? 'Saving…' : `Save ${exportFormat.toUpperCase()} to conversation`}
             </button>
             {saveError ? <div className="editor-error">{saveError}</div> : null}
-            {exportError ? <div className="editor-error">{exportError}</div> : null}
-            <span className="editor-session-note">Edits stay in the editor until you save them to the conversation or export them to disk.</span>
+            <span className="editor-session-note">Edits stay in the editor until you save them — download the saved file from the Edits panel below.</span>
           </div>
         </aside>
       </div>
 
-      <EditsPanel count={log.length} emptyText="Nothing saved or exported yet." bodyReservePx={editsPanelBodyReservePx}>
+      <EditsPanel count={log.length} emptyText="Nothing saved yet." bodyReservePx={editsPanelBodyReservePx}>
         <ul className="editor-op-list">
           {log.map((entry, index) => (
             <li key={index} className="editor-op editor-op-done">
-              <span className="editor-op-thumb-glyph">{entry.kind === 'save' ? '✓' : '§'}</span>
+              <span className="editor-op-thumb-glyph">✓</span>
               <div className="editor-op-meta">
                 <span className="editor-op-title">
-                  {entry.kind === 'save' ? `Saved · ${entry.format.toUpperCase()} · ${entry.cueCount} cues · ${entry.artifactId?.slice(0, 12)}` : `Export · ${entry.format.toUpperCase()} · ${entry.cueCount} cues`}
+                  Saved · {entry.format.toUpperCase()} · {entry.cueCount} cues · {entry.artifactId.slice(0, 12)}
                 </span>
-                <span className="editor-op-sub" title={entry.path || entry.url}>
-                  {entry.kind === 'save' ? `${entry.at} → attached to the conversation` : `${entry.at} → ${entry.path}`}
-                </span>
+                <span className="editor-op-sub" title={entry.url}>{entry.at} → attached to the conversation</span>
               </div>
-              {entry.kind === 'save' && entry.url ? (
-                <button type="button" onClick={() => void downloadSaved(entry.url!, index)}>Download</button>
-              ) : null}
+              <button type="button" onClick={() => void downloadSaved(entry.url, index)}>Download</button>
             </li>
           ))}
         </ul>
