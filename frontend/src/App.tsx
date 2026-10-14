@@ -3962,6 +3962,8 @@ function App() {
       }
       setEditorHandle(null);
       setAudioEditorHandle(null);
+      setSubtitleEditorHandle(null);
+      subtitleEditorDirty.current = false;
       videoEditorDirty.current = false;
       setVideoEditorHandle({source, sessionID: ''});
       // Preparation can complete while the user is in Settings; loading the
@@ -4012,6 +4014,8 @@ function App() {
       if (generation !== imageOpenGeneration.current) return;
       setVideoEditorHandle(null);
       setAudioEditorHandle(null);
+      setSubtitleEditorHandle(null);
+      subtitleEditorDirty.current = false;
       videoEditorDirty.current = false;
       setEditorHandle({source, sessionID: ''});
       setView((current) => (current === 'settings' ? current : 'app'));
@@ -4040,6 +4044,8 @@ function App() {
       if (generation !== audioOpenGeneration.current) return;
       setEditorHandle(null);
       setVideoEditorHandle(null);
+      setSubtitleEditorHandle(null);
+      subtitleEditorDirty.current = false;
       videoEditorDirty.current = false;
       audioEditorDirty.current = false;
       setAudioEditorHandle({source, sessionID: ''});
@@ -4094,6 +4100,8 @@ function App() {
       if (state.source.mediaKind === 'video') {
         setEditorHandle(null);
         setAudioEditorHandle(null);
+        setSubtitleEditorHandle(null);
+        subtitleEditorDirty.current = false;
         audioEditorDirty.current = false;
         videoEditorDirty.current = false;
         setVideoEditorHandle({source: main.EditSourceInfo.createFrom({...state.source,
@@ -4106,6 +4114,8 @@ function App() {
       if (state.source.mediaKind === 'audio') {
         setEditorHandle(null);
         setVideoEditorHandle(null);
+        setSubtitleEditorHandle(null);
+        subtitleEditorDirty.current = false;
         videoEditorDirty.current = false;
         audioEditorDirty.current = false;
         setAudioEditorHandle({source: main.EditSourceInfo.createFrom({...state.source,
@@ -4117,6 +4127,8 @@ function App() {
       }
       setVideoEditorHandle(null);
       setAudioEditorHandle(null);
+      setSubtitleEditorHandle(null);
+      subtitleEditorDirty.current = false;
       audioEditorDirty.current = false;
       setEditorHandle({
         source: main.EditSourceInfo.createFrom({
@@ -4141,8 +4153,10 @@ function App() {
     cancelAudioPreparation();
     setVideoEditorHandle(null);
     setAudioEditorHandle(null);
+    setSubtitleEditorHandle(null);
     videoEditorDirty.current = false;
     audioEditorDirty.current = false;
+    subtitleEditorDirty.current = false;
     setEditorHandle(null);
     setPreviewEditContext(null);
   }

@@ -22,7 +22,11 @@ export function EditorHeader(props: {
         <span className="editor-crumb-title">
           {props.title}
         </span>
-        {props.sessionID ? (
+        {/* The parent link rides parentAvailable, not sessionID: the subtitle
+            editor has a parent conversation but never a session (edits are
+            local until export), and would otherwise wear a permanent
+            "unsaved draft" crumb with no way back to the chat. */}
+        {props.sessionID || props.parentAvailable ? (
           props.parentAvailable ? (
             <button type="button" className="editor-crumb-link" onClick={() => props.onOpenParent(props.parentConversationID ?? '')}>
               Open original chat
