@@ -76,6 +76,12 @@ type HarnessPreparedTurn struct {
 	ToolResults          []HarnessToolResult
 	PlanValidationErrors []string
 	Rounds               []HarnessToolRound
+	// mediaFeeds is the turn's forwarded-media log (mediaFeedLog): the save
+	// path filters the reply's attachments through it so an intermediate a
+	// later call consumed (extract_audio's .m4a feeding convert_audio) does
+	// not ride the reply beside the deliverable. Evidence, activities, and
+	// telemetry keep every result.
+	mediaFeeds *mediaFeedLog
 	// LocalMediaEditUnavailable records that triage flagged the turn as a
 	// local media edit (see HarnessTriageDecision.MediaEdit) while no ffmpeg
 	// CLI is configured. The harness then delivers a code-authored note
@@ -560,11 +566,19 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	}
 
 	// Even if the text response stream failed, deliver any media the tool path
-	// produced rather than silently dropping it.
-	images, imageReq := imagesFromToolResults(preparation.ToolResults)
-	videos, videoReq := videosFromToolResults(preparation.ToolResults)
-	audios, audioReq := audiosFromToolResults(preparation.ToolResults)
+	// produced rather than silently dropping it. A chained pipeline's
+	// intermediates are excluded: a later call consumed them, so only the
+	// deliverable rides the reply (the .wav of an extract→convert chain, not
+	// also the .m4a it came from). Evidence and activities keep every result.
+	attachableResults := preparation.mediaFeeds.attachableResults(preparation.ToolResults)
+	images, imageReq := imagesFromToolResults(attachableResults)
+	videos, videoReq := videosFromToolResults(attachableResults)
+	audios, audioReq := audiosFromToolResults(attachableResults)
 	transcripts, transcriptModel, transcriptTimestamps := transcriptsFromToolResults(preparation.ToolResults)
+	// Consumed intermediates are never persisted as artifacts; remove their
+	// temp files alongside the collected ones so a 100MB+ stepping stone
+	// doesn't linger in the OS temp dir.
+	defer cleanupConsumedMediaTempFiles(preparation.ToolResults, preparation.mediaFeeds)
 	// Video/audio/transcript temp files are moved into the artifacts directory
 	// at persist time; remove any that survive (e.g. a save error, or a media
 	// combination the save switch doesn't extend) so they don't leak.
@@ -869,6 +883,36 @@ func cleanupTranscriptTempFiles(transcripts []ToolTranscriptFile) {
 	for _, transcript := range transcripts {
 		if path := strings.TrimSpace(transcript.TempPath); path != "" {
 			os.Remove(path)
+		}
+	}
+}
+
+// cleanupConsumedMediaTempFiles removes the audio/video temp files of calls
+// whose output a later call consumed. Those intermediates never reach the
+// attachment collection, so the regular persist-or-cleanup lifecycle never
+// touches them — without this, a chained extract→convert turn would leave the
+// 100MB+ intermediate .m4a in the OS temp dir. Best-effort, nil-safe.
+func cleanupConsumedMediaTempFiles(results []HarnessToolResult, feeds *mediaFeedLog) {
+	if feeds == nil {
+		return
+	}
+	for index, result := range results {
+		if !feeds.isConsumed(index) {
+			continue
+		}
+		switch typed := result.Result.(type) {
+		case ToolAudioResult:
+			for _, audio := range typed.Audios {
+				if path := strings.TrimSpace(audio.TempPath); path != "" {
+					os.Remove(path)
+				}
+			}
+		case ToolVideoResult:
+			for _, video := range typed.Videos {
+				if path := strings.TrimSpace(video.TempPath); path != "" {
+					os.Remove(path)
+				}
+			}
 		}
 	}
 }
@@ -1676,6 +1720,12 @@ type harnessTurnContext struct {
 	// motion control, or reference mode) and the lip sync tool. Tool-only:
 	// unlike audio they never reach a chat model.
 	AttachedVideos []string
+	// MediaFeeds tracks media this turn's tools produced and forwarded into
+	// the attachment slots, so a later call's consumption of an earlier call's
+	// output can hide the intermediate from the reply's attachments (the
+	// extract_audio → convert_audio chain, generate_speech → lip_sync).
+	// Shared by pointer across the per-round value copies of the turn context.
+	MediaFeeds *mediaFeedLog
 }
 
 // selectSkillForTurn picks (and loads) the skill guiding this turn. It runs a
@@ -1844,6 +1894,12 @@ const triageFailedSkillSkipReason = "skill selection skipped: triage failed this
 // for the next planning round. The loop is bounded by harnessChatMaxSteps
 // planning rounds and harnessChatMaxWallTime of wall time.
 func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conversationID string, req ChatRequest, turn harnessTurnContext, run *HarnessRun) (HarnessPreparedTurn, error) {
+	// One feed log per turn, shared by pointer across the per-round turn
+	// copies: runHarnessToolCalls records and consumes-flags against it, and
+	// the save path filters the reply's attachments through it.
+	if turn.MediaFeeds == nil {
+		turn.MediaFeeds = newMediaFeedLog()
+	}
 	var skillDecision *HarnessSkillDecision
 	var loadedSkill *LoadedSkill
 	if turn.TriageFailed {
@@ -1899,7 +1955,7 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 	})
 	deadline := time.Now().Add(harnessChatMaxWallTime)
 
-	prepared := HarnessPreparedTurn{SkillDecision: skillDecision, LoadedSkill: loadedSkill}
+	prepared := HarnessPreparedTurn{SkillDecision: skillDecision, LoadedSkill: loadedSkill, mediaFeeds: turn.MediaFeeds}
 	for iteration := 1; iteration <= harnessChatMaxSteps; iteration++ {
 		planning := run.appendStep("planning", iteration, turn.Harness.provider, req.Model, fmt.Sprintf("harness planning round %d", iteration))
 		prepReq := ChatRequest{
@@ -3447,6 +3503,11 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 				call.Model = turn.PrimaryModel
 			}
 		}
+		// Consume-flagging runs BEFORE the call executes: a feed whose output
+		// still seats the slot this tool reads is about to be consumed as the
+		// call's source, so it must not also ride the reply as an attachment.
+		turn.MediaFeeds.flagConsumed(call.Name, gateway.tools.AttachedAudios, gateway.tools.AttachedVideos, gateway.tools.AttachedImages)
+		seq := turn.MediaFeeds.nextExecution()
 		result := gateway.Execute(ctx, ToolExecutionRequest{
 			Name:           call.Name,
 			Call:           call,
@@ -3465,6 +3526,7 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 		// message (image base64 stays out of context; audio/video ride the
 		// attachment field straight to the consuming tool).
 		if generated := forwardableMediaFromResults(results); generated != nil {
+			turn.MediaFeeds.record(generated, seq)
 			if batch.GeneratedAudio == "" {
 				batch.GeneratedAudio = generated.Audio
 			}
@@ -3548,6 +3610,167 @@ func forwardableMediaFromResults(results []HarnessToolResult) *forwardableMedia 
 		return nil
 	}
 	return &media
+}
+
+// mediaFeed is one media output that forward-feed seeded into the turn's
+// attachment slots — a candidate intermediate. kind is "audio", "video", or
+// "image"; dataURL is the slot value the feed seeded (the output's first
+// file, matching forwardableMediaFromResults' newest-first pick); produced is
+// the global execution index of the producing call.
+type mediaFeed struct {
+	kind     string
+	dataURL  string
+	produced int
+}
+
+// mediaFeedLog tracks a turn's forwarded media so a chained pipeline's
+// intermediates can be told apart from its deliverables. When a later call in
+// the SAME turn consumes a forwarded output (extract_audio feeding
+// convert_audio, generate_speech feeding lip_sync), the consumed output is a
+// stepping stone — it must not also ride the reply as an attachment
+// (conv_34a07011: an extract→convert chain attached both the intermediate
+// .m4a and the requested .wav). The log is nil-safe: every method tolerates a
+// nil receiver so turns planned without media forwarding are no-ops.
+type mediaFeedLog struct {
+	executions int         // one per executed tool call, in execution order
+	feeds      []mediaFeed // chronological across all rounds
+	consumed   map[int]bool
+}
+
+func newMediaFeedLog() *mediaFeedLog {
+	return &mediaFeedLog{consumed: map[int]bool{}}
+}
+
+// toolConsumedMediaKinds names the planner tools that read a turn attachment
+// slot as their source, per kind. A feed is consumed when a LATER call for one
+// of these tools executes while the feed's output still holds the slot — the
+// exact condition under which the consuming tool stages that media. A call
+// that merely shares the turn (probe_media after extract_audio, say) does not
+// read the audio slot and leaves the feed attached. VoiceReference is absent
+// by design: the cloning path is pinned to the user's own clip and is never a
+// feed (see harnessTurnContext.VoiceReference).
+var toolConsumedMediaKinds = map[string]map[string]bool{
+	"transcribe_audio":    {"audio": true},
+	"convert_audio":       {"audio": true},
+	"split_audio":         {"audio": true},
+	"join_audios":         {"audio": true},
+	"extend_audio":        {"audio": true},
+	"replace_audio":       {"audio": true, "video": true},
+	"lip_sync":            {"audio": true, "video": true, "image": true},
+	"screenshot_video":    {"video": true},
+	"contact_sheet_video": {"video": true},
+	"split_video":         {"video": true},
+	"join_videos":         {"video": true},
+	"extract_audio":       {"video": true},
+	"transform_video":     {"video": true},
+	"probe_media":         {"video": true},
+	"upscale_video":       {"video": true},
+	"reframe_video":       {"video": true},
+	"restyle_video":       {"video": true},
+	"generate_video":      {"video": true, "image": true},
+	"generate_image":      {"image": true},
+	"upscale_image":       {"image": true},
+	"convert_image":       {"image": true},
+	"transform_image":     {"image": true},
+	"adjust_image":        {"image": true},
+	"optimize_image":      {"image": true},
+	"compose_images":      {"image": true},
+	"probe_image":         {"image": true},
+}
+
+// nextExecution reserves the next global execution index for a call about to
+// run. The index doubles as the result's position in
+// HarnessPreparedTurn.ToolResults (one result per call, appended in execution
+// order), which is how the save path filters consumed outputs.
+func (l *mediaFeedLog) nextExecution() int {
+	if l == nil {
+		return -1
+	}
+	index := l.executions
+	l.executions++
+	return index
+}
+
+// record notes a completed call's forwardable output as a feed candidate.
+func (l *mediaFeedLog) record(generated *forwardableMedia, produced int) {
+	if l == nil || generated == nil || produced < 0 {
+		return
+	}
+	if strings.TrimSpace(generated.Audio) != "" {
+		l.feeds = append(l.feeds, mediaFeed{kind: "audio", dataURL: generated.Audio, produced: produced})
+	}
+	if strings.TrimSpace(generated.Video) != "" {
+		l.feeds = append(l.feeds, mediaFeed{kind: "video", dataURL: generated.Video, produced: produced})
+	}
+	if len(generated.Images) > 0 {
+		l.feeds = append(l.feeds, mediaFeed{kind: "image", dataURL: generated.Images[0], produced: produced})
+	}
+}
+
+// flagConsumed marks feeds the named call consumed: for each kind the tool
+// reads, a still-seated feed (its output IS the current slot value) is a
+// consumed intermediate. Flagging a feed also flags every earlier feed of the
+// same kind — a chain's earlier outputs fed the lineage that was just
+// consumed (extract → convert → split leaves only the split parts). The slot
+// comparison is what keeps user-attached media safe: a feed never displaced a
+// user attachment (forward-feed fills empty slots only), so its data URL never
+// matches the slot and it can never be flagged.
+func (l *mediaFeedLog) flagConsumed(toolName string, attachedAudios, attachedVideos, attachedImages []string) {
+	if l == nil {
+		return
+	}
+	kinds := toolConsumedMediaKinds[toolName]
+	if len(kinds) == 0 {
+		return
+	}
+	slots := map[string][]string{
+		"audio": attachedAudios,
+		"video": attachedVideos,
+		"image": attachedImages,
+	}
+	for _, feed := range l.feeds {
+		if !kinds[feed.kind] || l.consumed[feed.produced] {
+			continue
+		}
+		slot := slots[feed.kind]
+		if len(slot) == 0 || slot[0] != feed.dataURL {
+			continue
+		}
+		// The feed's output is about to be consumed; every same-kind feed
+		// produced before it rode the same lineage.
+		for _, earlier := range l.feeds {
+			if earlier.kind == feed.kind && earlier.produced <= feed.produced {
+				l.consumed[earlier.produced] = true
+			}
+		}
+	}
+}
+
+// isConsumed reports whether the call at a global execution index produced
+// media that a later call consumed.
+func (l *mediaFeedLog) isConsumed(index int) bool {
+	if l == nil || index < 0 {
+		return false
+	}
+	return l.consumed[index]
+}
+
+// attachableResults drops consumed calls' results from the attachment
+// collection — consumed indexes positionally match results (nextExecution's
+// contract). Evidence, activities, and telemetry keep every result; only the
+// reply's media attachments skip intermediates.
+func (l *mediaFeedLog) attachableResults(results []HarnessToolResult) []HarnessToolResult {
+	if l == nil {
+		return results
+	}
+	attachable := make([]HarnessToolResult, 0, len(results))
+	for index, result := range results {
+		if l.isConsumed(index) {
+			continue
+		}
+		attachable = append(attachable, result)
+	}
+	return attachable
 }
 
 func (h *HarnessEngine) toolActivities(results []HarnessToolResult, calls []HarnessToolCall) []HarnessToolActivity {
