@@ -262,6 +262,50 @@
   letter-spacing: 0.02em;
 }
 
+/* Live streaming feedback inside the chat area — the sidebar spinner is easy
+   to miss, so the streaming assistant bubble carries one activity line (what
+   the harness is doing right now + elapsed, the bubble's only spinner), and
+   a blinking caret while response text is still arriving. */
+.stream-activity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 6px;
+  color: #9ea5a3;
+  font-size: 12px;
+}
+
+.stream-activity-spinner {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #3e4548;
+  border-top-color: #d5a64f;
+  border-radius: 999px;
+  animation: spin 0.9s linear infinite;
+}
+
+.stream-activity-label {
+  color: #c8cdc9;
+}
+
+.stream-activity-elapsed {
+  color: #6d7572;
+  font-variant-numeric: tabular-nums;
+}
+
+.markdown-body.streaming-live > :last-child::after {
+  content: '▍';
+  margin-left: 2px;
+  color: #d5a64f;
+  animation: stream-caret 1s steps(1) infinite;
+}
+
+@keyframes stream-caret {
+  0%, 60% { opacity: 1; }
+  61%, 100% { opacity: 0; }
+}
+
 .side-nav {
   display: grid;
   grid-template-columns: 1fr;

@@ -6349,10 +6349,16 @@ function App() {
                           )}
                         </div>
                       ) : null}
+                      {/* Live activity line while the turn works but no response
+                          text has arrived yet — names the harness phase instead
+                          of a static "..." (see StreamingActivity). */}
+                      {entry.role === 'assistant' && entry.streaming && !entry.content ? (
+                        <StreamingActivity run={entry.harnessRun} />
+                      ) : null}
                       {entry.role === 'assistant' || entry.role === 'system' ? (
-                        <div className="markdown-body">
+                        <div className={`markdown-body${entry.streaming && entry.content ? ' streaming-live' : ''}`}>
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                            {entry.content || (entry.streaming ? '...' : '')}
+                            {entry.content}
                           </ReactMarkdown>
                         </div>
                       ) : (
@@ -9467,6 +9473,62 @@ function parseHarnessRun(value: unknown): HarnessRunView | undefined {
   }
   const run = value as HarnessRunView;
   return run.status || run.steps?.length ? run : undefined;
+}
+
+// Live streaming feedback inside the chat area: the sidebar's spinner is easy
+// to miss, so the streaming assistant bubble names what the harness is doing
+// right now — the latest in-flight step of the live run snapshot — with a
+// spinner and a ticking elapsed clock. Snapshots only arrive on step
+// transitions, so without the local timer a two-minute video generation would
+// read as frozen. Mounts only while a turn streams with no response text yet;
+// once content flows the blinking caret takes over.
+function StreamingActivity({run}: {run?: HarnessRunView}) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const timer = window.setInterval(() => setTick((tick) => tick + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const active = [...asArray(run?.steps)].reverse().find((step) => step.status === 'running');
+  const elapsed = active?.startedAt ? Math.max(0, Date.now() - new Date(active.startedAt).getTime()) : 0;
+  return (
+    <div className="stream-activity">
+      <span className="stream-activity-spinner" aria-hidden="true" />
+      <span className="stream-activity-label">{active ? streamActivityLabel(active) : 'thinking'}</span>
+      {elapsed > 0 ? <span className="stream-activity-elapsed">{formatDuration(elapsed)}</span> : null}
+    </div>
+  );
+}
+
+// One line naming the phase a streaming turn is in. A tool round reads the
+// step summary — which names the planned tools ("running generate_video",
+// harness.go) — because the per-tool activities only attach once the whole
+// batch completes, making the summary the only live signal of what runs.
+function streamActivityLabel(step: HarnessStepView): string {
+  switch (step.kind) {
+    case 'triage':
+      return 'routing request';
+    case 'skill':
+      return 'matching skills';
+    case 'planning':
+      return 'planning tool calls';
+    case 'tool_call': {
+      const summary = step.summary ?? '';
+      if (summary.startsWith('running ')) {
+        const names = summary.slice('running '.length)
+          .split(',')
+          .map((name) => formatToolName(name.trim()))
+          .join(', ');
+        return `running ${names}`;
+      }
+      return 'running tools';
+    }
+    case 'model_call':
+      return 'generating response';
+    case 'streaming':
+      return 'streaming response';
+    default:
+      return 'working';
+  }
 }
 
 // One row per model that consumed tokens, folded from model-call steps. Only

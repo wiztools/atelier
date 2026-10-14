@@ -1981,7 +1981,21 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 			break
 		}
 
-		toolStep := run.appendStep("tool_call", iteration, "tools", "", "tool calls requested by harness planning")
+		// The step's Tools activities only land after the batch finishes, so
+		// the summary carries the planned tool names — it is the only live
+		// signal naming what a running round is executing (the harness panel
+		// and the in-chat streaming activity line both render it).
+		toolNames := make([]string, 0, len(plan.ToolCalls))
+		for _, call := range plan.ToolCalls {
+			if name := strings.TrimSpace(call.Name); name != "" {
+				toolNames = append(toolNames, name)
+			}
+		}
+		toolSummary := "tool calls requested by harness planning"
+		if len(toolNames) > 0 {
+			toolSummary = "running " + strings.Join(toolNames, ", ")
+		}
+		toolStep := run.appendStep("tool_call", iteration, "tools", "", toolSummary)
 		batch := h.runHarnessToolCalls(ctx, requestID, conversationID, plan.ToolCalls, turn)
 		results := batch.Results
 		round.ToolResults = results
