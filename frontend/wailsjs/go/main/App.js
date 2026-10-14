@@ -406,6 +406,10 @@ export function SaveReplicateAPIKey(arg1) {
   return window['go']['main']['App']['SaveReplicateAPIKey'](arg1);
 }
 
+export function SaveSubtitleEdit(arg1) {
+  return window['go']['main']['App']['SaveSubtitleEdit'](arg1);
+}
+
 export function SaveTranscript(arg1) {
   return window['go']['main']['App']['SaveTranscript'](arg1);
 }

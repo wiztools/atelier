@@ -2,6 +2,7 @@ package main
 
 import (
 	"math"
+	"os"
 	"strings"
 	"testing"
 )
@@ -133,5 +134,95 @@ func TestNewestEditorArtifactSubtitleKind(t *testing.T) {
 	// Unknown kinds are still rejected.
 	if _, _, err := newestEditorArtifact(storage, "conv_sub", "caption"); err == nil {
 		t.Fatal("an unknown editor kind must fail")
+	}
+}
+
+func TestSaveSubtitleEdit(t *testing.T) {
+	config := editTestHome(t)
+	subtitleConversationFixture(t, config.Storage)
+	app := NewApp()
+
+	result, err := app.SaveSubtitleEdit(SaveSubtitleEditRequest{
+		ConversationID:   "conv_sub",
+		SourceArtifactID: "trc_old",
+		Format:           "srt",
+		Cues: []SubtitleCue{
+			{StartSeconds: 1, EndSeconds: 2.5, Text: "Edited first"},
+			{StartSeconds: 3, EndSeconds: 4, Text: "Edited second"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SaveSubtitleEdit returned error: %v", err)
+	}
+	if !strings.HasPrefix(result.ArtifactID, "trc_") || result.Format != "srt" || result.CueCount != 2 {
+		t.Fatalf("result = %+v", result)
+	}
+	if !strings.HasPrefix(result.URL, artifactPrefix) || !strings.HasSuffix(result.URL, ".srt") {
+		t.Fatalf("url = %q", result.URL)
+	}
+
+	// The saved artifact is a parseable SRT file on disk with the edited cues.
+	detail, err := getConversation(config.Storage, "conv_sub")
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	// The fixture writes its turns without record stats, so the save's
+	// increment is the first one the record carries.
+	if detail.Conversation.Stats.TurnCount != 1 {
+		t.Fatalf("turn count = %d, want 1 (the save turn; the fixture's turns carry no stats)", detail.Conversation.Stats.TurnCount)
+	}
+	var saved *HistoryContent
+	var saveTurn *HistoryTurn
+	for i := len(detail.Turns) - 1; i >= 0; i-- {
+		for j, content := range detail.Turns[i].Content {
+			if content.ArtifactID == result.ArtifactID {
+				saved = &detail.Turns[i].Content[j]
+				saveTurn = &detail.Turns[i]
+			}
+		}
+	}
+	if saved == nil || saveTurn == nil {
+		t.Fatal("the save turn with the new artifact is missing from history")
+	}
+	if saved.Type != "transcript" || !strings.HasSuffix(saved.Path, ".srt") {
+		t.Fatalf("saved entry = %+v, want a .srt transcript", saved)
+	}
+	if saveTurn.Role != "assistant" || len(saveTurn.Content) != 2 {
+		t.Fatalf("save turn = role %q with %d entries, want an assistant turn with text + transcript", saveTurn.Role, len(saveTurn.Content))
+	}
+	if !strings.Contains(saveTurn.Content[0].Text, "trc_old") || !strings.Contains(saveTurn.Content[0].Text, "2 cues") {
+		t.Fatalf("save summary = %q", saveTurn.Content[0].Text)
+	}
+	path, err := contentArtifactPath(config.Storage, "conv_sub", *saved)
+	if err != nil {
+		t.Fatalf("contentArtifactPath returned error: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read saved artifact: %v", err)
+	}
+	cues, format, _, err := parseSubtitles(data)
+	if err != nil || format != subtitleFormatSRT || len(cues) != 2 || cues[0].Text != "Edited first" {
+		t.Fatalf("saved file parse = format %s, %d cues, err %v", format, len(cues), err)
+	}
+
+	// Refusals: unknown conversation, and a conversation that is streaming.
+	if _, err := app.SaveSubtitleEdit(SaveSubtitleEditRequest{ConversationID: "conv_missing", Format: "vtt", Cues: []SubtitleCue{{StartSeconds: 0, EndSeconds: 1, Text: "x"}}}); err == nil {
+		t.Fatal("an unknown conversation must fail")
+	}
+	app.streamsMu.Lock()
+	app.streamConversations["req_live"] = "conv_sub"
+	app.streamsMu.Unlock()
+	defer func() {
+		app.streamsMu.Lock()
+		delete(app.streamConversations, "req_live")
+		app.streamsMu.Unlock()
+	}()
+	if _, err := app.SaveSubtitleEdit(SaveSubtitleEditRequest{ConversationID: "conv_sub", Format: "vtt", Cues: []SubtitleCue{{StartSeconds: 0, EndSeconds: 1, Text: "x"}}}); err == nil {
+		t.Fatal("a streaming conversation must refuse the save")
+	}
+	// Validation still applies (borrowed from the export half).
+	if _, err := app.SaveSubtitleEdit(SaveSubtitleEditRequest{ConversationID: "conv_sub", Format: "ass", Cues: []SubtitleCue{{StartSeconds: 0, EndSeconds: 1, Text: "x"}}}); err == nil {
+		t.Fatal("an unknown format must fail")
 	}
 }

@@ -204,6 +204,8 @@ export function SaveOpenRouterAPIKey(arg1:string):Promise<void>;
 
 export function SaveReplicateAPIKey(arg1:string):Promise<void>;
 
+export function SaveSubtitleEdit(arg1:main.SaveSubtitleEditRequest):Promise<main.SaveSubtitleEditResult>;
+
 export function SaveTranscript(arg1:main.SaveTranscriptRequest):Promise<string>;
 
 export function SaveUIState(arg1:main.UIState):Promise<void>;

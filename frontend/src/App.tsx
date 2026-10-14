@@ -5729,6 +5729,16 @@ function App() {
                 });
               }}
               onDirtyChange={(dirty) => {subtitleEditorDirty.current = dirty;}}
+              onSavedToConversation={() => {
+                void refreshConversations();
+                setAssetsRefreshTick((tick) => tick + 1);
+                const parentID = subtitleEditorHandle.source.conversationId;
+                if (activeConversationIDRef.current === parentID) {
+                  void GetConversation(parentID).then((detail) => {
+                    if (activeConversationIDRef.current === parentID) hydrateChatConversation(detail);
+                  }).catch((error) => setStartupError(formatError(error)));
+                }
+              }}
             />
           </div>
         ) : null}

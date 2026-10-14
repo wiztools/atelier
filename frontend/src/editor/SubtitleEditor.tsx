@@ -1,5 +1,6 @@
 import {useEffect, useMemo, useRef, useState} from 'react';
 import * as AppBindings from '../../wailsjs/go/main/App';
+import {SaveTranscript} from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
 import {EditsPanel} from './EditsPanel';
 import {EditorHeader} from './EditorHeader';
@@ -30,11 +31,16 @@ export type SubtitleEditorHandle = {
 
 type SubtitleAsset = main.ConversationAsset;
 
-type ExportLogEntry = {
+type EditorLogEntry = {
+  kind: 'export' | 'save';
   format: string;
   cueCount: number;
-  path: string;
   at: string;
+  // An export carries the chosen disk path; a save carries the new
+  // conversation artifact's identity instead.
+  path?: string;
+  artifactId?: string;
+  url?: string;
 };
 
 // The Edits panel's height clamp needs this editor's content floor: header +
@@ -76,6 +82,10 @@ export function SubtitleEditor(props: {
   onClose: () => void;
   onOpenParent: (conversationID: string) => void;
   onDirtyChange?: (dirty: boolean) => void;
+  // Fired after a save lands a new artifact on the conversation, so the
+  // parent can refresh the sidebar and the assets panel (the audio editor's
+  // onResultAdded counterpart).
+  onSavedToConversation?: () => void;
 }) {
   const {source} = props.handle;
   const sourceArtifactID = useState(source.artifactId)[0];
@@ -98,7 +108,9 @@ export function SubtitleEditor(props: {
   const [exportFormat, setExportFormat] = useState<SubtitleFormat>(
     (source.format === 'vtt' || source.format === 'srt' ? source.format : 'vtt') as SubtitleFormat,
   );
-  const [exports, setExports] = useState<ExportLogEntry[]>([]);
+  const [log, setLog] = useState<EditorLogEntry[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const [exportError, setExportError] = useState('');
   const [exporting, setExporting] = useState(false);
 
@@ -235,8 +247,8 @@ export function SubtitleEditor(props: {
         suggestedName: `${source.conversationTitle || 'subtitles'}-${sourceArtifactID}`,
       }));
       if (path) {
-        setExports((entries) => [
-          {format: exportFormat, cueCount: doc.cues.length, path, at: new Date().toLocaleTimeString()},
+        setLog((entries) => [
+          {kind: 'export', format: exportFormat, cueCount: doc.cues.length, path, at: new Date().toLocaleTimeString()},
           ...entries,
         ]);
       }
@@ -244,6 +256,42 @@ export function SubtitleEditor(props: {
       setExportError(formatEditorError(error));
     } finally {
       setExporting(false);
+    }
+  };
+
+  // saveDoc commits the edited doc into the conversation: a new trc_ artifact
+  // plus a turn recording the edit — the media editors' "render + adopt"
+  // door, minus the render. The machine draft is never touched.
+  const saveDoc = async () => {
+    setSaving(true);
+    setSaveError('');
+    try {
+      const result = await AppBindings.SaveSubtitleEdit(main.SaveSubtitleEditRequest.createFrom({
+        conversationId: sourceConversationID,
+        sourceArtifactId: sourceArtifactID,
+        format: exportFormat,
+        cues: doc.cues,
+      }));
+      setLog((entries) => [
+        {kind: 'save', format: result.format, cueCount: result.cueCount, at: new Date().toLocaleTimeString(), artifactId: result.artifactId, url: result.url},
+        ...entries,
+      ]);
+      props.onSavedToConversation?.();
+    } catch (error) {
+      setSaveError(formatEditorError(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const downloadSaved = async (url: string, index: number) => {
+    try {
+      await SaveTranscript(main.SaveTranscriptRequest.createFrom({
+        path: url,
+        suggestedName: `${source.conversationTitle || 'subtitles'}-${Date.now()}-${index + 1}`,
+      }));
+    } catch (error) {
+      setSaveError(formatEditorError(error));
     }
   };
 
@@ -595,24 +643,41 @@ export function SubtitleEditor(props: {
                 <option value="srt">SubRip (.srt)</option>
               </select>
             </label>
-            <button type="button" className="editor-generate" disabled={exporting || doc.cues.length === 0} onClick={() => void exportDoc()}>
-              {exporting ? 'Exporting…' : `Export ${exportFormat.toUpperCase()}`}
+            <button
+              type="button"
+              className="editor-generate"
+              disabled={saving || doc.cues.length === 0}
+              title="Write the edited subtitles back into the conversation as a new artifact — the original stays intact"
+              onClick={() => void saveDoc()}
+            >
+              {saving ? 'Saving…' : 'Save to conversation'}
             </button>
+            <button type="button" disabled={exporting || doc.cues.length === 0} onClick={() => void exportDoc()}>
+              {exporting ? 'Exporting…' : `Export ${exportFormat.toUpperCase()} to disk…`}
+            </button>
+            {saveError ? <div className="editor-error">{saveError}</div> : null}
             {exportError ? <div className="editor-error">{exportError}</div> : null}
-            <span className="editor-session-note">Edits stay in the editor until you export — the conversation is never modified.</span>
+            <span className="editor-session-note">Edits stay in the editor until you save them to the conversation or export them to disk.</span>
           </div>
         </aside>
       </div>
 
-      <EditsPanel count={exports.length} emptyText="No exports yet." bodyReservePx={editsPanelBodyReservePx}>
+      <EditsPanel count={log.length} emptyText="Nothing saved or exported yet." bodyReservePx={editsPanelBodyReservePx}>
         <ul className="editor-op-list">
-          {exports.map((entry, index) => (
+          {log.map((entry, index) => (
             <li key={index} className="editor-op editor-op-done">
-              <span className="editor-op-thumb-glyph">§</span>
+              <span className="editor-op-thumb-glyph">{entry.kind === 'save' ? '✓' : '§'}</span>
               <div className="editor-op-meta">
-                <span className="editor-op-title">Export · {entry.format.toUpperCase()} · {entry.cueCount} cues</span>
-                <span className="editor-op-sub" title={entry.path}>{entry.at} → {entry.path}</span>
+                <span className="editor-op-title">
+                  {entry.kind === 'save' ? `Saved · ${entry.format.toUpperCase()} · ${entry.cueCount} cues · ${entry.artifactId?.slice(0, 12)}` : `Export · ${entry.format.toUpperCase()} · ${entry.cueCount} cues`}
+                </span>
+                <span className="editor-op-sub" title={entry.path || entry.url}>
+                  {entry.kind === 'save' ? `${entry.at} → attached to the conversation` : `${entry.at} → ${entry.path}`}
+                </span>
               </div>
+              {entry.kind === 'save' && entry.url ? (
+                <button type="button" onClick={() => void downloadSaved(entry.url!, index)}>Download</button>
+              ) : null}
             </li>
           ))}
         </ul>

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -197,4 +198,96 @@ func renderSubtitlesExport(req ExportSubtitlesRequest) ([]byte, string, error) {
 	}
 	extension := map[string]string{subtitleFormatVTT: ".vtt", subtitleFormatSRT: ".srt"}[format]
 	return []byte(rendered), extension, nil
+}
+
+// SaveSubtitleEditRequest carries one commit of the editor's cue doc back
+// into its conversation — the middle door between local edits and disk
+// export: a new trc_ artifact plus a small assistant turn recording the edit.
+// The source artifact is provenance for the turn's summary; the original
+// file is never touched.
+type SaveSubtitleEditRequest struct {
+	ConversationID   string        `json:"conversationId"`
+	SourceArtifactID string        `json:"sourceArtifactId,omitempty"`
+	Format           string        `json:"format"`
+	Cues             []SubtitleCue `json:"cues"`
+}
+
+// SaveSubtitleEditResult names what the save produced: the new artifact's
+// identity (the reply chips, the assets panel, and a later editor open all
+// read it) plus what was written.
+type SaveSubtitleEditResult struct {
+	ArtifactID string `json:"artifactId"`
+	URL        string `json:"url"`
+	Format     string `json:"format"`
+	CueCount   int    `json:"cueCount"`
+}
+
+// SaveSubtitleEdit commits the edited cue doc to the conversation: the
+// rendered file lands as a fresh trc_<hex>.<ext> transcript artifact and a
+// short assistant turn records the edit (source, cue count, target format).
+// The machine draft stays intact — every save is additive, mirroring how the
+// media editors never overwrite their sources. Refused while the
+// conversation streams, like every other sanctioned rewrite.
+func (a *App) SaveSubtitleEdit(req SaveSubtitleEditRequest) (SaveSubtitleEditResult, error) {
+	// The render half validates and serializes; the extension it reports is
+	// already baked into the artifact path by writeSubtitleAttachment.
+	data, _, err := renderSubtitlesExport(ExportSubtitlesRequest{Format: req.Format, Cues: req.Cues})
+	if err != nil {
+		return SaveSubtitleEditResult{}, err
+	}
+	format := strings.ToLower(strings.TrimSpace(req.Format))
+	conversationID := strings.TrimSpace(req.ConversationID)
+	if conversationID == "" {
+		return SaveSubtitleEditResult{}, errors.New("saving subtitles to a conversation requires a conversation id")
+	}
+	a.streamsMu.Lock()
+	for _, active := range a.streamConversations {
+		if active == conversationID {
+			a.streamsMu.Unlock()
+			return SaveSubtitleEditResult{}, errors.New("the conversation is still streaming — wait for the turn to finish before saving")
+		}
+	}
+	a.streamsMu.Unlock()
+
+	config, err := loadReadyConfig()
+	if err != nil {
+		return SaveSubtitleEditResult{}, err
+	}
+	store := newHistoryStore(config.Storage)
+	loaded, err := store.loadForAppend(conversationID, "chat", "a chat", config.Tools.Filesystem.Root)
+	if err != nil {
+		return SaveSubtitleEditResult{}, err
+	}
+	content, err := writeSubtitleAttachment(loaded.ArtifactsDir, data)
+	if err != nil {
+		return SaveSubtitleEditResult{}, err
+	}
+	source := strings.TrimSpace(req.SourceArtifactID)
+	if source == "" {
+		source = "subtitles"
+	}
+	nowText := time.Now().Format(time.RFC3339)
+	summary := fmt.Sprintf("Edited subtitles from %s · %d cues · saved as %s", source, len(req.Cues), strings.ToUpper(format))
+	assistantTurn := buildChatAssistantTurn(conversationID, loaded.NextTurnNumber, nowText, summary, "", "", "", "", 0, HarnessRun{}, "")
+	assistantTurn.Content = append(assistantTurn.Content, content)
+
+	loaded.Conversation.UpdatedAt = nowText
+	loaded.Conversation.Stats.TurnCount++
+	loaded.Conversation.Stats.ArtifactCount++
+	if err := store.writeConversation(loaded.Path, loaded.Conversation); err != nil {
+		return SaveSubtitleEditResult{}, err
+	}
+	if err := store.writeTurn(loaded.TurnsDir, assistantTurn); err != nil {
+		return SaveSubtitleEditResult{}, err
+	}
+	absArtifactsDir, err := filepath.Abs(loaded.ArtifactsDir)
+	if err != nil {
+		absArtifactsDir = loaded.ArtifactsDir
+	}
+	return SaveSubtitleEditResult{
+		ArtifactID: content.ArtifactID,
+		URL:        artifactPrefix + filepath.Join(absArtifactsDir, filepath.Base(content.Path)),
+		Format:     format,
+		CueCount:   len(req.Cues),
+	}, nil
 }

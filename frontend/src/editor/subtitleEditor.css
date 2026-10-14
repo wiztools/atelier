@@ -306,6 +306,12 @@ textarea.subtitle-cue-text.editing {
   margin-top: auto;
 }
 
+/* Two commit doors: saving to the conversation is the primary action and
+   keeps the editor-generate CTA; the disk export is the plain secondary. */
+.subtitle-export .editor-generate {
+  width: 100%;
+}
+
 .subtitle-export label {
   display: flex;
   align-items: center;
