@@ -721,6 +721,7 @@ export namespace main {
 	    images?: string[];
 	    audios?: string[];
 	    videos?: string[];
+	    subtitles?: string[];
 	    tool_calls?: ToolCall[];
 	
 	    static createFrom(source: any = {}) {
@@ -734,6 +735,7 @@ export namespace main {
 	        this.images = source["images"];
 	        this.audios = source["audios"];
 	        this.videos = source["videos"];
+	        this.subtitles = source["subtitles"];
 	        this.tool_calls = this.convertValues(source["tool_calls"], ToolCall);
 	    }
 	
@@ -903,6 +905,7 @@ export namespace main {
 	    requestID: string;
 	    conversationId: string;
 	    userVideos?: string[];
+	    userSubtitles?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ChatStreamStart(source);
@@ -913,6 +916,7 @@ export namespace main {
 	        this.requestID = source["requestID"];
 	        this.conversationId = source["conversationId"];
 	        this.userVideos = source["userVideos"];
+	        this.userSubtitles = source["userSubtitles"];
 	    }
 	}
 	
@@ -1815,6 +1819,7 @@ export namespace main {
 	    direction?: string;
 	    lyrics?: string;
 	    cloneVoice?: boolean;
+	    artifactId?: string;
 	    scale?: string;
 	    task?: string;
 	    language?: string;
@@ -1875,6 +1880,7 @@ export namespace main {
 	        this.direction = source["direction"];
 	        this.lyrics = source["lyrics"];
 	        this.cloneVoice = source["cloneVoice"];
+	        this.artifactId = source["artifactId"];
 	        this.scale = source["scale"];
 	        this.task = source["task"];
 	        this.language = source["language"];

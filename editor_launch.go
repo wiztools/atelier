@@ -205,7 +205,7 @@ func (a *App) CreateEditorConversation(req ChatRequest) (EditorLaunchResult, err
 	if strings.TrimSpace(req.Model) == "" {
 		req.Model = strings.TrimSpace(config.Providers.Ollama.Models.Primary)
 	}
-	conversationID, _, err := writePendingChatConversation(config, req)
+	conversationID, _, _, err := writePendingChatConversation(config, req)
 	if err != nil {
 		return EditorLaunchResult{}, err
 	}

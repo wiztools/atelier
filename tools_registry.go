@@ -75,9 +75,16 @@ type HarnessToolExecutionContext struct {
 	// on the direct/UI tool path, where there is no conversation to consult.
 	Storage        ConfigStorage
 	ConversationID string
-	GenerateImage  func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, []string, error)
-	GenerateVideo  func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error)
-	GenerateAudio  func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error)
+	// TranscriptFiles are the subtitle-bearing files produced by earlier calls
+	// THIS turn (transcribe_audio's .vtt, convert_subtitles' output), newest
+	// last. convert_subtitles reads the last one so "transcribe this and give
+	// me an SRT" chains in a single turn — the files are not persisted, and
+	// thus invisible to the conversation record, until the turn saves. Empty
+	// until a call produces one; never carries user attachments.
+	TranscriptFiles []ToolTranscriptFile
+	GenerateImage   func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, []string, error)
+	GenerateVideo   func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error)
+	GenerateAudio   func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error)
 	// GenerateAudioExtend lengthens an existing clip with generated audio —
 	// the extend sibling of GenerateAudio. It takes the canonical extend
 	// request (source clip, direction, added duration) and returns the longer
@@ -292,6 +299,10 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 	// no keys, CLI, or model behind them, so an editor-open ask is always
 	// servable (see editor_launch.go).
 	definitions = append(definitions, openEditorToolDefinition())
+	// convert_subtitles is unconditional for the same reason: pure-Go WebVTT ↔
+	// SubRip conversion over the conversation's transcript artifacts (see
+	// subtitle.go), with no ffmpeg, key, or model behind it.
+	definitions = append(definitions, convertSubtitlesToolDefinition())
 	if imageGenerationConfigured(config) {
 		definitions = append(definitions, imageGenerationToolDefinition(config))
 	}

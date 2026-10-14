@@ -495,7 +495,7 @@ func TestWritePendingChatConversationAdoptsStagedUpload(t *testing.T) {
 
 	config := defaultAppConfig()
 	config.Storage = storage
-	conversationID, videoURLs, err := writePendingChatConversation(config, ChatRequest{
+	conversationID, videoURLs, _, err := writePendingChatConversation(config, ChatRequest{
 		Model: "chat-model",
 		Messages: []ChatMessage{
 			{Role: "user", Content: "Extract the audio mp3 from this.", Videos: []string{staged.URL}},

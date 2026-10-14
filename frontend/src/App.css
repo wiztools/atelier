@@ -3226,6 +3226,24 @@ button:disabled {
   text-align: center;
 }
 
+/* Subtitle transcripts (.vtt/.srt) preview as a labeled chip — there is no
+   player for text cues, and the card's download/reference affordances still
+   apply. Mirrors asset-missing's footprint so the card grid stays even. */
+.asset-transcript-chip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 10px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #d7d1c3;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Hover-revealed affordances on every asset card, anchored to the preview's
    top-right corner (keyboard focus reveals them too — the buttons stay in tab
    order). Anchored to .asset-preview (position: relative above) and sitting

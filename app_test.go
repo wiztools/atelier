@@ -1924,7 +1924,7 @@ func TestChatConversationWithGeneratedImagesLifecycle(t *testing.T) {
 		t.Fatalf("ensureStorageDirs returned error: %v", err)
 	}
 
-	conversationID, _, err := writePendingChatConversation(config, ChatRequest{
+	conversationID, _, _, err := writePendingChatConversation(config, ChatRequest{
 		Model: "chat-model",
 		Messages: []ChatMessage{
 			{Role: "user", Content: "Paint a small house"},
@@ -1990,7 +1990,7 @@ func TestChatImageAssistantTurnStoresToolMetadata(t *testing.T) {
 		t.Fatalf("ensureStorageDirs returned error: %v", err)
 	}
 
-	conversationID, _, err := writePendingChatConversation(config, ChatRequest{
+	conversationID, _, _, err := writePendingChatConversation(config, ChatRequest{
 		Model: "chat-model",
 		Messages: []ChatMessage{
 			{Role: "user", Content: "Paint early"},
@@ -2059,7 +2059,7 @@ func TestPurgeArchivedConversationsRemovesOnlySoftDeletedFolders(t *testing.T) {
 		t.Fatalf("ensureStorageDirs returned error: %v", err)
 	}
 
-	archivedID, _, err := writePendingChatConversation(config, ChatRequest{
+	archivedID, _, _, err := writePendingChatConversation(config, ChatRequest{
 		Model: "chat-model",
 		Messages: []ChatMessage{
 			{Role: "user", Content: "Archive me", Images: []string{"data:image/png;base64,iVBORw0KGgo="}},
@@ -2068,7 +2068,7 @@ func TestPurgeArchivedConversationsRemovesOnlySoftDeletedFolders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("write archived conversation returned error: %v", err)
 	}
-	activeID, _, err := writePendingChatConversation(config, ChatRequest{
+	activeID, _, _, err := writePendingChatConversation(config, ChatRequest{
 		Model: "chat-model",
 		Messages: []ChatMessage{
 			{Role: "user", Content: "Keep me", Images: []string{"data:image/png;base64,iVBORw0KGgo="}},
@@ -2122,7 +2122,7 @@ func TestFindConversationPathResolvesCanonicalAndMismatchedLayouts(t *testing.T)
 		t.Fatalf("ensureStorageDirs returned error: %v", err)
 	}
 
-	canonicalID, _, err := writePendingChatConversation(config, ChatRequest{
+	canonicalID, _, _, err := writePendingChatConversation(config, ChatRequest{
 		Model:    "chat-model",
 		Messages: []ChatMessage{{Role: "user", Content: "Canonical"}},
 	})
@@ -4585,7 +4585,7 @@ func TestHarnessStartChatTurnRecordsUserBeforeAssistant(t *testing.T) {
 			{Role: "user", Content: "Start immediately"},
 		},
 	}
-	conversationID, _, err := engine.StartChatTurn(req)
+	conversationID, _, _, err := engine.StartChatTurn(req)
 	if err != nil {
 		t.Fatalf("StartChatTurn returned error: %v", err)
 	}

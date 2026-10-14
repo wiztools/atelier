@@ -122,6 +122,9 @@ type ChatEntry = {
   images?: string[];
   videos?: string[];
   audios?: string[];
+  // Subtitle files (.vtt/.srt) attached to a user turn — data URLs live,
+  // /atelier-artifact URLs after reload. Rendered as chips; never model input.
+  subtitles?: string[];
   // Timestamped-transcript artifacts (.vtt) produced by transcribe_audio —
   // "/atelier-artifact" URLs rendered as downloadable chips.
   transcripts?: string[];
@@ -308,9 +311,12 @@ type Attachment = {
   // shape); 'audio' and 'video' attachments keep the full data URL as payload,
   // since the OpenRouter input_audio part needs the bytes + a format derived
   // from the data:audio/<fmt>; prefix, and video input is tool-only so the
-  // backend keeps the full data URL for AttachedVideo consumers. The kind
-  // drives chip rendering and request building in submitChat.
-  kind: 'image' | 'audio' | 'video';
+  // backend keeps the full data URL for AttachedVideo consumers. 'subtitle'
+  // attachments (.vtt/.srt) keep the full data URL like audio/video — they are
+  // tool-only too (convert_subtitles reads the persisted artifact, never the
+  // message bytes). The kind drives chip rendering and request building in
+  // submitChat.
+  kind: 'image' | 'audio' | 'video' | 'subtitle';
   // Set when the file was too large to carry as a data URL: it was streamed
   // to the backend in chunks at attach time (stageMediaFileAsAttachment) and
   // src/payload are the staged /atelier-artifact/ URL. The backend adopts the
@@ -4176,6 +4182,7 @@ function App() {
       images: historyImages(turn.content),
       videos: historyVideos(turn.content),
       audios: historyAudios(turn.content),
+      subtitles: turn.role === 'user' ? historySubtitles(turn.content) : undefined,
       transcripts: historyTranscripts(turn.content),
       harnessRun: parseHarnessRun(turn.providerResponse?.harnessRun),
       mediaTool: turn.providerResponse?.tool as MediaToolSummaryView | undefined,
@@ -4333,6 +4340,18 @@ function App() {
             : entry,
         ));
       }
+      // Same swap for subtitles (ChatStreamStart.userSubtitles): the Save
+      // binding reads artifact paths only, so the persisted URLs are what
+      // make a just-attached subtitle downloadable without a reload.
+      // Positional and count-guarded like the video swap.
+      const persistedSubtitles = asArray(start.userSubtitles);
+      if (opts.userEntryId && persistedSubtitles.length) {
+        setChat((entries) => entries.map((entry) =>
+          entry.id === opts.userEntryId && entry.subtitles?.length === persistedSubtitles.length
+            ? {...entry, subtitles: persistedSubtitles}
+            : entry,
+        ));
+      }
       // The conversation now carries its own membership — the pending context
       // has done its job. Captured before the clear: it names where the new
       // row appears in the sidebar tree.
@@ -4398,6 +4417,7 @@ function App() {
       images: attachments.filter((item) => item.kind === 'image').map((item) => item.src),
       audios: attachments.filter((item) => item.kind === 'audio').map((item) => item.src),
       videos: attachments.filter((item) => item.kind === 'video').map((item) => item.src),
+      subtitles: attachments.filter((item) => item.kind === 'subtitle').map((item) => item.src),
     };
     // @-mentioned assets ride the request as IDs (backend resolves them into
     // the tool attachment slots); the readable @token stays in the message
@@ -4423,9 +4443,10 @@ function App() {
       .filter((payload) => payload.startsWith('data:'));
     const imageAttachments = attachments.filter((item) => item.kind === 'image').map((item) => item.payload).filter(Boolean);
     const videoAttachments = attachments.filter((item) => item.kind === 'video').map((item) => item.payload).filter(Boolean);
+    const subtitleAttachments = attachments.filter((item) => item.kind === 'subtitle').map((item) => item.payload).filter(Boolean);
     const requestMessages: main.ChatMessage[] = [
       ...chat
-        .filter((entry) => entry.role !== 'system' && (entry.content || entry.images?.length || entry.audios?.length || entry.videos?.length))
+        .filter((entry) => entry.role !== 'system' && (entry.content || entry.images?.length || entry.audios?.length || entry.videos?.length || entry.subtitles?.length))
         .map((entry) => ({
           role: entry.role,
           content: entry.content,
@@ -4434,6 +4455,7 @@ function App() {
           // only inline data: URLs are valid payloads, so filter like images.
           ...(entry.audios?.length ? {audios: entry.audios.filter((audio) => audio.startsWith('data:'))} : {}),
           ...(entry.videos?.length ? {videos: entry.videos.filter((video) => video.startsWith('data:'))} : {}),
+          ...(entry.subtitles?.length ? {subtitles: entry.subtitles.filter((subtitle) => subtitle.startsWith('data:'))} : {}),
         }) as main.ChatMessage),
       {
         role: 'user',
@@ -4441,6 +4463,7 @@ function App() {
         ...(imageAttachments.length ? {images: imageAttachments} : {}),
         ...(audioAttachments.length ? {audios: audioAttachments} : {}),
         ...(videoAttachments.length ? {videos: videoAttachments} : {}),
+        ...(subtitleAttachments.length ? {subtitles: subtitleAttachments} : {}),
       } as main.ChatMessage,
     ];
 
@@ -4618,7 +4641,7 @@ function App() {
       name: assetMentionLabel(asset),
       src: asset.url ?? '',
       payload: '',
-      kind: asset.kind === 'audio' ? 'audio' : asset.kind === 'video' ? 'video' : 'image',
+      kind: asset.kind === 'audio' ? 'audio' : asset.kind === 'video' ? 'video' : asset.kind === 'transcript' ? 'subtitle' : 'image',
       hint: composerLibraryID
         ? `${asset.role === 'user' ? 'attached' : 'generated'} · ${asset.conversationTitle || 'another chat'}`
         : `${asset.role === 'user' ? 'attached' : 'generated'} · ${assetTurnLabel(asset.originTurnId)}`,
@@ -4918,7 +4941,7 @@ function App() {
 
   function composerHasMediaDrag(event: React.DragEvent<HTMLDivElement>): boolean {
     return Array.from(event.dataTransfer?.items ?? []).some(
-      (item) => item.kind === 'file' && (item.type.startsWith('image/') || item.type.startsWith('audio/') || item.type.startsWith('video/')),
+      (item) => item.kind === 'file' && (item.type.startsWith('image/') || item.type.startsWith('audio/') || item.type.startsWith('video/') || item.type === 'text/vtt' || item.type === 'application/x-subrip'),
     );
   }
 
@@ -4953,8 +4976,11 @@ function App() {
   async function handleComposerDrop(event: React.DragEvent<HTMLDivElement>) {
     composerDragDepth.current = 0;
     setComposerDragging(false);
+    // Subtitle files are matched by extension too: an .srt dropped from Finder
+    // often reports an empty MIME type, which the type-only drag preview above
+    // misses — the drop itself should still accept what the picker accepts.
     const mediaFiles = Array.from(event.dataTransfer?.files ?? []).filter(
-      (file) => file.type.startsWith('image/') || file.type.startsWith('audio/') || file.type.startsWith('video/'),
+      (file) => file.type.startsWith('image/') || file.type.startsWith('audio/') || file.type.startsWith('video/') || subtitleMimeForFile(file) !== null,
     );
     if (!mediaFiles.length) {
       return;
@@ -5022,6 +5048,9 @@ function App() {
     }
     if (asset.kind === 'video') {
       return saveGeneratedVideo(asset.url, 0);
+    }
+    if (asset.kind === 'transcript') {
+      return saveGeneratedTranscript(asset.url, 0);
     }
     return saveGeneratedImage(asset.url, 0);
   }
@@ -6360,6 +6389,27 @@ function App() {
                           ))}
                         </div>
                       ) : null}
+                      {entry.role === 'user' && entry.subtitles?.length ? (
+                        <div className="chat-transcript-results">
+                          {entry.subtitles.map((subtitle, index) => (
+                            <div key={`${entry.id}-subtitle-${index}`} className="chat-transcript-card">
+                              <span className="chat-transcript-name">{transcriptChipLabel(subtitle)}</span>
+                              {/* The Save binding reads artifact paths, not data:
+                                  URLs — a just-attached file (the live entry's inline
+                                  form) hides download until the persisted artifact
+                                  URL replaces it, the same rule the user-audio
+                                  block applies. */}
+                              <button
+                                type="button"
+                                onClick={() => saveGeneratedTranscript(subtitle, index)}
+                                disabled={!subtitle.startsWith('/atelier-artifact/')}
+                              >
+                                Download subtitle
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
                       {entry.role === 'assistant' && entry.videos?.length ? (
                         <div className="chat-video-results">
                           {entry.videos.map((video, index) => (
@@ -6401,7 +6451,7 @@ function App() {
                           {entry.transcripts.map((transcript, index) => (
                             <div key={`${entry.id}-transcript-${index}`} className="chat-transcript-card">
                               <span className="chat-transcript-name">{transcriptChipLabel(transcript)}</span>
-                              <button type="button" onClick={() => saveGeneratedTranscript(transcript, index)}>Download transcript</button>
+                              <button type="button" onClick={() => saveGeneratedTranscript(transcript, index)}>{transcript.toLowerCase().endsWith('.srt') ? 'Download subtitles' : 'Download transcript'}</button>
                             </div>
                           ))}
                         </div>
@@ -6521,6 +6571,16 @@ function App() {
                               <rect width="14" height="12" x="2" y="6" rx="2" ry="2" />
                             </svg>
                           </span>
+                        ) : item.kind === 'subtitle' ? (
+                          <span className="attachment-subtitle-chip" aria-hidden="true">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <rect width="18" height="14" x="3" y="5" rx="2" ry="2" />
+                              <path d="M7 15h4" />
+                              <path d="M13 15h4" />
+                              <path d="M7 11h2" />
+                              <path d="M11 11h6" />
+                            </svg>
+                          </span>
                         ) : (
                           <img src={item.src} alt="" />
                         )}
@@ -6548,7 +6608,7 @@ function App() {
                             <img src={item.src} alt="" className="mention-thumb" />
                           ) : (
                             <span className="mention-icon" aria-hidden="true">
-                              {item.kind === 'audio' ? '♪' : '▶'}
+                              {item.kind === 'audio' ? '♪' : item.kind === 'subtitle' ? '💬' : '▶'}
                             </span>
                           )}
                           <span className="mention-name">{item.name}</span>
@@ -6623,7 +6683,7 @@ function App() {
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
                       </svg>
-                      <input type="file" accept="image/*,audio/*,video/*" multiple onChange={(event) => addFiles(event.target.files)} />
+                      <input type="file" accept="image/*,audio/*,video/*,.vtt,.srt,application/x-subrip,text/vtt" multiple onChange={(event) => addFiles(event.target.files)} />
                     </label>
                   </div>
                   <div className="composer-submit-row">
@@ -6725,7 +6785,7 @@ function App() {
               <p className="assets-empty">
                 {composerLibraryID
                   ? 'No library assets yet. Uploads and generated media from every chat in this library show up here.'
-                  : 'No assets yet. Images, audio, and video — attached or generated — show up here as the conversation produces them.'}
+                  : 'No assets yet. Images, audio, video, and subtitles — attached, generated, or converted — show up here as the conversation produces them.'}
               </p>
             ) : (
               panelAssets.map((asset) => (
@@ -6750,6 +6810,10 @@ function App() {
                       <AudioPlayer src={asset.url} />
                     ) : asset.kind === 'video' && asset.url ? (
                       <LazyPanelVideo src={asset.url} />
+                    ) : asset.kind === 'transcript' && asset.url ? (
+                      <span className="asset-transcript-chip">
+                        {transcriptChipLabel(asset.url)}
+                      </span>
                     ) : (
                       <span className="asset-missing">Artifact file is missing on disk</span>
                     )}
@@ -10035,13 +10099,32 @@ function historyTranscripts(contents: main.HistoryContent[] | null | undefined):
     .filter(Boolean);
 }
 
-// Transcript artifacts come in two kinds — the WebVTT rendering of a
-// timestamped transcript (.vtt) and an oversized plain transcript staged as
-// text (.txt). The URL's extension says which; the chip label follows it.
+// historySubtitles picks the SUBTITLE artifacts (.vtt/.srt) off a user turn's
+// content — the hydrated /atelier-artifact URLs attached subtitle files
+// persist as. Plain .txt transcripts are not subtitles and never match, and
+// assistant-produced transcript artifacts stay in `transcripts` (they render
+// there), which is why the caller guards this to user turns.
+function historySubtitles(contents: main.HistoryContent[] | null | undefined): string[] | undefined {
+  const urls = asArray(contents)
+    .filter((content) => {
+      if (content.type !== 'transcript') return false;
+      const path = content.text || content.path || '';
+      return path.toLowerCase().endsWith('.vtt') || path.toLowerCase().endsWith('.srt');
+    })
+    .map((content) => content.text || content.path || '')
+    .filter(Boolean);
+  return urls.length ? urls : undefined;
+}
+
+// Transcript artifacts come in three kinds — the WebVTT rendering of a
+// timestamped transcript (.vtt), its converted SubRip form (.srt, from
+// convert_subtitles), and an oversized plain transcript staged as text (.txt).
+// The URL's extension says which; the chip label follows it.
 function transcriptChipLabel(url: string): string {
-  return url.toLowerCase().endsWith('.vtt')
-    ? '📄 Timestamped transcript (.vtt)'
-    : '📄 Transcript (.txt)';
+  const lower = url.toLowerCase();
+  if (lower.endsWith('.vtt')) return '📄 Timestamped transcript (.vtt)';
+  if (lower.endsWith('.srt')) return '📄 Subtitles (.srt)';
+  return '📄 Transcript (.txt)';
 }
 
 function imagePayloadForOllama(image: string): string {
@@ -10191,10 +10274,39 @@ async function readVideoFile(file: File, nameOverride?: string): Promise<Attachm
   };
 }
 
+// subtitleMimeForFile names the wire mime an attached subtitle carries: the
+// extension decides (.vtt WebVTT, .srt SubRip) because OSes report these files
+// inconsistently (often an empty type). The backend re-sniffs the CONTENT at
+// persistence, so a mislabeled mime only affects the chip, never the artifact.
+function subtitleMimeForFile(file: File): string | null {
+  const lower = file.name.toLowerCase();
+  if (lower.endsWith('.vtt') || file.type === 'text/vtt') return 'text/vtt';
+  if (lower.endsWith('.srt') || file.type === 'application/x-subrip') return 'application/x-subrip';
+  return null;
+}
+
+// readSubtitleFile keeps the full data URL as the payload, mirroring
+// audio/video: subtitle attachments are tool-only (convert_subtitles reads the
+// persisted artifact), never model input, and the backend decodes the data URL
+// exactly like the other media kinds.
+async function readSubtitleFile(file: File, nameOverride?: string): Promise<Attachment> {
+  const mime = subtitleMimeForFile(file) ?? 'text/vtt';
+  const bytes = await file.arrayBuffer();
+  const dataURL = `data:${mime};base64,${bytesToBase64(bytes)}`;
+  return {
+    name: nameOverride ?? file.name,
+    src: dataURL,
+    payload: dataURL,
+    kind: 'subtitle',
+  };
+}
+
 // readFileAsAttachment dispatches on MIME type to the right reader. Audio files
-// route to readAudioFile, video files to readVideoFile; everything else (images
-// today, and an unknown type the OS picker let through) routes to readImageFile,
-// which produced the historical behavior.
+// route to readAudioFile, video files to readVideoFile, subtitle files
+// (.vtt/.srt — by extension first, the OS type is unreliable) to
+// readSubtitleFile; everything else (images today, and an unknown type the OS
+// picker let through) routes to readImageFile, which produced the historical
+// behavior.
 //
 // Audio/video past mediaStageThresholdBytes never become data URLs at all: the
 // base64 payload would have to cross the Wails bridge inside the StreamChat
@@ -10203,6 +10315,9 @@ async function readVideoFile(file: File, nameOverride?: string): Promise<Attachm
 // are staged to disk in chunks instead (media_upload.go) and carry the staged
 // artifact URL, which renders, plays, and persists like any other artifact.
 async function readFileAsAttachment(file: File, nameOverride?: string, onProgress?: (fraction: number) => void): Promise<Attachment> {
+  if (subtitleMimeForFile(file)) {
+    return readSubtitleFile(file, nameOverride);
+  }
   if (file.type.startsWith('audio/') || file.type.startsWith('video/')) {
     const kind = file.type.startsWith('audio/') ? 'audio' : 'video';
     if (file.size > mediaStageThresholdBytes) {

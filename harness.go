@@ -228,6 +228,12 @@ type HarnessToolCall struct {
 	// "unset" from "false" under omitempty, and strict-mode planners emit null
 	// for absent optionals (strictJSONSchema widens them to nullable unions).
 	CloneVoice *bool `json:"cloneVoice,omitempty"`
+	// ArtifactID is an optional convert_subtitles input naming a specific
+	// transcript artifact in the conversation to convert (e.g. "trc_ab12cd34").
+	// Omit to convert the newest .vtt/.srt artifact, or the subtitle file an
+	// earlier call in this same turn produced. Planner-only — declared in
+	// harnessToolPlanSchema and validated per-tool.
+	ArtifactID string `json:"artifactId,omitempty"`
 	// Scale is an optional upscale_image input naming the upscale factor
 	// ("2x" or "4x"). Omit for the default 2x. See imageUpscaleParamSchema.
 	Scale string `json:"scale,omitempty"`
@@ -346,7 +352,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		// The pre-started path (App.StreamChat) carries the user-turn video
 		// URLs out through ChatStreamStart; this fallback start belongs to
 		// callers with no live transcript to swap, so the URLs are dropped.
-		conversationID, _, err = h.StartChatTurn(req)
+		conversationID, _, _, err = h.StartChatTurn(req)
 		if err != nil {
 			h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: fmt.Sprintf("history start failed: %v", err), Done: true})
 			return
@@ -974,25 +980,40 @@ func audiosFromToolResults(results []HarnessToolResult) ([]ToolAudioFile, AudioG
 }
 
 // transcriptsFromToolResults collects the timestamped-transcript artifacts
-// produced by transcribe_audio tool calls this turn, plus the metadata used to
-// record them on the saved turn. The temp files hold the FULL transcript —
-// evidence only carries a preview (see transcribeAudioOutput).
+// produced by transcribe_audio tool calls this turn — and the converted
+// subtitle files convert_subtitles staged — plus the metadata used to record
+// them on the saved turn. The temp files hold the FULL transcript — evidence
+// only carries a preview (see transcribeAudioOutput). Only transcribe results
+// set the transcription metadata; a conversion contributes files alone.
 func transcriptsFromToolResults(results []HarnessToolResult) ([]ToolTranscriptFile, string, string) {
 	var transcripts []ToolTranscriptFile
 	transcriptModel := ""
 	timestamps := ""
 	for _, result := range results {
 		typed, ok := result.Result.(ToolTranscribeResult)
-		if !ok || result.Status != "completed" {
+		if ok && result.Status == "completed" {
+			if transcriptModel == "" {
+				transcriptModel = typed.Model
+				timestamps = typed.Timestamps
+			}
+			transcripts = append(transcripts, typed.Transcripts...)
 			continue
 		}
-		if transcriptModel == "" {
-			transcriptModel = typed.Model
-			timestamps = typed.Timestamps
+		converted, ok := result.Result.(ToolConvertSubtitlesResult)
+		if ok && result.Status == "completed" {
+			transcripts = append(transcripts, converted.Transcripts...)
 		}
-		transcripts = append(transcripts, typed.Transcripts...)
 	}
 	return transcripts, transcriptModel, timestamps
+}
+
+// transcriptFilesFromResults extracts just the subtitle-bearing temp files
+// completed transcribe/convert calls produced — the in-turn forward-feed the
+// per-batch seeding and the round fold both read. transcriptsFromToolResults
+// is the persistence-facing collector; this is its file-only view.
+func transcriptFilesFromResults(results []HarnessToolResult) []ToolTranscriptFile {
+	files, _, _ := transcriptsFromToolResults(results)
+	return files
 }
 
 // latestUserImages returns all non-empty images attached to the most recent
@@ -1726,6 +1747,12 @@ type harnessTurnContext struct {
 	// extract_audio → convert_audio chain, generate_speech → lip_sync).
 	// Shared by pointer across the per-round value copies of the turn context.
 	MediaFeeds *mediaFeedLog
+	// TranscriptFiles accumulates the subtitle-bearing files this turn's tools
+	// produced (transcribe_audio's .vtt, convert_subtitles' output), across
+	// planning rounds — the forward-feed that lets convert_subtitles chain off
+	// a transcribe_audio in the same turn. The files persist as artifacts when
+	// the turn saves regardless; this only makes them addressable mid-turn.
+	TranscriptFiles []ToolTranscriptFile
 }
 
 // selectSkillForTurn picks (and loads) the skill guiding this turn. It runs a
@@ -2076,6 +2103,10 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 		if len(turn.AttachedImages) == 0 {
 			turn.AttachedImages = batch.GeneratedImages
 		}
+		// Subtitle files ride the turn context so the NEXT round's
+		// runHarnessToolCalls inherits them (the transcript-slot sibling of the
+		// attachment folds above).
+		turn.TranscriptFiles = append(turn.TranscriptFiles, transcriptFilesFromResults(results)...)
 
 		if time.Now().After(deadline) {
 			break
@@ -2511,6 +2542,11 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 						"saturation":  map[string]any{"type": "integer"},
 						"grayscale":   map[string]any{"type": "boolean"},
 						"sepia":       map[string]any{"type": "boolean"},
+						// convert_subtitles inputs (subtitle.go): the target
+						// format rides the shared `format` string above; the
+						// optional artifact id names a specific transcript
+						// artifact when the newest one isn't the source.
+						"artifactId": map[string]any{"type": "string"},
 					},
 				},
 			},
@@ -2839,6 +2875,10 @@ func toolResultMessageView(result HarnessToolResult) HarnessToolResult {
 		messageResult.Result = typed
 	}
 	if typed, ok := result.Result.(ToolTranscribeResult); ok {
+		typed.Transcripts = nil
+		messageResult.Result = typed
+	}
+	if typed, ok := result.Result.(ToolConvertSubtitlesResult); ok {
 		typed.Transcripts = nil
 		messageResult.Result = typed
 	}
@@ -3474,6 +3514,9 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 	// the newest artifact of the named kind when the turn's slots lack it.
 	gateway.tools.Storage = h.config.Storage
 	gateway.tools.ConversationID = conversationID
+	// Subtitle files earlier rounds produced (transcribe_audio, convert_subtitles)
+	// seed convert_subtitles' in-turn source — the transcribe → convert chain.
+	gateway.tools.TranscriptFiles = turn.TranscriptFiles
 	batch := harnessToolBatchResult{Results: make([]HarnessToolResult, 0, len(calls))}
 	for _, call := range calls {
 		// When the user selected a model that is not the harness model as the
@@ -3517,6 +3560,11 @@ func (h *HarnessEngine) runHarnessToolCalls(ctx context.Context, requestID, conv
 		})
 		results := []HarnessToolResult{result}
 		batch.Results = append(batch.Results, result)
+		// Subtitle forward-feed: a transcript/conversion result this batch just
+		// produced seeds the next call's in-turn source (transcribe_audio →
+		// convert_subtitles in one round), the transcript-slot sibling of the
+		// generated-media feed below.
+		gateway.tools.TranscriptFiles = append(gateway.tools.TranscriptFiles, transcriptFilesFromResults(results)...)
 		// Forward-feed Part A: a media-generating call seeds the attachment
 		// slots for the NEXT call in this same batch, so a planner can chain
 		// generate_speech → lip_sync in one round. We only fill empty slots — a
@@ -4141,7 +4189,7 @@ func (h *HarnessEngine) SaveChatTurn(req ChatRequest, assistantContent, assistan
 // "/atelier-artifact" URLs so the streaming start result can swap the live
 // transcript's composer data: URLs for artifact srcs (poster derivation and
 // memory: the multi-MB base64 payload leaves the UI state).
-func (h *HarnessEngine) StartChatTurn(req ChatRequest) (string, []string, error) {
+func (h *HarnessEngine) StartChatTurn(req ChatRequest) (string, []string, []string, error) {
 	if strings.TrimSpace(req.ConversationID) == "" {
 		return writePendingChatConversation(h.config, req)
 	}

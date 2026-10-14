@@ -573,7 +573,14 @@ type ChatMessage struct {
 	// (and therefore before any model call), and no provider adapter emits a
 	// video content part. Tools consume it via AttachedVideos (Veo extend, lip
 	// sync). Bytes are validated with isVideoBytes before being persisted.
-	Videos    []string   `json:"videos,omitempty"`
+	Videos []string `json:"videos,omitempty"`
+	// Subtitles carries user-attached subtitle files (.vtt/.srt) as data URLs,
+	// parallel to Videos. Like video it is tool-only — no provider adapter
+	// emits it as model input, and messagesWithoutMedia strips the bytes. The
+	// turn persistence writes each file as a trc_<hex>.<ext> transcript
+	// artifact, which is the identity convert_subtitles reads and the assets
+	// panel and @-mentions list (subtitle.go).
+	Subtitles []string   `json:"subtitles,omitempty"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
@@ -658,6 +665,11 @@ type ChatStreamStart struct {
 	// moment the turn starts — the poster frame derives from the artifact
 	// path, never a data URL, and the base64 payload leaves the UI state.
 	UserVideos []string `json:"userVideos,omitempty"`
+	// UserSubtitles carries the just-persisted user-turn subtitle attachments'
+	// artifact URLs, positional like UserVideos. The Save binding reads
+	// artifact paths only, so the swap is what makes a just-attached subtitle
+	// downloadable without a reload.
+	UserSubtitles []string `json:"userSubtitles,omitempty"`
 }
 
 type ChatStreamEvent struct {
@@ -1974,7 +1986,7 @@ func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {
 		requestID = fmt.Sprintf("chat-%d", time.Now().UnixNano())
 	}
 
-	conversationID, userVideoURLs, err := engine.StartChatTurn(req)
+	conversationID, userVideoURLs, userSubtitleURLs, err := engine.StartChatTurn(req)
 	if err != nil {
 		return nil, err
 	}
@@ -1996,7 +2008,7 @@ func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {
 		engine.RunChatStream(streamCtx, requestID, req, true)
 	}()
 
-	return &ChatStreamStart{RequestID: requestID, ConversationID: conversationID, UserVideos: userVideoURLs}, nil
+	return &ChatStreamStart{RequestID: requestID, ConversationID: conversationID, UserVideos: userVideoURLs, UserSubtitles: userSubtitleURLs}, nil
 }
 
 func (a *App) CancelStream(requestID string) {
@@ -2096,11 +2108,11 @@ func (a *App) SaveTranscript(req SaveTranscriptRequest) (string, error) {
 	}
 
 	extension := strings.ToLower(filepath.Ext(sourcePath))
-	if extension != ".vtt" && extension != ".txt" {
+	if extension != ".vtt" && extension != ".txt" && extension != ".srt" {
 		extension = ".txt"
 	}
 	return a.saveArtifactDialog(data, req.SuggestedName, "atelier-transcript", extension, "Save transcript", []runtime.FileFilter{
-		{DisplayName: "Transcript Files", Pattern: "*.vtt;*.txt"},
+		{DisplayName: "Transcript & Subtitle Files", Pattern: "*.vtt;*.txt;*.srt"},
 		{DisplayName: "All Files", Pattern: "*.*"},
 	})
 }
@@ -4370,13 +4382,13 @@ func writeChatConversation(config AppConfig, req ChatRequest, assistantContent, 
 // hydrated "/atelier-artifact" URLs (in attachment order) so the streaming
 // start result can hand the live transcript artifact srcs — the poster-frame
 // swap the composer's data: URLs cannot carry.
-func writePendingChatConversation(config AppConfig, req ChatRequest) (string, []string, error) {
+func writePendingChatConversation(config AppConfig, req ChatRequest) (string, []string, []string, error) {
 	now := time.Now()
 	nowText := now.Format(time.RFC3339)
 	store := newHistoryStore(config.Storage)
 	workspace, err := store.newWorkspace(now)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 
 	userPrompt := lastUserPrompt(req.Messages)
@@ -4403,24 +4415,24 @@ func writePendingChatConversation(config AppConfig, req ChatRequest) (string, []
 		ProjectID:      strings.TrimSpace(req.ProjectID),
 		ModelOverrides: requestModelOverrides(req),
 	}
-	userTurn, videoURLs, err := buildChatUserTurn(workspace.ID, 1, nowText, req, workspace.ArtifactsDir, config.Storage, config, strings.TrimSpace(req.ProjectID))
+	userTurn, videoURLs, subtitleURLs, err := buildChatUserTurn(workspace.ID, 1, nowText, req, workspace.ArtifactsDir, config.Storage, config, strings.TrimSpace(req.ProjectID))
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 
 	if err := store.writeSnapshot(workspace, conversation, userTurn); err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
-	return workspace.ID, videoURLs, nil
+	return workspace.ID, videoURLs, subtitleURLs, nil
 }
 
 func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt string, req ChatRequest, assistantContent, assistantThinking, model, provider, reason string, tokens int, artifactsDir string, storage ConfigStorage, config AppConfig, run HarnessRun, projectID string) (HistoryTurn, HistoryTurn, []string, error) {
-	userTurn, videoURLs, err := buildChatUserTurn(conversationID, firstTurnNumber, createdAt, req, artifactsDir, storage, config, projectID)
+	userTurn, _, _, err := buildChatUserTurn(conversationID, firstTurnNumber, createdAt, req, artifactsDir, storage, config, projectID)
 	if err != nil {
 		return HistoryTurn{}, HistoryTurn{}, nil, err
 	}
 	assistantTurn := buildChatAssistantTurn(conversationID, firstTurnNumber+1, createdAt, assistantContent, assistantThinking, model, provider, reason, tokens, run, "")
-	return userTurn, assistantTurn, videoURLs, nil
+	return userTurn, assistantTurn, nil, nil
 }
 
 // buildChatUserTurn persists the user's turn. projectID is the conversation's
@@ -4428,11 +4440,15 @@ func buildChatTurnPair(conversationID string, firstTurnNumber int, createdAt str
 // exists) and the loaded record's ProjectID on appends — so @-mention
 // resolution can widen into the library even on the very first turn, when the
 // conversation being built is not yet on disk for getConversation to read.
-func buildChatUserTurn(conversationID string, turnNumber int, createdAt string, req ChatRequest, artifactsDir string, storage ConfigStorage, config AppConfig, projectID string) (HistoryTurn, []string, error) {
+func buildChatUserTurn(conversationID string, turnNumber int, createdAt string, req ChatRequest, artifactsDir string, storage ConfigStorage, config AppConfig, projectID string) (HistoryTurn, []string, []string, error) {
 	userContent, videoURLs, err := historyContentForMessage(lastUserMessage(req.Messages), artifactsDir, config)
 	if err != nil {
-		return HistoryTurn{}, nil, err
+		return HistoryTurn{}, nil, nil, err
 	}
+	// Attached subtitles' live-render URLs, derived BEFORE the mention append
+	// below: they map the composer attachments positionally (what the frontend
+	// entry carries), not the whole turn content.
+	subtitleURLs := subtitleAttachmentURLs(userContent, artifactsDir)
 	// @-mentioned assets are persisted as references to the existing artifact
 	// entries — same ArtifactID and relative Path, no byte copy — so the next
 	// turn's latest-wins history walk sees what the user cited rather than an
@@ -4464,7 +4480,32 @@ func buildChatUserTurn(conversationID string, turnNumber int, createdAt string, 
 	if selectedModel := strings.TrimSpace(req.SelectedModel); selectedModel != "" && selectedModel != req.Model {
 		userTurn.Request["selectedModel"] = selectedModel
 	}
-	return userTurn, videoURLs, nil
+	return userTurn, videoURLs, subtitleURLs, nil
+}
+
+// subtitleAttachmentURLs maps a user turn's attached-subtitle content entries
+// (the trc_<hex>.vtt/.srt artifacts writeSubtitleAttachment persisted) onto
+// the "/atelier-artifact" URLs the live UI swaps the just-attached data URLs
+// for — the positional counterpart of the returned video URLs. Mentioned
+// entries (appended by the caller after this derivation) never ride it: they
+// are not composer attachments.
+func subtitleAttachmentURLs(contents []HistoryContent, artifactsDir string) []string {
+	urls := []string{}
+	for _, content := range contents {
+		if subtitleArtifactExtension(content) == "" {
+			continue
+		}
+		path := filepath.FromSlash(content.Path)
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(artifactsDir, filepath.Base(path))
+		}
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			abs = path
+		}
+		urls = append(urls, artifactPrefix+abs)
+	}
+	return urls
 }
 
 // harnessRunCostMicros totals a run's USD-millionth cost: every model-call
@@ -4550,29 +4591,29 @@ func appendChatConversation(config AppConfig, req ChatRequest, assistantContent,
 
 // appendChatUserTurn also returns the persisted video attachments' hydrated
 // "/atelier-artifact" URLs (in attachment order) — see writePendingChatConversation.
-func appendChatUserTurn(config AppConfig, req ChatRequest) (string, []string, error) {
+func appendChatUserTurn(config AppConfig, req ChatRequest) (string, []string, []string, error) {
 	conversationID := strings.TrimSpace(req.ConversationID)
 	store := newHistoryStore(config.Storage)
 	loaded, err := store.loadForAppend(conversationID, "chat", "a chat", config.Tools.Filesystem.Root)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	nowText := time.Now().Format(time.RFC3339)
-	userTurn, videoURLs, err := buildChatUserTurn(conversationID, loaded.NextTurnNumber, nowText, req, loaded.ArtifactsDir, config.Storage, config, loaded.Conversation.ProjectID)
+	userTurn, videoURLs, subtitleURLs, err := buildChatUserTurn(conversationID, loaded.NextTurnNumber, nowText, req, loaded.ArtifactsDir, config.Storage, config, loaded.Conversation.ProjectID)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 
 	loaded.Conversation.UpdatedAt = nowText
 	loaded.Conversation.Stats.TurnCount++
 	loaded.Conversation.Stats.ArtifactCount += countMessageAttachments([]ChatMessage{lastUserMessage(req.Messages)})
 	if err := store.writeConversation(loaded.Path, loaded.Conversation); err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	if err := store.writeTurn(loaded.TurnsDir, userTurn); err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
-	return conversationID, videoURLs, nil
+	return conversationID, videoURLs, subtitleURLs, nil
 }
 
 func appendChatAssistantTurn(config AppConfig, conversationID, assistantContent, assistantThinking, model, provider, reason string, tokens int, run HarnessRun, errorText string) error {
@@ -4894,13 +4935,18 @@ func writeChatTranscriptArtifacts(config AppConfig, artifactsDir string, transcr
 }
 
 // transcriptExtensionForMimeType maps a staged transcript's mime type onto its
-// artifact extension — .vtt for WebVTT, .txt for anything else (the tool layer
-// stages plain text with text/plain).
+// artifact extension — .vtt for WebVTT, .srt for SubRip (convert_subtitles'
+// output), .txt for anything else (the tool layer stages plain text with
+// text/plain).
 func transcriptExtensionForMimeType(mimeType string) string {
-	if strings.EqualFold(strings.TrimSpace(mimeType), "text/vtt") {
+	switch strings.ToLower(strings.TrimSpace(mimeType)) {
+	case "text/vtt":
 		return ".vtt"
+	case "application/x-subrip":
+		return ".srt"
+	default:
+		return ".txt"
 	}
-	return ".txt"
 }
 
 // appendChatAssistantTurnWithTranscripts persists an assistant turn that
@@ -5460,7 +5506,7 @@ func historyContentForMessage(message ChatMessage, artifactsDir string, config A
 	if strings.TrimSpace(message.Content) != "" {
 		contents = append(contents, HistoryContent{Type: "text", Text: message.Content})
 	}
-	if len(message.Images) > 0 || len(message.Audios) > 0 || len(message.Videos) > 0 {
+	if len(message.Images) > 0 || len(message.Audios) > 0 || len(message.Videos) > 0 || len(message.Subtitles) > 0 {
 		if err := os.MkdirAll(artifactsDir, 0755); err != nil {
 			return nil, nil, err
 		}
@@ -5554,21 +5600,66 @@ func historyContentForMessage(message ChatMessage, artifactsDir string, config A
 			MimeType:   mediaTypeForExtension(extension),
 		})
 	}
+	for _, subtitle := range message.Subtitles {
+		data, err := decodeSubtitlePayload(subtitle)
+		if err != nil {
+			return nil, nil, err
+		}
+		content, err := writeSubtitleAttachment(artifactsDir, data)
+		if err != nil {
+			return nil, nil, err
+		}
+		contents = append(contents, content)
+	}
 	if len(contents) == 0 {
 		return []HistoryContent{{Type: "text", Text: ""}}, nil, nil
 	}
 	return contents, videoURLs, nil
 }
 
-// countMessageAttachments counts image, audio, and video attachments across
-// messages for conversation artifact stats. Audio and video are included so
-// the artifact count reflects user-attached media, not just images.
+// decodeSubtitlePayload reads an attached subtitle file's bytes from a data
+// URL (or an /atelier-artifact path, the hydrated form a later turn can
+// re-carry). decodeMediaDataURL is the shared decoder.
+func decodeSubtitlePayload(subtitle string) ([]byte, error) {
+	data, _, err := decodeMediaDataURL(subtitle)
+	return data, err
+}
+
+// writeSubtitleAttachment persists subtitle bytes as a trc_<hex>.<ext>
+// transcript artifact — the identity convert_subtitles reads, the chat chips
+// render, and the assets panel lists. The bytes must parse as actual cue
+// content (detectSubtitleFormat alone would accept any non-WebVTT bytes as
+// SRT), and the extension follows the CONTENT, not the declared mime: a
+// mislabeled upload still lands as the format its bytes actually are.
+func writeSubtitleAttachment(artifactsDir string, data []byte) (HistoryContent, error) {
+	_, format, _, err := parseSubtitles(data)
+	if err != nil {
+		return HistoryContent{}, fmt.Errorf("attached file is not VTT or SRT subtitle content: %w", err)
+	}
+	extension := map[string]string{subtitleFormatVTT: ".vtt", subtitleFormatSRT: ".srt"}[format]
+	artifactID := randomID("trc")
+	filename := artifactID + extension
+	if err := os.WriteFile(filepath.Join(artifactsDir, filename), data, 0644); err != nil {
+		return HistoryContent{}, err
+	}
+	return HistoryContent{
+		Type:       "transcript",
+		ArtifactID: artifactID,
+		Path:       filepath.ToSlash(filepath.Join("artifacts", filename)),
+		MimeType:   mediaTypeForExtension(extension),
+	}, nil
+}
+
+// countMessageAttachments counts image, audio, video, and subtitle attachments
+// across messages for conversation artifact stats. Audio and video are
+// included so the artifact count reflects user-attached media, not just images.
 func countMessageAttachments(messages []ChatMessage) int {
 	count := 0
 	for _, message := range messages {
 		count += len(message.Images)
 		count += len(message.Audios)
 		count += len(message.Videos)
+		count += len(message.Subtitles)
 	}
 	return count
 }
@@ -5830,6 +5921,8 @@ func mediaTypeForExtension(extension string) string {
 		return "audio/mp4"
 	case ".vtt":
 		return "text/vtt"
+	case ".srt":
+		return "application/x-subrip"
 	case ".txt":
 		return "text/plain"
 	default:

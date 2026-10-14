@@ -11,7 +11,11 @@
 // means — that is what keeps this path safe to bypass the model with.
 
 export type EditorLaunchKind = 'image' | 'video' | 'audio';
-export type ComposerAttachmentKind = 'image' | 'audio' | 'video';
+// 'subtitle' marks a .vtt/.srt attachment: a real attachment kind (the
+// composer accepts subtitle files) but never an editor-launch subject — the
+// grammar resolves only image/video/audio editors, so a subtitle attachment
+// simply never matches.
+export type ComposerAttachmentKind = 'image' | 'audio' | 'video' | 'subtitle';
 
 const openCommand = /^(?:please\s+)?open\b/;
 
@@ -122,7 +126,9 @@ export function detectEditorLaunchIntent(text: string, attachmentKinds: Composer
   if (requested) {
     return attachedCount(requested) === 1 ? requested : null;
   }
-  const attached = attachmentKinds.filter((item) => item === 'image' || item === 'video' || item === 'audio');
+  const isEditorSubject = (item: ComposerAttachmentKind): item is EditorLaunchKind =>
+    item === 'image' || item === 'video' || item === 'audio';
+  const attached = attachmentKinds.filter(isEditorSubject);
   if (attached.length === 1) {
     return attached[0];
   }

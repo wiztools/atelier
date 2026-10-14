@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -9,8 +10,9 @@ import (
 
 // ConversationAsset is one referable media artifact in a conversation's
 // history — the unit the assets panel lists and @-mentions resolve to. Assets
-// are derived, never stored: every image/audio/video HistoryContent entry on
-// a non-deleted turn becomes one. The ID is the content entry's ArtifactID —
+// are derived, never stored: every image/audio/video HistoryContent entry
+// (and every .vtt/.srt transcript) on a non-deleted turn becomes one. The ID
+// is the content entry's ArtifactID —
 // globally unique (img_/aud_/vid_<hex>) for artifacts written after that
 // scheme landed; legacy records keep per-conversation positional IDs
 // (turn_000001_img_000001), which stay valid within the conversation. Entries
@@ -19,7 +21,9 @@ import (
 type ConversationAsset struct {
 	ID             string `json:"id"`
 	ConversationID string `json:"conversationId"`
-	// Kind is the HistoryContent type: "image", "audio", or "video".
+	// Kind is the HistoryContent type: "image", "audio", "video", or
+	// "transcript" (the subtitle files — .vtt/.srt only; plain .txt
+	// transcripts are not assets).
 	Kind string `json:"kind"`
 	// MimeType is the persisted artifact MIME type, when recorded.
 	MimeType string `json:"mimeType,omitempty"`
@@ -62,7 +66,11 @@ func conversationAssetsFromDetail(detail ConversationDetail) []ConversationAsset
 	assets := []ConversationAsset{}
 	for _, turn := range detail.Turns {
 		for _, content := range turn.Content {
-			if content.Type != "image" && content.Type != "audio" && content.Type != "video" {
+			// Subtitle transcripts (.vtt/.srt — attached or converted) are
+			// assets too: referenceable, downloadable, panel-visible. Plain
+			// .txt transcripts are text dumps and stay out.
+			media := content.Type == "image" || content.Type == "audio" || content.Type == "video"
+			if !media && subtitleArtifactExtension(content) == "" {
 				continue
 			}
 			if strings.TrimSpace(content.Path) == "" {
@@ -185,10 +193,16 @@ func resolveReferencedAssets(storage ConfigStorage, conversationID, fallbackProj
 			dataURL, readErr = readAudioArtifactAsDataURL(storage, ownerID, content)
 		case "video":
 			dataURL, readErr = readVideoArtifactAsDataURL(storage, ownerID, content)
+		case "transcript":
+			// A subtitle mention fills no attachment slot (it is not model
+			// input) — the entry below is the whole point: persisted on the
+			// user turn, it is what convert_subtitles' record walk reads. The
+			// readability check keeps the dangling-reference rule honest.
+			_, readErr = readTranscriptArtifact(storage, ownerID, content)
 		default:
 			continue
 		}
-		if readErr != nil || dataURL == "" {
+		if readErr != nil || (dataURL == "" && content.Type != "transcript") {
 			continue
 		}
 		switch content.Type {
@@ -202,6 +216,18 @@ func resolveReferencedAssets(storage ConfigStorage, conversationID, fallbackProj
 		out.entries = append(out.entries, content)
 	}
 	return out
+}
+
+// readTranscriptArtifact resolves a transcript content entry to its bytes on
+// disk — the existence check a subtitle mention's dangling-reference rule
+// needs (the bytes have no consumer here; convert_subtitles re-reads the
+// artifact from the record when the turn runs).
+func readTranscriptArtifact(storage ConfigStorage, conversationID string, content HistoryContent) ([]byte, error) {
+	path, err := contentArtifactPath(storage, conversationID, content)
+	if err != nil {
+		return nil, err
+	}
+	return os.ReadFile(path)
 }
 
 // libraryArtifactID keeps ArtifactID empty for legacy path-fallback asset IDs —
@@ -351,7 +377,8 @@ func assetContentIndex(detail ConversationDetail) map[string]HistoryContent {
 	index := map[string]HistoryContent{}
 	for i := len(detail.Turns) - 1; i >= 0; i-- {
 		for _, content := range detail.Turns[i].Content {
-			if content.Type != "image" && content.Type != "audio" && content.Type != "video" {
+			media := content.Type == "image" || content.Type == "audio" || content.Type == "video"
+			if !media && subtitleArtifactExtension(content) == "" {
 				continue
 			}
 			if strings.TrimSpace(content.Path) == "" {

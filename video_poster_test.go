@@ -376,7 +376,7 @@ func TestAppendChatUserTurnReturnsVideoURLs(t *testing.T) {
 	}
 	upload := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(mp4ishPayload())
 
-	conversationID, firstURLs, err := writePendingChatConversation(config, ChatRequest{
+	conversationID, firstURLs, _, err := writePendingChatConversation(config, ChatRequest{
 		Model:    "chat-model",
 		Messages: []ChatMessage{{Role: "user", Content: "turn one", Videos: []string{upload}}},
 	})
@@ -387,7 +387,7 @@ func TestAppendChatUserTurnReturnsVideoURLs(t *testing.T) {
 		t.Fatalf("turn-1 videoURLs = %v, want one hydrated artifact URL", firstURLs)
 	}
 
-	appendedID, secondURLs, err := appendChatUserTurn(config, ChatRequest{
+	appendedID, secondURLs, _, err := appendChatUserTurn(config, ChatRequest{
 		ConversationID: conversationID,
 		Model:          "chat-model",
 		Messages:       []ChatMessage{{Role: "user", Content: "turn two", Videos: []string{upload}}},
