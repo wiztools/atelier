@@ -20,7 +20,7 @@ import (
 // as-is with no notice. Seedance is the model whose "4k" tier most distinguishes
 // it, so a 1080p request exercises the clean pass-through path.
 func TestResolveVideoBodySeedanceResolutionPassesThrough(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "seedance-2.0-image-to-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "seedance-2.0-image-to-video"),
 		VideoGenerateRequest{
 			Model:      "bytedance/seedance-2.0/image-to-video",
 			Prompt:     "a drone shot over a misty forest",
@@ -41,7 +41,7 @@ func TestResolveVideoBodySeedanceResolutionPassesThrough(t *testing.T) {
 // passing it through and 422ing at fal. The request still runs — the model picks
 // its own default resolution.
 func TestResolveVideoBodyResolutionDroppedForHappyHorse(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "happy-horse-image-to-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "happy-horse-image-to-video"),
 		VideoGenerateRequest{
 			Model:      "alibaba/happy-horse/image-to-video",
 			Prompt:     "a parent and child at dawn",
@@ -65,7 +65,7 @@ func TestResolveVideoBodyResolutionDroppedForHappyHorse(t *testing.T) {
 // control" notice and sends nothing — distinct from the enum-rejection case above.
 // The user learns the knob doesn't apply rather than that the value was wrong.
 func TestResolveVideoBodyResolutionNoControlNotice(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "kling-image-to-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "kling-image-to-video"),
 		VideoGenerateRequest{
 			Model:      "fal-ai/kling-video/v2/master/image-to-video",
 			Prompt:     "a drone shot over a forest",
@@ -89,7 +89,7 @@ func TestResolveVideoBodyResolutionNoControlNotice(t *testing.T) {
 // own default tier. This is what every video call that doesn't ask for a specific
 // resolution must do.
 func TestResolveVideoBodyResolutionOmittedSendsNothing(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "seedance-2.0-image-to-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "seedance-2.0-image-to-video"),
 		VideoGenerateRequest{
 			Model:  "bytedance/seedance-2.0/image-to-video",
 			Prompt: "a drone shot over a misty forest",
@@ -111,7 +111,7 @@ func TestResolveVideoBodyResolutionOmittedSendsNothing(t *testing.T) {
 // out-of-enum and nobody could actually select 1080P on minimax. The match is
 // now case-insensitive and sends the enum's own spelling.
 func TestResolveVideoBodyResolutionCaseInsensitiveEnumMatch(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "minimax-h3-max-reference-to-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "minimax-h3-max-reference-to-video"),
 		VideoGenerateRequest{
 			Model:      "minimax/h3-max/reference-to-video",
 			Prompt:     "the character walks through the house",
@@ -131,7 +131,7 @@ func TestResolveVideoBodyResolutionCaseInsensitiveEnumMatch(t *testing.T) {
 // middle tier is 768P), so "720p" must still be dropped with a notice rather
 // than silently coerced onto a tier the user never asked for.
 func TestResolveVideoBodyResolutionCaseMismatchStillDropped(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "minimax-h3-max-reference-to-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "minimax-h3-max-reference-to-video"),
 		VideoGenerateRequest{
 			Model:      "minimax/h3-max/reference-to-video",
 			Prompt:     "the character walks through the house",

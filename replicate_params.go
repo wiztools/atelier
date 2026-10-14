@@ -72,7 +72,7 @@ var errReplicateVideoSourceUnsupported = errors.New("the Replicate video backend
 // sibling of resolveImageBody; a nil schema (unavailable) yields a minimal
 // {prompt, image?} body plus a notice, since Replicate rejects unknown fields
 // a richer fallback would invent.
-func resolveReplicateImageInput(schema *ModelInputSchema, req ImageGenerateRequest) (map[string]any, []string, error) {
+func resolveReplicateImageInput(schema *ModelInputSchema, req ImageGenerateRequest) (map[string]any, []string, []string, error) {
 	prompt := strings.TrimSpace(req.Prompt)
 	// falImageURL's normalization is provider-neutral: hosted URLs and data
 	// URIs pass through and bare base64 (the post-Ollama shape) is wrapped
@@ -87,7 +87,7 @@ func resolveReplicateImageInput(schema *ModelInputSchema, req ImageGenerateReque
 	ov := Overrides{}
 	if schema == nil {
 		if len(sourceImages) > 1 {
-			return nil, nil, fmt.Errorf(
+			return nil, nil, nil, fmt.Errorf(
 				"model %q could not be queried for its parameter schema and accepts at most one image; %d were attached. Configure a multi-image edit model (one whose input declares an image array).",
 				req.Model, len(sourceImages))
 		}
@@ -95,11 +95,15 @@ func resolveReplicateImageInput(schema *ModelInputSchema, req ImageGenerateReque
 		if len(sourceImages) == 1 {
 			body["image"] = sourceImages[0]
 		}
-		return body, []string{"Couldn't load the model's parameter schema; generated with defaults and may have dropped an unsupported image input."}, nil
+		return body, []string{"Couldn't load the model's parameter schema; generated with defaults and may have dropped an unsupported image input."}, nil, nil
 	}
 
 	body := map[string]any{}
 	var notices []string
+	// Diagnostics records machine-facing mapping decisions (the reference
+	// rebind) on a successful resolve — never surfaced in the chat reply the
+	// way notices are; they ride tool evidence and the persisted run.
+	var diagnostics []string
 
 	if path, prop, ok := findNative(schema, ov, "replicate-image", req.Model, "prompt"); ok {
 		setBodyPath(schema, body, path, coerceImageValue(prop, prompt))
@@ -169,19 +173,22 @@ func resolveReplicateImageInput(schema *ModelInputSchema, req ImageGenerateReque
 					if altPath, altProp, found := findArrayKindNative(schema, "replicate-image", "sourceImage", path); found {
 						path, prop = altPath, altProp
 						rebound = true
-						notices = append(notices, fmt.Sprintf(
+						// A diagnostic, not a notice: the rebind is the request
+						// working as intended, so it must not render as a
+						// warning blockquote in the reply.
+						diagnostics = append(diagnostics, fmt.Sprintf(
 							"The selected model %q takes multiple references on %q; the attached images were mapped there.",
 							req.Model, path))
 					}
 				}
 				if !rebound {
-					return nil, notices, fmt.Errorf(
+					return nil, notices, diagnostics, fmt.Errorf(
 						"model %q accepts a single image; %d were attached. Use a multi-image edit model (one whose input declares an image array).",
 						req.Model, len(sourceImages))
 				}
 			}
 			if prop.Kind == schemaArray && prop.MaxItems > 0 && len(sourceImages) > prop.MaxItems {
-				return nil, notices, fmt.Errorf(
+				return nil, notices, diagnostics, fmt.Errorf(
 					"model %q accepts at most %d image(s); %d were attached. Attach fewer images or switch to a model with a higher image cap.",
 					req.Model, prop.MaxItems, len(sourceImages))
 			}
@@ -194,7 +201,7 @@ func resolveReplicateImageInput(schema *ModelInputSchema, req ImageGenerateReque
 			setBodyPath(schema, body, path, coerceImageValue(prop, req.Steps))
 		}
 	}
-	return body, notices, nil
+	return body, notices, diagnostics, nil
 }
 
 // resolveReplicateVideoInput maps a canonical VideoGenerateRequest onto the
@@ -210,7 +217,7 @@ func resolveReplicateImageInput(schema *ModelInputSchema, req ImageGenerateReque
 // in the message beats a downstream 422. An attached source image the schema
 // can't map onto a native input is a hard error too. A nil schema yields a
 // minimal {prompt, image?/video?} body plus a notice.
-func resolveReplicateVideoInput(schema *ModelInputSchema, req VideoGenerateRequest) (map[string]any, []string, error) {
+func resolveReplicateVideoInput(schema *ModelInputSchema, req VideoGenerateRequest) (map[string]any, []string, []string, error) {
 	sourceVideos := make([]string, 0, 1)
 	for _, video := range req.SourceVideos() {
 		if u := falVideoURL(strings.TrimSpace(video)); u != "" {
@@ -218,10 +225,10 @@ func resolveReplicateVideoInput(schema *ModelInputSchema, req VideoGenerateReque
 		}
 	}
 	if len(sourceVideos) > 0 && !req.ExtendSource {
-		return nil, nil, errReplicateVideoSourceUnsupported
+		return nil, nil, nil, errReplicateVideoSourceUnsupported
 	}
 	if req.Keyframes {
-		return nil, nil, errors.New("start→end keyframe transitions are not supported on the Replicate video backend; switch Video Provider to fal.ai in Settings → Models")
+		return nil, nil, nil, errors.New("start→end keyframe transitions are not supported on the Replicate video backend; switch Video Provider to fal.ai in Settings → Models")
 	}
 
 	prompt := strings.TrimSpace(req.Prompt)
@@ -235,12 +242,12 @@ func resolveReplicateVideoInput(schema *ModelInputSchema, req VideoGenerateReque
 	ov := Overrides{}
 	if schema == nil {
 		if len(sourceImages) > 1 {
-			return nil, nil, fmt.Errorf(
+			return nil, nil, nil, fmt.Errorf(
 				"model %q could not be queried for its parameter schema and accepts at most one image; %d were attached.",
 				req.Model, len(sourceImages))
 		}
 		if len(sourceVideos) > 1 {
-			return nil, nil, fmt.Errorf(
+			return nil, nil, nil, fmt.Errorf(
 				"model %q could not be queried for its parameter schema and accepts at most one video; %d were attached.",
 				req.Model, len(sourceVideos))
 		}
@@ -251,11 +258,15 @@ func resolveReplicateVideoInput(schema *ModelInputSchema, req VideoGenerateReque
 		if len(sourceVideos) == 1 {
 			body["video"] = sourceVideos[0]
 		}
-		return body, []string{"Couldn't load the model's parameter schema; generated with defaults and may have dropped an unsupported video input."}, nil
+		return body, []string{"Couldn't load the model's parameter schema; generated with defaults and may have dropped an unsupported video input."}, nil, nil
 	}
 
 	body := map[string]any{}
 	var notices []string
+	// Diagnostics records machine-facing mapping decisions (the reference
+	// rebind) on a successful resolve — never surfaced in the chat reply the
+	// way notices are; they ride tool evidence and the persisted run.
+	var diagnostics []string
 
 	if path, prop, ok := findNative(schema, ov, "replicate-video", req.Model, "prompt"); ok {
 		setBodyPath(schema, body, path, coerceVideoValue(prop, prompt))
@@ -374,7 +385,7 @@ func resolveReplicateVideoInput(schema *ModelInputSchema, req VideoGenerateReque
 			// with a confusing native-input complaint (conv_d5f5177320da74a0ce3caebb:
 			// wan 2.7's first_frame before its synonym landed). The
 			// upscale/restyle resolvers hold the same line for their sources.
-			return nil, notices, fmt.Errorf(
+			return nil, notices, diagnostics, fmt.Errorf(
 				"the selected model %q has no source-image input to animate from; pick a different image-to-video model in Settings → Models",
 				req.Model)
 		} else {
@@ -386,19 +397,22 @@ func resolveReplicateVideoInput(schema *ModelInputSchema, req VideoGenerateReque
 					if altPath, altProp, found := findArrayKindNative(schema, "replicate-video", "sourceImage", path); found {
 						path, prop = altPath, altProp
 						rebound = true
-						notices = append(notices, fmt.Sprintf(
+						// A diagnostic, not a notice: the rebind is the request
+						// working as intended, so it must not render as a
+						// warning blockquote in the reply.
+						diagnostics = append(diagnostics, fmt.Sprintf(
 							"The selected model %q takes multiple references on %q; the attached images were mapped there.",
 							req.Model, path))
 					}
 				}
 				if !rebound {
-					return nil, notices, fmt.Errorf(
+					return nil, notices, diagnostics, fmt.Errorf(
 						"model %q accepts a single image; %d were attached. Use a multi-image reference model.",
 						req.Model, len(sourceImages))
 				}
 			}
 			if prop.Kind == schemaArray && prop.MaxItems > 0 && len(sourceImages) > prop.MaxItems {
-				return nil, notices, fmt.Errorf(
+				return nil, notices, diagnostics, fmt.Errorf(
 					"model %q accepts at most %d image(s); %d were attached. Attach fewer images or switch to a model with a higher image cap.",
 					req.Model, prop.MaxItems, len(sourceImages))
 			}
@@ -414,18 +428,18 @@ func resolveReplicateVideoInput(schema *ModelInputSchema, req VideoGenerateReque
 		// callers.
 		path, prop, ok := findNative(schema, ov, "replicate-video", req.Model, "sourceVideo")
 		if !ok {
-			return nil, notices, fmt.Errorf(
+			return nil, notices, diagnostics, fmt.Errorf(
 				"the selected model %q has no source-video input to extend from; pick a different video-extend model in Settings → Models",
 				req.Model)
 		}
 		if prop.Kind != schemaArray && len(sourceVideos) > 1 {
-			return nil, notices, fmt.Errorf(
+			return nil, notices, diagnostics, fmt.Errorf(
 				"model %q accepts a single video; %d were attached.",
 				req.Model, len(sourceVideos))
 		}
 		setBodyPath(schema, body, path, coerceVideos(prop, sourceVideos))
 	}
-	return body, notices, nil
+	return body, notices, diagnostics, nil
 }
 
 // replicateUpscaleSynonyms lists, per canonical param, the native input names
@@ -652,7 +666,7 @@ var replicateVideoRestyleSynonyms = map[string][]string{
 // "reimagine" gets it by default, the style-transfer intent (the
 // characterOrientation/task guided-default pattern). A nil schema yields a
 // minimal {prompt, video, images?} fallback.
-func resolveReplicateVideoRestyleInput(schema *ModelInputSchema, req VideoRestyleRequest) (map[string]any, []string, error) {
+func resolveReplicateVideoRestyleInput(schema *ModelInputSchema, req VideoRestyleRequest) (map[string]any, []string, []string, error) {
 	prompt := strings.TrimSpace(req.Prompt)
 	video := falVideoURL(strings.TrimSpace(req.Video))
 	sourceImages := make([]string, 0, len(req.Images))
@@ -667,12 +681,16 @@ func resolveReplicateVideoRestyleInput(schema *ModelInputSchema, req VideoRestyl
 		if len(sourceImages) > 0 {
 			body["images"] = sourceImages
 		}
-		return body, nil, nil
+		return body, nil, nil, nil
 	}
 	body := map[string]any{}
 	var notices []string
+	// Diagnostics records machine-facing mapping decisions (the reference
+	// rebind) on a successful resolve — never surfaced in the chat reply the
+	// way notices are; they ride tool evidence and the persisted run.
+	var diagnostics []string
 	if path, prop, ok := findNative(schema, ov, "replicate-video-restyle", req.Model, "sourceVideo"); !ok {
-		return nil, notices, fmt.Errorf("the selected model %q has no video input to restyle", req.Model)
+		return nil, notices, diagnostics, fmt.Errorf("the selected model %q has no video input to restyle", req.Model)
 	} else {
 		setBodyPath(schema, body, path, coerceVideos(prop, []string{video}))
 	}
@@ -694,19 +712,22 @@ func resolveReplicateVideoRestyleInput(schema *ModelInputSchema, req VideoRestyl
 					if altPath, altProp, found := findArrayKindNative(schema, "replicate-video-restyle", "sourceImage", path); found {
 						path, prop = altPath, altProp
 						rebound = true
-						notices = append(notices, fmt.Sprintf(
+						// A diagnostic, not a notice: the rebind is the request
+						// working as intended, so it must not render as a
+						// warning blockquote in the reply.
+						diagnostics = append(diagnostics, fmt.Sprintf(
 							"The selected model %q takes multiple references on %q; the attached images were mapped there.",
 							req.Model, path))
 					}
 				}
 				if !rebound {
-					return nil, notices, fmt.Errorf(
+					return nil, notices, diagnostics, fmt.Errorf(
 						"model %q accepts a single reference image; %d were attached. Attach fewer references or switch to a model that declares an image array.",
 						req.Model, len(sourceImages))
 				}
 			}
 			if prop.Kind == schemaArray && prop.MaxItems > 0 && len(sourceImages) > prop.MaxItems {
-				return nil, notices, fmt.Errorf(
+				return nil, notices, diagnostics, fmt.Errorf(
 					"model %q accepts at most %d reference image(s); %d were attached.",
 					req.Model, prop.MaxItems, len(sourceImages))
 			}
@@ -746,7 +767,7 @@ func resolveReplicateVideoRestyleInput(schema *ModelInputSchema, req VideoRestyl
 			setBodyPath(schema, body, path, coerceVideoValue(prop, "reimagine"))
 		}
 	}
-	return body, notices, nil
+	return body, notices, diagnostics, nil
 }
 
 // replicateVideoReframeSynonyms lists, per canonical param, the native input

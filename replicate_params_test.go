@@ -49,7 +49,7 @@ func TestResolveReplicateImageInput(t *testing.T) {
 		Images:      []string{"data:image/png;base64," + tinyPNG},
 		AspectRatio: "9:16",
 	}
-	input, notices, err := resolveReplicateImageInput(schema, req)
+	input, notices, _, err := resolveReplicateImageInput(schema, req)
 	if err != nil {
 		t.Fatalf("resolveReplicateImageInput: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestResolveReplicateImageInput(t *testing.T) {
 
 func TestResolveReplicateImageInputEnumAndDrops(t *testing.T) {
 	schema := parseReplicateFixtureSchema(t, replicateEditModelSchema)
-	input, notices, err := resolveReplicateImageInput(schema, ImageGenerateRequest{
+	input, notices, _, err := resolveReplicateImageInput(schema, ImageGenerateRequest{
 		Model:       "owner/model",
 		Prompt:      "x",
 		AspectRatio: "4:3", // not in the model's enum
@@ -103,7 +103,7 @@ func TestResolveReplicateImageInputEnumAndDrops(t *testing.T) {
 
 func TestResolveReplicateImageInputMultiImageScalarError(t *testing.T) {
 	schema := parseReplicateFixtureSchema(t, replicateEditModelSchema)
-	_, _, err := resolveReplicateImageInput(schema, ImageGenerateRequest{
+	_, _, _, err := resolveReplicateImageInput(schema, ImageGenerateRequest{
 		Model:  "owner/model",
 		Prompt: "x",
 		Images: []string{"data:image/png;base64," + tinyPNG, "data:image/png;base64," + tinyPNG},
@@ -119,7 +119,7 @@ func TestResolveReplicateImageInputArrayImages(t *testing.T) {
 		"image":{"type":"array","items":{"type":"string"},"maxItems":3}
 	}}}}}`
 	schema := parseReplicateFixtureSchema(t, doc)
-	input, _, err := resolveReplicateImageInput(schema, ImageGenerateRequest{
+	input, _, _, err := resolveReplicateImageInput(schema, ImageGenerateRequest{
 		Model:  "google/nano-banana",
 		Prompt: "x",
 		Images: []string{"data:image/png;base64," + tinyPNG, "data:image/png;base64," + tinyPNG},
@@ -148,13 +148,14 @@ func TestResolveReplicateImageInputArrayImages(t *testing.T) {
 func TestResolveReplicateSourceRebindsToArrayField(t *testing.T) {
 	twoImages := []string{"data:image/png;base64," + tinyPNG, "data:image/png;base64," + tinyPNG}
 	for _, tc := range []struct {
-		name       string
-		doc        string
-		req        any
-		wantField  string
-		wantLen    int
-		wantErr    string // empty = expect success
-		wantNotice string // empty = expect no notices
+		name            string
+		doc             string
+		req             any
+		wantField       string
+		wantLen         int
+		wantErr         string // empty = expect success
+		wantDiagnostic  string // empty = expect no diagnostics
+		wantNoticeCount int    // a rebind is a diagnostic, never a reply notice
 	}{
 		{
 			name: "image edit: two references rebind onto the array beside a scalar canvas",
@@ -163,10 +164,11 @@ func TestResolveReplicateSourceRebindsToArrayField(t *testing.T) {
 				"image":{"type":"string"},
 				"image_input":{"type":"array","items":{"type":"string"},"maxItems":3}
 			}}}}}`,
-			req:        ImageGenerateRequest{Model: "owner/both-shapes", Prompt: "x", Images: twoImages},
-			wantField:  "image_input",
-			wantLen:    2,
-			wantNotice: "the attached images were mapped there",
+			req:             ImageGenerateRequest{Model: "owner/both-shapes", Prompt: "x", Images: twoImages},
+			wantField:       "image_input",
+			wantLen:         2,
+			wantDiagnostic:  "the attached images were mapped there",
+			wantNoticeCount: 0,
 		},
 		{
 			name: "image edit: seedream-4.5's array-only image_input binds directly",
@@ -195,10 +197,11 @@ func TestResolveReplicateSourceRebindsToArrayField(t *testing.T) {
 				"image":{"type":"string"},
 				"image_urls":{"type":"array","items":{"type":"string"}}
 			}}}}}`,
-			req:        VideoGenerateRequest{Model: "owner/both-shapes", Prompt: "x", Images: twoImages},
-			wantField:  "image_urls",
-			wantLen:    2,
-			wantNotice: "the attached images were mapped there",
+			req:             VideoGenerateRequest{Model: "owner/both-shapes", Prompt: "x", Images: twoImages},
+			wantField:       "image_urls",
+			wantLen:         2,
+			wantDiagnostic:  "the attached images were mapped there",
+			wantNoticeCount: 0,
 		},
 		{
 			name: "restyle: the array input binds directly (plural names listed first)",
@@ -227,14 +230,15 @@ func TestResolveReplicateSourceRebindsToArrayField(t *testing.T) {
 			schema := parseReplicateFixtureSchema(t, tc.doc)
 			var input map[string]any
 			var notices []string
+			var diagnostics []string
 			var err error
 			switch req := tc.req.(type) {
 			case ImageGenerateRequest:
-				input, notices, err = resolveReplicateImageInput(schema, req)
+				input, notices, diagnostics, err = resolveReplicateImageInput(schema, req)
 			case VideoGenerateRequest:
-				input, notices, err = resolveReplicateVideoInput(schema, req)
+				input, notices, diagnostics, err = resolveReplicateVideoInput(schema, req)
 			case VideoRestyleRequest:
-				input, notices, err = resolveReplicateVideoRestyleInput(schema, req)
+				input, notices, diagnostics, err = resolveReplicateVideoRestyleInput(schema, req)
 			default:
 				t.Fatalf("unhandled request type %T", tc.req)
 			}
@@ -251,19 +255,24 @@ func TestResolveReplicateSourceRebindsToArrayField(t *testing.T) {
 			if !ok || len(got) != tc.wantLen {
 				t.Fatalf("%s = %v (%T); want %d sources on the array field", tc.wantField, input[tc.wantField], input[tc.wantField], tc.wantLen)
 			}
-			if tc.wantNotice == "" {
-				if len(notices) != 0 {
-					t.Fatalf("expected no notices, got %v", notices)
+			if tc.wantDiagnostic == "" {
+				if len(diagnostics) != 0 {
+					t.Fatalf("expected no diagnostics, got %v", diagnostics)
 				}
-			} else if len(notices) != 1 || !strings.Contains(notices[0], tc.wantNotice) {
-				t.Fatalf("notices = %v, want exactly one naming the rebind (%q)", notices, tc.wantNotice)
+			} else if len(diagnostics) != 1 || !strings.Contains(diagnostics[0], tc.wantDiagnostic) {
+				t.Fatalf("diagnostics = %v, want exactly one naming the rebind (%q)", diagnostics, tc.wantDiagnostic)
+			}
+			// The rebind is the request working as intended: it must never
+			// surface as a reply notice.
+			if len(notices) != tc.wantNoticeCount {
+				t.Fatalf("notices = %v, want %d (the rebind rides diagnostics, not notices)", notices, tc.wantNoticeCount)
 			}
 		})
 	}
 }
 
 func TestResolveReplicateImageInputNilSchemaFallback(t *testing.T) {
-	input, notices, err := resolveReplicateImageInput(nil, ImageGenerateRequest{
+	input, notices, _, err := resolveReplicateImageInput(nil, ImageGenerateRequest{
 		Model:  "owner/model",
 		Prompt: "x",
 		Images: []string{"data:image/png;base64," + tinyPNG},
@@ -281,7 +290,7 @@ func TestResolveReplicateImageInputNilSchemaFallback(t *testing.T) {
 
 func TestResolveReplicateVideoInput(t *testing.T) {
 	schema := parseReplicateFixtureSchema(t, replicateVideoModelSchema)
-	input, notices, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
+	input, notices, _, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
 		Model:               "wan-video/wan-2.5-i2v",
 		Prompt:              "waves crash",
 		Duration:            "5",
@@ -330,7 +339,7 @@ const replicateWan27VideoModelSchema = `{"components":{"schemas":{"Input":{"type
 // (conv_d5f5177320da74a0ce3caebb).
 func TestResolveReplicateVideoInputWan27FirstFrame(t *testing.T) {
 	schema := parseReplicateFixtureSchema(t, replicateWan27VideoModelSchema)
-	input, notices, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
+	input, notices, _, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
 		Model:  "wan-video/wan-2.7-i2v",
 		Prompt: "folks with scissors for hands go about their day",
 		Images: []string{"data:image/png;base64," + tinyPNG},
@@ -353,7 +362,7 @@ func TestResolveReplicateVideoInputWan27FirstFrame(t *testing.T) {
 // than being sent as a string the prediction would reject.
 func TestResolveReplicateVideoInputAutoDurationResolvesToModelDefault(t *testing.T) {
 	schema := parseReplicateFixtureSchema(t, replicateWan27VideoModelSchema)
-	input, notices, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
+	input, notices, _, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
 		Model:  "wan-video/wan-2.7-i2v",
 		Prompt: "folks with scissors for hands go about their day",
 		Images: []string{"data:image/png;base64," + tinyPNG},
@@ -379,7 +388,7 @@ func TestResolveReplicateVideoInputSourceRatioInheritance(t *testing.T) {
 	schema := parseReplicateFixtureSchema(t, replicateVideoModelSchema)
 	// A config-derived ratio (AspectRatioExplicit false) on an
 	// image-to-video request is skipped so the frame's orientation wins.
-	input, notices, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
+	input, notices, _, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
 		Model:       "wan-video/wan-2.5-i2v",
 		Prompt:      "waves",
 		AspectRatio: "16:9",
@@ -398,7 +407,7 @@ func TestResolveReplicateVideoInputSourceRatioInheritance(t *testing.T) {
 
 func TestResolveReplicateVideoInputRefusals(t *testing.T) {
 	schema := parseReplicateFixtureSchema(t, replicateVideoModelSchema)
-	_, _, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
+	_, _, _, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
 		Model:  "owner/model",
 		Prompt: "extend",
 		Videos: []string{"https://x.test/clip.mp4"},
@@ -406,7 +415,7 @@ func TestResolveReplicateVideoInputRefusals(t *testing.T) {
 	if err != errReplicateVideoSourceUnsupported {
 		t.Fatalf("video-source err = %v", err)
 	}
-	_, _, err = resolveReplicateVideoInput(schema, VideoGenerateRequest{
+	_, _, _, err = resolveReplicateVideoInput(schema, VideoGenerateRequest{
 		Model:     "owner/model",
 		Prompt:    "transition",
 		Keyframes: true,
@@ -430,7 +439,7 @@ func TestResolveReplicateVideoInputExtendMapsGrokExtension(t *testing.T) {
 		"video":{"type":"string"},
 		"duration":{"type":"number","default":6,"minimum":2,"maximum":10}
 	}}}}}`)
-	input, notices, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
+	input, notices, _, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
 		Model:        "xai/grok-imagine-video-extension",
 		Prompt:       "the robot keeps walking",
 		Duration:     "5",
@@ -456,7 +465,7 @@ func TestResolveReplicateVideoInputExtendMapsGrokExtension(t *testing.T) {
 
 	// An extend onto a model with no video input is a hard refusal.
 	noVideoSchema := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{"prompt":{"type":"string"}}}}}}`)
-	_, _, err = resolveReplicateVideoInput(noVideoSchema, VideoGenerateRequest{
+	_, _, _, err = resolveReplicateVideoInput(noVideoSchema, VideoGenerateRequest{
 		Model:        "owner/model",
 		Prompt:       "extend",
 		Videos:       []string{"data:video/mp4;base64,QUJDRA=="},
@@ -467,7 +476,7 @@ func TestResolveReplicateVideoInputExtendMapsGrokExtension(t *testing.T) {
 	}
 
 	// The nil-schema fallback still carries the clip.
-	input, _, err = resolveReplicateVideoInput(nil, VideoGenerateRequest{
+	input, _, _, err = resolveReplicateVideoInput(nil, VideoGenerateRequest{
 		Model:        "owner/model",
 		Prompt:       "extend",
 		Videos:       []string{"data:video/mp4;base64,QUJDRA=="},
@@ -491,7 +500,7 @@ func TestResolveReplicateVideoInputUnmappedSourceImageRefused(t *testing.T) {
 		"duration":{"type":"number"}
 	}}}}}`
 	schema := parseReplicateFixtureSchema(t, doc)
-	_, _, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
+	_, _, _, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
 		Model:  "owner/model",
 		Prompt: "animate",
 		Images: []string{"data:image/png;base64," + tinyPNG},
@@ -503,7 +512,7 @@ func TestResolveReplicateVideoInputUnmappedSourceImageRefused(t *testing.T) {
 
 func TestResolveReplicateVideoInputEnumDrops(t *testing.T) {
 	schema := parseReplicateFixtureSchema(t, replicateVideoModelSchema)
-	input, notices, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
+	input, notices, _, err := resolveReplicateVideoInput(schema, VideoGenerateRequest{
 		Model:      "owner/model",
 		Prompt:     "x",
 		Resolution: "4k", // not in the enum
@@ -525,7 +534,7 @@ func TestResolveReplicateVideoInputEnumDrops(t *testing.T) {
 }
 
 func TestResolveReplicateVideoInputNilSchemaFallback(t *testing.T) {
-	input, notices, err := resolveReplicateVideoInput(nil, VideoGenerateRequest{
+	input, notices, _, err := resolveReplicateVideoInput(nil, VideoGenerateRequest{
 		Model:  "owner/model",
 		Prompt: "x",
 		Images: []string{"data:image/png;base64," + tinyPNG},
@@ -951,7 +960,7 @@ func TestResolveReplicateVideoRestyleInput(t *testing.T) {
 		"negative_prompt":{"type":"string"},
 		"resolution":{"type":"string","enum":["720p","1080p"]}
 	}}}}}`)
-	input, notices, err := resolveReplicateVideoRestyleInput(schema, VideoRestyleRequest{
+	input, notices, _, err := resolveReplicateVideoRestyleInput(schema, VideoRestyleRequest{
 		Model:          "kwaivgi/kling-v3-omni-video",
 		Video:          "data:video/mp4;base64,QUFB",
 		Prompt:         "anime style",
@@ -979,7 +988,7 @@ func TestResolveReplicateVideoRestyleInput(t *testing.T) {
 		"video":{"type":"string"},
 		"mode":{"type":"string","enum":["adhere","flex","reimagine"]}
 	}}}}}`)
-	input, _, err = resolveReplicateVideoRestyleInput(modeSchema, VideoRestyleRequest{
+	input, _, _, err = resolveReplicateVideoRestyleInput(modeSchema, VideoRestyleRequest{
 		Model:  "luma/modify-video",
 		Video:  "data:video/mp4;base64,QUFB",
 		Prompt: "claymation",
@@ -996,7 +1005,7 @@ func TestResolveReplicateVideoRestyleInput(t *testing.T) {
 		"prompt":{"type":"string"},
 		"video":{"type":"string"}
 	}}}}}`)
-	input, notices, err = resolveReplicateVideoRestyleInput(noRefSchema, VideoRestyleRequest{
+	input, notices, _, err = resolveReplicateVideoRestyleInput(noRefSchema, VideoRestyleRequest{
 		Model:  "owner/model",
 		Video:  "data:video/mp4;base64,QUFB",
 		Prompt: "x",
@@ -1011,10 +1020,10 @@ func TestResolveReplicateVideoRestyleInput(t *testing.T) {
 
 	// No video input is a hard error; nil schema falls back minimally.
 	noVideoSchema := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{"prompt":{"type":"string"}}}}}}`)
-	if _, _, err := resolveReplicateVideoRestyleInput(noVideoSchema, VideoRestyleRequest{Model: "owner/model", Video: "data:video/mp4;base64,QUFB", Prompt: "x"}); err == nil || !strings.Contains(err.Error(), "no video input") {
+	if _, _, _, err := resolveReplicateVideoRestyleInput(noVideoSchema, VideoRestyleRequest{Model: "owner/model", Video: "data:video/mp4;base64,QUFB", Prompt: "x"}); err == nil || !strings.Contains(err.Error(), "no video input") {
 		t.Fatalf("err = %v, want the no-video-input refusal", err)
 	}
-	input, _, err = resolveReplicateVideoRestyleInput(nil, VideoRestyleRequest{Model: "owner/model", Video: "data:video/mp4;base64,QUFB", Prompt: "x"})
+	input, _, _, err = resolveReplicateVideoRestyleInput(nil, VideoRestyleRequest{Model: "owner/model", Video: "data:video/mp4;base64,QUFB", Prompt: "x"})
 	if err != nil || input["prompt"] != "x" || input["video"] != "data:video/mp4;base64,QUFB" {
 		t.Fatalf("nil-schema fallback = %v, %v", input, err)
 	}

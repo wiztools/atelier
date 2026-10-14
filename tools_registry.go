@@ -142,6 +142,11 @@ type ToolImageResult struct {
 	Count   int      `json:"count"`
 	Images  []string `json:"images,omitempty"`
 	Notices []string `json:"notices,omitempty"`
+	// Diagnostics carries machine-facing resolution decisions recorded on a
+	// successful call (the Replicate reference rebind). Unlike Notices they
+	// never render in the chat reply; the json tag rides them into tool
+	// evidence and the persisted run.
+	Diagnostics []string `json:"diagnostics,omitempty"`
 	// CostMicros estimates what this generation cost in USD millionths
 	// (fal_pricing.go); zero on the local backends.
 	CostMicros int64 `json:"costMicros,omitempty"`
@@ -159,6 +164,12 @@ type ToolVideoResult struct {
 	Count   int             `json:"count"`
 	Videos  []ToolVideoFile `json:"videos,omitempty"`
 	Notices []string        `json:"notices,omitempty"`
+	// Diagnostics carries machine-facing resolution decisions recorded on a
+	// successful call (the reference rebind that mapped the attached sources
+	// onto the model's reference array). Unlike Notices they never render in
+	// the chat reply; the json tag rides them into tool evidence and the
+	// persisted run.
+	Diagnostics []string `json:"diagnostics,omitempty"`
 	// CostMicros estimates what this generation cost in USD millionths
 	// (fal_pricing.go); zero for the local ffmpeg tools.
 	CostMicros int64 `json:"costMicros,omitempty"`
@@ -262,6 +273,23 @@ func (r ToolTranscribeResult) ToolNotices() []string { return r.Notices }
 // NoticeProvider lets a tool's output carry deterministic user-facing caveats
 // that the harness surfaces verbatim in the chat reply.
 type NoticeProvider interface{ ToolNotices() []string }
+
+// ToolDiagnostics reports machine-facing resolution decisions recorded on a
+// successful image generation (e.g. the Replicate reference rebind). Mirrors
+// ToolNotices, but the harness routes them to tool evidence and telemetry,
+// never the chat reply.
+func (r ToolImageResult) ToolDiagnostics() []string { return r.Diagnostics }
+
+// ToolDiagnostics reports machine-facing resolution decisions recorded on a
+// successful video generation (e.g. a multi-reference rebind onto the model's
+// reference array). Mirrors ToolNotices with the same routing split.
+func (r ToolVideoResult) ToolDiagnostics() []string { return r.Diagnostics }
+
+// DiagnosticProvider lets a tool's output carry machine-facing resolution
+// diagnostics — how the request was mapped onto the model's inputs — that ride
+// tool evidence and the persisted run but never the chat reply. The sibling of
+// NoticeProvider.
+type DiagnosticProvider interface{ ToolDiagnostics() []string }
 
 type ToolAudioFile struct {
 	TempPath  string `json:"tempPath,omitempty"`
@@ -1067,8 +1095,11 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 			}
 			// Resolver notices ride the result; the executor adds its own only
 			// after generation succeeded, so a failed call carries nothing but
-			// the error (media usage drops failed calls entirely).
+			// the error (media usage drops failed calls entirely). Diagnostics
+			// ride the same success gate — the reference rebind never renders
+			// in the reply, so it needs no post-success executor additions.
 			output.Notices = generated.Notices
+			output.Diagnostics = generated.Diagnostics
 			output.Notices = append(output.Notices, sourceNotices...)
 			if len(requestVideos) < len(attachedVideos) {
 				output.Notices = append(output.Notices, fmt.Sprintf(
@@ -2040,7 +2071,7 @@ func imageGenerationToolDefinition(config AppConfig) HarnessToolDefinition {
 			if len(images) == 0 {
 				return nil, "image generation returned no image", errors.New("image model returned no image data")
 			}
-			output := ToolImageResult{Model: model, Prompt: imageReq.Prompt, Count: len(images), Images: images, Notices: notices, CostMicros: payload.CostMicros}
+			output := ToolImageResult{Model: model, Prompt: imageReq.Prompt, Count: len(images), Images: images, Notices: notices, CostMicros: payload.CostMicros, Diagnostics: payload.Diagnostics}
 			summary := fmt.Sprintf("generated %d image%s with %s", len(images), pluralSuffix(len(images)), model)
 			if imageCount := len(attachedImages); imageCount > 1 {
 				summary = fmt.Sprintf("combined %d attached images into %d image%s with %s", imageCount, len(images), pluralSuffix(len(images)), model)
@@ -2483,12 +2514,13 @@ func videoRestyleToolDefinition(config AppConfig) HarnessToolDefinition {
 				return nil, "video restyling failed", err
 			}
 			output := ToolVideoResult{
-				Model:      model,
-				Prompt:     strings.TrimSpace(call.Content),
-				Count:      1,
-				Videos:     []ToolVideoFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
-				Notices:    generated.Notices,
-				CostMicros: generated.CostMicros,
+				Model:       model,
+				Prompt:      strings.TrimSpace(call.Content),
+				Count:       1,
+				Videos:      []ToolVideoFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
+				Notices:     generated.Notices,
+				Diagnostics: generated.Diagnostics,
+				CostMicros:  generated.CostMicros,
 			}
 			return output, fmt.Sprintf("restyled the attached video with %s", model), nil
 		},

@@ -237,7 +237,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 					}
 				}
 				schema := replicateSchemaCache.Get(ctx, req.Model)
-				input, notices, err := resolveReplicateImageInput(schema, req)
+				input, notices, diagnostics, err := resolveReplicateImageInput(schema, req)
 				if err != nil {
 					return ollamaGenerateResponse{}, nil, nil, err
 				}
@@ -255,6 +255,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				if genErr == nil && recovered {
 					notices = append(notices, mediaGenerationRecoveredNotice)
 				}
+				resp.Diagnostics = diagnostics
 				return resp, nil, notices, genErr
 			}
 			resp, raw, err := app.ollamaClient(config.Providers.Ollama.BaseURL).GenerateImage(ctx, req)
@@ -302,7 +303,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				req.Videos = videos
 				req.Video = ""
 				schema := replicateSchemaCache.Get(ctx, req.Model)
-				input, notices, err := resolveReplicateVideoInput(schema, req)
+				input, notices, diagnostics, err := resolveReplicateVideoInput(schema, req)
 				if err != nil {
 					return GeneratedVideo{}, err
 				}
@@ -319,6 +320,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 					notices = append(notices, mediaGenerationRecoveredNotice)
 				}
 				generated.Notices = notices
+				generated.Diagnostics = diagnostics
 				return generated, genErr
 			}
 			apiKey, err := loadFalAPIKey()
@@ -359,7 +361,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				req.Image = resolved
 			}
 			schema := schemaCache.Get(ctx, req.Model)
-			body, notices, err := resolveVideoBody(schema, req, falOverrides)
+			body, notices, diagnostics, err := resolveVideoBody(schema, req, falOverrides)
 			if err != nil {
 				return GeneratedVideo{}, err
 			}
@@ -416,6 +418,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
 			}
 			generated.Notices = notices
+			generated.Diagnostics = diagnostics
 			return generated, genErr
 		}
 		gateway.tools.GenerateLipsync = func(ctx context.Context, req LipsyncGenerateRequest) (GeneratedVideo, error) {
@@ -778,7 +781,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 					}
 				}
 				schema := replicateSchemaCache.Get(ctx, req.Model)
-				input, notices, err := resolveReplicateVideoRestyleInput(schema, req)
+				input, notices, diagnostics, err := resolveReplicateVideoRestyleInput(schema, req)
 				if err != nil {
 					return GeneratedVideo{Notices: notices}, err
 				}
@@ -797,6 +800,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 					notices = append(notices, mediaGenerationRecoveredNotice)
 				}
 				generated.Notices = notices
+				generated.Diagnostics = diagnostics
 				return generated, genErr
 			}
 			apiKey, err := loadFalAPIKey()
@@ -1071,6 +1075,9 @@ func (g ToolGateway) Execute(ctx context.Context, req ToolExecutionRequest) Harn
 	result.Permission = permission
 	if np, ok := output.(NoticeProvider); ok {
 		result.Notices = np.ToolNotices()
+	}
+	if dp, ok := output.(DiagnosticProvider); ok {
+		result.Diagnostics = dp.ToolDiagnostics()
 	}
 	if err != nil {
 		result.Status = "failed"

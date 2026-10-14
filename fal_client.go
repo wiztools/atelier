@@ -442,6 +442,11 @@ type GeneratedVideo struct {
 	// input when the user attached a video to extend). Surfaced verbatim in the
 	// chat reply. Mirrors GeneratedAudio.Notices.
 	Notices []string
+	// Diagnostics holds machine-facing resolution decisions recorded on a
+	// successful call (e.g. which schema field a multi-reference rebind mapped
+	// the attached sources onto). Never surfaced in the chat reply — they ride
+	// tool evidence and the persisted run via ToolVideoResult.Diagnostics.
+	Diagnostics []string
 }
 
 // GenerateImage submits an already-native fal request body (built by

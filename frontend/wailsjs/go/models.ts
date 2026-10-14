@@ -1916,6 +1916,7 @@ export namespace main {
 	    result?: any;
 	    error?: string;
 	    notices?: string[];
+	    diagnostics?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new HarnessToolResult(source);
@@ -1929,6 +1930,7 @@ export namespace main {
 	        this.result = source["result"];
 	        this.error = source["error"];
 	        this.notices = source["notices"];
+	        this.diagnostics = source["diagnostics"];
 	    }
 	}
 	

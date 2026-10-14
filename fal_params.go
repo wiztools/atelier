@@ -1033,7 +1033,7 @@ func coerceVideos(prop SchemaProperty, videos []string) any {
 // silently losing all but one image. Multiple videos follow the same rule on
 // the source-video side (a scalar video_url vs the video_urls arrays reference
 // models declare).
-func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Overrides) (map[string]any, []string, error) {
+func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Overrides) (map[string]any, []string, []string, error) {
 	prompt := strings.TrimSpace(req.Prompt)
 	// SourceImages() unifies the new Images slice and the legacy scalar Image.
 	sourceImages := make([]string, 0, 4)
@@ -1060,12 +1060,12 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 		// multiples of either can't be expressed without a schema to map them
 		// onto, so fail rather than silently drop the extras.
 		if len(sourceImages) > 1 {
-			return nil, nil, fmt.Errorf(
+			return nil, nil, nil, fmt.Errorf(
 				"model %q could not be queried for its parameter schema and accepts at most one image; %d were attached. Configure a multi-image video model (e.g. bytedance/seedance-2.0/reference-to-video).",
 				req.Model, len(sourceImages))
 		}
 		if len(sourceVideos) > 1 {
-			return nil, nil, fmt.Errorf(
+			return nil, nil, nil, fmt.Errorf(
 				"model %q could not be queried for its parameter schema and accepts at most one video; %d were attached. Configure a multi-video reference model (e.g. bytedance/seedance-2.5/reference-to-video).",
 				req.Model, len(sourceVideos))
 		}
@@ -1102,11 +1102,15 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 		} else if len(sourceImages) == 1 {
 			body["image_url"] = sourceImages[0]
 		}
-		return body, []string{"Couldn't load the model's parameter schema; generated with defaults and may have dropped an unsupported video input."}, nil
+		return body, []string{"Couldn't load the model's parameter schema; generated with defaults and may have dropped an unsupported video input."}, nil, nil
 	}
 
 	body := map[string]any{}
 	var notices []string
+	// Diagnostics records machine-facing mapping decisions (the reference
+	// rebind) on a successful resolve — never surfaced in the chat reply the
+	// way notices are; they ride tool evidence and the persisted run.
+	var diagnostics []string
 
 	// Capture the prompt's native path/prop: the reference-token legend below
 	// re-sets the same slot with an augmented prompt after the source sides
@@ -1341,19 +1345,22 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 					if altPath, altProp, found := findArrayKindNative(schema, "video", "sourceVideo", path); found {
 						path, prop = altPath, altProp
 						rebound = true
-						notices = append(notices, fmt.Sprintf(
+						// A diagnostic, not a notice: the rebind is the request
+						// working as intended, so it must not render as a
+						// warning blockquote in the reply.
+						diagnostics = append(diagnostics, fmt.Sprintf(
 							"The selected model %q takes multiple references on %q; the attached videos were mapped there.",
 							req.Model, path))
 					}
 				}
 				if !rebound {
-					return nil, notices, fmt.Errorf(
+					return nil, notices, diagnostics, fmt.Errorf(
 						"model %q accepts a single video; %d were attached. Use a multi-video reference model (e.g. bytedance/seedance-2.5/reference-to-video).",
 						req.Model, len(sourceVideos))
 				}
 			}
 			if prop.Kind == schemaArray && prop.MaxItems > 0 && len(sourceVideos) > prop.MaxItems {
-				return nil, notices, fmt.Errorf(
+				return nil, notices, diagnostics, fmt.Errorf(
 					"model %q accepts at most %d video(s); %d were attached. Attach fewer videos or switch to a model with a higher video cap.",
 					req.Model, prop.MaxItems, len(sourceVideos))
 			}
@@ -1364,7 +1371,7 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 			// reference turn — the gateway routes the matching model slot — so
 			// submitting without it either fails server-side or extends
 			// nothing. The replicate sibling resolver holds the same line.
-			return nil, notices, fmt.Errorf(
+			return nil, notices, diagnostics, fmt.Errorf(
 				"the selected model %q has no source-video input to extend or reference; pick a different video model in Settings → Models",
 				req.Model)
 		}
@@ -1395,7 +1402,7 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 			// accepts the submit without it — the model then fails demanding
 			// its field or animates nothing of the user's frame (the wan 2.7
 			// lesson, conv_d5f5177320da74a0ce3caebb).
-			return nil, notices, fmt.Errorf(
+			return nil, notices, diagnostics, fmt.Errorf(
 				"the selected model %q has no source-image input to animate from; pick a different image-to-video model in Settings → Models",
 				req.Model)
 		} else {
@@ -1415,20 +1422,23 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 					if altPath, altProp, found := findArrayKindNative(schema, "video", "sourceImage", path); found {
 						path, prop = altPath, altProp
 						rebound = true
-						notices = append(notices, fmt.Sprintf(
+						// A diagnostic, not a notice: the rebind is the request
+						// working as intended, so it must not render as a
+						// warning blockquote in the reply.
+						diagnostics = append(diagnostics, fmt.Sprintf(
 							"The selected model %q takes multiple references on %q; the attached images were mapped there.",
 							req.Model, path))
 					}
 				}
 				if !rebound {
-					return nil, notices, fmt.Errorf(
+					return nil, notices, diagnostics, fmt.Errorf(
 						"model %q accepts a single image; %d were attached. Use a multi-image model (e.g. bytedance/seedance-2.0/reference-to-video).",
 						req.Model, len(sourceImages))
 				}
 			}
 			// Guardrail: a model declaring maxItems rejects requests above the cap.
 			if prop.Kind == schemaArray && prop.MaxItems > 0 && len(sourceImages) > prop.MaxItems {
-				return nil, notices, fmt.Errorf(
+				return nil, notices, diagnostics, fmt.Errorf(
 					"model %q accepts at most %d image(s); %d were attached. Attach fewer images or switch to a model with a higher image cap.",
 					req.Model, prop.MaxItems, len(sourceImages))
 			}
@@ -1504,7 +1514,7 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 			}
 		}
 	}
-	return body, notices, nil
+	return body, notices, diagnostics, nil
 }
 
 // advertisesReferenceTokens reports whether a source field's own schema

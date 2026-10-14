@@ -23,7 +23,7 @@ import (
 // Seedance schema (whose duration enum includes "auto"), the value is sent as-is
 // with no notice — letting Seedance size the clip to fit narration.
 func TestResolveVideoBodySeedanceAutoDurationPassesThrough(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "seedance-2.0-image-to-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "seedance-2.0-image-to-video"),
 		VideoGenerateRequest{
 			Model:    "bytedance/seedance-2.0/image-to-video",
 			Prompt:   "a kid narrating a story",
@@ -44,7 +44,7 @@ func TestResolveVideoBodySeedanceAutoDurationPassesThrough(t *testing.T) {
 // through and 422ing at fal. The request still runs — the model picks its own
 // default duration.
 func TestResolveVideoBodyAutoDurationDroppedForKling(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "kling-image-to-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "kling-image-to-video"),
 		VideoGenerateRequest{
 			Model:    "fal-ai/kling-video/v2/master/image-to-video",
 			Prompt:   "a drone shot over a forest",
@@ -66,7 +66,7 @@ func TestResolveVideoBodyAutoDurationDroppedForKling(t *testing.T) {
 // doesn't break the normal case: a numeric duration that IS in Kling's enum
 // passes through unchanged with no notice.
 func TestResolveVideoBodyNumericDurationStillWorksForKling(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "kling-image-to-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "kling-image-to-video"),
 		VideoGenerateRequest{
 			Model:    "fal-ai/kling-video/v2/master/image-to-video",
 			Prompt:   "a drone shot over a forest",
@@ -153,7 +153,7 @@ func TestEnumValueForCanonicalSpelling(t *testing.T) {
 // duration string is coerced to a JSON int — not left as the string "10" that
 // fal rejects. No notice, since 10 is in the enum.
 func TestResolveVideoBodyIntegerDurationSentAsNumber(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "happy-horse-image-to-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "happy-horse-image-to-video"),
 		VideoGenerateRequest{
 			Model:    "alibaba/happy-horse/image-to-video",
 			Prompt:   "a parent and child at dawn",
@@ -206,7 +206,7 @@ func TestVideoDurationSendableRespectsNumericBounds(t *testing.T) {
 // an integer enum and drops it with a notice (rather than sending it and 422ing
 // or, worse, coercing "auto" to a number). This is bug (1) from conv_4feb919a.
 func TestResolveVideoBodyAutoDroppedForIntegerEnum(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "happy-horse-image-to-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "happy-horse-image-to-video"),
 		VideoGenerateRequest{
 			Model:    "alibaba/happy-horse/image-to-video",
 			Prompt:   "a parent and child at dawn",

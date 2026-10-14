@@ -305,6 +305,13 @@ type HarnessToolResult struct {
 	Result  any      `json:"result,omitempty"`
 	Error   string   `json:"error,omitempty"`
 	Notices []string `json:"notices,omitempty"`
+	// Diagnostics records machine-facing resolution decisions that explain how
+	// a SUCCESSFUL call's sources were mapped onto the model's inputs (e.g. a
+	// multi-reference rebind). Unlike Notices they never render in the chat
+	// reply: the json tag carries them into the tool-evidence messages, the
+	// thinking panel's tool-results dump, and the persisted run — the models
+	// and the audit trail, never the user.
+	Diagnostics []string `json:"diagnostics,omitempty"`
 	// Permission records how the permission gate resolved for this call. It is
 	// telemetry only — json:"-" keeps it out of planner evidence (role:"tool"
 	// messages) and generated bindings; toolActivities zips it onto the

@@ -1043,7 +1043,7 @@ func TestResolveImageBodyNoSchema(t *testing.T) {
 // resolver passes the caller's string through unchanged.
 func TestResolveVideoBodyVeoTextToVideo(t *testing.T) {
 	audio := true
-	body, notices, _ := resolveVideoBody(loadSchema(t, "veo3.1"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "veo3.1"),
 		VideoGenerateRequest{
 			Model:          "fal-ai/veo3.1",
 			Prompt:         "a drone shot over a misty pine forest at sunrise",
@@ -1109,7 +1109,7 @@ func TestResolveVideoBodyReferenceURLsNaming(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			body, notices, err := resolveVideoBody(schema, tc.req, builtinFalOverrides())
+			body, notices, _, err := resolveVideoBody(schema, tc.req, builtinFalOverrides())
 			if err != nil {
 				t.Fatalf("resolveVideoBody error: %v", err)
 			}
@@ -1148,7 +1148,7 @@ func TestResolveVideoBodyReferenceURLsNaming(t *testing.T) {
 		// The live schema's scalar image_url ("first frame") is the first
 		// sourceImage synonym, so a lone attachment binds it — a rebind would
 		// only be right for multi-image turns.
-		body, notices, err := resolveVideoBody(schema,
+		body, notices, _, err := resolveVideoBody(schema,
 			VideoGenerateRequest{Model: "minimax/h3-max/reference-to-video", Prompt: "gentle breeze", Images: []string{"data:image/png;base64,AAA"}},
 			builtinFalOverrides())
 		if err != nil {
@@ -1223,22 +1223,24 @@ func TestResolveVideoBodyMultiSourceRebindsToArrayField(t *testing.T) {
 		}},
 	}}
 	for _, tc := range []struct {
-		name       string
-		schema     func() *ModelInputSchema
-		overrides  Overrides
-		req        VideoGenerateRequest
-		wantErr    string // empty = expect success
-		wantField  string // body key the sources must land on (success cases)
-		wantLen    int
-		wantNotice string // empty = expect no notices
+		name            string
+		schema          func() *ModelInputSchema
+		overrides       Overrides
+		req             VideoGenerateRequest
+		wantErr         string // empty = expect success
+		wantField       string // body key the sources must land on (success cases)
+		wantLen         int
+		wantDiagnostic  string // empty = expect no diagnostics
+		wantNoticeCount int    // a rebind is a diagnostic, never a reply notice
 	}{
 		{
-			name:       "three references rebind onto reference_image_urls",
-			schema:     func() *ModelInputSchema { return live },
-			req:        VideoGenerateRequest{Model: "minimax/h3-max/reference-to-video", Prompt: "one shot", Images: threeImages},
-			wantField:  "reference_image_urls",
-			wantLen:    3,
-			wantNotice: "the attached images were mapped there",
+			name:            "three references rebind onto reference_image_urls",
+			schema:          func() *ModelInputSchema { return live },
+			req:             VideoGenerateRequest{Model: "minimax/h3-max/reference-to-video", Prompt: "one shot", Images: threeImages},
+			wantField:       "reference_image_urls",
+			wantLen:         3,
+			wantDiagnostic:  "the attached images were mapped there",
+			wantNoticeCount: 0,
 		},
 		{
 			name: "scalar-only schema still refuses",
@@ -1268,12 +1270,13 @@ func TestResolveVideoBodyMultiSourceRebindsToArrayField(t *testing.T) {
 			wantErr: "accepts at most 2 image(s)",
 		},
 		{
-			name:       "two videos rebind onto reference_video_urls",
-			schema:     bothVideoShapes,
-			req:        VideoGenerateRequest{Model: "acme/both-video-shapes", Prompt: "one shot", Videos: []string{"data:video/mp4;base64,X", "data:video/mp4;base64,Y"}},
-			wantField:  "reference_video_urls",
-			wantLen:    2,
-			wantNotice: "the attached videos were mapped there",
+			name:            "two videos rebind onto reference_video_urls",
+			schema:          bothVideoShapes,
+			req:             VideoGenerateRequest{Model: "acme/both-video-shapes", Prompt: "one shot", Videos: []string{"data:video/mp4;base64,X", "data:video/mp4;base64,Y"}},
+			wantField:       "reference_video_urls",
+			wantLen:         2,
+			wantDiagnostic:  "the attached videos were mapped there",
+			wantNoticeCount: 0,
 		},
 		{
 			name:    "scalar-only video schema still refuses",
@@ -1287,7 +1290,7 @@ func TestResolveVideoBodyMultiSourceRebindsToArrayField(t *testing.T) {
 			if overrides.byCategory == nil {
 				overrides = builtinFalOverrides()
 			}
-			body, notices, err := resolveVideoBody(tc.schema(), tc.req, overrides)
+			body, notices, diagnostics, err := resolveVideoBody(tc.schema(), tc.req, overrides)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("err = %v, want it to contain %q", err, tc.wantErr)
@@ -1301,19 +1304,24 @@ func TestResolveVideoBodyMultiSourceRebindsToArrayField(t *testing.T) {
 			if !ok || len(got) != tc.wantLen {
 				t.Fatalf("%s = %v (%T); want %d sources on the rebound array", tc.wantField, body[tc.wantField], body[tc.wantField], tc.wantLen)
 			}
-			if tc.wantNotice == "" {
-				if len(notices) != 0 {
-					t.Fatalf("expected no notices, got %v", notices)
+			if tc.wantDiagnostic == "" {
+				if len(diagnostics) != 0 {
+					t.Fatalf("expected no diagnostics, got %v", diagnostics)
 				}
-			} else if len(notices) != 1 || !strings.Contains(notices[0], tc.wantNotice) {
-				t.Fatalf("notices = %v, want exactly one naming the rebind (%q)", notices, tc.wantNotice)
+			} else if len(diagnostics) != 1 || !strings.Contains(diagnostics[0], tc.wantDiagnostic) {
+				t.Fatalf("diagnostics = %v, want exactly one naming the rebind (%q)", diagnostics, tc.wantDiagnostic)
+			}
+			// The rebind is the request working as intended: it must never
+			// surface as a reply notice.
+			if len(notices) != tc.wantNoticeCount {
+				t.Fatalf("notices = %v, want %d (the rebind rides diagnostics, not notices)", notices, tc.wantNoticeCount)
 			}
 		})
 	}
 }
 
 func TestResolveVideoBodyUnmappedSourceRefusals(t *testing.T) {
-	_, _, err := resolveVideoBody(loadSchema(t, "veo3.1"),
+	_, _, _, err := resolveVideoBody(loadSchema(t, "veo3.1"),
 		VideoGenerateRequest{
 			Model:  "google/veo3.1",
 			Prompt: "animate",
@@ -1323,7 +1331,7 @@ func TestResolveVideoBodyUnmappedSourceRefusals(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no source-image input") {
 		t.Fatalf("image err = %v, want the unmapped-source-image refusal", err)
 	}
-	_, _, err = resolveVideoBody(loadSchema(t, "seedance-2.0-image-to-video"),
+	_, _, _, err = resolveVideoBody(loadSchema(t, "seedance-2.0-image-to-video"),
 		VideoGenerateRequest{
 			Model:  "fal-ai/bytedance/seedance-2.0/image-to-video",
 			Prompt: "extend",
@@ -1345,7 +1353,7 @@ func TestResolveVideoBodyUnmappedSourceRefusals(t *testing.T) {
 // endpoint has no such field to set.
 func TestResolveVideoBodySilentRequestOnModelWithoutToggle(t *testing.T) {
 	silent := false
-	body, notices, _ := resolveVideoBody(loadSchema(t, "happy-horse-image-to-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "happy-horse-image-to-video"),
 		VideoGenerateRequest{
 			Model:         "alibaba/happy-horse/v1.1/image-to-video",
 			Prompt:        "a parent stands still while a child walks toward the light",
@@ -1368,7 +1376,7 @@ func TestResolveVideoBodySilentRequestOnModelWithoutToggle(t *testing.T) {
 // the model has no generate_audio toggle: there is no user request being
 // violated, so the default-audio behavior is not a failure to surface.
 func TestResolveVideoBodyDefaultAudioOnModelWithoutToggleNoNotice(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "happy-horse-image-to-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "happy-horse-image-to-video"),
 		VideoGenerateRequest{
 			Model:  "alibaba/happy-horse/v1.1/image-to-video",
 			Prompt: "a calm lake at dawn",
@@ -1389,7 +1397,7 @@ func TestResolveVideoBodyDefaultAudioOnModelWithoutToggleNoNotice(t *testing.T) 
 // submit and quietly lose the image, so the combination refuses instead of
 // degrading to a plain extend.
 func TestResolveVideoBodyVeoExtend(t *testing.T) {
-	body, notices, err := resolveVideoBody(loadSchema(t, "veo3.1-extend-video"),
+	body, notices, _, err := resolveVideoBody(loadSchema(t, "veo3.1-extend-video"),
 		VideoGenerateRequest{
 			Model:  "fal-ai/veo3.1/extend-video",
 			Prompt: "the camera continues panning across the valley",
@@ -1411,7 +1419,7 @@ func TestResolveVideoBodyVeoExtend(t *testing.T) {
 	if len(notices) != 0 {
 		t.Fatalf("expected no notices on a clean extend, got %v", notices)
 	}
-	_, _, err = resolveVideoBody(loadSchema(t, "veo3.1-extend-video"),
+	_, _, _, err = resolveVideoBody(loadSchema(t, "veo3.1-extend-video"),
 		VideoGenerateRequest{
 			Model:  "fal-ai/veo3.1/extend-video",
 			Prompt: "the camera continues panning across the valley",
@@ -1431,7 +1439,7 @@ func TestResolveVideoBodyKeyframesPopulatesEndFrame(t *testing.T) {
 		Keyframes: true,
 		Images:    []string{"https://x/first.jpg", "https://x/last.jpg"},
 	}
-	body, _, err := resolveVideoBody(loadSchema(t, "seedance-2.0-image-to-video"), req, builtinFalOverrides())
+	body, _, _, err := resolveVideoBody(loadSchema(t, "seedance-2.0-image-to-video"), req, builtinFalOverrides())
 	if err != nil {
 		t.Fatalf("resolveVideoBody error: %v", err)
 	}
@@ -1450,7 +1458,7 @@ func TestResolveVideoBodyKeyframesDegradesWithoutEndField(t *testing.T) {
 		Keyframes: true,
 		Images:    []string{"https://x/first.jpg", "https://x/last.jpg"},
 	}
-	body, notices, err := resolveVideoBody(loadSchema(t, "kling-image-to-video"), req, builtinFalOverrides())
+	body, notices, _, err := resolveVideoBody(loadSchema(t, "kling-image-to-video"), req, builtinFalOverrides())
 	if err != nil {
 		t.Fatalf("resolveVideoBody error: %v", err)
 	}
@@ -1481,7 +1489,7 @@ func TestResolveVideoBodyKeyframesDegradesWithoutEndField(t *testing.T) {
 // defaulted to "video" (output orientation follows the motion video — better
 // for complex motions, and the only orientation that allows the 30s limit).
 func TestResolveVideoBodyMotionControlBothSources(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "kling-v2.6-pro-motion-control"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "kling-v2.6-pro-motion-control"),
 		VideoGenerateRequest{
 			Model:  defaultFalVideoMotionModel,
 			Prompt: "the character from the image dances like the reference video",
@@ -1511,7 +1519,7 @@ func TestResolveVideoBodyMotionControlBothSources(t *testing.T) {
 // hard error even though a video is also present — silently dropping the extra
 // frame would hide a real capability mismatch.
 func TestResolveVideoBodyMotionControlMultiImageRejected(t *testing.T) {
-	_, _, err := resolveVideoBody(loadSchema(t, "kling-v2.6-pro-motion-control"),
+	_, _, _, err := resolveVideoBody(loadSchema(t, "kling-v2.6-pro-motion-control"),
 		VideoGenerateRequest{
 			Model:  defaultFalVideoMotionModel,
 			Prompt: "dance",
@@ -1545,7 +1553,7 @@ func motionControlImageOnlyOrientationSchema() *ModelInputSchema {
 }
 
 func TestResolveVideoBodyCharacterOrientationEnumGate(t *testing.T) {
-	body, _, _ := resolveVideoBody(motionControlImageOnlyOrientationSchema(),
+	body, _, _, _ := resolveVideoBody(motionControlImageOnlyOrientationSchema(),
 		VideoGenerateRequest{
 			Model:  "acme/motion-control",
 			Prompt: "dance",
@@ -1601,7 +1609,7 @@ func extendVideoWithDurationSchema() *ModelInputSchema {
 // in the param schema rather than surfaced as a runtime notice, so a successful
 // send must produce NO notice.
 func TestResolveVideoBodyExtendDurationSentNoSemanticsNotice(t *testing.T) {
-	body, notices, _ := resolveVideoBody(extendVideoWithDurationSchema(),
+	body, notices, _, _ := resolveVideoBody(extendVideoWithDurationSchema(),
 		VideoGenerateRequest{
 			Model:    "xai/grok-imagine-video/extend-video",
 			Prompt:   "continue the flight over the canyon",
@@ -1636,7 +1644,7 @@ func TestResolveVideoBodyExtendDurationOutOfEnumDropped(t *testing.T) {
 		},
 		order: []string{"prompt", "video_url", "duration"},
 	}
-	body, notices, _ := resolveVideoBody(schema,
+	body, notices, _, _ := resolveVideoBody(schema,
 		VideoGenerateRequest{
 			Model:    "xai/grok-imagine-video/extend-video",
 			Prompt:   "continue the flight",
@@ -1673,7 +1681,7 @@ func TestResolveVideoBodyAutoDurationResolvesToModelDefault(t *testing.T) {
 		},
 		order: []string{"prompt", "duration"},
 	}
-	body, notices, _ := resolveVideoBody(schema,
+	body, notices, _, _ := resolveVideoBody(schema,
 		VideoGenerateRequest{
 			Model:    "minimax/h3/reference-to-video",
 			Prompt:   "the character examines her missing teeth in the mirror",
@@ -1691,7 +1699,7 @@ func TestResolveVideoBodyAutoDurationResolvesToModelDefault(t *testing.T) {
 	}
 
 	// A numeric duration still sends, as the schema's integer type.
-	body, notices, _ = resolveVideoBody(schema,
+	body, notices, _, _ = resolveVideoBody(schema,
 		VideoGenerateRequest{
 			Model:    "minimax/h3/reference-to-video",
 			Prompt:   "the character examines her missing teeth in the mirror",
@@ -1714,7 +1722,7 @@ func TestResolveVideoBodyAutoDurationResolvesToModelDefault(t *testing.T) {
 		},
 		order: []string{"prompt", "duration"},
 	}
-	body, notices, _ = resolveVideoBody(seedance,
+	body, notices, _, _ = resolveVideoBody(seedance,
 		VideoGenerateRequest{
 			Model:    "bytedance/seedance-2.0/text-to-video",
 			Prompt:   "a lantern drifting over the lake",
@@ -1740,7 +1748,7 @@ func TestResolveVideoBodyAutoDurationResolvesToModelDefault(t *testing.T) {
 // video was not reshaped. aspect_ratio must not appear in the body (the model
 // has no such field) and video_url is still sent.
 func TestResolveVideoBodyExtendExplicitRatioNoToggle(t *testing.T) {
-	body, notices, _ := resolveVideoBody(extendVideoNoAspectSchema(),
+	body, notices, _, _ := resolveVideoBody(extendVideoNoAspectSchema(),
 		VideoGenerateRequest{
 			Model:               "xai/grok-imagine-video/extend-video",
 			Prompt:              "continue the flight over the canyon",
@@ -1783,7 +1791,7 @@ func TestResolveVideoBodyExtendDropsDefaultRatio(t *testing.T) {
 		},
 		order: []string{"prompt", "video_url", "aspect_ratio"},
 	}
-	body, notices, _ := resolveVideoBody(schema,
+	body, notices, _, _ := resolveVideoBody(schema,
 		VideoGenerateRequest{
 			Model:       "fal-ai/veo3.1/extend-video",
 			Prompt:      "extend the shot",
@@ -1809,7 +1817,7 @@ func TestResolveVideoBodyExtendDropsDefaultRatio(t *testing.T) {
 // image onto image_urls as a one-element slice, so an image-to-video turn
 // succeeds instead of 422ing. See conv_3232dd3836e50aa6402d8f51.
 func TestResolveVideoBodyKlingImageToVideo(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "kling-image-to-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "kling-image-to-video"),
 		VideoGenerateRequest{
 			Model:  "fal-ai/kling-video/v2/master/image-to-video",
 			Prompt: "make the character walk forward",
@@ -1861,7 +1869,7 @@ func TestResolveVideoBodyKlingO3ProImageUrlsArray(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	body, notices, err := resolveVideoBody(schema,
+	body, notices, _, err := resolveVideoBody(schema,
 		VideoGenerateRequest{
 			Model:  "fal-ai/kling-video/o3/pro/reference-to-video",
 			Prompt: "A statue standing still as gentle waves hit it.",
@@ -1897,7 +1905,7 @@ func TestResolveVideoBodyKlingO3ProImageUrlsArray(t *testing.T) {
 // already matches, and that the image was not reshaped. aspect_ratio must not
 // appear in the body (the model has no such field) and image_url is still sent.
 func TestResolveVideoBodyImageToVideoExplicitRatioNoToggle(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "happy-horse-image-to-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "happy-horse-image-to-video"),
 		VideoGenerateRequest{
 			Model:               "alibaba/happy-horse/v1.1/image-to-video",
 			Prompt:              "a parent stands still while a child walks toward the light",
@@ -1930,7 +1938,7 @@ func TestResolveVideoBodyImageToVideoExplicitRatioNoToggle(t *testing.T) {
 // when there is no source image to inherit from — there the ratio genuinely
 // can't be carried, unlike the image-to-video case above.
 func TestResolveVideoBodyTextToVideoNoAspectRatioKeepsOldNotice(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "happy-horse-image-to-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "happy-horse-image-to-video"),
 		VideoGenerateRequest{
 			Model:       "alibaba/happy-horse/v1.1/image-to-video",
 			Prompt:      "a calm ocean at dawn",
@@ -1970,7 +1978,7 @@ func imageVideoWithAspectSchema() *ModelInputSchema {
 // follow the same gate.
 func TestResolveVideoBodyImageToVideoDropsDefaultRatio(t *testing.T) {
 	t.Run("schema-driven", func(t *testing.T) {
-		body, _, _ := resolveVideoBody(imageVideoWithAspectSchema(),
+		body, _, _, _ := resolveVideoBody(imageVideoWithAspectSchema(),
 			VideoGenerateRequest{
 				Model:       "fal-ai/kling-video/v2/master/image-to-video",
 				Prompt:      "animate",
@@ -1990,7 +1998,7 @@ func TestResolveVideoBodyImageToVideoDropsDefaultRatio(t *testing.T) {
 		}
 	})
 	t.Run("legacy nil-schema", func(t *testing.T) {
-		body, _, _ := resolveVideoBody(nil,
+		body, _, _, _ := resolveVideoBody(nil,
 			VideoGenerateRequest{
 				Model:       "fal-ai/kling-video/v2/master/image-to-video",
 				Prompt:      "animate",
@@ -2010,7 +2018,7 @@ func TestResolveVideoBodyImageToVideoDropsDefaultRatio(t *testing.T) {
 // case: the user asked, so we honor it.
 func TestResolveVideoBodyImageToVideoExplicitRatio(t *testing.T) {
 	t.Run("schema-driven", func(t *testing.T) {
-		body, _, _ := resolveVideoBody(imageVideoWithAspectSchema(),
+		body, _, _, _ := resolveVideoBody(imageVideoWithAspectSchema(),
 			VideoGenerateRequest{
 				Model:               "fal-ai/kling-video/v2/master/image-to-video",
 				Prompt:              "animate",
@@ -2024,7 +2032,7 @@ func TestResolveVideoBodyImageToVideoExplicitRatio(t *testing.T) {
 		}
 	})
 	t.Run("legacy nil-schema", func(t *testing.T) {
-		body, _, _ := resolveVideoBody(nil,
+		body, _, _, _ := resolveVideoBody(nil,
 			VideoGenerateRequest{
 				Model:               "fal-ai/kling-video/v2/master/image-to-video",
 				Prompt:              "animate",
@@ -2049,7 +2057,7 @@ func TestResolveVideoBodyImageToVideoExplicitRatio(t *testing.T) {
 // since an explicit ratio reaches the guard in either case.
 func TestResolveVideoBodyAspectRatioEnumGuardDropsUnsupported(t *testing.T) {
 	t.Run("text-to-video", func(t *testing.T) {
-		body, notices, _ := resolveVideoBody(loadSchema(t, "minimax-h3-max-reference-to-video"),
+		body, notices, _, _ := resolveVideoBody(loadSchema(t, "minimax-h3-max-reference-to-video"),
 			VideoGenerateRequest{
 				Model:       "minimax/h3-max/reference-to-video",
 				Prompt:      "the character walks through the house",
@@ -2064,7 +2072,7 @@ func TestResolveVideoBodyAspectRatioEnumGuardDropsUnsupported(t *testing.T) {
 		}
 	})
 	t.Run("explicit ratio with reference images", func(t *testing.T) {
-		body, notices, _ := resolveVideoBody(loadSchema(t, "minimax-h3-max-reference-to-video"),
+		body, notices, _, _ := resolveVideoBody(loadSchema(t, "minimax-h3-max-reference-to-video"),
 			VideoGenerateRequest{
 				Model:               "minimax/h3-max/reference-to-video",
 				Prompt:              "the character walks through the house",
@@ -2087,7 +2095,7 @@ func TestResolveVideoBodyAspectRatioEnumGuardDropsUnsupported(t *testing.T) {
 // spelling, via enumValueFor) with no notice, so the guard never eats a
 // supported Settings value like 16:9/9:16/1:1 on minimax.
 func TestResolveVideoBodyAspectRatioEnumMemberSentAsCanonical(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "minimax-h3-max-reference-to-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "minimax-h3-max-reference-to-video"),
 		VideoGenerateRequest{
 			Model:       "minimax/h3-max/reference-to-video",
 			Prompt:      "the character walks through the house",
@@ -2106,7 +2114,7 @@ func TestResolveVideoBodyAspectRatioEnumMemberSentAsCanonical(t *testing.T) {
 // the body GenerateVideo used to build itself, plus a schema-unavailable notice.
 func TestResolveVideoBodyNoSchema(t *testing.T) {
 	silent := false
-	body, notices, _ := resolveVideoBody(nil,
+	body, notices, _, _ := resolveVideoBody(nil,
 		VideoGenerateRequest{
 			Model:          "fal-ai/kling-video/v2/master/text-to-video",
 			Prompt:         "a calm ocean at dawn",
@@ -2151,7 +2159,7 @@ func TestResolveVideoBodyNoSchema(t *testing.T) {
 // submit without the clip, so the extend must fail locally with the remedy
 // rather than generating an unrelated text-to-video clip beside a notice.
 func TestResolveVideoBodyNoSourceInput(t *testing.T) {
-	_, _, err := resolveVideoBody(loadSchema(t, "veo3.1"),
+	_, _, _, err := resolveVideoBody(loadSchema(t, "veo3.1"),
 		VideoGenerateRequest{
 			Model:  "fal-ai/veo3.1",
 			Prompt: "extend this clip",
@@ -2189,7 +2197,7 @@ func referenceToVideoSchema() *ModelInputSchema {
 // source-video input" notice on a model that accepts it. Both sources must
 // reach the body with no notices.
 func TestResolveVideoBodyReferenceVideoBothSources(t *testing.T) {
-	body, notices, err := resolveVideoBody(referenceToVideoSchema(),
+	body, notices, _, err := resolveVideoBody(referenceToVideoSchema(),
 		VideoGenerateRequest{
 			Model:  "bytedance/seedance-2.0/reference-to-video",
 			Prompt: "continue the flight; girl from @Image1, lunar kitchen from @Image2",
@@ -2231,7 +2239,7 @@ func TestResolveVideoBodyReferenceVideoBothSources(t *testing.T) {
 // conv_f4048032debc0e335da6a085 needed — a character sheet plus two style
 // reference clips, all as references rather than a motion source.
 func TestResolveVideoBodyMultipleReferenceVideos(t *testing.T) {
-	body, notices, err := resolveVideoBody(referenceToVideoSchema(),
+	body, notices, _, err := resolveVideoBody(referenceToVideoSchema(),
 		VideoGenerateRequest{
 			Model:  "bytedance/seedance-2.5/reference-to-video",
 			Prompt: "wooden flying bed soars home; character from @Image1, motion style from @Video1 and @Video2",
@@ -2261,7 +2269,7 @@ func TestResolveVideoBodyMultipleReferenceVideos(t *testing.T) {
 // model — mirroring the image side — rather than a silent drop of all but the
 // first clip.
 func TestResolveVideoBodyScalarVideoModelRejectsMultipleVideos(t *testing.T) {
-	_, _, err := resolveVideoBody(loadSchema(t, "kling-v2.6-pro-motion-control"),
+	_, _, _, err := resolveVideoBody(loadSchema(t, "kling-v2.6-pro-motion-control"),
 		VideoGenerateRequest{
 			Model:  "fal-ai/kling-video/v2.6/pro/motion-control",
 			Prompt: "bed flies home",
@@ -2281,7 +2289,7 @@ func TestResolveVideoBodyScalarVideoModelRejectsMultipleVideos(t *testing.T) {
 // sibling: the legacy fallback body only knows a scalar video_url, so multiple
 // videos fail the call instead of silently losing the extras.
 func TestResolveVideoBodyLegacyNoSchemaRejectsMultipleVideos(t *testing.T) {
-	_, _, err := resolveVideoBody(nil,
+	_, _, _, err := resolveVideoBody(nil,
 		VideoGenerateRequest{
 			Model:  "acme/mystery-video",
 			Prompt: "bed flies home",
@@ -2302,7 +2310,7 @@ func TestResolveVideoBodyLegacyNoSchemaRejectsMultipleVideos(t *testing.T) {
 // attachment list, so the config-default reference model of a
 // useVideoAs:"reference" turn maps cleanly.
 func TestResolveVideoBodySeedance25Fixture(t *testing.T) {
-	body, _, err := resolveVideoBody(loadSchema(t, "seedance-2.5-reference-to-video"),
+	body, _, _, err := resolveVideoBody(loadSchema(t, "seedance-2.5-reference-to-video"),
 		VideoGenerateRequest{
 			Model:  "bytedance/seedance-2.5/reference-to-video",
 			Prompt: "bed flies home, girl winks at camera",
@@ -2334,7 +2342,7 @@ func TestResolveVideoBodyTaskExtension(t *testing.T) {
 	schema := loadSchema(t, "seedance-2.5-reference-to-video")
 
 	// Extend-shaped turn: task must be "extension" and the clip rides video_urls.
-	body, _, err := resolveVideoBody(schema,
+	body, _, _, err := resolveVideoBody(schema,
 		VideoGenerateRequest{
 			Model:        "bytedance/seedance-2.5/reference-to-video",
 			Prompt:       "the rocket clears the tower and climbs",
@@ -2355,7 +2363,7 @@ func TestResolveVideoBodyTaskExtension(t *testing.T) {
 	// Reference-mode turn (useVideoAs:"reference"): the task stays unset so the
 	// model's "reference" default applies — the clip is guidance, not a source
 	// to continue.
-	body, _, err = resolveVideoBody(schema,
+	body, _, _, err = resolveVideoBody(schema,
 		VideoGenerateRequest{
 			Model:  "bytedance/seedance-2.5/reference-to-video",
 			Prompt: "a city of glass",
@@ -2370,7 +2378,7 @@ func TestResolveVideoBodyTaskExtension(t *testing.T) {
 	}
 
 	// A dedicated extend endpoint declares no task input: the flag is a no-op.
-	body, _, err = resolveVideoBody(loadSchema(t, "veo3.1-extend-video"),
+	body, _, _, err = resolveVideoBody(loadSchema(t, "veo3.1-extend-video"),
 		VideoGenerateRequest{
 			Model:        "fal-ai/veo3.1/extend-video",
 			Prompt:       "the rocket climbs",
@@ -2395,7 +2403,7 @@ func TestResolveVideoBodyTaskExtension(t *testing.T) {
 		},
 		order: []string{"prompt", "video_url", "task"},
 	}
-	body, _, err = resolveVideoBody(limited,
+	body, _, _, err = resolveVideoBody(limited,
 		VideoGenerateRequest{
 			Model:        "acme/multimode-video",
 			Prompt:       "keep flying",
@@ -2417,7 +2425,7 @@ func TestResolveVideoBodyTaskExtension(t *testing.T) {
 // literal noise the model never learned.
 func TestResolveVideoBodyNoLegendWithoutTokenConvention(t *testing.T) {
 	const prompt = "blend the attached references, no tokens documented"
-	body, _, err := resolveVideoBody(multiImageVideoSchema(0),
+	body, _, _, err := resolveVideoBody(multiImageVideoSchema(0),
 		VideoGenerateRequest{
 			Model:  "alibaba/happy-horse/v1.1/reference-to-video",
 			Prompt: prompt,
@@ -2446,7 +2454,7 @@ func TestResolveVideoBodyLegendPerSideGating(t *testing.T) {
 		},
 		order: []string{"prompt", "image_urls", "video_urls"},
 	}
-	body, notices, err := resolveVideoBody(schema,
+	body, notices, _, err := resolveVideoBody(schema,
 		VideoGenerateRequest{
 			Model:  "acme/mixed-reference",
 			Prompt: "follow the video's motion on the images' subject",
@@ -2502,7 +2510,7 @@ func scalarImageVideoSchema() *ModelInputSchema {
 // fan out onto an array-typed image_urls field for a reference-to-video model.
 // All three URLs must reach the body in the user's attach order.
 func TestResolveVideoBodyMultiImageArray(t *testing.T) {
-	body, notices, err := resolveVideoBody(multiImageVideoSchema(0),
+	body, notices, _, err := resolveVideoBody(multiImageVideoSchema(0),
 		VideoGenerateRequest{
 			Model:  "bytedance/seedance-2.0/reference-to-video",
 			Prompt: "blend @Image1 and @Image2",
@@ -2534,7 +2542,7 @@ func TestResolveVideoBodyMultiImageArray(t *testing.T) {
 // image into an array field still produces a one-element slice (the original
 // behavior of coerceVideoValue wrapping a scalar), now via coerceImages.
 func TestResolveVideoBodySingleImageArrayStillWorks(t *testing.T) {
-	body, _, err := resolveVideoBody(multiImageVideoSchema(0),
+	body, _, _, err := resolveVideoBody(multiImageVideoSchema(0),
 		VideoGenerateRequest{
 			Model:  "bytedance/seedance-2.0/reference-to-video",
 			Prompt: "animate this",
@@ -2573,7 +2581,7 @@ func TestResolveVideoBodyOverrideArrayAcceptsMultipleImages(t *testing.T) {
 			},
 		},
 	}}
-	body, _, err := resolveVideoBody(schema,
+	body, _, _, err := resolveVideoBody(schema,
 		VideoGenerateRequest{
 			Model:  "acme/drift",
 			Prompt: "blend two references",
@@ -2600,7 +2608,7 @@ func TestResolveVideoBodyOverrideArrayAcceptsMultipleImages(t *testing.T) {
 // attached images must fail the call rather than silently drop the extras. The
 // error must name the model and the attached count so the user knows what to fix.
 func TestResolveVideoBodyScalarRejectsMultipleImages(t *testing.T) {
-	_, _, err := resolveVideoBody(scalarImageVideoSchema(),
+	_, _, _, err := resolveVideoBody(scalarImageVideoSchema(),
 		VideoGenerateRequest{
 			Model:  "bytedance/seedance-2.0/image-to-video",
 			Prompt: "blend these",
@@ -2625,7 +2633,7 @@ func TestResolveVideoBodyScalarRejectsMultipleImages(t *testing.T) {
 // model declaring maxItems:2 must reject 3 attached images. The cap value must
 // appear in the error so the user knows the limit.
 func TestResolveVideoBodyMaxItemsExceeded(t *testing.T) {
-	_, _, err := resolveVideoBody(multiImageVideoSchema(2),
+	_, _, _, err := resolveVideoBody(multiImageVideoSchema(2),
 		VideoGenerateRequest{
 			Model:  "bytedance/seedance-2.0/reference-to-video",
 			Prompt: "blend these",
@@ -2647,7 +2655,7 @@ func TestResolveVideoBodyMaxItemsExceeded(t *testing.T) {
 // legacy fallback also rejects multi-image — it only knows a scalar image_url,
 // so silently dropping extras there would hide the capability mismatch too.
 func TestResolveVideoBodyNoSchemaRejectsMultipleImages(t *testing.T) {
-	_, _, err := resolveVideoBody(nil,
+	_, _, _, err := resolveVideoBody(nil,
 		VideoGenerateRequest{
 			Model:  "unknown-model",
 			Prompt: "blend these",

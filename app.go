@@ -1065,6 +1065,12 @@ type ollamaGenerateResponse struct {
 	// tool gateway on the fal path only (fal_pricing.go); Ollama and the
 	// openai-compatible path never set it.
 	CostMicros int64 `json:"costMicros,omitempty"`
+	// Diagnostics carries the Replicate resolver's machine-facing mapping
+	// decisions (the reference rebind), stamped by the gateway beside Notices
+	// on the paths that resolve against a schema. Never rendered in the chat
+	// reply; rides ToolImageResult.Diagnostics into tool evidence and the
+	// persisted run.
+	Diagnostics []string `json:"diagnostics,omitempty"`
 }
 
 type ConversationSummary struct {

@@ -21,7 +21,7 @@ import (
 // declares an integer fps enum [24,30,60], a supported value is coerced to an
 // integer and sent as-is with no notice.
 func TestResolveVideoBodyFpsPassesThrough(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "fps-capable-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "fps-capable-video"),
 		VideoGenerateRequest{
 			Model:  "acme/fps-capable/text-to-video",
 			Prompt: "a drone shot over a misty forest",
@@ -45,7 +45,7 @@ func TestResolveVideoBodyFpsPassesThrough(t *testing.T) {
 // resolver must drop it with a notice rather than passing it through and 422ing
 // at fal. The request still runs — the model picks its own default frame rate.
 func TestResolveVideoBodyFpsDroppedOutOfEnum(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "fps-capable-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "fps-capable-video"),
 		VideoGenerateRequest{
 			Model:  "acme/fps-capable/text-to-video",
 			Prompt: "a drone shot over a misty forest",
@@ -68,7 +68,7 @@ func TestResolveVideoBodyFpsDroppedOutOfEnum(t *testing.T) {
 // and sends nothing — distinct from the enum-rejection case above. The user
 // learns the knob doesn't apply rather than that the value was wrong.
 func TestResolveVideoBodyFpsNoControlNotice(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "kling-image-to-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "kling-image-to-video"),
 		VideoGenerateRequest{
 			Model:  "fal-ai/kling-video/v2/master/image-to-video",
 			Prompt: "a drone shot over a forest",
@@ -90,7 +90,7 @@ func TestResolveVideoBodyFpsNoControlNotice(t *testing.T) {
 // is empty (the common case — the planner didn't set it), the resolver sends no
 // fps field and emits no notice, so the model uses its own default frame rate.
 func TestResolveVideoBodyFpsOmittedSendsNothing(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "fps-capable-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "fps-capable-video"),
 		VideoGenerateRequest{
 			Model:  "acme/fps-capable/text-to-video",
 			Prompt: "a drone shot over a misty forest",

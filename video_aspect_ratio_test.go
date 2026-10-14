@@ -37,7 +37,7 @@ import (
 // (seedance-2.5's image_urls array) with an attached image and no explicit
 // ratio must SEND the configured default instead of withholding it.
 func TestResolveVideoBodyReferenceImageSendsConfiguredRatio(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "seedance-2.5-reference-to-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "seedance-2.5-reference-to-video"),
 		VideoGenerateRequest{
 			Model:             "bytedance/seedance-2.5/reference-to-video",
 			Prompt:            "the character examines her missing teeth in the mirror",
@@ -64,7 +64,7 @@ func TestResolveVideoBodyReferenceImageSendsConfiguredRatio(t *testing.T) {
 // sheet with a vertical standing preference must produce a vertical request —
 // the image is guidance, not the canvas.
 func TestResolveVideoBodyReferenceImageConfigBeatsImageShape(t *testing.T) {
-	body, _, _ := resolveVideoBody(loadSchema(t, "seedance-2.5-reference-to-video"),
+	body, _, _, _ := resolveVideoBody(loadSchema(t, "seedance-2.5-reference-to-video"),
 		VideoGenerateRequest{
 			Model:             "bytedance/seedance-2.5/reference-to-video",
 			Prompt:            "the character walks away",
@@ -82,7 +82,7 @@ func TestResolveVideoBodyReferenceImageConfigBeatsImageShape(t *testing.T) {
 // "auto" and seedance's enum listing it, the sentinel is passed through — the
 // model decides the orientation, which is exactly what was asked.
 func TestResolveVideoBodyReferenceImageAutoSentWhenEnumAllows(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "seedance-2.5-reference-to-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "seedance-2.5-reference-to-video"),
 		VideoGenerateRequest{
 			Model:             "bytedance/seedance-2.5/reference-to-video",
 			Prompt:            "the character walks away",
@@ -104,7 +104,7 @@ func TestResolveVideoBodyReferenceImageAutoSentWhenEnumAllows(t *testing.T) {
 // out-of-enum ratio still notices (covered by the enum-guard test in
 // fal_params_test.go).
 func TestResolveVideoBodyReferenceImageAutoSilentOnAdaptiveEnum(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "minimax-h3-max-reference-to-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "minimax-h3-max-reference-to-video"),
 		VideoGenerateRequest{
 			Model:             "minimax/h3-max/reference-to-video",
 			Prompt:            "the character walks through the house",
@@ -136,7 +136,7 @@ func TestResolveVideoBodyReferenceImageNoAspectInput(t *testing.T) {
 		order: []string{"prompt", "image_urls"},
 	}
 	t.Run("concrete config notices honestly", func(t *testing.T) {
-		body, notices, _ := resolveVideoBody(schema,
+		body, notices, _, _ := resolveVideoBody(schema,
 			VideoGenerateRequest{
 				Model:             "acme/reference-to-video",
 				Prompt:            "the character walks away",
@@ -158,7 +158,7 @@ func TestResolveVideoBodyReferenceImageNoAspectInput(t *testing.T) {
 		}
 	})
 	t.Run("auto stays silent", func(t *testing.T) {
-		_, notices, _ := resolveVideoBody(schema,
+		_, notices, _, _ := resolveVideoBody(schema,
 			VideoGenerateRequest{
 				Model:             "acme/reference-to-video",
 				Prompt:            "the character walks away",
@@ -179,7 +179,7 @@ func TestResolveVideoBodyReferenceImageNoAspectInput(t *testing.T) {
 // request — the output continues the attached frame.
 func TestResolveVideoBodyFrameImageStillInheritsOrientation(t *testing.T) {
 	for _, config := range []string{"16:9", "auto"} {
-		body, notices, _ := resolveVideoBody(loadSchema(t, "seedance-2.0-image-to-video"),
+		body, notices, _, _ := resolveVideoBody(loadSchema(t, "seedance-2.0-image-to-video"),
 			VideoGenerateRequest{
 				Model:             "bytedance/seedance-2.0/image-to-video",
 				Prompt:            "animate the frame",
@@ -204,7 +204,7 @@ func TestResolveVideoBodyFrameImageStillInheritsOrientation(t *testing.T) {
 // (image_url), not the override-resolved wire path, so the config default is
 // NOT stamped while the override placement keeps working.
 func TestResolveVideoBodyOverrideRoutedFrameInputClassifiesAsFrame(t *testing.T) {
-	body, notices, _ := resolveVideoBody(loadSchema(t, "kling-image-to-video"),
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "kling-image-to-video"),
 		VideoGenerateRequest{
 			Model:             "fal-ai/kling-video/v2/master/image-to-video",
 			Prompt:            "make the character walk forward",
@@ -231,7 +231,7 @@ func TestResolveVideoBodyOverrideRoutedFrameInputClassifiesAsFrame(t *testing.T)
 // keeps the inherit rule even though its video input is reference-named.
 func TestResolveVideoBodyReferenceVideoVsExtend(t *testing.T) {
 	t.Run("reference video sends config", func(t *testing.T) {
-		body, _, _ := resolveVideoBody(loadSchema(t, "seedance-2.5-reference-to-video"),
+		body, _, _, _ := resolveVideoBody(loadSchema(t, "seedance-2.5-reference-to-video"),
 			VideoGenerateRequest{
 				Model:             "bytedance/seedance-2.5/reference-to-video",
 				Prompt:            "a new clip in the same style",
@@ -246,7 +246,7 @@ func TestResolveVideoBodyReferenceVideoVsExtend(t *testing.T) {
 		}
 	})
 	t.Run("extension inherits the clip", func(t *testing.T) {
-		body, _, _ := resolveVideoBody(loadSchema(t, "seedance-2.5-reference-to-video"),
+		body, _, _, _ := resolveVideoBody(loadSchema(t, "seedance-2.5-reference-to-video"),
 			VideoGenerateRequest{
 				Model:             "bytedance/seedance-2.5/reference-to-video",
 				Prompt:            "continue the shot",
@@ -266,7 +266,7 @@ func TestResolveVideoBodyReferenceVideoVsExtend(t *testing.T) {
 // enum-check "auto" and fal 422s on unknown enum members, so the sentinel is
 // withheld there — the model's own default already delivers the defer.
 func TestResolveVideoBodyLegacyPathWithholdsAuto(t *testing.T) {
-	body, _, _ := resolveVideoBody(nil,
+	body, _, _, _ := resolveVideoBody(nil,
 		VideoGenerateRequest{
 			Model:       "acme/text-to-video",
 			Prompt:      "a drone shot over the forest",
