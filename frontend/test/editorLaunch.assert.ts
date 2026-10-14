@@ -4,7 +4,7 @@ function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
 }
 
-function kinds(...items: Array<'image' | 'audio' | 'video'>): Array<'image' | 'audio' | 'video'> {
+function kinds(...items: Array<'image' | 'audio' | 'video' | 'subtitle'>): Array<'image' | 'audio' | 'video' | 'subtitle'> {
   return items;
 }
 
@@ -12,6 +12,15 @@ function kinds(...items: Array<'image' | 'audio' | 'video'>): Array<'image' | 'a
 assert(detectEditorLaunchIntent('Open this image in image editor', kinds('image')) === 'image', 'canonical image phrasing');
 assert(detectEditorLaunchIntent('Open in video editor', kinds('video')) === 'video', 'canonical video phrasing');
 assert(detectEditorLaunchIntent('Open in audio editor', kinds('audio')) === 'audio', 'canonical audio phrasing');
+
+// Subtitle files are an editor subject now: the kind resolves from the
+// subtitle vocabulary or a lone .srt attachment, like the other kinds.
+assert(detectEditorLaunchIntent('Open this in the subtitle editor', kinds('subtitle')) === 'subtitle', 'subtitle editor phrasing');
+assert(detectEditorLaunchIntent('Open the subtitles in the editor', kinds('subtitle')) === 'subtitle', 'subtitle media word resolves');
+assert(detectEditorLaunchIntent('Open this srt in the editor', kinds('subtitle')) === 'subtitle', 'extension word resolves');
+assert(detectEditorLaunchIntent('Open the vtt editor for me', kinds('subtitle')) === 'subtitle', 'vtt word and trailing politeness');
+assert(detectEditorLaunchIntent('Open in the editor', kinds('subtitle')) === 'subtitle', 'lone subtitle attachment resolves');
+assert(detectEditorLaunchIntent('Open in the editor', kinds('subtitle', 'image')) === null, 'subtitle plus image without a kind word abstains');
 
 // Punctuation, case, and articles.
 assert(detectEditorLaunchIntent('open this image in the image editor.', kinds('image')) === 'image', 'punctuation and articles');

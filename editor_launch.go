@@ -14,10 +14,11 @@ import (
 // one identity every editor entry point takes — the assets panel, the inline
 // Edit buttons, and this launch path alike.
 type EditorLaunchResult struct {
-	ConversationID   string   `json:"conversationId"`
-	ImageArtifactIDs []string `json:"imageArtifactIds,omitempty"`
-	VideoArtifactIDs []string `json:"videoArtifactIds,omitempty"`
-	AudioArtifactIDs []string `json:"audioArtifactIds,omitempty"`
+	ConversationID      string   `json:"conversationId"`
+	ImageArtifactIDs    []string `json:"imageArtifactIds,omitempty"`
+	VideoArtifactIDs    []string `json:"videoArtifactIds,omitempty"`
+	AudioArtifactIDs    []string `json:"audioArtifactIds,omitempty"`
+	SubtitleArtifactIDs []string `json:"subtitleArtifactIds,omitempty"`
 }
 
 // editorLaunchEventName is the atelier:editor-launch payload's event: the
@@ -60,11 +61,14 @@ type ToolOpenEditorResult struct {
 // artifact id — the same newest-turn-first walk newestVisualMediaKind uses
 // for the history fallback, so "the editor" and "the image" resolve to the
 // same asset. An empty kind means the newest image, video, or audio of any
-// kind. Attachments, @-mentions, and generated media all persist as
-// artifacts, so every one of them is openable; text and transcripts are
-// skipped.
+// kind — kindless never opens subtitles, since a bare "open the editor" ask
+// most plausibly means visual media and subtitle files are opened by name
+// (mode "subtitle"). The subtitle kind matches transcript artifacts carrying
+// VTT/SRT content (subtitleArtifactExtension), never plain .txt transcripts.
+// Attachments, @-mentions, and generated media all persist as artifacts, so
+// every one of them is openable; other text is skipped.
 func newestEditorArtifact(storage ConfigStorage, conversationID, kind string) (string, string, error) {
-	if kind != "" && kind != "image" && kind != "video" && kind != "audio" {
+	if kind != "" && kind != "image" && kind != "video" && kind != "audio" && kind != "subtitle" {
 		return "", "", fmt.Errorf("unknown editor kind %q", kind)
 	}
 	detail, err := getConversation(storage, conversationID)
@@ -79,7 +83,11 @@ func newestEditorArtifact(storage ConfigStorage, conversationID, kind string) (s
 			if kind == "" && content.Type != "image" && content.Type != "video" && content.Type != "audio" {
 				continue
 			}
-			if kind != "" && content.Type != kind {
+			if kind == "subtitle" {
+				if content.Type != "transcript" || subtitleArtifactExtension(content) == "" {
+					continue
+				}
+			} else if kind != "" && content.Type != kind {
 				continue
 			}
 			if kind == "" {
@@ -127,23 +135,23 @@ func openEditorToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "open_editor",
 		Title:       "Open in editor",
-		Description: "Opens one of the conversation's assets in Atelier's built-in editor on the user's screen. mode \"image\" opens the image editor, \"video\" the video editor, \"audio\" the audio editor; omit mode to open whichever editor matches the conversation's newest image, video, or audio artifact. The asset is the newest artifact of that kind — this turn's attachment, an @-mentioned asset, or one from conversation history — and it is opened as-is, never modified or regenerated. Call this ONLY when the user asks to open an asset in the editor (e.g. \"open this in the video editor\"); it does not perform edits — for a change the user described, use the edit or generation tools instead.",
+		Description: "Opens one of the conversation's assets in Atelier's built-in editor on the user's screen. mode \"image\" opens the image editor, \"video\" the video editor, \"audio\" the audio editor, \"subtitle\" the subtitle editor (a .vtt or .srt transcript artifact); omit mode to open whichever editor matches the conversation's newest image, video, or audio artifact. The asset is the newest artifact of that kind — this turn's attachment, an @-mentioned asset, or one from conversation history — and it is opened as-is, never modified or regenerated. Call this ONLY when the user asks to open an asset in the editor (e.g. \"open this in the video editor\", \"open the subtitles in the subtitle editor\"); it does not perform edits — for a change the user described, use the edit or generation tools instead.",
 		Example:     `{"name":"open_editor","mode":"video"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"mode": enumParam(`Which editor to open — "image", "video", or "audio". Omit to open the one matching the conversation's newest image, video, or audio artifact.`, "image", "video", "audio"),
+				"mode": enumParam(`Which editor to open — "image", "video", "audio", or "subtitle" (a .vtt/.srt transcript artifact). Omit to open the one matching the conversation's newest image, video, or audio artifact.`, "image", "video", "audio", "subtitle"),
 			},
 			"required": []string{},
 		},
 		Validate: func(prefix string, call HarnessToolCall) []string {
 			switch strings.TrimSpace(call.Mode) {
-			case "", "image", "video", "audio":
+			case "", "image", "video", "audio", "subtitle":
 				return nil
 			default:
-				return []string{prefix + `.mode must be "image", "video", or "audio" for open_editor`}
+				return []string{prefix + `.mode must be "image", "video", "audio", or "subtitle" for open_editor`}
 			}
 		},
 		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
@@ -196,8 +204,8 @@ func (a *App) CreateEditorConversation(req ChatRequest) (EditorLaunchResult, err
 		return EditorLaunchResult{}, err
 	}
 	message := lastUserMessage(req.Messages)
-	if len(message.Images) == 0 && len(message.Videos) == 0 && len(message.Audios) == 0 {
-		return EditorLaunchResult{}, errors.New("an attached image, video, or audio is required to open an editor")
+	if len(message.Images) == 0 && len(message.Videos) == 0 && len(message.Audios) == 0 && len(message.Subtitles) == 0 {
+		return EditorLaunchResult{}, errors.New("an attached image, video, audio, or subtitle file is required to open an editor")
 	}
 	// Opening an editor must not require a configured chat model — nothing is
 	// called on this path — but stamp the selection when there is one so a
@@ -229,6 +237,12 @@ func (a *App) CreateEditorConversation(req ChatRequest) (EditorLaunchResult, err
 				result.VideoArtifactIDs = append(result.VideoArtifactIDs, content.ArtifactID)
 			case "audio":
 				result.AudioArtifactIDs = append(result.AudioArtifactIDs, content.ArtifactID)
+			case "transcript":
+				// Attached subtitle files land as trc_ transcript artifacts;
+				// plain .txt transcripts are not editor material.
+				if subtitleArtifactExtension(content) != "" {
+					result.SubtitleArtifactIDs = append(result.SubtitleArtifactIDs, content.ArtifactID)
+				}
 			}
 		}
 	}

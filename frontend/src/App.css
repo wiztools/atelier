@@ -2683,6 +2683,15 @@ button:disabled {
   font-size: 12px;
 }
 
+/* Chip action rows: the Edit + Download pair on transcript/subtitle chips
+   keeps the card's single-row layout with both actions to the right. */
+.chat-transcript-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .attachment-strip span {
   overflow: hidden;
   text-overflow: ellipsis;

@@ -110,6 +110,10 @@ export function ExportLibrary(arg1) {
   return window['go']['main']['App']['ExportLibrary'](arg1);
 }
 
+export function ExportSubtitles(arg1) {
+  return window['go']['main']['App']['ExportSubtitles'](arg1);
+}
+
 export function GetConfig() {
   return window['go']['main']['App']['GetConfig']();
 }
@@ -352,6 +356,10 @@ export function ResolveAudioEditSource(arg1, arg2) {
 
 export function ResolveEditSource(arg1, arg2) {
   return window['go']['main']['App']['ResolveEditSource'](arg1, arg2);
+}
+
+export function ResolveSubtitleEditSource(arg1, arg2) {
+  return window['go']['main']['App']['ResolveSubtitleEditSource'](arg1, arg2);
 }
 
 export function ResolveToolPermission(arg1, arg2) {

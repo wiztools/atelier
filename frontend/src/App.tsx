@@ -63,6 +63,7 @@ import {
   ListEditSession,
   ResolveAudioEditSource,
   ResolveEditSource,
+  ResolveSubtitleEditSource,
   ResolveVideoEditSource,
   CancelVideoEditSource,
   ReleaseVideoEditSourcePreview,
@@ -105,6 +106,7 @@ import {EventsOff, EventsOn} from '../wailsjs/runtime/runtime';
 import {ImageEditor, ImageEditorHandle} from './editor/ImageEditor';
 import {VideoEditor, VideoEditorHandle} from './editor/VideoEditor';
 import {AudioEditor, AudioEditorHandle} from './editor/AudioEditor';
+import {SubtitleEditor, SubtitleEditorHandle} from './editor/SubtitleEditor';
 import {detectEditorLaunchIntent} from './editorLaunch';
 
 type View = 'app' | 'settings' | 'conversation-models';
@@ -1448,19 +1450,24 @@ function App() {
   const [editorHandle, setEditorHandle] = useState<ImageEditorHandle | null>(null);
   const [videoEditorHandle, setVideoEditorHandle] = useState<VideoEditorHandle | null>(null);
   const [audioEditorHandle, setAudioEditorHandle] = useState<AudioEditorHandle | null>(null);
+  const [subtitleEditorHandle, setSubtitleEditorHandle] = useState<SubtitleEditorHandle | null>(null);
   const [videoEditorOpening, setVideoEditorOpening] = useState(false);
   const [imageEditorOpening, setImageEditorOpening] = useState(false);
   const [audioEditorOpening, setAudioEditorOpening] = useState(false);
+  const [subtitleEditorOpening, setSubtitleEditorOpening] = useState(false);
   const [videoEditorError, setVideoEditorError] = useState('');
-  const [discardEditorDraft, setDiscardEditorDraft] = useState<'video' | 'audio' | null>(null);
+  const [discardEditorDraft, setDiscardEditorDraft] = useState<'video' | 'audio' | 'subtitle' | null>(null);
   const videoEditorDirty = useRef(false);
   const audioEditorDirty = useRef(false);
+  const subtitleEditorDirty = useRef(false);
   const videoNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
   const audioNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
+  const subtitleNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
   const videoOpenGeneration = useRef(0);
   const videoOpeningIdentity = useRef<{conversationID: string; artifactID: string} | null>(null);
   const imageOpenGeneration = useRef(0);
   const audioOpenGeneration = useRef(0);
+  const subtitleOpenGeneration = useRef(0);
   // Mirror of editorOpen for the atelier:editor-launch listener (an empty-deps
   // effect): a mid-stream AI launch must not replace an editor already on
   // screen — an unsaved draft is never discarded by a tool-timed open.
@@ -1468,8 +1475,8 @@ function App() {
   // Either editor's source resolve in flight — every edit button disables on
   // it, so a slow open can't collect repeated clicks (or race the other
   // editor's later-landing handle into view).
-  const editorOpening = imageEditorOpening || videoEditorOpening || audioEditorOpening;
-  const editorOpen = !!editorHandle || !!videoEditorHandle || !!audioEditorHandle;
+  const editorOpening = imageEditorOpening || videoEditorOpening || audioEditorOpening || subtitleEditorOpening;
+  const editorOpen = !!editorHandle || !!videoEditorHandle || !!audioEditorHandle || !!subtitleEditorHandle;
   const [purgeBusy, setPurgeBusy] = useState(false);
   const [confirmPurgeArchived, setConfirmPurgeArchived] = useState(false);
   const [purgeStatus, setPurgeStatus] = useState('');
@@ -2082,7 +2089,7 @@ function App() {
       const conversationID = event?.conversationId ?? '';
       const artifactID = event?.artifactId ?? '';
       const kind = event?.kind;
-      if (!conversationID || !artifactID || (kind !== 'image' && kind !== 'video' && kind !== 'audio')) {
+      if (!conversationID || !artifactID || (kind !== 'image' && kind !== 'video' && kind !== 'audio' && kind !== 'subtitle')) {
         return;
       }
       if (conversationID !== activeConversationIDRef.current || editorOpenRef.current) {
@@ -2092,6 +2099,8 @@ function App() {
         void openVideoEditor(conversationID, artifactID);
       } else if (kind === 'audio') {
         void openAudioEditor(conversationID, artifactID);
+      } else if (kind === 'subtitle') {
+        void openSubtitleEditor(conversationID, artifactID);
       } else {
         void openImageEditor(conversationID, artifactID);
       }
@@ -3862,6 +3871,18 @@ function App() {
     return /^aud_[a-zA-Z0-9]+$/.test(stem) ? stem : null;
   }
 
+  // transcriptArtifactIDFromURL matches subtitle artifacts only — trc_ stems
+  // with a .vtt/.srt extension. Plain .txt transcripts are not editor
+  // material, mirroring the assets layer's exclusion.
+  function transcriptArtifactIDFromURL(url: string): string | null {
+    if (!url.startsWith('/atelier-artifact/')) return null;
+    const path = url.split(/[?#]/)[0];
+    const filename = path.split('/').pop() || '';
+    const stem = filename.replace(/\.[^.]+$/, '');
+    if (!/\.(vtt|srt)$/i.test(filename)) return null;
+    return /^trc_[a-zA-Z0-9]+$/.test(stem) ? stem : null;
+  }
+
   function confirmLeaveVideoEditor(): Promise<boolean> {
     if (!videoEditorHandle || !videoEditorDirty.current) return Promise.resolve(true);
     if (videoNavigationResolver.current) return Promise.resolve(false);
@@ -3876,11 +3897,19 @@ function App() {
     return new Promise((resolve) => { audioNavigationResolver.current = resolve; });
   }
 
+  function confirmLeaveSubtitleEditor(): Promise<boolean> {
+    if (!subtitleEditorHandle || !subtitleEditorDirty.current) return Promise.resolve(true);
+    if (subtitleNavigationResolver.current) return Promise.resolve(false);
+    setDiscardEditorDraft('subtitle');
+    return new Promise((resolve) => { subtitleNavigationResolver.current = resolve; });
+  }
+
   // confirmLeaveEditor walks whichever editors hold unsaved work — only one
   // confirm flow is ever active, so the dialog resolves both waiters.
   async function confirmLeaveEditor(): Promise<boolean> {
     if (!(await confirmLeaveVideoEditor())) return false;
-    return confirmLeaveAudioEditor();
+    if (!(await confirmLeaveAudioEditor())) return false;
+    return confirmLeaveSubtitleEditor();
   }
 
   function resolveEditorNavigation(discard: boolean) {
@@ -3891,6 +3920,9 @@ function App() {
     const audioResolve = audioNavigationResolver.current;
     audioNavigationResolver.current = null;
     audioResolve?.(discard);
+    const subtitleResolve = subtitleNavigationResolver.current;
+    subtitleNavigationResolver.current = null;
+    subtitleResolve?.(discard);
   }
 
   function openSettings() {
@@ -4016,6 +4048,40 @@ function App() {
       if (generation === audioOpenGeneration.current) setStartupError(formatError(error));
     } finally {
       if (generation === audioOpenGeneration.current) setAudioEditorOpening(false);
+    }
+  }
+
+  // openSubtitleEditor mirrors openAudioEditor minus the session machinery:
+  // the subtitle editor is local-until-export, so the resolve is the whole
+  // load — cues, format, and the artifact identity the reply chips opened by.
+  async function openSubtitleEditor(conversationID: string, artifactID: string) {
+    if (!(await confirmLeaveEditor())) return;
+    cancelVideoPreparation();
+    cancelImagePreparation();
+    cancelAudioPreparation();
+    const generation = ++subtitleOpenGeneration.current;
+    setSubtitleEditorOpening(true);
+    try {
+      const owner = await GetConversation(conversationID);
+      if (generation !== subtitleOpenGeneration.current) return;
+      if (owner.conversation.kind === 'edit') {
+        await openEditSession(conversationID);
+        return;
+      }
+      const source = await ResolveSubtitleEditSource(conversationID, artifactID);
+      if (generation !== subtitleOpenGeneration.current) return;
+      setEditorHandle(null);
+      setVideoEditorHandle(null);
+      setAudioEditorHandle(null);
+      videoEditorDirty.current = false;
+      audioEditorDirty.current = false;
+      subtitleEditorDirty.current = false;
+      setSubtitleEditorHandle({source});
+      setView((current) => (current === 'settings' ? current : 'app'));
+    } catch (error) {
+      if (generation === subtitleOpenGeneration.current) setStartupError(formatError(error));
+    } finally {
+      if (generation === subtitleOpenGeneration.current) setSubtitleEditorOpening(false);
     }
   }
 
@@ -4489,7 +4555,7 @@ function App() {
   // artifact, the editors' one identity input. On a creation failure the
   // composer keeps its contents: nothing was persisted, so the send must look
   // like it never happened.
-  async function launchEditorConversation(kind: 'image' | 'video' | 'audio', trimmed: string) {
+  async function launchEditorConversation(kind: 'image' | 'video' | 'audio' | 'subtitle', trimmed: string) {
     const referencedAssetIds = [
       ...new Set(
         parseComposerMentions(trimmed, mentionBindingPool()).flatMap((segment) =>
@@ -4500,6 +4566,7 @@ function App() {
     const imagePayloads = attachments.filter((item) => item.kind === 'image').map((item) => item.payload).filter(Boolean);
     const videoPayloads = attachments.filter((item) => item.kind === 'video').map((item) => item.payload).filter(Boolean);
     const audioPayloads = attachments.filter((item) => item.kind === 'audio').map((item) => item.payload).filter(Boolean);
+    const subtitlePayloads = attachments.filter((item) => item.kind === 'subtitle').map((item) => item.payload).filter(Boolean);
     let result: main.EditorLaunchResult;
     try {
       result = await CreateEditorConversation(main.ChatRequest.createFrom({
@@ -4513,6 +4580,7 @@ function App() {
           ...(imagePayloads.length ? {images: imagePayloads} : {}),
           ...(videoPayloads.length ? {videos: videoPayloads} : {}),
           ...(audioPayloads.length ? {audios: audioPayloads} : {}),
+          ...(subtitlePayloads.length ? {subtitles: subtitlePayloads} : {}),
         } as main.ChatMessage],
         // Same turn-1-only lifecycle fields a streamed first turn carries.
         ...(draftWorkspace ? {workspace: draftWorkspace} : {}),
@@ -4546,7 +4614,10 @@ function App() {
       }
       const detail = await GetConversation(result.conversationId);
       hydrateChatConversation(detail);
-      const artifactId = (kind === 'image' ? result.imageArtifactIds : kind === 'video' ? result.videoArtifactIds : result.audioArtifactIds)?.[0];
+      const artifactId = (kind === 'image' ? result.imageArtifactIds
+        : kind === 'video' ? result.videoArtifactIds
+        : kind === 'subtitle' ? result.subtitleArtifactIds
+        : result.audioArtifactIds)?.[0];
       if (!artifactId) {
         throw new Error('the attached asset was not persisted');
       }
@@ -4554,6 +4625,8 @@ function App() {
         await openImageEditor(result.conversationId, artifactId);
       } else if (kind === 'video') {
         await openVideoEditor(result.conversationId, artifactId);
+      } else if (kind === 'subtitle') {
+        await openSubtitleEditor(result.conversationId, artifactId);
       } else {
         await openAudioEditor(result.conversationId, artifactId);
       }
@@ -5623,6 +5696,27 @@ function App() {
               onDirtyChange={(dirty) => {audioEditorDirty.current = dirty;}}
             />
           </div>
+        ) : subtitleEditorHandle ? (
+          <div className="editor-slot" hidden={view !== 'app'}>
+            <SubtitleEditor
+              key={subtitleEditorHandle.source.artifactId}
+              handle={subtitleEditorHandle}
+              // The linked-media picker widens to the library exactly when the
+              // edited conversation belongs to a project — the composer's
+              // library-scope rule applied to the editor's own conversation.
+              libraryID={libraryIDForProject(conversations.find((item) => item.id === subtitleEditorHandle.source.conversationId)?.projectId ?? '') || undefined}
+              suspended={view !== 'app'}
+              onClose={() => {void confirmLeaveEditor().then((discard) => {if (discard) closeImageEditor();});}}
+              onOpenParent={(conversationID) => {
+                void confirmLeaveEditor().then((discard) => {
+                  if (!discard) return;
+                  closeImageEditor();
+                  void openConversationSummary(main.ConversationSummary.createFrom({id: conversationID, kind: 'chat', title: ''}));
+                });
+              }}
+              onDirtyChange={(dirty) => {subtitleEditorDirty.current = dirty;}}
+            />
+          </div>
         ) : null}
         {view === 'settings' ? (
           <>
@@ -6394,18 +6488,33 @@ function App() {
                           {entry.subtitles.map((subtitle, index) => (
                             <div key={`${entry.id}-subtitle-${index}`} className="chat-transcript-card">
                               <span className="chat-transcript-name">{transcriptChipLabel(subtitle)}</span>
-                              {/* The Save binding reads artifact paths, not data:
-                                  URLs — a just-attached file (the live entry's inline
-                                  form) hides download until the persisted artifact
-                                  URL replaces it, the same rule the user-audio
-                                  block applies. */}
-                              <button
-                                type="button"
-                                onClick={() => saveGeneratedTranscript(subtitle, index)}
-                                disabled={!subtitle.startsWith('/atelier-artifact/')}
-                              >
-                                Download subtitle
-                              </button>
+                              <div className="chat-transcript-actions">
+                                <button
+                                  type="button"
+                                  disabled={editorOpening || !activeConversationID || !transcriptArtifactIDFromURL(subtitle)}
+                                  title={transcriptArtifactIDFromURL(subtitle) ? 'Open in the subtitle editor' : 'Persisted subtitle required'}
+                                  onClick={() => {
+                                    const artifactID = transcriptArtifactIDFromURL(subtitle);
+                                    if (artifactID && activeConversationID) {
+                                      void openSubtitleEditor(activeConversationID, artifactID);
+                                    }
+                                  }}
+                                >
+                                  Edit
+                                </button>
+                                {/* The Save binding reads artifact paths, not data:
+                                    URLs — a just-attached file (the live entry's inline
+                                    form) hides download until the persisted artifact
+                                    URL replaces it, the same rule the user-audio
+                                    block applies. */}
+                                <button
+                                  type="button"
+                                  onClick={() => saveGeneratedTranscript(subtitle, index)}
+                                  disabled={!subtitle.startsWith('/atelier-artifact/')}
+                                >
+                                  Download subtitle
+                                </button>
+                              </div>
                             </div>
                           ))}
                         </div>
@@ -6451,7 +6560,20 @@ function App() {
                           {entry.transcripts.map((transcript, index) => (
                             <div key={`${entry.id}-transcript-${index}`} className="chat-transcript-card">
                               <span className="chat-transcript-name">{transcriptChipLabel(transcript)}</span>
-                              <button type="button" onClick={() => saveGeneratedTranscript(transcript, index)}>{transcript.toLowerCase().endsWith('.srt') ? 'Download subtitles' : 'Download transcript'}</button>
+                              <div className="chat-transcript-actions">
+                                {/* Only .vtt/.srt open in the subtitle editor; a
+                                    plain .txt transcript has nothing to edit. */}
+                                {transcriptArtifactIDFromURL(transcript) && activeConversationID ? (
+                                  <button
+                                    type="button"
+                                    disabled={editorOpening}
+                                    onClick={() => void openSubtitleEditor(activeConversationID, transcriptArtifactIDFromURL(transcript)!)}
+                                  >
+                                    Edit
+                                  </button>
+                                ) : null}
+                                <button type="button" onClick={() => saveGeneratedTranscript(transcript, index)}>{transcript.toLowerCase().endsWith('.srt') ? 'Download subtitles' : 'Download transcript'}</button>
+                              </div>
                             </div>
                           ))}
                         </div>
@@ -6890,6 +7012,16 @@ function App() {
                         </svg>
                       </button>
                     ) : null}
+                    {asset.kind === 'transcript' && asset.url && asset.conversationId ? (
+                      <button type="button" className="asset-edit-button" disabled={editorOpening}
+                        onClick={() => void openSubtitleEditor(asset.conversationId, asset.id)}
+                        aria-label="Edit subtitles" title="Edit subtitles">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M12 20h9" />
+                          <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                        </svg>
+                      </button>
+                    ) : null}
                     {/* Navigation needs no artifact on disk — unlike download,
                         a missing file still has a conversation to jump to. */}
                     {asset.conversationId ? (
@@ -6933,7 +7065,7 @@ function App() {
               if (event.key === 'Escape') {event.stopPropagation(); resolveEditorNavigation(false);}
             }}>
             <strong id="discard-video-title">Discard unsaved edits?</strong>
-            <p>Your unrendered changes will be lost. Saved edits remain available.</p>
+            <p>{discardEditorDraft === 'subtitle' ? 'Your unexported changes will be lost.' : 'Your unrendered changes will be lost. Saved edits remain available.'}</p>
             <button type="button" autoFocus onClick={() => resolveEditorNavigation(false)}>Keep editing</button>
             <button type="button" onClick={() => resolveEditorNavigation(true)}>Discard changes</button>
           </div>

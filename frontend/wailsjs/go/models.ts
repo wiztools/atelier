@@ -1738,6 +1738,7 @@ export namespace main {
 	    imageArtifactIds?: string[];
 	    videoArtifactIds?: string[];
 	    audioArtifactIds?: string[];
+	    subtitleArtifactIds?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new EditorLaunchResult(source);
@@ -1749,6 +1750,7 @@ export namespace main {
 	        this.imageArtifactIds = source["imageArtifactIds"];
 	        this.videoArtifactIds = source["videoArtifactIds"];
 	        this.audioArtifactIds = source["audioArtifactIds"];
+	        this.subtitleArtifactIds = source["subtitleArtifactIds"];
 	    }
 	}
 	export class EmptyStatePrompt {
@@ -1764,6 +1766,56 @@ export namespace main {
 	        this.heading = source["heading"];
 	        this.sub = source["sub"];
 	    }
+	}
+	export class SubtitleCue {
+	    startSeconds: number;
+	    endSeconds: number;
+	    text: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SubtitleCue(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.startSeconds = source["startSeconds"];
+	        this.endSeconds = source["endSeconds"];
+	        this.text = source["text"];
+	    }
+	}
+	export class ExportSubtitlesRequest {
+	    format: string;
+	    cues: SubtitleCue[];
+	    suggestedName?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ExportSubtitlesRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.format = source["format"];
+	        this.cues = this.convertValues(source["cues"], SubtitleCue);
+	        this.suggestedName = source["suggestedName"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class FalModel {
 	    id: string;
@@ -2489,6 +2541,51 @@ export namespace main {
 	        this.size = source["size"];
 	        this.mediaType = source["mediaType"];
 	    }
+	}
+	
+	export class SubtitleSourceInfo {
+	    conversationId: string;
+	    conversationTitle?: string;
+	    artifactId: string;
+	    url: string;
+	    mimeType?: string;
+	    format: string;
+	    cues: SubtitleCue[];
+	    warnings?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SubtitleSourceInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.conversationId = source["conversationId"];
+	        this.conversationTitle = source["conversationTitle"];
+	        this.artifactId = source["artifactId"];
+	        this.url = source["url"];
+	        this.mimeType = source["mimeType"];
+	        this.format = source["format"];
+	        this.cues = this.convertValues(source["cues"], SubtitleCue);
+	        this.warnings = source["warnings"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	
 	export class ToolCommandRequest {

@@ -56,6 +56,8 @@ export function ExecuteTool(arg1:main.ToolExecutionRequest):Promise<main.Harness
 
 export function ExportLibrary(arg1:string):Promise<main.LibraryExportResult>;
 
+export function ExportSubtitles(arg1:main.ExportSubtitlesRequest):Promise<string>;
+
 export function GetConfig():Promise<main.AppConfig>;
 
 export function GetConversation(arg1:string):Promise<main.ConversationDetail>;
@@ -177,6 +179,8 @@ export function ResolveAudioEditInput(arg1:string,arg2:string):Promise<main.Edit
 export function ResolveAudioEditSource(arg1:string,arg2:string):Promise<main.EditSourceInfo>;
 
 export function ResolveEditSource(arg1:string,arg2:string):Promise<main.EditSourceInfo>;
+
+export function ResolveSubtitleEditSource(arg1:string,arg2:string):Promise<main.SubtitleSourceInfo>;
 
 export function ResolveToolPermission(arg1:string,arg2:boolean):Promise<void>;
 

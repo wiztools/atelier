@@ -151,6 +151,45 @@ func TestCreateEditorConversationVideoLaunch(t *testing.T) {
 	}
 }
 
+func TestCreateEditorConversationSubtitleLaunch(t *testing.T) {
+	config := newEditorLaunchTestConfig(t)
+	app := NewApp()
+	prompt := "Open this in the subtitle editor"
+	subtitleVTT := "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello\n"
+	result, err := app.CreateEditorConversation(ChatRequest{
+		Model: "chat-box-model",
+		Messages: []ChatMessage{{
+			Role:      "user",
+			Content:   prompt,
+			Subtitles: []string{"data:text/vtt;base64," + base64.StdEncoding.EncodeToString([]byte(subtitleVTT))},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateEditorConversation returned error: %v", err)
+	}
+	if len(result.SubtitleArtifactIDs) != 1 || !strings.HasPrefix(result.SubtitleArtifactIDs[0], "trc_") {
+		t.Fatalf("subtitle artifact ids = %v, want one trc_ id", result.SubtitleArtifactIDs)
+	}
+
+	// The persisted entry is a transcript artifact with the content-sniffed
+	// extension, and the byte content round-trips.
+	content := launchTurnContent(t, config, result, result.SubtitleArtifactIDs[0])
+	if content.Type != "transcript" || !strings.HasSuffix(content.Path, ".vtt") {
+		t.Fatalf("artifact entry = %+v, want a .vtt transcript under artifacts/", content)
+	}
+	conversationPath, err := findConversationPath(config.Storage, result.ConversationID)
+	if err != nil {
+		t.Fatalf("findConversationPath returned error: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(conversationPath), filepath.FromSlash(content.Path)))
+	if err != nil {
+		t.Fatalf("read persisted artifact returned error: %v", err)
+	}
+	if string(data) != subtitleVTT {
+		t.Fatalf("persisted subtitle bytes differ from the attachment")
+	}
+}
+
 func TestCreateEditorConversationRequiresAttachment(t *testing.T) {
 	config := newEditorLaunchTestConfig(t)
 	app := NewApp()
