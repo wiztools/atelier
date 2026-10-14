@@ -250,6 +250,14 @@ textarea.subtitle-cue-text.editing {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* The shared .editor-inspector rule is align-self: start — right for the
+     media editors' compact tool columns, but this inspector is content-rich
+     (warnings, search, export) and would grow past the body row and spill
+     over the Edits strip. Stretch to the body like the main column and
+     scroll internally instead. */
+  align-self: stretch;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .subtitle-framing-summary {
