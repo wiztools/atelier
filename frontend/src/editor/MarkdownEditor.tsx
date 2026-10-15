@@ -16,7 +16,6 @@ import {
   insertCodeFence,
   insertLink,
   insertTable,
-  lineOfOffset,
   markdownOutline,
   markdownStats,
   markdownWarnings,
@@ -64,6 +63,18 @@ const undoLimit = 100;
 // push explicitly.
 const typingCoalesceMs = 400;
 
+// Scroll-echo suppression: programmatic scrollTop assignments record the
+// value they set (read back after assigning, so clamping is exact); a scroll
+// event landing on that value inside the window is the assignment's own
+// echo, never the user. A timing-based lock (one rAF) raced scroll-event
+// delivery on large documents — the echo landed after the release and the
+// panes chased each other endlessly, with the browser's selection reveal
+// chasing the caret each bounce shoved out of view.
+const scrollEchoTolerancePx = 2;
+const scrollEchoWindowMs = 250;
+
+type ScrollEcho = {value: number; until: number};
+
 function formatEditorError(error: unknown): string {
   if (typeof error === 'string') return error;
   if (error instanceof Error) return error.message;
@@ -72,6 +83,50 @@ function formatEditorError(error: unknown): string {
   } catch {
     return String(error);
   }
+}
+
+// The scroll position that puts the line containing `offset` at the top of
+// the textarea's viewport, measured in a mirror div that reproduces the
+// textarea's wrapping (font, padding, width). Line-count proportions go
+// wrong wherever paragraphs wrap — a jump would land short of the target
+// and leave it below the viewport. The marker span after the head text sits
+// on the target line, so its offsetTop IS the scroll coordinate.
+function lineScrollTop(textarea: HTMLTextAreaElement, text: string, offset: number): number {
+  const cs = window.getComputedStyle(textarea);
+  const mirror = document.createElement('div');
+  for (const prop of [
+    'font-family',
+    'font-size',
+    'font-style',
+    'font-weight',
+    'letter-spacing',
+    'line-height',
+    'tab-size',
+    'padding-top',
+    'padding-right',
+    'padding-bottom',
+    'padding-left',
+    'box-sizing',
+    'white-space',
+    'overflow-wrap',
+    'word-break',
+  ]) {
+    mirror.style.setProperty(prop, cs.getPropertyValue(prop));
+  }
+  mirror.style.position = 'absolute';
+  mirror.style.top = '0';
+  mirror.style.left = '-9999px';
+  mirror.style.visibility = 'hidden';
+  mirror.style.width = `${textarea.clientWidth}px`;
+  const head = document.createElement('span');
+  head.textContent = text.slice(0, offset);
+  const marker = document.createElement('span');
+  marker.textContent = 'x';
+  mirror.append(head, marker);
+  document.body.appendChild(mirror);
+  const top = marker.offsetTop;
+  mirror.remove();
+  return Math.max(0, top);
 }
 
 type ViewMode = 'split' | 'source' | 'preview';
@@ -119,7 +174,7 @@ export function MarkdownEditor(props: {
   const previewRef = useRef<HTMLDivElement | null>(null);
   const lastPushRef = useRef(0);
   const pendingSelection = useRef<{start: number; end: number} | null>(null);
-  const scrollLockRef = useRef(false);
+  const scrollEchoes = useRef(new Map<HTMLElement, ScrollEcho>());
 
   const dirty = text !== baseline;
   const stats = useMemo(() => markdownStats(text), [text]);
@@ -266,21 +321,42 @@ export function MarkdownEditor(props: {
     }
   };
 
-  // Proportional scroll sync between the panes; the lock stops the mirror
-  // from feeding back into the pane the user is scrolling.
+  // Assigns a scroll position and remembers it as ours, so the scroll event
+  // it produces can be told apart from a user scroll.
+  const setPaneScrollTop = (pane: HTMLTextAreaElement | HTMLDivElement, value: number) => {
+    pane.scrollTop = value;
+    scrollEchoes.current.set(pane, {value: pane.scrollTop, until: Date.now() + scrollEchoWindowMs});
+  };
+
+  // Proportional scroll sync between the panes; echo suppression stops the
+  // mirror from feeding back into the pane the user is scrolling.
   const syncScroll = (from: HTMLTextAreaElement | HTMLDivElement, to: HTMLTextAreaElement | HTMLDivElement | null) => {
-    if (!to || scrollLockRef.current) {
+    if (!to) {
       return;
+    }
+    const echo = scrollEchoes.current.get(from);
+    if (echo) {
+      if (Date.now() < echo.until && Math.abs(from.scrollTop - echo.value) <= scrollEchoTolerancePx) {
+        return;
+      }
+      scrollEchoes.current.delete(from);
     }
     const fromRange = from.scrollHeight - from.clientHeight;
     if (fromRange <= 0) {
       return;
     }
-    scrollLockRef.current = true;
-    to.scrollTop = (from.scrollTop / fromRange) * (to.scrollHeight - to.clientHeight);
-    requestAnimationFrame(() => {
-      scrollLockRef.current = false;
-    });
+    setPaneScrollTop(to, (from.scrollTop / fromRange) * (to.scrollHeight - to.clientHeight));
+  };
+
+  // A jump drives BOTH panes itself instead of riding the scroll-event
+  // chain, so no echo of the jump can bounce back into the textarea.
+  const jumpTextareaTo = (textarea: HTMLTextAreaElement, offset: number) => {
+    setPaneScrollTop(textarea, lineScrollTop(textarea, text, offset));
+    const preview = previewRef.current;
+    const sourceRange = textarea.scrollHeight - textarea.clientHeight;
+    if (preview && sourceRange > 0) {
+      setPaneScrollTop(preview, (textarea.scrollTop / sourceRange) * (preview.scrollHeight - preview.clientHeight));
+    }
   };
 
   const jumpToLine = (line: number) => {
@@ -291,8 +367,7 @@ export function MarkdownEditor(props: {
     const offset = offsetOfLine(text, line);
     textarea.focus();
     textarea.setSelectionRange(offset, offset);
-    const lineRatio = text.split('\n').length > 1 ? line / (text.split('\n').length - 1) : 0;
-    textarea.scrollTop = lineRatio * (textarea.scrollHeight - textarea.clientHeight);
+    jumpTextareaTo(textarea, offset);
   };
 
   // Find & replace: literal, case-sensitive; the arrows walk the matches with
@@ -306,9 +381,7 @@ export function MarkdownEditor(props: {
     }
     textarea.focus();
     textarea.setSelectionRange(offset, offset + find.length);
-    const line = lineOfOffset(text, offset);
-    const totalLines = text.split('\n').length;
-    textarea.scrollTop = (totalLines > 1 ? line / (totalLines - 1) : 0) * (textarea.scrollHeight - textarea.clientHeight);
+    jumpTextareaTo(textarea, offset);
   };
 
   const jumpNext = () => {
