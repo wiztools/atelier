@@ -1465,8 +1465,9 @@ func (a *App) CreateLibrary(name string) (LibrarySummary, error) {
 	return createLibrary(config.Storage, name)
 }
 
-// ListLibraries returns every library with its projects, name-sorted, for the
-// sidebar's Libraries tree.
+// ListLibraries returns every library with its projects, most-recently-active
+// first, for the sidebar's Libraries tree. Activity is derived from the member
+// conversations (see newestConversationActivity), not stored on the records.
 func (a *App) ListLibraries() ([]LibrarySummary, error) {
 	config, err := loadReadyConfig()
 	if err != nil {

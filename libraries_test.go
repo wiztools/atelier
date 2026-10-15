@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -59,7 +60,10 @@ func TestLibraryProjectCRUDRoundTrip(t *testing.T) {
 		t.Fatalf("found project = %+v path = %q", found, path)
 	}
 
-	// Listing nests projects under their library, name-sorted.
+	// Listing nests both projects under their library. Their record
+	// timestamps share second granularity, so their relative activity order
+	// is not deterministic here — exact ordering is pinned by
+	// TestListLibrariesOrdersByRecentActivity.
 	libraries, err := listLibraries(storage)
 	if err != nil {
 		t.Fatalf("listLibraries returned error: %v", err)
@@ -67,8 +71,10 @@ func TestLibraryProjectCRUDRoundTrip(t *testing.T) {
 	if len(libraries) != 1 || len(libraries[0].Projects) != 2 {
 		t.Fatalf("libraries = %+v", libraries)
 	}
-	if libraries[0].Projects[0].Name != "A First Project" || libraries[0].Projects[1].Name != "Second Project" {
-		t.Fatalf("projects not name-sorted: %+v", libraries[0].Projects)
+	projectNames := []string{libraries[0].Projects[0].Name, libraries[0].Projects[1].Name}
+	sort.Strings(projectNames)
+	if projectNames[0] != "A First Project" || projectNames[1] != "Second Project" {
+		t.Fatalf("projects missing from listing: %+v", libraries[0].Projects)
 	}
 
 	// Rename flows through to the nested listing.
@@ -85,6 +91,98 @@ func TestLibraryProjectCRUDRoundTrip(t *testing.T) {
 	}
 	if renamedLibrary.Name != "Renamed Library" || len(renamedLibrary.Projects) != 2 {
 		t.Fatalf("renamed library = %+v", renamedLibrary)
+	}
+}
+
+// TestListLibrariesOrdersByRecentActivity pins the sidebar tree's ordering:
+// projects and libraries sort most-recently-active first — a project's
+// activity is the newest member conversation's UpdatedAt (its record's own
+// UpdatedAt covers projects never chatted in), a library's is the newest of
+// its projects' — not alphabetically. Soft-deleted and standalone
+// conversations don't count as activity.
+func TestListLibrariesOrdersByRecentActivity(t *testing.T) {
+	storage := libraryTestStorage(t)
+
+	zoo := Library{
+		SchemaVersion: currentLibrarySchemaVersion,
+		ID:            "lib_zoo",
+		Name:          "Zoo Library",
+		CreatedAt:     "2026-01-01T10:00:00Z",
+		UpdatedAt:     "2026-01-01T10:00:00Z",
+	}
+	oldProject := Project{
+		SchemaVersion: currentLibrarySchemaVersion,
+		ID:            "proj_old",
+		LibraryID:     zoo.ID,
+		Name:          "Old Project",
+		CreatedAt:     "2026-01-02T10:00:00Z",
+		UpdatedAt:     "2026-01-02T10:00:00Z",
+	}
+	freshProject := Project{
+		SchemaVersion: currentLibrarySchemaVersion,
+		ID:            "proj_fresh",
+		LibraryID:     zoo.ID,
+		Name:          "Fresh Project",
+		CreatedAt:     "2026-01-03T10:00:00Z",
+		UpdatedAt:     "2026-01-03T10:00:00Z",
+	}
+	// The newest record and the alphabetically-first name, but no
+	// conversation ever touched it — it must still sort last.
+	aaa := Library{
+		SchemaVersion: currentLibrarySchemaVersion,
+		ID:            "lib_aaa",
+		Name:          "Aaa Library",
+		CreatedAt:     "2026-01-04T10:00:00Z",
+		UpdatedAt:     "2026-01-04T10:00:00Z",
+	}
+	for _, library := range []Library{zoo, aaa} {
+		if err := os.MkdirAll(filepath.Join(libraryDir(storage, library.ID), "projects"), 0755); err != nil {
+			t.Fatalf("MkdirAll library dir: %v", err)
+		}
+		if err := writeJSONFile(libraryPath(storage, library.ID), library); err != nil {
+			t.Fatalf("write library.json: %v", err)
+		}
+	}
+	for _, project := range []Project{oldProject, freshProject} {
+		if err := os.MkdirAll(projectDir(storage, project.LibraryID, project.ID), 0755); err != nil {
+			t.Fatalf("MkdirAll project dir: %v", err)
+		}
+		if err := writeJSONFile(projectPath(storage, project.LibraryID, project.ID), project); err != nil {
+			t.Fatalf("write project.json: %v", err)
+		}
+	}
+
+	// "Old Project" holds the newest live activity (t9), beating "Fresh
+	// Project" (t5) and every record timestamp — so Zoo Library leads the
+	// tree despite Aaa Library carrying the newest record.
+	writeSearchConversation(t, storage, "2026/01/conv-old",
+		libraryConversationFixture("conv-old", "Old chat", "2026-01-09T10:00:00Z", oldProject.ID))
+	writeSearchConversation(t, storage, "2026/01/conv-fresh",
+		libraryConversationFixture("conv-fresh", "Fresh chat", "2026-01-05T10:00:00Z", freshProject.ID))
+	// A soft-deleted conversation newer than everything must not count, and
+	// a standalone conversation has no container to order.
+	deleted := libraryConversationFixture("conv-deleted", "Deleted chat", "2026-01-10T10:00:00Z", freshProject.ID)
+	deleted.DeletedAt = "2026-01-10T11:00:00Z"
+	writeSearchConversation(t, storage, "2026/01/conv-deleted", deleted)
+	writeSearchConversation(t, storage, "2026/01/conv-standalone",
+		searchConversationFixture("conv-standalone", "Standalone chat", "2026-01-10T12:00:00Z"))
+
+	libraries, err := listLibraries(storage)
+	if err != nil {
+		t.Fatalf("listLibraries returned error: %v", err)
+	}
+	if len(libraries) != 2 {
+		t.Fatalf("libraries = %+v", libraries)
+	}
+	if libraries[0].Name != "Zoo Library" || libraries[1].Name != "Aaa Library" {
+		t.Fatalf("libraries not activity-ordered: [%s, %s]", libraries[0].Name, libraries[1].Name)
+	}
+	zooProjects := libraries[0].Projects
+	if len(zooProjects) != 2 {
+		t.Fatalf("zoo projects = %+v", zooProjects)
+	}
+	if zooProjects[0].Name != "Old Project" || zooProjects[1].Name != "Fresh Project" {
+		t.Fatalf("projects not activity-ordered: [%s, %s]", zooProjects[0].Name, zooProjects[1].Name)
 	}
 }
 

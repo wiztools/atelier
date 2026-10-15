@@ -122,12 +122,58 @@ func requireContainerName(name, kind string) (string, error) {
 }
 
 // lessByName orders name-bearing records (libraries, projects) for
-// deterministic sidebar rendering: case-insensitive name, then ID.
+// deterministic sidebar rendering: case-insensitive name, then ID. It is the
+// tie-breaker under the activity ordering the summary builders apply.
 func lessByName(nameI, idI, nameJ, idJ string) bool {
 	if strings.ToLower(nameI) == strings.ToLower(nameJ) {
 		return idI < idJ
 	}
 	return strings.ToLower(nameI) < strings.ToLower(nameJ)
+}
+
+// newestConversationActivity folds every stored conversation record into
+// projectID → newest member UpdatedAt — the activity signal the library tree
+// orders by, derived rather than stored like every other library-level view.
+// Soft-deleted conversations don't count (the project no longer shows them)
+// and standalone conversations have no container to order. Records are small
+// metadata (media lives in artifact files), so the full walk the summary
+// builders already pay for stays cheap.
+func newestConversationActivity(storage ConfigStorage) (map[string]string, error) {
+	activity := map[string]string{}
+	err := forEachConversationRecord(storage, func(_ string, conversation HistoryConversation) error {
+		if conversation.DeletedAt != "" || conversation.ProjectID == "" {
+			return nil
+		}
+		if conversation.UpdatedAt > activity[conversation.ProjectID] {
+			activity[conversation.ProjectID] = conversation.UpdatedAt
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return map[string]string{}, nil
+		}
+		return nil, err
+	}
+	return activity, nil
+}
+
+// laterTimestamp returns the later of two RFC3339 timestamps, either allowed
+// to be empty. Every timestamp this app writes comes from time.RFC3339 with
+// one fixed local offset, so string comparison is chronological — the idiom
+// listProjectConversations and listConversations already order by.
+func laterTimestamp(a, b string) string {
+	if b > a {
+		return b
+	}
+	return a
+}
+
+// containerActivityUpdatedAt merges a project record's own UpdatedAt
+// (creation, rename, notes edits) with the newest member conversation's
+// UpdatedAt — either kind of touch is activity for the sidebar's ordering.
+func containerActivityUpdatedAt(recordUpdatedAt string, activity map[string]string, projectID string) string {
+	return laterTimestamp(recordUpdatedAt, activity[projectID])
 }
 
 // findLibrary loads one library record by ID. The ID is the directory name, so
@@ -269,11 +315,29 @@ func projectSummaryFrom(project Project) ProjectSummary {
 	}
 }
 
-// sortLibrarySummaries orders libraries for deterministic sidebar rendering.
-func sortLibrarySummaries(libraries []LibrarySummary) {
+// sortLibrarySummaries orders libraries for the sidebar most-recently-active
+// first: a library's key is its record UpdatedAt merged with its projects'
+// activity keys (all of them — the key never depends on project sort order).
+// lessByName breaks ties deterministically.
+func sortLibrarySummaries(libraries []LibrarySummary, activity map[string]string) {
 	sort.Slice(libraries, func(i, j int) bool {
+		ai := libraryActivityKey(libraries[i], activity)
+		aj := libraryActivityKey(libraries[j], activity)
+		if ai != aj {
+			return ai > aj
+		}
 		return lessByName(libraries[i].Name, libraries[i].ID, libraries[j].Name, libraries[j].ID)
 	})
+}
+
+// libraryActivityKey is a library's ordering key: its record UpdatedAt merged
+// with every member project's activity key.
+func libraryActivityKey(library LibrarySummary, activity map[string]string) string {
+	key := library.UpdatedAt
+	for _, project := range library.Projects {
+		key = laterTimestamp(key, containerActivityUpdatedAt(project.UpdatedAt, activity, project.ID))
+	}
+	return key
 }
 
 func createLibrary(storage ConfigStorage, name string) (LibrarySummary, error) {
@@ -312,7 +376,11 @@ func renameLibrary(storage ConfigStorage, libraryID, name string) (LibrarySummar
 	if err := writeJSONFile(libraryPath(storage, library.ID), library); err != nil {
 		return LibrarySummary{}, err
 	}
-	return librarySummary(storage, library)
+	activity, err := newestConversationActivity(storage)
+	if err != nil {
+		return LibrarySummary{}, err
+	}
+	return librarySummary(storage, library, activity)
 }
 
 func createProject(storage ConfigStorage, libraryID, name string) (ProjectSummary, error) {
@@ -376,8 +444,10 @@ func setProjectNotes(storage ConfigStorage, projectID, notes string) (ProjectSum
 	return projectSummaryFrom(project), nil
 }
 
-// librarySummary builds the full nested summary (library + sorted projects).
-func librarySummary(storage ConfigStorage, library Library) (LibrarySummary, error) {
+// librarySummary builds the full nested summary (library + projects ordered
+// most-recently-active first). activity is the newestConversationActivity
+// fold shared across the listing; nil orders by record timestamps alone.
+func librarySummary(storage ConfigStorage, library Library, activity map[string]string) (LibrarySummary, error) {
 	projects, err := listProjectRecords(storage, library.ID)
 	if err != nil {
 		return LibrarySummary{}, err
@@ -387,25 +457,34 @@ func librarySummary(storage ConfigStorage, library Library) (LibrarySummary, err
 		summaries = append(summaries, projectSummaryFrom(project))
 	}
 	sort.Slice(summaries, func(i, j int) bool {
+		ai := containerActivityUpdatedAt(summaries[i].UpdatedAt, activity, summaries[i].ID)
+		aj := containerActivityUpdatedAt(summaries[j].UpdatedAt, activity, summaries[j].ID)
+		if ai != aj {
+			return ai > aj
+		}
 		return lessByName(summaries[i].Name, summaries[i].ID, summaries[j].Name, summaries[j].ID)
 	})
 	return librarySummaryFrom(library, summaries), nil
 }
 
 func listLibraries(storage ConfigStorage) ([]LibrarySummary, error) {
+	activity, err := newestConversationActivity(storage)
+	if err != nil {
+		return nil, err
+	}
 	libraries, err := listLibraryRecords(storage)
 	if err != nil {
 		return nil, err
 	}
 	summaries := make([]LibrarySummary, 0, len(libraries))
 	for _, library := range libraries {
-		summary, err := librarySummary(storage, library)
+		summary, err := librarySummary(storage, library, activity)
 		if err != nil {
 			return nil, err
 		}
 		summaries = append(summaries, summary)
 	}
-	sortLibrarySummaries(summaries)
+	sortLibrarySummaries(summaries, activity)
 	return summaries, nil
 }
 
