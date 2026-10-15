@@ -333,10 +333,17 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			client := newFalClient(app.client, apiKey)
 			// Pre-resolve attached source media: one or more videos for extend,
 			// motion control, or reference-to-video, and one or more images for
-			// image-to-video / reference-to-video. Oversized payloads upload to
-			// fal's CDN so the queue submit stays under the inline size limit.
-			// SourceVideos() unifies the legacy scalar Video into the slice, so
-			// the resolver and transport below see one list.
+			// image-to-video / reference-to-video. Video sources upload to
+			// fal's CDN unconditionally (the upscale/reframe/restyle/lipsync
+			// rule): extend and video-to-video endpoints fetch video_url
+			// server-side and cannot read an inline data URI — pixverse extend
+			// failed with file_download_error on a 528KB clip that stayed
+			// inline under the 1 MB threshold (conv_9543bb0fbd8a7026a9a15776).
+			// Image sources keep the threshold-gated resolveMediaURL: image
+			// endpoints accept data URIs broadly, and only oversized payloads
+			// must leave the request. SourceVideos() unifies the legacy scalar
+			// Video into the slice, so the resolver and transport below see
+			// one list.
 			videos := req.SourceVideos()
 			// The source clips' billed input duration is parsed from the staged
 			// data URLs BEFORE hosting replaces them with fal CDN URLs whose
@@ -344,7 +351,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			// input_video_duration alongside output_duration).
 			sourceSeconds, _ := falVideoSourceSeconds(videos)
 			for i := range videos {
-				if resolved, err := client.resolveMediaURL(ctx, videos[i], "video/mp4", fmt.Sprintf("source-video-%d.mp4", i)); err == nil && resolved != "" {
+				if resolved, err := client.resolveMediaURLHosted(ctx, videos[i], "video/mp4", fmt.Sprintf("source-video-%d.mp4", i)); err == nil && resolved != "" {
 					videos[i] = resolved
 				}
 			}

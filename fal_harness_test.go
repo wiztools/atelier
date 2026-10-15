@@ -577,6 +577,12 @@ func TestHarnessMotionControlsAttachedImageAndVideoViaFal(t *testing.T) {
 		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
 			return falTestPricingResponse(), nil
 		}
+		if strings.Contains(req.URL.String(), "storage/auth/token") {
+			return jsonResponse(`{"token":"cdn-test-token","token_type":"Bearer","base_url":"https://v3.test.fal.media"}`), nil
+		}
+		if strings.HasSuffix(req.URL.Path, "/files/upload") {
+			return jsonResponse(`{"access_url":"https://v3.test.fal.media/files/abc/motion-source.mp4","uploaded":true}`), nil
+		}
 		if strings.Contains(req.URL.Path, "/api/openapi/") {
 			// Minimal motion-control schema (the shape of Kling v2.6
 			// motion-control): image_url, video_url, and character_orientation
@@ -588,8 +594,11 @@ func TestHarnessMotionControlsAttachedImageAndVideoViaFal(t *testing.T) {
 			if req.Method == http.MethodPost {
 				submittedModelPath = req.URL.Path
 				body, _ := io.ReadAll(req.Body)
+				// The motion video force-hosts to fal's CDN (extend and
+				// video-to-video endpoints fetch video_url server-side);
+				// the subject image keeps the inline data URI.
 				sawMotionBody = strings.Contains(string(body), `"image_url":"data:image/png;base64,`) &&
-					strings.Contains(string(body), `"video_url":"data:video/mp4;base64,`) &&
+					strings.Contains(string(body), `"video_url":"https://v3.test.fal.media/files/abc/motion-source.mp4"`) &&
 					strings.Contains(string(body), `"character_orientation":"video"`)
 				return jsonResponse(`{"request_id":"req-mc-1"}`), nil
 			}
@@ -1471,6 +1480,170 @@ func TestHarnessExtendsAudioViaFal(t *testing.T) {
 	}
 	if second["prompt"] != "rain swells once more" {
 		t.Errorf("turn 2 prompt = %v", second["prompt"])
+	}
+}
+
+// TestHarnessExtendsVideoViaFal runs the full chat turn with a video attached
+// (triage → planner → generate_video → fal queue → download → final response)
+// and confirms the extend turn submits its source as a fal CDN URL, not an
+// inline data URI. Extend endpoints fetch video_url server-side and cannot
+// read a data: URI — pixverse extend failed with file_download_error on a
+// 528KB clip that stayed inline under the 1 MB threshold
+// (conv_9543bb0fbd8a7026a9a15776) — so video sources force-host regardless of
+// size, the upscale/reframe/restyle/lipsync rule. The image sibling keeps the
+// threshold (TestHarnessAnimatesAttachedImageViaFal pins a data URI there).
+func TestHarnessExtendsVideoViaFal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	keyring.MockInit()
+	if err := saveFalAPIKey("fal-test-key"); err != nil {
+		t.Fatalf("saveFalAPIKey: %v", err)
+	}
+	t.Cleanup(func() { _ = clearFalAPIKey() })
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	config.Providers.Ollama.BaseURL = "http://ollama.test"
+	config.Providers.Ollama.Models.Primary = "chat-box-model"
+	config.Providers.Ollama.Models.Harness = "harness-model"
+	config.Providers.Fal.VideoModel = defaultFalVideoModel
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig: %v", err)
+	}
+
+	// A 24-byte clip — far under the 1 MB inline threshold, the exact size
+	// tier the old resolveMediaURL call kept inline and pixverse's downloader
+	// rejected.
+	clip := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(tinyMP4())
+	const cdnSource = "https://v3.test.fal.media/files/abc/source.mp4"
+
+	cdnUpload := false
+	submittedModelPath := ""
+	var submitted map[string]any
+	app := NewApp()
+	harnessCalls := 0
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.HasPrefix(req.URL.Path, "/v1/models/pricing") {
+			return falTestPricingResponse(), nil
+		}
+		switch {
+		case strings.Contains(req.URL.String(), "storage/auth/token"):
+			return jsonResponse(`{"token":"cdn-test-token","token_type":"Bearer","base_url":"https://v3.test.fal.media"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/files/upload"):
+			if auth := req.Header.Get("Authorization"); auth != "Bearer cdn-test-token" {
+				t.Errorf("upload auth = %q, want Bearer cdn-test-token", auth)
+			}
+			cdnUpload = true
+			return jsonResponse(`{"access_url":"` + cdnSource + `","uploaded":true}`), nil
+		case strings.Contains(req.URL.Path, "/api/openapi/"):
+			// Minimal extend schema: a scalar video_url is all
+			// resolveVideoBody needs to map the source clip.
+			return jsonResponse(`{"components":{"schemas":{"ExtendVideoInput":{"type":"object","required":["video_url","prompt"],"properties":{"video_url":{"type":"string"},"prompt":{"type":"string"},"duration":{"type":"string"}}}}}}`), nil
+		case strings.Contains(req.URL.Host, "fal.run"):
+			if req.Method == http.MethodPost {
+				submittedModelPath = req.URL.Path
+				var body map[string]any
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+					t.Fatalf("decode fal submit body: %v", err)
+				}
+				submitted = body
+				return jsonResponse(`{"request_id":"req-ext-v1"}`), nil
+			}
+			if strings.HasSuffix(req.URL.Path, "/status") {
+				return jsonResponse(`{"status":"COMPLETED"}`), nil
+			}
+			if strings.Contains(req.URL.Path, "/requests/") {
+				return jsonResponse(`{"video":{"url":"https://queue.fal.run/extended.mp4","content_type":"video/mp4"}}`), nil
+			}
+			// Download of the generated clip.
+			return &http.Response{StatusCode: 200, Status: "200 OK",
+				Body:   io.NopCloser(bytes.NewReader(tinyMP4())),
+				Header: http.Header{"Content-Type": []string{"video/mp4"}}}, nil
+		}
+		switch req.URL.Path {
+		case "/api/show":
+			return jsonResponse(`{"capabilities":[],"model_info":{},"details":{"family":"test","parameter_size":"1B"}}`), nil
+		case "/api/chat":
+			payload := chatPayload(t, req)
+			if payload["stream"] == false {
+				switch payload["model"] {
+				case "harness-model":
+					harnessCalls++
+					switch harnessCalls {
+					case 1: // triage
+						return chatCompletion("harness-model", `{"needsTools":true,"responseMode":"video","toolTask":"Extend the clip by 2 seconds.","reason":"The user asked to extend a video."}`), nil
+					case 2: // plan round 1
+						return chatCompletion("harness-model", `{"brief":"Extend the clip by 2 seconds.","needsTools":true,"reason":"extend","toolCalls":[{"name":"generate_video","content":"the train keeps rolling","duration":"2"}]}`), nil
+					case 3: // plan round 2 — the evidence is in, wrap up
+						return chatCompletion("harness-model", `{"brief":"Done.","needsTools":false,"reason":"done","toolCalls":[]}`), nil
+					}
+					t.Fatalf("unexpected harness call #%d", harnessCalls)
+					return nil, nil
+				default:
+					// Title generation runs once, on the primary model, after
+					// the turn — not part of the harness sequence.
+					return chatCompletion("chat-box-model", `"Extended train"`), nil
+				}
+			}
+			body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"Here is the longer clip."},"done":false}`) +
+				fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","eval_count":3}`)
+			return &http.Response{StatusCode: 200, Status: "200 OK",
+				Body:   io.NopCloser(strings.NewReader(body)),
+				Header: http.Header{"Content-Type": []string{"application/x-ndjson"}}}, nil
+		default:
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL)
+			return nil, nil
+		}
+	})
+
+	app.runChatStream(context.Background(), "request-fal-extend-video", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{{
+			Role:    "user",
+			Content: "Extend this clip by 2 seconds.",
+			Videos:  []string{clip},
+		}},
+	})
+
+	if submitted == nil {
+		t.Fatal("generate_video never submitted to fal — the tool did not run")
+	}
+	if submittedModelPath != "/"+defaultFalVideoExtendModel {
+		t.Fatalf("submitted to %q, want the extend model %q", submittedModelPath, "/"+defaultFalVideoExtendModel)
+	}
+	if !cdnUpload {
+		t.Fatal("expected the source clip to upload to fal's CDN — a data URI would fail pixverse's downloader")
+	}
+	if submitted["video_url"] != cdnSource {
+		t.Fatalf("submitted video_url = %v, want the CDN-hosted source (extend endpoints cannot read data URIs)", submitted["video_url"])
+	}
+	if submitted["prompt"] != "the train keeps rolling" {
+		t.Errorf("submitted prompt = %v", submitted["prompt"])
+	}
+
+	conversations, err := listConversations(config.Storage)
+	if err != nil || len(conversations) == 0 {
+		t.Fatalf("listConversations: %v (%d)", err, len(conversations))
+	}
+	detail, err := getConversation(config.Storage, conversations[0].ID)
+	if err != nil {
+		t.Fatalf("getConversation: %v", err)
+	}
+	assistant := detail.Turns[len(detail.Turns)-1]
+	hasVideo := false
+	for _, c := range assistant.Content {
+		if c.Type == "video" {
+			hasVideo = true
+		}
+	}
+	if !hasVideo {
+		t.Fatalf("assistant turn has no video artifact: %+v", assistant.Content)
 	}
 }
 

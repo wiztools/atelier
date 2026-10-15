@@ -1107,6 +1107,11 @@ func TestGatewayGenerateVideoPricesTokenBilledVideoSourceTurn(t *testing.T) {
 			return jsonResponse(`{"prices":[` +
 				`{"endpoint_id":"bytedance/seedance-2.5/reference-to-video","unit_price":0.0214,"unit":"1000 tokens","currency":"USD"}` +
 				`],"next_cursor":null,"has_more":false}`), nil
+		case strings.Contains(req.URL.String(), "storage/auth/token"):
+			// Video sources force-host to fal's CDN before the submit.
+			return jsonResponse(`{"token":"cdn-test-token","token_type":"Bearer","base_url":"https://v3.test.fal.media"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/files/upload"):
+			return jsonResponse(`{"access_url":"https://v3.test.fal.media/files/abc/source.mp4","uploaded":true}`), nil
 		case strings.Contains(req.URL.Path, "/api/openapi/"):
 			// Minimal seedance-2.5 reference-to-video-shaped schema: prompt +
 			// the video_url source slot, with the resolution/aspect_ratio
@@ -1176,6 +1181,11 @@ func TestGatewayGenerateVideoPricesMegapixelBilledModel(t *testing.T) {
 			return jsonResponse(`{"prices":[` +
 				`{"endpoint_id":"fal-ai/ltx-2.3-22b/extend-video","unit_price":0.001605,"unit":"megapixel","currency":"USD"}` +
 				`],"next_cursor":null,"has_more":false}`), nil
+		case strings.Contains(req.URL.String(), "storage/auth/token"):
+			// Video sources force-host to fal's CDN before the submit.
+			return jsonResponse(`{"token":"cdn-test-token","token_type":"Bearer","base_url":"https://v3.test.fal.media"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/files/upload"):
+			return jsonResponse(`{"access_url":"https://v3.test.fal.media/files/abc/source.mp4","uploaded":true}`), nil
 		case strings.Contains(req.URL.Path, "/api/openapi/"):
 			// Minimal ltx-2.3-22b extend-shaped input schema: prompt + the
 			// video_url source slot, with the num_frames default the megapixel
