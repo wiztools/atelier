@@ -71,6 +71,22 @@ func builtinFalOverrides() Overrides {
 			"fal-ai/kling-video/v2/master/image-to-video": {
 				"sourceImage": {Path: "image_urls", Kind: "array", Items: "string"},
 			},
+			// minimax/h3-max/reference-to-video REQUIRES at least one entry in
+			// its reference arrays and treats the scalar image_url as an
+			// OPTIONAL start frame ("The video opens exactly on this image
+			// while the references keep the subjects consistent") — so the
+			// synonym-order binding of a lone attachment onto image_url queued
+			// a zero-reference request that fal refused with 422 "At least one
+			// reference image, video, or audio must be provided"
+			// (conv_b4be09394cd906b1271431ec; the multi-image rebind already
+			// dodged this via findArrayKindNative, but a single image never
+			// trips that guardrail). Pin every image — one or many — onto the
+			// reference array. Kind/Items/MaxItems only matter if fal's
+			// published schema stops declaring reference_image_urls, in which
+			// case findNative fabricates the same shape from them.
+			"minimax/h3-max/reference-to-video": {
+				"sourceImage": {Path: "reference_image_urls", Kind: "array", Items: "string", MaxItems: 9},
+			},
 		},
 		"lipsync": {},
 	}}
