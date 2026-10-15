@@ -1,0 +1,249 @@
+/* The markdown editor's own rules, scoped under .markdown-editor — the shared
+   shell (header, body grid, inspector, tool groups, op rows) lives in App.css
+   under the .editor-* classes and arrives with the .editor-slot mount. */
+
+.markdown-editor .editor-body {
+  min-height: 0;
+}
+
+.markdown-editor-main {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  min-width: 0;
+}
+
+.markdown-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.markdown-view-modes {
+  display: flex;
+  border: 1px solid #3b3f42;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.markdown-view-modes button {
+  border: none;
+  background: none;
+  color: #9a9a92;
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.markdown-view-modes button + button {
+  border-left: 1px solid #3b3f42;
+}
+
+.markdown-view-modes button.selected {
+  background: #232527;
+  color: #d7d1c3;
+}
+
+.markdown-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.markdown-toolbar-group {
+  display: flex;
+  gap: 2px;
+}
+
+.markdown-toolbar button {
+  min-width: 28px;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: #b9b4a8;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.markdown-toolbar button:hover {
+  background: #232527;
+  color: #d7d1c3;
+}
+
+.markdown-panes {
+  flex: 1 1 auto;
+  display: grid;
+  min-height: 0;
+  border: 1px solid #3b3f42;
+  border-radius: 6px;
+  background: #121415;
+  overflow: hidden;
+}
+
+.markdown-panes.mode-split {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.markdown-panes.mode-source {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.markdown-panes.mode-preview {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.markdown-panes.mode-source .markdown-preview,
+.markdown-panes.mode-preview .markdown-source {
+  display: none;
+}
+
+.markdown-source {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 0;
+  padding: 12px 14px;
+  border: none;
+  outline: none;
+  resize: none;
+  background: none;
+  color: #d7d1c3;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.markdown-preview {
+  overflow-y: auto;
+  padding: 12px 16px;
+  font-size: 13px;
+}
+
+.markdown-panes.mode-split .markdown-preview {
+  border-left: 1px solid #2c2f31;
+}
+
+.markdown-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  /* The shared .editor-inspector rule is align-self: start — this inspector
+     is content-rich (outline, warnings, save) and must stretch like the
+     subtitle editor's, scrolling internally instead of spilling over the
+     Edits strip. */
+  align-self: stretch;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.markdown-framing-summary {
+  display: grid;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.markdown-framing-summary strong {
+  color: #d7d1c3;
+}
+
+.markdown-framing-summary span {
+  font-size: 11px;
+  color: #9a9a92;
+}
+
+.markdown-outline strong,
+.markdown-warnings strong {
+  display: block;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.markdown-outline ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+}
+
+.markdown-outline button {
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  color: #b9b4a8;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.markdown-outline button:hover {
+  background: #232527;
+  color: #d7d1c3;
+}
+
+.markdown-outline-2 {
+  padding-left: 12px;
+}
+
+.markdown-outline-3 {
+  padding-left: 24px;
+}
+
+.markdown-outline-4,
+.markdown-outline-5,
+.markdown-outline-6 {
+  padding-left: 36px;
+}
+
+.markdown-warnings ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 3px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.markdown-warnings button {
+  border: none;
+  background: none;
+  color: #c8a24a;
+  font-size: 11px;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+}
+
+.markdown-save {
+  display: grid;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.markdown-save .editor-generate {
+  width: 100%;
+}
+
+@media (max-width: 980px) {
+  .markdown-editor .editor-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .markdown-panes.mode-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .markdown-panes.mode-split .markdown-preview {
+    display: none;
+  }
+}

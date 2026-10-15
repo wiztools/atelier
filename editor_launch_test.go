@@ -387,7 +387,7 @@ func TestOpenEditorToolValidatesMode(t *testing.T) {
 	if errs := definition.Validate("toolCalls[0]", HarnessToolCall{Name: "open_editor", Mode: "sheet"}); len(errs) == 0 {
 		t.Fatalf("Validate accepted mode \"sheet\"")
 	}
-	for _, mode := range []string{"", "image", "video", "audio"} {
+	for _, mode := range []string{"", "image", "video", "audio", "subtitle", "markdown"} {
 		if errs := definition.Validate("toolCalls[0]", HarnessToolCall{Name: "open_editor", Mode: mode}); len(errs) != 0 {
 			t.Fatalf("Validate rejected mode %q: %v", mode, errs)
 		}

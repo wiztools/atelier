@@ -64,6 +64,7 @@ import {
   ResolveAudioEditSource,
   ResolveEditSource,
   ResolveSubtitleEditSource,
+  ResolveMarkdownEditSource,
   ResolveVideoEditSource,
   CancelVideoEditSource,
   ReleaseVideoEditSourcePreview,
@@ -93,6 +94,7 @@ import {
   SaveOpenAICompatibleAPIKey,
   SaveOpenRouterAPIKey,
   SaveUIState,
+  SaveMarkdown,
   SaveTranscript,
   StreamChat,
   UpdateConversationTitle,
@@ -107,6 +109,7 @@ import {ImageEditor, ImageEditorHandle} from './editor/ImageEditor';
 import {VideoEditor, VideoEditorHandle} from './editor/VideoEditor';
 import {AudioEditor, AudioEditorHandle} from './editor/AudioEditor';
 import {SubtitleEditor, SubtitleEditorHandle} from './editor/SubtitleEditor';
+import {MarkdownEditor, MarkdownEditorHandle} from './editor/MarkdownEditor';
 import {detectEditorLaunchIntent} from './editorLaunch';
 
 type View = 'app' | 'settings' | 'conversation-models';
@@ -127,6 +130,10 @@ type ChatEntry = {
   // Subtitle files (.vtt/.srt) attached to a user turn — data URLs live,
   // /atelier-artifact URLs after reload. Rendered as chips; never model input.
   subtitles?: string[];
+  // Markdown documents (.md) attached to a user turn or saved into the
+  // conversation by the markdown editor — /atelier-artifact URLs. Rendered as
+  // chips with an Edit door into the editor; never model input.
+  markdowns?: string[];
   // Timestamped-transcript artifacts (.vtt) produced by transcribe_audio —
   // "/atelier-artifact" URLs rendered as downloadable chips.
   transcripts?: string[];
@@ -316,9 +323,9 @@ type Attachment = {
   // backend keeps the full data URL for AttachedVideo consumers. 'subtitle'
   // attachments (.vtt/.srt) keep the full data URL like audio/video — they are
   // tool-only too (convert_subtitles reads the persisted artifact, never the
-  // message bytes). The kind drives chip rendering and request building in
-  // submitChat.
-  kind: 'image' | 'audio' | 'video' | 'subtitle';
+  // message bytes), and 'markdown' (.md) is the document twin. The kind drives
+  // chip rendering and request building in submitChat.
+  kind: 'image' | 'audio' | 'video' | 'subtitle' | 'markdown';
   // Set when the file was too large to carry as a data URL: it was streamed
   // to the backend in chunks at attach time (stageMediaFileAsAttachment) and
   // src/payload are the staged /atelier-artifact/ URL. The backend adopts the
@@ -1451,23 +1458,28 @@ function App() {
   const [videoEditorHandle, setVideoEditorHandle] = useState<VideoEditorHandle | null>(null);
   const [audioEditorHandle, setAudioEditorHandle] = useState<AudioEditorHandle | null>(null);
   const [subtitleEditorHandle, setSubtitleEditorHandle] = useState<SubtitleEditorHandle | null>(null);
+  const [markdownEditorHandle, setMarkdownEditorHandle] = useState<MarkdownEditorHandle | null>(null);
   const [videoEditorOpening, setVideoEditorOpening] = useState(false);
   const [imageEditorOpening, setImageEditorOpening] = useState(false);
   const [audioEditorOpening, setAudioEditorOpening] = useState(false);
   const [subtitleEditorOpening, setSubtitleEditorOpening] = useState(false);
+  const [markdownEditorOpening, setMarkdownEditorOpening] = useState(false);
   const [videoEditorError, setVideoEditorError] = useState('');
-  const [discardEditorDraft, setDiscardEditorDraft] = useState<'video' | 'audio' | 'subtitle' | null>(null);
+  const [discardEditorDraft, setDiscardEditorDraft] = useState<'video' | 'audio' | 'subtitle' | 'markdown' | null>(null);
   const videoEditorDirty = useRef(false);
   const audioEditorDirty = useRef(false);
   const subtitleEditorDirty = useRef(false);
+  const markdownEditorDirty = useRef(false);
   const videoNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
   const audioNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
   const subtitleNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
+  const markdownNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
   const videoOpenGeneration = useRef(0);
   const videoOpeningIdentity = useRef<{conversationID: string; artifactID: string} | null>(null);
   const imageOpenGeneration = useRef(0);
   const audioOpenGeneration = useRef(0);
   const subtitleOpenGeneration = useRef(0);
+  const markdownOpenGeneration = useRef(0);
   // Mirror of editorOpen for the atelier:editor-launch listener (an empty-deps
   // effect): a mid-stream AI launch must not replace an editor already on
   // screen — an unsaved draft is never discarded by a tool-timed open.
@@ -1475,8 +1487,8 @@ function App() {
   // Either editor's source resolve in flight — every edit button disables on
   // it, so a slow open can't collect repeated clicks (or race the other
   // editor's later-landing handle into view).
-  const editorOpening = imageEditorOpening || videoEditorOpening || audioEditorOpening || subtitleEditorOpening;
-  const editorOpen = !!editorHandle || !!videoEditorHandle || !!audioEditorHandle || !!subtitleEditorHandle;
+  const editorOpening = imageEditorOpening || videoEditorOpening || audioEditorOpening || subtitleEditorOpening || markdownEditorOpening;
+  const editorOpen = !!editorHandle || !!videoEditorHandle || !!audioEditorHandle || !!subtitleEditorHandle || !!markdownEditorHandle;
   const [purgeBusy, setPurgeBusy] = useState(false);
   const [confirmPurgeArchived, setConfirmPurgeArchived] = useState(false);
   const [purgeStatus, setPurgeStatus] = useState('');
@@ -2089,7 +2101,7 @@ function App() {
       const conversationID = event?.conversationId ?? '';
       const artifactID = event?.artifactId ?? '';
       const kind = event?.kind;
-      if (!conversationID || !artifactID || (kind !== 'image' && kind !== 'video' && kind !== 'audio' && kind !== 'subtitle')) {
+      if (!conversationID || !artifactID || (kind !== 'image' && kind !== 'video' && kind !== 'audio' && kind !== 'subtitle' && kind !== 'markdown')) {
         return;
       }
       if (conversationID !== activeConversationIDRef.current || editorOpenRef.current) {
@@ -2101,6 +2113,8 @@ function App() {
         void openAudioEditor(conversationID, artifactID);
       } else if (kind === 'subtitle') {
         void openSubtitleEditor(conversationID, artifactID);
+      } else if (kind === 'markdown') {
+        void openMarkdownEditor(conversationID, artifactID);
       } else {
         void openImageEditor(conversationID, artifactID);
       }
@@ -3883,6 +3897,17 @@ function App() {
     return /^trc_[a-zA-Z0-9]+$/.test(stem) ? stem : null;
   }
 
+  // markdownArtifactIDFromURL matches document artifacts only — md_ stems
+  // with a .md extension.
+  function markdownArtifactIDFromURL(url: string): string | null {
+    if (!url.startsWith('/atelier-artifact/')) return null;
+    const path = url.split(/[?#]/)[0];
+    const filename = path.split('/').pop() || '';
+    const stem = filename.replace(/\.[^.]+$/, '');
+    if (!/\.md$/i.test(filename)) return null;
+    return /^md_[a-zA-Z0-9]+$/.test(stem) ? stem : null;
+  }
+
   function confirmLeaveVideoEditor(): Promise<boolean> {
     if (!videoEditorHandle || !videoEditorDirty.current) return Promise.resolve(true);
     if (videoNavigationResolver.current) return Promise.resolve(false);
@@ -3904,12 +3929,20 @@ function App() {
     return new Promise((resolve) => { subtitleNavigationResolver.current = resolve; });
   }
 
+  function confirmLeaveMarkdownEditor(): Promise<boolean> {
+    if (!markdownEditorHandle || !markdownEditorDirty.current) return Promise.resolve(true);
+    if (markdownNavigationResolver.current) return Promise.resolve(false);
+    setDiscardEditorDraft('markdown');
+    return new Promise((resolve) => { markdownNavigationResolver.current = resolve; });
+  }
+
   // confirmLeaveEditor walks whichever editors hold unsaved work — only one
   // confirm flow is ever active, so the dialog resolves both waiters.
   async function confirmLeaveEditor(): Promise<boolean> {
     if (!(await confirmLeaveVideoEditor())) return false;
     if (!(await confirmLeaveAudioEditor())) return false;
-    return confirmLeaveSubtitleEditor();
+    if (!(await confirmLeaveSubtitleEditor())) return false;
+    return confirmLeaveMarkdownEditor();
   }
 
   function resolveEditorNavigation(discard: boolean) {
@@ -3923,6 +3956,9 @@ function App() {
     const subtitleResolve = subtitleNavigationResolver.current;
     subtitleNavigationResolver.current = null;
     subtitleResolve?.(discard);
+    const markdownResolve = markdownNavigationResolver.current;
+    markdownNavigationResolver.current = null;
+    markdownResolve?.(discard);
   }
 
   function openSettings() {
@@ -3963,8 +3999,10 @@ function App() {
       setEditorHandle(null);
       setAudioEditorHandle(null);
       setSubtitleEditorHandle(null);
+      setMarkdownEditorHandle(null);
       subtitleEditorDirty.current = false;
       videoEditorDirty.current = false;
+      markdownEditorDirty.current = false;
       setVideoEditorHandle({source, sessionID: ''});
       // Preparation can complete while the user is in Settings; loading the
       // editor must not yank them out of it — Back will reveal it.
@@ -4015,8 +4053,10 @@ function App() {
       setVideoEditorHandle(null);
       setAudioEditorHandle(null);
       setSubtitleEditorHandle(null);
+      setMarkdownEditorHandle(null);
       subtitleEditorDirty.current = false;
       videoEditorDirty.current = false;
+      markdownEditorDirty.current = false;
       setEditorHandle({source, sessionID: ''});
       setView((current) => (current === 'settings' ? current : 'app'));
     } catch (error) {
@@ -4045,8 +4085,10 @@ function App() {
       setEditorHandle(null);
       setVideoEditorHandle(null);
       setSubtitleEditorHandle(null);
+      setMarkdownEditorHandle(null);
       subtitleEditorDirty.current = false;
       videoEditorDirty.current = false;
+      markdownEditorDirty.current = false;
       audioEditorDirty.current = false;
       setAudioEditorHandle({source, sessionID: ''});
       setView((current) => (current === 'settings' ? current : 'app'));
@@ -4079,8 +4121,10 @@ function App() {
       setEditorHandle(null);
       setVideoEditorHandle(null);
       setAudioEditorHandle(null);
+      setMarkdownEditorHandle(null);
       videoEditorDirty.current = false;
       audioEditorDirty.current = false;
+      markdownEditorDirty.current = false;
       subtitleEditorDirty.current = false;
       setSubtitleEditorHandle({source});
       setView((current) => (current === 'settings' ? current : 'app'));
@@ -4088,6 +4132,37 @@ function App() {
       if (generation === subtitleOpenGeneration.current) setStartupError(formatError(error));
     } finally {
       if (generation === subtitleOpenGeneration.current) setSubtitleEditorOpening(false);
+    }
+  }
+
+  // openMarkdownEditor mirrors openSubtitleEditor: the markdown editor is
+  // local-until-save, so the resolve is the whole load — the document text and
+  // the artifact identity the reply chips opened by. No session machinery, no
+  // edit conversation kind: documents are never media-edit subjects.
+  async function openMarkdownEditor(conversationID: string, artifactID: string) {
+    if (!(await confirmLeaveEditor())) return;
+    cancelVideoPreparation();
+    cancelImagePreparation();
+    cancelAudioPreparation();
+    const generation = ++markdownOpenGeneration.current;
+    setMarkdownEditorOpening(true);
+    try {
+      const source = await ResolveMarkdownEditSource(conversationID, artifactID);
+      if (generation !== markdownOpenGeneration.current) return;
+      setEditorHandle(null);
+      setVideoEditorHandle(null);
+      setAudioEditorHandle(null);
+      setSubtitleEditorHandle(null);
+      videoEditorDirty.current = false;
+      audioEditorDirty.current = false;
+      subtitleEditorDirty.current = false;
+      markdownEditorDirty.current = false;
+      setMarkdownEditorHandle({source});
+      setView((current) => (current === 'settings' ? current : 'app'));
+    } catch (error) {
+      if (generation === markdownOpenGeneration.current) setStartupError(formatError(error));
+    } finally {
+      if (generation === markdownOpenGeneration.current) setMarkdownEditorOpening(false);
     }
   }
 
@@ -4154,9 +4229,11 @@ function App() {
     setVideoEditorHandle(null);
     setAudioEditorHandle(null);
     setSubtitleEditorHandle(null);
+    setMarkdownEditorHandle(null);
     videoEditorDirty.current = false;
     audioEditorDirty.current = false;
     subtitleEditorDirty.current = false;
+    markdownEditorDirty.current = false;
     setEditorHandle(null);
     setPreviewEditContext(null);
   }
@@ -4263,6 +4340,7 @@ function App() {
       videos: historyVideos(turn.content),
       audios: historyAudios(turn.content),
       subtitles: turn.role === 'user' ? historySubtitles(turn.content) : undefined,
+      markdowns: historyMarkdowns(turn.content),
       transcripts: historyTranscripts(turn.content),
       harnessRun: parseHarnessRun(turn.providerResponse?.harnessRun),
       mediaTool: turn.providerResponse?.tool as MediaToolSummaryView | undefined,
@@ -4432,6 +4510,15 @@ function App() {
             : entry,
         ));
       }
+      // Documents swap the same way (ChatStreamStart.userMarkdowns).
+      const persistedMarkdowns = asArray(start.userMarkdowns);
+      if (opts.userEntryId && persistedMarkdowns.length) {
+        setChat((entries) => entries.map((entry) =>
+          entry.id === opts.userEntryId && entry.markdowns?.length === persistedMarkdowns.length
+            ? {...entry, markdowns: persistedMarkdowns}
+            : entry,
+        ));
+      }
       // The conversation now carries its own membership — the pending context
       // has done its job. Captured before the clear: it names where the new
       // row appears in the sidebar tree.
@@ -4498,6 +4585,7 @@ function App() {
       audios: attachments.filter((item) => item.kind === 'audio').map((item) => item.src),
       videos: attachments.filter((item) => item.kind === 'video').map((item) => item.src),
       subtitles: attachments.filter((item) => item.kind === 'subtitle').map((item) => item.src),
+      markdowns: attachments.filter((item) => item.kind === 'markdown').map((item) => item.src),
     };
     // @-mentioned assets ride the request as IDs (backend resolves them into
     // the tool attachment slots); the readable @token stays in the message
@@ -4524,9 +4612,10 @@ function App() {
     const imageAttachments = attachments.filter((item) => item.kind === 'image').map((item) => item.payload).filter(Boolean);
     const videoAttachments = attachments.filter((item) => item.kind === 'video').map((item) => item.payload).filter(Boolean);
     const subtitleAttachments = attachments.filter((item) => item.kind === 'subtitle').map((item) => item.payload).filter(Boolean);
+    const markdownAttachments = attachments.filter((item) => item.kind === 'markdown').map((item) => item.payload).filter(Boolean);
     const requestMessages: main.ChatMessage[] = [
       ...chat
-        .filter((entry) => entry.role !== 'system' && (entry.content || entry.images?.length || entry.audios?.length || entry.videos?.length || entry.subtitles?.length))
+        .filter((entry) => entry.role !== 'system' && (entry.content || entry.images?.length || entry.audios?.length || entry.videos?.length || entry.subtitles?.length || entry.markdowns?.length))
         .map((entry) => ({
           role: entry.role,
           content: entry.content,
@@ -4536,6 +4625,7 @@ function App() {
           ...(entry.audios?.length ? {audios: entry.audios.filter((audio) => audio.startsWith('data:'))} : {}),
           ...(entry.videos?.length ? {videos: entry.videos.filter((video) => video.startsWith('data:'))} : {}),
           ...(entry.subtitles?.length ? {subtitles: entry.subtitles.filter((subtitle) => subtitle.startsWith('data:'))} : {}),
+          ...(entry.markdowns?.length ? {markdowns: entry.markdowns.filter((markdown) => markdown.startsWith('data:'))} : {}),
         }) as main.ChatMessage),
       {
         role: 'user',
@@ -4544,6 +4634,7 @@ function App() {
         ...(audioAttachments.length ? {audios: audioAttachments} : {}),
         ...(videoAttachments.length ? {videos: videoAttachments} : {}),
         ...(subtitleAttachments.length ? {subtitles: subtitleAttachments} : {}),
+        ...(markdownAttachments.length ? {markdowns: markdownAttachments} : {}),
       } as main.ChatMessage,
     ];
 
@@ -4569,7 +4660,7 @@ function App() {
   // artifact, the editors' one identity input. On a creation failure the
   // composer keeps its contents: nothing was persisted, so the send must look
   // like it never happened.
-  async function launchEditorConversation(kind: 'image' | 'video' | 'audio' | 'subtitle', trimmed: string) {
+  async function launchEditorConversation(kind: 'image' | 'video' | 'audio' | 'subtitle' | 'markdown', trimmed: string) {
     const referencedAssetIds = [
       ...new Set(
         parseComposerMentions(trimmed, mentionBindingPool()).flatMap((segment) =>
@@ -4581,6 +4672,7 @@ function App() {
     const videoPayloads = attachments.filter((item) => item.kind === 'video').map((item) => item.payload).filter(Boolean);
     const audioPayloads = attachments.filter((item) => item.kind === 'audio').map((item) => item.payload).filter(Boolean);
     const subtitlePayloads = attachments.filter((item) => item.kind === 'subtitle').map((item) => item.payload).filter(Boolean);
+    const markdownPayloads = attachments.filter((item) => item.kind === 'markdown').map((item) => item.payload).filter(Boolean);
     let result: main.EditorLaunchResult;
     try {
       result = await CreateEditorConversation(main.ChatRequest.createFrom({
@@ -4595,6 +4687,7 @@ function App() {
           ...(videoPayloads.length ? {videos: videoPayloads} : {}),
           ...(audioPayloads.length ? {audios: audioPayloads} : {}),
           ...(subtitlePayloads.length ? {subtitles: subtitlePayloads} : {}),
+          ...(markdownPayloads.length ? {markdowns: markdownPayloads} : {}),
         } as main.ChatMessage],
         // Same turn-1-only lifecycle fields a streamed first turn carries.
         ...(draftWorkspace ? {workspace: draftWorkspace} : {}),
@@ -4631,6 +4724,7 @@ function App() {
       const artifactId = (kind === 'image' ? result.imageArtifactIds
         : kind === 'video' ? result.videoArtifactIds
         : kind === 'subtitle' ? result.subtitleArtifactIds
+        : kind === 'markdown' ? result.markdownArtifactIds
         : result.audioArtifactIds)?.[0];
       if (!artifactId) {
         throw new Error('the attached asset was not persisted');
@@ -4641,6 +4735,8 @@ function App() {
         await openVideoEditor(result.conversationId, artifactId);
       } else if (kind === 'subtitle') {
         await openSubtitleEditor(result.conversationId, artifactId);
+      } else if (kind === 'markdown') {
+        await openMarkdownEditor(result.conversationId, artifactId);
       } else {
         await openAudioEditor(result.conversationId, artifactId);
       }
@@ -4728,7 +4824,7 @@ function App() {
       name: assetMentionLabel(asset),
       src: asset.url ?? '',
       payload: '',
-      kind: asset.kind === 'audio' ? 'audio' : asset.kind === 'video' ? 'video' : asset.kind === 'transcript' ? 'subtitle' : 'image',
+      kind: asset.kind === 'audio' ? 'audio' : asset.kind === 'video' ? 'video' : asset.kind === 'transcript' ? 'subtitle' : asset.kind === 'markdown' ? 'markdown' : 'image',
       hint: composerLibraryID
         ? `${asset.role === 'user' ? 'attached' : 'generated'} · ${asset.conversationTitle || 'another chat'}`
         : `${asset.role === 'user' ? 'attached' : 'generated'} · ${assetTurnLabel(asset.originTurnId)}`,
@@ -5028,7 +5124,7 @@ function App() {
 
   function composerHasMediaDrag(event: React.DragEvent<HTMLDivElement>): boolean {
     return Array.from(event.dataTransfer?.items ?? []).some(
-      (item) => item.kind === 'file' && (item.type.startsWith('image/') || item.type.startsWith('audio/') || item.type.startsWith('video/') || item.type === 'text/vtt' || item.type === 'application/x-subrip'),
+      (item) => item.kind === 'file' && (item.type.startsWith('image/') || item.type.startsWith('audio/') || item.type.startsWith('video/') || item.type === 'text/vtt' || item.type === 'application/x-subrip' || item.type === 'text/markdown'),
     );
   }
 
@@ -5063,11 +5159,12 @@ function App() {
   async function handleComposerDrop(event: React.DragEvent<HTMLDivElement>) {
     composerDragDepth.current = 0;
     setComposerDragging(false);
-    // Subtitle files are matched by extension too: an .srt dropped from Finder
-    // often reports an empty MIME type, which the type-only drag preview above
-    // misses — the drop itself should still accept what the picker accepts.
+    // Subtitle and markdown files are matched by extension too: an .srt or .md
+    // dropped from Finder often reports an empty MIME type, which the type-only
+    // drag preview above misses — the drop itself should still accept what the
+    // picker accepts.
     const mediaFiles = Array.from(event.dataTransfer?.files ?? []).filter(
-      (file) => file.type.startsWith('image/') || file.type.startsWith('audio/') || file.type.startsWith('video/') || subtitleMimeForFile(file) !== null,
+      (file) => file.type.startsWith('image/') || file.type.startsWith('audio/') || file.type.startsWith('video/') || subtitleMimeForFile(file) !== null || markdownMimeForFile(file) !== null,
     );
     if (!mediaFiles.length) {
       return;
@@ -5125,6 +5222,17 @@ function App() {
     }
   }
 
+  async function saveGeneratedMarkdown(markdown: string, index: number) {
+    try {
+      await SaveMarkdown(main.SaveTranscriptRequest.createFrom({
+        path: markdown,
+        suggestedName: `atelier-${Date.now()}-${index + 1}`,
+      }));
+    } catch (error) {
+      setStartupError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   // downloadAsset is the assets-panel download affordance: every Save* binding
   // accepts the panel's /atelier-artifact URL (each resolves it back to the
   // artifact bytes on disk), so one per-kind dispatcher covers every card.
@@ -5138,6 +5246,9 @@ function App() {
     }
     if (asset.kind === 'transcript') {
       return saveGeneratedTranscript(asset.url, 0);
+    }
+    if (asset.kind === 'markdown') {
+      return saveGeneratedMarkdown(asset.url, 0);
     }
     return saveGeneratedImage(asset.url, 0);
   }
@@ -5733,6 +5844,33 @@ function App() {
                 void refreshConversations();
                 setAssetsRefreshTick((tick) => tick + 1);
                 const parentID = subtitleEditorHandle.source.conversationId;
+                if (activeConversationIDRef.current === parentID) {
+                  void GetConversation(parentID).then((detail) => {
+                    if (activeConversationIDRef.current === parentID) hydrateChatConversation(detail);
+                  }).catch((error) => setStartupError(formatError(error)));
+                }
+              }}
+            />
+          </div>
+        ) : markdownEditorHandle ? (
+          <div className="editor-slot" hidden={view !== 'app'}>
+            <MarkdownEditor
+              key={markdownEditorHandle.source.artifactId}
+              handle={markdownEditorHandle}
+              suspended={view !== 'app'}
+              onClose={() => {void confirmLeaveEditor().then((discard) => {if (discard) closeImageEditor();});}}
+              onOpenParent={(conversationID) => {
+                void confirmLeaveEditor().then((discard) => {
+                  if (!discard) return;
+                  closeImageEditor();
+                  void openConversationSummary(main.ConversationSummary.createFrom({id: conversationID, kind: 'chat', title: ''}));
+                });
+              }}
+              onDirtyChange={(dirty) => {markdownEditorDirty.current = dirty;}}
+              onSavedToConversation={() => {
+                void refreshConversations();
+                setAssetsRefreshTick((tick) => tick + 1);
+                const parentID = markdownEditorHandle.source.conversationId;
                 if (activeConversationIDRef.current === parentID) {
                   void GetConversation(parentID).then((detail) => {
                     if (activeConversationIDRef.current === parentID) hydrateChatConversation(detail);
@@ -6602,6 +6740,37 @@ function App() {
                           ))}
                         </div>
                       ) : null}
+                      {entry.markdowns?.length ? (
+                        <div className="chat-transcript-results">
+                          {entry.markdowns.map((markdown, index) => (
+                            <div key={`${entry.id}-markdown-${index}`} className="chat-transcript-card">
+                              <span className="chat-transcript-name">📝 {markdown.split('/').pop() || 'Document (.md)'}</span>
+                              <div className="chat-transcript-actions">
+                                <button
+                                  type="button"
+                                  disabled={editorOpening || !activeConversationID || !markdownArtifactIDFromURL(markdown)}
+                                  title={markdownArtifactIDFromURL(markdown) ? 'Open in the markdown editor' : 'Persisted document required'}
+                                  onClick={() => {
+                                    const artifactID = markdownArtifactIDFromURL(markdown);
+                                    if (artifactID && activeConversationID) {
+                                      void openMarkdownEditor(activeConversationID, artifactID);
+                                    }
+                                  }}
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => saveGeneratedMarkdown(markdown, index)}
+                                  disabled={!markdown.startsWith('/atelier-artifact/')}
+                                >
+                                  Download document
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
                       {entry.thinking ? (
                         <div className="thinking-panel">
                           <button
@@ -6727,6 +6896,15 @@ function App() {
                               <path d="M11 11h6" />
                             </svg>
                           </span>
+                        ) : item.kind === 'markdown' ? (
+                          <span className="attachment-subtitle-chip" aria-hidden="true">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
+                              <path d="M14 2v6h6" />
+                              <path d="M8 13h8" />
+                              <path d="M8 17h5" />
+                            </svg>
+                          </span>
                         ) : (
                           <img src={item.src} alt="" />
                         )}
@@ -6829,7 +7007,7 @@ function App() {
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
                       </svg>
-                      <input type="file" accept="image/*,audio/*,video/*,.vtt,.srt,application/x-subrip,text/vtt" multiple onChange={(event) => addFiles(event.target.files)} />
+                      <input type="file" accept="image/*,audio/*,video/*,.vtt,.srt,application/x-subrip,text/vtt,.md,.markdown,text/markdown" multiple onChange={(event) => addFiles(event.target.files)} />
                     </label>
                   </div>
                   <div className="composer-submit-row">
@@ -6960,6 +7138,8 @@ function App() {
                       <span className="asset-transcript-chip">
                         {transcriptChipLabel(asset.url)}
                       </span>
+                    ) : asset.kind === 'markdown' && asset.url ? (
+                      <span className="asset-transcript-chip">📝 Markdown (.md)</span>
                     ) : (
                       <span className="asset-missing">Artifact file is missing on disk</span>
                     )}
@@ -7046,6 +7226,16 @@ function App() {
                         </svg>
                       </button>
                     ) : null}
+                    {asset.kind === 'markdown' && asset.url && asset.conversationId ? (
+                      <button type="button" className="asset-edit-button" disabled={editorOpening}
+                        onClick={() => void openMarkdownEditor(asset.conversationId, asset.id)}
+                        aria-label="Edit document" title="Edit document">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M12 20h9" />
+                          <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                        </svg>
+                      </button>
+                    ) : null}
                     {/* Navigation needs no artifact on disk — unlike download,
                         a missing file still has a conversation to jump to. */}
                     {asset.conversationId ? (
@@ -7089,7 +7279,7 @@ function App() {
               if (event.key === 'Escape') {event.stopPropagation(); resolveEditorNavigation(false);}
             }}>
             <strong id="discard-video-title">Discard unsaved edits?</strong>
-            <p>{discardEditorDraft === 'subtitle' ? 'Your unexported changes will be lost.' : 'Your unrendered changes will be lost. Saved edits remain available.'}</p>
+            <p>{discardEditorDraft === 'subtitle' ? 'Your unexported changes will be lost.' : discardEditorDraft === 'markdown' ? 'Your unsaved changes will be lost. Saved versions remain in the conversation.' : 'Your unrendered changes will be lost. Saved edits remain available.'}</p>
             <button type="button" autoFocus onClick={() => resolveEditorNavigation(false)}>Keep editing</button>
             <button type="button" onClick={() => resolveEditorNavigation(true)}>Discard changes</button>
           </div>
@@ -10272,6 +10462,17 @@ function historySubtitles(contents: main.HistoryContent[] | null | undefined): s
   return urls.length ? urls : undefined;
 }
 
+// historyMarkdowns picks the markdown artifacts off a turn's content — the
+// hydrated /atelier-artifact URLs md_ documents persist as, on either side of
+// the conversation (attached by the user, saved by the markdown editor).
+function historyMarkdowns(contents: main.HistoryContent[] | null | undefined): string[] | undefined {
+  const urls = asArray(contents)
+    .filter((content) => content.type === 'markdown')
+    .map((content) => content.text || content.path || '')
+    .filter((path) => path.toLowerCase().endsWith('.md'));
+  return urls.length ? urls : undefined;
+}
+
 // Transcript artifacts come in three kinds — the WebVTT rendering of a
 // timestamped transcript (.vtt), its converted SubRip form (.srt, from
 // convert_subtitles), and an oversized plain transcript staged as text (.txt).
@@ -10457,10 +10658,35 @@ async function readSubtitleFile(file: File, nameOverride?: string): Promise<Atta
   };
 }
 
+// markdownMimeForFile is the document twin: extension-first (.md/.markdown —
+// OSes often report an empty type), with text/markdown as the declared fallback.
+// The backend normalizes both spellings onto .md at persistence.
+function markdownMimeForFile(file: File): string | null {
+  const lower = file.name.toLowerCase();
+  if (lower.endsWith('.md') || lower.endsWith('.markdown') || file.type === 'text/markdown') return 'text/markdown';
+  return null;
+}
+
+// readMarkdownFile keeps the full data URL as the payload, mirroring
+// subtitles: markdown attachments are tool-only (the markdown editor reads the
+// persisted artifact), never model input.
+async function readMarkdownFile(file: File, nameOverride?: string): Promise<Attachment> {
+  const mime = markdownMimeForFile(file) ?? 'text/markdown';
+  const bytes = await file.arrayBuffer();
+  const dataURL = `data:${mime};base64,${bytesToBase64(bytes)}`;
+  return {
+    name: nameOverride ?? file.name,
+    src: dataURL,
+    payload: dataURL,
+    kind: 'markdown',
+  };
+}
+
 // readFileAsAttachment dispatches on MIME type to the right reader. Audio files
 // route to readAudioFile, video files to readVideoFile, subtitle files
 // (.vtt/.srt — by extension first, the OS type is unreliable) to
-// readSubtitleFile; everything else (images today, and an unknown type the OS
+// readSubtitleFile, markdown documents (.md/.markdown) to readMarkdownFile;
+// everything else (images today, and an unknown type the OS
 // picker let through) routes to readImageFile, which produced the historical
 // behavior.
 //
@@ -10473,6 +10699,9 @@ async function readSubtitleFile(file: File, nameOverride?: string): Promise<Atta
 async function readFileAsAttachment(file: File, nameOverride?: string, onProgress?: (fraction: number) => void): Promise<Attachment> {
   if (subtitleMimeForFile(file)) {
     return readSubtitleFile(file, nameOverride);
+  }
+  if (markdownMimeForFile(file)) {
+    return readMarkdownFile(file, nameOverride);
   }
   if (file.type.startsWith('audio/') || file.type.startsWith('video/')) {
     const kind = file.type.startsWith('audio/') ? 'audio' : 'video';

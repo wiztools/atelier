@@ -21,9 +21,9 @@ import (
 type ConversationAsset struct {
 	ID             string `json:"id"`
 	ConversationID string `json:"conversationId"`
-	// Kind is the HistoryContent type: "image", "audio", "video", or
+	// Kind is the HistoryContent type: "image", "audio", "video",
 	// "transcript" (the subtitle files — .vtt/.srt only; plain .txt
-	// transcripts are not assets).
+	// transcripts are not assets), or "markdown" (.md documents).
 	Kind string `json:"kind"`
 	// MimeType is the persisted artifact MIME type, when recorded.
 	MimeType string `json:"mimeType,omitempty"`
@@ -66,11 +66,11 @@ func conversationAssetsFromDetail(detail ConversationDetail) []ConversationAsset
 	assets := []ConversationAsset{}
 	for _, turn := range detail.Turns {
 		for _, content := range turn.Content {
-			// Subtitle transcripts (.vtt/.srt — attached or converted) are
-			// assets too: referenceable, downloadable, panel-visible. Plain
-			// .txt transcripts are text dumps and stay out.
+			// Subtitle transcripts (.vtt/.srt — attached or converted) and markdown
+			// documents (.md) are assets too: referenceable, downloadable,
+			// panel-visible. Plain .txt transcripts are text dumps and stay out.
 			media := content.Type == "image" || content.Type == "audio" || content.Type == "video"
-			if !media && subtitleArtifactExtension(content) == "" {
+			if !media && subtitleArtifactExtension(content) == "" && markdownArtifactExtension(content) == "" {
 				continue
 			}
 			if strings.TrimSpace(content.Path) == "" {
@@ -199,10 +199,14 @@ func resolveReferencedAssets(storage ConfigStorage, conversationID, fallbackProj
 			// user turn, it is what convert_subtitles' record walk reads. The
 			// readability check keeps the dangling-reference rule honest.
 			_, readErr = readTranscriptArtifact(storage, ownerID, content)
+		case "markdown":
+			// Same shape as a subtitle mention: no slot, just the persisted
+			// entry the markdown editor's record walk reads.
+			_, readErr = readTranscriptArtifact(storage, ownerID, content)
 		default:
 			continue
 		}
-		if readErr != nil || (dataURL == "" && content.Type != "transcript") {
+		if readErr != nil || (dataURL == "" && content.Type != "transcript" && content.Type != "markdown") {
 			continue
 		}
 		switch content.Type {
@@ -233,9 +237,9 @@ func readTranscriptArtifact(storage ConfigStorage, conversationID string, conten
 // libraryArtifactID keeps ArtifactID empty for legacy path-fallback asset IDs —
 // those are only meaningful inside their own conversation, so the absolute
 // Path key carries the cross-conversation reference instead. Modern IDs
-// (img_/aud_/vid_<hex>) are globally unique and pass through.
+// (img_/aud_/vid_/md_<hex>) are globally unique and pass through.
 func libraryArtifactID(id string) string {
-	for _, prefix := range []string{"img_", "aud_", "vid_"} {
+	for _, prefix := range []string{"img_", "aud_", "vid_", "md_"} {
 		if strings.HasPrefix(id, prefix) {
 			return id
 		}
@@ -378,7 +382,7 @@ func assetContentIndex(detail ConversationDetail) map[string]HistoryContent {
 	for i := len(detail.Turns) - 1; i >= 0; i-- {
 		for _, content := range detail.Turns[i].Content {
 			media := content.Type == "image" || content.Type == "audio" || content.Type == "video"
-			if !media && subtitleArtifactExtension(content) == "" {
+			if !media && subtitleArtifactExtension(content) == "" && markdownArtifactExtension(content) == "" {
 				continue
 			}
 			if strings.TrimSpace(content.Path) == "" {

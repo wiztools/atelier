@@ -722,6 +722,7 @@ export namespace main {
 	    audios?: string[];
 	    videos?: string[];
 	    subtitles?: string[];
+	    markdowns?: string[];
 	    tool_calls?: ToolCall[];
 	
 	    static createFrom(source: any = {}) {
@@ -736,6 +737,7 @@ export namespace main {
 	        this.audios = source["audios"];
 	        this.videos = source["videos"];
 	        this.subtitles = source["subtitles"];
+	        this.markdowns = source["markdowns"];
 	        this.tool_calls = this.convertValues(source["tool_calls"], ToolCall);
 	    }
 	
@@ -906,6 +908,7 @@ export namespace main {
 	    conversationId: string;
 	    userVideos?: string[];
 	    userSubtitles?: string[];
+	    userMarkdowns?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ChatStreamStart(source);
@@ -917,6 +920,7 @@ export namespace main {
 	        this.conversationId = source["conversationId"];
 	        this.userVideos = source["userVideos"];
 	        this.userSubtitles = source["userSubtitles"];
+	        this.userMarkdowns = source["userMarkdowns"];
 	    }
 	}
 	
@@ -1739,6 +1743,7 @@ export namespace main {
 	    videoArtifactIds?: string[];
 	    audioArtifactIds?: string[];
 	    subtitleArtifactIds?: string[];
+	    markdownArtifactIds?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new EditorLaunchResult(source);
@@ -1751,6 +1756,7 @@ export namespace main {
 	        this.videoArtifactIds = source["videoArtifactIds"];
 	        this.audioArtifactIds = source["audioArtifactIds"];
 	        this.subtitleArtifactIds = source["subtitleArtifactIds"];
+	        this.markdownArtifactIds = source["markdownArtifactIds"];
 	    }
 	}
 	export class EmptyStatePrompt {
@@ -2251,6 +2257,30 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class MarkdownSourceInfo {
+	    conversationId: string;
+	    conversationTitle?: string;
+	    artifactId: string;
+	    url: string;
+	    mimeType?: string;
+	    text: string;
+	    wordCount: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new MarkdownSourceInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.conversationId = source["conversationId"];
+	        this.conversationTitle = source["conversationTitle"];
+	        this.artifactId = source["artifactId"];
+	        this.url = source["url"];
+	        this.mimeType = source["mimeType"];
+	        this.text = source["text"];
+	        this.wordCount = source["wordCount"];
+	    }
+	}
 	export class ModelInfo {
 	    provider: string;
 	    id: string;
@@ -2378,6 +2408,38 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.image = source["image"];
 	        this.suggestedName = source["suggestedName"];
+	    }
+	}
+	export class SaveMarkdownEditRequest {
+	    conversationId: string;
+	    sourceArtifactId?: string;
+	    text: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SaveMarkdownEditRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.conversationId = source["conversationId"];
+	        this.sourceArtifactId = source["sourceArtifactId"];
+	        this.text = source["text"];
+	    }
+	}
+	export class SaveMarkdownEditResult {
+	    artifactId: string;
+	    url: string;
+	    wordCount: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SaveMarkdownEditResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.artifactId = source["artifactId"];
+	        this.url = source["url"];
+	        this.wordCount = source["wordCount"];
 	    }
 	}
 	export class SubtitleCue {

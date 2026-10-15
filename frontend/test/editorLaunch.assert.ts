@@ -4,7 +4,7 @@ function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
 }
 
-function kinds(...items: Array<'image' | 'audio' | 'video' | 'subtitle'>): Array<'image' | 'audio' | 'video' | 'subtitle'> {
+function kinds(...items: Array<'image' | 'audio' | 'video' | 'subtitle' | 'markdown'>): Array<'image' | 'audio' | 'video' | 'subtitle' | 'markdown'> {
   return items;
 }
 
@@ -66,3 +66,12 @@ assert(detectEditorLaunchIntent('Open the editor and stuff', kinds('image')) ===
 assert(detectEditorLaunchIntent('Open this clip in the video editor and extract its audio', kinds('video')) === null, 'second intent abstains');
 assert(detectEditorLaunchIntent('Open the image and the video editors', kinds('image', 'video')) === null, 'two editors in one message abstains');
 assert(detectEditorLaunchIntent('Open the editor, then make it black and white', kinds('image')) === null, 'follow-up instruction abstains');
+
+// Markdown documents are the fifth editor subject: the document vocabulary or
+// a lone .md attachment resolves, like subtitles.
+assert(detectEditorLaunchIntent('Open this in the markdown editor', kinds('markdown')) === 'markdown', 'markdown editor phrasing');
+assert(detectEditorLaunchIntent('Open the document in the editor', kinds('markdown')) === 'markdown', 'document media word resolves');
+assert(detectEditorLaunchIntent('Open the markdown editor for me', kinds('markdown')) === 'markdown', 'markdown word and trailing politeness');
+assert(detectEditorLaunchIntent('Open in the editor', kinds('markdown')) === 'markdown', 'lone markdown attachment resolves');
+assert(detectEditorLaunchIntent('Open in the editor', kinds('markdown', 'image')) === null, 'markdown plus image without a kind word abstains');
+assert(detectEditorLaunchIntent('Open this md in the editor', kinds('markdown')) === 'markdown', 'extension word resolves');

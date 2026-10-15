@@ -359,7 +359,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		// The pre-started path (App.StreamChat) carries the user-turn video
 		// URLs out through ChatStreamStart; this fallback start belongs to
 		// callers with no live transcript to swap, so the URLs are dropped.
-		conversationID, _, _, err = h.StartChatTurn(req)
+		conversationID, _, _, _, err = h.StartChatTurn(req)
 		if err != nil {
 			h.app.emitChatEvent(ChatStreamEvent{RequestID: requestID, Error: fmt.Sprintf("history start failed: %v", err), Done: true})
 			return
@@ -4195,8 +4195,10 @@ func (h *HarnessEngine) SaveChatTurn(req ChatRequest, assistantContent, assistan
 // StartChatTurn also returns the persisted video attachments' hydrated
 // "/atelier-artifact" URLs so the streaming start result can swap the live
 // transcript's composer data: URLs for artifact srcs (poster derivation and
-// memory: the multi-MB base64 payload leaves the UI state).
-func (h *HarnessEngine) StartChatTurn(req ChatRequest) (string, []string, []string, error) {
+// memory: the multi-MB base64 payload leaves the UI state). The subtitle and
+// markdown slices do the same for their attachments (the Save bindings read
+// artifact paths only).
+func (h *HarnessEngine) StartChatTurn(req ChatRequest) (string, []string, []string, []string, error) {
 	if strings.TrimSpace(req.ConversationID) == "" {
 		return writePendingChatConversation(h.config, req)
 	}

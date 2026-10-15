@@ -190,6 +190,7 @@ func messagesWithoutMedia(messages []ChatMessage) []ChatMessage {
 		message.Audios = nil
 		message.Videos = nil
 		message.Subtitles = nil
+		message.Markdowns = nil
 		stripped[index] = message
 	}
 	return stripped
@@ -290,6 +291,9 @@ func attachmentNote(message ChatMessage) string {
 	}
 	if n := len(message.Videos); n > 0 {
 		parts = append(parts, pluralize(n, "video"))
+	}
+	if n := len(message.Markdowns); n > 0 {
+		parts = append(parts, pluralize(n, "markdown document"))
 	}
 	if len(parts) == 0 {
 		return ""

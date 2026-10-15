@@ -354,6 +354,10 @@ export function ResolveEditSource(arg1, arg2) {
   return window['go']['main']['App']['ResolveEditSource'](arg1, arg2);
 }
 
+export function ResolveMarkdownEditSource(arg1, arg2) {
+  return window['go']['main']['App']['ResolveMarkdownEditSource'](arg1, arg2);
+}
+
 export function ResolveSubtitleEditSource(arg1, arg2) {
   return window['go']['main']['App']['ResolveSubtitleEditSource'](arg1, arg2);
 }
@@ -388,6 +392,14 @@ export function SaveFalAPIKey(arg1) {
 
 export function SaveImage(arg1) {
   return window['go']['main']['App']['SaveImage'](arg1);
+}
+
+export function SaveMarkdown(arg1) {
+  return window['go']['main']['App']['SaveMarkdown'](arg1);
+}
+
+export function SaveMarkdownEdit(arg1) {
+  return window['go']['main']['App']['SaveMarkdownEdit'](arg1);
 }
 
 export function SaveOpenAICompatibleAPIKey(arg1) {

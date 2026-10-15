@@ -10,11 +10,11 @@
 // Abstention is decidable without understanding what the leftover content
 // means — that is what keeps this path safe to bypass the model with.
 
-export type EditorLaunchKind = 'image' | 'video' | 'audio' | 'subtitle';
+export type EditorLaunchKind = 'image' | 'video' | 'audio' | 'subtitle' | 'markdown';
 // 'subtitle' marks a .vtt/.srt attachment: a real attachment kind (the
 // composer accepts subtitle files) and, since the subtitle editor exists, an
-// editor-launch subject.
-export type ComposerAttachmentKind = 'image' | 'audio' | 'video' | 'subtitle';
+// editor-launch subject. 'markdown' is the document twin (.md attachments).
+export type ComposerAttachmentKind = 'image' | 'audio' | 'video' | 'subtitle' | 'markdown';
 
 const openCommand = /^(?:please\s+)?open\b/;
 
@@ -58,6 +58,12 @@ const mediaKinds: Record<string, EditorLaunchKind> = {
   vtt: 'subtitle',
   transcript: 'subtitle',
   transcripts: 'subtitle',
+  markdown: 'markdown',
+  md: 'markdown',
+  document: 'markdown',
+  documents: 'markdown',
+  doc: 'markdown',
+  docs: 'markdown',
 };
 
 // The closed vocabulary. Politeness particles are admitted; content words are
@@ -134,7 +140,7 @@ export function detectEditorLaunchIntent(text: string, attachmentKinds: Composer
     return attachedCount(requested) === 1 ? requested : null;
   }
   const isEditorSubject = (item: ComposerAttachmentKind): item is EditorLaunchKind =>
-    item === 'image' || item === 'video' || item === 'audio' || item === 'subtitle';
+    item === 'image' || item === 'video' || item === 'audio' || item === 'subtitle' || item === 'markdown';
   const attached = attachmentKinds.filter(isEditorSubject);
   if (attached.length === 1) {
     return attached[0];

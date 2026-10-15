@@ -178,6 +178,8 @@ export function ResolveAudioEditSource(arg1:string,arg2:string):Promise<main.Edi
 
 export function ResolveEditSource(arg1:string,arg2:string):Promise<main.EditSourceInfo>;
 
+export function ResolveMarkdownEditSource(arg1:string,arg2:string):Promise<main.MarkdownSourceInfo>;
+
 export function ResolveSubtitleEditSource(arg1:string,arg2:string):Promise<main.SubtitleSourceInfo>;
 
 export function ResolveToolPermission(arg1:string,arg2:boolean):Promise<void>;
@@ -195,6 +197,10 @@ export function SaveConfig(arg1:main.AppConfig):Promise<void>;
 export function SaveFalAPIKey(arg1:string):Promise<void>;
 
 export function SaveImage(arg1:main.SaveImageRequest):Promise<string>;
+
+export function SaveMarkdown(arg1:main.SaveTranscriptRequest):Promise<string>;
+
+export function SaveMarkdownEdit(arg1:main.SaveMarkdownEditRequest):Promise<main.SaveMarkdownEditResult>;
 
 export function SaveOpenAICompatibleAPIKey(arg1:string):Promise<void>;
 
