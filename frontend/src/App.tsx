@@ -10464,12 +10464,14 @@ function historySubtitles(contents: main.HistoryContent[] | null | undefined): s
 
 // historyMarkdowns picks the markdown artifacts off a turn's content — the
 // hydrated /atelier-artifact URLs md_ documents persist as, on either side of
-// the conversation (attached by the user, saved by the markdown editor).
+// the conversation (attached by the user, saved by the markdown editor). Both
+// dialects match — .md and .fountain — the same extension set
+// markdownArtifactIDFromURL gates the chip's Edit button on.
 function historyMarkdowns(contents: main.HistoryContent[] | null | undefined): string[] | undefined {
   const urls = asArray(contents)
     .filter((content) => content.type === 'markdown')
     .map((content) => content.text || content.path || '')
-    .filter((path) => path.toLowerCase().endsWith('.md'));
+    .filter((path) => /\.(md|fountain)$/i.test(path));
   return urls.length ? urls : undefined;
 }
 

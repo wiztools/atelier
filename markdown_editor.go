@@ -295,7 +295,9 @@ func (a *App) SaveMarkdownEdit(req SaveMarkdownEditRequest) (SaveMarkdownEditRes
 
 // SaveMarkdown copies a markdown artifact to a user-chosen location — the
 // document sibling of SaveTranscript: the same non-empty-text guard (there is
-// no container magic to verify) and dialog ritual, with the .md filter.
+// no container magic to verify) and dialog ritual. The saved extension follows
+// the artifact's own dialect (.md or .fountain, the SaveMarkdownEditRequest
+// set), so a Fountain screenplay downloads as one.
 func (a *App) SaveMarkdown(req SaveTranscriptRequest) (string, error) {
 	sourcePath := strings.TrimSpace(req.Path)
 	sourcePath = strings.TrimPrefix(sourcePath, artifactPrefix)
@@ -310,11 +312,11 @@ func (a *App) SaveMarkdown(req SaveTranscriptRequest) (string, error) {
 		return "", errors.New("markdown artifact is empty")
 	}
 	extension := strings.ToLower(filepath.Ext(sourcePath))
-	if extension != ".md" {
+	if extension != ".md" && extension != ".fountain" {
 		extension = ".md"
 	}
 	return a.saveArtifactDialog(data, req.SuggestedName, "atelier-document", extension, "Save document", []runtime.FileFilter{
-		{DisplayName: "Markdown Files", Pattern: "*.md"},
+		{DisplayName: "Document Files", Pattern: "*.md;*.fountain"},
 		{DisplayName: "All Files", Pattern: "*.*"},
 	})
 }
