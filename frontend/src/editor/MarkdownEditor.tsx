@@ -616,11 +616,15 @@ export function MarkdownEditor(props: {
                   Use as source
                 </button>
                 {entry.format === 'fountain' ? (
-                  <>
-                    <button type="button" title="Render the saved screenplay to a production-layout PDF" onClick={() => void exportSaved(entry.url, 'pdf', index)}>PDF</button>
-                    <button type="button" title="Export the saved screenplay as a Final Draft .fdx file" onClick={() => void exportSaved(entry.url, 'fdx', index)}>FDX</button>
-                  </>
+                  <button type="button" title="Export the saved screenplay as a Final Draft .fdx file" onClick={() => void exportSaved(entry.url, 'fdx', index)}>FDX</button>
                 ) : null}
+                <button
+                  type="button"
+                  title={entry.format === 'fountain' ? 'Render the saved screenplay to a production-layout PDF' : 'Render the saved document to a print-layout PDF'}
+                  onClick={() => void exportSaved(entry.url, 'pdf', index)}
+                >
+                  PDF
+                </button>
                 <button type="button" onClick={() => void downloadSaved(entry.url, index)}>Download</button>
               </div>
             </li>

@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -53,17 +54,7 @@ func (a *App) SaveDocumentExport(req SaveDocumentExportRequest) (string, error) 
 	if len(bytes.TrimSpace(data)) == 0 {
 		return "", errors.New("document artifact is empty")
 	}
-	elements, titlePage := fountainParse(data)
-	var rendered []byte
-	extension, filterName, pattern := "", "", ""
-	switch format {
-	case "pdf":
-		rendered, err = fountainPDF(elements, titlePage)
-		extension, filterName, pattern = ".pdf", "PDF Files", "*.pdf"
-	default:
-		rendered, err = fountainFDX(elements, titlePage)
-		extension, filterName, pattern = ".fdx", "Final Draft Files", "*.fdx"
-	}
+	rendered, extension, filterName, pattern, err := renderDocumentExport(data, sourcePath, format)
 	if err != nil {
 		return "", err
 	}
@@ -71,6 +62,32 @@ func (a *App) SaveDocumentExport(req SaveDocumentExportRequest) (string, error) 
 		{DisplayName: filterName, Pattern: pattern},
 		{DisplayName: "All Files", Pattern: "*.*"},
 	})
+}
+
+// renderDocumentExport is the save dialog's testable half: the artifact's own
+// extension picks the layout — .fountain renders as a screenplay (PDF) or
+// exports to Final Draft; everything else renders as a document, the markdown
+// print layout. FDX has no meaning for a markdown document, so it refuses
+// with the fix.
+func renderDocumentExport(data []byte, sourcePath, format string) ([]byte, string, string, string, error) {
+	isFountain := strings.EqualFold(filepath.Ext(sourcePath), ".fountain")
+	switch format {
+	case "pdf":
+		if isFountain {
+			elements, titlePage := fountainParse(data)
+			rendered, err := fountainPDF(elements, titlePage)
+			return rendered, ".pdf", "PDF Files", "*.pdf", err
+		}
+		rendered, err := markdownPDF(parseMarkdownBlocks(data))
+		return rendered, ".pdf", "PDF Files", "*.pdf", err
+	default:
+		if !isFountain {
+			return nil, "", "", "", errors.New("FDX export renders Fountain screenplays — save the document as .fountain first")
+		}
+		elements, titlePage := fountainParse(data)
+		rendered, err := fountainFDX(elements, titlePage)
+		return rendered, ".fdx", "Final Draft Files", "*.fdx", err
+	}
 }
 
 // --- PDF ---------------------------------------------------------------
@@ -105,6 +122,34 @@ type fountainPDFLine struct {
 	center    bool
 	right     bool
 	underline bool
+	// font and size carry the markdown layout's typographic steps (bold
+	// headings at larger sizes); zero values mean the screenplay defaults —
+	// regular Courier at 12pt. Pagination stays on the fixed 12pt grid for
+	// both dialects: larger glyphs draw on their own grid slot, with blank
+	// lines the layout inserts around headings keeping them clear.
+	font string
+	size float64
+}
+
+// pdfFont returns the line's font resource name, defaulting to regular Courier.
+func (l fountainPDFLine) pdfFont() string {
+	if l.font != "" {
+		return l.font
+	}
+	return "/F1"
+}
+
+// pdfSize returns the line's point size, defaulting to 12.
+func (l fountainPDFLine) pdfSize() float64 {
+	if l.size > 0 {
+		return l.size
+	}
+	return 12
+}
+
+// pdfCharWidthAt is the Courier advance width at a size: 0.6em.
+func pdfCharWidthAt(size float64) float64 {
+	return size * 0.6
 }
 
 // fountainLayoutLine converts one element into its rendered rows — wrapped
@@ -168,36 +213,12 @@ func fountainStripEmphasis(text string) string {
 	return replacer.Replace(text)
 }
 
-// fountainPDF renders the script. Returns the full PDF file bytes — objects,
-// xref, trailer, %%EOF.
-func fountainPDF(elements []FountainElement, titlePage map[string]string) ([]byte, error) {
-	// Layout: optional title page, then the body, paginated so a scene
-	// heading or a character cue (with room for one line of its speech)
-	// never strands on a page's last line — the (MORE)/(CONT'D) machinery
-	// this defers is the only loss.
+// pdfPaginate breaks laid-out rows into pages on the fixed 55-line grid,
+// honoring a per-block keep-with-next room requirement — the screenplay's
+// widow rule (a cue needs a line of its speech below it) and the markdown
+// layout's (a heading needs a body line below it) are the same mechanism.
+func pdfPaginate(blocks [][]fountainPDFLine, keepRoom func([]fountainPDFLine) int) [][]fountainPDFLine {
 	pages := [][]fountainPDFLine{}
-	titleRow := -1
-	if len(titlePage) > 0 {
-		pages = append(pages, fountainTitlePageLines(titlePage))
-		titleRow = fountainTitleRowIndex(titlePage)
-	}
-	type block []fountainPDFLine
-	blocks := []block{}
-	for _, element := range elements {
-		lines := fountainLayoutLine(element)
-		if len(lines) == 0 {
-			continue
-		}
-		// A whole element keeps its own lines together when it matters
-		// (scene heading, character cue); everything else paginates per row.
-		if element.Kind == fountainScene || element.Kind == fountainCharacter {
-			blocks = append(blocks, lines)
-		} else {
-			for _, line := range lines {
-				blocks = append(blocks, block{line})
-			}
-		}
-	}
 	current := []fountainPDFLine{}
 	lineAt := 0
 	newPage := func() {
@@ -210,8 +231,8 @@ func fountainPDF(elements []FountainElement, titlePage map[string]string) ([]byt
 			newPage()
 		}
 		needsRoom := len(blk)
-		if needsRoom == 1 && blk[0].indent == fountainIndentChar {
-			needsRoom = 2
+		if keepRoom != nil {
+			needsRoom = keepRoom(blk)
 		}
 		if lineAt+needsRoom > pdfLinesPerPage {
 			newPage()
@@ -222,7 +243,22 @@ func fountainPDF(elements []FountainElement, titlePage map[string]string) ([]byt
 	if len(current) > 0 || len(pages) == 0 {
 		pages = append(pages, current)
 	}
+	return pages
+}
 
+// fountainKeepRoom is the screenplay widow rule: a lone character cue on a
+// page's last line would separate it from its speech.
+func fountainKeepRoom(blk []fountainPDFLine) int {
+	if len(blk) == 1 && blk[0].indent == fountainIndentChar {
+		return 2
+	}
+	return len(blk)
+}
+
+// pdfWrite assembles the PDF file — objects, xref, trailer, %%EOF — from
+// laid-out pages plus the optional title page (whose underline row the
+// stream needs).
+func pdfWrite(pages [][]fountainPDFLine, titlePage map[string]string, titleRow int) []byte {
 	w := &pdfBuf{}
 	w.writeString("%PDF-1.4\n")
 	type objRef struct {
@@ -258,6 +294,7 @@ func fountainPDF(elements []FountainElement, titlePage map[string]string) ([]byt
 		}
 		pageID, contentID := 5+2*i, 6+2*i
 		stream := fountainPageStream(pageLines, row, scriptPage)
+
 		writeObj(pageID, fmt.Sprintf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %.0f %.0f] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents %d 0 R >>", pdfPageWidth, pdfPageHeight, contentID))
 		record(contentID)
 		fmt.Fprintf(w.raw(), "%d 0 obj\n<< /Length %d >>\nstream\n%s\nendstream\nendobj\n", contentID, len(stream), stream)
@@ -270,7 +307,37 @@ func fountainPDF(elements []FountainElement, titlePage map[string]string) ([]byt
 		fmt.Fprintf(w.raw(), "%010d 00000 n \n", object.head)
 	}
 	fmt.Fprintf(w.raw(), "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", len(objects)+1, xrefHead)
-	return w.bytes(), nil
+	return w.bytes()
+}
+
+// fountainPDF renders the script: optional title page, then the body laid
+// out and paginated with the widow rules, then the shared object assembly.
+func fountainPDF(elements []FountainElement, titlePage map[string]string) ([]byte, error) {
+	pages := [][]fountainPDFLine{}
+	titleRow := -1
+	if len(titlePage) > 0 {
+		titlePages := [][]fountainPDFLine{fountainTitlePageLines(titlePage)}
+		pages = append(pages, titlePages...)
+		titleRow = fountainTitleRowIndex(titlePage)
+	}
+	blocks := [][]fountainPDFLine{}
+	for _, element := range elements {
+		lines := fountainLayoutLine(element)
+		if len(lines) == 0 {
+			continue
+		}
+		// A whole element keeps its own lines together when it matters
+		// (scene heading, character cue); everything else paginates per row.
+		if element.Kind == fountainScene || element.Kind == fountainCharacter {
+			blocks = append(blocks, lines)
+		} else {
+			for _, line := range lines {
+				blocks = append(blocks, []fountainPDFLine{line})
+			}
+		}
+	}
+	pages = append(pages, pdfPaginate(blocks, fountainKeepRoom)...)
+	return pdfWrite(pages, titlePage, titleRow), nil
 }
 
 // fountainPageStream renders one page's content stream: per-line BT/Tj/ET
@@ -287,7 +354,9 @@ func fountainPageStream(lines []fountainPDFLine, underlineRow int, scriptPage in
 		if text == "" {
 			continue
 		}
-		width := float64(len(line.text)) * pdfCharWidth
+		size := line.pdfSize()
+		charWidth := pdfCharWidthAt(size)
+		width := float64(len(line.text)) * charWidth
 		var x float64
 		switch {
 		case line.center:
@@ -295,13 +364,13 @@ func fountainPageStream(lines []fountainPDFLine, underlineRow int, scriptPage in
 		case line.right:
 			x = pdfTextRight - width
 		default:
-			x = pdfMarginLeft + float64(line.indent)*pdfCharWidth
+			x = pdfMarginLeft + float64(line.indent)*charWidth
 		}
-		font := "/F1"
+		font := line.pdfFont()
 		if line.underline {
 			font = "/F2"
 		}
-		fmt.Fprintf(&b, "BT %s 12 Tf 1 0 0 1 %.2f %.2f Tm (%s) Tj ET\n", font, x, rowY(row), text)
+		fmt.Fprintf(&b, "BT %s %.0f Tf 1 0 0 1 %.2f %.2f Tm (%s) Tj ET\n", font, size, x, rowY(row), text)
 		if row == underlineRow || line.underline {
 			fmt.Fprintf(&b, "%.2f %.2f m %.2f %.2f l S\n", x, rowY(row)-2, x+width, rowY(row)-2)
 		}
