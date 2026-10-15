@@ -117,3 +117,18 @@ assert(todos.length === 1 && todos[0].line === 1 && todos[0].message.includes('T
 const fencedTodo = markdownWarnings('```ts\n// TODO inside code\n```\n');
 assert(fencedTodo.length === 0, 'markers inside code fences are code, not warnings');
 assert(markdownWarnings('# Title\n\n## Sub ###\n').length === 0, 'closing hashes do not break the heading read');
+
+import {findMatches, nextMatch, previousMatch, replaceLiteral} from '../src/editor/markdownModel';
+
+// findMatches / nextMatch / previousMatch / replaceLiteral: literal,
+// case-sensitive, wrap-around navigation — the inspector's find bar contract.
+assert(findMatches('ab cd ab', 'ab').length === 2 && findMatches('ab cd ab', 'ab')[0] === 0 && findMatches('ab cd ab', 'ab')[1] === 6, 'findMatches returns every non-overlapping offset');
+assert(findMatches('aB ab', 'ab').length === 1, 'findMatches is case-sensitive');
+assert(findMatches('aaa', 'aa').length === 1, 'findMatches never overlaps matches');
+assert(findMatches('anything', '').length === 0, 'an empty query matches nothing (the no-op guard)');
+assert(nextMatch([3, 7, 12], 5) === 7 && nextMatch([3, 7, 12], 12) === 3, 'nextMatch advances and wraps');
+assert(previousMatch([3, 7, 12], 10) === 7 && previousMatch([3, 7, 12], 3) === 12, 'previousMatch rewinds and wraps');
+assert(nextMatch([], 0) === -1 && previousMatch([], 0) === -1, 'no matches navigates nowhere');
+const replaced = replaceLiteral('one two one two', 'one', '1');
+assert(replaced.text === '1 two 1 two' && replaced.count === 2, 'replaceLiteral swaps every occurrence and counts');
+assert(replaceLiteral('text', '', 'x').count === 0, 'replaceLiteral with an empty find is a no-op');

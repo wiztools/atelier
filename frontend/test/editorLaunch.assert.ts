@@ -75,3 +75,8 @@ assert(detectEditorLaunchIntent('Open the markdown editor for me', kinds('markdo
 assert(detectEditorLaunchIntent('Open in the editor', kinds('markdown')) === 'markdown', 'lone markdown attachment resolves');
 assert(detectEditorLaunchIntent('Open in the editor', kinds('markdown', 'image')) === null, 'markdown plus image without a kind word abstains');
 assert(detectEditorLaunchIntent('Open this md in the editor', kinds('markdown')) === 'markdown', 'extension word resolves');
+
+// The screenplay vocabulary rides the markdown editor (Fountain is its dialect).
+assert(detectEditorLaunchIntent('Open the screenplay editor', kinds('markdown')) === 'markdown', 'screenplay editor phrasing');
+assert(detectEditorLaunchIntent('Open this script in the editor', kinds('markdown')) === 'markdown', 'script media word resolves');
+assert(detectEditorLaunchIntent('Open the fountain editor for me', kinds('markdown')) === 'markdown', 'fountain word and trailing politeness');

@@ -14,7 +14,8 @@
     "test:video-trim": "node test/run-video-trim-tests.cjs",
     "test:audio-trim": "node test/run-audio-trim-tests.cjs",
     "test:subtitle-model": "node test/run-subtitle-model-tests.cjs",
-    "test:markdown-model": "node test/run-markdown-model-tests.cjs"
+    "test:markdown-model": "node test/run-markdown-model-tests.cjs",
+    "test:fountain-model": "node test/run-fountain-model-tests.cjs"
   },
   "dependencies": {
     "react": "^18.2.0",

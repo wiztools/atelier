@@ -3898,13 +3898,13 @@ function App() {
   }
 
   // markdownArtifactIDFromURL matches document artifacts only — md_ stems
-  // with a .md extension.
+  // with a .md or .fountain extension (the two document dialects).
   function markdownArtifactIDFromURL(url: string): string | null {
     if (!url.startsWith('/atelier-artifact/')) return null;
     const path = url.split(/[?#]/)[0];
     const filename = path.split('/').pop() || '';
     const stem = filename.replace(/\.[^.]+$/, '');
-    if (!/\.md$/i.test(filename)) return null;
+    if (!/\.(md|fountain)$/i.test(filename)) return null;
     return /^md_[a-zA-Z0-9]+$/.test(stem) ? stem : null;
   }
 
@@ -5124,7 +5124,7 @@ function App() {
 
   function composerHasMediaDrag(event: React.DragEvent<HTMLDivElement>): boolean {
     return Array.from(event.dataTransfer?.items ?? []).some(
-      (item) => item.kind === 'file' && (item.type.startsWith('image/') || item.type.startsWith('audio/') || item.type.startsWith('video/') || item.type === 'text/vtt' || item.type === 'application/x-subrip' || item.type === 'text/markdown'),
+      (item) => item.kind === 'file' && (item.type.startsWith('image/') || item.type.startsWith('audio/') || item.type.startsWith('video/') || item.type === 'text/vtt' || item.type === 'application/x-subrip' || item.type === 'text/markdown' || item.type === 'text/x-fountain'),
     );
   }
 
@@ -7007,7 +7007,7 @@ function App() {
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
                       </svg>
-                      <input type="file" accept="image/*,audio/*,video/*,.vtt,.srt,application/x-subrip,text/vtt,.md,.markdown,text/markdown" multiple onChange={(event) => addFiles(event.target.files)} />
+                      <input type="file" accept="image/*,audio/*,video/*,.vtt,.srt,application/x-subrip,text/vtt,.md,.markdown,.fountain,text/markdown" multiple onChange={(event) => addFiles(event.target.files)} />
                     </label>
                   </div>
                   <div className="composer-submit-row">
@@ -7139,7 +7139,7 @@ function App() {
                         {transcriptChipLabel(asset.url)}
                       </span>
                     ) : asset.kind === 'markdown' && asset.url ? (
-                      <span className="asset-transcript-chip">📝 Markdown (.md)</span>
+                      <span className="asset-transcript-chip">{asset.url.toLowerCase().endsWith('.fountain') ? '📝 Screenplay (.fountain)' : '📝 Markdown (.md)'}</span>
                     ) : (
                       <span className="asset-missing">Artifact file is missing on disk</span>
                     )}
@@ -10660,9 +10660,12 @@ async function readSubtitleFile(file: File, nameOverride?: string): Promise<Atta
 
 // markdownMimeForFile is the document twin: extension-first (.md/.markdown —
 // OSes often report an empty type), with text/markdown as the declared fallback.
-// The backend normalizes both spellings onto .md at persistence.
+// .fountain rides the screenplay dialect's wire mime so the extension survives
+// persistence (unlike .markdown, which normalizes .md because the mime cannot
+// distinguish the spellings). The backend maps the mime back onto the extension.
 function markdownMimeForFile(file: File): string | null {
   const lower = file.name.toLowerCase();
+  if (lower.endsWith('.fountain')) return 'text/x-fountain';
   if (lower.endsWith('.md') || lower.endsWith('.markdown') || file.type === 'text/markdown') return 'text/markdown';
   return null;
 }

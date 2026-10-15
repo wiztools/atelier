@@ -127,6 +127,113 @@
   border-left: 1px solid #2c2f31;
 }
 
+/* The screenplay preview: the page as the PDF prints it — Courier columns
+   at the industry indents (22 / 16 / 10 characters from the text edge). */
+.fountain-preview {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.fountain-preview p {
+  margin: 0;
+  display: inline;
+}
+
+.fountain-page {
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 12px 16px 48px;
+}
+
+.fountain-scene {
+  font-weight: 700;
+  text-transform: uppercase;
+  margin: 1.4em 0 0.9em;
+}
+
+.fountain-action {
+  margin: 0 0 0.9em;
+}
+
+.fountain-character {
+  text-transform: uppercase;
+  margin: 1em 0 0;
+  padding-left: 22ch;
+}
+
+.fountain-parenthetical {
+  padding-left: 16ch;
+}
+
+.fountain-dialogue {
+  margin: 0 0 0.9em;
+  padding-left: 10ch;
+  padding-right: 15ch;
+}
+
+.fountain-transition {
+  text-align: right;
+  text-transform: uppercase;
+  margin: 0 0 0.9em;
+}
+
+.fountain-centered {
+  text-align: center;
+  margin: 0.9em 0;
+}
+
+.fountain-lyric {
+  font-style: italic;
+  margin: 0 0 0.9em;
+  padding-left: 22ch;
+}
+
+.fountain-section,
+.fountain-synopsis {
+  color: #9a9a92;
+  font-style: italic;
+  font-size: 12px;
+  margin: 0.6em 0;
+}
+
+.fountain-section {
+  font-weight: 700;
+}
+
+.fountain-page-break {
+  border: none;
+  border-top: 1px dashed #3b3f42;
+  margin: 1.6em 0;
+}
+
+.fountain-title-page {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  padding: 96px 0 220px;
+  border-bottom: 1px dashed #3b3f42;
+  margin-bottom: 32px;
+}
+
+.fountain-title-title {
+  font-weight: 700;
+  font-size: 16px;
+  text-decoration: underline;
+  text-transform: uppercase;
+}
+
+.fountain-title-credit,
+.fountain-title-author,
+.fountain-title-authors,
+.fountain-title-source,
+.fountain-title-draft-date {
+  font-size: 13px;
+}
+
+.fountain-title-author,
+.fountain-title-authors {
+  margin-bottom: 10px;
+}
+
 .markdown-inspector {
   display: flex;
   flex-direction: column;
@@ -222,6 +329,52 @@
   text-align: left;
   padding: 0;
   cursor: pointer;
+}
+
+.markdown-search {
+  display: grid;
+  gap: 6px;
+}
+
+.markdown-search-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.markdown-search-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid #2c2f31;
+  border-radius: 4px;
+  background: #17191a;
+  color: #d7d1c3;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+.markdown-search-row button {
+  border: 1px solid #3b3f42;
+  border-radius: 4px;
+  background: none;
+  color: #b9b4a8;
+  font-size: 11px;
+  padding: 4px 7px;
+  cursor: pointer;
+}
+
+.markdown-search-row button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.markdown-search-count {
+  min-width: 18px;
+  text-align: right;
+  font-size: 11px;
+  color: #9a9a92;
+  font-variant-numeric: tabular-nums;
 }
 
 .markdown-save {

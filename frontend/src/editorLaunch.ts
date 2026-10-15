@@ -64,6 +64,11 @@ const mediaKinds: Record<string, EditorLaunchKind> = {
   documents: 'markdown',
   doc: 'markdown',
   docs: 'markdown',
+  screenplay: 'markdown',
+  screenplays: 'markdown',
+  script: 'markdown',
+  scripts: 'markdown',
+  fountain: 'markdown',
 };
 
 // The closed vocabulary. Politeness particles are admitted; content words are

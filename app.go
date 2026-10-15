@@ -5653,11 +5653,11 @@ func historyContentForMessage(message ChatMessage, artifactsDir string, config A
 		contents = append(contents, content)
 	}
 	for _, markdown := range message.Markdowns {
-		data, err := decodeSubtitlePayload(markdown)
+		data, mime, err := decodeMediaDataURL(markdown)
 		if err != nil {
 			return nil, nil, err
 		}
-		content, err := writeMarkdownAttachment(artifactsDir, data)
+		content, err := writeMarkdownAttachment(artifactsDir, data, markdownExtensionForMime(mime))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -5974,6 +5974,8 @@ func mediaTypeForExtension(extension string) string {
 		return "audio/mp4"
 	case ".md":
 		return "text/markdown"
+	case ".fountain":
+		return "text/x-fountain"
 	case ".vtt":
 		return "text/vtt"
 	case ".srt":

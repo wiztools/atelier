@@ -194,6 +194,8 @@ export function SaveAudio(arg1:main.SaveAudioRequest):Promise<string>;
 
 export function SaveConfig(arg1:main.AppConfig):Promise<void>;
 
+export function SaveDocumentExport(arg1:main.SaveDocumentExportRequest):Promise<string>;
+
 export function SaveFalAPIKey(arg1:string):Promise<void>;
 
 export function SaveImage(arg1:main.SaveImageRequest):Promise<string>;

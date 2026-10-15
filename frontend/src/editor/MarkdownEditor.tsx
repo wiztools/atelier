@@ -2,7 +2,7 @@ import {useEffect, useMemo, useRef, useState} from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import * as AppBindings from '../../wailsjs/go/main/App';
-import {SaveMarkdown} from '../../wailsjs/go/main/App';
+import {SaveDocumentExport, SaveMarkdown} from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
 import {EditsPanel} from './EditsPanel';
 import {EditorHeader} from './EditorHeader';
@@ -10,29 +10,47 @@ import {
   MarkdownEditState,
   continueListOnEnter,
   cycleHeading,
+  findMatches,
   indentSelection,
   insertBlockSnippet,
   insertCodeFence,
   insertLink,
   insertTable,
+  lineOfOffset,
   markdownOutline,
   markdownStats,
   markdownWarnings,
+  nextMatch,
   offsetOfLine,
+  previousMatch,
+  replaceLiteral,
   toggleLineAffix,
   wrapSelection,
 } from './markdownModel';
+import {
+  FountainElement,
+  fountainContinueElementOnEnter,
+  fountainCycleElementOnTab,
+  fountainOutline,
+  fountainParse,
+  fountainWarnings,
+} from './fountainModel';
 import './markdownEditor.css';
 
 export type MarkdownEditorHandle = {
   source: main.MarkdownSourceInfo;
 };
 
+// The two document dialects — what the save format select offers and what
+// the preview, outline, warnings, and keyboard model dispatch on.
+type DocumentFormat = 'markdown' | 'fountain';
+
 type EditorLogEntry = {
   at: string;
   artifactId: string;
   url: string;
   wordCount: number;
+  format: DocumentFormat;
 };
 
 // The Edits panel's height clamp needs this editor's content floor: header +
@@ -87,6 +105,15 @@ export function MarkdownEditor(props: {
   const [log, setLog] = useState<EditorLogEntry[]>([]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
+  // The dialect the document saves (and previews) as — seeded from the
+  // source artifact's extension, switched from the save block's select.
+  // Switching and saving IS the format conversion: the artifact extension
+  // follows the format.
+  const [exportFormat, setExportFormat] = useState<DocumentFormat>(source.format === 'fountain' ? 'fountain' : 'markdown');
+
+  const [find, setFind] = useState('');
+  const [replace, setReplace] = useState('');
+  const [replaceCount, setReplaceCount] = useState<number | null>(null);
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
@@ -96,8 +123,19 @@ export function MarkdownEditor(props: {
 
   const dirty = text !== baseline;
   const stats = useMemo(() => markdownStats(text), [text]);
-  const outline = useMemo(() => markdownOutline(text), [text]);
-  const warnings = useMemo(() => markdownWarnings(text), [text]);
+  const fountain = exportFormat === 'fountain';
+  const outline = useMemo(
+    () => (fountain ? fountainOutline(text) : markdownOutline(text)),
+    [fountain, text],
+  );
+  const fountainScript = useMemo(
+    () => (fountain ? fountainParse(text) : null),
+    [fountain, text],
+  );
+  const warnings = useMemo(
+    () => (fountain ? fountainWarnings(fountainScript!) : markdownWarnings(text)),
+    [fountain, fountainScript, text],
+  );
 
   // Typing path: coalesce by idle gap so a burst of keystrokes is one undo
   // step, and clear any stale op timestamp so the burst starts its own entry.
@@ -197,7 +235,8 @@ export function MarkdownEditor(props: {
       return;
     }
     if (event.key === 'Enter' && !event.shiftKey && !meta && !event.altKey) {
-      const next = continueListOnEnter({
+      const op = fountain ? fountainContinueElementOnEnter : continueListOnEnter;
+      const next = op({
         text,
         selStart: event.currentTarget.selectionStart,
         selEnd: event.currentTarget.selectionEnd,
@@ -209,6 +248,13 @@ export function MarkdownEditor(props: {
       return;
     }
     if (event.key === 'Tab') {
+      if (fountain) {
+        // The screenplay Tab re-types the line as the next element kind;
+        // Shift+Tab walks the cycle backwards.
+        event.preventDefault();
+        run((state) => fountainCycleElementOnTab(state, event.shiftKey));
+        return;
+      }
       const next = indentSelection(
         {text, selStart: event.currentTarget.selectionStart, selEnd: event.currentTarget.selectionEnd},
         event.shiftKey,
@@ -249,8 +295,45 @@ export function MarkdownEditor(props: {
     textarea.scrollTop = lineRatio * (textarea.scrollHeight - textarea.clientHeight);
   };
 
+  // Find & replace: literal, case-sensitive; the arrows walk the matches with
+  // wrap-around, Replace all commits through the same undo path as the ops.
+  const matchOffsets = useMemo(() => findMatches(text, find), [text, find]);
+
+  const selectMatch = (offset: number) => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+    textarea.focus();
+    textarea.setSelectionRange(offset, offset + find.length);
+    const line = lineOfOffset(text, offset);
+    const totalLines = text.split('\n').length;
+    textarea.scrollTop = (totalLines > 1 ? line / (totalLines - 1) : 0) * (textarea.scrollHeight - textarea.clientHeight);
+  };
+
+  const jumpNext = () => {
+    const at = nextMatch(matchOffsets, textareaRef.current?.selectionEnd ?? 0);
+    if (at >= 0) selectMatch(at);
+  };
+  const jumpPrev = () => {
+    const at = previousMatch(matchOffsets, textareaRef.current?.selectionStart ?? 0);
+    if (at >= 0) selectMatch(at);
+  };
+
+  const runReplaceAll = () => {
+    const result = replaceLiteral(text, find, replace);
+    if (result.count > 0) {
+      setUndoStack((stack) => [...stack, text].slice(-undoLimit));
+      lastPushRef.current = Date.now();
+      setRedoStack([]);
+      setTextState(result.text);
+    }
+    setReplaceCount(result.count);
+  };
+
   // saveDoc commits the edited document into the conversation: a new md_
-  // artifact plus a turn recording the edit. The draft is never touched.
+  // artifact in the selected format plus a turn recording the edit. The
+  // draft is never touched.
   const saveDoc = async () => {
     setSaving(true);
     setSaveError('');
@@ -258,10 +341,11 @@ export function MarkdownEditor(props: {
       const result = await AppBindings.SaveMarkdownEdit(main.SaveMarkdownEditRequest.createFrom({
         conversationId: sourceConversationID,
         sourceArtifactId: activeArtifactID,
+        format: exportFormat,
         text,
       }));
       setLog((entries) => [
-        {at: new Date().toLocaleTimeString(), artifactId: result.artifactId, url: result.url, wordCount: result.wordCount},
+        {at: new Date().toLocaleTimeString(), artifactId: result.artifactId, url: result.url, wordCount: result.wordCount, format: result.format === 'fountain' ? 'fountain' : 'markdown'},
         ...entries,
       ]);
       props.onSavedToConversation?.();
@@ -286,6 +370,7 @@ export function MarkdownEditor(props: {
       setTextState(revision.text);
       setBaseline(revision.text);
       setActiveArtifactID(revision.artifactId);
+      setExportFormat(revision.format === 'fountain' ? 'fountain' : 'markdown');
       lastPushRef.current = 0;
     } catch (error) {
       setLoadError(formatEditorError(error));
@@ -299,6 +384,21 @@ export function MarkdownEditor(props: {
       await SaveMarkdown(main.SaveTranscriptRequest.createFrom({
         path: url,
         suggestedName: `${source.conversationTitle || 'document'}-${Date.now()}-${index + 1}`,
+      }));
+    } catch (error) {
+      setSaveError(formatEditorError(error));
+    }
+  };
+
+  // exportSaved is the fountain rows' derived-export door: the saved
+  // artifact renders to PDF or Final Draft on its way to disk — never from
+  // the editor's uncommitted draft.
+  const exportSaved = async (url: string, format: 'pdf' | 'fdx', index: number) => {
+    try {
+      await SaveDocumentExport(main.SaveDocumentExportRequest.createFrom({
+        path: url,
+        format,
+        suggestedName: `${source.conversationTitle || 'screenplay'}-${Date.now()}-${index + 1}`,
       }));
     } catch (error) {
       setSaveError(formatEditorError(error));
@@ -372,18 +472,18 @@ export function MarkdownEditor(props: {
               ref={textareaRef}
               className="markdown-source"
               value={text}
-              placeholder="Write in Markdown…"
+              placeholder={fountain ? 'INT. SCENE - DAY' : 'Write in Markdown…'}
               onChange={(event) => onType(event.target.value)}
               onKeyDown={onKeyDown}
               onScroll={(event) => syncScroll(event.currentTarget, previewRef.current)}
               spellCheck
             />
             <div
-              className="markdown-preview markdown-body"
+              className={`markdown-preview ${fountain ? 'fountain-preview' : 'markdown-body'}`}
               ref={previewRef}
               onScroll={(event) => syncScroll(event.currentTarget, textareaRef.current)}
             >
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+              {fountain ? <FountainPreview text={text} /> : <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>}
             </div>
           </div>
         </div>
@@ -426,6 +526,36 @@ export function MarkdownEditor(props: {
             </ul>
           </div>
 
+          <div className="markdown-search">
+            <div className="markdown-search-row">
+              <input
+                type="text"
+                placeholder="Find…"
+                value={find}
+                onChange={(event) => { setFind(event.target.value); setReplaceCount(null); }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    if (event.shiftKey) jumpPrev(); else jumpNext();
+                  }
+                }}
+              />
+              <span className="markdown-search-count">{find ? matchOffsets.length : ''}</span>
+              <button type="button" disabled={!matchOffsets.length} title="Previous match (Shift+Enter)" onClick={jumpPrev}>↑</button>
+              <button type="button" disabled={!matchOffsets.length} title="Next match (Enter)" onClick={jumpNext}>↓</button>
+            </div>
+            <div className="markdown-search-row">
+              <input
+                type="text"
+                placeholder="Replace with…"
+                value={replace}
+                onChange={(event) => setReplace(event.target.value)}
+              />
+              <button type="button" disabled={!find || !matchOffsets.length} onClick={runReplaceAll}>Replace all</button>
+            </div>
+            {replaceCount !== null ? <span className="hint">{replaceCount} replaced</span> : null}
+          </div>
+
           <div className="editor-tool-group">
             <button type="button" disabled={!undoStack.length} onClick={undo}>Undo</button>
             <button type="button" disabled={!redoStack.length} onClick={redo}>Redo</button>
@@ -439,6 +569,17 @@ export function MarkdownEditor(props: {
           </div>
 
           <div className="markdown-save">
+            <label>
+              Format
+              <select
+                value={exportFormat}
+                onChange={(event) => setExportFormat(event.target.value === 'fountain' ? 'fountain' : 'markdown')}
+                title="The dialect the document saves and previews as — the artifact extension follows it, so switching and saving converts the format"
+              >
+                <option value="markdown">Markdown (.md)</option>
+                <option value="fountain">Fountain screenplay (.fountain)</option>
+              </select>
+            </label>
             <button
               type="button"
               className="editor-generate"
@@ -446,7 +587,7 @@ export function MarkdownEditor(props: {
               title="Write the document back into the conversation as a new artifact — the original stays intact. Download the saved file from the Edits panel below."
               onClick={() => void saveDoc()}
             >
-              {saving ? 'Saving…' : 'Save Markdown to conversation'}
+              {saving ? 'Saving…' : `Save ${fountain ? 'Fountain' : 'Markdown'} to conversation`}
             </button>
             {saveError ? <div className="editor-error">{saveError}</div> : null}
             <span className="editor-session-note">Edits stay in the editor until you save them — download the saved file from the Edits panel below.</span>
@@ -461,7 +602,7 @@ export function MarkdownEditor(props: {
               <span className="editor-op-thumb-glyph">✓</span>
               <div className="editor-op-meta">
                 <span className="editor-op-title">
-                  Saved · {entry.wordCount} words · {entry.artifactId.slice(0, 12)}
+                  Saved · {entry.format === 'fountain' ? 'Fountain' : 'Markdown'} · {entry.wordCount} words · {entry.artifactId.slice(0, 12)}
                 </span>
                 <span className="editor-op-sub" title={entry.url}>{entry.at} → attached to the conversation</span>
               </div>
@@ -474,6 +615,12 @@ export function MarkdownEditor(props: {
                 >
                   Use as source
                 </button>
+                {entry.format === 'fountain' ? (
+                  <>
+                    <button type="button" title="Render the saved screenplay to a production-layout PDF" onClick={() => void exportSaved(entry.url, 'pdf', index)}>PDF</button>
+                    <button type="button" title="Export the saved screenplay as a Final Draft .fdx file" onClick={() => void exportSaved(entry.url, 'fdx', index)}>FDX</button>
+                  </>
+                ) : null}
                 <button type="button" onClick={() => void downloadSaved(entry.url, index)}>Download</button>
               </div>
             </li>
@@ -481,5 +628,43 @@ export function MarkdownEditor(props: {
         </ul>
       </EditsPanel>
     </section>
+  );
+}
+
+// FountainPreview renders the screenplay page: the title page block when the
+// script opens with one, then every element in its industry column — the
+// preview IS the formatted script, the way the PDF will print it. Element
+// text renders through react-markdown (one inline block each) so Fountain's
+// *emphasis* markers style instead of printing.
+function FountainPreview({text}: {text: string}) {
+  const script = useMemo(() => fountainParse(text), [text]);
+  const titleKeys = Object.keys(script.titlePage);
+  return (
+    <div className="fountain-page">
+      {titleKeys.length > 0 ? (
+        <div className="fountain-title-page">
+          {(['Title', 'Credit', 'Author', 'Authors', 'Source', 'Draft date'] as const).map((key) =>
+            script.titlePage[key] ? (
+              <div key={key} className={`fountain-title-${key.toLowerCase().replace(' ', '-')}`}>{script.titlePage[key]}</div>
+            ) : null,
+          )}
+        </div>
+      ) : null}
+      {script.elements.map((element, index) => (
+        <FountainElementView key={index} element={element} />
+      ))}
+    </div>
+  );
+}
+
+function FountainElementView({element}: {element: FountainElement}) {
+  if (element.kind === 'Page Break') {
+    return <hr className="fountain-page-break" />;
+  }
+  const className = `fountain-${element.kind.toLowerCase().replace(' ', '-')}`;
+  return (
+    <div className={className}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{element.text}</ReactMarkdown>
+    </div>
   );
 }

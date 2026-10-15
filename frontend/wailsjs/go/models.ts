@@ -2263,6 +2263,7 @@ export namespace main {
 	    artifactId: string;
 	    url: string;
 	    mimeType?: string;
+	    format: string;
 	    text: string;
 	    wordCount: number;
 	
@@ -2277,6 +2278,7 @@ export namespace main {
 	        this.artifactId = source["artifactId"];
 	        this.url = source["url"];
 	        this.mimeType = source["mimeType"];
+	        this.format = source["format"];
 	        this.text = source["text"];
 	        this.wordCount = source["wordCount"];
 	    }
@@ -2396,6 +2398,22 @@ export namespace main {
 	        this.suggestedName = source["suggestedName"];
 	    }
 	}
+	export class SaveDocumentExportRequest {
+	    path: string;
+	    format: string;
+	    suggestedName?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SaveDocumentExportRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.format = source["format"];
+	        this.suggestedName = source["suggestedName"];
+	    }
+	}
 	export class SaveImageRequest {
 	    image: string;
 	    suggestedName?: string;
@@ -2413,6 +2431,7 @@ export namespace main {
 	export class SaveMarkdownEditRequest {
 	    conversationId: string;
 	    sourceArtifactId?: string;
+	    format?: string;
 	    text: string;
 	
 	    static createFrom(source: any = {}) {
@@ -2423,12 +2442,14 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.conversationId = source["conversationId"];
 	        this.sourceArtifactId = source["sourceArtifactId"];
+	        this.format = source["format"];
 	        this.text = source["text"];
 	    }
 	}
 	export class SaveMarkdownEditResult {
 	    artifactId: string;
 	    url: string;
+	    format: string;
 	    wordCount: number;
 	
 	    static createFrom(source: any = {}) {
@@ -2439,6 +2460,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.artifactId = source["artifactId"];
 	        this.url = source["url"];
+	        this.format = source["format"];
 	        this.wordCount = source["wordCount"];
 	    }
 	}

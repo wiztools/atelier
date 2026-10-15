@@ -21,22 +21,58 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// markdownArtifactExtension reports ".md" when a history content entry is a
-// markdown artifact. The path extension is the direct identity
-// (writeMarkdownAttachment always lands .md); the mime mapping covers any
+// markdownArtifactExtension reports ".md" or ".fountain" when a history
+// content entry is a markdown artifact — the two dialects of the document
+// editor, one HistoryContent type. The path extension is the direct identity
+// (writeMarkdownAttachment lands one of the two); the mime mapping covers any
 // entry whose path is missing — the same two-step read as
 // subtitleArtifactExtension.
 func markdownArtifactExtension(content HistoryContent) string {
 	if content.Type != "markdown" {
 		return ""
 	}
-	if strings.ToLower(filepath.Ext(content.Path)) == ".md" {
+	switch strings.ToLower(filepath.Ext(content.Path)) {
+	case ".md":
 		return ".md"
+	case ".fountain":
+		return ".fountain"
 	}
-	if content.MimeType == "text/markdown" {
+	switch content.MimeType {
+	case "text/x-fountain":
+		return ".fountain"
+	case "text/markdown":
 		return ".md"
 	}
 	return ""
+}
+
+// markdownExtensionForMime maps an attachment's declared mime onto its
+// persisted extension — .fountain for the screenplay dialect's wire mime,
+// .md for everything else. The composer sends text/x-fountain for .fountain
+// files so the dialect survives persistence (unlike .markdown-vs-.md, where
+// the mime cannot distinguish the spellings and everything normalizes .md).
+func markdownExtensionForMime(mimeType string) string {
+	if strings.ToLower(strings.TrimSpace(mimeType)) == "text/x-fountain" {
+		return ".fountain"
+	}
+	return ".md"
+}
+
+// markdownFormatExtension maps a save format onto the artifact extension.
+func markdownFormatExtension(format string) string {
+	if format == documentFormatFountain {
+		return ".fountain"
+	}
+	return ".md"
+}
+
+// markdownFormatLabel renders a format for the save summary ("saved as
+// Markdown" / "saved as Fountain").
+func markdownFormatLabel(format string) string {
+	if format == documentFormatFountain {
+		return "Fountain"
+	}
+	return "Markdown"
 }
 
 // markdownWordCount is the one fact the save path's summary turn states, kept
@@ -50,7 +86,7 @@ func markdownWordCount(text string) int {
 // lists. Validation is loose (non-empty, valid UTF-8): unlike subtitles there
 // is no format to sniff, and every attachment normalizes to the .md spelling
 // because the data-URL mime (text/markdown) cannot distinguish .markdown.
-func writeMarkdownAttachment(artifactsDir string, data []byte) (HistoryContent, error) {
+func writeMarkdownAttachment(artifactsDir string, data []byte, extension string) (HistoryContent, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return HistoryContent{}, errors.New("markdown document is empty")
 	}
@@ -58,7 +94,7 @@ func writeMarkdownAttachment(artifactsDir string, data []byte) (HistoryContent, 
 		return HistoryContent{}, errors.New("markdown document is not UTF-8 text")
 	}
 	artifactID := randomID("md")
-	filename := artifactID + ".md"
+	filename := artifactID + extension
 	if err := os.WriteFile(filepath.Join(artifactsDir, filename), data, 0644); err != nil {
 		return HistoryContent{}, err
 	}
@@ -66,20 +102,24 @@ func writeMarkdownAttachment(artifactsDir string, data []byte) (HistoryContent, 
 		Type:       "markdown",
 		ArtifactID: artifactID,
 		Path:       filepath.ToSlash(filepath.Join("artifacts", filename)),
-		MimeType:   mediaTypeForExtension(".md"),
+		MimeType:   mediaTypeForExtension(extension),
 	}, nil
 }
 
 // MarkdownSourceInfo is what the editor loads: the document text plus the
-// identity the reply chips and assets panel need. Unlike the subtitle
-// resolve, there are no cues or server-computed warnings to carry — the text
-// is the whole document, and the editor derives its review checklist from it.
+// identity the reply chips and assets panel need. Format names the dialect
+// the artifact's extension carries (.md → "markdown", .fountain → "fountain")
+// — the editor's preview, outline, and keyboard model dispatch on it, and the
+// save's format select starts there. Unlike the subtitle resolve, there are
+// no cues or server-computed warnings to carry — the text is the whole
+// document, and the editor derives its review checklist from it.
 type MarkdownSourceInfo struct {
 	ConversationID    string `json:"conversationId"`
 	ConversationTitle string `json:"conversationTitle,omitempty"`
 	ArtifactID        string `json:"artifactId"`
 	URL               string `json:"url"`
 	MimeType          string `json:"mimeType,omitempty"`
+	Format            string `json:"format"`
 	Text              string `json:"text"`
 	WordCount         int    `json:"wordCount"`
 }
@@ -142,29 +182,44 @@ func (a *App) ResolveMarkdownEditSource(conversationID, artifactID string) (Mark
 		ArtifactID:        content.ArtifactID,
 		URL:               artifactPrefix + absPath,
 		MimeType:          content.MimeType,
+		Format:            documentFormatForExtension(markdownArtifactExtension(*content)),
 		Text:              string(data),
 		WordCount:         markdownWordCount(string(data)),
 	}
 	return info, nil
 }
 
+// documentFormatForExtension names the editor dialect an artifact extension
+// carries — the resolve path's Format value.
+func documentFormatForExtension(extension string) string {
+	if extension == ".fountain" {
+		return documentFormatFountain
+	}
+	return documentFormatMarkdown
+}
+
 // SaveMarkdownEditRequest carries one commit of the editor's document back
 // into its conversation — the same single door the subtitle editor has: a new
-// md_ artifact plus a small assistant turn recording the edit. The source
-// artifact is provenance for the turn's summary; the original file is never
-// touched.
+// md_ artifact plus a small assistant turn recording the edit. Format names
+// the dialect the document saves as ("markdown" | "fountain", empty →
+// markdown) — the artifact extension follows it, so switching the select and
+// saving IS the format conversion. The source artifact is provenance for the
+// turn's summary; the original file is never touched.
 type SaveMarkdownEditRequest struct {
 	ConversationID   string `json:"conversationId"`
 	SourceArtifactID string `json:"sourceArtifactId,omitempty"`
+	Format           string `json:"format,omitempty"`
 	Text             string `json:"text"`
 }
 
 // SaveMarkdownEditResult names what the save produced: the new artifact's
 // identity (the reply chips, the assets panel, and a later editor open all
-// read it) plus what was written.
+// read it) plus what was written — Format echoes the save's dialect, the
+// Edits panel rows key their PDF/FDX actions on it.
 type SaveMarkdownEditResult struct {
 	ArtifactID string `json:"artifactId"`
 	URL        string `json:"url"`
+	Format     string `json:"format"`
 	WordCount  int    `json:"wordCount"`
 }
 
@@ -177,6 +232,13 @@ func (a *App) SaveMarkdownEdit(req SaveMarkdownEditRequest) (SaveMarkdownEditRes
 	conversationID := strings.TrimSpace(req.ConversationID)
 	if conversationID == "" {
 		return SaveMarkdownEditResult{}, errors.New("saving a document to a conversation requires a conversation id")
+	}
+	format := strings.ToLower(strings.TrimSpace(req.Format))
+	if format == "" {
+		format = documentFormatMarkdown
+	}
+	if format != documentFormatMarkdown && format != documentFormatFountain {
+		return SaveMarkdownEditResult{}, fmt.Errorf(`document format must be "markdown" or "fountain", got %q`, req.Format)
 	}
 	a.streamsMu.Lock()
 	for _, active := range a.streamConversations {
@@ -196,17 +258,17 @@ func (a *App) SaveMarkdownEdit(req SaveMarkdownEditRequest) (SaveMarkdownEditRes
 	if err != nil {
 		return SaveMarkdownEditResult{}, err
 	}
-	content, err := writeMarkdownAttachment(loaded.ArtifactsDir, []byte(req.Text))
+	content, err := writeMarkdownAttachment(loaded.ArtifactsDir, []byte(req.Text), markdownFormatExtension(format))
 	if err != nil {
 		return SaveMarkdownEditResult{}, err
 	}
 	source := strings.TrimSpace(req.SourceArtifactID)
 	if source == "" {
-		source = "markdown"
+		source = format
 	}
 	words := markdownWordCount(req.Text)
 	nowText := time.Now().Format(time.RFC3339)
-	summary := fmt.Sprintf("Edited document from %s · %d words · saved as Markdown", source, words)
+	summary := fmt.Sprintf("Edited document from %s · %d words · saved as %s", source, words, markdownFormatLabel(format))
 	assistantTurn := buildChatAssistantTurn(conversationID, loaded.NextTurnNumber, nowText, summary, "", "", "", "", 0, HarnessRun{}, "")
 	assistantTurn.Content = append(assistantTurn.Content, content)
 
@@ -226,6 +288,7 @@ func (a *App) SaveMarkdownEdit(req SaveMarkdownEditRequest) (SaveMarkdownEditRes
 	return SaveMarkdownEditResult{
 		ArtifactID: content.ArtifactID,
 		URL:        artifactPrefix + filepath.Join(absArtifactsDir, filepath.Base(content.Path)),
+		Format:     format,
 		WordCount:  words,
 	}, nil
 }

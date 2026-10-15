@@ -386,6 +386,10 @@ export function SaveConfig(arg1) {
   return window['go']['main']['App']['SaveConfig'](arg1);
 }
 
+export function SaveDocumentExport(arg1) {
+  return window['go']['main']['App']['SaveDocumentExport'](arg1);
+}
+
 export function SaveFalAPIKey(arg1) {
   return window['go']['main']['App']['SaveFalAPIKey'](arg1);
 }

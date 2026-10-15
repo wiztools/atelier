@@ -319,3 +319,60 @@ export function markdownWarnings(text: string): MarkdownWarning[] {
   }
   return warnings;
 }
+
+// findMatches returns the non-overlapping start offsets of every literal,
+// case-sensitive occurrence of query — [] when the query is empty (the find
+// field's no-op). Literal by contract, like replaceLiteral below: no regex
+// surprises in a review tool.
+export function findMatches(text: string, query: string): number[] {
+  if (!query) {
+    return [];
+  }
+  const matches: number[] = [];
+  let at = text.indexOf(query);
+  while (at >= 0) {
+    matches.push(at);
+    at = text.indexOf(query, at + query.length);
+  }
+  return matches;
+}
+
+// replaceLiteral applies a literal replacement across the whole document and
+// reports how many substitutions landed — the count is the review affordance
+// ("9 replaced") before committing.
+export function replaceLiteral(text: string, find: string, replace: string): {text: string; count: number} {
+  if (!find) {
+    return {text, count: 0};
+  }
+  const parts = text.split(find);
+  return {text: parts.join(replace), count: parts.length - 1};
+}
+
+// nextMatch picks the first match strictly after the caret, wrapping to the
+// first — -1 when there are none. Strictly after, so Next from a match's own
+// start advances instead of re-selecting it.
+export function nextMatch(offsets: number[], caret: number): number {
+  if (!offsets.length) {
+    return -1;
+  }
+  for (const at of offsets) {
+    if (at > caret) {
+      return at;
+    }
+  }
+  return offsets[0];
+}
+
+// previousMatch picks the last match strictly before the caret, wrapping to
+// the last — -1 when there are none.
+export function previousMatch(offsets: number[], caret: number): number {
+  if (!offsets.length) {
+    return -1;
+  }
+  for (let index = offsets.length - 1; index >= 0; index--) {
+    if (offsets[index] < caret) {
+      return offsets[index];
+    }
+  }
+  return offsets[offsets.length - 1];
+}
