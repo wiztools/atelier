@@ -46,7 +46,7 @@ func ffmpegToolsConfigured(config AppConfig) bool {
 // configured. It tells the model what actually happened (the capability is
 // absent, not broken) and the exact remedy to relay, so a from-knowledge
 // answer can't masquerade as a failed edit or hand the user a raw CLI recipe.
-const localMediaEditUnavailableNote = "Atelier note: the user's latest request asks for a local media edit — capturing a frame or a contact sheet, splitting or trimming a clip or audio recording, joining clips or audio files, converting an audio file's format, cropping/resizing/rotating a clip, or extracting/replacing audio — but no ffmpeg CLI was detected on this machine, so Atelier has no tool that can perform it. Do not claim the edit was done and do not attempt it through other tools. Tell the user plainly that local media editing needs a one-time install: install ffmpeg with `brew install ffmpeg` (or set an explicit binary in Settings → Video Tools); Atelier detects it automatically on the next message."
+const localMediaEditUnavailableNote = "Atelier note: the user's latest request asks for a local media edit — capturing a frame or a contact sheet, splitting or trimming a clip or audio recording, joining clips or audio files, converting an audio file's format, cropping/resizing/rotating/reversing a clip, or extracting/replacing audio — but no ffmpeg CLI was detected on this machine, so Atelier has no tool that can perform it. Do not claim the edit was done and do not attempt it through other tools. Tell the user plainly that local media editing needs a one-time install: install ffmpeg with `brew install ffmpeg` (or set an explicit binary in Settings → Video Tools); Atelier detects it automatically on the next message."
 
 // mediaEditFallbackNotice returns the deterministic one-line blockquote for
 // the chat reply when the final model's answer did not already mention ffmpeg
@@ -79,6 +79,7 @@ func ffmpegToolDefinitions(config AppConfig) []HarnessToolDefinition {
 		replaceAudioToolDefinition(),
 		convertAudioToolDefinition(),
 		transformVideoToolDefinition(),
+		reverseVideoToolDefinition(),
 	}
 	if _, ok := resolveLocalFFprobeBinary(config); ok {
 		definitions = append(definitions, probeMediaToolDefinition())
@@ -2477,6 +2478,164 @@ func transformVideoSourceDimensions(ctx context.Context, config AppConfig, input
 		return 0, 0, errors.New("transform_video could not read the attached clip's dimensions for the aspect-ratio crop — ffprobe is unavailable and the clip is not a readable MP4")
 	}
 	return width, height, nil
+}
+
+// reverseVideoToolDefinition exposes reverse_video: play an attached clip
+// backwards — the rewind/boomerang effect, and half of the reverse → extend →
+// reverse pipeline that extends a clip's beginning (generation models only
+// continue from the end).
+func reverseVideoToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "reverse_video",
+		Title:       "Reverse video",
+		Description: "Use this when the user asks to play an attached video backwards — reverse it, rewind it, a boomerang effect — delivering the same footage in reverse order. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). By default the audio plays backwards too, staying in sync with the picture; set mode \"mute\" to deliver the reversed clip with no sound — do that when the reversed clip will feed another generation step, because a backwards soundtrack is meaningless conditioning. That is also the recipe for extending a clip's BEGINNING, which video models cannot do directly (they only continue from the end): reverse_video the clip (mode \"mute\"), generate_video to extend the reversed clip, reverse_video the result, then join_videos. The video is re-encoded to H.264 — the reverse filter cannot stream-copy — and very long clips are refused, since reversing buffers every decoded frame in memory; split a long source with split_video and reverse the segments. The result is attached to the assistant reply and becomes the conversation's newest video.",
+		Example:     `{"name":"reverse_video"}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: reverseVideoParamSchema(),
+		Validate: func(prefix string, call HarnessToolCall) []string {
+			switch strings.TrimSpace(call.Mode) {
+			case "", "sound", "mute":
+			default:
+				return []string{prefix + `.mode must be "sound" or "mute" for reverse_video — whether the audio plays backwards or the clip is delivered silent`}
+			}
+			return nil
+		},
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			source := firstAttachedVideo(tools.AttachedVideos)
+			if source == "" {
+				return nil, "reverse requires an attached video clip", errors.New("reverse_video requires an attached video clip — ask the user to attach one first")
+			}
+			staging, err := os.MkdirTemp("", "atelier-ffmpeg-*")
+			if err != nil {
+				return nil, "reverse failed", err
+			}
+			defer os.RemoveAll(staging)
+			input, err := stageMediaDataURL(staging, "input", source)
+			if err != nil {
+				return nil, "reverse failed", err
+			}
+			duration, fps, width, height, hasAudio, err := reverseVideoSourceFacts(ctx, tools.Config, input, source)
+			if err != nil {
+				return nil, "reverse failed", err
+			}
+			if needed := reverseVideoMemoryEstimate(duration, fps, width, height); needed > reverseVideoMemoryBudgetBytes {
+				return nil, "reverse failed", fmt.Errorf("reverse_video reverses in memory, and this clip (%ss at %dx%d, about %.1f GiB of decoded frames) exceeds the %d GiB budget — split_video it into shorter segments and reverse those, or use a shorter clip", formatPlaybackSpeed(duration), width, height, float64(needed)/(1<<30), reverseVideoMemoryBudgetBytes>>30)
+			}
+			mute := strings.TrimSpace(call.Mode) == "mute"
+			staged := filepath.Join(staging, "reversed.mp4")
+			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegReverseVideoArgs(input, staged, mute)); err != nil {
+				return nil, "reverse failed", err
+			}
+			tempPath, err := promoteStagedOutput(staged, "atelier-video-*", ".mp4")
+			if err != nil {
+				return nil, "reverse failed", err
+			}
+			notices := []string{
+				"the video was re-encoded (H.264, CRF 18) — the reverse filter cannot stream-copy.",
+			}
+			prompt := "reverse: the clip plays backwards"
+			summary := "reversed the attached video with ffmpeg (H.264, CRF 18, audio reversed)"
+			if mute {
+				notices = append(notices, "the audio track was dropped (mode \"mute\") — the reversed clip is silent.")
+				prompt = "reverse: the clip plays backwards with no audio"
+				summary = "reversed the attached video with ffmpeg (H.264, CRF 18, audio muted)"
+			} else if !hasAudio {
+				notices = append(notices, "the clip has no audio track, so the reversed clip is silent too.")
+			}
+			output := ToolVideoResult{
+				Model:   ffmpegModelName,
+				Prompt:  prompt,
+				Count:   1,
+				Videos:  []ToolVideoFile{{TempPath: tempPath, MimeType: "video/mp4"}},
+				Notices: notices,
+			}
+			return output, summary, nil
+		},
+		Activity: ffmpegActivity("reverse"),
+	}
+}
+
+// reverseVideoParamSchema frees the grammar to emit reverse_video's audio
+// selector; the values are validated per-tool in the definition above.
+func reverseVideoParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"mode": stringParam(`Optional — audio handling: "sound" (the default) plays the audio backwards in sync with the picture; "mute" delivers the reversed clip with no audio (use when the reversed clip will feed a video-generation step).`),
+		},
+		"required": []string{},
+	}
+}
+
+// reverseVideoMemoryBudgetBytes caps the decoded-frame buffer one reverse_video
+// call may need. The reverse filter holds EVERY frame until the clip ends —
+// roughly width × height × 1.5 bytes each (yuv420p) at the clip's frame rate —
+// so a minutes-long 4K source would buffer gigabytes before the first output
+// frame. 4 GiB admits every AI-generated clip and most short creative ones
+// (~43s of 1080p30) while refusing genuinely dangerous sources; the refusal
+// names split_video so the planner can repair into bounded segments.
+const reverseVideoMemoryBudgetBytes = int64(4) << 30
+
+// reverseVideoDefaultFPS stands in for the frame rate when only the MP4 box
+// sniff answers (no ffprobe): the sniffer reads no timing tables, and 30 sits
+// at the upper-middle of typical sources — over-counting a 24fps clip is the
+// safe direction for a memory guard.
+const reverseVideoDefaultFPS = 30.0
+
+// ffmpegReverseVideoArgs reverses playback: the frames play last-to-first and
+// the audio with them (areverse), under the house re-encode preset — a stream
+// copy cannot reverse. mode "mute" swaps the reversed audio for -an; a clip
+// with no audio stream simply ignores -af (transform_video's speed path leans
+// on the same tolerance).
+func ffmpegReverseVideoArgs(input, output string, muteAudio bool) []string {
+	args := []string{"-i", input, "-vf", "reverse"}
+	if muteAudio {
+		args = append(args, "-an")
+	} else {
+		args = append(args, "-af", "areverse")
+	}
+	return append(args,
+		"-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+		"-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output)
+}
+
+// reverseVideoSourceFacts resolves what the memory guard needs about the
+// attached clip: duration, frame rate, frame size, and audio presence.
+// ffprobe answers for any container when it resolves; the MP4 box sniff
+// (mvhd duration + tkhd dimensions) covers generation outputs without it,
+// assuming 30fps since the sniffer reads no timing tables. Audio presence
+// only feeds a notice, so a sniff without an mvhd audio marker is tolerated.
+// The error fails closed and names the remedy: without a measurement the
+// guard cannot size a buffer for a filter that decodes the whole clip.
+func reverseVideoSourceFacts(ctx context.Context, config AppConfig, input, sourceDataURL string) (duration, fps float64, width, height int, hasAudio bool, err error) {
+	if _, ok := resolveLocalFFprobeBinary(config); ok {
+		if probe, probeErr := probeStagedMedia(ctx, config, input, "video"); probeErr == nil &&
+			probe.Duration > 0 && probe.Width > 0 && probe.Height > 0 {
+			probeFPS := probe.FPS
+			if probeFPS <= 0 {
+				probeFPS = reverseVideoDefaultFPS
+			}
+			return probe.Duration, probeFPS, probe.Width, probe.Height, probe.AudioCodec != "", nil
+		}
+	}
+	if data, _, decodeErr := decodeMediaDataURL(sourceDataURL); decodeErr == nil {
+		seconds, ok := mp4DurationSeconds(data)
+		w, h, sizeOK := mp4VideoDimensions(data)
+		if ok && sizeOK {
+			return seconds, reverseVideoDefaultFPS, int(w), int(h), mp4HasAudioTrack(data), nil
+		}
+	}
+	return 0, 0, 0, 0, false, errors.New("reverse_video could not measure the attached clip's length or frame size, and reversing buffers the whole decode in memory — Atelier refuses clips it cannot size. Install ffprobe (`brew install ffmpeg` includes it, or set both binaries in Settings → Video Tools) and re-attach the clip, or trim it to MP4 with split_video first")
+}
+
+// reverseVideoMemoryEstimate sizes the reverse filter's worst-case buffer:
+// every frame of the clip decoded to yuv420p (1.5 bytes per pixel). It is a
+// guard's approximation, not a quote — 10-bit or 4:2:2 sources decode larger,
+// so the estimate errs small against those, which the 4 GiB budget's headroom
+// absorbs.
+func reverseVideoMemoryEstimate(duration, fps float64, width, height int) int64 {
+	return int64(duration * fps * float64(width) * float64(height) * 1.5)
 }
 
 // probeMediaToolDefinition exposes probe_media: ffprobe facts of an attached

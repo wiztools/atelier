@@ -109,6 +109,15 @@ cat <<'JSON'
 JSON
 `
 
+// fakeFFprobeLongClipScript fakes ffprobe over a 600-second 1080p clip —
+// far beyond reverse_video's decoded-frame memory budget — driving the
+// guard's refusal.
+const fakeFFprobeLongClipScript = `#!/bin/sh
+cat <<'JSON'
+{"format":{"duration":"600.000","format_name":"mov,mp4,m4a,3gp,3g2,mj2"},"streams":[{"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"avg_frame_rate":"30000/1001"},{"codec_type":"audio","codec_name":"aac"}]}
+JSON
+`
+
 // fakeFFprobeFailScript fakes an ffprobe that always fails: it drives the
 // probe-failure fallbacks deterministically — an absent ffprobe override
 // would let a real ffprobe on PATH probe the fixtures (and two genuine WAVs
@@ -701,6 +710,17 @@ func TestFFmpegToolValidation(t *testing.T) {
 	}
 	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Speed: 2, Start: "00:00:10", End: "00:00:20"}); len(errors) != 0 {
 		t.Errorf("valid portion transform = %v, want none", errors)
+	}
+
+	reverse := reverseVideoToolDefinition()
+	if errors := reverse.Validate("toolCalls[0]", HarnessToolCall{}); len(errors) != 0 {
+		t.Errorf("valid default reverse = %v, want none", errors)
+	}
+	if errors := reverse.Validate("toolCalls[0]", HarnessToolCall{Mode: "mute"}); len(errors) != 0 {
+		t.Errorf("valid mute reverse = %v, want none", errors)
+	}
+	if errors := reverse.Validate("toolCalls[0]", HarnessToolCall{Mode: "louder"}); len(errors) == 0 || !strings.Contains(errors[0], `.mode must be "sound" or "mute"`) {
+		t.Errorf("reverse with a bad mode = %v, want the mode enum error", errors)
 	}
 }
 
@@ -1632,6 +1652,91 @@ func TestFFmpegRemoveAudioExecutes(t *testing.T) {
 	})
 }
 
+// TestFFmpegReverseVideoExecutes pins the reverse path: a pinned H.264
+// re-encode whose picture and audio both play backwards, the mute variant's
+// -an, the silent-source notice, the decoded-frame memory refusal, the
+// fail-closed unmeasurable-clip error, and the required-video error.
+func TestFFmpegReverseVideoExecutes(t *testing.T) {
+	t.Run("reverses picture and audio by default", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "reverse_video", HarnessToolCall{})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, ok := result.Result.(ToolVideoResult)
+		if !ok || typed.Model != ffmpegModelName || len(typed.Videos) != 1 {
+			t.Fatalf("result payload = %+v", result.Result)
+		}
+		defer os.Remove(typed.Videos[0].TempPath)
+		if typed.Videos[0].MimeType != "video/mp4" {
+			t.Fatalf("mimeType = %q", typed.Videos[0].MimeType)
+		}
+		args := fakeFFmpegArgs(t, bin)
+		if !strings.Contains(args, "-vf reverse") || !strings.Contains(args, "-af areverse") || !strings.Contains(args, "libx264") || strings.Contains(args, "-an ") {
+			t.Fatalf("reverse args = %q, want a pinned re-encode with reversed audio", args)
+		}
+	})
+	t.Run("mute mode strips the audio", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "reverse_video", HarnessToolCall{Mode: "mute"})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed := result.Result.(ToolVideoResult)
+		defer os.Remove(typed.Videos[0].TempPath)
+		args := fakeFFmpegArgs(t, bin)
+		if !strings.Contains(args, "-an ") || strings.Contains(args, "areverse") {
+			t.Fatalf("mute args = %q, want -an and no areverse", args)
+		}
+		if len(result.Notices) < 2 || !strings.Contains(result.Notices[1], "mode \"mute\"") {
+			t.Fatalf("notices = %v, want the mute notice", result.Notices)
+		}
+	})
+	t.Run("a silent source rides a notice", func(t *testing.T) {
+		config, _ := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeNoAudioScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "reverse_video", HarnessToolCall{})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed := result.Result.(ToolVideoResult)
+		defer os.Remove(typed.Videos[0].TempPath)
+		if len(result.Notices) < 2 || !strings.Contains(result.Notices[1], "no audio track") {
+			t.Fatalf("notices = %v, want the silent-source notice", result.Notices)
+		}
+	})
+	t.Run("a clip beyond the memory budget is refused", func(t *testing.T) {
+		config, _ := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeLongClipScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "reverse_video", HarnessToolCall{})
+		if result.Status == "completed" || !strings.Contains(result.Error, "split_video") || !strings.Contains(result.Error, "memory") {
+			t.Fatalf("result = %+v, want the memory-budget refusal naming split_video", result)
+		}
+	})
+	t.Run("an unmeasurable clip fails closed", func(t *testing.T) {
+		config, _ := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeFailScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "reverse_video", HarnessToolCall{})
+		if result.Status == "completed" || !strings.Contains(result.Error, "could not measure") {
+			t.Fatalf("result = %+v, want the unmeasurable-clip error", result)
+		}
+	})
+	t.Run("requires an attached video", func(t *testing.T) {
+		config, _ := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{}, "reverse_video", HarnessToolCall{})
+		if result.Status == "completed" || !strings.Contains(result.Error, "attached video clip") {
+			t.Fatalf("result = %+v, want the attached-video error", result)
+		}
+	})
+}
+
 // TestFFmpegJoinHonorsAttachmentOrder pins the sequence contract: the concat
 // playlist lists the clips in attachment order, and a forced copy skips
 // probing entirely.
@@ -2442,7 +2547,7 @@ func TestFFmpegRegistryGating(t *testing.T) {
 		t.Fatal("ffmpeg tools must be absent without a detected binary")
 	}
 	names := newRegistryNames(t, map[string]string{"ffmpeg": "/opt/test/bin/ffmpeg"})
-	for _, want := range []string{"screenshot_video", "contact_sheet_video", "split_video", "join_videos", "extract_audio", "remove_audio", "replace_audio", "transform_video"} {
+	for _, want := range []string{"screenshot_video", "contact_sheet_video", "split_video", "join_videos", "extract_audio", "remove_audio", "replace_audio", "transform_video", "reverse_video"} {
 		if !containsString(names, want) {
 			t.Errorf("registry with ffmpeg = %v, want %q", names, want)
 		}

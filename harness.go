@@ -3719,6 +3719,7 @@ var toolConsumedMediaKinds = map[string]map[string]bool{
 	"extract_audio":       {"video": true},
 	"remove_audio":        {"video": true},
 	"transform_video":     {"video": true},
+	"reverse_video":       {"video": true},
 	"probe_media":         {"video": true},
 	"upscale_video":       {"video": true},
 	"reframe_video":       {"video": true},
