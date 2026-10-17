@@ -334,6 +334,8 @@ func TestFFmpegArgBuilders(t *testing.T) {
 			"-i in.mp4 -vn -c:a copy out.m4a"},
 		{"extract convert", ffmpegExtractAudioArgs("in.mp4", "out.mp3", false),
 			"-i in.mp4 -vn -c:a libmp3lame -b:a 192k out.mp3"},
+		{"remove audio stream copy", ffmpegRemoveAudioArgs("in.mp4", "out.mp4"),
+			"-i in.mp4 -map 0:v:0 -c:v copy -an -movflags +faststart out.mp4"},
 		{"convert audio mp3 default bitrate", ffmpegConvertAudioArgs("in.m4a", "out.mp3", []string{"-c:a", "libmp3lame", "-b:a", "192k"}),
 			"-i in.m4a -vn -c:a libmp3lame -b:a 192k out.mp3"},
 		{"convert audio lossless", ffmpegConvertAudioArgs("in.mp3", "out.wav", []string{"-c:a", "pcm_s16le"}),
@@ -1564,6 +1566,72 @@ func TestFFmpegSplitExecutes(t *testing.T) {
 	})
 }
 
+// TestFFmpegRemoveAudioExecutes pins the mute path: a pinned stream copy that
+// drops the audio (no re-encode), the source container mirrored onto the
+// output, the silent-source notice, and the required-video error.
+func TestFFmpegRemoveAudioExecutes(t *testing.T) {
+	t.Run("stream copy drops the audio", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "remove_audio", HarnessToolCall{})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, ok := result.Result.(ToolVideoResult)
+		if !ok || typed.Model != ffmpegModelName || len(typed.Videos) != 1 {
+			t.Fatalf("result payload = %+v", result.Result)
+		}
+		defer os.Remove(typed.Videos[0].TempPath)
+		if typed.Videos[0].MimeType != "video/mp4" {
+			t.Fatalf("mimeType = %q", typed.Videos[0].MimeType)
+		}
+		if len(result.Notices) != 0 {
+			t.Fatalf("notices = %v, want none for a clip with audio", result.Notices)
+		}
+		args := fakeFFmpegArgs(t, bin)
+		if !strings.Contains(args, "-map 0:v:0") || !strings.Contains(args, "-c:v copy") || !strings.Contains(args, "-an ") || strings.Contains(args, "libx264") {
+			t.Fatalf("remove args = %q, want a pinned stream copy with -an", args)
+		}
+	})
+	t.Run("mirrors a webm source container", func(t *testing.T) {
+		config, _ := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		webm := "data:video/webm;base64," + base64.StdEncoding.EncodeToString([]byte("CLIP-WEBM"))
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{webm},
+		}, "remove_audio", HarnessToolCall{})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed := result.Result.(ToolVideoResult)
+		defer os.Remove(typed.Videos[0].TempPath)
+		if typed.Videos[0].MimeType != "video/webm" || !strings.HasSuffix(typed.Videos[0].TempPath, ".webm") {
+			t.Fatalf("output = %s (%s), want the source's webm container", typed.Videos[0].TempPath, typed.Videos[0].MimeType)
+		}
+	})
+	t.Run("a silent source rides a notice", func(t *testing.T) {
+		config, _ := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeNoAudioScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "remove_audio", HarnessToolCall{})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed := result.Result.(ToolVideoResult)
+		defer os.Remove(typed.Videos[0].TempPath)
+		if len(result.Notices) == 0 || !strings.Contains(result.Notices[0], "no audio track") {
+			t.Fatalf("notices = %v, want the already-silent notice", result.Notices)
+		}
+	})
+	t.Run("requires an attached video", func(t *testing.T) {
+		config, _ := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{}, "remove_audio", HarnessToolCall{})
+		if result.Status == "completed" || !strings.Contains(result.Error, "attached video clip") {
+			t.Fatalf("result = %+v, want the attached-video error", result)
+		}
+	})
+}
+
 // TestFFmpegJoinHonorsAttachmentOrder pins the sequence contract: the concat
 // playlist lists the clips in attachment order, and a forced copy skips
 // probing entirely.
@@ -2362,8 +2430,8 @@ func TestFFmpegTransformExecutes(t *testing.T) {
 }
 
 // TestFFmpegRegistryGating pins the tool gates: nothing without a binary, the
-// six transform tools with ffmpeg alone, plus probe_media only when ffprobe
-// also resolves.
+// ffmpeg-backed edit tools with ffmpeg alone, plus probe_media only when
+// ffprobe also resolves.
 func TestFFmpegRegistryGating(t *testing.T) {
 	newRegistryNames := func(t *testing.T, found map[string]string) []string {
 		t.Helper()
@@ -2374,7 +2442,7 @@ func TestFFmpegRegistryGating(t *testing.T) {
 		t.Fatal("ffmpeg tools must be absent without a detected binary")
 	}
 	names := newRegistryNames(t, map[string]string{"ffmpeg": "/opt/test/bin/ffmpeg"})
-	for _, want := range []string{"screenshot_video", "contact_sheet_video", "split_video", "join_videos", "extract_audio", "replace_audio", "transform_video"} {
+	for _, want := range []string{"screenshot_video", "contact_sheet_video", "split_video", "join_videos", "extract_audio", "remove_audio", "replace_audio", "transform_video"} {
 		if !containsString(names, want) {
 			t.Errorf("registry with ffmpeg = %v, want %q", names, want)
 		}

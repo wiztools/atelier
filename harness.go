@@ -3717,6 +3717,7 @@ var toolConsumedMediaKinds = map[string]map[string]bool{
 	"split_video":         {"video": true},
 	"join_videos":         {"video": true},
 	"extract_audio":       {"video": true},
+	"remove_audio":        {"video": true},
 	"transform_video":     {"video": true},
 	"probe_media":         {"video": true},
 	"upscale_video":       {"video": true},

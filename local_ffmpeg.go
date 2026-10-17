@@ -75,6 +75,7 @@ func ffmpegToolDefinitions(config AppConfig) []HarnessToolDefinition {
 		joinVideosToolDefinition(),
 		joinAudiosToolDefinition(),
 		extractAudioToolDefinition(),
+		removeAudioToolDefinition(),
 		replaceAudioToolDefinition(),
 		convertAudioToolDefinition(),
 		transformVideoToolDefinition(),
@@ -517,6 +518,14 @@ func ffmpegExtractAudioArgs(input, output string, streamCopy bool) []string {
 		args = append(args, "-c:a", "libmp3lame", "-b:a", "192k")
 	}
 	return append(args, output)
+}
+
+// ffmpegRemoveAudioArgs keeps the first video stream untouched and drops the
+// audio: -map 0:v:0 pins the selection (default selection could otherwise
+// drag a subtitle stream into a container that rejects it), -an removes the
+// audio track, and the copy means no re-encode and no quality loss.
+func ffmpegRemoveAudioArgs(input, output string) []string {
+	return []string{"-i", input, "-map", "0:v:0", "-c:v", "copy", "-an", "-movflags", "+faststart", output}
 }
 
 // ffmpegConvertAudioArgs transcodes the whole input into the target format
@@ -1942,7 +1951,7 @@ func extractAudioToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "extract_audio",
 		Title:       "Extract audio",
-		Description: "Use this when the user asks to extract, pull out, or export the audio track of an attached video (get the sound from a clip, make a standalone audio file of it). Requires an attached video clip. The track is copied without re-encoding when its codec allows (AAC → .m4a, MP3 → .mp3) and otherwise converted to MP3 192kbps with a notice. The audio clip is attached to the assistant reply and becomes the conversation's newest audio — a transcribe_audio call in the same turn can transcribe it directly.",
+		Description: "Use this when the user asks to extract, pull out, or export the audio track of an attached video (get the sound from a clip, make a standalone audio file of it; to keep the picture but deliver it silent, use remove_audio). Requires an attached video clip. The track is copied without re-encoding when its codec allows (AAC → .m4a, MP3 → .mp3) and otherwise converted to MP3 192kbps with a notice. The audio clip is attached to the assistant reply and becomes the conversation's newest audio — a transcribe_audio call in the same turn can transcribe it directly.",
 		Example:     `{"name":"extract_audio"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: extractAudioParamSchema(),
@@ -2001,6 +2010,71 @@ func extractAudioTarget(ctx context.Context, config AppConfig, input string) (ex
 		return ".mp3", "audio/mpeg", false, "the video appears to have no audio stream; the extracted file may be silent."
 	default:
 		return ".mp3", "audio/mpeg", false, fmt.Sprintf("the audio codec (%s) has no copy-safe standalone container here, so the track was converted to MP3 192kbps.", probe.AudioCodec)
+	}
+}
+
+// removeAudioToolDefinition exposes remove_audio: deliver the attached video
+// with its audio track dropped — extract_audio's mirror image.
+func removeAudioToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "remove_audio",
+		Title:       "Remove audio",
+		Description: "Use this when the user asks to remove, strip, drop, or mute the audio of an attached video — keep the picture, deliver it with no sound track (for the soundtrack as a standalone audio file, use extract_audio; to put different audio under the clip, use replace_audio). Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). The video stream is copied with no re-encoding — no quality loss, and the output keeps the source's container. The silent clip is attached to the assistant reply and becomes the conversation's newest video.",
+		Example:     `{"name":"remove_audio"}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: removeAudioParamSchema(),
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			source := firstAttachedVideo(tools.AttachedVideos)
+			if source == "" {
+				return nil, "audio removal requires an attached video clip", errors.New("remove_audio requires an attached video clip — ask the user to attach one first")
+			}
+			staging, err := os.MkdirTemp("", "atelier-ffmpeg-*")
+			if err != nil {
+				return nil, "audio removal failed", err
+			}
+			defer os.RemoveAll(staging)
+			input, err := stageMediaDataURL(staging, "input", source)
+			if err != nil {
+				return nil, "audio removal failed", err
+			}
+			ext, mimeType := silentVideoTarget(input)
+			staged := filepath.Join(staging, "silent"+ext)
+			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegRemoveAudioArgs(input, staged)); err != nil {
+				return nil, "audio removal failed", err
+			}
+			tempPath, err := promoteStagedOutput(staged, "atelier-video-*", ext)
+			if err != nil {
+				return nil, "audio removal failed", err
+			}
+			output := ToolVideoResult{
+				Model:  ffmpegModelName,
+				Prompt: "audio track removed from the attached video",
+				Count:  1,
+				Videos: []ToolVideoFile{{TempPath: tempPath, MimeType: mimeType}},
+			}
+			summary := "removed the audio track from the attached video with ffmpeg (stream copy)"
+			if probe, err := probeStagedMedia(ctx, tools.Config, input, "video"); err == nil && probe.AudioCodec == "" {
+				output.Notices = append(output.Notices, "the video has no audio track to begin with, so the copy matches the source.")
+				summary = "copied the attached video with ffmpeg (it has no audio track)"
+			}
+			return output, summary, nil
+		},
+		Activity: ffmpegActivity("remove-audio"),
+	}
+}
+
+// silentVideoTarget mirrors the staged input's container: the video stream is
+// copied, so the output keeps the container it came from (a codec always
+// lives in the container it came from). An unrecognized extension falls back
+// to .mp4 — an exotic codec that cannot live there fails loudly in ffmpeg.
+func silentVideoTarget(input string) (ext, mimeType string) {
+	switch strings.ToLower(filepath.Ext(input)) {
+	case ".webm":
+		return ".webm", "video/webm"
+	case ".mov":
+		return ".mov", "video/quicktime"
+	default:
+		return ".mp4", "video/mp4"
 	}
 }
 
@@ -2142,7 +2216,7 @@ func replaceAudioToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "replace_audio",
 		Title:       "Replace audio",
-		Description: "Use this when the user asks to put different audio under a video — add narration, music, or a sound effect (often one generate_speech or generate_sound just produced) to a silent clip, or swap a video's soundtrack. Requires an attached video AND an attached audio clip (attached, @-mentioned, or generated earlier this turn). The video stream is copied when the container allows it; the audio is encoded to AAC; the result ends when the shorter of the two inputs ends. The new video is attached to the assistant reply and becomes the conversation's newest video.",
+		Description: "Use this when the user asks to put different audio under a video — add narration, music, or a sound effect (often one generate_speech or generate_sound just produced) to a silent clip, or swap a video's soundtrack (to remove the audio without adding any, use remove_audio). Requires an attached video AND an attached audio clip (attached, @-mentioned, or generated earlier this turn). The video stream is copied when the container allows it; the audio is encoded to AAC; the result ends when the shorter of the two inputs ends. The new video is attached to the assistant reply and becomes the conversation's newest video.",
 		Example:     `{"name":"replace_audio"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: replaceAudioParamSchema(),
@@ -2632,6 +2706,15 @@ func joinAudiosParamSchema() map[string]any {
 }
 
 func extractAudioParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{},
+		"required":             []string{},
+	}
+}
+
+func removeAudioParamSchema() map[string]any {
 	return map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
