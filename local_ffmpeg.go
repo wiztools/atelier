@@ -67,7 +67,8 @@ func mediaEditFallbackNotice(unavailable bool, assistantContent string) string {
 // ffmpegToolDefinitions assembles the ffmpeg-backed tool catalog. probe_media
 // additionally needs ffprobe (detected separately — it powers the JSON report);
 // the transform tools degrade without it (they re-encode rather than probe),
-// and join_audios' auto mode re-encodes rather than comparing unprobed clips.
+// and join_audios' auto mode re-encodes rather than comparing unprobed clips
+// (its crossfade measures clips through the pure-Go byte sniff instead).
 // list_video_transitions needs ffmpeg itself — its entire value is the
 // installed build's xfade report, so like probe_media it is offered only when
 // its CLI resolves.
@@ -732,6 +733,210 @@ func ffmpegJoinTransitionArgs(inputs []string, plan joinTransitionPlan, output s
 		"-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
 		"-c:a", "aac", "-b:a", "192k",
 		"-movflags", "+faststart")
+	return append(args, output)
+}
+
+// formatJoinSeconds renders a junction length or output duration for a notice
+// in its shortest form at millisecond precision (2, 0.5, 19.54): probed
+// durations are decimal strings whose sums and differences pick up binary
+// floating-point dust that %g would print in full.
+func formatJoinSeconds(seconds float64) string {
+	return strconv.FormatFloat(math.Round(seconds*1000)/1000, 'f', -1, 64)
+}
+
+// audioTransitions enumerates the transition kinds join_audios accepts: audio
+// has exactly one blend — the crossfade (acrossfade) — where xfade gives video
+// dozens. "fade" is the planner-facing alias, mirroring join_videos' pair so
+// the vocabulary transfers between the siblings.
+var audioTransitions = []string{"crossfade", "fade"}
+
+// normalizeAudioTransition trims a planner-supplied transition name and maps
+// the "fade" alias onto "crossfade". ok is false for anything else — the
+// Validate hook turns that into a planner correction, and the executor refuses
+// (a direct API path bypasses Validate).
+func normalizeAudioTransition(name string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "crossfade", "fade":
+		return "crossfade", true
+	}
+	return "", false
+}
+
+const (
+	// joinAudioDefaultSampleRate and joinAudioDefaultChannels shape a
+	// crossfaded join when no clip's sample rate or channel count could be
+	// read (the byte sniff measures length only) — the video chain's 48 kHz
+	// stereo.
+	joinAudioDefaultSampleRate = 48000
+	joinAudioDefaultChannels   = 2
+)
+
+// joinAudioClipFact is one staged audio clip's measured shape: what the
+// crossfade builder needs to clamp the overlap and normalize every input onto
+// a common sample rate and channel layout. Codec feeds the re-encode target;
+// it is empty when only the byte sniff measured the clip.
+type joinAudioClipFact struct {
+	Duration   float64
+	SampleRate int
+	Channels   int
+	Codec      string
+}
+
+// joinAudioClipFacts measures every staged input in sequence order. ok is
+// false when ANY clip is unmeasurable: the overlap clamps to the shortest clip,
+// and acrossfade silently drops a side shorter than the overlap (a 0.5s clip
+// joined to a 3s one with a 1s crossfade renders the 3s clip alone) — the
+// executor degrades to the plain concat join with a notice rather than
+// encoding a graph that may lose a clip.
+func joinAudioClipFacts(ctx context.Context, config AppConfig, inputs, sources []string) ([]joinAudioClipFact, bool) {
+	facts := make([]joinAudioClipFact, 0, len(inputs))
+	for i, input := range inputs {
+		fact, ok := joinAudioClipFactFor(ctx, config, input, sources[i])
+		if !ok {
+			return nil, false
+		}
+		facts = append(facts, fact)
+	}
+	return facts, true
+}
+
+// joinAudioClipFactFor measures one staged clip: ffprobe answers for any
+// container (codec, rate, channels, duration); the pure-Go sniff
+// (probeAudioDuration — WAV, MP3, FLAC, OGG, M4A, ADTS) covers the length when
+// ffprobe is absent, leaving the shape to the defaults.
+func joinAudioClipFactFor(ctx context.Context, config AppConfig, input, sourceDataURL string) (joinAudioClipFact, bool) {
+	if _, ok := resolveLocalFFprobeBinary(config); ok {
+		if probe, err := probeStagedMedia(ctx, config, input, "audio"); err == nil && probe.Duration > 0 {
+			return joinAudioClipFact{
+				Duration:   probe.Duration,
+				SampleRate: probe.SampleRate,
+				Channels:   probe.Channels,
+				Codec:      probe.AudioCodec,
+			}, true
+		}
+	}
+	if data, _, err := decodeMediaDataURL(sourceDataURL); err == nil {
+		if seconds, ok := probeAudioDuration(data); ok {
+			return joinAudioClipFact{Duration: seconds}, true
+		}
+	}
+	return joinAudioClipFact{}, false
+}
+
+// joinAudioTransitionPlan is everything the crossfaded join's ffmpeg
+// invocation needs, plus the decisions the executor turns into notices.
+// SampleRate/Channels are the shape every input was normalized onto.
+type joinAudioTransitionPlan struct {
+	FilterComplex string
+	Seconds       float64
+	SampleRate    int
+	Channels      int
+	Clamped       bool
+	Normalized    bool
+	Defaulted     bool
+	OutputSeconds float64
+}
+
+// joinAudioTransitionsFilterGraph lays out a crossfaded join: one acrossfade
+// per junction, every input first normalized onto the FIRST clip's sample rate
+// and channel layout (acrossfade negotiates one shape for both sides, so a
+// 44.1 kHz clip meeting a 48 kHz one would otherwise resample implicitly to
+// whichever the graph picked), and the output pinned to that shape. When the
+// first clip reports no shape (the byte sniff measures length only) the chain
+// lands on 48 kHz stereo. The overlap clamps to half the shortest clip — a
+// middle clip gives one overlap at each end, and acrossfade silently drops a
+// side shorter than the overlap.
+func joinAudioTransitionsFilterGraph(clips []joinAudioClipFact, requestedSeconds float64) joinAudioTransitionPlan {
+	seconds := requestedSeconds
+	if seconds <= 0 {
+		seconds = joinTransitionsDefaultSeconds
+	}
+	shortest := clips[0].Duration
+	for _, clip := range clips[1:] {
+		if clip.Duration < shortest {
+			shortest = clip.Duration
+		}
+	}
+	plan := joinAudioTransitionPlan{Seconds: seconds, SampleRate: clips[0].SampleRate, Channels: clips[0].Channels}
+	if maxSeconds := shortest / 2; plan.Seconds > maxSeconds {
+		plan.Seconds = maxSeconds
+		plan.Clamped = true
+	}
+	if plan.SampleRate <= 0 || plan.Channels <= 0 {
+		plan.SampleRate, plan.Channels, plan.Defaulted = joinAudioDefaultSampleRate, joinAudioDefaultChannels, true
+	} else {
+		for _, clip := range clips[1:] {
+			if clip.SampleRate > 0 && clip.Channels > 0 &&
+				(clip.SampleRate != plan.SampleRate || clip.Channels != plan.Channels) {
+				plan.Normalized = true
+				break
+			}
+		}
+	}
+	shape := fmt.Sprintf("aformat=sample_rates=%d:channel_layouts=%s", plan.SampleRate, audioChannelLayout(plan.Channels))
+	secondsText := formatPlaybackSpeed(plan.Seconds)
+	chain := make([]string, 0, 2*len(clips))
+	for i := range clips {
+		chain = append(chain, fmt.Sprintf("[%d:a]%s[ain%d]", i, shape, i))
+	}
+	// From the second junction on, the chain's left input is the previous
+	// junction's output, not the raw clip.
+	for i := 0; i < len(clips)-1; i++ {
+		left := fmt.Sprintf("ain%d", i)
+		if i > 0 {
+			left = fmt.Sprintf("ax%d", i)
+		}
+		chain = append(chain, fmt.Sprintf("[%s][ain%d]acrossfade=d=%s[ax%d]", left, i+1, secondsText, i+1))
+	}
+	last := len(clips) - 1
+	chain = append(chain, fmt.Sprintf("[ax%d]%s[aout]", last, shape))
+	total := 0.0
+	for _, clip := range clips {
+		total += clip.Duration
+	}
+	plan.OutputSeconds = total - float64(last)*plan.Seconds
+	plan.FilterComplex = strings.Join(chain, ";")
+	return plan
+}
+
+// audioChannelLayout names a channel count for aformat: ffmpeg's mono/stereo
+// for the common pair, else the "<n>c" default-layout spelling.
+func audioChannelLayout(channels int) string {
+	switch channels {
+	case 1:
+		return "mono"
+	case 2:
+		return "stereo"
+	default:
+		return fmt.Sprintf("%dc", channels)
+	}
+}
+
+// audioShapePhrase renders a sample rate and channel count for a notice
+// ("44.1 kHz stereo", "48 kHz mono", "22.05 kHz 6-channel").
+func audioShapePhrase(sampleRate, channels int) string {
+	rate := strconv.FormatFloat(float64(sampleRate)/1000, 'f', -1, 64) + " kHz"
+	switch channels {
+	case 1:
+		return rate + " mono"
+	case 2:
+		return rate + " stereo"
+	default:
+		return fmt.Sprintf("%s %d-channel", rate, channels)
+	}
+}
+
+// ffmpegJoinAudioTransitionArgs assembles the crossfaded join's invocation:
+// the clips' -i args, the graph, the mapped output, and the re-encode target
+// derived from the first clip — acrossfade cannot stream-copy, and the concat
+// demuxer is not involved at all.
+func ffmpegJoinAudioTransitionArgs(inputs []string, plan joinAudioTransitionPlan, codecArgs []string, output string) []string {
+	args := make([]string, 0, 2*len(inputs)+len(codecArgs)+5)
+	for _, input := range inputs {
+		args = append(args, "-i", input)
+	}
+	args = append(args, "-filter_complex", plan.FilterComplex, "-map", "[aout]")
+	args = append(args, codecArgs...)
 	return append(args, output)
 }
 
@@ -2167,7 +2372,7 @@ func executeTransitionedJoin(ctx context.Context, tools HarnessToolExecutionCont
 	}
 	plan := joinTransitionsFilterGraph(facts, transition, call.TransitionDuration)
 	if plan.Clamped {
-		notices = append(notices, fmt.Sprintf("the %s transition was shortened to %gs at each junction — an overlap may not exceed half of the shortest clip.", plan.Transition, plan.Seconds))
+		notices = append(notices, fmt.Sprintf("the %s transition was shortened to %ss at each junction — an overlap may not exceed half of the shortest clip.", plan.Transition, formatJoinSeconds(plan.Seconds)))
 	}
 	if plan.Normalized {
 		notices = append(notices, "the clips differ in size or frame rate; each was scaled to the first clip's frame (extra area letterboxed, never cropped) so the transitions could run.")
@@ -2196,11 +2401,11 @@ func executeTransitionedJoin(ctx context.Context, tools HarnessToolExecutionCont
 		Prompt: fmt.Sprintf("joined %d clips with a %s transition", len(inputs), plan.Transition),
 		Count:  1,
 		Videos: []ToolVideoFile{{TempPath: tempPath, MimeType: "video/mp4"}},
-		Notices: append(notices, fmt.Sprintf("the %s transition overlaps the clips by %gs at each junction, so the video is %gs shorter than the clips combined; the join was re-encoded (transitions cannot stream-copy).",
-			plan.Transition, plan.Seconds, combined-plan.OutputSeconds)),
+		Notices: append(notices, fmt.Sprintf("the %s transition overlaps the clips by %ss at each junction, so the video is %ss shorter than the clips combined; the join was re-encoded (transitions cannot stream-copy).",
+			plan.Transition, formatJoinSeconds(plan.Seconds), formatJoinSeconds(combined-plan.OutputSeconds))),
 	}
-	summary := fmt.Sprintf("joined %d clips in attachment order with ffmpeg (%s transition, %gs at each junction, re-encoded, %gs output)",
-		len(inputs), plan.Transition, plan.Seconds, plan.OutputSeconds)
+	summary := fmt.Sprintf("joined %d clips in attachment order with ffmpeg (%s transition, %ss at each junction, re-encoded, %ss output)",
+		len(inputs), plan.Transition, formatJoinSeconds(plan.Seconds), formatJoinSeconds(plan.OutputSeconds))
 	return output, summary, nil
 }
 
@@ -2244,22 +2449,36 @@ func joinCopyMode(ctx context.Context, config AppConfig, mode string, inputs []s
 // joinAudiosToolDefinition exposes join_audios: concatenate attached audio
 // files into one, honoring attachment order as the sequence — the audio
 // sibling of join_videos. Completes split_audio's story: "remove the middle
-// section" is two splits plus the join of the kept parts.
+// section" is two splits plus the join of the kept parts. An optional
+// transition blends the clips through a crossfade at every junction instead of
+// hard-cutting — audio's one blend, where xfade gives video dozens.
 func joinAudiosToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "join_audios",
 		Title:       "Join audio",
-		Description: "Use this when the user asks to combine, concatenate, merge, stitch, or join multiple AUDIO files into one — stitch voice memos or podcast chapters into a single recording, or reassemble the parts a split_audio call kept (for video clips, use join_videos instead). Requires at least two audio clips attached or @-mentioned this turn — they are joined in EXACTLY the order they were attached or mentioned; that order is the sequence, so tell the user to reorder the attachments if they want a different one. mode \"auto\" (the default) copies the streams untouched when every clip matches in codec, sample rate, and channel count (fast, lossless) and re-encodes to the FIRST clip's format otherwise; \"copy\" forces stream copy; \"reencode\" forces re-encoding. The joined audio is attached to the assistant reply and becomes the conversation's newest audio.",
+		Description: "Use this when the user asks to combine, concatenate, merge, stitch, or join multiple AUDIO files into one — stitch voice memos or podcast chapters into a single recording, or reassemble the parts a split_audio call kept (for video clips, use join_videos instead). Requires at least two audio clips attached or @-mentioned this turn — they are joined in EXACTLY the order they were attached or mentioned; that order is the sequence, so tell the user to reorder the attachments if they want a different one. mode \"auto\" (the default) copies the streams untouched when every clip matches in codec, sample rate, and channel count (fast, lossless) and re-encodes to the FIRST clip's format otherwise; \"copy\" forces stream copy; \"reencode\" forces re-encoding. transition (optional) blends the clips through a crossfade at every junction instead of hard-cutting — \"crossfade\" (or \"fade\") is the one transition audio has, the sibling of join_videos' visual transitions. A crossfade always re-encodes (mode \"copy\" is rejected) into the first clip's format, applies to EVERY junction, and transitionDuration (optional, seconds, 0.1–10, default 1) sets its length — the joined recording is the clips' combined length minus one overlap per junction; clips with a different sample rate or channel count are converted to the first clip's so the crossfade can run. The joined audio is attached to the assistant reply and becomes the conversation's newest audio.",
 		Example:     `{"name":"join_audios"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: joinAudiosParamSchema(),
 		Validate: func(prefix string, call HarnessToolCall) []string {
+			var errs []string
 			switch strings.TrimSpace(call.Mode) {
 			case "", "auto", "copy", "reencode":
-				return nil
 			default:
-				return []string{prefix + `.mode must be "auto", "copy", or "reencode" for join_audios`}
+				errs = append(errs, prefix+`.mode must be "auto", "copy", or "reencode" for join_audios`)
 			}
+			if name := strings.TrimSpace(call.Transition); name != "" {
+				if _, ok := normalizeAudioTransition(name); !ok {
+					errs = append(errs, prefix+`.transition must be "crossfade" (or "fade") for join_audios — the crossfade is the only transition audio has; dissolves, wipes, and slides are join_videos' picture effects`)
+				}
+				if call.TransitionDuration != 0 && (call.TransitionDuration < joinTransitionsMinSeconds || call.TransitionDuration > joinTransitionsMaxSeconds) {
+					errs = append(errs, prefix+fmt.Sprintf(".transitionDuration must be between %v and %v seconds when set (omit it for 1 second)", joinTransitionsMinSeconds, joinTransitionsMaxSeconds))
+				}
+				if strings.TrimSpace(call.Mode) == "copy" {
+					errs = append(errs, prefix+`.mode "copy" cannot carry a transition (a crossfade re-encodes) — drop the transition, or use mode "auto" or "reencode"`)
+				}
+			}
+			return errs
 		},
 		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
 			sources := nonEmptyAudios(tools.AttachedAudios)
@@ -2279,48 +2498,118 @@ func joinAudiosToolDefinition() HarnessToolDefinition {
 				}
 				inputs = append(inputs, input)
 			}
-			listFile := filepath.Join(staging, "concat.txt")
-			if err := os.WriteFile(listFile, []byte(concatListFileContents(inputs)), 0o644); err != nil {
-				return nil, "join failed", err
+			if strings.TrimSpace(call.Transition) != "" {
+				return executeTransitionedAudioJoin(ctx, tools, call, staging, inputs, sources)
 			}
-			streamCopy, probes, notice := joinAudioCopyMode(ctx, tools.Config, call.Mode, inputs)
-			// Copy keeps the first clip's own container; a re-encode normalizes
-			// to the target derived from the first probed clip (MP3 when no
-			// probe survived).
-			ext, mimeType := filepath.Ext(inputs[0]), audioMimeForExtension(filepath.Ext(inputs[0]))
-			codecArgs := []string(nil)
-			if !streamCopy {
-				if len(probes) > 0 {
-					var targetNotice string
-					ext, mimeType, codecArgs, targetNotice = joinAudioReencodeTarget(probes[0])
-					if targetNotice != "" {
-						notice = strings.TrimSpace(notice + " " + targetNotice)
-					}
-				} else {
-					ext, mimeType, codecArgs = ".mp3", "audio/mpeg", audioMP3FallbackArgs
-				}
-			}
-			staged := filepath.Join(staging, "joined"+ext)
-			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegJoinAudioArgs(listFile, staged, streamCopy, codecArgs)); err != nil {
-				return nil, "join failed", err
-			}
-			tempPath, err := promoteStagedOutput(staged, "atelier-audio-*", ext)
-			if err != nil {
-				return nil, "join failed", err
-			}
-			output := ToolAudioResult{
-				Model:  ffmpegModelName,
-				Prompt: fmt.Sprintf("joined %d audio clips in attachment order", len(sources)),
-				Count:  1,
-				Audios: []ToolAudioFile{{TempPath: tempPath, MimeType: mimeType}},
-			}
-			if notice != "" {
-				output.Notices = append(output.Notices, notice)
-			}
-			return output, fmt.Sprintf("joined %d audio clips in attachment order with ffmpeg (%s)", len(sources), joinModePhrase(streamCopy)), nil
+			return runConcatAudioJoin(ctx, tools, call, staging, inputs, nil)
 		},
 		Activity: ffmpegActivity("join-audios"),
 	}
+}
+
+// runConcatAudioJoin is the concat-demuxer join the tool has always run: the
+// auto probe decides copy-vs-reencode (the notice explains what auto decided,
+// or why it could not), a re-encode lands on the first clip's codec family,
+// and the output is promoted out of staging. Also the degradation target of
+// executeTransitionedAudioJoin — the join itself is still doable when the
+// clips cannot be measured, so the requested crossfade stands down under a
+// substitution notice rather than failing the call.
+func runConcatAudioJoin(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall, staging string, inputs []string, notices []string) (any, string, error) {
+	listFile := filepath.Join(staging, "concat.txt")
+	if err := os.WriteFile(listFile, []byte(concatListFileContents(inputs)), 0o644); err != nil {
+		return nil, "join failed", err
+	}
+	streamCopy, probes, notice := joinAudioCopyMode(ctx, tools.Config, call.Mode, inputs)
+	// Copy keeps the first clip's own container; a re-encode normalizes to
+	// the target derived from the first probed clip (MP3 when no probe
+	// survived).
+	ext, mimeType := filepath.Ext(inputs[0]), audioMimeForExtension(filepath.Ext(inputs[0]))
+	codecArgs := []string(nil)
+	if !streamCopy {
+		if len(probes) > 0 {
+			var targetNotice string
+			ext, mimeType, codecArgs, targetNotice = joinAudioReencodeTarget(probes[0])
+			if targetNotice != "" {
+				notice = strings.TrimSpace(notice + " " + targetNotice)
+			}
+		} else {
+			ext, mimeType, codecArgs = ".mp3", "audio/mpeg", audioMP3FallbackArgs
+		}
+	}
+	staged := filepath.Join(staging, "joined"+ext)
+	if err := runLocalFFmpeg(ctx, tools.Config, ffmpegJoinAudioArgs(listFile, staged, streamCopy, codecArgs)); err != nil {
+		return nil, "join failed", err
+	}
+	tempPath, err := promoteStagedOutput(staged, "atelier-audio-*", ext)
+	if err != nil {
+		return nil, "join failed", err
+	}
+	if notice != "" {
+		notices = append(notices, notice)
+	}
+	output := ToolAudioResult{
+		Model:   ffmpegModelName,
+		Prompt:  fmt.Sprintf("joined %d audio clips in attachment order", len(inputs)),
+		Count:   1,
+		Audios:  []ToolAudioFile{{TempPath: tempPath, MimeType: mimeType}},
+		Notices: notices,
+	}
+	return output, fmt.Sprintf("joined %d audio clips in attachment order with ffmpeg (%s)", len(inputs), joinModePhrase(streamCopy)), nil
+}
+
+// executeTransitionedAudioJoin joins the staged clips through a crossfade at
+// every junction (joinAudioTransitionsFilterGraph builds the graph; the plan's
+// decisions ride notices). Every clip must be measurable — the overlap clamps
+// to the shortest clip, and acrossfade silently drops a side shorter than the
+// overlap — so an unmeasurable clip degrades to the plain concat join instead
+// of failing the call. The re-encode target follows the first clip's codec the
+// way the plain re-encode does, so two WAVs crossfade into a WAV.
+func executeTransitionedAudioJoin(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall, staging string, inputs, sources []string) (any, string, error) {
+	requested := strings.TrimSpace(call.Transition)
+	transition, ok := normalizeAudioTransition(requested)
+	if !ok {
+		return nil, "join failed", fmt.Errorf("join_audios does not know the %q transition — \"crossfade\" is the one transition audio has (dissolves, wipes, and slides are join_videos' picture effects)", requested)
+	}
+	facts, measurable := joinAudioClipFacts(ctx, tools.Config, inputs, sources)
+	if !measurable {
+		notices := []string{"the clips' lengths could not be measured (ffprobe is unavailable and at least one clip's container could not be read), so the join ran without the requested crossfade — the overlap has to fit inside the shortest clip. Install ffprobe (`brew install ffmpeg`) for crossfaded joins."}
+		return runConcatAudioJoin(ctx, tools, call, staging, inputs, notices)
+	}
+	plan := joinAudioTransitionsFilterGraph(facts, call.TransitionDuration)
+	var notices []string
+	if plan.Clamped {
+		notices = append(notices, fmt.Sprintf("the %s was shortened to %ss at each junction — an overlap may not exceed half of the shortest clip.", transition, formatJoinSeconds(plan.Seconds)))
+	}
+	if plan.Normalized {
+		notices = append(notices, fmt.Sprintf("the clips differ in sample rate or channel count; each was converted to the first clip's (%s) so the crossfade could run.", audioShapePhrase(plan.SampleRate, plan.Channels)))
+	}
+	if plan.Defaulted {
+		notices = append(notices, fmt.Sprintf("the clips' sample rate and channel count could not be read (ffprobe is unavailable), so the crossfaded join was rendered at %s.", audioShapePhrase(plan.SampleRate, plan.Channels)))
+	}
+	ext, mimeType, codecArgs, targetNotice := joinAudioReencodeTarget(ToolProbeResult{AudioCodec: facts[0].Codec})
+	if targetNotice != "" {
+		notices = append(notices, targetNotice)
+	}
+	staged := filepath.Join(staging, "joined"+ext)
+	if err := runLocalFFmpeg(ctx, tools.Config, ffmpegJoinAudioTransitionArgs(inputs, plan, codecArgs, staged)); err != nil {
+		return nil, "join failed", err
+	}
+	tempPath, err := promoteStagedOutput(staged, "atelier-audio-*", ext)
+	if err != nil {
+		return nil, "join failed", err
+	}
+	shortened := float64(len(facts)-1) * plan.Seconds
+	output := ToolAudioResult{
+		Model:  ffmpegModelName,
+		Prompt: fmt.Sprintf("joined %d audio clips with a %s", len(inputs), transition),
+		Count:  1,
+		Audios: []ToolAudioFile{{TempPath: tempPath, MimeType: mimeType}},
+		Notices: append(notices, fmt.Sprintf("the %s overlaps the clips by %ss at each junction, so the recording is %ss shorter than the clips combined; the join was re-encoded (a crossfade cannot stream-copy).",
+			transition, formatJoinSeconds(plan.Seconds), formatJoinSeconds(shortened))),
+	}
+	summary := fmt.Sprintf("joined %d audio clips in attachment order with ffmpeg (%s, %ss at each junction, re-encoded, %ss output)",
+		len(inputs), transition, formatJoinSeconds(plan.Seconds), formatJoinSeconds(plan.OutputSeconds))
+	return output, summary, nil
 }
 
 // joinAudioCopyMode decides whether the audio join can stream-copy: an
@@ -3367,7 +3656,9 @@ func joinAudiosParamSchema() map[string]any {
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
-			"mode": enumParam("Optional — \"auto\" (the default) copies when every clip matches in codec, sample rate, and channel count, and re-encodes to the first clip's format otherwise; \"copy\" forces a lossless stream copy; \"reencode\" forces re-encoding.", "auto", "copy", "reencode"),
+			"mode":               enumParam("Optional — \"auto\" (the default) copies when every clip matches in codec, sample rate, and channel count, and re-encodes to the first clip's format otherwise; \"copy\" forces a lossless stream copy; \"reencode\" forces re-encoding. A crossfade always re-encodes, so \"copy\" is invalid with one.", "auto", "copy", "reencode"),
+			"transition":         enumParam("Optional — blend the clips through a crossfade at every junction instead of hard-cutting (\"fade\" is an alias for \"crossfade\"; the crossfade is the only transition audio has). Re-encodes the join into the first clip's format.", audioTransitions...),
+			"transitionDuration": numberParam("Optional — the crossfade's length in seconds, 0.1 to 10. Omit for 1 second. Ignored without transition."),
 		},
 		"required": []string{},
 	}

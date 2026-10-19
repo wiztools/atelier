@@ -261,9 +261,11 @@ type HarnessToolCall struct {
 	// optional grid width — frames per row of the montage (rows derive from
 	// the frame count); an omitted value picks a near-square grid.
 	// Transition is join_videos' optional transition kind (a fade/dissolve/
-	// wipe/slide between joined clips; "crossfade" aliases "fade"); when set,
-	// the join re-encodes through xfade/acrossfade and mode "copy" is invalid.
-	// TransitionDuration is that transition's length in seconds (omitted = 1s).
+	// wipe/slide between joined clips; "crossfade" aliases "fade") and
+	// join_audios' ("crossfade", audio's one blend; "fade" aliases it); when
+	// set, the join re-encodes through xfade/acrossfade and mode "copy" is
+	// invalid. TransitionDuration is that transition's length in seconds
+	// (omitted = 1s).
 	// Planner-only, like the other media inputs — see local_ffmpeg.go and
 	// local_images.go.
 	At                 string  `json:"at,omitempty"`
@@ -2523,7 +2525,8 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 						// contact_sheet_video's frame count; columns is
 						// contact_sheet_video's grid width; transition and
 						// transitionDuration are join_videos' crossfade/
-						// dissolve/wipe between clips). The values are
+						// dissolve/wipe between clips and join_audios'
+						// crossfade between recordings). The values are
 						// validated per-tool; the schema only frees the
 						// grammar to emit them.
 						"at":                 map[string]any{"type": "string"},

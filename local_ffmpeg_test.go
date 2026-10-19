@@ -3308,3 +3308,406 @@ func TestJoinVideosTransitionValidate(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Audio join transitions
+// ---------------------------------------------------------------------------
+
+// fakeFFprobeAudioScript fakes ffprobe over a 30-second 44.1 kHz stereo PCM
+// WAV — the audio-only report (codec, sample rate, channels, duration) the
+// crossfaded join normalizes onto and derives its re-encode target from.
+const fakeFFprobeAudioScript = `#!/bin/sh
+cat <<'JSON'
+{"format":{"duration":"30.000","format_name":"wav","bit_rate":"1411200","size":"5292044"},"streams":[{"codec_type":"audio","codec_name":"pcm_s16le","sample_rate":"44100","channels":2}]}
+JSON
+`
+
+// fakeFFprobeAudioDriftScript fakes an ffprobe whose SECOND and later calls
+// report a 48 kHz mono clip after a 44.1 kHz stereo first — drives the
+// crossfaded join's normalize-onto-the-first-clip branch.
+const fakeFFprobeAudioDriftScript = `#!/bin/sh
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -e "$dir/probed" ]; then
+cat <<'JSON'
+{"format":{"duration":"20.000","format_name":"wav"},"streams":[{"codec_type":"audio","codec_name":"pcm_s16le","sample_rate":"48000","channels":1}]}
+JSON
+else
+  : > "$dir/probed"
+cat <<'JSON'
+{"format":{"duration":"30.000","format_name":"wav"},"streams":[{"codec_type":"audio","codec_name":"pcm_s16le","sample_rate":"44100","channels":2}]}
+JSON
+fi
+`
+
+func TestNormalizeAudioTransition(t *testing.T) {
+	cases := []struct {
+		name string
+		want string
+		ok   bool
+	}{
+		{"crossfade", "crossfade", true},
+		{" CrossFade ", "crossfade", true},
+		{"fade", "crossfade", true},
+		{"FADE", "crossfade", true},
+		{"dissolve", "", false},
+		{"wipeleft", "", false},
+		{"", "", false},
+	}
+	for _, tc := range cases {
+		got, ok := normalizeAudioTransition(tc.name)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("normalizeAudioTransition(%q) = (%q, %v), want (%q, %v)", tc.name, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+func TestFormatJoinSeconds(t *testing.T) {
+	cases := []struct {
+		seconds float64
+		want    string
+	}{
+		{2, "2"},
+		{0.5, "0.5"},
+		{12.527 + 8.013 - (12.527 + 8.013 - 2), "2"},
+		{19.540000000000003, "19.54"},
+		{6.2635, "6.264"},
+	}
+	for _, tc := range cases {
+		if got := formatJoinSeconds(tc.seconds); got != tc.want {
+			t.Errorf("formatJoinSeconds(%v) = %q, want %q", tc.seconds, got, tc.want)
+		}
+	}
+}
+
+// TestJoinAudioTransitionsFilterGraph pins the crossfaded graph: every input
+// normalized onto the first clip's shape, one acrossfade per junction chained
+// through the previous junction's output, the output pinned to the same
+// shape, the overlap clamped to half the shortest clip, and 48 kHz stereo
+// standing in when no shape was measured.
+func TestJoinAudioTransitionsFilterGraph(t *testing.T) {
+	stereo44 := "aformat=sample_rates=44100:channel_layouts=stereo"
+	mono48 := "aformat=sample_rates=48000:channel_layouts=mono"
+	stereo48 := "aformat=sample_rates=48000:channel_layouts=stereo"
+	cases := []struct {
+		name          string
+		clips         []joinAudioClipFact
+		requested     float64
+		wantGraph     string
+		wantSeconds   float64
+		wantOutput    float64
+		wantShape     [2]int
+		wantClamped   bool
+		wantNormal    bool
+		wantDefaulted bool
+	}{
+		{
+			name:        "two clips, default one-second crossfade",
+			clips:       []joinAudioClipFact{{Duration: 30, SampleRate: 44100, Channels: 2, Codec: "pcm_s16le"}, {Duration: 30, SampleRate: 44100, Channels: 2, Codec: "pcm_s16le"}},
+			requested:   0,
+			wantGraph:   "[0:a]" + stereo44 + "[ain0];[1:a]" + stereo44 + "[ain1];[ain0][ain1]acrossfade=d=1[ax1];[ax1]" + stereo44 + "[aout]",
+			wantSeconds: 1,
+			wantOutput:  59,
+			wantShape:   [2]int{44100, 2},
+		},
+		{
+			name:      "three clips chain through the previous junction",
+			clips:     []joinAudioClipFact{{Duration: 10, SampleRate: 48000, Channels: 1}, {Duration: 8, SampleRate: 48000, Channels: 1}, {Duration: 12, SampleRate: 48000, Channels: 1}},
+			requested: 2,
+			wantGraph: "[0:a]" + mono48 + "[ain0];[1:a]" + mono48 + "[ain1];[2:a]" + mono48 + "[ain2];" +
+				"[ain0][ain1]acrossfade=d=2[ax1];[ax1][ain2]acrossfade=d=2[ax2];[ax2]" + mono48 + "[aout]",
+			wantSeconds: 2,
+			wantOutput:  26,
+			wantShape:   [2]int{48000, 1},
+		},
+		{
+			name:        "clamped to half the shortest clip",
+			clips:       []joinAudioClipFact{{Duration: 2, SampleRate: 44100, Channels: 2}, {Duration: 5, SampleRate: 44100, Channels: 2}},
+			requested:   3,
+			wantGraph:   "[0:a]" + stereo44 + "[ain0];[1:a]" + stereo44 + "[ain1];[ain0][ain1]acrossfade=d=1[ax1];[ax1]" + stereo44 + "[aout]",
+			wantSeconds: 1,
+			wantOutput:  6,
+			wantShape:   [2]int{44100, 2},
+			wantClamped: true,
+		},
+		{
+			name:        "differing clips normalize to the first clip's shape",
+			clips:       []joinAudioClipFact{{Duration: 30, SampleRate: 44100, Channels: 2}, {Duration: 20, SampleRate: 48000, Channels: 1}},
+			requested:   2,
+			wantGraph:   "[0:a]" + stereo44 + "[ain0];[1:a]" + stereo44 + "[ain1];[ain0][ain1]acrossfade=d=2[ax1];[ax1]" + stereo44 + "[aout]",
+			wantSeconds: 2,
+			wantOutput:  48,
+			wantShape:   [2]int{44100, 2},
+			wantNormal:  true,
+		},
+		{
+			name:          "unmeasured shape defaults to 48 kHz stereo",
+			clips:         []joinAudioClipFact{{Duration: 1}, {Duration: 1}},
+			requested:     0,
+			wantGraph:     "[0:a]" + stereo48 + "[ain0];[1:a]" + stereo48 + "[ain1];[ain0][ain1]acrossfade=d=0.5[ax1];[ax1]" + stereo48 + "[aout]",
+			wantSeconds:   0.5,
+			wantOutput:    1.5,
+			wantShape:     [2]int{48000, 2},
+			wantClamped:   true,
+			wantDefaulted: true,
+		},
+		{
+			name:        "a sniffed second clip never counts as normalized",
+			clips:       []joinAudioClipFact{{Duration: 30, SampleRate: 44100, Channels: 2}, {Duration: 30}},
+			requested:   1,
+			wantGraph:   "[0:a]" + stereo44 + "[ain0];[1:a]" + stereo44 + "[ain1];[ain0][ain1]acrossfade=d=1[ax1];[ax1]" + stereo44 + "[aout]",
+			wantSeconds: 1,
+			wantOutput:  59,
+			wantShape:   [2]int{44100, 2},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := joinAudioTransitionsFilterGraph(tc.clips, tc.requested)
+			if plan.FilterComplex != tc.wantGraph {
+				t.Fatalf("filter_complex =\n%s\nwant\n%s", plan.FilterComplex, tc.wantGraph)
+			}
+			if plan.Seconds != tc.wantSeconds {
+				t.Errorf("seconds = %v, want %v", plan.Seconds, tc.wantSeconds)
+			}
+			if plan.OutputSeconds != tc.wantOutput {
+				t.Errorf("output seconds = %v, want %v", plan.OutputSeconds, tc.wantOutput)
+			}
+			if plan.SampleRate != tc.wantShape[0] || plan.Channels != tc.wantShape[1] {
+				t.Errorf("shape = %d Hz × %d, want %d Hz × %d", plan.SampleRate, plan.Channels, tc.wantShape[0], tc.wantShape[1])
+			}
+			if plan.Clamped != tc.wantClamped {
+				t.Errorf("clamped = %v, want %v", plan.Clamped, tc.wantClamped)
+			}
+			if plan.Normalized != tc.wantNormal {
+				t.Errorf("normalized = %v, want %v", plan.Normalized, tc.wantNormal)
+			}
+			if plan.Defaulted != tc.wantDefaulted {
+				t.Errorf("defaulted = %v, want %v", plan.Defaulted, tc.wantDefaulted)
+			}
+		})
+	}
+}
+
+func TestAudioChannelLayoutAndShapePhrase(t *testing.T) {
+	for channels, want := range map[int]string{1: "mono", 2: "stereo", 6: "6c"} {
+		if got := audioChannelLayout(channels); got != want {
+			t.Errorf("audioChannelLayout(%d) = %q, want %q", channels, got, want)
+		}
+	}
+	cases := []struct {
+		rate, channels int
+		want           string
+	}{
+		{44100, 2, "44.1 kHz stereo"},
+		{48000, 1, "48 kHz mono"},
+		{22050, 6, "22.05 kHz 6-channel"},
+	}
+	for _, tc := range cases {
+		if got := audioShapePhrase(tc.rate, tc.channels); got != tc.want {
+			t.Errorf("audioShapePhrase(%d, %d) = %q, want %q", tc.rate, tc.channels, got, tc.want)
+		}
+	}
+}
+
+func TestFFmpegJoinAudioTransitionArgs(t *testing.T) {
+	plan := joinAudioTransitionPlan{FilterComplex: "FC"}
+	got := strings.Join(ffmpegJoinAudioTransitionArgs([]string{"a.wav", "b.wav"}, plan, []string{"-c:a", "pcm_s16le"}, "out.wav"), " ")
+	want := "-i a.wav -i b.wav -filter_complex FC -map [aout] -c:a pcm_s16le out.wav"
+	if got != want {
+		t.Fatalf("args = %s, want %s", got, want)
+	}
+}
+
+func TestJoinAudiosTransitionValidate(t *testing.T) {
+	validate := func(call HarnessToolCall) []string {
+		return joinAudiosToolDefinition().Validate("toolCalls[0]", call)
+	}
+	if errs := validate(HarnessToolCall{Mode: "copy", Transition: "crossfade"}); len(errs) != 1 ||
+		!strings.Contains(errs[0], `mode "copy" cannot carry a transition`) {
+		t.Errorf("copy + transition = %v, want the mode conflict", errs)
+	}
+	if errs := validate(HarnessToolCall{Transition: "dissolve"}); len(errs) != 1 ||
+		!strings.Contains(errs[0], `must be "crossfade"`) || !strings.Contains(errs[0], "join_videos") {
+		t.Errorf("video transition = %v, want the vocabulary correction pointing at join_videos", errs)
+	}
+	for _, bad := range []float64{-1, 0.05, 15} {
+		if errs := validate(HarnessToolCall{Transition: "crossfade", TransitionDuration: bad}); len(errs) != 1 {
+			t.Errorf("transitionDuration %v = %v, want the bounds correction", bad, errs)
+		}
+	}
+	if errs := validate(HarnessToolCall{Mode: "turbo", Transition: "dissolve"}); len(errs) != 2 {
+		t.Errorf("bad mode + bad transition = %v, want both corrections", errs)
+	}
+	for _, good := range []HarnessToolCall{
+		{Transition: "crossfade"},
+		{Transition: "FADE", TransitionDuration: 2.5},
+		{Mode: "reencode", Transition: "crossfade"},
+		{Mode: "auto", Transition: "fade", TransitionDuration: 10},
+		{Mode: "copy"},
+	} {
+		if errs := validate(good); len(errs) != 0 {
+			t.Errorf("validate(%+v) = %v, want none", good, errs)
+		}
+	}
+	schema := joinAudiosParamSchema()["properties"].(map[string]any)
+	for _, param := range []string{"transition", "transitionDuration"} {
+		if _, ok := schema[param]; !ok {
+			t.Errorf("join_audios param schema lacks %q", param)
+		}
+	}
+	if enum := schema["transition"].(map[string]any)["enum"].([]string); strings.Join(enum, ",") != "crossfade,fade" {
+		t.Errorf("transition enum = %v, want crossfade,fade", enum)
+	}
+	if desc := joinAudiosToolDefinition().Description; !strings.Contains(desc, "crossfade") || !strings.Contains(desc, "transitionDuration") {
+		t.Errorf("join_audios description should explain the crossfade transition: %q", desc)
+	}
+}
+
+// TestFFmpegJoinAudioTransitionExecutes drives the crossfaded join end to end:
+// the graph replaces the concat demuxer, every input lands on the first clip's
+// shape, the output keeps the first clip's codec family (two WAVs crossfade
+// into a WAV), and the evidence says what ran.
+func TestFFmpegJoinAudioTransitionExecutes(t *testing.T) {
+	config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeAudioScript)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		AttachedAudios: []string{wavDataURL(), wavDataURL()},
+	}, "join_audios", HarnessToolCall{Transition: "fade", TransitionDuration: 2})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	args := fakeFFmpegArgs(t, bin)
+	if !strings.Contains(args, "-filter_complex") || strings.Contains(args, "-f concat") {
+		t.Fatalf("args = %s, want a filter_complex join without the concat demuxer", args)
+	}
+	for _, fragment := range []string{
+		"[0:a]aformat=sample_rates=44100:channel_layouts=stereo[ain0]",
+		"[ain0][ain1]acrossfade=d=2[ax1]",
+		"[ax1]aformat=sample_rates=44100:channel_layouts=stereo[aout]",
+		"-map [aout] -c:a pcm_s16le",
+	} {
+		if !strings.Contains(args, fragment) {
+			t.Errorf("args = %s, want it to include %q", args, fragment)
+		}
+	}
+	if first, second := strings.Index(args, "input-001.wav"), strings.Index(args, "input-002.wav"); first < 0 || second < 0 || first > second {
+		t.Errorf("args = %s, want the inputs in attachment order", args)
+	}
+	if !strings.Contains(result.Summary, "crossfade, 2s at each junction") || !strings.Contains(result.Summary, "58s output") {
+		t.Errorf("summary = %q, want the crossfade phrase and the shortened output length", result.Summary)
+	}
+	if len(result.Notices) != 1 || !strings.Contains(result.Notices[0], "overlaps the clips by 2s") ||
+		!strings.Contains(result.Notices[0], "2s shorter") || !strings.Contains(result.Notices[0], "re-encoded") {
+		t.Errorf("notices = %v, want only the overlap and re-encode explanation", result.Notices)
+	}
+	typed, ok := result.Result.(ToolAudioResult)
+	if !ok || len(typed.Audios) != 1 {
+		t.Fatalf("result payload = %+v", result.Result)
+	}
+	defer os.Remove(typed.Audios[0].TempPath)
+	if typed.Audios[0].MimeType != "audio/wav" || !strings.HasSuffix(typed.Audios[0].TempPath, ".wav") {
+		t.Errorf("audio file = %+v, want the first clip's WAV family", typed.Audios[0])
+	}
+}
+
+// TestFFmpegJoinAudioTransitionNormalizesShape pins the normalize notice: a
+// second clip at another sample rate and channel count is converted onto the
+// first clip's shape, and the notice names that shape.
+func TestFFmpegJoinAudioTransitionNormalizesShape(t *testing.T) {
+	config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeAudioDriftScript)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		AttachedAudios: []string{wavDataURL(), wavDataURL()},
+	}, "join_audios", HarnessToolCall{Transition: "crossfade"})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	args := fakeFFmpegArgs(t, bin)
+	if !strings.Contains(args, "[1:a]aformat=sample_rates=44100:channel_layouts=stereo[ain1]") || strings.Contains(args, "48000") {
+		t.Fatalf("args = %s, want the second clip normalized onto the first clip's 44.1 kHz stereo", args)
+	}
+	joined := strings.Join(result.Notices, "\n")
+	if !strings.Contains(joined, "converted to the first clip's (44.1 kHz stereo)") {
+		t.Errorf("notices = %v, want the normalize notice naming the shape", result.Notices)
+	}
+	if !strings.Contains(result.Summary, "49s output") {
+		t.Errorf("summary = %q, want 30 + 20 - 1 = 49s output", result.Summary)
+	}
+	typed := result.Result.(ToolAudioResult)
+	os.Remove(typed.Audios[0].TempPath)
+}
+
+// TestFFmpegJoinAudioTransitionSniffsWithoutFFprobe pins the no-ffprobe path:
+// the pure-Go byte sniff measures the WAVs (one second each), so the crossfade
+// still runs — clamped to half the shortest clip, rendered at the default
+// shape, re-encoded to the MP3 fallback because no codec was identified — and
+// every one of those decisions rides a notice.
+func TestFFmpegJoinAudioTransitionSniffsWithoutFFprobe(t *testing.T) {
+	config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeFailScript)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		AttachedAudios: []string{wavDataURL(), wavDataURL()},
+	}, "join_audios", HarnessToolCall{Transition: "crossfade"})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	args := fakeFFmpegArgs(t, bin)
+	for _, fragment := range []string{
+		"acrossfade=d=0.5",
+		"aformat=sample_rates=48000:channel_layouts=stereo",
+		"-c:a libmp3lame -b:a 192k",
+	} {
+		if !strings.Contains(args, fragment) {
+			t.Errorf("args = %s, want it to include %q", args, fragment)
+		}
+	}
+	if strings.Contains(args, "-f concat") {
+		t.Errorf("args = %s, want the crossfade graph, not the concat degrade", args)
+	}
+	joined := strings.Join(result.Notices, "\n")
+	for _, fragment := range []string{
+		"shortened to 0.5s",
+		"rendered at 48 kHz stereo",
+		"could not be identified",
+		"overlaps the clips by 0.5s",
+	} {
+		if !strings.Contains(joined, fragment) {
+			t.Errorf("notices = %v, want them to include %q", result.Notices, fragment)
+		}
+	}
+	if !strings.Contains(result.Summary, "1.5s output") {
+		t.Errorf("summary = %q, want 1 + 1 - 0.5 = 1.5s output", result.Summary)
+	}
+	typed := result.Result.(ToolAudioResult)
+	defer os.Remove(typed.Audios[0].TempPath)
+	if typed.Audios[0].MimeType != "audio/mpeg" || !strings.HasSuffix(typed.Audios[0].TempPath, ".mp3") {
+		t.Errorf("audio file = %+v, want the MP3 fallback", typed.Audios[0])
+	}
+}
+
+// TestFFmpegJoinAudioTransitionUnmeasurableDegrades pins the degradation: a
+// clip whose length neither ffprobe nor the byte sniff can read joins plainly
+// under a substitution notice rather than failing the call — and the plain
+// join's own notice follows it.
+func TestFFmpegJoinAudioTransitionUnmeasurableDegrades(t *testing.T) {
+	config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeFailScript)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		AttachedAudios: []string{audioDataURL("audio/mpeg", "not-an-mp3"), audioDataURL("audio/mpeg", "still-not-an-mp3")},
+	}, "join_audios", HarnessToolCall{Transition: "crossfade"})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	args := fakeFFmpegArgs(t, bin)
+	if !strings.Contains(args, "-f concat") || strings.Contains(args, "acrossfade") {
+		t.Fatalf("args = %s, want the plain concat join without acrossfade", args)
+	}
+	if len(result.Notices) < 2 || !strings.Contains(result.Notices[0], "without the requested crossfade") ||
+		!strings.Contains(result.Notices[1], "could not be compared") {
+		t.Errorf("notices = %v, want the substitution notice first, then the plain join's probe-failure notice", result.Notices)
+	}
+	if !strings.Contains(result.Summary, "re-encoded") || strings.Contains(result.Summary, "crossfade") {
+		t.Errorf("summary = %q, want the plain join's phrase", result.Summary)
+	}
+	typed, ok := result.Result.(ToolAudioResult)
+	if !ok || len(typed.Audios) != 1 {
+		t.Fatalf("result payload = %+v", result.Result)
+	}
+	os.Remove(typed.Audios[0].TempPath)
+}
