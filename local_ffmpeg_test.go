@@ -3029,7 +3029,7 @@ func TestJoinTransitionsFilterGraph(t *testing.T) {
 			wantGraph: "[0:v]" + videoChain + "[v0];[1:v]" + videoChain + "[v1];" +
 				"[v0][v1]xfade=transition=fade:duration=1:offset=11.5[vx1];[vx1]format=yuv420p[vout];" +
 				"[0:a]" + audioChain + "[ain0];[1:a]" + audioChain + "[ain1];" +
-				"[ain0][ain1]acrossfade=d=1[ax1];[ax1]" + audioChain + "[aout]",
+				"[ain0][ain1]acrossfade=d=1:c1=qsin:c2=qsin[ax1];[ax1]" + audioChain + "[aout]",
 			wantSeconds: 1,
 			wantOutput:  24,
 		},
@@ -3042,7 +3042,7 @@ func TestJoinTransitionsFilterGraph(t *testing.T) {
 				"[v0][v1]xfade=transition=dissolve:duration=2:offset=8[vx1];" +
 				"[vx1][v2]xfade=transition=dissolve:duration=2:offset=14[vx2];[vx2]format=yuv420p[vout];" +
 				"[0:a]" + audioChain + "[ain0];[3:a]" + audioChain + "[ain1];[2:a]" + audioChain + "[ain2];" +
-				"[ain0][ain1]acrossfade=d=2[ax1];[ax1][ain2]acrossfade=d=2[ax2];[ax2]" + audioChain + "[aout]",
+				"[ain0][ain1]acrossfade=d=2:c1=qsin:c2=qsin[ax1];[ax1][ain2]acrossfade=d=2:c1=qsin:c2=qsin[ax2];[ax2]" + audioChain + "[aout]",
 			wantInputs:   []string{"-f", "lavfi", "-t", "8", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"},
 			wantSeconds:  2,
 			wantOutput:   26,
@@ -3056,7 +3056,7 @@ func TestJoinTransitionsFilterGraph(t *testing.T) {
 			wantGraph: "[0:v]" + videoChain + "[v0];[1:v]" + videoChain + "[v1];" +
 				"[v0][v1]xfade=transition=wipeleft:duration=1:offset=1[vx1];[vx1]format=yuv420p[vout];" +
 				"[0:a]" + audioChain + "[ain0];[1:a]" + audioChain + "[ain1];" +
-				"[ain0][ain1]acrossfade=d=1[ax1];[ax1]" + audioChain + "[aout]",
+				"[ain0][ain1]acrossfade=d=1:c1=qsin:c2=qsin[ax1];[ax1]" + audioChain + "[aout]",
 			wantSeconds: 1,
 			wantOutput:  6,
 			wantClamped: true,
@@ -3069,7 +3069,7 @@ func TestJoinTransitionsFilterGraph(t *testing.T) {
 			wantGraph: "[0:v]" + videoChain + "[v0];[1:v]" + videoChain + "[v1];" +
 				"[v0][v1]xfade=transition=slideleft:duration=2:offset=8[vx1];[vx1]format=yuv420p[vout];" +
 				"[0:a]" + audioChain + "[ain0];[1:a]" + audioChain + "[ain1];" +
-				"[ain0][ain1]acrossfade=d=2[ax1];[ax1]" + audioChain + "[aout]",
+				"[ain0][ain1]acrossfade=d=2:c1=qsin:c2=qsin[ax1];[ax1]" + audioChain + "[aout]",
 			wantSeconds: 2,
 			wantOutput:  18,
 			wantNormal:  true,
@@ -3082,7 +3082,7 @@ func TestJoinTransitionsFilterGraph(t *testing.T) {
 			wantGraph: "[0:v]" + videoChain + "[v0];[1:v]" + videoChain + "[v1];" +
 				"[v0][v1]xfade=transition=radial:duration=1:offset=5[vx1];[vx1]format=yuv420p[vout];" +
 				"[0:a]" + audioChain + "[ain0];[1:a]" + audioChain + "[ain1];" +
-				"[ain0][ain1]acrossfade=d=1[ax1];[ax1]" + audioChain + "[aout]",
+				"[ain0][ain1]acrossfade=d=1:c1=qsin:c2=qsin[ax1];[ax1]" + audioChain + "[aout]",
 			wantSeconds: 1,
 			wantOutput:  11,
 		},
@@ -3185,7 +3185,7 @@ func TestFFmpegJoinTransitionExecutes(t *testing.T) {
 	}
 	for _, fragment := range []string{
 		"xfade=transition=dissolve:duration=2:offset=10.5",
-		"acrossfade=d=2",
+		"acrossfade=d=2:c1=qsin:c2=qsin",
 	} {
 		if !strings.Contains(args, fragment) {
 			t.Errorf("args = %s, want it to include %q", args, fragment)
@@ -3380,7 +3380,7 @@ func TestFormatJoinSeconds(t *testing.T) {
 }
 
 // TestJoinAudioTransitionsFilterGraph pins the crossfaded graph: every input
-// normalized onto the first clip's shape, one acrossfade per junction chained
+// normalized onto the first clip's shape, one equal-power acrossfade per junction chained
 // through the previous junction's output, the output pinned to the same
 // shape, the overlap clamped to half the shortest clip, and 48 kHz stereo
 // standing in when no shape was measured.
@@ -3404,7 +3404,7 @@ func TestJoinAudioTransitionsFilterGraph(t *testing.T) {
 			name:        "two clips, default one-second crossfade",
 			clips:       []joinAudioClipFact{{Duration: 30, SampleRate: 44100, Channels: 2, Codec: "pcm_s16le"}, {Duration: 30, SampleRate: 44100, Channels: 2, Codec: "pcm_s16le"}},
 			requested:   0,
-			wantGraph:   "[0:a]" + stereo44 + "[ain0];[1:a]" + stereo44 + "[ain1];[ain0][ain1]acrossfade=d=1[ax1];[ax1]" + stereo44 + "[aout]",
+			wantGraph:   "[0:a]" + stereo44 + "[ain0];[1:a]" + stereo44 + "[ain1];[ain0][ain1]acrossfade=d=1:c1=qsin:c2=qsin[ax1];[ax1]" + stereo44 + "[aout]",
 			wantSeconds: 1,
 			wantOutput:  59,
 			wantShape:   [2]int{44100, 2},
@@ -3414,7 +3414,7 @@ func TestJoinAudioTransitionsFilterGraph(t *testing.T) {
 			clips:     []joinAudioClipFact{{Duration: 10, SampleRate: 48000, Channels: 1}, {Duration: 8, SampleRate: 48000, Channels: 1}, {Duration: 12, SampleRate: 48000, Channels: 1}},
 			requested: 2,
 			wantGraph: "[0:a]" + mono48 + "[ain0];[1:a]" + mono48 + "[ain1];[2:a]" + mono48 + "[ain2];" +
-				"[ain0][ain1]acrossfade=d=2[ax1];[ax1][ain2]acrossfade=d=2[ax2];[ax2]" + mono48 + "[aout]",
+				"[ain0][ain1]acrossfade=d=2:c1=qsin:c2=qsin[ax1];[ax1][ain2]acrossfade=d=2:c1=qsin:c2=qsin[ax2];[ax2]" + mono48 + "[aout]",
 			wantSeconds: 2,
 			wantOutput:  26,
 			wantShape:   [2]int{48000, 1},
@@ -3423,7 +3423,7 @@ func TestJoinAudioTransitionsFilterGraph(t *testing.T) {
 			name:        "clamped to half the shortest clip",
 			clips:       []joinAudioClipFact{{Duration: 2, SampleRate: 44100, Channels: 2}, {Duration: 5, SampleRate: 44100, Channels: 2}},
 			requested:   3,
-			wantGraph:   "[0:a]" + stereo44 + "[ain0];[1:a]" + stereo44 + "[ain1];[ain0][ain1]acrossfade=d=1[ax1];[ax1]" + stereo44 + "[aout]",
+			wantGraph:   "[0:a]" + stereo44 + "[ain0];[1:a]" + stereo44 + "[ain1];[ain0][ain1]acrossfade=d=1:c1=qsin:c2=qsin[ax1];[ax1]" + stereo44 + "[aout]",
 			wantSeconds: 1,
 			wantOutput:  6,
 			wantShape:   [2]int{44100, 2},
@@ -3433,7 +3433,7 @@ func TestJoinAudioTransitionsFilterGraph(t *testing.T) {
 			name:        "differing clips normalize to the first clip's shape",
 			clips:       []joinAudioClipFact{{Duration: 30, SampleRate: 44100, Channels: 2}, {Duration: 20, SampleRate: 48000, Channels: 1}},
 			requested:   2,
-			wantGraph:   "[0:a]" + stereo44 + "[ain0];[1:a]" + stereo44 + "[ain1];[ain0][ain1]acrossfade=d=2[ax1];[ax1]" + stereo44 + "[aout]",
+			wantGraph:   "[0:a]" + stereo44 + "[ain0];[1:a]" + stereo44 + "[ain1];[ain0][ain1]acrossfade=d=2:c1=qsin:c2=qsin[ax1];[ax1]" + stereo44 + "[aout]",
 			wantSeconds: 2,
 			wantOutput:  48,
 			wantShape:   [2]int{44100, 2},
@@ -3443,7 +3443,7 @@ func TestJoinAudioTransitionsFilterGraph(t *testing.T) {
 			name:          "unmeasured shape defaults to 48 kHz stereo",
 			clips:         []joinAudioClipFact{{Duration: 1}, {Duration: 1}},
 			requested:     0,
-			wantGraph:     "[0:a]" + stereo48 + "[ain0];[1:a]" + stereo48 + "[ain1];[ain0][ain1]acrossfade=d=0.5[ax1];[ax1]" + stereo48 + "[aout]",
+			wantGraph:     "[0:a]" + stereo48 + "[ain0];[1:a]" + stereo48 + "[ain1];[ain0][ain1]acrossfade=d=0.5:c1=qsin:c2=qsin[ax1];[ax1]" + stereo48 + "[aout]",
 			wantSeconds:   0.5,
 			wantOutput:    1.5,
 			wantShape:     [2]int{48000, 2},
@@ -3454,7 +3454,7 @@ func TestJoinAudioTransitionsFilterGraph(t *testing.T) {
 			name:        "a sniffed second clip never counts as normalized",
 			clips:       []joinAudioClipFact{{Duration: 30, SampleRate: 44100, Channels: 2}, {Duration: 30}},
 			requested:   1,
-			wantGraph:   "[0:a]" + stereo44 + "[ain0];[1:a]" + stereo44 + "[ain1];[ain0][ain1]acrossfade=d=1[ax1];[ax1]" + stereo44 + "[aout]",
+			wantGraph:   "[0:a]" + stereo44 + "[ain0];[1:a]" + stereo44 + "[ain1];[ain0][ain1]acrossfade=d=1:c1=qsin:c2=qsin[ax1];[ax1]" + stereo44 + "[aout]",
 			wantSeconds: 1,
 			wantOutput:  59,
 			wantShape:   [2]int{44100, 2},
@@ -3581,7 +3581,7 @@ func TestFFmpegJoinAudioTransitionExecutes(t *testing.T) {
 	}
 	for _, fragment := range []string{
 		"[0:a]aformat=sample_rates=44100:channel_layouts=stereo[ain0]",
-		"[ain0][ain1]acrossfade=d=2[ax1]",
+		"[ain0][ain1]acrossfade=d=2:c1=qsin:c2=qsin[ax1]",
 		"[ax1]aformat=sample_rates=44100:channel_layouts=stereo[aout]",
 		"-map [aout] -c:a pcm_s16le",
 	} {
@@ -3650,7 +3650,7 @@ func TestFFmpegJoinAudioTransitionSniffsWithoutFFprobe(t *testing.T) {
 	}
 	args := fakeFFmpegArgs(t, bin)
 	for _, fragment := range []string{
-		"acrossfade=d=0.5",
+		"acrossfade=d=0.5:c1=qsin:c2=qsin",
 		"aformat=sample_rates=48000:channel_layouts=stereo",
 		"-c:a libmp3lame -b:a 192k",
 	} {
@@ -3710,4 +3710,21 @@ func TestFFmpegJoinAudioTransitionUnmeasurableDegrades(t *testing.T) {
 		t.Fatalf("result payload = %+v", result.Result)
 	}
 	os.Remove(typed.Audios[0].TempPath)
+}
+
+// TestAcrossfadeFilterIsEqualPower pins the junction stage both join tools
+// share: quarter-sine curves on both sides, never acrossfade's default linear
+// ramps (which dip ~3 dB at the midpoint on unrelated material).
+func TestAcrossfadeFilterIsEqualPower(t *testing.T) {
+	if got := acrossfadeFilter("2.5"); got != "acrossfade=d=2.5:c1=qsin:c2=qsin" {
+		t.Fatalf("acrossfadeFilter(2.5) = %q", got)
+	}
+	for _, graph := range []string{
+		joinTransitionsFilterGraph([]joinClipFact{{Duration: 10, Width: 1920, Height: 1080, FPS: 30, HasAudio: true}, {Duration: 10, Width: 1920, Height: 1080, FPS: 30, HasAudio: true}}, "fade", 1).FilterComplex,
+		joinAudioTransitionsFilterGraph([]joinAudioClipFact{{Duration: 10, SampleRate: 48000, Channels: 2}, {Duration: 10, SampleRate: 48000, Channels: 2}}, 1).FilterComplex,
+	} {
+		if !strings.Contains(graph, "acrossfade=d=1:c1=qsin:c2=qsin") || strings.Contains(graph, "acrossfade=d=1[") {
+			t.Errorf("graph = %s, want every acrossfade stage equal-power", graph)
+		}
+	}
 }

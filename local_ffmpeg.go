@@ -620,8 +620,9 @@ type joinTransitionPlan struct {
 }
 
 // joinTransitionsFilterGraph lays out a transitioned join: one xfade per
-// junction on the video side and one acrossfade per junction on the audio
-// side, every input normalized onto the FIRST clip's frame (xfade refuses
+// junction on the video side and one equal-power acrossfade per junction on
+// the audio side (acrossfadeFilter), every input normalized onto the FIRST
+// clip's frame (xfade refuses
 // inputs that differ in size, frame rate, or pixel format — scale+pad keeps
 // every pixel, letterboxing rather than cropping). Clips without audio get a
 // synthesized anullsrc input so the audio chain stays uniform: acrossfade
@@ -703,8 +704,8 @@ func joinTransitionsFilterGraph(clips []joinClipFact, transition string, request
 		}
 		video = append(video, fmt.Sprintf("[%s][v%d]xfade=transition=%s:duration=%s:offset=%s[vx%d]",
 			leftVideo, i+1, transition, secondsText, offset, i+1))
-		audio = append(audio, fmt.Sprintf("[%s][ain%d]acrossfade=d=%s[ax%d]",
-			leftAudio, i+1, secondsText, i+1))
+		audio = append(audio, fmt.Sprintf("[%s][ain%d]%s[ax%d]",
+			leftAudio, i+1, acrossfadeFilter(secondsText), i+1))
 	}
 	last := len(clips) - 1
 	video = append(video, fmt.Sprintf("[vx%d]format=yuv420p[vout]", last))
@@ -742,6 +743,17 @@ func ffmpegJoinTransitionArgs(inputs []string, plan joinTransitionPlan, output s
 // floating-point dust that %g would print in full.
 func formatJoinSeconds(seconds float64) string {
 	return strconv.FormatFloat(math.Round(seconds*1000)/1000, 'f', -1, 64)
+}
+
+// acrossfadeFilter renders the acrossfade stage both join tools chain at a
+// junction: an EQUAL-POWER crossfade — quarter-sine curves on both sides, so
+// the outgoing cos² and incoming sin² gains sum to one — rather than
+// acrossfade's default linear ramps. Joined clips are unrelated material (two
+// songs, two scenes' ambience), and linear ramps halve their summed power at
+// the midpoint: an audible dip, measured −3.06 dB on white noise against
+// −0.07 dB for the quarter-sine pair.
+func acrossfadeFilter(secondsText string) string {
+	return "acrossfade=d=" + secondsText + ":c1=qsin:c2=qsin"
 }
 
 // audioTransitions enumerates the transition kinds join_audios accepts: audio
@@ -837,8 +849,9 @@ type joinAudioTransitionPlan struct {
 	OutputSeconds float64
 }
 
-// joinAudioTransitionsFilterGraph lays out a crossfaded join: one acrossfade
-// per junction, every input first normalized onto the FIRST clip's sample rate
+// joinAudioTransitionsFilterGraph lays out a crossfaded join: one equal-power
+// acrossfade per junction (acrossfadeFilter), every input first normalized
+// onto the FIRST clip's sample rate
 // and channel layout (acrossfade negotiates one shape for both sides, so a
 // 44.1 kHz clip meeting a 48 kHz one would otherwise resample implicitly to
 // whichever the graph picked), and the output pinned to that shape. When the
@@ -886,7 +899,7 @@ func joinAudioTransitionsFilterGraph(clips []joinAudioClipFact, requestedSeconds
 		if i > 0 {
 			left = fmt.Sprintf("ax%d", i)
 		}
-		chain = append(chain, fmt.Sprintf("[%s][ain%d]acrossfade=d=%s[ax%d]", left, i+1, secondsText, i+1))
+		chain = append(chain, fmt.Sprintf("[%s][ain%d]%s[ax%d]", left, i+1, acrossfadeFilter(secondsText), i+1))
 	}
 	last := len(clips) - 1
 	chain = append(chain, fmt.Sprintf("[ax%d]%s[aout]", last, shape))
@@ -2265,7 +2278,7 @@ func joinVideosToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "join_videos",
 		Title:       "Join videos",
-		Description: "Use this when the user asks to combine, concatenate, merge, stitch, or join multiple video clips into one (for audio files, use join_audios instead). Requires at least two videos attached or @-mentioned this turn — the clips are joined in EXACTLY the order they were attached or mentioned; that order is the sequence, so tell the user to reorder the attachments if they want a different one (older conversation clips are not picked up automatically). mode \"auto\" (the default) copies the streams untouched when every clip matches in codec, resolution, frame rate, and audio (fast, lossless — clips from the same generator always match) and re-encodes otherwise; \"copy\" forces stream copy; \"reencode\" forces re-encoding. transition (optional) blends the clips through that effect at every junction instead of hard-cutting: crossfade/dissolve/fadeblack, wipes, slides, circles, pixelize and more — run list_video_transitions to see what the installed ffmpeg supports (\"crossfade\" aliases \"fade\"). A transition always re-encodes (mode \"copy\" is rejected), applies to EVERY junction, and transitionDuration (optional, seconds, 0.1–10, default 1) sets its length — the joined video is the clips' combined length minus one overlap per junction; differing clips are scaled to the first clip's frame (letterboxed, never cropped), and clips without audio get silence so the crossfade stays in sync. The joined video is attached to the assistant reply and becomes the conversation's newest video.",
+		Description: "Use this when the user asks to combine, concatenate, merge, stitch, or join multiple video clips into one (for audio files, use join_audios instead). Requires at least two videos attached or @-mentioned this turn — the clips are joined in EXACTLY the order they were attached or mentioned; that order is the sequence, so tell the user to reorder the attachments if they want a different one (older conversation clips are not picked up automatically). mode \"auto\" (the default) copies the streams untouched when every clip matches in codec, resolution, frame rate, and audio (fast, lossless — clips from the same generator always match) and re-encodes otherwise; \"copy\" forces stream copy; \"reencode\" forces re-encoding. transition (optional) blends the clips through that effect at every junction instead of hard-cutting: crossfade/dissolve/fadeblack, wipes, slides, circles, pixelize and more — run list_video_transitions to see what the installed ffmpeg supports (\"crossfade\" aliases \"fade\"). A transition always re-encodes (mode \"copy\" is rejected), applies to EVERY junction, and transitionDuration (optional, seconds, 0.1–10, default 1) sets its length — the joined video is the clips' combined length minus one overlap per junction; differing clips are scaled to the first clip's frame (letterboxed, never cropped), and clips without audio get silence so the crossfade stays in sync; the audio crossfade is equal-power, so loudness holds steady through the blend. The joined video is attached to the assistant reply and becomes the conversation's newest video.",
 		Example:     `{"name":"join_videos"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: joinVideosParamSchema(),
@@ -2456,7 +2469,7 @@ func joinAudiosToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "join_audios",
 		Title:       "Join audio",
-		Description: "Use this when the user asks to combine, concatenate, merge, stitch, or join multiple AUDIO files into one — stitch voice memos or podcast chapters into a single recording, or reassemble the parts a split_audio call kept (for video clips, use join_videos instead). Requires at least two audio clips attached or @-mentioned this turn — they are joined in EXACTLY the order they were attached or mentioned; that order is the sequence, so tell the user to reorder the attachments if they want a different one. mode \"auto\" (the default) copies the streams untouched when every clip matches in codec, sample rate, and channel count (fast, lossless) and re-encodes to the FIRST clip's format otherwise; \"copy\" forces stream copy; \"reencode\" forces re-encoding. transition (optional) blends the clips through a crossfade at every junction instead of hard-cutting — \"crossfade\" (or \"fade\") is the one transition audio has, the sibling of join_videos' visual transitions. A crossfade always re-encodes (mode \"copy\" is rejected) into the first clip's format, applies to EVERY junction, and transitionDuration (optional, seconds, 0.1–10, default 1) sets its length — the joined recording is the clips' combined length minus one overlap per junction; clips with a different sample rate or channel count are converted to the first clip's so the crossfade can run. The joined audio is attached to the assistant reply and becomes the conversation's newest audio.",
+		Description: "Use this when the user asks to combine, concatenate, merge, stitch, or join multiple AUDIO files into one — stitch voice memos or podcast chapters into a single recording, or reassemble the parts a split_audio call kept (for video clips, use join_videos instead). Requires at least two audio clips attached or @-mentioned this turn — they are joined in EXACTLY the order they were attached or mentioned; that order is the sequence, so tell the user to reorder the attachments if they want a different one. mode \"auto\" (the default) copies the streams untouched when every clip matches in codec, sample rate, and channel count (fast, lossless) and re-encodes to the FIRST clip's format otherwise; \"copy\" forces stream copy; \"reencode\" forces re-encoding. transition (optional) blends the clips through an equal-power crossfade (loudness holds steady through the blend) at every junction instead of hard-cutting — \"crossfade\" (or \"fade\") is the one transition audio has, the sibling of join_videos' visual transitions. A crossfade always re-encodes (mode \"copy\" is rejected) into the first clip's format, applies to EVERY junction, and transitionDuration (optional, seconds, 0.1–10, default 1) sets its length — the joined recording is the clips' combined length minus one overlap per junction; clips with a different sample rate or channel count are converted to the first clip's so the crossfade can run. The joined audio is attached to the assistant reply and becomes the conversation's newest audio.",
 		Example:     `{"name":"join_audios"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: joinAudiosParamSchema(),
