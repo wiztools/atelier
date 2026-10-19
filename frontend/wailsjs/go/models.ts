@@ -1847,6 +1847,9 @@ export namespace main {
 	    rotate?: number;
 	    flip?: string;
 	    speed?: number;
+	    fadeIn?: number;
+	    fadeOut?: number;
+	    fadeTarget?: string;
 	    position?: string;
 	    opacity?: number;
 	    brightness?: number;
@@ -1910,6 +1913,9 @@ export namespace main {
 	        this.rotate = source["rotate"];
 	        this.flip = source["flip"];
 	        this.speed = source["speed"];
+	        this.fadeIn = source["fadeIn"];
+	        this.fadeOut = source["fadeOut"];
+	        this.fadeTarget = source["fadeTarget"];
 	        this.position = source["position"];
 	        this.opacity = source["opacity"];
 	        this.brightness = source["brightness"];

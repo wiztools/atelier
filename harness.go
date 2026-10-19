@@ -288,7 +288,11 @@ type HarnessToolCall struct {
 	// here); Brightness/Contrast/Saturation/Grayscale/Sepia are adjust_image's
 	// color controls; Speed is transform_video's playback multiplier (2 plays
 	// twice as fast, 0.5 at half speed) — a float, unlike the integer geometry
-	// params. Planner-only, like At — declared in
+	// params. FadeIn/FadeOut are the single-clip fades, in output seconds:
+	// transform_video's picture to/from black with the soundtrack to/from
+	// silence, transform_audio's recording to/from silence; FadeTarget narrows
+	// transform_video's to the picture ("video") or the sound ("audio") alone
+	// (omitted = both). Planner-only, like At — declared in
 	// harnessToolPlanSchema and validated per-tool.
 	Format     string  `json:"format,omitempty"`
 	Quality    int     `json:"quality,omitempty"`
@@ -297,6 +301,9 @@ type HarnessToolCall struct {
 	Rotate     int     `json:"rotate,omitempty"`
 	Flip       string  `json:"flip,omitempty"`
 	Speed      float64 `json:"speed,omitempty"`
+	FadeIn     float64 `json:"fadeIn,omitempty"`
+	FadeOut    float64 `json:"fadeOut,omitempty"`
+	FadeTarget string  `json:"fadeTarget,omitempty"`
 	Position   string  `json:"position,omitempty"`
 	Opacity    int     `json:"opacity,omitempty"`
 	Brightness int     `json:"brightness,omitempty"`
@@ -2544,8 +2551,11 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 						// contract: per-tool validation, grammar freedom here.
 						// aspectRatio and scale are shared with generate_image
 						// and upscale_image (string shapes there); the geometry
-						// params are shared with transform_video, and speed is
-						// transform_video's playback multiplier (a float).
+						// params are shared with transform_video, speed is
+						// transform_video's playback multiplier (a float), and
+						// fadeIn/fadeOut are the single-clip fades transform_video
+						// and transform_audio share (fadeTarget narrows
+						// transform_video's to the picture or the sound).
 						"format":      map[string]any{"type": "string"},
 						"quality":     map[string]any{"type": "integer"},
 						"aspectRatio": map[string]any{"type": "string"},
@@ -2555,6 +2565,9 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 						"rotate":      map[string]any{"type": "integer"},
 						"flip":        map[string]any{"type": "string"},
 						"speed":       map[string]any{"type": "number"},
+						"fadeIn":      map[string]any{"type": "number"},
+						"fadeOut":     map[string]any{"type": "number"},
+						"fadeTarget":  map[string]any{"type": "string"},
 						"position":    map[string]any{"type": "string"},
 						"opacity":     map[string]any{"type": "integer"},
 						"brightness":  map[string]any{"type": "integer"},
@@ -3259,6 +3272,12 @@ func setToolCallField(call *HarnessToolCall, key, raw string) {
 		call.Rotate = kwargInt(raw)
 	case "speed":
 		call.Speed = kwargFloat(raw)
+	case "fade_in", "fadeIn":
+		call.FadeIn = kwargFloat(raw)
+	case "fade_out", "fadeOut":
+		call.FadeOut = kwargFloat(raw)
+	case "fade_target", "fadeTarget":
+		call.FadeTarget = raw
 	case "opacity":
 		call.Opacity = kwargInt(raw)
 	case "brightness":

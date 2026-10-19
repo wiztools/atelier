@@ -366,10 +366,18 @@ func TestFFmpegArgBuilders(t *testing.T) {
 			"-i in.mp4 -vf setpts=PTS/3 -af atempo=2.0,atempo=1.5 -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -movflags +faststart out.mp4"},
 		{"transform speed only omits -vf", ffmpegTransformArgs("in.mp4", "", "atempo=0.5", "out.mp4"),
 			"-i in.mp4 -af atempo=0.5 -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -movflags +faststart out.mp4"},
-		{"portion speed with audio", ffmpegPortionSpeedArgs("in.mp4", "FC", true, "out.mp4"),
+		{"transform fade appended after speed", ffmpegTransformArgs("in.mp4", "setpts=PTS/2,fade=t=out:st=4.25:d=2", "atempo=2,afade=t=out:st=4.25:d=2", "out.mp4"),
+			"-i in.mp4 -vf setpts=PTS/2,fade=t=out:st=4.25:d=2 -af atempo=2,afade=t=out:st=4.25:d=2 -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -movflags +faststart out.mp4"},
+		{"portion speed with audio", ffmpegPortionSpeedArgs("in.mp4", "FC", true, false, "out.mp4"),
 			"-i in.mp4 -filter_complex FC -map [vout] -map [acat] -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -movflags +faststart out.mp4"},
-		{"portion speed without audio", ffmpegPortionSpeedArgs("in.mp4", "FC", false, "out.mp4"),
+		{"portion speed with faded audio maps [aout]", ffmpegPortionSpeedArgs("in.mp4", "FC", true, true, "out.mp4"),
+			"-i in.mp4 -filter_complex FC -map [vout] -map [aout] -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -movflags +faststart out.mp4"},
+		{"portion speed without audio", ffmpegPortionSpeedArgs("in.mp4", "FC", false, false, "out.mp4"),
 			"-i in.mp4 -filter_complex FC -map [vout] -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -movflags +faststart out.mp4"},
+		{"portion speed without audio ignores the faded flag", ffmpegPortionSpeedArgs("in.mp4", "FC", false, true, "out.mp4"),
+			"-i in.mp4 -filter_complex FC -map [vout] -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -movflags +faststart out.mp4"},
+		{"transform audio fades in the recording's codec", ffmpegTransformAudioArgs("in.wav", "afade=t=in:st=0:d=1,afade=t=out:st=27:d=3", []string{"-c:a", "pcm_s16le"}, "out.wav"),
+			"-i in.wav -vn -af afade=t=in:st=0:d=1,afade=t=out:st=27:d=3 -c:a pcm_s16le out.wav"},
 	}
 	for _, tc := range cases {
 		if joined := strings.Join(tc.got, " "); joined != tc.want {
@@ -491,41 +499,60 @@ func TestAtempoChain(t *testing.T) {
 // applied to the joined output.
 func TestVideoPortionSpeedFilterComplex(t *testing.T) {
 	cases := []struct {
-		name       string
-		geometry   string
-		start      float64
-		end        float64
-		endBounded bool
-		hasAudio   bool
-		speed      float64
-		want       string
+		name         string
+		geometry     string
+		start        float64
+		end          float64
+		endBounded   bool
+		hasAudio     bool
+		speed        float64
+		audioFilters string
+		want         string
 	}{
-		{"3x middle with audio", "", 10, 20, true, true, 3,
+		{"3x middle with audio", "", 10, 20, true, true, 3, "",
 			"[0:v]trim=end=10,setpts=PTS-STARTPTS[v0];[0:a]atrim=end=10,asetpts=PTS-STARTPTS[a0];" +
 				"[0:v]trim=start=10:end=20,setpts=(PTS-STARTPTS)/3[v1];[0:a]atrim=start=10:end=20,asetpts=(PTS-STARTPTS)/3,atempo=2.0,atempo=1.5[a1];" +
 				"[0:v]trim=start=20,setpts=PTS-STARTPTS[v2];[0:a]atrim=start=20,asetpts=PTS-STARTPTS[a2];" +
 				"[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[vout][acat]"},
-		{"2x middle without audio", "", 4, 8, true, false, 2,
+		{"2x middle without audio", "", 4, 8, true, false, 2, "",
 			"[0:v]trim=end=4,setpts=PTS-STARTPTS[v0];" +
 				"[0:v]trim=start=4:end=8,setpts=(PTS-STARTPTS)/2[v1];" +
 				"[0:v]trim=start=8,setpts=PTS-STARTPTS[v2];" +
 				"[v0][v1][v2]concat=n=3:v=1:a=0[vout]"},
-		{"half-speed opening, no head", "", 0, 4.5, true, true, 0.5,
+		{"half-speed opening, no head", "", 0, 4.5, true, true, 0.5, "",
 			"[0:v]trim=start=0:end=4.5,setpts=(PTS-STARTPTS)/0.5[v1];[0:a]atrim=start=0:end=4.5,asetpts=(PTS-STARTPTS)/0.5,atempo=0.5[a1];" +
 				"[0:v]trim=start=4.5,setpts=PTS-STARTPTS[v2];[0:a]atrim=start=4.5,asetpts=PTS-STARTPTS[a2];" +
 				"[v1][a1][v2][a2]concat=n=2:v=1:a=1[vout][acat]"},
-		{"3x to the end, no tail", "", 10, 0, false, true, 3,
+		{"3x to the end, no tail", "", 10, 0, false, true, 3, "",
 			"[0:v]trim=end=10,setpts=PTS-STARTPTS[v0];[0:a]atrim=end=10,asetpts=PTS-STARTPTS[a0];" +
 				"[0:v]trim=start=10,setpts=(PTS-STARTPTS)/3[v1];[0:a]atrim=start=10,asetpts=(PTS-STARTPTS)/3,atempo=2.0,atempo=1.5[a1];" +
 				"[v0][a0][v1][a1]concat=n=2:v=1:a=1[vout][acat]"},
-		{"geometry covers the joined output", "crop=864:1080", 10, 20, true, true, 3,
+		{"geometry covers the joined output", "crop=864:1080", 10, 20, true, true, 3, "",
 			"[0:v]trim=end=10,setpts=PTS-STARTPTS[v0];[0:a]atrim=end=10,asetpts=PTS-STARTPTS[a0];" +
 				"[0:v]trim=start=10:end=20,setpts=(PTS-STARTPTS)/3[v1];[0:a]atrim=start=10:end=20,asetpts=(PTS-STARTPTS)/3,atempo=2.0,atempo=1.5[a1];" +
 				"[0:v]trim=start=20,setpts=PTS-STARTPTS[v2];[0:a]atrim=start=20,asetpts=PTS-STARTPTS[a2];" +
 				"[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[vcat][acat];[vcat]crop=864:1080[vout]"},
+		// Fades ride the post-concat chains: the video fade routes the concat
+		// through [vcat] even without geometry, and the audio fade turns
+		// [acat] into [aout] for the args builder to map.
+		{"fades on the joined output", "fade=t=out:st=22.333:d=2", 10, 20, true, true, 3, "afade=t=out:st=22.333:d=2",
+			"[0:v]trim=end=10,setpts=PTS-STARTPTS[v0];[0:a]atrim=end=10,asetpts=PTS-STARTPTS[a0];" +
+				"[0:v]trim=start=10:end=20,setpts=(PTS-STARTPTS)/3[v1];[0:a]atrim=start=10:end=20,asetpts=(PTS-STARTPTS)/3,atempo=2.0,atempo=1.5[a1];" +
+				"[0:v]trim=start=20,setpts=PTS-STARTPTS[v2];[0:a]atrim=start=20,asetpts=PTS-STARTPTS[a2];" +
+				"[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[vcat][acat];[vcat]fade=t=out:st=22.333:d=2[vout];[acat]afade=t=out:st=22.333:d=2[aout]"},
+		{"audio fade on a silent clip is dropped", "fade=t=in:st=0:d=1", 4, 8, true, false, 2, "afade=t=in:st=0:d=1",
+			"[0:v]trim=end=4,setpts=PTS-STARTPTS[v0];" +
+				"[0:v]trim=start=4:end=8,setpts=(PTS-STARTPTS)/2[v1];" +
+				"[0:v]trim=start=8,setpts=PTS-STARTPTS[v2];" +
+				"[v0][v1][v2]concat=n=3:v=1:a=0[vcat];[vcat]fade=t=in:st=0:d=1[vout]"},
+		{"audio-only fade leaves the video straight off the concat", "", 4, 8, true, true, 2, "afade=t=out:st=9:d=1",
+			"[0:v]trim=end=4,setpts=PTS-STARTPTS[v0];[0:a]atrim=end=4,asetpts=PTS-STARTPTS[a0];" +
+				"[0:v]trim=start=4:end=8,setpts=(PTS-STARTPTS)/2[v1];[0:a]atrim=start=4:end=8,asetpts=(PTS-STARTPTS)/2,atempo=2[a1];" +
+				"[0:v]trim=start=8,setpts=PTS-STARTPTS[v2];[0:a]atrim=start=8,asetpts=PTS-STARTPTS[a2];" +
+				"[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[vout][acat];[acat]afade=t=out:st=9:d=1[aout]"},
 	}
 	for _, tc := range cases {
-		if got := videoPortionSpeedFilterComplex(tc.geometry, tc.start, tc.end, tc.endBounded, tc.hasAudio, tc.speed); got != tc.want {
+		if got := videoPortionSpeedFilterComplex(tc.geometry, tc.start, tc.end, tc.endBounded, tc.hasAudio, tc.speed, tc.audioFilters); got != tc.want {
 			t.Errorf("%s filter_complex =\n%q\nwant\n%q", tc.name, got, tc.want)
 		}
 	}
@@ -549,6 +576,151 @@ func TestPortionSpeedPhrase(t *testing.T) {
 		if got := portionSpeedPhrase(tc.start, tc.end, tc.endBounded, tc.speed); got != tc.want {
 			t.Errorf("%s phrase = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestPortionOutputDuration pins the rendered length a portion speed change
+// produces — what a fade-out on that output is timed against: the head and
+// tail at normal speed, the middle divided by the speed.
+func TestPortionOutputDuration(t *testing.T) {
+	cases := []struct {
+		name       string
+		start      float64
+		end        float64
+		endBounded bool
+		duration   float64
+		speed      float64
+		want       float64
+	}{
+		{"3x middle of a 30s clip", 10, 20, true, 30, 3, 10 + 10.0/3 + 10},
+		{"2x from 10s to the end", 10, 0, false, 30, 2, 10 + 10},
+		{"half-speed opening", 0, 4, true, 12.5, 0.5, 8 + 8.5},
+	}
+	for _, tc := range cases {
+		if got := portionOutputDuration(tc.start, tc.end, tc.endBounded, tc.duration, tc.speed); math.Abs(got-tc.want) > 1e-9 {
+			t.Errorf("%s output duration = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestResolveFadePlan pins the fade clamp and the fade-out's placement: each
+// fade is capped at half the output (a notice per shortened fade), the
+// fade-out starts at duration minus its length, and an unknown duration
+// (zero) passes the fades through untouched — the fade-in-only path with no
+// measurable clip.
+func TestResolveFadePlan(t *testing.T) {
+	plan := resolveFadePlan(1, 2, 12.5)
+	if plan.In != 1 || plan.Out != 2 || plan.OutStart != 10.5 || len(plan.Clamped) != 0 {
+		t.Fatalf("plain plan = %+v, want in 1, out 2 from 10.5, no clamp", plan)
+	}
+	clamped := resolveFadePlan(4, 5, 6)
+	if clamped.In != 3 || clamped.Out != 3 || clamped.OutStart != 3 {
+		t.Fatalf("clamped plan = %+v, want both fades capped at 3 (half of 6)", clamped)
+	}
+	if len(clamped.Clamped) != 2 || !strings.Contains(clamped.Clamped[0], "4s fade in is longer than half the 6s output, so it was shortened to 3s") || !strings.Contains(clamped.Clamped[1], "5s fade out is longer than half the 6s output, so it was shortened to 3s") {
+		t.Fatalf("clamp notices = %v, want one per shortened fade naming the numbers", clamped.Clamped)
+	}
+	inOnly := resolveFadePlan(2, 0, 0)
+	if inOnly.In != 2 || inOnly.Out != 0 || inOnly.OutStart != 0 || len(inOnly.Clamped) != 0 {
+		t.Fatalf("unmeasured fade-in plan = %+v, want the fade passed through unclamped", inOnly)
+	}
+	// Binary dust from a probed decimal duration renders at millisecond
+	// precision in the fade-out start.
+	dusty := resolveFadePlan(0, 2, 25.708333)
+	if got := videoFadeFilters(dusty); len(got) != 1 || got[0] != "fade=t=out:st=23.708:d=2" {
+		t.Fatalf("dusty fade-out filter = %v, want a millisecond-rounded start", got)
+	}
+}
+
+// TestFadeFilterChains pins the fade stages and the target split: "both"
+// fills the video and audio chains, "video" leaves audio empty, "audio" leaves
+// video empty; the afade stays on the default linear curve (no c= option).
+func TestFadeFilterChains(t *testing.T) {
+	plan := resolveFadePlan(1, 2, 12.5)
+	cases := []struct {
+		target    string
+		wantVideo string
+		wantAudio string
+	}{
+		{"both", "fade=t=in:st=0:d=1,fade=t=out:st=10.5:d=2", "afade=t=in:st=0:d=1,afade=t=out:st=10.5:d=2"},
+		{"video", "fade=t=in:st=0:d=1,fade=t=out:st=10.5:d=2", ""},
+		{"audio", "", "afade=t=in:st=0:d=1,afade=t=out:st=10.5:d=2"},
+	}
+	for _, tc := range cases {
+		video, audio := fadeFilterChains(plan, tc.target)
+		if video != tc.wantVideo || audio != tc.wantAudio {
+			t.Errorf("target %q chains = %q / %q, want %q / %q", tc.target, video, audio, tc.wantVideo, tc.wantAudio)
+		}
+	}
+	video, audio := fadeFilterChains(fadePlan{}, "both")
+	if video != "" || audio != "" {
+		t.Fatalf("empty plan chains = %q / %q, want both empty", video, audio)
+	}
+	if got := appendFilterChain("setpts=PTS/2", "fade=t=in:st=0:d=1"); got != "setpts=PTS/2,fade=t=in:st=0:d=1" {
+		t.Fatalf("appendFilterChain = %q, want the fade after the rescale", got)
+	}
+	if got := appendFilterChain("", "afade=t=in:st=0:d=1"); got != "afade=t=in:st=0:d=1" {
+		t.Fatalf("appendFilterChain onto empty = %q, want the fade alone", got)
+	}
+	if got := appendFilterChain("crop=864:1080", ""); got != "crop=864:1080" {
+		t.Fatalf("appendFilterChain with empty more = %q, want the chain alone", got)
+	}
+}
+
+// TestFadeOpPhrases pins the summary ops, which name what the target fades
+// from/to so the final model describes the right edit.
+func TestFadeOpPhrases(t *testing.T) {
+	plan := resolveFadePlan(1, 2.5, 20)
+	cases := []struct {
+		target string
+		want   []string
+	}{
+		{"both", []string{"faded in from black and silence over 1s", "faded out to black and silence over 2.5s"}},
+		{"video", []string{"faded in from black over 1s", "faded out to black over 2.5s"}},
+		{"audio", []string{"faded in from silence over 1s", "faded out to silence over 2.5s"}},
+	}
+	for _, tc := range cases {
+		if got := fadeOpPhrases(plan, tc.target); strings.Join(got, "|") != strings.Join(tc.want, "|") {
+			t.Errorf("target %q ops = %v, want %v", tc.target, got, tc.want)
+		}
+	}
+	if got := fadeOpPhrases(resolveFadePlan(0, 3, 20), "both"); len(got) != 1 || got[0] != "faded out to black and silence over 3s" {
+		t.Fatalf("fade-out-only ops = %v, want the single out phrase", got)
+	}
+}
+
+// TestNormalizeFadeTarget pins the enum: empty and "both" land on both, the
+// two narrowing values pass case-insensitively, anything else is rejected.
+func TestNormalizeFadeTarget(t *testing.T) {
+	for raw, want := range map[string]string{"": "both", "both": "both", " Video ": "video", "AUDIO": "audio"} {
+		got, ok := normalizeFadeTarget(raw)
+		if !ok || got != want {
+			t.Errorf("normalizeFadeTarget(%q) = %q, %v; want %q, true", raw, got, ok, want)
+		}
+	}
+	if _, ok := normalizeFadeTarget("music"); ok {
+		t.Fatalf("normalizeFadeTarget(music) accepted, want rejected")
+	}
+}
+
+// TestTransformAudioTarget pins the single-clip twin of the join's re-encode
+// target: known codecs keep their family with no notice, unknown or absent
+// codecs fall back to MP3 192k with the recording-worded notice.
+func TestTransformAudioTarget(t *testing.T) {
+	ext, mime, args, notice := transformAudioTarget("pcm_s24le")
+	if ext != ".wav" || mime != "audio/wav" || strings.Join(args, " ") != "-c:a pcm_s16le" || notice != "" {
+		t.Fatalf("pcm target = %s %s %v %q, want WAV with no notice", ext, mime, args, notice)
+	}
+	ext, mime, args, notice = transformAudioTarget("mp3")
+	if ext != ".mp3" || mime != "audio/mpeg" || strings.Join(args, " ") != "-c:a libmp3lame -b:a 192k" || notice != "" {
+		t.Fatalf("mp3 target = %s %s %v %q, want MP3 192k with no notice", ext, mime, args, notice)
+	}
+	ext, _, args, notice = transformAudioTarget("")
+	if ext != ".mp3" || strings.Join(args, " ") != strings.Join(audioMP3FallbackArgs, " ") || !strings.Contains(notice, "the recording's codec could not be identified") {
+		t.Fatalf("unprobed target = %s %v %q, want the MP3 fallback with the recording notice", ext, args, notice)
+	}
+	if _, _, _, notice = transformAudioTarget("wmav2"); !strings.Contains(notice, "the recording's codec (wmav2) has no re-encode mapping") {
+		t.Fatalf("unmapped target notice = %q, want it to name the codec", notice)
 	}
 }
 
@@ -717,6 +889,46 @@ func TestFFmpegToolValidation(t *testing.T) {
 	}
 	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Speed: 2, Start: "00:00:10", End: "00:00:20"}); len(errors) != 0 {
 		t.Errorf("valid portion transform = %v, want none", errors)
+	}
+	// Single-clip fades: a fade alone is an operation; the range is
+	// 0.1–30s; fadeTarget is an enum that needs a fade to apply to.
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{FadeOut: 2}); len(errors) != 0 {
+		t.Errorf("valid fade-out-only transform = %v, want none", errors)
+	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{FadeIn: 1, FadeOut: 2, FadeTarget: "audio", Speed: 2}); len(errors) != 0 {
+		t.Errorf("valid fades with target and speed = %v, want none", errors)
+	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{FadeIn: 45}); len(errors) == 0 || !strings.Contains(errors[0], ".fadeIn must be between 0.1 and 30 seconds") {
+		t.Errorf("transform with a too-long fade in = %v, want the range error", errors)
+	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{FadeOut: 0.05}); len(errors) == 0 || !strings.Contains(errors[0], ".fadeOut must be between 0.1 and 30 seconds") {
+		t.Errorf("transform with a too-short fade out = %v, want the range error", errors)
+	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{FadeOut: 2, FadeTarget: "music"}); len(errors) == 0 || !strings.Contains(errors[0], `.fadeTarget must be "both", "video", or "audio"`) {
+		t.Errorf("transform with a bad fade target = %v, want the enum error", errors)
+	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{Width: 1280, FadeTarget: "video"}); len(errors) == 0 || !strings.Contains(errors[0], ".fadeTarget is only valid with fadeIn or fadeOut") {
+		t.Errorf("transform with a fade target but no fade = %v, want the needs-a-fade error", errors)
+	}
+	if errors := transform.Validate("toolCalls[0]", HarnessToolCall{}); len(errors) == 0 || !strings.Contains(errors[0], "fadeIn, or fadeOut") {
+		t.Errorf("transform without ops = %v, want the at-least-one error to name the fades", errors)
+	}
+
+	transformAudio := transformAudioToolDefinition()
+	if errors := transformAudio.Validate("toolCalls[0]", HarnessToolCall{}); len(errors) == 0 || !strings.Contains(errors[0], ".transform_audio needs fadeIn, fadeOut, or both") {
+		t.Errorf("transform_audio without fades = %v, want the needs-a-fade error", errors)
+	}
+	if errors := transformAudio.Validate("toolCalls[0]", HarnessToolCall{FadeOut: 3}); len(errors) != 0 {
+		t.Errorf("valid transform_audio fade out = %v, want none", errors)
+	}
+	if errors := transformAudio.Validate("toolCalls[0]", HarnessToolCall{FadeIn: 0.5, FadeOut: 3}); len(errors) != 0 {
+		t.Errorf("valid transform_audio fade pair = %v, want none", errors)
+	}
+	if errors := transformAudio.Validate("toolCalls[0]", HarnessToolCall{FadeIn: 31}); len(errors) == 0 || !strings.Contains(errors[0], ".fadeIn must be between 0.1 and 30 seconds for transform_audio") {
+		t.Errorf("transform_audio with a too-long fade = %v, want the range error", errors)
+	}
+	if errors := transformAudio.Validate("toolCalls[0]", HarnessToolCall{FadeOut: 2, FadeTarget: "audio"}); len(errors) == 0 || !strings.Contains(errors[0], ".fadeTarget is transform_video's") {
+		t.Errorf("transform_audio with a fade target = %v, want the not-here error", errors)
 	}
 
 	reverse := reverseVideoToolDefinition()
@@ -2547,6 +2759,274 @@ func TestFFmpegTransformExecutes(t *testing.T) {
 	})
 }
 
+// TestFFmpegTransformFadesExecute drives transform_video's single-clip fades
+// end to end: the fade stages land LAST on the chains and read the output
+// timeline (the probed 12.5s clip, divided by any speed, or the portion
+// arithmetic), fadeTarget narrows them, the clamp notices, a silent clip never
+// yields a claimed sound fade, and a fade-out with nothing to time it against
+// fails closed while a fade-in alone still runs.
+func TestFFmpegTransformFadesExecute(t *testing.T) {
+	t.Run("fade out to black and silence", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript) // duration 12.5, aac
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "transform_video", HarnessToolCall{FadeOut: 2})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, _ := result.Result.(ToolVideoResult)
+		defer os.Remove(typed.Videos[0].TempPath)
+		args := fakeFFmpegArgs(t, bin)
+		if !strings.Contains(args, "-vf fade=t=out:st=10.5:d=2 ") || !strings.Contains(args, "-af afade=t=out:st=10.5:d=2 ") {
+			t.Fatalf("transform args = %q, want the fade-out on both chains starting at 10.5s", args)
+		}
+		if !strings.Contains(result.Summary, "faded out to black and silence over 2s") {
+			t.Fatalf("summary = %q, want the fade op", result.Summary)
+		}
+		if !strings.Contains(typed.Notices[0], "fades cannot stream-copy") {
+			t.Fatalf("notices = %v, want the re-encode notice to name fades", typed.Notices)
+		}
+	})
+
+	t.Run("fade in the picture alone beside a speed change", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "transform_video", HarnessToolCall{Speed: 2, FadeIn: 1, FadeTarget: "video"})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, _ := result.Result.(ToolVideoResult)
+		defer os.Remove(typed.Videos[0].TempPath)
+		args := fakeFFmpegArgs(t, bin)
+		if !strings.Contains(args, "-vf setpts=PTS/2,fade=t=in:st=0:d=1 ") || !strings.Contains(args, "-af atempo=2 ") || strings.Contains(args, "afade") {
+			t.Fatalf("transform args = %q, want the fade after the rescale and no audio fade", args)
+		}
+		if !strings.Contains(result.Summary, "2x playback speed, faded in from black over 1s") {
+			t.Fatalf("summary = %q, want the speed then the picture-only fade op", result.Summary)
+		}
+	})
+
+	t.Run("fade out is timed on the sped-up output", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "transform_video", HarnessToolCall{Speed: 2, FadeOut: 2})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, _ := result.Result.(ToolVideoResult)
+		defer os.Remove(typed.Videos[0].TempPath)
+		// 12.5s at 2x renders 6.25s; a 2s fade-out starts at 4.25s.
+		args := fakeFFmpegArgs(t, bin)
+		if !strings.Contains(args, "-vf setpts=PTS/2,fade=t=out:st=4.25:d=2 ") || !strings.Contains(args, "-af atempo=2,afade=t=out:st=4.25:d=2 ") {
+			t.Fatalf("transform args = %q, want the fade-out placed against the 6.25s output", args)
+		}
+	})
+
+	t.Run("portion speed with a fade rides the post-concat chains", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "transform_video", HarnessToolCall{Speed: 3, Start: "2", End: "4", FadeOut: 1})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, _ := result.Result.(ToolVideoResult)
+		defer os.Remove(typed.Videos[0].TempPath)
+		// Output = 2s head + 2s/3 middle + 8.5s tail = 11.1667s; the 1s
+		// fade-out starts at 10.167s (millisecond precision).
+		args := fakeFFmpegArgs(t, bin)
+		for _, want := range []string{
+			"concat=n=3:v=1:a=1[vcat][acat];[vcat]fade=t=out:st=10.167:d=1[vout];[acat]afade=t=out:st=10.167:d=1[aout]",
+			"-map [vout] -map [aout]",
+		} {
+			if !strings.Contains(args, want) {
+				t.Fatalf("transform args = %q, want %q", args, want)
+			}
+		}
+		if !strings.Contains(result.Summary, "3x playback speed from 2s to 4s, faded out to black and silence over 1s") {
+			t.Fatalf("summary = %q, want the portion op then the fade op", result.Summary)
+		}
+	})
+
+	t.Run("a fade longer than half the clip is clamped with a notice", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "transform_video", HarnessToolCall{FadeOut: 10})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, _ := result.Result.(ToolVideoResult)
+		defer os.Remove(typed.Videos[0].TempPath)
+		if args := fakeFFmpegArgs(t, bin); !strings.Contains(args, "-vf fade=t=out:st=6.25:d=6.25 ") {
+			t.Fatalf("transform args = %q, want the fade-out clamped to 6.25s", args)
+		}
+		if !strings.Contains(strings.Join(typed.Notices, " "), "10s fade out is longer than half the 12.5s output, so it was shortened to 6.25s") {
+			t.Fatalf("notices = %v, want the clamp notice", typed.Notices)
+		}
+	})
+
+	t.Run("a silent clip fades the picture alone with a notice", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeNoAudioScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "transform_video", HarnessToolCall{FadeOut: 2})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, _ := result.Result.(ToolVideoResult)
+		defer os.Remove(typed.Videos[0].TempPath)
+		if args := fakeFFmpegArgs(t, bin); !strings.Contains(args, "-vf fade=t=out:st=10.5:d=2 ") || strings.Contains(args, "-af") {
+			t.Fatalf("transform args = %q, want the picture fade and no audio chain", args)
+		}
+		if !strings.Contains(strings.Join(typed.Notices, " "), "carries no audio track, so only the picture was faded") {
+			t.Fatalf("notices = %v, want the silent-clip notice", typed.Notices)
+		}
+		if !strings.Contains(result.Summary, "faded out to black over 2s") || strings.Contains(result.Summary, "silence") {
+			t.Fatalf("summary = %q, want a picture-only fade op", result.Summary)
+		}
+	})
+
+	t.Run("an audio-only fade on a silent clip fails", func(t *testing.T) {
+		config, _ := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeNoAudioScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "transform_video", HarnessToolCall{FadeOut: 2, FadeTarget: "audio"})
+		if result.Status != "failed" || !strings.Contains(result.Error, "has nothing to fade") {
+			t.Fatalf("result = %+v (error %s), want the nothing-to-fade failure", result, result.Error)
+		}
+	})
+
+	t.Run("fade out fails closed without a measurable duration", func(t *testing.T) {
+		dir := t.TempDir()
+		bin := filepath.Join(dir, "bin")
+		config := defaultAppConfig()
+		ffmpegPath := writeFakeWhisper(t, bin, "ffmpeg", fakeFFmpegScript)
+		stubLocalLookup(t, map[string]string{"ffmpeg": ffmpegPath, ffmpegPath: ffmpegPath})
+		config.Providers.Local.FFmpeg.Binary = ffmpegPath
+		// No ffprobe resolves and the ftyp-only fixture has no mvhd.
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "transform_video", HarnessToolCall{FadeOut: 2})
+		if result.Status != "failed" || !strings.Contains(result.Error, "duration for the fade out") {
+			t.Fatalf("result = %+v (error %s), want the unreadable-duration failure", result, result.Error)
+		}
+	})
+
+	t.Run("fade in alone runs without a measurable duration", func(t *testing.T) {
+		dir := t.TempDir()
+		bin := filepath.Join(dir, "bin")
+		config := defaultAppConfig()
+		ffmpegPath := writeFakeWhisper(t, bin, "ffmpeg", fakeFFmpegScript)
+		stubLocalLookup(t, map[string]string{"ffmpeg": ffmpegPath, ffmpegPath: ffmpegPath})
+		config.Providers.Local.FFmpeg.Binary = ffmpegPath
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+		}, "transform_video", HarnessToolCall{FadeIn: 1})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, _ := result.Result.(ToolVideoResult)
+		defer os.Remove(typed.Videos[0].TempPath)
+		if args := fakeFFmpegArgs(t, bin); !strings.Contains(args, "-vf fade=t=in:st=0:d=1 ") || !strings.Contains(args, "-af afade=t=in:st=0:d=1 ") {
+			t.Fatalf("transform args = %q, want the unclamped fade-in on both chains", args)
+		}
+	})
+}
+
+// TestFFmpegTransformAudioExecutes drives transform_audio end to end: the
+// fades ride one -af chain timed against the probed 30s recording, the output
+// keeps the recording's own codec (pcm → WAV), the clamp notices, an
+// unmeasurable fade-out fails closed, and a fade-in alone on an unprobed file
+// still runs — into the MP3 fallback with its notice.
+func TestFFmpegTransformAudioExecutes(t *testing.T) {
+	t.Run("fades a WAV in its own format", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeAudioScript) // 30s pcm_s16le
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedAudios: []string{audioDataURL("audio/wav", "WAV-ONE")},
+		}, "transform_audio", HarnessToolCall{FadeIn: 1, FadeOut: 3})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, ok := result.Result.(ToolAudioResult)
+		if !ok || typed.Model != ffmpegModelName || len(typed.Audios) != 1 {
+			t.Fatalf("result payload = %+v", result.Result)
+		}
+		defer os.Remove(typed.Audios[0].TempPath)
+		if typed.Audios[0].MimeType != "audio/wav" || !strings.HasSuffix(typed.Audios[0].TempPath, ".wav") {
+			t.Fatalf("output = %+v, want a WAV", typed.Audios[0])
+		}
+		if args := fakeFFmpegArgs(t, bin); !strings.Contains(args, "-vn -af afade=t=in:st=0:d=1,afade=t=out:st=27:d=3 -c:a pcm_s16le ") {
+			t.Fatalf("transform args = %q, want both fades on one chain into PCM", args)
+		}
+		if !strings.Contains(result.Summary, "faded in from silence over 1s, faded out to silence over 3s") {
+			t.Fatalf("summary = %q, want both fade ops", result.Summary)
+		}
+		if len(typed.Notices) != 0 {
+			t.Fatalf("notices = %v, want none for a probed, in-range fade", typed.Notices)
+		}
+	})
+
+	t.Run("a fade longer than half the recording is clamped", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeAudioScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedAudios: []string{audioDataURL("audio/wav", "WAV-ONE")},
+		}, "transform_audio", HarnessToolCall{FadeOut: 20})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, _ := result.Result.(ToolAudioResult)
+		defer os.Remove(typed.Audios[0].TempPath)
+		if args := fakeFFmpegArgs(t, bin); !strings.Contains(args, "-af afade=t=out:st=15:d=15 ") {
+			t.Fatalf("transform args = %q, want the fade-out clamped to 15s", args)
+		}
+		if !strings.Contains(strings.Join(typed.Notices, " "), "20s fade out is longer than half the 30s output, so it was shortened to 15s") {
+			t.Fatalf("notices = %v, want the clamp notice", typed.Notices)
+		}
+	})
+
+	t.Run("fade out fails closed without a measurable duration", func(t *testing.T) {
+		config, _ := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeFailScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedAudios: []string{audioDataURL("audio/mpeg", "NOT-REAL-AUDIO")},
+		}, "transform_audio", HarnessToolCall{FadeOut: 2})
+		if result.Status != "failed" || !strings.Contains(result.Error, "could not read the attached recording's duration for the fade out") {
+			t.Fatalf("result = %+v (error %s), want the unreadable-duration failure", result, result.Error)
+		}
+	})
+
+	t.Run("fade in alone on an unprobed file lands on the MP3 fallback", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeFailScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedAudios: []string{audioDataURL("audio/mpeg", "NOT-REAL-AUDIO")},
+		}, "transform_audio", HarnessToolCall{FadeIn: 1})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, _ := result.Result.(ToolAudioResult)
+		defer os.Remove(typed.Audios[0].TempPath)
+		if typed.Audios[0].MimeType != "audio/mpeg" || !strings.HasSuffix(typed.Audios[0].TempPath, ".mp3") {
+			t.Fatalf("output = %+v, want the MP3 fallback", typed.Audios[0])
+		}
+		if args := fakeFFmpegArgs(t, bin); !strings.Contains(args, "-af afade=t=in:st=0:d=1 -c:a libmp3lame -b:a 192k ") {
+			t.Fatalf("transform args = %q, want the unclamped fade-in into MP3 192k", args)
+		}
+		if !strings.Contains(strings.Join(typed.Notices, " "), "codec could not be identified, so the faded recording was converted to MP3 192kbps") {
+			t.Fatalf("notices = %v, want the fallback notice", typed.Notices)
+		}
+	})
+
+	t.Run("requires an attached recording", func(t *testing.T) {
+		config, _ := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeAudioScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{}, "transform_audio", HarnessToolCall{FadeOut: 2})
+		if result.Status != "failed" || !strings.Contains(result.Error, "requires an attached audio file") {
+			t.Fatalf("result = %+v (error %s), want the missing-attachment failure", result, result.Error)
+		}
+	})
+}
+
 // TestFFmpegRegistryGating pins the tool gates: nothing without a binary, the
 // ffmpeg-backed edit tools (and list_video_transitions) with ffmpeg alone,
 // plus probe_media only when ffprobe also resolves.
@@ -2560,7 +3040,7 @@ func TestFFmpegRegistryGating(t *testing.T) {
 		t.Fatal("ffmpeg tools must be absent without a detected binary")
 	}
 	names := newRegistryNames(t, map[string]string{"ffmpeg": "/opt/test/bin/ffmpeg"})
-	for _, want := range []string{"screenshot_video", "contact_sheet_video", "split_video", "join_videos", "extract_audio", "remove_audio", "replace_audio", "transform_video", "reverse_video", "list_video_transitions"} {
+	for _, want := range []string{"screenshot_video", "contact_sheet_video", "split_video", "join_videos", "extract_audio", "remove_audio", "replace_audio", "transform_video", "transform_audio", "reverse_video", "list_video_transitions"} {
 		if !containsString(names, want) {
 			t.Errorf("registry with ffmpeg = %v, want %q", names, want)
 		}
@@ -2597,7 +3077,7 @@ func TestHarnessToolPlanSchemaHasFFmpegParams(t *testing.T) {
 	schema := harnessToolPlanSchema(filesystemToolRegistry())
 	items := schema["properties"].(map[string]any)["toolCalls"].(map[string]any)["items"].(map[string]any)
 	properties := items["properties"].(map[string]any)
-	for _, param := range []string{"at", "count", "start", "end", "mode", "columns", "speed"} {
+	for _, param := range []string{"at", "count", "start", "end", "mode", "columns", "speed", "fadeIn", "fadeOut", "fadeTarget"} {
 		if _, ok := properties[param].(map[string]any); !ok {
 			t.Errorf("plan schema properties missing %q: %+v", param, properties)
 		}
@@ -2618,6 +3098,11 @@ func TestApplyKwargsFFmpegParams(t *testing.T) {
 	applyKwargs(&slowed, "speed='0.5x'")
 	if slowed.Speed != 0.5 {
 		t.Fatalf("applyKwargs speed='0.5x' = %v, want 0.5", slowed.Speed)
+	}
+	var faded HarnessToolCall
+	applyKwargs(&faded, "fadeIn=1.5, fade_out=2, fadeTarget='audio'")
+	if faded.FadeIn != 1.5 || faded.FadeOut != 2 || faded.FadeTarget != "audio" {
+		t.Fatalf("applyKwargs fades = %+v, want fadeIn=1.5, fadeOut=2, fadeTarget=audio (both spellings)", faded)
 	}
 }
 

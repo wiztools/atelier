@@ -48,7 +48,7 @@ func ffmpegToolsConfigured(config AppConfig) bool {
 // configured. It tells the model what actually happened (the capability is
 // absent, not broken) and the exact remedy to relay, so a from-knowledge
 // answer can't masquerade as a failed edit or hand the user a raw CLI recipe.
-const localMediaEditUnavailableNote = "Atelier note: the user's latest request asks for a local media edit — capturing a frame or a contact sheet, splitting or trimming a clip or audio recording, joining clips or audio files, converting an audio file's format, cropping/resizing/rotating/reversing a clip, or extracting/replacing audio — but no ffmpeg CLI was detected on this machine, so Atelier has no tool that can perform it. Do not claim the edit was done and do not attempt it through other tools. Tell the user plainly that local media editing needs a one-time install: install ffmpeg with `brew install ffmpeg` (or set an explicit binary in Settings → Video Tools); Atelier detects it automatically on the next message."
+const localMediaEditUnavailableNote = "Atelier note: the user's latest request asks for a local media edit — capturing a frame or a contact sheet, splitting or trimming a clip or audio recording, joining clips or audio files, converting an audio file's format, cropping/resizing/rotating/reversing a clip, fading a clip or recording in or out, or extracting/replacing audio — but no ffmpeg CLI was detected on this machine, so Atelier has no tool that can perform it. Do not claim the edit was done and do not attempt it through other tools. Tell the user plainly that local media editing needs a one-time install: install ffmpeg with `brew install ffmpeg` (or set an explicit binary in Settings → Video Tools); Atelier detects it automatically on the next message."
 
 // mediaEditFallbackNotice returns the deterministic one-line blockquote for
 // the chat reply when the final model's answer did not already mention ffmpeg
@@ -85,6 +85,7 @@ func ffmpegToolDefinitions(config AppConfig) []HarnessToolDefinition {
 		replaceAudioToolDefinition(),
 		convertAudioToolDefinition(),
 		transformVideoToolDefinition(),
+		transformAudioToolDefinition(),
 		reverseVideoToolDefinition(),
 	}
 	if _, ok := resolveLocalFFprobeBinary(config); ok {
@@ -1105,6 +1106,15 @@ func ffmpegConvertAudioArgs(input, output string, codecArgs []string) []string {
 	return append(args, output)
 }
 
+// ffmpegTransformAudioArgs re-encodes a recording through an -af chain (the
+// fades) into codecArgs' target — a filtered stream cannot stream-copy. -vn
+// drops embedded cover art, the audio tools' shared idiom.
+func ffmpegTransformAudioArgs(input, audioFilters string, codecArgs []string, output string) []string {
+	args := []string{"-i", input, "-vn", "-af", audioFilters}
+	args = append(args, codecArgs...)
+	return append(args, output)
+}
+
 // ffmpegReplaceAudioArgs lays audio under a video: video streams are copied
 // when the output container holds them, otherwise re-encoded; audio always
 // becomes AAC (uniform, plays everywhere); -shortest ends the output when the
@@ -1260,11 +1270,13 @@ func atempoChain(speed float64) string {
 // and the middle's audio rides the same atempo chain as a whole-clip change so
 // it stays pitch-preserved and in sync. hasAudio selects the atrim/asetpts
 // chains (referencing [0:a] on a silent clip is a filtergraph error);
-// geometryFilters (crop/scale/rotate/flip from videoTransformFilters) is
-// applied to the joined output, so shape ops cover the whole clip. The final
-// video label is always [vout] and the audio label [acat]; the args builder
-// maps them.
-func videoPortionSpeedFilterComplex(geometryFilters string, startSec, endSec float64, endBounded, hasAudio bool, speed float64) string {
+// outputFilters (crop/scale/rotate/flip from videoTransformFilters, plus any
+// fade stages) is applied to the joined output, so shape ops and fades cover
+// the whole clip; outputAudioFilters (the afade stages) likewise runs on the
+// joined audio. The final video label is always [vout]; the audio label is
+// [acat] straight off the concat, or [aout] when outputAudioFilters ran — the
+// args builder maps whichever applies.
+func videoPortionSpeedFilterComplex(outputFilters string, startSec, endSec float64, endBounded, hasAudio bool, speed float64, outputAudioFilters string) string {
 	segments := 1
 	if startSec > 0 {
 		segments++
@@ -1313,7 +1325,7 @@ func videoPortionSpeedFilterComplex(geometryFilters string, startSec, endSec flo
 	} else {
 		concat += "0"
 	}
-	if geometryFilters == "" {
+	if outputFilters == "" {
 		concat += "[vout]"
 	} else {
 		concat += "[vcat]"
@@ -1322,8 +1334,11 @@ func videoPortionSpeedFilterComplex(geometryFilters string, startSec, endSec flo
 		concat += "[acat]"
 	}
 	parts = append(parts, concat)
-	if geometryFilters != "" {
-		parts = append(parts, "[vcat]"+geometryFilters+"[vout]")
+	if outputFilters != "" {
+		parts = append(parts, "[vcat]"+outputFilters+"[vout]")
+	}
+	if hasAudio && outputAudioFilters != "" {
+		parts = append(parts, "[acat]"+outputAudioFilters+"[aout]")
 	}
 	return strings.Join(parts, ";")
 }
@@ -1331,11 +1346,16 @@ func videoPortionSpeedFilterComplex(geometryFilters string, startSec, endSec flo
 // ffmpegPortionSpeedArgs runs a portion speed change's filter_complex with the
 // house re-encode preset. Every segment re-encodes once into uniform streams —
 // the concat filter cannot stream-copy, so the normal-speed head and tail are
-// re-encoded too.
-func ffmpegPortionSpeedArgs(input, filterComplex string, hasAudio bool, output string) []string {
+// re-encoded too. audioFiltered maps the [aout] label a post-concat audio
+// chain (the fades) produced instead of the concat's own [acat].
+func ffmpegPortionSpeedArgs(input, filterComplex string, hasAudio, audioFiltered bool, output string) []string {
 	args := []string{"-i", input, "-filter_complex", filterComplex, "-map", "[vout]"}
 	if hasAudio {
-		args = append(args, "-map", "[acat]")
+		if audioFiltered {
+			args = append(args, "-map", "[aout]")
+		} else {
+			args = append(args, "-map", "[acat]")
+		}
 	}
 	return append(args,
 		"-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
@@ -1357,14 +1377,15 @@ func portionSpeedPhrase(startSec, endSec float64, endBounded bool, speed float64
 	return fmt.Sprintf("%sx playback speed from %s to %s", formatPlaybackSpeed(speed), startLabel, endLabel)
 }
 
-// transformVideoPortionFacts resolves what a portion speed change needs from
-// the attached clip: its total duration (to validate the bounds and clamp an
-// end past the clip) and whether it carries audio (the filter_complex must not
-// reference [0:a] on a silent clip). ffprobe answers both for any container;
-// the MP4 box sniff (mvhd duration, a 'soun' trak) covers generation outputs
-// when ffprobe is unavailable — the same fallback shape as the aspect crop's
-// dimension resolution.
-func transformVideoPortionFacts(ctx context.Context, config AppConfig, input, sourceDataURL string) (float64, bool, error) {
+// transformVideoClipFacts resolves what a duration-dependent transform needs
+// from the attached clip: its total duration (to validate portion bounds and
+// clamp an end past the clip, or to place a fade-out) and whether it carries
+// audio (the filter_complex must not reference [0:a] on a silent clip).
+// ffprobe answers both for any container; the MP4 box sniff (mvhd duration, a
+// 'soun' trak) covers generation outputs when ffprobe is unavailable — the
+// same fallback shape as the aspect crop's dimension resolution. purpose names
+// the operation in the error ("the portion speed change", "the fade out").
+func transformVideoClipFacts(ctx context.Context, config AppConfig, input, sourceDataURL, purpose string) (float64, bool, error) {
 	if _, ok := resolveLocalFFprobeBinary(config); ok {
 		if probe, err := probeStagedMedia(ctx, config, input, "video"); err == nil && probe.Duration > 0 {
 			return probe.Duration, probe.AudioCodec != "", nil
@@ -1375,14 +1396,190 @@ func transformVideoPortionFacts(ctx context.Context, config AppConfig, input, so
 			return seconds, mp4HasAudioTrack(data), nil
 		}
 	}
-	return 0, false, errors.New("transform_video could not read the attached clip's duration for the portion speed change — ffprobe is unavailable and the clip is not a readable MP4")
+	return 0, false, fmt.Errorf("transform_video could not read the attached clip's duration for %s — ffprobe is unavailable and the clip is not a readable MP4", purpose)
+}
+
+// portionOutputDuration is the rendered length of a portion speed change: the
+// normal-speed head and tail plus the middle divided by the speed — what a
+// fade-out on that output is timed against.
+func portionOutputDuration(startSec, endSec float64, endBounded bool, duration, speed float64) float64 {
+	middleEnd := duration
+	if endBounded {
+		middleEnd = endSec
+	}
+	output := startSec + (middleEnd-startSec)/speed
+	if endBounded {
+		output += duration - endSec
+	}
+	return output
+}
+
+// ---------------------------------------------------------------------------
+// Single-clip fades
+// ---------------------------------------------------------------------------
+
+// Single-clip fade bounds. The floor matches the join transitions' (anything
+// shorter is a cut); the ceiling is three times theirs because a lone clip's
+// fade legitimately runs long — a 20s tail-out on a music track is ordinary,
+// where a 20s overlap between two joined clips would swallow both.
+const (
+	fadeMinSeconds = 0.1
+	fadeMaxSeconds = 30.0
+)
+
+// normalizeFadeTarget resolves transform_video's fadeTarget: "both" (the
+// default — picture to/from black and soundtrack to/from silence together, the
+// fade-to-black every editor means), "video" (picture only; the sound keeps
+// playing), or "audio" (dip the sound; the picture stays). ok is false for
+// anything else — Validate turns that into a planner correction.
+func normalizeFadeTarget(raw string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "both":
+		return "both", true
+	case "video":
+		return "video", true
+	case "audio":
+		return "audio", true
+	}
+	return "", false
+}
+
+// validateFadeParams is the Validate fragment the fade-capable tools share:
+// each fade, when set, must sit inside [fadeMinSeconds, fadeMaxSeconds].
+func validateFadeParams(prefix, tool string, call HarnessToolCall) []string {
+	for _, fade := range []struct {
+		name  string
+		value float64
+	}{{"fadeIn", call.FadeIn}, {"fadeOut", call.FadeOut}} {
+		if fade.value != 0 && (fade.value < fadeMinSeconds || fade.value > fadeMaxSeconds) {
+			return []string{fmt.Sprintf("%s.%s must be between %v and %v seconds for %s", prefix, fade.name, fadeMinSeconds, fadeMaxSeconds, tool)}
+		}
+	}
+	return nil
+}
+
+// fadePlan is a single-clip fade pair resolved against the OUTPUT timeline:
+// In/Out are the fade lengths after clamping and OutStart is where the
+// fade-out begins (output duration minus Out). ffmpeg's fade and afade take an
+// absolute start time and have no end-relative form, which is why a fade-out
+// needs the rendered duration. Clamped carries the notices for fades the clamp
+// shortened.
+type fadePlan struct {
+	In       float64
+	Out      float64
+	OutStart float64
+	Clamped  []string
+}
+
+// resolveFadePlan clamps each requested fade to half the output duration — a
+// 5s fade-out on a 3s clip is an over-ask, not an error (the join transitions'
+// clamp-to-half-the-shortest-clip stance) — and computes the fade-out's start.
+// With no known duration (zero) the fades pass through unclamped: a fade-in
+// alone starts at zero and needs no measurement, so the caller measures
+// best-effort for it and only fails closed when a fade-out has nothing to be
+// timed against.
+func resolveFadePlan(fadeIn, fadeOut, outputDuration float64) fadePlan {
+	plan := fadePlan{In: fadeIn, Out: fadeOut}
+	if outputDuration <= 0 {
+		return plan
+	}
+	limit := outputDuration / 2
+	if plan.In > limit {
+		plan.Clamped = append(plan.Clamped, fmt.Sprintf("the requested %ss fade in is longer than half the %ss output, so it was shortened to %ss.", formatJoinSeconds(fadeIn), formatJoinSeconds(outputDuration), formatJoinSeconds(limit)))
+		plan.In = limit
+	}
+	if plan.Out > limit {
+		plan.Clamped = append(plan.Clamped, fmt.Sprintf("the requested %ss fade out is longer than half the %ss output, so it was shortened to %ss.", formatJoinSeconds(fadeOut), formatJoinSeconds(outputDuration), formatJoinSeconds(limit)))
+		plan.Out = limit
+	}
+	if plan.Out > 0 {
+		plan.OutStart = outputDuration - plan.Out
+	}
+	return plan
+}
+
+// videoFadeFilters renders the fade stages for a video chain: fade=t=in from
+// black over In seconds at the start, fade=t=out to black over Out seconds
+// from OutStart. They go LAST on the chain so their times read the output
+// timeline — after a setpts rescale, the frames already carry output stamps.
+func videoFadeFilters(plan fadePlan) []string {
+	var stages []string
+	if plan.In > 0 {
+		stages = append(stages, "fade=t=in:st=0:d="+formatJoinSeconds(plan.In))
+	}
+	if plan.Out > 0 {
+		stages = append(stages, "fade=t=out:st="+formatJoinSeconds(plan.OutStart)+":d="+formatJoinSeconds(plan.Out))
+	}
+	return stages
+}
+
+// audioFadeFilters is videoFadeFilters' afade twin, on the default (linear)
+// curve on purpose: the equal-power quarter-sine the crossfades use corrects
+// the summed power of TWO signals through a blend, and a fade to silence sums
+// nothing — the linear ramp is what every editor's "fade out" means.
+func audioFadeFilters(plan fadePlan) []string {
+	var stages []string
+	if plan.In > 0 {
+		stages = append(stages, "afade=t=in:st=0:d="+formatJoinSeconds(plan.In))
+	}
+	if plan.Out > 0 {
+		stages = append(stages, "afade=t=out:st="+formatJoinSeconds(plan.OutStart)+":d="+formatJoinSeconds(plan.Out))
+	}
+	return stages
+}
+
+// fadeFilterChains renders the comma-joined fade chains transform_video
+// appends to its video and audio filters, honoring the target: "video" leaves
+// the audio chain empty, "audio" the video chain, "both" fills both.
+func fadeFilterChains(plan fadePlan, target string) (videoChain, audioChain string) {
+	if target != "audio" {
+		videoChain = strings.Join(videoFadeFilters(plan), ",")
+	}
+	if target != "video" {
+		audioChain = strings.Join(audioFadeFilters(plan), ",")
+	}
+	return videoChain, audioChain
+}
+
+// appendFilterChain joins two comma-separated filter chains, either of which
+// may be empty — an empty filtergraph argument is a CLI error, so the result
+// is empty only when both are.
+func appendFilterChain(chain, more string) string {
+	switch {
+	case chain == "":
+		return more
+	case more == "":
+		return chain
+	}
+	return chain + "," + more
+}
+
+// fadeOpPhrases renders the summary ops for a fade pair, naming what the
+// target fades from/to: "faded in from black and silence over 1s", "faded out
+// to silence over 2s".
+func fadeOpPhrases(plan fadePlan, target string) []string {
+	edge := "black and silence"
+	switch target {
+	case "video":
+		edge = "black"
+	case "audio":
+		edge = "silence"
+	}
+	var ops []string
+	if plan.In > 0 {
+		ops = append(ops, fmt.Sprintf("faded in from %s over %ss", edge, formatJoinSeconds(plan.In)))
+	}
+	if plan.Out > 0 {
+		ops = append(ops, fmt.Sprintf("faded out to %s over %ss", edge, formatJoinSeconds(plan.Out)))
+	}
+	return ops
 }
 
 // clipDurationForEqualIntervals resolves the attached clip's duration for an
 // ffmpeg tool's equal-interval batch form (count without at): ffprobe answers
 // for any container; the MP4 box sniff (mvhd) covers generation outputs when
 // ffprobe is unavailable — the same fallback shape as
-// transformVideoPortionFacts. The error names the calling tool and its
+// transformVideoClipFacts. The error names the calling tool and its
 // explicit-at escape so the planner can repair into a timestamp list instead
 // of retrying the same call.
 func clipDurationForEqualIntervals(ctx context.Context, config AppConfig, input, sourceDataURL, tool string) (float64, error) {
@@ -2659,28 +2856,59 @@ func joinAudioCopyMode(ctx context.Context, config AppConfig, mode string, input
 	return true, probes, "the clips matched in codec, sample rate, and channel count, so they were joined by stream copy (lossless, no re-encoding)."
 }
 
+// audioCodecReencodeTarget maps a probed codec onto the re-encode target that
+// keeps its family — pcm→WAV, mp3, aac→M4A, flac, opus/vorbis→OGG — so
+// matching-family sources keep their format and quality (a WAV does not
+// degrade to a lossy codec). known is false for an empty or unmapped codec,
+// where the result is the MP3 192k fallback and the caller words its own
+// notice.
+func audioCodecReencodeTarget(codec string) (ext, mimeType string, codecArgs []string, known bool) {
+	switch {
+	case strings.HasPrefix(codec, "pcm"):
+		return ".wav", "audio/wav", []string{"-c:a", "pcm_s16le"}, true
+	case codec == "mp3":
+		return ".mp3", "audio/mpeg", []string{"-c:a", "libmp3lame", "-b:a", "192k"}, true
+	case codec == "aac":
+		return ".m4a", "audio/mp4", []string{"-c:a", "aac", "-b:a", "192k"}, true
+	case codec == "flac":
+		return ".flac", "audio/flac", []string{"-c:a", "flac"}, true
+	case codec == "opus":
+		return ".ogg", "audio/ogg", []string{"-c:a", "libopus", "-b:a", "192k"}, true
+	case codec == "vorbis":
+		return ".ogg", "audio/ogg", []string{"-c:a", "libvorbis", "-b:a", "192k"}, true
+	}
+	return ".mp3", "audio/mpeg", audioMP3FallbackArgs, false
+}
+
 // joinAudioReencodeTarget normalizes a mismatched join to the FIRST clip's
 // codec, so matching-family sources keep their format and quality (two WAVs
 // with different rates do not degrade to a lossy codec). An unrecognized or
 // unprobed codec falls back to MP3 with a notice (extract_audio's vocabulary).
 func joinAudioReencodeTarget(probe ToolProbeResult) (ext, mimeType string, codecArgs []string, notice string) {
+	ext, mimeType, codecArgs, known := audioCodecReencodeTarget(probe.AudioCodec)
 	switch {
-	case strings.HasPrefix(probe.AudioCodec, "pcm"):
-		return ".wav", "audio/wav", []string{"-c:a", "pcm_s16le"}, ""
-	case probe.AudioCodec == "mp3":
-		return ".mp3", "audio/mpeg", []string{"-c:a", "libmp3lame", "-b:a", "192k"}, ""
-	case probe.AudioCodec == "aac":
-		return ".m4a", "audio/mp4", []string{"-c:a", "aac", "-b:a", "192k"}, ""
-	case probe.AudioCodec == "flac":
-		return ".flac", "audio/flac", []string{"-c:a", "flac"}, ""
-	case probe.AudioCodec == "opus":
-		return ".ogg", "audio/ogg", []string{"-c:a", "libopus", "-b:a", "192k"}, ""
-	case probe.AudioCodec == "vorbis":
-		return ".ogg", "audio/ogg", []string{"-c:a", "libvorbis", "-b:a", "192k"}, ""
+	case known:
+		return ext, mimeType, codecArgs, ""
 	case probe.AudioCodec == "":
-		return ".mp3", "audio/mpeg", audioMP3FallbackArgs, "the first clip's codec could not be identified, so the join was converted to MP3 192kbps."
+		return ext, mimeType, codecArgs, "the first clip's codec could not be identified, so the join was converted to MP3 192kbps."
 	default:
-		return ".mp3", "audio/mpeg", audioMP3FallbackArgs, fmt.Sprintf("the first clip's codec (%s) has no re-encode mapping here, so the join was converted to MP3 192kbps.", probe.AudioCodec)
+		return ext, mimeType, codecArgs, fmt.Sprintf("the first clip's codec (%s) has no re-encode mapping here, so the join was converted to MP3 192kbps.", probe.AudioCodec)
+	}
+}
+
+// transformAudioTarget is joinAudioReencodeTarget's single-clip twin: the
+// faded recording re-encodes in its own format, falling back to MP3 192k with
+// a notice when the codec is unknown — the sniff-only measurement (no ffprobe)
+// yields a duration but no codec.
+func transformAudioTarget(codec string) (ext, mimeType string, codecArgs []string, notice string) {
+	ext, mimeType, codecArgs, known := audioCodecReencodeTarget(codec)
+	switch {
+	case known:
+		return ext, mimeType, codecArgs, ""
+	case codec == "":
+		return ext, mimeType, codecArgs, "the recording's codec could not be identified, so the faded recording was converted to MP3 192kbps."
+	default:
+		return ext, mimeType, codecArgs, fmt.Sprintf("the recording's codec (%s) has no re-encode mapping here, so the faded recording was converted to MP3 192kbps.", codec)
 	}
 }
 
@@ -3041,14 +3269,14 @@ func replaceAudioCopyVideo(ctx context.Context, config AppConfig, videoPath stri
 }
 
 // transformVideoToolDefinition exposes transform_video: crop an attached
-// video to an aspect ratio, resize it to exact dimensions, rotate, flip, or
-// change its playback speed — the video sibling of transform_image, on one
-// ffmpeg filter chain.
+// video to an aspect ratio, resize it to exact dimensions, rotate, flip,
+// change its playback speed, or fade it in/out — the video sibling of
+// transform_image, on one ffmpeg filter chain.
 func transformVideoToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "transform_video",
 		Title:       "Transform video",
-		Description: "Use this when the user asks to change the shape or size of an attached video — crop it to an aspect ratio, convert it between shapes (e.g. a 16:9 clip to 9:16 vertical for Reels/Shorts/TikTok, or to 1:1), downscale or resize it to specific pixel dimensions (for example a clip too large for a video model's input limit), rotate a sideways clip, mirror it — or to speed up or slow down its playback, in whole or in part. It crops to a shape, not a region of time — cutting a segment out is split_video. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). aspectRatio changes the shape to a W:H ratio like \"1:1\", \"4:5\", \"9:16\", or \"16:9\"; mode picks how the new shape is reached — \"crop\" (the default) trims the longer side from the center, \"blur\" fills the added canvas with an enlarged, heavily blurred copy of the frame (the standard vertical-video background; keeps the whole frame visible), \"pad\" letterboxes with black bars; to have new scene content GENERATED in the added area instead of bars or blur, use reframe_video. width and height resize — both together lands on exactly those pixels (reaching them via the same mode: center-cropped by default, blur/pad-filled otherwise, never stretched), one alone preserves aspect; rotate is 90, 180, or 270 clockwise; flip is \"horizontal\" or \"vertical\"; speed is a playback multiplier — 3 plays three times as fast, 0.5 at half speed (slow motion), between 0.25 and 8, with the audio tempo-adjusted to stay in sync (pitch preserved). Alone, speed applies to the WHOLE clip; with the optional start and end bounds (timestamps in seconds or clock form, like split_video's) it applies to that PORTION only — speed 3 with start 10 and end 20 plays 10–20s at 3x while everything before and after keeps its normal speed (e.g. \"make the middle of this clip twice as fast\", \"slow-mo the dive between 3s and 7s\"). At least one operation is required. The video is re-encoded to H.264 with its audio kept. The result is attached to the assistant reply and becomes the conversation's newest video.",
+		Description: "Use this when the user asks to change the shape or size of an attached video — crop it to an aspect ratio, convert it between shapes (e.g. a 16:9 clip to 9:16 vertical for Reels/Shorts/TikTok, or to 1:1), downscale or resize it to specific pixel dimensions (for example a clip too large for a video model's input limit), rotate a sideways clip, mirror it — to speed up or slow down its playback, in whole or in part, or to fade it in or out. It crops to a shape, not a region of time — cutting a segment out is split_video. Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). aspectRatio changes the shape to a W:H ratio like \"1:1\", \"4:5\", \"9:16\", or \"16:9\"; mode picks how the new shape is reached — \"crop\" (the default) trims the longer side from the center, \"blur\" fills the added canvas with an enlarged, heavily blurred copy of the frame (the standard vertical-video background; keeps the whole frame visible), \"pad\" letterboxes with black bars; to have new scene content GENERATED in the added area instead of bars or blur, use reframe_video. width and height resize — both together lands on exactly those pixels (reaching them via the same mode: center-cropped by default, blur/pad-filled otherwise, never stretched), one alone preserves aspect; rotate is 90, 180, or 270 clockwise; flip is \"horizontal\" or \"vertical\"; speed is a playback multiplier — 3 plays three times as fast, 0.5 at half speed (slow motion), between 0.25 and 8, with the audio tempo-adjusted to stay in sync (pitch preserved). Alone, speed applies to the WHOLE clip; with the optional start and end bounds (timestamps in seconds or clock form, like split_video's) it applies to that PORTION only — speed 3 with start 10 and end 20 plays 10–20s at 3x while everything before and after keeps its normal speed (e.g. \"make the middle of this clip twice as fast\", \"slow-mo the dive between 3s and 7s\"). fadeIn and fadeOut (seconds, 0.1 to 30) are the single-clip fades: fadeIn eases the opening in from black with the sound rising from silence, fadeOut eases the ending out to black with the sound dipping to silence — \"fade to black at the end\", \"fade it in\", \"fade out the last 2 seconds\". By default both the picture and the soundtrack fade; fadeTarget \"video\" fades the picture alone (the music keeps playing) and \"audio\" dips the sound alone (the picture stays). Fades are timed on the finished clip (after any speed change), and one longer than half the clip is shortened with a notice; to fade a standalone audio recording, use transform_audio. At least one operation is required. The video is re-encoded to H.264 with its audio kept. The result is attached to the assistant reply and becomes the conversation's newest video.",
 		Example:     `{"name":"transform_video","width":1280,"height":720}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: transformVideoParamSchema(),
@@ -3097,8 +3325,17 @@ func transformVideoToolDefinition() HarnessToolDefinition {
 					return []string{prefix + ".end must be after start for transform_video"}
 				}
 			}
-			if call.Width == 0 && call.Height == 0 && aspect == "" && call.Rotate == 0 && strings.TrimSpace(call.Flip) == "" && call.Speed == 0 {
-				return []string{prefix + ".transform_video needs at least one of aspectRatio, width, height, rotate, flip, or speed"}
+			if errs := validateFadeParams(prefix, "transform_video", call); len(errs) > 0 {
+				return errs
+			}
+			if _, ok := normalizeFadeTarget(call.FadeTarget); !ok {
+				return []string{prefix + `.fadeTarget must be "both", "video", or "audio" for transform_video — what the fades touch (omit it for both)`}
+			}
+			if strings.TrimSpace(call.FadeTarget) != "" && call.FadeIn == 0 && call.FadeOut == 0 {
+				return []string{prefix + ".fadeTarget is only valid with fadeIn or fadeOut for transform_video — it picks what those fades touch"}
+			}
+			if call.Width == 0 && call.Height == 0 && aspect == "" && call.Rotate == 0 && strings.TrimSpace(call.Flip) == "" && call.Speed == 0 && call.FadeIn == 0 && call.FadeOut == 0 {
+				return []string{prefix + ".transform_video needs at least one of aspectRatio, width, height, rotate, flip, speed, fadeIn, or fadeOut"}
 			}
 			switch call.Rotate {
 			case 0, 90, 180, 270:
@@ -3137,7 +3374,7 @@ func transformVideoToolDefinition() HarnessToolDefinition {
 			var args []string
 			var ops []string
 			notices := []string{
-				"the video was re-encoded (H.264, CRF 18) — crop, resize, rotate, flip, and speed changes cannot stream-copy.",
+				"the video was re-encoded (H.264, CRF 18) — crop, resize, rotate, flip, speed changes, and fades cannot stream-copy.",
 			}
 			// Portion speed change: the bounds resolve against the clip's
 			// real duration — an end at/past the end clamps open (the tail
@@ -3147,18 +3384,19 @@ func transformVideoToolDefinition() HarnessToolDefinition {
 			// the plain whole-clip run.
 			startSec, endSec := 0.0, 0.0
 			endBounded := false
-			hasAudio := false
+			hasAudio, audioKnown := false, false
+			srcDuration := 0.0
 			if call.Speed != 0 && (strings.TrimSpace(call.Start) != "" || strings.TrimSpace(call.End) != "") {
 				startSec, _ = parseMediaTimestamp(strings.TrimSpace(call.Start)) // validation guarantees these parse
 				var hasEnd bool
 				if endRaw := strings.TrimSpace(call.End); endRaw != "" {
 					endSec, hasEnd = parseMediaTimestamp(endRaw)
 				}
-				duration, audio, factsErr := transformVideoPortionFacts(ctx, tools.Config, input, source)
+				duration, audio, factsErr := transformVideoClipFacts(ctx, tools.Config, input, source, "the portion speed change")
 				if factsErr != nil {
 					return nil, "transform failed", factsErr
 				}
-				hasAudio = audio
+				srcDuration, hasAudio, audioKnown = duration, audio, true
 				if startSec >= duration {
 					return nil, "transform failed", fmt.Errorf("transform_video's start (%ss) is at or past the end of the attached clip (%ss)", formatPlaybackSpeed(startSec), formatPlaybackSpeed(duration))
 				}
@@ -3169,28 +3407,73 @@ func transformVideoToolDefinition() HarnessToolDefinition {
 					endBounded = hasEnd
 				}
 			}
-			if startSec > 0 || endBounded {
-				// Geometry ops shape the WHOLE output (they run after the
-				// concat), so the portion only rescales the middle's
-				// timestamps; the speed op phrase lands after the shape ops.
+			portion := startSec > 0 || endBounded
+			// Fades are timed on the OUTPUT timeline — they run after any
+			// speed rescale and the geometry — so a fade-out needs the
+			// rendered duration: the source's divided by a whole-clip
+			// speed, or the portion arithmetic. The measurement fails closed
+			// for a fade-out (nothing to time it against) and is best-effort
+			// for a fade-in alone, which starts at zero and is only clamped
+			// when the duration is known.
+			fadeTarget, _ := normalizeFadeTarget(call.FadeTarget) // validation guarantees it parses
+			var fades fadePlan
+			if call.FadeIn > 0 || call.FadeOut > 0 {
+				if srcDuration == 0 {
+					duration, audio, factsErr := transformVideoClipFacts(ctx, tools.Config, input, source, "the fade out")
+					if factsErr != nil && call.FadeOut > 0 {
+						return nil, "transform failed", factsErr
+					}
+					if factsErr == nil {
+						srcDuration, hasAudio, audioKnown = duration, audio, true
+					}
+				}
+				// A silent clip has no sound to fade: a "both" fade is
+				// honestly a picture fade, and an audio-only fade has nothing
+				// to act on — the result must never claim a dip that didn't
+				// happen.
+				if audioKnown && !hasAudio && fadeTarget != "video" {
+					if fadeTarget == "audio" {
+						return nil, "transform failed", errors.New(`transform_video's fadeTarget "audio" has nothing to fade — the attached clip carries no audio track`)
+					}
+					fadeTarget = "video"
+					notices = append(notices, "the clip carries no audio track, so only the picture was faded.")
+				}
+				outputDuration := srcDuration
+				switch {
+				case portion:
+					outputDuration = portionOutputDuration(startSec, endSec, endBounded, srcDuration, call.Speed)
+				case call.Speed != 0 && srcDuration > 0:
+					outputDuration = srcDuration / call.Speed
+				}
+				fades = resolveFadePlan(call.FadeIn, call.FadeOut, outputDuration)
+				notices = append(notices, fades.Clamped...)
+			}
+			videoFades, audioFades := fadeFilterChains(fades, fadeTarget)
+			if portion {
+				// Geometry ops and fades shape the WHOLE output (they run
+				// after the concat), so the portion only rescales the
+				// middle's timestamps; the speed op phrase lands after the
+				// shape ops, the fades after it.
 				geometryCall := call
 				geometryCall.Speed = 0
 				filters, geometryOps := videoTransformFilters(geometryCall, srcWidth, srcHeight)
 				ops = append(ops, geometryOps...)
 				ops = append(ops, portionSpeedPhrase(startSec, endSec, endBounded, call.Speed))
-				filterComplex := videoPortionSpeedFilterComplex(filters, startSec, endSec, endBounded, hasAudio, call.Speed)
-				args = ffmpegPortionSpeedArgs(input, filterComplex, hasAudio, staged)
+				ops = append(ops, fadeOpPhrases(fades, fadeTarget)...)
+				audioFiltered := hasAudio && audioFades != ""
+				filterComplex := videoPortionSpeedFilterComplex(appendFilterChain(filters, videoFades), startSec, endSec, endBounded, hasAudio, call.Speed, audioFades)
+				args = ffmpegPortionSpeedArgs(input, filterComplex, hasAudio, audioFiltered, staged)
 				notices = append(notices, "the normal-speed head and tail were re-encoded too — the joined segments must share one uniform stream.")
 			} else {
 				filters, transformOps := videoTransformFilters(call, srcWidth, srcHeight)
-				ops = transformOps
+				ops = append(transformOps, fadeOpPhrases(fades, fadeTarget)...)
 				audioFilters := ""
 				if call.Speed != 0 {
 					// atempo keeps the audio in sync with the setpts-rescaled
 					// video; a clip with no audio stream simply ignores -af.
 					audioFilters = atempoChain(call.Speed)
 				}
-				args = ffmpegTransformArgs(input, filters, audioFilters, staged)
+				args = ffmpegTransformArgs(input, appendFilterChain(filters, videoFades), appendFilterChain(audioFilters, audioFades), staged)
 			}
 			if err := runLocalFFmpeg(ctx, tools.Config, args); err != nil {
 				return nil, "transform failed", err
@@ -3234,6 +3517,87 @@ func transformVideoSourceDimensions(ctx context.Context, config AppConfig, input
 		return 0, 0, errors.New("transform_video could not read the attached clip's dimensions for the aspect-ratio crop — ffprobe is unavailable and the clip is not a readable MP4")
 	}
 	return width, height, nil
+}
+
+// transformAudioToolDefinition exposes transform_audio: fade an attached audio
+// recording in from silence and/or out to silence — the single-clip fades
+// transform_video gives a clip's soundtrack, for a standalone recording. Its
+// own tool rather than a convert_audio param because convert_audio is
+// deliberately probe-free and a fade-out needs the clip's duration; named for
+// the ops transform_video already hosts rather than the one it ships with, so
+// a later speed (atempoChain is audio-generic) lands here instead of in a
+// third tool.
+func transformAudioToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "transform_audio",
+		Title:       "Transform audio",
+		Description: "Use this when the user asks to fade an attached AUDIO recording in or out — ease a podcast, voice memo, or music track in from silence at the start, fade it out (dip to silence) at the end, or both; \"fade out the last 3 seconds\", \"fade the song in\", \"dip the ending to silence\". For a video clip, use transform_video instead (its fadeIn/fadeOut take the picture and soundtrack together); to cut a segment out, split_audio; to change the format, convert_audio. Requires an attached audio file (one attached or @-mentioned this turn, or the conversation's newest audio). fadeIn (seconds) fades in from silence at the start; fadeOut (seconds) fades to silence over the recording's final stretch — each 0.1 to 30, at least one required; a fade longer than half the recording is shortened with a notice. The recording is re-encoded in its own format (a WAV stays WAV, an MP3 stays MP3; an unidentifiable codec becomes MP3 192kbps). The result is attached to the assistant reply and becomes the conversation's newest audio.",
+		Example:     `{"name":"transform_audio","fadeOut":3}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: transformAudioParamSchema(),
+		Validate: func(prefix string, call HarnessToolCall) []string {
+			if errs := validateFadeParams(prefix, "transform_audio", call); len(errs) > 0 {
+				return errs
+			}
+			if strings.TrimSpace(call.FadeTarget) != "" {
+				return []string{prefix + ".fadeTarget is transform_video's — transform_audio fades the recording itself, so omit it"}
+			}
+			if call.FadeIn == 0 && call.FadeOut == 0 {
+				return []string{prefix + ".transform_audio needs fadeIn, fadeOut, or both"}
+			}
+			return nil
+		},
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			source := firstAttachedAudio(tools.AttachedAudios)
+			if source == "" {
+				return nil, "transform requires an attached audio file", errors.New("transform_audio requires an attached audio file — ask the user to attach one first")
+			}
+			staging, err := os.MkdirTemp("", "atelier-ffmpeg-*")
+			if err != nil {
+				return nil, "transform failed", err
+			}
+			defer os.RemoveAll(staging)
+			input, err := stageMediaDataURL(staging, "input", source)
+			if err != nil {
+				return nil, "transform failed", err
+			}
+			// The fade-out is timed from the recording's end, so its
+			// duration must be measurable (ffprobe, else the pure-Go sniff);
+			// unlike the join there is no plain variant to degrade to, so an
+			// unmeasurable fade-out fails closed. A fade-in alone starts at
+			// zero and runs regardless — the measurement then only supplies
+			// the codec and the clamp.
+			fact, measured := joinAudioClipFactFor(ctx, tools.Config, input, source)
+			if call.FadeOut > 0 && !measured {
+				return nil, "transform failed", errors.New("transform_audio could not read the attached recording's duration for the fade out — ffprobe is unavailable and the file is not a readable WAV, MP3, FLAC, OGG, or M4A")
+			}
+			var notices []string
+			fades := resolveFadePlan(call.FadeIn, call.FadeOut, fact.Duration)
+			notices = append(notices, fades.Clamped...)
+			ext, mimeType, codecArgs, targetNotice := transformAudioTarget(fact.Codec)
+			if targetNotice != "" {
+				notices = append(notices, targetNotice)
+			}
+			staged := filepath.Join(staging, "transformed"+ext)
+			args := ffmpegTransformAudioArgs(input, strings.Join(audioFadeFilters(fades), ","), codecArgs, staged)
+			if err := runLocalFFmpeg(ctx, tools.Config, args); err != nil {
+				return nil, "transform failed", err
+			}
+			tempPath, err := promoteStagedOutput(staged, "atelier-audio-*", ext)
+			if err != nil {
+				return nil, "transform failed", err
+			}
+			ops := fadeOpPhrases(fades, "audio")
+			return ToolAudioResult{
+				Model:   ffmpegModelName,
+				Prompt:  "transform: " + strings.Join(ops, ", "),
+				Count:   1,
+				Audios:  []ToolAudioFile{{TempPath: tempPath, MimeType: mimeType}},
+				Notices: notices,
+			}, fmt.Sprintf("transformed the attached audio with ffmpeg (%s)", strings.Join(ops, ", ")), nil
+		},
+		Activity: ffmpegActivity("transform-audio"),
+	}
 }
 
 // reverseVideoToolDefinition exposes reverse_video: play an attached clip
@@ -3730,6 +4094,24 @@ func transformVideoParamSchema() map[string]any {
 			"speed":       numberParam("Optional — playback-speed multiplier: 3 plays three times as fast, 0.5 at half speed (slow motion). Between 0.25 and 8, not 1. The audio is tempo-adjusted to stay in sync. Alone it applies to the whole clip; with start/end it applies to that portion only."),
 			"start":       stringParam(`Optional (requires speed) — portion bound in seconds ("10") or clock ("00:01:30"): the speed change applies from here; before it the clip plays at normal speed. Use split_video to cut a segment out instead.`),
 			"end":         stringParam(`Optional (requires speed) — portion bound: the speed change applies until here; after it the clip plays at normal speed.`),
+			"fadeIn":      numberParam("Optional — fade the opening in from black (with the sound rising from silence) over this many seconds, 0.1 to 30. Timed on the finished clip, after any speed change."),
+			"fadeOut":     numberParam("Optional — fade the ending out to black (with the sound dipping to silence) over this many seconds, 0.1 to 30. A fade longer than half the clip is shortened."),
+			"fadeTarget":  enumParam(`Optional (with fadeIn/fadeOut) — what the fades touch: "both" (the default: picture and soundtrack), "video" (picture only; the sound keeps playing), or "audio" (dip the sound only; the picture stays).`, "both", "video", "audio"),
+		},
+		"required": []string{},
+	}
+}
+
+// transformAudioParamSchema declares transform_audio's fades: the same
+// fadeIn/fadeOut transform_video takes, minus fadeTarget — a recording has only
+// its sound to fade.
+func transformAudioParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"fadeIn":  numberParam("Optional — fade in from silence over this many seconds at the start, 0.1 to 30."),
+			"fadeOut": numberParam("Optional — fade out to silence over this many seconds at the end, 0.1 to 30. At least one of fadeIn/fadeOut is required; a fade longer than half the recording is shortened."),
 		},
 		"required": []string{},
 	}
