@@ -32,6 +32,13 @@ import (
 const fakeFFmpegScript = `#!/bin/sh
 dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 printf '%s\n' "$@" >> "$dir/args.txt"
+for a in "$@"; do
+  case "$a" in
+    # A help query produces no output file — writing the last arg ("filter=xfade")
+    # into the process CWD would stray-file the repo.
+    -h|-filters|-version) exit 0 ;;
+  esac
+done
 seen_concat=0
 prev=""
 out=""
@@ -2199,6 +2206,12 @@ func TestFFmpegAudioSiblingCrossReferences(t *testing.T) {
 	if desc := joinAudiosToolDefinition().Description; !strings.Contains(desc, "join_videos") {
 		t.Errorf("join_audios description should reference join_videos")
 	}
+	if desc := joinVideosToolDefinition().Description; !strings.Contains(desc, "list_video_transitions") {
+		t.Errorf("join_videos description should reference list_video_transitions")
+	}
+	if desc := listVideoTransitionsToolDefinition().Description; !strings.Contains(desc, "join_videos") {
+		t.Errorf("list_video_transitions description should reference join_videos")
+	}
 }
 
 func TestFFmpegExtractAudioExecutes(t *testing.T) {
@@ -2535,19 +2548,19 @@ func TestFFmpegTransformExecutes(t *testing.T) {
 }
 
 // TestFFmpegRegistryGating pins the tool gates: nothing without a binary, the
-// ffmpeg-backed edit tools with ffmpeg alone, plus probe_media only when
-// ffprobe also resolves.
+// ffmpeg-backed edit tools (and list_video_transitions) with ffmpeg alone,
+// plus probe_media only when ffprobe also resolves.
 func TestFFmpegRegistryGating(t *testing.T) {
 	newRegistryNames := func(t *testing.T, found map[string]string) []string {
 		t.Helper()
 		stubLocalLookup(t, found)
 		return defaultHarnessToolRegistry(context.Background(), defaultAppConfig(), nil).Names()
 	}
-	if names := newRegistryNames(t, map[string]string{}); containsString(names, "split_video") {
+	if names := newRegistryNames(t, map[string]string{}); containsString(names, "split_video") || containsString(names, "list_video_transitions") {
 		t.Fatal("ffmpeg tools must be absent without a detected binary")
 	}
 	names := newRegistryNames(t, map[string]string{"ffmpeg": "/opt/test/bin/ffmpeg"})
-	for _, want := range []string{"screenshot_video", "contact_sheet_video", "split_video", "join_videos", "extract_audio", "remove_audio", "replace_audio", "transform_video", "reverse_video"} {
+	for _, want := range []string{"screenshot_video", "contact_sheet_video", "split_video", "join_videos", "extract_audio", "remove_audio", "replace_audio", "transform_video", "reverse_video", "list_video_transitions"} {
 		if !containsString(names, want) {
 			t.Errorf("registry with ffmpeg = %v, want %q", names, want)
 		}
@@ -2921,4 +2934,377 @@ func TestHarnessMediaEditWithoutFFmpegNotifies(t *testing.T) {
 			t.Fatalf("reply = %q, no fallback is warranted with ffmpeg configured", reply)
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Join transitions
+// ---------------------------------------------------------------------------
+
+// fakeFFmpegXFadeScript fakes an ffmpeg whose `-h filter=xfade` reports a
+// three-transition vocabulary and whose `-version` reports 7.1.1 — the
+// capability check and list_video_transitions both read it. Any other call
+// (a real join) writes fake media bytes to its last argument, like
+// fakeFFmpegScript.
+const fakeFFmpegXFadeScript = `#!/bin/sh
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+printf '%s\n' "$@" >> "$dir/args.txt"
+for a in "$@"; do
+  case "$a" in
+    filter=xfade)
+      cat <<'HELP'
+Filter xfade
+  Crossfade one video stream to another.
+xfade AVOptions:
+  transition         <int>        ..FVA....... set crossfade transition (from 0 to INT_MAX) (default fade)
+    fade             0            ..FVA....... fade crossfade
+    wipeleft         1            ..FVA....... slide one screen over another from left to right
+    fadeblack        2            ..FVA....... fade through black
+  duration           <duration>   ..FVA....... set crossfade duration (default 1)
+  offset             <duration>   ..FVA....... set crossfade start offset (default 0)
+HELP
+      exit 0
+      ;;
+    -version)
+      echo "ffmpeg version 7.1.1 Copyright (c) 2000-2025 the FFmpeg developers"
+      exit 0
+      ;;
+  esac
+done
+out=""
+for a in "$@"; do
+  out="$a"
+done
+case "$out" in
+  -*) exit 0 ;;
+esac
+printf '\377\330\377FAKE-MEDIA' > "$out"
+`
+
+func TestNormalizeXFadeTransition(t *testing.T) {
+	cases := []struct {
+		name string
+		want string
+		ok   bool
+	}{
+		{"fade", "fade", true},
+		{" CrossFade ", "fade", true},
+		{"DISSOLVE", "dissolve", true},
+		{"wipeleft", "wipeleft", true},
+		{"zoomin", "", false},
+		{"", "", false},
+	}
+	for _, tc := range cases {
+		got, ok := normalizeXFadeTransition(tc.name)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("normalizeXFadeTransition(%q) = (%q, %v), want (%q, %v)", tc.name, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+// TestJoinTransitionsFilterGraph pins the whole transitioned graph: junction
+// offsets run on the merged timeline (each xfade shortens the total by the
+// overlap), a silent clip gets a synthesized anullsrc input after the real
+// clips, and the transition clamps to half the shortest clip.
+func TestJoinTransitionsFilterGraph(t *testing.T) {
+	videoChain := "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p"
+	audioChain := "aformat=sample_rates=48000:channel_layouts=stereo"
+	cases := []struct {
+		name         string
+		clips        []joinClipFact
+		transition   string
+		requested    float64
+		wantGraph    string
+		wantInputs   []string
+		wantSeconds  float64
+		wantOutput   float64
+		wantClamped  bool
+		wantNormal   bool
+		wantSynthOne bool
+	}{
+		{
+			name:       "two audio clips, default one-second fade",
+			clips:      []joinClipFact{{Duration: 12.5, Width: 1920, Height: 1080, FPS: 30, HasAudio: true}, {Duration: 12.5, Width: 1920, Height: 1080, FPS: 30, HasAudio: true}},
+			transition: "fade",
+			requested:  0,
+			wantGraph: "[0:v]" + videoChain + "[v0];[1:v]" + videoChain + "[v1];" +
+				"[v0][v1]xfade=transition=fade:duration=1:offset=11.5[vx1];[vx1]format=yuv420p[vout];" +
+				"[0:a]" + audioChain + "[ain0];[1:a]" + audioChain + "[ain1];" +
+				"[ain0][ain1]acrossfade=d=1[ax1];[ax1]" + audioChain + "[aout]",
+			wantSeconds: 1,
+			wantOutput:  24,
+		},
+		{
+			name:       "three clips with a silent middle, dissolve",
+			clips:      []joinClipFact{{Duration: 10, Width: 1920, Height: 1080, FPS: 30, HasAudio: true}, {Duration: 8, Width: 1920, Height: 1080, FPS: 30}, {Duration: 12, Width: 1920, Height: 1080, FPS: 30, HasAudio: true}},
+			transition: "dissolve",
+			requested:  2,
+			wantGraph: "[0:v]" + videoChain + "[v0];[1:v]" + videoChain + "[v1];[2:v]" + videoChain + "[v2];" +
+				"[v0][v1]xfade=transition=dissolve:duration=2:offset=8[vx1];" +
+				"[vx1][v2]xfade=transition=dissolve:duration=2:offset=14[vx2];[vx2]format=yuv420p[vout];" +
+				"[0:a]" + audioChain + "[ain0];[3:a]" + audioChain + "[ain1];[2:a]" + audioChain + "[ain2];" +
+				"[ain0][ain1]acrossfade=d=2[ax1];[ax1][ain2]acrossfade=d=2[ax2];[ax2]" + audioChain + "[aout]",
+			wantInputs:   []string{"-f", "lavfi", "-t", "8", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"},
+			wantSeconds:  2,
+			wantOutput:   26,
+			wantSynthOne: true,
+		},
+		{
+			name:       "clamped to half the shortest clip",
+			clips:      []joinClipFact{{Duration: 2, Width: 1920, Height: 1080, FPS: 30, HasAudio: true}, {Duration: 5, Width: 1920, Height: 1080, FPS: 30, HasAudio: true}},
+			transition: "wipeleft",
+			requested:  3,
+			wantGraph: "[0:v]" + videoChain + "[v0];[1:v]" + videoChain + "[v1];" +
+				"[v0][v1]xfade=transition=wipeleft:duration=1:offset=1[vx1];[vx1]format=yuv420p[vout];" +
+				"[0:a]" + audioChain + "[ain0];[1:a]" + audioChain + "[ain1];" +
+				"[ain0][ain1]acrossfade=d=1[ax1];[ax1]" + audioChain + "[aout]",
+			wantSeconds: 1,
+			wantOutput:  6,
+			wantClamped: true,
+		},
+		{
+			name:       "differing clips normalize to the first clip's frame",
+			clips:      []joinClipFact{{Duration: 10, Width: 1920, Height: 1080, FPS: 30, HasAudio: true}, {Duration: 10, Width: 1280, Height: 720, FPS: 25, HasAudio: true}},
+			transition: "slideleft",
+			requested:  2,
+			wantGraph: "[0:v]" + videoChain + "[v0];[1:v]" + videoChain + "[v1];" +
+				"[v0][v1]xfade=transition=slideleft:duration=2:offset=8[vx1];[vx1]format=yuv420p[vout];" +
+				"[0:a]" + audioChain + "[ain0];[1:a]" + audioChain + "[ain1];" +
+				"[ain0][ain1]acrossfade=d=2[ax1];[ax1]" + audioChain + "[aout]",
+			wantSeconds: 2,
+			wantOutput:  18,
+			wantNormal:  true,
+		},
+		{
+			name:       "unprobed clips stand in 30fps without counting as normalized",
+			clips:      []joinClipFact{{Duration: 6, Width: 1920, Height: 1080, HasAudio: true}, {Duration: 6, Width: 1920, Height: 1080, HasAudio: true}},
+			transition: "radial",
+			requested:  1,
+			wantGraph: "[0:v]" + videoChain + "[v0];[1:v]" + videoChain + "[v1];" +
+				"[v0][v1]xfade=transition=radial:duration=1:offset=5[vx1];[vx1]format=yuv420p[vout];" +
+				"[0:a]" + audioChain + "[ain0];[1:a]" + audioChain + "[ain1];" +
+				"[ain0][ain1]acrossfade=d=1[ax1];[ax1]" + audioChain + "[aout]",
+			wantSeconds: 1,
+			wantOutput:  11,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := joinTransitionsFilterGraph(tc.clips, tc.transition, tc.requested)
+			if plan.FilterComplex != tc.wantGraph {
+				t.Fatalf("filter_complex =\n%s\nwant\n%s", plan.FilterComplex, tc.wantGraph)
+			}
+			if plan.Seconds != tc.wantSeconds {
+				t.Errorf("seconds = %v, want %v", plan.Seconds, tc.wantSeconds)
+			}
+			if plan.OutputSeconds != tc.wantOutput {
+				t.Errorf("output seconds = %v, want %v", plan.OutputSeconds, tc.wantOutput)
+			}
+			if plan.Clamped != tc.wantClamped {
+				t.Errorf("clamped = %v, want %v", plan.Clamped, tc.wantClamped)
+			}
+			if plan.Normalized != tc.wantNormal {
+				t.Errorf("normalized = %v, want %v", plan.Normalized, tc.wantNormal)
+			}
+			if (len(plan.Synthesized) > 0) != tc.wantSynthOne {
+				t.Errorf("synthesized = %v, want presence %v", plan.Synthesized, tc.wantSynthOne)
+			}
+			if strings.Join(plan.InputArgs, " ") != strings.Join(tc.wantInputs, " ") {
+				t.Errorf("input args = %v, want %v", plan.InputArgs, tc.wantInputs)
+			}
+		})
+	}
+}
+
+func TestFFmpegJoinTransitionArgs(t *testing.T) {
+	plan := joinTransitionPlan{
+		FilterComplex: "FC",
+		InputArgs:     []string{"-f", "lavfi", "-t", "5", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"},
+	}
+	got := strings.Join(ffmpegJoinTransitionArgs([]string{"a.mp4", "b.mp4"}, plan, "out.mp4"), " ")
+	want := "-i a.mp4 -i b.mp4 -f lavfi -t 5 -i anullsrc=channel_layout=stereo:sample_rate=48000 " +
+		"-filter_complex FC -map [vout] -map [aout] -c:v libx264 -preset veryfast -crf 18 " +
+		"-c:a aac -b:a 192k -movflags +faststart out.mp4"
+	if got != want {
+		t.Fatalf("args = %s, want %s", got, want)
+	}
+}
+
+func TestParseXFadeTransitions(t *testing.T) {
+	help := `Filter xfade
+  Crossfade one video stream to another.
+xfade AVOptions:
+  transition         <int>        ..FVA....... set crossfade transition (from 0 to INT_MAX) (default fade)
+    fade             0            ..FVA....... fade crossfade
+    wipeleft         1            ..FVA....... slide one screen over another from left to right
+    fadeblack        2            ..FVA....... fade through black
+  duration           <duration>   ..FVA....... set crossfade duration (default 1)
+  offset             <duration>   ..FVA....... set crossfade start offset (default 0)
+`
+	got := parseXFadeTransitions([]byte(help))
+	want := []string{"fade", "wipeleft", "fadeblack"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("transitions = %v, want %v", got, want)
+	}
+	for _, broken := range []string{"", "no filter help here", "xfade AVOptions:\n  duration <duration> bad"} {
+		if got := parseXFadeTransitions([]byte(broken)); len(got) != 0 {
+			t.Errorf("parseXFadeTransitions(%q) = %v, want empty", broken, got)
+		}
+	}
+}
+
+func TestParseFFmpegVersion(t *testing.T) {
+	cases := []struct {
+		output string
+		want   string
+	}{
+		{"ffmpeg version 7.1.1 Copyright (c) 2000-2025 the FFmpeg developers\n", "7.1.1"},
+		{"ffmpeg version n7.0.2-13-g8b8dd0bf76\n", "7.0.2-13-g8b8dd0bf76"},
+		{"garbage", ""},
+	}
+	for _, tc := range cases {
+		if got := parseFFmpegVersion([]byte(tc.output)); got != tc.want {
+			t.Errorf("parseFFmpegVersion(%q) = %q, want %q", tc.output, got, tc.want)
+		}
+	}
+}
+
+// TestFFmpegJoinTransitionExecutes drives the transitioned join end to end:
+// the graph replaces the concat demuxer, the junction offsets land at the
+// merged timeline, and the evidence says what ran.
+func TestFFmpegJoinTransitionExecutes(t *testing.T) {
+	config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		AttachedVideos: []string{videoDataURL("CLIP-ONE"), videoDataURL("CLIP-TWO")},
+	}, "join_videos", HarnessToolCall{Transition: "dissolve", TransitionDuration: 2})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	args := fakeFFmpegArgs(t, bin)
+	if !strings.Contains(args, "-filter_complex") || strings.Contains(args, "-f concat") {
+		t.Fatalf("args = %s, want a filter_complex join without the concat demuxer", args)
+	}
+	for _, fragment := range []string{
+		"xfade=transition=dissolve:duration=2:offset=10.5",
+		"acrossfade=d=2",
+	} {
+		if !strings.Contains(args, fragment) {
+			t.Errorf("args = %s, want it to include %q", args, fragment)
+		}
+	}
+	if !strings.Contains(result.Summary, "dissolve transition, 2s at each junction") ||
+		!strings.Contains(result.Summary, "23s output") {
+		t.Errorf("summary = %q, want the transition phrase and the shortened output length", result.Summary)
+	}
+	joined := strings.Join(result.Notices, "\n")
+	if !strings.Contains(joined, "overlaps the clips by 2s") || !strings.Contains(joined, "re-encoded") {
+		t.Errorf("notices = %v, want the overlap and re-encode explanation", result.Notices)
+	}
+	typed, ok := result.Result.(ToolVideoResult)
+	if !ok || len(typed.Videos) != 1 {
+		t.Fatalf("result payload = %+v", result.Result)
+	}
+	os.Remove(typed.Videos[0].TempPath)
+}
+
+// TestFFmpegJoinTransitionSubstitutesUnsupported pins the capability check:
+// a transition the installed ffmpeg lacks degrades to "fade" under a notice
+// that names the request and points at list_video_transitions.
+func TestFFmpegJoinTransitionSubstitutesUnsupported(t *testing.T) {
+	config, bin := ffmpegTestConfig(t, fakeFFmpegXFadeScript, fakeFFprobeScript)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		AttachedVideos: []string{videoDataURL("CLIP-ONE"), videoDataURL("CLIP-TWO")},
+	}, "join_videos", HarnessToolCall{Transition: "dissolve"})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	args := fakeFFmpegArgs(t, bin)
+	if !strings.Contains(args, "xfade=transition=fade:") {
+		t.Fatalf("args = %s, want the substituted fade transition", args)
+	}
+	joined := strings.Join(result.Notices, "\n")
+	if !strings.Contains(joined, `does not support the "dissolve" transition`) ||
+		!strings.Contains(joined, "list_video_transitions") {
+		t.Errorf("notices = %v, want the substitution notice naming the request", result.Notices)
+	}
+	typed, ok := result.Result.(ToolVideoResult)
+	if !ok || len(typed.Videos) != 1 {
+		t.Fatalf("result payload = %+v", result.Result)
+	}
+	os.Remove(typed.Videos[0].TempPath)
+}
+
+// TestFFmpegJoinTransitionUnmeasurableDegrades pins the degradation: a clip
+// whose length cannot be measured (ffprobe failing, the fixture carrying no
+// MP4 boxes to sniff) joins plainly under a substitution notice rather than
+// failing the call.
+func TestFFmpegJoinTransitionUnmeasurableDegrades(t *testing.T) {
+	config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeFailScript)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		AttachedVideos: []string{videoDataURL("CLIP-ONE"), videoDataURL("CLIP-TWO")},
+	}, "join_videos", HarnessToolCall{Transition: "dissolve"})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	args := fakeFFmpegArgs(t, bin)
+	if !strings.Contains(args, "-f concat") || strings.Contains(args, "xfade=transition=") {
+		t.Fatalf("args = %s, want the plain concat join without xfade", args)
+	}
+	joined := strings.Join(result.Notices, "\n")
+	if !strings.Contains(joined, "without the requested transition") {
+		t.Errorf("notices = %v, want the substitution notice", result.Notices)
+	}
+	typed, ok := result.Result.(ToolVideoResult)
+	if !ok || len(typed.Videos) != 1 {
+		t.Fatalf("result payload = %+v", result.Result)
+	}
+	os.Remove(typed.Videos[0].TempPath)
+}
+
+func TestListVideoTransitionsExecutes(t *testing.T) {
+	config, _ := ffmpegTestConfig(t, fakeFFmpegXFadeScript, "")
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{}, "list_video_transitions", HarnessToolCall{})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	typed, ok := result.Result.(ToolTransitionListResult)
+	if !ok {
+		t.Fatalf("result payload = %+v", result.Result)
+	}
+	if typed.Version != "7.1.1" || typed.Default != "fade" {
+		t.Errorf("payload = %+v, want version 7.1.1 and default fade", typed)
+	}
+	if strings.Join(typed.Transitions, ",") != "fade,wipeleft,fadeblack" {
+		t.Errorf("transitions = %v, want the fixture's three", typed.Transitions)
+	}
+	if !strings.Contains(result.Summary, "ffmpeg 7.1.1 supports 3 video transitions") {
+		t.Errorf("summary = %q", result.Summary)
+	}
+}
+
+func TestJoinVideosTransitionValidate(t *testing.T) {
+	validate := func(call HarnessToolCall) []string {
+		return joinVideosToolDefinition().Validate("toolCalls[0]", call)
+	}
+	if errs := validate(HarnessToolCall{Mode: "copy", Transition: "fade"}); len(errs) != 1 ||
+		!strings.Contains(errs[0], `mode "copy" cannot carry a transition`) {
+		t.Errorf("copy + transition = %v, want the mode conflict", errs)
+	}
+	if errs := validate(HarnessToolCall{Transition: "zoomin"}); len(errs) != 1 ||
+		!strings.Contains(errs[0], "list_video_transitions") {
+		t.Errorf("unknown transition = %v, want the vocabulary correction", errs)
+	}
+	for _, bad := range []float64{-1, 0.05, 15} {
+		if errs := validate(HarnessToolCall{Transition: "fade", TransitionDuration: bad}); len(errs) != 1 {
+			t.Errorf("transitionDuration %v = %v, want the bounds correction", bad, errs)
+		}
+	}
+	for _, good := range []HarnessToolCall{
+		{Transition: "crossfade"},
+		{Transition: "DISSOLVE", TransitionDuration: 2.5},
+		{Mode: "reencode", Transition: "wipeleft"},
+	} {
+		if errs := validate(good); len(errs) != 0 {
+			t.Errorf("validate(%+v) = %v, want none", good, errs)
+		}
+	}
 }

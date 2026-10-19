@@ -1838,6 +1838,8 @@ export namespace main {
 	    end?: string;
 	    mode?: string;
 	    columns?: number;
+	    transition?: string;
+	    transitionDuration?: number;
 	    format?: string;
 	    quality?: number;
 	    width?: number;
@@ -1899,6 +1901,8 @@ export namespace main {
 	        this.end = source["end"];
 	        this.mode = source["mode"];
 	        this.columns = source["columns"];
+	        this.transition = source["transition"];
+	        this.transitionDuration = source["transitionDuration"];
 	        this.format = source["format"];
 	        this.quality = source["quality"];
 	        this.width = source["width"];

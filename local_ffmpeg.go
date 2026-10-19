@@ -21,6 +21,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -66,6 +68,9 @@ func mediaEditFallbackNotice(unavailable bool, assistantContent string) string {
 // additionally needs ffprobe (detected separately — it powers the JSON report);
 // the transform tools degrade without it (they re-encode rather than probe),
 // and join_audios' auto mode re-encodes rather than comparing unprobed clips.
+// list_video_transitions needs ffmpeg itself — its entire value is the
+// installed build's xfade report, so like probe_media it is offered only when
+// its CLI resolves.
 func ffmpegToolDefinitions(config AppConfig) []HarnessToolDefinition {
 	definitions := []HarnessToolDefinition{
 		screenshotVideoToolDefinition(),
@@ -83,6 +88,9 @@ func ffmpegToolDefinitions(config AppConfig) []HarnessToolDefinition {
 	}
 	if _, ok := resolveLocalFFprobeBinary(config); ok {
 		definitions = append(definitions, probeMediaToolDefinition())
+	}
+	if _, ok := resolveLocalFFmpegBinary(config); ok {
+		definitions = append(definitions, listVideoTransitionsToolDefinition())
 	}
 	return definitions
 }
@@ -466,6 +474,346 @@ func ffmpegJoinArgs(listFile string, streamCopy bool, output string) []string {
 	return append(args, "-movflags", "+faststart", output)
 }
 
+// ---------------------------------------------------------------------------
+// Join transitions
+// ---------------------------------------------------------------------------
+
+const (
+	// joinTransitionsDefaultSeconds is the junction overlap when the planner
+	// names a transition but no duration — the house default across editors.
+	joinTransitionsDefaultSeconds = 1.0
+	// joinTransitionsMinSeconds and joinTransitionsMaxSeconds bound the
+	// planner-supplied transition duration; Validate turns a violation into
+	// a planner correction.
+	joinTransitionsMinSeconds = 0.1
+	joinTransitionsMaxSeconds = 10.0
+	// joinTransitionsDefaultFPS stands in for the frame rate when only the
+	// MP4 box sniff measured a clip (the reverseVideoDefaultFPS figure).
+	joinTransitionsDefaultFPS = 30.0
+	// joinTransitionsFPSTolerance is the frame-rate difference below which
+	// two clips count as matching (concatCompatible's figure).
+	joinTransitionsFPSTolerance = 0.01
+)
+
+// xfadeTransitions enumerates the transition kinds join_videos accepts. xfade
+// itself ships more (and grows them between ffmpeg releases), but every name
+// here exists in any build carrying the filter (ffmpeg 4.3+), so the curated
+// list stays stable across installs; the runtime capability check substitutes
+// "fade" when an install somehow lacks one. "crossfade" is a planner-facing
+// alias for "fade", not an ffmpeg name.
+var xfadeTransitions = []string{
+	"fade", "dissolve", "fadeblack", "fadewhite", "fadegrays",
+	"wipeleft", "wiperight", "wipeup", "wipedown",
+	"slideleft", "slideright", "slideup", "slidedown",
+	"circlecrop", "circleopen", "circleclose", "rectcrop", "radial", "distance",
+	"smoothleft", "smoothright", "smoothup", "smoothdown",
+	"horzopen", "horzclose", "vertopen", "vertclose",
+	"diagtl", "diagtr", "diagbl", "diagbr",
+	"hlslice", "hrslice", "vuslice", "vdslice",
+	"wipetl", "wipetr", "wipebl", "wipebr",
+	"hblur", "pixelize", "squeezeh", "squeezev",
+}
+
+// normalizeXFadeTransition trims a planner-supplied transition name and maps
+// the "crossfade" alias onto "fade". ok is false for anything outside the
+// curated enum — the Validate hook turns that into a planner correction, and
+// the executor refuses (a direct API path bypasses Validate) rather than
+// encoding an unknown ffmpeg option value.
+func normalizeXFadeTransition(name string) (string, bool) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "crossfade" {
+		return "fade", true
+	}
+	for _, known := range xfadeTransitions {
+		if name == known {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// joinClipFact is one staged clip's measured shape: what the transition
+// builder needs to lay out the junctions and normalize every input onto a
+// common frame. Width/Height are the DISPLAY size (an anamorphic clip's
+// stretched size — the normalization target, paired with setsar=1); Duration
+// is the probed container duration, which includes the audio tail, so a
+// junction may hold the outgoing clip's last frame for a few milliseconds on
+// sources with a long audio tail; HasAudio decides between acrossfade and a
+// synthesized silent track.
+type joinClipFact struct {
+	Duration float64
+	Width    int
+	Height   int
+	FPS      float64
+	HasAudio bool
+}
+
+// joinClipFacts measures every staged input in sequence order. ok is false
+// when ANY clip is unmeasurable: the junction offsets need every duration,
+// and a wrong offset garbles the transition — the executor degrades to the
+// plain concat join with a notice rather than encoding a broken graph.
+func joinClipFacts(ctx context.Context, config AppConfig, inputs, sources []string) ([]joinClipFact, bool) {
+	facts := make([]joinClipFact, 0, len(inputs))
+	for i, input := range inputs {
+		fact, ok := joinClipFactFor(ctx, config, input, sources[i])
+		if !ok {
+			return nil, false
+		}
+		facts = append(facts, fact)
+	}
+	return facts, true
+}
+
+// joinClipFactFor measures one staged clip: ffprobe answers for any container
+// (the display size when anamorphic, the real frame rate); the MP4 box sniff
+// (mvhd duration, tkhd size, a 'soun' trak) covers generation outputs without
+// ffprobe, standing in the 30fps default — the reverseVideoSourceFacts shape.
+func joinClipFactFor(ctx context.Context, config AppConfig, input, sourceDataURL string) (joinClipFact, bool) {
+	if _, ok := resolveLocalFFprobeBinary(config); ok {
+		if probe, err := probeStagedMedia(ctx, config, input, "video"); err == nil &&
+			probe.Duration > 0 && probe.Width > 0 && probe.Height > 0 {
+			fact := joinClipFact{
+				Duration: probe.Duration,
+				Width:    probe.Width,
+				Height:   probe.Height,
+				FPS:      probe.FPS,
+				HasAudio: probe.AudioCodec != "",
+			}
+			if probe.DisplayWidth > 0 && probe.DisplayHeight > 0 {
+				fact.Width = probe.DisplayWidth
+				fact.Height = probe.DisplayHeight
+			}
+			return fact, true
+		}
+	}
+	if data, _, err := decodeMediaDataURL(sourceDataURL); err == nil {
+		seconds, durationOK := mp4DurationSeconds(data)
+		width, height, sizeOK := mp4VideoDimensions(data)
+		if durationOK && sizeOK {
+			return joinClipFact{
+				Duration: seconds,
+				Width:    int(width),
+				Height:   int(height),
+				FPS:      joinTransitionsDefaultFPS,
+				HasAudio: mp4HasAudioTrack(data),
+			}, true
+		}
+	}
+	return joinClipFact{}, false
+}
+
+// joinTransitionPlan is everything the transitioned join's ffmpeg invocation
+// needs, plus the decisions the executor turns into notices. InputArgs holds
+// the synthetic inputs ("-f lavfi -t <dur> -i anullsrc=...") that follow the
+// real clips' -i args on the command line; the graph references their audio
+// by input index.
+type joinTransitionPlan struct {
+	Transition    string
+	FilterComplex string
+	InputArgs     []string
+	Seconds       float64
+	Clamped       bool
+	Normalized    bool
+	Synthesized   []int
+	OutputSeconds float64
+}
+
+// joinTransitionsFilterGraph lays out a transitioned join: one xfade per
+// junction on the video side and one acrossfade per junction on the audio
+// side, every input normalized onto the FIRST clip's frame (xfade refuses
+// inputs that differ in size, frame rate, or pixel format — scale+pad keeps
+// every pixel, letterboxing rather than cropping). Clips without audio get a
+// synthesized anullsrc input so the audio chain stays uniform: acrossfade
+// errors when either side is silent, and plainly concatenating the audio
+// would drift out of sync because the video timeline shortens by the
+// junction overlaps. The transition length clamps to half the shortest clip,
+// because a junction cannot overlap more than its clips can give.
+func joinTransitionsFilterGraph(clips []joinClipFact, transition string, requestedSeconds float64) joinTransitionPlan {
+	target := clips[0]
+	targetFPS := target.FPS
+	if targetFPS <= 0 {
+		targetFPS = joinTransitionsDefaultFPS
+	}
+	seconds := requestedSeconds
+	if seconds <= 0 {
+		seconds = joinTransitionsDefaultSeconds
+	}
+	shortest := clips[0].Duration
+	for _, clip := range clips[1:] {
+		if clip.Duration < shortest {
+			shortest = clip.Duration
+		}
+	}
+	clamped := false
+	if maxSeconds := shortest / 2; seconds > maxSeconds {
+		seconds = maxSeconds
+		clamped = true
+	}
+	normalized := false
+	for _, clip := range clips {
+		clipFPS := clip.FPS
+		if clipFPS <= 0 {
+			clipFPS = joinTransitionsDefaultFPS
+		}
+		if clip.Width != target.Width || clip.Height != target.Height ||
+			math.Abs(clipFPS-targetFPS) > joinTransitionsFPSTolerance {
+			normalized = true
+			break
+		}
+	}
+	width, height := evenDown(target.Width), evenDown(target.Height)
+	fpsText := formatFilterFPS(targetFPS)
+	secondsText := formatPlaybackSpeed(seconds)
+	videoChain := fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=%s,format=yuv420p",
+		width, height, width, height, fpsText)
+
+	// Synthetic silent inputs come after the real clips on the command line;
+	// the graph references their audio by input index.
+	inputCount := len(clips)
+	plan := joinTransitionPlan{Transition: transition, Seconds: seconds, Clamped: clamped, Normalized: normalized}
+	var video []string
+	var audio []string
+	for i, clip := range clips {
+		video = append(video, fmt.Sprintf("[%d:v]%s[v%d]", i, videoChain, i))
+		if clip.HasAudio {
+			audio = append(audio, fmt.Sprintf("[%d:a]aformat=sample_rates=48000:channel_layouts=stereo[ain%d]", i, i))
+			continue
+		}
+		plan.Synthesized = append(plan.Synthesized, i+1)
+		plan.InputArgs = append(plan.InputArgs, "-f", "lavfi",
+			"-t", formatPlaybackSpeed(clip.Duration),
+			"-i", "anullsrc=channel_layout=stereo:sample_rate=48000")
+		audio = append(audio, fmt.Sprintf("[%d:a]aformat=sample_rates=48000:channel_layouts=stereo[ain%d]", inputCount, i))
+		inputCount++
+	}
+	// Junction offsets run on the merged timeline: the transition into clip
+	// i+1 starts where the merged output so far ends minus this junction's
+	// own overlap — each xfade shortens the total by the transition length,
+	// and the audio chain (acrossfade) overlaps by the same amount, so the
+	// sides stay frame-locked. From the second junction on, the chain's left
+	// input is the previous junction's output, not the raw clip.
+	elapsed := 0.0
+	for i := 0; i < len(clips)-1; i++ {
+		elapsed += clips[i].Duration
+		offset := formatPlaybackSpeed(elapsed - float64(i+1)*seconds)
+		leftVideo, leftAudio := fmt.Sprintf("v%d", i), fmt.Sprintf("ain%d", i)
+		if i > 0 {
+			leftVideo, leftAudio = fmt.Sprintf("vx%d", i), fmt.Sprintf("ax%d", i)
+		}
+		video = append(video, fmt.Sprintf("[%s][v%d]xfade=transition=%s:duration=%s:offset=%s[vx%d]",
+			leftVideo, i+1, transition, secondsText, offset, i+1))
+		audio = append(audio, fmt.Sprintf("[%s][ain%d]acrossfade=d=%s[ax%d]",
+			leftAudio, i+1, secondsText, i+1))
+	}
+	last := len(clips) - 1
+	video = append(video, fmt.Sprintf("[vx%d]format=yuv420p[vout]", last))
+	audio = append(audio, fmt.Sprintf("[ax%d]aformat=sample_rates=48000:channel_layouts=stereo[aout]", last))
+	total := 0.0
+	for _, clip := range clips {
+		total += clip.Duration
+	}
+	plan.OutputSeconds = total - float64(last)*seconds
+	plan.FilterComplex = strings.Join(append(video, audio...), ";")
+	return plan
+}
+
+// ffmpegJoinTransitionArgs assembles the transitioned join's invocation: the
+// real clips' -i args, the plan's synthetic silent inputs, the graph, and the
+// house re-encode — geometry filters cannot stream-copy, and the concat
+// demuxer is not involved at all.
+func ffmpegJoinTransitionArgs(inputs []string, plan joinTransitionPlan, output string) []string {
+	args := make([]string, 0, 2*len(inputs)+len(plan.InputArgs)+14)
+	for _, input := range inputs {
+		args = append(args, "-i", input)
+	}
+	args = append(args, plan.InputArgs...)
+	args = append(args, "-filter_complex", plan.FilterComplex,
+		"-map", "[vout]", "-map", "[aout]",
+		"-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+		"-c:a", "aac", "-b:a", "192k",
+		"-movflags", "+faststart")
+	return append(args, output)
+}
+
+// parseXFadeTransitions reads the transition names out of `ffmpeg -h
+// filter=xfade`: under the "transition" option line, each enum value prints
+// as "<name>  <int>  <flags>  <description>", and the block ends at the next
+// option ("duration", "offset"). Empty on anything unexpected — the callers
+// treat an unparsable help output as "capability unknown" and stand down.
+func parseXFadeTransitions(helpOutput []byte) []string {
+	names := []string{}
+	inValues := false
+	for _, line := range strings.Split(string(helpOutput), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if !inValues {
+			if strings.HasPrefix(trimmed, "transition") {
+				inValues = true
+			}
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) >= 3 && isXFadeValueLine(fields) {
+			names = append(names, fields[0])
+			continue
+		}
+		break
+	}
+	return names
+}
+
+// xfadeValueNameShape matches an enum value's name column in the xfade help
+// output ("fade", "circleopen").
+var xfadeValueNameShape = regexp.MustCompile(`^[a-z][a-z0-9]*$`)
+
+// isXFadeValueLine recognizes one enum value row: a lowercase name, an
+// integer ordinal, then ffmpeg's per-context flags ("..FVA.......").
+func isXFadeValueLine(fields []string) bool {
+	if !xfadeValueNameShape.MatchString(fields[0]) {
+		return false
+	}
+	_, err := strconv.Atoi(fields[1])
+	return err == nil
+}
+
+// parseFFmpegVersion reads the version out of `ffmpeg -version`'s first line
+// ("ffmpeg version 7.1.1 Copyright ..."); some builds prefix the number with
+// an 'n' (git checkouts). Empty on anything unexpected.
+func parseFFmpegVersion(versionOutput []byte) string {
+	first := strings.SplitN(string(versionOutput), "\n", 2)[0]
+	fields := strings.Fields(first)
+	if len(fields) >= 3 && fields[0] == "ffmpeg" && fields[1] == "version" {
+		return strings.TrimPrefix(fields[2], "n")
+	}
+	return ""
+}
+
+// installedXFadeTransitions asks the resolved ffmpeg which transitions its
+// xfade filter actually ships, plus its version. ok is false when ffmpeg is
+// absent, could not run, or the help output did not parse — the join skips
+// the capability check and lets ffmpeg validate the transition itself, and
+// list_video_transitions reports the failure (fail-soft, like every probe).
+func installedXFadeTransitions(ctx context.Context, config AppConfig) (transitions []string, version string, ok bool) {
+	resolved, resolvedOK := resolveLocalFFmpegBinary(config)
+	if !resolvedOK {
+		return nil, "", false
+	}
+	help, err := runLocalMediaCLI(ctx, resolved, "ffmpeg", localFFmpegTimeout, []string{"-hide_banner", "-h", "filter=xfade"})
+	if err != nil {
+		return nil, "", false
+	}
+	names := parseXFadeTransitions(help)
+	if len(names) == 0 {
+		return nil, "", false
+	}
+	if out, err := runLocalMediaCLI(ctx, resolved, "ffmpeg", localFFmpegTimeout, []string{"-version"}); err == nil {
+		version = parseFFmpegVersion(out)
+	}
+	return names, version, true
+}
+
 // audioMP3FallbackArgs is the shared re-encode target for the audio tools'
 // unknown-codec fallbacks (extract_audio's vocabulary: MP3 192kbps).
 var audioMP3FallbackArgs = []string{"-c:a", "libmp3lame", "-b:a", "192k"}
@@ -657,6 +1005,15 @@ func videoTransformFilters(call HarnessToolCall, srcWidth, srcHeight int) (strin
 // (3, 0.5, 1.75) for both the setpts expression and the op phrase.
 func formatPlaybackSpeed(speed float64) string {
 	return strconv.FormatFloat(speed, 'f', -1, 64)
+}
+
+// formatFilterFPS renders a frame rate for the fps filter: six significant
+// digits absorb avg_frame_rate's rational-rate expansion (30000/1001 reads
+// 29.97, not 29.97002997002997) while staying exact for the common rates.
+// Both sides of an xfade get the same normalized rate, so the rounding never
+// splits the chain.
+func formatFilterFPS(fps float64) string {
+	return strconv.FormatFloat(fps, 'g', 6, 64)
 }
 
 // atempoChain decomposes a playback multiplier into atempo filter instances,
@@ -1697,22 +2054,35 @@ func splitAudioModePhrase(codecArgs []string) string {
 }
 
 // joinVideosToolDefinition exposes join_videos: concatenate attached clips
-// into one, honoring attachment order as the sequence.
+// into one, honoring attachment order as the sequence — optionally blended
+// through a transition at every junction.
 func joinVideosToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "join_videos",
 		Title:       "Join videos",
-		Description: "Use this when the user asks to combine, concatenate, merge, stitch, or join multiple video clips into one (for audio files, use join_audios instead). Requires at least two videos attached or @-mentioned this turn — the clips are joined in EXACTLY the order they were attached or mentioned; that order is the sequence, so tell the user to reorder the attachments if they want a different one (older conversation clips are not picked up automatically). mode \"auto\" (the default) copies the streams untouched when every clip matches in codec, resolution, frame rate, and audio (fast, lossless — clips from the same generator always match) and re-encodes otherwise; \"copy\" forces stream copy; \"reencode\" forces re-encoding. The joined video is attached to the assistant reply and becomes the conversation's newest video.",
+		Description: "Use this when the user asks to combine, concatenate, merge, stitch, or join multiple video clips into one (for audio files, use join_audios instead). Requires at least two videos attached or @-mentioned this turn — the clips are joined in EXACTLY the order they were attached or mentioned; that order is the sequence, so tell the user to reorder the attachments if they want a different one (older conversation clips are not picked up automatically). mode \"auto\" (the default) copies the streams untouched when every clip matches in codec, resolution, frame rate, and audio (fast, lossless — clips from the same generator always match) and re-encodes otherwise; \"copy\" forces stream copy; \"reencode\" forces re-encoding. transition (optional) blends the clips through that effect at every junction instead of hard-cutting: crossfade/dissolve/fadeblack, wipes, slides, circles, pixelize and more — run list_video_transitions to see what the installed ffmpeg supports (\"crossfade\" aliases \"fade\"). A transition always re-encodes (mode \"copy\" is rejected), applies to EVERY junction, and transitionDuration (optional, seconds, 0.1–10, default 1) sets its length — the joined video is the clips' combined length minus one overlap per junction; differing clips are scaled to the first clip's frame (letterboxed, never cropped), and clips without audio get silence so the crossfade stays in sync. The joined video is attached to the assistant reply and becomes the conversation's newest video.",
 		Example:     `{"name":"join_videos"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: joinVideosParamSchema(),
 		Validate: func(prefix string, call HarnessToolCall) []string {
+			var errs []string
 			switch strings.TrimSpace(call.Mode) {
 			case "", "auto", "copy", "reencode":
-				return nil
 			default:
-				return []string{prefix + `.mode must be "auto", "copy", or "reencode" for join_videos`}
+				errs = append(errs, prefix+`.mode must be "auto", "copy", or "reencode" for join_videos`)
 			}
+			if name := strings.TrimSpace(call.Transition); name != "" {
+				if _, ok := normalizeXFadeTransition(name); !ok {
+					errs = append(errs, prefix+`.transition must be a transition join_videos accepts ("fade"/"crossfade", "dissolve", "fadeblack", "wipeleft", "slideleft", "circleopen", ...) — run list_video_transitions to see what the installed ffmpeg supports`)
+				}
+				if call.TransitionDuration != 0 && (call.TransitionDuration < joinTransitionsMinSeconds || call.TransitionDuration > joinTransitionsMaxSeconds) {
+					errs = append(errs, prefix+fmt.Sprintf(".transitionDuration must be between %v and %v seconds when set (omit it for 1 second)", joinTransitionsMinSeconds, joinTransitionsMaxSeconds))
+				}
+				if strings.TrimSpace(call.Mode) == "copy" {
+					errs = append(errs, prefix+`.mode "copy" cannot carry a transition (transitions re-encode) — drop the transition, or use mode "auto" or "reencode"`)
+				}
+			}
+			return errs
 		},
 		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
 			sources := nonEmptyVideos(tools.AttachedVideos)
@@ -1732,32 +2102,116 @@ func joinVideosToolDefinition() HarnessToolDefinition {
 				}
 				inputs = append(inputs, input)
 			}
-			listFile := filepath.Join(staging, "concat.txt")
-			if err := os.WriteFile(listFile, []byte(concatListFileContents(inputs)), 0o644); err != nil {
-				return nil, "join failed", err
+			if strings.TrimSpace(call.Transition) != "" {
+				return executeTransitionedJoin(ctx, tools, call, staging, inputs, sources)
 			}
-			streamCopy, notice := joinCopyMode(ctx, tools.Config, call.Mode, inputs)
-			staged := filepath.Join(staging, "joined.mp4")
-			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegJoinArgs(listFile, streamCopy, staged)); err != nil {
-				return nil, "join failed", err
-			}
-			tempPath, err := promoteStagedOutput(staged, "atelier-video-*", ".mp4")
-			if err != nil {
-				return nil, "join failed", err
-			}
-			output := ToolVideoResult{
-				Model:  ffmpegModelName,
-				Prompt: fmt.Sprintf("joined %d clips in attachment order", len(sources)),
-				Count:  1,
-				Videos: []ToolVideoFile{{TempPath: tempPath, MimeType: "video/mp4"}},
-			}
-			if notice != "" {
-				output.Notices = append(output.Notices, notice)
-			}
-			return output, fmt.Sprintf("joined %d clips in attachment order with ffmpeg (%s)", len(sources), joinModePhrase(streamCopy)), nil
+			return runConcatJoin(ctx, tools, call, staging, inputs, nil)
 		},
 		Activity: ffmpegActivity("join"),
 	}
+}
+
+// runConcatJoin is the concat-demuxer join the tool has always run: an auto
+// probe decides copy-vs-reencode (the notice explains what auto decided, or
+// why it could not), and the output is promoted out of staging. Also the
+// degradation target of executeTransitionedJoin — the join itself is still
+// doable when the clips cannot be measured, so the requested transition
+// stands down under a substitution notice rather than failing the call.
+func runConcatJoin(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall, staging string, inputs []string, notices []string) (any, string, error) {
+	listFile := filepath.Join(staging, "concat.txt")
+	if err := os.WriteFile(listFile, []byte(concatListFileContents(inputs)), 0o644); err != nil {
+		return nil, "join failed", err
+	}
+	streamCopy, notice := joinCopyMode(ctx, tools.Config, call.Mode, inputs)
+	if notice != "" {
+		notices = append(notices, notice)
+	}
+	staged := filepath.Join(staging, "joined.mp4")
+	if err := runLocalFFmpeg(ctx, tools.Config, ffmpegJoinArgs(listFile, streamCopy, staged)); err != nil {
+		return nil, "join failed", err
+	}
+	tempPath, err := promoteStagedOutput(staged, "atelier-video-*", ".mp4")
+	if err != nil {
+		return nil, "join failed", err
+	}
+	output := ToolVideoResult{
+		Model:   ffmpegModelName,
+		Prompt:  fmt.Sprintf("joined %d clips in attachment order", len(inputs)),
+		Count:   1,
+		Videos:  []ToolVideoFile{{TempPath: tempPath, MimeType: "video/mp4"}},
+		Notices: notices,
+	}
+	return output, fmt.Sprintf("joined %d clips in attachment order with ffmpeg (%s)", len(inputs), joinModePhrase(streamCopy)), nil
+}
+
+// executeTransitionedJoin joins the staged clips through one transition at
+// every junction (joinTransitionsFilterGraph builds the graph; the plan's
+// decisions ride notices). Every clip must be measurable — the junction
+// offsets need exact durations — so an unmeasurable clip degrades to the
+// plain concat join instead of failing the call.
+func executeTransitionedJoin(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall, staging string, inputs, sources []string) (any, string, error) {
+	requested := strings.TrimSpace(call.Transition)
+	transition, ok := normalizeXFadeTransition(requested)
+	if !ok {
+		return nil, "join failed", fmt.Errorf("join_videos does not know the %q transition — run list_video_transitions to see what the installed ffmpeg supports", requested)
+	}
+	var notices []string
+	if installed, _, capabilityKnown := installedXFadeTransitions(ctx, tools.Config); capabilityKnown && !slices.Contains(installed, transition) {
+		notices = append(notices, fmt.Sprintf("the installed ffmpeg does not support the %q transition, so \"fade\" was used instead — run list_video_transitions to see what it supports.", requested))
+		transition = "fade"
+	}
+	facts, measurable := joinClipFacts(ctx, tools.Config, inputs, sources)
+	if !measurable {
+		notices = append(notices, "the clips' lengths could not be measured (ffprobe is unavailable and at least one clip is not a readable MP4), so the join ran without the requested transition — transitions need exact junction offsets. Install ffprobe (`brew install ffmpeg`) or use MP4 clips for transitioned joins.")
+		return runConcatJoin(ctx, tools, call, staging, inputs, notices)
+	}
+	plan := joinTransitionsFilterGraph(facts, transition, call.TransitionDuration)
+	if plan.Clamped {
+		notices = append(notices, fmt.Sprintf("the %s transition was shortened to %gs at each junction — an overlap may not exceed half of the shortest clip.", plan.Transition, plan.Seconds))
+	}
+	if plan.Normalized {
+		notices = append(notices, "the clips differ in size or frame rate; each was scaled to the first clip's frame (extra area letterboxed, never cropped) so the transitions could run.")
+	}
+	if len(plan.Synthesized) > 0 {
+		noun := "clip"
+		if len(plan.Synthesized) > 1 {
+			noun = "clips"
+		}
+		notices = append(notices, fmt.Sprintf("%s %s had no audio, so silence was generated for the crossfade and the joined video stays in sync.", noun, joinClipNumbers(plan.Synthesized)))
+	}
+	staged := filepath.Join(staging, "joined.mp4")
+	if err := runLocalFFmpeg(ctx, tools.Config, ffmpegJoinTransitionArgs(inputs, plan, staged)); err != nil {
+		return nil, "join failed", err
+	}
+	tempPath, err := promoteStagedOutput(staged, "atelier-video-*", ".mp4")
+	if err != nil {
+		return nil, "join failed", err
+	}
+	combined := 0.0
+	for _, fact := range facts {
+		combined += fact.Duration
+	}
+	output := ToolVideoResult{
+		Model:  ffmpegModelName,
+		Prompt: fmt.Sprintf("joined %d clips with a %s transition", len(inputs), plan.Transition),
+		Count:  1,
+		Videos: []ToolVideoFile{{TempPath: tempPath, MimeType: "video/mp4"}},
+		Notices: append(notices, fmt.Sprintf("the %s transition overlaps the clips by %gs at each junction, so the video is %gs shorter than the clips combined; the join was re-encoded (transitions cannot stream-copy).",
+			plan.Transition, plan.Seconds, combined-plan.OutputSeconds)),
+	}
+	summary := fmt.Sprintf("joined %d clips in attachment order with ffmpeg (%s transition, %gs at each junction, re-encoded, %gs output)",
+		len(inputs), plan.Transition, plan.Seconds, plan.OutputSeconds)
+	return output, summary, nil
+}
+
+// joinClipNumbers renders 1-based clip positions for a notice ("2" or
+// "2, 3").
+func joinClipNumbers(numbers []int) string {
+	parts := make([]string, len(numbers))
+	for i, number := range numbers {
+		parts[i] = strconv.Itoa(number)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // joinCopyMode decides whether the join can stream-copy: an explicit mode
@@ -2682,6 +3136,53 @@ func probeMediaToolDefinition() HarnessToolDefinition {
 	}
 }
 
+// ToolTransitionListResult is list_video_transitions' payload: the xfade
+// vocabulary the installed ffmpeg actually ships (join_videos' transition
+// parameter accepts these names, with "crossfade" aliasing "fade"), the
+// ffmpeg version they came from, and the substitution default.
+type ToolTransitionListResult struct {
+	Version     string   `json:"version"`
+	Transitions []string `json:"transitions"`
+	Default     string   `json:"default"`
+}
+
+// listVideoTransitionsToolDefinition exposes list_video_transitions: the
+// installed ffmpeg's xfade vocabulary as evidence. Unlike the media tools it
+// gates on ffmpeg resolving (the probe_media pattern) — its entire value is
+// the report, and a planned call that can only fail helps no one.
+func listVideoTransitionsToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "list_video_transitions",
+		Title:       "List video transitions",
+		Description: "Use this when the user asks which video transitions are available (crossfades, dissolves, wipes, slides) or before planning a join_videos call with an unusual transition. Reports the transitions the locally installed ffmpeg's xfade filter actually supports — the names join_videos' transition parameter accepts — along with the ffmpeg version. Requires a detected ffmpeg CLI. No parameters.",
+		Example:     `{"name":"list_video_transitions"}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: listVideoTransitionsParamSchema(),
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			transitions, version, ok := installedXFadeTransitions(ctx, tools.Config)
+			if !ok {
+				return nil, "transition list failed", errors.New("list_video_transitions could not read the installed ffmpeg's xfade transitions — install ffmpeg (`brew install ffmpeg`, or set the binary in Settings → Video Tools) and try again")
+			}
+			result := ToolTransitionListResult{Version: version, Transitions: transitions, Default: "fade"}
+			phrase := "the installed ffmpeg"
+			if version != "" {
+				phrase = "ffmpeg " + version
+			}
+			return result, fmt.Sprintf("%s supports %d video transitions (join_videos' transition parameter; default \"fade\")", phrase, len(transitions)), nil
+		},
+		Activity: ffmpegActivity("list-transitions"),
+	}
+}
+
+func listVideoTransitionsParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{},
+		"required":             []string{},
+	}
+}
+
 // ffmpegActivity is the shared activity builder for the ffmpeg media tools:
 // default media fields (kind/count/model ride the result type) plus the
 // ffmpeg command and provider attribution. Provider is pre-filled so the
@@ -2835,10 +3336,18 @@ func joinVideosParamSchema() map[string]any {
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
-			"mode": enumParam("Optional — \"auto\" (the default) copies when every clip matches and re-encodes otherwise; \"copy\" forces a lossless stream copy; \"reencode\" forces re-encoding.", "auto", "copy", "reencode"),
+			"mode":               enumParam("Optional — \"auto\" (the default) copies when every clip matches and re-encodes otherwise; \"copy\" forces a lossless stream copy; \"reencode\" forces re-encoding. A transition always re-encodes, so \"copy\" is invalid with one.", "auto", "copy", "reencode"),
+			"transition":         enumParam("Optional — blend the clips through this transition at every junction instead of hard-cutting (\"crossfade\" is an alias for \"fade\"). Re-encodes the join. Run list_video_transitions to see what the installed ffmpeg supports.", xfadeTransitionsEnum()...),
+			"transitionDuration": numberParam("Optional — the transition's length in seconds, 0.1 to 10. Omit for 1 second. Ignored without transition."),
 		},
 		"required": []string{},
 	}
+}
+
+// xfadeTransitionsEnum is the planner-facing transition vocabulary: the
+// curated xfade list with the "crossfade" alias spelled out up front.
+func xfadeTransitionsEnum() []string {
+	return append([]string{"fade", "crossfade"}, xfadeTransitions[1:]...)
 }
 
 func splitAudioParamSchema() map[string]any {

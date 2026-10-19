@@ -260,14 +260,20 @@ type HarnessToolCall struct {
 	// "watermark" (the default) or "collage". Columns is contact_sheet_video's
 	// optional grid width — frames per row of the montage (rows derive from
 	// the frame count); an omitted value picks a near-square grid.
+	// Transition is join_videos' optional transition kind (a fade/dissolve/
+	// wipe/slide between joined clips; "crossfade" aliases "fade"); when set,
+	// the join re-encodes through xfade/acrossfade and mode "copy" is invalid.
+	// TransitionDuration is that transition's length in seconds (omitted = 1s).
 	// Planner-only, like the other media inputs — see local_ffmpeg.go and
 	// local_images.go.
-	At      string `json:"at,omitempty"`
-	Count   int    `json:"count,omitempty"`
-	Start   string `json:"start,omitempty"`
-	End     string `json:"end,omitempty"`
-	Mode    string `json:"mode,omitempty"`
-	Columns int    `json:"columns,omitempty"`
+	At                 string  `json:"at,omitempty"`
+	Count              int     `json:"count,omitempty"`
+	Start              string  `json:"start,omitempty"`
+	End                string  `json:"end,omitempty"`
+	Mode               string  `json:"mode,omitempty"`
+	Columns            int     `json:"columns,omitempty"`
+	Transition         string  `json:"transition,omitempty"`
+	TransitionDuration float64 `json:"transitionDuration,omitempty"`
 	// Local image-tool inputs (convert_image, transform_image, compose_images,
 	// adjust_image, optimize_image; see local_images.go) and the audio sibling
 	// convert_audio (local_ffmpeg.go). Format names an output format; Quality
@@ -2515,15 +2521,19 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 						// transform_video's speed to a portion; count is
 						// screenshot_video's equal-interval batch size and
 						// contact_sheet_video's frame count; columns is
-						// contact_sheet_video's grid width). The values are
+						// contact_sheet_video's grid width; transition and
+						// transitionDuration are join_videos' crossfade/
+						// dissolve/wipe between clips). The values are
 						// validated per-tool; the schema only frees the
 						// grammar to emit them.
-						"at":      map[string]any{"type": "string"},
-						"count":   map[string]any{"type": "integer"},
-						"start":   map[string]any{"type": "string"},
-						"end":     map[string]any{"type": "string"},
-						"mode":    map[string]any{"type": "string"},
-						"columns": map[string]any{"type": "integer"},
+						"at":                 map[string]any{"type": "string"},
+						"count":              map[string]any{"type": "integer"},
+						"start":              map[string]any{"type": "string"},
+						"end":                map[string]any{"type": "string"},
+						"mode":               map[string]any{"type": "string"},
+						"columns":            map[string]any{"type": "integer"},
+						"transition":         map[string]any{"type": "string"},
+						"transitionDuration": map[string]any{"type": "number"},
 						// Local image tool inputs (convert/transform/compose/
 						// adjust/optimize — see local_images.go) shared with
 						// convert_audio, the format-converting audio sibling
