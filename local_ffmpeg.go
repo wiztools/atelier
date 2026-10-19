@@ -757,20 +757,26 @@ func acrossfadeFilter(secondsText string) string {
 	return "acrossfade=d=" + secondsText + ":c1=qsin:c2=qsin"
 }
 
-// audioTransitions enumerates the transition kinds join_audios accepts: audio
-// has exactly one blend — the crossfade (acrossfade) — where xfade gives video
-// dozens. "fade" is the planner-facing alias, mirroring join_videos' pair so
-// the vocabulary transfers between the siblings.
-var audioTransitions = []string{"crossfade", "fade"}
+// audioTransitions enumerates the transition kinds join_audios accepts. Audio
+// has two: the crossfade (acrossfade — the clips overlap and blend) and the
+// dip (afade out, afade in, concat — the outgoing clip fades to silence and
+// the incoming rises from it at the cut, no overlap), where xfade gives video
+// dozens. "fade" is the crossfade's planner-facing alias and "fadeblack" the
+// dip's — join_videos' names for the same two shapes, so the vocabulary
+// transfers between the siblings.
+var audioTransitions = []string{"crossfade", "fade", "dip", "fadeblack"}
 
 // normalizeAudioTransition trims a planner-supplied transition name and maps
-// the "fade" alias onto "crossfade". ok is false for anything else — the
-// Validate hook turns that into a planner correction, and the executor refuses
-// (a direct API path bypasses Validate).
+// the aliases onto the canonical kinds: "fade" → "crossfade", "fadeblack" →
+// "dip". ok is false for anything else — the Validate hook turns that into a
+// planner correction, and the executor refuses (a direct API path bypasses
+// Validate).
 func normalizeAudioTransition(name string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "crossfade", "fade":
 		return "crossfade", true
+	case "dip", "fadeblack":
+		return "dip", true
 	}
 	return "", false
 }
@@ -836,9 +842,12 @@ func joinAudioClipFactFor(ctx context.Context, config AppConfig, input, sourceDa
 	return joinAudioClipFact{}, false
 }
 
-// joinAudioTransitionPlan is everything the crossfaded join's ffmpeg
+// joinAudioTransitionPlan is everything a transitioned join's ffmpeg
 // invocation needs, plus the decisions the executor turns into notices.
-// SampleRate/Channels are the shape every input was normalized onto.
+// SampleRate/Channels are the shape every input was normalized onto. Seconds is
+// the per-junction transition length after clamping; OutputSeconds the
+// rendered length (a crossfade shortens the clips' sum by one overlap per
+// junction, a dip keeps it).
 type joinAudioTransitionPlan struct {
 	FilterComplex string
 	Seconds       float64
@@ -848,6 +857,37 @@ type joinAudioTransitionPlan struct {
 	Normalized    bool
 	Defaulted     bool
 	OutputSeconds float64
+}
+
+// joinAudioOutputShape picks the sample rate and channel count every input of
+// a transitioned join is normalized onto — the FIRST clip's, both acrossfade
+// and the concat filter need one shape across their inputs — and reports
+// whether any measured clip differed (normalized) or the first clip reported
+// no shape at all (defaulted to the video chain's 48 kHz stereo; the byte
+// sniff measures length only).
+func joinAudioOutputShape(clips []joinAudioClipFact) (sampleRate, channels int, normalized, defaulted bool) {
+	sampleRate, channels = clips[0].SampleRate, clips[0].Channels
+	if sampleRate <= 0 || channels <= 0 {
+		return joinAudioDefaultSampleRate, joinAudioDefaultChannels, false, true
+	}
+	for _, clip := range clips[1:] {
+		if clip.SampleRate > 0 && clip.Channels > 0 && (clip.SampleRate != sampleRate || clip.Channels != channels) {
+			return sampleRate, channels, true, false
+		}
+	}
+	return sampleRate, channels, false, false
+}
+
+// shortestJoinAudioClip is the shortest measured duration among the clips —
+// what both transition clamps measure against.
+func shortestJoinAudioClip(clips []joinAudioClipFact) float64 {
+	shortest := clips[0].Duration
+	for _, clip := range clips[1:] {
+		if clip.Duration < shortest {
+			shortest = clip.Duration
+		}
+	}
+	return shortest
 }
 
 // joinAudioTransitionsFilterGraph lays out a crossfaded join: one equal-power
@@ -865,28 +905,12 @@ func joinAudioTransitionsFilterGraph(clips []joinAudioClipFact, requestedSeconds
 	if seconds <= 0 {
 		seconds = joinTransitionsDefaultSeconds
 	}
-	shortest := clips[0].Duration
-	for _, clip := range clips[1:] {
-		if clip.Duration < shortest {
-			shortest = clip.Duration
-		}
-	}
-	plan := joinAudioTransitionPlan{Seconds: seconds, SampleRate: clips[0].SampleRate, Channels: clips[0].Channels}
-	if maxSeconds := shortest / 2; plan.Seconds > maxSeconds {
+	plan := joinAudioTransitionPlan{Seconds: seconds}
+	if maxSeconds := shortestJoinAudioClip(clips) / 2; plan.Seconds > maxSeconds {
 		plan.Seconds = maxSeconds
 		plan.Clamped = true
 	}
-	if plan.SampleRate <= 0 || plan.Channels <= 0 {
-		plan.SampleRate, plan.Channels, plan.Defaulted = joinAudioDefaultSampleRate, joinAudioDefaultChannels, true
-	} else {
-		for _, clip := range clips[1:] {
-			if clip.SampleRate > 0 && clip.Channels > 0 &&
-				(clip.SampleRate != plan.SampleRate || clip.Channels != plan.Channels) {
-				plan.Normalized = true
-				break
-			}
-		}
-	}
+	plan.SampleRate, plan.Channels, plan.Normalized, plan.Defaulted = joinAudioOutputShape(clips)
 	shape := fmt.Sprintf("aformat=sample_rates=%d:channel_layouts=%s", plan.SampleRate, audioChannelLayout(plan.Channels))
 	secondsText := formatPlaybackSpeed(plan.Seconds)
 	chain := make([]string, 0, 2*len(clips))
@@ -909,6 +933,56 @@ func joinAudioTransitionsFilterGraph(clips []joinAudioClipFact, requestedSeconds
 		total += clip.Duration
 	}
 	plan.OutputSeconds = total - float64(last)*plan.Seconds
+	plan.FilterComplex = strings.Join(chain, ";")
+	return plan
+}
+
+// joinAudioDipFilterGraph lays out a dip-to-silence join — the audio analog of
+// xfade's fadeblack, and the junction form of transform_audio's fades: at
+// every cut the outgoing clip fades to silence over half the transition and
+// the incoming clip rises from silence over the other half, then the clips
+// are concatenated with NO overlap, so the recording keeps the clips'
+// combined length where a crossfade shortens it. Each clip's edges carry only
+// the fades its junctions need — the first clip fades out alone, the last
+// fades in alone, the recording's own start and end stay untouched (those
+// are transform_audio's). Every input is normalized onto the first clip's
+// shape (the concat filter refuses mismatched inputs, the reason acrossfade
+// needed it too); the transition clamps to the shortest clip, since a middle
+// clip carries a half-fade at each end and the two must fit inside it. The
+// afade stages are audioFadeFilters' — the default linear curve, for the same
+// reason the single-clip fades use it: nothing is summed through a dip.
+func joinAudioDipFilterGraph(clips []joinAudioClipFact, requestedSeconds float64) joinAudioTransitionPlan {
+	seconds := requestedSeconds
+	if seconds <= 0 {
+		seconds = joinTransitionsDefaultSeconds
+	}
+	plan := joinAudioTransitionPlan{Seconds: seconds}
+	if shortest := shortestJoinAudioClip(clips); plan.Seconds > shortest {
+		plan.Seconds = shortest
+		plan.Clamped = true
+	}
+	plan.SampleRate, plan.Channels, plan.Normalized, plan.Defaulted = joinAudioOutputShape(clips)
+	shape := fmt.Sprintf("aformat=sample_rates=%d:channel_layouts=%s", plan.SampleRate, audioChannelLayout(plan.Channels))
+	half := plan.Seconds / 2
+	last := len(clips) - 1
+	chain := make([]string, 0, len(clips)+1)
+	var labels strings.Builder
+	total := 0.0
+	for i, clip := range clips {
+		var edges fadePlan
+		if i > 0 {
+			edges.In = half
+		}
+		if i < last {
+			edges.Out, edges.OutStart = half, clip.Duration-half
+		}
+		stages := append([]string{shape}, audioFadeFilters(edges)...)
+		chain = append(chain, fmt.Sprintf("[%d:a]%s[ain%d]", i, strings.Join(stages, ","), i))
+		fmt.Fprintf(&labels, "[ain%d]", i)
+		total += clip.Duration
+	}
+	chain = append(chain, fmt.Sprintf("%sconcat=n=%d:v=0:a=1[aout]", labels.String(), len(clips)))
+	plan.OutputSeconds = total
 	plan.FilterComplex = strings.Join(chain, ";")
 	return plan
 }
@@ -940,10 +1014,10 @@ func audioShapePhrase(sampleRate, channels int) string {
 	}
 }
 
-// ffmpegJoinAudioTransitionArgs assembles the crossfaded join's invocation:
-// the clips' -i args, the graph, the mapped output, and the re-encode target
-// derived from the first clip — acrossfade cannot stream-copy, and the concat
-// demuxer is not involved at all.
+// ffmpegJoinAudioTransitionArgs assembles a transitioned join's invocation:
+// the clips' -i args, the graph (crossfade or dip), the mapped output, and the
+// re-encode target derived from the first clip — a filtered join cannot
+// stream-copy, and the concat demuxer is not involved at all.
 func ffmpegJoinAudioTransitionArgs(inputs []string, plan joinAudioTransitionPlan, codecArgs []string, output string) []string {
 	args := make([]string, 0, 2*len(inputs)+len(codecArgs)+5)
 	for _, input := range inputs {
@@ -2660,13 +2734,13 @@ func joinCopyMode(ctx context.Context, config AppConfig, mode string, inputs []s
 // files into one, honoring attachment order as the sequence — the audio
 // sibling of join_videos. Completes split_audio's story: "remove the middle
 // section" is two splits plus the join of the kept parts. An optional
-// transition blends the clips through a crossfade at every junction instead of
-// hard-cutting — audio's one blend, where xfade gives video dozens.
+// transition blends the clips at every junction instead of hard-cutting — a
+// crossfade or a dip to silence, audio's two, where xfade gives video dozens.
 func joinAudiosToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "join_audios",
 		Title:       "Join audio",
-		Description: "Use this when the user asks to combine, concatenate, merge, stitch, or join multiple AUDIO files into one — stitch voice memos or podcast chapters into a single recording, or reassemble the parts a split_audio call kept (for video clips, use join_videos instead). Requires at least two audio clips attached or @-mentioned this turn — they are joined in EXACTLY the order they were attached or mentioned; that order is the sequence, so tell the user to reorder the attachments if they want a different one. mode \"auto\" (the default) copies the streams untouched when every clip matches in codec, sample rate, and channel count (fast, lossless) and re-encodes to the FIRST clip's format otherwise; \"copy\" forces stream copy; \"reencode\" forces re-encoding. transition (optional) blends the clips through an equal-power crossfade (loudness holds steady through the blend) at every junction instead of hard-cutting — \"crossfade\" (or \"fade\") is the one transition audio has, the sibling of join_videos' visual transitions. A crossfade always re-encodes (mode \"copy\" is rejected) into the first clip's format, applies to EVERY junction, and transitionDuration (optional, seconds, 0.1–10, default 1) sets its length — the joined recording is the clips' combined length minus one overlap per junction; clips with a different sample rate or channel count are converted to the first clip's so the crossfade can run. The joined audio is attached to the assistant reply and becomes the conversation's newest audio.",
+		Description: "Use this when the user asks to combine, concatenate, merge, stitch, or join multiple AUDIO files into one — stitch voice memos or podcast chapters into a single recording, or reassemble the parts a split_audio call kept (for video clips, use join_videos instead). Requires at least two audio clips attached or @-mentioned this turn — they are joined in EXACTLY the order they were attached or mentioned; that order is the sequence, so tell the user to reorder the attachments if they want a different one. mode \"auto\" (the default) copies the streams untouched when every clip matches in codec, sample rate, and channel count (fast, lossless) and re-encodes to the FIRST clip's format otherwise; \"copy\" forces stream copy; \"reencode\" forces re-encoding. transition (optional) joins the clips through an effect at every junction instead of hard-cutting — audio has two, the siblings of join_videos' visual transitions: \"crossfade\" (or \"fade\") overlaps the clips through an equal-power crossfade (loudness holds steady through the blend), so the joined recording is the clips' combined length minus one overlap per junction; \"dip\" (or \"fadeblack\", join_videos' name for the same shape) fades the outgoing clip out to silence and the incoming clip in from silence at the cut with NO overlap — the natural break between podcast chapters or songs — so the recording keeps the clips' combined length (its own start and end stay untouched; fade those with transform_audio). A transition always re-encodes (mode \"copy\" is rejected) into the first clip's format, applies to EVERY junction, and transitionDuration (optional, seconds, 0.1–10, default 1) sets its length — a dip splits it, half fading out and half fading in; clips with a different sample rate or channel count are converted to the first clip's so the transition can run. The joined audio is attached to the assistant reply and becomes the conversation's newest audio.",
 		Example:     `{"name":"join_audios"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: joinAudiosParamSchema(),
@@ -2679,13 +2753,13 @@ func joinAudiosToolDefinition() HarnessToolDefinition {
 			}
 			if name := strings.TrimSpace(call.Transition); name != "" {
 				if _, ok := normalizeAudioTransition(name); !ok {
-					errs = append(errs, prefix+`.transition must be "crossfade" (or "fade") for join_audios — the crossfade is the only transition audio has; dissolves, wipes, and slides are join_videos' picture effects`)
+					errs = append(errs, prefix+`.transition must be "crossfade" (or "fade") or "dip" (or "fadeblack") for join_audios — audio blends through a crossfade or dips through silence; dissolves, wipes, and slides are join_videos' picture effects`)
 				}
 				if call.TransitionDuration != 0 && (call.TransitionDuration < joinTransitionsMinSeconds || call.TransitionDuration > joinTransitionsMaxSeconds) {
 					errs = append(errs, prefix+fmt.Sprintf(".transitionDuration must be between %v and %v seconds when set (omit it for 1 second)", joinTransitionsMinSeconds, joinTransitionsMaxSeconds))
 				}
 				if strings.TrimSpace(call.Mode) == "copy" {
-					errs = append(errs, prefix+`.mode "copy" cannot carry a transition (a crossfade re-encodes) — drop the transition, or use mode "auto" or "reencode"`)
+					errs = append(errs, prefix+`.mode "copy" cannot carry a transition (a crossfade or dip re-encodes) — drop the transition, or use mode "auto" or "reencode"`)
 				}
 			}
 			return errs
@@ -2767,34 +2841,44 @@ func runConcatAudioJoin(ctx context.Context, tools HarnessToolExecutionContext, 
 	return output, fmt.Sprintf("joined %d audio clips in attachment order with ffmpeg (%s)", len(inputs), joinModePhrase(streamCopy)), nil
 }
 
-// executeTransitionedAudioJoin joins the staged clips through a crossfade at
-// every junction (joinAudioTransitionsFilterGraph builds the graph; the plan's
-// decisions ride notices). Every clip must be measurable — the overlap clamps
-// to the shortest clip, and acrossfade silently drops a side shorter than the
-// overlap — so an unmeasurable clip degrades to the plain concat join instead
-// of failing the call. The re-encode target follows the first clip's codec the
-// way the plain re-encode does, so two WAVs crossfade into a WAV.
+// executeTransitionedAudioJoin joins the staged clips through a transition at
+// every junction — a crossfade (joinAudioTransitionsFilterGraph) or a dip to
+// silence (joinAudioDipFilterGraph); the plan's decisions ride notices. Every
+// clip must be measurable — the crossfade's overlap clamps to the shortest clip
+// and acrossfade silently drops a side shorter than the overlap; the dip's
+// fade-outs start at each clip's end — so an unmeasurable clip degrades to the
+// plain concat join instead of failing the call. The re-encode target follows
+// the first clip's codec the way the plain re-encode does, so two WAVs join
+// into a WAV.
 func executeTransitionedAudioJoin(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall, staging string, inputs, sources []string) (any, string, error) {
 	requested := strings.TrimSpace(call.Transition)
 	transition, ok := normalizeAudioTransition(requested)
 	if !ok {
-		return nil, "join failed", fmt.Errorf("join_audios does not know the %q transition — \"crossfade\" is the one transition audio has (dissolves, wipes, and slides are join_videos' picture effects)", requested)
+		return nil, "join failed", fmt.Errorf("join_audios does not know the %q transition — \"crossfade\" and \"dip\" are the two transitions audio has (dissolves, wipes, and slides are join_videos' picture effects)", requested)
 	}
 	facts, measurable := joinAudioClipFacts(ctx, tools.Config, inputs, sources)
 	if !measurable {
-		notices := []string{"the clips' lengths could not be measured (ffprobe is unavailable and at least one clip's container could not be read), so the join ran without the requested crossfade — the overlap has to fit inside the shortest clip. Install ffprobe (`brew install ffmpeg`) for crossfaded joins."}
+		notices := []string{fmt.Sprintf("the clips' lengths could not be measured (ffprobe is unavailable and at least one clip's container could not be read), so the join ran without the requested %s — the transition has to fit inside the clips. Install ffprobe (`brew install ffmpeg`) for transitioned joins.", transition)}
 		return runConcatAudioJoin(ctx, tools, call, staging, inputs, notices)
 	}
-	plan := joinAudioTransitionsFilterGraph(facts, call.TransitionDuration)
+	var plan joinAudioTransitionPlan
 	var notices []string
-	if plan.Clamped {
-		notices = append(notices, fmt.Sprintf("the %s was shortened to %ss at each junction — an overlap may not exceed half of the shortest clip.", transition, formatJoinSeconds(plan.Seconds)))
+	if transition == "dip" {
+		plan = joinAudioDipFilterGraph(facts, call.TransitionDuration)
+		if plan.Clamped {
+			notices = append(notices, fmt.Sprintf("the dip was shortened to %ss at each junction — its two half-fades must fit inside the shortest clip.", formatJoinSeconds(plan.Seconds)))
+		}
+	} else {
+		plan = joinAudioTransitionsFilterGraph(facts, call.TransitionDuration)
+		if plan.Clamped {
+			notices = append(notices, fmt.Sprintf("the %s was shortened to %ss at each junction — an overlap may not exceed half of the shortest clip.", transition, formatJoinSeconds(plan.Seconds)))
+		}
 	}
 	if plan.Normalized {
-		notices = append(notices, fmt.Sprintf("the clips differ in sample rate or channel count; each was converted to the first clip's (%s) so the crossfade could run.", audioShapePhrase(plan.SampleRate, plan.Channels)))
+		notices = append(notices, fmt.Sprintf("the clips differ in sample rate or channel count; each was converted to the first clip's (%s) so the %s could run.", audioShapePhrase(plan.SampleRate, plan.Channels), transition))
 	}
 	if plan.Defaulted {
-		notices = append(notices, fmt.Sprintf("the clips' sample rate and channel count could not be read (ffprobe is unavailable), so the crossfaded join was rendered at %s.", audioShapePhrase(plan.SampleRate, plan.Channels)))
+		notices = append(notices, fmt.Sprintf("the clips' sample rate and channel count could not be read (ffprobe is unavailable), so the %s join was rendered at %s.", transition, audioShapePhrase(plan.SampleRate, plan.Channels)))
 	}
 	ext, mimeType, codecArgs, targetNotice := joinAudioReencodeTarget(ToolProbeResult{AudioCodec: facts[0].Codec})
 	if targetNotice != "" {
@@ -2808,14 +2892,20 @@ func executeTransitionedAudioJoin(ctx context.Context, tools HarnessToolExecutio
 	if err != nil {
 		return nil, "join failed", err
 	}
-	shortened := float64(len(facts)-1) * plan.Seconds
+	if transition == "dip" {
+		notices = append(notices, fmt.Sprintf("the dip fades each clip out to silence and the next in from silence over %ss at each junction (half each side) with no overlap, so the recording is the clips' combined length (%ss); the join was re-encoded (a dip cannot stream-copy).",
+			formatJoinSeconds(plan.Seconds), formatJoinSeconds(plan.OutputSeconds)))
+	} else {
+		shortened := float64(len(facts)-1) * plan.Seconds
+		notices = append(notices, fmt.Sprintf("the %s overlaps the clips by %ss at each junction, so the recording is %ss shorter than the clips combined; the join was re-encoded (a crossfade cannot stream-copy).",
+			transition, formatJoinSeconds(plan.Seconds), formatJoinSeconds(shortened)))
+	}
 	output := ToolAudioResult{
-		Model:  ffmpegModelName,
-		Prompt: fmt.Sprintf("joined %d audio clips with a %s", len(inputs), transition),
-		Count:  1,
-		Audios: []ToolAudioFile{{TempPath: tempPath, MimeType: mimeType}},
-		Notices: append(notices, fmt.Sprintf("the %s overlaps the clips by %ss at each junction, so the recording is %ss shorter than the clips combined; the join was re-encoded (a crossfade cannot stream-copy).",
-			transition, formatJoinSeconds(plan.Seconds), formatJoinSeconds(shortened))),
+		Model:   ffmpegModelName,
+		Prompt:  fmt.Sprintf("joined %d audio clips with a %s", len(inputs), transition),
+		Count:   1,
+		Audios:  []ToolAudioFile{{TempPath: tempPath, MimeType: mimeType}},
+		Notices: notices,
 	}
 	summary := fmt.Sprintf("joined %d audio clips in attachment order with ffmpeg (%s, %ss at each junction, re-encoded, %ss output)",
 		len(inputs), transition, formatJoinSeconds(plan.Seconds), formatJoinSeconds(plan.OutputSeconds))
@@ -4034,8 +4124,8 @@ func joinAudiosParamSchema() map[string]any {
 		"additionalProperties": false,
 		"properties": map[string]any{
 			"mode":               enumParam("Optional — \"auto\" (the default) copies when every clip matches in codec, sample rate, and channel count, and re-encodes to the first clip's format otherwise; \"copy\" forces a lossless stream copy; \"reencode\" forces re-encoding. A crossfade always re-encodes, so \"copy\" is invalid with one.", "auto", "copy", "reencode"),
-			"transition":         enumParam("Optional — blend the clips through a crossfade at every junction instead of hard-cutting (\"fade\" is an alias for \"crossfade\"; the crossfade is the only transition audio has). Re-encodes the join into the first clip's format.", audioTransitions...),
-			"transitionDuration": numberParam("Optional — the crossfade's length in seconds, 0.1 to 10. Omit for 1 second. Ignored without transition."),
+			"transition":         enumParam("Optional — join the clips through a transition at every junction instead of hard-cutting: \"crossfade\" (alias \"fade\") overlaps them through an equal-power blend and shortens the recording by one overlap per junction; \"dip\" (alias \"fadeblack\") fades the outgoing clip to silence and the incoming one in from silence at the cut with no overlap, keeping the combined length. Re-encodes the join into the first clip's format.", audioTransitions...),
+			"transitionDuration": numberParam("Optional — the transition's length in seconds, 0.1 to 10 (a dip splits it: half fading out, half fading in). Omit for 1 second. Ignored without transition."),
 		},
 		"required": []string{},
 	}
