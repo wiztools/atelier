@@ -1,7 +1,7 @@
 import {
   SubtitleDoc, activeSubtitleIndex, deleteSubtitleCue, formatSubtitleClock, insertSubtitleCueAfter,
-  mergeCueWithNext, nudgeCueEdge, replaceAllInCues, sameSubtitleDoc, shiftAllCues, splitSubtitleCue,
-  subtitleWarnings, updateCueText, updateCueTimes,
+  linkedMediaProvenance, mergeCueWithNext, nudgeCueEdge, replaceAllInCues, sameSubtitleDoc, shiftAllCues,
+  splitSubtitleCue, subtitleWarnings, updateCueText, updateCueTimes,
 } from '../src/editor/subtitleModel';
 
 function assert(value: boolean, message: string): void {if (!value) throw new Error(message);}
@@ -85,5 +85,13 @@ assert(activeSubtitleIndex(cueDoc, 9, 0) === -1, 'a gap selects nothing');
 assert(formatSubtitleClock(3671.5, 'srt') === '01:01:11,500', 'srt clock uses a comma');
 assert(formatSubtitleClock(3671.5, 'vtt') === '01:01:11.500', 'vtt clock uses a dot');
 assert(formatSubtitleClock(-3, 'srt') === '00:00:00,000', 'negative times clamp at zero for display');
+
+// Linked-media provenance: the edited conversation's own assets never read as
+// foreign media, even when its title is blank; a cross-conversation row (the
+// library fold) names its chat.
+assert(linkedMediaProvenance({conversationId: 'conv_a'}, 'conv_a') === 'this chat', 'own asset reads this chat');
+assert(linkedMediaProvenance({conversationId: 'conv_a', conversationTitle: ''}, 'conv_a') === 'this chat', 'untitled own asset still reads this chat');
+assert(linkedMediaProvenance({conversationId: 'conv_b', conversationTitle: 'Studio session'}, 'conv_a') === 'Studio session', 'cross-conversation asset names its chat');
+assert(linkedMediaProvenance({conversationId: 'conv_b'}, 'conv_a') === 'another chat', 'untitled cross-conversation asset falls back to another chat');
 
 console.log('subtitle model assertions passed');

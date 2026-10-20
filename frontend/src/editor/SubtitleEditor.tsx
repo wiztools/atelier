@@ -13,6 +13,7 @@ import {
   deleteSubtitleCue,
   formatSubtitleClock,
   insertSubtitleCueAfter,
+  linkedMediaProvenance,
   mergeCueWithNext,
   nudgeCueEdge,
   replaceAllInCues,
@@ -27,6 +28,11 @@ import './subtitleEditor.css';
 
 export type SubtitleEditorHandle = {
   source: main.SubtitleSourceInfo;
+  // The edited conversation's library scope for the linked-media picker,
+  // resolved from its own record when the editor opens: the library owning
+  // the conversation's project, or empty when the conversation belongs to no
+  // project — the picker then covers the conversation only.
+  libraryID: string;
 };
 
 type SubtitleAsset = main.ConversationAsset;
@@ -459,7 +465,9 @@ export function SubtitleEditor(props: {
                 type="button"
                 className="subtitle-media-source"
                 onClick={() => setPickerOpen((open) => !open)}
-                title="Choose the clip this transcript plays against — from this conversation or its library"
+                title={props.libraryID
+                  ? 'Choose the clip this transcript plays against — from this conversation or its library'
+                  : 'Choose the clip this transcript plays against — from this conversation'}
               >
                 {media ? `Linked: ${media.id.slice(0, 12)} (${media.kind})` : 'Link media'}
               </button>
@@ -504,7 +512,7 @@ export function SubtitleEditor(props: {
                       >
                         <span className="subtitle-picker-name">{asset.id.slice(0, 16)} · {asset.kind}</span>
                         <span className="subtitle-picker-provenance">
-                          {asset.role === 'user' ? 'attached' : 'generated'} · {asset.conversationTitle || 'another chat'}
+                          {asset.role === 'user' ? 'attached' : 'generated'} · {linkedMediaProvenance(asset, sourceConversationID)}
                         </span>
                       </button>
                     </li>

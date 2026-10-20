@@ -231,3 +231,23 @@ export function formatSubtitleClock(seconds: number, format: SubtitleFormat): st
   const mmm = String(millis % 1000).padStart(3, '0');
   return `${hh}:${mm}:${ss}${format === 'srt' ? ',' : '.'}${mmm}`;
 }
+
+// The linked-media picker's row shape: only the fields the provenance label
+// reads, so the model stays free of the wailsjs bindings (main.ConversationAsset
+// satisfies it structurally).
+export type LinkableMediaAsset = {
+  conversationId: string;
+  conversationTitle?: string;
+};
+
+// linkedMediaProvenance names one picker row's source chat. The edited
+// conversation's own assets read "this chat" even when its title is blank —
+// an untitled conversation must not look like foreign media; a different
+// conversation's asset (the library fold) names that conversation, with
+// "another chat" reserved for cross-conversation rows whose title is unknown.
+export function linkedMediaProvenance(asset: LinkableMediaAsset, editedConversationID: string): string {
+  if (asset.conversationId === editedConversationID) {
+    return 'this chat';
+  }
+  return asset.conversationTitle || 'another chat';
+}

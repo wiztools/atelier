@@ -4126,7 +4126,13 @@ function App() {
       audioEditorDirty.current = false;
       markdownEditorDirty.current = false;
       subtitleEditorDirty.current = false;
-      setSubtitleEditorHandle({source});
+      // The linked-media picker's scope comes from the conversation's own
+      // record: the library that owns its project, or none for an independent
+      // conversation. Resolved here rather than at render time — the sidebar's
+      // conversation list is only the newest slice by mtime, so a project
+      // conversation outside it would otherwise silently lose its library
+      // scope.
+      setSubtitleEditorHandle({source, libraryID: libraryIDForProject(owner.conversation.projectId ?? '')});
       setView((current) => (current === 'settings' ? current : 'app'));
     } catch (error) {
       if (generation === subtitleOpenGeneration.current) setStartupError(formatError(error));
@@ -5827,9 +5833,10 @@ function App() {
               key={subtitleEditorHandle.source.artifactId}
               handle={subtitleEditorHandle}
               // The linked-media picker widens to the library exactly when the
-              // edited conversation belongs to a project — the composer's
-              // library-scope rule applied to the editor's own conversation.
-              libraryID={libraryIDForProject(conversations.find((item) => item.id === subtitleEditorHandle.source.conversationId)?.projectId ?? '') || undefined}
+              // edited conversation belongs to a project — the scope resolved
+              // from its own record at open time, so an independent
+              // conversation lists only its own assets.
+              libraryID={subtitleEditorHandle.libraryID || undefined}
               suspended={view !== 'app'}
               onClose={() => {void confirmLeaveEditor().then((discard) => {if (discard) closeImageEditor();});}}
               onOpenParent={(conversationID) => {
