@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Whisper CLI flavors. The flavor names the command-line dialect the runner
@@ -507,12 +508,19 @@ func runLocalWhisperTranscription(ctx context.Context, config AppConfig, req Tra
 }
 
 // truncateLocalToolOutput bounds a CLI's combined output inside an error
-// message so a chatty failure can't flood the chat reply.
+// message so a chatty failure can't flood the chat reply. The TAIL is kept:
+// the CLIs behind these errors (ffmpeg, ffprobe, whisper) state the actual
+// failure at the END of their output — ffmpeg's version banner and input
+// dumps come first, so a head-bound cap hid the one line that mattered.
 func truncateLocalToolOutput(output []byte) string {
 	const limit = 2000
 	text := strings.TrimSpace(string(output))
 	if len(text) > limit {
-		return text[:limit] + "…"
+		cut := text[len(text)-limit:]
+		for len(cut) > 0 && !utf8.RuneStart(cut[0]) {
+			cut = cut[1:]
+		}
+		return "…" + cut
 	}
 	if text == "" {
 		return "(no output)"

@@ -274,7 +274,9 @@ func buildCompositionRenderPlan(doc CompositionDoc, facts map[string]joinClipFac
 			statements = append(statements, fmt.Sprintf("%strim=start=%s:end=%s,setpts=PTS-STARTPTS%s",
 				videoLabel, formatJoinSeconds(*rangeStart), formatJoinSeconds(*rangeEnd), videoOut))
 		} else if videoLabel != videoOut {
-			statements = append(statements, fmt.Sprintf("%sanull%s", videoLabel, videoOut))
+			// null, not anull — anull is the AUDIO pass-through and refuses a
+			// video pad ("Media type mismatch … Error linking filters").
+			statements = append(statements, fmt.Sprintf("%snull%s", videoLabel, videoOut))
 		}
 	}
 

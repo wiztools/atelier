@@ -1199,7 +1199,7 @@ export function CompositionEditor(props: {
                     ? ` · ${formatCompositionClock(op.rangeStartSeconds)}–${formatCompositionClock(op.rangeEndSeconds)}`
                     : ''}
                 </span>
-                <span className="editor-op-sub">
+                <span className="editor-op-sub" title={op.error || undefined}>
                   {op.status === 'running' || op.status === 'queued'
                     ? `${Math.round((op.progress || 0) * 100)}%`
                     : op.error || asArray(op.notices).join(' · ') || 'rendered for this session'}

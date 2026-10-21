@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -44,7 +45,7 @@ func TestBuildCompositionRenderPlanSingleClip(t *testing.T) {
 	}
 	want := "[0:v]trim=start=0:end=10,setpts=PTS-STARTPTS," +
 		"scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v0];" +
-		"[v0]anull[vout];" +
+		"[v0]null[vout];" +
 		"[0:a]atrim=start=0:end=10,asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo[ac0];" +
 		"[ac0]anull[aout]"
 	if plan.FilterComplex != want {
@@ -75,7 +76,7 @@ func TestBuildCompositionRenderPlanDissolveWithAudioCut(t *testing.T) {
 		"[1:v]trim=start=0:end=3,setpts=PTS-STARTPTS," +
 		"scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v1];" +
 		"[v0][v1]xfade=transition=fade:duration=1:offset=3[vx0];" +
-		"[vx0]anull[vout];" +
+		"[vx0]null[vout];" +
 		"[0:a]atrim=start=0:end=4,asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo[ac0];" +
 		"[2:a]aformat=sample_rates=48000:channel_layouts=stereo[ac1];" +
 		"[ac0]atrim=start=0:end=3,asetpts=PTS-STARTPTS[at0];" +
@@ -600,5 +601,106 @@ func TestCompositionExportLifecycle(t *testing.T) {
 	}
 	if _, err := os.Stat("-"); err == nil {
 		t.Fatal("the fake ffmpeg stray-filed the null output into the working directory")
+	}
+}
+
+// ---- Real-ffmpeg graph verification (opt-in, the updater_e2e pattern) ----
+//
+// The plan tests above pin the graph TEXT; only ffmpeg can say whether the
+// graph LINKS — the composer's first real render failed on an audio
+// pass-through (anull) wired into the video chain, a media-type mismatch no
+// string comparison sees and the fake-ffmpeg lifecycle tests never parse.
+// Set ATELIER_COMPOSITION_FFMPEG=1 (ffmpeg on PATH) to render every
+// representative shape for real; plain `go test` stays machine-independent.
+func TestCompositionRenderGraphsOnRealFFmpeg(t *testing.T) {
+	if os.Getenv("ATELIER_COMPOSITION_FFMPEG") == "" {
+		t.Skip("set ATELIER_COMPOSITION_FFMPEG=1 to run the composition graphs through a real ffmpeg")
+	}
+	binary, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("no ffmpeg on PATH")
+	}
+	dir := t.TempDir()
+	encode := func(name string, args ...string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		cmd := exec.Command(binary, append([]string{"-y", "-v", "error"}, append(args, path)...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("ffmpeg fixture %s: %v\n%s", name, err, out)
+		}
+		return path
+	}
+	// An audio-carrying 1280x720 clip, a second audio-carrying 960x540 clip
+	// (the pad conform runs between them), a silent 640x360 clip, and a
+	// stereo WAV for the lanes.
+	withAudio := encode("a.mp4",
+		"-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30:duration=3",
+		"-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=3",
+		"-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest")
+	withAudioB := encode("b.mp4",
+		"-f", "lavfi", "-i", "testsrc=size=960x540:rate=24:duration=3",
+		"-f", "lavfi", "-i", "sine=frequency=550:sample_rate=48000:duration=3",
+		"-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest")
+	silent := encode("c.mp4",
+		"-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=3",
+		"-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p")
+	wav := encode("m.wav",
+		"-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000:duration=3",
+		"-ac", "2")
+
+	refA := CompositionMediaRef{ArtifactID: "vid_a", Path: withAudio, Kind: "video", DurationSeconds: 3, Width: 1280, Height: 720, FPS: 30, HasAudio: true}
+	refB := CompositionMediaRef{ArtifactID: "vid_b", Path: withAudioB, Kind: "video", DurationSeconds: 3, Width: 960, Height: 540, FPS: 24, HasAudio: true}
+	refC := CompositionMediaRef{ArtifactID: "vid_c", Path: silent, Kind: "video", DurationSeconds: 3, Width: 640, Height: 360, FPS: 24, HasAudio: false}
+	refM := CompositionMediaRef{ArtifactID: "aud_m", Path: wav, Kind: "audio", DurationSeconds: 3, HasAudio: true}
+	facts := renderTestFacts(refA, refB, refC, refM)
+	musicLane := CompositionLane{ID: "lane1", Name: "Music", Segments: []CompositionSegment{{
+		ID: "seg1", Ref: refM, InSeconds: 0, OutSeconds: 3, StartSeconds: 1,
+		GainDb: -6, FadeInSeconds: 0.5, FadeOutSeconds: 0.5,
+		Ducks: []CompositionDuck{{StartSeconds: 1, EndSeconds: 2, GainDb: -12}},
+	}}}
+	dissolve := &CompositionTransition{Kind: "dissolve", Seconds: 1, AudioCrossfade: true}
+	cutWithSilent := func() CompositionDoc {
+		return renderTestDoc(renderTestClip("c1", refA, 0, 3, nil), renderTestClip("c2", refC, 0, 3, nil))
+	}
+	dissolveDoc := func() CompositionDoc {
+		return renderTestDoc(renderTestClip("c1", refA, 0, 3, dissolve), renderTestClip("c2", refB, 0, 3, nil))
+	}
+	withLanes := func() CompositionDoc {
+		doc := renderTestDoc(renderTestClip("c1", refA, 0, 3, nil))
+		doc.AudioLanes = []CompositionLane{musicLane}
+		return doc
+	}
+	one := 1.0
+	four := 4.0
+
+	scenarios := []struct {
+		name         string
+		doc          CompositionDoc
+		opts         compositionRenderOptions
+		preview      bool
+		crf          int
+		includeAudio bool
+	}{
+		{"single clip", renderTestDoc(renderTestClip("c1", refA, 0, 3, nil)), compositionRenderOptions{}, true, 0, true},
+		{"cut with silent peer", cutWithSilent(), compositionRenderOptions{}, true, 0, true},
+		{"dissolve with crossfade", dissolveDoc(), compositionRenderOptions{}, true, 0, true},
+		{"lanes with ducks", withLanes(), compositionRenderOptions{}, true, 0, true},
+		{"audio only", CompositionDoc{SchemaVersion: compositionSchemaVersion, Name: "Test", Output: CompositionOutput{Fit: compositionFitPad}, AudioLanes: []CompositionLane{musicLane}}, compositionRenderOptions{}, true, 0, true},
+		{"range preview", cutWithSilent(), compositionRenderOptions{StartSeconds: &one, EndSeconds: &four}, true, 0, true},
+		{"export muted", dissolveDoc(), compositionRenderOptions{MuteAudio: true}, false, 20, false},
+	}
+	for _, scenario := range scenarios {
+		t.Run(scenario.name, func(t *testing.T) {
+			plan, err := buildCompositionRenderPlan(scenario.doc, facts, scenario.opts)
+			if err != nil {
+				t.Fatalf("buildCompositionRenderPlan returned error: %v", err)
+			}
+			output := filepath.Join(dir, strings.ReplaceAll(scenario.name, " ", "-")+".mp4")
+			args := compositionFFmpegArgs(plan, compositionEncodeArgs(scenario.preview, scenario.crf, plan.AudioOnly, scenario.includeAudio), output)
+			cmd := exec.Command(binary, append([]string{"-v", "error"}, args...)...)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("ffmpeg refused the graph: %v\nfilter_complex: %s\n%s", err, plan.FilterComplex, out)
+			}
+		})
 	}
 }
