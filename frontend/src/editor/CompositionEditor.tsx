@@ -537,6 +537,27 @@ export function CompositionEditor(props: {
     updatePlayhead();
   };
 
+  // The Edits row's Play. A completed preview already took the stage, so
+  // setting the same preview again re-renders the same keyed element and
+  // starts nothing; and a different render remounts the element, so play()
+  // must wait for the commit. The flag carries the intent across either.
+  const playOnStageRef = useRef(false);
+  const playRenderOnStage = (op: main.CompositionRenderOperation) => {
+    const url = op.resultUrl;
+    if (!url) {
+      return;
+    }
+    playOnStageRef.current = true;
+    setPreview({url, audioOnly: op.audioOnly, offsetSeconds: op.rangeStartSeconds ?? 0});
+  };
+  useEffect(() => {
+    if (!playOnStageRef.current) {
+      return;
+    }
+    playOnStageRef.current = false;
+    void previewMediaRef.current?.play();
+  }, [preview]);
+
   // submitRender previews the WORKING document — the no-forced-save
   // contract; the export path (next milestone) will pin a saved revision.
   const submitRender = async () => {
@@ -1442,13 +1463,8 @@ export function CompositionEditor(props: {
                 {op.status === 'completed' && op.resultUrl && op.mode !== 'export' ? (
                   <button
                     type="button"
-                    title="Load this render onto the stage"
-                    onClick={() => {
-                      const url = op.resultUrl;
-                      if (url) {
-                        setPreview({url, audioOnly: op.audioOnly, offsetSeconds: op.rangeStartSeconds ?? 0});
-                      }
-                    }}
+                    title="Play this render on the stage"
+                    onClick={() => playRenderOnStage(op)}
                   >
                     Play
                   </button>
