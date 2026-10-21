@@ -306,6 +306,74 @@ func TestNewestSubtitleArtifact(t *testing.T) {
 	if _, _, err := newestSubtitleArtifact(storage, "convert_subtitles", "conv_missing", ""); err == nil {
 		t.Fatal("an unknown conversation must fail")
 	}
+
+	// The composer's @-mention display form — a leading @ and the truncated
+	// short id (conv_84ff8fa9dea9621f290e31e8: the planner passed it verbatim)
+	// — resolves through the unique prefix match.
+	content, extension, err = newestSubtitleArtifact(storage, "convert_subtitles", "conv_sub", "@trc_new")
+	if err != nil {
+		t.Fatalf("newestSubtitleArtifact(@mention) returned error: %v", err)
+	}
+	if content.ArtifactID != "trc_new" || extension != ".srt" {
+		t.Fatalf("got %s/%s, want trc_new/.srt", content.ArtifactID, extension)
+	}
+	content, _, err = newestSubtitleArtifact(storage, "convert_subtitles", "conv_sub", "@trc_ol")
+	if err != nil || content.ArtifactID != "trc_old" {
+		t.Fatalf("@trc_ol = %s/%v, want trc_old", content.ArtifactID, err)
+	}
+
+	// A prefix matching more than one subtitle artifact id is ambiguous —
+	// named ids never silently resolve to a different file.
+	if _, _, err := newestSubtitleArtifact(storage, "convert_subtitles", "conv_sub", "trc_"); err == nil || !strings.Contains(err.Error(), "starts with") {
+		t.Fatalf("ambiguous prefix error = %v, want the ambiguity message", err)
+	}
+	// A prefix matching nothing keeps the no-match error.
+	if _, _, err := newestSubtitleArtifact(storage, "convert_subtitles", "conv_sub", "trc_zzz"); err == nil {
+		t.Fatal("a prefix matching no subtitle artifact must fail")
+	}
+	// An id that is nothing but the @ normalizes to empty — the default path.
+	content, _, err = newestSubtitleArtifact(storage, "convert_subtitles", "conv_sub", "@")
+	if err != nil || content.ArtifactID != "trc_new" {
+		t.Fatalf("bare @ = %s/%v, want the default newest artifact", content.ArtifactID, err)
+	}
+}
+
+// TestNewestSubtitleArtifactMentionRecarry mirrors the shape a real
+// @-mention produces (conv_84ff8fa9dea9621f290e31e8): the cited artifact
+// re-rides the citing user turn under its original id, so the same id
+// legitimately appears on two turns. Prefix candidates are counted by
+// DISTINCT id — the re-carry must not read as ambiguity.
+func TestNewestSubtitleArtifactMentionRecarry(t *testing.T) {
+	storage := libraryTestStorage(t)
+	artifacts := filepath.Join(storage.History, "conversations", "2026/10/conv_mention", "artifacts")
+	if err := os.MkdirAll(artifacts, 0755); err != nil {
+		t.Fatalf("MkdirAll artifacts: %v", err)
+	}
+	writeSearchConversation(t, storage, "2026/10/conv_mention",
+		searchConversationFixture("conv_mention", "Mention recarry", "2026-10-21T17:00:00Z"),
+		searchTurnFixture("turn_000001", "assistant", "2026-10-21T16:30:00Z",
+			HistoryContent{Type: "transcript", ArtifactID: "trc_one", Path: "artifacts/trc_one.srt", MimeType: "application/x-subrip"},
+			HistoryContent{Type: "transcript", ArtifactID: "trc_two", Path: "artifacts/trc_two.srt", MimeType: "application/x-subrip"}),
+		// The user turn citing trc_one: same id, re-carried entry.
+		searchTurnFixture("turn_000002", "user", "2026-10-21T16:59:00Z",
+			HistoryContent{Type: "transcript", ArtifactID: "trc_one", Path: "artifacts/trc_one.srt", MimeType: "application/x-subrip"}))
+
+	// The truncated mention form resolves through both re-carried entries.
+	content, _, err := newestSubtitleArtifact(storage, "burn_subtitles", "conv_mention", "@trc_on")
+	if err != nil || content.ArtifactID != "trc_one" {
+		t.Fatalf("@trc_on = %s/%v, want trc_one despite the re-carry", content.ArtifactID, err)
+	}
+	// Two distinct ids under one prefix are still ambiguous.
+	if _, _, err := newestSubtitleArtifact(storage, "burn_subtitles", "conv_mention", "trc_"); err == nil {
+		t.Fatal("two distinct subtitle ids under one prefix must stay ambiguous")
+	}
+	// The newest turn re-carrying the cited artifact makes IT the default —
+	// the mention is the strongest recency signal, which is exactly what
+	// would have made conv_84ff8fa9's default path burn the right file.
+	content, _, err = newestSubtitleArtifact(storage, "burn_subtitles", "conv_mention", "")
+	if err != nil || content.ArtifactID != "trc_one" {
+		t.Fatalf("default = %s/%v, want trc_one (the cited re-carry on the newest turn)", content.ArtifactID, err)
+	}
 }
 
 func TestExecuteConvertSubtitlesFromTurnFiles(t *testing.T) {
@@ -387,6 +455,16 @@ func TestExecuteConvertSubtitlesFromPersistedArtifact(t *testing.T) {
 	defer os.Remove(result.Transcripts[0].TempPath)
 	if result.SourceFormat != subtitleFormatVTT || result.TargetFormat != subtitleFormatSRT {
 		t.Fatalf("id result = %+v", result)
+	}
+
+	// The composer's @-mention short form names the same artifact.
+	result, _, err = executeConvertSubtitles(tools, HarnessToolCall{ArtifactID: "@trc_ol"})
+	if err != nil {
+		t.Fatalf("executeConvertSubtitles(@mention) returned error: %v", err)
+	}
+	defer os.Remove(result.Transcripts[0].TempPath)
+	if result.SourceFormat != subtitleFormatVTT {
+		t.Fatalf("mention result = %+v, want the .vtt source", result)
 	}
 }
 

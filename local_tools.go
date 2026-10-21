@@ -862,7 +862,10 @@ func runLocalFFmpeg(ctx context.Context, config AppConfig, args []string) error 
 	if !ok {
 		return errors.New("no local ffmpeg CLI found — install ffmpeg (brew install ffmpeg), or clear the configured binary override in Settings → Video Tools")
 	}
-	_, err := runLocalMediaCLI(ctx, resolved, "ffmpeg", localFFmpegTimeout, args)
+	// -hide_banner first, so a failure's capped output (the last 2000 chars
+	// survive) starts with the actual error instead of the 3-line build
+	// banner and version dump.
+	_, err := runLocalMediaCLI(ctx, resolved, "ffmpeg", localFFmpegTimeout, append([]string{"-hide_banner"}, args...))
 	return err
 }
 

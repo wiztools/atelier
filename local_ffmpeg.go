@@ -3386,7 +3386,7 @@ func burnSubtitlesParamSchema() map[string]any {
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
-			"artifactId": stringParam(`Optional — the id of a specific transcript artifact in this conversation to burn (e.g. "trc_ab12cd34"). Defaults to the newest .vtt/.srt artifact, or the subtitle file an earlier call in this turn produced.`),
+			"artifactId": stringParam(`Optional — the id of a specific transcript artifact in this conversation to burn (a full id like "trc_ab12cd34ef56ab78cd90ef12"; the short @-mention form as the user typed it, like "@trc_ab12cd34", is accepted too). Defaults to the newest .vtt/.srt artifact, or the subtitle file an earlier call in this turn produced.`),
 		},
 		"required": []string{},
 	}
@@ -3400,6 +3400,13 @@ func executeBurnSubtitles(ctx context.Context, tools HarnessToolExecutionContext
 	video := firstAttachedVideo(tools.AttachedVideos)
 	if video == "" {
 		return ToolVideoResult{}, "subtitle burning requires an attached video clip", errors.New("burn_subtitles requires an attached video clip — ask the user to attach one first")
+	}
+	// The subtitles filter is libass's, not ffmpeg's core: a build compiled
+	// without it parses no filtergraph and dies instantly (exit 234, the real
+	// error drowned under the build banner — conv_84ff8fa9dea9621f290e31e8).
+	// Refuse before staging a clip's worth of bytes, with the fix.
+	if available, known := subtitlesFilterAvailable(ctx, tools.Config); known && !available {
+		return ToolVideoResult{}, "subtitle burning needs an ffmpeg build with libass", errors.New(burnSubtitlesFilterMissingMessage)
 	}
 	data, _, sourceLabel, err := resolveSubtitleSource(tools, "burn_subtitles", strings.TrimSpace(call.ArtifactID))
 	if err != nil {
@@ -3444,6 +3451,48 @@ func executeBurnSubtitles(ctx context.Context, tools HarnessToolExecutionContext
 		output.Notices = append(output.Notices, fmt.Sprintf("%d malformed cue block(s) in the subtitle file were skipped.", skipped))
 	}
 	return output, fmt.Sprintf("Burned %d cues from %s into the clip; the captioned video is attached to the reply.", len(cues), sourceLabel), nil
+}
+
+// burnSubtitlesFilterMissingMessage is the refusal for an ffmpeg build without
+// libass. Homebrew's core ffmpeg formula carries no libass dependency and no
+// options, so "brew install ffmpeg" can never supply the filter — the fixes
+// are the full-featured build or any other libass-bearing binary selected in
+// Settings → Video Tools.
+const burnSubtitlesFilterMissingMessage = "this ffmpeg build has no subtitles filter — it was compiled without libass, so captions cannot be rendered onto the frames. Install a build that includes libass (brew install ffmpeg-full, or a static build from ffmpeg.org) and select it in Settings → Video Tools, then try again."
+
+// subtitlesFilterAvailable asks the resolved ffmpeg whether its subtitles
+// filter is compiled in. The answer is PARSED, never read from the exit
+// status: `ffmpeg -h filter=NAME` exits 0 for an unknown filter too (verified
+// on Homebrew ffmpeg 9.0.1 — "Unknown filter 'subtitles'." followed by
+// "Exiting with exit code 0"). known is false when ffmpeg is absent, could
+// not run, or the help text matched neither shape — the burn then proceeds
+// and lets ffmpeg's own error surface, the xfade check's fail-soft stance.
+func subtitlesFilterAvailable(ctx context.Context, config AppConfig) (available, known bool) {
+	resolved, ok := resolveLocalFFmpegBinary(config)
+	if !ok {
+		return false, false
+	}
+	help, err := runLocalMediaCLI(ctx, resolved, "ffmpeg", localFFmpegTimeout, []string{"-hide_banner", "-h", "filter=subtitles"})
+	if err != nil {
+		return false, false
+	}
+	return parseFilterHelpAvailable(help, "subtitles")
+}
+
+// parseFilterHelpAvailable reads `ffmpeg -h filter=NAME` output: an "Unknown
+// filter 'NAME'" line is a definite no, the "Filter NAME" header a definite
+// yes, anything else unknown.
+func parseFilterHelpAvailable(helpOutput []byte, name string) (available, known bool) {
+	text := string(helpOutput)
+	if strings.Contains(text, "Unknown filter '"+name+"'") {
+		return false, true
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) == "Filter "+name {
+			return true, true
+		}
+	}
+	return false, false
 }
 
 // ffmpegBurnSubtitlesArgs paints the subtitles onto the frames through the

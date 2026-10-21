@@ -255,7 +255,7 @@ func convertSubtitlesParamSchema() map[string]any {
 		"additionalProperties": false,
 		"properties": map[string]any{
 			"format":     enumParam(`Target subtitle format — "srt" (SubRip) or "vtt" (WebVTT). Defaults to the opposite of the source file's format.`, subtitleFormatSRT, subtitleFormatVTT),
-			"artifactId": stringParam(`Optional — the id of a specific transcript artifact in this conversation to convert (e.g. "trc_ab12cd34"). Defaults to the newest .vtt/.srt artifact, or the subtitle file an earlier call in this turn produced.`),
+			"artifactId": stringParam(`Optional — the id of a specific transcript artifact in this conversation to convert (a full id like "trc_ab12cd34ef56ab78cd90ef12"; the short @-mention form as the user typed it, like "@trc_ab12cd34", is accepted too). Defaults to the newest .vtt/.srt artifact, or the subtitle file an earlier call in this turn produced.`),
 		},
 		"required": []string{},
 	}
@@ -319,6 +319,7 @@ func normalizeSubtitleTargetFormat(requested, sourceFormat string) (string, erro
 // tool in the error messages (convert_subtitles and burn_subtitles share the
 // ladder).
 func resolveSubtitleSource(tools HarnessToolExecutionContext, toolName, wantArtifactID string) ([]byte, string, string, error) {
+	wantArtifactID = normalizeSubtitleArtifactID(wantArtifactID)
 	if wantArtifactID == "" {
 		// Newest first — and subtitle files only: a timestamped transcription
 		// can stage BOTH a .vtt and an oversized plain .txt (see
@@ -360,18 +361,41 @@ func subtitleFormatForExtension(extension string) string {
 	return map[string]string{".vtt": subtitleFormatVTT, ".srt": subtitleFormatSRT}[extension]
 }
 
+// normalizeSubtitleArtifactID reads a planner-supplied artifact id in the
+// forms the model actually sees: the full id, or the composer's @-mention
+// display form ("@trc_9588b815" — a leading @ and the id truncated to the
+// chip's short width). The @ is dropped here; the truncation is resolved by
+// newestSubtitleArtifact's prefix match. An id that is nothing but the @ (or
+// whitespace) normalizes to empty, i.e. the default source.
+func normalizeSubtitleArtifactID(id string) string {
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(id), "@"))
+}
+
 // newestSubtitleArtifact finds the artifact a subtitle-consuming call should
 // read: the newest turn's first transcript content entry carrying a VTT or SRT
 // artifact — the same newest-turn-first walk newestEditorArtifact uses, so
 // "the subtitles" and "the transcript" resolve to the same asset. Text (.txt)
 // transcripts are not subtitle files and never match. A non-empty wantID
-// matches that artifact id exactly. toolName names the calling tool in the
-// error messages.
+// (normalized, so the @-mention form works) matches an artifact id exactly,
+// else as the UNIQUE prefix of one subtitle artifact id: the planner only ever
+// sees the composer's truncated mention form, so a small model mimicking it
+// passes "@trc_9588b815" for trc_9588b815d51acc11b26e98d1
+// (conv_84ff8fa9dea9621f290e31e8 — the exact-match-only walk failed a burn
+// whose default path would have found the very same file). Candidates are
+// counted by DISTINCT id — an @-mentioned artifact re-rides the citing user
+// turn under its original id, so the same file legitimately appears twice —
+// and a prefix matching nothing, or more than one id, is still an error: a
+// named id must never silently resolve to a different file. toolName names
+// the calling tool in the error messages.
 func newestSubtitleArtifact(storage ConfigStorage, toolName, conversationID, wantID string) (*HistoryContent, string, error) {
 	detail, err := getConversation(storage, conversationID)
 	if err != nil {
 		return nil, "", err
 	}
+	wantID = normalizeSubtitleArtifactID(wantID)
+	var prefixMatch *HistoryContent
+	prefixExtension := ""
+	prefixIDs := map[string]bool{}
 	for i := len(detail.Turns) - 1; i >= 0; i-- {
 		for j := range detail.Turns[i].Content {
 			content := detail.Turns[i].Content[j]
@@ -379,16 +403,28 @@ func newestSubtitleArtifact(storage ConfigStorage, toolName, conversationID, wan
 			if extension == "" {
 				continue
 			}
-			if wantID != "" && content.ArtifactID != wantID {
-				continue
+			if wantID == "" || content.ArtifactID == wantID {
+				return &content, extension, nil
 			}
-			return &content, extension, nil
+			if strings.HasPrefix(content.ArtifactID, wantID) && !prefixIDs[content.ArtifactID] {
+				prefixIDs[content.ArtifactID] = true
+				if prefixMatch == nil {
+					prefixMatch = &content
+					prefixExtension = extension
+				}
+			}
 		}
 	}
-	if wantID != "" {
+	switch {
+	case wantID == "":
+		return nil, "", errors.New(toolName + " found no subtitle artifact (.vtt or .srt) in this conversation — a transcribe_audio call with timestamps produces one, or the user can attach a subtitle file first")
+	case len(prefixIDs) == 1:
+		return prefixMatch, prefixExtension, nil
+	case len(prefixIDs) > 1:
+		return nil, "", fmt.Errorf("%s found %d subtitle artifacts whose id starts with %q in this conversation — name the full artifact id", toolName, len(prefixIDs), wantID)
+	default:
 		return nil, "", fmt.Errorf("%s found no VTT or SRT artifact with id %q in this conversation — transcript artifacts carrying subtitle content are what it can read", toolName, wantID)
 	}
-	return nil, "", errors.New(toolName + " found no subtitle artifact (.vtt or .srt) in this conversation — a transcribe_audio call with timestamps produces one, or the user can attach a subtitle file first")
 }
 
 // subtitleArtifactExtension reports ".vtt"/".srt" when a history content entry

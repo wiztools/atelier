@@ -4619,3 +4619,101 @@ func TestFFmpegBurnSubtitlesRequiresSources(t *testing.T) {
 		t.Fatalf("zero-cue error = %v, want the parser's refusal", err)
 	}
 }
+
+// TestFFmpegBurnSubtitlesAcceptsMentionForm pins the conv_84ff8fa9 shape end
+// to end: the planner passes the composer's truncated @-mention display form
+// verbatim, and the ladder's unique-prefix match still lands the burn on the
+// right artifact.
+func TestFFmpegBurnSubtitlesAcceptsMentionForm(t *testing.T) {
+	config, _ := ffmpegTestConfig(t, fakeFFmpegScript, "")
+	storage := libraryTestStorage(t)
+	subtitleConversationFixture(t, storage)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		Storage:        storage,
+		ConversationID: "conv_sub",
+		AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+	}, "burn_subtitles", HarnessToolCall{ArtifactID: "@trc_ne"})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	typed := result.Result.(ToolVideoResult)
+	defer os.Remove(typed.Videos[0].TempPath)
+	if !strings.Contains(result.Summary, "Burned 1 cues from trc_new") {
+		t.Errorf("summary = %q, want the mention form resolving to trc_new", result.Summary)
+	}
+}
+
+// fakeFFmpegNoSubtitlesScript fakes a libass-less ffmpeg build: the
+// `-h filter=subtitles` query answers with the REAL shape of a build without
+// the filter — "Unknown filter" text AND exit code 0 (Homebrew ffmpeg 9.0.1
+// does exactly that, so an exit-code check cannot see it). Any other
+// invocation records args and writes the standard payload, so a gate that
+// fails to fire lets the "burn" succeed loudly in tests.
+const fakeFFmpegNoSubtitlesScript = `#!/bin/sh
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+printf '%s\n' "$@" >> "$dir/args.txt"
+for a in "$@"; do
+  if [ "$a" = "filter=subtitles" ]; then
+    printf "Unknown filter 'subtitles'.\n\nExiting with exit code 0\n"
+    exit 0
+  fi
+done
+prev=""
+out=""
+for a in "$@"; do
+  prev="$a"
+  out="$a"
+done
+printf '\377\330\377FAKE-MEDIA' > "$out"
+`
+
+// TestParseFilterHelpAvailable pins the parsed-not-exit-coded answer for
+// `ffmpeg -h filter=NAME`: "Unknown filter" is a definite no (even though
+// ffmpeg exits 0), the "Filter NAME" header a definite yes, anything else
+// unknown (fail-soft toward running).
+func TestParseFilterHelpAvailable(t *testing.T) {
+	cases := []struct {
+		name      string
+		output    string
+		wantAvail bool
+		wantKnown bool
+	}{
+		{"real unknown-filter output", "Unknown filter 'subtitles'.\n\nExiting with exit code 0\n", false, true},
+		{"known filter header", "Filter subtitles\n  Subtitle filter:\n    Render text from a subtitle file onto the video.\n", true, true},
+		{"empty output", "", false, false},
+		{"different filter unknown", "Unknown filter 'zoompan'.\n", false, false},
+	}
+	for _, tc := range cases {
+		available, known := parseFilterHelpAvailable([]byte(tc.output), "subtitles")
+		if available != tc.wantAvail || known != tc.wantKnown {
+			t.Fatalf("%s: got (%v, %v), want (%v, %v)", tc.name, available, known, tc.wantAvail, tc.wantKnown)
+		}
+	}
+}
+
+// TestFFmpegBurnSubtitlesRefusesFilterlessBuild pins the capability gate on
+// the conv_84ff8fa9 shape: a build without libass refuses BEFORE any media
+// work — no staged clip, no doomed encode — with the error naming libass and
+// the fix, instead of exit 234 buried under the build banner.
+func TestFFmpegBurnSubtitlesRefusesFilterlessBuild(t *testing.T) {
+	config, bin := ffmpegTestConfig(t, fakeFFmpegNoSubtitlesScript, "")
+	storage := libraryTestStorage(t)
+	subtitleConversationFixture(t, storage)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		Storage:        storage,
+		ConversationID: "conv_sub",
+		AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+	}, "burn_subtitles", HarnessToolCall{})
+	if result.Status != "failed" {
+		t.Fatalf("result = %+v, want a failed call", result)
+	}
+	if !strings.Contains(result.Error, "libass") || !strings.Contains(result.Error, "ffmpeg-full") {
+		t.Fatalf("error = %q, want the libass message naming the fix", result.Error)
+	}
+	// The only ffmpeg work was the help query — no input was staged for a
+	// build that could never have burned it.
+	args := fakeFFmpegArgs(t, bin)
+	if !strings.Contains(args, "filter=subtitles") || strings.Contains(args, " -i ") {
+		t.Fatalf("ffmpeg args = %q, want only the filter help query", args)
+	}
+}
