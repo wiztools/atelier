@@ -61,12 +61,13 @@ type ConversationModelOverrides struct {
 	TranscribeModel    string `json:"transcribeModel,omitempty"`
 	LipsyncImageModel  string `json:"lipsyncImageModel,omitempty"`
 	LipsyncVideoModel  string `json:"lipsyncVideoModel,omitempty"`
-	// TranscriptionProvider/WhisperModel/WhisperBinary override transcribe_audio's
-	// backend plus the local whisper model and binary (everything the Models
-	// tab's Transcription section edits).
+	// TranscriptionProvider/WhisperModel/WhisperBinary/WhisperVADModel override
+	// transcribe_audio's backend plus the local whisper model, binary, and VAD
+	// model (everything the Models tab's Transcription section edits).
 	TranscriptionProvider string `json:"transcriptionProvider,omitempty"`
 	WhisperModel          string `json:"whisperModel,omitempty"`
 	WhisperBinary         string `json:"whisperBinary,omitempty"`
+	WhisperVADModel       string `json:"whisperVADModel,omitempty"`
 	// The generation defaults the Models tab edits. The planner can still vary
 	// these per call — these are the per-conversation defaults the tools fall
 	// back to. ImageSteps is the one int: 0 means inherit (normalize clamps
@@ -106,7 +107,7 @@ func normalizeConversationModelOverrides(o ConversationModelOverrides) Conversat
 		&o.VideoExtendModel, &o.VideoMotionModel, &o.VideoKeyframeModel, &o.VideoUpscaleModel, &o.VideoReframeModel, &o.VideoRestyleModel,
 		&o.AudioModel, &o.SoundEffectsModel, &o.AudioCloneModel, &o.AudioExtendModel, &o.TranscribeModel,
 		&o.LipsyncImageModel, &o.LipsyncVideoModel,
-		&o.TranscriptionProvider, &o.WhisperModel, &o.WhisperBinary,
+		&o.TranscriptionProvider, &o.WhisperModel, &o.WhisperBinary, &o.WhisperVADModel,
 		&o.ImageAspectRatio, &o.ImageSizePreset, &o.VideoDuration, &o.VideoAspectRatio, &o.VideoResolution, &o.SoundDuration, &o.AudioExtendDuration,
 	}
 	for _, field := range fields {
@@ -450,6 +451,9 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 	}
 	if o.WhisperBinary != "" {
 		config.Providers.Local.Whisper.Binary = o.WhisperBinary
+	}
+	if o.WhisperVADModel != "" {
+		config.Providers.Local.Whisper.VADModel = o.WhisperVADModel
 	}
 	if o.ImageAspectRatio != "" {
 		config.Generation.Image.AspectRatio = o.ImageAspectRatio

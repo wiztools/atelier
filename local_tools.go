@@ -427,6 +427,12 @@ func runLocalWhisperTranscription(ctx context.Context, config AppConfig, req Tra
 
 	model := strings.TrimSpace(req.Model)
 	timestamps := strings.TrimSpace(req.Timestamps)
+	// The VAD model is a whisper.cpp-only machine setting (Settings →
+	// Transcription): silero voice-activity detection so long silences are
+	// skipped rather than transcribed as hallucinated text. Tilde-expanded
+	// like the model path — whisper-cli opens it with plain fopen.
+	vadModel := expandTildePath(strings.TrimSpace(config.Providers.Local.Whisper.VADModel))
+	var notices []string
 	var args []string
 	var outputPath string
 	runFromHome := false
@@ -439,10 +445,13 @@ func runLocalWhisperTranscription(ctx context.Context, config AppConfig, req Tra
 			model = resolveDefaultWhisperCPPModel()
 		}
 		model = expandTildePath(model)
-		args, outputPath = whisperCPPArgs(input.Name(), outDir, model, req.Task, req.Language, timestamps)
+		args, outputPath = whisperCPPArgs(input.Name(), outDir, model, req.Task, req.Language, timestamps, vadModel)
 		runFromHome = true
 	default:
 		args, outputPath = whisperOpenAIArgs(input.Name(), outDir, model, req.Task, req.Language, timestamps)
+		if vadModel != "" {
+			notices = append(notices, "The whisper VAD model configured in Settings applies to whisper.cpp only — the openai-whisper CLI has no VAD support, so transcription ran without it.")
+		}
 	}
 
 	runCtx, cancel := context.WithTimeout(ctx, localWhisperTimeout)
@@ -476,7 +485,7 @@ func runLocalWhisperTranscription(ctx context.Context, config AppConfig, req Tra
 		if text == "" {
 			return GeneratedTranscript{}, fmt.Errorf("whisper returned an empty transcript: %s", truncateLocalToolOutput(output))
 		}
-		return GeneratedTranscript{Text: text}, nil
+		return GeneratedTranscript{Text: text, Notices: notices}, nil
 	}
 	// Timestamped modes parse the structured output back into chunks, and the
 	// plain text always comes FROM the chunks — the raw file is a VTT/JSON
@@ -497,7 +506,7 @@ func runLocalWhisperTranscription(ctx context.Context, config AppConfig, req Tra
 	if plain == "" {
 		return GeneratedTranscript{}, fmt.Errorf("whisper returned an empty transcript: %s", truncateLocalToolOutput(output))
 	}
-	transcript := GeneratedTranscript{Text: plain, Timestamps: timestamps}
+	transcript := GeneratedTranscript{Text: plain, Timestamps: timestamps, Notices: notices}
 	if rendered := renderTimestampedChunks(chunks); rendered != "" {
 		transcript.TimestampedText = rendered
 		transcript.Chunks = chunks
@@ -563,8 +572,10 @@ func whisperOpenAIArgs(input, outDir, model, task, language, timestamps string) 
 // anchors that to the user's home, so ~/models/ggml-base.en.bin works). This
 // mirrors how the CLI behaves when invoked bare, which is the behavior users
 // of an existing whisper.cpp checkout expect; its own error surfaces verbatim
-// when no default resolves.
-func whisperCPPArgs(input, outDir, model, task, language, timestamps string) ([]string, string) {
+// when no default resolves. vadModel (the Settings-configured silero model)
+// rides --vad/--vad-model when set — voice-activity detection, so silent
+// stretches are skipped instead of hallucinated into text.
+func whisperCPPArgs(input, outDir, model, task, language, timestamps, vadModel string) ([]string, string) {
 	base := strings.TrimSuffix(transcriptPathForInput(outDir, input, ".txt"), ".txt")
 	outputFlag, ext := "-otxt", ".txt"
 	if timestamps != "" {
@@ -585,6 +596,9 @@ func whisperCPPArgs(input, outDir, model, task, language, timestamps string) ([]
 	}
 	if strings.TrimSpace(task) == "translate" {
 		args = append(args, "-tr")
+	}
+	if vadModel = strings.TrimSpace(vadModel); vadModel != "" {
+		args = append(args, "--vad", "--vad-model", vadModel)
 	}
 	return args, base + ext
 }

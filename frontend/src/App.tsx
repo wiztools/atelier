@@ -1246,6 +1246,7 @@ function App() {
   const [transcriptionProvider, setTranscriptionProvider] = useState<'fal' | 'local-whisper'>('fal');
   const [whisperModel, setWhisperModel] = useState('');
   const [whisperBinary, setWhisperBinary] = useState('');
+  const [whisperVADModel, setWhisperVADModel] = useState('');
   const [ffmpegBinary, setFfmpegBinary] = useState('');
   const [ffprobeBinary, setFfprobeBinary] = useState('');
   const [sipsBinary, setSipsBinary] = useState('');
@@ -1924,6 +1925,7 @@ function App() {
             whisper: {
               binary: whisperBinary,
               model: whisperModel,
+              vadModel: whisperVADModel,
             },
             ffmpeg: {
               binary: ffmpegBinary,
@@ -1980,7 +1982,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [airplaneMode, baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel]);
+  }, [airplaneMode, baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel, whisperVADModel]);
 
   // Re-probe local CLI tools when a binary override changes so the provider
   // dropdown and the video/image-tools status reflect an unsaved override without
@@ -2448,7 +2450,8 @@ function App() {
     soundDuration,
     audioExtendDuration,
     whisperBinary,
-  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, inpaintProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, whisperModel, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration, whisperBinary]);
+    whisperVADModel,
+  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, inpaintProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, whisperModel, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration, whisperBinary, whisperVADModel]);
 
   const conversationModelSelection = useMemo<ModelSelectionValue>(() => {
     const global = globalModelSelection;
@@ -2502,6 +2505,7 @@ function App() {
       transcriptionProvider: overrides.transcriptionProvider === 'fal' || overrides.transcriptionProvider === 'local-whisper' ? overrides.transcriptionProvider : global.transcriptionProvider,
       whisperModel: overrides.whisperModel || global.whisperModel,
       whisperBinary: overrides.whisperBinary || global.whisperBinary,
+      whisperVADModel: overrides.whisperVADModel || global.whisperVADModel,
       falTranscribeModel: overrides.transcribeModel || global.falTranscribeModel,
       falLipsyncImageModel: overrides.lipsyncImageModel || global.falLipsyncImageModel,
       falLipsyncVideoModel: overrides.lipsyncVideoModel || global.falLipsyncVideoModel,
@@ -2583,6 +2587,7 @@ function App() {
     if (patch.soundDuration !== undefined) setSoundDuration(patch.soundDuration);
     if (patch.audioExtendDuration !== undefined) setAudioExtendDuration(patch.audioExtendDuration);
     if (patch.whisperBinary !== undefined) setWhisperBinary(patch.whisperBinary);
+    if (patch.whisperVADModel !== undefined) setWhisperVADModel(patch.whisperVADModel);
   };
 
   const openConversationModels = () => {
@@ -2671,6 +2676,7 @@ function App() {
       if (patch.transcriptionProvider !== undefined) next.add('transcriptionProvider');
       if (patch.whisperModel !== undefined) next.add('whisperModel');
       if (patch.whisperBinary !== undefined) next.add('whisperBinary');
+      if (patch.whisperVADModel !== undefined) next.add('whisperVADModel');
       if (patch.imageAspectRatio !== undefined) next.add('imageAspectRatio');
       if (patch.imageSizePreset !== undefined) next.add('imageSizePreset');
       if (patch.imageSteps !== undefined) next.add('imageSteps');
@@ -2766,6 +2772,7 @@ function App() {
         case 'transcriptionProvider': next.transcriptionProvider = global.transcriptionProvider; break;
         case 'whisperModel': next.whisperModel = global.whisperModel; break;
         case 'whisperBinary': next.whisperBinary = global.whisperBinary; break;
+        case 'whisperVADModel': next.whisperVADModel = global.whisperVADModel; break;
         case 'imageAspectRatio': next.imageAspectRatio = global.imageAspectRatio; break;
         case 'imageSizePreset': next.imageSizePreset = global.imageSizePreset; break;
         case 'imageSteps': next.imageSteps = global.imageSteps; break;
@@ -3227,6 +3234,7 @@ function App() {
 	const nextTranscriptionProvider = config.models?.transcriptionProvider === 'local-whisper' ? 'local-whisper' : 'fal';
 	const nextWhisperModel = config.providers?.local?.whisper?.model ?? '';
 	const nextWhisperBinary = config.providers?.local?.whisper?.binary ?? '';
+	const nextWhisperVADModel = config.providers?.local?.whisper?.vadModel ?? '';
 	const nextFfmpegBinary = config.providers?.local?.ffmpeg?.binary ?? '';
 	const nextFfprobeBinary = config.providers?.local?.ffprobe?.binary ?? '';
 	const nextSipsBinary = config.providers?.local?.sips?.binary ?? '';
@@ -3298,6 +3306,7 @@ function App() {
     setTranscriptionProvider(nextTranscriptionProvider);
     setWhisperModel(nextWhisperModel);
     setWhisperBinary(nextWhisperBinary);
+    setWhisperVADModel(nextWhisperVADModel);
     setFfmpegBinary(nextFfmpegBinary);
     setFfprobeBinary(nextFfprobeBinary);
     setSipsBinary(nextSipsBinary);
@@ -8654,6 +8663,7 @@ type ModelSelectionValue = {
   soundDuration: string;
   audioExtendDuration: string;
   whisperBinary: string;
+  whisperVADModel: string;
 };
 
 // chatModelOptionsFor is the provider-aware option list shared by the primary
@@ -8707,6 +8717,7 @@ function overrideKeysFromRecord(overrides: main.ConversationModelOverrides | nul
   if (overrides.transcriptionProvider) keys.add('transcriptionProvider');
   if (overrides.whisperModel) keys.add('whisperModel');
   if (overrides.whisperBinary) keys.add('whisperBinary');
+  if (overrides.whisperVADModel) keys.add('whisperVADModel');
   if (overrides.imageAspectRatio) keys.add('imageAspectRatio');
   if (overrides.imageSizePreset) keys.add('imageSizePreset');
   if (overrides.imageSteps) keys.add('imageSteps');
@@ -8762,6 +8773,7 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   if (keys.has('transcriptionProvider')) payload.transcriptionProvider = draft.transcriptionProvider;
   if (keys.has('whisperModel')) payload.whisperModel = draft.whisperModel;
   if (keys.has('whisperBinary')) payload.whisperBinary = draft.whisperBinary;
+  if (keys.has('whisperVADModel')) payload.whisperVADModel = draft.whisperVADModel;
   if (keys.has('imageAspectRatio')) payload.imageAspectRatio = draft.imageAspectRatio;
   if (keys.has('imageSizePreset')) payload.imageSizePreset = draft.imageSizePreset;
   if (keys.has('imageSteps')) payload.imageSteps = draft.imageSteps;
@@ -9802,19 +9814,37 @@ function ModelSelectionPanel({
           </div>
 
           {value.transcriptionProvider === 'local-whisper' || airplaneMode ? (
-            <div className="field">
-              <div className="field-label-row">
-                {fieldLabel('whisper-binary', 'Whisper Binary', 'whisperBinary')}
-                {catalogs.whisperStatus?.detail ? (
-                  <InfoHint label="Whisper binary detection" text={catalogs.whisperStatus.detail} />
-                ) : null}
+            <div className="two-column">
+              <div className="field">
+                <div className="field-label-row">
+                  {fieldLabel('whisper-binary', 'Whisper Binary', 'whisperBinary')}
+                  {catalogs.whisperStatus?.detail ? (
+                    <InfoHint label="Whisper binary detection" text={catalogs.whisperStatus.detail} />
+                  ) : null}
+                </div>
+                <input
+                  id="whisper-binary"
+                  value={value.whisperBinary}
+                  onChange={(event) => onChange({whisperBinary: event.target.value})}
+                  placeholder={catalogs.whisperStatus?.path || 'auto-detect on PATH: whisper, then whisper-cli'}
+                />
               </div>
-              <input
-                id="whisper-binary"
-                value={value.whisperBinary}
-                onChange={(event) => onChange({whisperBinary: event.target.value})}
-                placeholder={catalogs.whisperStatus?.path || 'auto-detect on PATH: whisper, then whisper-cli'}
-              />
+
+              <div className="field">
+                <div className="field-label-row">
+                  {fieldLabel('whisper-vad-model', 'Whisper VAD Model', 'whisperVADModel')}
+                  <InfoHint
+                    label="Optional voice-activity detection"
+                    text="Path to a whisper.cpp VAD model (e.g. ~/.cache/whisper.cpp/ggml-silero-v6.2.0.bin). When set, local transcription runs with --vad so silent stretches are skipped instead of transcribed as hallucinated text. whisper.cpp only — the openai-whisper CLI has no VAD support and transcriptions carry a notice instead."
+                  />
+                </div>
+                <input
+                  id="whisper-vad-model"
+                  value={value.whisperVADModel}
+                  onChange={(event) => onChange({whisperVADModel: event.target.value})}
+                  placeholder="optional: ~/.cache/whisper.cpp/ggml-silero-v6.2.0.bin"
+                />
+              </div>
             </div>
           ) : !catalogs.falHasKey ? (
             <span className="hint">Add a fal.ai API key {keyWhere} — or install whisper locally — to transcribe audio.</span>

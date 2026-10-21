@@ -1746,7 +1746,7 @@ func transcribeAudioOutput(req TranscribeAudioRequest, backend string, transcrip
 			output.Notices = append(output.Notices, fmt.Sprintf("The full transcript (%d characters) was saved as a text artifact attached to the reply; the evidence below carries only a preview.", utf8.RuneCountInString(transcript.Text)))
 		}
 	}
-	return output, transcribeAudioSummary(backend, req.Model, transcript.Timestamps), nil
+	return output, transcribeAudioSummary(backend, req.Model, req.Task, transcript.Timestamps), nil
 }
 
 // capTranscriptPreview keeps the first transcriptEvidencePreviewLines lines of
@@ -1786,14 +1786,20 @@ func transcribeAudioDescription(local bool) string {
 		modelHint = " The optional model names a whisper size (e.g. \"small\", \"large-v3\") or whisper.cpp ggml model, overriding the Settings default."
 	}
 	return "Use this when the user asks to transcribe, caption, or get a text version of an attached audio clip (a voice memo, recording, interview, etc.). Requires an attached audio clip. " +
-		backend + modelHint + " Set task to \"translate\" to translate the audio's speech to English text instead of transcribing it. Pass timestamps: \"words\" or \"segments\" when the user wants timing information — the result then also carries a time-stamped transcript (word-level where the backend supports it; fal's wizper provides segments only)."
+		backend + modelHint + " Set task to \"translate\" to translate the audio's speech to English text instead of transcribing it — task \"translate\" together with timestamps turns foreign-language audio (a \"translate this Japanese audio to English subtitles\" ask) into an English subtitle track; the timestamped artifact rides the reply and convert_subtitles or burn_subtitles can rework its format or put it on the picture. Pass timestamps: \"words\" or \"segments\" when the user wants timing information — the result then also carries a time-stamped transcript (word-level where the backend supports it; fal's wizper provides segments only)."
 }
 
 // transcribeAudioSummary names the backend, model, and timestamp granularity
 // in the tool result's summary line; the model may legitimately be empty on
-// the local backend (whisper's own default), and the granularity suffix only
-// appears when the backend actually produced timestamps.
-func transcribeAudioSummary(backend, model, timestamps string) string {
+// the local backend (whisper's own default), the verb names the task
+// (translate serves English text from foreign-language speech), and the
+// granularity suffix only appears when the backend actually produced
+// timestamps.
+func transcribeAudioSummary(backend, model, task, timestamps string) string {
+	verb := "transcribed"
+	if strings.TrimSpace(task) == "translate" {
+		verb = "translated"
+	}
 	suffix := ""
 	switch timestamps {
 	case "words":
@@ -1802,9 +1808,9 @@ func transcribeAudioSummary(backend, model, timestamps string) string {
 		suffix = " with segment timestamps"
 	}
 	if model == "" {
-		return fmt.Sprintf("transcribed audio with %s%s", backend, suffix)
+		return fmt.Sprintf("%s audio with %s%s", verb, backend, suffix)
 	}
-	return fmt.Sprintf("transcribed audio with %s (%s)%s", backend, model, suffix)
+	return fmt.Sprintf("%s audio with %s (%s)%s", verb, backend, model, suffix)
 }
 
 // transcribeAudioParamSchema describes transcribe_audio's optional inputs. There

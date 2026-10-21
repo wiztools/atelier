@@ -385,9 +385,15 @@ type ConfigLocalProviders struct {
 // local_tools.go): WHISPER_MODEL from Atelier's environment, then
 // ~/.whisper-base.en.bin, then ~/.cache/whisper.cpp/ggml-base.en.bin when
 // present, else whisper-cli's own models/ default anchored to the user's home.
+// VADModel is an optional voice-activity-detection model (whisper.cpp's
+// ggml-silero): when set, whisper.cpp transcriptions run with --vad so
+// long silences are skipped instead of transcribed as hallucinated text.
+// whisper.cpp only — the openai-whisper CLI has no VAD flags, so a set value
+// there rides a notice rather than the command line.
 type ConfigLocalWhisper struct {
-	Binary string `json:"binary,omitempty"`
-	Model  string `json:"model,omitempty"`
+	Binary   string `json:"binary,omitempty"`
+	Model    string `json:"model,omitempty"`
+	VADModel string `json:"vadModel,omitempty"`
 }
 
 // ConfigLocalFFmpeg configures the local ffmpeg CLI behind the video tools
@@ -4108,6 +4114,7 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	// PATH auto-detection and an empty model means the CLI's own default.
 	config.Providers.Local.Whisper.Binary = strings.TrimSpace(config.Providers.Local.Whisper.Binary)
 	config.Providers.Local.Whisper.Model = strings.TrimSpace(config.Providers.Local.Whisper.Model)
+	config.Providers.Local.Whisper.VADModel = strings.TrimSpace(config.Providers.Local.Whisper.VADModel)
 	config.Providers.Local.FFmpeg.Binary = strings.TrimSpace(config.Providers.Local.FFmpeg.Binary)
 	config.Providers.Local.FFprobe.Binary = strings.TrimSpace(config.Providers.Local.FFprobe.Binary)
 	if config.Models.ImageProvider == "fal" && strings.TrimSpace(config.Providers.Fal.Model) == "" {

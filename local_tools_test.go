@@ -198,7 +198,7 @@ func TestWhisperArgBuilders(t *testing.T) {
 		}
 	})
 	t.Run("whisper-cpp full", func(t *testing.T) {
-		args, output := whisperCPPArgs(input, outDir, "/models/ggml-base.en.bin", "translate", "de", "")
+		args, output := whisperCPPArgs(input, outDir, "/models/ggml-base.en.bin", "translate", "de", "", "")
 		want := []string{"-m", "/models/ggml-base.en.bin", "-f", input, "-otxt", "-of", filepath.Join(outDir, "audio"), "-l", "de", "-tr"}
 		if strings.Join(args, " ") != strings.Join(want, " ") {
 			t.Fatalf("args = %v, want %v", args, want)
@@ -207,8 +207,21 @@ func TestWhisperArgBuilders(t *testing.T) {
 			t.Fatalf("output = %q", output)
 		}
 	})
+	t.Run("whisper-cpp vad model rides --vad and --vad-model", func(t *testing.T) {
+		args, _ := whisperCPPArgs(input, outDir, "/models/ggml-large-v3.bin", "translate", "ja", "segments", "/models/ggml-silero-v6.2.0.bin")
+		want := []string{"-m", "/models/ggml-large-v3.bin", "-f", input, "-ovtt", "-of", filepath.Join(outDir, "audio"), "-l", "ja", "-tr", "--vad", "--vad-model", "/models/ggml-silero-v6.2.0.bin"}
+		if strings.Join(args, " ") != strings.Join(want, " ") {
+			t.Fatalf("args = %v, want %v", args, want)
+		}
+	})
+	t.Run("whisper-cpp empty vad model omits the vad flags", func(t *testing.T) {
+		args, _ := whisperCPPArgs(input, outDir, "", "", "", "", "  ")
+		if strings.Contains(strings.Join(args, " "), "--vad") {
+			t.Fatalf("an empty VAD model must omit the flags: %v", args)
+		}
+	})
 	t.Run("whisper-cpp words use vtt with one-word cues", func(t *testing.T) {
-		args, output := whisperCPPArgs(input, outDir, "/models/ggml-base.en.bin", "", "", "words")
+		args, output := whisperCPPArgs(input, outDir, "/models/ggml-base.en.bin", "", "", "words", "")
 		want := []string{"-m", "/models/ggml-base.en.bin", "-f", input, "-ovtt", "-of", filepath.Join(outDir, "audio"), "-ml", "1", "-sow"}
 		if strings.Join(args, " ") != strings.Join(want, " ") {
 			t.Fatalf("args = %v, want %v", args, want)
@@ -218,7 +231,7 @@ func TestWhisperArgBuilders(t *testing.T) {
 		}
 	})
 	t.Run("whisper-cpp segments use vtt without the word split", func(t *testing.T) {
-		args, output := whisperCPPArgs(input, outDir, "", "", "", "segments")
+		args, output := whisperCPPArgs(input, outDir, "", "", "", "segments", "")
 		joined := strings.Join(args, " ")
 		if !strings.Contains(joined, "-ovtt") || strings.Contains(joined, "-ml") || strings.Contains(joined, "-sow") {
 			t.Fatalf("segments must use plain vtt cues: %v", args)
@@ -228,7 +241,7 @@ func TestWhisperArgBuilders(t *testing.T) {
 		}
 	})
 	t.Run("whisper-cpp empty model omits -m for the CLI's own default", func(t *testing.T) {
-		args, _ := whisperCPPArgs(input, outDir, "", "", "", "")
+		args, _ := whisperCPPArgs(input, outDir, "", "", "", "", "")
 		for _, arg := range args {
 			if arg == "-m" {
 				t.Fatalf("empty model must omit -m so whisper-cli applies its own default: %v", args)
@@ -323,6 +336,44 @@ func TestRunLocalWhisperTranscription(t *testing.T) {
 		}
 		if strings.Contains(transcript.Text, "-m ~/") {
 			t.Fatalf("transcript %q leaked the unexpanded tilde path", transcript.Text)
+		}
+	})
+	t.Run("whisper-cpp configured vad model expands tilde and rides the command", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		config := newConfig()
+		config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, filepath.Join(dir, "cpp-vad"), "whisper-cli", cppWhisperScript)
+		config.Providers.Local.Whisper.VADModel = "~/.cache/whisper.cpp/ggml-silero-v6.2.0.bin"
+		transcript, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL()})
+		if err != nil {
+			t.Fatalf("runLocalWhisperTranscription: %v", err)
+		}
+		want := "--vad --vad-model " + filepath.Join(home, ".cache", "whisper.cpp", "ggml-silero-v6.2.0.bin")
+		if !strings.Contains(transcript.Text, want) {
+			t.Fatalf("transcript %q should pass the expanded VAD model path", transcript.Text)
+		}
+		if strings.Contains(transcript.Text, "--vad-model ~/") {
+			t.Fatalf("transcript %q leaked the unexpanded tilde VAD path", transcript.Text)
+		}
+	})
+	t.Run("openai-whisper ignores the configured vad model with a notice", func(t *testing.T) {
+		config := newConfig()
+		config.Providers.Local.Whisper.VADModel = "/models/ggml-silero-v6.2.0.bin"
+		transcript, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL()})
+		if err != nil {
+			t.Fatalf("runLocalWhisperTranscription: %v", err)
+		}
+		if strings.Contains(transcript.Text, "--vad") {
+			t.Fatalf("openai-whisper has no VAD flags — transcript %q must not carry them", transcript.Text)
+		}
+		found := false
+		for _, notice := range transcript.Notices {
+			if strings.Contains(notice, "VAD") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("notices = %v, want the whisper.cpp-only VAD note", transcript.Notices)
 		}
 	})
 	t.Run("openai-whisper words parse the json output", func(t *testing.T) {
@@ -1040,6 +1091,15 @@ func TestTranscribeAudioOutputArtifact(t *testing.T) {
 			t.Fatalf("plain output = %+v", output)
 		}
 		if summary != "transcribed audio with fal (fal-ai/wizper)" {
+			t.Fatalf("summary = %q", summary)
+		}
+	})
+	t.Run("translate task names the verb", func(t *testing.T) {
+		_, summary, err := transcribeAudioOutput(TranscribeAudioRequest{Model: "small", Task: "translate"}, "local whisper", GeneratedTranscript{Text: "hello"})
+		if err != nil {
+			t.Fatalf("transcribeAudioOutput: %v", err)
+		}
+		if summary != "translated audio with local whisper (small)" {
 			t.Fatalf("summary = %q", summary)
 		}
 	})

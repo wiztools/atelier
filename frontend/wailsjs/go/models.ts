@@ -245,6 +245,7 @@ export namespace main {
 	export class ConfigLocalWhisper {
 	    binary?: string;
 	    model?: string;
+	    vadModel?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigLocalWhisper(source);
@@ -254,6 +255,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.binary = source["binary"];
 	        this.model = source["model"];
+	        this.vadModel = source["vadModel"];
 	    }
 	}
 	export class ConfigLocalProviders {
@@ -789,6 +791,7 @@ export namespace main {
 	    transcriptionProvider?: string;
 	    whisperModel?: string;
 	    whisperBinary?: string;
+	    whisperVADModel?: string;
 	    imageAspectRatio?: string;
 	    imageSizePreset?: string;
 	    imageSteps?: number;
@@ -833,6 +836,7 @@ export namespace main {
 	        this.transcriptionProvider = source["transcriptionProvider"];
 	        this.whisperModel = source["whisperModel"];
 	        this.whisperBinary = source["whisperBinary"];
+	        this.whisperVADModel = source["whisperVADModel"];
 	        this.imageAspectRatio = source["imageAspectRatio"];
 	        this.imageSizePreset = source["imageSizePreset"];
 	        this.imageSteps = source["imageSteps"];
