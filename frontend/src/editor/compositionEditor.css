@@ -258,8 +258,30 @@
   border-color: #6f66a3;
 }
 
+/* A cut is invisible, FCP-style: clips read as butted together, and the seam
+   only appears on hover (or when selected) so the drag-to-create gesture
+   stays findable without drawing at rest. */
+.composition-junction.cut {
+  min-width: 10px;
+  background: transparent;
+  border-color: transparent;
+  color: transparent;
+}
+
+.composition-junction.cut:hover {
+  border-left-color: #6a737d;
+}
+
+.composition-junction.cut.selected {
+  border-left-color: #4a90d9;
+}
+
 .composition-junction.selected {
   box-shadow: 0 0 0 1px #4a90d9;
+}
+
+.composition-junction.cut.selected {
+  box-shadow: none;
 }
 
 /* The media picker — the subtitle editor's linked-media dialog shape. */

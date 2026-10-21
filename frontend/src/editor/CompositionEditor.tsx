@@ -22,6 +22,7 @@ import {
   compositionMaxAudioLanes,
   compositionProblems,
   compositionSequenceDuration,
+  compositionTransitions,
   compositionTransitionMinSeconds,
   detachClipAudio,
   duplicateClip,
@@ -190,14 +191,14 @@ function TransitionControls(props: {doc: CompositionDoc; clipID: string; commit:
   return (
     <>
       <div className="composition-field-row">
-        <label className="composition-field">
+        <label className="composition-field" title="The overlap effect between the two clips; every name is an ffmpeg xfade transition this composer renders (an install lacking one falls back to a plain dissolve)">
           <span>Kind</span>
           <select
-            value={transition ? 'dissolve' : 'cut'}
-            onChange={(event) => props.commit(setClipTransition(props.doc, props.clipID, event.target.value === 'dissolve' ? {seconds: transition?.seconds ?? 1, audioCrossfade: transition?.audioCrossfade ?? true} : null))}
+            value={transition ? transition.kind : 'cut'}
+            onChange={(event) => props.commit(setClipTransition(props.doc, props.clipID, event.target.value === 'cut' ? null : {kind: event.target.value, seconds: transition?.seconds ?? 1, audioCrossfade: transition?.audioCrossfade ?? true}))}
           >
             <option value="cut">cut</option>
-            <option value="dissolve">dissolve</option>
+            {compositionTransitions.map((name) => <option key={name} value={name}>{name}</option>)}
           </select>
         </label>
         {transition ? (
@@ -208,13 +209,13 @@ function TransitionControls(props: {doc: CompositionDoc; clipID: string; commit:
             min={bounds.min}
             max={bounds.max}
             title={`The clips allow ${bounds.min.toFixed(1)}–${bounds.max.toFixed(1)}s`}
-            onCommit={(value) => props.commit(setClipTransition(props.doc, props.clipID, {seconds: value, audioCrossfade: transition.audioCrossfade}))}
+            onCommit={(value) => props.commit(setClipTransition(props.doc, props.clipID, {kind: transition.kind, seconds: value, audioCrossfade: transition.audioCrossfade}))}
           />
         ) : null}
       </div>
       {transition ? (
-        <label className="composition-toggle" title="Crossfade the original audio across the dissolve (equal power), or cut it hard at the junction">
-          <input type="checkbox" checked={transition.audioCrossfade} onChange={(event) => props.commit(setClipTransition(props.doc, props.clipID, {seconds: transition.seconds, audioCrossfade: event.target.checked}))} />
+        <label className="composition-toggle" title="Crossfade the original audio across the overlap (equal power), or cut it hard at the junction">
+          <input type="checkbox" checked={transition.audioCrossfade} onChange={(event) => props.commit(setClipTransition(props.doc, props.clipID, {kind: transition.kind, seconds: transition.seconds, audioCrossfade: event.target.checked}))} />
           crossfade original audio
         </label>
       ) : null}
@@ -634,7 +635,7 @@ export function CompositionEditor(props: {
             applyLive(setClipTransition(current, drag.clipID, null));
             return;
           }
-          const next = setClipTransition(current, drag.clipID, {seconds: requested, audioCrossfade: clip.transitionToNext?.audioCrossfade ?? true});
+          const next = setClipTransition(current, drag.clipID, {kind: clip.transitionToNext?.kind, seconds: requested, audioCrossfade: clip.transitionToNext?.audioCrossfade ?? true});
           applyLive(next);
           return;
         }
@@ -986,11 +987,11 @@ export function CompositionEditor(props: {
                     className={`composition-junction${transition ? ' dissolve' : ' cut'}${selection.kind === 'junction' && selection.clipID === clip.id ? ' selected' : ''}`}
                     style={{left: pct(junctionAt), width: transition ? pct(transition.seconds) : '3px'}}
                     title={transition
-                      ? `Dissolve ${transition.seconds.toFixed(1)}s (audio ${transition.audioCrossfade ? 'crossfades' : 'cuts'}) — drag to resize, drag fully left for a cut`
-                      : 'Cut — drag right to create a dissolve'}
+                      ? `${transition.kind} ${transition.seconds.toFixed(1)}s (audio ${transition.audioCrossfade ? 'crossfades' : 'cuts'}) — drag to resize, drag fully left for a cut`
+                      : 'Cut — drag right to create a transition, or pick one in the inspector'}
                     onPointerDown={(event) => beginJunctionDrag(event, clip)}
                   >
-                    {transition ? `${transition.seconds.toFixed(1)}s` : '∥'}
+                    {transition ? `${transition.seconds.toFixed(1)}s` : ''}
                   </button>
                 );
               })}
@@ -1040,6 +1041,17 @@ export function CompositionEditor(props: {
               </p>
               <div className="composition-transition">
                 <TransitionControls doc={doc} clipID={junctionClip.id} commit={commit} />
+              </div>
+              <div className="editor-tool-group">
+                <button
+                  type="button"
+                  aria-label="Remove transition"
+                  title="Remove transition — the clips join with a straight cut"
+                  disabled={!junctionClip.transitionToNext}
+                  onClick={() => commit(setClipTransition(docRef.current, junctionClip.id, null))}
+                >
+                  <TrashIcon />
+                </button>
               </div>
             </div>
           ) : selection.kind === 'doc' || !selectedClip ? (
