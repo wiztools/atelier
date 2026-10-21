@@ -21,7 +21,7 @@ import (
 // defaultMediaGenerationTimeoutSeconds bounds one queued media generation when
 // the config carries no value: generous enough for provider queue backlogs,
 // tight enough that an unavailable downstream cannot hold a turn (and its
-// billing meter) open indefinitely. Exposed in Settings → Others.
+// billing meter) open indefinitely. Exposed in Settings → General.
 const defaultMediaGenerationTimeoutSeconds = 900
 
 // mediaRecoveryTimeout bounds the post-timeout diagnosis: the status check,

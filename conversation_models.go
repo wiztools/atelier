@@ -61,9 +61,13 @@ type ConversationModelOverrides struct {
 	TranscribeModel    string `json:"transcribeModel,omitempty"`
 	LipsyncImageModel  string `json:"lipsyncImageModel,omitempty"`
 	LipsyncVideoModel  string `json:"lipsyncVideoModel,omitempty"`
-	// TranscriptionProvider/WhisperModel/WhisperBinary/WhisperVADModel override
-	// transcribe_audio's backend plus the local whisper model, binary, and VAD
-	// model (everything the Models tab's Transcription section edits).
+	// TranscriptionProvider/WhisperModel override transcribe_audio's backend
+	// and the local whisper model — the Models tab's Transcription &
+	// Subtitles section. WhisperBinary/WhisperVADModel are engine config the
+	// Settings → Local Tools tab now edits globally (ffmpeg's status); no UI
+	// pins them per conversation any more, but records pinned before the move
+	// still overlay here, and the frontend's next override save drops the
+	// stale pin rather than re-emitting it.
 	TranscriptionProvider string `json:"transcriptionProvider,omitempty"`
 	WhisperModel          string `json:"whisperModel,omitempty"`
 	WhisperBinary         string `json:"whisperBinary,omitempty"`

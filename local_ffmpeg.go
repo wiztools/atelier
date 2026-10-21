@@ -48,7 +48,7 @@ func ffmpegToolsConfigured(config AppConfig) bool {
 // configured. It tells the model what actually happened (the capability is
 // absent, not broken) and the exact remedy to relay, so a from-knowledge
 // answer can't masquerade as a failed edit or hand the user a raw CLI recipe.
-const localMediaEditUnavailableNote = "Atelier note: the user's latest request asks for a local media edit — capturing a frame or a contact sheet, splitting or trimming a clip or audio recording, joining clips or audio files, converting an audio file's format, cropping/resizing/rotating/reversing a clip, fading a clip or recording in or out, or extracting/replacing audio — but no ffmpeg CLI was detected on this machine, so Atelier has no tool that can perform it. Do not claim the edit was done and do not attempt it through other tools. Tell the user plainly that local media editing needs a one-time install: install ffmpeg with `brew install ffmpeg` (or set an explicit binary in Settings → Video Tools); Atelier detects it automatically on the next message."
+const localMediaEditUnavailableNote = "Atelier note: the user's latest request asks for a local media edit — capturing a frame or a contact sheet, splitting or trimming a clip or audio recording, joining clips or audio files, converting an audio file's format, cropping/resizing/rotating/reversing a clip, fading a clip or recording in or out, or extracting/replacing audio — but no ffmpeg CLI was detected on this machine, so Atelier has no tool that can perform it. Do not claim the edit was done and do not attempt it through other tools. Tell the user plainly that local media editing needs a one-time install: install ffmpeg with `brew install ffmpeg` (or set an explicit binary in Settings → Local Tools); Atelier detects it automatically on the next message."
 
 // mediaEditFallbackNotice returns the deterministic one-line blockquote for
 // the chat reply when the final model's answer did not already mention ffmpeg
@@ -61,7 +61,7 @@ func mediaEditFallbackNotice(unavailable bool, assistantContent string) string {
 	if strings.Contains(strings.ToLower(assistantContent), "ffmpeg") {
 		return ""
 	}
-	return "> ⚠️ Local media editing isn't available yet — install ffmpeg (`brew install ffmpeg`, or set the binary in Settings → Video Tools) and Atelier picks it up automatically."
+	return "> ⚠️ Local media editing isn't available yet — install ffmpeg (`brew install ffmpeg`, or set the binary in Settings → Local Tools) and Atelier picks it up automatically."
 }
 
 // ffmpegToolDefinitions assembles the ffmpeg-backed tool catalog. probe_media
@@ -3457,8 +3457,8 @@ func executeBurnSubtitles(ctx context.Context, tools HarnessToolExecutionContext
 // libass. Homebrew's core ffmpeg formula carries no libass dependency and no
 // options, so "brew install ffmpeg" can never supply the filter — the fixes
 // are the full-featured build or any other libass-bearing binary selected in
-// Settings → Video Tools.
-const burnSubtitlesFilterMissingMessage = "this ffmpeg build has no subtitles filter — it was compiled without libass, so captions cannot be rendered onto the frames. Install a build that includes libass (brew install ffmpeg-full, or a static build from ffmpeg.org) and select it in Settings → Video Tools, then try again."
+// Settings → Local Tools.
+const burnSubtitlesFilterMissingMessage = "this ffmpeg build has no subtitles filter — it was compiled without libass, so captions cannot be rendered onto the frames. Install a build that includes libass (brew install ffmpeg-full, or a static build from ffmpeg.org) and select it in Settings → Local Tools, then try again."
 
 // subtitlesFilterAvailable asks the resolved ffmpeg whether its subtitles
 // filter is compiled in. The answer is PARSED, never read from the exit
@@ -3985,7 +3985,7 @@ func reverseVideoSourceFacts(ctx context.Context, config AppConfig, input, sourc
 			return seconds, reverseVideoDefaultFPS, int(w), int(h), mp4HasAudioTrack(data), nil
 		}
 	}
-	return 0, 0, 0, 0, false, errors.New("reverse_video could not measure the attached clip's length or frame size, and reversing buffers the whole decode in memory — Atelier refuses clips it cannot size. Install ffprobe (`brew install ffmpeg` includes it, or set both binaries in Settings → Video Tools) and re-attach the clip, or trim it to MP4 with split_video first")
+	return 0, 0, 0, 0, false, errors.New("reverse_video could not measure the attached clip's length or frame size, and reversing buffers the whole decode in memory — Atelier refuses clips it cannot size. Install ffprobe (`brew install ffmpeg` includes it, or set both binaries in Settings → Local Tools) and re-attach the clip, or trim it to MP4 with split_video first")
 }
 
 // reverseVideoMemoryEstimate sizes the reverse filter's worst-case buffer:
@@ -4066,7 +4066,7 @@ func listVideoTransitionsToolDefinition() HarnessToolDefinition {
 		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
 			transitions, version, ok := installedXFadeTransitions(ctx, tools.Config)
 			if !ok {
-				return nil, "transition list failed", errors.New("list_video_transitions could not read the installed ffmpeg's xfade transitions — install ffmpeg (`brew install ffmpeg`, or set the binary in Settings → Video Tools) and try again")
+				return nil, "transition list failed", errors.New("list_video_transitions could not read the installed ffmpeg's xfade transitions — install ffmpeg (`brew install ffmpeg`, or set the binary in Settings → Local Tools) and try again")
 			}
 			result := ToolTransitionListResult{Version: version, Transitions: transitions, Default: "fade"}
 			phrase := "the installed ffmpeg"

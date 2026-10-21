@@ -367,11 +367,11 @@ func localBinaryMissingDetail(spec localBinarySpec) string {
 	case whisperBinarySpec.key:
 		return "No whisper CLI found on the PATH. Install one to enable local transcription: `pip install -U openai-whisper` or `brew install whisper-cpp`."
 	case ffmpegBinarySpec.key:
-		return "No ffmpeg CLI found on the PATH. Install one to enable local video tools (screenshot, split, join, extract audio): " + packageInstallHint("ffmpeg", "ffmpeg") + "."
+		return "No ffmpeg CLI found on the PATH. Install one to enable the local video and audio tools (screenshot, split, join, convert, extract audio, burn subtitles): " + packageInstallHint("ffmpeg", "ffmpeg") + "."
 	case ffprobeBinarySpec.key:
 		return "No ffprobe CLI found. It ships with ffmpeg (" + packageInstallHint("ffmpeg", "ffmpeg") + "); without it the video tools still run but always re-encode and extract audio as MP3."
 	case sipsBinarySpec.key:
-		return "No sips CLI found — it ships with macOS, so a miss here means the configured override in Settings → Image Tools points at the wrong path."
+		return "No sips CLI found — it ships with macOS, so a miss here means the configured override in Settings → Local Tools points at the wrong path."
 	case imagemagickBinarySpec.key:
 		detail := "Install one to enable the advanced image tools (watermark, collage, color adjust, strip metadata)"
 		if runtimeGOOS != "darwin" {
@@ -874,7 +874,7 @@ const localFFmpegTimeout = 10 * time.Minute
 func runLocalFFmpeg(ctx context.Context, config AppConfig, args []string) error {
 	resolved, ok := resolveLocalFFmpegBinary(config)
 	if !ok {
-		return errors.New("no local ffmpeg CLI found — install ffmpeg (brew install ffmpeg), or clear the configured binary override in Settings → Video Tools")
+		return errors.New("no local ffmpeg CLI found — install ffmpeg (brew install ffmpeg), or clear the configured binary override in Settings → Local Tools")
 	}
 	// -hide_banner first, so a failure's capped output (the last 2000 chars
 	// survive) starts with the actual error instead of the 3-line build
@@ -905,7 +905,7 @@ const localImageToolTimeout = 5 * time.Minute
 func runLocalSips(ctx context.Context, config AppConfig, args []string) ([]byte, error) {
 	resolved, ok := resolveLocalSipsBinary(config)
 	if !ok {
-		return nil, errors.New("no sips CLI found — it ships with macOS; check Settings → Image Tools for a configured override")
+		return nil, errors.New("no sips CLI found — it ships with macOS; check Settings → Local Tools for a configured override")
 	}
 	return runLocalMediaCLI(ctx, resolved, "sips", localImageToolTimeout, args)
 }
@@ -916,7 +916,7 @@ func runLocalSips(ctx context.Context, config AppConfig, args []string) ([]byte,
 func runLocalImageMagick(ctx context.Context, config AppConfig, args []string) ([]byte, error) {
 	resolved, ok := resolveLocalImageMagickBinary(config)
 	if !ok {
-		return nil, errors.New("no ImageMagick CLI found — install one (brew install imagemagick), or clear the configured binary override in Settings → Image Tools")
+		return nil, errors.New("no ImageMagick CLI found — install one (brew install imagemagick), or clear the configured binary override in Settings → Local Tools")
 	}
 	return runLocalMediaCLI(ctx, resolved, "imagemagick", localImageToolTimeout, args)
 }

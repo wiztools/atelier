@@ -117,7 +117,11 @@ import {CompositionEditor, CompositionEditorHandle} from './editor/CompositionEd
 import {detectEditorLaunchIntent} from './editorLaunch';
 
 type View = 'app' | 'settings' | 'conversation-models';
-type SettingsTab = 'providers' | 'models' | 'others';
+// Settings tabs draw one line: Providers are endpoints and keys you connect to
+// and then select as a backend under Models (cloud or local servers alike);
+// Local Tools are binaries installed on this machine that chat shells out to
+// and never selects as a backend — the ConfigLocalProviders set in Go.
+type SettingsTab = 'providers' | 'models' | 'tools' | 'general';
 type ChatProviderID = 'ollama' | 'openrouter' | 'openai-compatible';
 // 'edit' marks an image-editor session child conversation: the sidebar lists
 // it, but opening it routes to the editor workspace, not the chat transcript.
@@ -1242,7 +1246,9 @@ function App() {
   // whisper CLI) plus the local-whisper knobs. localToolsReport is the Go
   // side's detection snapshot (DetectLocalTools): which binaries exist and
   // which provider the config resolves to — the dropdown's local option only
-  // makes sense when a whisper was actually found.
+  // makes sense when a whisper was actually found. The provider and model are
+  // Models-tab selections (per-conversation overridable); the binary and VAD
+  // model are engine config edited under Local Tools, global like ffmpeg's.
   const [transcriptionProvider, setTranscriptionProvider] = useState<'fal' | 'local-whisper'>('fal');
   const [whisperModel, setWhisperModel] = useState('');
   const [whisperBinary, setWhisperBinary] = useState('');
@@ -1252,6 +1258,11 @@ function App() {
   const [sipsBinary, setSipsBinary] = useState('');
   const [magickBinary, setMagickBinary] = useState('');
   const [localToolsReport, setLocalToolsReport] = useState<main.LocalToolsReport | null>(null);
+  // The Local Tools tab's Re-detect button bumps the nonce so detection
+  // re-runs without a binary edit — a `brew install` made while Settings is
+  // open would otherwise never flip the status until the next launch.
+  const [localToolsDetectNonce, setLocalToolsDetectNonce] = useState(0);
+  const [localToolsDetecting, setLocalToolsDetecting] = useState(false);
   const [falLipsyncImageModel, setFalLipsyncImageModel] = useState(defaultFalLipsyncImageModel);
   const [falLipsyncVideoModel, setFalLipsyncVideoModel] = useState(defaultFalLipsyncVideoModel);
   const [falLipsyncImageModels, setFalLipsyncImageModels] = useState<main.FalModel[]>([]);
@@ -1984,10 +1995,11 @@ function App() {
     return () => window.clearTimeout(timeout);
   }, [airplaneMode, baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel, whisperVADModel]);
 
-  // Re-probe local CLI tools when a binary override changes so the provider
-  // dropdown and the video/image-tools status reflect an unsaved override without
-  // waiting for a save (an empty override means PATH auto-detection — the Go
-  // side treats it that way too).
+  // Re-probe local CLI tools when a binary override changes — or the Local
+  // Tools tab's Re-detect button bumps the nonce — so the transcription
+  // dropdown and the tool statuses reflect an unsaved override or a fresh
+  // install without waiting for a save (an empty override means PATH
+  // auto-detection — the Go side treats it that way too).
   useEffect(() => {
     if (!configLoaded) {
       return;
@@ -1995,10 +2007,16 @@ function App() {
     const timer = window.setTimeout(() => {
       DetectLocalTools(new main.LocalToolOverrides({binaries: {whisper: whisperBinary, ffmpeg: ffmpegBinary, ffprobe: ffprobeBinary, sips: sipsBinary, imagemagick: magickBinary}}))
         .then((report) => setLocalToolsReport(report))
-        .catch(() => setLocalToolsReport(null));
+        .catch(() => setLocalToolsReport(null))
+        .finally(() => setLocalToolsDetecting(false));
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [configLoaded, whisperBinary, ffmpegBinary, ffprobeBinary, sipsBinary, magickBinary]);
+  }, [configLoaded, whisperBinary, ffmpegBinary, ffprobeBinary, sipsBinary, magickBinary, localToolsDetectNonce]);
+
+  const redetectLocalTools = () => {
+    setLocalToolsDetecting(true);
+    setLocalToolsDetectNonce((nonce) => nonce + 1);
+  };
 
   // On a fresh launch, put the cursor in the chat box so the user can start
   // typing immediately. Fires once, when config finishes loading.
@@ -2449,9 +2467,7 @@ function App() {
     videoResolution,
     soundDuration,
     audioExtendDuration,
-    whisperBinary,
-    whisperVADModel,
-  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, inpaintProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, whisperModel, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration, whisperBinary, whisperVADModel]);
+  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, inpaintProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, whisperModel, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration]);
 
   const conversationModelSelection = useMemo<ModelSelectionValue>(() => {
     const global = globalModelSelection;
@@ -2504,8 +2520,6 @@ function App() {
       falAudioExtendModel: overrides.audioExtendModel || global.falAudioExtendModel,
       transcriptionProvider: overrides.transcriptionProvider === 'fal' || overrides.transcriptionProvider === 'local-whisper' ? overrides.transcriptionProvider : global.transcriptionProvider,
       whisperModel: overrides.whisperModel || global.whisperModel,
-      whisperBinary: overrides.whisperBinary || global.whisperBinary,
-      whisperVADModel: overrides.whisperVADModel || global.whisperVADModel,
       falTranscribeModel: overrides.transcribeModel || global.falTranscribeModel,
       falLipsyncImageModel: overrides.lipsyncImageModel || global.falLipsyncImageModel,
       falLipsyncVideoModel: overrides.lipsyncVideoModel || global.falLipsyncVideoModel,
@@ -2586,8 +2600,6 @@ function App() {
     if (patch.videoResolution !== undefined) setVideoResolution(patch.videoResolution);
     if (patch.soundDuration !== undefined) setSoundDuration(patch.soundDuration);
     if (patch.audioExtendDuration !== undefined) setAudioExtendDuration(patch.audioExtendDuration);
-    if (patch.whisperBinary !== undefined) setWhisperBinary(patch.whisperBinary);
-    if (patch.whisperVADModel !== undefined) setWhisperVADModel(patch.whisperVADModel);
   };
 
   const openConversationModels = () => {
@@ -2675,8 +2687,6 @@ function App() {
       if (patch.falTranscribeModel !== undefined) next.add('transcribeModel');
       if (patch.transcriptionProvider !== undefined) next.add('transcriptionProvider');
       if (patch.whisperModel !== undefined) next.add('whisperModel');
-      if (patch.whisperBinary !== undefined) next.add('whisperBinary');
-      if (patch.whisperVADModel !== undefined) next.add('whisperVADModel');
       if (patch.imageAspectRatio !== undefined) next.add('imageAspectRatio');
       if (patch.imageSizePreset !== undefined) next.add('imageSizePreset');
       if (patch.imageSteps !== undefined) next.add('imageSteps');
@@ -2771,8 +2781,6 @@ function App() {
         case 'transcribeModel': next.falTranscribeModel = global.falTranscribeModel; break;
         case 'transcriptionProvider': next.transcriptionProvider = global.transcriptionProvider; break;
         case 'whisperModel': next.whisperModel = global.whisperModel; break;
-        case 'whisperBinary': next.whisperBinary = global.whisperBinary; break;
-        case 'whisperVADModel': next.whisperVADModel = global.whisperVADModel; break;
         case 'imageAspectRatio': next.imageAspectRatio = global.imageAspectRatio; break;
         case 'imageSizePreset': next.imageSizePreset = global.imageSizePreset; break;
         case 'imageSteps': next.imageSteps = global.imageSteps; break;
@@ -6087,7 +6095,7 @@ function App() {
             <div className="settings-screen">
               <div className="settings-header">
                 <h2>Settings</h2>
-                <p>Ollama provider, model defaults, and prompt preferences.</p>
+                <p>Providers, model defaults, local tools, and general preferences.</p>
               </div>
 
               <div className="settings-tabs" role="tablist">
@@ -6108,10 +6116,17 @@ function App() {
                 <button
                   type="button"
                   role="tab"
-                  aria-selected={settingsTab === 'others'}
-                  className={settingsTab === 'others' ? 'active' : ''}
-                  onClick={() => setSettingsTab('others')}
-                >Others</button>
+                  aria-selected={settingsTab === 'tools'}
+                  className={settingsTab === 'tools' ? 'active' : ''}
+                  onClick={() => setSettingsTab('tools')}
+                >Local Tools</button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={settingsTab === 'general'}
+                  className={settingsTab === 'general' ? 'active' : ''}
+                  onClick={() => setSettingsTab('general')}
+                >General</button>
               </div>
 
               {settingsTab === 'providers' ? (
@@ -6137,8 +6152,10 @@ function App() {
                 </div>
               </section>
 
+              <div className="settings-group-label">Local servers</div>
+
               <section className="settings-section">
-                <h3>Provider</h3>
+                <h3>Ollama</h3>
                 <div className="connection">
                   <label htmlFor="base-url">Ollama endpoint</label>
                   <div className="endpoint-row">
@@ -6183,6 +6200,68 @@ function App() {
                   </select>
                 </div>
               </section>
+
+              <section className="settings-section">
+                <h3>OpenAI-compatible (local)</h3>
+                <div className="connection">
+                  <div className="field-label-row">
+                    <label htmlFor="openai-image-endpoint">Local image server endpoint</label>
+                    <InfoHint
+                      label="Local image server endpoint"
+                      text="Any server speaking OpenAI's /v1/images/generations (LocalAI, a diffusers shim, ...). Used when Image Provider is set to OpenAI-compatible."
+                    />
+                  </div>
+                  <div className="endpoint-row">
+                    <input
+                      id="openai-image-endpoint"
+                      value={openaiCompatibleBaseURL}
+                      onChange={(event) => setOpenaiCompatibleBaseURL(event.target.value)}
+                    />
+                    <button onClick={() => refreshOpenAICompatibleModels()}>Refresh</button>
+                  </div>
+                  <div className={openaiCompatibleStatus === 'ok' ? 'status online' : 'status offline'}>
+                    <span />
+                    {openaiCompatibleStatus === 'ok'
+                      ? `Online — ${openaiCompatibleModels.length} model${openaiCompatibleModels.length === 1 ? '' : 's'} listed`
+                      : openaiCompatibleStatus === 'error'
+                        ? 'Server unreachable or no /v1/models — enter model ids manually in Models.'
+                        : 'Not checked.'}
+                  </div>
+                </div>
+                <div className="connection">
+                  <label htmlFor="openai-image-key">API Key (optional)</label>
+                  <div className="endpoint-row">
+                    <input
+                      id="openai-image-key"
+                      type="password"
+                      placeholder={openaiCompatibleHasKey ? 'Key saved — enter a new key to replace it' : 'Leave empty for a local server without auth'}
+                      value={openaiCompatibleKeyInput}
+                      onChange={(event) => setOpenaiCompatibleKeyInput(event.target.value)}
+                    />
+                    <button type="button" className="icon-btn" onClick={saveOpenAICompatibleKey} disabled={!openaiCompatibleKeyInput} aria-label="Save key" title="Save key">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                        <polyline points="17 21 17 13 7 13 7 21" />
+                        <polyline points="7 3 7 8 15 8" />
+                      </svg>
+                    </button>
+                    {openaiCompatibleHasKey ? (
+                      <button type="button" className="icon-btn" onClick={clearOpenAICompatibleKey} aria-label="Clear key" title="Clear key">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="3 6 5 6 21 6" />
+                          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                        </svg>
+                      </button>
+                    ) : <span className="icon-btn-placeholder" aria-hidden="true" />}
+                  </div>
+                  <div className={openaiCompatibleHasKey ? 'status online' : 'status offline'}>
+                    <span />
+                    {openaiCompatibleHasKey ? 'Bearer key saved' : 'No key — requests go unauthenticated.'}
+                  </div>
+                </div>
+              </section>
+
+              <div className="settings-group-label">Cloud services</div>
 
               <section className={airplaneMode ? 'settings-section airplane-blocked' : 'settings-section'}>
                 <h3>
@@ -6346,72 +6425,24 @@ function App() {
                 </div>
               </section>
 
-              <section className="settings-section">
-                <h3>OpenAI-compatible (local)</h3>
-                <div className="connection">
-                  <div className="field-label-row">
-                    <label htmlFor="openai-image-endpoint">Local image server endpoint</label>
-                    <InfoHint
-                      label="Local image server endpoint"
-                      text="Any server speaking OpenAI's /v1/images/generations (LocalAI, a diffusers shim, ...). Used when Image Provider is set to OpenAI-compatible."
-                    />
-                  </div>
-                  <div className="endpoint-row">
-                    <input
-                      id="openai-image-endpoint"
-                      value={openaiCompatibleBaseURL}
-                      onChange={(event) => setOpenaiCompatibleBaseURL(event.target.value)}
-                    />
-                    <button onClick={() => refreshOpenAICompatibleModels()}>Refresh</button>
-                  </div>
-                  <div className={openaiCompatibleStatus === 'ok' ? 'status online' : 'status offline'}>
-                    <span />
-                    {openaiCompatibleStatus === 'ok'
-                      ? `Online — ${openaiCompatibleModels.length} model${openaiCompatibleModels.length === 1 ? '' : 's'} listed`
-                      : openaiCompatibleStatus === 'error'
-                        ? 'Server unreachable or no /v1/models — enter model ids manually in Models.'
-                        : 'Not checked.'}
-                  </div>
-                </div>
-                <div className="connection">
-                  <label htmlFor="openai-image-key">API Key (optional)</label>
-                  <div className="endpoint-row">
-                    <input
-                      id="openai-image-key"
-                      type="password"
-                      placeholder={openaiCompatibleHasKey ? 'Key saved — enter a new key to replace it' : 'Leave empty for a local server without auth'}
-                      value={openaiCompatibleKeyInput}
-                      onChange={(event) => setOpenaiCompatibleKeyInput(event.target.value)}
-                    />
-                    <button type="button" className="icon-btn" onClick={saveOpenAICompatibleKey} disabled={!openaiCompatibleKeyInput} aria-label="Save key" title="Save key">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
-                        <polyline points="17 21 17 13 7 13 7 21" />
-                        <polyline points="7 3 7 8 15 8" />
-                      </svg>
-                    </button>
-                    {openaiCompatibleHasKey ? (
-                      <button type="button" className="icon-btn" onClick={clearOpenAICompatibleKey} aria-label="Clear key" title="Clear key">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <polyline points="3 6 5 6 21 6" />
-                          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                        </svg>
-                      </button>
-                    ) : <span className="icon-btn-placeholder" aria-hidden="true" />}
-                  </div>
-                  <div className={openaiCompatibleHasKey ? 'status online' : 'status offline'}>
-                    <span />
-                    {openaiCompatibleHasKey ? 'Bearer key saved' : 'No key — requests go unauthenticated.'}
-                  </div>
-                </div>
-              </section>
+              </>
+              ) : null}
+
+              {settingsTab === 'tools' ? (
+              <>
+              <div className="tools-tab-intro">
+                <span>Binaries installed on this machine — Atelier detects them on the PATH automatically, so most of this stays untouched. Local tools keep working in airplane mode.</span>
+                <button type="button" onClick={redetectLocalTools} disabled={localToolsDetecting}>
+                  {localToolsDetecting ? 'Detecting…' : 'Re-detect'}
+                </button>
+              </div>
 
               <section className="settings-section">
                 <h3>
-                  Video Tools (FFmpeg){' '}
+                  Video &amp; Audio Tools (FFmpeg){' '}
                   <InfoHint
-                    label="Local video tools"
-                    text="ffmpeg powers the local video tools in chat: screenshot a frame, split a clip, join clips in attachment order, extract or replace audio, and probe a clip's properties. Detected automatically on PATH, or set an explicit binary below. A missing ffprobe only degrades two paths — joins always re-encode and audio extraction falls back to MP3."
+                    label="Local video and audio tools"
+                    text="ffmpeg powers the local video and audio tools in chat: screenshot or storyboard a clip, split, join (with crossfades), extract, replace, or remove audio, convert formats, change speed or shape, reverse playback, fade in or out, and burn subtitles. Detected automatically on PATH, or set an explicit binary below. A missing ffprobe only degrades some paths — joins always re-encode and audio extraction falls back to MP3."
                   />
                 </h3>
                 <div className="settings-rows">
@@ -6497,10 +6528,57 @@ function App() {
                   ) : null}
                 </div>
               </section>
+
+              <section className="settings-section">
+                <h3>
+                  Speech Tools (Whisper){' '}
+                  <InfoHint
+                    label="Local speech tools"
+                    text="Whisper powers local transcription in chat — plain transcripts, timestamped VTT/SRT subtitles, and English translation of foreign-language speech. It runs when Transcription Provider is 'Whisper (local)' under Models. Detected automatically on PATH ('whisper', then 'whisper-cli'), or set an explicit binary below. The optional VAD model is whisper.cpp only: when set, silent stretches are skipped instead of transcribed as hallucinated text."
+                  />
+                </h3>
+                <div className="settings-rows">
+                  <div className="two-column">
+                    <div className="field">
+                      <div className="field-label-row">
+                        <label htmlFor="whisper-binary">Whisper Binary</label>
+                        {whisperStatus?.detail ? (
+                          <InfoHint label="Whisper binary detection" text={whisperStatus.detail} />
+                        ) : null}
+                      </div>
+                      <input
+                        id="whisper-binary"
+                        value={whisperBinary}
+                        onChange={(event) => setWhisperBinary(event.target.value)}
+                        placeholder={whisperStatus?.path || 'auto-detect on PATH: whisper, then whisper-cli'}
+                      />
+                    </div>
+
+                    <div className="field">
+                      <div className="field-label-row">
+                        <label htmlFor="whisper-vad-model">Whisper VAD Model</label>
+                        <InfoHint
+                          label="Optional voice-activity detection"
+                          text="Path to a whisper.cpp VAD model (e.g. ~/.cache/whisper.cpp/ggml-silero-v6.2.0.bin). When set, local transcription runs with --vad so silent stretches are skipped instead of transcribed as hallucinated text. whisper.cpp only — the openai-whisper CLI has no VAD support and transcriptions carry a notice instead."
+                        />
+                      </div>
+                      <input
+                        id="whisper-vad-model"
+                        value={whisperVADModel}
+                        onChange={(event) => setWhisperVADModel(event.target.value)}
+                        placeholder="optional: ~/.cache/whisper.cpp/ggml-silero-v6.2.0.bin"
+                      />
+                    </div>
+                  </div>
+                  {!whisperStatus?.available ? (
+                    <span className="hint">{whisperStatus?.detail ?? 'Detecting local tools…'}</span>
+                  ) : null}
+                </div>
+              </section>
               </>
               ) : null}
 
-              {settingsTab === 'others' ? (
+              {settingsTab === 'general' ? (
               <>
               <section className="settings-section">
                 <h3>Storage</h3>
@@ -6584,11 +6662,12 @@ function App() {
                 catalogs={modelSelectionCatalogs}
                 durationOptions={{video: videoDurationOptions, image: videoDurationImageOptions, keyframe: videoDurationKeyframeOptions, extend: videoDurationExtendOptions, sound: soundDurationOptions}}
                 airplaneMode={airplaneMode}
+                onOpenLocalTools={() => setSettingsTab('tools')}
               />
               </>
               ) : null}
 
-              {settingsTab === 'others' ? (
+              {settingsTab === 'general' ? (
               <section className="settings-section">
                 <h3>System</h3>
                 <div className="field">
@@ -8662,8 +8741,6 @@ type ModelSelectionValue = {
   videoResolution: string;
   soundDuration: string;
   audioExtendDuration: string;
-  whisperBinary: string;
-  whisperVADModel: string;
 };
 
 // chatModelOptionsFor is the provider-aware option list shared by the primary
@@ -8716,6 +8793,11 @@ function overrideKeysFromRecord(overrides: main.ConversationModelOverrides | nul
   if (overrides.transcribeModel) keys.add('transcribeModel');
   if (overrides.transcriptionProvider) keys.add('transcriptionProvider');
   if (overrides.whisperModel) keys.add('whisperModel');
+  // The whisper binary and VAD model are no longer per-conversation fields
+  // (they're engine config under Settings → Local Tools), but a record pinned
+  // before that still overlays in Go, so it still counts as "overrides
+  // active" here; conversationOverridesPayload never re-emits them, so the
+  // next save normalizes the stale pin away.
   if (overrides.whisperBinary) keys.add('whisperBinary');
   if (overrides.whisperVADModel) keys.add('whisperVADModel');
   if (overrides.imageAspectRatio) keys.add('imageAspectRatio');
@@ -8772,8 +8854,6 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   if (keys.has('transcribeModel')) payload.transcribeModel = draft.falTranscribeModel;
   if (keys.has('transcriptionProvider')) payload.transcriptionProvider = draft.transcriptionProvider;
   if (keys.has('whisperModel')) payload.whisperModel = draft.whisperModel;
-  if (keys.has('whisperBinary')) payload.whisperBinary = draft.whisperBinary;
-  if (keys.has('whisperVADModel')) payload.whisperVADModel = draft.whisperVADModel;
   if (keys.has('imageAspectRatio')) payload.imageAspectRatio = draft.imageAspectRatio;
   if (keys.has('imageSizePreset')) payload.imageSizePreset = draft.imageSizePreset;
   if (keys.has('imageSteps')) payload.imageSteps = draft.imageSteps;
@@ -8793,7 +8873,10 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
 // screens stay pixel-identical by construction. The conversation variant adds
 // a Primary section and — via overriddenKeys/onResetField — marks fields this
 // conversation pins with a reset affordance; everything else, generation
-// defaults and the whisper binary included, renders in both variants.
+// defaults included, renders in both variants. Engine config (the whisper
+// binary and VAD model, like ffmpeg's) is NOT here — it lives under Settings →
+// Local Tools and is global; onOpenLocalTools lets the settings variant jump
+// there from a "whisper not found" hint.
 function ModelSelectionPanel({
   variant,
   value,
@@ -8803,6 +8886,7 @@ function ModelSelectionPanel({
   overriddenKeys,
   onResetField,
   airplaneMode,
+  onOpenLocalTools,
 }: {
   variant: 'settings' | 'conversation';
   value: ModelSelectionValue;
@@ -8810,6 +8894,7 @@ function ModelSelectionPanel({
   // Airplane mode: cloud providers and cloud-only sections render disabled or
   // hidden — the backend refuses them (airplane_mode.go), the panel explains.
   airplaneMode: boolean;
+  onOpenLocalTools?: () => void;
   catalogs: {
     models: main.OllamaModel[];
     modelOptions: string[];
@@ -8856,8 +8941,23 @@ function ModelSelectionPanel({
   const isPinned = (key: string) => !isSettings && !!overriddenKeys?.has(key);
   const resetField = (key: string) => onResetField?.(key);
   // "Add a key above" only reads right inside Settings; the conversation
-  // screen has no Providers tab, so point there instead.
+  // screen has no Providers tab, so point there instead. Local binaries live
+  // on their own tab in both cases.
   const keyWhere = isSettings ? 'above' : 'in Settings → Providers';
+  const toolWhere = isSettings ? 'under Local Tools' : 'in Settings → Local Tools';
+  // The Transcription section's one actionable hint: what's missing (a fal key
+  // or a whisper install) and where to fix it — never two hints saying the
+  // same thing. The detection detail from Go is a full sentence, so the
+  // pointer continues as its own sentence.
+  const whisperFound = !!catalogs.whisperStatus?.available;
+  const whisperDetail = catalogs.whisperStatus?.detail ?? 'Whisper not found.';
+  const localTranscriptionSelected = airplaneMode || value.transcriptionProvider === 'local-whisper';
+  const openLocalToolsLink = isSettings && onOpenLocalTools ? (
+    <>
+      {' '}
+      <button type="button" className="hint-link" onClick={onOpenLocalTools}>Open Local Tools</button>
+    </>
+  ) : null;
 
   const chatOptions = chatModelOptionsFor(value.harnessProvider, catalogs);
   const primaryOptions = chatModelOptionsFor(value.primaryProvider, catalogs);
@@ -9748,7 +9848,13 @@ function ModelSelectionPanel({
       </section>
 
       <section className="settings-section">
-        <h3>Transcription</h3>
+        <h3>
+          Transcription &amp; Subtitles{' '}
+          <InfoHint
+            label="What transcription powers"
+            text="Powers transcribe_audio: plain transcripts, timestamped VTT/SRT subtitles, and English translation of foreign-language speech; convert_subtitles and burn_subtitles consume the result. The whisper binary and VAD model themselves are configured under Local Tools."
+          />
+        </h3>
         <div className="settings-rows">
           <div className="two-column">
             <div className="field">
@@ -9774,9 +9880,6 @@ function ModelSelectionPanel({
                   Whisper (local)
                 </option>
               </select>
-              {!airplaneMode && !catalogs.whisperStatus?.available && value.transcriptionProvider !== 'local-whisper' ? (
-                <span className="hint">{catalogs.whisperStatus?.detail ?? 'Detecting local tools…'}</span>
-              ) : null}
             </div>
 
             {airplaneMode || value.transcriptionProvider === 'local-whisper' ? (
@@ -9813,42 +9916,18 @@ function ModelSelectionPanel({
             )}
           </div>
 
-          {value.transcriptionProvider === 'local-whisper' || airplaneMode ? (
-            <div className="two-column">
-              <div className="field">
-                <div className="field-label-row">
-                  {fieldLabel('whisper-binary', 'Whisper Binary', 'whisperBinary')}
-                  {catalogs.whisperStatus?.detail ? (
-                    <InfoHint label="Whisper binary detection" text={catalogs.whisperStatus.detail} />
-                  ) : null}
-                </div>
-                <input
-                  id="whisper-binary"
-                  value={value.whisperBinary}
-                  onChange={(event) => onChange({whisperBinary: event.target.value})}
-                  placeholder={catalogs.whisperStatus?.path || 'auto-detect on PATH: whisper, then whisper-cli'}
-                />
-              </div>
-
-              <div className="field">
-                <div className="field-label-row">
-                  {fieldLabel('whisper-vad-model', 'Whisper VAD Model', 'whisperVADModel')}
-                  <InfoHint
-                    label="Optional voice-activity detection"
-                    text="Path to a whisper.cpp VAD model (e.g. ~/.cache/whisper.cpp/ggml-silero-v6.2.0.bin). When set, local transcription runs with --vad so silent stretches are skipped instead of transcribed as hallucinated text. whisper.cpp only — the openai-whisper CLI has no VAD support and transcriptions carry a notice instead."
-                  />
-                </div>
-                <input
-                  id="whisper-vad-model"
-                  value={value.whisperVADModel}
-                  onChange={(event) => onChange({whisperVADModel: event.target.value})}
-                  placeholder="optional: ~/.cache/whisper.cpp/ggml-silero-v6.2.0.bin"
-                />
-              </div>
-            </div>
+          {localTranscriptionSelected ? (
+            whisperFound ? null : (
+              <span className="hint">{whisperDetail} Then re-detect or set its path {toolWhere}.{openLocalToolsLink}</span>
+            )
           ) : !catalogs.falHasKey ? (
-            <span className="hint">Add a fal.ai API key {keyWhere} — or install whisper locally — to transcribe audio.</span>
-          ) : null}
+            <span className="hint">
+              Add a fal.ai API key {keyWhere} — or {whisperFound ? 'switch to Whisper (local)' : <>set up whisper {toolWhere}</>} — to transcribe audio.
+              {whisperFound ? null : openLocalToolsLink}
+            </span>
+          ) : whisperFound ? null : (
+            <span className="hint">{whisperDetail} Then re-detect or set its path {toolWhere} to enable the local option.{openLocalToolsLink}</span>
+          )}
         </div>
       </section>
 
