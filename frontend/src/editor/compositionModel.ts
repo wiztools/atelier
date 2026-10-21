@@ -22,7 +22,7 @@ export type CompositionMediaRef = {
 };
 
 export type CompositionTransition = {
-  kind: 'dissolve';
+  kind: string;
   seconds: number;
   audioCrossfade: boolean;
 };
@@ -101,6 +101,31 @@ export const compositionDefaultFPS = 30.0;
 export const compositionDefaultName = 'Untitled composition';
 export const detachedAudioLaneName = 'Detached audio';
 
+// compositionTransitions is the junction vocabulary — 'dissolve' (the
+// composer's name for a plain cross-fade) plus the join tools' curated xfade
+// enum minus 'fade' itself (ffmpeg also ships a pixel 'dissolve', a different
+// effect, so the doc never stores that name). Mirrors composition.go.
+export const compositionTransitions = [
+  'dissolve', 'fadeblack', 'fadewhite', 'fadegrays',
+  'wipeleft', 'wiperight', 'wipeup', 'wipedown',
+  'slideleft', 'slideright', 'slideup', 'slidedown',
+  'circlecrop', 'circleopen', 'circleclose', 'rectcrop', 'radial', 'distance',
+  'smoothleft', 'smoothright', 'smoothup', 'smoothdown',
+  'horzopen', 'horzclose', 'vertopen', 'vertclose',
+  'diagtl', 'diagtr', 'diagbl', 'diagbr',
+  'hlslice', 'hrslice', 'vuslice', 'vdslice',
+  'wipetl', 'wipetr', 'wipebl', 'wipebr',
+  'hblur', 'pixelize', 'squeezeh', 'squeezev',
+];
+
+// normalizeTransitionKind aliases the raw xfade 'fade' onto 'dissolve' and
+// coerces anything foreign (a hand-edited or newer-version document) back to
+// the default — the Go validator would refuse the save otherwise.
+export function normalizeTransitionKind(kind: string): string {
+  if (kind === 'fade') return 'dissolve';
+  return compositionTransitions.includes(kind) ? kind : 'dissolve';
+}
+
 function finite(...values: number[]): boolean {
   return values.every((value) => Number.isFinite(value));
 }
@@ -148,9 +173,9 @@ export function normalizeCompositionDoc(wire: any): CompositionDoc {
       ref: normalizeCompositionMediaRef(clip?.ref),
       inSeconds: finite(clip?.inSeconds) ? clip.inSeconds : 0,
       outSeconds: finite(clip?.outSeconds) ? clip.outSeconds : 0,
-      transitionToNext: clip?.transitionToNext?.kind === 'dissolve'
+      transitionToNext: clip?.transitionToNext && clip.transitionToNext.kind !== 'cut'
         ? {
-            kind: 'dissolve' as const,
+            kind: normalizeTransitionKind(String(clip.transitionToNext.kind)),
             seconds: finite(clip.transitionToNext.seconds) ? clip.transitionToNext.seconds : compositionTransitionDefaultSeconds,
             audioCrossfade: clip.transitionToNext.audioCrossfade !== false,
           }
@@ -305,10 +330,10 @@ export function transitionBounds(doc: CompositionDoc, clipIndex: number): {min: 
   return {min: compositionTransitionMinSeconds, max: upper};
 }
 
-// clampTransition pulls a junction's dissolve into its bounds, in place on
+// clampTransition pulls a junction's transition into its bounds, in place on
 // the cloned clip array. Returns the transition (or null for a cut).
 function clampTransition(clip: CompositionClip, next: CompositionClip): CompositionTransition | null {
-  if (!clip.transitionToNext || clip.transitionToNext.kind !== 'dissolve') {
+  if (!clip.transitionToNext) {
     return null;
   }
   const upper = Math.min(compositionTransitionMaxSeconds, Math.min(clipDurationSeconds(clip), clipDurationSeconds(next)) / 2);
@@ -316,7 +341,7 @@ function clampTransition(clip: CompositionClip, next: CompositionClip): Composit
     return null;
   }
   const seconds = Math.min(upper, Math.max(compositionTransitionMinSeconds, finite(clip.transitionToNext.seconds) && clip.transitionToNext.seconds > 0 ? clip.transitionToNext.seconds : compositionTransitionDefaultSeconds));
-  return {kind: 'dissolve', seconds, audioCrossfade: clip.transitionToNext.audioCrossfade};
+  return {kind: normalizeTransitionKind(clip.transitionToNext.kind), seconds, audioCrossfade: clip.transitionToNext.audioCrossfade};
 }
 
 // normalizeTransitions re-clamps every junction and drops the last clip's —
@@ -463,13 +488,13 @@ export function setClipRange(doc: CompositionDoc, clipID: string, inSeconds: num
 // setClipTransition installs, resizes, or removes a junction's transition.
 // A dissolve clamps into its bounds; a request Go would refuse (bounds null)
 // is a no-op — the inspector renders those bounds, so the user never asks
-// blind. Passing null is the cut.
-export function setClipTransition(doc: CompositionDoc, clipID: string, transition: {seconds: number; audioCrossfade: boolean} | null): CompositionDoc {
+// blind. Passing null is the cut; a kind outside the vocabulary normalizes.
+export function setClipTransition(doc: CompositionDoc, clipID: string, transition: {kind?: string; seconds: number; audioCrossfade: boolean} | null): CompositionDoc {
   const index = doc.video.findIndex((clip) => clip.id === clipID);
   if (index < 0 || index >= doc.video.length - 1) return cloneCompositionDoc(doc);
   const next = updateClip(doc, clipID, (current) => ({
     ...current,
-    transitionToNext: transition ? {kind: 'dissolve', seconds: transition.seconds, audioCrossfade: transition.audioCrossfade} : null,
+    transitionToNext: transition ? {kind: normalizeTransitionKind(transition.kind ?? 'dissolve'), seconds: transition.seconds, audioCrossfade: transition.audioCrossfade} : null,
   }));
   return {...next, video: normalizeTransitions(next.video)};
 }
@@ -781,11 +806,14 @@ export function compositionProblems(doc: CompositionDoc): string[] {
     if (!finite(clip.inSeconds, clip.outSeconds) || clip.outSeconds - clip.inSeconds < compositionMinRangeSeconds) {
       problems.push(`${label}'s source range is too short`);
     }
-    if (clip.transitionToNext && clip.transitionToNext.kind !== 'dissolve') {
-      problems.push(`${label}'s transition kind must be "cut" or "dissolve"`);
+    if (clip.transitionToNext) {
+      const kind = clip.transitionToNext.kind;
+      if (kind !== 'dissolve' && kind !== 'fade' && !compositionTransitions.includes(kind)) {
+        problems.push(`${label}'s transition kind must be "cut", "dissolve", or an xfade transition name`);
+      }
     }
     if (clip.transitionToNext && index < doc.video.length - 1 && transitionBounds(doc, index) === null) {
-      problems.push(`${label}'s dissolve does not fit: the adjacent clips are too short`);
+      problems.push(`${label}'s transition does not fit: the adjacent clips are too short`);
     }
   });
   doc.audioLanes.forEach((lane, laneIndex) => {

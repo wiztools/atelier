@@ -53,6 +53,11 @@ type compositionRenderOptions struct {
 	Width        int
 	Height       int
 	FPS          float64
+	// InstalledTransitions bounds the junction vocabulary to the resolved
+	// ffmpeg's real xfade names (installedXFadeTransitions); a kind outside
+	// it renders as a plain dissolve under a notice. Nil skips the check —
+	// the pure-builder tests, and any render whose doc has no transitions.
+	InstalledTransitions []string
 }
 
 // compositionRenderPlan is everything the ffmpeg invocation needs, plus the
@@ -254,14 +259,35 @@ func buildCompositionRenderPlan(doc CompositionDoc, facts map[string]joinClipFac
 			statements = append(statements, compositionConformStatements(inputFor(clip.Ref), clip, fact, doc.Output.Fit, width, height, fpsText, fmt.Sprintf("v%d", i))...)
 		}
 		videoLabel = "[v0]"
+		unsupportedXfades := map[string]bool{}
 		for j := 0; j+1 < len(doc.Video); j++ {
 			next := fmt.Sprintf("[vx%d]", j)
 			transition := doc.Video[j].Transition
 			if transition != nil {
 				// The overlap starts where the incoming clip lands on the
 				// merged timeline — compositionClipLayout's starts hold it.
-				statements = append(statements, fmt.Sprintf("%s[v%d]xfade=transition=fade:duration=%s:offset=%s%s",
-					videoLabel, j+1, formatJoinSeconds(transition.Seconds), formatJoinSeconds(starts[j+1]), next))
+				// The kind names the real xfade ("dissolve" is the composer's
+				// word for a plain cross-fade); an install lacking the name
+				// falls back to that plain dissolve under a notice.
+				xfadeName := compositionXfadeName(transition.Kind)
+				if opts.InstalledTransitions != nil {
+					known := false
+					for _, installed := range opts.InstalledTransitions {
+						if installed == xfadeName {
+							known = true
+							break
+						}
+					}
+					if !known {
+						xfadeName = "fade"
+						if !unsupportedXfades[transition.Kind] {
+							unsupportedXfades[transition.Kind] = true
+							plan.Notices = append(plan.Notices, fmt.Sprintf("this ffmpeg lacks the %q transition — that junction uses a plain dissolve instead", transition.Kind))
+						}
+					}
+				}
+				statements = append(statements, fmt.Sprintf("%s[v%d]xfade=transition=%s:duration=%s:offset=%s%s",
+					videoLabel, j+1, xfadeName, formatJoinSeconds(transition.Seconds), formatJoinSeconds(starts[j+1]), next))
 			} else {
 				statements = append(statements, fmt.Sprintf("%s[v%d]concat=n=2:v=1:a=0%s", videoLabel, j+1, next))
 			}
@@ -824,14 +850,27 @@ func (a *App) executeCompositionRender(ctx context.Context, config AppConfig, ru
 		facts[clip.Ref.ArtifactID] = fact
 	}
 
+	// The junction vocabulary is bounded by the resolved ffmpeg only when the
+	// doc uses one — no capability probe for transition-free compositions.
+	var installed []string
+	for _, clip := range doc.Video {
+		if clip.Transition != nil {
+			if names, _, ok := installedXFadeTransitions(ctx, config); ok {
+				installed = names
+			}
+			break
+		}
+	}
+
 	plan, err := buildCompositionRenderPlan(doc, facts, compositionRenderOptions{
-		StartSeconds: op.RangeStart,
-		EndSeconds:   op.RangeEnd,
-		SoloLaneID:   op.SoloLaneID,
-		MuteAudio:    run.muteAudio,
-		Width:        run.width,
-		Height:       run.height,
-		FPS:          run.fps,
+		StartSeconds:         op.RangeStart,
+		EndSeconds:           op.RangeEnd,
+		SoloLaneID:           op.SoloLaneID,
+		MuteAudio:            run.muteAudio,
+		Width:                run.width,
+		Height:               run.height,
+		FPS:                  run.fps,
+		InstalledTransitions: installed,
 	})
 	if err != nil {
 		update(func(o *CompositionRenderOperation) { o.Status = "failed"; o.Error = err.Error() })

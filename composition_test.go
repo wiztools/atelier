@@ -206,7 +206,7 @@ func TestValidateCompositionDocRefusals(t *testing.T) {
 		{"unmeasured clip", video(clip("c1", testVideoRef("vid", 0, true), 0, 5)), "never measured"},
 		{"range too short", video(clip("c1", testVideoRef("vid", 5, true), 2, 2.001)), "too short"},
 		{"range not finite", video(clip("c1", testVideoRef("vid", 5, true), math.NaN(), 5)), "non-finite"},
-		{"unknown transition", video(CompositionClip{ID: "c1", Ref: testVideoRef("vid", 5, true), OutSeconds: 5, Transition: &CompositionTransition{Kind: "wipe"}}, clip("c2", testVideoRef("vid2", 5, true), 0, 5)), "must be \"cut\" or \"dissolve\""},
+		{"unknown transition", video(CompositionClip{ID: "c1", Ref: testVideoRef("vid", 5, true), OutSeconds: 5, Transition: &CompositionTransition{Kind: "wipe"}}, clip("c2", testVideoRef("vid2", 5, true), 0, 5)), "transition kind must be"},
 		{"dissolve does not fit", video(CompositionClip{ID: "c1", Ref: testVideoRef("vid", 5, true), OutSeconds: 0.15, Transition: &CompositionTransition{Kind: "dissolve", Seconds: 1}}, clip("c2", testVideoRef("vid2", 5, true), 0, 5)), "does not fit"},
 		{"segment overlap", lane(segment("s1", testAudioRef("aud", 6), 0), segment("s2", testAudioRef("aud2", 6), 3)), "overlaps the previous segment"},
 		{"segment negative start", lane(segment("s1", testAudioRef("aud", 6), -1)), "before the composition begins"},
@@ -501,5 +501,35 @@ func TestSaveCompositionEditAndResolve(t *testing.T) {
 	app.streamsMu.Unlock()
 	if _, err := app.SaveCompositionEdit(SaveCompositionEditRequest{ConversationID: "conv_comp", Doc: doc}); err == nil || !strings.Contains(err.Error(), "streaming") {
 		t.Fatalf("a streaming conversation must refuse the save, got %v", err)
+	}
+}
+
+func TestValidateCompositionDocTransitionKinds(t *testing.T) {
+	build := func(kind string) *CompositionDoc {
+		return &CompositionDoc{
+			SchemaVersion: compositionSchemaVersion, Name: "T", Output: CompositionOutput{Fit: compositionFitPad},
+			Video: []CompositionClip{
+				{ID: "clp_a", Ref: testVideoRef("vid_a", 10, true), InSeconds: 0, OutSeconds: 10, Transition: &CompositionTransition{Kind: kind, Seconds: 1}},
+				{ID: "clp_b", Ref: testVideoRef("vid_b", 10, true), InSeconds: 0, OutSeconds: 10},
+			},
+			AudioLanes: []CompositionLane{},
+		}
+	}
+	doc := build("fade")
+	if err := validateCompositionDoc(doc); err != nil {
+		t.Fatalf("the raw xfade name \"fade\" must alias to dissolve: %v", err)
+	}
+	if doc.Video[0].Transition == nil || doc.Video[0].Transition.Kind != "dissolve" {
+		t.Fatalf("\"fade\" must normalize to dissolve, got %+v", doc.Video[0].Transition)
+	}
+	doc = build("wipeleft")
+	if err := validateCompositionDoc(doc); err != nil {
+		t.Fatalf("a curated xfade name must validate: %v", err)
+	}
+	if doc.Video[0].Transition.Kind != "wipeleft" {
+		t.Fatalf("a curated name must survive validation, got %+v", doc.Video[0].Transition)
+	}
+	if err := validateCompositionDoc(build("radialnonsense")); err == nil {
+		t.Fatal("an unknown kind must be refused")
 	}
 }

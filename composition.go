@@ -80,7 +80,7 @@ type CompositionMediaRef struct {
 // original audio crosses the junction (an equal-power crossfade by default,
 // the join_audios curve; a hard audio cut when AudioCrossfade is false).
 type CompositionTransition struct {
-	Kind    string  `json:"kind"` // "dissolve" (a "cut" normalizes to nil)
+	Kind    string  `json:"kind"` // "dissolve" or a curated xfade name (a "cut" normalizes to nil)
 	Seconds float64 `json:"seconds,omitempty"`
 	// AudioCrossfade crossfades the outgoing and incoming original audio over
 	// the dissolve; false cuts the audio hard at the junction (TR-07).
@@ -235,19 +235,20 @@ func compositionClampGain(gainDb float64) float64 {
 // adjacent clip ranges: into [min, max], and at most half the shorter
 // neighboring clip (the join tools' clamp — an overlap longer than half a
 // clip would consume the clip entirely). A "cut" normalizes to nil; a
-// dissolve with no length takes the default; a junction whose clips cannot
+// transition with no length takes the default; a junction whose clips cannot
 // hold even the minimum overlap is an error, since no clamp could make it
 // fit. An unknown kind is an error.
 func compositionNormalizeTransition(transition *CompositionTransition, thisDuration, nextDuration float64, index int) (*CompositionTransition, error) {
 	if transition == nil || transition.Kind == "" || transition.Kind == "cut" {
 		return nil, nil
 	}
-	if transition.Kind != "dissolve" {
-		return nil, fmt.Errorf("clip %d's transition kind must be \"cut\" or \"dissolve\", got %q", index+1, transition.Kind)
+	kind, known := compositionTransitionKind(transition.Kind)
+	if !known {
+		return nil, fmt.Errorf("clip %d's transition kind must be \"cut\", \"dissolve\", or an xfade transition name (fadeblack, wipeleft, circleopen, …), got %q", index+1, transition.Kind)
 	}
 	upper := math.Min(compositionTransitionMaxSeconds, math.Min(thisDuration, nextDuration)/2)
 	if upper < compositionTransitionMinSeconds {
-		return nil, fmt.Errorf("clip %d's dissolve does not fit: the adjacent clips are too short for even the minimum %gs overlap", index+1, compositionTransitionMinSeconds)
+		return nil, fmt.Errorf("clip %d's %s does not fit: the adjacent clips are too short for even the minimum %gs overlap", index+1, kind, compositionTransitionMinSeconds)
 	}
 	seconds := transition.Seconds
 	if !compositionFinite(seconds) || seconds <= 0 {
@@ -259,7 +260,46 @@ func compositionNormalizeTransition(transition *CompositionTransition, thisDurat
 	if seconds < compositionTransitionMinSeconds {
 		seconds = compositionTransitionMinSeconds
 	}
-	return &CompositionTransition{Kind: "dissolve", Seconds: seconds, AudioCrossfade: transition.AudioCrossfade}, nil
+	return &CompositionTransition{Kind: kind, Seconds: seconds, AudioCrossfade: transition.AudioCrossfade}, nil
+}
+
+// compositionTransitions is the composer's junction vocabulary: "dissolve"
+// (the composer's name for a plain cross-fade) plus the join tools' curated
+// xfade enum minus "fade" itself — ffmpeg also ships a pixel "dissolve", a
+// different effect, so the doc never stores that name.
+var compositionTransitions = func() []string {
+	names := make([]string, 0, len(xfadeTransitions))
+	for _, name := range xfadeTransitions {
+		if name != "fade" {
+			names = append(names, name)
+		}
+	}
+	return names
+}()
+
+// compositionTransitionKind normalizes a doc's transition kind: "fade" (the
+// raw xfade name) lands on "dissolve", the join tools' crossfade-alias
+// pattern inverted. ok is false for anything outside the vocabulary.
+func compositionTransitionKind(kind string) (string, bool) {
+	if kind == "fade" {
+		return "dissolve", true
+	}
+	for _, name := range compositionTransitions {
+		if kind == name {
+			return kind, true
+		}
+	}
+	return "", false
+}
+
+// compositionXfadeName maps a doc's transition kind onto its ffmpeg xfade
+// name — "dissolve" is the composer's word for xfade "fade"; every other
+// kind is already the xfade name.
+func compositionXfadeName(kind string) string {
+	if kind == "dissolve" {
+		return "fade"
+	}
+	return kind
 }
 
 // validateCompositionDoc checks and normalizes a document in place — the

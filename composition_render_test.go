@@ -684,6 +684,7 @@ func TestCompositionRenderGraphsOnRealFFmpeg(t *testing.T) {
 		{"single clip", renderTestDoc(renderTestClip("c1", refA, 0, 3, nil)), compositionRenderOptions{}, true, 0, true},
 		{"cut with silent peer", cutWithSilent(), compositionRenderOptions{}, true, 0, true},
 		{"dissolve with crossfade", dissolveDoc(), compositionRenderOptions{}, true, 0, true},
+		{"wipe transition", renderTestDoc(renderTestClip("c1", refA, 0, 3, &CompositionTransition{Kind: "wipeleft", Seconds: 1}), renderTestClip("c2", refB, 0, 3, nil)), compositionRenderOptions{}, true, 0, true},
 		{"lanes with ducks", withLanes(), compositionRenderOptions{}, true, 0, true},
 		{"audio only", CompositionDoc{SchemaVersion: compositionSchemaVersion, Name: "Test", Output: CompositionOutput{Fit: compositionFitPad}, AudioLanes: []CompositionLane{musicLane}}, compositionRenderOptions{}, true, 0, true},
 		{"range preview", cutWithSilent(), compositionRenderOptions{StartSeconds: &one, EndSeconds: &four}, true, 0, true},
@@ -702,5 +703,44 @@ func TestCompositionRenderGraphsOnRealFFmpeg(t *testing.T) {
 				t.Fatalf("ffmpeg refused the graph: %v\nfilter_complex: %s\n%s", err, plan.FilterComplex, out)
 			}
 		})
+	}
+}
+
+func TestBuildCompositionRenderPlanTransitionVocabulary(t *testing.T) {
+	wipe := &CompositionTransition{Kind: "wipeleft", Seconds: 1}
+	clipA := renderTestClip("c1", renderTestVideoRef("vid_a", "/v.mp4", 10, true), 0, 10, wipe)
+	clipB := renderTestClip("c2", renderTestVideoRef("vid_b", "/w.mp4", 10, true), 0, 10, nil)
+	doc := renderTestDoc(clipA, clipB)
+	facts := renderTestFacts(clipA.Ref, clipB.Ref)
+
+	plan, err := buildCompositionRenderPlan(doc, facts, compositionRenderOptions{})
+	if err != nil {
+		t.Fatalf("buildCompositionRenderPlan returned error: %v", err)
+	}
+	if !strings.Contains(plan.FilterComplex, "xfade=transition=wipeleft:duration=1:") {
+		t.Fatalf("a named xfade kind must reach the graph verbatim: %s", plan.FilterComplex)
+	}
+
+	// An install lacking the name renders the junction as a plain dissolve
+	// under one deduped notice; the audio branches are untouched.
+	plan, err = buildCompositionRenderPlan(doc, facts, compositionRenderOptions{InstalledTransitions: []string{"fade"}})
+	if err != nil {
+		t.Fatalf("buildCompositionRenderPlan with a bounded install returned error: %v", err)
+	}
+	if strings.Contains(plan.FilterComplex, "wipeleft") || !strings.Contains(plan.FilterComplex, "xfade=transition=fade:duration=1:") {
+		t.Fatalf("an unsupported kind must degrade to a plain dissolve: %s", plan.FilterComplex)
+	}
+	if len(plan.Notices) != 1 || !strings.Contains(plan.Notices[0], "wipeleft") {
+		t.Fatalf("exactly one substitution notice naming the kind: %v", plan.Notices)
+	}
+
+	// "dissolve" remains the composer's word for xfade "fade".
+	dissolveDoc := renderTestDoc(renderTestClip("c1", renderTestVideoRef("vid_a", "/v.mp4", 10, true), 0, 10, &CompositionTransition{Kind: "dissolve", Seconds: 1}), renderTestClip("c2", renderTestVideoRef("vid_b", "/w.mp4", 10, true), 0, 10, nil))
+	plan, err = buildCompositionRenderPlan(dissolveDoc, renderTestFacts(clipA.Ref, clipB.Ref), compositionRenderOptions{InstalledTransitions: []string{"fade"}})
+	if err != nil {
+		t.Fatalf("dissolve plan returned error: %v", err)
+	}
+	if !strings.Contains(plan.FilterComplex, "xfade=transition=fade:") || len(plan.Notices) != 0 {
+		t.Fatalf("dissolve must render as fade without a notice: %s %v", plan.FilterComplex, plan.Notices)
 	}
 }

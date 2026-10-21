@@ -18,6 +18,7 @@ import {
   moveSegment,
   newCompositionID,
   normalizeCompositionDoc,
+  normalizeTransitionKind,
   reattachClipAudio,
   removeDuck,
   removeSegment,
@@ -164,6 +165,15 @@ assert(bothDetached.audioLanes[0].segments[1].startSeconds === 10, 'the second d
 assert(resolveOutputFrame(threeClips()).width === 1280 && resolveOutputFrame(threeClips()).fps === 30, 'output inherits the first clip');
 const sized = setCompositionOutput(threeClips(), {width: 1081, height: 1921, fit: 'blur'});
 assert(sized.output.width === 1080 && sized.output.height === 1920 && sized.output.fit === 'blur', 'output clamps even and takes the fit');
+
+// Junction vocabulary (the composer's xfade names).
+assert(normalizeTransitionKind('fade') === 'dissolve' && normalizeTransitionKind('wipeleft') === 'wipeleft', "'fade' aliases to dissolve; curated names pass");
+assert(normalizeTransitionKind('radialnonsense') === 'dissolve', 'a foreign kind coerces back to the default');
+const wipeBase = threeClips();
+const wipe = setClipTransition(wipeBase, wipeBase.video[1].id, {kind: 'wipeleft', seconds: 1, audioCrossfade: false});
+assert(wipe.video[1].transitionToNext?.kind === 'wipeleft', 'a named kind survives the set');
+assert(sameCompositionDoc(normalizeCompositionDoc(toWireDoc(wipe)), wipe), 'a named kind round-trips the wire');
+assert(wipe.video[1].transitionToNext?.audioCrossfade === false, 'a named kind keeps its audio choice');
 
 // Problems: the Go refusal mirror.
 assert(compositionProblems(threeClips()).length === 0, 'a built doc has no problems');
