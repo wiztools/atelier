@@ -1246,9 +1246,10 @@ function App() {
   // whisper CLI) plus the local-whisper knobs. localToolsReport is the Go
   // side's detection snapshot (DetectLocalTools): which binaries exist and
   // which provider the config resolves to — the dropdown's local option only
-  // makes sense when a whisper was actually found. The provider and model are
-  // Models-tab selections (per-conversation overridable); the binary and VAD
-  // model are engine config edited under Local Tools, global like ffmpeg's.
+  // makes sense when a whisper was actually found. The provider is a
+  // Models-tab selection (per-conversation overridable); the model, binary,
+  // and VAD model are engine config edited under Local Tools, global like
+  // ffmpeg's.
   const [transcriptionProvider, setTranscriptionProvider] = useState<'fal' | 'local-whisper'>('fal');
   const [whisperModel, setWhisperModel] = useState('');
   const [whisperBinary, setWhisperBinary] = useState('');
@@ -2455,7 +2456,6 @@ function App() {
     falSoundEffectsModel,
     falAudioExtendModel,
     transcriptionProvider,
-    whisperModel,
     falTranscribeModel,
     falLipsyncImageModel,
     falLipsyncVideoModel,
@@ -2467,7 +2467,7 @@ function App() {
     videoResolution,
     soundDuration,
     audioExtendDuration,
-  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, inpaintProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, whisperModel, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration]);
+  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, inpaintProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration]);
 
   const conversationModelSelection = useMemo<ModelSelectionValue>(() => {
     const global = globalModelSelection;
@@ -2519,7 +2519,6 @@ function App() {
       falSoundEffectsModel: overrides.soundEffectsModel || global.falSoundEffectsModel,
       falAudioExtendModel: overrides.audioExtendModel || global.falAudioExtendModel,
       transcriptionProvider: overrides.transcriptionProvider === 'fal' || overrides.transcriptionProvider === 'local-whisper' ? overrides.transcriptionProvider : global.transcriptionProvider,
-      whisperModel: overrides.whisperModel || global.whisperModel,
       falTranscribeModel: overrides.transcribeModel || global.falTranscribeModel,
       falLipsyncImageModel: overrides.lipsyncImageModel || global.falLipsyncImageModel,
       falLipsyncVideoModel: overrides.lipsyncVideoModel || global.falLipsyncVideoModel,
@@ -2588,7 +2587,6 @@ function App() {
     if (patch.falSoundEffectsModel !== undefined) setFalSoundEffectsModel(patch.falSoundEffectsModel);
     if (patch.falAudioExtendModel !== undefined) setFalAudioExtendModel(patch.falAudioExtendModel);
     if (patch.transcriptionProvider !== undefined) setTranscriptionProvider(patch.transcriptionProvider);
-    if (patch.whisperModel !== undefined) setWhisperModel(patch.whisperModel);
     if (patch.falTranscribeModel !== undefined) setFalTranscribeModel(patch.falTranscribeModel);
     if (patch.falLipsyncImageModel !== undefined) setFalLipsyncImageModel(patch.falLipsyncImageModel);
     if (patch.falLipsyncVideoModel !== undefined) setFalLipsyncVideoModel(patch.falLipsyncVideoModel);
@@ -2686,7 +2684,6 @@ function App() {
       if (patch.falAudioExtendModel !== undefined) next.add('audioExtendModel');
       if (patch.falTranscribeModel !== undefined) next.add('transcribeModel');
       if (patch.transcriptionProvider !== undefined) next.add('transcriptionProvider');
-      if (patch.whisperModel !== undefined) next.add('whisperModel');
       if (patch.imageAspectRatio !== undefined) next.add('imageAspectRatio');
       if (patch.imageSizePreset !== undefined) next.add('imageSizePreset');
       if (patch.imageSteps !== undefined) next.add('imageSteps');
@@ -2780,7 +2777,6 @@ function App() {
         case 'audioExtendModel': next.falAudioExtendModel = global.falAudioExtendModel; break;
         case 'transcribeModel': next.falTranscribeModel = global.falTranscribeModel; break;
         case 'transcriptionProvider': next.transcriptionProvider = global.transcriptionProvider; break;
-        case 'whisperModel': next.whisperModel = global.whisperModel; break;
         case 'imageAspectRatio': next.imageAspectRatio = global.imageAspectRatio; break;
         case 'imageSizePreset': next.imageSizePreset = global.imageSizePreset; break;
         case 'imageSteps': next.imageSteps = global.imageSteps; break;
@@ -6534,7 +6530,7 @@ function App() {
                   Speech Tools (Whisper){' '}
                   <InfoHint
                     label="Local speech tools"
-                    text="Whisper powers local transcription in chat — plain transcripts, timestamped VTT/SRT subtitles, and English translation of foreign-language speech. It runs when Transcription Provider is 'Whisper (local)' under Models. Detected automatically on PATH ('whisper', then 'whisper-cli'), or set an explicit binary below. The optional VAD model is whisper.cpp only: when set, silent stretches are skipped instead of transcribed as hallucinated text."
+                    text="Whisper powers local transcription in chat — plain transcripts, timestamped VTT/SRT subtitles, and English translation of foreign-language speech. It runs when Transcription Provider is 'Whisper (local)' under Models. The binary is detected automatically on PATH ('whisper', then 'whisper-cli'); set an explicit binary, the model, or the optional VAD model below. The VAD model is whisper.cpp only: when set, silent stretches are skipped instead of transcribed as hallucinated text."
                   />
                 </h3>
                 <div className="settings-rows">
@@ -6551,6 +6547,24 @@ function App() {
                         value={whisperBinary}
                         onChange={(event) => setWhisperBinary(event.target.value)}
                         placeholder={whisperStatus?.path || 'auto-detect on PATH: whisper, then whisper-cli'}
+                      />
+                    </div>
+
+                    <div className="field">
+                      <div className="field-label-row">
+                        <label htmlFor="whisper-model">Whisper Model</label>
+                        <InfoHint
+                          label="Whisper model"
+                          text={whisperStatus?.flavor === 'whisper-cpp'
+                            ? 'A ggml model file for whisper.cpp (a leading ~/ is expanded). Empty resolves: $WHISPER_MODEL (if set when Atelier launched) → ~/.whisper-base.en.bin → ~/.cache/whisper.cpp/ggml-base.en.bin → ~/models/ggml-base.en.bin.'
+                            : 'An openai-whisper model size (tiny, base, small, medium, large-v3, ...), downloaded on first use. Empty uses the CLI\'s own default, small. With whisper.cpp this becomes a ggml model file path instead.'}
+                        />
+                      </div>
+                      <input
+                        id="whisper-model"
+                        value={whisperModel}
+                        onChange={(event) => setWhisperModel(event.target.value)}
+                        placeholder={whisperStatus?.flavor === 'whisper-cpp' ? '/path/to/ggml-base.en.bin' : 'small (whisper default)'}
                       />
                     </div>
 
@@ -8729,7 +8743,6 @@ type ModelSelectionValue = {
   falSoundEffectsModel: string;
   falAudioExtendModel: string;
   transcriptionProvider: 'fal' | 'local-whisper';
-  whisperModel: string;
   falTranscribeModel: string;
   falLipsyncImageModel: string;
   falLipsyncVideoModel: string;
@@ -8792,12 +8805,12 @@ function overrideKeysFromRecord(overrides: main.ConversationModelOverrides | nul
   if (overrides.audioExtendModel) keys.add('audioExtendModel');
   if (overrides.transcribeModel) keys.add('transcribeModel');
   if (overrides.transcriptionProvider) keys.add('transcriptionProvider');
+  // The whisper model, binary, and VAD model are no longer per-conversation
+  // fields (they're engine config under Settings → Local Tools), but a record
+  // pinned before that still overlays in Go, so it still counts as
+  // "overrides active" here; conversationOverridesPayload never re-emits
+  // them, so the next save normalizes the stale pin away.
   if (overrides.whisperModel) keys.add('whisperModel');
-  // The whisper binary and VAD model are no longer per-conversation fields
-  // (they're engine config under Settings → Local Tools), but a record pinned
-  // before that still overlays in Go, so it still counts as "overrides
-  // active" here; conversationOverridesPayload never re-emits them, so the
-  // next save normalizes the stale pin away.
   if (overrides.whisperBinary) keys.add('whisperBinary');
   if (overrides.whisperVADModel) keys.add('whisperVADModel');
   if (overrides.imageAspectRatio) keys.add('imageAspectRatio');
@@ -8853,7 +8866,6 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   if (keys.has('audioExtendModel')) payload.audioExtendModel = draft.falAudioExtendModel;
   if (keys.has('transcribeModel')) payload.transcribeModel = draft.falTranscribeModel;
   if (keys.has('transcriptionProvider')) payload.transcriptionProvider = draft.transcriptionProvider;
-  if (keys.has('whisperModel')) payload.whisperModel = draft.whisperModel;
   if (keys.has('imageAspectRatio')) payload.imageAspectRatio = draft.imageAspectRatio;
   if (keys.has('imageSizePreset')) payload.imageSizePreset = draft.imageSizePreset;
   if (keys.has('imageSteps')) payload.imageSteps = draft.imageSteps;
@@ -8874,9 +8886,9 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
 // a Primary section and — via overriddenKeys/onResetField — marks fields this
 // conversation pins with a reset affordance; everything else, generation
 // defaults included, renders in both variants. Engine config (the whisper
-// binary and VAD model, like ffmpeg's) is NOT here — it lives under Settings →
-// Local Tools and is global; onOpenLocalTools lets the settings variant jump
-// there from a "whisper not found" hint.
+// model, binary, and VAD model, like ffmpeg's) is NOT here — it lives under
+// Settings → Local Tools and is global; onOpenLocalTools lets the settings
+// variant jump there from the Transcription section's hints.
 function ModelSelectionPanel({
   variant,
   value,
@@ -9852,7 +9864,7 @@ function ModelSelectionPanel({
           Transcription &amp; Subtitles{' '}
           <InfoHint
             label="What transcription powers"
-            text="Powers transcribe_audio: plain transcripts, timestamped VTT/SRT subtitles, and English translation of foreign-language speech; convert_subtitles and burn_subtitles consume the result. The whisper binary and VAD model themselves are configured under Local Tools."
+            text="Powers transcribe_audio: plain transcripts, timestamped VTT/SRT subtitles, and English translation of foreign-language speech; convert_subtitles and burn_subtitles consume the result. The whisper binary, model, and VAD model themselves are configured under Local Tools."
           />
         </h3>
         <div className="settings-rows">
@@ -9882,25 +9894,7 @@ function ModelSelectionPanel({
               </select>
             </div>
 
-            {airplaneMode || value.transcriptionProvider === 'local-whisper' ? (
-              <div className="field">
-                <div className="field-label-row">
-                  {fieldLabel('whisper-model', 'Whisper Model', 'whisperModel')}
-                  {catalogs.whisperStatus?.flavor === 'whisper-cpp' ? (
-                    <InfoHint
-                      label="Empty whisper model resolution"
-                      text="Empty model resolves: $WHISPER_MODEL (if set when Atelier launched) → ~/.whisper-base.en.bin → ~/.cache/whisper.cpp/ggml-base.en.bin → ~/models/ggml-base.en.bin."
-                    />
-                  ) : null}
-                </div>
-                <input
-                  id="whisper-model"
-                  value={value.whisperModel}
-                  onChange={(event) => onChange({whisperModel: event.target.value})}
-                  placeholder={catalogs.whisperStatus?.flavor === 'whisper-cpp' ? '/path/to/ggml-base.en.bin' : 'small (whisper default)'}
-                />
-              </div>
-            ) : (
+            {localTranscriptionSelected ? null : (
               <div className="field">
                 {fieldLabel('fal-transcribe-model', 'Transcription Model (fal.ai)', 'transcribeModel')}
                 <ModelCombobox
@@ -9917,7 +9911,9 @@ function ModelSelectionPanel({
           </div>
 
           {localTranscriptionSelected ? (
-            whisperFound ? null : (
+            whisperFound ? (
+              <span className="hint">The whisper binary, model, and VAD model are configured {toolWhere}.{openLocalToolsLink}</span>
+            ) : (
               <span className="hint">{whisperDetail} Then re-detect or set its path {toolWhere}.{openLocalToolsLink}</span>
             )
           ) : !catalogs.falHasKey ? (
