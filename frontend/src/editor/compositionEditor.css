@@ -332,6 +332,14 @@
 
 .composition-inspector {
   gap: 12px;
+  /* The shared .editor-inspector rule is align-self: start — right for the
+     media editors' compact tool columns, but this inspector is content-rich
+     (project output, clip/lane inspectors, save, export) and would grow past
+     the body row and spill over the Edits strip. Stretch to the body like the
+     main column and scroll internally instead. */
+  align-self: stretch;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .composition-field {
