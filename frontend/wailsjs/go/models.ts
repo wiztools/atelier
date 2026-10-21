@@ -923,6 +923,317 @@ export namespace main {
 	        this.userMarkdowns = source["userMarkdowns"];
 	    }
 	}
+	export class CompositionOriginalAudio {
+	    gainDb?: number;
+	    muted?: boolean;
+	    detached?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new CompositionOriginalAudio(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.gainDb = source["gainDb"];
+	        this.muted = source["muted"];
+	        this.detached = source["detached"];
+	    }
+	}
+	export class CompositionTransition {
+	    kind: string;
+	    seconds?: number;
+	    audioCrossfade?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new CompositionTransition(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.seconds = source["seconds"];
+	        this.audioCrossfade = source["audioCrossfade"];
+	    }
+	}
+	export class CompositionMediaRef {
+	    artifactId: string;
+	    conversationId?: string;
+	    path: string;
+	    mimeType?: string;
+	    kind: string;
+	    durationSeconds: number;
+	    width?: number;
+	    height?: number;
+	    fps?: number;
+	    hasAudio?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new CompositionMediaRef(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.artifactId = source["artifactId"];
+	        this.conversationId = source["conversationId"];
+	        this.path = source["path"];
+	        this.mimeType = source["mimeType"];
+	        this.kind = source["kind"];
+	        this.durationSeconds = source["durationSeconds"];
+	        this.width = source["width"];
+	        this.height = source["height"];
+	        this.fps = source["fps"];
+	        this.hasAudio = source["hasAudio"];
+	    }
+	}
+	export class CompositionClip {
+	    id: string;
+	    ref: CompositionMediaRef;
+	    inSeconds: number;
+	    outSeconds: number;
+	    transitionToNext?: CompositionTransition;
+	    audio: CompositionOriginalAudio;
+	
+	    static createFrom(source: any = {}) {
+	        return new CompositionClip(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.ref = this.convertValues(source["ref"], CompositionMediaRef);
+	        this.inSeconds = source["inSeconds"];
+	        this.outSeconds = source["outSeconds"];
+	        this.transitionToNext = this.convertValues(source["transitionToNext"], CompositionTransition);
+	        this.audio = this.convertValues(source["audio"], CompositionOriginalAudio);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class CompositionDuck {
+	    startSeconds: number;
+	    endSeconds: number;
+	    gainDb: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CompositionDuck(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.startSeconds = source["startSeconds"];
+	        this.endSeconds = source["endSeconds"];
+	        this.gainDb = source["gainDb"];
+	    }
+	}
+	export class CompositionSegment {
+	    id: string;
+	    ref: CompositionMediaRef;
+	    inSeconds: number;
+	    outSeconds: number;
+	    startSeconds: number;
+	    gainDb?: number;
+	    fadeInSeconds?: number;
+	    fadeOutSeconds?: number;
+	    ducks: CompositionDuck[];
+	    detachedFromClipId?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CompositionSegment(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.ref = this.convertValues(source["ref"], CompositionMediaRef);
+	        this.inSeconds = source["inSeconds"];
+	        this.outSeconds = source["outSeconds"];
+	        this.startSeconds = source["startSeconds"];
+	        this.gainDb = source["gainDb"];
+	        this.fadeInSeconds = source["fadeInSeconds"];
+	        this.fadeOutSeconds = source["fadeOutSeconds"];
+	        this.ducks = this.convertValues(source["ducks"], CompositionDuck);
+	        this.detachedFromClipId = source["detachedFromClipId"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class CompositionLane {
+	    id: string;
+	    name: string;
+	    gainDb?: number;
+	    muted?: boolean;
+	    segments: CompositionSegment[];
+	
+	    static createFrom(source: any = {}) {
+	        return new CompositionLane(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.gainDb = source["gainDb"];
+	        this.muted = source["muted"];
+	        this.segments = this.convertValues(source["segments"], CompositionSegment);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class CompositionOutput {
+	    width?: number;
+	    height?: number;
+	    fps?: number;
+	    fit?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CompositionOutput(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.width = source["width"];
+	        this.height = source["height"];
+	        this.fps = source["fps"];
+	        this.fit = source["fit"];
+	    }
+	}
+	export class CompositionDoc {
+	    schemaVersion: number;
+	    name?: string;
+	    output: CompositionOutput;
+	    video: CompositionClip[];
+	    audioLanes: CompositionLane[];
+	
+	    static createFrom(source: any = {}) {
+	        return new CompositionDoc(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.schemaVersion = source["schemaVersion"];
+	        this.name = source["name"];
+	        this.output = this.convertValues(source["output"], CompositionOutput);
+	        this.video = this.convertValues(source["video"], CompositionClip);
+	        this.audioLanes = this.convertValues(source["audioLanes"], CompositionLane);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
+	
+	
+	
+	
+	export class CompositionSourceInfo {
+	    conversationId: string;
+	    conversationTitle?: string;
+	    artifactId?: string;
+	    url?: string;
+	    mimeType?: string;
+	    doc: CompositionDoc;
+	    missingRefs: string[];
+	    warnings: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new CompositionSourceInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.conversationId = source["conversationId"];
+	        this.conversationTitle = source["conversationTitle"];
+	        this.artifactId = source["artifactId"];
+	        this.url = source["url"];
+	        this.mimeType = source["mimeType"];
+	        this.doc = this.convertValues(source["doc"], CompositionDoc);
+	        this.missingRefs = source["missingRefs"];
+	        this.warnings = source["warnings"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	
 	
 	
@@ -2408,6 +2719,76 @@ export namespace main {
 	        this.suggestedName = source["suggestedName"];
 	    }
 	}
+	export class SaveCompositionEditRequest {
+	    conversationId: string;
+	    sourceArtifactId?: string;
+	    doc: CompositionDoc;
+	
+	    static createFrom(source: any = {}) {
+	        return new SaveCompositionEditRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.conversationId = source["conversationId"];
+	        this.sourceArtifactId = source["sourceArtifactId"];
+	        this.doc = this.convertValues(source["doc"], CompositionDoc);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class SaveCompositionEditResult {
+	    artifactId: string;
+	    url: string;
+	    doc: CompositionDoc;
+	    summary: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SaveCompositionEditResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.artifactId = source["artifactId"];
+	        this.url = source["url"];
+	        this.doc = this.convertValues(source["doc"], CompositionDoc);
+	        this.summary = source["summary"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class SaveDocumentExportRequest {
 	    path: string;
 	    format: string;
@@ -2621,6 +3002,22 @@ export namespace main {
 		    }
 		    return a;
 		}
+	}
+	export class SeedCompositionRequest {
+	    conversationId: string;
+	    name?: string;
+	    artifactIds: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SeedCompositionRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.conversationId = source["conversationId"];
+	        this.name = source["name"];
+	        this.artifactIds = source["artifactIds"];
+	    }
 	}
 	export class SidebarState {
 	    chatsCollapsed?: boolean;

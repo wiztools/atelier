@@ -1,0 +1,415 @@
+/* Video composer specifics — the shared shell lives in App.css under the
+   .editor-* classes; everything here is scoped under .composition-editor.
+   The main column squeezes (min-height 0) with the toolbar at natural height
+   and the timeline absorbing the rest. */
+
+.composition-editor .editor-body {
+  min-height: 0;
+}
+
+.composition-editor-main {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  gap: 10px;
+}
+
+.composition-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.composition-name {
+  min-width: 160px;
+  max-width: 260px;
+}
+
+.composition-summary {
+  font-size: 12px;
+  color: #aeb4b8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.composition-toolbar-spacer {
+  flex: 1;
+}
+
+.composition-warning {
+  font-size: 12px;
+  color: #d9a441;
+  white-space: nowrap;
+}
+
+.composition-seed-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #d9a441;
+  border: 1px solid #4a3f27;
+  border-radius: 6px;
+}
+
+/* The timeline: a ruler, the video lane, and the audio lanes. Lanes are
+   position:relative strips; clips and segments are absolutely positioned
+   by percentage of the timeline extent. */
+
+.composition-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 220px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 6px 4px 10px;
+  border: 1px solid #3b3f42;
+  border-radius: 6px;
+  background: #23272a;
+}
+
+.composition-ruler {
+  position: relative;
+  height: 16px;
+  min-width: 100%;
+  font-size: 10px;
+  color: #7d8488;
+}
+
+.composition-ruler span {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.composition-lane {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  min-height: 44px;
+  border-radius: 4px;
+}
+
+.composition-lane-video {
+  min-height: 60px;
+  background: #1b1f22;
+  border: 1px solid #3b3f42;
+}
+
+.composition-lane-video.focused {
+  border-color: #55606a;
+}
+
+.composition-lane-audio {
+  background: #1e2225;
+  border: 1px solid #33383c;
+}
+
+.composition-lane-audio.selected {
+  border-color: #4a90d9;
+}
+
+.composition-lane-label {
+  flex: 0 0 96px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  font-size: 11px;
+  color: #9aa1a6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composition-lane-audio.muted .composition-lane-label {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+.composition-lane-track {
+  position: relative;
+  flex: 1;
+}
+
+.composition-lane-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-style: italic;
+  color: #6f7477;
+}
+
+.composition-clip,
+.composition-segment {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border: 1px solid #4a5560;
+  border-radius: 4px;
+  background: #2e3a46;
+  color: #d7dde2;
+  font-size: 11px;
+  overflow: hidden;
+  padding: 2px;
+  cursor: pointer;
+}
+
+.composition-clip.selected,
+.composition-segment.selected {
+  border-color: #4a90d9;
+  box-shadow: 0 0 0 1px #4a90d9;
+}
+
+.composition-clip.missing,
+.composition-segment.missing {
+  background: repeating-linear-gradient(45deg, #43302d, #43302d 6px, #352623 6px, #352623 12px);
+  border-color: #8c4a42;
+}
+
+.composition-clip.audio-muted {
+  opacity: 0.75;
+}
+
+.composition-clip.audio-detached {
+  border-style: dashed;
+}
+
+.composition-clip-name,
+.composition-clip-duration {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.composition-clip-duration {
+  font-size: 10px;
+  color: #9aa1a6;
+}
+
+.composition-segment {
+  background: #2c4034;
+  border-color: #3f5c4a;
+}
+
+.composition-segment.ducked::after {
+  content: '♪';
+  position: absolute;
+  right: 3px;
+  bottom: 1px;
+  font-size: 10px;
+  color: #d9a441;
+}
+
+.composition-junction {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  min-width: 14px;
+  z-index: 2;
+  border: 1px solid #6a737d;
+  border-radius: 3px;
+  background: #454f58;
+  color: #e6ebee;
+  font-size: 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  white-space: nowrap;
+  padding: 0 2px;
+}
+
+.composition-junction.dissolve {
+  background: #4a4364;
+  border-color: #6f66a3;
+}
+
+.composition-junction.selected {
+  box-shadow: 0 0 0 1px #4a90d9;
+}
+
+/* The media picker — the subtitle editor's linked-media dialog shape. */
+
+.composition-media-picker {
+  position: relative;
+  border: 1px solid #3b3f42;
+  border-radius: 6px;
+  background: #1e2225;
+  padding: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.composition-media-picker-head {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.composition-media-picker-head input {
+  flex: 1;
+}
+
+.composition-media-picker ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.composition-media-picker li button {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  text-align: left;
+  padding: 6px 8px;
+  border: 1px solid #3b3f42;
+  border-radius: 4px;
+  background: #23272a;
+  color: #d7dde2;
+  cursor: pointer;
+}
+
+.composition-media-picker li button:hover:not(:disabled) {
+  border-color: #55606a;
+}
+
+.composition-media-picker li button.added {
+  border-color: #3f5c4a;
+}
+
+.composition-picker-name {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composition-picker-provenance {
+  font-size: 11px;
+  color: #8d9498;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composition-picker-state {
+  font-size: 11px;
+  color: #7fb98a;
+  white-space: nowrap;
+}
+
+.composition-picker-empty {
+  font-size: 12px;
+  font-style: italic;
+  color: #6f7477;
+  padding: 6px 8px;
+}
+
+/* Inspector fields. */
+
+.composition-inspector {
+  gap: 12px;
+}
+
+.composition-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: #9aa1a6;
+  min-width: 0;
+}
+
+.composition-field input,
+.composition-field select {
+  min-width: 0;
+}
+
+.composition-field-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.composition-field-row .composition-field {
+  flex: 1 1 64px;
+}
+
+.composition-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #c7cdd1;
+}
+
+.composition-ref-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composition-problems ul {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  font-size: 12px;
+  color: #d9a441;
+}
+
+.composition-inspect-clip,
+.composition-inspect-lane,
+.composition-inspect-segment,
+.composition-inspect-doc {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.composition-transition,
+.composition-audio-mix,
+.composition-ducks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid #33383c;
+  padding-top: 8px;
+}
+
+.composition-duck-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.composition-duck-row .composition-field {
+  flex: 1;
+}
+
+.composition-save {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}

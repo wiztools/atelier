@@ -62,6 +62,7 @@ import {
   ListInpaintModels,
   ListEditSession,
   ResolveAudioEditSource,
+  ResolveCompositionEditSource,
   ResolveEditSource,
   ResolveSubtitleEditSource,
   ResolveMarkdownEditSource,
@@ -95,7 +96,9 @@ import {
   SaveOpenRouterAPIKey,
   SaveUIState,
   SaveMarkdown,
+  SaveComposition,
   SaveTranscript,
+  SeedComposition,
   StreamChat,
   UpdateConversationTitle,
   AppendMediaUploadChunk,
@@ -110,6 +113,7 @@ import {VideoEditor, VideoEditorHandle} from './editor/VideoEditor';
 import {AudioEditor, AudioEditorHandle} from './editor/AudioEditor';
 import {SubtitleEditor, SubtitleEditorHandle} from './editor/SubtitleEditor';
 import {MarkdownEditor, MarkdownEditorHandle} from './editor/MarkdownEditor';
+import {CompositionEditor, CompositionEditorHandle} from './editor/CompositionEditor';
 import {detectEditorLaunchIntent} from './editorLaunch';
 
 type View = 'app' | 'settings' | 'conversation-models';
@@ -134,6 +138,10 @@ type ChatEntry = {
   // conversation by the markdown editor — /atelier-artifact URLs. Rendered as
   // chips with an Edit door into the editor; never model input.
   markdowns?: string[];
+  // Composition project documents (cmp_ .json) saved into the conversation by
+  // the video composer — one per saved revision. Rendered as chips with an
+  // Edit door reopening that revision; never model input.
+  compositions?: string[];
   // Timestamped-transcript artifacts (.vtt) produced by transcribe_audio —
   // "/atelier-artifact" URLs rendered as downloadable chips.
   transcripts?: string[];
@@ -1459,27 +1467,32 @@ function App() {
   const [audioEditorHandle, setAudioEditorHandle] = useState<AudioEditorHandle | null>(null);
   const [subtitleEditorHandle, setSubtitleEditorHandle] = useState<SubtitleEditorHandle | null>(null);
   const [markdownEditorHandle, setMarkdownEditorHandle] = useState<MarkdownEditorHandle | null>(null);
+  const [compositionEditorHandle, setCompositionEditorHandle] = useState<CompositionEditorHandle | null>(null);
   const [videoEditorOpening, setVideoEditorOpening] = useState(false);
   const [imageEditorOpening, setImageEditorOpening] = useState(false);
   const [audioEditorOpening, setAudioEditorOpening] = useState(false);
   const [subtitleEditorOpening, setSubtitleEditorOpening] = useState(false);
   const [markdownEditorOpening, setMarkdownEditorOpening] = useState(false);
+  const [compositionEditorOpening, setCompositionEditorOpening] = useState(false);
   const [videoEditorError, setVideoEditorError] = useState('');
-  const [discardEditorDraft, setDiscardEditorDraft] = useState<'video' | 'audio' | 'subtitle' | 'markdown' | null>(null);
+  const [discardEditorDraft, setDiscardEditorDraft] = useState<'video' | 'audio' | 'subtitle' | 'markdown' | 'composition' | null>(null);
   const videoEditorDirty = useRef(false);
   const audioEditorDirty = useRef(false);
   const subtitleEditorDirty = useRef(false);
   const markdownEditorDirty = useRef(false);
+  const compositionEditorDirty = useRef(false);
   const videoNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
   const audioNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
   const subtitleNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
   const markdownNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
+  const compositionNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
   const videoOpenGeneration = useRef(0);
   const videoOpeningIdentity = useRef<{conversationID: string; artifactID: string} | null>(null);
   const imageOpenGeneration = useRef(0);
   const audioOpenGeneration = useRef(0);
   const subtitleOpenGeneration = useRef(0);
   const markdownOpenGeneration = useRef(0);
+  const compositionOpenGeneration = useRef(0);
   // Mirror of editorOpen for the atelier:editor-launch listener (an empty-deps
   // effect): a mid-stream AI launch must not replace an editor already on
   // screen — an unsaved draft is never discarded by a tool-timed open.
@@ -1487,8 +1500,8 @@ function App() {
   // Either editor's source resolve in flight — every edit button disables on
   // it, so a slow open can't collect repeated clicks (or race the other
   // editor's later-landing handle into view).
-  const editorOpening = imageEditorOpening || videoEditorOpening || audioEditorOpening || subtitleEditorOpening || markdownEditorOpening;
-  const editorOpen = !!editorHandle || !!videoEditorHandle || !!audioEditorHandle || !!subtitleEditorHandle || !!markdownEditorHandle;
+  const editorOpening = imageEditorOpening || videoEditorOpening || audioEditorOpening || subtitleEditorOpening || markdownEditorOpening || compositionEditorOpening;
+  const editorOpen = !!editorHandle || !!videoEditorHandle || !!audioEditorHandle || !!subtitleEditorHandle || !!markdownEditorHandle || !!compositionEditorHandle;
   const [purgeBusy, setPurgeBusy] = useState(false);
   const [confirmPurgeArchived, setConfirmPurgeArchived] = useState(false);
   const [purgeStatus, setPurgeStatus] = useState('');
@@ -3908,6 +3921,17 @@ function App() {
     return /^md_[a-zA-Z0-9]+$/.test(stem) ? stem : null;
   }
 
+  // compositionArtifactIDFromURL matches project documents only — cmp_ stems
+  // with a .json extension, the video composer's saved revisions.
+  function compositionArtifactIDFromURL(url: string): string | null {
+    if (!url.startsWith('/atelier-artifact/')) return null;
+    const path = url.split(/[?#]/)[0];
+    const filename = path.split('/').pop() || '';
+    const stem = filename.replace(/\.[^.]+$/, '');
+    if (!/\.json$/i.test(filename)) return null;
+    return /^cmp_[a-zA-Z0-9]+$/.test(stem) ? stem : null;
+  }
+
   function confirmLeaveVideoEditor(): Promise<boolean> {
     if (!videoEditorHandle || !videoEditorDirty.current) return Promise.resolve(true);
     if (videoNavigationResolver.current) return Promise.resolve(false);
@@ -3936,13 +3960,21 @@ function App() {
     return new Promise((resolve) => { markdownNavigationResolver.current = resolve; });
   }
 
+  function confirmLeaveCompositionEditor(): Promise<boolean> {
+    if (!compositionEditorHandle || !compositionEditorDirty.current) return Promise.resolve(true);
+    if (compositionNavigationResolver.current) return Promise.resolve(false);
+    setDiscardEditorDraft('composition');
+    return new Promise((resolve) => { compositionNavigationResolver.current = resolve; });
+  }
+
   // confirmLeaveEditor walks whichever editors hold unsaved work — only one
   // confirm flow is ever active, so the dialog resolves both waiters.
   async function confirmLeaveEditor(): Promise<boolean> {
     if (!(await confirmLeaveVideoEditor())) return false;
     if (!(await confirmLeaveAudioEditor())) return false;
     if (!(await confirmLeaveSubtitleEditor())) return false;
-    return confirmLeaveMarkdownEditor();
+    if (!(await confirmLeaveMarkdownEditor())) return false;
+    return confirmLeaveCompositionEditor();
   }
 
   function resolveEditorNavigation(discard: boolean) {
@@ -3959,6 +3991,9 @@ function App() {
     const markdownResolve = markdownNavigationResolver.current;
     markdownNavigationResolver.current = null;
     markdownResolve?.(discard);
+    const compositionResolve = compositionNavigationResolver.current;
+    compositionNavigationResolver.current = null;
+    compositionResolve?.(discard);
   }
 
   function openSettings() {
@@ -4172,6 +4207,82 @@ function App() {
     }
   }
 
+  // openCompositionEditor reopens a saved composition revision — the assets
+  // panel's and the reply chips' Edit door. The third session-free editor:
+  // the resolve is the whole load, and the picker's library scope comes from
+  // the conversation's own record (the openSubtitleEditor rule).
+  async function openCompositionEditor(conversationID: string, artifactID: string) {
+    if (!(await confirmLeaveEditor())) return;
+    cancelVideoPreparation();
+    cancelImagePreparation();
+    cancelAudioPreparation();
+    const generation = ++compositionOpenGeneration.current;
+    setCompositionEditorOpening(true);
+    try {
+      const owner = await GetConversation(conversationID);
+      if (generation !== compositionOpenGeneration.current) return;
+      if (owner.conversation.kind === 'edit') {
+        await openEditSession(conversationID);
+        return;
+      }
+      const source = await ResolveCompositionEditSource(conversationID, artifactID);
+      if (generation !== compositionOpenGeneration.current) return;
+      setEditorHandle(null);
+      setVideoEditorHandle(null);
+      setAudioEditorHandle(null);
+      setSubtitleEditorHandle(null);
+      setMarkdownEditorHandle(null);
+      videoEditorDirty.current = false;
+      audioEditorDirty.current = false;
+      subtitleEditorDirty.current = false;
+      markdownEditorDirty.current = false;
+      compositionEditorDirty.current = false;
+      setCompositionEditorHandle({source, libraryID: libraryIDForProject(owner.conversation.projectId ?? '')});
+      setView((current) => (current === 'settings' ? current : 'app'));
+    } catch (error) {
+      if (generation === compositionOpenGeneration.current) setStartupError(formatError(error));
+    } finally {
+      if (generation === compositionOpenGeneration.current) setCompositionEditorOpening(false);
+    }
+  }
+
+  // openNewComposition starts an unsaved draft — the "New composition" action
+  // and (later) the editor-launch intent's door. Seeding resolves and
+  // measures the referenced artifacts in order; nothing persists until the
+  // editor's first save, which is what lets this run mid-stream safely.
+  async function openNewComposition(conversationID: string, seedArtifactIDs: string[]) {
+    if (!(await confirmLeaveEditor())) return;
+    cancelVideoPreparation();
+    cancelImagePreparation();
+    cancelAudioPreparation();
+    const generation = ++compositionOpenGeneration.current;
+    setCompositionEditorOpening(true);
+    try {
+      const owner = await GetConversation(conversationID);
+      const source = await SeedComposition(main.SeedCompositionRequest.createFrom({
+        conversationId: conversationID,
+        artifactIds: seedArtifactIDs,
+      }));
+      if (generation !== compositionOpenGeneration.current) return;
+      setEditorHandle(null);
+      setVideoEditorHandle(null);
+      setAudioEditorHandle(null);
+      setSubtitleEditorHandle(null);
+      setMarkdownEditorHandle(null);
+      videoEditorDirty.current = false;
+      audioEditorDirty.current = false;
+      subtitleEditorDirty.current = false;
+      markdownEditorDirty.current = false;
+      compositionEditorDirty.current = false;
+      setCompositionEditorHandle({source, libraryID: libraryIDForProject(owner.conversation.projectId ?? '')});
+      setView((current) => (current === 'settings' ? current : 'app'));
+    } catch (error) {
+      if (generation === compositionOpenGeneration.current) setStartupError(formatError(error));
+    } finally {
+      if (generation === compositionOpenGeneration.current) setCompositionEditorOpening(false);
+    }
+  }
+
   // openEditSession reopens a saved edit session — the sidebar/search path
   // for Kind "edit" conversations. The handle seeds from the loaded session's
   // own source copy, so the editor can submit iterations without guessing.
@@ -4236,10 +4347,12 @@ function App() {
     setAudioEditorHandle(null);
     setSubtitleEditorHandle(null);
     setMarkdownEditorHandle(null);
+    setCompositionEditorHandle(null);
     videoEditorDirty.current = false;
     audioEditorDirty.current = false;
     subtitleEditorDirty.current = false;
     markdownEditorDirty.current = false;
+    compositionEditorDirty.current = false;
     setEditorHandle(null);
     setPreviewEditContext(null);
   }
@@ -4347,6 +4460,7 @@ function App() {
       audios: historyAudios(turn.content),
       subtitles: turn.role === 'user' ? historySubtitles(turn.content) : undefined,
       markdowns: historyMarkdowns(turn.content),
+      compositions: historyCompositions(turn.content),
       transcripts: historyTranscripts(turn.content),
       harnessRun: parseHarnessRun(turn.providerResponse?.harnessRun),
       mediaTool: turn.providerResponse?.tool as MediaToolSummaryView | undefined,
@@ -5239,6 +5353,17 @@ function App() {
     }
   }
 
+  async function saveGeneratedComposition(composition: string, index: number) {
+    try {
+      await SaveComposition(main.SaveTranscriptRequest.createFrom({
+        path: composition,
+        suggestedName: `composition-${Date.now()}-${index + 1}`,
+      }));
+    } catch (error) {
+      setStartupError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   // downloadAsset is the assets-panel download affordance: every Save* binding
   // accepts the panel's /atelier-artifact URL (each resolves it back to the
   // artifact bytes on disk), so one per-kind dispatcher covers every card.
@@ -5255,6 +5380,9 @@ function App() {
     }
     if (asset.kind === 'markdown') {
       return saveGeneratedMarkdown(asset.url, 0);
+    }
+    if (asset.kind === 'composition') {
+      return saveGeneratedComposition(asset.url, 0);
     }
     return saveGeneratedImage(asset.url, 0);
   }
@@ -5878,6 +6006,37 @@ function App() {
                 void refreshConversations();
                 setAssetsRefreshTick((tick) => tick + 1);
                 const parentID = markdownEditorHandle.source.conversationId;
+                if (activeConversationIDRef.current === parentID) {
+                  void GetConversation(parentID).then((detail) => {
+                    if (activeConversationIDRef.current === parentID) hydrateChatConversation(detail);
+                  }).catch((error) => setStartupError(formatError(error)));
+                }
+              }}
+            />
+          </div>
+        ) : compositionEditorHandle ? (
+          <div className="editor-slot" hidden={view !== 'app'}>
+            <CompositionEditor
+              key={compositionEditorHandle.source.artifactId || 'composition-draft'}
+              handle={compositionEditorHandle}
+              // The media picker widens to the library exactly when the
+              // composition's conversation belongs to a project — the scope
+              // resolved from its own record at open time.
+              libraryID={compositionEditorHandle.libraryID || undefined}
+              suspended={view !== 'app'}
+              onClose={() => {void confirmLeaveEditor().then((discard) => {if (discard) closeImageEditor();});}}
+              onOpenParent={(conversationID) => {
+                void confirmLeaveEditor().then((discard) => {
+                  if (!discard) return;
+                  closeImageEditor();
+                  void openConversationSummary(main.ConversationSummary.createFrom({id: conversationID, kind: 'chat', title: ''}));
+                });
+              }}
+              onDirtyChange={(dirty) => {compositionEditorDirty.current = dirty;}}
+              onSavedToConversation={() => {
+                void refreshConversations();
+                setAssetsRefreshTick((tick) => tick + 1);
+                const parentID = compositionEditorHandle.source.conversationId;
                 if (activeConversationIDRef.current === parentID) {
                   void GetConversation(parentID).then((detail) => {
                     if (activeConversationIDRef.current === parentID) hydrateChatConversation(detail);
@@ -6778,6 +6937,37 @@ function App() {
                           ))}
                         </div>
                       ) : null}
+                      {entry.compositions?.length ? (
+                        <div className="chat-transcript-results">
+                          {entry.compositions.map((composition, index) => (
+                            <div key={`${entry.id}-composition-${index}`} className="chat-transcript-card">
+                              <span className="chat-transcript-name">🎬 Composition · {(composition.split('/').pop() || 'project.json').replace(/\.json$/i, '').slice(0, 16)}</span>
+                              <div className="chat-transcript-actions">
+                                <button
+                                  type="button"
+                                  disabled={editorOpening || !activeConversationID || !compositionArtifactIDFromURL(composition)}
+                                  title={compositionArtifactIDFromURL(composition) ? 'Open this revision in the video composer' : 'Persisted composition required'}
+                                  onClick={() => {
+                                    const artifactID = compositionArtifactIDFromURL(composition);
+                                    if (artifactID && activeConversationID) {
+                                      void openCompositionEditor(activeConversationID, artifactID);
+                                    }
+                                  }}
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => saveGeneratedComposition(composition, index)}
+                                  disabled={!composition.startsWith('/atelier-artifact/')}
+                                >
+                                  Download project
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
                       {entry.thinking ? (
                         <div className="thinking-panel">
                           <button
@@ -7099,6 +7289,17 @@ function App() {
             <span className="assets-panel-title">
               {composerLibraryID && composerProjectNames ? `Assets · ${composerProjectNames.libraryName}` : 'Assets'}
             </span>
+            {activeConversationID ? (
+              <button
+                type="button"
+                className="assets-panel-new-composition"
+                disabled={editorOpening}
+                title="Open the video composer on an unsaved draft for this conversation — add clips from the picker inside it"
+                onClick={() => void openNewComposition(activeConversationID, [])}
+              >
+                ＋ Composition
+              </button>
+            ) : null}
             <button
               type="button"
               className="assets-panel-close"
@@ -7147,6 +7348,8 @@ function App() {
                       </span>
                     ) : asset.kind === 'markdown' && asset.url ? (
                       <span className="asset-transcript-chip">{asset.url.toLowerCase().endsWith('.fountain') ? '📝 Screenplay (.fountain)' : '📝 Markdown (.md)'}</span>
+                    ) : asset.kind === 'composition' && asset.url ? (
+                      <span className="asset-transcript-chip">🎬 Composition project</span>
                     ) : (
                       <span className="asset-missing">Artifact file is missing on disk</span>
                     )}
@@ -7154,22 +7357,27 @@ function App() {
                         zoom button — a button cannot contain a button) so the
                         hover reveal overlays every preview variant without
                         stealing the zoom/play gestures. */}
-                    <button
-                      type="button"
-                      className="asset-reference-button"
-                      // Suppress the mousedown default so the click can't
-                      // steal focus from the composer: engines that focus
-                      // buttons on mousedown (Chromium) would blur the
-                      // textarea before onClick fires, defeating the
-                      // caret-position insert in insertAssetReference.
-                      // Keyboard focus (Tab) is unaffected.
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => insertAssetReference(asset)}
-                      aria-label="Reference this asset in the composer"
-                      title="Reference this asset in the composer"
-                    >
-                      <span aria-hidden="true">@</span>
-                    </button>
+                    {/* Compositions are not @-mentionable (v1): a mention has
+                        no slot and the model cannot read the project, so the
+                        affordance would be a dead end. */}
+                    {asset.kind !== 'composition' ? (
+                      <button
+                        type="button"
+                        className="asset-reference-button"
+                        // Suppress the mousedown default so the click can't
+                        // steal focus from the composer: engines that focus
+                        // buttons on mousedown (Chromium) would blur the
+                        // textarea before onClick fires, defeating the
+                        // caret-position insert in insertAssetReference.
+                        // Keyboard focus (Tab) is unaffected.
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => insertAssetReference(asset)}
+                        aria-label="Reference this asset in the composer"
+                        title="Reference this asset in the composer"
+                      >
+                        <span aria-hidden="true">@</span>
+                      </button>
+                    ) : null}
                     {/* Same sibling rule as the reference button; hidden when
                         the artifact is missing on disk — there is nothing to
                         save. */}
@@ -7243,6 +7451,16 @@ function App() {
                         </svg>
                       </button>
                     ) : null}
+                    {asset.kind === 'composition' && asset.url && asset.conversationId ? (
+                      <button type="button" className="asset-edit-button" disabled={editorOpening}
+                        onClick={() => void openCompositionEditor(asset.conversationId, asset.id)}
+                        aria-label="Open composition" title="Open this composition revision in the video composer">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M12 20h9" />
+                          <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                        </svg>
+                      </button>
+                    ) : null}
                     {/* Navigation needs no artifact on disk — unlike download,
                         a missing file still has a conversation to jump to. */}
                     {asset.conversationId ? (
@@ -7286,7 +7504,7 @@ function App() {
               if (event.key === 'Escape') {event.stopPropagation(); resolveEditorNavigation(false);}
             }}>
             <strong id="discard-video-title">Discard unsaved edits?</strong>
-            <p>{discardEditorDraft === 'subtitle' ? 'Your unexported changes will be lost.' : discardEditorDraft === 'markdown' ? 'Your unsaved changes will be lost. Saved versions remain in the conversation.' : 'Your unrendered changes will be lost. Saved edits remain available.'}</p>
+            <p>{discardEditorDraft === 'subtitle' ? 'Your unexported changes will be lost.' : discardEditorDraft === 'markdown' ? 'Your unsaved changes will be lost. Saved versions remain in the conversation.' : discardEditorDraft === 'composition' ? 'Your unsaved timeline changes will be lost. Saved revisions remain in the conversation.' : 'Your unrendered changes will be lost. Saved edits remain available.'}</p>
             <button type="button" autoFocus onClick={() => resolveEditorNavigation(false)}>Keep editing</button>
             <button type="button" onClick={() => resolveEditorNavigation(true)}>Discard changes</button>
           </div>
@@ -10479,6 +10697,18 @@ function historyMarkdowns(contents: main.HistoryContent[] | null | undefined): s
     .filter((content) => content.type === 'markdown')
     .map((content) => content.text || content.path || '')
     .filter((path) => /\.(md|fountain)$/i.test(path));
+  return urls.length ? urls : undefined;
+}
+
+// historyCompositions picks the composition project documents off a turn's
+// content — the hydrated /atelier-artifact URLs cmp_ revisions persist as,
+// one entry per save. The chip's Edit door reopens that revision in the
+// video composer.
+function historyCompositions(contents: main.HistoryContent[] | null | undefined): string[] | undefined {
+  const urls = asArray(contents)
+    .filter((content) => content.type === 'composition')
+    .map((content) => content.text || content.path || '')
+    .filter((path) => /\.json$/i.test(path));
   return urls.length ? urls : undefined;
 }
 

@@ -176,6 +176,10 @@ export function ResolveAudioEditInput(arg1:string,arg2:string):Promise<main.Edit
 
 export function ResolveAudioEditSource(arg1:string,arg2:string):Promise<main.EditSourceInfo>;
 
+export function ResolveCompositionEditSource(arg1:string,arg2:string):Promise<main.CompositionSourceInfo>;
+
+export function ResolveCompositionMedia(arg1:string,arg2:string):Promise<main.CompositionMediaRef>;
+
 export function ResolveEditSource(arg1:string,arg2:string):Promise<main.EditSourceInfo>;
 
 export function ResolveMarkdownEditSource(arg1:string,arg2:string):Promise<main.MarkdownSourceInfo>;
@@ -191,6 +195,10 @@ export function ResolveVideoEditSource(arg1:string,arg2:string):Promise<main.Edi
 export function RunToolCommand(arg1:main.ToolCommandRequest):Promise<main.ToolCommandResult>;
 
 export function SaveAudio(arg1:main.SaveAudioRequest):Promise<string>;
+
+export function SaveComposition(arg1:main.SaveTranscriptRequest):Promise<string>;
+
+export function SaveCompositionEdit(arg1:main.SaveCompositionEditRequest):Promise<main.SaveCompositionEditResult>;
 
 export function SaveConfig(arg1:main.AppConfig):Promise<void>;
 
@@ -219,6 +227,8 @@ export function SaveUIState(arg1:main.UIState):Promise<void>;
 export function SaveVideo(arg1:main.SaveVideoRequest):Promise<string>;
 
 export function SearchConversations(arg1:string,arg2:main.SearchOptions):Promise<main.SearchResponse>;
+
+export function SeedComposition(arg1:main.SeedCompositionRequest):Promise<main.CompositionSourceInfo>;
 
 export function SetConversationModelOverrides(arg1:string,arg2:main.ConversationModelOverrides):Promise<main.ConversationSummary>;
 
