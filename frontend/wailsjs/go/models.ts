@@ -1202,6 +1202,8 @@ export namespace main {
 	    height?: number;
 	    fps?: number;
 	    audioOnly: boolean;
+	    includeAudio: boolean;
+	    exportArtifactId?: string;
 	    rangeStartSeconds?: number;
 	    rangeEndSeconds?: number;
 	    soloLaneId?: string;
@@ -1227,6 +1229,8 @@ export namespace main {
 	        this.height = source["height"];
 	        this.fps = source["fps"];
 	        this.audioOnly = source["audioOnly"];
+	        this.includeAudio = source["includeAudio"];
+	        this.exportArtifactId = source["exportArtifactId"];
 	        this.rangeStartSeconds = source["rangeStartSeconds"];
 	        this.rangeEndSeconds = source["rangeEndSeconds"];
 	        this.soloLaneId = source["soloLaneId"];
@@ -1242,6 +1246,11 @@ export namespace main {
 	    startSeconds?: number;
 	    endSeconds?: number;
 	    soloLaneId?: string;
+	    includeAudio?: boolean;
+	    width?: number;
+	    height?: number;
+	    fps?: number;
+	    crf?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new CompositionRenderRequest(source);
@@ -1256,6 +1265,11 @@ export namespace main {
 	        this.startSeconds = source["startSeconds"];
 	        this.endSeconds = source["endSeconds"];
 	        this.soloLaneId = source["soloLaneId"];
+	        this.includeAudio = source["includeAudio"];
+	        this.width = source["width"];
+	        this.height = source["height"];
+	        this.fps = source["fps"];
+	        this.crf = source["crf"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

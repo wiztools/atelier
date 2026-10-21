@@ -1,6 +1,6 @@
 import {useEffect, useMemo, useRef, useState} from 'react';
 import * as AppBindings from '../../wailsjs/go/main/App';
-import {CancelCompositionRender, SaveComposition} from '../../wailsjs/go/main/App';
+import {CancelCompositionRender, SaveComposition, SaveVideo} from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
 import {EventsOff, EventsOn} from '../../wailsjs/runtime/runtime';
 import {EditsPanel} from './EditsPanel';
@@ -201,6 +201,17 @@ export function CompositionEditor(props: {
   const [rangeTo, setRangeTo] = useState('');
   const [soloLaneID, setSoloLaneID] = useState('');
 
+  // Export choices (AU-11's audio toggle; the advanced overrides are
+  // per-export — empty inherits the revision's own output settings).
+  const [exportIncludeAudio, setExportIncludeAudio] = useState(true);
+  const [exportAdvancedOpen, setExportAdvancedOpen] = useState(false);
+  const [exportWidth, setExportWidth] = useState('');
+  const [exportHeight, setExportHeight] = useState('');
+  const [exportFPS, setExportFPS] = useState('');
+  const [exportCRF, setExportCRF] = useState('18');
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState('');
+
   // A ref mirror of the doc so async picker adds always commit against the
   // newest state (the video editor's stale-resolve discipline).
   const docRef = useRef(doc);
@@ -307,7 +318,14 @@ export function CompositionEditor(props: {
     };
   }, [sourceConversationID, props.libraryID]);
 
-  // Render-op events fold into the rows; a completion also takes the stage.
+  // Render-op events fold into the rows; a completion also takes the stage,
+  // and a completed EXPORT adopted a new artifact into the conversation —
+  // the same refresh the save fires. The callback rides a ref because this
+  // effect's deps are deliberately empty (one subscription).
+  const savedToConversationRef = useRef(props.onSavedToConversation);
+  useEffect(() => {
+    savedToConversationRef.current = props.onSavedToConversation;
+  }, [props.onSavedToConversation]);
   useEffect(() => {
     const onUpdate = (event: any) => {
       const op = main.CompositionRenderOperation.createFrom(event);
@@ -321,6 +339,10 @@ export function CompositionEditor(props: {
         return next;
       });
       if (op.status === 'completed' && op.resultUrl) {
+        if (op.mode === 'export') {
+          savedToConversationRef.current?.();
+          return;
+        }
         setPreview({url: op.resultUrl, audioOnly: op.audioOnly});
       }
     };
@@ -591,31 +613,73 @@ export function CompositionEditor(props: {
     }
   };
 
+  // persistRevision is the one save door both the Save button and
+  // save-and-export walk through: it writes the working doc as a new
+  // revision, re-baselines on the server's normalization, and returns the
+  // revision's artifact id (what an export pins — EX-04).
+  const persistRevision = async (): Promise<string> => {
+    const result = await AppBindings.SaveCompositionEdit(main.SaveCompositionEditRequest.createFrom({
+      conversationId: sourceConversationID,
+      sourceArtifactId: activeArtifactID || undefined,
+      doc: toWireDoc(docRef.current),
+    }));
+    const normalized = normalizeCompositionDoc(result.doc);
+    setLog((entries) => [
+      {name: normalized.name, clipCount: normalized.video.length, at: new Date().toLocaleTimeString(), artifactId: result.artifactId, url: result.url},
+      ...entries,
+    ]);
+    // Re-baseline on exactly what landed (the server's normalization wins).
+    setDoc(normalized);
+    setBaseline(normalizeCompositionDoc(normalized));
+    docRef.current = normalized;
+    setNameDraft(normalized.name);
+    setActiveArtifactID(result.artifactId);
+    props.onSavedToConversation?.();
+    return result.artifactId;
+  };
+
   const saveDoc = async () => {
     setSaving(true);
     setSaveError('');
     try {
-      const result = await AppBindings.SaveCompositionEdit(main.SaveCompositionEditRequest.createFrom({
-        conversationId: sourceConversationID,
-        sourceArtifactId: activeArtifactID || undefined,
-        doc: toWireDoc(docRef.current),
-      }));
-      const normalized = normalizeCompositionDoc(result.doc);
-      setLog((entries) => [
-        {name: normalized.name, clipCount: normalized.video.length, at: new Date().toLocaleTimeString(), artifactId: result.artifactId, url: result.url},
-        ...entries,
-      ]);
-      // Re-baseline on exactly what landed (the server's normalization wins).
-      setDoc(normalized);
-      setBaseline(normalized);
-      docRef.current = normalized;
-      setNameDraft(normalized.name);
-      setActiveArtifactID(result.artifactId);
-      props.onSavedToConversation?.();
+      await persistRevision();
     } catch (error) {
       setSaveError(formatEditorError(error));
     } finally {
       setSaving(false);
+    }
+  };
+
+  // saveAndExport is the export door: pin a revision first (saving the
+  // working doc when anything is unsaved), then render THAT artifact with
+  // the house encode — later edits cannot touch what export produces.
+  const saveAndExport = async () => {
+    setExporting(true);
+    setExportError('');
+    try {
+      let artifactID = activeArtifactID;
+      if (dirty || !artifactID) {
+        artifactID = await persistRevision();
+      }
+      const width = parseInt(exportWidth, 10);
+      const height = parseInt(exportHeight, 10);
+      const fps = parseFloat(exportFPS);
+      const crf = parseInt(exportCRF, 10);
+      const op = await AppBindings.SubmitCompositionRender(main.CompositionRenderRequest.createFrom({
+        conversationId: sourceConversationID,
+        mode: 'export',
+        artifactId: artifactID,
+        includeAudio: exportIncludeAudio,
+        ...(exportAdvancedOpen && Number.isFinite(width) && width > 0 ? {width} : {}),
+        ...(exportAdvancedOpen && Number.isFinite(height) && height > 0 ? {height} : {}),
+        ...(exportAdvancedOpen && Number.isFinite(fps) && fps > 0 ? {fps} : {}),
+        ...(exportAdvancedOpen && Number.isFinite(crf) && crf > 0 ? {crf} : {}),
+      }));
+      setRenders((current) => [op, ...current]);
+    } catch (error) {
+      setExportError(formatEditorError(error));
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -1072,6 +1136,51 @@ export function CompositionEditor(props: {
             {saveError ? <div className="editor-error">{saveError}</div> : null}
             <span className="editor-session-note">Edits stay in the editor until saved; every save is a new revision. Downloads land in the panel below.</span>
           </div>
+
+          <div className="composition-export-block">
+            <strong>Export</strong>
+            {/* EX-03's pre-render summary: what the file will be. */}
+            <p className="hint">
+              {frame.width}×{frame.height} @ {Math.round(frame.fps)}fps · {formatCompositionClock(sequenceDuration)}
+              {exportIncludeAudio ? ' · audio included' : ' · no audio'}
+              {exportIncludeAudio && overhang > 0 ? ` · ${overhang.toFixed(1)}s audio tail trims at the video end` : ''}
+            </p>
+            <label className="composition-toggle" title="The mix rides the video (original audio, lanes, ducks). Turn it off for a silent file.">
+              <input type="checkbox" checked={exportIncludeAudio} onChange={(event) => setExportIncludeAudio(event.target.checked)} />
+              include audio
+            </label>
+            <button
+              type="button"
+              className="editor-generate"
+              disabled={exporting || renderDisabled}
+              title={dirty || !activeArtifactID
+                ? 'Save the working timeline as a revision, then export that revision — later edits cannot change the file'
+                : 'Export the pinned revision into the conversation as a new video artifact'}
+              onClick={() => void saveAndExport()}
+            >
+              {exporting ? 'Exporting…' : dirty || !activeArtifactID ? 'Save & export' : 'Export revision'}
+            </button>
+            {exportError ? <div className="editor-error">{exportError}</div> : null}
+            <button type="button" className="composition-advanced-toggle" onClick={() => setExportAdvancedOpen((open) => !open)}>
+              {exportAdvancedOpen ? '− Advanced' : '+ Advanced'}
+            </button>
+            {exportAdvancedOpen ? (
+              <div className="composition-field-row">
+                <NumberField label="Width" value={exportWidth === '' ? 0 : parseFloat(exportWidth)} step={2} min={0} title="0 inherits the revision's width" onCommit={(value) => setExportWidth(value > 0 ? String(value) : '')} />
+                <NumberField label="Height" value={exportHeight === '' ? 0 : parseFloat(exportHeight)} step={2} min={0} title="0 inherits the revision's height" onCommit={(value) => setExportHeight(value > 0 ? String(value) : '')} />
+                <NumberField label="FPS" value={exportFPS === '' ? 0 : parseFloat(exportFPS)} step={1} min={0} max={60} title="0 inherits the revision's frame rate" onCommit={(value) => setExportFPS(value > 0 ? String(value) : '')} />
+                <label className="composition-field" title="Lower is better quality (H.264 CRF); 18 is the house default">
+                  <span>Quality</span>
+                  <select value={exportCRF} onChange={(event) => setExportCRF(event.target.value)}>
+                    <option value="18">High (18)</option>
+                    <option value="23">Medium (23)</option>
+                    <option value="28">Compact (28)</option>
+                  </select>
+                </label>
+              </div>
+            ) : null}
+            <span className="editor-session-note">Export always renders a saved revision and lands in the conversation as a new artifact (downloadable below).</span>
+          </div>
         </aside>
       </div>
 
@@ -1082,7 +1191,7 @@ export function CompositionEditor(props: {
               <span className="editor-op-thumb-glyph">{op.status === 'completed' ? '▶' : op.status === 'failed' ? '✕' : op.status === 'cancelled' ? '–' : '⋯'}</span>
               <div className="editor-op-meta">
                 <span className="editor-op-title">
-                  Preview · {op.audioOnly ? 'audio only' : `${op.width || '?'}×${op.height || '?'}`} · {formatCompositionClock(op.outputSeconds || 0)}
+                  {op.mode === 'export' ? 'Export' : 'Preview'} · {op.audioOnly ? 'audio only' : `${op.width || '?'}×${op.height || '?'}`} · {formatCompositionClock(op.outputSeconds || 0)}
                   {op.rangeStartSeconds !== undefined && op.rangeEndSeconds !== undefined
                     ? ` · ${formatCompositionClock(op.rangeStartSeconds)}–${formatCompositionClock(op.rangeEndSeconds)}`
                     : ''}
@@ -1097,7 +1206,21 @@ export function CompositionEditor(props: {
                 {op.status === 'running' || op.status === 'queued' ? (
                   <button type="button" onClick={() => void cancelRender(op.id)}>Cancel</button>
                 ) : null}
-                {op.status === 'completed' && op.resultUrl ? (
+                {op.status === 'completed' && op.resultUrl && op.mode === 'export' ? (
+                  <button
+                    type="button"
+                    title="Save the exported file to disk"
+                    onClick={() => {
+                      void SaveVideo(main.SaveVideoRequest.createFrom({
+                        path: op.resultUrl,
+                        suggestedName: `${doc.name.replace(/\s+/g, '-').toLowerCase() || 'composition'}-${(op.exportArtifactId || op.id).slice(0, 10)}`,
+                      })).catch((error) => setRenderError(formatEditorError(error)));
+                    }}
+                  >
+                    Download
+                  </button>
+                ) : null}
+                {op.status === 'completed' && op.resultUrl && op.mode !== 'export' ? (
                   <button
                     type="button"
                     title="Load this render onto the stage"

@@ -414,6 +414,20 @@
   gap: 6px;
 }
 
+.composition-export-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid #33383c;
+  padding-top: 8px;
+}
+
+.composition-advanced-toggle {
+  align-self: flex-start;
+  font-size: 11px;
+  color: #8d9498;
+}
+
 /* The preview stage: the rendered proxy and the controls that produce it.
    The media element is native controls — the preview IS the render, so
    scrubbing it is exactly what export produces (render-to-preview only). */

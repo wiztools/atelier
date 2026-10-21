@@ -21,6 +21,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,18 +33,26 @@ const (
 	compositionRenderEventName   = "atelier:composition-op"
 	compositionPreviewDirName    = "atelier-composition-previews"
 	compositionRenderModePreview = "preview"
+	compositionRenderModeExport  = "export"
 	compositionAudioSampleRate   = 48000
 	compositionAudioChannels     = 2
 )
 
 // compositionRenderOptions carries the per-render choices the plan builder
-// needs: an optional output-timeline range (PV-03's range preview) and the
-// lane a solo preview isolates (AU-03 — every other lane and the clips'
-// original audio drop out of the mix).
+// needs: an optional output-timeline range (PV-03's range preview), the lane
+// a solo preview isolates (AU-03 — every other lane and the clips' original
+// audio drop out of the mix), audio omission (AU-11's export choice), and
+// the export-time frame overrides (0 = the revision's own output settings —
+// clip order, timing, and lanes are what a saved revision pins; framing is
+// an export choice).
 type compositionRenderOptions struct {
 	StartSeconds *float64
 	EndSeconds   *float64
 	SoloLaneID   string
+	MuteAudio    bool
+	Width        int
+	Height       int
+	FPS          float64
 }
 
 // compositionRenderPlan is everything the ffmpeg invocation needs, plus the
@@ -62,6 +72,7 @@ type compositionRenderPlan struct {
 	Width, Height   int
 	FPS             float64
 	AudioOnly       bool
+	MuteAudio       bool
 	RangeStart      *float64
 	RangeEnd        *float64
 }
@@ -166,7 +177,19 @@ func buildCompositionRenderPlan(doc CompositionDoc, facts map[string]joinClipFac
 	if len(doc.Video) == 0 && compositionAudioSegmentCount(doc) == 0 {
 		return plan, errors.New("the composition is empty — add clips or audio before rendering")
 	}
+	if opts.MuteAudio && len(doc.Video) == 0 {
+		return plan, errors.New("an audio-only composition cannot export without its audio")
+	}
 	width, height, fps := compositionFrame(doc, facts)
+	if opts.Width > 0 {
+		width = evenDown(opts.Width)
+	}
+	if opts.Height > 0 {
+		height = evenDown(opts.Height)
+	}
+	if opts.FPS > 0 {
+		fps = math.Min(compositionMaxFPS, opts.FPS)
+	}
 	plan.Width, plan.Height, plan.FPS = width, height, fps
 	fpsText := formatJoinSeconds(fps)
 
@@ -209,6 +232,7 @@ func buildCompositionRenderPlan(doc CompositionDoc, facts map[string]joinClipFac
 	// section (the video relabel rides the video section, the audio trim the
 	// mix), so both need it before either is emitted.
 	plan.AudioOnly = len(doc.Video) == 0
+	plan.MuteAudio = opts.MuteAudio
 	total := sequence
 	if plan.AudioOnly {
 		total = compositionAudioExtentSeconds(doc)
@@ -255,8 +279,9 @@ func buildCompositionRenderPlan(doc CompositionDoc, facts map[string]joinClipFac
 	}
 
 	// ---- Original audio, junction-chained in step with the video ----
+	// (skipped entirely when the export omits audio — AU-11's choice)
 	audioLabel := ""
-	if len(doc.Video) > 0 {
+	if len(doc.Video) > 0 && !opts.MuteAudio {
 		for i, clip := range doc.Video {
 			duration := clip.OutSeconds - clip.InSeconds
 			label := fmt.Sprintf("[ac%d]", i)
@@ -299,7 +324,7 @@ func buildCompositionRenderPlan(doc CompositionDoc, facts map[string]joinClipFac
 		mixLabels = append(mixLabels, audioLabel)
 	}
 	for _, lane := range doc.AudioLanes {
-		if lane.Muted || (opts.SoloLaneID != "" && lane.ID != opts.SoloLaneID) {
+		if opts.MuteAudio || lane.Muted || (opts.SoloLaneID != "" && lane.ID != opts.SoloLaneID) {
 			continue
 		}
 		for _, segment := range lane.Segments {
@@ -340,28 +365,30 @@ func buildCompositionRenderPlan(doc CompositionDoc, facts map[string]joinClipFac
 	}
 
 	// ---- Mix ----
-	if len(mixLabels) == 0 {
-		// Only reachable for an audio-only document whose every lane is
-		// muted under a solo that matches nothing — refuse rather than emit
-		// an empty graph.
-		return plan, errors.New("nothing audible to render — every lane is muted")
-	}
-	mixLabel := mixLabels[0]
-	if len(mixLabels) > 1 {
-		durationMode := "first"
-		if plan.AudioOnly {
-			durationMode = "longest"
+	if !opts.MuteAudio {
+		if len(mixLabels) == 0 {
+			// Only reachable for an audio-only document whose every lane is
+			// muted under a solo that matches nothing — refuse rather than
+			// emit an empty graph.
+			return plan, errors.New("nothing audible to render — every lane is muted")
 		}
-		mixLabel = "[mix]"
-		statements = append(statements, fmt.Sprintf("%samix=inputs=%d:duration=%s:normalize=0%s",
-			strings.Join(mixLabels, ""), len(mixLabels), durationMode, mixLabel))
-	}
-	audioOut := "[aout]"
-	if rangeStart != nil && rangeEnd != nil {
-		statements = append(statements, fmt.Sprintf("%satrim=start=%s:end=%s,asetpts=PTS-STARTPTS%s",
-			mixLabel, formatJoinSeconds(*rangeStart), formatJoinSeconds(*rangeEnd), audioOut))
-	} else if mixLabel != audioOut {
-		statements = append(statements, fmt.Sprintf("%sanull%s", mixLabel, audioOut))
+		mixLabel := mixLabels[0]
+		if len(mixLabels) > 1 {
+			durationMode := "first"
+			if plan.AudioOnly {
+				durationMode = "longest"
+			}
+			mixLabel = "[mix]"
+			statements = append(statements, fmt.Sprintf("%samix=inputs=%d:duration=%s:normalize=0%s",
+				strings.Join(mixLabels, ""), len(mixLabels), durationMode, mixLabel))
+		}
+		audioOut := "[aout]"
+		if rangeStart != nil && rangeEnd != nil {
+			statements = append(statements, fmt.Sprintf("%satrim=start=%s:end=%s,asetpts=PTS-STARTPTS%s",
+				mixLabel, formatJoinSeconds(*rangeStart), formatJoinSeconds(*rangeEnd), audioOut))
+		} else if mixLabel != audioOut {
+			statements = append(statements, fmt.Sprintf("%sanull%s", mixLabel, audioOut))
+		}
 	}
 
 	if syntheticCount > 0 {
@@ -428,18 +455,31 @@ func normalizeCompositionRange(start, end *float64, total float64) (*float64, *f
 }
 
 // compositionEncodeArgs renders the output block. A preview trades quality
-// for latency (ultrafast, CRF 23, 128k audio); the export path (M3) takes
-// the house encode.
-func compositionEncodeArgs(preview, audioOnly bool) []string {
+// for latency (ultrafast, CRF 23, 128k audio); an export takes the house
+// encode with the requested CRF (0 = the house 18), and an export that
+// omits audio replaces the audio block with -an (AU-11).
+func compositionEncodeArgs(preview bool, crf int, audioOnly, includeAudio bool) []string {
 	if audioOnly {
-		return []string{"-c:a", "aac", "-b:a", "128k"}
+		bitrate := "192k"
+		if preview {
+			bitrate = "128k"
+		}
+		return []string{"-c:a", "aac", "-b:a", bitrate}
+	}
+	if crf <= 0 || crf > 34 {
+		crf = 18
+	}
+	videoBlock := func(preset string, quality int) []string {
+		return []string{"-c:v", "libx264", "-preset", preset, "-crf", strconv.Itoa(quality), "-pix_fmt", "yuv420p"}
 	}
 	if preview {
-		return []string{"-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-pix_fmt", "yuv420p",
-			"-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"}
+		return append(videoBlock("ultrafast", 23), "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart")
 	}
-	return []string{"-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
-		"-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"}
+	args := videoBlock("veryfast", crf)
+	if !includeAudio {
+		return append(args, "-an")
+	}
+	return append(args, "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
 }
 
 // compositionFFmpegArgs assembles the invocation: real inputs, synthetic
@@ -451,9 +491,12 @@ func compositionFFmpegArgs(plan compositionRenderPlan, encodeArgs []string, outp
 	}
 	args = append(args, plan.ExtraInputArgs...)
 	args = append(args, "-filter_complex", plan.FilterComplex)
-	if plan.AudioOnly {
+	switch {
+	case plan.AudioOnly:
 		args = append(args, "-map", "[aout]")
-	} else {
+	case plan.MuteAudio:
+		args = append(args, "-map", "[vout]")
+	default:
 		args = append(args, "-map", "[vout]", "-map", "[aout]")
 	}
 	args = append(args, encodeArgs...)
@@ -465,8 +508,11 @@ func compositionFFmpegArgs(plan compositionRenderPlan, encodeArgs []string, outp
 
 // CompositionRenderRequest names what to render: a SAVED revision by
 // artifact id, or the working document itself (the preview path — no forced
-// save before looking). Mode "preview" renders into the temp preview
-// directory; the export mode arrives with M3 and refuses here for now.
+// save before looking). A preview lands in the temp preview directory; an
+// EXPORT always pins a saved revision (EX-04) and adopts its result into the
+// conversation as a new artifact, so it refuses a working document and a
+// streaming conversation up front. The optional fields are export choices:
+// audio omission (AU-11), frame overrides (0 = the revision's own), and CRF.
 type CompositionRenderRequest struct {
 	ConversationID string          `json:"conversationId"`
 	ArtifactID     string          `json:"artifactId,omitempty"`
@@ -475,6 +521,11 @@ type CompositionRenderRequest struct {
 	StartSeconds   *float64        `json:"startSeconds,omitempty"`
 	EndSeconds     *float64        `json:"endSeconds,omitempty"`
 	SoloLaneID     string          `json:"soloLaneId,omitempty"`
+	IncludeAudio   *bool           `json:"includeAudio,omitempty"`
+	Width          int             `json:"width,omitempty"`
+	Height         int             `json:"height,omitempty"`
+	FPS            float64         `json:"fps,omitempty"`
+	CRF            int             `json:"crf,omitempty"`
 }
 
 // CompositionRenderOperation is the live op the editor tracks; every
@@ -490,17 +541,21 @@ type CompositionRenderOperation struct {
 	// ResultPosterURL rides the _poster.jpg convention the assets panel and
 	// players already mirror — WKWebView paints a black rectangle until
 	// playback, so the preview needs a still.
-	ResultPosterURL string   `json:"resultPosterUrl,omitempty"`
-	OutputSeconds   float64  `json:"outputSeconds"`
-	Width           int      `json:"width,omitempty"`
-	Height          int      `json:"height,omitempty"`
-	FPS             float64  `json:"fps,omitempty"`
-	AudioOnly       bool     `json:"audioOnly"`
-	RangeStart      *float64 `json:"rangeStartSeconds,omitempty"`
-	RangeEnd        *float64 `json:"rangeEndSeconds,omitempty"`
-	SoloLaneID      string   `json:"soloLaneId,omitempty"`
-	StartedAt       string   `json:"startedAt"`
-	UpdatedAt       string   `json:"updatedAt"`
+	ResultPosterURL string  `json:"resultPosterUrl,omitempty"`
+	OutputSeconds   float64 `json:"outputSeconds"`
+	Width           int     `json:"width,omitempty"`
+	Height          int     `json:"height,omitempty"`
+	FPS             float64 `json:"fps,omitempty"`
+	AudioOnly       bool    `json:"audioOnly"`
+	IncludeAudio    bool    `json:"includeAudio"`
+	// ExportArtifactID names the vid_/aud_ artifact an export adopted into
+	// the conversation (previews leave it empty — their result is ephemeral).
+	ExportArtifactID string   `json:"exportArtifactId,omitempty"`
+	RangeStart       *float64 `json:"rangeStartSeconds,omitempty"`
+	RangeEnd         *float64 `json:"rangeEndSeconds,omitempty"`
+	SoloLaneID       string   `json:"soloLaneId,omitempty"`
+	StartedAt        string   `json:"startedAt"`
+	UpdatedAt        string   `json:"updatedAt"`
 }
 
 type compositionRenderRun struct {
@@ -509,6 +564,13 @@ type compositionRenderRun struct {
 	// op is the live operation snapshot — tests poll it, and the terminal
 	// transition moves it into the history map before the run deregisters.
 	op CompositionRenderOperation
+	// The export choices captured at submit: the pinned revision, audio
+	// omission, and the frame/CRF overrides (0 = inherit).
+	artifactID    string
+	muteAudio     bool
+	width, height int
+	fps           float64
+	crf           int
 }
 
 // compositionPreviewDir is where preview outputs live, served through the
@@ -554,32 +616,50 @@ func (a *App) SubmitCompositionRender(req CompositionRenderRequest) (Composition
 	if mode == "" {
 		mode = compositionRenderModePreview
 	}
-	if mode != compositionRenderModePreview {
-		return CompositionRenderOperation{}, fmt.Errorf(`render mode must be "preview" for now — exporting arrives with the export milestone`)
+	if mode != compositionRenderModePreview && mode != compositionRenderModeExport {
+		return CompositionRenderOperation{}, fmt.Errorf(`render mode must be "preview" or "export", got %q`, mode)
 	}
 	conversationID := strings.TrimSpace(req.ConversationID)
 	if conversationID == "" {
 		return CompositionRenderOperation{}, errors.New("rendering a composition requires its conversation id")
 	}
+	// An export pins a saved revision (EX-04) and adopts its result into the
+	// conversation — both write-facing, so a working document and a
+	// streaming conversation are refused up front.
+	if mode == compositionRenderModeExport {
+		if strings.TrimSpace(req.ArtifactID) == "" {
+			return CompositionRenderOperation{}, errors.New("an export renders a saved revision — save the composition first")
+		}
+		if a.conversationStreaming(conversationID) {
+			return CompositionRenderOperation{}, errors.New("the conversation is still streaming — wait for the turn to finish before exporting")
+		}
+	}
 	doc, err := compositionDocForRender(config, conversationID, req.ArtifactID, req.Doc)
 	if err != nil {
 		return CompositionRenderOperation{}, err
 	}
+	includeAudio := true
+	if req.IncludeAudio != nil {
+		includeAudio = *req.IncludeAudio
+	}
+	muteAudio := mode == compositionRenderModeExport && !includeAudio
 
 	nowText := time.Now().Format(time.RFC3339)
 	op := CompositionRenderOperation{
-		ID:         randomID("crend"),
-		Mode:       mode,
-		Status:     "queued",
-		Notices:    []string{},
-		StartedAt:  nowText,
-		UpdatedAt:  nowText,
-		RangeStart: req.StartSeconds,
-		RangeEnd:   req.EndSeconds,
-		SoloLaneID: strings.TrimSpace(req.SoloLaneID),
+		ID:           randomID("crend"),
+		Mode:         mode,
+		Status:       "queued",
+		Notices:      []string{},
+		StartedAt:    nowText,
+		UpdatedAt:    nowText,
+		RangeStart:   req.StartSeconds,
+		RangeEnd:     req.EndSeconds,
+		SoloLaneID:   strings.TrimSpace(req.SoloLaneID),
+		IncludeAudio: includeAudio,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	run := &compositionRenderRun{conversationID: conversationID, cancel: cancel, op: op}
+	run := &compositionRenderRun{conversationID: conversationID, cancel: cancel, op: op,
+		artifactID: strings.TrimSpace(req.ArtifactID), muteAudio: muteAudio, width: req.Width, height: req.Height, fps: req.FPS, crf: req.CRF}
 	a.compositionRendersMu.Lock()
 	for _, existing := range a.compositionRenders {
 		if existing.conversationID == conversationID {
@@ -746,6 +826,10 @@ func (a *App) executeCompositionRender(ctx context.Context, config AppConfig, ru
 		StartSeconds: op.RangeStart,
 		EndSeconds:   op.RangeEnd,
 		SoloLaneID:   op.SoloLaneID,
+		MuteAudio:    run.muteAudio,
+		Width:        run.width,
+		Height:       run.height,
+		FPS:          run.fps,
 	})
 	if err != nil {
 		update(func(o *CompositionRenderOperation) { o.Status = "failed"; o.Error = err.Error() })
@@ -764,7 +848,8 @@ func (a *App) executeCompositionRender(ctx context.Context, config AppConfig, ru
 		extension = ".m4a"
 	}
 	stagedOutput := filepath.Join(staging, "output"+extension)
-	args := compositionFFmpegArgs(plan, compositionEncodeArgs(true, plan.AudioOnly), stagedOutput)
+	encodeArgs := compositionEncodeArgs(op.Mode == compositionRenderModePreview, run.crf, plan.AudioOnly, !plan.MuteAudio)
+	args := compositionFFmpegArgs(plan, encodeArgs, stagedOutput)
 	err = runLocalFFmpegProgress(ctx, config, plan.OutputSeconds, args, func(progress float64) {
 		update(func(o *CompositionRenderOperation) { o.Progress = progress })
 	})
@@ -786,6 +871,39 @@ func (a *App) executeCompositionRender(ctx context.Context, config AppConfig, ru
 		update(func(o *CompositionRenderOperation) {
 			o.Status = "failed"
 			o.Error = "the render produced no playable output — try again, or report the composition if it repeats"
+		})
+		return
+	}
+
+	// An export adopts its result into the conversation as a new artifact
+	// plus a linked turn (EX-07); a preview lands in the swept temp
+	// directory. The AU-10-lite clipping check reads the export's own mix.
+	if op.Mode == compositionRenderModeExport {
+		if a.conversationStreaming(run.conversationID) {
+			update(func(o *CompositionRenderOperation) {
+				o.Status = "failed"
+				o.Error = "the conversation started streaming while the export rendered — retry once the turn finishes (nothing was written)"
+			})
+			return
+		}
+		notices := plan.Notices
+		if !plan.MuteAudio {
+			if clipping := compositionClippingNotice(ctx, config, stagedOutput); clipping != "" {
+				notices = append(notices, clipping)
+			}
+		}
+		artifactID, resultURL, adoptErr := adoptCompositionExport(config, run.conversationID, doc, run.artifactID, stagedOutput, extension, op.ID)
+		if adoptErr != nil {
+			update(func(o *CompositionRenderOperation) { o.Status = "failed"; o.Error = adoptErr.Error() })
+			return
+		}
+		update(func(o *CompositionRenderOperation) {
+			o.Status = "completed"
+			o.Progress = 1
+			o.Notices = notices
+			o.ExportArtifactID = artifactID
+			o.ResultURL = resultURL
+			o.OutputSeconds = seconds
 		})
 		return
 	}
@@ -813,6 +931,95 @@ func (a *App) executeCompositionRender(ctx context.Context, config AppConfig, ru
 		o.ResultPosterURL = posterURL
 		o.OutputSeconds = seconds
 	})
+}
+
+// adoptCompositionExport writes the rendered file into the conversation as a
+// fresh vid_/aud_ artifact plus an assistant turn whose ProviderResponse
+// links the export to its pinned revision — the appendEditAdoptionTurn
+// shape (deliberately not the media-ledger helpers: this copy generated
+// nothing). Returns the artifact id and its hydrated URL.
+func adoptCompositionExport(config AppConfig, conversationID string, doc CompositionDoc, revisionArtifactID, stagedOutput, extension, operationID string) (string, string, error) {
+	store := newHistoryStore(config.Storage)
+	loaded, err := store.loadForAppend(conversationID, "chat", "a chat", config.Tools.Filesystem.Root)
+	if err != nil {
+		return "", "", err
+	}
+	tempCopy, err := copyEditResultToTemp(stagedOutput, extension)
+	if err != nil {
+		return "", "", err
+	}
+	defer os.Remove(tempCopy)
+	var contents []HistoryContent
+	var urls []string
+	if extension == ".m4a" {
+		contents, urls, err = writeChatAudioArtifacts(config, loaded.ArtifactsDir, []ToolAudioFile{{TempPath: tempCopy, MimeType: "audio/mp4"}})
+	} else {
+		contents, urls, err = writeChatVideoArtifacts(config, loaded.ArtifactsDir, []ToolVideoFile{{TempPath: tempCopy, MimeType: "video/mp4"}})
+	}
+	if err != nil || len(contents) == 0 || len(urls) == 0 {
+		if err == nil {
+			err = errors.New("the export could not be copied into the conversation")
+		}
+		return "", "", err
+	}
+	nowText := time.Now().Format(time.RFC3339)
+	kind := "video"
+	if extension == ".m4a" {
+		kind = "audio"
+	}
+	summary := fmt.Sprintf("Exported composition “%s” · %s · %s", doc.Name, compositionDocSummary(doc), kind)
+	turn := HistoryTurn{
+		SchemaVersion:  1,
+		ID:             fmt.Sprintf("turn_%06d", loaded.NextTurnNumber),
+		ConversationID: conversationID,
+		CreatedAt:      nowText,
+		Kind:           "chat",
+		Role:           "assistant",
+		Content:        append([]HistoryContent{{Type: "text", Text: summary}}, contents...),
+		ProviderResponse: map[string]any{
+			"compositionExport": map[string]any{
+				"artifactId":         contents[0].ArtifactID,
+				"revisionArtifactId": revisionArtifactID,
+				"operationId":        operationID,
+				"kind":               kind,
+				"backend":            "ffmpeg",
+			},
+		},
+	}
+	loaded.Conversation.UpdatedAt = nowText
+	loaded.Conversation.Stats.TurnCount++
+	loaded.Conversation.Stats.ArtifactCount += len(contents)
+	if err := store.writeConversation(loaded.Path, loaded.Conversation); err != nil {
+		return "", "", err
+	}
+	if err := store.writeTurn(loaded.TurnsDir, turn); err != nil {
+		return "", "", err
+	}
+	return contents[0].ArtifactID, urls[0], nil
+}
+
+// compositionClippingNotice is AU-10's export-time check: a volumedetect
+// pass over the rendered file, reported when the peak sits at the ceiling —
+// the mix is clipping and gains should come down. Fail-soft: no ffmpeg or
+// an unparsable report returns no notice.
+func compositionClippingNotice(ctx context.Context, config AppConfig, path string) string {
+	resolved, ok := resolveLocalFFmpegBinary(config)
+	if !ok {
+		return ""
+	}
+	output, err := runLocalMediaCLI(ctx, resolved, "ffmpeg", localFFmpegTimeout, []string{"-i", path, "-af", "volumedetect", "-f", "null", "-"})
+	if err != nil {
+		return ""
+	}
+	match := regexp.MustCompile(`max_volume:\s*(-?[0-9.]+)\s*dB`).FindStringSubmatch(string(output))
+	if match == nil {
+		return ""
+	}
+	peak, err := strconv.ParseFloat(match[1], 64)
+	if err != nil || peak <= -0.5 {
+		return ""
+	}
+	return fmt.Sprintf("the mix clips (peak %s dB) — lower the gains and re-export", match[1])
 }
 
 // verifyCompositionOutput checks the rendered file is playable, using the

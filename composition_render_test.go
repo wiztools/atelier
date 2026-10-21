@@ -183,7 +183,7 @@ func TestBuildCompositionRenderPlanAudioOnly(t *testing.T) {
 	if strings.Contains(plan.FilterComplex, "[v") || !strings.Contains(plan.FilterComplex, "[0:a]atrim=start=0:end=6") {
 		t.Fatalf("audio-only graph =\n%s", plan.FilterComplex)
 	}
-	args := compositionFFmpegArgs(plan, compositionEncodeArgs(true, plan.AudioOnly), "/out.m4a")
+	args := compositionFFmpegArgs(plan, compositionEncodeArgs(true, 0, plan.AudioOnly, true), "/out.m4a")
 	if !strings.Contains(strings.Join(args, " "), "-map [aout]") || strings.Contains(strings.Join(args, " "), "[vout]") {
 		t.Fatalf("audio-only args = %v", args)
 	}
@@ -193,13 +193,53 @@ func TestBuildCompositionRenderPlanAudioOnly(t *testing.T) {
 	}
 }
 
+func TestBuildCompositionRenderPlanMuteAudioAndOverrides(t *testing.T) {
+	clip := renderTestClip("c1", renderTestVideoRef("vid_a", "/v.mp4", 10, true), 0, 10, nil)
+	doc := renderTestDoc(clip)
+	facts := renderTestFacts(clip.Ref)
+
+	muted, err := buildCompositionRenderPlan(doc, facts, compositionRenderOptions{MuteAudio: true})
+	if err != nil {
+		t.Fatalf("mute buildCompositionRenderPlan returned error: %v", err)
+	}
+	if strings.Contains(muted.FilterComplex, "[aout]") || strings.Contains(muted.FilterComplex, "amix") || strings.Contains(muted.FilterComplex, "[0:a]") {
+		t.Fatalf("a muted render must carry no audio graph:\n%s", muted.FilterComplex)
+	}
+	args := compositionFFmpegArgs(muted, compositionEncodeArgs(false, 0, false, false), "/out.mp4")
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "-map [vout]") || strings.Contains(joined, "[aout]") || !strings.Contains(joined, "-an") {
+		t.Fatalf("muted args = %v", args)
+	}
+
+	// Frame overrides win over the first clip's facts (even-dimensioned).
+	overridden, err := buildCompositionRenderPlan(doc, facts, compositionRenderOptions{Width: 1081, Height: 1921, FPS: 24})
+	if err != nil {
+		t.Fatalf("override buildCompositionRenderPlan returned error: %v", err)
+	}
+	if overridden.Width != 1080 || overridden.Height != 1920 || overridden.FPS != 24 {
+		t.Fatalf("overrides = %dx%d @%g", overridden.Width, overridden.Height, overridden.FPS)
+	}
+	if !strings.Contains(overridden.FilterComplex, "scale=1080:1920") || !strings.Contains(overridden.FilterComplex, "fps=24") {
+		t.Fatalf("the conform chain did not follow the overrides:\n%s", overridden.FilterComplex)
+	}
+
+	// A muted audio-only composition is a contradiction and refuses.
+	audioOnly := renderTestDoc()
+	audioOnly.AudioLanes = []CompositionLane{{ID: "l1", Name: "Music", Segments: []CompositionSegment{{
+		ID: "s1", Ref: renderTestAudioRef("aud_m", "/m.wav", 6), InSeconds: 0, OutSeconds: 6, Ducks: []CompositionDuck{},
+	}}}}
+	if _, err := buildCompositionRenderPlan(audioOnly, map[string]joinClipFact{}, compositionRenderOptions{MuteAudio: true}); err == nil || !strings.Contains(err.Error(), "cannot export without its audio") {
+		t.Fatalf("a muted audio-only composition must refuse, got %v", err)
+	}
+}
+
 func TestCompositionFFmpegArgsShape(t *testing.T) {
 	clip := renderTestClip("c1", renderTestVideoRef("vid_a", "/v.mp4", 10, true), 0, 10, nil)
 	plan, err := buildCompositionRenderPlan(renderTestDoc(clip), renderTestFacts(clip.Ref), compositionRenderOptions{})
 	if err != nil {
 		t.Fatalf("buildCompositionRenderPlan returned error: %v", err)
 	}
-	args := compositionFFmpegArgs(plan, compositionEncodeArgs(true, false), "/out.mp4")
+	args := compositionFFmpegArgs(plan, compositionEncodeArgs(true, 0, false, true), "/out.mp4")
 	want := "-y -i /v.mp4 -filter_complex " + plan.FilterComplex +
 		" -map [vout] -map [aout]" +
 		" -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p -c:a aac -b:a 128k -movflags +faststart /out.mp4"
@@ -244,7 +284,7 @@ func writeFakeCompositionFFmpeg(t *testing.T, dir, mode string) string {
 	}
 	script := fmt.Sprintf(`#!/bin/sh
 dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-printf '%%s\\n' "$@" >> "$dir/args.txt"
+printf '%%s\n' "$@" >> "$dir/args.txt"
 out=""
 mode="%s"
 for a in "$@"; do out="$a"; done
@@ -252,6 +292,12 @@ case "$mode" in
   fail) echo "fake render failure" >&2; exit 1 ;;
   sleep) sleep 30; exit 0 ;;
 esac
+# The volumedetect pass writes to the null muxer ("-") — copying the template
+# there would stray-file the process CWD (the repo, under go test).
+if [ "$out" = "-" ]; then
+  echo "[Parsed_volumedetect_0] max_volume: -3.2 dB" >&2
+  exit 0
+fi
 cp "$dir/template.mp4" "$out"
 echo "out_time_ms=4000000"
 `, mode)
@@ -305,16 +351,19 @@ func TestCompositionRenderLifecycle(t *testing.T) {
 	compositionConversationFixture(t, config.Storage)
 	app := NewApp()
 
-	// Guard rails first: an unknown mode, an empty request, and an empty
-	// document.
-	if _, err := app.SubmitCompositionRender(CompositionRenderRequest{ConversationID: "conv_comp", Mode: "export", Doc: &CompositionDoc{}}); err == nil || !strings.Contains(err.Error(), "preview") {
-		t.Fatalf("the export mode must refuse until its milestone, got %v", err)
+	// Guard rails first: an unknown mode, an empty request, an empty
+	// document, and an export that tries to render a working document.
+	if _, err := app.SubmitCompositionRender(CompositionRenderRequest{ConversationID: "conv_comp", Mode: "burn", Doc: &CompositionDoc{}}); err == nil || !strings.Contains(err.Error(), "preview") {
+		t.Fatalf("an unknown mode must refuse, got %v", err)
 	}
 	if _, err := app.SubmitCompositionRender(CompositionRenderRequest{ConversationID: "conv_comp", Mode: "preview"}); err == nil || !strings.Contains(err.Error(), "saved revision id or the working document") {
 		t.Fatalf("a render with neither doc nor artifact must refuse, got %v", err)
 	}
 	if _, err := app.SubmitCompositionRender(CompositionRenderRequest{ConversationID: "conv_comp", Doc: &CompositionDoc{}}); err == nil || !strings.Contains(err.Error(), "empty") {
 		t.Fatalf("an empty document must refuse, got %v", err)
+	}
+	if _, err := app.SubmitCompositionRender(CompositionRenderRequest{ConversationID: "conv_comp", Mode: "export", Doc: &CompositionDoc{Video: []CompositionClip{{ID: "c", Ref: renderTestVideoRef("vid_a", "/v.mp4", 5, true), OutSeconds: 5}}}}); err == nil || !strings.Contains(err.Error(), "save the composition first") {
+		t.Fatalf("an export without a pinned revision must refuse, got %v", err)
 	}
 
 	// The happy path renders the working document (the preview contract —
@@ -408,5 +457,148 @@ func TestCompositionRenderLifecycle(t *testing.T) {
 	terminal = waitCompositionRenderTerminal(t, app, op.ID)
 	if terminal.Status != "failed" || !strings.Contains(terminal.Error, "fake render failure") {
 		t.Fatalf("failed op = %+v", terminal)
+	}
+}
+
+func TestCompositionExportLifecycle(t *testing.T) {
+	config := editTestHome(t)
+	artifacts := compositionConversationFixture(t, config.Storage)
+	app := NewApp()
+	fakeDir := filepath.Join(t.TempDir(), "ffmpeg")
+	fake := writeFakeCompositionFFmpeg(t, fakeDir, "ok")
+	exportConfig := config
+	exportConfig.Providers.Local.FFmpeg.Binary = fake
+	if err := writeAppConfig(exportConfig); err != nil {
+		t.Fatalf("writeAppConfig: %v", err)
+	}
+	stubLocalLookup(t, map[string]string{fake: fake})
+
+	// Save a revision first — the export's pinned input (EX-04).
+	seed, err := app.SeedComposition(SeedCompositionRequest{ConversationID: "conv_comp", ArtifactIDs: []string{"vid_a"}})
+	if err != nil {
+		t.Fatalf("SeedComposition returned error: %v", err)
+	}
+	saved, err := app.SaveCompositionEdit(SaveCompositionEditRequest{ConversationID: "conv_comp", Doc: seed.Doc})
+	if err != nil {
+		t.Fatalf("SaveCompositionEdit returned error: %v", err)
+	}
+
+	// An export while the conversation streams refuses up front.
+	app.streamsMu.Lock()
+	app.streamConversations["req"] = "conv_comp"
+	app.streamsMu.Unlock()
+	_, err = app.SubmitCompositionRender(CompositionRenderRequest{ConversationID: "conv_comp", Mode: "export", ArtifactID: saved.ArtifactID})
+	if err == nil || !strings.Contains(err.Error(), "streaming") {
+		t.Fatalf("a streaming conversation must refuse the export, got %v", err)
+	}
+	app.streamsMu.Lock()
+	delete(app.streamConversations, "req")
+	app.streamsMu.Unlock()
+
+	// The export: frame override, CRF, and audio omitted (the seeded clip
+	// has audio, so this exercises the video-only graph and -an).
+	noAudio := false
+	op, err := app.SubmitCompositionRender(CompositionRenderRequest{
+		ConversationID: "conv_comp",
+		Mode:           "export",
+		ArtifactID:     saved.ArtifactID,
+		IncludeAudio:   &noAudio,
+		Width:          1920,
+		Height:         1080,
+		CRF:            23,
+	})
+	if err != nil {
+		t.Fatalf("SubmitCompositionRender(export) returned error: %v", err)
+	}
+	terminal := waitCompositionRenderTerminal(t, app, op.ID)
+	if terminal.Status != "completed" {
+		t.Fatalf("export terminal = %+v", terminal)
+	}
+	if terminal.Width != 1920 || terminal.Height != 1080 || terminal.IncludeAudio || terminal.ExportArtifactID == "" || !strings.HasPrefix(terminal.ExportArtifactID, "vid_") {
+		t.Fatalf("export op fields = %+v", terminal)
+	}
+	if !strings.HasPrefix(terminal.ResultURL, artifactPrefix) || !strings.Contains(terminal.ResultURL, "conv_comp") {
+		t.Fatalf("export result URL = %q, want the conversation artifact", terminal.ResultURL)
+	}
+
+	// The adopted artifact and its linked turn landed in the conversation.
+	detail, err := getConversation(config.Storage, "conv_comp")
+	if err != nil {
+		t.Fatalf("getConversation returned error: %v", err)
+	}
+	var exportTurn *HistoryTurn
+	for i := len(detail.Turns) - 1; i >= 0; i-- {
+		if detail.Turns[i].ProviderResponse != nil {
+			if _, ok := detail.Turns[i].ProviderResponse["compositionExport"]; ok {
+				exportTurn = &detail.Turns[i]
+			}
+		}
+	}
+	if exportTurn == nil {
+		t.Fatal("the export's linked turn is missing from history")
+	}
+	link := exportTurn.ProviderResponse["compositionExport"].(map[string]any)
+	if link["artifactId"] != terminal.ExportArtifactID || link["revisionArtifactId"] != saved.ArtifactID || link["kind"] != "video" {
+		t.Fatalf("compositionExport link = %+v", link)
+	}
+	var exported *HistoryContent
+	for _, content := range exportTurn.Content {
+		if content.ArtifactID == terminal.ExportArtifactID {
+			exported = &content
+		}
+	}
+	if exported == nil || exported.Type != "video" {
+		t.Fatalf("the export turn carries no video artifact: %+v", exportTurn.Content)
+	}
+	if _, err := os.Stat(filepath.Join(artifacts, filepath.Base(exported.Path))); err != nil {
+		t.Fatalf("the exported file never landed in the artifacts dir: %v", err)
+	}
+	if detail.Conversation.Stats.TurnCount != 2 || detail.Conversation.Stats.ArtifactCount != 2 {
+		t.Fatalf("stats = %+v, want the save and the export counted", detail.Conversation.Stats)
+	}
+
+	// The rendered argv carried the export block: the house preset, the
+	// requested CRF, the overridden frame's scale, and -an for the omitted
+	// mix.
+	recorded, err := os.ReadFile(filepath.Join(fakeDir, "args.txt"))
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	joined := strings.ReplaceAll(string(recorded), "\n", " ")
+	for _, want := range []string{"-preset veryfast", "-crf 23", "-an", "scale=1920:1080"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("export argv missing %q:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "amix") || strings.Contains(joined, "acrossfade") {
+		t.Fatalf("an audio-omitted export must carry no audio graph:\n%s", joined)
+	}
+
+	// An audio-only composition exports its mix as an aud_ artifact (AU-08).
+	audioSeed, err := app.SeedComposition(SeedCompositionRequest{ConversationID: "conv_comp", ArtifactIDs: []string{"aud_a"}})
+	if err != nil {
+		t.Fatalf("audio SeedComposition returned error: %v", err)
+	}
+	audioSaved, err := app.SaveCompositionEdit(SaveCompositionEditRequest{ConversationID: "conv_comp", Doc: audioSeed.Doc})
+	if err != nil {
+		t.Fatalf("audio SaveCompositionEdit returned error: %v", err)
+	}
+	op, err = app.SubmitCompositionRender(CompositionRenderRequest{ConversationID: "conv_comp", Mode: "export", ArtifactID: audioSaved.ArtifactID})
+	if err != nil {
+		t.Fatalf("audio export submit returned error: %v", err)
+	}
+	terminal = waitCompositionRenderTerminal(t, app, op.ID)
+	if terminal.Status != "completed" || !terminal.AudioOnly || !strings.HasPrefix(terminal.ExportArtifactID, "aud_") {
+		t.Fatalf("audio export = %+v", terminal)
+	}
+	// The fake's volumedetect pass reports a −3.2 dB peak — comfortably under
+	// the ceiling, so no clipping notice rides the export.
+	for _, notice := range terminal.Notices {
+		if strings.Contains(notice, "clips") {
+			t.Fatalf("a −3.2 dB peak must not raise the clipping notice: %v", terminal.Notices)
+		}
+	}
+	if _, err := os.Stat("-"); err == nil {
+		t.Fatal("the fake ffmpeg stray-filed the null output into the working directory")
 	}
 }
