@@ -940,9 +940,12 @@ export function CompositionEditor(props: {
                     <option value="blur">blur</option>
                   </select>
                 </label>
-                <NumberField label="Width" value={doc.output.width} step={2} min={0} title="0 inherits the first clip's width" onCommit={(value) => commit(setCompositionOutput(docRef.current, {width: value}))} />
-                <NumberField label="Height" value={doc.output.height} step={2} min={0} title="0 inherits the first clip's height" onCommit={(value) => commit(setCompositionOutput(docRef.current, {height: value}))} />
-                <NumberField label="FPS" value={doc.output.fps} step={1} min={0} max={60} title="0 inherits the first clip's frame rate" onCommit={(value) => commit(setCompositionOutput(docRef.current, {fps: value}))} />
+                {/* The fields show the frame the project will actually render
+                    — the doc stores 0 for "inherit the first clip", so the
+                    resolved value fills the box until an edit pins it. */}
+                <NumberField label="Width" value={frame.width} step={2} min={0} title="Overrides the first clip's width — 0 restores the inheritance" onCommit={(value) => commit(setCompositionOutput(docRef.current, {width: value}))} />
+                <NumberField label="Height" value={frame.height} step={2} min={0} title="Overrides the first clip's height — 0 restores the inheritance" onCommit={(value) => commit(setCompositionOutput(docRef.current, {height: value}))} />
+                <NumberField label="FPS" value={frame.fps} step={1} min={0} max={60} title="Overrides the first clip's frame rate — 0 restores the inheritance" onCommit={(value) => commit(setCompositionOutput(docRef.current, {fps: value}))} />
               </div>
               <p className="hint">Output frame: {frame.width}×{frame.height} @ {Math.round(frame.fps)}fps · {doc.output.fit}</p>
               <div className="composition-problems">
@@ -950,7 +953,7 @@ export function CompositionEditor(props: {
                 {problems.length ? (
                   <ul>{problems.map((problem, index) => <li key={index}>{problem}</li>)}</ul>
                 ) : (
-                  <p className="hint">Select a clip, lane, or segment to edit it. Preview renders arrive with the next milestone.</p>
+                  <p className="hint">Select a clip, lane, or segment to edit it.</p>
                 )}
               </div>
             </div>
@@ -1166,9 +1169,9 @@ export function CompositionEditor(props: {
             </button>
             {exportAdvancedOpen ? (
               <div className="composition-field-row">
-                <NumberField label="Width" value={exportWidth === '' ? 0 : parseFloat(exportWidth)} step={2} min={0} title="0 inherits the revision's width" onCommit={(value) => setExportWidth(value > 0 ? String(value) : '')} />
-                <NumberField label="Height" value={exportHeight === '' ? 0 : parseFloat(exportHeight)} step={2} min={0} title="0 inherits the revision's height" onCommit={(value) => setExportHeight(value > 0 ? String(value) : '')} />
-                <NumberField label="FPS" value={exportFPS === '' ? 0 : parseFloat(exportFPS)} step={1} min={0} max={60} title="0 inherits the revision's frame rate" onCommit={(value) => setExportFPS(value > 0 ? String(value) : '')} />
+                <NumberField label="Width" value={exportWidth === '' ? frame.width : parseFloat(exportWidth)} step={2} min={0} title="Overrides the saved width — 0 restores it" onCommit={(value) => setExportWidth(value > 0 ? String(value) : '')} />
+                <NumberField label="Height" value={exportHeight === '' ? frame.height : parseFloat(exportHeight)} step={2} min={0} title="Overrides the saved height — 0 restores it" onCommit={(value) => setExportHeight(value > 0 ? String(value) : '')} />
+                <NumberField label="FPS" value={exportFPS === '' ? frame.fps : parseFloat(exportFPS)} step={1} min={0} max={60} title="Overrides the saved frame rate — 0 restores it" onCommit={(value) => setExportFPS(value > 0 ? String(value) : '')} />
                 <label className="composition-field" title="Lower is better quality (H.264 CRF); 18 is the house default">
                   <span>Quality</span>
                   <select value={exportCRF} onChange={(event) => setExportCRF(event.target.value)}>
