@@ -7317,10 +7317,19 @@ function App() {
                 type="button"
                 className="assets-panel-new-composition"
                 disabled={editorOpening}
+                aria-label="New composition"
                 title="Open the video composer on an unsaved draft for this conversation — add clips from the picker inside it"
                 onClick={() => void openNewComposition(activeConversationID, [])}
               >
-                ＋ Composition
+                {/* Staggered clips on tracks + a plus — deliberately
+                    media-neutral: the composer hosts audio-only mixes too. */}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M3 5.5h9" strokeWidth="3" />
+                  <path d="M7 12h7" strokeWidth="3" />
+                  <path d="M3 18.5h7" strokeWidth="3" />
+                  <path d="M18.5 15v6" strokeWidth="2" />
+                  <path d="M15.5 18h6" strokeWidth="2" />
+                </svg>
               </button>
             ) : null}
             <button

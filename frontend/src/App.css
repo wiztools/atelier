@@ -3071,6 +3071,30 @@ button:disabled {
   color: #9ea5a3;
 }
 
+.assets-panel-new-composition {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  color: #9ea5a3;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.assets-panel-new-composition:hover {
+  opacity: 1;
+}
+
+.assets-panel-new-composition:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
 .assets-panel-close {
   width: 20px;
   height: 20px;
