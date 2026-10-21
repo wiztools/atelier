@@ -413,3 +413,72 @@
   flex-direction: column;
   gap: 6px;
 }
+
+/* The preview stage: the rendered proxy and the controls that produce it.
+   The media element is native controls — the preview IS the render, so
+   scrubbing it is exactly what export produces (render-to-preview only). */
+
+.composition-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.composition-preview {
+  width: 100%;
+  max-height: 280px;
+  border-radius: 6px;
+  background: #000;
+}
+
+.composition-preview-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 120px;
+  padding: 12px;
+  font-size: 12px;
+  font-style: italic;
+  color: #6f7477;
+  text-align: center;
+  border: 1px dashed #3b3f42;
+  border-radius: 6px;
+}
+
+.composition-stage-controls {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.composition-stage-controls .composition-field {
+  flex: 0 1 96px;
+}
+
+/* Direct manipulation: bodies grab, edges resize. touch-action none keeps
+   pointer drags from turning into scroll gestures. */
+
+.composition-clip,
+.composition-segment {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.composition-clip:active,
+.composition-segment:active {
+  cursor: grabbing;
+}
+
+.composition-clip.dragging {
+  opacity: 0.75;
+  z-index: 3;
+}
+
+.composition-junction {
+  cursor: ew-resize;
+  touch-action: none;
+  user-select: none;
+}

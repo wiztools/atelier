@@ -1188,6 +1188,94 @@ export namespace main {
 	
 	
 	
+	export class CompositionRenderOperation {
+	    id: string;
+	    mode: string;
+	    status: string;
+	    progress: number;
+	    error?: string;
+	    notices: string[];
+	    resultUrl?: string;
+	    resultPosterUrl?: string;
+	    outputSeconds: number;
+	    width?: number;
+	    height?: number;
+	    fps?: number;
+	    audioOnly: boolean;
+	    rangeStartSeconds?: number;
+	    rangeEndSeconds?: number;
+	    soloLaneId?: string;
+	    startedAt: string;
+	    updatedAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CompositionRenderOperation(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.mode = source["mode"];
+	        this.status = source["status"];
+	        this.progress = source["progress"];
+	        this.error = source["error"];
+	        this.notices = source["notices"];
+	        this.resultUrl = source["resultUrl"];
+	        this.resultPosterUrl = source["resultPosterUrl"];
+	        this.outputSeconds = source["outputSeconds"];
+	        this.width = source["width"];
+	        this.height = source["height"];
+	        this.fps = source["fps"];
+	        this.audioOnly = source["audioOnly"];
+	        this.rangeStartSeconds = source["rangeStartSeconds"];
+	        this.rangeEndSeconds = source["rangeEndSeconds"];
+	        this.soloLaneId = source["soloLaneId"];
+	        this.startedAt = source["startedAt"];
+	        this.updatedAt = source["updatedAt"];
+	    }
+	}
+	export class CompositionRenderRequest {
+	    conversationId: string;
+	    artifactId?: string;
+	    doc?: CompositionDoc;
+	    mode: string;
+	    startSeconds?: number;
+	    endSeconds?: number;
+	    soloLaneId?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CompositionRenderRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.conversationId = source["conversationId"];
+	        this.artifactId = source["artifactId"];
+	        this.doc = this.convertValues(source["doc"], CompositionDoc);
+	        this.mode = source["mode"];
+	        this.startSeconds = source["startSeconds"];
+	        this.endSeconds = source["endSeconds"];
+	        this.soloLaneId = source["soloLaneId"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	
 	export class CompositionSourceInfo {
 	    conversationId: string;

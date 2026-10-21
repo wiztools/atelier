@@ -10,6 +10,8 @@ export function BeginMediaUpload(arg1:string,arg2:string):Promise<string>;
 
 export function CancelAudioEdit(arg1:string,arg2:string):Promise<void>;
 
+export function CancelCompositionRender(arg1:string):Promise<void>;
+
 export function CancelImageEdit(arg1:string,arg2:string):Promise<void>;
 
 export function CancelStream(arg1:string):Promise<void>;
@@ -239,6 +241,8 @@ export function SetProjectNotes(arg1:string,arg2:string):Promise<main.ProjectSum
 export function StreamChat(arg1:main.ChatRequest):Promise<main.ChatStreamStart>;
 
 export function SubmitAudioEdit(arg1:main.AudioEditSubmitRequest):Promise<main.EditOperationState>;
+
+export function SubmitCompositionRender(arg1:main.CompositionRenderRequest):Promise<main.CompositionRenderOperation>;
 
 export function SubmitImageEdit(arg1:main.ImageEditSubmitRequest):Promise<main.EditOperationState>;
 

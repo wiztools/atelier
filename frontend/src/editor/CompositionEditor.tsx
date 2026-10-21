@@ -1,13 +1,16 @@
 import {useEffect, useMemo, useRef, useState} from 'react';
 import * as AppBindings from '../../wailsjs/go/main/App';
-import {SaveComposition} from '../../wailsjs/go/main/App';
+import {CancelCompositionRender, SaveComposition} from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
+import {EventsOff, EventsOn} from '../../wailsjs/runtime/runtime';
 import {EditsPanel} from './EditsPanel';
 import {EditorHeader} from './EditorHeader';
 import {MediaPicker} from './MediaPicker';
 import {
+  CompositionClip,
   CompositionDoc,
   CompositionFit,
+  CompositionSegment,
   addClip,
   addDuck,
   addLane,
@@ -89,8 +92,26 @@ function formatEditorError(error: unknown): string {
   }
 }
 
+// compositionPosterURL mirrors the app-wide posterURLForVideoSrc convention:
+// a /atelier-artifact video src swaps its extension for _poster.jpg (the
+// renderer writes the sibling; a 404 degrades to the bare video element).
+function compositionPosterURL(src: string): string {
+  if (!src.startsWith('/atelier-artifact/')) return '';
+  return src.replace(/\.[^.]+$/, '_poster.jpg');
+}
+
 function asArray<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : [];
+}
+
+function findSegment(doc: CompositionDoc, segmentID: string): CompositionSegment | undefined {
+  for (const lane of doc.audioLanes) {
+    const segment = lane.segments.find((candidate) => candidate.id === segmentID);
+    if (segment) {
+      return segment;
+    }
+  }
+  return undefined;
 }
 
 // NumberField commits on blur or Enter, so typing "0." mid-edit never fights
@@ -167,6 +188,19 @@ export function CompositionEditor(props: {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
 
+  // Render ops this session, newest first — every transition arrives as an
+  // atelier:composition-op event and folds into the row (terminal states
+  // never overwrite a later one because the op id keys the merge).
+  const [renders, setRenders] = useState<main.CompositionRenderOperation[]>([]);
+  const [renderError, setRenderError] = useState('');
+  // The stage plays the chosen completed render; renderedDoc is the snapshot
+  // it was built from, so edits after a render show the stale note.
+  const [preview, setPreview] = useState<{url: string; audioOnly: boolean} | null>(null);
+  const [renderedDoc, setRenderedDoc] = useState<CompositionDoc | null>(null);
+  const [rangeFrom, setRangeFrom] = useState('');
+  const [rangeTo, setRangeTo] = useState('');
+  const [soloLaneID, setSoloLaneID] = useState('');
+
   // A ref mirror of the doc so async picker adds always commit against the
   // newest state (the video editor's stale-resolve discipline).
   const docRef = useRef(doc);
@@ -198,6 +232,27 @@ export function CompositionEditor(props: {
     setRedoStack([]);
     setDoc(next);
     docRef.current = next;
+  };
+  // Drags coalesce to ONE undo entry, taken lazily: a pointerdown that never
+  // moves (a plain select click) pushes nothing.
+  const pushUndoSnapshot = () => {
+    setUndoStack((stack) => [...stack, docRef.current].slice(-undoLimit));
+    setRedoStack([]);
+  };
+  const dragChangedRef = useRef(false);
+  const liveSetDoc = (next: CompositionDoc) => {
+    setDoc(next);
+    docRef.current = next;
+  };
+  const applyLive = (next: CompositionDoc) => {
+    if (sameCompositionDoc(next, docRef.current)) {
+      return;
+    }
+    if (!dragChangedRef.current) {
+      dragChangedRef.current = true;
+      pushUndoSnapshot();
+    }
+    liveSetDoc(next);
   };
   const undo = () => {
     setUndoStack((stack) => {
@@ -252,6 +307,64 @@ export function CompositionEditor(props: {
     };
   }, [sourceConversationID, props.libraryID]);
 
+  // Render-op events fold into the rows; a completion also takes the stage.
+  useEffect(() => {
+    const onUpdate = (event: any) => {
+      const op = main.CompositionRenderOperation.createFrom(event);
+      setRenders((current) => {
+        const index = current.findIndex((candidate) => candidate.id === op.id);
+        if (index < 0) {
+          return [op, ...current];
+        }
+        const next = [...current];
+        next[index] = op;
+        return next;
+      });
+      if (op.status === 'completed' && op.resultUrl) {
+        setPreview({url: op.resultUrl, audioOnly: op.audioOnly});
+      }
+    };
+    EventsOn('atelier:composition-op', onUpdate);
+    return () => {
+      EventsOff('atelier:composition-op');
+    };
+  }, []);
+
+  const runningRender = renders.find((op) => op.status === 'queued' || op.status === 'running') ?? null;
+  const renderDisabled = !!runningRender || problems.length > 0 || missingRefs.size > 0 ||
+    (doc.video.length === 0 && doc.audioLanes.every((lane) => lane.segments.length === 0));
+  const previewOutdated = !!preview && renderedDoc !== null && !sameCompositionDoc(renderedDoc, doc);
+
+  // submitRender previews the WORKING document — the no-forced-save
+  // contract; the export path (next milestone) will pin a saved revision.
+  const submitRender = async () => {
+    setRenderError('');
+    const from = parseFloat(rangeFrom);
+    const to = parseFloat(rangeTo);
+    try {
+      const op = await AppBindings.SubmitCompositionRender(main.CompositionRenderRequest.createFrom({
+        conversationId: sourceConversationID,
+        mode: 'preview',
+        doc: toWireDoc(docRef.current),
+        ...(Number.isFinite(from) ? {startSeconds: from} : {}),
+        ...(Number.isFinite(to) ? {endSeconds: to} : {}),
+        ...(soloLaneID ? {soloLaneId: soloLaneID} : {}),
+      }));
+      setRenderedDoc(normalizeCompositionDoc(docRef.current));
+      setRenders((current) => [op, ...current]);
+    } catch (error) {
+      setRenderError(formatEditorError(error));
+    }
+  };
+
+  const cancelRender = async (operationID: string) => {
+    try {
+      await CancelCompositionRender(operationID);
+    } catch (error) {
+      setRenderError(formatEditorError(error));
+    }
+  };
+
   // Global shortcuts, detached while suspended and skipped for text targets.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -283,6 +396,170 @@ export function CompositionEditor(props: {
       setNameDraft(doc.name);
     }
   };
+
+  // ---- Direct timeline manipulation ----
+  // One generic pointer drag covers every timeline gesture: a clip's body
+  // reorders, its edges trim the source range, a junction badge resizes its
+  // dissolve (dragging a cut right CREATES the dissolve), a segment's body
+  // slides along its lane, its edges trim. All of them funnel into the
+  // model's clamping ops, and all of them coalesce to a single undo entry.
+
+  type DragState =
+    | {kind: 'clip-move'; clipID: string; fromIndex: number; targetIndex: number; startClientX: number}
+    | {kind: 'clip-trim'; clipID: string; edge: 'in' | 'out'; startClientX: number; startValue: number}
+    | {kind: 'junction'; clipID: string; startClientX: number; startSeconds: number; hadTransition: boolean}
+    | {kind: 'segment-move'; segmentID: string; grabOffset: number; startClientX: number}
+    | {kind: 'segment-trim'; segmentID: string; edge: 'in' | 'out'; startClientX: number; startValue: number};
+  const [drag, setDrag] = useState<DragState | null>(null);
+  const laneElementRef = useRef<HTMLDivElement | null>(null);
+
+  const pxPerSecond = () => {
+    const width = laneElementRef.current?.getBoundingClientRect().width ?? 0;
+    return width > 0 && timelineExtent > 0 ? width / timelineExtent : 1;
+  };
+  const pointerTime = (clientX: number) => {
+    const rect = laneElementRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0) {
+      return 0;
+    }
+    return Math.max(0, ((clientX - rect.left) / rect.width) * timelineExtent);
+  };
+  const edgeAt = (element: Element, clientX: number) => {
+    const rect = element.getBoundingClientRect();
+    const within = clientX - rect.left;
+    if (within <= 9) {
+      return 'in' as const;
+    }
+    if (rect.width - within <= 9) {
+      return 'out' as const;
+    }
+    return null;
+  };
+
+  const beginClipDrag = (event: React.PointerEvent, clip: CompositionClip, index: number) => {
+    if (event.button !== 0 || props.suspended) {
+      return;
+    }
+    event.preventDefault();
+    setSelection({kind: 'clip', clipID: clip.id});
+    const edge = edgeAt(event.currentTarget, event.clientX);
+    dragChangedRef.current = false;
+    if (edge) {
+      setDrag({kind: 'clip-trim', clipID: clip.id, edge, startClientX: event.clientX, startValue: edge === 'in' ? clip.inSeconds : clip.outSeconds});
+    } else {
+      setDrag({kind: 'clip-move', clipID: clip.id, fromIndex: index, targetIndex: index, startClientX: event.clientX});
+    }
+  };
+
+  const beginJunctionDrag = (event: React.PointerEvent, clip: CompositionClip) => {
+    if (event.button !== 0 || props.suspended) {
+      return;
+    }
+    event.preventDefault();
+    setSelection({kind: 'clip', clipID: clip.id});
+    dragChangedRef.current = false;
+    setDrag({kind: 'junction', clipID: clip.id, startClientX: event.clientX, startSeconds: clip.transitionToNext?.seconds ?? 0, hadTransition: !!clip.transitionToNext});
+  };
+
+  const beginSegmentDrag = (event: React.PointerEvent, segment: CompositionSegment) => {
+    if (event.button !== 0 || props.suspended) {
+      return;
+    }
+    event.preventDefault();
+    const laneID = docRef.current.audioLanes.find((lane) => lane.segments.some((candidate) => candidate.id === segment.id))?.id ?? '';
+    setSelection({kind: 'segment', laneID, segmentID: segment.id});
+    const edge = edgeAt(event.currentTarget, event.clientX);
+    dragChangedRef.current = false;
+    if (edge) {
+      setDrag({kind: 'segment-trim', segmentID: segment.id, edge, startClientX: event.clientX, startValue: edge === 'in' ? segment.inSeconds : segment.outSeconds});
+    } else {
+      const grabOffset = Math.max(0, pointerTime(event.clientX) - segment.startSeconds);
+      setDrag({kind: 'segment-move', segmentID: segment.id, grabOffset, startClientX: event.clientX});
+    }
+  };
+
+  useEffect(() => {
+    if (!drag) {
+      return;
+    }
+    const onMove = (event: PointerEvent) => {
+      const scale = pxPerSecond();
+      const delta = (event.clientX - drag.startClientX) / scale;
+      switch (drag.kind) {
+        case 'clip-move': {
+          const current = docRef.current;
+          const index = current.video.findIndex((clip) => clip.id === drag.clipID);
+          if (index < 0) {
+            return;
+          }
+          const averageWidth = current.video.length > 1
+            ? current.video.reduce((total, clip) => total + clipDurationSeconds(clip), 0) / current.video.length
+            : timelineExtent;
+          const target = Math.min(Math.max(0, Math.round(drag.fromIndex + (event.clientX - drag.startClientX) / (averageWidth * scale))), current.video.length - 1);
+          if (target !== drag.targetIndex && target !== index) {
+            applyLive(moveClip(current, drag.clipID, target));
+            setDrag({...drag, targetIndex: target});
+          }
+          return;
+        }
+        case 'clip-trim': {
+          const current = docRef.current;
+          const clip = current.video.find((candidate) => candidate.id === drag.clipID);
+          if (!clip) {
+            return;
+          }
+          const next = drag.edge === 'in'
+            ? setClipRange(current, drag.clipID, drag.startValue + delta, clip.outSeconds)
+            : setClipRange(current, drag.clipID, clip.inSeconds, drag.startValue + delta);
+          applyLive(next);
+          return;
+        }
+        case 'junction': {
+          const current = docRef.current;
+          const clip = current.video.find((candidate) => candidate.id === drag.clipID);
+          if (!clip) {
+            return;
+          }
+          const requested = Math.max(0, drag.startSeconds + delta);
+          if (requested < compositionTransitionMinSeconds) {
+            applyLive(setClipTransition(current, drag.clipID, null));
+            return;
+          }
+          const next = setClipTransition(current, drag.clipID, {seconds: requested, audioCrossfade: clip.transitionToNext?.audioCrossfade ?? true});
+          applyLive(next);
+          return;
+        }
+        case 'segment-move': {
+          const current = docRef.current;
+          const target = Math.max(0, pointerTime(event.clientX) - drag.grabOffset);
+          const next = moveSegment(current, drag.segmentID, target);
+          applyLive(next);
+          return;
+        }
+        case 'segment-trim': {
+          const current = docRef.current;
+          const segment = findSegment(current, drag.segmentID);
+          if (!segment) {
+            return;
+          }
+          const next = drag.edge === 'in'
+            ? setSegmentRange(current, drag.segmentID, drag.startValue + delta, segment.outSeconds)
+            : setSegmentRange(current, drag.segmentID, segment.inSeconds, drag.startValue + delta);
+          applyLive(next);
+          return;
+        }
+      }
+    };
+    const finish = () => setDrag(null);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', finish);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+    };
+  }, [drag, timelineExtent, props.suspended]);
 
   // addMedia resolves and measures one picked asset, then lands it: videos
   // append to the video lane, audio queues onto the selected lane when one is
@@ -460,7 +737,58 @@ export function CompositionEditor(props: {
             />
           ) : null}
 
-          <div className="composition-timeline">
+          <div className="composition-stage">
+            {preview ? (
+              preview.audioOnly ? (
+                <audio key={preview.url} className="composition-preview composition-preview-audio" src={preview.url} controls />
+              ) : (
+                <video key={preview.url} className="composition-preview" src={preview.url} poster={compositionPosterURL(preview.url)} controls />
+              )
+            ) : (
+              <div className="composition-preview-empty">
+                No preview yet — render one to watch the assembled sequence. Trims, dissolves, and the audio mix are exactly what export will produce.
+              </div>
+            )}
+            <div className="composition-stage-controls">
+              <button
+                type="button"
+                className="editor-generate"
+                disabled={renderDisabled}
+                title={missingRefs.size > 0
+                  ? 'A source file is missing — the render refuses until it is removed'
+                  : problems.length > 0
+                    ? 'Fix the timeline problems first'
+                    : 'Render the working timeline to a preview file — no save required'}
+                onClick={() => void submitRender()}
+              >
+                {runningRender ? `Rendering… ${Math.round((runningRender.progress ?? 0) * 100)}%` : 'Render preview'}
+              </button>
+              {runningRender ? (
+                <button type="button" onClick={() => void cancelRender(runningRender.id)}>Cancel</button>
+              ) : null}
+              <label className="composition-field" title="Render only part of the output timeline — leave empty for the whole sequence">
+                <span>From (s)</span>
+                <input type="number" min={0} step={0.5} value={rangeFrom} placeholder="0" onChange={(event) => setRangeFrom(event.target.value)} />
+              </label>
+              <label className="composition-field" title="Range end — leave empty to run to the sequence end">
+                <span>To (s)</span>
+                <input type="number" min={0} step={0.5} value={rangeTo} placeholder={formatCompositionClock(timelineExtent)} onChange={(event) => setRangeTo(event.target.value)} />
+              </label>
+              {doc.audioLanes.length ? (
+                <label className="composition-field" title="Preview with only this lane audible — every other lane and the clips' original audio drop out">
+                  <span>Solo lane</span>
+                  <select value={soloLaneID} onChange={(event) => setSoloLaneID(event.target.value)}>
+                    <option value="">— none —</option>
+                    {doc.audioLanes.map((lane) => <option key={lane.id} value={lane.id}>{lane.name}</option>)}
+                  </select>
+                </label>
+              ) : null}
+              {previewOutdated ? <span className="composition-warning" title="The timeline changed after this preview was rendered">preview outdated — re-render</span> : null}
+              {renderError ? <span className="composition-warning" role="alert">{renderError}</span> : null}
+            </div>
+          </div>
+
+          <div className="composition-timeline" ref={laneElementRef}>
             <div className="composition-ruler">
               {Array.from({length: 7}, (_, index) => {
                 const at = (timelineExtent * index) / 6;
@@ -477,13 +805,10 @@ export function CompositionEditor(props: {
                   <button
                     key={clip.id}
                     type="button"
-                    className={`composition-clip${selection.kind === 'clip' && selection.clipID === clip.id ? ' selected' : ''}${missing ? ' missing' : ''}${clip.audio.muted ? ' audio-muted' : ''}${clip.audio.detached ? ' audio-detached' : ''}`}
+                    className={`composition-clip${selection.kind === 'clip' && selection.clipID === clip.id ? ' selected' : ''}${missing ? ' missing' : ''}${clip.audio.muted ? ' audio-muted' : ''}${clip.audio.detached ? ' audio-detached' : ''}${drag?.kind === 'clip-move' && drag.clipID === clip.id ? ' dragging' : ''}`}
                     style={{left: pct(layout.starts[index]), width: pct(clipDurationSeconds(clip))}}
-                    title={`${clip.ref.artifactId} · ${formatCompositionClock(clipDurationSeconds(clip))}${missing ? ' · source file missing' : ''}`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setSelection({kind: 'clip', clipID: clip.id});
-                    }}
+                    title={`${clip.ref.artifactId} · ${formatCompositionClock(clipDurationSeconds(clip))}${missing ? ' · source file missing' : ''}\nDrag to reorder · drag an edge to trim · select to edit`}
+                    onPointerDown={(event) => beginClipDrag(event, clip, index)}
                   >
                     <span className="composition-clip-name">{clip.ref.artifactId.slice(0, 12)}</span>
                     <span className="composition-clip-duration">{formatCompositionClock(clipDurationSeconds(clip))}</span>
@@ -498,14 +823,11 @@ export function CompositionEditor(props: {
                     key={`junction-${clip.id}`}
                     type="button"
                     className={`composition-junction${transition ? ' dissolve' : ' cut'}${selection.kind === 'clip' && selection.clipID === clip.id ? ' selected' : ''}`}
-                    style={{left: pct(junctionAt), width: transition ? pct(transition.seconds) : '2px'}}
+                    style={{left: pct(junctionAt), width: transition ? pct(transition.seconds) : '3px'}}
                     title={transition
-                      ? `Dissolve ${transition.seconds.toFixed(1)}s (audio ${transition.audioCrossfade ? 'crossfades' : 'cuts'}) — select the left clip to edit`
-                      : 'Cut — select the left clip to add a transition'}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setSelection({kind: 'clip', clipID: clip.id});
-                    }}
+                      ? `Dissolve ${transition.seconds.toFixed(1)}s (audio ${transition.audioCrossfade ? 'crossfades' : 'cuts'}) — drag to resize, drag fully left for a cut`
+                      : 'Cut — drag right to create a dissolve'}
+                    onPointerDown={(event) => beginJunctionDrag(event, clip)}
                   >
                     {transition ? `${transition.seconds.toFixed(1)}s` : '∥'}
                   </button>
@@ -529,11 +851,8 @@ export function CompositionEditor(props: {
                       type="button"
                       className={`composition-segment${selection.kind === 'segment' && selection.segmentID === segment.id ? ' selected' : ''}${missingRefs.has(segment.ref.artifactId) ? ' missing' : ''}${segment.ducks.length ? ' ducked' : ''}`}
                       style={{left: pct(segment.startSeconds), width: pct(segmentDurationSeconds(segment))}}
-                      title={`${segment.ref.artifactId} · ${formatCompositionClock(segmentDurationSeconds(segment))}${segment.ducks.length ? ` · ${segment.ducks.length} duck${segment.ducks.length === 1 ? '' : 's'}` : ''}`}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setSelection({kind: 'segment', laneID: lane.id, segmentID: segment.id});
-                      }}
+                      title={`${segment.ref.artifactId} · ${formatCompositionClock(segmentDurationSeconds(segment))}${segment.ducks.length ? ` · ${segment.ducks.length} duck${segment.ducks.length === 1 ? '' : 's'}` : ''}\nDrag to move · drag an edge to trim · select to edit`}
+                      onPointerDown={(event) => beginSegmentDrag(event, segment)}
                     >
                       {segment.ref.artifactId.slice(0, 10)}
                     </button>
@@ -756,8 +1075,45 @@ export function CompositionEditor(props: {
         </aside>
       </div>
 
-      <EditsPanel count={log.length} emptyText="Nothing saved yet." bodyReservePx={editsPanelBodyReservePx}>
+      <EditsPanel count={log.length + renders.length} emptyText="Nothing rendered or saved yet." bodyReservePx={editsPanelBodyReservePx}>
         <ul className="editor-op-list">
+          {renders.map((op) => (
+            <li key={op.id} className={`editor-op editor-op-${op.status}`}>
+              <span className="editor-op-thumb-glyph">{op.status === 'completed' ? '▶' : op.status === 'failed' ? '✕' : op.status === 'cancelled' ? '–' : '⋯'}</span>
+              <div className="editor-op-meta">
+                <span className="editor-op-title">
+                  Preview · {op.audioOnly ? 'audio only' : `${op.width || '?'}×${op.height || '?'}`} · {formatCompositionClock(op.outputSeconds || 0)}
+                  {op.rangeStartSeconds !== undefined && op.rangeEndSeconds !== undefined
+                    ? ` · ${formatCompositionClock(op.rangeStartSeconds)}–${formatCompositionClock(op.rangeEndSeconds)}`
+                    : ''}
+                </span>
+                <span className="editor-op-sub">
+                  {op.status === 'running' || op.status === 'queued'
+                    ? `${Math.round((op.progress || 0) * 100)}%`
+                    : op.error || asArray(op.notices).join(' · ') || 'rendered for this session'}
+                </span>
+              </div>
+              <div className="editor-op-actions">
+                {op.status === 'running' || op.status === 'queued' ? (
+                  <button type="button" onClick={() => void cancelRender(op.id)}>Cancel</button>
+                ) : null}
+                {op.status === 'completed' && op.resultUrl ? (
+                  <button
+                    type="button"
+                    title="Load this render onto the stage"
+                    onClick={() => {
+                      const url = op.resultUrl;
+                      if (url) {
+                        setPreview({url, audioOnly: op.audioOnly});
+                      }
+                    }}
+                  >
+                    Play
+                  </button>
+                ) : null}
+              </div>
+            </li>
+          ))}
           {log.map((entry, index) => (
             <li key={index} className="editor-op editor-op-done">
               <span className="editor-op-thumb-glyph">✓</span>

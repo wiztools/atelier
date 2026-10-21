@@ -18,6 +18,10 @@ export function CancelAudioEdit(arg1, arg2) {
   return window['go']['main']['App']['CancelAudioEdit'](arg1, arg2);
 }
 
+export function CancelCompositionRender(arg1) {
+  return window['go']['main']['App']['CancelCompositionRender'](arg1);
+}
+
 export function CancelImageEdit(arg1, arg2) {
   return window['go']['main']['App']['CancelImageEdit'](arg1, arg2);
 }
@@ -476,6 +480,10 @@ export function StreamChat(arg1) {
 
 export function SubmitAudioEdit(arg1) {
   return window['go']['main']['App']['SubmitAudioEdit'](arg1);
+}
+
+export function SubmitCompositionRender(arg1) {
+  return window['go']['main']['App']['SubmitCompositionRender'](arg1);
 }
 
 export function SubmitImageEdit(arg1) {

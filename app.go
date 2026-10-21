@@ -73,11 +73,18 @@ type App struct {
 	// operation ID (edit_session.go): the one-op-per-session guard,
 	// CancelImageEdit's handle, and the "is it live?" check orphaned
 	// queued/running records consult. editOpsMu guards the map.
-	editOps             map[string]*editOpRun
-	editOpsMu           sync.Mutex
-	videoPreviewMu      sync.Mutex
-	videoPreviewJobs    map[string]*videoPreviewJob
-	videoSourcePreviews map[string]EditSourceInfo
+	editOps   map[string]*editOpRun
+	editOpsMu sync.Mutex
+	// compositionRenders tracks the video composer's in-flight render
+	// operations keyed by operation ID (composition_render.go): the
+	// one-render-per-conversation guard and CancelCompositionRender's
+	// handle. compositionRendersMu guards the map.
+	compositionRenders       map[string]*compositionRenderRun
+	compositionRenderHistory map[string]CompositionRenderOperation
+	compositionRendersMu     sync.Mutex
+	videoPreviewMu           sync.Mutex
+	videoPreviewJobs         map[string]*videoPreviewJob
+	videoSourcePreviews      map[string]EditSourceInfo
 	// editSubmitMu serializes submit-time validation, persistence, and
 	// in-flight registration. Without it, two quick submits into the same
 	// session could both pass the running check before either registered.
@@ -105,14 +112,16 @@ func NewApp() *App {
 		updateClient: &http.Client{
 			Timeout: 10 * time.Minute,
 		},
-		baseURL:             defaultOllamaBaseURL,
-		streams:             map[string]context.CancelFunc{},
-		streamConversations: map[string]string{},
-		permissions:         map[string]chan bool{},
-		editOps:             map[string]*editOpRun{},
-		videoPreviewJobs:    map[string]*videoPreviewJob{},
-		videoSourcePreviews: map[string]EditSourceInfo{},
-		falPricing:          newFalPricingCache(),
+		baseURL:                  defaultOllamaBaseURL,
+		streams:                  map[string]context.CancelFunc{},
+		streamConversations:      map[string]string{},
+		permissions:              map[string]chan bool{},
+		editOps:                  map[string]*editOpRun{},
+		compositionRenders:       map[string]*compositionRenderRun{},
+		compositionRenderHistory: map[string]CompositionRenderOperation{},
+		videoPreviewJobs:         map[string]*videoPreviewJob{},
+		videoSourcePreviews:      map[string]EditSourceInfo{},
+		falPricing:               newFalPricingCache(),
 	}
 	app.toolPermission = app.requestToolPermission
 	return app
@@ -135,6 +144,7 @@ func (a *App) startup(ctx context.Context) {
 	cleanupEditSourcePreviews()
 	cleanupVideoEditStaging()
 	cleanupAudioEditStaging()
+	cleanupCompositionPreviews()
 	a.startUpdateScheduler(ctx)
 }
 
@@ -1719,6 +1729,11 @@ func (a *App) shutdown(_ context.Context) {
 		operation.cancel()
 	}
 	a.editOpsMu.Unlock()
+	a.compositionRendersMu.Lock()
+	for _, render := range a.compositionRenders {
+		render.cancel()
+	}
+	a.compositionRendersMu.Unlock()
 	deadline := time.Now().Add(2 * time.Second)
 	for a.anyEditOperationActive() && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
