@@ -84,6 +84,7 @@ func ffmpegToolDefinitions(config AppConfig) []HarnessToolDefinition {
 		removeAudioToolDefinition(),
 		replaceAudioToolDefinition(),
 		convertAudioToolDefinition(),
+		burnSubtitlesToolDefinition(),
 		transformVideoToolDefinition(),
 		transformAudioToolDefinition(),
 		reverseVideoToolDefinition(),
@@ -3358,10 +3359,109 @@ func replaceAudioCopyVideo(ctx context.Context, config AppConfig, videoPath stri
 	return false, fmt.Sprintf("the video's container (%s) cannot hold a copied stream inside MP4, so the video was re-encoded.", probe.Format)
 }
 
-// transformVideoToolDefinition exposes transform_video: crop an attached
-// video to an aspect ratio, resize it to exact dimensions, rotate, flip,
-// change its playback speed, or fade it in/out — the video sibling of
-// transform_image, on one ffmpeg filter chain.
+// burnSubtitlesToolDefinition exposes burn_subtitles: render the
+// conversation's subtitles onto the attached video's frames — hardcoded
+// captions that show in every player — the ffmpeg sibling of the in-process
+// convert_subtitles (subtitle.go), sharing its source ladder.
+func burnSubtitlesToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "burn_subtitles",
+		Title:       "Burn subtitles",
+		Description: "Use this when the user asks to burn or hardcode subtitles into a video — render the captions onto the frames (\"open captions\") so the text is part of the picture and shows even in players that load no subtitle file (to convert a subtitle file's FORMAT instead, use convert_subtitles; to keep it a separate sidecar file, there is nothing to do — attach it and players load it themselves). Requires an attached video clip (one attached or @-mentioned this turn, or the conversation's newest video). The subtitle source resolves like convert_subtitles's: the subtitle file an earlier call in this same turn produced (e.g. a transcribe_audio in the same plan), or the conversation's newest .vtt/.srt transcript artifact (this includes a subtitle file attached to this turn) — artifactId names a specific one. The video is re-encoded to H.264 with its audio kept; captions render in ffmpeg's default style (white text with a black outline, bottom-centered). The captioned video is attached to the assistant reply and becomes the conversation's newest video.",
+		Example:     `{"name":"burn_subtitles"}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: burnSubtitlesParamSchema(),
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			return executeBurnSubtitles(ctx, tools, call)
+		},
+		Activity: ffmpegActivity("burn-subtitles"),
+	}
+}
+
+// burnSubtitlesParamSchema mirrors the Validate contract for the native
+// function-calling declaration: no required params, artifactId narrows the
+// subtitle source like convert_subtitles's.
+func burnSubtitlesParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"artifactId": stringParam(`Optional — the id of a specific transcript artifact in this conversation to burn (e.g. "trc_ab12cd34"). Defaults to the newest .vtt/.srt artifact, or the subtitle file an earlier call in this turn produced.`),
+		},
+		"required": []string{},
+	}
+}
+
+// executeBurnSubtitles resolves the video (the standard slot) and the subtitle
+// file (resolveSubtitleSource's ladder: this turn's in-flight transcripts
+// first, then the persisted record), validates the cues, and burns them in
+// with one house re-encode.
+func executeBurnSubtitles(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (ToolVideoResult, string, error) {
+	video := firstAttachedVideo(tools.AttachedVideos)
+	if video == "" {
+		return ToolVideoResult{}, "subtitle burning requires an attached video clip", errors.New("burn_subtitles requires an attached video clip — ask the user to attach one first")
+	}
+	data, _, sourceLabel, err := resolveSubtitleSource(tools, "burn_subtitles", strings.TrimSpace(call.ArtifactID))
+	if err != nil {
+		return ToolVideoResult{}, "subtitle burning failed", err
+	}
+	// A zero-cue source would re-encode the clip into an identical one and
+	// claim success — refuse while the parser's error names the real problem.
+	// Malformed blocks are counted, not fatal (parseSubtitles is lenient, the
+	// convert_subtitles stance).
+	cues, format, skipped, err := parseSubtitles(data)
+	if err != nil {
+		return ToolVideoResult{}, "subtitle burning failed", fmt.Errorf("the subtitle source is not usable: %w", err)
+	}
+	staging, err := os.MkdirTemp("", "atelier-ffmpeg-*")
+	if err != nil {
+		return ToolVideoResult{}, "subtitle burning failed", err
+	}
+	defer os.RemoveAll(staging)
+	videoPath, err := stageMediaDataURL(staging, "video", video)
+	if err != nil {
+		return ToolVideoResult{}, "subtitle burning failed", err
+	}
+	subtitlePath := filepath.Join(staging, "subtitles"+map[string]string{subtitleFormatVTT: ".vtt", subtitleFormatSRT: ".srt"}[format])
+	if err := os.WriteFile(subtitlePath, data, 0o644); err != nil {
+		return ToolVideoResult{}, "subtitle burning failed", fmt.Errorf("staging the subtitle file failed: %w", err)
+	}
+	staged := filepath.Join(staging, "burned.mp4")
+	if err := runLocalFFmpeg(ctx, tools.Config, ffmpegBurnSubtitlesArgs(videoPath, subtitlePath, staged)); err != nil {
+		return ToolVideoResult{}, "subtitle burning failed", err
+	}
+	tempPath, err := promoteStagedOutput(staged, "atelier-video-*", ".mp4")
+	if err != nil {
+		return ToolVideoResult{}, "subtitle burning failed", err
+	}
+	output := ToolVideoResult{
+		Model:  ffmpegModelName,
+		Prompt: "the conversation's subtitles burned into the attached video",
+		Count:  1,
+		Videos: []ToolVideoFile{{TempPath: tempPath, MimeType: "video/mp4"}},
+	}
+	if skipped > 0 {
+		output.Notices = append(output.Notices, fmt.Sprintf("%d malformed cue block(s) in the subtitle file were skipped.", skipped))
+	}
+	return output, fmt.Sprintf("Burned %d cues from %s into the clip; the captioned video is attached to the reply.", len(cues), sourceLabel), nil
+}
+
+// ffmpegBurnSubtitlesArgs paints the subtitles onto the frames through the
+// house transform re-encode (a geometry op cannot stream-copy): H.264 CRF 18,
+// audio to AAC — uniform, plays everywhere.
+func ffmpegBurnSubtitlesArgs(video, subtitles, output string) []string {
+	return ffmpegTransformArgs(video, "subtitles="+subtitleFilterFilename(subtitles), "", output)
+}
+
+// subtitleFilterFilename renders a staged subtitle path as the subtitles
+// filter's filename option value. The filtergraph parser reads backslash,
+// colon, and single-quote as metacharacters even inside an option value, so
+// each is backslash-escaped — a staged temp path happens to be colon-free on
+// macOS, but the escaping is the builder's contract, not the filesystem's.
+func subtitleFilterFilename(path string) string {
+	return strings.NewReplacer(`\`, `\\`, `:`, `\:`, `'`, `\'`).Replace(path)
+}
+
 func transformVideoToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "transform_video",

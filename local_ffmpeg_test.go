@@ -230,6 +230,9 @@ func executeFFmpegTool(t *testing.T, config AppConfig, attachments HarnessToolEx
 	gateway := newToolGateway(nil, config, registry)
 	gateway.tools.AttachedVideos = attachments.AttachedVideos
 	gateway.tools.AttachedAudios = attachments.AttachedAudios
+	gateway.tools.TranscriptFiles = attachments.TranscriptFiles
+	gateway.tools.Storage = attachments.Storage
+	gateway.tools.ConversationID = attachments.ConversationID
 	return gateway.Execute(context.Background(), ToolExecutionRequest{Name: name, Call: call})
 }
 
@@ -4441,5 +4444,178 @@ func TestAcrossfadeFilterIsEqualPower(t *testing.T) {
 		if !strings.Contains(graph, "acrossfade=d=1:c1=qsin:c2=qsin") || strings.Contains(graph, "acrossfade=d=1[") {
 			t.Errorf("graph = %s, want every acrossfade stage equal-power", graph)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// burn_subtitles
+// ---------------------------------------------------------------------------
+
+// TestSubtitleFilterFilename pins the filtergraph escaping: backslash, colon,
+// and single-quote are metacharacters even inside an option value, so each is
+// backslash-escaped (a staged temp path is colon-free on macOS, but the
+// escaping is the builder's contract).
+func TestSubtitleFilterFilename(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"/tmp/sub.srt", "/tmp/sub.srt"},
+		{"/tmp/a:b.srt", `/tmp/a\:b.srt`},
+		{`/tmp/a\b.srt`, `/tmp/a\\b.srt`},
+		{`/tmp/a'b.srt`, `/tmp/a\'b.srt`},
+		{`/tmp/x':\y.srt`, `/tmp/x\'\:\\y.srt`},
+	}
+	for _, tc := range cases {
+		if got := subtitleFilterFilename(tc.in); got != tc.want {
+			t.Fatalf("subtitleFilterFilename(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestFFmpegBurnSubtitlesArgs pins the whole arg contract: the subtitles
+// filter over the staged file (filtergraph-escaped), the house transform
+// re-encode, audio kept as AAC.
+func TestFFmpegBurnSubtitlesArgs(t *testing.T) {
+	got := ffmpegBurnSubtitlesArgs("/v.mp4", `/tmp/a:b'c\d.srt`, "/o.mp4")
+	want := []string{"-i", "/v.mp4", "-vf", `subtitles=/tmp/a\:b\'c\\d.srt`, "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "/o.mp4"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("args = %v, want %v", got, want)
+	}
+}
+
+// TestFFmpegBurnSubtitlesFromPersistedArtifact drives the full gateway path
+// over the record: the fixture's newest subtitle artifact is the one-cue .srt
+// (the older .vtt and the .txt transcript never win), burned with the house
+// re-encode onto the attached clip.
+func TestFFmpegBurnSubtitlesFromPersistedArtifact(t *testing.T) {
+	config, bin := ffmpegTestConfig(t, fakeFFmpegScript, "")
+	storage := libraryTestStorage(t)
+	subtitleConversationFixture(t, storage)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		Storage:        storage,
+		ConversationID: "conv_sub",
+		AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+	}, "burn_subtitles", HarnessToolCall{})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	typed, ok := result.Result.(ToolVideoResult)
+	if !ok || typed.Model != ffmpegModelName || typed.Count != 1 || len(typed.Videos) != 1 || typed.Videos[0].MimeType != "video/mp4" {
+		t.Fatalf("result payload = %+v", result.Result)
+	}
+	defer os.Remove(typed.Videos[0].TempPath)
+	if data, err := os.ReadFile(typed.Videos[0].TempPath); err != nil || !strings.HasPrefix(string(data), "\xff\xd8\xffFAKE-MEDIA") {
+		t.Fatalf("output file = %q (%v), want the fake ffmpeg payload", data, err)
+	}
+	args := fakeFFmpegArgs(t, bin)
+	fields := strings.Fields(args)
+	filter := ""
+	for i, field := range fields {
+		if field == "-vf" && i+1 < len(fields) {
+			filter = fields[i+1]
+		}
+	}
+	if !strings.HasPrefix(filter, "subtitles=") || !strings.HasSuffix(filter, "subtitles.srt") {
+		t.Fatalf("-vf = %q, want the staged .srt under the subtitles filter", filter)
+	}
+	for _, want := range []string{"-c:v libx264 -preset veryfast -crf 18", "-c:a aac", "-movflags +faststart"} {
+		if !strings.Contains(args, want) {
+			t.Errorf("args = %s, want %q", args, want)
+		}
+	}
+	if !strings.Contains(result.Summary, "Burned 1 cues from trc_new") {
+		t.Errorf("summary = %q, want the burned-cues phrase naming the artifact", result.Summary)
+	}
+}
+
+// TestFFmpegBurnSubtitlesFromTurnFiles pins the in-turn chain: the .vtt a
+// transcribe_audio produced earlier this turn burns with no persisted record
+// and no conversation at all, and a malformed cue block rides a skipped
+// notice rather than failing the call.
+func TestFFmpegBurnSubtitlesFromTurnFiles(t *testing.T) {
+	config, bin := ffmpegTestConfig(t, fakeFFmpegScript, "")
+	staged, err := writeTempMediaBytes([]byte(subtitleFixtureVTT+"\ngarbage block without timing\n"), "atelier-test-transcript-*", ".vtt")
+	if err != nil {
+		t.Fatalf("writeTempMediaBytes returned error: %v", err)
+	}
+	defer os.Remove(staged)
+	result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+		TranscriptFiles: []ToolTranscriptFile{{TempPath: staged, MimeType: "text/vtt"}},
+		AttachedVideos:  []string{videoDataURL("CLIP-ONE")},
+	}, "burn_subtitles", HarnessToolCall{})
+	if result.Status != "completed" {
+		t.Fatalf("result = %+v (error %s)", result, result.Error)
+	}
+	typed := result.Result.(ToolVideoResult)
+	defer os.Remove(typed.Videos[0].TempPath)
+	args := fakeFFmpegArgs(t, bin)
+	if !strings.Contains(args, "-vf subtitles=") || !strings.Contains(args, "subtitles.vtt") {
+		t.Fatalf("args = %q, want the staged .vtt under the subtitles filter", args)
+	}
+	if !strings.Contains(result.Summary, "Burned 3 cues from") {
+		t.Errorf("summary = %q, want the fixture's 3 cues", result.Summary)
+	}
+	if len(result.Notices) != 1 || !strings.Contains(result.Notices[0], "1 malformed cue block") {
+		t.Errorf("notices = %v, want the skipped-block notice", result.Notices)
+	}
+}
+
+// TestFFmpegBurnSubtitlesRequiresSources pins the ladder's failure edges: no
+// video, a conversation with no subtitle artifacts (the message names
+// burn_subtitles, not convert_subtitles), in-turn files carrying only plain
+// text with no conversation behind them, and a zero-cue source (burning it
+// would re-encode the clip into an identical one and claim success).
+func TestFFmpegBurnSubtitlesRequiresSources(t *testing.T) {
+	config, _ := ffmpegTestConfig(t, fakeFFmpegScript, "")
+	storage := libraryTestStorage(t)
+	subtitleConversationFixture(t, storage)
+	// A conversation that exists but carries no subtitle artifacts — the
+	// ladder-miss case, distinct from a missing record.
+	writeSearchConversation(t, storage, "2026/10/conv_empty",
+		searchConversationFixture("conv_empty", "No subtitles", "2026-10-01T10:00:00Z"))
+
+	_, _, err := executeBurnSubtitles(context.Background(), HarnessToolExecutionContext{
+		Config:         config,
+		Storage:        storage,
+		ConversationID: "conv_sub",
+	}, HarnessToolCall{})
+	if err == nil || !strings.Contains(err.Error(), "attached video clip") {
+		t.Fatalf("no-video error = %v, want the attached-video message", err)
+	}
+
+	_, _, err = executeBurnSubtitles(context.Background(), HarnessToolExecutionContext{
+		Config:         config,
+		Storage:        storage,
+		ConversationID: "conv_empty",
+		AttachedVideos: []string{videoDataURL("CLIP-ONE")},
+	}, HarnessToolCall{})
+	if err == nil || !strings.Contains(err.Error(), "burn_subtitles found no subtitle artifact") {
+		t.Fatalf("no-subtitles error = %v, want the burn_subtitles-named ladder miss", err)
+	}
+
+	plain, err := writeTempMediaBytes([]byte("a plain transcript without timings"), "atelier-test-transcript-*", ".txt")
+	if err != nil {
+		t.Fatalf("writeTempMediaBytes returned error: %v", err)
+	}
+	defer os.Remove(plain)
+	_, _, err = executeBurnSubtitles(context.Background(), HarnessToolExecutionContext{
+		Config:          config,
+		TranscriptFiles: []ToolTranscriptFile{{TempPath: plain, MimeType: "text/plain"}},
+		AttachedVideos:  []string{videoDataURL("CLIP-ONE")},
+	}, HarnessToolCall{})
+	if err == nil || !strings.Contains(err.Error(), "burn_subtitles reads a conversation's subtitle artifacts") {
+		t.Fatalf("plain-txt error = %v, want the no-conversation ladder miss naming burn_subtitles", err)
+	}
+
+	garbage, err := writeTempMediaBytes([]byte("no timings here"), "atelier-test-transcript-*", ".srt")
+	if err != nil {
+		t.Fatalf("writeTempMediaBytes returned error: %v", err)
+	}
+	defer os.Remove(garbage)
+	_, _, err = executeBurnSubtitles(context.Background(), HarnessToolExecutionContext{
+		Config:          config,
+		TranscriptFiles: []ToolTranscriptFile{{TempPath: garbage, MimeType: "application/x-subrip"}},
+		AttachedVideos:  []string{videoDataURL("CLIP-ONE")},
+	}, HarnessToolCall{})
+	if err == nil || !strings.Contains(err.Error(), "no subtitle cues found") {
+		t.Fatalf("zero-cue error = %v, want the parser's refusal", err)
 	}
 }

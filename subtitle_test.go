@@ -279,7 +279,7 @@ func TestNewestSubtitleArtifact(t *testing.T) {
 
 	// Default: the newest turn's first subtitle artifact — the .srt, not the
 	// older .vtt, and never the .txt transcript or the image beside it.
-	content, extension, err := newestSubtitleArtifact(storage, "conv_sub", "")
+	content, extension, err := newestSubtitleArtifact(storage, "convert_subtitles", "conv_sub", "")
 	if err != nil {
 		t.Fatalf("newestSubtitleArtifact returned error: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestNewestSubtitleArtifact(t *testing.T) {
 	}
 
 	// An explicit id wins over recency.
-	content, extension, err = newestSubtitleArtifact(storage, "conv_sub", "trc_old")
+	content, extension, err = newestSubtitleArtifact(storage, "convert_subtitles", "conv_sub", "trc_old")
 	if err != nil {
 		t.Fatalf("newestSubtitleArtifact(id) returned error: %v", err)
 	}
@@ -297,13 +297,13 @@ func TestNewestSubtitleArtifact(t *testing.T) {
 	}
 
 	// An id that exists but is not a subtitle file is a miss, not a fallback.
-	if _, _, err := newestSubtitleArtifact(storage, "conv_sub", "trc_plain"); err == nil {
+	if _, _, err := newestSubtitleArtifact(storage, "convert_subtitles", "conv_sub", "trc_plain"); err == nil {
 		t.Fatal("a .txt artifact id must not resolve as a subtitle source")
 	}
-	if _, _, err := newestSubtitleArtifact(storage, "conv_sub", "img_old"); err == nil {
+	if _, _, err := newestSubtitleArtifact(storage, "convert_subtitles", "conv_sub", "img_old"); err == nil {
 		t.Fatal("a non-transcript artifact id must not resolve as a subtitle source")
 	}
-	if _, _, err := newestSubtitleArtifact(storage, "conv_missing", ""); err == nil {
+	if _, _, err := newestSubtitleArtifact(storage, "convert_subtitles", "conv_missing", ""); err == nil {
 		t.Fatal("an unknown conversation must fail")
 	}
 }

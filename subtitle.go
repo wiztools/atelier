@@ -265,7 +265,7 @@ func convertSubtitlesParamSchema() map[string]any {
 // in-flight artifacts first, then the persisted record), converts it, and
 // stages the output as a transcript-file artifact the harness persists.
 func executeConvertSubtitles(tools HarnessToolExecutionContext, call HarnessToolCall) (ToolConvertSubtitlesResult, string, error) {
-	data, sourceFormat, sourceLabel, err := resolveSubtitleSource(tools, strings.TrimSpace(call.ArtifactID))
+	data, sourceFormat, sourceLabel, err := resolveSubtitleSource(tools, "convert_subtitles", strings.TrimSpace(call.ArtifactID))
 	if err != nil {
 		return ToolConvertSubtitlesResult{}, "subtitle conversion failed", err
 	}
@@ -315,8 +315,10 @@ func normalizeSubtitleTargetFormat(requested, sourceFormat string) (string, erro
 // its temp file is not persisted, and thus invisible to the record walk, until
 // the turn saves); the persisted record walk covers every earlier turn. The
 // returned label names the source for the evidence summary (an artifact id, or
-// the temp file's base name for in-flight files).
-func resolveSubtitleSource(tools HarnessToolExecutionContext, wantArtifactID string) ([]byte, string, string, error) {
+// the temp file's base name for in-flight files). toolName names the calling
+// tool in the error messages (convert_subtitles and burn_subtitles share the
+// ladder).
+func resolveSubtitleSource(tools HarnessToolExecutionContext, toolName, wantArtifactID string) ([]byte, string, string, error) {
 	if wantArtifactID == "" {
 		// Newest first — and subtitle files only: a timestamped transcription
 		// can stage BOTH a .vtt and an oversized plain .txt (see
@@ -335,9 +337,9 @@ func resolveSubtitleSource(tools HarnessToolExecutionContext, wantArtifactID str
 		}
 	}
 	if strings.TrimSpace(tools.ConversationID) == "" {
-		return nil, "", "", errors.New("convert_subtitles converts a conversation's subtitle artifacts, and no conversation is attached to this call")
+		return nil, "", "", errors.New(toolName + " reads a conversation's subtitle artifacts, and no conversation is attached to this call")
 	}
-	content, extension, err := newestSubtitleArtifact(tools.Storage, tools.ConversationID, wantArtifactID)
+	content, extension, err := newestSubtitleArtifact(tools.Storage, toolName, tools.ConversationID, wantArtifactID)
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -358,13 +360,14 @@ func subtitleFormatForExtension(extension string) string {
 	return map[string]string{".vtt": subtitleFormatVTT, ".srt": subtitleFormatSRT}[extension]
 }
 
-// newestSubtitleArtifact finds the artifact a convert_subtitles call should
+// newestSubtitleArtifact finds the artifact a subtitle-consuming call should
 // read: the newest turn's first transcript content entry carrying a VTT or SRT
 // artifact — the same newest-turn-first walk newestEditorArtifact uses, so
 // "the subtitles" and "the transcript" resolve to the same asset. Text (.txt)
 // transcripts are not subtitle files and never match. A non-empty wantID
-// matches that artifact id exactly.
-func newestSubtitleArtifact(storage ConfigStorage, conversationID, wantID string) (*HistoryContent, string, error) {
+// matches that artifact id exactly. toolName names the calling tool in the
+// error messages.
+func newestSubtitleArtifact(storage ConfigStorage, toolName, conversationID, wantID string) (*HistoryContent, string, error) {
 	detail, err := getConversation(storage, conversationID)
 	if err != nil {
 		return nil, "", err
@@ -383,9 +386,9 @@ func newestSubtitleArtifact(storage ConfigStorage, conversationID, wantID string
 		}
 	}
 	if wantID != "" {
-		return nil, "", fmt.Errorf("convert_subtitles found no VTT or SRT artifact with id %q in this conversation — transcript artifacts carrying subtitle content are what it can read", wantID)
+		return nil, "", fmt.Errorf("%s found no VTT or SRT artifact with id %q in this conversation — transcript artifacts carrying subtitle content are what it can read", toolName, wantID)
 	}
-	return nil, "", errors.New("convert_subtitles found no subtitle artifact (.vtt or .srt) in this conversation — a transcribe_audio call with timestamps produces one, or the user can attach a subtitle file first")
+	return nil, "", errors.New(toolName + " found no subtitle artifact (.vtt or .srt) in this conversation — a transcribe_audio call with timestamps produces one, or the user can attach a subtitle file first")
 }
 
 // subtitleArtifactExtension reports ".vtt"/".srt" when a history content entry
