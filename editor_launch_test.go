@@ -263,7 +263,7 @@ func TestCreateEditorConversationPinsModelOverrides(t *testing.T) {
 
 // openEditorLaunchConversation persists a one-image launch conversation and
 // returns the tool execution context pointed at it, with the OpenEditor hook
-// recording every fired (kind, conversationID, artifactID) triple.
+// recording every fired (kind, conversationID, artifactID, seeds…) call.
 func openEditorLaunchConversation(t *testing.T, config AppConfig, app *App) (HarnessToolExecutionContext, EditorLaunchResult, *[][]string) {
 	t.Helper()
 	result, err := app.CreateEditorConversation(ChatRequest{
@@ -281,8 +281,8 @@ func openEditorLaunchConversation(t *testing.T, config AppConfig, app *App) (Har
 	tools.Storage = config.Storage
 	tools.ConversationID = result.ConversationID
 	fired := &[][]string{}
-	tools.OpenEditor = func(kind, conversationID, artifactID string) error {
-		*fired = append(*fired, []string{kind, conversationID, artifactID})
+	tools.OpenEditor = func(kind, conversationID, artifactID string, seedArtifactIDs []string) error {
+		*fired = append(*fired, append([]string{kind, conversationID, artifactID}, seedArtifactIDs...))
 		return nil
 	}
 	return tools, result, fired
@@ -330,6 +330,74 @@ func TestOpenEditorToolResolvesAndEmits(t *testing.T) {
 	}
 }
 
+// TestOpenEditorCompositionSeeds pins the seeded-only contract: mode
+// "composition" opens the workspace with this turn's video and audio in
+// persisted order (images never seed), the artifact id stays empty, and a
+// turn without video or audio opens unseeded rather than failing.
+func TestOpenEditorCompositionSeeds(t *testing.T) {
+	config := newEditorLaunchTestConfig(t)
+	app := NewApp()
+	result, err := app.CreateEditorConversation(ChatRequest{
+		Model: "chat-box-model",
+		Messages: []ChatMessage{{
+			Role:    "user",
+			Content: "Open the video composer for these",
+			Videos:  []string{"data:video/mp4;base64," + base64.StdEncoding.EncodeToString(compositionMP4Fixture(8, 1280, 720, true))},
+			Audios:  []string{"data:audio/wav;base64," + base64.StdEncoding.EncodeToString(buildWAV(8000))},
+			Images:  []string{"data:image/png;base64," + base64.StdEncoding.EncodeToString(editorLaunchPNG)},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateEditorConversation returned error: %v", err)
+	}
+	tools := newHarnessToolExecutionContext(config)
+	tools.Storage = config.Storage
+	tools.ConversationID = result.ConversationID
+	fired := &[][]string{}
+	tools.OpenEditor = func(kind, conversationID, artifactID string, seedArtifactIDs []string) error {
+		*fired = append(*fired, append([]string{kind, conversationID, artifactID}, seedArtifactIDs...))
+		return nil
+	}
+	definition := openEditorDefinition(t, config)
+	if problems := definition.Validate("plan.tools[0].", HarnessToolCall{Name: "open_editor", Mode: "composition"}); problems != nil {
+		t.Fatalf("mode composition must validate, got %v", problems)
+	}
+
+	output, summary, err := definition.Execute(t.Context(), tools, HarnessToolCall{Name: "open_editor", Mode: "composition"})
+	if err != nil {
+		t.Fatalf("open_editor composition returned error: %v", err)
+	}
+	typed, ok := output.(ToolOpenEditorResult)
+	if !ok || typed.Kind != "composition" || typed.ArtifactID != "" || typed.ConversationID != result.ConversationID {
+		t.Fatalf("composition result = %+v", typed)
+	}
+	// The video and the audio seed, in attachment order; the image never does.
+	wantSeeds := []string{result.VideoArtifactIDs[0], result.AudioArtifactIDs[0]}
+	if len(*fired) != 1 || (*fired)[0][0] != "composition" || (*fired)[0][2] != "" {
+		t.Fatalf("launch hook fired %v, want a composition launch with no artifact", *fired)
+	}
+	gotSeeds := (*fired)[0][3:]
+	if strings.Join(gotSeeds, ",") != strings.Join(wantSeeds, ",") {
+		t.Fatalf("seeds = %v, want %v", gotSeeds, wantSeeds)
+	}
+	if !strings.Contains(summary, "seeded with 2") || !strings.Contains(summary, "unsaved draft") {
+		t.Fatalf("summary = %q, want the seeding count and the draft caveat", summary)
+	}
+
+	// A turn with no video or audio opens the composer unseeded.
+	imageOnly, _, imageFired := openEditorLaunchConversation(t, config, app)
+	_, unseededSummary, err := definition.Execute(t.Context(), imageOnly, HarnessToolCall{Name: "open_editor", Mode: "composition"})
+	if err != nil {
+		t.Fatalf("open_editor composition (unseeded) returned error: %v", err)
+	}
+	if len(*imageFired) != 1 || len((*imageFired)[0]) != 3 {
+		t.Fatalf("unseeded launch = %v, want no seeds", *imageFired)
+	}
+	if !strings.Contains(unseededSummary, "unseeded") {
+		t.Fatalf("unseeded summary = %q", unseededSummary)
+	}
+}
+
 func TestOpenEditorToolErrorsWithoutAMatchingAsset(t *testing.T) {
 	config := newEditorLaunchTestConfig(t)
 	app := NewApp()
@@ -360,7 +428,7 @@ func TestOpenEditorToolRequiresConversationAndHook(t *testing.T) {
 		t.Fatalf("open_editor on a missing conversation returned no error")
 	}
 
-	tools.OpenEditor = func(kind, conversationID, artifactID string) error {
+	tools.OpenEditor = func(kind, conversationID, artifactID string, seedArtifactIDs []string) error {
 		return errors.New("delivery failed")
 	}
 	app := NewApp()

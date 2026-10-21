@@ -2110,14 +2110,22 @@ function App() {
   // the user what was opened. Mirrors the chat:chunk pattern — refs only, so
   // the empty-deps subscription never fires a stale closure.
   useEffect(() => {
-    const onEditorLaunch = (event: {conversationId?: string; artifactId?: string; kind?: string}) => {
+    const onEditorLaunch = (event: {conversationId?: string; artifactId?: string; kind?: string; seedArtifactIds?: string[]}) => {
       const conversationID = event?.conversationId ?? '';
       const artifactID = event?.artifactId ?? '';
       const kind = event?.kind;
-      if (!conversationID || !artifactID || (kind !== 'image' && kind !== 'video' && kind !== 'audio' && kind !== 'subtitle' && kind !== 'markdown')) {
+      // The composer is the one kind that opens without an artifact — its
+      // identity is the conversation, and the seeds ride the payload.
+      const composition = kind === 'composition';
+      if (!conversationID || (!artifactID && !composition) ||
+          (kind !== 'image' && kind !== 'video' && kind !== 'audio' && kind !== 'subtitle' && kind !== 'markdown' && kind !== 'composition')) {
         return;
       }
       if (conversationID !== activeConversationIDRef.current || editorOpenRef.current) {
+        return;
+      }
+      if (composition) {
+        void openNewComposition(conversationID, asArray(event?.seedArtifactIds));
         return;
       }
       if (kind === 'video') {
@@ -4688,10 +4696,15 @@ function App() {
     // Editor-launch prompts ("Open this image in image editor") are UI
     // navigation, not chat: on a brand-new conversation they route straight to
     // the editor — no model call, no assistant turn. Inside an existing
-    // conversation the same words stay a normal chat turn.
+    // conversation the same words stay a normal chat turn. The composer's
+    // claim additionally needs media to seed with — the tier-0 path persists
+    // a conversation from attachments, so an unattached "open the composer"
+    // falls through to the AI tier (which creates the conversation, and
+    // open_editor opens the composer unseeded).
     if (!activeConversationID) {
       const editorKind = detectEditorLaunchIntent(trimmed, attachments.map((item) => item.kind));
-      if (editorKind) {
+      const hasComposerMedia = attachments.some((item) => item.kind === 'video' || item.kind === 'audio');
+      if (editorKind && (editorKind !== 'composition' || hasComposerMedia)) {
         await launchEditorConversation(editorKind, trimmed);
         return;
       }
@@ -4780,7 +4793,7 @@ function App() {
   // artifact, the editors' one identity input. On a creation failure the
   // composer keeps its contents: nothing was persisted, so the send must look
   // like it never happened.
-  async function launchEditorConversation(kind: 'image' | 'video' | 'audio' | 'subtitle' | 'markdown', trimmed: string) {
+  async function launchEditorConversation(kind: 'image' | 'video' | 'audio' | 'subtitle' | 'markdown' | 'composition', trimmed: string) {
     const referencedAssetIds = [
       ...new Set(
         parseComposerMentions(trimmed, mentionBindingPool()).flatMap((segment) =>
@@ -4841,6 +4854,16 @@ function App() {
       }
       const detail = await GetConversation(result.conversationId);
       hydrateChatConversation(detail);
+      // The composer opens on the conversation itself, seeded with the
+      // persisted media (videos then audio — the seed's deterministic
+      // order); every other editor opens the turn's first artifact of kind.
+      if (kind === 'composition') {
+        await openNewComposition(result.conversationId, [
+          ...asArray(result.videoArtifactIds),
+          ...asArray(result.audioArtifactIds),
+        ]);
+        return;
+      }
       const artifactId = (kind === 'image' ? result.imageArtifactIds
         : kind === 'video' ? result.videoArtifactIds
         : kind === 'subtitle' ? result.subtitleArtifactIds

@@ -130,7 +130,9 @@ type HarnessToolExecutionContext struct {
 	// kind. The gateway wires it to the atelier:editor-launch Wails event (see
 	// editor_launch.go); nil in contexts with no UI to launch into, where the
 	// tool fails rather than silently claiming an editor it cannot open.
-	OpenEditor func(kind, conversationID, artifactID string) error
+	// seedArtifactIDs carries the video composer's seeding (empty for every
+	// other editor, whose artifactID names the opened asset instead).
+	OpenEditor func(kind, conversationID, artifactID string, seedArtifactIDs []string) error
 }
 
 // ToolImageResult carries generated images as data URLs. The Images field is

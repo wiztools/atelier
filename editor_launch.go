@@ -33,6 +33,10 @@ type EditorLaunchEvent struct {
 	ConversationID string `json:"conversationId"`
 	ArtifactID     string `json:"artifactId"`
 	Kind           string `json:"kind"`
+	// SeedArtifactIDs carries the video composer's seeding — the turn's
+	// referenced video and audio, in order (empty for an unseeded open).
+	// Every other editor ignores it.
+	SeedArtifactIDs []string `json:"seedArtifactIds,omitempty"`
 }
 
 // emitEditorLaunchEvent delivers the open_editor tool's UI directive and
@@ -162,11 +166,47 @@ func newestEditorArtifact(storage ConfigStorage, conversationID, kind string) (s
 	return "", "", fmt.Errorf("open_editor found no %s in this conversation — ask the user to attach or generate one first", kind)
 }
 
+// compositionSeedIDs gathers the video and audio artifact ids this turn's
+// explicit media carries — attachments and @-mentions both land as content
+// entries on the user turn, so one walk covers them (cross-conversation
+// mentions carry their globally-unique ids). Videos first, then audio:
+// cross-kind interleaving is lost at persistence (attachments arrive as
+// per-kind arrays), so the deterministic reading of "reference order" is
+// within-kind order with clips ahead of music. Empty when the newest turn
+// isn't the user's or holds no media: the composer opens unseeded, and its
+// picker is right there.
+func compositionSeedIDs(storage ConfigStorage, conversationID string) ([]string, error) {
+	detail, err := getConversation(storage, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	if len(detail.Turns) == 0 || detail.Turns[len(detail.Turns)-1].Role != "user" {
+		return []string{}, nil
+	}
+	turn := detail.Turns[len(detail.Turns)-1]
+	videos := []string{}
+	audios := []string{}
+	for _, content := range turn.Content {
+		if content.ArtifactID == "" {
+			continue
+		}
+		if content.Type == "video" {
+			videos = append(videos, content.ArtifactID)
+		} else if content.Type == "audio" {
+			audios = append(audios, content.ArtifactID)
+		}
+	}
+	return append(videos, audios...), nil
+}
+
 // executeOpenEditor resolves the artifact and delivers the launch event. The
 // editors open by (conversationID, artifactID) — the same identity every other
 // editor entry point takes — and the hook indirection keeps the definition
 // testable without a Wails runtime, like every other capability hook on the
-// tool execution context.
+// tool execution context. The video composer is the exception: it opens no
+// artifact — it opens the workspace seeded with the turn's video and audio
+// (the seeded-only contract: media land exactly as if picked, in reference
+// order, and nothing is arranged).
 func executeOpenEditor(tools HarnessToolExecutionContext, mode string) (ToolOpenEditorResult, string, error) {
 	if strings.TrimSpace(tools.ConversationID) == "" {
 		return ToolOpenEditorResult{}, "editor launch is unavailable", errors.New("open_editor opens a conversation asset, and no conversation is attached to this call")
@@ -174,11 +214,31 @@ func executeOpenEditor(tools HarnessToolExecutionContext, mode string) (ToolOpen
 	if tools.OpenEditor == nil {
 		return ToolOpenEditorResult{}, "editor launch is unavailable", errors.New("open_editor is not available in this context")
 	}
+	if mode == "composition" {
+		seeds, err := compositionSeedIDs(tools.Storage, tools.ConversationID)
+		if err != nil {
+			return ToolOpenEditorResult{}, "editor launch failed", err
+		}
+		if err := tools.OpenEditor("composition", tools.ConversationID, "", seeds); err != nil {
+			return ToolOpenEditorResult{}, "editor launch failed", err
+		}
+		summary := "Opened the video composer on the user's screen"
+		if len(seeds) > 0 {
+			plural := "s"
+			if len(seeds) == 1 {
+				plural = ""
+			}
+			summary += fmt.Sprintf(", seeded with %d referenced clip%s in reference order — nothing was arranged, trimmed, or transitioned; the composition is an unsaved draft until the user saves it", len(seeds), plural)
+		} else {
+			summary += " (unseeded — this turn referenced no video or audio); the user adds media from the composer's picker"
+		}
+		return ToolOpenEditorResult{Kind: "composition", ConversationID: tools.ConversationID}, summary, nil
+	}
 	kind, artifactID, err := newestEditorArtifact(tools.Storage, tools.ConversationID, mode)
 	if err != nil {
 		return ToolOpenEditorResult{}, "editor launch failed", err
 	}
-	if err := tools.OpenEditor(kind, tools.ConversationID, artifactID); err != nil {
+	if err := tools.OpenEditor(kind, tools.ConversationID, artifactID, nil); err != nil {
 		return ToolOpenEditorResult{}, "editor launch failed", err
 	}
 	summary := fmt.Sprintf("Opened %s in the built-in %s editor on the user's screen. The asset was opened as-is — nothing was generated or modified; do not describe an edit as done.", artifactID, kind)
@@ -195,23 +255,23 @@ func openEditorToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "open_editor",
 		Title:       "Open in editor",
-		Description: "Opens one of the conversation's assets in Atelier's built-in editor on the user's screen. mode \"image\" opens the image editor, \"video\" the video editor, \"audio\" the audio editor, \"subtitle\" the subtitle editor (a .vtt or .srt transcript artifact), \"markdown\" the markdown editor (a .md document artifact); omit mode to open whichever editor matches the asset the user means — this turn's attachment when one exists, otherwise the conversation's newest image, video, or audio artifact. The asset is the newest artifact of that kind — this turn's attachment, an @-mentioned asset, or one from conversation history — and it is opened as-is, never modified or regenerated. Call this ONLY when the user asks to open an asset in the editor (e.g. \"open this in the video editor\", \"open the document in the markdown editor\"); it does not perform edits — for a change the user described, use the edit or generation tools instead.",
+		Description: "Opens one of the conversation's assets in Atelier's built-in editor on the user's screen. mode \"image\" opens the image editor, \"video\" the video editor, \"audio\" the audio editor, \"subtitle\" the subtitle editor (a .vtt or .srt transcript artifact), \"markdown\" the markdown editor (a .md document artifact), and \"composition\" the video composer — the multi-clip editing workspace, opened seeded with the turn's referenced video and audio in reference order (nothing is arranged); omit mode to open whichever editor matches the asset the user means — this turn's attachment when one exists, otherwise the conversation's newest image, video, or audio artifact. The asset is the newest artifact of that kind — this turn's attachment, an @-mentioned asset, or one from conversation history — and it is opened as-is, never modified or regenerated. Call this ONLY when the user asks to open an asset in the editor (e.g. \"open this in the video editor\", \"open the document in the markdown editor\", \"open the video composer\"); it does not perform edits — for a change the user described, use the edit or generation tools instead. When the user asks to JOIN or CONCATENATE clips into one rendered file with no editing workspace in the wording, that is join_videos/join_audios, not mode \"composition\" — the composer is for when the user names the composer or wants an editable composition.",
 		Example:     `{"name":"open_editor","mode":"video"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"mode": enumParam(`Which editor to open — "image", "video", "audio", "subtitle" (a .vtt/.srt transcript artifact), or "markdown" (a .md document artifact). Omit when the user attached the asset this turn or the ask names the kind — omitting resolves this turn's attachment first, else the conversation's newest image, video, or audio artifact.`, "image", "video", "audio", "subtitle", "markdown"),
+				"mode": enumParam(`Which editor to open — "image", "video", "audio", "subtitle" (a .vtt/.srt transcript artifact), "markdown" (a .md document artifact), or "composition" (the video composer, seeded with this turn's referenced video and audio). Omit when the user attached the asset this turn or the ask names the kind — omitting resolves this turn's attachment first, else the conversation's newest image, video, or audio artifact.`, "image", "video", "audio", "subtitle", "markdown", "composition"),
 			},
 			"required": []string{},
 		},
 		Validate: func(prefix string, call HarnessToolCall) []string {
 			switch strings.TrimSpace(call.Mode) {
-			case "", "image", "video", "audio", "subtitle", "markdown":
+			case "", "image", "video", "audio", "subtitle", "markdown", "composition":
 				return nil
 			default:
-				return []string{prefix + `.mode must be "image", "video", "audio", "subtitle", or "markdown" for open_editor`}
+				return []string{prefix + `.mode must be "image", "video", "audio", "subtitle", "markdown", or "composition" for open_editor`}
 			}
 		},
 		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {

@@ -10,7 +10,7 @@
 // Abstention is decidable without understanding what the leftover content
 // means — that is what keeps this path safe to bypass the model with.
 
-export type EditorLaunchKind = 'image' | 'video' | 'audio' | 'subtitle' | 'markdown';
+export type EditorLaunchKind = 'image' | 'video' | 'audio' | 'subtitle' | 'markdown' | 'composition';
 // 'subtitle' marks a .vtt/.srt attachment: a real attachment kind (the
 // composer accepts subtitle files) and, since the subtitle editor exists, an
 // editor-launch subject. 'markdown' is the document twin (.md attachments).
@@ -106,7 +106,7 @@ export function detectEditorLaunchIntent(text: string, attachmentKinds: Composer
   const mediaSeen: EditorLaunchKind[] = [];
   for (; index < words.length; index++) {
     const word = words[index];
-    if (word === 'editor' || word === 'editors') {
+    if (word === 'editor' || word === 'editors' || word === 'composer' || word === 'composers') {
       editorIndex = index;
       index++;
       break;
@@ -130,6 +130,14 @@ export function detectEditorLaunchIntent(text: string, attachmentKinds: Composer
       return null;
     }
   }
+  // "composer" is the video composer's head noun — the whole phrase is one
+  // name, so a "video" prefix must not resolve the video EDITOR, and no
+  // attachment-count rule applies (the launch path seeds whatever video and
+  // audio the turn carries, including none).
+  const headWord = words[editorIndex];
+  if (headWord === 'composer' || headWord === 'composers') {
+    return 'composition';
+  }
   let named: EditorLaunchKind | null = null;
   for (let scan = editorIndex - 1; scan >= 0; scan--) {
     const word = words[scan];
@@ -144,7 +152,7 @@ export function detectEditorLaunchIntent(text: string, attachmentKinds: Composer
   if (requested) {
     return attachedCount(requested) === 1 ? requested : null;
   }
-  const isEditorSubject = (item: ComposerAttachmentKind): item is EditorLaunchKind =>
+  const isEditorSubject = (item: ComposerAttachmentKind): item is Exclude<EditorLaunchKind, 'composition'> =>
     item === 'image' || item === 'video' || item === 'audio' || item === 'subtitle' || item === 'markdown';
   const attached = attachmentKinds.filter(isEditorSubject);
   if (attached.length === 1) {

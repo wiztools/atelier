@@ -1025,8 +1025,8 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 		// open_editor's side effect is the UI directive, not local work — the
 		// event IS the execution, so an undeliverable launch fails the call
 		// rather than letting evidence claim an editor that never opened.
-		gateway.tools.OpenEditor = func(kind, conversationID, artifactID string) error {
-			if !app.emitEditorLaunchEvent(EditorLaunchEvent{Kind: kind, ConversationID: conversationID, ArtifactID: artifactID}) {
+		gateway.tools.OpenEditor = func(kind, conversationID, artifactID string, seedArtifactIDs []string) error {
+			if !app.emitEditorLaunchEvent(EditorLaunchEvent{Kind: kind, ConversationID: conversationID, ArtifactID: artifactID, SeedArtifactIDs: seedArtifactIDs}) {
 				return errors.New("the editor launch could not be delivered — no UI is attached")
 			}
 			return nil

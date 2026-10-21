@@ -80,3 +80,15 @@ assert(detectEditorLaunchIntent('Open this md in the editor', kinds('markdown'))
 assert(detectEditorLaunchIntent('Open the screenplay editor', kinds('markdown')) === 'markdown', 'screenplay editor phrasing');
 assert(detectEditorLaunchIntent('Open this script in the editor', kinds('markdown')) === 'markdown', 'script media word resolves');
 assert(detectEditorLaunchIntent('Open the fountain editor for me', kinds('markdown')) === 'markdown', 'fountain word and trailing politeness');
+
+// The video composer: "composer" is its head noun, and the whole phrase is
+// one name — a "video" prefix must not resolve the video EDITOR, and the
+// exactly-one-attachment rule does not apply (the launch seeds whatever
+// video and audio the turn carries, including none).
+assert(detectEditorLaunchIntent('Open the video composer', []) === 'composition', 'video composer is one name');
+assert(detectEditorLaunchIntent('Open the composer', []) === 'composition', 'bare composer');
+assert(detectEditorLaunchIntent('please open up the composer for me', []) === 'composition', 'politeness binds');
+assert(detectEditorLaunchIntent('Open the composer', kinds('video', 'video', 'audio')) === 'composition', 'multiple attachments are fine');
+assert(detectEditorLaunchIntent('open the composers', []) === 'composition', 'plural composer');
+assert(detectEditorLaunchIntent('open the composer and crop it', kinds('video')) === null, 'a second intent abstains');
+assert(detectEditorLaunchIntent('open the video editor', kinds('video')) === 'video', 'video editor still resolves the editor');
