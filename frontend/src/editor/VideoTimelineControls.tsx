@@ -3,7 +3,10 @@ import {ReactNode, useRef} from 'react';
 // The transport row both video timelines share: play/pause, mute, marker/cut
 // hops, frame steps, and the time readout. Tool-specific buttons and
 // mini-fields render after the readout via children. Stepping hops through
-// stepTargets — the reframe markers' times or the trim cuts' times.
+// stepTargets — the reframe markers' times, the trim cuts' times, or the
+// composer's clip boundaries. hopLabel renames the hop buttons' tooltips and
+// frameSeconds the step size (the project fps); both default to the video
+// editors' values.
 export function VideoTimelineControls(props: {
   playing: boolean;
   muted: boolean;
@@ -11,13 +14,16 @@ export function VideoTimelineControls(props: {
   currentTime: number;
   duration: number;
   stepTargets: number[];
+  hopLabel?: string;
+  frameSeconds?: number;
   onTogglePlay: () => void;
   onToggleMuted: () => void;
   onSeek: (timeSeconds: number) => void;
   children?: ReactNode;
 }) {
   const markerEpsilon = 0.001;
-  const frameStepSeconds = 1 / 30;
+  const frameStepSeconds = props.frameSeconds ?? 1 / 30;
+  const hopLabel = props.hopLabel ?? 'marker';
 
   function stepTarget(direction: -1 | 1): number | null {
     if (direction === -1) {
@@ -69,8 +75,8 @@ export function VideoTimelineControls(props: {
         className="video-icon-button"
         onClick={() => stepTo(-1)}
         disabled={props.busy || stepTarget(-1) === null}
-        aria-label="Seek to the previous marker"
-        title="Previous marker"
+        aria-label={`Seek to the previous ${hopLabel}`}
+        title={`Previous ${hopLabel}`}
       >
         |◀
       </button>
@@ -100,8 +106,8 @@ export function VideoTimelineControls(props: {
         className="video-icon-button"
         onClick={() => stepTo(1)}
         disabled={props.busy || stepTarget(1) === null}
-        aria-label="Seek to the next marker"
-        title="Next marker"
+        aria-label={`Seek to the next ${hopLabel}`}
+        title={`Next ${hopLabel}`}
       >
         ▶|
       </button>

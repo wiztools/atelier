@@ -71,7 +71,8 @@
   gap: 6px;
   /* Absorb the main column's remaining height and hold it there — the lanes
      scroll inside their own pane below, so lane count never grows the box
-     over the body row. */
+     over the body row. position: relative anchors the playhead. */
+  position: relative;
   flex: 1 1 auto;
   min-height: 220px;
   overflow: hidden;
@@ -93,9 +94,23 @@
 .composition-ruler {
   position: relative;
   height: 16px;
-  min-width: 100%;
+  /* Indented by the lane-label column + gap, so ticks sit over the shared
+     track geometry every lane (and the playhead) uses. */
+  margin-left: 104px;
   font-size: 10px;
   color: #7d8488;
+  cursor: pointer;
+}
+
+.composition-playhead {
+  position: absolute;
+  top: 4px;
+  bottom: 6px;
+  width: 2px;
+  margin-left: -1px;
+  background: #f2c94c;
+  pointer-events: none;
+  z-index: 5;
 }
 
 .composition-ruler span {

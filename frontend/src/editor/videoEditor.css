@@ -131,7 +131,10 @@
 /* One compact controls row above the track: play/pause, time readout, add
    marker (icons), then the selected marker's time and interpolation as
    mini-fields and delete as an icon. */
-.video-editor .video-timeline-controls {
+/* The transport row is shared chrome — the video editor and the composer
+   both mount VideoTimelineControls, so these carry no editor prefix.
+   .video-mini-field below stays video-only. */
+.video-timeline-controls {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -139,7 +142,7 @@
   font-size: 12px;
 }
 
-.video-editor .video-timeline-controls button {
+.video-timeline-controls button {
   height: 24px;
   border: 1px solid #3a3e41;
   border-radius: 7px;
@@ -150,12 +153,12 @@
   cursor: pointer;
 }
 
-.video-editor .video-timeline-controls button:disabled {
+.video-timeline-controls button:disabled {
   opacity: .45;
   cursor: default;
 }
 
-.video-editor .video-icon-button {
+.video-icon-button {
   min-width: 28px;
   display: inline-flex;
   align-items: center;
@@ -163,7 +166,7 @@
   text-align: center;
 }
 
-.video-editor .video-timeline-time {
+.video-timeline-time {
   color: #9a978f;
   font-size: 12px;
   /* Steady width while the time ticks. */

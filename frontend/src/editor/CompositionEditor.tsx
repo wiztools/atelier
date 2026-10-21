@@ -6,6 +6,7 @@ import {EventsOff, EventsOn} from '../../wailsjs/runtime/runtime';
 import {EditsPanel} from './EditsPanel';
 import {EditorHeader} from './EditorHeader';
 import {MediaPicker} from './MediaPicker';
+import {VideoTimelineControls} from './VideoTimelineControls';
 import {
   CompositionClip,
   CompositionDoc,
@@ -268,7 +269,7 @@ export function CompositionEditor(props: {
   const [renderError, setRenderError] = useState('');
   // The stage plays the chosen completed render; renderedDoc is the snapshot
   // it was built from, so edits after a render show the stale note.
-  const [preview, setPreview] = useState<{url: string; audioOnly: boolean} | null>(null);
+  const [preview, setPreview] = useState<{url: string; audioOnly: boolean; offsetSeconds: number} | null>(null);
   const [renderedDoc, setRenderedDoc] = useState<CompositionDoc | null>(null);
   const [rangeFrom, setRangeFrom] = useState('');
   const [rangeTo, setRangeTo] = useState('');
@@ -416,7 +417,7 @@ export function CompositionEditor(props: {
           savedToConversationRef.current?.();
           return;
         }
-        setPreview({url: op.resultUrl, audioOnly: op.audioOnly});
+        setPreview({url: op.resultUrl, audioOnly: op.audioOnly, offsetSeconds: op.rangeStartSeconds ?? 0});
       }
     };
     EventsOn('atelier:composition-op', onUpdate);
@@ -436,6 +437,105 @@ export function CompositionEditor(props: {
   const renderDisabled = !!runningRender || problems.length > 0 || missingRefs.size > 0 ||
     (doc.video.length === 0 && doc.audioLanes.every((lane) => lane.segments.length === 0));
   const previewOutdated = !!preview && renderedDoc !== null && !sameCompositionDoc(renderedDoc, doc);
+
+  // The playhead: a timeline line pinned to the preview player's position.
+  // The line's left is set imperatively (a 60fps React re-render for one
+  // moving pixel is waste); a rAF loop runs only while the player plays, and
+  // time/seek events cover the paused cases. The offset maps a ranged render
+  // back onto the full timeline.
+  const previewMediaRef = useRef<HTMLMediaElement | null>(null);
+  const playheadRef = useRef<HTMLDivElement | null>(null);
+  const playheadLoopRef = useRef<number | null>(null);
+  const updatePlayhead = () => {
+    const media = previewMediaRef.current;
+    const head = playheadRef.current;
+    const track = laneElementRef.current;
+    if (!media || !head || !track || timelineExtent <= 0) {
+      return;
+    }
+    const trackRect = track.getBoundingClientRect();
+    const timelineRect = (head.parentElement as HTMLElement).getBoundingClientRect();
+    const at = Math.min(Math.max(0, ((preview?.offsetSeconds ?? 0) + media.currentTime) / timelineExtent), 1);
+    head.style.left = `${trackRect.left - timelineRect.left + at * trackRect.width}px`;
+  };
+  const startPlayheadLoop = () => {
+    if (playheadLoopRef.current !== null) {
+      return;
+    }
+    const tick = () => {
+      updatePlayhead();
+      playheadLoopRef.current = requestAnimationFrame(tick);
+    };
+    playheadLoopRef.current = requestAnimationFrame(tick);
+  };
+  const stopPlayheadLoop = () => {
+    if (playheadLoopRef.current !== null) {
+      cancelAnimationFrame(playheadLoopRef.current);
+      playheadLoopRef.current = null;
+    }
+    updatePlayhead();
+  };
+  useEffect(() => () => {
+    if (playheadLoopRef.current !== null) {
+      cancelAnimationFrame(playheadLoopRef.current);
+    }
+  }, []);
+  const seekFromPointer = (clientX: number) => {
+    const media = previewMediaRef.current;
+    const track = laneElementRef.current;
+    if (!media || !track) {
+      return;
+    }
+    const rect = track.getBoundingClientRect();
+    // Left of the track is the label column — a label click selects, it
+    // never seeks.
+    if (rect.width <= 0 || timelineExtent <= 0 || clientX < rect.left) {
+      return;
+    }
+    const at = Math.min(Math.max(0, (clientX - rect.left) / rect.width), 1);
+    media.currentTime = Math.min(Math.max(0, at * timelineExtent - (preview?.offsetSeconds ?? 0)), media.duration || Number.MAX_VALUE);
+    handleMediaTime();
+  };
+
+  // The transport (VideoTimelineControls, the video editor's row) drives the
+  // preview media; its readout tracks time updates (≈4Hz), while the line
+  // stays on the rAF loop.
+  const [transportPlaying, setTransportPlaying] = useState(false);
+  const [transportMuted, setTransportMuted] = useState(false);
+  const [transportTime, setTransportTime] = useState(0);
+  const mediaTimelineTime = () => (previewMediaRef.current ? (preview?.offsetSeconds ?? 0) + previewMediaRef.current.currentTime : 0);
+  const handleMediaTime = () => {
+    updatePlayhead();
+    setTransportTime(mediaTimelineTime());
+  };
+  const toggleTransportPlay = () => {
+    const media = previewMediaRef.current;
+    if (!media) {
+      return;
+    }
+    if (media.paused) {
+      void media.play();
+    } else {
+      media.pause();
+    }
+  };
+  const toggleTransportMuted = () => {
+    const media = previewMediaRef.current;
+    if (!media) {
+      return;
+    }
+    media.muted = !media.muted;
+    setTransportMuted(media.muted);
+  };
+  const seekTransport = (time: number) => {
+    const media = previewMediaRef.current;
+    if (!media) {
+      return;
+    }
+    media.currentTime = Math.min(Math.max(0, time - (preview?.offsetSeconds ?? 0)), media.duration || 0);
+    setTransportTime(time);
+    updatePlayhead();
+  };
 
   // submitRender previews the WORKING document — the no-forced-save
   // contract; the export path (next milestone) will pin a saved revision.
@@ -893,9 +993,13 @@ export function CompositionEditor(props: {
           <div className="composition-stage">
             {preview ? (
               preview.audioOnly ? (
-                <audio key={preview.url} className="composition-preview composition-preview-audio" src={preview.url} controls />
+                <audio key={preview.url} ref={(el) => { previewMediaRef.current = el; }} className="composition-preview composition-preview-audio" src={preview.url} controls
+                  onTimeUpdate={handleMediaTime} onSeeked={handleMediaTime} onVolumeChange={() => { if (previewMediaRef.current) setTransportMuted(previewMediaRef.current.muted); }}
+                  onPlay={() => { setTransportPlaying(true); startPlayheadLoop(); }} onPause={() => { setTransportPlaying(false); stopPlayheadLoop(); handleMediaTime(); }} onEnded={() => { setTransportPlaying(false); stopPlayheadLoop(); handleMediaTime(); }} />
               ) : (
-                <video key={preview.url} className="composition-preview" src={preview.url} poster={compositionPosterURL(preview.url)} controls />
+                <video key={preview.url} ref={(el) => { previewMediaRef.current = el; }} className="composition-preview" src={preview.url} poster={compositionPosterURL(preview.url)} controls
+                  onTimeUpdate={handleMediaTime} onSeeked={handleMediaTime} onVolumeChange={() => { if (previewMediaRef.current) setTransportMuted(previewMediaRef.current.muted); }}
+                  onPlay={() => { setTransportPlaying(true); startPlayheadLoop(); }} onPause={() => { setTransportPlaying(false); stopPlayheadLoop(); handleMediaTime(); }} onEnded={() => { setTransportPlaying(false); stopPlayheadLoop(); handleMediaTime(); }} />
               )
             ) : (
               <div className="composition-preview-empty">
@@ -941,8 +1045,23 @@ export function CompositionEditor(props: {
             </div>
           </div>
 
-          <div className="composition-timeline" ref={laneElementRef}>
-            <div className="composition-ruler">
+          <div className="composition-timeline">
+            {preview ? (
+              <VideoTimelineControls
+                playing={transportPlaying}
+                muted={transportMuted}
+                busy={false}
+                currentTime={transportTime}
+                duration={timelineExtent}
+                stepTargets={layout.starts.length ? [...layout.starts, timelineExtent] : [0, timelineExtent]}
+                hopLabel="clip boundary"
+                frameSeconds={frame.fps > 0 ? 1 / frame.fps : 1 / 30}
+                onTogglePlay={toggleTransportPlay}
+                onToggleMuted={toggleTransportMuted}
+                onSeek={seekTransport}
+              />
+            ) : null}
+            <div className="composition-ruler" title="Click to move the playhead" onClick={(event) => seekFromPointer(event.clientX)}>
               {Array.from({length: 7}, (_, index) => {
                 const at = (timelineExtent * index) / 6;
                 return <span key={index} style={{left: pct(at)}}>{formatCompositionClock(at)}</span>;
@@ -953,14 +1072,21 @@ export function CompositionEditor(props: {
             <div className="composition-lane-scroll">
             <div
               className={`composition-lane composition-lane-video${selection.kind === 'doc' ? ' focused' : ''}`}
-              onClick={() => {
+              onClick={(event) => {
                 if (suppressLaneClickRef.current) {
                   suppressLaneClickRef.current = false;
                   return;
                 }
+                // An empty-lane click moves the playhead there, FCP-style,
+                // and clears to the project view.
+                seekFromPointer(event.clientX);
                 setSelection({kind: 'doc'});
               }}
             >
+              {/* Every lane shares the label + track geometry, so clips,
+                  segments, the ruler, and the playhead share one time axis. */}
+              <span className="composition-lane-label">Video</span>
+              <div className="composition-lane-track" ref={laneElementRef}>
               {doc.video.map((clip, index) => {
                 const missing = missingRefs.has(clip.ref.artifactId);
                 return (
@@ -996,16 +1122,18 @@ export function CompositionEditor(props: {
                 );
               })}
               {doc.video.length === 0 ? <span className="composition-lane-empty">No clips — add media from the picker.</span> : null}
+              </div>
             </div>
             {doc.audioLanes.map((lane) => (
               <div
                 key={lane.id}
                 className={`composition-lane composition-lane-audio${selection.kind === 'lane' && selection.laneID === lane.id ? ' selected' : ''}${lane.muted ? ' muted' : ''}`}
-                onClick={() => {
+                onClick={(event) => {
                   if (suppressLaneClickRef.current) {
                     suppressLaneClickRef.current = false;
                     return;
                   }
+                  seekFromPointer(event.clientX);
                   setSelection({kind: 'lane', laneID: lane.id});
                 }}
               >
@@ -1029,6 +1157,10 @@ export function CompositionEditor(props: {
               </div>
             ))}
             </div>
+            {/* The playhead rides the preview player's position (left set
+                imperatively); pointer-events none so it never blocks the
+                lanes beneath it. */}
+            {preview ? <div className="composition-playhead" ref={playheadRef} aria-hidden="true" /> : null}
           </div>
         </div>
 
@@ -1314,7 +1446,7 @@ export function CompositionEditor(props: {
                     onClick={() => {
                       const url = op.resultUrl;
                       if (url) {
-                        setPreview({url, audioOnly: op.audioOnly});
+                        setPreview({url, audioOnly: op.audioOnly, offsetSeconds: op.rangeStartSeconds ?? 0});
                       }
                     }}
                   >
