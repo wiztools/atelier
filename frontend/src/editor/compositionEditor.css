@@ -254,7 +254,10 @@
   border-radius: 6px;
   background: #1e2225;
   padding: 8px;
-  max-height: 260px;
+  /* Content-sized boxes read as a stray chip when the scope has few
+     candidates — reserve room for ~5 rows and let ~8 scroll. */
+  min-height: 240px;
+  max-height: 340px;
   overflow-y: auto;
 }
 
