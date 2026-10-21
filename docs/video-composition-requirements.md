@@ -1,7 +1,7 @@
 # Video Composition Workspace — Product Requirements
 
-Status: Draft for review  
-Date: 20 October 2026  
+Status: v1 implemented (document + workspace, render-to-preview, export, seeded chat intent); proposals and the in-workspace chat surface are v2  
+Date: 20 October 2026 (v1 shipped October 2026)  
 Product: Atelier
 
 ## 1. Purpose
@@ -53,7 +53,7 @@ The composition workspace must support projects containing a single clip. Adding
 - Advanced color grading and audio processing.
 - Real-time collaboration between multiple people.
 - A chat surface inside the workspace and selection-carrying chat requests (journey 5.4, HL-06). MVP agent interaction happens conversation-side.
-- Agent pre-assembly of compositions (chosen order and transitions). The MVP composer intent opens the workspace seeded with referenced media only.
+- Agent pre-assembly of compositions (chosen order and transitions) and proposal batches (HL-03–HL-05, HL-07–HL-09). The MVP composer intent opens the workspace seeded with referenced media only, and every edit is manual.
 - Automatic dialogue detection and automatic music ducking. The MVP may use user- or agent-specified time ranges for volume automation.
 
 ## 5. Core User Journeys
@@ -166,22 +166,22 @@ Selection must determine the inspector contents. Detailed settings should not ob
 
 ### 7.5 Preview
 
-- **PV-01:** Users must be able to play, pause, seek, and scrub the assembled sequence.
-- **PV-02:** Preview must reflect clip order, trims, framing, transitions, audio placement, fades, and volume settings.
-- **PV-03:** Users must be able to preview a selected range, especially around transitions or audio changes.
-- **PV-04:** Any effect approximated during interactive preview must be identified as approximate.
-- **PV-05:** When interactive preview cannot represent an effect accurately, users must be able to render a preview of a selected range.
-- **PV-06:** Slow preview generation must show progress and support cancellation without losing project edits.
+- **PV-01:** Users must be able to play, pause, seek, and scrub the assembled sequence (the rendered preview file's native controls).
+- **PV-02 (v1):** Preview is a render of the working timeline, on demand — accurate by construction, because the preview IS the render (trims, dissolves, the audio mix, ducks, and the output frame all appear exactly as export produces them). No forced save precedes it. Interactive in-timeline scrubbing arrives with v2.
+- **PV-03:** Users must be able to preview a selected range (the render controls' From/To).
+- **PV-04:** Superseded by the v1 approach — nothing is approximated.
+- **PV-05:** Satisfied by the same mechanism (any render is the real graph).
+- **PV-06:** Render progress shows as a percentage with cancellation, and never loses project edits.
 
 ### 7.6 Human-in-the-Loop Collaboration
 
 - **HL-01:** Agent-assisted edits must target the same editable project and controls available to manual editing.
 - **HL-02:** The explicit composer intent must create a composition seeded with the referenced media — seeded only, in reference order (see Chat routing in section 6). Agent pre-assembly of the draft (chosen order, transitions, settings) is a v2 goal.
-- **HL-03:** Agent-proposed changes must appear as a reviewable batch with a readable summary and visible timeline changes.
-- **HL-04:** Users must be able to preview, accept, or reject a proposed batch. Accepted changes must be undoable as a batch.
-- **HL-05:** Users must be able to adjust a proposal through normal editor controls before accepting it.
+- **HL-03 (v2):** Agent-proposed changes must appear as a reviewable batch with a readable summary and visible timeline changes.
+- **HL-04 (v2):** Users must be able to preview, accept, or reject a proposed batch. Accepted changes must be undoable as a batch.
+- **HL-05 (v2):** Users must be able to adjust a proposal through normal editor controls before accepting it.
 - **HL-06 (v2):** Chat requests must carry the relevant editor selection so references such as “this clip” and “this transition” resolve in context. Deferred with the in-workspace chat surface.
-- **HL-07:** The agent must not silently overwrite manual edits made after its proposal began. A stale proposal must be refreshed or reconciled before acceptance.
+- **HL-07 (v2):** The agent must not silently overwrite manual edits made after its proposal began. A stale proposal must be refreshed or reconciled before acceptance. (Moot in v1: the agent cannot mutate a project — seeded-only.)
 - **HL-08:** Accepting a proposal must not require a final render or export.
 - **HL-09:** Failed or rejected proposals must preserve the previously accepted project state.
 
@@ -218,25 +218,22 @@ Selection must determine the inspector contents. Detailed settings should not ob
 | Lower music during dialogue | Volume can be reduced over a specified range and restored afterward; the change is audible in preview and export |
 | Detach audio | Detached audio remains synchronized initially and plays once, with independent editing controls |
 | Export audio | A selected segment or final mix exports as a playable audio artifact |
-| Review agent edits | A proposed batch shows its changes, can be previewed and adjusted, and supports acceptance, rejection, and undo |
-| Protect concurrent edits | An agent proposal based on an older project revision cannot silently replace newer manual edits |
+| Review agent edits (v2) | A proposed batch shows its changes, can be previewed and adjusted, and supports acceptance, rejection, and undo — deferred with pre-assembly |
+| Protect concurrent edits (v2) | An agent proposal based on an older project revision cannot silently replace newer manual edits — moot in v1 (the agent cannot mutate a project) |
 | Reopen a project | Saved timeline, transitions, audio settings, and output settings are restored |
 | Recover missing media | A missing source is identified and can be relinked without recreating the timeline |
 | Export a video | The completed artifact reflects the saved revision’s clip order, timing, transitions, framing, and audio mix |
 | Edit during rendering | Changes made after export begins do not change that export’s output |
 | Recover from render failure | Failure or cancellation preserves the project and allows another export attempt |
 | Preserve quick editing | Edit video continues to open the existing single-clip workflow |
+| Open the composer by chat intent | "Open the video composer" in a conversation with attached or mentioned media opens the workspace seeded with that media, in reference order; with none, it opens unseeded with the picker |
 
 ## 10. Decisions to Resolve During Design
 
-- Exact supported export formats and default quality presets.
-- Project output defaults and the initial framing policy for mixed-aspect media.
-- Default dissolve duration and its associated original-audio behavior.
-- How users choose between timeline-fixed and clip-linked placement for detached or additional audio.
-- Whether saves are automatic, explicit, or a combination, and how revision history is exposed.
 - Performance targets and supported project limits, including clip count, duration, resolution, and audio-lane count.
-- Project location and navigation within Atelier, including access from the originating conversation and the media picker's scope when a composition is created outside a conversation.
-- Whether the MVP includes project-mutating agent tools — the capability HL-03 through HL-05 and HL-07 through HL-09 (proposal batches) depend on — or defers proposals to v2 together with pre-assembly.
+- An OpenTimelineIO import/export adapter over the document's OTIO-shaped vocabulary (the native format deliberately mirrors it).
+
+Resolved during implementation: compositions are conversation-attached `cmp_` artifacts (every save an immutable revision; reopen, duplicate, and export pinning all read them); saves are explicit; the output frame inherits the first clip's display size and frame rate with pad as the default fit, overridable per project and per export; the default dissolve is 1s with an equal-power audio crossfade; detached audio starts pinned to its clip then moves independently; export ships MP4/H.264 (CRF 18/23/28) with an audio-only M4A path; the composer intent is seeded-only, and project-mutating agent tools are deferred to v2 with the proposal batches.
 
 ## 11. Validation Focus
 
