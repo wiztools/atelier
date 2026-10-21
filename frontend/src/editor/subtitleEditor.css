@@ -75,6 +75,7 @@
   font-size: 11px;
   color: #9a9a92;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .subtitle-media-picker {
@@ -258,6 +259,12 @@ textarea.subtitle-cue-text.editing {
   align-self: stretch;
   min-height: 0;
   overflow-y: auto;
+}
+
+/* A scrolling flex column squeezes its children instead of overflowing —
+   sections keep their height; the pane scrolls. */
+.subtitle-inspector > * {
+  flex-shrink: 0;
 }
 
 .subtitle-framing-summary {

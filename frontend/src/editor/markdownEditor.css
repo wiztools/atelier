@@ -247,6 +247,12 @@
   overflow-y: auto;
 }
 
+/* A scrolling flex column squeezes its children instead of overflowing —
+   sections keep their height; the pane scrolls. */
+.markdown-inspector > * {
+  flex-shrink: 0;
+}
+
 .markdown-framing-summary {
   display: grid;
   gap: 2px;

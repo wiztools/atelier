@@ -5,6 +5,10 @@
 
 .composition-editor .editor-body {
   min-height: 0;
+  /* Bound the row to the body itself — without it the row is content-sized,
+     the lane stack grows it past the body, and the Edits panel just paints
+     over the timeline's tail. */
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .composition-editor-main {
@@ -65,13 +69,25 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
+  /* Absorb the main column's remaining height and hold it there — the lanes
+     scroll inside their own pane below, so lane count never grows the box
+     over the body row. */
+  flex: 1 1 auto;
   min-height: 220px;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: hidden;
   padding: 6px 4px 10px;
   border: 1px solid #3b3f42;
   border-radius: 6px;
   background: #23272a;
+}
+
+.composition-lane-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .composition-ruler {
@@ -345,6 +361,14 @@
   overflow-y: auto;
 }
 
+/* A scrolling flex column squeezes its children instead of overflowing —
+   and a child with overflow:hidden (the button groups) has no automatic
+   minimum, so it collapsed to a sliver. Sections keep their height; the
+   pane scrolls. */
+.composition-inspector > * {
+  flex-shrink: 0;
+}
+
 .composition-field {
   display: flex;
   flex-direction: column;
@@ -375,6 +399,7 @@
   gap: 6px;
   font-size: 12px;
   color: #c7cdd1;
+  white-space: nowrap;
 }
 
 .composition-ref-line {
@@ -447,6 +472,11 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  /* Compresses when the window is short (the video editor's stage rule) —
+     the timeline keeps its floor and the lanes scroll inside it instead. */
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .composition-preview {

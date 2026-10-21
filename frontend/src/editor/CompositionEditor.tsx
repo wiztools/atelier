@@ -74,6 +74,7 @@ type EditorLogEntry = {
 type Selection =
   | {kind: 'doc'}
   | {kind: 'clip'; clipID: string}
+  | {kind: 'junction'; clipID: string}
   | {kind: 'lane'; laneID: string}
   | {kind: 'segment'; laneID: string; segmentID: string};
 
@@ -148,6 +149,77 @@ function NumberField(props: {label: string; value: number; step?: number; min?: 
         }}
       />
     </label>
+  );
+}
+
+// DuplicateIcon/TrashIcon — the app's 24-viewBox stroke glyphs; the hover
+// title carries the verb.
+function DuplicateIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="9" y="9" width="13" height="13" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 6h18" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </svg>
+  );
+}
+
+// TransitionControls is the Kind/Seconds/crossfade block for the transition
+// ONTO the clip after clipID — shared by the clip inspector ("Transition to
+// next") and the junction's own inspector.
+function TransitionControls(props: {doc: CompositionDoc; clipID: string; commit: (doc: CompositionDoc) => void}) {
+  const index = props.doc.video.findIndex((clip) => clip.id === props.clipID);
+  const clip = props.doc.video[index];
+  const bounds = transitionBounds(props.doc, index);
+  if (!clip || index >= props.doc.video.length - 1) {
+    return <p className="hint">The last clip has no next neighbor.</p>;
+  }
+  if (!bounds) {
+    return <p className="hint">The adjacent clips are too short for even the minimum {compositionTransitionMinSeconds}s dissolve — trim elsewhere first.</p>;
+  }
+  const transition = clip.transitionToNext;
+  return (
+    <>
+      <div className="composition-field-row">
+        <label className="composition-field">
+          <span>Kind</span>
+          <select
+            value={transition ? 'dissolve' : 'cut'}
+            onChange={(event) => props.commit(setClipTransition(props.doc, props.clipID, event.target.value === 'dissolve' ? {seconds: transition?.seconds ?? 1, audioCrossfade: transition?.audioCrossfade ?? true} : null))}
+          >
+            <option value="cut">cut</option>
+            <option value="dissolve">dissolve</option>
+          </select>
+        </label>
+        {transition ? (
+          <NumberField
+            label="Seconds"
+            value={transition.seconds}
+            step={0.1}
+            min={bounds.min}
+            max={bounds.max}
+            title={`The clips allow ${bounds.min.toFixed(1)}–${bounds.max.toFixed(1)}s`}
+            onCommit={(value) => props.commit(setClipTransition(props.doc, props.clipID, {seconds: value, audioCrossfade: transition.audioCrossfade}))}
+          />
+        ) : null}
+      </div>
+      {transition ? (
+        <label className="composition-toggle" title="Crossfade the original audio across the dissolve (equal power), or cut it hard at the junction">
+          <input type="checkbox" checked={transition.audioCrossfade} onChange={(event) => props.commit(setClipTransition(props.doc, props.clipID, {seconds: transition.seconds, audioCrossfade: event.target.checked}))} />
+          crossfade original audio
+        </label>
+      ) : null}
+      <p className="hint">Allowed {bounds.min.toFixed(1)}–{bounds.max.toFixed(1)}s (half the shorter clip).</p>
+    </>
   );
 }
 
@@ -353,6 +425,13 @@ export function CompositionEditor(props: {
   }, []);
 
   const runningRender = renders.find((op) => op.status === 'queued' || op.status === 'running') ?? null;
+  // SubmitCompositionRender emits the queued op as an event BEFORE its
+  // promise resolves, so the event handler usually inserts the row first —
+  // the submit-side insert must not prepend a second copy of the same id
+  // (the twin would freeze at 0%: events dedupe to the first match only).
+  const addRenderOp = (op: main.CompositionRenderOperation) => {
+    setRenders((current) => current.some((candidate) => candidate.id === op.id) ? current : [op, ...current]);
+  };
   const renderDisabled = !!runningRender || problems.length > 0 || missingRefs.size > 0 ||
     (doc.video.length === 0 && doc.audioLanes.every((lane) => lane.segments.length === 0));
   const previewOutdated = !!preview && renderedDoc !== null && !sameCompositionDoc(renderedDoc, doc);
@@ -373,7 +452,7 @@ export function CompositionEditor(props: {
         ...(soloLaneID ? {soloLaneId: soloLaneID} : {}),
       }));
       setRenderedDoc(normalizeCompositionDoc(docRef.current));
-      setRenders((current) => [op, ...current]);
+      addRenderOp(op);
     } catch (error) {
       setRenderError(formatEditorError(error));
     }
@@ -434,6 +513,11 @@ export function CompositionEditor(props: {
     | {kind: 'segment-trim'; segmentID: string; edge: 'in' | 'out'; startClientX: number; startValue: number};
   const [drag, setDrag] = useState<DragState | null>(null);
   const laneElementRef = useRef<HTMLDivElement | null>(null);
+  // WebKit fires a compatibility click after a pointerdown whose default was
+  // prevented, and it bubbles to the lane's onClick — which would clobber the
+  // selection the press just made (junction/clip/segment press "doesn't
+  // select"). Item presses raise this flag; the lane's onClick consumes it.
+  const suppressLaneClickRef = useRef(false);
 
   const pxPerSecond = () => {
     const width = laneElementRef.current?.getBoundingClientRect().width ?? 0;
@@ -464,6 +548,7 @@ export function CompositionEditor(props: {
     }
     event.preventDefault();
     setSelection({kind: 'clip', clipID: clip.id});
+    suppressLaneClickRef.current = true;
     const edge = edgeAt(event.currentTarget, event.clientX);
     dragChangedRef.current = false;
     if (edge) {
@@ -478,7 +563,8 @@ export function CompositionEditor(props: {
       return;
     }
     event.preventDefault();
-    setSelection({kind: 'clip', clipID: clip.id});
+    setSelection({kind: 'junction', clipID: clip.id});
+    suppressLaneClickRef.current = true;
     dragChangedRef.current = false;
     setDrag({kind: 'junction', clipID: clip.id, startClientX: event.clientX, startSeconds: clip.transitionToNext?.seconds ?? 0, hadTransition: !!clip.transitionToNext});
   };
@@ -490,6 +576,7 @@ export function CompositionEditor(props: {
     event.preventDefault();
     const laneID = docRef.current.audioLanes.find((lane) => lane.segments.some((candidate) => candidate.id === segment.id))?.id ?? '';
     setSelection({kind: 'segment', laneID, segmentID: segment.id});
+    suppressLaneClickRef.current = true;
     const edge = edgeAt(event.currentTarget, event.clientX);
     dragChangedRef.current = false;
     if (edge) {
@@ -675,7 +762,7 @@ export function CompositionEditor(props: {
         ...(exportAdvancedOpen && Number.isFinite(fps) && fps > 0 ? {fps} : {}),
         ...(exportAdvancedOpen && Number.isFinite(crf) && crf > 0 ? {crf} : {}),
       }));
-      setRenders((current) => [op, ...current]);
+      addRenderOp(op);
     } catch (error) {
       setExportError(formatEditorError(error));
     } finally {
@@ -722,6 +809,7 @@ export function CompositionEditor(props: {
 
   const pct = (seconds: number) => `${Math.max(0, Math.min(100, (seconds / timelineExtent) * 100))}%`;
   const selectedClip = selection.kind === 'clip' ? doc.video.find((clip) => clip.id === selection.clipID) : undefined;
+  const junctionClip = selection.kind === 'junction' ? doc.video.find((clip) => clip.id === selection.clipID) : undefined;
   const selectedLane = selection.kind === 'lane' ? doc.audioLanes.find((lane) => lane.id === selection.laneID) : undefined;
   const selectedSegment = selection.kind === 'segment'
     ? doc.audioLanes.find((lane) => lane.id === selection.laneID)?.segments.find((segment) => segment.id === selection.segmentID)
@@ -859,9 +947,18 @@ export function CompositionEditor(props: {
                 return <span key={index} style={{left: pct(at)}}>{formatCompositionClock(at)}</span>;
               })}
             </div>
+            {/* The lanes scroll under the pinned ruler — the timeline box
+                itself stays bounded by the editor body. */}
+            <div className="composition-lane-scroll">
             <div
               className={`composition-lane composition-lane-video${selection.kind === 'doc' ? ' focused' : ''}`}
-              onClick={() => setSelection({kind: 'doc'})}
+              onClick={() => {
+                if (suppressLaneClickRef.current) {
+                  suppressLaneClickRef.current = false;
+                  return;
+                }
+                setSelection({kind: 'doc'});
+              }}
             >
               {doc.video.map((clip, index) => {
                 const missing = missingRefs.has(clip.ref.artifactId);
@@ -886,7 +983,7 @@ export function CompositionEditor(props: {
                   <button
                     key={`junction-${clip.id}`}
                     type="button"
-                    className={`composition-junction${transition ? ' dissolve' : ' cut'}${selection.kind === 'clip' && selection.clipID === clip.id ? ' selected' : ''}`}
+                    className={`composition-junction${transition ? ' dissolve' : ' cut'}${selection.kind === 'junction' && selection.clipID === clip.id ? ' selected' : ''}`}
                     style={{left: pct(junctionAt), width: transition ? pct(transition.seconds) : '3px'}}
                     title={transition
                       ? `Dissolve ${transition.seconds.toFixed(1)}s (audio ${transition.audioCrossfade ? 'crossfades' : 'cuts'}) — drag to resize, drag fully left for a cut`
@@ -903,7 +1000,13 @@ export function CompositionEditor(props: {
               <div
                 key={lane.id}
                 className={`composition-lane composition-lane-audio${selection.kind === 'lane' && selection.laneID === lane.id ? ' selected' : ''}${lane.muted ? ' muted' : ''}`}
-                onClick={() => setSelection({kind: 'lane', laneID: lane.id})}
+                onClick={() => {
+                  if (suppressLaneClickRef.current) {
+                    suppressLaneClickRef.current = false;
+                    return;
+                  }
+                  setSelection({kind: 'lane', laneID: lane.id});
+                }}
               >
                 <span className="composition-lane-label" title={`${lane.name}${lane.muted ? ' (muted)' : ''}`}>
                   {lane.name}{lane.gainDb !== 0 ? ` ${lane.gainDb > 0 ? '+' : ''}${lane.gainDb}dB` : ''}
@@ -924,11 +1027,22 @@ export function CompositionEditor(props: {
                 </div>
               </div>
             ))}
+            </div>
           </div>
         </div>
 
         <aside className="editor-inspector composition-inspector">
-          {selection.kind === 'doc' || !selectedClip ? (
+          {selection.kind === 'junction' && junctionClip ? (
+            <div className="composition-inspect-junction">
+              <strong>Transition</strong>
+              <p className="hint composition-ref-line" title={junctionClip.ref.path}>
+                {junctionClip.ref.artifactId.slice(0, 12)} → the next clip
+              </p>
+              <div className="composition-transition">
+                <TransitionControls doc={doc} clipID={junctionClip.id} commit={commit} />
+              </div>
+            </div>
+          ) : selection.kind === 'doc' || !selectedClip ? (
             <div className="composition-inspect-doc">
               <strong>Project</strong>
               <div className="composition-field-row">
@@ -971,59 +1085,17 @@ export function CompositionEditor(props: {
               <p className="hint">Plays {formatCompositionClock(clipDurationSeconds(selectedClip))} starting at {formatCompositionClock(layout.starts[doc.video.findIndex((clip) => clip.id === selectedClip.id)] ?? 0)}</p>
 
               <div className="editor-tool-group">
-                <button type="button" disabled={doc.video.findIndex((clip) => clip.id === selectedClip.id) === 0} onClick={() => commit(moveClip(docRef.current, selectedClip.id, doc.video.findIndex((clip) => clip.id === selectedClip.id) - 1))}>↑ Move earlier</button>
-                <button type="button" disabled={doc.video.findIndex((clip) => clip.id === selectedClip.id) === doc.video.length - 1} onClick={() => commit(moveClip(docRef.current, selectedClip.id, doc.video.findIndex((clip) => clip.id === selectedClip.id) + 2))}>↓ Move later</button>
-                <button type="button" onClick={() => commit(duplicateClip(docRef.current, selectedClip.id))}>Duplicate</button>
-                <button type="button" onClick={() => {commit(removeClip(docRef.current, selectedClip.id)); setSelection({kind: 'doc'});}}>Remove</button>
+                {/* Arrows only — the lane runs left to right, so direction reads
+                    without words (the hover title carries them). */}
+                <button type="button" aria-label="Move earlier" title="Move earlier" disabled={doc.video.findIndex((clip) => clip.id === selectedClip.id) === 0} onClick={() => commit(moveClip(docRef.current, selectedClip.id, doc.video.findIndex((clip) => clip.id === selectedClip.id) - 1))}>←</button>
+                <button type="button" aria-label="Move later" title="Move later" disabled={doc.video.findIndex((clip) => clip.id === selectedClip.id) === doc.video.length - 1} onClick={() => commit(moveClip(docRef.current, selectedClip.id, doc.video.findIndex((clip) => clip.id === selectedClip.id) + 2))}>→</button>
+                <button type="button" aria-label="Duplicate clip" title="Duplicate clip" onClick={() => commit(duplicateClip(docRef.current, selectedClip.id))}><DuplicateIcon /></button>
+                <button type="button" aria-label="Remove clip" title="Remove clip" onClick={() => {commit(removeClip(docRef.current, selectedClip.id)); setSelection({kind: 'doc'});}}><TrashIcon /></button>
               </div>
 
               <div className="composition-transition">
                 <strong>Transition to next</strong>
-                {(() => {
-                  const index = doc.video.findIndex((clip) => clip.id === selectedClip.id);
-                  const bounds = transitionBounds(doc, index);
-                  if (index >= doc.video.length - 1) {
-                    return <p className="hint">The last clip has no next neighbor.</p>;
-                  }
-                  if (!bounds) {
-                    return <p className="hint">The adjacent clips are too short for even the minimum {compositionTransitionMinSeconds}s dissolve — trim elsewhere first.</p>;
-                  }
-                  const transition = selectedClip.transitionToNext;
-                  return (
-                    <>
-                      <div className="composition-field-row">
-                        <label className="composition-field">
-                          <span>Kind</span>
-                          <select
-                            value={transition ? 'dissolve' : 'cut'}
-                            onChange={(event) => commit(setClipTransition(docRef.current, selectedClip.id, event.target.value === 'dissolve' ? {seconds: transition?.seconds ?? 1, audioCrossfade: transition?.audioCrossfade ?? true} : null))}
-                          >
-                            <option value="cut">cut</option>
-                            <option value="dissolve">dissolve</option>
-                          </select>
-                        </label>
-                        {transition ? (
-                          <NumberField
-                            label="Seconds"
-                            value={transition.seconds}
-                            step={0.1}
-                            min={bounds.min}
-                            max={bounds.max}
-                            title={`The clips allow ${bounds.min.toFixed(1)}–${bounds.max.toFixed(1)}s`}
-                            onCommit={(value) => commit(setClipTransition(docRef.current, selectedClip.id, {seconds: value, audioCrossfade: transition.audioCrossfade}))}
-                          />
-                        ) : null}
-                      </div>
-                      {transition ? (
-                        <label className="composition-toggle" title="Crossfade the original audio across the dissolve (equal power), or cut it hard at the junction">
-                          <input type="checkbox" checked={transition.audioCrossfade} onChange={(event) => commit(setClipTransition(docRef.current, selectedClip.id, {seconds: transition.seconds, audioCrossfade: event.target.checked}))} />
-                          crossfade original audio
-                        </label>
-                      ) : null}
-                      <p className="hint">Allowed {bounds.min.toFixed(1)}–{bounds.max.toFixed(1)}s (half the shorter clip).</p>
-                    </>
-                  );
-                })()}
+                <TransitionControls doc={doc} clipID={selectedClip.id} commit={commit} />
               </div>
 
               <div className="composition-audio-mix">
@@ -1110,8 +1182,8 @@ export function CompositionEditor(props: {
                 </button>
               </div>
               <div className="editor-tool-group">
-                <button type="button" onClick={() => commit(duplicateSegment(docRef.current, selectedSegment.id))}>Duplicate</button>
-                <button type="button" onClick={() => {commit(removeSegment(docRef.current, selectedSegment.id)); setSelection({kind: 'lane', laneID: selectedSegmentLane.id});}}>Remove</button>
+                <button type="button" aria-label="Duplicate segment" title="Duplicate segment" onClick={() => commit(duplicateSegment(docRef.current, selectedSegment.id))}><DuplicateIcon /></button>
+                <button type="button" aria-label="Remove segment" title="Remove segment" onClick={() => {commit(removeSegment(docRef.current, selectedSegment.id)); setSelection({kind: 'lane', laneID: selectedSegmentLane.id});}}><TrashIcon /></button>
               </div>
             </div>
           ) : null}

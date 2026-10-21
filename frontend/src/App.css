@@ -788,6 +788,19 @@ select {
   padding: 0 10px;
 }
 
+/* Checkboxes and radios are field-sized controls, not text fields — the
+   width/height/padding above scales the native control into a giant block.
+   Restore their natural size (accent stays house-colored; the airplane
+   toggle re-accents to amber). */
+input[type='checkbox'],
+input[type='radio'] {
+  width: auto;
+  height: auto;
+  padding: 0;
+  margin: 0 2px 0 0;
+  accent-color: #3563c4;
+}
+
 textarea {
   min-height: 88px;
   padding: 10px;
