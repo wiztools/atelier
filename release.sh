@@ -13,8 +13,10 @@
 #            xcrun notarytool store-credentials \
 #              --apple-id YOUR_APPLE_ID --team-id YOUR_TEAM_ID \
 #              --password YOUR_APP_SPECIFIC_PASSWORD atelier-release
-#          and set NOTARYTOOL_KEYCHAIN_PROFILE=atelier-release
+#          'atelier-release' is the default profile — used automatically when
+#          no other credentials are configured; no env var is needed.
 #       2) env vars APPLE_ID, APPLE_TEAM_ID, APPLE_APP_SPECIFIC_PASSWORD
+#          (NOTARYTOOL_KEYCHAIN_PROFILE overrides the default profile)
 #
 # The script updates wails.json/frontend/package.json with the supplied version,
 # commits the bump, creates a Git tag, builds a universal macOS .app, signs it,
@@ -140,6 +142,13 @@ echo "    Signing identity: $APPLE_DEVELOPER_ID_APPLICATION"
 echo "    Team ID: $TEAM_ID"
 
 # ---------- Resolve notarization credentials ----------
+# 'atelier-release' is the default keychain profile: when neither it nor a full
+# set of Apple ID variables is configured, use it. A missing profile surfaces
+# at submit time as a notarytool error naming it.
+if [[ -z "${NOTARYTOOL_KEYCHAIN_PROFILE:-}" && -z "${APPLE_ID:-}${APPLE_TEAM_ID:-}${APPLE_APP_SPECIFIC_PASSWORD:-}" ]]; then
+    NOTARYTOOL_KEYCHAIN_PROFILE="atelier-release"
+fi
+
 if [[ -n "${NOTARYTOOL_KEYCHAIN_PROFILE:-}" ]]; then
     echo "    Notarization: keychain profile '$NOTARYTOOL_KEYCHAIN_PROFILE'"
     NOTARY_ARGS=(--keychain-profile "$NOTARYTOOL_KEYCHAIN_PROFILE")
@@ -149,7 +158,7 @@ elif [[ -n "${APPLE_ID:-}" && -n "${APPLE_TEAM_ID:-}" && -n "${APPLE_APP_SPECIFI
 else
     echo "Error: notarytool credentials not configured" >&2
     echo "Set one of:" >&2
-    echo "  NOTARYTOOL_KEYCHAIN_PROFILE" >&2
+    echo "  NOTARYTOOL_KEYCHAIN_PROFILE (default 'atelier-release' — create it with xcrun notarytool store-credentials, see header)" >&2
     echo "  APPLE_ID + APPLE_TEAM_ID + APPLE_APP_SPECIFIC_PASSWORD" >&2
     exit 1
 fi
