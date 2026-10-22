@@ -115,6 +115,7 @@ import {SubtitleEditor, SubtitleEditorHandle} from './editor/SubtitleEditor';
 import {MarkdownEditor, MarkdownEditorHandle} from './editor/MarkdownEditor';
 import {CompositionEditor, CompositionEditorHandle} from './editor/CompositionEditor';
 import {detectEditorLaunchIntent} from './editorLaunch';
+import {composerHasMediaDrag, mediaKindForFile, mediaMimeForFile} from './mediaIntake';
 
 type View = 'app' | 'settings' | 'conversation-models';
 // Settings tabs draw one line: Providers are endpoints and keys you connect to
@@ -5201,7 +5202,7 @@ function App() {
   // staging rows are keyed per call so parallel drops don't cross-talk.
   async function attachFiles(files: File[], nameFor?: (file: File, index: number) => string) {
     const stagingKeys = files.map((file, index): {key: string; kind: 'audio' | 'video'} | null => {
-      const kind = file.type.startsWith('audio/') ? 'audio' : file.type.startsWith('video/') ? 'video' : null;
+      const kind = mediaKindForFile(file);
       if (!kind || file.size <= mediaStageThresholdBytes) {
         return null;
       }
@@ -5278,14 +5279,12 @@ function App() {
     });
   }
 
-  function composerHasMediaDrag(event: React.DragEvent<HTMLDivElement>): boolean {
-    return Array.from(event.dataTransfer?.items ?? []).some(
-      (item) => item.kind === 'file' && (item.type.startsWith('image/') || item.type.startsWith('audio/') || item.type.startsWith('video/') || item.type === 'text/vtt' || item.type === 'application/x-subrip' || item.type === 'text/markdown' || item.type === 'text/x-fountain'),
-    );
-  }
-
   function handleComposerDragEnter(event: React.DragEvent<HTMLDivElement>) {
-    if (!composerHasMediaDrag(event)) {
+    // Any file item counts (composerHasMediaDrag in mediaIntake.ts): WebKit
+    // offers no filename during dragover, so an .mkv — no MIME on macOS —
+    // arrives here as a file item with an empty type, and a type-only check
+    // hid the drop overlay from a drop the handler would accept.
+    if (!composerHasMediaDrag(Array.from(event.dataTransfer?.items ?? []))) {
       return;
     }
     event.preventDefault();
@@ -5294,7 +5293,7 @@ function App() {
   }
 
   function handleComposerDragOver(event: React.DragEvent<HTMLDivElement>) {
-    if (!composerHasMediaDrag(event)) {
+    if (!composerHasMediaDrag(Array.from(event.dataTransfer?.items ?? []))) {
       return;
     }
     // Signal that dropping here is allowed and stop the browser from opening the file.
@@ -5315,18 +5314,25 @@ function App() {
   async function handleComposerDrop(event: React.DragEvent<HTMLDivElement>) {
     composerDragDepth.current = 0;
     setComposerDragging(false);
+    const droppedFiles = Array.from(event.dataTransfer?.files ?? []);
+    if (!droppedFiles.length) {
+      return;
+    }
+    // Keep the browser from navigating to the dropped file before anything
+    // else — even when no file routes to attachments, navigation must not win.
+    event.preventDefault();
     // Subtitle and markdown files are matched by extension too: an .srt or .md
     // dropped from Finder often reports an empty MIME type, which the type-only
     // drag preview above misses — the drop itself should still accept what the
-    // picker accepts.
-    const mediaFiles = Array.from(event.dataTransfer?.files ?? []).filter(
-      (file) => file.type.startsWith('image/') || file.type.startsWith('audio/') || file.type.startsWith('video/') || subtitleMimeForFile(file) !== null || markdownMimeForFile(file) !== null,
+    // picker accepts. Media containers go through mediaKindForFile for the same
+    // reason: .mkv carries no MIME type on macOS, and the type-only filter
+    // turned its drop into a silent no-op (conv_d3e32280).
+    const mediaFiles = droppedFiles.filter(
+      (file) => mediaKindForFile(file) !== null || subtitleMimeForFile(file) !== null || markdownMimeForFile(file) !== null,
     );
     if (!mediaFiles.length) {
       return;
     }
-    // Keep the browser from navigating to the dropped file and route it to attachments.
-    event.preventDefault();
     const stamp = Date.now();
     await attachFiles(
       mediaFiles,
@@ -7329,7 +7335,7 @@ function App() {
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
                       </svg>
-                      <input type="file" accept="image/*,audio/*,video/*,.vtt,.srt,application/x-subrip,text/vtt,.md,.markdown,.fountain,text/markdown" multiple onChange={(event) => addFiles(event.target.files)} />
+                      <input type="file" accept="image/*,audio/*,video/*,.mkv,.vtt,.srt,application/x-subrip,text/vtt,.md,.markdown,.fountain,text/markdown" multiple onChange={(event) => addFiles(event.target.files)} />
                     </label>
                   </div>
                   <div className="composer-submit-row">
@@ -10972,12 +10978,7 @@ async function readImageFile(file: File, nameOverride?: string): Promise<Attachm
 // the format. Audio input is OpenRouter-only; the harness rejects an audio turn
 // on any other provider before it runs.
 async function readAudioFile(file: File, nameOverride?: string): Promise<Attachment> {
-  const dataURL = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
+  const dataURL = await mediaFileDataURL(file, 'audio');
 
   return {
     name: nameOverride ?? file.name,
@@ -10992,12 +10993,7 @@ async function readAudioFile(file: File, nameOverride?: string): Promise<Attachm
 // AttachedVideo from the data URL the frontend sends (decodeVideoPayload /
 // readVideoArtifactAsDataURL).
 async function readVideoFile(file: File, nameOverride?: string): Promise<Attachment> {
-  const dataURL = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
+  const dataURL = await mediaFileDataURL(file, 'video');
 
   return {
     name: nameOverride ?? file.name,
@@ -11005,6 +11001,24 @@ async function readVideoFile(file: File, nameOverride?: string): Promise<Attachm
     payload: dataURL,
     kind: 'video',
   };
+}
+
+// mediaFileDataURL builds an audio/video attachment's data URL. FileReader
+// labels a container the OS left unlabeled (.mkv) application/octet-stream,
+// which the Go decoders and the OpenRouter audio part read as an unknown
+// format — so the extension's mime stands in when the OS offered no type
+// (mediaIntake.ts).
+async function mediaFileDataURL(file: File, kind: 'audio' | 'video'): Promise<string> {
+  if (file.type) {
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+  }
+  const bytes = await file.arrayBuffer();
+  return `data:${mediaMimeForFile(file, kind)};base64,${bytesToBase64(bytes)}`;
 }
 
 // subtitleMimeForFile names the wire mime an attached subtitle carries: the
@@ -11061,11 +11075,12 @@ async function readMarkdownFile(file: File, nameOverride?: string): Promise<Atta
   };
 }
 
-// readFileAsAttachment dispatches on MIME type to the right reader. Audio files
-// route to readAudioFile, video files to readVideoFile, subtitle files
-// (.vtt/.srt — by extension first, the OS type is unreliable) to
-// readSubtitleFile, markdown documents (.md/.markdown) to readMarkdownFile;
-// everything else (images today, and an unknown type the OS
+// readFileAsAttachment dispatches to the right reader. Audio files route to
+// readAudioFile, video files to readVideoFile (kind decided by
+// mediaKindForFile — extension first, since real containers like .mkv carry no
+// MIME on macOS), subtitle files (.vtt/.srt — by extension first, the OS type
+// is unreliable) to readSubtitleFile, markdown documents (.md/.markdown) to
+// readMarkdownFile; everything else (images today, and an unknown type the OS
 // picker let through) routes to readImageFile, which produced the historical
 // behavior.
 //
@@ -11082,8 +11097,8 @@ async function readFileAsAttachment(file: File, nameOverride?: string, onProgres
   if (markdownMimeForFile(file)) {
     return readMarkdownFile(file, nameOverride);
   }
-  if (file.type.startsWith('audio/') || file.type.startsWith('video/')) {
-    const kind = file.type.startsWith('audio/') ? 'audio' : 'video';
+  const kind = mediaKindForFile(file);
+  if (kind) {
     if (file.size > mediaStageThresholdBytes) {
       return stageMediaFileAsAttachment(file, kind, nameOverride, onProgress);
     }

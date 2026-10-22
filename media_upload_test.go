@@ -282,6 +282,72 @@ func TestHistoryContentAdoptsStagedAudioUpload(t *testing.T) {
 	}
 }
 
+func TestHistoryContentAdoptsStagedMKVUpload(t *testing.T) {
+	// conv_d3e32280: an attached MKV must survive the whole chain under its own
+	// container. The EBML magic passes isVideoBytes, the staged .mkv extension
+	// survives mediaUploadExtension, and adoption keeps it — which only holds
+	// while mediaTypeForExtension knows .mkv (the default there is image/png,
+	// and adoptStagedUpload renames to .mp4 on an unknown mapping).
+	app, storage := newMediaUploadTestApp(t)
+	mkvBytes := append([]byte{0x1a, 0x45, 0xdf, 0xa3}, make([]byte, 64)...)
+	_, staged := stageTestVideo(t, app, storage, mkvBytes, "movie.mkv")
+	if filepath.Ext(staged.Path) != ".mkv" {
+		t.Fatalf("staged extension = %q, want .mkv", filepath.Ext(staged.Path))
+	}
+	if staged.MediaType != "video/x-matroska" {
+		t.Fatalf("staged mediaType = %q, want video/x-matroska", staged.MediaType)
+	}
+
+	artifactsDir := filepath.Join(storage.History, "conversations", "2026", "10", "conv_x", "artifacts")
+	contents, _, err := historyContentForMessage(ChatMessage{
+		Role:    "user",
+		Content: "Convert this to mp4.",
+		Videos:  []string{staged.URL},
+	}, artifactsDir, AppConfig{Storage: storage})
+	if err != nil {
+		t.Fatalf("historyContentForMessage returned error: %v", err)
+	}
+	var videoContent *HistoryContent
+	for i := range contents {
+		if contents[i].Type == "video" {
+			videoContent = &contents[i]
+		}
+	}
+	if videoContent == nil {
+		t.Fatalf("no video content in %+v", contents)
+	}
+	if videoContent.MimeType != "video/x-matroska" {
+		t.Fatalf("mimeType = %q, want video/x-matroska", videoContent.MimeType)
+	}
+	adoptedPath := filepath.Join(artifactsDir, filepath.Base(videoContent.Path))
+	if filepath.Ext(adoptedPath) != ".mkv" {
+		t.Fatalf("adopted artifact = %q, want the .mkv extension kept", adoptedPath)
+	}
+	if !isVideoBytes(mustRead(t, adoptedPath)) {
+		t.Fatal("adopted artifact does not hold the Matroska bytes")
+	}
+}
+
+func TestDecodeVideoPayloadMatroskaDataURL(t *testing.T) {
+	// A small (<24MB) MKV rides as a data URL instead of a staged upload; the
+	// mime decides the artifact extension, so both spellings macOS sees
+	// (x-matroska standard, the third-party UTIs' video/mkv) map onto .mkv.
+	mkvBytes := append([]byte{0x1a, 0x45, 0xdf, 0xa3}, make([]byte, 32)...)
+	for _, mediaType := range []string{"video/x-matroska", "video/mkv"} {
+		payload := "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(mkvBytes)
+		data, extension, err := decodeVideoPayload(payload)
+		if err != nil {
+			t.Fatalf("%s: decodeVideoPayload returned error: %v", mediaType, err)
+		}
+		if string(data) != string(mkvBytes) {
+			t.Fatalf("%s: decoded bytes differ", mediaType)
+		}
+		if extension != ".mkv" {
+			t.Fatalf("%s: extension = %q, want .mkv", mediaType, extension)
+		}
+	}
+}
+
 func TestDiscardMediaUpload(t *testing.T) {
 	app, storage := newMediaUploadTestApp(t)
 	uploadsDir := mediaUploadsDir(storage)

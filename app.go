@@ -5986,6 +5986,14 @@ func mediaTypeForExtension(extension string) string {
 		return "video/webm"
 	case ".mov":
 		return "video/quicktime"
+	case ".mkv":
+		// Matroska: the staged-upload container allowlist keeps the .mkv
+		// extension (media_upload.go), so the adopt path reads the same table —
+		// an unknown mapping here would rename the artifact to .mp4 and stamp
+		// the staged upload "image/png" (the table's default).
+		return "video/x-matroska"
+	case ".3gp":
+		return "video/3gpp"
 	case ".mp3":
 		return "audio/mpeg"
 	case ".wav":
@@ -6065,6 +6073,10 @@ func videoExtensionForMediaType(mediaType string) string {
 		return ".webm"
 	case "video/quicktime":
 		return ".mov"
+	case "video/x-matroska", "video/mkv":
+		// "video/mkv" is the MIME tag third-party Matroska UTIs declare on
+		// macOS; x-matroska is the standard spelling.
+		return ".mkv"
 	default:
 		return ".mp4"
 	}
