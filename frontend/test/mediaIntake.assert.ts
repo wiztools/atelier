@@ -41,3 +41,10 @@ assert(composerHasMediaDrag([{kind: 'file', type: 'video/mp4'}]), 'a typed file 
 assert(composerHasMediaDrag([{kind: 'string', type: 'text/plain'}, {kind: 'file', type: ''}]), 'a file item beside a text item shows the overlay');
 assert(!composerHasMediaDrag([{kind: 'string', type: 'text/plain'}]), 'a text-only drag shows nothing');
 assert(!composerHasMediaDrag([]), 'no items show nothing');
+
+// WebKit's protected mode can expose NO file items during dragover (they are
+// only reliable at the drop event), so the guaranteed "Files" entry in
+// dataTransfer.types carries the detection on its own.
+assert(composerHasMediaDrag([], ['Files']), 'the types-only Files entry shows the overlay (the WebKit dragover case)');
+assert(composerHasMediaDrag([{kind: 'file', type: ''}], ['Files', 'text/plain']), 'Files in types beside items still shows the overlay');
+assert(!composerHasMediaDrag([{kind: 'string', type: 'text/plain'}], ['text/plain', 'text/html']), 'a text-only drag with no Files type shows nothing');

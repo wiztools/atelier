@@ -5280,11 +5280,12 @@ function App() {
   }
 
   function handleComposerDragEnter(event: React.DragEvent<HTMLDivElement>) {
-    // Any file item counts (composerHasMediaDrag in mediaIntake.ts): WebKit
-    // offers no filename during dragover, so an .mkv — no MIME on macOS —
-    // arrives here as a file item with an empty type, and a type-only check
-    // hid the drop overlay from a drop the handler would accept.
-    if (!composerHasMediaDrag(Array.from(event.dataTransfer?.items ?? []))) {
+    // Any file drag counts (composerHasMediaDrag in mediaIntake.ts): WebKit
+    // offers no filename during dragover and may omit the file items entirely
+    // outside the drop event, so the overlay rides the guaranteed "Files"
+    // types entry — a type-only or items-only check hid the drop overlay from
+    // an .mkv drop the handler would accept.
+    if (!composerHasMediaDrag(Array.from(event.dataTransfer?.items ?? []), Array.from(event.dataTransfer?.types ?? []))) {
       return;
     }
     event.preventDefault();
@@ -5293,7 +5294,7 @@ function App() {
   }
 
   function handleComposerDragOver(event: React.DragEvent<HTMLDivElement>) {
-    if (!composerHasMediaDrag(Array.from(event.dataTransfer?.items ?? []))) {
+    if (!composerHasMediaDrag(Array.from(event.dataTransfer?.items ?? []), Array.from(event.dataTransfer?.types ?? []))) {
       return;
     }
     // Signal that dropping here is allowed and stop the browser from opening the file.

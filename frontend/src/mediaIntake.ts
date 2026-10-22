@@ -54,12 +54,16 @@ export function mediaMimeForFile(file: {name: string; type: string}, kind: Media
 }
 
 // composerHasMediaDrag decides whether a drag over the composer shows the
-// drop overlay. During dragover WebKit exposes only item.kind and item.type —
-// no filename (getAsFile is null outside the drop event) — so an
-// extension-classified container (.mkv; the same gap the .srt/.md drops ride)
-// arrives as a file item with an EMPTY type and a type-only predicate hides
-// the overlay from a drop that would be accepted. Any file item therefore
-// counts: the overlay is a hint, and handleComposerDrop filters precisely.
-export function composerHasMediaDrag(items: Array<{kind: string; type: string}>): boolean {
+// drop overlay. During dragover WebKit's protected mode may expose NO readable
+// file items (they are only reliable at the drop event), so the check rides
+// the spec-guaranteed signal first: a drag carrying files always lists
+// "Files" in dataTransfer.types. Any file item counts beyond that — WebKit
+// exposes no filename during dragover either, so an .mkv (no MIME on macOS)
+// is indistinguishable from an unknown file there. The overlay is a hint, and
+// handleComposerDrop filters precisely.
+export function composerHasMediaDrag(items: Array<{kind: string; type: string}>, types: string[] = []): boolean {
+  if (types.includes('Files')) {
+    return true;
+  }
   return items.some((item) => item.kind === 'file');
 }
