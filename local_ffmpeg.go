@@ -84,6 +84,7 @@ func ffmpegToolDefinitions(config AppConfig) []HarnessToolDefinition {
 		removeAudioToolDefinition(),
 		replaceAudioToolDefinition(),
 		convertAudioToolDefinition(),
+		convertVideoToolDefinition(),
 		burnSubtitlesToolDefinition(),
 		transformVideoToolDefinition(),
 		transformAudioToolDefinition(),
@@ -1177,6 +1178,16 @@ func ffmpegRemoveAudioArgs(input, output string) []string {
 // mux into the output.
 func ffmpegConvertAudioArgs(input, output string, codecArgs []string) []string {
 	args := []string{"-i", input, "-vn"}
+	args = append(args, codecArgs...)
+	return append(args, output)
+}
+
+// ffmpegConvertVideoArgs transcodes the whole clip into the target container:
+// codecArgs carry everything target-specific (video encoder + CRF, audio
+// encoder + bitrate, faststart on the MP4 family), so the builder stays
+// format-agnostic the way the audio one does.
+func ffmpegConvertVideoArgs(input, output string, codecArgs []string) []string {
+	args := []string{"-i", input}
 	args = append(args, codecArgs...)
 	return append(args, output)
 }
@@ -3284,6 +3295,171 @@ func convertAudioTargetPhrase(format string, quality int) string {
 		return format
 	}
 	return fmt.Sprintf("%s (%d kbps)", format, convertAudioBitrate(quality))
+}
+
+// convertVideoToolDefinition exposes convert_video: re-encode the attached
+// video into another container — the video sibling of convert_audio, and the
+// tool a "convert to mp4" ask routes to (conv_62e121b8: with no video
+// conversion tool, triage routed the ask to text and the reply claimed a
+// conversion was "initiated").
+func convertVideoToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "convert_video",
+		Title:       "Convert video",
+		Description: "Use this when the user asks to convert an attached VIDEO file to another container format or codec — make an MP4 out of an MKV/MOV/AVI download for a phone or editor, a WebM for the web, or an MKV archive copy (for a video's soundtrack, use extract_audio; to cut a segment out, use split_video; to change the shape, size, or speed, use transform_video). Requires an attached video file (one attached or @-mentioned this turn, or the conversation's newest video). format is one of \"mp4\", \"mov\", \"mkv\", \"webm\". quality is optional 1-100 — higher is higher fidelity (90+ ≈ near-lossless, 70 ≈ the house quality — the default, 40 ≈ smaller files, below ≈ smallest). The whole clip re-encodes (H.264 + AAC for mp4/mov/mkv, VP9 + Opus for webm) — a conversion never stream-copies, so a same-format ask still normalizes the encoding. The converted file is attached to the assistant reply and becomes the conversation's newest video.",
+		Example:     `{"name":"convert_video","format":"mp4"}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: convertVideoParamSchema(),
+		Validate: func(prefix string, call HarnessToolCall) []string {
+			format := convertVideoFormat(call.Format)
+			if format == "" {
+				return []string{prefix + `.format is required for convert_video ("mp4", "mov", "mkv", or "webm")`}
+			}
+			if !convertVideoFormats[format] {
+				return []string{prefix + `.format must be one of "mp4", "mov", "mkv", or "webm" for convert_video`}
+			}
+			if call.Quality != 0 && (call.Quality < 1 || call.Quality > 100) {
+				return []string{prefix + ".quality must be 1-100 for convert_video"}
+			}
+			return nil
+		},
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			source := firstAttachedVideo(tools.AttachedVideos)
+			if source == "" {
+				return nil, "conversion requires an attached video file", errors.New("convert_video requires an attached video file — ask the user to attach one first")
+			}
+			format := convertVideoFormat(call.Format)
+			quality := call.Quality
+			staging, err := os.MkdirTemp("", "atelier-ffmpeg-*")
+			if err != nil {
+				return nil, "conversion failed", err
+			}
+			defer os.RemoveAll(staging)
+			input, err := stageMediaDataURL(staging, "input", source)
+			if err != nil {
+				return nil, "conversion failed", err
+			}
+			ext, mimeType, codecArgs := convertVideoTarget(format, quality)
+			staged := filepath.Join(staging, "converted"+ext)
+			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegConvertVideoArgs(input, staged, codecArgs)); err != nil {
+				return nil, "conversion failed", err
+			}
+			tempPath, err := promoteStagedOutput(staged, "atelier-video-*", ext)
+			if err != nil {
+				return nil, "conversion failed", err
+			}
+			return ToolVideoResult{
+				Model:  ffmpegModelName,
+				Prompt: "converted to " + convertVideoTargetPhrase(format, quality),
+				Count:  1,
+				Videos: []ToolVideoFile{{TempPath: tempPath, MimeType: mimeType}},
+			}, fmt.Sprintf("converted the attached video to %s with ffmpeg", convertVideoTargetPhrase(format, quality)), nil
+		},
+		Activity: ffmpegActivity("convert-video"),
+	}
+}
+
+// convertVideoFormats are the output containers convert_video accepts — the
+// video targets the house H.264 encode plus a WebM for the web.
+var convertVideoFormats = map[string]bool{
+	"mp4": true, "mov": true, "mkv": true, "webm": true,
+}
+
+// convertVideoFormat normalizes the planner's format input the way
+// convertAudioFormat does: trimmed and lowercased. Empty stays empty (the
+// required-format validation error).
+func convertVideoFormat(raw string) string {
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+// convertVideoCRF maps the quality input onto an x264 CRF tier. Zero
+// (omitted) lands on the house default 18 — the rate every transform_video
+// re-encode standardizes on.
+func convertVideoCRF(quality int) int {
+	switch {
+	case quality >= 90:
+		return 16
+	case quality >= 70:
+		return 18
+	case quality >= 40:
+		return 21
+	case quality > 0:
+		return 25
+	default:
+		return 18
+	}
+}
+
+// convertVideoVP9CRF maps the same quality input onto VP9's CRF scale (its
+// 0-63 range sits a few steps higher than x264's for similar quality).
+func convertVideoVP9CRF(quality int) int {
+	switch {
+	case quality >= 90:
+		return 20
+	case quality >= 70:
+		return 24
+	case quality >= 40:
+		return 28
+	case quality > 0:
+		return 33
+	default:
+		return 24
+	}
+}
+
+// convertVideoTarget builds the output shape for the requested container:
+// the extension, its MIME type, and the full codec args. mp4/mov/mkv share
+// the house H.264 encode (faststart on the MP4-family containers); webm runs
+// VP9 + Opus in constant-quality mode. The audio track takes
+// convertAudioBitrate's tier, so quality means the same thing on both sides
+// of the convert_audio/convert_video pair.
+func convertVideoTarget(format string, quality int) (ext, mimeType string, codecArgs []string) {
+	bitrate := strconv.Itoa(convertAudioBitrate(quality)) + "k"
+	switch format {
+	case "mov":
+		return ".mov", "video/quicktime", []string{
+			"-c:v", "libx264", "-preset", "veryfast", "-crf", strconv.Itoa(convertVideoCRF(quality)),
+			"-c:a", "aac", "-b:a", bitrate, "-movflags", "+faststart",
+		}
+	case "mkv":
+		return ".mkv", "video/x-matroska", []string{
+			"-c:v", "libx264", "-preset", "veryfast", "-crf", strconv.Itoa(convertVideoCRF(quality)),
+			"-c:a", "aac", "-b:a", bitrate,
+		}
+	case "webm":
+		return ".webm", "video/webm", []string{
+			"-c:v", "libvpx-vp9", "-crf", strconv.Itoa(convertVideoVP9CRF(quality)), "-b:v", "0", "-row-mt", "1",
+			"-c:a", "libopus", "-b:a", bitrate,
+		}
+	default:
+		return ".mp4", "video/mp4", []string{
+			"-c:v", "libx264", "-preset", "veryfast", "-crf", strconv.Itoa(convertVideoCRF(quality)),
+			"-c:a", "aac", "-b:a", bitrate, "-movflags", "+faststart",
+		}
+	}
+}
+
+// convertVideoTargetPhrase names the conversion result for the evidence
+// prompt and summary: the container plus the CRF tier actually applied.
+func convertVideoTargetPhrase(format string, quality int) string {
+	if format == "webm" {
+		return fmt.Sprintf("%s (CRF %d)", format, convertVideoVP9CRF(quality))
+	}
+	return fmt.Sprintf("%s (CRF %d)", format, convertVideoCRF(quality))
+}
+
+// convertVideoParamSchema is convert_audio's schema with the video
+// vocabulary; format/quality ride the same shared HarnessToolCall fields.
+func convertVideoParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"format":  enumParam(`The output format: "mp4", "mov", "mkv", or "webm".`, "mp4", "mov", "mkv", "webm"),
+			"quality": intParam(`Optional 1-100: higher means higher fidelity (90+ ≈ near-lossless, 70 ≈ the house quality — the default, 40 ≈ smaller files, below ≈ smallest).`),
+		},
+		"required": []string{"format"},
+	}
 }
 
 // replaceAudioToolDefinition exposes replace_audio: lay a new audio track

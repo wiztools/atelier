@@ -359,6 +359,10 @@ func TestFFmpegArgBuilders(t *testing.T) {
 			"-i in.m4a -vn -c:a libmp3lame -b:a 192k out.mp3"},
 		{"convert audio lossless", ffmpegConvertAudioArgs("in.mp3", "out.wav", []string{"-c:a", "pcm_s16le"}),
 			"-i in.mp3 -vn -c:a pcm_s16le out.wav"},
+		{"convert video mp4 default crf", ffmpegConvertVideoArgs("in.mkv", "out.mp4", []string{"-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"}),
+			"-i in.mkv -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -movflags +faststart out.mp4"},
+		{"convert video webm", ffmpegConvertVideoArgs("in.mp4", "out.webm", []string{"-c:v", "libvpx-vp9", "-crf", "24", "-b:v", "0", "-row-mt", "1", "-c:a", "libopus", "-b:a", "192k"}),
+			"-i in.mp4 -c:v libvpx-vp9 -crf 24 -b:v 0 -row-mt 1 -c:a libopus -b:a 192k out.webm"},
 		{"replace copy video", ffmpegReplaceAudioArgs("v.mp4", "a.mp3", true, "out.mp4"),
 			"-i v.mp4 -i a.mp3 -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 192k -shortest -movflags +faststart out.mp4"},
 		{"replace reencode video", ffmpegReplaceAudioArgs("v.webm", "a.mp3", false, "out.mp4"),
@@ -833,6 +837,23 @@ func TestFFmpegToolValidation(t *testing.T) {
 	}
 	if errors := convertAudio.Validate("toolCalls[0]", HarnessToolCall{Format: "mp3", Quality: 95}); len(errors) != 0 {
 		t.Errorf("valid convert_audio mp3 with quality = %v, want none", errors)
+	}
+
+	convertVideo := convertVideoToolDefinition()
+	if errors := convertVideo.Validate("toolCalls[0]", HarnessToolCall{}); len(errors) == 0 || !strings.Contains(errors[0], ".format is required for convert_video") {
+		t.Errorf("convert_video without a format = %v, want the required-format error", errors)
+	}
+	if errors := convertVideo.Validate("toolCalls[0]", HarnessToolCall{Format: "avi"}); len(errors) == 0 || !strings.Contains(errors[0], `.format must be one of "mp4", "mov", "mkv", or "webm"`) {
+		t.Errorf("convert_video with an unsupported format = %v, want the format enum error", errors)
+	}
+	if errors := convertVideo.Validate("toolCalls[0]", HarnessToolCall{Format: "MP4"}); len(errors) != 0 {
+		t.Errorf("convert_video with an uppercase format = %v, want none (formats normalize)", errors)
+	}
+	if errors := convertVideo.Validate("toolCalls[0]", HarnessToolCall{Format: "mkv", Quality: 101}); len(errors) == 0 || !strings.Contains(errors[0], ".quality must be 1-100") {
+		t.Errorf("convert_video with an out-of-range quality = %v, want the range error", errors)
+	}
+	if errors := convertVideo.Validate("toolCalls[0]", HarnessToolCall{Format: "webm", Quality: 85}); len(errors) != 0 {
+		t.Errorf("valid convert_video webm with quality = %v, want none", errors)
 	}
 
 	transform := transformVideoToolDefinition()
@@ -2125,6 +2146,117 @@ func TestConvertAudioTargetPhrase(t *testing.T) {
 	if got := convertAudioTargetPhrase("wav", 0); got != "wav" {
 		t.Errorf("convertAudioTargetPhrase(wav, 0) = %q, want \"wav\"", got)
 	}
+}
+
+// TestConvertVideoTarget pins the container mapping and the quality→CRF
+// tiers: mp4/mov/mkv share the house H.264 encode (faststart only on the
+// MP4-family containers), webm runs VP9+Opus in constant-quality mode, and
+// the audio track takes convertAudioBitrate's tier so quality means the same
+// thing on both convert tools. Omitted quality lands on the house CRF 18.
+func TestConvertVideoTarget(t *testing.T) {
+	cases := []struct {
+		format   string
+		quality  int
+		wantExt  string
+		wantMime string
+		wantArgs string
+	}{
+		{"mp4", 0, ".mp4", "video/mp4", "-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -movflags +faststart"},
+		{"mp4", 95, ".mp4", "video/mp4", "-c:v libx264 -preset veryfast -crf 16 -c:a aac -b:a 320k -movflags +faststart"},
+		{"mp4", 40, ".mp4", "video/mp4", "-c:v libx264 -preset veryfast -crf 21 -c:a aac -b:a 192k -movflags +faststart"},
+		{"mp4", 10, ".mp4", "video/mp4", "-c:v libx264 -preset veryfast -crf 25 -c:a aac -b:a 128k -movflags +faststart"},
+		{"mov", 0, ".mov", "video/quicktime", "-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -movflags +faststart"},
+		{"mkv", 0, ".mkv", "video/x-matroska", "-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k"},
+		{"webm", 0, ".webm", "video/webm", "-c:v libvpx-vp9 -crf 24 -b:v 0 -row-mt 1 -c:a libopus -b:a 192k"},
+		{"webm", 95, ".webm", "video/webm", "-c:v libvpx-vp9 -crf 20 -b:v 0 -row-mt 1 -c:a libopus -b:a 320k"},
+		{"webm", 10, ".webm", "video/webm", "-c:v libvpx-vp9 -crf 33 -b:v 0 -row-mt 1 -c:a libopus -b:a 128k"},
+	}
+	for _, tc := range cases {
+		ext, mime, codecArgs := convertVideoTarget(tc.format, tc.quality)
+		if ext != tc.wantExt || mime != tc.wantMime {
+			t.Errorf("convertVideoTarget(%q, %d) = %s/%s, want %s/%s", tc.format, tc.quality, ext, mime, tc.wantExt, tc.wantMime)
+		}
+		if got := strings.Join(codecArgs, " "); got != tc.wantArgs {
+			t.Errorf("convertVideoTarget(%q, %d) args = %q, want %q", tc.format, tc.quality, got, tc.wantArgs)
+		}
+	}
+}
+
+// TestConvertVideoTargetPhrase pins the evidence phrasing: the container plus
+// the CRF tier actually applied, in the encoder's own CRF space for webm.
+func TestConvertVideoTargetPhrase(t *testing.T) {
+	if got := convertVideoTargetPhrase("mp4", 0); got != "mp4 (CRF 18)" {
+		t.Errorf("convertVideoTargetPhrase(mp4, 0) = %q, want \"mp4 (CRF 18)\"", got)
+	}
+	if got := convertVideoTargetPhrase("mkv", 95); got != "mkv (CRF 16)" {
+		t.Errorf("convertVideoTargetPhrase(mkv, 95) = %q, want \"mkv (CRF 16)\"", got)
+	}
+	if got := convertVideoTargetPhrase("webm", 0); got != "webm (CRF 24)" {
+		t.Errorf("convertVideoTargetPhrase(webm, 0) = %q, want \"webm (CRF 24)\"", got)
+	}
+}
+
+// TestFFmpegConvertVideoExecutes drives convert_video against the fake ffmpeg:
+// the whole clip transcodes under the requested container's codec args, the
+// output rides ToolVideoResult with the target container's MIME, the summary
+// names format and CRF, and a turn without an attached video fails with the
+// attachment error.
+func TestFFmpegConvertVideoExecutes(t *testing.T) {
+	t.Run("mkv to mp4 at the default crf", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP")},
+		}, "convert_video", HarnessToolCall{Format: "mp4"})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed, ok := result.Result.(ToolVideoResult)
+		if !ok || typed.Model != ffmpegModelName || len(typed.Videos) != 1 {
+			t.Fatalf("result payload = %+v", result.Result)
+		}
+		defer os.Remove(typed.Videos[0].TempPath)
+		if typed.Videos[0].MimeType != "video/mp4" {
+			t.Fatalf("mimeType = %q, want video/mp4", typed.Videos[0].MimeType)
+		}
+		data, err := os.ReadFile(typed.Videos[0].TempPath)
+		if err != nil || !strings.HasPrefix(string(data), "\xff\xd8\xffFAKE-MEDIA") {
+			t.Fatalf("output file = %q (%v), want the fake ffmpeg payload", data, err)
+		}
+		args := fakeFFmpegArgs(t, bin)
+		if !strings.Contains(args, "-c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -movflags +faststart") {
+			t.Fatalf("convert args = %q, want the house H.264 re-encode with faststart", args)
+		}
+		if !strings.Contains(result.Summary, "converted the attached video to mp4 (CRF 18)") {
+			t.Fatalf("summary = %q, want the format+crf phrase", result.Summary)
+		}
+	})
+	t.Run("webm rides the vp9 encoder", func(t *testing.T) {
+		config, bin := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{videoDataURL("CLIP")},
+		}, "convert_video", HarnessToolCall{Format: "WebM", Quality: 95})
+		if result.Status != "completed" {
+			t.Fatalf("result = %+v (error %s)", result, result.Error)
+		}
+		typed := result.Result.(ToolVideoResult)
+		defer os.Remove(typed.Videos[0].TempPath)
+		if typed.Videos[0].MimeType != "video/webm" {
+			t.Fatalf("mimeType = %q, want video/webm", typed.Videos[0].MimeType)
+		}
+		args := fakeFFmpegArgs(t, bin)
+		if !strings.Contains(args, "-c:v libvpx-vp9 -crf 20 -b:v 0 -row-mt 1 -c:a libopus -b:a 320k") {
+			t.Fatalf("convert args = %q, want the quality-95 VP9 tier", args)
+		}
+	})
+	t.Run("needs an attached video file", func(t *testing.T) {
+		config, _ := ffmpegTestConfig(t, fakeFFmpegScript, fakeFFprobeScript)
+		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
+			AttachedVideos: []string{""},
+		}, "convert_video", HarnessToolCall{Format: "mp4"})
+		if result.Status == "completed" || !strings.Contains(result.Error, "requires an attached video file") {
+			t.Fatalf("result = %+v, want the attachment error", result)
+		}
+	})
 }
 
 // TestFFmpegConvertAudioExecutes drives convert_audio against the fake ffmpeg:
