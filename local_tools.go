@@ -436,6 +436,20 @@ func runLocalWhisperTranscription(ctx context.Context, config AppConfig, req Tra
 	var args []string
 	var outputPath string
 	runFromHome := false
+	inputPath := input.Name()
+	// whisper.cpp's bundled decoders read only WAV/MP3/FLAC — an AAC/M4A clip
+	// (extract_audio's default product) dies at read_audio_data after the
+	// model itself loaded fine (conv_dc9ece2c: exit 11 "failed to read audio
+	// file"). Convert to whisper's native input shape through the local ffmpeg
+	// when one is installed; without one, run on the original clip and let
+	// whisper's own error surface — the pre-conversion status quo, fail-soft.
+	if resolved.flavor == localWhisperFlavorCPP && whisperCPPNeedsTranscode(mediaType) {
+		if wavPath, wavErr := transcodeAudioForWhisperCPP(ctx, config, input.Name()); wavErr == nil {
+			defer os.Remove(wavPath)
+			inputPath = wavPath
+			notices = append(notices, "The input audio was converted to 16 kHz mono WAV before transcription — the whisper.cpp CLI's bundled decoders cannot read this container directly, so local ffmpeg transcoded it first.")
+		}
+	}
 	switch resolved.flavor {
 	case localWhisperFlavorCPP:
 		// An empty model is valid for whisper.cpp and resolves in tiers —
@@ -445,10 +459,10 @@ func runLocalWhisperTranscription(ctx context.Context, config AppConfig, req Tra
 			model = resolveDefaultWhisperCPPModel()
 		}
 		model = expandTildePath(model)
-		args, outputPath = whisperCPPArgs(input.Name(), outDir, model, req.Task, req.Language, timestamps, vadModel)
+		args, outputPath = whisperCPPArgs(inputPath, outDir, model, req.Task, req.Language, timestamps, vadModel)
 		runFromHome = true
 	default:
-		args, outputPath = whisperOpenAIArgs(input.Name(), outDir, model, req.Task, req.Language, timestamps)
+		args, outputPath = whisperOpenAIArgs(inputPath, outDir, model, req.Task, req.Language, timestamps)
 		if vadModel != "" {
 			notices = append(notices, "The whisper VAD model configured in Settings applies to whisper.cpp only — the openai-whisper CLI has no VAD support, so transcription ran without it.")
 		}
@@ -514,6 +528,47 @@ func runLocalWhisperTranscription(ctx context.Context, config AppConfig, req Tra
 		transcript.Timestamps = ""
 	}
 	return transcript, nil
+}
+
+// whisperCPPNeedsTranscode reports whether an audio clip of this media type
+// needs a conversion pass before whisper.cpp can read it: the bundled miniaudio
+// decoders cover only WAV, MP3, and FLAC (unless built with ffmpeg support,
+// which package installs are not — conv_dc9ece2c). The media type resolves
+// through audioExtensionForMediaType so every alias (audio/x-wav, audio/aac,
+// audio/x-m4a, …) decides through the one table, and an unknown type keeps the
+// old attempt-anyway behavior.
+func whisperCPPNeedsTranscode(mediaType string) bool {
+	switch audioExtensionForMediaType(mediaType) {
+	case ".wav", ".mp3", ".flac":
+		return false
+	default:
+		return true
+	}
+}
+
+// transcodeAudioForWhisperCPP converts a clip whisper.cpp cannot decode into
+// its native input shape — 16 kHz mono signed 16-bit WAV, what the CLI
+// resamples everything to anyway — via the resolved local ffmpeg. Returns the
+// fresh temp WAV for the caller to remove; a missing or failing ffmpeg returns
+// an error so the caller can fall back to the original clip.
+func transcodeAudioForWhisperCPP(ctx context.Context, config AppConfig, input string) (string, error) {
+	wav, err := os.CreateTemp("", "atelier-whisper-wav-*.wav")
+	if err != nil {
+		return "", err
+	}
+	wav.Close()
+	if err := runLocalFFmpeg(ctx, config, whisperTranscodeWAVArgs(input, wav.Name())); err != nil {
+		os.Remove(wav.Name())
+		return "", err
+	}
+	return wav.Name(), nil
+}
+
+// whisperTranscodeWAVArgs builds the conversion command: -y over the
+// pre-created temp file (ffmpeg prompts on an existing output and stdin is
+// /dev/null), -vn drops embedded cover art (the audio tools' idiom).
+func whisperTranscodeWAVArgs(input, output string) []string {
+	return []string{"-y", "-i", input, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", output}
 }
 
 // truncateLocalToolOutput bounds a CLI's combined output inside an error

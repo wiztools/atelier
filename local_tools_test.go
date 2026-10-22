@@ -104,6 +104,12 @@ func wavDataURL() string {
 	return "data:audio/wav;base64," + base64.StdEncoding.EncodeToString(buildWAV(8000))
 }
 
+// m4aDataURL serves an AAC-in-M4A payload — the container extract_audio
+// produces and whisper.cpp's bundled decoders cannot read (conv_dc9ece2c).
+func m4aDataURL() string {
+	return "data:audio/mp4;base64," + base64.StdEncoding.EncodeToString([]byte("fake aac payload"))
+}
+
 func TestResolveLocalBinary(t *testing.T) {
 	const whisperPath = "/opt/test/bin/whisper"
 	const cliPath = "/opt/test/bin/whisper-cli"
@@ -248,6 +254,13 @@ func TestWhisperArgBuilders(t *testing.T) {
 			}
 		}
 		want := []string{"-f", input, "-otxt", "-of", filepath.Join(outDir, "audio")}
+		if strings.Join(args, " ") != strings.Join(want, " ") {
+			t.Fatalf("args = %v, want %v", args, want)
+		}
+	})
+	t.Run("transcode builds the 16 kHz mono wav command", func(t *testing.T) {
+		args := whisperTranscodeWAVArgs("/tmp/atelier-whisper-in-1/audio.m4a", "/tmp/atelier-whisper-wav-2.wav")
+		want := []string{"-y", "-i", "/tmp/atelier-whisper-in-1/audio.m4a", "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "/tmp/atelier-whisper-wav-2.wav"}
 		if strings.Join(args, " ") != strings.Join(want, " ") {
 			t.Fatalf("args = %v, want %v", args, want)
 		}
@@ -563,6 +576,148 @@ func TestRunLocalWhisperTranscription(t *testing.T) {
 			t.Fatalf("err = %v, want the empty-transcript error", err)
 		}
 	})
+}
+
+// ffmpegTranscodeScript fakes the conversion pass: it records the full argv
+// beside the output path (the last argument) and copies the -i source onto it,
+// so the test can assert both the flags and which file fed the conversion.
+const ffmpegTranscodeScript = `#!/bin/sh
+prev=""
+input=""
+for a in "$@"; do
+  if [ "$prev" = "-i" ]; then input="$a"; fi
+  prev="$a"
+done
+for a in "$@"; do out="$a"; done
+printf 'FFMPEG-TOKEN %s' "$*" > "$out.args"
+cp "$input" "$out"
+`
+
+// TestWhisperCPPTranscodesUndecodableAudio pins the conv_dc9ece2c fix: an
+// AAC/M4A clip (extract_audio's default product) is converted to 16 kHz mono
+// WAV through local ffmpeg before whisper.cpp runs, the conversion rides a
+// transcript notice, and a missing or failing ffmpeg falls back to the original
+// clip — the pre-fix behavior — instead of failing the turn. The openai-whisper
+// flavor decodes through its own ffmpeg and never transcodes here.
+func TestWhisperCPPTranscodesUndecodableAudio(t *testing.T) {
+	// Hermetic model resolution: no cached ggml file may leak in from the dev
+	// machine (empty model must stay model-less in the recorded args).
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WHISPER_MODEL", "")
+	withRealLocalLookup(t)
+	dir := t.TempDir()
+
+	t.Run("m4a transcodes through ffmpeg before whisper-cli runs", func(t *testing.T) {
+		config := defaultAppConfig()
+		config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, filepath.Join(dir, "cpp"), "whisper-cli", cppWhisperScript)
+		config.Providers.Local.FFmpeg.Binary = writeFakeWhisper(t, filepath.Join(dir, "ff"), "ffmpeg", ffmpegTranscodeScript)
+		transcript, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: m4aDataURL()})
+		if err != nil {
+			t.Fatalf("runLocalWhisperTranscription: %v", err)
+		}
+		// whisper-cli was invoked on the converted WAV, never the staged M4A.
+		const sep = " -f "
+		idx := strings.Index(transcript.Text, sep)
+		if idx < 0 {
+			t.Fatalf("transcript %q carries no -f input", transcript.Text)
+		}
+		rest := transcript.Text[idx+len(sep):]
+		wavPath := rest[:strings.Index(rest, " ")]
+		if !strings.Contains(wavPath, "atelier-whisper-wav-") || !strings.HasSuffix(wavPath, ".wav") {
+			t.Fatalf("whisper input = %q, want the converted temp WAV", wavPath)
+		}
+		if strings.Contains(transcript.Text, ".m4a") {
+			t.Fatalf("transcript %q still names the staged M4A", transcript.Text)
+		}
+		// The conversion command carried whisper's native shape and consumed
+		// the staged clip.
+		args, err := os.ReadFile(wavPath + ".args")
+		if err != nil {
+			t.Fatalf("the fake ffmpeg never ran: %v", err)
+		}
+		for _, want := range []string{"-y", "-vn", "-ac 1", "-ar 16000", "-c:a pcm_s16le", "-i ", "atelier-whisper-in-", ".m4a"} {
+			if !strings.Contains(string(args), want) {
+				t.Errorf("ffmpeg argv %q missing %q", args, want)
+			}
+		}
+		// The temp WAV is cleaned up with the runner's other temp files.
+		if _, err := os.Stat(wavPath); !os.IsNotExist(err) {
+			t.Fatalf("converted WAV survived the run: %v", err)
+		}
+		found := false
+		for _, notice := range transcript.Notices {
+			if strings.Contains(notice, "16 kHz mono WAV") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("notices = %v, want the conversion note", transcript.Notices)
+		}
+	})
+
+	t.Run("failed transcode falls back to the original clip", func(t *testing.T) {
+		config := defaultAppConfig()
+		config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, filepath.Join(dir, "cpp-soft"), "whisper-cli", cppWhisperScript)
+		config.Providers.Local.FFmpeg.Binary = writeFakeWhisper(t, filepath.Join(dir, "ff-broken"), "ffmpeg", "#!/bin/sh\necho 'conversion boom' >&2\nexit 1\n")
+		transcript, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: m4aDataURL()})
+		if err != nil {
+			t.Fatalf("a failed conversion must not fail the transcription: %v", err)
+		}
+		if !strings.Contains(transcript.Text, ".m4a") {
+			t.Fatalf("transcript %q should name the original staged clip", transcript.Text)
+		}
+		if len(transcript.Notices) != 0 {
+			t.Fatalf("notices = %v, want none without a conversion", transcript.Notices)
+		}
+	})
+
+	t.Run("openai-whisper flavor skips the conversion entirely", func(t *testing.T) {
+		sentinel := filepath.Join(dir, "ffmpeg-ran")
+		config := defaultAppConfig()
+		config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, filepath.Join(dir, "pip"), "whisper", openaiWhisperScript)
+		config.Providers.Local.FFmpeg.Binary = writeFakeWhisper(t, filepath.Join(dir, "ff-untouched"), "ffmpeg", "#!/bin/sh\ntouch '"+sentinel+"'\nexit 1\n")
+		transcript, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: m4aDataURL()})
+		if err != nil {
+			t.Fatalf("runLocalWhisperTranscription: %v", err)
+		}
+		// The pip CLI decodes through its own ffmpeg, so it received the M4A
+		// untouched and no conversion pass ran.
+		if !strings.Contains(transcript.Text, ".m4a") {
+			t.Fatalf("transcript %q should pass the staged M4A through", transcript.Text)
+		}
+		if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+			t.Fatalf("the openai-whisper flavor must never invoke Atelier's ffmpeg: %v", err)
+		}
+	})
+}
+
+// TestWhisperCPPNeedsTranscode pins the container gate: miniaudio's bundled
+// decoders (WAV/MP3/FLAC) pass through untouched; everything extract_audio,
+// convert_audio, or a browser attachment can produce besides them converts.
+func TestWhisperCPPNeedsTranscode(t *testing.T) {
+	cases := []struct {
+		name      string
+		mediaType string
+		want      bool
+	}{
+		{"wav passes through", "audio/wav", false},
+		{"wav alias passes through", "audio/x-wav", false},
+		{"mp3 passes through", "audio/mpeg", false},
+		{"flac passes through", "audio/flac", false},
+		{"unknown type keeps the attempt-anyway behavior", "", false},
+		{"m4a converts", "audio/mp4", true},
+		{"m4a alias converts", "audio/x-m4a", true},
+		{"aac converts", "audio/aac", true},
+		{"ogg converts", "audio/ogg", true},
+		{"opus converts", "audio/opus", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := whisperCPPNeedsTranscode(tc.mediaType); got != tc.want {
+				t.Fatalf("whisperCPPNeedsTranscode(%q) = %v, want %v", tc.mediaType, got, tc.want)
+			}
+		})
+	}
 }
 
 // TestResolveTranscriptionProvider pins the routing rules: explicit choice
