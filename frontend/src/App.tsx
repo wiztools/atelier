@@ -9867,6 +9867,48 @@ function ModelSelectionPanel({
         </h3>
         <div className="two-column">
           <div className="field">
+            <div className="field-label-row">
+              {fieldLabel('sound-duration', 'Default Sound Duration', 'soundDuration')}
+              <InfoHint
+                label="Default sound duration"
+                text="Applies to music and sound-effect generation when a request doesn't state a length. Auto leaves the clip length to the model — it decides from the prompt. A request naming a length always wins, and speech generation is unaffected (its length follows the spoken text)."
+              />
+            </div>
+            <select id="sound-duration" value={value.soundDuration} onChange={(event) => onChange({soundDuration: event.target.value})}>
+              {durationOptions.sound.map((option) => <option key={option} value={option}>{soundDurationLabels[option] ?? option}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <div className="field-label-row">
+              {fieldLabel('audio-extend-duration', 'Default Extension Length', 'audioExtendDuration')}
+              <InfoHint
+                label="Default extension length"
+                text="Seconds extend_audio adds to a clip when a request doesn't state a length. Auto keeps each extend model's own behavior — the inpaint/outpaint models' built-in 30s, or sonauto deciding from the audio. A request naming a length always wins; each model caps what it accepts."
+              />
+            </div>
+            <select id="audio-extend-duration" value={value.audioExtendDuration} onChange={(event) => onChange({audioExtendDuration: event.target.value})}>
+              {audioExtendDurationOptions.map((option) => <option key={option} value={option}>{audioExtendDurationLabels[option] ?? option}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <div className="field-label-row">
+              {fieldLabel('fal-voice-design-model', 'Voice Design Model (fal.ai)', 'voiceDesignModel')}
+              <InfoHint
+                label="Voice design model"
+                text="Creates a NEW voice from a written description (the generate_voice tool) — a preview clip of the described voice plus its reusable voice id. The id pairs with the MiniMax speech endpoints (marked in the Speech Model list) to speak new text in the designed voice; speech from text on other models and cloning an attached voice stay on their own tools."
+              />
+            </div>
+            <ModelCombobox
+              id="fal-voice-design-model"
+              ariaLabel="fal.ai voice design model"
+              placeholder={defaultFalVoiceDesignModel}
+              value={value.falVoiceDesignModel}
+              onChange={(next) => onChange({falVoiceDesignModel: next})}
+              options={falVoiceDesignOptions}
+              allowCustom
+            />
+          </div>
+          <div className="field">
             {fieldLabel('fal-audio-model', 'Speech Model (TTS, fal.ai)', 'audioModel')}
             <ModelCombobox
               id="fal-audio-model"
@@ -9903,18 +9945,6 @@ function ModelSelectionPanel({
             />
           </div>
           <div className="field">
-            <div className="field-label-row">
-              {fieldLabel('sound-duration', 'Default Sound Duration', 'soundDuration')}
-              <InfoHint
-                label="Default sound duration"
-                text="Applies to music and sound-effect generation when a request doesn't state a length. Auto leaves the clip length to the model — it decides from the prompt. A request naming a length always wins, and speech generation is unaffected (its length follows the spoken text)."
-              />
-            </div>
-            <select id="sound-duration" value={value.soundDuration} onChange={(event) => onChange({soundDuration: event.target.value})}>
-              {durationOptions.sound.map((option) => <option key={option} value={option}>{soundDurationLabels[option] ?? option}</option>)}
-            </select>
-          </div>
-          <div className="field">
             {fieldLabel('fal-audio-extend-model', 'Audio Extend Model (fal.ai)', 'audioExtendModel')}
             <ModelCombobox
               id="fal-audio-extend-model"
@@ -9925,36 +9955,6 @@ function ModelSelectionPanel({
               options={falAudioExtendOptions}
               allowCustom
             />
-          </div>
-          <div className="field">
-            <div className="field-label-row">
-              {fieldLabel('fal-voice-design-model', 'Voice Design Model (fal.ai)', 'voiceDesignModel')}
-              <InfoHint
-                label="Voice design model"
-                text="Creates a NEW voice from a written description (the generate_voice tool) — a preview clip of the described voice plus its reusable voice id. The id pairs with the MiniMax speech endpoints (marked in the Speech Model list) to speak new text in the designed voice; speech from text on other models and cloning an attached voice stay on their own tools."
-              />
-            </div>
-            <ModelCombobox
-              id="fal-voice-design-model"
-              ariaLabel="fal.ai voice design model"
-              placeholder={defaultFalVoiceDesignModel}
-              value={value.falVoiceDesignModel}
-              onChange={(next) => onChange({falVoiceDesignModel: next})}
-              options={falVoiceDesignOptions}
-              allowCustom
-            />
-          </div>
-          <div className="field">
-            <div className="field-label-row">
-              {fieldLabel('audio-extend-duration', 'Default Extension Length', 'audioExtendDuration')}
-              <InfoHint
-                label="Default extension length"
-                text="Seconds extend_audio adds to a clip when a request doesn't state a length. Auto keeps each extend model's own behavior — the inpaint/outpaint models' built-in 30s, or sonauto deciding from the audio. A request naming a length always wins; each model caps what it accepts."
-              />
-            </div>
-            <select id="audio-extend-duration" value={value.audioExtendDuration} onChange={(event) => onChange({audioExtendDuration: event.target.value})}>
-              {audioExtendDurationOptions.map((option) => <option key={option} value={option}>{audioExtendDurationLabels[option] ?? option}</option>)}
-            </select>
           </div>
         </div>
         {!airplaneMode && !catalogs.falHasKey ? (
