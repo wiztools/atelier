@@ -115,7 +115,7 @@ import {SubtitleEditor, SubtitleEditorHandle} from './editor/SubtitleEditor';
 import {MarkdownEditor, MarkdownEditorHandle} from './editor/MarkdownEditor';
 import {CompositionEditor, CompositionEditorHandle} from './editor/CompositionEditor';
 import {detectEditorLaunchIntent} from './editorLaunch';
-import {composerHasMediaDrag, dropAcceptsFile, markdownMimeForFile, mediaKindForFile, mediaMimeForFile, subtitleMimeForFile} from './mediaIntake';
+import {composerHasMediaDrag, dropAcceptsFile, markdownMimeForFile, mediaKindForFile, mediaMimeForFile, subtitleMimeForFile, videoThumbnailOnlySrc} from './mediaIntake';
 
 type View = 'app' | 'settings' | 'conversation-models';
 // Settings tabs draw one line: Providers are endpoints and keys you connect to
@@ -1332,6 +1332,11 @@ function App() {
   const [stagingAttachments, setStagingAttachments] = useState<StagingAttachment[]>([]);
   const [composerDragging, setComposerDragging] = useState(false);
   const composerDragDepth = useRef(0);
+  // Why the last attachment intake failed (a rejected staging sniff, a disk
+  // error mid-chunks). Silent failures here read as a swallowed drop — the
+  // staging row ran to 100% and vanished — so the composer shows the reason
+  // until dismissed or the next attach.
+  const [attachError, setAttachError] = useState('');
   // @-mention autocomplete state. mentionOpen/mentionIndex drive renders;
   // mentionStateRef holds the active {@-position, query} for the keydown and
   // accept handlers to read synchronously (avoiding stale-closure reads of
@@ -5201,6 +5206,7 @@ function App() {
   // synthetic name for files without one (pasted bytes, anonymous drops); the
   // staging rows are keyed per call so parallel drops don't cross-talk.
   async function attachFiles(files: File[], nameFor?: (file: File, index: number) => string) {
+    setAttachError('');
     const stagingKeys = files.map((file, index): {key: string; kind: 'audio' | 'video'} | null => {
       const kind = mediaKindForFile(file);
       if (!kind || file.size <= mediaStageThresholdBytes) {
@@ -5221,11 +5227,17 @@ function App() {
             ? (fraction: number) =>
                 setStagingAttachments((items) => items.map((item) => (item.key === entry.key ? {...item, fraction} : item)))
             : undefined;
-          return readFileAsAttachment(file, nameFor?.(file, index), onProgress).finally(() => {
-            if (entry) {
-              setStagingAttachments((items) => items.filter((item) => item.key !== entry.key));
-            }
-          });
+          return readFileAsAttachment(file, nameFor?.(file, index), onProgress)
+            // Name the file that failed: a multi-file drop otherwise reports a
+            // backend message with no hint which attachment it belongs to.
+            .catch((error) => {
+              throw new Error(`${file.name}: ${formatError(error)}`);
+            })
+            .finally(() => {
+              if (entry) {
+                setStagingAttachments((items) => items.filter((item) => item.key !== entry.key));
+              }
+            });
         }),
       );
       appendAttachments(next);
@@ -5235,6 +5247,7 @@ function App() {
           setStagingAttachments((items) => items.filter((item) => item.key !== entry.key));
         }
       });
+      setAttachError(formatError(error));
       console.error('attaching files failed', error);
     }
   }
@@ -6926,12 +6939,15 @@ function App() {
                             <figure key={`${entry.id}-video-${index}`} className="chat-video-card">
                               <div className="chat-media-stage">
                                 <VideoPlayer src={video} />
+                                {/* The video editor's trim stage plays the clip, so a
+                                    container WebKit cannot decode gets download only
+                                    (VideoPlayer already renders it as a still). */}
                                 <InlineMediaActions
                                   downloadTitle="Download video"
                                   onDownload={videoArtifactIDFromURL(video) ? () => saveGeneratedVideo(video, index) : null}
                                   editTitle="Edit video"
                                   editDisabled={editorOpening}
-                                  onEdit={activeConversationID && videoArtifactIDFromURL(video)
+                                  onEdit={activeConversationID && videoArtifactIDFromURL(video) && !videoThumbnailOnlySrc(video)
                                     ? () => void openVideoEditor(activeConversationID, videoArtifactIDFromURL(video)!)
                                     : null}
                                 />
@@ -6987,7 +7003,7 @@ function App() {
                                   onDownload={() => saveGeneratedVideo(video, index)}
                                   editTitle="Edit video"
                                   editDisabled={editorOpening}
-                                  onEdit={activeConversationID && videoArtifactIDFromURL(video)
+                                  onEdit={activeConversationID && videoArtifactIDFromURL(video) && !videoThumbnailOnlySrc(video)
                                     ? () => void openVideoEditor(activeConversationID, videoArtifactIDFromURL(video)!)
                                     : null}
                                 />
@@ -7184,6 +7200,14 @@ function App() {
                     ))}
                   </div>
                 ) : null}
+                {attachError ? (
+                  <div className="composer-attach-error">
+                    <span>{attachError}</span>
+                    <button type="button" onClick={() => setAttachError('')} aria-label="Dismiss attachment error">
+                      ✕
+                    </button>
+                  </div>
+                ) : null}
                 {asArray(attachments).length ? (
                   <div className="attachment-strip">
                     {asArray(attachments).map((item) => (
@@ -7333,7 +7357,7 @@ function App() {
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
                       </svg>
-                      <input type="file" accept="image/*,audio/*,video/*,.mkv,.vtt,.srt,application/x-subrip,text/vtt,.md,.markdown,.fountain,text/markdown" multiple onChange={(event) => addFiles(event.target.files)} />
+                      <input type="file" accept="image/*,audio/*,video/*,.mkv,.flv,.avi,.ts,.mpg,.mpeg,.vtt,.srt,application/x-subrip,text/vtt,.md,.markdown,.fountain,text/markdown" multiple onChange={(event) => addFiles(event.target.files)} />
                     </label>
                   </div>
                   <div className="composer-submit-row">
@@ -7549,7 +7573,9 @@ function App() {
                         </svg>
                       </button>
                     ) : null}
-                    {asset.kind === 'video' && asset.url && asset.conversationId ? (
+                    {/* The video editor's trim stage plays the clip, so a container
+                        WebKit cannot decode gets no Edit door here either. */}
+                    {asset.kind === 'video' && asset.url && asset.conversationId && !videoThumbnailOnlySrc(asset.url) ? (
                       <button type="button" className="asset-edit-button" disabled={editorOpening}
                         onClick={() => void openVideoEditor(asset.conversationId, asset.id)}
                         aria-label="Edit video" title="Edit video">
@@ -8202,9 +8228,11 @@ function VideoPlayer({src, onPlayingChange}: {src: string; onPlayingChange?: (pl
   const rafRef = useRef(0);
   const posterURL = posterURLForVideoSrc(src);
   const [posterHidden, setPosterHidden] = useState(false);
+  const [stillFailed, setStillFailed] = useState(false);
 
   useEffect(() => {
     setPosterHidden(false);
+    setStillFailed(false);
   }, [posterURL]);
 
   const syncReadout = () => {
@@ -8227,6 +8255,31 @@ function VideoPlayer({src, onPlayingChange}: {src: string; onPlayingChange?: (pl
   };
 
   useEffect(() => () => cancelAnimationFrame(rafRef.current), []);
+
+  // FLV/AVI/TS (and MPG) have no WebKit demuxer: a <video> element would sit
+  // black under a dead control bar, so these containers render the poster
+  // still alone — no player, no readout, no play affordance
+  // (videoThumbnailOnlySrc in mediaIntake.ts). The ffmpeg-backed tools read
+  // them fine, so the clip remains a full attachment. A missing poster (no
+  // extractor at save time) degrades to the quiet glyph.
+  if (videoThumbnailOnlySrc(src)) {
+    return (
+      <div className="video-player">
+        <div className="video-stage">
+          {posterURL && !stillFailed ? (
+            <img className="video-poster-still" src={posterURL} alt="" onError={() => setStillFailed(true)} />
+          ) : (
+            <span className="video-poster-still-empty" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M10 9.2v5.6l4.8-2.8z" fill="currentColor" stroke="none" />
+              </svg>
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="video-player">

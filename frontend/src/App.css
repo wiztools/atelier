@@ -2419,6 +2419,37 @@ button:disabled {
   color: #9a9a92;
 }
 
+/* Why the last attachment intake failed (a staging sniff rejection, a disk
+   error mid-chunks) — the same row vocabulary as the staging progress, in the
+   error tone, dismissible; the next attach clears it either way. */
+.composer-attach-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #ff9c91;
+}
+
+.composer-attach-error span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.composer-attach-error button {
+  height: auto;
+  padding: 1px 5px;
+  border: 0;
+  background: transparent;
+  color: #9a9a92;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.composer-attach-error button:hover {
+  color: #e8ebec;
+}
+
 .attachment-strip img,
 .thumb-row img {
   width: 38px;
@@ -2554,6 +2585,46 @@ button:disabled {
 .chat-user-videos .video-poster-overlay,
 .chat-video-card .video-poster-overlay {
   border-radius: 8px;
+}
+
+/* FLV/AVI/TS (and MPG) have no WebKit demuxer: VideoPlayer renders their
+   poster as a STILL instead of mounting a player that could never decode
+   (videoThumbnailOnlySrc in mediaIntake.ts). The still sizes exactly where
+   the <video> would in each context — the chat card's 520px cap, the asset
+   preview's letterboxed fill — so the contexts' video rules stand untouched.
+   The empty variant covers a clip whose poster never generated (no ffmpeg or
+   QuickLook thumbnailer resolved at save time). */
+.video-poster-still {
+  display: block;
+  width: 100%;
+  max-height: 520px;
+  object-fit: contain;
+  background: #0f1112;
+  border-radius: 8px;
+}
+
+.asset-preview .video-poster-still {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  object-fit: contain;
+  border-radius: 0;
+}
+
+.video-poster-still-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 140px;
+  background: #0f1112;
+  border-radius: 8px;
+  color: #4c5257;
+}
+
+.video-poster-still-empty svg {
+  width: 36px;
+  height: 36px;
 }
 
 /* VideoPlayer/AudioPlayer: the shared m:ss.mmm current/total readout —

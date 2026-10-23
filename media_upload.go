@@ -106,6 +106,7 @@ var regexpMediaUploadExtension = regexp.MustCompile(`^\.[a-z0-9]{1,5}$`)
 var mediaUploadVideoContainers = map[string]bool{
 	".mp4": true, ".m4v": true, ".mov": true, ".webm": true, ".mkv": true,
 	".avi": true, ".ts": true, ".3gp": true, ".mpg": true, ".mpeg": true,
+	".flv": true,
 }
 
 var mediaUploadAudioContainers = map[string]bool{

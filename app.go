@@ -5994,6 +5994,14 @@ func mediaTypeForExtension(extension string) string {
 		return "video/x-matroska"
 	case ".3gp":
 		return "video/3gpp"
+	case ".avi":
+		return "video/x-msvideo"
+	case ".ts":
+		return "video/mp2t"
+	case ".mpg", ".mpeg":
+		return "video/mpeg"
+	case ".flv":
+		return "video/x-flv"
 	case ".mp3":
 		return "audio/mpeg"
 	case ".wav":
@@ -6077,21 +6085,50 @@ func videoExtensionForMediaType(mediaType string) string {
 		// "video/mkv" is the MIME tag third-party Matroska UTIs declare on
 		// macOS; x-matroska is the standard spelling.
 		return ".mkv"
+	case "video/x-msvideo":
+		return ".avi"
+	case "video/mp2t":
+		return ".ts"
+	case "video/mpeg":
+		return ".mpg"
+	case "video/x-flv":
+		return ".flv"
 	default:
 		return ".mp4"
 	}
 }
 
-// isVideoBytes reports whether data looks like a container format a <video> tag
-// can play. It sniffs MP4/MOV (ISO base media, "ftyp" box at offset 4), WebM/
-// Matroska (EBML magic), and returns false otherwise so a stray non-video
-// download is rejected rather than written as a broken artifact.
+// isVideoBytes reports whether data looks like one of the video containers the
+// attachment pipeline admits (the staged-upload allowlist in media_upload.go
+// and the frontend's videoExtensions mirror each other): MP4/MOV and 3GP (ISO
+// base media, "ftyp" box at offset 4), WebM/Matroska (EBML magic), FLV ("FLV"
+// magic), AVI (RIFF with "AVI " form type), MPEG program stream (.mpg/.mpeg,
+// pack header), and MPEG transport stream (.ts, 0x47 packet sync — the M2TS
+// variant shifts it four bytes in). Returns false otherwise so a stray
+// non-video download is rejected rather than written as a broken artifact.
 func isVideoBytes(data []byte) bool {
 	if len(data) >= 12 && bytes.Equal(data[4:8], []byte("ftyp")) {
 		return true
 	}
 	if len(data) >= 4 && bytes.Equal(data[:4], []byte{0x1a, 0x45, 0xdf, 0xa3}) {
 		return true
+	}
+	if len(data) >= 3 && bytes.Equal(data[:3], []byte("FLV")) {
+		return true
+	}
+	if len(data) >= 12 && bytes.Equal(data[:4], []byte("RIFF")) && bytes.Equal(data[8:12], []byte("AVI ")) {
+		return true
+	}
+	if len(data) >= 4 && bytes.Equal(data[:4], []byte{0x00, 0x00, 0x01, 0xBA}) {
+		return true // MPEG program stream pack header
+	}
+	// Transport stream: 188-byte packets carry 0x47 at every header, so two
+	// consecutive syncs identify it where a lone 0x47 could be anything.
+	if len(data) >= 189 && data[0] == 0x47 && data[188] == 0x47 {
+		return true
+	}
+	if len(data) >= 197 && data[4] == 0x47 && data[196] == 0x47 {
+		return true // M2TS: 4-byte TP_extra_header before each packet
 	}
 	return false
 }

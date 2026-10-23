@@ -12,7 +12,7 @@
 // vanishing.
 
 const videoExtensions = new Set([
-  '.mp4', '.m4v', '.mov', '.webm', '.mkv', '.avi', '.ts', '.3gp', '.mpg', '.mpeg',
+  '.mp4', '.m4v', '.mov', '.webm', '.mkv', '.avi', '.ts', '.3gp', '.mpg', '.mpeg', '.flv',
 ]);
 
 const audioExtensions = new Set([
@@ -23,10 +23,39 @@ const audioExtensions = new Set([
 // becomes an honest data:video/x-matroska URL instead of
 // application/octet-stream, which decodeVideoPayload/decodeAudioPayload and
 // the OpenRouter audio part read as an unknown format. Everything else falls
-// back to the kind's house mime.
+// back to the kind's house mime. Mirrors mediaTypeForExtension (app.go).
 const extensionMimes: Record<string, string> = {
   '.mkv': 'video/x-matroska',
+  '.avi': 'video/x-msvideo',
+  '.ts': 'video/mp2t',
+  '.mpg': 'video/mpeg',
+  '.mpeg': 'video/mpeg',
+  '.flv': 'video/x-flv',
 };
+
+// Video containers WKWebView's <video> cannot decode — it has no demuxer for
+// them, so a player element would sit black under a dead control bar. The UI
+// renders these as their poster thumbnail instead (VideoPlayer's still branch);
+// every ffmpeg-backed tool reads them fine, so they remain full attachments.
+// MKV is deliberately absent: it predates this rule and rides the player today.
+const thumbnailOnlyVideoExtensions = new Set(['.flv', '.avi', '.ts', '.mpg', '.mpeg']);
+
+const thumbnailOnlyVideoMimes = new Set(['video/x-flv', 'video/x-msvideo', 'video/mp2t', 'video/mpeg']);
+
+// videoThumbnailOnlySrc decides whether a video attachment's src renders as a
+// poster still instead of a player. Persisted clips arrive as artifact URLs
+// (the extension decides); the live transcript's just-attached clip is a data
+// URL (the mime in the header decides), so both spellings are recognized.
+export function videoThumbnailOnlySrc(src: string): boolean {
+  if (src.startsWith('data:')) {
+    const headerEnd = src.indexOf(',');
+    if (headerEnd < 0) {
+      return false;
+    }
+    return thumbnailOnlyVideoMimes.has(src.slice(5, headerEnd).split(';')[0]);
+  }
+  return thumbnailOnlyVideoExtensions.has(fileExtension(src.split(/[?#]/)[0]));
+}
 
 export type MediaKind = 'audio' | 'video';
 

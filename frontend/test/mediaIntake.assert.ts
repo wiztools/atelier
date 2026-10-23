@@ -1,4 +1,4 @@
-import {composerHasMediaDrag, dropAcceptsFile, markdownMimeForFile, mediaKindForFile, mediaMimeForFile, subtitleMimeForFile} from '../src/mediaIntake';
+import {composerHasMediaDrag, dropAcceptsFile, markdownMimeForFile, mediaKindForFile, mediaMimeForFile, subtitleMimeForFile, videoThumbnailOnlySrc} from '../src/mediaIntake';
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -10,6 +10,10 @@ function assert(condition: boolean, message: string): void {
 assert(mediaKindForFile({name: 'song video.mkv', type: ''}) === 'video', 'mkv with empty type classifies as video');
 assert(mediaKindForFile({name: 'clip.ts', type: ''}) === 'video', 'ts with empty type classifies as video');
 assert(mediaKindForFile({name: 'recording.mp3', type: ''}) === 'audio', 'mp3 with empty type classifies as audio');
+// The FLV report: the extension was not admitted, so classification rode the
+// OS mime alone and an unlabeled FLV would fall out of the drop entirely.
+assert(mediaKindForFile({name: 'movie.flv', type: ''}) === 'video', 'flv with empty type classifies as video');
+assert(mediaKindForFile({name: 'clip.avi', type: ''}) === 'video', 'avi with empty type classifies as video');
 
 // A type the OS did offer is honored when the extension says nothing...
 assert(mediaKindForFile({name: 'clip', type: 'video/x-matroska'}) === 'video', 'type decides without an extension');
@@ -26,6 +30,8 @@ assert(mediaKindForFile({name: 'clip.mkv', type: 'video/x-matroska'}) === 'video
 // honest mime so the data URL does not land as application/octet-stream.
 assert(mediaMimeForFile({name: 'clip.mp4', type: 'video/mp4'}, 'video') === 'video/mp4', 'offered type passes through');
 assert(mediaMimeForFile({name: 'song video.mkv', type: ''}, 'video') === 'video/x-matroska', 'mkv gets the matroska mime');
+assert(mediaMimeForFile({name: 'movie.flv', type: ''}, 'video') === 'video/x-flv', 'flv gets the flash-video mime');
+assert(mediaMimeForFile({name: 'clip.avi', type: ''}, 'video') === 'video/x-msvideo', 'avi gets the msvideo mime');
 assert(mediaMimeForFile({name: 'clip', type: ''}, 'video') === 'video/mp4', 'video falls back to the house mime');
 assert(mediaMimeForFile({name: 'voice', type: ''}, 'audio') === 'audio/mpeg', 'audio falls back to the house mime');
 
@@ -66,3 +72,19 @@ assert(subtitleMimeForFile({name: 'captions.srt', type: ''}) === 'application/x-
 assert(subtitleMimeForFile({name: 'subtitles', type: 'text/vtt'}) === 'text/vtt', 'a typed vtt passes through');
 assert(markdownMimeForFile({name: 'script.fountain', type: ''}) === 'text/x-fountain', 'fountain keeps its dialect mime');
 assert(markdownMimeForFile({name: 'notes', type: 'text/markdown'}) === 'text/markdown', 'a typed markdown passes through');
+
+// Containers WKWebView cannot decode render as poster stills, not players.
+// Artifact URLs decide by extension, the live transcript's data URLs by the
+// mime in the header.
+assert(videoThumbnailOnlySrc('/atelier-artifact/x/vid_a1.flv'), 'an flv artifact renders as a still');
+assert(videoThumbnailOnlySrc('/atelier-artifact/x/vid_b2.avi'), 'an avi artifact renders as a still');
+assert(videoThumbnailOnlySrc('/atelier-artifact/x/vid_c3.ts'), 'a ts artifact renders as a still');
+assert(videoThumbnailOnlySrc('/atelier-artifact/x/vid_d4.mpg'), 'an mpg artifact renders as a still');
+assert(videoThumbnailOnlySrc('data:video/x-flv;base64,AAAA'), 'a flv data URL renders as a still');
+assert(videoThumbnailOnlySrc('data:video/x-msvideo;base64,AAAA'), 'an avi data URL renders as a still');
+assert(!videoThumbnailOnlySrc('/atelier-artifact/x/vid_e5.mp4'), 'an mp4 artifact plays');
+assert(!videoThumbnailOnlySrc('/atelier-artifact/x/vid_f6.webm'), 'a webm artifact plays');
+assert(!videoThumbnailOnlySrc('/atelier-artifact/x/vid_g7.mkv'), 'mkv keeps its player (predates the rule)');
+assert(!videoThumbnailOnlySrc('data:video/mp4;base64,AAAA'), 'an mp4 data URL plays');
+assert(!videoThumbnailOnlySrc('data:image/png;base64,AAAA'), 'a non-video data URL is not a still');
+assert(!videoThumbnailOnlySrc('/atelier-artifact/x/vid_h8'), 'an extensionless URL is not a still');

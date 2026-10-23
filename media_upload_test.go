@@ -101,6 +101,9 @@ func TestMediaUploadExtensionTable(t *testing.T) {
 	}{
 		{"holiday.mov", "video", ".mov"},
 		{"holiday.mkv", "video", ".mkv"},
+		{"movie.flv", "video", ".flv"},
+		{"clip.avi", "video", ".avi"},
+		{"stream.ts", "video", ".ts"},
 		{"no-extension", "video", ".mp4"},
 		{"mislabeled.mp3", "video", ".mp4"},
 		{"voice.wav", "audio", ".wav"},
@@ -279,6 +282,105 @@ func TestHistoryContentAdoptsStagedAudioUpload(t *testing.T) {
 	}
 	if _, err := os.Stat(staged.Path); err != nil {
 		t.Fatalf("staged audio should remain after adoption (link, not move): %v", err)
+	}
+}
+
+func TestIsVideoBytesContainerMagics(t *testing.T) {
+	// Every container the staged-upload allowlist admits must pass the sniff —
+	// an admitted extension whose bytes the sniff rejects dies at
+	// completeMediaUpload only after fully staging (the FLV report: progress to
+	// 100%, then a swallowed "not a supported video file").
+	tsBytes := make([]byte, 189)
+	tsBytes[0], tsBytes[188] = 0x47, 0x47
+	m2tsBytes := make([]byte, 197)
+	m2tsBytes[4], m2tsBytes[196] = 0x47, 0x47
+	cases := []struct {
+		name string
+		data []byte
+		want bool
+	}{
+		{"mp4 ftyp", append([]byte{0x00, 0x00, 0x00, 0x18}, []byte("ftypmp42")...), true},
+		{"webm/mkv ebml", []byte{0x1a, 0x45, 0xdf, 0xa3, 0x00, 0x00}, true},
+		{"flv", append([]byte("FLV\x01\x05"), make([]byte, 64)...), true},
+		{"avi", append([]byte("RIFF\x24\x00\x00\x00AVI LIST"), make([]byte, 64)...), true},
+		{"mpeg program stream", append([]byte{0x00, 0x00, 0x01, 0xBA}, make([]byte, 64)...), true},
+		{"mpeg transport stream", tsBytes, true},
+		{"m2ts transport stream", m2tsBytes, true},
+		{"3gp ftyp", append([]byte{0x00, 0x00, 0x00, 0x14}, []byte("ftyp3gp4")...), true},
+		{"plain riff is not avi", append([]byte("RIFF\x24\x00\x00\x00WAVEfmt "), make([]byte, 64)...), false},
+		{"text", []byte("this is not a video"), false},
+		{"empty", nil, false},
+		{"lone sync byte", []byte{0x47, 0x00, 0x00, 0x00}, false},
+	}
+	for _, tc := range cases {
+		if got := isVideoBytes(tc.data); got != tc.want {
+			t.Errorf("%s: isVideoBytes = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestHistoryContentAdoptsStagedFLVUpload(t *testing.T) {
+	// An attached FLV must survive the whole chain under its own container: the
+	// "FLV" magic passes isVideoBytes (it did not before — the staged upload
+	// died at complete with "not a supported video file"), the staged .flv
+	// extension survives mediaUploadExtension, and adoption keeps it — which
+	// only holds while mediaTypeForExtension knows .flv (the default there is
+	// image/png, and adoptStagedUpload renames to .mp4 on an unknown mapping).
+	app, storage := newMediaUploadTestApp(t)
+	flvBytes := append([]byte("FLV\x01\x05\x00\x00\x00\x09"), make([]byte, 64)...)
+	_, staged := stageTestVideo(t, app, storage, flvBytes, "movie.flv")
+	if filepath.Ext(staged.Path) != ".flv" {
+		t.Fatalf("staged extension = %q, want .flv", filepath.Ext(staged.Path))
+	}
+	if staged.MediaType != "video/x-flv" {
+		t.Fatalf("staged mediaType = %q, want video/x-flv", staged.MediaType)
+	}
+
+	artifactsDir := filepath.Join(storage.History, "conversations", "2026", "10", "conv_x", "artifacts")
+	contents, _, err := historyContentForMessage(ChatMessage{
+		Role:    "user",
+		Content: "Convert this to mp4.",
+		Videos:  []string{staged.URL},
+	}, artifactsDir, AppConfig{Storage: storage})
+	if err != nil {
+		t.Fatalf("historyContentForMessage returned error: %v", err)
+	}
+	var videoContent *HistoryContent
+	for i := range contents {
+		if contents[i].Type == "video" {
+			videoContent = &contents[i]
+		}
+	}
+	if videoContent == nil {
+		t.Fatalf("no video content in %+v", contents)
+	}
+	if videoContent.MimeType != "video/x-flv" {
+		t.Fatalf("mimeType = %q, want video/x-flv", videoContent.MimeType)
+	}
+	adoptedPath := filepath.Join(artifactsDir, filepath.Base(videoContent.Path))
+	if filepath.Ext(adoptedPath) != ".flv" {
+		t.Fatalf("adopted artifact = %q, want the .flv extension kept", adoptedPath)
+	}
+	if !isVideoBytes(mustRead(t, adoptedPath)) {
+		t.Fatal("adopted artifact does not hold the FLV bytes")
+	}
+}
+
+func TestDecodeVideoPayloadFLVDataURL(t *testing.T) {
+	// A small (<24MB) FLV rides as a data URL instead of a staged upload; the
+	// mime decides the artifact extension, so video/x-flv must map onto .flv
+	// (the fallback there is .mp4, which would misname the artifact).
+	flvBytes := append([]byte("FLV\x01\x05\x00\x00\x00\x09"), make([]byte, 32)...)
+	payload := "data:video/x-flv;base64," + base64.StdEncoding.EncodeToString(flvBytes)
+	data, extension, err := decodeVideoPayload(payload)
+	if err != nil {
+		t.Fatalf("decodeVideoPayload returned error: %v", err)
+	}
+	if string(data) != string(flvBytes) {
+		t.Fatal("decoded bytes differ")
+	}
+	if extension != ".flv" {
+		t.Fatalf("extension = %q, want .flv", extension)
 	}
 }
 
