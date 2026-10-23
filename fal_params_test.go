@@ -118,19 +118,32 @@ func TestResolveDiffrhythmStylePrompt(t *testing.T) {
 }
 
 // TestResolveAudioVoiceReference pins the voice-cloning body shape: a
-// zero-shot cloning model (f5-tts) declares audio_url, so the canonical
-// sourceAudio reference must land there, while a speech model with no
+// zero-shot cloning model (f5-tts — live schema gen_text/ref_audio_url after
+// the 2026-10 rename) takes the canonical prompt as gen_text and the
+// canonical sourceAudio reference as ref_audio_url, with its required
+// model_type enum filled by the house default, while a speech model with no
 // reference input (elevenlabs) drops it with a notice instead of 422ing.
 func TestResolveAudioVoiceReference(t *testing.T) {
 	const reference = "data:audio/mpeg;base64,QUJD"
 	body, notices := resolveAudioBody(loadSchema(t, "f5-tts"),
 		AudioGenerateRequest{Model: "fal-ai/f5-tts", Prompt: "hello there", SourceAudio: reference},
 		builtinFalOverrides())
-	if body["prompt"] != "hello there" {
-		t.Fatalf("expected prompt=hello there, got %v (body: %v)", body["prompt"], body)
+	if body["gen_text"] != "hello there" {
+		t.Fatalf("expected gen_text=hello there, got %v (body: %v)", body["gen_text"], body)
 	}
-	if body["audio_url"] != reference {
-		t.Fatalf("expected audio_url=reference, got %v (body: %v)", body["audio_url"], body)
+	if body["ref_audio_url"] != reference {
+		t.Fatalf("expected ref_audio_url=reference, got %v (body: %v)", body["ref_audio_url"], body)
+	}
+	if body["model_type"] != "F5-TTS" {
+		t.Fatalf("expected house default model_type=F5-TTS, got %v (body: %v)", body["model_type"], body)
+	}
+	// The renamed inputs must bind through the synonyms, not the generic
+	// prompt/text fallback — f5-tts rejects both spellings.
+	if _, ok := body["prompt"]; ok {
+		t.Fatalf("f5-tts has no prompt input; must not send one (body: %v)", body)
+	}
+	if _, ok := body["text"]; ok {
+		t.Fatalf("f5-tts has no text input; must not send one (body: %v)", body)
 	}
 	if len(notices) != 0 {
 		t.Fatalf("expected no notices, got %v", notices)
@@ -3151,7 +3164,7 @@ func TestResolveAudioExtendBody(t *testing.T) {
 		if err != nil {
 			t.Fatalf("error: %v", err)
 		}
-		if body["audio_url"] != source || body["prompt"] != "more rain" {
+		if body["ref_audio_url"] != source || body["gen_text"] != "more rain" {
 			t.Fatalf("body = %v", body)
 		}
 		// f5-tts declares no duration input, so the canonical drops with a

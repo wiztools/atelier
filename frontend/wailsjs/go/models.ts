@@ -2245,6 +2245,7 @@ export namespace main {
 	    loop?: boolean;
 	    voice?: string;
 	    style?: string;
+	    emotion?: string;
 	    direction?: string;
 	    lyrics?: string;
 	    cloneVoice?: boolean;
@@ -2312,6 +2313,7 @@ export namespace main {
 	        this.loop = source["loop"];
 	        this.voice = source["voice"];
 	        this.style = source["style"];
+	        this.emotion = source["emotion"];
 	        this.direction = source["direction"];
 	        this.lyrics = source["lyrics"];
 	        this.cloneVoice = source["cloneVoice"];

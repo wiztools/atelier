@@ -1,15 +1,189 @@
 {
-  "components": {
-    "schemas": {
-      "F5TTSInput": {
-        "type": "object",
-        "required": ["prompt", "audio_url"],
-        "properties": {
-          "prompt": { "type": "string", "description": "The text to speak in the reference voice." },
-          "audio_url": { "type": "string", "description": "URL or data URI of the reference audio to clone the voice from." },
-          "normalize": { "type": "boolean", "default": true }
-        }
-      }
-    }
+ "components": {
+  "securitySchemes": {
+   "apiKeyAuth": {
+    "type": "apiKey",
+    "in": "header",
+    "name": "Authorization",
+    "description": "Fal Key"
+   }
+  },
+  "schemas": {
+   "QueueStatus": {
+    "type": "object",
+    "properties": {
+     "status": {
+      "type": "string",
+      "enum": [
+       "IN_QUEUE",
+       "IN_PROGRESS",
+       "COMPLETED"
+      ]
+     },
+     "request_id": {
+      "type": "string",
+      "description": "The request id."
+     },
+     "response_url": {
+      "type": "string",
+      "description": "The response url."
+     },
+     "status_url": {
+      "type": "string",
+      "description": "The status url."
+     },
+     "cancel_url": {
+      "type": "string",
+      "description": "The cancel url."
+     },
+     "logs": {
+      "type": "object",
+      "description": "The logs.",
+      "additionalProperties": true
+     },
+     "metrics": {
+      "type": "object",
+      "description": "The metrics.",
+      "additionalProperties": true
+     },
+     "queue_position": {
+      "type": "integer",
+      "description": "The queue position."
+     }
+    },
+    "required": [
+     "status",
+     "request_id"
+    ]
+   },
+   "F5TtsInput": {
+    "required": [
+     "gen_text",
+     "ref_audio_url",
+     "model_type"
+    ],
+    "x-fal-order-properties": [
+     "gen_text",
+     "ref_audio_url",
+     "ref_text",
+     "model_type",
+     "remove_silence"
+    ],
+    "properties": {
+     "model_type": {
+      "title": "Model Type",
+      "description": "The name of the model to be used for TTS.",
+      "type": "string",
+      "enum": [
+       "F5-TTS",
+       "E2-TTS"
+      ]
+     },
+     "gen_text": {
+      "examples": [
+       "I don't really care what you call me. I've been a silent spectator, watching species evolve, empires rise and fall. But always remember, I am mighty and enduring. Respect me and I'll nurture you; ignore me and you shall face the consequences."
+      ],
+      "description": "The text to be converted to speech. Maximum 5000 characters.",
+      "type": "string",
+      "title": "Text to be converted to speech"
+     },
+     "ref_audio_url": {
+      "examples": [
+       "https://storage.googleapis.com/falserverless/example_inputs/reference_audio.wav"
+      ],
+      "description": "The URL of the reference audio file.",
+      "type": "string",
+      "title": "Reference Audio URL"
+     },
+     "ref_text": {
+      "examples": [
+       "Some call me nature, others call me mother nature."
+      ],
+      "description": "The reference text to be used for TTS. If not provided, an ASR (Automatic Speech Recognition) model will be used to generate the reference text.",
+      "type": "string",
+      "default": "",
+      "title": "Reference Text for the Reference Audio"
+     },
+     "remove_silence": {
+      "description": "Whether to remove the silence from the audio file.",
+      "type": "boolean",
+      "default": true,
+      "title": "Remove Silence"
+     }
+    },
+    "type": "object",
+    "title": "TTSInput"
+   },
+   "F5TtsOutput": {
+    "required": [
+     "audio_url"
+    ],
+    "x-fal-order-properties": [
+     "audio_url"
+    ],
+    "properties": {
+     "audio_url": {
+      "description": "The audio file containing the generated speech.",
+      "$ref": "#/components/schemas/AudioFile",
+      "title": "Generated Speech"
+     }
+    },
+    "type": "object",
+    "title": "TTSOutput"
+   },
+   "AudioFile": {
+    "required": [
+     "url"
+    ],
+    "x-fal-order-properties": [
+     "url",
+     "content_type",
+     "file_name",
+     "file_size"
+    ],
+    "properties": {
+     "url": {
+      "examples": [
+       "https://v2.fal.media/files/8535dd59e911496a947daa35c07e67a3_tmplkcy6tut.wav"
+      ],
+      "type": "string",
+      "title": "Url"
+     },
+     "file_name": {
+      "examples": [
+       "8535dd59e911496a947daa35c07e67a3_tmplkcy6tut.wav"
+      ],
+      "type": "string",
+      "default": "8535dd59e911496a947daa35c07e67a3_tmplkcy6tut.wav",
+      "title": "File Name"
+     },
+     "content_type": {
+      "examples": [
+       "audio/wav"
+      ],
+      "type": "string",
+      "default": "audio/wav",
+      "title": "Content Type"
+     },
+     "file_size": {
+      "examples": [
+       4404019
+      ],
+      "description": "The size of the file in bytes.",
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "File Size"
+     }
+    },
+    "type": "object",
+    "title": "AudioFile"
+   }
   }
+ }
 }

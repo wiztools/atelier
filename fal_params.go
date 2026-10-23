@@ -164,7 +164,10 @@ var audioSynonyms = map[string][]string{
 	// prompt-bearing input is the required lyrics field — see
 	// conv_8be630557ba60c15daba8388, which 422ed with "body.lyrics Field
 	// required" when the generic prompt/text fallback was sent instead.
-	"prompt":   {"prompt", "text", "lyrics"},
+	// "gen_text" covers fal-ai/f5-tts, which renamed its text input in its
+	// 2026-10 schema refresh (conv_dc865c9f0eab981850e99ca6 422ed demanding
+	// gen_text after the generic prompt/text fallback went out).
+	"prompt":   {"prompt", "text", "lyrics", "gen_text"},
 	"duration": {"duration_seconds", "duration", "music_length_ms"},
 	"loop":     {"loop"},
 	"voice":    {"voice", "voice_id", "voice_name", "speaker", "speaker_id"},
@@ -182,9 +185,11 @@ var audioSynonyms = map[string][]string{
 	"speed": {"speed"},
 	// "sourceAudio" is the voice-cloning reference clip — the audio sibling of
 	// the lipsync source inputs, same native keys. Zero-shot cloning models
-	// (fal-ai/f5-tts, dia, orpheus) declare audio_url for it; a speech model
-	// without a reference input drops it with a notice and uses its own voice.
-	"sourceAudio":    {"audio_url", "audio_file_url", "audio"},
+	// declare a reference input for it: fal-ai/f5-tts names it ref_audio_url
+	// (audio_url before its 2026-10 schema refresh), dia and orpheus declare
+	// audio_url. A speech model without a reference input drops it with a
+	// notice and uses its own voice.
+	"sourceAudio":    {"audio_url", "audio_file_url", "audio", "ref_audio_url"},
 	"negativePrompt": {"negative_prompt"},
 	// "style_prompt" is required in practice by lyrics-driven music models
 	// (fal-ai/diffrhythm: "Either style prompt or reference audio URL must be
@@ -436,6 +441,18 @@ func resolveAudioBody(schema *ModelInputSchema, req AudioGenerateRequest, ov Ove
 		}
 		if notice != "" {
 			notices = append(notices, notice)
+		}
+	}
+	// fal-ai/f5-tts's live schema (its 2026-10 refresh) makes model_type a
+	// REQUIRED enum — "F5-TTS" or "E2-TTS" — with no default, and no canonical
+	// maps to it, so the built body could never satisfy it: the endpoint 422s
+	// demanding gen_text, ref_audio_url, and model_type no matter what the
+	// planner sends (conv_dc865c9f0eab981850e99ca6). Fill the namesake member
+	// when the schema declares that enum; the guards keep the constant away
+	// from any other model that might carry an unrelated model_type input.
+	if _, ok := body["model_type"]; !ok {
+		if prop, ok := schema.property("model_type"); ok && contains(prop.Enum, "F5-TTS") {
+			body["model_type"] = "F5-TTS"
 		}
 	}
 	return body, notices
