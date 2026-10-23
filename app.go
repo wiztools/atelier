@@ -265,7 +265,7 @@ type ConfigFal struct {
 	// AudioModel is the text-to-speech endpoint used by the generate_speech
 	// tool; SoundEffectsModel is the text-to-audio endpoint (music and sound
 	// effects) used by the generate_sound tool. AudioCloneModel is the
-	// zero-shot voice-cloning endpoint generate_speech switches to when the
+	// voice-cloning endpoint generate_speech switches to when the
 	// user attached a reference clip — selected by attachment, like the
 	// lipsync image/video split. AudioExtendModel is the audio-extend endpoint
 	// used by the extend_audio tool (stable-audio-25/inpaint by default — the

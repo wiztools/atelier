@@ -1219,7 +1219,7 @@ func resolveDefaultAudioModel(config AppConfig) string {
 	return defaultFalAudioModel
 }
 
-// resolveDefaultAudioCloneModel returns the zero-shot voice-cloning model
+// resolveDefaultAudioCloneModel returns the voice-cloning model
 // generate_speech switches to when the user attached a reference clip — the
 // speech sibling of the lipsync image/video split: one tool, the attachment
 // decides the endpoint.
