@@ -1476,6 +1476,7 @@ func speechGenerationToolDefinition(videoAudioCapable bool) HarnessToolDefinitio
 				Prompt:      call.Content,
 				Voice:       strings.TrimSpace(call.Voice),
 				Emotion:     strings.TrimSpace(call.Emotion),
+				Speed:       call.Speed,
 				SourceAudio: reference,
 			}, func(config AppConfig) string {
 				if reference != "" {
@@ -2840,6 +2841,10 @@ func generateSpeechParamSchema() map[string]any {
 				"(\"say it sadly\", \"read it excitedly\"): an emotion the model supports, e.g. \"happy\", \"sad\", " +
 				"\"angry\", \"neutral\". The selected model's own enum validates the value and a wrong one is ignored " +
 				"with a note listing the valid ones; models without an emotion control ignore it entirely."),
+			"speed": numberParam("Optional — the speaking rate when the user asks for faster or slower narration " +
+				"(\"read it slower\", \"speed it up\"): a multiplier where 1 is normal, 0.5 is half speed, 2 is twice " +
+				"as fast. Clamped to the selected model's declared range with a note; models without a speed control " +
+				"ignore it entirely. (Not transform_video's playback multiplier — this shapes the synthesized voice.)"),
 			"cloneVoice": boolParam("Optional — voice-cloning control. Omit to clone automatically when the user " +
 				"attached an audio clip; true to require cloning from the attached clip; false to keep the regular " +
 				"speech voice even when a clip is attached (e.g. the clip holds content to transcribe, not a voice to copy)."),

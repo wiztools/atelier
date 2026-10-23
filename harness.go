@@ -298,7 +298,10 @@ type HarnessToolCall struct {
 	// watermark (Scale, reused from upscale_image, sizes it — a percentage
 	// here); Brightness/Contrast/Saturation/Grayscale/Sepia are adjust_image's
 	// color controls; Speed is transform_video's playback multiplier (2 plays
-	// twice as fast, 0.5 at half speed) — a float, unlike the integer geometry
+	// twice as fast, 0.5 at half speed) and, on generate_speech, the synthesized
+	// voice's speaking rate (same "higher is faster" multiplier semantics, the
+	// model's own range clamps it — see generateSpeechParamSchema) — a float,
+	// unlike the integer geometry
 	// params. FadeIn/FadeOut are the single-clip fades, in output seconds:
 	// transform_video's picture to/from black with the soundtrack to/from
 	// silence, transform_audio's recording to/from silence; FadeTarget narrows

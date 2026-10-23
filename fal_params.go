@@ -174,6 +174,12 @@ var audioSynonyms = map[string][]string{
 	// property carries the model's enum, so coerceValue's default branch
 	// drops an unknown tone with a notice listing the valid ones.
 	"emotion": {"emotion"},
+	// "speed" is the speaking rate for speech models that expose one (MiniMax
+	// nests it under voice_setting beside emotion — voice_modify and
+	// audio_setting declare no speed member, so the nested walk binds
+	// voice_setting.speed unambiguously). coerceValue's speed branch clamps
+	// the value to the model's declared bounds.
+	"speed": {"speed"},
 	// "sourceAudio" is the voice-cloning reference clip — the audio sibling of
 	// the lipsync source inputs, same native keys. Zero-shot cloning models
 	// (fal-ai/f5-tts, dia, orpheus) declare audio_url for it; a speech model
@@ -385,6 +391,7 @@ func canonicalAudioValues(req AudioGenerateRequest) []canonicalValue {
 		{"loop", req.Loop, req.Loop},
 		{"voice", strings.TrimSpace(req.Voice), strings.TrimSpace(req.Voice) != ""},
 		{"emotion", strings.TrimSpace(req.Emotion), strings.TrimSpace(req.Emotion) != ""},
+		{"speed", req.Speed, req.Speed > 0},
 		{"sourceAudio", strings.TrimSpace(req.SourceAudio), strings.TrimSpace(req.SourceAudio) != ""},
 		{"negativePrompt", strings.TrimSpace(req.NegativePrompt), strings.TrimSpace(req.NegativePrompt) != ""},
 		{"style", strings.TrimSpace(req.Style), strings.TrimSpace(req.Style) != ""},
@@ -398,7 +405,7 @@ func resolveAudioBody(schema *ModelInputSchema, req AudioGenerateRequest, ov Ove
 	prompt := strings.TrimSpace(req.Prompt)
 	if schema == nil {
 		return map[string]any{"prompt": prompt, "text": prompt},
-			[]string{"Couldn't load the model's parameter schema; generated with defaults and skipped duration/loop/voice/voice reference."}
+			[]string{"Couldn't load the model's parameter schema; generated with defaults and skipped duration/loop/voice/emotion/speed/voice reference."}
 	}
 
 	body := map[string]any{}
@@ -424,11 +431,12 @@ func resolveAudioBody(schema *ModelInputSchema, req AudioGenerateRequest, ov Ove
 			continue
 		}
 		value, notice := coerceValue(item.canon, prop, item.value, req.Model)
+		if value != nil {
+			setBodyPath(schema, body, path, value)
+		}
 		if notice != "" {
 			notices = append(notices, notice)
-			continue
 		}
-		setBodyPath(schema, body, path, value)
 	}
 	return body, notices
 }
@@ -653,11 +661,12 @@ func resolveAudioExtendBody(schema *ModelInputSchema, req AudioExtendRequest, ov
 			continue
 		}
 		value, notice := coerceValue(item.canon, prop, item.value, req.Model)
+		if value != nil {
+			setBodyPath(schema, body, path, value)
+		}
 		if notice != "" {
 			notices = append(notices, notice)
-			continue
 		}
-		setBodyPath(schema, body, path, value)
 	}
 	return body, notices, nil
 }
@@ -2150,7 +2159,10 @@ func propAtPath(schema *ModelInputSchema, path string) (SchemaProperty, bool) {
 
 // coerceValue converts a canonical value to the native property's type and
 // applies transforms (seconds→ms for *_ms fields; enum validation). Returns a
-// notice string instead of a value when the value is invalid for the property.
+// notice string when the value needs the user's attention — an invalid value
+// comes back nil (dropped), while a clamped one (speed) comes back usable, so
+// callers set the body whenever the value is non-nil and surface the notice
+// regardless.
 func coerceValue(canon string, prop SchemaProperty, value any, model string) (any, string) {
 	switch canon {
 	case "duration":
@@ -2164,6 +2176,32 @@ func coerceValue(canon string, prop SchemaProperty, value any, model string) (an
 		return secs, ""
 	case "loop":
 		return true, ""
+	case "speed":
+		// The speaking-rate multiplier (MiniMax voice_setting.speed, 0.5–2).
+		// The plan grammar types it a number and HarnessToolCall.Speed is a
+		// float, so the value normally arrives as float64; a numeric string
+		// from a kwarg dialect is tolerated. Clamped to the model's declared
+		// bounds rather than dropped — an over-ask, not an error (the join
+		// transitions' clamp stance) — and a non-positive multiplier is
+		// dropped outright.
+		secs, ok := value.(float64)
+		if !ok {
+			parsed, err := strconv.ParseFloat(fmt.Sprintf("%v", value), 64)
+			if err != nil {
+				return nil, fmt.Sprintf("Ignored speed %q for %q: not a number.", value, model)
+			}
+			secs = parsed
+		}
+		if secs <= 0 {
+			return nil, fmt.Sprintf("Ignored speed %v for %q: the multiplier must be positive.", secs, model)
+		}
+		if prop.Minimum != nil && secs < *prop.Minimum {
+			return *prop.Minimum, fmt.Sprintf("Clamped speed %v to the model's minimum %v.", secs, *prop.Minimum)
+		}
+		if prop.Maximum != nil && secs > *prop.Maximum {
+			return *prop.Maximum, fmt.Sprintf("Clamped speed %v to the model's maximum %v.", secs, *prop.Maximum)
+		}
+		return secs, ""
 	default: // voice, negativePrompt — string values, enum-checked
 		s := fmt.Sprintf("%v", value)
 		if len(prop.Enum) > 0 && !contains(prop.Enum, s) {

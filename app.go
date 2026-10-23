@@ -1051,6 +1051,12 @@ type AudioGenerateRequest struct {
 	// schema and dropped-with-notice when the model has no emotion input, so a
 	// non-MiniMax speech model keeps its own default tone.
 	Emotion string `json:"emotion,omitempty"`
+	// Speed is the speaking-rate multiplier for speech models that expose one
+	// (MiniMax's voice_setting.speed: 1 normal, 0.5 half speed, 2 twice as
+	// fast). Resolved like the other params — clamped to the model's declared
+	// bounds with a notice, dropped-with-notice on models without the control.
+	// Zero means unset (any real multiplier is positive).
+	Speed float64 `json:"speed,omitempty"`
 	// SourceAudio is a reference clip (data URL) for zero-shot voice cloning:
 	// generate_speech fills it from the user's attached audio so the speech is
 	// synthesized in that voice. Resolved like the other params — mapped onto

@@ -205,6 +205,55 @@ func TestResolveEmotionOnMiniMaxSpeech(t *testing.T) {
 	}
 }
 
+// TestResolveSpeedOnMiniMaxSpeech pins the speed canonical: the MiniMax
+// speech-2.8 endpoints declare voice_setting.speed (0.5–2, default 1), so the
+// canonical multiplier lands beside the voice with the schema's sibling
+// defaults surviving the merge; an out-of-range multiplier is clamped to the
+// model's declared bounds with a notice (an over-ask, not an error); a model
+// without a speed control (elevenlabs) drops it with a notice.
+func TestResolveSpeedOnMiniMaxSpeech(t *testing.T) {
+	body, notices := resolveAudioBody(loadSchema(t, "minimax-speech-2.8-hd"),
+		AudioGenerateRequest{Model: "fal-ai/minimax/speech-2.8-hd", Prompt: "hello", Voice: "Wise_Woman", Speed: 1.5},
+		builtinFalOverrides())
+	vs, ok := body["voice_setting"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected voice_setting object, got %T", body["voice_setting"])
+	}
+	if vs["voice_id"] != "Wise_Woman" {
+		t.Fatalf("expected voice_id=Wise_Woman, got %v", vs["voice_id"])
+	}
+	if vs["speed"] != 1.5 {
+		t.Fatalf("expected speed=1.5, got %v", vs["speed"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("unexpected notices: %v", notices)
+	}
+
+	_, notices = resolveAudioBody(loadSchema(t, "minimax-speech-2.8-hd"),
+		AudioGenerateRequest{Model: "fal-ai/minimax/speech-2.8-hd", Prompt: "hello", Speed: 5},
+		builtinFalOverrides())
+	if len(notices) != 1 || !strings.Contains(notices[0], "Clamped speed 5") || !strings.Contains(notices[0], "maximum 2") {
+		t.Fatalf("expected one clamp-to-maximum notice, got %v", notices)
+	}
+
+	body, notices = resolveAudioBody(loadSchema(t, "minimax-speech-2.8-hd"),
+		AudioGenerateRequest{Model: "fal-ai/minimax/speech-2.8-hd", Prompt: "hello", Speed: 0.1},
+		builtinFalOverrides())
+	if body["voice_setting"].(map[string]any)["speed"] != 0.5 {
+		t.Fatalf("expected speed clamped to 0.5, got %v", body["voice_setting"])
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "minimum 0.5") {
+		t.Fatalf("expected one clamp-to-minimum notice, got %v", notices)
+	}
+
+	_, notices = resolveAudioBody(loadSchema(t, "elevenlabs-tts-ml-v2"),
+		AudioGenerateRequest{Model: "fal-ai/elevenlabs/tts/multilingual-v2", Prompt: "hi", Speed: 1.5},
+		builtinFalOverrides())
+	if len(notices) != 1 || !strings.Contains(notices[0], "no speed control") {
+		t.Fatalf("expected one speed drop notice, got %v", notices)
+	}
+}
+
 func TestResolveDropsUnsupportedLoop(t *testing.T) {
 	_, notices := resolveAudioBody(loadSchema(t, "elevenlabs-tts-ml-v2"),
 		AudioGenerateRequest{Model: "fal-ai/elevenlabs/tts/multilingual-v2", Prompt: "hi", Loop: true},
