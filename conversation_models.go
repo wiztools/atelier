@@ -58,6 +58,7 @@ type ConversationModelOverrides struct {
 	SoundEffectsModel  string `json:"soundEffectsModel,omitempty"`
 	AudioCloneModel    string `json:"audioCloneModel,omitempty"`
 	AudioExtendModel   string `json:"audioExtendModel,omitempty"`
+	VoiceDesignModel   string `json:"voiceDesignModel,omitempty"`
 	TranscribeModel    string `json:"transcribeModel,omitempty"`
 	LipsyncImageModel  string `json:"lipsyncImageModel,omitempty"`
 	LipsyncVideoModel  string `json:"lipsyncVideoModel,omitempty"`
@@ -109,7 +110,7 @@ func normalizeConversationModelOverrides(o ConversationModelOverrides) Conversat
 		&o.ImageEditModel, &o.UpscaleModel,
 		&o.InpaintProvider, &o.InpaintModel,
 		&o.VideoExtendModel, &o.VideoMotionModel, &o.VideoKeyframeModel, &o.VideoUpscaleModel, &o.VideoReframeModel, &o.VideoRestyleModel,
-		&o.AudioModel, &o.SoundEffectsModel, &o.AudioCloneModel, &o.AudioExtendModel, &o.TranscribeModel,
+		&o.AudioModel, &o.SoundEffectsModel, &o.AudioCloneModel, &o.AudioExtendModel, &o.VoiceDesignModel, &o.TranscribeModel,
 		&o.LipsyncImageModel, &o.LipsyncVideoModel,
 		&o.TranscriptionProvider, &o.WhisperModel, &o.WhisperBinary, &o.WhisperVADModel,
 		&o.ImageAspectRatio, &o.ImageSizePreset, &o.VideoDuration, &o.VideoAspectRatio, &o.VideoResolution, &o.SoundDuration, &o.AudioExtendDuration,
@@ -437,6 +438,9 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 	}
 	if o.AudioExtendModel != "" {
 		config.Providers.Fal.AudioExtendModel = o.AudioExtendModel
+	}
+	if o.VoiceDesignModel != "" {
+		config.Providers.Fal.VoiceDesignModel = o.VoiceDesignModel
 	}
 	if o.TranscribeModel != "" {
 		config.Providers.Fal.TranscribeModel = o.TranscribeModel

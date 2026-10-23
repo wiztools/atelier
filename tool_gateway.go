@@ -922,6 +922,50 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			generated.Notices = notices
 			return generated, err
 		}
+		gateway.tools.GenerateVoiceDesign = func(ctx context.Context, req VoiceDesignRequest) (GeneratedAudio, error) {
+			// fal-only: airplane mode refuses the call.
+			if err := airplaneMediaError(config, "voice design"); err != nil {
+				return GeneratedAudio{}, err
+			}
+			apiKey, err := loadFalAPIKey()
+			if err != nil {
+				return GeneratedAudio{}, err
+			}
+			if strings.TrimSpace(apiKey) == "" {
+				return GeneratedAudio{}, errFalKeyNotConfigured
+			}
+			client := newFalClient(app.client, apiKey)
+			// The voice-design endpoints take the two plain strings directly —
+			// prompt + preview_text — so there is no schema resolution here,
+			// only the transport, the timeout policy, and the estimate.
+			body := map[string]any{
+				"prompt":       req.Description,
+				"preview_text": req.PreviewText,
+			}
+			job := &mediaJob{}
+			client.jobSink = job
+			generated, recovered, err := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+				func(jctx context.Context) (GeneratedAudio, error) {
+					return client.GenerateVoiceDesign(jctx, req.Model, body)
+				},
+				client.CancelMediaJob,
+				client.RecoverAudioJob,
+			)
+			if err == nil && recovered {
+				generated.Notices = append(generated.Notices, mediaGenerationRecoveredNotice)
+			}
+			if err == nil {
+				// The preview audio is character-billed (MiniMax documents $30
+				// per 1M characters of preview text), so the hint rides the
+				// preview, not the description.
+				hints := falBillingHints{
+					Requests:   1,
+					Characters: len([]rune(req.PreviewText)),
+				}
+				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
+			}
+			return generated, err
+		}
 		gateway.tools.GenerateAudioExtend = func(ctx context.Context, req AudioExtendRequest) (GeneratedAudio, error) {
 			// fal-only: airplane mode refuses the call.
 			if err := airplaneMediaError(config, "extend_audio"); err != nil {

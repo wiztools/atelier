@@ -228,6 +228,11 @@ type HarnessToolCall struct {
 	// "unset" from "false" under omitempty, and strict-mode planners emit null
 	// for absent optionals (strictJSONSchema widens them to nullable unions).
 	CloneVoice *bool `json:"cloneVoice,omitempty"`
+	// PreviewText is an optional generate_voice input: the line the designed
+	// voice's preview clip speaks (MiniMax voice-design requires one). Empty
+	// applies the tool's default preview line. Planner-only, like Voice — see
+	// generateVoiceParamSchema.
+	PreviewText string `json:"previewText,omitempty"`
 	// ArtifactID is an optional convert_subtitles input naming a specific
 	// transcript artifact in the conversation to convert (e.g. "trc_ab12cd34").
 	// Omit to convert the newest .vtt/.srt artifact, or the subtitle file an
@@ -2580,6 +2585,10 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 						// optional artifact id names a specific transcript
 						// artifact when the newest one isn't the source.
 						"artifactId": map[string]any{"type": "string"},
+						// generate_voice input (voice design): the line the
+						// designed voice's preview clip speaks; omitted for the
+						// tool's default preview line.
+						"previewText": map[string]any{"type": "string"},
 					},
 				},
 			},
@@ -3226,6 +3235,8 @@ func setToolCallField(call *HarnessToolCall, key, raw string) {
 		call.Resolution = raw
 	case "voice":
 		call.Voice = raw
+	case "preview_text", "previewText":
+		call.PreviewText = raw
 	case "language":
 		call.Language = raw
 	case "task":

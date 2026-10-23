@@ -88,6 +88,14 @@ const (
 	// covers both sound effects and music, and this endpoint takes prompt,
 	// duration_seconds, and loop.
 	defaultFalSoundEffectsModel = "fal-ai/elevenlabs/sound-effects/v2"
+	// defaultFalVoiceDesignModel is the voice-design endpoint used by the
+	// generate_voice tool when none is configured — MiniMax Voice Design turns a
+	// written voice description ("a sweet, natural voice of an 8-year-old …")
+	// into a preview clip of that voice plus a reusable custom_voice_id. Its
+	// required inputs are prompt (the description, ≤2000 chars) and preview_text
+	// (the line the preview speaks, ≤500 chars, billed per character); the voice
+	// id feeds generate_speech on a MiniMax speech endpoint as its voice input.
+	defaultFalVoiceDesignModel = "fal-ai/minimax/voice-design"
 	// defaultFalAudioExtendModel is the audio-extend endpoint used by the
 	// extend_audio tool when none is configured — stable-audio-25/inpaint
 	// appends or prepends generated audio while preserving the unmasked original
@@ -298,6 +306,10 @@ type GeneratedAudio struct {
 	Data      []byte
 	MimeType  string
 	SourceURL string
+	// VoiceID is the reusable custom voice id a voice-design endpoint reports
+	// for its generated voice (MiniMax Voice Design's custom_voice_id). Empty
+	// for plain speech/music/sound generation, which produces no voice.
+	VoiceID string
 	// CostMicros estimates the generation's USD-millionth cost, stamped by the
 	// tool gateway after a successful call (fal_pricing.go). Not part of fal's
 	// response — the transport itself never sets it.
@@ -980,6 +992,81 @@ func (client FalClient) audioFromJob(ctx context.Context, resultURL string) (Gen
 		return GeneratedAudio{}, err
 	}
 	return GeneratedAudio{Data: data, MimeType: mimeType, SourceURL: audioURL}, nil
+}
+
+// GenerateVoiceDesign submits a voice-design request (a written description of
+// the voice plus the line its preview speaks) to the fal queue, polls until
+// completion, and downloads the preview clip. It mirrors GenerateAudio's
+// transport and additionally lifts the result's custom_voice_id — the reusable
+// id of the designed voice — into GeneratedAudio.VoiceID, so the generate_voice
+// tool can surface it for follow-up speech generation.
+func (client FalClient) GenerateVoiceDesign(ctx context.Context, model string, body map[string]any) (GeneratedAudio, error) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = defaultFalVoiceDesignModel
+	}
+	if body == nil {
+		body = map[string]any{}
+	}
+
+	submit, err := client.submit(ctx, model, body)
+	if err != nil {
+		return GeneratedAudio{}, err
+	}
+	requestID := strings.TrimSpace(submit.RequestID)
+	if requestID == "" {
+		return GeneratedAudio{}, errors.New("fal submit returned no request id")
+	}
+	statusURL, resultURL := falQueueURLs(submit, model, requestID)
+	client.recordMediaJob(model, submit, requestID, statusURL, resultURL)
+
+	if err := client.waitForCompletion(ctx, statusURL); err != nil {
+		return GeneratedAudio{}, err
+	}
+
+	result, raw, err := client.fetchResult(ctx, resultURL)
+	if err != nil {
+		return GeneratedAudio{}, err
+	}
+
+	audioURL := ""
+	for _, file := range []*falVideoFile{result.Audio.File, result.AudioFile} {
+		if file != nil && strings.TrimSpace(file.URL) != "" {
+			audioURL = strings.TrimSpace(file.URL)
+			break
+		}
+	}
+	if audioURL == "" {
+		audioURL = firstFalAudioURL(raw)
+	}
+	if audioURL == "" {
+		return GeneratedAudio{}, errors.New("fal result returned no audio")
+	}
+	data, mimeType, err := client.downloadAudio(ctx, audioURL)
+	if err != nil {
+		return GeneratedAudio{}, err
+	}
+	return GeneratedAudio{Data: data, MimeType: mimeType, SourceURL: audioURL, VoiceID: falCustomVoiceID(raw)}, nil
+}
+
+// falCustomVoiceID extracts a voice-design result's custom_voice_id from the
+// raw payload — at the top level, or nested under "data" the way fal nests
+// some outputs. Empty when the endpoint reports none (e.g. the Qwen
+// voice-design family returns the preview audio only).
+func falCustomVoiceID(raw []byte) string {
+	var payload struct {
+		CustomVoiceID string `json:"custom_voice_id"`
+		Data          struct {
+			CustomVoiceID string `json:"custom_voice_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	if id := strings.TrimSpace(payload.CustomVoiceID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(payload.Data.CustomVoiceID)
 }
 
 // TranscribeAudio submits an audio clip to fal's speech-to-text endpoint
@@ -1815,6 +1902,21 @@ const maxFalRedirects = 5
 // a real fal outage. 4xx and network errors are never retried.
 const maxFalTransientRetries = 1
 
+// maxFalRateLimitRetries / falRateLimitRetryWait give 429 responses their own,
+// more patient budget: a rate limit needs the window to refill, so an
+// immediate re-issue (the 5xx treatment) is useless. The settings screen fires
+// ~30 paginated /v1/models requests on load and fal 429s the tail of that
+// burst — the audio listers sit last in the chain, and their swallowed
+// failures used to leave those model pickers with zero options and no
+// dropdown (conv_2595b488 follow-up: the speech combobox "didn't open"). Two
+// waits (2s, 4s) ride out a short window; a longer one still surfaces the
+// error to the caller's own degrade path. Bounded by the caller's context, so
+// a canceled call stops waiting.
+const (
+	maxFalRateLimitRetries = 2
+	falRateLimitRetryWait  = 2 * time.Second
+)
+
 func (client FalClient) do(ctx context.Context, baseURL, method, path string, body map[string]any) (*http.Response, error) {
 	if strings.TrimSpace(client.apiKey) == "" {
 		return nil, errors.New("fal api key is not configured")
@@ -1851,6 +1953,18 @@ func (client FalClient) do(ctx context.Context, baseURL, method, path string, bo
 		}
 		resp = got
 		finalTarget = finalT
+		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxFalRateLimitRetries {
+			// A rate-limited request was never accepted, so re-issuing is
+			// safe for both GETs and queue submits — but only after the
+			// wait, which the immediate 5xx retry cannot offer.
+			resp.Body.Close()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(attempt+1) * falRateLimitRetryWait):
+			}
+			continue
+		}
 		retryable = isFalTransientStatus(resp.StatusCode) && attempt < maxFalTransientRetries
 		if !retryable {
 			break

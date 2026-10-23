@@ -46,6 +46,7 @@ import {
   ListFalSoundEffectModels,
   ListFalSoundEffectDurations,
   ListFalAudioExtendModels,
+  ListFalVoiceDesignModels,
   ListFalTranscribeModels,
   ListFalUpscaleModels,
   ListFalLipsyncImageModels,
@@ -427,6 +428,7 @@ const defaultFalVideoRestyleModel = 'fal-ai/kling-video/o3/pro/video-to-video/ed
 const defaultFalAudioModel = 'fal-ai/elevenlabs/tts/multilingual-v2';
 const defaultFalAudioCloneModel = 'fal-ai/f5-tts';
 const defaultFalSoundEffectsModel = 'fal-ai/elevenlabs/sound-effects/v2';
+const defaultFalVoiceDesignModel = 'fal-ai/minimax/voice-design';
 const defaultFalAudioExtendModel = 'fal-ai/stable-audio-25/inpaint';
 const defaultFalTranscribeModel = 'fal-ai/wizper';
 const defaultFalLipsyncImageModel = 'fal-ai/kling-video/lipsync/audio-to-video';
@@ -1238,9 +1240,11 @@ function App() {
   const [falAudioModels, setFalAudioModels] = useState<main.FalModel[]>([]);
   const [falAudioCloneModel, setFalAudioCloneModel] = useState(defaultFalAudioCloneModel);
   const [falSoundEffectsModel, setFalSoundEffectsModel] = useState(defaultFalSoundEffectsModel);
+  const [falVoiceDesignModel, setFalVoiceDesignModel] = useState(defaultFalVoiceDesignModel);
   const [falAudioExtendModel, setFalAudioExtendModel] = useState(defaultFalAudioExtendModel);
   const [falSoundEffectModels, setFalSoundEffectModels] = useState<main.FalModel[]>([]);
   const [falAudioExtendModels, setFalAudioExtendModels] = useState<main.FalModel[]>([]);
+  const [falVoiceDesignModels, setFalVoiceDesignModels] = useState<main.FalModel[]>([]);
   const [falTranscribeModel, setFalTranscribeModel] = useState(defaultFalTranscribeModel);
   const [falTranscribeModels, setFalTranscribeModels] = useState<main.FalModel[]>([]);
   // Transcription provider selection ("fal" cloud vs the locally installed
@@ -1912,6 +1916,7 @@ function App() {
             videoRestyleModel: falVideoRestyleModel,
             audioModel: falAudioModel,
             soundEffectsModel: falSoundEffectsModel,
+            voiceDesignModel: falVoiceDesignModel,
             audioCloneModel: falAudioCloneModel,
             audioExtendModel: falAudioExtendModel,
             transcribeModel: falTranscribeModel,
@@ -2000,7 +2005,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [airplaneMode, baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel, whisperVADModel]);
+  }, [airplaneMode, baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falVoiceDesignModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel, whisperVADModel]);
 
   // Re-probe local CLI tools when a binary override changes — or the Local
   // Tools tab's Re-detect button bumps the nonce — so the transcription
@@ -2460,6 +2465,7 @@ function App() {
     falAudioModel,
     falAudioCloneModel,
     falSoundEffectsModel,
+    falVoiceDesignModel,
     falAudioExtendModel,
     transcriptionProvider,
     falTranscribeModel,
@@ -2473,7 +2479,7 @@ function App() {
     videoResolution,
     soundDuration,
     audioExtendDuration,
-  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, inpaintProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falAudioExtendModel, transcriptionProvider, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration]);
+  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, inpaintProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falVoiceDesignModel, falAudioExtendModel, transcriptionProvider, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration]);
 
   const conversationModelSelection = useMemo<ModelSelectionValue>(() => {
     const global = globalModelSelection;
@@ -2523,6 +2529,7 @@ function App() {
       falAudioModel: overrides.audioModel || global.falAudioModel,
       falAudioCloneModel: overrides.audioCloneModel || global.falAudioCloneModel,
       falSoundEffectsModel: overrides.soundEffectsModel || global.falSoundEffectsModel,
+      falVoiceDesignModel: overrides.voiceDesignModel || global.falVoiceDesignModel,
       falAudioExtendModel: overrides.audioExtendModel || global.falAudioExtendModel,
       transcriptionProvider: overrides.transcriptionProvider === 'fal' || overrides.transcriptionProvider === 'local-whisper' ? overrides.transcriptionProvider : global.transcriptionProvider,
       falTranscribeModel: overrides.transcribeModel || global.falTranscribeModel,
@@ -2591,6 +2598,7 @@ function App() {
     if (patch.falAudioModel !== undefined) setFalAudioModel(patch.falAudioModel);
     if (patch.falAudioCloneModel !== undefined) setFalAudioCloneModel(patch.falAudioCloneModel);
     if (patch.falSoundEffectsModel !== undefined) setFalSoundEffectsModel(patch.falSoundEffectsModel);
+    if (patch.falVoiceDesignModel !== undefined) setFalVoiceDesignModel(patch.falVoiceDesignModel);
     if (patch.falAudioExtendModel !== undefined) setFalAudioExtendModel(patch.falAudioExtendModel);
     if (patch.transcriptionProvider !== undefined) setTranscriptionProvider(patch.transcriptionProvider);
     if (patch.falTranscribeModel !== undefined) setFalTranscribeModel(patch.falTranscribeModel);
@@ -2687,6 +2695,7 @@ function App() {
       if (patch.falAudioModel !== undefined) next.add('audioModel');
       if (patch.falAudioCloneModel !== undefined) next.add('audioCloneModel');
       if (patch.falSoundEffectsModel !== undefined) next.add('soundEffectsModel');
+      if (patch.falVoiceDesignModel !== undefined) next.add('voiceDesignModel');
       if (patch.falAudioExtendModel !== undefined) next.add('audioExtendModel');
       if (patch.falTranscribeModel !== undefined) next.add('transcribeModel');
       if (patch.transcriptionProvider !== undefined) next.add('transcriptionProvider');
@@ -2780,6 +2789,7 @@ function App() {
         case 'audioModel': next.falAudioModel = global.falAudioModel; break;
         case 'audioCloneModel': next.falAudioCloneModel = global.falAudioCloneModel; break;
         case 'soundEffectsModel': next.falSoundEffectsModel = global.falSoundEffectsModel; break;
+        case 'voiceDesignModel': next.falVoiceDesignModel = global.falVoiceDesignModel; break;
         case 'audioExtendModel': next.falAudioExtendModel = global.falAudioExtendModel; break;
         case 'transcribeModel': next.falTranscribeModel = global.falTranscribeModel; break;
         case 'transcriptionProvider': next.transcriptionProvider = global.transcriptionProvider; break;
@@ -3005,6 +3015,7 @@ function App() {
     falAudioModels,
     falSoundEffectModels,
     falAudioExtendModels,
+    falVoiceDesignModels,
     falTranscribeModels,
     falUpscaleModels,
     falLipsyncImageModels,
@@ -3239,6 +3250,7 @@ function App() {
 	const nextFalAudioModel = config.providers?.fal?.audioModel || defaultFalAudioModel;
 	const nextFalAudioCloneModel = config.providers?.fal?.audioCloneModel || defaultFalAudioCloneModel;
 	const nextFalSoundEffectsModel = config.providers?.fal?.soundEffectsModel || defaultFalSoundEffectsModel;
+	const nextFalVoiceDesignModel = config.providers?.fal?.voiceDesignModel || defaultFalVoiceDesignModel;
 	const nextFalAudioExtendModel = config.providers?.fal?.audioExtendModel || defaultFalAudioExtendModel;
 	const nextFalTranscribeModel = config.providers?.fal?.transcribeModel || defaultFalTranscribeModel;
 	const nextTranscriptionProvider = config.models?.transcriptionProvider === 'local-whisper' ? 'local-whisper' : 'fal';
@@ -3311,6 +3323,7 @@ function App() {
     setFalAudioModel(nextFalAudioModel);
     setFalAudioCloneModel(nextFalAudioCloneModel);
     setFalSoundEffectsModel(nextFalSoundEffectsModel);
+    setFalVoiceDesignModel(nextFalVoiceDesignModel);
     setFalAudioExtendModel(nextFalAudioExtendModel);
     setFalTranscribeModel(nextFalTranscribeModel);
     setTranscriptionProvider(nextTranscriptionProvider);
@@ -3502,78 +3515,88 @@ function App() {
     // The fal catalog is a discovery aid only — a load failure leaves the field
     // as free text, so swallow the error rather than surfacing it as a fal
     // connection error (which would confuse "key works" vs "catalog fetch").
+    // Each load rides falCatalogWithRetry, and the Go transport waits out short
+    // 429 windows itself — the screen fires ~30 paginated /v1/models requests
+    // on load and fal rate-limits the tail of that burst, which used to leave
+    // the audio pickers with zero options and no dropdown (the speech combobox
+    // simply "didn't open").
     try {
-      setFalModels(asArray(await ListFalModels()));
+      setFalModels(await falCatalogWithRetry(ListFalModels));
     } catch {
       setFalModels([]);
     }
     try {
-      setFalImageEditModels(asArray(await ListFalImageEditModels()));
+      setFalImageEditModels(await falCatalogWithRetry(ListFalImageEditModels));
     } catch {
       setFalImageEditModels([]);
     }
     try {
-      setFalVideoModels(asArray(await ListFalVideoModels()));
+      setFalVideoModels(await falCatalogWithRetry(ListFalVideoModels));
     } catch {
       setFalVideoModels([]);
     }
     try {
-      setFalVideoImageModels(asArray(await ListFalVideoImageModels()));
+      setFalVideoImageModels(await falCatalogWithRetry(ListFalVideoImageModels));
     } catch {
       setFalVideoImageModels([]);
     }
     try {
-      setFalVideoKeyframeModels(asArray(await ListFalVideoKeyframeModels()));
+      setFalVideoKeyframeModels(await falCatalogWithRetry(ListFalVideoKeyframeModels));
     } catch {
       setFalVideoKeyframeModels([]);
     }
     try {
-      setFalVideoExtendModels(asArray(await ListFalVideoExtendModels()));
+      setFalVideoExtendModels(await falCatalogWithRetry(ListFalVideoExtendModels));
     } catch {
       setFalVideoExtendModels([]);
     }
     try {
-      setFalVideoMotionModels(asArray(await ListFalVideoMotionModels()));
+      setFalVideoMotionModels(await falCatalogWithRetry(ListFalVideoMotionModels));
     } catch {
       setFalVideoMotionModels([]);
     }
     try {
-      setFalVideoUpscaleModels(asArray(await ListFalVideoUpscaleModels()));
+      setFalVideoUpscaleModels(await falCatalogWithRetry(ListFalVideoUpscaleModels));
     } catch {
       setFalVideoUpscaleModels([]);
     }
     try {
-      setFalVideoReframeModels(asArray(await ListFalVideoReframeModels()));
+      setFalVideoReframeModels(await falCatalogWithRetry(ListFalVideoReframeModels));
     } catch {
       setFalVideoReframeModels([]);
     }
     try {
-      setFalVideoRestyleModels(asArray(await ListFalVideoRestyleModels()));
+      setFalVideoRestyleModels(await falCatalogWithRetry(ListFalVideoRestyleModels));
     } catch {
       setFalVideoRestyleModels([]);
     }
     try {
-      setFalAudioModels(asArray(await ListFalSpeechModels()));
+      setFalAudioModels(await falCatalogWithRetry(ListFalSpeechModels));
     } catch {
       setFalAudioModels([]);
     }
     try {
-      setFalSoundEffectModels(asArray(await ListFalSoundEffectModels()));
+      setFalSoundEffectModels(await falCatalogWithRetry(ListFalSoundEffectModels));
     } catch {
       setFalSoundEffectModels([]);
     }
     try {
-      setFalAudioExtendModels(asArray(await ListFalAudioExtendModels()));
+      setFalAudioExtendModels(await falCatalogWithRetry(ListFalAudioExtendModels));
     } catch {
       setFalAudioExtendModels([]);
     }
     try {
-      setFalTranscribeModels(asArray(await ListFalTranscribeModels()));
+      setFalVoiceDesignModels(await falCatalogWithRetry(ListFalVoiceDesignModels));
+    } catch {
+      setFalVoiceDesignModels([]);
+    }
+    try {
+      setFalTranscribeModels(await falCatalogWithRetry(ListFalTranscribeModels));
     } catch {
       setFalTranscribeModels([]);
     }
     try {
-      setFalUpscaleModels(asArray(await ListFalUpscaleModels()));
+      setFalUpscaleModels(await falCatalogWithRetry(ListFalUpscaleModels));
     } catch {
       // Keep the last-good list on a transient fetch failure (the upscale and
       // edit pickers page fal's large image-to-image catalog and can time out);
@@ -3581,12 +3604,12 @@ function App() {
       // momentary blip. A genuine cold-load failure simply leaves it empty.
     }
     try {
-      setFalLipsyncImageModels(asArray(await ListFalLipsyncImageModels()));
+      setFalLipsyncImageModels(await falCatalogWithRetry(ListFalLipsyncImageModels));
     } catch {
       setFalLipsyncImageModels([]);
     }
     try {
-      setFalLipsyncVideoModels(asArray(await ListFalLipsyncVideoModels()));
+      setFalLipsyncVideoModels(await falCatalogWithRetry(ListFalLipsyncVideoModels));
     } catch {
       setFalLipsyncVideoModels([]);
     }
@@ -8798,6 +8821,7 @@ type ModelSelectionValue = {
   falAudioModel: string;
   falAudioCloneModel: string;
   falSoundEffectsModel: string;
+  falVoiceDesignModel: string;
   falAudioExtendModel: string;
   transcriptionProvider: 'fal' | 'local-whisper';
   falTranscribeModel: string;
@@ -8859,6 +8883,7 @@ function overrideKeysFromRecord(overrides: main.ConversationModelOverrides | nul
   if (overrides.audioModel) keys.add('audioModel');
   if (overrides.audioCloneModel) keys.add('audioCloneModel');
   if (overrides.soundEffectsModel) keys.add('soundEffectsModel');
+  if (overrides.voiceDesignModel) keys.add('voiceDesignModel');
   if (overrides.audioExtendModel) keys.add('audioExtendModel');
   if (overrides.transcribeModel) keys.add('transcribeModel');
   if (overrides.transcriptionProvider) keys.add('transcriptionProvider');
@@ -8920,6 +8945,7 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   if (keys.has('audioModel')) payload.audioModel = draft.falAudioModel;
   if (keys.has('audioCloneModel')) payload.audioCloneModel = draft.falAudioCloneModel;
   if (keys.has('soundEffectsModel')) payload.soundEffectsModel = draft.falSoundEffectsModel;
+  if (keys.has('voiceDesignModel')) payload.voiceDesignModel = draft.falVoiceDesignModel;
   if (keys.has('audioExtendModel')) payload.audioExtendModel = draft.falAudioExtendModel;
   if (keys.has('transcribeModel')) payload.transcribeModel = draft.falTranscribeModel;
   if (keys.has('transcriptionProvider')) payload.transcriptionProvider = draft.transcriptionProvider;
@@ -8991,6 +9017,7 @@ function ModelSelectionPanel({
     falAudioModels: main.FalModel[];
     falSoundEffectModels: main.FalModel[];
     falAudioExtendModels: main.FalModel[];
+    falVoiceDesignModels: main.FalModel[];
     falTranscribeModels: main.FalModel[];
     falUpscaleModels: main.FalModel[];
     falLipsyncImageModels: main.FalModel[];
@@ -9050,9 +9077,10 @@ function ModelSelectionPanel({
   const falVideoUpscaleOptions = falModelOptionList(catalogs.falVideoUpscaleModels);
   const falVideoReframeOptions = falModelOptionList(catalogs.falVideoReframeModels);
   const falVideoRestyleOptions = falModelOptionList(catalogs.falVideoRestyleModels);
-  const falAudioOptions = falModelOptionList(catalogs.falAudioModels);
+  const falAudioOptions = speechModelOptionsWithVoiceDesignBadge(falModelOptionList(catalogs.falAudioModels));
   const falSoundEffectOptions = falModelOptionList(catalogs.falSoundEffectModels);
   const falAudioExtendOptions = falModelOptionList(catalogs.falAudioExtendModels);
+  const falVoiceDesignOptions = falModelOptionList(catalogs.falVoiceDesignModels);
   const falTranscribeOptions = falModelOptionList(catalogs.falTranscribeModels);
   const falLipsyncImageOptions = falModelOptionList(catalogs.falLipsyncImageModels);
   const falLipsyncVideoOptions = falModelOptionList(catalogs.falLipsyncVideoModels);
@@ -9895,6 +9923,24 @@ function ModelSelectionPanel({
               value={value.falAudioExtendModel}
               onChange={(next) => onChange({falAudioExtendModel: next})}
               options={falAudioExtendOptions}
+              allowCustom
+            />
+          </div>
+          <div className="field">
+            <div className="field-label-row">
+              {fieldLabel('fal-voice-design-model', 'Voice Design Model (fal.ai)', 'voiceDesignModel')}
+              <InfoHint
+                label="Voice design model"
+                text="Creates a NEW voice from a written description (the generate_voice tool) — a preview clip of the described voice plus its reusable voice id. The id pairs with the MiniMax speech endpoints (marked in the Speech Model list) to speak new text in the designed voice; speech from text on other models and cloning an attached voice stay on their own tools."
+              />
+            </div>
+            <ModelCombobox
+              id="fal-voice-design-model"
+              ariaLabel="fal.ai voice design model"
+              placeholder={defaultFalVoiceDesignModel}
+              value={value.falVoiceDesignModel}
+              onChange={(next) => onChange({falVoiceDesignModel: next})}
+              options={falVoiceDesignOptions}
               allowCustom
             />
           </div>
@@ -10764,6 +10810,36 @@ function asArray<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : [];
 }
 
+// falCatalogWithRetry rides out fal's /v1/models rate limit. The settings
+// screen fires the whole catalog plus every per-category walk on load — a
+// burst of ~30 paginated requests that fal answers with 429s once its window
+// is exhausted — and the audio listers sit at the END of the sequential chain,
+// so their swallowed failures left those pickers with zero options and, where
+// no static fallback exists, a combobox that renders no dropdown at all. The
+// waits grow per attempt (the window refills on the order of seconds to a
+// minute) and stop at the first non-empty load; a lister that legitimately
+// returns nothing keeps its empty result, and a persistent failure still
+// throws so each caller's catch keeps its own degrade semantics (clear vs
+// keep-last-good).
+async function falCatalogWithRetry<T>(load: () => Promise<T[]>, attempts = 3): Promise<T[]> {
+  const waits = [2000, 5000];
+  let lastError: unknown = new Error('catalog load failed');
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const value = asArray(await load());
+      if (value.length > 0 || attempt === attempts) {
+        return value;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    if (attempt < attempts) {
+      await new Promise((resolve) => setTimeout(resolve, waits[Math.min(attempt - 1, waits.length - 1)]));
+    }
+  }
+  throw lastError;
+}
+
 // falModelOptionList builds sorted combobox options for a fal model catalog.
 // fal's catalog reuses one display name across endpoint variants — e.g.
 // fal-ai/speech-to-text, .../turbo, .../stream, and .../turbo/stream all carry
@@ -10776,6 +10852,21 @@ function asArray<T>(value: T[] | null | undefined): T[] {
 // falModelOptionList turns a provider catalog (fal's or Replicate's — both
 // carry {id, displayName}) into combobox options, qualifying display names
 // that collide across owners.
+// speechModelOptionsWithVoiceDesignBadge marks the MiniMax speech endpoints in
+// the Speech Model picker — the one speech family whose voice input accepts
+// the reusable ids generate_voice designs — so the voice-design pairing is
+// visible (and searchable via the label) in the long speech list without
+// consulting the model docs.
+function speechModelOptionsWithVoiceDesignBadge(options: {value: string; label: string}[]): {value: string; label: string}[] {
+  return options.map((option) => {
+    const id = option.value.toLowerCase();
+    if (id.includes('minimax') && id.includes('speech')) {
+      return {...option, label: `${option.label} — accepts voice-design ids`};
+    }
+    return option;
+  });
+}
+
 function falModelOptionList(models: main.FalModel[] | main.ReplicateModel[] | null | undefined): {value: string; label: string}[] {
   const items = asArray(models).map((item) => ({id: item.id || '', base: item.displayName || item.id || ''}));
   // Group by display name to find collisions.

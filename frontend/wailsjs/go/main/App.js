@@ -238,6 +238,10 @@ export function ListFalVideoUpscaleModels() {
   return window['go']['main']['App']['ListFalVideoUpscaleModels']();
 }
 
+export function ListFalVoiceDesignModels() {
+  return window['go']['main']['App']['ListFalVoiceDesignModels']();
+}
+
 export function ListInpaintModels(arg1) {
   return window['go']['main']['App']['ListInpaintModels'](arg1);
 }

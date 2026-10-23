@@ -359,6 +359,7 @@ export namespace main {
 	    soundEffectsModel?: string;
 	    audioCloneModel?: string;
 	    audioExtendModel?: string;
+	    voiceDesignModel?: string;
 	    transcribeModel?: string;
 	    upscaleModel?: string;
 	    inpaintModel?: string;
@@ -386,6 +387,7 @@ export namespace main {
 	        this.soundEffectsModel = source["soundEffectsModel"];
 	        this.audioCloneModel = source["audioCloneModel"];
 	        this.audioExtendModel = source["audioExtendModel"];
+	        this.voiceDesignModel = source["voiceDesignModel"];
 	        this.transcribeModel = source["transcribeModel"];
 	        this.upscaleModel = source["upscaleModel"];
 	        this.inpaintModel = source["inpaintModel"];
@@ -785,6 +787,7 @@ export namespace main {
 	    soundEffectsModel?: string;
 	    audioCloneModel?: string;
 	    audioExtendModel?: string;
+	    voiceDesignModel?: string;
 	    transcribeModel?: string;
 	    lipsyncImageModel?: string;
 	    lipsyncVideoModel?: string;
@@ -830,6 +833,7 @@ export namespace main {
 	        this.soundEffectsModel = source["soundEffectsModel"];
 	        this.audioCloneModel = source["audioCloneModel"];
 	        this.audioExtendModel = source["audioExtendModel"];
+	        this.voiceDesignModel = source["voiceDesignModel"];
 	        this.transcribeModel = source["transcribeModel"];
 	        this.lipsyncImageModel = source["lipsyncImageModel"];
 	        this.lipsyncVideoModel = source["lipsyncVideoModel"];
@@ -2244,6 +2248,7 @@ export namespace main {
 	    direction?: string;
 	    lyrics?: string;
 	    cloneVoice?: boolean;
+	    previewText?: string;
 	    artifactId?: string;
 	    scale?: string;
 	    task?: string;
@@ -2310,6 +2315,7 @@ export namespace main {
 	        this.direction = source["direction"];
 	        this.lyrics = source["lyrics"];
 	        this.cloneVoice = source["cloneVoice"];
+	        this.previewText = source["previewText"];
 	        this.artifactId = source["artifactId"];
 	        this.scale = source["scale"];
 	        this.task = source["task"];

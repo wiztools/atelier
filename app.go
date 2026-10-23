@@ -89,15 +89,18 @@ type App struct {
 	// in-flight registration. Without it, two quick submits into the same
 	// session could both pass the running check before either registered.
 	editSubmitMu sync.Mutex
-	// imageToImage* cache fal's image-to-image catalog (~400 models) shared by
-	// the Settings upscale and image-edit pickers, so the two listers don't each
-	// re-page the whole category and race the request timeout — a slow page used
-	// to leave one picker empty. Guarded by imageToImageMu; falImageToImageCacheTTL
-	// bounds staleness. falCategoryFetch is a test seam — nil uses the real fetch.
-	imageToImageMu        sync.Mutex
-	imageToImageModels    []FalModel
-	imageToImageFetchedAt time.Time
-	falCategoryFetch      func(context.Context, string) ([]FalModel, error)
+	// falCategoryCache caches one fetched fal model category per key (the
+	// category id), shared by every Settings lister that reads it — the
+	// screen walks ~a dozen categories on load, and re-paging all of them on
+	// every open both tripled the request count and, under fal's /v1/models
+	// rate limit, emptied the tail listers' pickers (the speech combobox
+	// "didn't open"). A cached category also serves a rate-limited re-fetch
+	// as the last good copy instead of a failure. Guarded by falCategoryMu;
+	// falCategoryCacheTTL bounds freshness. falCategoryFetch is a test seam —
+	// nil uses the real fetch.
+	falCategoryMu    sync.Mutex
+	falCategories    map[string]falCategoryEntry
+	falCategoryFetch func(context.Context, string) ([]FalModel, error)
 }
 
 func NewApp() *App {
@@ -266,11 +269,15 @@ type ConfigFal struct {
 	// user attached a reference clip — selected by attachment, like the
 	// lipsync image/video split. AudioExtendModel is the audio-extend endpoint
 	// used by the extend_audio tool (stable-audio-25/inpaint by default — the
-	// audio sibling of VideoExtendModel).
+	// audio sibling of VideoExtendModel). VoiceDesignModel is the voice-design
+	// endpoint used by the generate_voice tool (MiniMax voice-design by
+	// default): a written description of a voice becomes a preview clip plus a
+	// reusable voice id.
 	AudioModel        string `json:"audioModel,omitempty"`
 	SoundEffectsModel string `json:"soundEffectsModel,omitempty"`
 	AudioCloneModel   string `json:"audioCloneModel,omitempty"`
 	AudioExtendModel  string `json:"audioExtendModel,omitempty"`
+	VoiceDesignModel  string `json:"voiceDesignModel,omitempty"`
 	// TranscribeModel is the speech-to-text endpoint used by transcribe_audio
 	// when the transcription provider is fal (fal-ai/wizper by default). The
 	// local whisper CLI is the provider-independent alternative — see
@@ -1043,6 +1050,18 @@ type AudioGenerateRequest struct {
 	// the model's audio_url-shaped input, dropped-with-notice when the model
 	// has no reference input.
 	SourceAudio string `json:"sourceAudio,omitempty"`
+}
+
+// VoiceDesignRequest is the input to the generate_voice tool: Description is
+// the written voice profile ("a sweet, natural voice of an 8-year-old …") and
+// PreviewText the line the preview clip speaks — the two required inputs of
+// MiniMax's voice-design endpoint (≤2000 and ≤500 characters). An empty
+// PreviewText lets the executor supply a default preview line, since the
+// endpoint requires one and a voice ask need not carry words to say.
+type VoiceDesignRequest struct {
+	Model       string `json:"model"`
+	Description string `json:"description"`
+	PreviewText string `json:"previewText,omitempty"`
 }
 
 // AudioExtendRequest is the input to extend_audio: lengthen an existing clip
@@ -2988,26 +3007,14 @@ func (a *App) ClearOpenAICompatibleAPIKey() error {
 // /v1/models catalog directly. Requires a stored fal key (the underlying client
 // attaches it to every request), so call it after the key is saved.
 func (a *App) ListFalModels() ([]FalModel, error) {
-	key, err := loadFalAPIKey()
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	return newFalClient(a.client, key).ListModels(ctx, falTextToImageCategory, 0)
+	return a.cachedFalCategoryModels(falTextToImageCategory)
 }
 
 // ListFalVideoModels returns fal's text-to-video catalog for the Settings
 // video-model picker. It mirrors ListFalModels but filters to the text-to-video
 // category; fal is the only video backend (Ollama has no video models).
 func (a *App) ListFalVideoModels() ([]FalModel, error) {
-	key, err := loadFalAPIKey()
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	return newFalClient(a.client, key).ListModels(ctx, falTextToVideoCategory, 0)
+	return a.cachedFalCategoryModels(falTextToVideoCategory)
 }
 
 // ListFalVideoDurations returns the duration values the given fal video model
@@ -3055,13 +3062,7 @@ func (a *App) ListFalSoundEffectDurations(model string) ([]string, error) {
 // ListFalVideoImageModels returns fal's image-to-video catalog for the Settings
 // image-to-video model picker (used to animate an attached image).
 func (a *App) ListFalVideoImageModels() ([]FalModel, error) {
-	key, err := loadFalAPIKey()
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	return newFalClient(a.client, key).ListModels(ctx, falImageToVideoCategory, 0)
+	return a.cachedFalCategoryModels(falImageToVideoCategory)
 }
 
 // ListFalVideoKeyframeModels returns fal's image-to-video catalog for the
@@ -3069,20 +3070,21 @@ func (a *App) ListFalVideoImageModels() ([]FalModel, error) {
 // image-to-video models with an end-frame input, so they share the
 // image-to-video category with ListFalVideoImageModels.
 func (a *App) ListFalVideoKeyframeModels() ([]FalModel, error) {
-	key, err := loadFalAPIKey()
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	return newFalClient(a.client, key).ListModels(ctx, falImageToVideoCategory, 0)
+	return a.cachedFalCategoryModels(falImageToVideoCategory)
 }
 
-// falImageToImageCacheTTL bounds how long the shared image-to-image catalog is
-// reused before a re-fetch. Long enough that the upscale and edit pickers on one
-// Settings open share a single fetch; short enough that a newly added endpoint
-// shows up on a later visit.
-const falImageToImageCacheTTL = 2 * time.Minute
+// falCategoryCacheTTL bounds how long a fetched fal model category is reused
+// before a re-fetch. Long enough that the listers on one Settings open share a
+// single fetch per category (the six video-to-video pickers used to page the
+// same category six times); short enough that a newly added endpoint shows up
+// on a later visit.
+const falCategoryCacheTTL = 2 * time.Minute
+
+// falCategoryEntry is one cached category walk.
+type falCategoryEntry struct {
+	models    []FalModel
+	fetchedAt time.Time
+}
 
 // fetchFalCategoryModels pages a fal model category. falCategoryFetch overrides
 // it in tests; the real path loads the key and calls the fal client.
@@ -3097,26 +3099,42 @@ func (a *App) fetchFalCategoryModels(ctx context.Context, category string) ([]Fa
 	return newFalClient(a.client, key).ListModels(ctx, category, 0)
 }
 
-// cachedImageToImageModels returns fal's image-to-image catalog, fetching it at
-// most once per falImageToImageCacheTTL. The upscale and edit listers both derive
-// their picks from this one bucket; caching (and serializing behind imageToImageMu)
-// means one Settings open pages the ~400-model category once instead of twice and
-// under a single 45s deadline, so a slow page no longer empties one picker.
-func (a *App) cachedImageToImageModels() ([]FalModel, error) {
-	a.imageToImageMu.Lock()
-	defer a.imageToImageMu.Unlock()
-	if a.imageToImageModels != nil && time.Since(a.imageToImageFetchedAt) < falImageToImageCacheTTL {
-		return a.imageToImageModels, nil
+// cachedFalCategoryModels returns fal's catalog for one category, fetching it
+// at most once per falCategoryCacheTTL across every lister that reads it. The
+// Settings screen walks ~a dozen categories on load; without the cache each
+// open re-paged all of them, and under fal's /v1/models rate limit the tail of
+// that burst (the audio listers) failed and left those pickers with zero
+// options — the speech combobox rendered no dropdown at all. A category with a
+// stale cached copy also serves that copy when the re-fetch fails, so a
+// rate-limited refresh degrades to slightly-old data instead of an empty
+// picker.
+func (a *App) cachedFalCategoryModels(category string) ([]FalModel, error) {
+	a.falCategoryMu.Lock()
+	defer a.falCategoryMu.Unlock()
+	if entry, ok := a.falCategories[category]; ok && time.Since(entry.fetchedAt) < falCategoryCacheTTL {
+		return entry.models, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	models, err := a.fetchFalCategoryModels(ctx, falImageUpscalingCategory)
+	models, err := a.fetchFalCategoryModels(ctx, category)
 	if err != nil {
+		if entry, ok := a.falCategories[category]; ok {
+			return entry.models, nil
+		}
 		return nil, err
 	}
-	a.imageToImageModels = models
-	a.imageToImageFetchedAt = time.Now()
+	if a.falCategories == nil {
+		a.falCategories = map[string]falCategoryEntry{}
+	}
+	a.falCategories[category] = falCategoryEntry{models: models, fetchedAt: time.Now()}
 	return models, nil
+}
+
+// cachedImageToImageModels returns fal's image-to-image catalog through the
+// shared category cache. The upscale and edit listers both derive their picks
+// from this one bucket.
+func (a *App) cachedImageToImageModels() ([]FalModel, error) {
+	return a.cachedFalCategoryModels(falImageUpscalingCategory)
 }
 
 // ListFalUpscaleModels returns fal's image-upscaler catalog for the Settings
@@ -3216,20 +3234,14 @@ func isFalLipsyncModel(model FalModel) bool {
 // ListFalAudioModels merges two categories; the filter mirrors
 // ListFalUpscaleModels.
 func (a *App) ListFalLipsyncImageModels() ([]FalModel, error) {
-	key, err := loadFalAPIKey()
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	client := newFalClient(a.client, key)
-
 	merged := []FalModel{}
 	seen := map[string]bool{}
 	for _, category := range []string{falAudioToVideoCategory, falImageToVideoCategory} {
-		models, err := client.ListModels(ctx, category, 0)
+		models, err := a.cachedFalCategoryModels(category)
 		if err != nil {
-			return nil, err
+			// One category failing (a rate-limited request) keeps the
+			// other's matches; only a total failure degrades, below.
+			continue
 		}
 		for _, model := range models {
 			if model.ID == "" || seen[model.ID] || !isFalLipsyncModel(model) {
@@ -3238,6 +3250,9 @@ func (a *App) ListFalLipsyncImageModels() ([]FalModel, error) {
 			seen[model.ID] = true
 			merged = append(merged, model)
 		}
+	}
+	if len(merged) == 0 {
+		merged = append(merged, FalModel{ID: defaultFalLipsyncImageModel})
 	}
 	return merged, nil
 }
@@ -3248,21 +3263,19 @@ func (a *App) ListFalLipsyncImageModels() ([]FalModel, error) {
 // pixverse). fal files these under the video-to-video category, fetched and kept
 // only when isFalLipsyncModel matches.
 func (a *App) ListFalLipsyncVideoModels() ([]FalModel, error) {
-	key, err := loadFalAPIKey()
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	models, err := newFalClient(a.client, key).ListModels(ctx, falVideoToVideoCategory, 0)
-	if err != nil {
-		return nil, err
-	}
-	lipsync := make([]FalModel, 0, len(models))
-	for _, model := range models {
-		if isFalLipsyncModel(model) {
-			lipsync = append(lipsync, model)
+	models, err := a.cachedFalCategoryModels(falVideoToVideoCategory)
+	lipsync := []FalModel{}
+	if err == nil {
+		for _, model := range models {
+			if isFalLipsyncModel(model) {
+				lipsync = append(lipsync, model)
+			}
 		}
+	}
+	if len(lipsync) == 0 {
+		// A failed (rate-limited) or reshuffled catalog keeps the mapped
+		// default — the picker stays openable.
+		lipsync = append(lipsync, FalModel{ID: defaultFalLipsyncVideoModel})
 	}
 	return lipsync, nil
 }
@@ -3295,13 +3308,7 @@ func isFalVideoExtendModel(model FalModel) bool {
 // ListFalLipsyncVideoModels and ListFalVideoMotionModels; the three filters
 // (extend vs lipsync vs motion) partition it.
 func (a *App) ListFalVideoExtendModels() ([]FalModel, error) {
-	key, err := loadFalAPIKey()
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	models, err := newFalClient(a.client, key).ListModels(ctx, falVideoToVideoCategory, 0)
+	models, err := a.cachedFalCategoryModels(falVideoToVideoCategory)
 	if err != nil {
 		return nil, err
 	}
@@ -3337,13 +3344,7 @@ func isFalVideoMotionModel(model FalModel) bool {
 // both. fal files these under the video-to-video category, fetched and kept only
 // when isFalVideoMotionModel matches.
 func (a *App) ListFalVideoMotionModels() ([]FalModel, error) {
-	key, err := loadFalAPIKey()
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	models, err := newFalClient(a.client, key).ListModels(ctx, falVideoToVideoCategory, 0)
+	models, err := a.cachedFalCategoryModels(falVideoToVideoCategory)
 	if err != nil {
 		return nil, err
 	}
@@ -3381,13 +3382,7 @@ func isFalVideoUpscaleModel(model FalModel) bool {
 // matches. Shares its category with the extend/lipsync/motion/reframe/restyle
 // pickers; the six filters partition it.
 func (a *App) ListFalVideoUpscaleModels() ([]FalModel, error) {
-	key, err := loadFalAPIKey()
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	models, err := newFalClient(a.client, key).ListModels(ctx, falVideoToVideoCategory, 0)
+	models, err := a.cachedFalCategoryModels(falVideoToVideoCategory)
 	if err != nil {
 		return nil, err
 	}
@@ -3426,13 +3421,7 @@ func isFalVideoReframeModel(model FalModel) bool {
 // isFalVideoReframeModel matches. Shares its category with the
 // extend/lipsync/motion/upscale/restyle pickers; the six filters partition it.
 func (a *App) ListFalVideoReframeModels() ([]FalModel, error) {
-	key, err := loadFalAPIKey()
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	models, err := newFalClient(a.client, key).ListModels(ctx, falVideoToVideoCategory, 0)
+	models, err := a.cachedFalCategoryModels(falVideoToVideoCategory)
 	if err != nil {
 		return nil, err
 	}
@@ -3509,13 +3498,7 @@ func isFalVideoRestyleModel(model FalModel) bool {
 // isFalVideoRestyleModel matches. Shares its category with the
 // extend/lipsync/motion/upscale/reframe pickers; the six filters partition it.
 func (a *App) ListFalVideoRestyleModels() ([]FalModel, error) {
-	key, err := loadFalAPIKey()
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	models, err := newFalClient(a.client, key).ListModels(ctx, falVideoToVideoCategory, 0)
+	models, err := a.cachedFalCategoryModels(falVideoToVideoCategory)
 	if err != nil {
 		return nil, err
 	}
@@ -3560,21 +3543,20 @@ func isFalSpeechModel(model FalModel) bool {
 // isFalSpeechModel matches are merged in — without it, the default speech
 // model would be missing from its own picker. Deduped by endpoint id.
 func (a *App) ListFalSpeechModels() ([]FalModel, error) {
-	key, err := loadFalAPIKey()
+	speech, err := a.cachedFalCategoryModels(falTextToSpeechCategory)
 	if err != nil {
-		return nil, err
+		// Catalog failure keeps the mapped defaults: the speech and
+		// voice-clone pickers (which share this list) open with a short
+		// static pair instead of rendering no dropdown at all — fal's
+		// /v1/models endpoint rate-limits the settings screen's catalog
+		// burst, and the audio listers sit at the tail of it.
+		return falAudioFallback(), nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	client := newFalClient(a.client, key)
-
-	speech, err := client.ListModels(ctx, falTextToSpeechCategory, 0)
+	audio, err := a.cachedFalCategoryModels(falTextToAudioCategory)
 	if err != nil {
-		return nil, err
-	}
-	audio, err := client.ListModels(ctx, falTextToAudioCategory, 0)
-	if err != nil {
-		return nil, err
+		// The speech category may still have served (cache or stale copy) —
+		// merge the mapped defaults into it rather than discarding the walk.
+		audio = falAudioFallback()
 	}
 
 	merged := make([]FalModel, 0, len(speech)+len(audio))
@@ -3596,23 +3578,69 @@ func (a *App) ListFalSpeechModels() ([]FalModel, error) {
 	return merged, nil
 }
 
+// falAudioFallback is the static pair ListFalSpeechModels degrades to when a
+// category fetch fails: the speech and voice-clone pickers share this list,
+// and each needs its own mapped default in it to stay openable.
+func falAudioFallback() []FalModel {
+	return []FalModel{
+		{ID: defaultFalAudioModel},
+		{ID: defaultFalAudioCloneModel},
+	}
+}
+
+// isFalVoiceDesignModel reports whether a fal catalog entry is a voice-design
+// endpoint — one that synthesizes a NEW voice from a written description
+// (MiniMax voice-design, Qwen 3 TTS voice-design, Kling create-voice), rather
+// than speaking with a preset or cloned voice. fal files them under the
+// text-to-speech category (Kling's under audio-to-audio), so the id is checked
+// for the design/create-voice markers. Mirrors isFalAudioExtendModel's
+// defensive id+tags matching.
+func isFalVoiceDesignModel(model FalModel) bool {
+	id := strings.ToLower(model.ID)
+	for _, marker := range []string{"voice-design", "voice_design", "create-voice"} {
+		if strings.Contains(id, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// ListFalVoiceDesignModels returns fal's voice-design catalog for the Settings
+// voice-design-model picker (the generate_voice tool's endpoint), fetched from
+// the text-to-speech category and kept only when isFalVoiceDesignModel
+// matches. The mapped default is always included even when the catalog fetch
+// or filter misses it (a catalog re-shuffle then degrades to a short static
+// list instead of an empty picker).
+func (a *App) ListFalVoiceDesignModels() ([]FalModel, error) {
+	design := []FalModel{{ID: defaultFalVoiceDesignModel}}
+	seen := map[string]bool{defaultFalVoiceDesignModel: true}
+	models, err := a.cachedFalCategoryModels(falTextToSpeechCategory)
+	if err != nil {
+		// Catalog failure keeps the static default — the picker stays usable.
+		return design, nil
+	}
+	for _, model := range models {
+		if model.ID == "" || seen[model.ID] || !isFalVoiceDesignModel(model) {
+			continue
+		}
+		seen[model.ID] = true
+		design = append(design, model)
+	}
+	return design, nil
+}
+
 // ListFalSoundEffectModels returns fal's text-to-audio catalog (music and
 // sound effects) for the Settings sound-effects-model picker (the
 // generate_sound tool's endpoint), with speech endpoints filtered out — fal
 // files TTS models like elevenlabs/tts/* and kokoro/* under this same
 // category, and they don't belong behind a "music & sound effects" label.
 func (a *App) ListFalSoundEffectModels() ([]FalModel, error) {
-	key, err := loadFalAPIKey()
+	models, err := a.cachedFalCategoryModels(falTextToAudioCategory)
 	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	client := newFalClient(a.client, key)
-
-	models, err := client.ListModels(ctx, falTextToAudioCategory, 0)
-	if err != nil {
-		return nil, err
+		// Catalog failure keeps the mapped default — the picker stays
+		// openable (the speech-list failure mode: fal's rate limit lands on
+		// the audio listers last).
+		return []FalModel{{ID: defaultFalSoundEffectsModel}}, nil
 	}
 	sound := make([]FalModel, 0, len(models))
 	for _, model := range models {
@@ -3627,14 +3655,14 @@ func (a *App) ListFalSoundEffectModels() ([]FalModel, error) {
 // transcription-model picker. Single category (speech-to-text), like the other
 // audio-family pickers.
 func (a *App) ListFalTranscribeModels() ([]FalModel, error) {
-	key, err := loadFalAPIKey()
+	models, err := a.cachedFalCategoryModels(falSpeechToTextCategory)
 	if err != nil {
-		return nil, err
+		// Catalog failure keeps the mapped default — the picker stays
+		// openable (the audio listers sit at the tail of fal's rate-limited
+		// catalog burst).
+		return []FalModel{{ID: defaultFalTranscribeModel}}, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	client := newFalClient(a.client, key)
-	return client.ListModels(ctx, falSpeechToTextCategory, 0)
+	return models, nil
 }
 
 // DetectLocalTools reports the locally installed CLI media tools (whisper
@@ -3683,14 +3711,6 @@ func isFalAudioExtendModel(model FalModel) bool {
 // included even when the catalog fetch or filter misses them (a catalog
 // re-shuffle then degrades to a short static list instead of an empty picker).
 func (a *App) ListFalAudioExtendModels() ([]FalModel, error) {
-	key, err := loadFalAPIKey()
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	client := newFalClient(a.client, key)
-
 	extend := []FalModel{
 		{ID: defaultFalAudioExtendModel},
 		{ID: "fal-ai/ace-step/audio-outpaint"},
@@ -3700,7 +3720,7 @@ func (a *App) ListFalAudioExtendModels() ([]FalModel, error) {
 	for _, model := range extend {
 		seen[model.ID] = true
 	}
-	models, err := client.ListModels(ctx, falAudioToAudioCategory, 0)
+	models, err := a.cachedFalCategoryModels(falAudioToAudioCategory)
 	if err != nil {
 		// Catalog failure keeps the static three — the picker stays usable.
 		return extend, nil
@@ -4144,6 +4164,12 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	// gets cloning when they attach a reference clip, without a Settings visit.
 	if strings.TrimSpace(config.Providers.Fal.AudioModel) != "" && strings.TrimSpace(config.Providers.Fal.AudioCloneModel) == "" {
 		config.Providers.Fal.AudioCloneModel = defaultFalAudioCloneModel
+	}
+	// Seed the voice-design endpoint the same way: anyone with speech configured
+	// gets generate_voice, so a "create a voice" ask routes to it without a
+	// Settings visit.
+	if strings.TrimSpace(config.Providers.Fal.AudioModel) != "" && strings.TrimSpace(config.Providers.Fal.VoiceDesignModel) == "" {
+		config.Providers.Fal.VoiceDesignModel = defaultFalVoiceDesignModel
 	}
 	if strings.TrimSpace(config.Prompts.System) == "" {
 		config.Prompts.System = defaults.Prompts.System

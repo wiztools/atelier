@@ -85,6 +85,11 @@ type HarnessToolExecutionContext struct {
 	GenerateImage   func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, []string, error)
 	GenerateVideo   func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error)
 	GenerateAudio   func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error)
+	// GenerateVoiceDesign designs a NEW voice from a written description — the
+	// generate_voice tool's backend (MiniMax voice-design by default). It
+	// returns the preview clip plus the designed voice's reusable id (see
+	// VoiceDesignRequest), same transport shape as GenerateAudio.
+	GenerateVoiceDesign func(ctx context.Context, req VoiceDesignRequest) (GeneratedAudio, error)
 	// GenerateAudioExtend lengthens an existing clip with generated audio —
 	// the extend sibling of GenerateAudio. It takes the canonical extend
 	// request (source clip, direction, added duration) and returns the longer
@@ -346,6 +351,9 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 	}
 	if soundEffectsGenerationConfigured(config) {
 		definitions = append(definitions, soundEffectsGenerationToolDefinition())
+	}
+	if voiceDesignConfigured(config) {
+		definitions = append(definitions, voiceGenerationToolDefinition())
 	}
 	if audioExtendConfigured(config) {
 		definitions = append(definitions, extendAudioToolDefinition())
@@ -1484,6 +1492,132 @@ func speechGenerationToolDefinition(videoAudioCapable bool) HarnessToolDefinitio
 				}
 			}
 			return out, summary, err
+		},
+		Activity: audioGenerationActivity,
+	}
+}
+
+// voiceDesignConfigured reports whether the generate_voice tool should be
+// offered: a fal voice-design model must be configured AND a fal.ai key must
+// be present. fal is the only voice-design backend; mergeAppConfig seeds the
+// default once AudioModel is set, so anyone with speech configured gets it.
+func voiceDesignConfigured(config AppConfig) bool {
+	// fal-only: airplane mode drops the tool.
+	if airplaneModeActive(config) {
+		return false
+	}
+	if strings.TrimSpace(config.Providers.Fal.VoiceDesignModel) == "" {
+		return false
+	}
+	return falKeyConfigured()
+}
+
+// resolveDefaultVoiceDesignModel returns the model the generate_voice tool
+// uses when the call doesn't override it.
+func resolveDefaultVoiceDesignModel(config AppConfig) string {
+	if model := strings.TrimSpace(config.Providers.Fal.VoiceDesignModel); model != "" {
+		return model
+	}
+	return defaultFalVoiceDesignModel
+}
+
+// voiceDesignDescription assembles the generate_voice tool description. It
+// draws the boundary against generate_speech twice — the lookalike asks — so a
+// small planner routes "speak this text" to speech and "create/design a
+// voice" to design, and it tells the planner the preview clip plus the
+// reusable voice id are the deliverables.
+func voiceDesignDescription() string {
+	return "Use this when the user asks to CREATE or DESIGN a VOICE from a description — a described persona (age, gender, accent, tone, character) they want as a reusable voice (\"create a voice: …\", \"design a warm narrator voice\", a pasted voice-design brief). The configured fal.ai voice-design endpoint synthesizes a preview clip of the described voice and reports its reusable voice id, both attached to the assistant reply. Pass previewText when the user gave words the voice should say in the preview; otherwise a default preview line is used. To SPEAK given text aloud (\"read this\", \"narrate this paragraph\") use generate_speech instead — that tool also covers cloning an attached clip's voice; voice design makes a NEW voice, not speech from text."
+}
+
+// generateVoiceParamSchema is generate_voice's planner-facing schema.
+func generateVoiceParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"content":     stringParam("The written description of the voice to design — age, gender, accent, tone, energy, character (e.g. \"A sweet, natural voice of an 8-year-old Indian girl, warm, expressive, with a subtle accent\")."),
+			"previewText": stringParam("Optional — the line the preview clip speaks so the designed voice can be heard (up to ~500 characters). Pass it when the user gave words the voice should say; omit to use a default preview line."),
+			"model":       stringParam("Optional fal.ai voice-design model override."),
+		},
+		"required": []string{"content"},
+	}
+}
+
+// defaultVoiceDesignPreviewText is the preview line generate_voice speaks when
+// the planner passes no previewText — MiniMax voice-design requires
+// preview_text, and a voice ask need not carry words to say. Short on purpose:
+// the preview audio is billed per character.
+const defaultVoiceDesignPreviewText = "Hi! This is the voice you designed — here is a short preview so you can hear how it sounds."
+
+// voiceDesignExecute clamps the two request fields to the fal endpoint's
+// documented limits (description ≤2000, preview ≤500 characters) with a
+// notice, applies the default preview line, and runs the design.
+func voiceDesignExecute(ctx context.Context, tools HarnessToolExecutionContext, req VoiceDesignRequest) (any, string, error) {
+	if tools.GenerateVoiceDesign == nil {
+		return nil, "voice design unavailable", errors.New("voice design is not available in this context")
+	}
+	if strings.TrimSpace(req.Model) == "" {
+		req.Model = resolveDefaultVoiceDesignModel(tools.Config)
+	}
+	var notices []string
+	description := strings.TrimSpace(req.Description)
+	if len([]rune(description)) > 2000 {
+		description = string([]rune(description)[:2000])
+		notices = append(notices, "The voice description was longer than the 2000 characters the voice-design model accepts; it was truncated.")
+	}
+	preview := strings.TrimSpace(req.PreviewText)
+	if preview == "" {
+		preview = defaultVoiceDesignPreviewText
+		notices = append(notices, "No preview text was given, so the preview speaks a default line instead of the user's words.")
+	} else if len([]rune(preview)) > 500 {
+		preview = string([]rune(preview)[:500])
+		notices = append(notices, "The preview text was longer than the 500 characters the voice-design model accepts; it was truncated.")
+	}
+	req.Description, req.PreviewText = description, preview
+	generated, err := tools.GenerateVoiceDesign(ctx, req)
+	if err != nil {
+		return nil, "voice design failed", err
+	}
+	if len(generated.Data) == 0 {
+		return nil, "voice design returned no audio", errors.New("voice design returned no audio")
+	}
+	generated.Notices = append(generated.Notices, notices...)
+	out, summary, err := stageGeneratedAudio(req.Model, description, generated)
+	if typed, ok := out.(ToolAudioResult); ok {
+		if generated.VoiceID != "" {
+			typed.Notices = append(typed.Notices, fmt.Sprintf(
+				"Designed voice id: %s — generate_speech can speak new text in this voice (pass voice:%q and a MiniMax speech model such as fal-ai/minimax/speech-2.8-hd).",
+				generated.VoiceID, generated.VoiceID))
+			summary = fmt.Sprintf("designed voice %s with %s", generated.VoiceID, req.Model)
+		} else {
+			summary = fmt.Sprintf("designed a voice with %s", req.Model)
+		}
+		out = typed
+	}
+	return out, summary, err
+}
+
+func voiceGenerationToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "generate_voice",
+		Title:       "Generate voice",
+		Description: voiceDesignDescription(),
+		Example:     `{"name":"generate_voice","content":"A sweet, natural voice of an 8-year-old girl, warm, bright, and expressive"}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: generateVoiceParamSchema(),
+		Validate: func(prefix string, call HarnessToolCall) []string {
+			if strings.TrimSpace(call.Content) == "" {
+				return []string{prefix + ".content is required for generate_voice (the description of the voice to design)"}
+			}
+			return nil
+		},
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			return voiceDesignExecute(ctx, tools, VoiceDesignRequest{
+				Model:       strings.TrimSpace(call.Model),
+				Description: call.Content,
+				PreviewText: call.PreviewText,
+			})
 		},
 		Activity: audioGenerationActivity,
 	}

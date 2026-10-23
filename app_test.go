@@ -8290,6 +8290,82 @@ func TestGenerateConversationTitleRoutesToProvider(t *testing.T) {
 	}
 }
 
+// TestFalCategoryCacheSharedAndStale verifies the generalized category cache
+// behind the Settings listers: one fetch per category per TTL across every
+// lister that reads it (the speech lister's two walks included), and a failed
+// re-fetch — fal's /v1/models rate limit on the settings load burst — serves
+// the stale copy instead of failing the lister, while a category with no
+// cached copy still surfaces the error (the audio listers' static fallbacks
+// then keep their pickers openable).
+func TestFalCategoryCacheSharedAndStale(t *testing.T) {
+	calls := map[string]int{}
+	failRefetch := false
+	app := &App{falCategoryFetch: func(_ context.Context, category string) ([]FalModel, error) {
+		calls[category]++
+		if failRefetch {
+			return nil, errors.New("fal rate limited: Rate limit exceeded")
+		}
+		return []FalModel{{ID: "fal-ai/test/" + category}}, nil
+	}}
+
+	// The voice-design and speech listers both walk text-to-speech; the
+	// category is fetched once and shared. The fake's id matches no picker's
+	// filter, so the design list is exactly its static default, while the
+	// speech list passes the text-to-speech side through unfiltered.
+	design, err := app.ListFalVoiceDesignModels()
+	if err != nil {
+		t.Fatalf("ListFalVoiceDesignModels: %v", err)
+	}
+	if len(design) != 1 || design[0].ID != defaultFalVoiceDesignModel {
+		t.Fatalf("design list = %+v, want the static default (the fake id matches no filter)", design)
+	}
+	speech, err := app.ListFalSpeechModels()
+	if err != nil {
+		t.Fatalf("ListFalSpeechModels: %v", err)
+	}
+	found := false
+	for _, model := range speech {
+		if model.ID == "fal-ai/test/"+falTextToSpeechCategory {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("speech list should carry the shared text-to-speech fetch: %+v", speech)
+	}
+	if calls[falTextToSpeechCategory] != 1 {
+		t.Fatalf("text-to-speech fetched %d times, want 1 shared fetch", calls[falTextToSpeechCategory])
+	}
+	if calls[falTextToAudioCategory] != 1 {
+		t.Fatalf("text-to-audio fetched %d times, want 1", calls[falTextToAudioCategory])
+	}
+
+	// Expire the cache and fail the re-fetch: the listers serve the stale
+	// copy rather than failing.
+	failRefetch = true
+	app.falCategories = map[string]falCategoryEntry{
+		falTextToSpeechCategory: {models: []FalModel{{ID: "stale/tts"}}, fetchedAt: time.Now().Add(-falCategoryCacheTTL - time.Second)},
+	}
+	speech, err = app.ListFalSpeechModels()
+	if err != nil {
+		t.Fatalf("stale-serve speech: %v", err)
+	}
+	found = false
+	for _, model := range speech {
+		if model.ID == "stale/tts" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("speech list should carry the stale copy on a failed re-fetch: %+v", speech)
+	}
+
+	// A category with no cached copy surfaces the error (listers without a
+	// static fallback propagate it; the ones with one degrade to it).
+	if _, err := app.ListFalModels(); err == nil {
+		t.Fatal("a category with no cache copy and a failing fetch should error")
+	}
+}
+
 // TestFalImageToImageCacheSharedAndFiltered verifies the upscale and edit
 // listers share a single cached fetch of the image-to-image category and
 // partition it correctly, and that the cache refreshes after its TTL.
@@ -8329,7 +8405,9 @@ func TestFalImageToImageCacheSharedAndFiltered(t *testing.T) {
 	}
 
 	// After the TTL lapses, the next call re-fetches.
-	app.imageToImageFetchedAt = time.Now().Add(-falImageToImageCacheTTL - time.Second)
+	app.falCategories = map[string]falCategoryEntry{
+		falImageUpscalingCategory: {fetchedAt: time.Now().Add(-falCategoryCacheTTL - time.Second)},
+	}
 	if _, err := app.ListFalUpscaleModels(); err != nil {
 		t.Fatalf("refetch: %v", err)
 	}
