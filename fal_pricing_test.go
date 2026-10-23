@@ -754,19 +754,32 @@ func TestAudioBillingSeconds(t *testing.T) {
 	}
 }
 
-// falPricingTransport serves one pricing payload and counts requests.
+// falPricingTransport serves one pricing payload and counts requests. When
+// failBatchOn is set, any request whose endpoint_id query carries that
+// substring fails with 400 — fal validates a batch all-or-nothing, so one bad
+// id fails the request for every id in it — while requests without it serve
+// the body.
 type falPricingTransport struct {
-	requests  int
-	lastQuery string
-	lastAuth  string
-	body      string
-	status    int
+	requests    int
+	lastQuery   string
+	lastAuth    string
+	body        string
+	status      int
+	failBatchOn string
 }
 
 func (transport *falPricingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	transport.requests++
 	transport.lastQuery = req.URL.RawQuery
 	transport.lastAuth = req.Header.Get("Authorization")
+	if transport.failBatchOn != "" && strings.Contains(req.URL.RawQuery, transport.failBatchOn) {
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Status:     "400 Bad Request",
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"validation_error","message":"Bad request"}}`)),
+			Header:     http.Header{},
+		}, nil
+	}
 	body := transport.body
 	if body == "" {
 		body = `{"prices":[` +
@@ -851,16 +864,56 @@ func TestFalPricingCacheFailureNegativeTTL(t *testing.T) {
 	if _, ok := cache.quote(ctx, &http.Client{Transport: transport}, "key", "fal-ai/flux/schnell", nil); ok {
 		t.Fatal("failing fetch should not produce a quote")
 	}
-	if transport.requests != 1 {
-		t.Fatalf("pricing requests = %d, want 1", transport.requests)
+	// Batch and solo fallback both fail — 2 requests — and only then does the
+	// negative window open.
+	if transport.requests != 2 {
+		t.Fatalf("pricing requests = %d, want 2 (batch + solo fallback)", transport.requests)
 	}
 	// Within the negative window no retry: an offline machine must not hit
 	// the pricing endpoint on every media turn.
 	if _, ok := cache.quote(ctx, &http.Client{Transport: transport}, "key", "fal-ai/flux/schnell", nil); ok {
 		t.Fatal("negative-cached quote should miss")
 	}
-	if transport.requests != 1 {
-		t.Fatalf("pricing requests = %d within negative TTL, want 1", transport.requests)
+	if transport.requests != 2 {
+		t.Fatalf("pricing requests = %d within negative TTL, want 2", transport.requests)
+	}
+}
+
+// TestFalPricingCachePoisonedBatchFallsBackToSolo is the regression shape of
+// conv_ebcb7dff: a non-endpoint value typed into a Settings model slot rides
+// the configured batch, fal rejects the WHOLE batched pricing request for it,
+// and the speech generation under test priced to zero even though its own
+// endpoint had a good quote ($0.1 per 1000 characters). The cache must fall
+// back to the one id the call prices, merge it in, and serve later calls from
+// that merge without re-fetching.
+func TestFalPricingCachePoisonedBatchFallsBackToSolo(t *testing.T) {
+	transport := &falPricingTransport{
+		failBatchOn: "Kling",
+		body:        `{"prices":[{"endpoint_id":"fal-ai/minimax/speech-2.8-hd","unit_price":0.1,"unit":"1000 characters","currency":"USD"}],"next_cursor":null,"has_more":false}`,
+	}
+	client := &http.Client{Transport: transport}
+	cache := newFalPricingCache()
+	ctx := context.Background()
+
+	// The batch the gateway builds carries the junk Settings value; the
+	// requested speech endpoint prices anyway. 13 characters × $0.1/1000.
+	got := estimateFalCostMicros(ctx, cache, client, "key", "fal-ai/minimax/speech-2.8-hd", []string{"Kling", "fal-ai/esrgan"}, falBillingHints{Requests: 1, Characters: 13})
+	if got != 1300 {
+		t.Fatalf("speech estimate = %d, want 1300 (13 characters at $0.1/1000)", got)
+	}
+	if transport.requests != 2 {
+		t.Fatalf("pricing requests = %d, want 2 (poisoned batch + solo fallback)", transport.requests)
+	}
+	if !strings.Contains(transport.lastQuery, "endpoint_id=fal-ai%2Fminimax%2Fspeech-2.8-hd") || strings.Contains(transport.lastQuery, "Kling") {
+		t.Fatalf("fallback query %q should carry the speech id alone", transport.lastQuery)
+	}
+
+	// The merged quote serves later calls without another fetch.
+	if got := estimateFalCostMicros(ctx, cache, client, "key", "fal-ai/minimax/speech-2.8-hd", []string{"Kling"}, falBillingHints{Requests: 1, Characters: 13}); got != 1300 {
+		t.Fatalf("cached speech estimate = %d, want 1300", got)
+	}
+	if transport.requests != 2 {
+		t.Fatalf("pricing requests = %d after cached quote, want 2 (merged quote serves)", transport.requests)
 	}
 }
 

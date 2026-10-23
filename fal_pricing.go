@@ -114,17 +114,31 @@ func (cache *falPricingCache) quote(ctx context.Context, httpClient *http.Client
 	// The requested endpoint always rides the batch even when the caller
 	// passed no wider configured set, so a cold cache can still price a
 	// single call.
-	if err := cache.fetch(ctx, httpClient, apiKey, append(append([]string{}, allIDs...), endpointID)); err != nil {
-		cache.failedAt = now
-		return falPriceQuote{}, false
+	if err := cache.fetch(ctx, httpClient, apiKey, append(append([]string{}, allIDs...), endpointID), false); err != nil {
+		// fal prices a batch all-or-nothing: an unknown or malformed endpoint
+		// id fails the request for EVERY id in it, so one bad value — free
+		// text typed into a Settings model slot, an endpoint fal has not
+		// priced yet (conv_ebcb7dff: a speech turn priced 0 because the batch
+		// carried a non-endpoint video-model value) — would keep every quote
+		// out of the cache until the slot is fixed. Fall back to the one id
+		// this call actually prices, merged in so earlier fallback quotes
+		// survive; only BOTH requests failing counts as the outage the
+		// negative TTL remembers.
+		if err := cache.fetch(ctx, httpClient, apiKey, []string{endpointID}, true); err != nil {
+			cache.failedAt = now
+			return falPriceQuote{}, false
+		}
 	}
 	quote, ok := cache.quotes[endpointID]
 	return quote, ok
 }
 
 // fetch populates the cache from one batched pricing request (plus cursor
-// pages). Caller holds the mutex.
-func (cache *falPricingCache) fetch(ctx context.Context, httpClient *http.Client, apiKey string, endpointIDs []string) error {
+// pages). merge appends the fetched quotes onto the existing table instead of
+// replacing it — the solo fallback after a failed batch keeps the quotes that
+// earlier fallbacks fetched, since the batch that would refresh them keeps
+// failing. Caller holds the mutex.
+func (cache *falPricingCache) fetch(ctx context.Context, httpClient *http.Client, apiKey string, endpointIDs []string, merge bool) error {
 	ids := make([]string, 0, len(endpointIDs))
 	seen := make(map[string]bool, len(endpointIDs))
 	for _, id := range endpointIDs {
@@ -184,9 +198,16 @@ func (cache *falPricingCache) fetch(ctx context.Context, httpClient *http.Client
 		cursor = *payload.NextCursor
 	}
 	// A successful fetch replaces the table wholesale: prices change, and a
-	// removed endpoint must not linger at its old rate. fetchedAt only moves
-	// on success (the updater-state pattern), so transient failures retry.
-	cache.quotes = quotes
+	// removed endpoint must not linger at its old rate. The merge form is the
+	// solo-fallback exception — it owns no refresh. fetchedAt only moves on
+	// success (the updater-state pattern), so transient failures retry.
+	if merge {
+		for id, quote := range quotes {
+			cache.quotes[id] = quote
+		}
+	} else {
+		cache.quotes = quotes
+	}
 	cache.fetchedAt = time.Now()
 	cache.failedAt = time.Time{}
 	return nil
