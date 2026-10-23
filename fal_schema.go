@@ -200,6 +200,12 @@ func toSchemaProperty(name string, raw json.RawMessage, components map[string]js
 			if resolved.Description == "" {
 				resolved.Description = p.Description
 			}
+			if resolved.Default == nil && len(p.Default) > 0 {
+				var d any
+				if err := json.Unmarshal(p.Default, &d); err == nil {
+					resolved.Default = d
+				}
+			}
 			return resolved
 		}
 	}
@@ -231,6 +237,16 @@ func toSchemaProperty(name string, raw json.RawMessage, components map[string]js
 			}
 			if unwrapped.Maximum == nil {
 				unwrapped.Maximum = p.Maximum
+			}
+			// The same for a sibling default — fal declares it beside the
+			// union (voice_setting's object default sits on the property that
+			// $refs the shape), and setBodyPath's nested-default merge reads
+			// it from here.
+			if unwrapped.Default == nil && len(p.Default) > 0 {
+				var d any
+				if err := json.Unmarshal(p.Default, &d); err == nil {
+					unwrapped.Default = d
+				}
 			}
 			return unwrapped
 		}

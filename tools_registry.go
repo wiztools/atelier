@@ -1475,6 +1475,7 @@ func speechGenerationToolDefinition(videoAudioCapable bool) HarnessToolDefinitio
 				Model:       strings.TrimSpace(call.Model),
 				Prompt:      call.Content,
 				Voice:       strings.TrimSpace(call.Voice),
+				Emotion:     strings.TrimSpace(call.Emotion),
 				SourceAudio: reference,
 			}, func(config AppConfig) string {
 				if reference != "" {
@@ -2835,6 +2836,10 @@ func generateSpeechParamSchema() map[string]any {
 			"model":   stringParam("Optional fal.ai speech model override."),
 			"voice": stringParam("Optional — the voice for the speech (e.g. \"Rachel\"). " +
 				"Only some speech models support it; ignored otherwise with a note to the user."),
+			"emotion": stringParam("Optional — the delivery tone when the user asks the speech to carry a mood " +
+				"(\"say it sadly\", \"read it excitedly\"): an emotion the model supports, e.g. \"happy\", \"sad\", " +
+				"\"angry\", \"neutral\". The selected model's own enum validates the value and a wrong one is ignored " +
+				"with a note listing the valid ones; models without an emotion control ignore it entirely."),
 			"cloneVoice": boolParam("Optional — voice-cloning control. Omit to clone automatically when the user " +
 				"attached an audio clip; true to require cloning from the attached clip; false to keep the regular " +
 				"speech voice even when a clip is attached (e.g. the clip holds content to transcribe, not a voice to copy)."),

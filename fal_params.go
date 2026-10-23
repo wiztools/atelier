@@ -168,6 +168,12 @@ var audioSynonyms = map[string][]string{
 	"duration": {"duration_seconds", "duration", "music_length_ms"},
 	"loop":     {"loop"},
 	"voice":    {"voice", "voice_id", "voice_name", "speaker", "speaker_id"},
+	// "emotion" is the delivery tone for speech models that expose one —
+	// MiniMax speech-2.5/2.8 nest it under voice_setting (a $ref'd object),
+	// so the one-level nested walk binds voice_setting.emotion. The parsed
+	// property carries the model's enum, so coerceValue's default branch
+	// drops an unknown tone with a notice listing the valid ones.
+	"emotion": {"emotion"},
 	// "sourceAudio" is the voice-cloning reference clip — the audio sibling of
 	// the lipsync source inputs, same native keys. Zero-shot cloning models
 	// (fal-ai/f5-tts, dia, orpheus) declare audio_url for it; a speech model
@@ -378,6 +384,7 @@ func canonicalAudioValues(req AudioGenerateRequest) []canonicalValue {
 		{"duration", strings.TrimSpace(req.Duration), strings.TrimSpace(req.Duration) != ""},
 		{"loop", req.Loop, req.Loop},
 		{"voice", strings.TrimSpace(req.Voice), strings.TrimSpace(req.Voice) != ""},
+		{"emotion", strings.TrimSpace(req.Emotion), strings.TrimSpace(req.Emotion) != ""},
 		{"sourceAudio", strings.TrimSpace(req.SourceAudio), strings.TrimSpace(req.SourceAudio) != ""},
 		{"negativePrompt", strings.TrimSpace(req.NegativePrompt), strings.TrimSpace(req.NegativePrompt) != ""},
 		{"style", strings.TrimSpace(req.Style), strings.TrimSpace(req.Style) != ""},

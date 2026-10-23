@@ -1044,6 +1044,13 @@ type AudioGenerateRequest struct {
 	Loop  bool   `json:"loop,omitempty"`
 	Voice string `json:"voice,omitempty"`
 	Style string `json:"style,omitempty"`
+	// Emotion names the delivery tone for speech models that expose an emotion
+	// control (the MiniMax speech-2.5/2.8 endpoints declare voice_setting.emotion
+	// as a seven-value enum — happy, sad, angry, fearful, disgusted, surprised,
+	// neutral). Resolved like the other params — enum-checked against the model's
+	// schema and dropped-with-notice when the model has no emotion input, so a
+	// non-MiniMax speech model keeps its own default tone.
+	Emotion string `json:"emotion,omitempty"`
 	// SourceAudio is a reference clip (data URL) for zero-shot voice cloning:
 	// generate_speech fills it from the user's attached audio so the speech is
 	// synthesized in that voice. Resolved like the other params — mapped onto

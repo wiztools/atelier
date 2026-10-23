@@ -163,6 +163,48 @@ func TestResolveVoiceNestedMerge(t *testing.T) {
 	}
 }
 
+// TestResolveEmotionOnMiniMaxSpeech pins the emotion canonical: the MiniMax
+// speech-2.8 endpoints declare voice_setting.emotion (a $ref'd object whose
+// emotion member is a nullable anyOf string enum), so the canonical tone must
+// land beside the voice with the schema's sibling defaults surviving the
+// merge; a value outside the model's enum is dropped with the valid list; a
+// model without an emotion control (elevenlabs) drops it with a notice.
+func TestResolveEmotionOnMiniMaxSpeech(t *testing.T) {
+	body, notices := resolveAudioBody(loadSchema(t, "minimax-speech-2.8-hd"),
+		AudioGenerateRequest{Model: "fal-ai/minimax/speech-2.8-hd", Prompt: "hello", Voice: "Wise_Woman", Emotion: "sad"},
+		builtinFalOverrides())
+	vs, ok := body["voice_setting"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected voice_setting object, got %T", body["voice_setting"])
+	}
+	if vs["voice_id"] != "Wise_Woman" {
+		t.Fatalf("expected voice_id=Wise_Woman, got %v", vs["voice_id"])
+	}
+	if vs["emotion"] != "sad" {
+		t.Fatalf("expected emotion=sad, got %v", vs["emotion"])
+	}
+	if vs["speed"] != 1.0 { // sibling default preserved by merge
+		t.Fatalf("expected merged default speed=1, got %v", vs["speed"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("unexpected notices: %v", notices)
+	}
+
+	_, notices = resolveAudioBody(loadSchema(t, "minimax-speech-2.8-hd"),
+		AudioGenerateRequest{Model: "fal-ai/minimax/speech-2.8-hd", Prompt: "hello", Emotion: "furious"},
+		builtinFalOverrides())
+	if len(notices) != 1 || !strings.Contains(notices[0], "furious") || !strings.Contains(notices[0], "happy") {
+		t.Fatalf("expected enum drop notice naming the valid tones, got %v", notices)
+	}
+
+	_, notices = resolveAudioBody(loadSchema(t, "elevenlabs-tts-ml-v2"),
+		AudioGenerateRequest{Model: "fal-ai/elevenlabs/tts/multilingual-v2", Prompt: "hi", Emotion: "sad"},
+		builtinFalOverrides())
+	if len(notices) != 1 || !strings.Contains(notices[0], "no emotion control") {
+		t.Fatalf("expected one emotion drop notice, got %v", notices)
+	}
+}
+
 func TestResolveDropsUnsupportedLoop(t *testing.T) {
 	_, notices := resolveAudioBody(loadSchema(t, "elevenlabs-tts-ml-v2"),
 		AudioGenerateRequest{Model: "fal-ai/elevenlabs/tts/multilingual-v2", Prompt: "hi", Loop: true},

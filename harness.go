@@ -214,6 +214,12 @@ type HarnessToolCall struct {
 	Loop  bool   `json:"loop,omitempty"`
 	Voice string `json:"voice,omitempty"`
 	Style string `json:"style,omitempty"`
+	// Emotion is an optional generate_speech input naming the delivery tone
+	// ("happy", "sad", "angry", ...) for models with an emotion control — the
+	// MiniMax speech-2.5/2.8 endpoints. Planner-only, like Voice — resolved
+	// against the model's schema and dropped-with-notice when it has none. See
+	// generateSpeechParamSchema.
+	Emotion string `json:"emotion,omitempty"`
 	// Direction and Lyrics are optional extend_audio inputs. Direction selects
 	// "after" (the default — append to the clip's end) or "before" (prepend to
 	// its start); Lyrics carries song words for music extenders (ace-step
@@ -2589,6 +2595,11 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 						// designed voice's preview clip speaks; omitted for the
 						// tool's default preview line.
 						"previewText": map[string]any{"type": "string"},
+						// generate_speech input: the delivery tone for models
+						// with an emotion control (the MiniMax speech models —
+						// the model's own schema enum-checks the value);
+						// omitted for the model's default tone.
+						"emotion": map[string]any{"type": "string"},
 					},
 				},
 			},
@@ -3235,6 +3246,8 @@ func setToolCallField(call *HarnessToolCall, key, raw string) {
 		call.Resolution = raw
 	case "voice":
 		call.Voice = raw
+	case "emotion":
+		call.Emotion = raw
 	case "preview_text", "previewText":
 		call.PreviewText = raw
 	case "language":
