@@ -1,4 +1,5 @@
-// Media attachment intake: classifying a file as audio or video. The OS MIME
+// Media attachment intake: classifying a dropped/pasted/picked file as audio,
+// video, subtitle, or document attachment. The OS MIME
 // type is unreliable for real containers — macOS's preferred UTI for .mkv
 // (org.matroska.mkv) declares no MIME tag, so WebKit hands the composer an
 // EMPTY file.type; a type-only check routed an attached MKV to the image
@@ -66,4 +67,46 @@ export function composerHasMediaDrag(items: Array<{kind: string; type: string}>,
     return true;
   }
   return items.some((item) => item.kind === 'file');
+}
+
+// subtitleMimeForFile names the wire mime an attached subtitle carries: the
+// extension decides (.vtt WebVTT, .srt SubRip) because OSes report these files
+// inconsistently (often an empty type). The backend re-sniffs the CONTENT at
+// persistence, so a mislabeled mime only affects the chip, never the artifact.
+export function subtitleMimeForFile(file: {name: string; type: string}): string | null {
+  const lower = file.name.toLowerCase();
+  if (lower.endsWith('.vtt') || file.type === 'text/vtt') return 'text/vtt';
+  if (lower.endsWith('.srt') || file.type === 'application/x-subrip') return 'application/x-subrip';
+  return null;
+}
+
+// markdownMimeForFile is the document twin: extension-first (.md/.markdown —
+// OSes often report an empty type), with text/markdown as the declared fallback.
+// .fountain rides the screenplay dialect's wire mime so the extension survives
+// persistence (unlike .markdown, which normalizes .md because the mime cannot
+// distinguish the spellings). The backend maps the mime back onto the extension.
+export function markdownMimeForFile(file: {name: string; type: string}): string | null {
+  const lower = file.name.toLowerCase();
+  if (lower.endsWith('.fountain')) return 'text/x-fountain';
+  if (lower.endsWith('.md') || lower.endsWith('.markdown') || file.type === 'text/markdown') return 'text/markdown';
+  return null;
+}
+
+// dropAcceptsFile is the composer drop's admission test, the drop-side twin of
+// the picker's accept list: containers ride mediaKindForFile (extension first —
+// an .mkv carries no MIME on macOS, and the filter that predates it turned such
+// a drop into a silent no-op, conv_d3e32280), subtitles and documents ride
+// their extension-first mimes, and images ride the MIME type (macOS types them
+// reliably, and readFileAsAttachment's readImageFile fallthrough is the reader
+// the picker's image/* accept entry feeds). The image branch was dropped when
+// the container routing moved to mediaKindForFile, so dropped PNGs were
+// silently swallowed while the overlay still promised a drop zone — every
+// branch here is asserted in test/mediaIntake.assert.ts.
+export function dropAcceptsFile(file: {name: string; type: string}): boolean {
+  return (
+    mediaKindForFile(file) !== null ||
+    file.type.startsWith('image/') ||
+    subtitleMimeForFile(file) !== null ||
+    markdownMimeForFile(file) !== null
+  );
 }

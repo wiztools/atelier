@@ -115,7 +115,7 @@ import {SubtitleEditor, SubtitleEditorHandle} from './editor/SubtitleEditor';
 import {MarkdownEditor, MarkdownEditorHandle} from './editor/MarkdownEditor';
 import {CompositionEditor, CompositionEditorHandle} from './editor/CompositionEditor';
 import {detectEditorLaunchIntent} from './editorLaunch';
-import {composerHasMediaDrag, mediaKindForFile, mediaMimeForFile} from './mediaIntake';
+import {composerHasMediaDrag, dropAcceptsFile, markdownMimeForFile, mediaKindForFile, mediaMimeForFile, subtitleMimeForFile} from './mediaIntake';
 
 type View = 'app' | 'settings' | 'conversation-models';
 // Settings tabs draw one line: Providers are endpoints and keys you connect to
@@ -5325,12 +5325,9 @@ function App() {
     // Subtitle and markdown files are matched by extension too: an .srt or .md
     // dropped from Finder often reports an empty MIME type, which the type-only
     // drag preview above misses — the drop itself should still accept what the
-    // picker accepts. Media containers go through mediaKindForFile for the same
-    // reason: .mkv carries no MIME type on macOS, and the type-only filter
-    // turned its drop into a silent no-op (conv_d3e32280).
-    const mediaFiles = droppedFiles.filter(
-      (file) => mediaKindForFile(file) !== null || subtitleMimeForFile(file) !== null || markdownMimeForFile(file) !== null,
-    );
+    // picker accepts (dropAcceptsFile in mediaIntake.ts; the .mkv empty-type
+    // case is conv_d3e32280).
+    const mediaFiles = droppedFiles.filter(dropAcceptsFile);
     if (!mediaFiles.length) {
       return;
     }
@@ -11022,17 +11019,6 @@ async function mediaFileDataURL(file: File, kind: 'audio' | 'video'): Promise<st
   return `data:${mediaMimeForFile(file, kind)};base64,${bytesToBase64(bytes)}`;
 }
 
-// subtitleMimeForFile names the wire mime an attached subtitle carries: the
-// extension decides (.vtt WebVTT, .srt SubRip) because OSes report these files
-// inconsistently (often an empty type). The backend re-sniffs the CONTENT at
-// persistence, so a mislabeled mime only affects the chip, never the artifact.
-function subtitleMimeForFile(file: File): string | null {
-  const lower = file.name.toLowerCase();
-  if (lower.endsWith('.vtt') || file.type === 'text/vtt') return 'text/vtt';
-  if (lower.endsWith('.srt') || file.type === 'application/x-subrip') return 'application/x-subrip';
-  return null;
-}
-
 // readSubtitleFile keeps the full data URL as the payload, mirroring
 // audio/video: subtitle attachments are tool-only (convert_subtitles reads the
 // persisted artifact), never model input, and the backend decodes the data URL
@@ -11047,18 +11033,6 @@ async function readSubtitleFile(file: File, nameOverride?: string): Promise<Atta
     payload: dataURL,
     kind: 'subtitle',
   };
-}
-
-// markdownMimeForFile is the document twin: extension-first (.md/.markdown —
-// OSes often report an empty type), with text/markdown as the declared fallback.
-// .fountain rides the screenplay dialect's wire mime so the extension survives
-// persistence (unlike .markdown, which normalizes .md because the mime cannot
-// distinguish the spellings). The backend maps the mime back onto the extension.
-function markdownMimeForFile(file: File): string | null {
-  const lower = file.name.toLowerCase();
-  if (lower.endsWith('.fountain')) return 'text/x-fountain';
-  if (lower.endsWith('.md') || lower.endsWith('.markdown') || file.type === 'text/markdown') return 'text/markdown';
-  return null;
 }
 
 // readMarkdownFile keeps the full data URL as the payload, mirroring

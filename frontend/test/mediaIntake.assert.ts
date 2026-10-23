@@ -1,4 +1,4 @@
-import {composerHasMediaDrag, mediaKindForFile, mediaMimeForFile} from '../src/mediaIntake';
+import {composerHasMediaDrag, dropAcceptsFile, markdownMimeForFile, mediaKindForFile, mediaMimeForFile, subtitleMimeForFile} from '../src/mediaIntake';
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -48,3 +48,21 @@ assert(!composerHasMediaDrag([]), 'no items show nothing');
 assert(composerHasMediaDrag([], ['Files']), 'the types-only Files entry shows the overlay (the WebKit dragover case)');
 assert(composerHasMediaDrag([{kind: 'file', type: ''}], ['Files', 'text/plain']), 'Files in types beside items still shows the overlay');
 assert(!composerHasMediaDrag([{kind: 'string', type: 'text/plain'}], ['text/plain', 'text/html']), 'a text-only drag with no Files type shows nothing');
+
+// The drop's admission test mirrors the picker's accept list. The regression
+// this pins: the container routing refactor dropped the image branch, so a
+// dropped PNG passed no predicate and the handler swallowed it silently —
+// while the overlay above still showed a drop zone.
+assert(dropAcceptsFile({name: 'photo.png', type: 'image/png'}), 'an image rides its MIME type');
+assert(dropAcceptsFile({name: 'clip.mkv', type: ''}), 'an empty-type mkv rides its extension');
+assert(dropAcceptsFile({name: 'voice memo.mp3', type: 'audio/mpeg'}), 'an audio attachment is accepted');
+assert(dropAcceptsFile({name: 'captions.srt', type: ''}), 'a subtitle rides its extension');
+assert(dropAcceptsFile({name: 'notes.md', type: ''}), 'a markdown document rides its extension');
+assert(!dropAcceptsFile({name: 'page.pdf', type: 'application/pdf'}), 'a pdf is not an attachment');
+assert(!dropAcceptsFile({name: 'mystery', type: ''}), 'an extensionless unknown file is not an attachment');
+
+// The subtitle/markdown mimes the admission test and the readers share.
+assert(subtitleMimeForFile({name: 'captions.srt', type: ''}) === 'application/x-subrip', 'srt extension decides the subtitle mime');
+assert(subtitleMimeForFile({name: 'subtitles', type: 'text/vtt'}) === 'text/vtt', 'a typed vtt passes through');
+assert(markdownMimeForFile({name: 'script.fountain', type: ''}) === 'text/x-fountain', 'fountain keeps its dialect mime');
+assert(markdownMimeForFile({name: 'notes', type: 'text/markdown'}) === 'text/markdown', 'a typed markdown passes through');
