@@ -278,6 +278,14 @@ export function ListReplicateImageEditModels() {
   return window['go']['main']['App']['ListReplicateImageEditModels']();
 }
 
+export function ListReplicateLipsyncImageModels() {
+  return window['go']['main']['App']['ListReplicateLipsyncImageModels']();
+}
+
+export function ListReplicateLipsyncVideoModels() {
+  return window['go']['main']['App']['ListReplicateLipsyncVideoModels']();
+}
+
 export function ListReplicateModels() {
   return window['go']['main']['App']['ListReplicateModels']();
 }

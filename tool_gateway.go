@@ -65,9 +65,10 @@ func imageGenerationProvider(config AppConfig) string {
 // routing truth for the gateway's GenerateVideo wiring, media telemetry
 // attribution (toolActivityFromResult), and the tool gates/resolvers. An unset
 // or unrecognized provider means fal: video was fal-only before the Replicate
-// backend existed, so a config written then must keep routing there. The
-// video-source transforms (upscale/reframe/restyle), lipsync, and audio stay
-// fal-only regardless — they are separate tools with their own fal-key gates.
+// backend existed, so a config written then must keep routing there. Audio
+// generation stays fal-only regardless; lip_sync routes by its own
+// Models.LipsyncProvider (resolveLipsyncProvider), and the video-source
+// transforms (upscale/reframe/restyle) follow this provider.
 func videoGenerationProvider(config AppConfig) string {
 	switch strings.TrimSpace(config.Models.VideoProvider) {
 	case "replicate":
@@ -429,9 +430,63 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			return generated, genErr
 		}
 		gateway.tools.GenerateLipsync = func(ctx context.Context, req LipsyncGenerateRequest) (GeneratedVideo, error) {
-			// fal-only: airplane mode refuses the call.
+			// Cloud-only (fal or Replicate): airplane mode refuses the call.
 			if err := airplaneMediaError(config, "lip_sync"); err != nil {
 				return GeneratedVideo{}, err
+			}
+			if resolveLipsyncProvider(config) == "replicate" {
+				apiKey, err := loadReplicateAPIKey()
+				if err != nil {
+					return GeneratedVideo{}, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return GeneratedVideo{}, errReplicateKeyNotConfigured
+				}
+				client := newReplicateClient(app.client, apiKey)
+				// The image face is normalized to a model-decodable format
+				// first (model_image_compat.go) — a HEIC face source can't
+				// ride a Replicate image input any better than a generation
+				// source can.
+				req.Image = ensureModelSafeImage(ctx, config, req.Image)
+				// Pre-resolve the media references: oversized payloads upload
+				// through Replicate's Files API so the prediction input stays
+				// within the inline data-URI budget — lipsync media (a clip
+				// plus its soundtrack) is always oversized in practice, the
+				// generate_video path's rule.
+				if resolved, err := client.ResolveMediaURL(ctx, req.Audio, "audio/mpeg", "audio.mp3"); err == nil && resolved != "" {
+					req.Audio = resolved
+				}
+				if resolved, err := client.ResolveMediaURL(ctx, req.Video, "video/mp4", "face-video.mp4"); err == nil && resolved != "" {
+					req.Video = resolved
+				}
+				if resolved, err := client.ResolveMediaURL(ctx, req.Image, "image/png", "face-image.png"); err == nil && resolved != "" {
+					req.Image = resolved
+				}
+				schema := replicateSchemaCache.Get(ctx, req.Model)
+				body, notices, err := resolveLipsyncBody(schema, req, Overrides{}, "replicate-lipsync")
+				if err != nil {
+					return GeneratedVideo{Notices: notices}, err
+				}
+				// Lip sync returns a video, so it reuses the GenerateVideo
+				// transport — the prediction lifecycle, cancellation, and
+				// output scavenging are the video backend's. Replicate
+				// reports no per-generation cost, so CostMicros stays unset
+				// and the activity renders the CostUnknown "?" (the
+				// dollar-cost invariant).
+				job := &mediaJob{}
+				client.jobSink = job
+				generated, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (GeneratedVideo, error) {
+						return client.GenerateVideo(jctx, req.Model, body)
+					},
+					client.CancelMediaJob,
+					client.RecoverVideoJob,
+				)
+				if genErr == nil && recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
+				generated.Notices = notices
+				return generated, genErr
 			}
 			apiKey, err := loadFalAPIKey()
 			if err != nil {
@@ -469,7 +524,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				req.Image = resolved
 			}
 			schema := schemaCache.Get(ctx, req.Model)
-			body, notices, err := resolveLipsyncBody(schema, req, falOverrides)
+			body, notices, err := resolveLipsyncBody(schema, req, falOverrides, "lipsync")
 			if err != nil {
 				return GeneratedVideo{Notices: notices}, err
 			}

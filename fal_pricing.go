@@ -433,12 +433,18 @@ func configuredFalEndpointIDs(config AppConfig, extra ...string) []string {
 		resolveDefaultSoundEffectsModel,
 		resolveDefaultAudioExtendModel,
 		resolveDefaultTranscribeModel,
-		resolveDefaultLipsyncImageModel,
-		resolveDefaultLipsyncVideoModel,
 	}
 	ids := make([]string, 0, len(resolvers)+len(extra))
 	for _, resolve := range resolvers {
 		ids = append(ids, resolve(config))
+	}
+	// The lipsync slots route by Models.LipsyncProvider, so their fal
+	// endpoints only join the batch when fal actually serves lip_sync — a
+	// replicate-pinned config's fal lipsync slots are dead config.
+	if resolveLipsyncProvider(config) == "fal" {
+		ids = append(ids,
+			resolveDefaultLipsyncImageModel(config, "fal"),
+			resolveDefaultLipsyncVideoModel(config, "fal"))
 	}
 	ids = append(ids, extra...)
 	return ids

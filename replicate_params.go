@@ -1000,3 +1000,46 @@ func resolveReplicateTranscribeInput(schema *ModelInputSchema, req TranscribeAud
 	}
 	return body, notices, nil
 }
+
+// replicateLipsyncSchemaServes reports whether a lipsync collection model's
+// input schema serves the canonical lip_sync request for the given face kind
+// ("sourceImage" for the talking-head picker, "sourceVideo" for the re-sync
+// picker). The pair must BOTH resolve through the replicate-lipsync synonym
+// table as scalar strings (a URI input — an array or object shape is a chat
+// wrapper the canonical request cannot fill, the transcribe resolver's kind
+// guard), and the schema must declare no text-driven input: a "text",
+// "prompt", or "voice_script" string means the model drives the face from
+// written words (kling-lip-sync's text + voice_id, wan-2.2-s2v's required
+// prompt, p-video-avatar's voice_script) — the canonical request carries no
+// text and cannot override one, so such a model never reaches the pickers.
+// The explicit-model path is unaffected: a planner override naming any model
+// still runs, and resolveLipsyncBody's face-source rule polices the mismatch
+// at submit time.
+func replicateLipsyncSchemaServes(schema *ModelInputSchema, faceKind string) bool {
+	if schema == nil {
+		return false
+	}
+	for _, canon := range []string{"sourceAudio", faceKind} {
+		var prop SchemaProperty
+		found := false
+		for _, name := range synonymsFor("replicate-lipsync", canon) {
+			if candidate, ok := schema.property(name); ok {
+				prop, found = candidate, true
+				break
+			}
+		}
+		if !found || prop.Kind != schemaScalar || prop.Type != "string" {
+			return false
+		}
+	}
+	for name, prop := range schema.Properties {
+		if prop.Kind != schemaScalar || prop.Type != "string" {
+			continue
+		}
+		switch name {
+		case "text", "prompt", "voice_script":
+			return false
+		}
+	}
+	return true
+}

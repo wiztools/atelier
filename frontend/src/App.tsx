@@ -54,6 +54,8 @@ import {
   ListFalSoundEffectsVideoModels,
   ListReplicateModels,
   ListReplicateImageEditModels,
+  ListReplicateLipsyncImageModels,
+  ListReplicateLipsyncVideoModels,
   ListReplicateUpscaleModels,
   ListReplicateVideoUpscaleModels,
   ListReplicateVideoRestyleModels,
@@ -443,6 +445,10 @@ const defaultFalVoiceDesignModel = 'fal-ai/minimax/voice-design';
 const defaultFalAudioExtendModel = 'fal-ai/stable-audio-25/inpaint';
 const defaultFalTranscribeModel = 'fal-ai/wizper';
 const defaultReplicateTranscribeModel = 'openai/whisper';
+// Replicate lipsync defaults — the collection's official endpoints the
+// canonical request drives outright (the Go resolvers' fallback constants).
+const defaultReplicateLipsyncImageModel = 'veed/fabric-1.0';
+const defaultReplicateLipsyncVideoModel = 'sync/lipsync-2';
 // Kling's lipsync/audio-to-video takes video_url + audio_url — a video-face
 // endpoint despite the name, so it defaults the video+audio slot; the
 // image+audio slot needs sync-lipsync's image-to-video endpoint (kling has no
@@ -1220,6 +1226,7 @@ function App() {
   // generator and their verified mask-capable editor model need not share a
   // cloud. Defaults mirror the Go merge (fal).
   const [inpaintProvider, setInpaintProvider] = useState<'fal' | 'replicate'>('fal');
+  const [lipsyncProvider, setLipsyncProvider] = useState<'fal' | 'replicate'>('fal');
   const [falInpaintModel, setFalInpaintModel] = useState(defaultFalInpaintModel);
   const [replicateInpaintModel, setReplicateInpaintModel] = useState(defaultReplicateInpaintModel);
   const [openaiCompatibleBaseURL, setOpenaiCompatibleBaseURL] = useState('http://localhost:8080');
@@ -1321,6 +1328,10 @@ function App() {
   const [replicateVideoImageModels, setReplicateVideoImageModels] = useState<main.ReplicateModel[]>([]);
   const [replicateTranscribeModel, setReplicateTranscribeModel] = useState(defaultReplicateTranscribeModel);
   const [replicateTranscribeModels, setReplicateTranscribeModels] = useState<main.ReplicateModel[]>([]);
+  const [replicateLipsyncImageModel, setReplicateLipsyncImageModel] = useState(defaultReplicateLipsyncImageModel);
+  const [replicateLipsyncImageModels, setReplicateLipsyncImageModels] = useState<main.ReplicateModel[]>([]);
+  const [replicateLipsyncVideoModel, setReplicateLipsyncVideoModel] = useState(defaultReplicateLipsyncVideoModel);
+  const [replicateLipsyncVideoModels, setReplicateLipsyncVideoModels] = useState<main.ReplicateModel[]>([]);
   // Each video picker owns its duration options + value, driven by its model's
   // published schema (ListFalVideoDurations). videoDuration (text-to-video) is
   // the canonical value persisted to config.generation.video.duration — the
@@ -1969,6 +1980,8 @@ function App() {
             videoModel: replicateVideoModel,
             videoImageModel: replicateVideoImageModel,
             transcribeModel: replicateTranscribeModel,
+            lipsyncImageModel: replicateLipsyncImageModel,
+            lipsyncVideoModel: replicateLipsyncVideoModel,
           },
           openaiCompatible: {
             baseURL: openaiCompatibleBaseURL,
@@ -2002,6 +2015,7 @@ function App() {
           imageProvider,
           videoProvider,
           inpaintProvider,
+          lipsyncProvider,
           transcriptionProvider,
         },
         prompts: {
@@ -2037,7 +2051,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [airplaneMode, baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, replicateTranscribeModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel, whisperVADModel]);
+  }, [airplaneMode, baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, replicateTranscribeModel, replicateLipsyncImageModel, replicateLipsyncVideoModel, lipsyncProvider, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel, whisperVADModel]);
 
   // Re-probe local CLI tools when a binary override changes — or the Local
   // Tools tab's Re-detect button bumps the nonce — so the transcription
@@ -2471,6 +2485,7 @@ function App() {
     imageProvider,
     videoProvider,
     inpaintProvider,
+    lipsyncProvider,
     falModel,
     openaiImageModel: openaiCompatibleModel,
     replicateModel,
@@ -2505,6 +2520,8 @@ function App() {
     replicateTranscribeModel,
     falLipsyncImageModel,
     falLipsyncVideoModel,
+    replicateLipsyncImageModel,
+    replicateLipsyncVideoModel,
     imageAspectRatio,
     imageSizePreset,
     imageSteps,
@@ -2513,7 +2530,7 @@ function App() {
     videoResolution,
     soundDuration,
     audioExtendDuration,
-  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, inpaintProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, transcriptionProvider, falTranscribeModel, replicateTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration]);
+  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, inpaintProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, transcriptionProvider, falTranscribeModel, replicateTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, replicateLipsyncImageModel, replicateLipsyncVideoModel, lipsyncProvider, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration]);
 
   const conversationModelSelection = useMemo<ModelSelectionValue>(() => {
     const global = globalModelSelection;
@@ -2528,6 +2545,7 @@ function App() {
     const imageProvider = overrides.imageProvider === 'fal' || overrides.imageProvider === 'replicate' || overrides.imageProvider === 'openai-compatible' ? overrides.imageProvider : global.imageProvider;
     const videoProvider = overrides.videoProvider === 'replicate' ? 'replicate' : overrides.videoProvider === 'fal' ? 'fal' : global.videoProvider;
     const inpaintProvider = overrides.inpaintProvider === 'replicate' ? 'replicate' : overrides.inpaintProvider === 'fal' ? 'fal' : global.inpaintProvider;
+    const lipsyncProvider = overrides.lipsyncProvider === 'replicate' ? 'replicate' : overrides.lipsyncProvider === 'fal' ? 'fal' : global.lipsyncProvider;
     const effectiveTranscriptionProvider = overrides.transcriptionProvider === 'fal' || overrides.transcriptionProvider === 'local-whisper' || overrides.transcriptionProvider === 'replicate' ? overrides.transcriptionProvider : global.transcriptionProvider;
     const next: ModelSelectionValue = {
       ...global,
@@ -2538,6 +2556,7 @@ function App() {
       imageProvider,
       videoProvider,
       inpaintProvider,
+      lipsyncProvider,
       falModel: overrides.imageModel && imageProvider === 'fal' ? overrides.imageModel : global.falModel,
       openaiImageModel: overrides.imageModel && imageProvider === 'openai-compatible' ? overrides.imageModel : global.openaiImageModel,
       replicateModel: overrides.imageModel && imageProvider === 'replicate' ? overrides.imageModel : global.replicateModel,
@@ -2570,8 +2589,10 @@ function App() {
       transcriptionProvider: effectiveTranscriptionProvider,
       falTranscribeModel: overrides.transcribeModel && effectiveTranscriptionProvider !== 'replicate' ? overrides.transcribeModel : global.falTranscribeModel,
       replicateTranscribeModel: overrides.transcribeModel && effectiveTranscriptionProvider === 'replicate' ? overrides.transcribeModel : global.replicateTranscribeModel,
-      falLipsyncImageModel: overrides.lipsyncImageModel || global.falLipsyncImageModel,
-      falLipsyncVideoModel: overrides.lipsyncVideoModel || global.falLipsyncVideoModel,
+      falLipsyncImageModel: overrides.lipsyncImageModel && lipsyncProvider !== 'replicate' ? overrides.lipsyncImageModel : global.falLipsyncImageModel,
+      falLipsyncVideoModel: overrides.lipsyncVideoModel && lipsyncProvider !== 'replicate' ? overrides.lipsyncVideoModel : global.falLipsyncVideoModel,
+      replicateLipsyncImageModel: overrides.lipsyncImageModel && lipsyncProvider === 'replicate' ? overrides.lipsyncImageModel : global.replicateLipsyncImageModel,
+      replicateLipsyncVideoModel: overrides.lipsyncVideoModel && lipsyncProvider === 'replicate' ? overrides.lipsyncVideoModel : global.replicateLipsyncVideoModel,
       imageAspectRatio: overrides.imageAspectRatio || global.imageAspectRatio,
       imageSizePreset: overrides.imageSizePreset || global.imageSizePreset,
       imageSteps: overrides.imageSteps || global.imageSteps,
@@ -2609,6 +2630,9 @@ function App() {
     if (patch.imageProvider !== undefined) setImageProvider(patch.imageProvider);
     if (patch.videoProvider !== undefined) setVideoProvider(patch.videoProvider);
     if (patch.inpaintProvider !== undefined) setInpaintProvider(patch.inpaintProvider);
+    if (patch.lipsyncProvider !== undefined) setLipsyncProvider(patch.lipsyncProvider);
+    if (patch.replicateLipsyncImageModel !== undefined) setReplicateLipsyncImageModel(patch.replicateLipsyncImageModel);
+    if (patch.replicateLipsyncVideoModel !== undefined) setReplicateLipsyncVideoModel(patch.replicateLipsyncVideoModel);
     if (patch.falInpaintModel !== undefined) setFalInpaintModel(patch.falInpaintModel);
     if (patch.replicateInpaintModel !== undefined) setReplicateInpaintModel(patch.replicateInpaintModel);
     if (patch.falModel !== undefined) setFalModel(patch.falModel);
@@ -2643,6 +2667,9 @@ function App() {
     if (patch.replicateTranscribeModel !== undefined) setReplicateTranscribeModel(patch.replicateTranscribeModel);
     if (patch.falLipsyncImageModel !== undefined) setFalLipsyncImageModel(patch.falLipsyncImageModel);
     if (patch.falLipsyncVideoModel !== undefined) setFalLipsyncVideoModel(patch.falLipsyncVideoModel);
+    if (patch.lipsyncProvider !== undefined) setLipsyncProvider(patch.lipsyncProvider);
+    if (patch.replicateLipsyncImageModel !== undefined) setReplicateLipsyncImageModel(patch.replicateLipsyncImageModel);
+    if (patch.replicateLipsyncVideoModel !== undefined) setReplicateLipsyncVideoModel(patch.replicateLipsyncVideoModel);
     if (patch.imageAspectRatio !== undefined) setImageAspectRatio(patch.imageAspectRatio);
     if (patch.imageSizePreset !== undefined) setImageSizePreset(patch.imageSizePreset);
     if (patch.imageSteps !== undefined) setImageSteps(patch.imageSteps);
@@ -2758,6 +2785,9 @@ function App() {
       if (patch.audioExtendDuration !== undefined) next.add('audioExtendDuration');
       if (patch.falLipsyncImageModel !== undefined) next.add('lipsyncImageModel');
       if (patch.falLipsyncVideoModel !== undefined) next.add('lipsyncVideoModel');
+      if (patch.lipsyncProvider !== undefined) next.add('lipsyncProvider');
+      if (patch.replicateLipsyncImageModel !== undefined) next.add('lipsyncImageModel');
+      if (patch.replicateLipsyncVideoModel !== undefined) next.add('lipsyncVideoModel');
       return next;
     });
   };
@@ -2854,8 +2884,15 @@ function App() {
         case 'videoResolution': next.videoResolution = global.videoResolution; break;
         case 'soundDuration': next.soundDuration = global.soundDuration; break;
         case 'audioExtendDuration': next.audioExtendDuration = global.audioExtendDuration; break;
-        case 'lipsyncImageModel': next.falLipsyncImageModel = global.falLipsyncImageModel; break;
-        case 'lipsyncVideoModel': next.falLipsyncVideoModel = global.falLipsyncVideoModel; break;
+        case 'lipsyncProvider': next.lipsyncProvider = global.lipsyncProvider; break;
+        case 'lipsyncImageModel':
+          next.falLipsyncImageModel = global.falLipsyncImageModel;
+          next.replicateLipsyncImageModel = global.replicateLipsyncImageModel;
+          break;
+        case 'lipsyncVideoModel':
+          next.falLipsyncVideoModel = global.falLipsyncVideoModel;
+          next.replicateLipsyncVideoModel = global.replicateLipsyncVideoModel;
+          break;
       }
       return next;
     });
@@ -3059,6 +3096,8 @@ function App() {
     replicateVideoModels,
     replicateVideoImageModels,
     replicateTranscribeModels,
+    replicateLipsyncImageModels,
+    replicateLipsyncVideoModels,
     falVideoModels,
     falVideoImageModels,
     falVideoKeyframeModels,
@@ -3321,6 +3360,9 @@ function App() {
 	const nextMagickBinary = config.providers?.local?.magick?.binary ?? '';
 	const nextFalLipsyncImageModel = config.providers?.fal?.lipsyncImageModel || defaultFalLipsyncImageModel;
 	const nextFalLipsyncVideoModel = config.providers?.fal?.lipsyncVideoModel || defaultFalLipsyncVideoModel;
+    const nextLipsyncProvider: 'fal' | 'replicate' = config.models?.lipsyncProvider === 'replicate' ? 'replicate' : 'fal';
+    const nextReplicateLipsyncImageModel = config.providers?.replicate?.lipsyncImageModel || defaultReplicateLipsyncImageModel;
+    const nextReplicateLipsyncVideoModel = config.providers?.replicate?.lipsyncVideoModel || defaultReplicateLipsyncVideoModel;
     const nextFalUpscaleModel = config.providers?.fal?.upscaleModel || defaultFalUpscaleModel;
     const nextInpaintProvider: 'fal' | 'replicate' = config.models?.inpaintProvider === 'replicate' ? 'replicate' : 'fal';
     const nextFalInpaintModel = config.providers?.fal?.inpaintModel || defaultFalInpaintModel;
@@ -3394,6 +3436,9 @@ function App() {
     setFfprobeBinary(nextFfprobeBinary);
     setSipsBinary(nextSipsBinary);
     setMagickBinary(nextMagickBinary);
+    setLipsyncProvider(nextLipsyncProvider);
+    setReplicateLipsyncImageModel(nextReplicateLipsyncImageModel);
+    setReplicateLipsyncVideoModel(nextReplicateLipsyncVideoModel);
     setFalLipsyncImageModel(nextFalLipsyncImageModel);
     setFalLipsyncVideoModel(nextFalLipsyncVideoModel);
     setFalUpscaleModel(nextFalUpscaleModel);
@@ -3821,6 +3866,16 @@ function App() {
     } catch {
       setReplicateTranscribeModels([]);
     }
+    try {
+      setReplicateLipsyncImageModels(asArray(await ListReplicateLipsyncImageModels()));
+    } catch {
+      setReplicateLipsyncImageModels([]);
+    }
+    try {
+      setReplicateLipsyncVideoModels(asArray(await ListReplicateLipsyncVideoModels()));
+    } catch {
+      setReplicateLipsyncVideoModels([]);
+    }
   }
 
   async function saveReplicateKey() {
@@ -3863,10 +3918,13 @@ function App() {
       setReplicateVideoReframeModels([]);
       setReplicateVideoModels([]);
       setReplicateVideoImageModels([]);
+      setReplicateLipsyncImageModels([]);
+      setReplicateLipsyncVideoModels([]);
       setReplicateStatus('unknown');
       setReplicateError('');
       setImageProvider((current) => current === 'replicate' ? 'openai-compatible' : current);
       setVideoProvider((current) => current === 'replicate' ? 'fal' : current);
+      setLipsyncProvider((current) => current === 'replicate' ? 'fal' : current);
     } catch (error) {
       setStatus((current) => current ? {...current, error: String(error)} : current);
     }
@@ -8900,6 +8958,9 @@ type ModelSelectionValue = {
   replicateTranscribeModel: string;
   falLipsyncImageModel: string;
   falLipsyncVideoModel: string;
+  lipsyncProvider: 'fal' | 'replicate';
+  replicateLipsyncImageModel: string;
+  replicateLipsyncVideoModel: string;
   imageAspectRatio: string;
   imageSizePreset: string;
   imageSteps: number;
@@ -8977,6 +9038,7 @@ function overrideKeysFromRecord(overrides: main.ConversationModelOverrides | nul
   if (overrides.videoResolution) keys.add('videoResolution');
   if (overrides.soundDuration) keys.add('soundDuration');
   if (overrides.audioExtendDuration) keys.add('audioExtendDuration');
+  if (overrides.lipsyncProvider) keys.add('lipsyncProvider');
   if (overrides.lipsyncImageModel) keys.add('lipsyncImageModel');
   if (overrides.lipsyncVideoModel) keys.add('lipsyncVideoModel');
   return keys;
@@ -9034,8 +9096,9 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   if (keys.has('videoResolution')) payload.videoResolution = draft.videoResolution;
   if (keys.has('soundDuration')) payload.soundDuration = draft.soundDuration;
   if (keys.has('audioExtendDuration')) payload.audioExtendDuration = draft.audioExtendDuration;
-  if (keys.has('lipsyncImageModel')) payload.lipsyncImageModel = draft.falLipsyncImageModel;
-  if (keys.has('lipsyncVideoModel')) payload.lipsyncVideoModel = draft.falLipsyncVideoModel;
+  if (keys.has('lipsyncProvider')) payload.lipsyncProvider = draft.lipsyncProvider;
+  if (keys.has('lipsyncImageModel')) payload.lipsyncImageModel = draft.lipsyncProvider === 'replicate' ? draft.replicateLipsyncImageModel : draft.falLipsyncImageModel;
+  if (keys.has('lipsyncVideoModel')) payload.lipsyncVideoModel = draft.lipsyncProvider === 'replicate' ? draft.replicateLipsyncVideoModel : draft.falLipsyncVideoModel;
   return main.ConversationModelOverrides.createFrom(payload);
 }
 
@@ -9084,6 +9147,8 @@ function ModelSelectionPanel({
     replicateVideoModels: main.ReplicateModel[];
     replicateVideoImageModels: main.ReplicateModel[];
     replicateTranscribeModels: main.ReplicateModel[];
+    replicateLipsyncImageModels: main.ReplicateModel[];
+    replicateLipsyncVideoModels: main.ReplicateModel[];
     falVideoModels: main.FalModel[];
     falVideoImageModels: main.FalModel[];
     falVideoKeyframeModels: main.FalModel[];
@@ -9149,6 +9214,8 @@ function ModelSelectionPanel({
   const replicateVideoOptions = falModelOptionList(catalogs.replicateVideoModels);
   const replicateVideoImageOptions = falModelOptionList(catalogs.replicateVideoImageModels);
   const replicateTranscribeOptions = falModelOptionList(catalogs.replicateTranscribeModels);
+  const replicateLipsyncImageOptions = falModelOptionList(catalogs.replicateLipsyncImageModels);
+  const replicateLipsyncVideoOptions = falModelOptionList(catalogs.replicateLipsyncVideoModels);
   const falUpscaleOptions = falModelOptionList(catalogs.falUpscaleModels);
   const falVideoOptions = falModelOptionList(catalogs.falVideoModels);
   const falVideoImageOptions = falModelOptionList(catalogs.falVideoImageModels);
@@ -10168,39 +10235,85 @@ function ModelSelectionPanel({
           {airplaneMode ? (
             <AirplaneHint
               label="Lip sync unavailable"
-              text="Lip sync runs on fal.ai, which airplane mode blocks."
+              text="Lip sync runs on a cloud provider (fal.ai or Replicate), which airplane mode blocks."
             />
           ) : null}
         </h3>
         <div className="settings-rows">
           <div className="two-column">
             <div className="field">
-              {fieldLabel('fal-lipsync-image-model', 'Image+Audio Input (fal.ai)', 'lipsyncImageModel')}
-              <ModelCombobox
-                id="fal-lipsync-image-model"
-                ariaLabel="fal.ai image+audio lip sync model"
-                placeholder={defaultFalLipsyncImageModel}
-                value={value.falLipsyncImageModel}
-                onChange={(next) => onChange({falLipsyncImageModel: next})}
-                options={falLipsyncImageOptions}
-                allowCustom
-              />
-            </div>
-
-            <div className="field">
-              {fieldLabel('fal-lipsync-video-model', 'Video+Audio Input (fal.ai)', 'lipsyncVideoModel')}
-              <ModelCombobox
-                id="fal-lipsync-video-model"
-                ariaLabel="fal.ai video+audio lip sync model"
-                placeholder={defaultFalLipsyncVideoModel}
-                value={value.falLipsyncVideoModel}
-                onChange={(next) => onChange({falLipsyncVideoModel: next})}
-                options={falLipsyncVideoOptions}
-                allowCustom
-              />
+              {fieldLabel('lipsync-provider', 'Lip Sync Provider', 'lipsyncProvider')}
+              <select
+                id="lipsync-provider"
+                value={value.lipsyncProvider}
+                onChange={(event) => onChange({lipsyncProvider: event.target.value as 'fal' | 'replicate'})}
+              >
+                <option value="fal" disabled={airplaneMode}>fal.ai (cloud)</option>
+                <option value="replicate" disabled={airplaneMode}>Replicate (cloud)</option>
+              </select>
             </div>
           </div>
-          {!airplaneMode && !catalogs.falHasKey ? (
+          {value.lipsyncProvider === 'replicate' ? (
+            <div className="two-column">
+              <div className="field">
+                {fieldLabel('replicate-lipsync-image-model', 'Image+Audio Input (Replicate)', 'lipsyncImageModel')}
+                <ModelCombobox
+                  id="replicate-lipsync-image-model"
+                  ariaLabel="Replicate image+audio lip sync model"
+                  placeholder={defaultReplicateLipsyncImageModel}
+                  value={value.replicateLipsyncImageModel}
+                  onChange={(next) => onChange({replicateLipsyncImageModel: next})}
+                  options={replicateLipsyncImageOptions}
+                  allowCustom
+                />
+              </div>
+
+              <div className="field">
+                {fieldLabel('replicate-lipsync-video-model', 'Video+Audio Input (Replicate)', 'lipsyncVideoModel')}
+                <ModelCombobox
+                  id="replicate-lipsync-video-model"
+                  ariaLabel="Replicate video+audio lip sync model"
+                  placeholder={defaultReplicateLipsyncVideoModel}
+                  value={value.replicateLipsyncVideoModel}
+                  onChange={(next) => onChange({replicateLipsyncVideoModel: next})}
+                  options={replicateLipsyncVideoOptions}
+                  allowCustom
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="two-column">
+              <div className="field">
+                {fieldLabel('fal-lipsync-image-model', 'Image+Audio Input (fal.ai)', 'lipsyncImageModel')}
+                <ModelCombobox
+                  id="fal-lipsync-image-model"
+                  ariaLabel="fal.ai image+audio lip sync model"
+                  placeholder={defaultFalLipsyncImageModel}
+                  value={value.falLipsyncImageModel}
+                  onChange={(next) => onChange({falLipsyncImageModel: next})}
+                  options={falLipsyncImageOptions}
+                  allowCustom
+                />
+              </div>
+
+              <div className="field">
+                {fieldLabel('fal-lipsync-video-model', 'Video+Audio Input (fal.ai)', 'lipsyncVideoModel')}
+                <ModelCombobox
+                  id="fal-lipsync-video-model"
+                  ariaLabel="fal.ai video+audio lip sync model"
+                  placeholder={defaultFalLipsyncVideoModel}
+                  value={value.falLipsyncVideoModel}
+                  onChange={(next) => onChange({falLipsyncVideoModel: next})}
+                  options={falLipsyncVideoOptions}
+                  allowCustom
+                />
+              </div>
+            </div>
+          )}
+          {!airplaneMode && value.lipsyncProvider === 'replicate' && !catalogs.replicateHasKey ? (
+            <span className="hint">Add a Replicate API token {keyWhere} to use lip sync.</span>
+          ) : null}
+          {!airplaneMode && value.lipsyncProvider !== 'replicate' && !catalogs.falHasKey ? (
             <span className="hint">Add a fal.ai API key {keyWhere} to use lip sync.</span>
           ) : null}
         </div>

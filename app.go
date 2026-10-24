@@ -310,6 +310,8 @@ type ConfigFal struct {
 	// user attaches an audio clip plus an image (a talking head).
 	// LipsyncVideoModel is the video-to-video lip sync endpoint used when the
 	// user attaches an audio clip plus a video (re-lip-sync an existing clip).
+	// Both serve when fal is the LipsyncProvider; the Replicate slots mirror
+	// them for a replicate-pinned config.
 	LipsyncImageModel string `json:"lipsyncImageModel,omitempty"`
 	LipsyncVideoModel string `json:"lipsyncVideoModel,omitempty"`
 	// SoundEffectsVideoModel is the video-to-sound-effects endpoint used by the
@@ -325,8 +327,8 @@ type ConfigFal struct {
 // follow ImageProvider), generate_video, and upscale_video/restyle_video/
 // reframe_video (which follow VideoProvider). The API token lives in the OS
 // keychain (see keychain.go), not in config — Enabled mirrors the key's
-// presence for the frontend, like ConfigFal. Lipsync and audio stay
-// fal-only.
+// presence for the frontend, like ConfigFal. Audio generation stays
+// fal-only; lip_sync routes by Models.LipsyncProvider.
 type ConfigReplicate struct {
 	Enabled bool `json:"enabled"`
 	// Model is the text-to-image model (an owner/name slug, e.g.
@@ -365,6 +367,14 @@ type ConfigReplicate struct {
 	// the Replicate sibling of ConfigFal.TranscribeModel. The picker lists
 	// Replicate's speech-to-text collection.
 	TranscribeModel string `json:"transcribeModel,omitempty"`
+	// LipsyncImageModel is the audio-to-video lip sync model lip_sync uses
+	// (a talking head from the attached image) and LipsyncVideoModel the
+	// video-to-video model (re-lip-sync an attached clip) when replicate is
+	// the LipsyncProvider — the Replicate siblings of ConfigFal's lipsync
+	// pair. The pickers list Replicate's lipsync collection, post-filtered
+	// by input schema.
+	LipsyncImageModel string `json:"lipsyncImageModel,omitempty"`
+	LipsyncVideoModel string `json:"lipsyncVideoModel,omitempty"`
 }
 
 // ConfigOpenAICompatible addresses a local server that speaks OpenAI's API
@@ -473,6 +483,12 @@ type ConfigModels struct {
 	// mask-capable editor model need not share a backend. Normalized in
 	// mergeAppConfig like VideoProvider.
 	InpaintProvider string `json:"inpaintProvider,omitempty"`
+	// LipsyncProvider selects the lip_sync backend: "fal" (the default) or
+	// "replicate". Independent of VideoProvider the way InpaintProvider is
+	// independent of ImageProvider — lip_sync spans all three media kinds
+	// (audio plus an image or video face), so tying it to the video backend
+	// would surprise. Normalized in mergeAppConfig like VideoProvider.
+	LipsyncProvider string `json:"lipsyncProvider,omitempty"`
 }
 
 type ConfigPrompts struct {
@@ -3037,6 +3053,56 @@ func (a *App) listReplicateCollection(slug string) ([]ReplicateModel, error) {
 	return newReplicateClient(a.client, key).ListCollectionModels(ctx, slug)
 }
 
+// ListReplicateLipsyncImageModels returns the official lipsync collection
+// models whose input schemas serve the canonical image-face pair — an image
+// plus the driving audio — for the Settings talking-head picker, shown when
+// replicate is the lipsync provider. Text-driven avatar generators
+// (kling-lip-sync's text + voice_id, wan-2.2-s2v's required prompt,
+// p-video-avatar's voice_script) and every video-face re-sync endpoint drop
+// out: the canonical request cannot drive them. An empty result falls back
+// to the default model so the dropdown never goes bare.
+func (a *App) ListReplicateLipsyncImageModels() ([]ReplicateModel, error) {
+	return a.listReplicateLipsyncModels("sourceImage", defaultReplicateLipsyncImageModel)
+}
+
+// ListReplicateLipsyncVideoModels is the video-face sibling: re-sync
+// endpoints whose schemas accept a video plus the driving audio
+// (sync/lipsync-2, the HeyGen pair, pixverse/lipsync).
+func (a *App) ListReplicateLipsyncVideoModels() ([]ReplicateModel, error) {
+	return a.listReplicateLipsyncModels("sourceVideo", defaultReplicateLipsyncVideoModel)
+}
+
+// listReplicateLipsyncModels is the shared body of the two lipsync pickers:
+// the collection walk, then a per-model input-schema check through the
+// replicate schema cache (which warms the same cache the gateway's lip_sync
+// wiring reads). The fal listers' two-category fetch is the sibling here;
+// the schema check replaces their id-marker partition because the face kinds
+// are only visible in the schemas — no id vocabulary separates a talking
+// head from a re-sync endpoint.
+func (a *App) listReplicateLipsyncModels(faceKind, fallback string) ([]ReplicateModel, error) {
+	models, err := a.listReplicateCollection(replicateLipsyncCollection)
+	if err != nil {
+		return nil, err
+	}
+	config, err := loadAppConfig()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cache := newReplicateSchemaCache(a.client, config.Storage.Root)
+	filtered := make([]ReplicateModel, 0, len(models))
+	for _, model := range models {
+		if replicateLipsyncSchemaServes(cache.Get(ctx, model.ID), faceKind) {
+			filtered = append(filtered, model)
+		}
+	}
+	if len(filtered) == 0 {
+		filtered = append(filtered, ReplicateModel{ID: fallback})
+	}
+	return filtered, nil
+}
+
 // ListReplicateVideoDurations returns the duration values the given Replicate
 // video model accepts, read from its input schema — the Replicate counterpart
 // of ListFalVideoDurations. Returns an empty slice (not an error) when the
@@ -4325,6 +4391,18 @@ func mergeAppConfig(config AppConfig) AppConfig {
 		config.Models.InpaintProvider = strings.TrimSpace(config.Models.InpaintProvider)
 	default:
 		config.Models.InpaintProvider = "fal"
+	}
+	// LipsyncProvider selects the lip_sync backend ("fal" | "replicate").
+	// Unknown or empty normalizes to "fal", the default: an absent field
+	// means a config written before Replicate served lipsync, which must
+	// keep routing there. The model slots carry no forced defaults — the
+	// resolvers fall back to known-good constants on both providers, the
+	// transcription slots' contract.
+	switch strings.TrimSpace(config.Models.LipsyncProvider) {
+	case "fal", "replicate":
+		config.Models.LipsyncProvider = strings.TrimSpace(config.Models.LipsyncProvider)
+	default:
+		config.Models.LipsyncProvider = "fal"
 	}
 	// Local CLI tool settings carry no forced defaults: an empty binary means
 	// PATH auto-detection and an empty model means the CLI's own default.

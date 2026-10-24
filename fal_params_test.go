@@ -2909,7 +2909,7 @@ func TestResolveLipsyncBodyAudioToVideo(t *testing.T) {
 			Audio: "data:audio/mpeg;base64,AAA",
 			Image: "data:image/png;base64,BBB",
 		},
-		builtinFalOverrides())
+		builtinFalOverrides(), "lipsync")
 	if err != nil {
 		t.Fatalf("resolveLipsyncBody returned error for image-capable model: %v", err)
 	}
@@ -2941,7 +2941,7 @@ func TestResolveLipsyncBodyImageOnVideoOnlyModel(t *testing.T) {
 			Audio: "data:audio/mpeg;base64,AAA",
 			Image: "data:image/png;base64,BBB",
 		},
-		builtinFalOverrides())
+		builtinFalOverrides(), "lipsync")
 	if err == nil {
 		t.Fatalf("expected a hard error when an image is sent to a video-only lip sync model, got nil")
 	}
@@ -2959,7 +2959,7 @@ func TestResolveLipsyncBodyVideoOnImageOnlyModel(t *testing.T) {
 			Audio: "data:audio/mpeg;base64,AAA",
 			Video: "data:video/mp4;base64,CCC",
 		},
-		builtinFalOverrides())
+		builtinFalOverrides(), "lipsync")
 	if err == nil {
 		t.Fatalf("expected a hard error when a video is sent to an image-only lip sync model, got nil")
 	}
@@ -2977,7 +2977,7 @@ func TestResolveLipsyncBodyVideoToVideo(t *testing.T) {
 			Audio: "data:audio/mpeg;base64,AAA",
 			Video: "data:video/mp4;base64,CCC",
 		},
-		builtinFalOverrides())
+		builtinFalOverrides(), "lipsync")
 	if err != nil {
 		t.Fatalf("resolveLipsyncBody returned error for video-capable model: %v", err)
 	}
@@ -3005,7 +3005,7 @@ func TestResolveLipsyncBodyNoSchema(t *testing.T) {
 			Audio: "data:audio/mpeg;base64,AAA",
 			Video: "data:video/mp4;base64,CCC",
 		},
-		builtinFalOverrides())
+		builtinFalOverrides(), "lipsync")
 	if err != nil {
 		t.Fatalf("nil-schema fallback returned error: %v", err)
 	}

@@ -123,7 +123,7 @@ func TestChainedToolIntermediateNotAttached(t *testing.T) {
 	audioBytes := []byte{0xFF, 0xE0, 0x00, 0x00, 'n', 'a', 'r', 'r', 'a', 't', 'e'}
 	registry := newHarnessToolRegistry([]HarnessToolDefinition{
 		speechGenerationToolDefinition(false),
-		lipsyncToolDefinition(false),
+		lipsyncToolDefinition(defaultAppConfig(), false),
 	})
 	tools := HarnessToolExecutionContext{
 		Config: defaultAppConfig(),
@@ -226,7 +226,7 @@ func TestToolConsumedMediaKindsMatchRegistry(t *testing.T) {
 	definitions = append(definitions, imagemagickImageToolDefinitions()...)
 	// probe_media is gated on ffprobe resolving (pinned off in tests).
 	definitions = append(definitions, probeMediaToolDefinition())
-	definitions = append(definitions, lipsyncToolDefinition(false))
+	definitions = append(definitions, lipsyncToolDefinition(defaultAppConfig(), false))
 	definitions = append(definitions, imageUpscaleToolDefinition(config))
 	definitions = append(definitions, videoUpscaleToolDefinition(config))
 	definitions = append(definitions, videoReframeToolDefinition(config))

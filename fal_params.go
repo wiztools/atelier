@@ -303,6 +303,19 @@ var lipsyncSynonyms = map[string][]string{
 	"sourceVideo": {"video_url", "video_urls"},
 }
 
+// replicateLipsyncSynonyms is the Replicate sibling of lipsyncSynonyms — the
+// native key names the lipsync collection's schemas actually declare
+// (sync/lipsync-2 says video/audio, chenxwh/video-retalking face/input_audio,
+// cjwbw/sadtalker source_image/driven_audio, tmappdev/lipsync
+// video_input/audio_input). `face` is deliberately a sourceVideo name only:
+// video-retalking's face input is the face CLIP, and routing an attached
+// image into it would send a still where the model expects video frames.
+var replicateLipsyncSynonyms = map[string][]string{
+	"sourceAudio": {"audio", "input_audio", "driven_audio", "audio_input", "audio_file", "first_audio"},
+	"sourceImage": {"image", "source_image"},
+	"sourceVideo": {"video", "video_input", "face"},
+}
+
 // sfxSynonyms lists, per canonical param, the native key names to look for in a
 // video sound-effects model's schema (the add_sound_effects tool's category —
 // resolveSFXBody). sourceVideo is the clip to soundtrack; prompt steers the
@@ -1791,6 +1804,12 @@ func schemaDefaultSeconds(prop SchemaProperty) string {
 // yields a generic body with the audio + whichever source is present, plus a
 // notice.
 //
+// The category selects the synonym table: "lipsync" walks fal's dialect
+// (audio_url/video_url), "replicate-lipsync" Replicate's (audio/video,
+// face/input_audio). The URL normalizers are provider-neutral — Replicate
+// inputs take the same http/data-URI shapes, and the gateway pre-resolves
+// oversized media to hosted URLs before this runs.
+//
 // The face source is the tool's entire purpose, so an unmapped face input is a
 // fatal error, not a graceful drop: without it the model can't do lip sync and
 // the request would 422 downstream with a confusing "field required" message
@@ -1798,7 +1817,7 @@ func schemaDefaultSeconds(prop SchemaProperty) string {
 // selected for an audio+image turn and the dropped image became a 422). The
 // audio input, by contrast, stays a notice — some endpoints can drive a face
 // from text, so a missing audio field is degradable.
-func resolveLipsyncBody(schema *ModelInputSchema, req LipsyncGenerateRequest, ov Overrides) (map[string]any, []string, error) {
+func resolveLipsyncBody(schema *ModelInputSchema, req LipsyncGenerateRequest, ov Overrides, category string) (map[string]any, []string, error) {
 	audio := falAudioURL(strings.TrimSpace(req.Audio))
 	image := falImageURL(strings.TrimSpace(req.Image))
 	video := falVideoURL(strings.TrimSpace(req.Video))
@@ -1820,7 +1839,7 @@ func resolveLipsyncBody(schema *ModelInputSchema, req LipsyncGenerateRequest, ov
 	var notices []string
 
 	if audio != "" {
-		if path, prop, ok := findNative(schema, ov, "lipsync", req.Model, "sourceAudio"); ok {
+		if path, prop, ok := findNative(schema, ov, category, req.Model, "sourceAudio"); ok {
 			setBodyPath(schema, body, path, coerceVideoValue(prop, audio))
 		} else {
 			notices = append(notices, fmt.Sprintf(
@@ -1836,7 +1855,7 @@ func resolveLipsyncBody(schema *ModelInputSchema, req LipsyncGenerateRequest, ov
 	// as a confusing "field required" rather than a model-mismatch.
 	switch {
 	case video != "":
-		if path, prop, ok := findNative(schema, ov, "lipsync", req.Model, "sourceVideo"); ok {
+		if path, prop, ok := findNative(schema, ov, category, req.Model, "sourceVideo"); ok {
 			setBodyPath(schema, body, path, coerceVideoValue(prop, video))
 		} else {
 			return nil, notices, fmt.Errorf(
@@ -1844,7 +1863,7 @@ func resolveLipsyncBody(schema *ModelInputSchema, req LipsyncGenerateRequest, ov
 				req.Model)
 		}
 	case image != "":
-		if path, prop, ok := findNative(schema, ov, "lipsync", req.Model, "sourceImage"); ok {
+		if path, prop, ok := findNative(schema, ov, category, req.Model, "sourceImage"); ok {
 			setBodyPath(schema, body, path, coerceVideoValue(prop, image))
 		} else {
 			return nil, notices, fmt.Errorf(
@@ -2298,6 +2317,8 @@ func synonymsFor(category, canon string) []string {
 		return videoSynonyms[canon]
 	case "lipsync":
 		return lipsyncSynonyms[canon]
+	case "replicate-lipsync":
+		return replicateLipsyncSynonyms[canon]
 	case "sfx":
 		return sfxSynonyms[canon]
 	case "inpaint":

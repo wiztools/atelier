@@ -632,7 +632,7 @@ func TestGenerateSpeechFeedsLipSyncInSameBatch(t *testing.T) {
 
 	registry := newHarnessToolRegistry([]HarnessToolDefinition{
 		speechGenerationToolDefinition(false),
-		lipsyncToolDefinition(false),
+		lipsyncToolDefinition(defaultAppConfig(), false),
 	})
 	tools := HarnessToolExecutionContext{
 		Config: defaultAppConfig(),
@@ -702,7 +702,7 @@ func TestUserAttachedAudioNotOverwritten(t *testing.T) {
 	var lipsyncSawAudio string
 	registry := newHarnessToolRegistry([]HarnessToolDefinition{
 		speechGenerationToolDefinition(false),
-		lipsyncToolDefinition(false),
+		lipsyncToolDefinition(defaultAppConfig(), false),
 	})
 	const userAudio = "data:audio/mpeg;base64,USERCLIP"
 	tools := HarnessToolExecutionContext{

@@ -140,6 +140,10 @@ export function ListProjectConversations(arg1:string):Promise<Array<main.Convers
 
 export function ListReplicateImageEditModels():Promise<Array<main.ReplicateModel>>;
 
+export function ListReplicateLipsyncImageModels():Promise<Array<main.ReplicateModel>>;
+
+export function ListReplicateLipsyncVideoModels():Promise<Array<main.ReplicateModel>>;
+
 export function ListReplicateModels():Promise<Array<main.ReplicateModel>>;
 
 export function ListReplicateTranscribeModels():Promise<Array<main.ReplicateModel>>;

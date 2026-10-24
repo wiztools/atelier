@@ -759,7 +759,7 @@ func TestLipsyncFaceFromRouting(t *testing.T) {
 			config.Providers.Fal.LipsyncVideoModel = lipsyncVideoModel
 
 			var gotReq LipsyncGenerateRequest
-			def := lipsyncToolDefinition(false)
+			def := lipsyncToolDefinition(defaultAppConfig(), false)
 			exec := HarnessToolExecutionContext{
 				Config:         config,
 				AttachedImages: tc.images,
@@ -804,7 +804,7 @@ func TestLipsyncFaceFromRouting(t *testing.T) {
 // TestLipsyncFaceFromMissingFace pins the guard: a faceFrom naming a face that
 // isn't attached fails the call with a correction the planner can act on.
 func TestLipsyncFaceFromMissingFace(t *testing.T) {
-	def := lipsyncToolDefinition(false)
+	def := lipsyncToolDefinition(defaultAppConfig(), false)
 	exec := HarnessToolExecutionContext{
 		Config:         defaultAppConfig(),
 		AttachedVideos: []string{"data:video/mp4;base64,CCC"},
@@ -823,7 +823,7 @@ func TestLipsyncFaceFromMissingFace(t *testing.T) {
 // TestLipsyncFaceFromValidation pins the enum guard: an unknown faceFrom value
 // is a plan correction, not a silent fallthrough to the default face.
 func TestLipsyncFaceFromValidation(t *testing.T) {
-	def := lipsyncToolDefinition(false)
+	def := lipsyncToolDefinition(defaultAppConfig(), false)
 	problems := def.Validate("toolCalls[0]", HarnessToolCall{Name: "lip_sync", FaceFrom: "photograph"})
 	if len(problems) != 1 || !strings.Contains(problems[0], "faceFrom must be") {
 		t.Fatalf("problems = %v, want the faceFrom enum correction", problems)

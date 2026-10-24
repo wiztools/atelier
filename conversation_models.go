@@ -34,8 +34,9 @@ type ConversationModelOverrides struct {
 	// pair. VideoExtendModel and the transform slots (upscale, reframe,
 	// restyle) follow the effective video provider the same way — their
 	// resolvers route by it. The remaining fal endpoint fields still map 1:1
-	// onto ConfigFal — their tools (keyframes, motion control, lipsync,
-	// audio) are fal-only with no provider dimension.
+	// onto ConfigFal — their tools (keyframes, motion control, audio) are
+	// fal-only with no provider dimension. Lipsync is the exception: it has
+	// its own LipsyncProvider dimension below.
 	VideoProvider   string `json:"videoProvider,omitempty"`
 	VideoModel      string `json:"videoModel,omitempty"`
 	VideoImageModel string `json:"videoImageModel,omitempty"`
@@ -63,6 +64,12 @@ type ConversationModelOverrides struct {
 	TranscribeModel        string `json:"transcribeModel,omitempty"`
 	LipsyncImageModel      string `json:"lipsyncImageModel,omitempty"`
 	LipsyncVideoModel      string `json:"lipsyncVideoModel,omitempty"`
+	// LipsyncProvider overrides lip_sync's backend ("fal" | "replicate") —
+	// the InpaintProvider pattern one tool over: its own dimension, since
+	// lipsync spans all three media kinds and follows neither the image nor
+	// the video pair. The model slots above land on the ones the effective
+	// provider reads.
+	LipsyncProvider string `json:"lipsyncProvider,omitempty"`
 	// TranscriptionProvider overrides transcribe_audio's backend — the Models
 	// tab's Transcription & Subtitles section. WhisperModel/WhisperBinary/
 	// WhisperVADModel are engine config the Settings → Local Tools tab edits
@@ -112,7 +119,7 @@ func normalizeConversationModelOverrides(o ConversationModelOverrides) Conversat
 		&o.InpaintProvider, &o.InpaintModel,
 		&o.VideoExtendModel, &o.VideoMotionModel, &o.VideoKeyframeModel, &o.VideoUpscaleModel, &o.VideoReframeModel, &o.VideoRestyleModel,
 		&o.AudioModel, &o.SoundEffectsModel, &o.SoundEffectsVideoModel, &o.AudioCloneModel, &o.AudioExtendModel, &o.VoiceDesignModel, &o.TranscribeModel,
-		&o.LipsyncImageModel, &o.LipsyncVideoModel,
+		&o.LipsyncImageModel, &o.LipsyncVideoModel, &o.LipsyncProvider,
 		&o.TranscriptionProvider, &o.WhisperModel, &o.WhisperBinary, &o.WhisperVADModel,
 		&o.ImageAspectRatio, &o.ImageSizePreset, &o.VideoDuration, &o.VideoAspectRatio, &o.VideoResolution, &o.SoundDuration, &o.AudioExtendDuration,
 	}
@@ -135,6 +142,8 @@ func validateConversationModelOverrides(o ConversationModelOverrides) error {
 		"harnessProvider":       o.HarnessProvider,
 		"imageProvider":         o.ImageProvider,
 		"videoProvider":         o.VideoProvider,
+		"inpaintProvider":       o.InpaintProvider,
+		"lipsyncProvider":       o.LipsyncProvider,
 		"transcriptionProvider": o.TranscriptionProvider,
 	} {
 		switch name {
@@ -149,6 +158,10 @@ func validateConversationModelOverrides(o ConversationModelOverrides) error {
 		case "inpaintProvider":
 			if value != "" && value != "fal" && value != "replicate" {
 				return fmt.Errorf("unknown inpaint provider %q", value)
+			}
+		case "lipsyncProvider":
+			if value != "" && value != "fal" && value != "replicate" {
+				return fmt.Errorf("unknown lipsync provider %q", value)
 			}
 		case "transcriptionProvider":
 			if value != "" && value != transcriptionProviderFal && value != transcriptionProviderLocalWhisper && value != transcriptionProviderReplicate {
@@ -461,11 +474,37 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 			config.Providers.Fal.TranscribeModel = o.TranscribeModel
 		}
 	}
-	if o.LipsyncImageModel != "" {
-		config.Providers.Fal.LipsyncImageModel = o.LipsyncImageModel
+	if o.LipsyncProvider != "" {
+		// The lipsync provider overrides lip_sync's backend directly — its
+		// own dimension (fal | replicate), validated at mutator time like
+		// InpaintProvider. Applied BEFORE the model slots below so their
+		// routing sees the overridden provider.
+		config.Models.LipsyncProvider = o.LipsyncProvider
 	}
-	if o.LipsyncVideoModel != "" {
-		config.Providers.Fal.LipsyncVideoModel = o.LipsyncVideoModel
+	if o.LipsyncImageModel != "" || o.LipsyncVideoModel != "" {
+		// The lipsync-slot overrides follow the effective lipsync provider —
+		// the TranscribeModel recipe one tool over: the executor routes by
+		// Models.LipsyncProvider, so a Replicate-pinned conversation lip
+		// syncs with its Replicate models.
+		provider := o.LipsyncProvider
+		if provider == "" {
+			provider = config.Models.LipsyncProvider
+		}
+		if provider == "replicate" {
+			if o.LipsyncImageModel != "" {
+				config.Providers.Replicate.LipsyncImageModel = o.LipsyncImageModel
+			}
+			if o.LipsyncVideoModel != "" {
+				config.Providers.Replicate.LipsyncVideoModel = o.LipsyncVideoModel
+			}
+		} else {
+			if o.LipsyncImageModel != "" {
+				config.Providers.Fal.LipsyncImageModel = o.LipsyncImageModel
+			}
+			if o.LipsyncVideoModel != "" {
+				config.Providers.Fal.LipsyncVideoModel = o.LipsyncVideoModel
+			}
+		}
 	}
 	if o.TranscriptionProvider != "" {
 		config.Models.TranscriptionProvider = o.TranscriptionProvider

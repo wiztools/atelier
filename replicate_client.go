@@ -108,12 +108,31 @@ const (
 	// canonical transcription request cannot fill, so its lister post-filters
 	// them out (isReplicateTranscribeModel) the same way.
 	replicateSpeechToTextCollection = "speech-to-text"
+	// replicateLipsyncCollection is the lip_sync pickers' bucket. It spans
+	// both face kinds (re-lip-sync a clip, a talking head from an image)
+	// plus text-driven avatar generators, so its listers post-filter by
+	// input schema (replicateLipsyncSchemaServes) — a model the canonical
+	// request cannot drive (a required text/prompt, a text-driven speech
+	// voice) never reaches the dropdown.
+	replicateLipsyncCollection = "lipsync"
 	// defaultReplicateTranscribeModel is the speech-to-text model used when
 	// none is configured — openai/whisper, the collection's official
 	// whisper: a translate boolean, a two-letter language enum, and a
 	// "plain text" | "srt" | "vtt" output-format control a timestamped
 	// request sets to vtt so the returned document parses into segments.
 	defaultReplicateTranscribeModel = "openai/whisper"
+	// defaultReplicateLipsyncImageModel is the audio-to-video lip sync model
+	// used when replicate is the LipsyncProvider and none is configured —
+	// veed/fabric-1.0, the collection's official talking-head endpoint whose
+	// required inputs are exactly the canonical pair (image + audio) and
+	// whose only extra is a resolution enum that defaults to 720p.
+	defaultReplicateLipsyncImageModel = "veed/fabric-1.0"
+	// defaultReplicateLipsyncVideoModel is the video-to-video lip sync model
+	// used when replicate is the LipsyncProvider and none is configured —
+	// sync/lipsync-2, Sync Labs' official re-sync endpoint (the same family
+	// as fal's default): required video + audio, a sync_mode enum, and an
+	// expressiveness temperature, all defaulted.
+	defaultReplicateLipsyncVideoModel = "sync/lipsync-2"
 	// maxReplicateTransientRetries is the number of times do() re-issues a
 	// request after a transient 5xx, matching the fal client's posture.
 	maxReplicateTransientRetries = 1

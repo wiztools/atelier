@@ -383,7 +383,7 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 		definitions = append(definitions, imagemagickImageToolDefinitions()...)
 	}
 	if lipsyncConfigured(config) {
-		definitions = append(definitions, lipsyncToolDefinition(videoAudioCapable))
+		definitions = append(definitions, lipsyncToolDefinition(config, videoAudioCapable))
 	}
 	if imageUpscaleConfigured(config) {
 		definitions = append(definitions, imageUpscaleToolDefinition(config))
@@ -677,7 +677,8 @@ func resolveDefaultVideoRestyleModel(config AppConfig) string {
 // model configured AND a fal.ai key present (the historical gate), the
 // Replicate path needs a Replicate video model configured AND its key. The key
 // checks avoid offering a tool that is guaranteed to fail at call time with a
-// key-not-configured error. Lipsync and audio stay fal-only; the video
+// key-not-configured error. Audio generation stays fal-only; lip_sync routes
+// by its own Models.LipsyncProvider gate (lipsyncConfigured), and the video
 // transforms (upscale/reframe/restyle) follow VideoProvider and keep their own
 // provider-aware gates.
 func videoGenerationConfigured(config AppConfig) bool {
@@ -1413,21 +1414,48 @@ func resolveDefaultLocalWhisperModel(config AppConfig) string {
 	return strings.TrimSpace(config.Providers.Local.Whisper.Model)
 }
 
-// lipsyncConfigured reports whether the lip_sync tool should be offered: fal is
-// the only lip sync backend, and the default models always apply (the audio-to-
-// video and video-to-video endpoints are known-good), so the gate is purely the
-// fal key — like transcribe_audio, no model needs to be configured first.
+// resolveLipsyncProvider names the backend lip_sync routes to for this config
+// — the capability-scoped sibling of videoGenerationProvider. An unset or
+// unrecognized provider means fal: lipsync was fal-only before the Replicate
+// backend served it, so a config written then must keep routing there. The
+// routing truth for the gateway's GenerateLipsync wiring, the model-slot
+// resolvers below, the tool gate, and media telemetry attribution.
+func resolveLipsyncProvider(config AppConfig) string {
+	switch strings.TrimSpace(config.Models.LipsyncProvider) {
+	case "replicate":
+		return "replicate"
+	default:
+		return "fal"
+	}
+}
+
+// lipsyncConfigured reports whether the lip_sync tool should be offered,
+// routing by resolveLipsyncProvider: the fal path needs a fal.ai key, the
+// Replicate path its token. Like transcribe_audio, no model needs to be
+// configured first — both providers' default lip sync models are known-good
+// and resolve at call time.
 func lipsyncConfigured(config AppConfig) bool {
-	// fal-only: airplane mode drops the tool.
+	// Cloud-only: fal and Replicate are the only lipsync backends, so
+	// airplane mode drops the tool.
 	if airplaneModeActive(config) {
 		return false
+	}
+	if resolveLipsyncProvider(config) == "replicate" {
+		return replicateKeyConfigured()
 	}
 	return falKeyConfigured()
 }
 
 // resolveDefaultLipsyncImageModel returns the audio-to-video lip sync model
-// used when the user attaches an audio clip plus an image (a talking head).
-func resolveDefaultLipsyncImageModel(config AppConfig) string {
+// used when the user attaches an audio clip plus an image (a talking head),
+// routed by the effective lipsync provider.
+func resolveDefaultLipsyncImageModel(config AppConfig, provider string) string {
+	if provider == "replicate" {
+		if model := strings.TrimSpace(config.Providers.Replicate.LipsyncImageModel); model != "" {
+			return model
+		}
+		return defaultReplicateLipsyncImageModel
+	}
 	if model := strings.TrimSpace(config.Providers.Fal.LipsyncImageModel); model != "" {
 		return model
 	}
@@ -1435,8 +1463,15 @@ func resolveDefaultLipsyncImageModel(config AppConfig) string {
 }
 
 // resolveDefaultLipsyncVideoModel returns the video-to-video lip sync model
-// used when the user attaches an audio clip plus a video (re-lip-sync a clip).
-func resolveDefaultLipsyncVideoModel(config AppConfig) string {
+// used when the user attaches an audio clip plus a video (re-lip-sync a clip),
+// routed by the effective lipsync provider.
+func resolveDefaultLipsyncVideoModel(config AppConfig, provider string) string {
+	if provider == "replicate" {
+		if model := strings.TrimSpace(config.Providers.Replicate.LipsyncVideoModel); model != "" {
+			return model
+		}
+		return defaultReplicateLipsyncVideoModel
+	}
 	if model := strings.TrimSpace(config.Providers.Fal.LipsyncVideoModel); model != "" {
 		return model
 	}
@@ -2235,7 +2270,8 @@ func lipsyncDescription(videoAudioCapable bool) string {
 // The result is a video, so it rides the existing ToolVideoResult → artifact
 // pipeline (videosFromToolResults / writeChatVideoArtifacts) — no new
 // persistence code. Mirrors transcribe_audio's attachment-guard pattern.
-func lipsyncToolDefinition(videoAudioCapable bool) HarnessToolDefinition {
+func lipsyncToolDefinition(config AppConfig, videoAudioCapable bool) HarnessToolDefinition {
+	provider := resolveLipsyncProvider(config)
 	return HarnessToolDefinition{
 		Name:        "lip_sync",
 		Title:       "Lip sync video",
@@ -2292,11 +2328,12 @@ func lipsyncToolDefinition(videoAudioCapable bool) HarnessToolDefinition {
 				useVideoFace = true
 			}
 			model := strings.TrimSpace(call.Model)
+			provider := resolveLipsyncProvider(tools.Config)
 			if model == "" {
 				if useVideoFace {
-					model = resolveDefaultLipsyncVideoModel(tools.Config)
+					model = resolveDefaultLipsyncVideoModel(tools.Config, provider)
 				} else {
-					model = resolveDefaultLipsyncImageModel(tools.Config)
+					model = resolveDefaultLipsyncImageModel(tools.Config, provider)
 				}
 			}
 			lipsyncReq := LipsyncGenerateRequest{
@@ -2344,7 +2381,13 @@ func lipsyncToolDefinition(videoAudioCapable bool) HarnessToolDefinition {
 		Activity: func(result HarnessToolResult) HarnessToolActivity {
 			activity := defaultHarnessToolActivity(result)
 			if typed, ok := result.Result.(ToolVideoResult); ok {
-				activity.Command = []string{"fal", "lipsync", typed.Model}
+				// The captured provider names the backend the definition was
+				// built for — the transcribe_audio pattern (the builders
+				// don't receive the executed call's context, but the
+				// definition is rebuilt per turn against the effective
+				// config).
+				activity.Command = []string{provider, "lipsync", typed.Model}
+				activity.Provider = provider
 			}
 			return activity
 		},
@@ -2353,14 +2396,15 @@ func lipsyncToolDefinition(videoAudioCapable bool) HarnessToolDefinition {
 
 // lipsyncParamSchema describes lip_sync's inputs. There is no "content" param —
 // the audio and face come from the user's attachments, not a prompt. model is
-// the fal endpoint override; faceFrom is the planner-facing choice of which
-// attached face drives the sync when both kinds are attached.
+// the endpoint override (a fal endpoint or a Replicate owner/name slug, per the
+// effective provider); faceFrom is the planner-facing choice of which attached
+// face drives the sync when both kinds are attached.
 func lipsyncParamSchema() map[string]any {
 	return map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
-			"model":    stringParam("Optional fal.ai lip sync model override."),
+			"model":    stringParam("Optional lip sync model override on the configured provider (a fal endpoint or a Replicate owner/name slug)."),
 			"faceFrom": enumParam("Optional — which attached face to sync when both an image and a video are attached. \"video\" (the default) re-lip-syncs the existing clip; \"image\" instead produces a talking head from the attached image. Choose \"image\" when the user's face reference is the image (e.g. a character sheet) and the attached video is only context.", "image", "video"),
 		},
 		"required": []string{},

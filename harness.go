@@ -3982,13 +3982,14 @@ func (h *HarnessEngine) toolActivityFromResult(result HarnessToolResult) Harness
 	// Media provider attribution rides the engine layer, not the per-tool
 	// builders: generate_video routes by config.Models.VideoProvider — the
 	// same field the tool gateway reads, via videoGenerationProvider — while
-	// audio generation and the video transforms (upscale/reframe/restyle,
-	// lipsync) remain fal-only, and generate_image routes by
-	// config.Models.ImageProvider; the builders don't receive config. A failed
-	// call has no result payload, so no case matches and Provider stays empty.
-	// A builder that already named its provider (the ffmpeg tools stamp
-	// "ffmpeg") wins — the engine layer cannot know which backend a local tool
-	// ran on.
+	// audio generation stays fal-only, and generate_image routes by
+	// config.Models.ImageProvider; the builders don't receive config. The
+	// lipsync builder stamps its own provider (captured from the config the
+	// definition was built against — the transcribe_audio pattern), which
+	// then wins below. A failed call has no result payload, so no case
+	// matches and Provider stays empty. A builder that already named its
+	// provider (the ffmpeg tools stamp "ffmpeg") wins — the engine layer
+	// cannot know which backend a local tool ran on.
 	if activity.Provider == "" {
 		switch result.Result.(type) {
 		case ToolVideoResult:

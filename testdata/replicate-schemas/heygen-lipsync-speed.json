@@ -1,0 +1,632 @@
+{
+ "info": {
+  "title": "Cog",
+  "version": "0.1.0"
+ },
+ "paths": {
+  "/": {
+   "get": {
+    "summary": "Root",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     }
+    },
+    "operationId": "root__get"
+   }
+  },
+  "/predictions": {
+   "post": {
+    "summary": "Predict",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "title": "PredictionResponse",
+         "properties": {
+          "id": {
+           "type": "string",
+           "title": "Id"
+          },
+          "logs": {
+           "type": "string",
+           "title": "Logs"
+          },
+          "error": {
+           "type": "string",
+           "title": "Error"
+          },
+          "input": {
+           "type": "object",
+           "title": "Input",
+           "required": [
+            "video",
+            "audio"
+           ],
+           "properties": {
+            "audio": {
+             "type": "string",
+             "title": "Audio",
+             "format": "uri",
+             "x-order": 1,
+             "description": "Replacement audio file. The video's lip movements will be re-animated to match this audio."
+            },
+            "video": {
+             "type": "string",
+             "title": "Video",
+             "format": "uri",
+             "x-order": 0,
+             "description": "Source video file to lip-sync."
+            },
+            "disable_music_track": {
+             "type": "boolean",
+             "title": "Disable Music Track",
+             "default": false,
+             "x-order": 3,
+             "description": "Strip background music from the source video."
+            },
+            "enable_dynamic_duration": {
+             "type": "boolean",
+             "title": "Enable Dynamic Duration",
+             "default": true,
+             "x-order": 2,
+             "description": "Allow the output duration to adjust to match the new audio length."
+            },
+            "enable_speech_enhancement": {
+             "type": "boolean",
+             "title": "Enable Speech Enhancement",
+             "default": false,
+             "x-order": 4,
+             "description": "Enhance speech quality in the output."
+            }
+           }
+          },
+          "output": {
+           "type": "string",
+           "title": "Output",
+           "format": "uri"
+          },
+          "status": {
+           "type": "string",
+           "title": "Status"
+          },
+          "metrics": {
+           "type": "object",
+           "title": "Metrics"
+          },
+          "version": {
+           "type": "string",
+           "title": "Version"
+          },
+          "created_at": {
+           "type": "string",
+           "title": "Created At",
+           "format": "date-time"
+          },
+          "started_at": {
+           "type": "string",
+           "title": "Started At",
+           "format": "date-time"
+          },
+          "completed_at": {
+           "type": "string",
+           "title": "Completed At",
+           "format": "date-time"
+          }
+         }
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "title": "HTTPValidationError",
+         "properties": {
+          "detail": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "title": "ValidationError",
+            "required": [
+             "loc",
+             "msg",
+             "type"
+            ],
+            "properties": {
+             "loc": {
+              "type": "array",
+              "items": {
+               "anyOf": [
+                {
+                 "type": "string"
+                },
+                {
+                 "type": "integer"
+                }
+               ]
+              },
+              "title": "Location"
+             },
+             "msg": {
+              "type": "string",
+              "title": "Message"
+             },
+             "type": {
+              "type": "string",
+              "title": "Error Type"
+             }
+            }
+           },
+           "title": "Detail"
+          }
+         }
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "description": "Run a single prediction on the model",
+    "operationId": "predict_predictions_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "title": "PredictionRequest",
+        "properties": {
+         "id": {
+          "type": "string",
+          "title": "Id"
+         },
+         "input": {
+          "type": "object",
+          "title": "Input",
+          "required": [
+           "video",
+           "audio"
+          ],
+          "properties": {
+           "audio": {
+            "type": "string",
+            "title": "Audio",
+            "format": "uri",
+            "x-order": 1,
+            "description": "Replacement audio file. The video's lip movements will be re-animated to match this audio."
+           },
+           "video": {
+            "type": "string",
+            "title": "Video",
+            "format": "uri",
+            "x-order": 0,
+            "description": "Source video file to lip-sync."
+           },
+           "disable_music_track": {
+            "type": "boolean",
+            "title": "Disable Music Track",
+            "default": false,
+            "x-order": 3,
+            "description": "Strip background music from the source video."
+           },
+           "enable_dynamic_duration": {
+            "type": "boolean",
+            "title": "Enable Dynamic Duration",
+            "default": true,
+            "x-order": 2,
+            "description": "Allow the output duration to adjust to match the new audio length."
+           },
+           "enable_speech_enhancement": {
+            "type": "boolean",
+            "title": "Enable Speech Enhancement",
+            "default": false,
+            "x-order": 4,
+            "description": "Enhance speech quality in the output."
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/health-check": {
+   "get": {
+    "summary": "Healthcheck",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     }
+    },
+    "operationId": "healthcheck_health_check_get"
+   }
+  },
+  "/predictions/{prediction_id}/cancel": {
+   "post": {
+    "summary": "Cancel",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "title": "HTTPValidationError",
+         "properties": {
+          "detail": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "title": "ValidationError",
+            "required": [
+             "loc",
+             "msg",
+             "type"
+            ],
+            "properties": {
+             "loc": {
+              "type": "array",
+              "items": {
+               "anyOf": [
+                {
+                 "type": "string"
+                },
+                {
+                 "type": "integer"
+                }
+               ]
+              },
+              "title": "Location"
+             },
+             "msg": {
+              "type": "string",
+              "title": "Message"
+             },
+             "type": {
+              "type": "string",
+              "title": "Error Type"
+             }
+            }
+           },
+           "title": "Detail"
+          }
+         }
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "parameters": [
+     {
+      "in": "path",
+      "name": "prediction_id",
+      "schema": {
+       "type": "string",
+       "title": "Prediction Id"
+      },
+      "required": true
+     }
+    ],
+    "operationId": "cancel_predictions__prediction_id__cancel_post"
+   }
+  }
+ },
+ "openapi": "3.0.2",
+ "components": {
+  "schemas": {
+   "Input": {
+    "type": "object",
+    "title": "Input",
+    "required": [
+     "video",
+     "audio"
+    ],
+    "properties": {
+     "audio": {
+      "type": "string",
+      "title": "Audio",
+      "format": "uri",
+      "x-order": 1,
+      "description": "Replacement audio file. The video's lip movements will be re-animated to match this audio."
+     },
+     "video": {
+      "type": "string",
+      "title": "Video",
+      "format": "uri",
+      "x-order": 0,
+      "description": "Source video file to lip-sync."
+     },
+     "disable_music_track": {
+      "type": "boolean",
+      "title": "Disable Music Track",
+      "default": false,
+      "x-order": 3,
+      "description": "Strip background music from the source video."
+     },
+     "enable_dynamic_duration": {
+      "type": "boolean",
+      "title": "Enable Dynamic Duration",
+      "default": true,
+      "x-order": 2,
+      "description": "Allow the output duration to adjust to match the new audio length."
+     },
+     "enable_speech_enhancement": {
+      "type": "boolean",
+      "title": "Enable Speech Enhancement",
+      "default": false,
+      "x-order": 4,
+      "description": "Enhance speech quality in the output."
+     }
+    }
+   },
+   "Output": {
+    "type": "string",
+    "title": "Output",
+    "format": "uri"
+   },
+   "Status": {
+    "enum": [
+     "starting",
+     "processing",
+     "succeeded",
+     "canceled",
+     "failed"
+    ],
+    "type": "string",
+    "title": "Status",
+    "description": "An enumeration."
+   },
+   "ValidationError": {
+    "type": "object",
+    "title": "ValidationError",
+    "required": [
+     "loc",
+     "msg",
+     "type"
+    ],
+    "properties": {
+     "loc": {
+      "type": "array",
+      "items": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "integer"
+        }
+       ]
+      },
+      "title": "Location"
+     },
+     "msg": {
+      "type": "string",
+      "title": "Message"
+     },
+     "type": {
+      "type": "string",
+      "title": "Error Type"
+     }
+    }
+   },
+   "PredictionRequest": {
+    "type": "object",
+    "title": "PredictionRequest",
+    "properties": {
+     "id": {
+      "type": "string",
+      "title": "Id"
+     },
+     "input": {
+      "type": "object",
+      "title": "Input",
+      "required": [
+       "video",
+       "audio"
+      ],
+      "properties": {
+       "audio": {
+        "type": "string",
+        "title": "Audio",
+        "format": "uri",
+        "x-order": 1,
+        "description": "Replacement audio file. The video's lip movements will be re-animated to match this audio."
+       },
+       "video": {
+        "type": "string",
+        "title": "Video",
+        "format": "uri",
+        "x-order": 0,
+        "description": "Source video file to lip-sync."
+       },
+       "disable_music_track": {
+        "type": "boolean",
+        "title": "Disable Music Track",
+        "default": false,
+        "x-order": 3,
+        "description": "Strip background music from the source video."
+       },
+       "enable_dynamic_duration": {
+        "type": "boolean",
+        "title": "Enable Dynamic Duration",
+        "default": true,
+        "x-order": 2,
+        "description": "Allow the output duration to adjust to match the new audio length."
+       },
+       "enable_speech_enhancement": {
+        "type": "boolean",
+        "title": "Enable Speech Enhancement",
+        "default": false,
+        "x-order": 4,
+        "description": "Enhance speech quality in the output."
+       }
+      }
+     }
+    }
+   },
+   "PredictionResponse": {
+    "type": "object",
+    "title": "PredictionResponse",
+    "properties": {
+     "id": {
+      "type": "string",
+      "title": "Id"
+     },
+     "logs": {
+      "type": "string",
+      "title": "Logs"
+     },
+     "error": {
+      "type": "string",
+      "title": "Error"
+     },
+     "input": {
+      "type": "object",
+      "title": "Input",
+      "required": [
+       "video",
+       "audio"
+      ],
+      "properties": {
+       "audio": {
+        "type": "string",
+        "title": "Audio",
+        "format": "uri",
+        "x-order": 1,
+        "description": "Replacement audio file. The video's lip movements will be re-animated to match this audio."
+       },
+       "video": {
+        "type": "string",
+        "title": "Video",
+        "format": "uri",
+        "x-order": 0,
+        "description": "Source video file to lip-sync."
+       },
+       "disable_music_track": {
+        "type": "boolean",
+        "title": "Disable Music Track",
+        "default": false,
+        "x-order": 3,
+        "description": "Strip background music from the source video."
+       },
+       "enable_dynamic_duration": {
+        "type": "boolean",
+        "title": "Enable Dynamic Duration",
+        "default": true,
+        "x-order": 2,
+        "description": "Allow the output duration to adjust to match the new audio length."
+       },
+       "enable_speech_enhancement": {
+        "type": "boolean",
+        "title": "Enable Speech Enhancement",
+        "default": false,
+        "x-order": 4,
+        "description": "Enhance speech quality in the output."
+       }
+      }
+     },
+     "output": {
+      "type": "string",
+      "title": "Output",
+      "format": "uri"
+     },
+     "status": {
+      "type": "string",
+      "title": "Status"
+     },
+     "metrics": {
+      "type": "object",
+      "title": "Metrics"
+     },
+     "version": {
+      "type": "string",
+      "title": "Version"
+     },
+     "created_at": {
+      "type": "string",
+      "title": "Created At",
+      "format": "date-time"
+     },
+     "started_at": {
+      "type": "string",
+      "title": "Started At",
+      "format": "date-time"
+     },
+     "completed_at": {
+      "type": "string",
+      "title": "Completed At",
+      "format": "date-time"
+     }
+    }
+   },
+   "HTTPValidationError": {
+    "type": "object",
+    "title": "HTTPValidationError",
+    "properties": {
+     "detail": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "title": "ValidationError",
+       "required": [
+        "loc",
+        "msg",
+        "type"
+       ],
+       "properties": {
+        "loc": {
+         "type": "array",
+         "items": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "integer"
+           }
+          ]
+         },
+         "title": "Location"
+        },
+        "msg": {
+         "type": "string",
+         "title": "Message"
+        },
+        "type": {
+         "type": "string",
+         "title": "Error Type"
+        }
+       }
+      },
+      "title": "Detail"
+     }
+    }
+   }
+  }
+ }
+}

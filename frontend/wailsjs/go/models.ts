@@ -179,6 +179,7 @@ export namespace main {
 	    videoProvider?: string;
 	    transcriptionProvider?: string;
 	    inpaintProvider?: string;
+	    lipsyncProvider?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigModels(source);
@@ -192,6 +193,7 @@ export namespace main {
 	        this.videoProvider = source["videoProvider"];
 	        this.transcriptionProvider = source["transcriptionProvider"];
 	        this.inpaintProvider = source["inpaintProvider"];
+	        this.lipsyncProvider = source["lipsyncProvider"];
 	    }
 	}
 	export class ConfigLocalImageMagick {
@@ -327,6 +329,8 @@ export namespace main {
 	    videoRestyleModel?: string;
 	    videoReframeModel?: string;
 	    transcribeModel?: string;
+	    lipsyncImageModel?: string;
+	    lipsyncVideoModel?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigReplicate(source);
@@ -346,6 +350,8 @@ export namespace main {
 	        this.videoRestyleModel = source["videoRestyleModel"];
 	        this.videoReframeModel = source["videoReframeModel"];
 	        this.transcribeModel = source["transcribeModel"];
+	        this.lipsyncImageModel = source["lipsyncImageModel"];
+	        this.lipsyncVideoModel = source["lipsyncVideoModel"];
 	    }
 	}
 	export class ConfigFal {
@@ -796,6 +802,7 @@ export namespace main {
 	    transcribeModel?: string;
 	    lipsyncImageModel?: string;
 	    lipsyncVideoModel?: string;
+	    lipsyncProvider?: string;
 	    transcriptionProvider?: string;
 	    whisperModel?: string;
 	    whisperBinary?: string;
@@ -843,6 +850,7 @@ export namespace main {
 	        this.transcribeModel = source["transcribeModel"];
 	        this.lipsyncImageModel = source["lipsyncImageModel"];
 	        this.lipsyncVideoModel = source["lipsyncVideoModel"];
+	        this.lipsyncProvider = source["lipsyncProvider"];
 	        this.transcriptionProvider = source["transcriptionProvider"];
 	        this.whisperModel = source["whisperModel"];
 	        this.whisperBinary = source["whisperBinary"];

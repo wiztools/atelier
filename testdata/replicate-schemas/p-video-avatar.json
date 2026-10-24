@@ -1,0 +1,1260 @@
+{
+ "info": {
+  "title": "Cog",
+  "version": "0.1.0"
+ },
+ "paths": {
+  "/": {
+   "get": {
+    "summary": "Root",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     }
+    },
+    "operationId": "root__get"
+   }
+  },
+  "/predictions": {
+   "post": {
+    "summary": "Predict",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "title": "PredictionResponse",
+         "properties": {
+          "id": {
+           "type": "string",
+           "title": "Id"
+          },
+          "logs": {
+           "type": "string",
+           "title": "Logs"
+          },
+          "error": {
+           "type": "string",
+           "title": "Error"
+          },
+          "input": {
+           "type": "object",
+           "title": "Input",
+           "required": [
+            "image"
+           ],
+           "properties": {
+            "seed": {
+             "type": "integer",
+             "title": "Seed",
+             "x-order": 7,
+             "nullable": true,
+             "description": "Random seed. Set for reproducible generation."
+            },
+            "audio": {
+             "type": "string",
+             "title": "Audio",
+             "format": "uri",
+             "x-order": 2,
+             "nullable": true,
+             "description": "Optional uploaded audio to drive avatar speech. If provided, this is used instead of voice_script and voice settings."
+            },
+            "image": {
+             "type": "string",
+             "title": "Image",
+             "format": "uri",
+             "x-order": 0,
+             "description": "Input image (first frame). Supports jpg, jpeg, png, webp."
+            },
+            "no_op": {
+             "type": "boolean",
+             "title": "No Op",
+             "default": false,
+             "x-order": 13,
+             "description": "Health check mode - returns status without inference."
+            },
+            "voice": {
+             "enum": [
+              "Zephyr (Female)",
+              "Puck (Male)",
+              "Charon (Male)",
+              "Kore (Female)",
+              "Fenrir (Male)",
+              "Leda (Female)",
+              "Orus (Male)",
+              "Aoede (Female)",
+              "Callirrhoe (Female)",
+              "Autonoe (Female)",
+              "Enceladus (Male)",
+              "Iapetus (Male)",
+              "Umbriel (Male)",
+              "Algenib (Male)",
+              "Despina (Female)",
+              "Erinome (Female)",
+              "Laomedeia (Female)",
+              "Achernar (Female)",
+              "Algieba (Male)",
+              "Schedar (Male)",
+              "Gacrux (Female)",
+              "Pulcherrima (Female)",
+              "Achird (Male)",
+              "Zubenelgenubi (Male)",
+              "Vindemiatrix (Female)",
+              "Sadachbia (Male)",
+              "Sadaltager (Male)",
+              "Sulafat (Female)",
+              "Alnilam (Male)",
+              "Rasalgethi (Male)"
+             ],
+             "type": "string",
+             "title": "voice",
+             "description": "Voice to use when generating speech from voice_script.",
+             "default": "Zephyr (Female)",
+             "x-order": 3
+            },
+            "resolution": {
+             "enum": [
+              "720p",
+              "1080p"
+             ],
+             "type": "string",
+             "title": "resolution",
+             "description": "Resolution of the video.",
+             "default": "720p",
+             "x-order": 1
+            },
+            "video_prompt": {
+             "type": "string",
+             "title": "Video Prompt",
+             "default": "The person is talking.",
+             "x-order": 8,
+             "description": "Optional visual prompt describing how the person should appear or behave while speaking."
+            },
+            "voice_prompt": {
+             "type": "string",
+             "title": "Voice Prompt",
+             "default": "Say the following.",
+             "x-order": 5,
+             "description": "Optional style instructions for how to speak voice_script, such as tone, pacing, accent, or emotion. These instructions are not spoken."
+            },
+            "voice_script": {
+             "type": "string",
+             "title": "Voice Script",
+             "default": "",
+             "x-order": 4,
+             "description": "Exact words the avatar should say. Required when no audio file is uploaded."
+            },
+            "voice_language": {
+             "enum": [
+              "English (US)",
+              "English (UK)",
+              "Spanish",
+              "French",
+              "German",
+              "Italian",
+              "Portuguese (Brazil)",
+              "Japanese",
+              "Korean",
+              "Hindi"
+             ],
+             "type": "string",
+             "title": "voice_language",
+             "description": "Language/accent target for generated speech.",
+             "default": "English (US)",
+             "x-order": 6
+            },
+            "negative_prompt": {
+             "type": "string",
+             "title": "Negative Prompt",
+             "default": "",
+             "x-order": 9,
+             "description": "Disabled if empty.Mention what you do NOT want in the video, e.g. \"subtitles, text, blurry, low quality, frames, watermark, titles, scene change\". We recommend using multiple keywords at once."
+            },
+            "disable_safety_filter": {
+             "type": "boolean",
+             "title": "Disable Safety Filter",
+             "default": true,
+             "x-order": 11,
+             "description": "Disable safety filter for prompts and input image. When disabled, prompts are not checked for unsafe content before generation."
+            },
+            "strength_negative_prompt": {
+             "type": "number",
+             "title": "Strength Negative Prompt",
+             "default": 0.5,
+             "maximum": 4,
+             "minimum": 0,
+             "x-order": 10,
+             "description": "Strength of the Negative Prompt. Optimal value can differ for different video lengths (Experimental Feature)"
+            },
+            "disable_prompt_upsampling": {
+             "type": "boolean",
+             "title": "Disable Prompt Upsampling",
+             "default": false,
+             "x-order": 12,
+             "description": "When true, skip automatic enhancement of the visual video prompt and use video_prompt directly."
+            }
+           }
+          },
+          "output": {
+           "type": "string",
+           "title": "Output",
+           "format": "uri"
+          },
+          "status": {
+           "type": "string",
+           "title": "Status"
+          },
+          "metrics": {
+           "type": "object",
+           "title": "Metrics"
+          },
+          "version": {
+           "type": "string",
+           "title": "Version"
+          },
+          "created_at": {
+           "type": "string",
+           "title": "Created At",
+           "format": "date-time"
+          },
+          "started_at": {
+           "type": "string",
+           "title": "Started At",
+           "format": "date-time"
+          },
+          "completed_at": {
+           "type": "string",
+           "title": "Completed At",
+           "format": "date-time"
+          }
+         }
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "title": "HTTPValidationError",
+         "properties": {
+          "detail": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "title": "ValidationError",
+            "required": [
+             "loc",
+             "msg",
+             "type"
+            ],
+            "properties": {
+             "loc": {
+              "type": "array",
+              "items": {
+               "anyOf": [
+                {
+                 "type": "string"
+                },
+                {
+                 "type": "integer"
+                }
+               ]
+              },
+              "title": "Location"
+             },
+             "msg": {
+              "type": "string",
+              "title": "Message"
+             },
+             "type": {
+              "type": "string",
+              "title": "Error Type"
+             }
+            }
+           },
+           "title": "Detail"
+          }
+         }
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "description": "Run a single prediction on the model",
+    "operationId": "predict_predictions_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "title": "PredictionRequest",
+        "properties": {
+         "id": {
+          "type": "string",
+          "title": "Id"
+         },
+         "input": {
+          "type": "object",
+          "title": "Input",
+          "required": [
+           "image"
+          ],
+          "properties": {
+           "seed": {
+            "type": "integer",
+            "title": "Seed",
+            "x-order": 7,
+            "nullable": true,
+            "description": "Random seed. Set for reproducible generation."
+           },
+           "audio": {
+            "type": "string",
+            "title": "Audio",
+            "format": "uri",
+            "x-order": 2,
+            "nullable": true,
+            "description": "Optional uploaded audio to drive avatar speech. If provided, this is used instead of voice_script and voice settings."
+           },
+           "image": {
+            "type": "string",
+            "title": "Image",
+            "format": "uri",
+            "x-order": 0,
+            "description": "Input image (first frame). Supports jpg, jpeg, png, webp."
+           },
+           "no_op": {
+            "type": "boolean",
+            "title": "No Op",
+            "default": false,
+            "x-order": 13,
+            "description": "Health check mode - returns status without inference."
+           },
+           "voice": {
+            "enum": [
+             "Zephyr (Female)",
+             "Puck (Male)",
+             "Charon (Male)",
+             "Kore (Female)",
+             "Fenrir (Male)",
+             "Leda (Female)",
+             "Orus (Male)",
+             "Aoede (Female)",
+             "Callirrhoe (Female)",
+             "Autonoe (Female)",
+             "Enceladus (Male)",
+             "Iapetus (Male)",
+             "Umbriel (Male)",
+             "Algenib (Male)",
+             "Despina (Female)",
+             "Erinome (Female)",
+             "Laomedeia (Female)",
+             "Achernar (Female)",
+             "Algieba (Male)",
+             "Schedar (Male)",
+             "Gacrux (Female)",
+             "Pulcherrima (Female)",
+             "Achird (Male)",
+             "Zubenelgenubi (Male)",
+             "Vindemiatrix (Female)",
+             "Sadachbia (Male)",
+             "Sadaltager (Male)",
+             "Sulafat (Female)",
+             "Alnilam (Male)",
+             "Rasalgethi (Male)"
+            ],
+            "type": "string",
+            "title": "voice",
+            "description": "Voice to use when generating speech from voice_script.",
+            "default": "Zephyr (Female)",
+            "x-order": 3
+           },
+           "resolution": {
+            "enum": [
+             "720p",
+             "1080p"
+            ],
+            "type": "string",
+            "title": "resolution",
+            "description": "Resolution of the video.",
+            "default": "720p",
+            "x-order": 1
+           },
+           "video_prompt": {
+            "type": "string",
+            "title": "Video Prompt",
+            "default": "The person is talking.",
+            "x-order": 8,
+            "description": "Optional visual prompt describing how the person should appear or behave while speaking."
+           },
+           "voice_prompt": {
+            "type": "string",
+            "title": "Voice Prompt",
+            "default": "Say the following.",
+            "x-order": 5,
+            "description": "Optional style instructions for how to speak voice_script, such as tone, pacing, accent, or emotion. These instructions are not spoken."
+           },
+           "voice_script": {
+            "type": "string",
+            "title": "Voice Script",
+            "default": "",
+            "x-order": 4,
+            "description": "Exact words the avatar should say. Required when no audio file is uploaded."
+           },
+           "voice_language": {
+            "enum": [
+             "English (US)",
+             "English (UK)",
+             "Spanish",
+             "French",
+             "German",
+             "Italian",
+             "Portuguese (Brazil)",
+             "Japanese",
+             "Korean",
+             "Hindi"
+            ],
+            "type": "string",
+            "title": "voice_language",
+            "description": "Language/accent target for generated speech.",
+            "default": "English (US)",
+            "x-order": 6
+           },
+           "negative_prompt": {
+            "type": "string",
+            "title": "Negative Prompt",
+            "default": "",
+            "x-order": 9,
+            "description": "Disabled if empty.Mention what you do NOT want in the video, e.g. \"subtitles, text, blurry, low quality, frames, watermark, titles, scene change\". We recommend using multiple keywords at once."
+           },
+           "disable_safety_filter": {
+            "type": "boolean",
+            "title": "Disable Safety Filter",
+            "default": true,
+            "x-order": 11,
+            "description": "Disable safety filter for prompts and input image. When disabled, prompts are not checked for unsafe content before generation."
+           },
+           "strength_negative_prompt": {
+            "type": "number",
+            "title": "Strength Negative Prompt",
+            "default": 0.5,
+            "maximum": 4,
+            "minimum": 0,
+            "x-order": 10,
+            "description": "Strength of the Negative Prompt. Optimal value can differ for different video lengths (Experimental Feature)"
+           },
+           "disable_prompt_upsampling": {
+            "type": "boolean",
+            "title": "Disable Prompt Upsampling",
+            "default": false,
+            "x-order": 12,
+            "description": "When true, skip automatic enhancement of the visual video prompt and use video_prompt directly."
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/health-check": {
+   "get": {
+    "summary": "Healthcheck",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     }
+    },
+    "operationId": "healthcheck_health_check_get"
+   }
+  },
+  "/predictions/{prediction_id}/cancel": {
+   "post": {
+    "summary": "Cancel",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "title": "HTTPValidationError",
+         "properties": {
+          "detail": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "title": "ValidationError",
+            "required": [
+             "loc",
+             "msg",
+             "type"
+            ],
+            "properties": {
+             "loc": {
+              "type": "array",
+              "items": {
+               "anyOf": [
+                {
+                 "type": "string"
+                },
+                {
+                 "type": "integer"
+                }
+               ]
+              },
+              "title": "Location"
+             },
+             "msg": {
+              "type": "string",
+              "title": "Message"
+             },
+             "type": {
+              "type": "string",
+              "title": "Error Type"
+             }
+            }
+           },
+           "title": "Detail"
+          }
+         }
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "parameters": [
+     {
+      "in": "path",
+      "name": "prediction_id",
+      "schema": {
+       "type": "string",
+       "title": "Prediction Id"
+      },
+      "required": true
+     }
+    ],
+    "operationId": "cancel_predictions__prediction_id__cancel_post"
+   }
+  }
+ },
+ "openapi": "3.0.2",
+ "components": {
+  "schemas": {
+   "Input": {
+    "type": "object",
+    "title": "Input",
+    "required": [
+     "image"
+    ],
+    "properties": {
+     "seed": {
+      "type": "integer",
+      "title": "Seed",
+      "x-order": 7,
+      "nullable": true,
+      "description": "Random seed. Set for reproducible generation."
+     },
+     "audio": {
+      "type": "string",
+      "title": "Audio",
+      "format": "uri",
+      "x-order": 2,
+      "nullable": true,
+      "description": "Optional uploaded audio to drive avatar speech. If provided, this is used instead of voice_script and voice settings."
+     },
+     "image": {
+      "type": "string",
+      "title": "Image",
+      "format": "uri",
+      "x-order": 0,
+      "description": "Input image (first frame). Supports jpg, jpeg, png, webp."
+     },
+     "no_op": {
+      "type": "boolean",
+      "title": "No Op",
+      "default": false,
+      "x-order": 13,
+      "description": "Health check mode - returns status without inference."
+     },
+     "voice": {
+      "enum": [
+       "Zephyr (Female)",
+       "Puck (Male)",
+       "Charon (Male)",
+       "Kore (Female)",
+       "Fenrir (Male)",
+       "Leda (Female)",
+       "Orus (Male)",
+       "Aoede (Female)",
+       "Callirrhoe (Female)",
+       "Autonoe (Female)",
+       "Enceladus (Male)",
+       "Iapetus (Male)",
+       "Umbriel (Male)",
+       "Algenib (Male)",
+       "Despina (Female)",
+       "Erinome (Female)",
+       "Laomedeia (Female)",
+       "Achernar (Female)",
+       "Algieba (Male)",
+       "Schedar (Male)",
+       "Gacrux (Female)",
+       "Pulcherrima (Female)",
+       "Achird (Male)",
+       "Zubenelgenubi (Male)",
+       "Vindemiatrix (Female)",
+       "Sadachbia (Male)",
+       "Sadaltager (Male)",
+       "Sulafat (Female)",
+       "Alnilam (Male)",
+       "Rasalgethi (Male)"
+      ],
+      "type": "string",
+      "title": "voice",
+      "description": "Voice to use when generating speech from voice_script.",
+      "default": "Zephyr (Female)",
+      "x-order": 3
+     },
+     "resolution": {
+      "enum": [
+       "720p",
+       "1080p"
+      ],
+      "type": "string",
+      "title": "resolution",
+      "description": "Resolution of the video.",
+      "default": "720p",
+      "x-order": 1
+     },
+     "video_prompt": {
+      "type": "string",
+      "title": "Video Prompt",
+      "default": "The person is talking.",
+      "x-order": 8,
+      "description": "Optional visual prompt describing how the person should appear or behave while speaking."
+     },
+     "voice_prompt": {
+      "type": "string",
+      "title": "Voice Prompt",
+      "default": "Say the following.",
+      "x-order": 5,
+      "description": "Optional style instructions for how to speak voice_script, such as tone, pacing, accent, or emotion. These instructions are not spoken."
+     },
+     "voice_script": {
+      "type": "string",
+      "title": "Voice Script",
+      "default": "",
+      "x-order": 4,
+      "description": "Exact words the avatar should say. Required when no audio file is uploaded."
+     },
+     "voice_language": {
+      "enum": [
+       "English (US)",
+       "English (UK)",
+       "Spanish",
+       "French",
+       "German",
+       "Italian",
+       "Portuguese (Brazil)",
+       "Japanese",
+       "Korean",
+       "Hindi"
+      ],
+      "type": "string",
+      "title": "voice_language",
+      "description": "Language/accent target for generated speech.",
+      "default": "English (US)",
+      "x-order": 6
+     },
+     "negative_prompt": {
+      "type": "string",
+      "title": "Negative Prompt",
+      "default": "",
+      "x-order": 9,
+      "description": "Disabled if empty.Mention what you do NOT want in the video, e.g. \"subtitles, text, blurry, low quality, frames, watermark, titles, scene change\". We recommend using multiple keywords at once."
+     },
+     "disable_safety_filter": {
+      "type": "boolean",
+      "title": "Disable Safety Filter",
+      "default": true,
+      "x-order": 11,
+      "description": "Disable safety filter for prompts and input image. When disabled, prompts are not checked for unsafe content before generation."
+     },
+     "strength_negative_prompt": {
+      "type": "number",
+      "title": "Strength Negative Prompt",
+      "default": 0.5,
+      "maximum": 4,
+      "minimum": 0,
+      "x-order": 10,
+      "description": "Strength of the Negative Prompt. Optimal value can differ for different video lengths (Experimental Feature)"
+     },
+     "disable_prompt_upsampling": {
+      "type": "boolean",
+      "title": "Disable Prompt Upsampling",
+      "default": false,
+      "x-order": 12,
+      "description": "When true, skip automatic enhancement of the visual video prompt and use video_prompt directly."
+     }
+    }
+   },
+   "voice": {
+    "enum": [
+     "Zephyr (Female)",
+     "Puck (Male)",
+     "Charon (Male)",
+     "Kore (Female)",
+     "Fenrir (Male)",
+     "Leda (Female)",
+     "Orus (Male)",
+     "Aoede (Female)",
+     "Callirrhoe (Female)",
+     "Autonoe (Female)",
+     "Enceladus (Male)",
+     "Iapetus (Male)",
+     "Umbriel (Male)",
+     "Algenib (Male)",
+     "Despina (Female)",
+     "Erinome (Female)",
+     "Laomedeia (Female)",
+     "Achernar (Female)",
+     "Algieba (Male)",
+     "Schedar (Male)",
+     "Gacrux (Female)",
+     "Pulcherrima (Female)",
+     "Achird (Male)",
+     "Zubenelgenubi (Male)",
+     "Vindemiatrix (Female)",
+     "Sadachbia (Male)",
+     "Sadaltager (Male)",
+     "Sulafat (Female)",
+     "Alnilam (Male)",
+     "Rasalgethi (Male)"
+    ],
+    "type": "string",
+    "title": "voice",
+    "description": "An enumeration."
+   },
+   "Output": {
+    "type": "string",
+    "title": "Output",
+    "format": "uri"
+   },
+   "Status": {
+    "enum": [
+     "starting",
+     "processing",
+     "succeeded",
+     "canceled",
+     "failed"
+    ],
+    "type": "string",
+    "title": "Status",
+    "description": "An enumeration."
+   },
+   "resolution": {
+    "enum": [
+     "720p",
+     "1080p"
+    ],
+    "type": "string",
+    "title": "resolution",
+    "description": "An enumeration."
+   },
+   "voice_language": {
+    "enum": [
+     "English (US)",
+     "English (UK)",
+     "Spanish",
+     "French",
+     "German",
+     "Italian",
+     "Portuguese (Brazil)",
+     "Japanese",
+     "Korean",
+     "Hindi"
+    ],
+    "type": "string",
+    "title": "voice_language",
+    "description": "An enumeration."
+   },
+   "ValidationError": {
+    "type": "object",
+    "title": "ValidationError",
+    "required": [
+     "loc",
+     "msg",
+     "type"
+    ],
+    "properties": {
+     "loc": {
+      "type": "array",
+      "items": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "integer"
+        }
+       ]
+      },
+      "title": "Location"
+     },
+     "msg": {
+      "type": "string",
+      "title": "Message"
+     },
+     "type": {
+      "type": "string",
+      "title": "Error Type"
+     }
+    }
+   },
+   "PredictionRequest": {
+    "type": "object",
+    "title": "PredictionRequest",
+    "properties": {
+     "id": {
+      "type": "string",
+      "title": "Id"
+     },
+     "input": {
+      "type": "object",
+      "title": "Input",
+      "required": [
+       "image"
+      ],
+      "properties": {
+       "seed": {
+        "type": "integer",
+        "title": "Seed",
+        "x-order": 7,
+        "nullable": true,
+        "description": "Random seed. Set for reproducible generation."
+       },
+       "audio": {
+        "type": "string",
+        "title": "Audio",
+        "format": "uri",
+        "x-order": 2,
+        "nullable": true,
+        "description": "Optional uploaded audio to drive avatar speech. If provided, this is used instead of voice_script and voice settings."
+       },
+       "image": {
+        "type": "string",
+        "title": "Image",
+        "format": "uri",
+        "x-order": 0,
+        "description": "Input image (first frame). Supports jpg, jpeg, png, webp."
+       },
+       "no_op": {
+        "type": "boolean",
+        "title": "No Op",
+        "default": false,
+        "x-order": 13,
+        "description": "Health check mode - returns status without inference."
+       },
+       "voice": {
+        "enum": [
+         "Zephyr (Female)",
+         "Puck (Male)",
+         "Charon (Male)",
+         "Kore (Female)",
+         "Fenrir (Male)",
+         "Leda (Female)",
+         "Orus (Male)",
+         "Aoede (Female)",
+         "Callirrhoe (Female)",
+         "Autonoe (Female)",
+         "Enceladus (Male)",
+         "Iapetus (Male)",
+         "Umbriel (Male)",
+         "Algenib (Male)",
+         "Despina (Female)",
+         "Erinome (Female)",
+         "Laomedeia (Female)",
+         "Achernar (Female)",
+         "Algieba (Male)",
+         "Schedar (Male)",
+         "Gacrux (Female)",
+         "Pulcherrima (Female)",
+         "Achird (Male)",
+         "Zubenelgenubi (Male)",
+         "Vindemiatrix (Female)",
+         "Sadachbia (Male)",
+         "Sadaltager (Male)",
+         "Sulafat (Female)",
+         "Alnilam (Male)",
+         "Rasalgethi (Male)"
+        ],
+        "type": "string",
+        "title": "voice",
+        "description": "Voice to use when generating speech from voice_script.",
+        "default": "Zephyr (Female)",
+        "x-order": 3
+       },
+       "resolution": {
+        "enum": [
+         "720p",
+         "1080p"
+        ],
+        "type": "string",
+        "title": "resolution",
+        "description": "Resolution of the video.",
+        "default": "720p",
+        "x-order": 1
+       },
+       "video_prompt": {
+        "type": "string",
+        "title": "Video Prompt",
+        "default": "The person is talking.",
+        "x-order": 8,
+        "description": "Optional visual prompt describing how the person should appear or behave while speaking."
+       },
+       "voice_prompt": {
+        "type": "string",
+        "title": "Voice Prompt",
+        "default": "Say the following.",
+        "x-order": 5,
+        "description": "Optional style instructions for how to speak voice_script, such as tone, pacing, accent, or emotion. These instructions are not spoken."
+       },
+       "voice_script": {
+        "type": "string",
+        "title": "Voice Script",
+        "default": "",
+        "x-order": 4,
+        "description": "Exact words the avatar should say. Required when no audio file is uploaded."
+       },
+       "voice_language": {
+        "enum": [
+         "English (US)",
+         "English (UK)",
+         "Spanish",
+         "French",
+         "German",
+         "Italian",
+         "Portuguese (Brazil)",
+         "Japanese",
+         "Korean",
+         "Hindi"
+        ],
+        "type": "string",
+        "title": "voice_language",
+        "description": "Language/accent target for generated speech.",
+        "default": "English (US)",
+        "x-order": 6
+       },
+       "negative_prompt": {
+        "type": "string",
+        "title": "Negative Prompt",
+        "default": "",
+        "x-order": 9,
+        "description": "Disabled if empty.Mention what you do NOT want in the video, e.g. \"subtitles, text, blurry, low quality, frames, watermark, titles, scene change\". We recommend using multiple keywords at once."
+       },
+       "disable_safety_filter": {
+        "type": "boolean",
+        "title": "Disable Safety Filter",
+        "default": true,
+        "x-order": 11,
+        "description": "Disable safety filter for prompts and input image. When disabled, prompts are not checked for unsafe content before generation."
+       },
+       "strength_negative_prompt": {
+        "type": "number",
+        "title": "Strength Negative Prompt",
+        "default": 0.5,
+        "maximum": 4,
+        "minimum": 0,
+        "x-order": 10,
+        "description": "Strength of the Negative Prompt. Optimal value can differ for different video lengths (Experimental Feature)"
+       },
+       "disable_prompt_upsampling": {
+        "type": "boolean",
+        "title": "Disable Prompt Upsampling",
+        "default": false,
+        "x-order": 12,
+        "description": "When true, skip automatic enhancement of the visual video prompt and use video_prompt directly."
+       }
+      }
+     }
+    }
+   },
+   "PredictionResponse": {
+    "type": "object",
+    "title": "PredictionResponse",
+    "properties": {
+     "id": {
+      "type": "string",
+      "title": "Id"
+     },
+     "logs": {
+      "type": "string",
+      "title": "Logs"
+     },
+     "error": {
+      "type": "string",
+      "title": "Error"
+     },
+     "input": {
+      "type": "object",
+      "title": "Input",
+      "required": [
+       "image"
+      ],
+      "properties": {
+       "seed": {
+        "type": "integer",
+        "title": "Seed",
+        "x-order": 7,
+        "nullable": true,
+        "description": "Random seed. Set for reproducible generation."
+       },
+       "audio": {
+        "type": "string",
+        "title": "Audio",
+        "format": "uri",
+        "x-order": 2,
+        "nullable": true,
+        "description": "Optional uploaded audio to drive avatar speech. If provided, this is used instead of voice_script and voice settings."
+       },
+       "image": {
+        "type": "string",
+        "title": "Image",
+        "format": "uri",
+        "x-order": 0,
+        "description": "Input image (first frame). Supports jpg, jpeg, png, webp."
+       },
+       "no_op": {
+        "type": "boolean",
+        "title": "No Op",
+        "default": false,
+        "x-order": 13,
+        "description": "Health check mode - returns status without inference."
+       },
+       "voice": {
+        "enum": [
+         "Zephyr (Female)",
+         "Puck (Male)",
+         "Charon (Male)",
+         "Kore (Female)",
+         "Fenrir (Male)",
+         "Leda (Female)",
+         "Orus (Male)",
+         "Aoede (Female)",
+         "Callirrhoe (Female)",
+         "Autonoe (Female)",
+         "Enceladus (Male)",
+         "Iapetus (Male)",
+         "Umbriel (Male)",
+         "Algenib (Male)",
+         "Despina (Female)",
+         "Erinome (Female)",
+         "Laomedeia (Female)",
+         "Achernar (Female)",
+         "Algieba (Male)",
+         "Schedar (Male)",
+         "Gacrux (Female)",
+         "Pulcherrima (Female)",
+         "Achird (Male)",
+         "Zubenelgenubi (Male)",
+         "Vindemiatrix (Female)",
+         "Sadachbia (Male)",
+         "Sadaltager (Male)",
+         "Sulafat (Female)",
+         "Alnilam (Male)",
+         "Rasalgethi (Male)"
+        ],
+        "type": "string",
+        "title": "voice",
+        "description": "Voice to use when generating speech from voice_script.",
+        "default": "Zephyr (Female)",
+        "x-order": 3
+       },
+       "resolution": {
+        "enum": [
+         "720p",
+         "1080p"
+        ],
+        "type": "string",
+        "title": "resolution",
+        "description": "Resolution of the video.",
+        "default": "720p",
+        "x-order": 1
+       },
+       "video_prompt": {
+        "type": "string",
+        "title": "Video Prompt",
+        "default": "The person is talking.",
+        "x-order": 8,
+        "description": "Optional visual prompt describing how the person should appear or behave while speaking."
+       },
+       "voice_prompt": {
+        "type": "string",
+        "title": "Voice Prompt",
+        "default": "Say the following.",
+        "x-order": 5,
+        "description": "Optional style instructions for how to speak voice_script, such as tone, pacing, accent, or emotion. These instructions are not spoken."
+       },
+       "voice_script": {
+        "type": "string",
+        "title": "Voice Script",
+        "default": "",
+        "x-order": 4,
+        "description": "Exact words the avatar should say. Required when no audio file is uploaded."
+       },
+       "voice_language": {
+        "enum": [
+         "English (US)",
+         "English (UK)",
+         "Spanish",
+         "French",
+         "German",
+         "Italian",
+         "Portuguese (Brazil)",
+         "Japanese",
+         "Korean",
+         "Hindi"
+        ],
+        "type": "string",
+        "title": "voice_language",
+        "description": "Language/accent target for generated speech.",
+        "default": "English (US)",
+        "x-order": 6
+       },
+       "negative_prompt": {
+        "type": "string",
+        "title": "Negative Prompt",
+        "default": "",
+        "x-order": 9,
+        "description": "Disabled if empty.Mention what you do NOT want in the video, e.g. \"subtitles, text, blurry, low quality, frames, watermark, titles, scene change\". We recommend using multiple keywords at once."
+       },
+       "disable_safety_filter": {
+        "type": "boolean",
+        "title": "Disable Safety Filter",
+        "default": true,
+        "x-order": 11,
+        "description": "Disable safety filter for prompts and input image. When disabled, prompts are not checked for unsafe content before generation."
+       },
+       "strength_negative_prompt": {
+        "type": "number",
+        "title": "Strength Negative Prompt",
+        "default": 0.5,
+        "maximum": 4,
+        "minimum": 0,
+        "x-order": 10,
+        "description": "Strength of the Negative Prompt. Optimal value can differ for different video lengths (Experimental Feature)"
+       },
+       "disable_prompt_upsampling": {
+        "type": "boolean",
+        "title": "Disable Prompt Upsampling",
+        "default": false,
+        "x-order": 12,
+        "description": "When true, skip automatic enhancement of the visual video prompt and use video_prompt directly."
+       }
+      }
+     },
+     "output": {
+      "type": "string",
+      "title": "Output",
+      "format": "uri"
+     },
+     "status": {
+      "type": "string",
+      "title": "Status"
+     },
+     "metrics": {
+      "type": "object",
+      "title": "Metrics"
+     },
+     "version": {
+      "type": "string",
+      "title": "Version"
+     },
+     "created_at": {
+      "type": "string",
+      "title": "Created At",
+      "format": "date-time"
+     },
+     "started_at": {
+      "type": "string",
+      "title": "Started At",
+      "format": "date-time"
+     },
+     "completed_at": {
+      "type": "string",
+      "title": "Completed At",
+      "format": "date-time"
+     }
+    }
+   },
+   "HTTPValidationError": {
+    "type": "object",
+    "title": "HTTPValidationError",
+    "properties": {
+     "detail": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "title": "ValidationError",
+       "required": [
+        "loc",
+        "msg",
+        "type"
+       ],
+       "properties": {
+        "loc": {
+         "type": "array",
+         "items": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "integer"
+           }
+          ]
+         },
+         "title": "Location"
+        },
+        "msg": {
+         "type": "string",
+         "title": "Message"
+        },
+        "type": {
+         "type": "string",
+         "title": "Error Type"
+        }
+       }
+      },
+      "title": "Detail"
+     }
+    }
+   }
+  }
+ }
+}
