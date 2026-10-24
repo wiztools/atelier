@@ -277,6 +277,13 @@ func (hints falBillingHints) quantityForUnit(unit string) (float64, bool) {
 			return float64(hints.Images), true
 		}
 		return float64(hints.Requests), hints.Requests > 0
+	case "minute", "minutes":
+		// fal's per-minute video unit — sync-lipsync bills per minute of
+		// output video ($3/min on v2, $0.70/min on v1, verified 2026-10).
+		// A minute is exactly sixty seconds of the seconds hint, which the
+		// lipsync call site fills from the rendered clip's own container
+		// (see falLipsyncBillingSeconds).
+		return hints.Seconds / 60, hints.Seconds > 0
 	default:
 		// Token-billed models: the unit names how many tokens one billed unit
 		// covers ("1000 tokens" is what fal's pricing API returns for
@@ -297,9 +304,8 @@ func (hints falBillingHints) quantityForUnit(unit string) (float64, bool) {
 			return hints.Megapixels / multiplier, hints.Megapixels > 0
 		}
 		// Anything else — "compute seconds" (wizper, esrgan: billed GPU time
-		// the request can never state), "minutes" (sync-lipsync: output length
-		// ≈ the driving audio's, which the gateway doesn't know) — stays
-		// unpriced rather than guessed onto a nearby hint.
+		// the request can never state) — stays unpriced rather than guessed
+		// onto a nearby hint.
 		return 0, false
 	}
 }
@@ -1085,6 +1091,24 @@ func falVideoBilledSeconds(output []byte, requested string) (float64, bool) {
 		return seconds, true
 	}
 	return falDurationSeconds(requested)
+}
+
+// falLipsyncBillingSeconds resolves the quantity a per-minute lipsync model
+// bills (sync-lipsync prices per minute of output video): the generated
+// clip's own container is exact — fal charges the video it actually rendered —
+// and the driving audio's duration stands in when the container won't parse,
+// since lipsync output tracks the audio's length. The audio rides as a data
+// URL when the gateway holds the request, so the sniff happens before
+// resolveMediaURLHosted swaps it for a hosted URL whose bytes are no longer
+// local. ok is false when neither source is measurable: the cost is skipped
+// rather than guessed, the shared fail-soft rule
+// (conv_d5a03dfe20e5225352212c2b priced a sync-lipsync v2 call "?" until the
+// unit and this quantity existed).
+func falLipsyncBillingSeconds(output []byte, audio string) (float64, bool) {
+	if seconds, ok := mp4DurationSeconds(output); ok {
+		return seconds, true
+	}
+	return dataURLAudioDuration(audio)
 }
 
 // estimateFalGenerationCost is the App-level entry the tool gateway calls

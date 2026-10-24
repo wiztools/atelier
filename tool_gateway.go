@@ -455,6 +455,10 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			// (model_image_compat.go) — a HEIC face source can't ride fal's
 			// image_url any better than a generation source can.
 			req.Image = ensureModelSafeImage(ctx, config, req.Image)
+			// The audio's data URL is the only locally readable form of the
+			// driving audio — capture it before the hosted swap below, for
+			// the per-minute billing quantity (falLipsyncBillingSeconds).
+			audioData := req.Audio
 			if resolved, err := client.resolveMediaURLHosted(ctx, req.Audio, "audio/mpeg", "audio.mp3"); err == nil {
 				req.Audio = resolved
 			}
@@ -483,10 +487,17 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				if recovered {
 					notices = append(notices, mediaGenerationRecoveredNotice)
 				}
-				// Output length ≈ the driving audio's length, which the
-				// gateway never knows — per-second lipsync endpoints get no
-				// estimate rather than a guessed duration.
-				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, falBillingHints{Requests: 1})
+				// Sync-lipsync bills per minute of output video ($3/min on
+				// v2): the rendered clip's own container prices it, with the
+				// driving audio's duration as the stand-in. Before the
+				// minutes unit was taught, the estimate priced to zero and
+				// the activity stamped costUnknown
+				// (conv_d5a03dfe20e5225352212c2b).
+				hints := falBillingHints{Requests: 1}
+				if seconds, ok := falLipsyncBillingSeconds(generated.Data, audioData); ok {
+					hints.Seconds = seconds
+				}
+				generated.CostMicros = app.estimateFalGenerationCost(ctx, config, req.Model, hints)
 			}
 			generated.Notices = notices
 			return generated, genErr

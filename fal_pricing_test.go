@@ -86,6 +86,10 @@ func TestFalBillingHintsQuantityForUnit(t *testing.T) {
 		{unit: "megapixel", wantQty: 124.895232, wantOK: true},
 		{unit: "Megapixels", wantQty: 124.895232, wantOK: true},
 		{unit: "1 megapixel", wantQty: 124.895232, wantOK: true},
+		// fal's per-minute video unit (sync-lipsync v2/v1): sixty seconds
+		// of the seconds hint to the unit.
+		{unit: "minutes", wantQty: 0.125, wantOK: true},
+		{unit: "minute", wantQty: 0.125, wantOK: true},
 		{unit: "gpu_second", wantQty: 0, wantOK: false},
 		{unit: "", wantQty: 0, wantOK: false},
 	}
@@ -126,13 +130,18 @@ func TestFalBillingHintsQuantityForUnit(t *testing.T) {
 	if _, ok := (falBillingHints{Characters: 91}).quantityForUnit("cloned voices"); ok {
 		t.Fatal("quantityForUnit(cloned voices) with no requests hint should report not-ok")
 	}
-	// fal's compute-time and per-minute vocabulary stays unpriced: the request
-	// can never state GPU seconds, and a lipsync clip's minutes ride the
-	// driving audio the gateway doesn't probe.
-	for _, unit := range []string{"compute seconds", "minutes"} {
+	// fal's compute-time vocabulary stays unpriced: the request can never
+	// state GPU seconds. Per-minute endpoints (sync-lipsync) price from the
+	// seconds hint now that the lipsync site measures the rendered clip, but
+	// a hints value without seconds must still refuse rather than price a
+	// zero-minute call.
+	for _, unit := range []string{"compute seconds"} {
 		if _, ok := (falBillingHints{Requests: 1, Seconds: 30}).quantityForUnit(unit); ok {
 			t.Fatalf("quantityForUnit(%q) should report not-ok", unit)
 		}
+	}
+	if _, ok := (falBillingHints{Requests: 1}).quantityForUnit("minutes"); ok {
+		t.Fatal("quantityForUnit(minutes) with no seconds hint should report not-ok")
 	}
 }
 
@@ -801,6 +810,7 @@ func (transport *falPricingTransport) RoundTrip(req *http.Request) (*http.Respon
 			`{"endpoint_id":"fal-ai/f5-tts","unit_price":0.05,"unit":"1000 characters","currency":"USD"},` +
 			`{"endpoint_id":"fal-ai/minimax/voice-design","unit_price":3,"unit":"cloned voices","currency":"USD"},` +
 			`{"endpoint_id":"fal-ai/elevenlabs/sound-effects/v2","unit_price":0.002,"unit":"second","currency":"USD"},` +
+			`{"endpoint_id":"fal-ai/sync-lipsync/v2","unit_price":3,"unit":"minutes","currency":"USD"},` +
 			`{"endpoint_id":"fal-ai/nonusd/model","unit_price":1,"unit":"image","currency":"EUR"}` +
 			`],"next_cursor":null,"has_more":false}`
 	}
@@ -1001,6 +1011,14 @@ func TestEstimateFalCostMicros(t *testing.T) {
 	if got != 6000 {
 		t.Fatalf("per-second audio estimate = %d, want 6000", got)
 	}
+	// Per-minute lipsync (the conv_d5a03dfe20e5225352212c2b bill): sync-lipsync
+	// v2 prices per minute of output video — the turn's 0.875s rendered clip
+	// is 0.875/60 min × $3 = $0.04375. Before the minutes unit was taught the
+	// estimate priced to zero and the activity stamped costUnknown.
+	got = estimateFalCostMicros(ctx, cache, client, "key", "fal-ai/sync-lipsync/v2", nil, falBillingHints{Requests: 1, Seconds: 0.875})
+	if got != 43750 {
+		t.Fatalf("per-minute lipsync estimate = %d, want 43750", got)
+	}
 	// Fail-soft: nil cache, empty key, unknown endpoint, and an unpriceable
 	// unit (per-second model with no duration hint) all yield 0.
 	if estimateFalCostMicros(ctx, nil, client, "key", "x", nil, falBillingHints{}) != 0 {
@@ -1035,6 +1053,31 @@ func TestFalVideoBilledSeconds(t *testing.T) {
 	// Neither source knows: not-ok, never a guess.
 	if _, ok := falVideoBilledSeconds(tinyMP4(), ""); ok {
 		t.Fatal("billed seconds should be not-ok with no container and no requested duration")
+	}
+}
+
+// TestFalLipsyncBillingSeconds pins the per-minute lipsync billing quantity:
+// the rendered clip's own container (what fal charged for) wins, the driving
+// audio's data-URL duration stands in when the container won't parse, and
+// neither measurable means not-ok — the cost is skipped rather than guessed.
+func TestFalLipsyncBillingSeconds(t *testing.T) {
+	// Container wins: the conv_d5a03dfe turn's 0.875s output.
+	if got, ok := falLipsyncBillingSeconds(mp4FixtureWithDuration(0, 1000, 875), "data:audio/mp4;base64,AAAA"); !ok || got != 0.875 {
+		t.Fatalf("lipsync billed seconds = (%v, %v), want (0.875, true) from the container", got, ok)
+	}
+	// Unparseable output falls back to the driving audio: a 1s WAV (8000
+	// payload bytes at the fixture's 8kHz byte rate).
+	wavURL := "data:audio/wav;base64," + base64.StdEncoding.EncodeToString(buildWAV(8000))
+	if got, ok := falLipsyncBillingSeconds(tinyMP4(), wavURL); !ok || got != 1 {
+		t.Fatalf("lipsync billed seconds = (%v, %v), want (1, true) from the audio", got, ok)
+	}
+	// A hosted (non-data-URL) audio reference is not fetched — not-ok.
+	if _, ok := falLipsyncBillingSeconds(tinyMP4(), "https://v3.fal.media/files/x.m4a"); ok {
+		t.Fatal("hosted audio reference should not price")
+	}
+	// Neither source measurable: not-ok.
+	if _, ok := falLipsyncBillingSeconds(tinyMP4(), ""); ok {
+		t.Fatal("lipsync billed seconds should be not-ok with no container and no audio")
 	}
 }
 
@@ -1299,5 +1342,86 @@ func TestGatewayGenerateVideoPricesMegapixelBilledModel(t *testing.T) {
 	// $0.200457 — fal's published rate card for the 22B family.
 	if generated.CostMicros != 200457 {
 		t.Fatalf("CostMicros = %d, want 200457 (124.895232 MP at $0.001605)", generated.CostMicros)
+	}
+}
+
+// TestGatewayGenerateLipsyncPricesMinuteBilledModel drives the real
+// GenerateLipsync gateway closure against a mocked fal (schema + CDN upload +
+// queue + download + pricing) and pins the stamped CostMicros for a
+// per-minute-billed model. This is the regression shape of
+// conv_d5a03dfe20e5225352212c2b: a sync-lipsync/v2 call over a 0.84s audio
+// clip that rendered 0.875s of video — the estimate must come from the
+// rendered clip's own container duration, and before the minutes unit was
+// taught the turn stamped costUnknown.
+func TestGatewayGenerateLipsyncPricesMinuteBilledModel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	keyring.MockInit()
+	if err := saveFalAPIKey("fal-test-key"); err != nil {
+		t.Fatalf("saveFalAPIKey: %v", err)
+	}
+	t.Cleanup(func() { _ = clearFalAPIKey() })
+
+	config := defaultAppConfig()
+	config.Storage = ConfigStorage{
+		Root:      filepath.Join(home, ".atelier"),
+		History:   filepath.Join(home, ".atelier", "history"),
+		Artifacts: filepath.Join(home, ".atelier", "history"),
+	}
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig: %v", err)
+	}
+
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case strings.HasPrefix(req.URL.Path, "/v1/models/pricing"):
+			return jsonResponse(`{"prices":[` +
+				`{"endpoint_id":"fal-ai/sync-lipsync/v2","unit_price":3,"unit":"minutes","currency":"USD"}` +
+				`],"next_cursor":null,"has_more":false}`), nil
+		case strings.Contains(req.URL.String(), "storage/auth/token"):
+			// The driving audio force-hosts to fal's CDN before the submit.
+			return jsonResponse(`{"token":"cdn-test-token","token_type":"Bearer","base_url":"https://v3.test.fal.media"}`), nil
+		case strings.HasSuffix(req.URL.Path, "/files/upload"):
+			return jsonResponse(`{"access_url":"https://v3.test.fal.media/files/abc/audio.mp3","uploaded":true}`), nil
+		case strings.Contains(req.URL.Path, "/api/openapi/"):
+			// Minimal sync-lipsync-shaped input schema: the driving audio_url
+			// plus the video_url face slot.
+			return jsonResponse(`{"components":{"schemas":{"SyncLipsyncInput":{"type":"object","required":["audio_url","video_url"],` +
+				`"properties":{"audio_url":{"type":"string"},"video_url":{"type":"string"},` +
+				`"sync_mode":{"type":"string","enum":["cut_off","loop","bounce","silence","remap"],"default":"cut_off"}}}}}}`), nil
+		}
+		if strings.Contains(req.URL.Host, "fal.run") {
+			switch {
+			case req.Method == http.MethodPost:
+				return jsonResponse(`{"request_id":"req-lip-1"}`), nil
+			case strings.HasSuffix(req.URL.Path, "/status"):
+				return jsonResponse(`{"status":"COMPLETED"}`), nil
+			case strings.HasSuffix(req.URL.Path, "/requests/req-lip-1"):
+				return jsonResponse(`{"video":{"url":"https://queue.fal.run/dl/lipsync-video.mp4","content_type":"video/mp4"}}`), nil
+			default:
+				// The clip download: a 0.875-second container — the rendered
+				// length the per-minute bill tracks (the conv's output shape).
+				return mp4Resp(mp4FixtureWithDuration(0, 1000, 875), "video/mp4"), nil
+			}
+		}
+		t.Fatalf("unexpected request %s %s", req.Method, req.URL)
+		return nil, nil
+	})
+
+	gateway := newToolGateway(app, config)
+	generated, err := gateway.tools.GenerateLipsync(context.Background(), LipsyncGenerateRequest{
+		Model: "fal-ai/sync-lipsync/v2",
+		Audio: "data:audio/mpeg;base64," + base64.StdEncoding.EncodeToString(buildMP3(4)),
+		Video: "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(tinyMP4()),
+	})
+	if err != nil {
+		t.Fatalf("GenerateLipsync: %v", err)
+	}
+	// 0.875s rendered = 0.875/60 min × $3/min = $0.04375 — fal's rate card
+	// for the endpoint, priced from the rendered container.
+	if generated.CostMicros != 43750 {
+		t.Fatalf("CostMicros = %d, want 43750 (0.875s at $3/minute)", generated.CostMicros)
 	}
 }
