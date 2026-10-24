@@ -17,10 +17,15 @@ import (
 )
 
 const (
-	harnessChatMaxSteps    = 3
-	harnessChatMaxWallTime = 2 * time.Minute
-	harnessPlanNumPredict  = 4096
+	harnessChatMaxSteps   = 3
+	harnessPlanNumPredict = 4096
 )
+
+// harnessChatMaxWallTime bounds one planning-round budget — planning + tool
+// calls between deadline checks (the all-failed refresh in prepareChatTurnLoop
+// restarts it). A var so tests can pin it; production keeps the two-minute
+// budget.
+var harnessChatMaxWallTime = 2 * time.Minute
 
 // Context budgeting works in characters with a rough chars-per-token estimate;
 // it only needs to be accurate enough to keep requests inside num_ctx so
@@ -2156,6 +2161,21 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 		// attachment folds above).
 		turn.TranscriptFiles = append(turn.TranscriptFiles, transcriptFilesFromResults(results)...)
 
+		// A round whose calls ALL failed delivered nothing the final model could
+		// answer from beyond the failures — the planner's next round is the
+		// turn's only recovery path, and the wall-time budget must not abandon
+		// it at a knife-edge. conv_51b85fd58d6818d38b3fe5aa: the same fal 422
+		// (Kling o1's 2500-character prompt cap) that an earlier planner
+		// one-shot fixed with a shortened retry (conv_0f9cc90f61402bae64acf707)
+		// ended this turn as a bare failure, because the deadline — anchored
+		// after triage and skill selection had spent 89 seconds, then a
+		// 112-second planning round — expired during the 11-second failed call.
+		// Refresh the budget so the correction round runs; harnessChatMaxSteps
+		// still bounds the loop, and a round that delivered any evidence keeps
+		// today's semantics (stop; the final model answers from it).
+		if allToolCallsFailed(results) {
+			deadline = time.Now().Add(harnessChatMaxWallTime)
+		}
 		if time.Now().After(deadline) {
 			break
 		}
@@ -2175,6 +2195,23 @@ func (h *HarnessEngine) plannerAssistantMessage(useNativeTools bool, completion 
 		return ChatMessage{Role: "assistant", Content: completion.Content, ToolCalls: completion.ToolCalls}
 	}
 	return ChatMessage{Role: "assistant", Content: completion.Content}
+}
+
+// allToolCallsFailed reports whether every result in a tool round failed — the
+// round delivered no evidence beyond the failures themselves, so the planner's
+// next round is the turn's only recovery path (the wall-time refresh in
+// prepareChatTurnLoop keys on it). An empty round is not "all failed": nothing
+// ran, so there is no recovery to grant.
+func allToolCallsFailed(results []HarnessToolResult) bool {
+	if len(results) == 0 {
+		return false
+	}
+	for _, result := range results {
+		if result.Status != "failed" {
+			return false
+		}
+	}
+	return true
 }
 
 // planParseFailed reports whether the validation errors include a JSON parse

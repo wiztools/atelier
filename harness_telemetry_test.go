@@ -117,6 +117,118 @@ func TestHarnessStepTokenAccountingDirectPath(t *testing.T) {
 	}
 }
 
+// TestHarnessPlanningLoopRecoversFromAllFailedRound pins the wall-time refresh
+// for a round whose calls all failed: the planning loop must grant the planner
+// a correction round even after the wall-time budget has expired, because a
+// fully-failed round delivered nothing the final model could answer from — the
+// planner's retry is the turn's only recovery path. conv_51b85fd58d6818d38b3fe5aa
+// is the failure being fixed: the same fal 422 (Kling o1's 2500-character
+// prompt cap) that an earlier planner one-shot fixed with a shortened retry
+// (conv_0f9cc90f61402bae64acf707) ended this turn as a bare "not completed"
+// reply because the 2-minute budget expired during the failed call. Round 1's
+// planning call sleeps past the pinned 1ms budget, so the deadline is always
+// past when round 1's tools finish — the old behavior stops there (one round),
+// the refresh must re-plan, and the retry reads an existing file and succeeds.
+// Whether the refreshed budget also fits a third round is timing, not
+// behavior, so the assertions hold a floor (>= 2 rounds), not an exact count.
+func TestHarnessPlanningLoopRecoversFromAllFailedRound(t *testing.T) {
+	defer func(orig time.Duration) { harnessChatMaxWallTime = orig }(harnessChatMaxWallTime)
+	harnessChatMaxWallTime = 1 * time.Millisecond
+
+	config := telemetryTestConfig(t)
+	root := filepath.Join(filepath.Dir(config.Storage.Root), "tool-root")
+	config.Tools.Filesystem.Root = root
+	if err := os.MkdirAll(config.Tools.Filesystem.Root, 0755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(config.Tools.Filesystem.Root, "status.txt"), []byte("Project status: green"), 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	nonStreamCount := 0
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/chat" {
+			return notFoundResponse(), nil
+		}
+		var payload map[string]any
+		data, _ := io.ReadAll(req.Body)
+		if err := json.Unmarshal(data, &payload); err != nil {
+			t.Fatalf("provider request body is not JSON: %v", err)
+		}
+		if payload["stream"] == false {
+			nonStreamCount++
+			harnessPlan := func(content string) (*http.Response, error) {
+				return jsonResponse(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(content) + `},"done":true,"done_reason":"stop","prompt_eval_count":33,"eval_count":4}`), nil
+			}
+			switch nonStreamCount {
+			case 1:
+				decision := `{"needsTools":true,"responseMode":"text","toolTask":"Read status.txt to answer.","reason":"The status lives in the workspace."}`
+				return jsonResponse(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","prompt_eval_count":11,"eval_count":2}`), nil
+			case 2:
+				// Round 1's planning call overshoots the pinned budget, so the
+				// deadline is already past when the round's failed tool returns.
+				time.Sleep(5 * time.Millisecond)
+				return harnessPlan("```json\n{\"brief\":\"Read the status file.\",\"needsTools\":true,\"reason\":\"Need the file.\",\"toolCalls\":[{\"name\":\"read_file\",\"path\":\"missing.txt\"}]}\n```")
+			case 3:
+				return harnessPlan("```json\n{\"brief\":\"The first path was wrong; read the real one.\",\"needsTools\":true,\"reason\":\"Retry with the existing file.\",\"toolCalls\":[{\"name\":\"read_file\",\"path\":\"status.txt\"}]}\n```")
+			default:
+				return harnessPlan("```json\n{\"brief\":\"Answer from the file.\",\"needsTools\":false,\"reason\":\"Enough context.\",\"toolCalls\":[]}\n```")
+			}
+		}
+		body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"The project is green."},"done":false}`) +
+			fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","prompt_eval_count":22,"eval_count":3}`)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{"Content-Type": []string{"application/x-ndjson"}},
+		}, nil
+	})
+
+	app.runChatStream(context.Background(), "request-recovery", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "What is the project status?"},
+		},
+	})
+
+	run := persistedHarnessRun(t, config, 1)
+	steps, _ := run["steps"].([]any)
+
+	planningSteps := harnessStepsByKind(t, steps, "planning")
+	if len(planningSteps) < 2 {
+		t.Fatalf("planning steps = %d, want at least 2 rounds (the all-failed round must re-plan)", len(planningSteps))
+	}
+	loop, _ := run["loop"].(map[string]any)
+	iterations, _ := loop["iterations"].(float64)
+	if iterations < 2 {
+		t.Fatalf("loop iterations = %v, want at least 2", iterations)
+	}
+
+	toolSteps := harnessStepsByKind(t, steps, "tool_call")
+	if len(toolSteps) < 2 {
+		t.Fatalf("tool_call steps = %d, want at least 2", len(toolSteps))
+	}
+	firstRoundTools, _ := toolSteps[0]["tools"].([]any)
+	firstResult, _ := firstRoundTools[0].(map[string]any)
+	if firstResult["status"] != "failed" {
+		t.Fatalf("round 1 tool status = %v, want failed (missing.txt does not exist)", firstResult["status"])
+	}
+	secondRoundTools, _ := toolSteps[1]["tools"].([]any)
+	secondResult, _ := secondRoundTools[0].(map[string]any)
+	if secondResult["status"] != "completed" {
+		t.Fatalf("round 2 tool status = %v, want completed (status.txt exists)", secondResult["status"])
+	}
+	if harnessStepByKind(t, steps, "streaming") == nil {
+		t.Fatalf("streaming step missing; the turn must still deliver a final response")
+	}
+}
+
 func TestHarnessStepTokenAccountingTooledPath(t *testing.T) {
 	config := telemetryTestConfig(t)
 	root := filepath.Join(filepath.Dir(config.Storage.Root), "tool-root")
