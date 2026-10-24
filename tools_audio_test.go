@@ -40,8 +40,9 @@ func TestGenerateSpeechSurfacesNotices(t *testing.T) {
 // selection and its cloneVoice override: the user's attached clip
 // (VoiceReference) both switches the default to the cloning endpoint and rides
 // the request as SourceAudio, cloneVoice forces or suppresses that path
-// (nil = auto), and call.Model still overrides either path — the speech
-// sibling of the lipsync image/video split.
+// (nil = auto), a named voice outranks a reference unless cloneVoice:true says
+// otherwise (conv_1a989138830e7eaa29f6c429), and call.Model still overrides
+// either path — the speech sibling of the lipsync image/video split.
 func TestGenerateSpeechVoiceCloningRouting(t *testing.T) {
 	const reference = "data:audio/mpeg;base64,QUJD"
 	config := defaultAppConfig()
@@ -51,19 +52,24 @@ func TestGenerateSpeechVoiceCloningRouting(t *testing.T) {
 	yes := true
 
 	cases := []struct {
-		name       string
-		voiceRef   string
-		callClone  *bool
-		callModel  string
-		wantModel  string
-		wantSource string
+		name           string
+		voiceRef       string
+		callClone      *bool
+		callVoice      string
+		callModel      string
+		wantModel      string
+		wantSource     string
+		wantNoticePart string
 	}{
-		{"no reference uses the speech model", "", nil, "", "fal-ai/speech/model", ""},
-		{"reference selects the clone model", reference, nil, "", "fal-ai/clone/model", reference},
-		{"cloneVoice true forces the clone path", reference, &yes, "", "fal-ai/clone/model", reference},
-		{"cloneVoice false opts out with a reference", reference, &no, "", "fal-ai/speech/model", ""},
-		{"cloneVoice true without a reference degrades to speech", "", &yes, "", "fal-ai/speech/model", ""},
-		{"call model overrides the clone path", reference, nil, "fal-ai/manual", "fal-ai/manual", reference},
+		{"no reference uses the speech model", "", nil, "", "", "fal-ai/speech/model", "", ""},
+		{"reference selects the clone model", reference, nil, "", "", "fal-ai/clone/model", reference, ""},
+		{"cloneVoice true forces the clone path", reference, &yes, "", "", "fal-ai/clone/model", reference, ""},
+		{"cloneVoice false opts out with a reference", reference, &no, "", "", "fal-ai/speech/model", "", ""},
+		{"cloneVoice true without a reference degrades to speech", "", &yes, "", "", "fal-ai/speech/model", "", "regular voice"},
+		{"call model overrides the clone path", reference, nil, "", "fal-ai/manual", "fal-ai/manual", reference, ""},
+		{"named voice outranks the reference", reference, nil, "ttv-voice-x", "", "fal-ai/speech/model", "", "not used as a cloning reference"},
+		{"cloneVoice true overrides a named voice", reference, &yes, "ttv-voice-x", "", "fal-ai/clone/model", reference, ""},
+		{"named voice without a reference uses the speech model", "", nil, "ttv-voice-x", "", "fal-ai/speech/model", "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -77,7 +83,7 @@ func TestGenerateSpeechVoiceCloningRouting(t *testing.T) {
 				},
 			}
 			def := speechGenerationToolDefinition(false)
-			out, _, err := def.Execute(context.Background(), tools, HarnessToolCall{Content: "hello", Model: tc.callModel, CloneVoice: tc.callClone})
+			out, _, err := def.Execute(context.Background(), tools, HarnessToolCall{Content: "hello", Model: tc.callModel, Voice: tc.callVoice, CloneVoice: tc.callClone})
 			if err != nil {
 				t.Fatalf("Execute error: %v", err)
 			}
@@ -87,18 +93,21 @@ func TestGenerateSpeechVoiceCloningRouting(t *testing.T) {
 			if gotReq.SourceAudio != tc.wantSource {
 				t.Fatalf("sourceAudio = %q, want %q", gotReq.SourceAudio, tc.wantSource)
 			}
-			// Forced cloning without an attached clip must degrade with a
-			// notice, not fail and not clone from nothing.
+			if tc.callVoice != "" && gotReq.Voice != tc.callVoice {
+				t.Fatalf("voice = %q, want %q", gotReq.Voice, tc.callVoice)
+			}
+			// Judgment calls must degrade with a notice, not fail: forced
+			// cloning without an attached clip, and a named voice standing a
+			// clip down from the cloning path.
 			np, ok := out.(NoticeProvider)
 			if !ok {
 				t.Fatalf("expected result to implement NoticeProvider, got %T", out)
 			}
 			notices := np.ToolNotices()
-			wantNotice := tc.voiceRef == "" && tc.callClone != nil && *tc.callClone
-			if wantNotice && (len(notices) != 1 || !strings.Contains(notices[0], "regular voice")) {
-				t.Fatalf("expected a degrade notice for forced cloning without a clip, got %v", notices)
+			if tc.wantNoticePart != "" && (len(notices) != 1 || !strings.Contains(notices[0], tc.wantNoticePart)) {
+				t.Fatalf("expected a %q notice, got %v", tc.wantNoticePart, notices)
 			}
-			if !wantNotice && len(notices) != 0 {
+			if tc.wantNoticePart == "" && len(notices) != 0 {
 				t.Fatalf("expected no notices, got %v", notices)
 			}
 		})
@@ -121,6 +130,25 @@ func TestGenerateSpeechVoiceCloningRouting(t *testing.T) {
 	}
 	if gotModel != defaultFalAudioCloneModel {
 		t.Fatalf("clone fallback model = %q, want %q", gotModel, defaultFalAudioCloneModel)
+	}
+}
+
+// TestGenerateSpeechDescriptionTeachesVoicePrecedence pins the catalog half of
+// the conv_1a989138830e7eaa29f6c429 lesson: the planner must learn that naming
+// a voice speaks in that voice directly, so a history-backfilled clip doesn't
+// read as a cloning signal it needs cloneVoice:false to escape.
+func TestGenerateSpeechDescriptionTeachesVoicePrecedence(t *testing.T) {
+	description := speechGenerationDescription(true)
+	if !strings.Contains(description, "Naming a voice (voice) speaks in that named voice directly") {
+		t.Fatalf("description should teach the named-voice precedence:\n%s", description)
+	}
+	schema := generateSpeechParamSchema()
+	clone, ok := schema["properties"].(map[string]any)["cloneVoice"].(map[string]any)
+	if !ok {
+		t.Fatalf("cloneVoice property missing from schema: %#v", schema)
+	}
+	if !strings.Contains(clone["description"].(string), "unless the call also names a voice") {
+		t.Fatalf("cloneVoice param should carry the named-voice precedence: %#v", clone)
 	}
 }
 
