@@ -95,7 +95,8 @@ const (
 	// written voice description ("a sweet, natural voice of an 8-year-old …")
 	// into a preview clip of that voice plus a reusable custom_voice_id. Its
 	// required inputs are prompt (the description, ≤2000 chars) and preview_text
-	// (the line the preview speaks, ≤500 chars, billed per character); the voice
+	// (the line the preview speaks, ≤500 chars — fal bills the design per
+	// "cloned voices", one per call, not per preview character); the voice
 	// id feeds generate_speech on a MiniMax speech endpoint as its voice input.
 	defaultFalVoiceDesignModel = "fal-ai/minimax/voice-design"
 	// defaultFalAudioExtendModel is the audio-extend endpoint used by the

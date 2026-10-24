@@ -1569,8 +1569,9 @@ func generateVoiceParamSchema() map[string]any {
 
 // defaultVoiceDesignPreviewText is the preview line generate_voice speaks when
 // the planner passes no previewText — MiniMax voice-design requires
-// preview_text, and a voice ask need not carry words to say. Short on purpose:
-// the preview audio is billed per character.
+// preview_text, and a voice ask need not carry words to say. fal bills the
+// design per cloned voice (pricing API unit "cloned voices"), not per preview
+// character, so the line's length costs nothing.
 const defaultVoiceDesignPreviewText = "Hi! This is the voice you designed — here is a short preview so you can hear how it sounds."
 
 // voiceDesignExecute clamps the two request fields to the fal endpoint's

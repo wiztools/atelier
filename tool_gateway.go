@@ -955,9 +955,11 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				generated.Notices = append(generated.Notices, mediaGenerationRecoveredNotice)
 			}
 			if err == nil {
-				// The preview audio is character-billed (MiniMax documents $30
-				// per 1M characters of preview text), so the hint rides the
-				// preview, not the description.
+				// fal prices the default voice-design endpoint per "cloned
+				// voices" ($3 per designed voice — one per call), so
+				// Requests carries the estimate. The character hint stays
+				// for alternate endpoints in the slot priced per preview
+				// character.
 				hints := falBillingHints{
 					Requests:   1,
 					Characters: len([]rune(req.PreviewText)),

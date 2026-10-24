@@ -66,6 +66,11 @@ func TestFalBillingHintsQuantityForUnit(t *testing.T) {
 		{unit: "request", wantQty: 1, wantOK: true},
 		// fal's flat per-audio unit (stable-audio inpaint returns "audios").
 		{unit: "audios", wantQty: 1, wantOK: true},
+		// fal's per-designed-voice unit (minimax/voice-design): one voice
+		// per call, so it prices like "request" — the preview's length
+		// prices nothing.
+		{unit: "cloned voices", wantQty: 1, wantOK: true},
+		{unit: "cloned voice", wantQty: 1, wantOK: true},
 		// fal's generic per-output unit — seedream v5 returns "units" per
 		// generated image (conv_26ef0c4f), so an image call's count is its
 		// images while every other call bills one per request.
@@ -115,6 +120,11 @@ func TestFalBillingHintsQuantityForUnit(t *testing.T) {
 	// A character-billed model with no text must not price at zero characters.
 	if _, ok := (falBillingHints{Requests: 1}).quantityForUnit("1000 characters"); ok {
 		t.Fatal("quantityForUnit(1000 characters) with no characters hint should report not-ok")
+	}
+	// Nor may a per-voice design price at zero voices when no request count
+	// rides the hints.
+	if _, ok := (falBillingHints{Characters: 91}).quantityForUnit("cloned voices"); ok {
+		t.Fatal("quantityForUnit(cloned voices) with no requests hint should report not-ok")
 	}
 	// fal's compute-time and per-minute vocabulary stays unpriced: the request
 	// can never state GPU seconds, and a lipsync clip's minutes ride the
@@ -789,6 +799,7 @@ func (transport *falPricingTransport) RoundTrip(req *http.Request) (*http.Respon
 			`{"endpoint_id":"bytedance/seedance-2.5/reference-to-video","unit_price":0.0214,"unit":"1000 tokens","currency":"USD"},` +
 			`{"endpoint_id":"bytedance/seedream/v5/pro/edit","unit_price":0.0675,"unit":"units","currency":"USD"},` +
 			`{"endpoint_id":"fal-ai/f5-tts","unit_price":0.05,"unit":"1000 characters","currency":"USD"},` +
+			`{"endpoint_id":"fal-ai/minimax/voice-design","unit_price":3,"unit":"cloned voices","currency":"USD"},` +
 			`{"endpoint_id":"fal-ai/elevenlabs/sound-effects/v2","unit_price":0.002,"unit":"second","currency":"USD"},` +
 			`{"endpoint_id":"fal-ai/nonusd/model","unit_price":1,"unit":"image","currency":"EUR"}` +
 			`],"next_cursor":null,"has_more":false}`
@@ -973,6 +984,15 @@ func TestEstimateFalCostMicros(t *testing.T) {
 	got = estimateFalCostMicros(ctx, cache, client, "key", "fal-ai/f5-tts", nil, falBillingHints{Characters: 120, Requests: 1})
 	if got != 6000 {
 		t.Fatalf("character-billed estimate = %d, want 6000", got)
+	}
+	// Voice design (the conv_1a989138830e7eaa29f6c429 bill): fal prices the
+	// endpoint per "cloned voices" — $3 per designed voice, one per call —
+	// so a design with the 91-character default preview prices a flat $3.00
+	// whatever the preview says. While the unit was unknown the turn stamped
+	// costUnknown and rendered "est. ?".
+	got = estimateFalCostMicros(ctx, cache, client, "key", "fal-ai/minimax/voice-design", nil, falBillingHints{Requests: 1, Characters: 91})
+	if got != 3000000 {
+		t.Fatalf("voice-design estimate = %d, want 3000000", got)
 	}
 	// Per-second sound generation (the conv_a3fecc876e6360a50ed6e8b5 bill): the
 	// elevenlabs sound-effects model rendered a 3s clip at $0.002/s = $0.006 —

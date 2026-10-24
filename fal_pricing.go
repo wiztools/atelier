@@ -259,6 +259,14 @@ func (hints falBillingHints) quantityForUnit(unit string) (float64, bool) {
 		// fal's flat per-generated-audio unit (stable-audio inpaint returns
 		// "audios"): one per generation, like "request".
 		return float64(hints.Requests), hints.Requests > 0
+	case "cloned voice", "cloned voices":
+		// fal's per-designed-voice unit — minimax/voice-design returns
+		// "cloned voices" ($3 per designed voice, verified 2026-10): each
+		// call designs exactly one voice whatever the preview's length, so
+		// it prices like "request" (conv_1a989138830e7eaa29f6c429: the unit
+		// fell through to the unpriced default and the design stamped
+		// costUnknown).
+		return float64(hints.Requests), hints.Requests > 0
 	case "unit", "units":
 		// fal's generic per-output unit — seedream v5 prices "units" per
 		// generated image, gemini-omni edit per clip (conv_26ef0c4f billed a
