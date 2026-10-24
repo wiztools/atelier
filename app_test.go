@@ -5718,6 +5718,8 @@ func TestIsFalLipsyncModel(t *testing.T) {
 		{"kling v1 standard ai-avatar", FalModel{ID: "fal-ai/kling-video/v1/standard/ai-avatar"}, true},
 		{"kling v1 pro ai-avatar", FalModel{ID: "fal-ai/kling-video/v1/pro/ai-avatar"}, true},
 		{"sync-lipsync by id", FalModel{ID: "fal-ai/sync-lipsync/v2/pro"}, true},
+		{"kling lipsync audio-to-video by id", FalModel{ID: "fal-ai/kling-video/lipsync/audio-to-video", Tags: []string{"audio to video", "lipsync"}}, true},
+		{"kling lipsync text-to-video by id", FalModel{ID: "fal-ai/kling-video/lipsync/text-to-video", Tags: []string{"text to video", "lipsync"}}, true},
 		{"lipsync by tag", FalModel{ID: "fal-ai/latentsync", Tags: []string{"lipsync", "video-to-video"}}, true},
 		{"lip sync tag with space", FalModel{ID: "fal-ai/veed/lip-sync", Tags: []string{"lip sync"}}, true},
 		{"kling plain image-to-video", FalModel{ID: "fal-ai/kling-video/v2/master/image-to-video"}, false},
@@ -5730,6 +5732,34 @@ func TestIsFalLipsyncModel(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := isFalLipsyncModel(tc.model); got != tc.want {
 				t.Errorf("isFalLipsyncModel(%+v) = %v, want %v", tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFalTextDrivenLipsyncModel covers the picker-side exclusion layered on
+// isFalLipsyncModel: fal's text-driven lipsync variants (kling's
+// lipsync/text-to-video takes TTS text, no audio_url) cannot serve lip_sync's
+// required audio clip, so the video+audio picker must never list them. The
+// audio-driven siblings — including kling's lipsync/audio-to-video, which fal
+// also files under text-to-video — stay listable.
+func TestFalTextDrivenLipsyncModel(t *testing.T) {
+	cases := []struct {
+		name  string
+		model FalModel
+		want  bool
+	}{
+		{"kling text-to-video lipsync by tag", FalModel{ID: "fal-ai/kling-video/lipsync/text-to-video", Tags: []string{"text to video", "lipsync"}}, true},
+		{"kling text-to-video lipsync by id alone", FalModel{ID: "fal-ai/kling-video/lipsync/text-to-video"}, true},
+		{"text-driven tag on any id", FalModel{ID: "fal-ai/some-lipsync", Tags: []string{"text to video"}}, true},
+		{"kling audio-to-video lipsync", FalModel{ID: "fal-ai/kling-video/lipsync/audio-to-video", Tags: []string{"audio to video", "lipsync"}}, false},
+		{"sync-lipsync v2", FalModel{ID: "fal-ai/sync-lipsync/v2", Tags: []string{"animation", "lip sync"}}, false},
+		{"audio-to-video tag is not text-driven", FalModel{ID: "veed/avatars/audio-to-video", Tags: []string{"lipsync", "audio-to-video"}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := falTextDrivenLipsyncModel(tc.model); got != tc.want {
+				t.Errorf("falTextDrivenLipsyncModel(%+v) = %v, want %v", tc.model, got, tc.want)
 			}
 		})
 	}

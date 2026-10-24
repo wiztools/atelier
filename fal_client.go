@@ -140,8 +140,10 @@ const (
 	defaultFalLipsyncImageModel = "fal-ai/sync-lipsync/v3/image-to-video"
 	// defaultFalLipsyncVideoModel is the video-to-video lip sync endpoint used
 	// when the user attaches an audio clip plus a video — re-lip-syncs an
-	// existing clip. sync-lipsync v2/pro preserves facial detail well.
-	defaultFalLipsyncVideoModel = "fal-ai/sync-lipsync/v2/pro"
+	// existing clip. Kling's lipsync/audio-to-video is exactly that contract
+	// (required: video_url, audio_url); despite its name it is a video-face
+	// endpoint, never the image-face slot above.
+	defaultFalLipsyncVideoModel = "fal-ai/kling-video/lipsync/audio-to-video"
 	// defaultFalVideoDuration / defaultFalVideoAspectRatio are fal's enum
 	// defaults for text-to-video; kept here so config defaults and the client
 	// agree on a single source of truth.

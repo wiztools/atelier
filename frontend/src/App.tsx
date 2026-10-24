@@ -435,8 +435,12 @@ const defaultFalSoundEffectsModel = 'fal-ai/elevenlabs/sound-effects/v2';
 const defaultFalVoiceDesignModel = 'fal-ai/minimax/voice-design';
 const defaultFalAudioExtendModel = 'fal-ai/stable-audio-25/inpaint';
 const defaultFalTranscribeModel = 'fal-ai/wizper';
-const defaultFalLipsyncImageModel = 'fal-ai/kling-video/lipsync/audio-to-video';
-const defaultFalLipsyncVideoModel = 'fal-ai/sync-lipsync/v2/pro';
+// Kling's lipsync/audio-to-video takes video_url + audio_url — a video-face
+// endpoint despite the name, so it defaults the video+audio slot; the
+// image+audio slot needs sync-lipsync's image-to-video endpoint (kling has no
+// image input and 422s there). Mirrors the Go constants in fal_client.go.
+const defaultFalLipsyncImageModel = 'fal-ai/sync-lipsync/v3/image-to-video';
+const defaultFalLipsyncVideoModel = 'fal-ai/kling-video/lipsync/audio-to-video';
 const defaultFalUpscaleModel = 'fal-ai/esrgan';
 // Replicate backend defaults — owner/name slugs, kept in sync with the Go
 // consts in replicate_client.go (the single source of truth; these mirror it
@@ -10068,10 +10072,10 @@ function ModelSelectionPanel({
         <div className="settings-rows">
           <div className="two-column">
             <div className="field">
-              {fieldLabel('fal-lipsync-image-model', 'Audio-to-Video Model (fal.ai)', 'lipsyncImageModel')}
+              {fieldLabel('fal-lipsync-image-model', 'Image+Audio Input (fal.ai)', 'lipsyncImageModel')}
               <ModelCombobox
                 id="fal-lipsync-image-model"
-                ariaLabel="fal.ai audio-to-video lip sync model"
+                ariaLabel="fal.ai image+audio lip sync model"
                 placeholder={defaultFalLipsyncImageModel}
                 value={value.falLipsyncImageModel}
                 onChange={(next) => onChange({falLipsyncImageModel: next})}
@@ -10081,10 +10085,10 @@ function ModelSelectionPanel({
             </div>
 
             <div className="field">
-              {fieldLabel('fal-lipsync-video-model', 'Video-to-Video Model (fal.ai)', 'lipsyncVideoModel')}
+              {fieldLabel('fal-lipsync-video-model', 'Video+Audio Input (fal.ai)', 'lipsyncVideoModel')}
               <ModelCombobox
                 id="fal-lipsync-video-model"
-                ariaLabel="fal.ai video-to-video lip sync model"
+                ariaLabel="fal.ai video+audio lip sync model"
                 placeholder={defaultFalLipsyncVideoModel}
                 value={value.falLipsyncVideoModel}
                 onChange={(next) => onChange({falLipsyncVideoModel: next})}

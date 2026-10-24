@@ -3239,13 +3239,14 @@ func isFalLipsyncModel(model FalModel) bool {
 // ListFalLipsyncImageModels returns fal's audio-to-video lip sync catalog for
 // the Settings audio-to-video-model picker — endpoints that drive a face image
 // with an audio clip (a talking head). fal files these across the audio-to-video
-// and image-to-video categories (kling lipsync/audio-to-video is tagged
-// text-to-video but sync-lipsync/v3/image-to-video and musetalk are
+// and image-to-video categories (sync-lipsync/v3/image-to-video is
 // image-to-video; kling's ai-avatar endpoints sit in image-to-video with no
 // lipsync tag at all), so both are fetched, merged, deduped by endpoint id, and
-// kept only when isFalLipsyncModel matches. The category split mirrors how
-// ListFalAudioModels merges two categories; the filter mirrors
-// ListFalUpscaleModels.
+// kept only when isFalLipsyncModel matches. Kling's lipsync/* endpoints are
+// deliberately absent: fal files them under text-to-video, they take no image
+// input, and an audio+image pick would fail resolveLipsyncBody's face-source
+// rule. The category split mirrors how ListFalAudioModels merges two
+// categories; the filter mirrors ListFalUpscaleModels.
 func (a *App) ListFalLipsyncImageModels() ([]FalModel, error) {
 	merged := []FalModel{}
 	seen := map[string]bool{}
@@ -3270,27 +3271,58 @@ func (a *App) ListFalLipsyncImageModels() ([]FalModel, error) {
 	return merged, nil
 }
 
+// falTextDrivenLipsyncModel reports whether a lip sync endpoint drives speech
+// from TTS text rather than an audio file — fal tags its text-driven variants
+// "text to video" (fal-ai/kling-video/lipsync/text-to-video takes
+// audio_input.tts_audio and no audio_url), and the id suffix carries the same
+// signal. lip_sync always carries an audio clip, so a text-driven endpoint
+// cannot serve it: listing one would invite a pick that 422s on the tool's
+// contract. Consulted only for entries isFalLipsyncModel already matched.
+func falTextDrivenLipsyncModel(model FalModel) bool {
+	if strings.Contains(strings.ToLower(model.ID), "text-to-video") {
+		return true
+	}
+	for _, tag := range model.Tags {
+		if strings.EqualFold(strings.TrimSpace(tag), "text to video") {
+			return true
+		}
+	}
+	return false
+}
+
 // ListFalLipsyncVideoModels returns fal's video-to-video lip sync catalog for
 // the Settings video-to-video-model picker — endpoints that re-lip-sync an
 // existing video with an audio clip (sync-lipsync, latentsync, veed, heygen,
-// pixverse). fal files these under the video-to-video category, fetched and kept
-// only when isFalLipsyncModel matches.
+// pixverse). fal files the sync-lipsync family under the video-to-video
+// category but kling's lipsync endpoints (video_url + audio_url, e.g.
+// lipsync/audio-to-video) under text-to-video, so both are fetched, merged,
+// and deduped by endpoint id — the audio-to-video lister's two-category
+// pattern — kept when isFalLipsyncModel matches, minus the text-driven entries
+// the tool's required audio clip rules out.
 func (a *App) ListFalLipsyncVideoModels() ([]FalModel, error) {
-	models, err := a.cachedFalCategoryModels(falVideoToVideoCategory)
-	lipsync := []FalModel{}
-	if err == nil {
+	merged := []FalModel{}
+	seen := map[string]bool{}
+	for _, category := range []string{falVideoToVideoCategory, falTextToVideoCategory} {
+		models, err := a.cachedFalCategoryModels(category)
+		if err != nil {
+			// One category failing (a rate-limited request) keeps the
+			// other's matches; only a total failure degrades, below.
+			continue
+		}
 		for _, model := range models {
-			if isFalLipsyncModel(model) {
-				lipsync = append(lipsync, model)
+			if model.ID == "" || seen[model.ID] || !isFalLipsyncModel(model) || falTextDrivenLipsyncModel(model) {
+				continue
 			}
+			seen[model.ID] = true
+			merged = append(merged, model)
 		}
 	}
-	if len(lipsync) == 0 {
+	if len(merged) == 0 {
 		// A failed (rate-limited) or reshuffled catalog keeps the mapped
 		// default — the picker stays openable.
-		lipsync = append(lipsync, FalModel{ID: defaultFalLipsyncVideoModel})
+		merged = append(merged, FalModel{ID: defaultFalLipsyncVideoModel})
 	}
-	return lipsync, nil
+	return merged, nil
 }
 
 // isFalVideoExtendModel reports whether a fal catalog entry is a video-extend
