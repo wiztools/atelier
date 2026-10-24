@@ -1,0 +1,21 @@
+{
+  "components": {
+    "schemas": {
+      "MMAudioV2Input": {
+        "type": "object",
+        "x-fal-order-properties": ["video_url", "prompt", "negative_prompt", "seed", "num_steps", "duration", "cfg_strength", "mask_away_clip"],
+        "required": ["prompt", "video_url"],
+        "properties": {
+          "video_url": { "type": "string", "title": "Video Url", "description": "URL of the video to generate audio for" },
+          "prompt": { "type": "string", "title": "Prompt", "description": "The prompt to generate the audio for" },
+          "negative_prompt": { "type": "string", "title": "Negative Prompt", "default": "", "description": "Negative prompt" },
+          "seed": { "type": "integer", "title": "Seed", "description": "Seed for the random number generator" },
+          "num_steps": { "type": "integer", "title": "Num Steps", "default": 25, "description": "Number of generation steps" },
+          "duration": { "type": "number", "title": "Duration", "default": 8, "description": "Duration of the generated audio" },
+          "cfg_strength": { "type": "number", "title": "Cfg Strength", "default": 4.5, "description": "Classifier Free Guidance strength" },
+          "mask_away_clip": { "type": "boolean", "title": "Mask Away Clip", "description": "Whether to mask away the clip" }
+        }
+      }
+    }
+  }
+}

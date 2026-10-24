@@ -101,6 +101,12 @@ type HarnessToolExecutionContext struct {
 	// (image for audio-to-video, video for video-to-video). It returns a video
 	// (same transport as GenerateVideo) plus resolver notices.
 	GenerateLipsync func(ctx context.Context, req LipsyncGenerateRequest) (GeneratedVideo, error)
+	// GenerateSFX runs a video sound-effects generation — the configured fal
+	// endpoint watches an attached clip and generates a synchronized soundtrack
+	// for it. The result carries whichever media kind the endpoint returned:
+	// the video with the sound mixed in, or the standalone soundtrack
+	// (SFXGenerateResult; video-to-audio endpoints). Exactly one side is set.
+	GenerateSFX func(ctx context.Context, req SFXGenerateRequest) (SFXGenerateResult, error)
 	// TranscribeAudio runs fal's speech-to-text endpoint; TranscribeAudioLocal
 	// runs the locally installed whisper CLI. Both take the same canonical
 	// TranscribeAudioRequest so the tool layer cannot drift between backends;
@@ -359,6 +365,9 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 	}
 	if audioExtendConfigured(config) {
 		definitions = append(definitions, extendAudioToolDefinition())
+	}
+	if soundEffectsVideoConfigured(config) {
+		definitions = append(definitions, soundEffectsVideoToolDefinition())
 	}
 	if transcribeAudioConfigured(config) {
 		definitions = append(definitions, transcribeAudioToolDefinition(config))
@@ -1263,6 +1272,31 @@ func resolveDefaultSoundEffectsModel(config AppConfig) string {
 	return defaultFalSoundEffectsModel
 }
 
+// soundEffectsVideoConfigured reports whether the add_sound_effects tool
+// should be offered: a fal video sound-effects model must be configured AND a
+// fal.ai key present — fal is the only backend. mergeAppConfig seeds the
+// default once AudioModel is set, so anyone with speech configured gets the
+// tool without a Settings visit.
+func soundEffectsVideoConfigured(config AppConfig) bool {
+	// fal-only: airplane mode drops the tool.
+	if airplaneModeActive(config) {
+		return false
+	}
+	if strings.TrimSpace(config.Providers.Fal.SoundEffectsVideoModel) == "" {
+		return false
+	}
+	return falKeyConfigured()
+}
+
+// resolveDefaultSoundEffectsVideoModel returns the video sound-effects model
+// the add_sound_effects tool uses when the call doesn't override it.
+func resolveDefaultSoundEffectsVideoModel(config AppConfig) string {
+	if model := strings.TrimSpace(config.Providers.Fal.SoundEffectsVideoModel); model != "" {
+		return model
+	}
+	return defaultFalSoundEffectsVideoModel
+}
+
 // audioExtendConfigured reports whether the extend_audio tool should be
 // offered: fal is the only audio-extend backend, and the default model always
 // applies (stable-audio-25/inpaint), so the gate is purely the fal key — like
@@ -1705,6 +1739,126 @@ func soundEffectsGenerationToolDefinition() HarnessToolDefinition {
 			}, resolveDefaultSoundEffectsModel)
 		},
 		Activity: audioGenerationActivity,
+	}
+}
+
+// soundEffectsVideoDescription assembles the add_sound_effects tool
+// description. The deliverable wording covers both endpoint families: the
+// video-soundtrack ones return the clip with the sound mixed in, the
+// video-to-audio ones a standalone soundtrack the planner chains into
+// replace_audio.
+func soundEffectsVideoDescription() string {
+	return "Use this when the user asks to add or generate sound effects for an attached video — a synchronized soundtrack, foley, ambience for the picture (footsteps, rain, doors, whooshes, room tone). Requires an attached video; the configured fal.ai sound-effects model watches the clip and generates matching sound. Pass content describing the sound — name off-screen sources the picture doesn't show (\"distant thunder, footsteps on gravel, low room tone\"); when the user didn't name specific sounds, describe the scene's likely sound world. The result is the video with the new soundtrack mixed in, or — when the configured model delivers sound only — a soundtrack clip; chain replace_audio in the same turn to lay that one under the video. Pass preserveSpeech:false when the generated sound must replace everything including dialogue; leave it unset to keep any speech in the clip. Generation runs for a minute or more."
+}
+
+// soundEffectsVideoParamSchema describes add_sound_effects's inputs. content
+// is the sound description (the planner's steering; the model also reads the
+// picture), preserveSpeech the optional dialogue-preservation toggle.
+func soundEffectsVideoParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"content":        stringParam("Description of the sound to generate for the video — name on-screen and off-screen sources (footsteps, rain, distant traffic, room tone)."),
+			"preserveSpeech": boolParam("Optional — true (the default) keeps any speech in the clip and generates the rest around it; false yields sound effects only and suppresses speech."),
+		},
+		"required": []string{"content"},
+	}
+}
+
+// soundEffectsVideoToolDefinition exposes the add_sound_effects tool: it
+// consumes an attached video and produces its generated soundtrack. The result
+// kind follows the configured endpoint — a video with the sound mixed in rides
+// the existing ToolVideoResult → artifact pipeline, a standalone soundtrack
+// rides ToolAudioResult (and carries forward to replace_audio) — so no new
+// persistence code. Mirrors lip_sync's attachment-guard pattern.
+func soundEffectsVideoToolDefinition() HarnessToolDefinition {
+	return HarnessToolDefinition{
+		Name:        "add_sound_effects",
+		Title:       "Add sound effects",
+		Description: soundEffectsVideoDescription(),
+		Example:     `{"name":"add_sound_effects","content":"distant thunder, footsteps on gravel, low room tone"}`,
+		Risk:        HarnessToolRiskRead,
+		ParamSchema: soundEffectsVideoParamSchema(),
+		Validate: func(prefix string, call HarnessToolCall) []string {
+			if strings.TrimSpace(call.Content) == "" {
+				return []string{prefix + ".content is required for add_sound_effects (the description of the sound to generate)"}
+			}
+			return nil
+		},
+		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
+			if tools.GenerateSFX == nil {
+				return nil, "sound effects unavailable", errors.New("sound-effects generation is not available in this context")
+			}
+			// fal's sound-effects endpoints take a single video_url, so only
+			// the first attached video is used even when several are attached.
+			attachedVideo := firstAttachedVideo(tools.AttachedVideos)
+			if attachedVideo == "" {
+				return nil, "sound effects require an attached video", errors.New("add_sound_effects requires an attached video — ask the user to attach one first")
+			}
+			model := strings.TrimSpace(call.Model)
+			if model == "" {
+				model = resolveDefaultSoundEffectsVideoModel(tools.Config)
+			}
+			req := SFXGenerateRequest{
+				Model:          model,
+				Video:          attachedVideo,
+				Prompt:         strings.TrimSpace(call.Content),
+				NegativePrompt: strings.TrimSpace(call.NegativePrompt),
+				PreserveSpeech: call.PreserveSpeech,
+			}
+			result, err := tools.GenerateSFX(ctx, req)
+			if err != nil {
+				return nil, "sound effects failed", err
+			}
+			// The endpoint family spans two output kinds; the response decides.
+			// A video with the soundtrack mixed in is the richer deliverable; a
+			// standalone soundtrack carries forward to replace_audio, so the
+			// summary names that chain for the planner to finish the job.
+			if result.Video.Data != nil {
+				tempPath, err := writeTempVideo(result.Video)
+				if err != nil {
+					return nil, "sound effects failed", err
+				}
+				output := ToolVideoResult{
+					Model:      model,
+					Count:      1,
+					Videos:     []ToolVideoFile{{TempPath: tempPath, MimeType: result.Video.MimeType, SourceURL: result.Video.SourceURL}},
+					CostMicros: result.Video.CostMicros,
+					Notices:    result.Video.Notices,
+				}
+				return output, fmt.Sprintf("added sound effects to the attached video with %s", model), nil
+			}
+			if result.Audio.Data != nil {
+				tempPath, err := writeTempAudio(result.Audio)
+				if err != nil {
+					return nil, "sound effects failed", err
+				}
+				output := ToolAudioResult{
+					Model:      model,
+					Prompt:     req.Prompt,
+					Count:      1,
+					Audios:     []ToolAudioFile{{TempPath: tempPath, MimeType: result.Audio.MimeType, SourceURL: result.Audio.SourceURL}},
+					CostMicros: result.Audio.CostMicros,
+					Notices:    result.Audio.Notices,
+				}
+				return output, fmt.Sprintf("generated a sound-effects track for the attached video with %s — call replace_audio with it to lay the track under the clip", model), nil
+			}
+			return nil, "sound effects returned no media", errors.New("sound-effects model returned no video or audio")
+		},
+		Activity: func(result HarnessToolResult) HarnessToolActivity {
+			// audioGenerationActivity's shape for both output kinds: the
+			// video-with-soundtrack result reports MediaKind video, the
+			// standalone soundtrack audio — the usage ledger folds both.
+			activity := defaultHarnessToolActivity(result)
+			switch typed := result.Result.(type) {
+			case ToolVideoResult:
+				activity.Command = []string{"fal", "generate", typed.Model}
+			case ToolAudioResult:
+				activity.Command = []string{"fal", "generate", typed.Model}
+			}
+			return activity
+		},
 	}
 }
 

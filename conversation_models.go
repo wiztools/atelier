@@ -46,22 +46,23 @@ type ConversationModelOverrides struct {
 	// Models.InpaintProvider is independent of ImageProvider. The model lands
 	// on the slot the effective inpaint provider reads (fal InpaintModel /
 	// replicate InpaintModel).
-	InpaintProvider    string `json:"inpaintProvider,omitempty"`
-	InpaintModel       string `json:"inpaintModel,omitempty"`
-	VideoExtendModel   string `json:"videoExtendModel,omitempty"`
-	VideoMotionModel   string `json:"videoMotionModel,omitempty"`
-	VideoKeyframeModel string `json:"videoKeyframeModel,omitempty"`
-	VideoUpscaleModel  string `json:"videoUpscaleModel,omitempty"`
-	VideoReframeModel  string `json:"videoReframeModel,omitempty"`
-	VideoRestyleModel  string `json:"videoRestyleModel,omitempty"`
-	AudioModel         string `json:"audioModel,omitempty"`
-	SoundEffectsModel  string `json:"soundEffectsModel,omitempty"`
-	AudioCloneModel    string `json:"audioCloneModel,omitempty"`
-	AudioExtendModel   string `json:"audioExtendModel,omitempty"`
-	VoiceDesignModel   string `json:"voiceDesignModel,omitempty"`
-	TranscribeModel    string `json:"transcribeModel,omitempty"`
-	LipsyncImageModel  string `json:"lipsyncImageModel,omitempty"`
-	LipsyncVideoModel  string `json:"lipsyncVideoModel,omitempty"`
+	InpaintProvider        string `json:"inpaintProvider,omitempty"`
+	InpaintModel           string `json:"inpaintModel,omitempty"`
+	VideoExtendModel       string `json:"videoExtendModel,omitempty"`
+	VideoMotionModel       string `json:"videoMotionModel,omitempty"`
+	VideoKeyframeModel     string `json:"videoKeyframeModel,omitempty"`
+	VideoUpscaleModel      string `json:"videoUpscaleModel,omitempty"`
+	VideoReframeModel      string `json:"videoReframeModel,omitempty"`
+	VideoRestyleModel      string `json:"videoRestyleModel,omitempty"`
+	AudioModel             string `json:"audioModel,omitempty"`
+	SoundEffectsModel      string `json:"soundEffectsModel,omitempty"`
+	SoundEffectsVideoModel string `json:"soundEffectsVideoModel,omitempty"`
+	AudioCloneModel        string `json:"audioCloneModel,omitempty"`
+	AudioExtendModel       string `json:"audioExtendModel,omitempty"`
+	VoiceDesignModel       string `json:"voiceDesignModel,omitempty"`
+	TranscribeModel        string `json:"transcribeModel,omitempty"`
+	LipsyncImageModel      string `json:"lipsyncImageModel,omitempty"`
+	LipsyncVideoModel      string `json:"lipsyncVideoModel,omitempty"`
 	// TranscriptionProvider overrides transcribe_audio's backend — the Models
 	// tab's Transcription & Subtitles section. WhisperModel/WhisperBinary/
 	// WhisperVADModel are engine config the Settings → Local Tools tab edits
@@ -110,7 +111,7 @@ func normalizeConversationModelOverrides(o ConversationModelOverrides) Conversat
 		&o.ImageEditModel, &o.UpscaleModel,
 		&o.InpaintProvider, &o.InpaintModel,
 		&o.VideoExtendModel, &o.VideoMotionModel, &o.VideoKeyframeModel, &o.VideoUpscaleModel, &o.VideoReframeModel, &o.VideoRestyleModel,
-		&o.AudioModel, &o.SoundEffectsModel, &o.AudioCloneModel, &o.AudioExtendModel, &o.VoiceDesignModel, &o.TranscribeModel,
+		&o.AudioModel, &o.SoundEffectsModel, &o.SoundEffectsVideoModel, &o.AudioCloneModel, &o.AudioExtendModel, &o.VoiceDesignModel, &o.TranscribeModel,
 		&o.LipsyncImageModel, &o.LipsyncVideoModel,
 		&o.TranscriptionProvider, &o.WhisperModel, &o.WhisperBinary, &o.WhisperVADModel,
 		&o.ImageAspectRatio, &o.ImageSizePreset, &o.VideoDuration, &o.VideoAspectRatio, &o.VideoResolution, &o.SoundDuration, &o.AudioExtendDuration,
@@ -432,6 +433,9 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 	}
 	if o.SoundEffectsModel != "" {
 		config.Providers.Fal.SoundEffectsModel = o.SoundEffectsModel
+	}
+	if o.SoundEffectsVideoModel != "" {
+		config.Providers.Fal.SoundEffectsVideoModel = o.SoundEffectsVideoModel
 	}
 	if o.AudioCloneModel != "" {
 		config.Providers.Fal.AudioCloneModel = o.AudioCloneModel

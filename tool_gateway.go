@@ -502,6 +502,86 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			generated.Notices = notices
 			return generated, genErr
 		}
+		gateway.tools.GenerateSFX = func(ctx context.Context, req SFXGenerateRequest) (SFXGenerateResult, error) {
+			// fal-only: airplane mode refuses the call.
+			if err := airplaneMediaError(config, "add_sound_effects"); err != nil {
+				return SFXGenerateResult{}, err
+			}
+			apiKey, err := loadFalAPIKey()
+			if err != nil {
+				return SFXGenerateResult{}, err
+			}
+			if strings.TrimSpace(apiKey) == "" {
+				return SFXGenerateResult{}, errFalKeyNotConfigured
+			}
+			client := newFalClient(app.client, apiKey)
+			// The source clip rides fal-hosted like every fal media reference (a
+			// multi-MB video sent inline trips the queue's request-size cap). Its
+			// data URL is the only locally readable form of the length — probe it
+			// before the swap, so a call whose plan named no length soundtracks the
+			// whole clip instead of the endpoints' short API default (10s on
+			// mirelo). WebM/MOV sources the MP4 sniff can't read fall back to the
+			// model's own default, the shared fail-soft rule.
+			if req.Duration <= 0 {
+				if data, _, decErr := decodeMediaDataURL(req.Video); decErr == nil {
+					if seconds, ok := mp4DurationSeconds(data); ok {
+						req.Duration = seconds
+					}
+				}
+			}
+			if resolved, err := client.resolveMediaURLHosted(ctx, req.Video, "video/mp4", "sfx-source.mp4"); err == nil {
+				req.Video = resolved
+			}
+			schema := schemaCache.Get(ctx, req.Model)
+			body, notices, err := resolveSFXBody(schema, req, falOverrides)
+			if err != nil {
+				return SFXGenerateResult{}, err
+			}
+			// The SFX endpoints return a video with the soundtrack mixed in or a
+			// standalone audio clip, so both the transport and the recovery are
+			// kind-agnostic (RecoverSFXJob sniffs the same ladder sfxFromJob runs).
+			job := &mediaJob{}
+			client.jobSink = job
+			result, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+				func(jctx context.Context) (SFXGenerateResult, error) {
+					return client.GenerateSFX(jctx, req.Model, body)
+				},
+				client.CancelMediaJob,
+				client.RecoverSFXJob,
+			)
+			if genErr == nil {
+				if recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
+				// The family bills per second of generated audio (mirelo, per
+				// sample — the resolver pins one), so the length the body carried
+				// prices it. When the probe never measured the source (a WebM
+				// sniff miss), the rendered output's own container stands in —
+				// the generated audio tracks the clip either way.
+				hints := falBillingHints{Requests: 1}
+				seconds, priced := req.Duration, req.Duration > 0
+				if !priced {
+					if result.Video.Data != nil {
+						seconds, priced = mp4DurationSeconds(result.Video.Data)
+					} else if result.Audio.Data != nil {
+						seconds, priced = probeAudioDuration(result.Audio.Data)
+					}
+				}
+				if priced {
+					hints.Seconds = seconds
+				}
+				cost := app.estimateFalGenerationCost(ctx, config, req.Model, hints)
+				if result.Video.Data != nil {
+					result.Video.CostMicros = cost
+					result.Video.Notices = notices
+				}
+				if result.Audio.Data != nil {
+					result.Audio.CostMicros = cost
+					result.Audio.Notices = notices
+				}
+			}
+			return result, genErr
+		}
 		gateway.tools.UpscaleImage = func(ctx context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, []string, error) {
 			// Cloud-only (Ollama has no upscaler): airplane mode refuses the call.
 			if err := airplaneMediaError(config, "upscale_image"); err != nil {

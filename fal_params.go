@@ -89,6 +89,9 @@ func builtinFalOverrides() Overrides {
 			},
 		},
 		"lipsync": {},
+		// The video sound-effects category (resolveSFXBody): empty by default,
+		// present so user overrides in fal-overrides.json have a home.
+		"sfx": {},
 	}}
 }
 
@@ -298,6 +301,23 @@ var lipsyncSynonyms = map[string][]string{
 	"sourceAudio": {"audio_url", "audio_file_url", "audio"},
 	"sourceImage": {"image_url", "image_urls"},
 	"sourceVideo": {"video_url", "video_urls"},
+}
+
+// sfxSynonyms lists, per canonical param, the native key names to look for in a
+// video sound-effects model's schema (the add_sound_effects tool's category —
+// resolveSFXBody). sourceVideo is the clip to soundtrack; prompt steers the
+// sound (mirelo names it text_prompt, mmaudio prompt); preserveSpeech is
+// Mirelo's dialogue-preservation toggle; numSamples is the per-sample billing
+// dial the resolver pins to one; duration covers the endpoints that generate a
+// fixed-length soundtrack (mirelo clamps it to the video, mmaudio renders that
+// much sound).
+var sfxSynonyms = map[string][]string{
+	"sourceVideo":    {"video_url", "video_urls"},
+	"prompt":         {"text_prompt", "prompt", "text"},
+	"negativePrompt": {"negative_prompt"},
+	"preserveSpeech": {"preserve_speech", "preserve_sounds", "keep_speech"},
+	"numSamples":     {"num_samples", "samples"},
+	"duration":       {"duration", "duration_seconds"},
 }
 
 // inpaintSynonyms lists, per canonical param, the native key names to look for
@@ -1835,6 +1855,133 @@ func resolveLipsyncBody(schema *ModelInputSchema, req LipsyncGenerateRequest, ov
 	return body, notices, nil
 }
 
+// resolveSFXBody maps an SFXGenerateRequest onto a video sound-effects model's
+// native input schema, returning the fal body and user-facing notices. The
+// source clip is the tool's entire purpose, so an unmapped video input is a
+// fatal error, not a graceful drop (resolveLipsyncBody's face-source rule):
+// sending anyway would 422 downstream with a confusing "field required". The
+// prompt is the tool layer's contract (content is required there), so an empty
+// one here is skipped defensively rather than defaulted. Mirelo bills per
+// sample (num_samples, endpoint default 2), so the resolver pins one whenever
+// the schema declares the dial — the tool delivers a single result, and every
+// extra sample doubles the bill for an output nobody sees. A requested
+// duration is clamped to the property's declared bounds with a notice (the
+// speed-clamp stance: an over-ask, not an error) and dropped on enum-typed
+// lengths the value can't join. A nil schema yields a generic body with the
+// source video plus the steering inputs' raw names, plus a notice.
+func resolveSFXBody(schema *ModelInputSchema, req SFXGenerateRequest, ov Overrides) (map[string]any, []string, error) {
+	video := falVideoURL(strings.TrimSpace(req.Video))
+
+	if schema == nil {
+		body := map[string]any{"video_url": video}
+		if prompt := strings.TrimSpace(req.Prompt); prompt != "" {
+			body["prompt"] = prompt
+		}
+		if negative := strings.TrimSpace(req.NegativePrompt); negative != "" {
+			body["negative_prompt"] = negative
+		}
+		if req.Duration > 0 {
+			body["duration"] = req.Duration
+		}
+		if req.PreserveSpeech != nil {
+			body["preserve_speech"] = *req.PreserveSpeech
+		}
+		return body, []string{"Couldn't load the model's parameter schema; generated with defaults and may have dropped an unsupported input."}, nil
+	}
+
+	body := map[string]any{}
+	var notices []string
+
+	if path, prop, ok := findNative(schema, ov, "sfx", req.Model, "sourceVideo"); ok {
+		setBodyPath(schema, body, path, coerceVideoValue(prop, video))
+	} else {
+		return nil, notices, fmt.Errorf(
+			"the sound-effects model %q has no video input — it cannot soundtrack an attached clip; pick a video-capable model in Settings",
+			req.Model)
+	}
+
+	if prompt := strings.TrimSpace(req.Prompt); prompt != "" {
+		if path, prop, ok := findNative(schema, ov, "sfx", req.Model, "prompt"); ok {
+			value, notice := coerceValue("prompt", prop, prompt, req.Model)
+			if value != nil {
+				setBodyPath(schema, body, path, value)
+			}
+			if notice != "" {
+				notices = append(notices, notice)
+			}
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q takes no sound description; the prompt was ignored and the model generated its own read of the picture.",
+				req.Model))
+		}
+	}
+
+	if negative := strings.TrimSpace(req.NegativePrompt); negative != "" {
+		if path, prop, ok := findNative(schema, ov, "sfx", req.Model, "negativePrompt"); ok {
+			value, notice := coerceValue("negativePrompt", prop, negative, req.Model)
+			if value != nil {
+				setBodyPath(schema, body, path, value)
+			}
+			if notice != "" {
+				notices = append(notices, notice)
+			}
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no negative-prompt input; the excluded sounds were ignored.", req.Model))
+		}
+	}
+
+	// Per-sample billing (mirelo): pin one whenever the schema declares the
+	// dial. No notice — the endpoint's default of 2 exists for its own studio's
+	// variation gallery, not for a single-result tool call.
+	if path, prop, ok := findNative(schema, ov, "sfx", req.Model, "numSamples"); ok {
+		setBodyPath(schema, body, path, coerceVideoValue(prop, 1))
+	}
+
+	if req.Duration > 0 {
+		if path, prop, ok := findNative(schema, ov, "sfx", req.Model, "duration"); ok {
+			switch {
+			case len(prop.Enum) > 0:
+				notices = append(notices, fmt.Sprintf(
+					"The selected model %q picks its own sound length; ignoring the %.1f-second request.",
+					req.Model, req.Duration))
+			default:
+				seconds := req.Duration
+				if prop.Minimum != nil && seconds < *prop.Minimum {
+					seconds = *prop.Minimum
+					notices = append(notices, fmt.Sprintf(
+						"Clamped the sound length to the model's minimum %g seconds.", seconds))
+				}
+				if prop.Maximum != nil && seconds > *prop.Maximum {
+					seconds = *prop.Maximum
+					notices = append(notices, fmt.Sprintf(
+						"Clamped the sound length to the model's maximum %g seconds.", seconds))
+				}
+				if strings.HasSuffix(prop.Name, "_ms") {
+					seconds *= 1000
+				}
+				setBodyPath(schema, body, path, coerceVideoValue(prop, seconds))
+			}
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q takes no sound-length input; ignoring the %.1f-second request.",
+				req.Model, req.Duration))
+		}
+	}
+
+	if req.PreserveSpeech != nil {
+		if path, _, ok := findNative(schema, ov, "sfx", req.Model, "preserveSpeech"); ok {
+			setBodyPath(schema, body, path, *req.PreserveSpeech)
+		} else {
+			notices = append(notices, fmt.Sprintf(
+				"The selected model %q has no speech-preservation control; the model's own handling of dialogue applies.",
+				req.Model))
+		}
+	}
+
+	return body, notices, nil
+}
+
 // resolveVideoUpscaleBody maps a VideoUpscaleRequest onto the model's native
 // input schema, returning the fal body and user-facing notices. The source clip
 // is the tool's entire purpose, so an unmapped video input is fatal (mirroring
@@ -2151,6 +2298,8 @@ func synonymsFor(category, canon string) []string {
 		return videoSynonyms[canon]
 	case "lipsync":
 		return lipsyncSynonyms[canon]
+	case "sfx":
+		return sfxSynonyms[canon]
 	case "inpaint":
 		return inpaintSynonyms[canon]
 	case "replicate-image":

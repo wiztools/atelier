@@ -368,6 +368,7 @@ export namespace main {
 	    videoRestyleModel?: string;
 	    lipsyncImageModel?: string;
 	    lipsyncVideoModel?: string;
+	    soundEffectsVideoModel?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigFal(source);
@@ -396,6 +397,7 @@ export namespace main {
 	        this.videoRestyleModel = source["videoRestyleModel"];
 	        this.lipsyncImageModel = source["lipsyncImageModel"];
 	        this.lipsyncVideoModel = source["lipsyncVideoModel"];
+	        this.soundEffectsVideoModel = source["soundEffectsVideoModel"];
 	    }
 	}
 	export class ConfigOpenRouter {
@@ -785,6 +787,7 @@ export namespace main {
 	    videoRestyleModel?: string;
 	    audioModel?: string;
 	    soundEffectsModel?: string;
+	    soundEffectsVideoModel?: string;
 	    audioCloneModel?: string;
 	    audioExtendModel?: string;
 	    voiceDesignModel?: string;
@@ -831,6 +834,7 @@ export namespace main {
 	        this.videoRestyleModel = source["videoRestyleModel"];
 	        this.audioModel = source["audioModel"];
 	        this.soundEffectsModel = source["soundEffectsModel"];
+	        this.soundEffectsVideoModel = source["soundEffectsVideoModel"];
 	        this.audioCloneModel = source["audioCloneModel"];
 	        this.audioExtendModel = source["audioExtendModel"];
 	        this.voiceDesignModel = source["voiceDesignModel"];
@@ -2250,6 +2254,7 @@ export namespace main {
 	    direction?: string;
 	    lyrics?: string;
 	    cloneVoice?: boolean;
+	    preserveSpeech?: boolean;
 	    previewText?: string;
 	    artifactId?: string;
 	    scale?: string;
@@ -2319,6 +2324,7 @@ export namespace main {
 	        this.direction = source["direction"];
 	        this.lyrics = source["lyrics"];
 	        this.cloneVoice = source["cloneVoice"];
+	        this.preserveSpeech = source["preserveSpeech"];
 	        this.previewText = source["previewText"];
 	        this.artifactId = source["artifactId"];
 	        this.scale = source["scale"];

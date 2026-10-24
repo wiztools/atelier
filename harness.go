@@ -251,6 +251,13 @@ type HarnessToolCall struct {
 	// "unset" from "false" under omitempty, and strict-mode planners emit null
 	// for absent optionals (strictJSONSchema widens them to nullable unions).
 	CloneVoice *bool `json:"cloneVoice,omitempty"`
+	// PreserveSpeech is an optional add_sound_effects input. Nil (absent) keeps
+	// the model's default (on where dialogue exists — sound is generated around
+	// it); false asks for sound effects only, suppressing speech. A pointer for
+	// the same reason CloneVoice is. Planner-only, like CloneVoice — resolved
+	// against the model's schema and dropped-with-notice when the configured
+	// endpoint has no speech-preservation control. See soundEffectsVideoParamSchema.
+	PreserveSpeech *bool `json:"preserveSpeech,omitempty"`
 	// PreviewText is an optional generate_voice input: the line the designed
 	// voice's preview clip speaks (MiniMax voice-design requires one). Empty
 	// applies the tool's default preview line. Planner-only, like Voice — see
@@ -2652,6 +2659,10 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 						// the model's own schema enum-checks the value);
 						// omitted for the model's default tone.
 						"emotion": map[string]any{"type": "string"},
+						// add_sound_effects input: the dialogue-preservation
+						// toggle (Mirelo SFX). Omitted for the model's own
+						// default; false asks for sound effects only.
+						"preserveSpeech": map[string]any{"type": "boolean"},
 					},
 				},
 			},
@@ -3318,6 +3329,9 @@ func setToolCallField(call *HarnessToolCall, key, raw string) {
 		call.Cwd = raw
 	case "loop":
 		call.Loop = raw == "true"
+	case "preserve_speech", "preserveSpeech":
+		preserve := raw == "true"
+		call.PreserveSpeech = &preserve
 	case "append":
 		call.Append = raw == "true"
 	case "overwrite":

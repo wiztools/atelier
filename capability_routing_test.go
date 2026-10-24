@@ -229,25 +229,27 @@ func TestTriageSystemPromptRoutingHintConditional(t *testing.T) {
 
 // TestTriagePromptListsAudioTools asserts that with the audio tools
 // registered, triage's catalog and its responseMode "audio" guidance name
-// generate_speech, generate_sound, generate_voice, AND extend_audio — the
-// planner picks between them, so triage must surface all four. Also pins that
-// the old combined generate_audio name is gone from the catalog.
+// generate_speech, generate_sound, generate_voice, extend_audio, AND
+// add_sound_effects — the planner picks between them, so triage must surface
+// all five. Also pins that the old combined generate_audio name is gone from
+// the catalog.
 func TestTriagePromptListsAudioTools(t *testing.T) {
 	registry := newHarnessToolRegistry([]HarnessToolDefinition{
 		speechGenerationToolDefinition(false),
 		soundEffectsGenerationToolDefinition(),
 		voiceGenerationToolDefinition(),
 		extendAudioToolDefinition(),
+		soundEffectsVideoToolDefinition(),
 	})
 	catalog := registry.PromptCatalog()
-	for _, want := range []string{"generate_speech", "generate_sound", "generate_voice", "extend_audio"} {
+	for _, want := range []string{"generate_speech", "generate_sound", "generate_voice", "extend_audio", "add_sound_effects"} {
 		if !strings.Contains(catalog, want) {
 			t.Fatalf("tool catalog missing %q:\n%s", want, catalog)
 		}
 	}
 	prompt := triageSystemPrompt(registry, nil, "/tmp/ws", false)
-	if !strings.Contains(prompt, "generate_speech, generate_sound, generate_voice, or extend_audio tool") {
-		t.Fatalf("audio-mode guidance should name all four audio tools:\n%s", prompt)
+	if !strings.Contains(prompt, "generate_speech, generate_sound, generate_voice, extend_audio, or add_sound_effects tool") {
+		t.Fatalf("audio-mode guidance should name all five audio tools:\n%s", prompt)
 	}
 	// conv_2595b488f3e0d4dc4a856464: a "create tts voice" brief was routed to
 	// text as "not directly executable" and the reply invented a vocal spec
@@ -256,6 +258,12 @@ func TestTriagePromptListsAudioTools(t *testing.T) {
 	// generate_speech's.
 	if !strings.Contains(prompt, "never generate_speech's") {
 		t.Fatalf("audio-mode guidance should route voice design to generate_voice:\n%s", prompt)
+	}
+	// Generated sound for an attached video (add_sound_effects) must not be
+	// confused with the replace_audio mediaEdit: the sound is generated from
+	// the picture, not provided by the user.
+	if !strings.Contains(prompt, "sound effects ONTO an attached video") {
+		t.Fatalf("audio-mode guidance should route video sound effects to add_sound_effects:\n%s", prompt)
 	}
 	// conv_a1990c38b8ee9269525a4c0a: a small harness model routed a bare
 	// "extend this clip by 20s" (clip attached) to text mode to ask what the

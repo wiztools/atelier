@@ -190,6 +190,10 @@ export function ListFalSoundEffectModels() {
   return window['go']['main']['App']['ListFalSoundEffectModels']();
 }
 
+export function ListFalSoundEffectsVideoModels() {
+  return window['go']['main']['App']['ListFalSoundEffectsVideoModels']();
+}
+
 export function ListFalSpeechModels() {
   return window['go']['main']['App']['ListFalSpeechModels']();
 }

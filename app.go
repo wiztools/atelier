@@ -312,6 +312,12 @@ type ConfigFal struct {
 	// user attaches an audio clip plus a video (re-lip-sync an existing clip).
 	LipsyncImageModel string `json:"lipsyncImageModel,omitempty"`
 	LipsyncVideoModel string `json:"lipsyncVideoModel,omitempty"`
+	// SoundEffectsVideoModel is the video-to-sound-effects endpoint used by the
+	// add_sound_effects tool (Mirelo SFX 2.0 video-to-video by default): the
+	// model watches an attached clip and generates a synchronized soundtrack
+	// for it, returning the video with the sound mixed in (or, on the
+	// video-to-audio family, the standalone soundtrack).
+	SoundEffectsVideoModel string `json:"soundEffectsVideoModel,omitempty"`
 }
 
 // ConfigReplicate configures the Replicate image/video-generation backend —
@@ -1011,6 +1017,41 @@ type LipsyncGenerateRequest struct {
 	// Video is the face source for video-to-video lip sync. Set for video-to-video
 	// mode (re-lip-sync an existing clip). Mutually exclusive with Image.
 	Video string `json:"video,omitempty"`
+}
+
+// SFXGenerateRequest is the input to a video sound-effects generation: the
+// attached clip plus optional steering. resolveSFXBody maps these onto the
+// model's native fields (video_url, text_prompt/prompt, negative_prompt,
+// preserve_speech, duration).
+type SFXGenerateRequest struct {
+	Model string `json:"model"`
+	// Video is the clip to generate sound for — required. A URL or data URI.
+	Video string `json:"video,omitempty"`
+	// Prompt steers the soundtrack: name off-screen sources and ambience not
+	// shown in the picture. Optional — the model reads the picture itself when
+	// empty (endpoints that require a prompt get a generic one).
+	Prompt string `json:"prompt,omitempty"`
+	// NegativePrompt names sounds to exclude, as a short comma-separated list.
+	NegativePrompt string `json:"negativePrompt,omitempty"`
+	// Duration is the length of generated sound in seconds. Zero sends nothing
+	// (the model's own default); the gateway fills the source clip's measured
+	// length when the planner gave none, so the soundtrack covers the video
+	// instead of the endpoints' short API default.
+	Duration float64 `json:"duration,omitempty"`
+	// PreserveSpeech keeps input speech and generates the rest around it (nil =
+	// the model's default, on where dialogue exists); false yields sound
+	// effects only and suppresses speech.
+	PreserveSpeech *bool `json:"preserveSpeech,omitempty"`
+}
+
+// SFXGenerateResult carries whichever media kind the sound-effects endpoint
+// returned: Video when the endpoint mixed the generated soundtrack into the
+// clip (Mirelo SFX 2.0 video-to-video, MMAudio V2), Audio when it delivered
+// the soundtrack as a standalone clip (Mirelo SFX 2.0 video-to-audio).
+// Exactly one side is populated on success.
+type SFXGenerateResult struct {
+	Video GeneratedVideo `json:"video,omitempty"`
+	Audio GeneratedAudio `json:"audio,omitempty"`
 }
 
 type SaveImageRequest struct {
@@ -3325,6 +3366,68 @@ func (a *App) ListFalLipsyncVideoModels() ([]FalModel, error) {
 	return merged, nil
 }
 
+// isFalVideoSFXModel reports whether a fal catalog entry is a video
+// sound-effects endpoint — one that watches an attached clip and generates a
+// synchronized soundtrack for it (Mirelo SFX, MMAudio, CassetteAI's and
+// PixVerse's video sound-effects generators). fal files these across the
+// video-to-video and video-to-audio categories, so the id and tags are checked
+// for the sfx markers rather than trusting one category. Mirrors
+// isFalLipsyncModel / isFalVideoExtendModel. The text-only SFX generators
+// (cassetteai/sound-effects-generator, mirelo sfx2.0 text-to-audio) live in
+// the text-to-audio category this predicate never sees — they are
+// generate_sound's domain.
+func isFalVideoSFXModel(model FalModel) bool {
+	id := strings.ToLower(model.ID)
+	for _, marker := range []string{"sfx", "sound-effect", "sound effect", "foley", "mmaudio"} {
+		if strings.Contains(id, marker) {
+			return true
+		}
+	}
+	for _, tag := range model.Tags {
+		tag = strings.ToLower(tag)
+		for _, marker := range []string{"sfx", "sound-effect", "sound effect", "foley"} {
+			if strings.Contains(tag, marker) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ListFalSoundEffectsVideoModels returns fal's video sound-effects catalog for
+// the Settings video-sound-effects-model picker (the add_sound_effects tool's
+// endpoint) — models that watch an attached clip and generate a synchronized
+// soundtrack for it. Mirelo's sfx2.0 family spans two categories (the
+// video-to-video endpoint returns the clip with the sound mixed in, the
+// video-to-audio one the standalone soundtrack), so both are fetched, merged,
+// and deduped by endpoint id — the lipsync listers' two-category pattern —
+// kept only when isFalVideoSFXModel matches.
+func (a *App) ListFalSoundEffectsVideoModels() ([]FalModel, error) {
+	merged := []FalModel{}
+	seen := map[string]bool{}
+	for _, category := range []string{falVideoToVideoCategory, falVideoToAudioCategory} {
+		models, err := a.cachedFalCategoryModels(category)
+		if err != nil {
+			// One category failing (a rate-limited request) keeps the
+			// other's matches; only a total failure degrades, below.
+			continue
+		}
+		for _, model := range models {
+			if model.ID == "" || seen[model.ID] || !isFalVideoSFXModel(model) {
+				continue
+			}
+			seen[model.ID] = true
+			merged = append(merged, model)
+		}
+	}
+	if len(merged) == 0 {
+		// A failed (rate-limited) or reshuffled catalog keeps the mapped
+		// default — the picker stays openable.
+		merged = append(merged, FalModel{ID: defaultFalSoundEffectsVideoModel})
+	}
+	return merged, nil
+}
+
 // isFalVideoExtendModel reports whether a fal catalog entry is a video-extend
 // endpoint — one that continues an existing clip into a longer one (Veo extend,
 // ltx extend, pixverse extend, etc.). fal files these under the broad
@@ -4215,6 +4318,12 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	// Settings visit.
 	if strings.TrimSpace(config.Providers.Fal.AudioModel) != "" && strings.TrimSpace(config.Providers.Fal.VoiceDesignModel) == "" {
 		config.Providers.Fal.VoiceDesignModel = defaultFalVoiceDesignModel
+	}
+	// Seed the video sound-effects endpoint the same way: anyone with speech
+	// configured gets add_sound_effects, so an "add sound effects to this video"
+	// ask routes to it without a Settings visit.
+	if strings.TrimSpace(config.Providers.Fal.AudioModel) != "" && strings.TrimSpace(config.Providers.Fal.SoundEffectsVideoModel) == "" {
+		config.Providers.Fal.SoundEffectsVideoModel = defaultFalSoundEffectsVideoModel
 	}
 	if strings.TrimSpace(config.Prompts.System) == "" {
 		config.Prompts.System = defaults.Prompts.System

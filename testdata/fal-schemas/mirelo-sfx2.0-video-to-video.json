@@ -1,0 +1,20 @@
+{
+  "components": {
+    "schemas": {
+      "MireloSFX20VideoToVideoInput": {
+        "type": "object",
+        "x-fal-order-properties": ["video_url", "text_prompt", "negative_prompt", "preserve_speech", "duration", "num_samples", "seed"],
+        "required": ["video_url"],
+        "properties": {
+          "video_url": { "type": "string", "title": "Video", "description": "Video to add sound to: an HTTP(S) URL or a base64 data URI, up to 8 MB." },
+          "text_prompt": { "type": "string", "title": "Text Prompt", "description": "Guides the soundtrack; name off-screen sounds or ambience not shown in the picture." },
+          "negative_prompt": { "type": "string", "title": "Negative Prompt", "description": "Sounds to exclude, as a short comma-separated list." },
+          "preserve_speech": { "type": "boolean", "title": "Preserve Speech", "default": true, "description": "Keep input speech and generate the rest around it; false yields sound effects only and suppresses speech." },
+          "duration": { "type": "number", "title": "Duration", "minimum": 1, "maximum": 600, "default": 10, "description": "Seconds of sound, clamped to the video length; >10s generates in 10s windows." },
+          "num_samples": { "type": "integer", "title": "Num Samples", "minimum": 1, "maximum": 4, "default": 2, "description": "Number of variations; billed per sample." },
+          "seed": { "type": "integer", "title": "Seed", "description": "Generation seed; -1 or null for random." }
+        }
+      }
+    }
+  }
+}

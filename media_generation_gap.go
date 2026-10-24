@@ -22,7 +22,7 @@ func generationForceToolTask(mode string) string {
 	case "video":
 		return "Generate the requested video using the generate_video tool; extending or continuing an attached or recent clip is also a generate_video call."
 	case "audio":
-		return "Generate the requested audio using the generate_speech, generate_sound, generate_voice, or extend_audio tool."
+		return "Generate the requested audio using the generate_speech, generate_sound, generate_voice, extend_audio, or add_sound_effects tool (add_sound_effects when the sound is requested against a video)."
 	default:
 		return "Generate the requested media using the matching generate_* tool."
 	}
@@ -40,7 +40,7 @@ func generationToolNamesByMode(mode string) []string {
 	case "video":
 		return []string{"generate_video"}
 	case "audio":
-		return []string{"generate_speech", "generate_sound", "generate_voice", "extend_audio"}
+		return []string{"generate_speech", "generate_sound", "generate_voice", "extend_audio", "add_sound_effects"}
 	default:
 		return nil
 	}

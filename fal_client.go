@@ -90,6 +90,19 @@ const (
 	// covers both sound effects and music, and this endpoint takes prompt,
 	// duration_seconds, and loop.
 	defaultFalSoundEffectsModel = "fal-ai/elevenlabs/sound-effects/v2"
+	// defaultFalSoundEffectsVideoModel is the video-to-sound-effects endpoint
+	// used by the add_sound_effects tool when none is configured — Mirelo SFX
+	// 2.0 watches an attached clip and generates a synchronized soundtrack for
+	// it, returning the video with the sound mixed in (video_url required;
+	// text_prompt, negative_prompt, preserve_speech optional; duration 1–600s
+	// clamped to the video; num_samples billed per sample, so the resolver pins
+	// one). Alternatives the picker surfaces: the video-to-audio twin
+	// (mirelo-ai/sfx2.0/video-to-audio delivers the soundtrack as a standalone
+	// audio clip instead), MMAudio V2 (fal-ai/mmaudio-v2, ~30s inputs, required
+	// prompt), and CassetteAI's video-sound-effects generator;
+	// resolveSFXBody maps the canonical prompt/source/duration onto whichever
+	// endpoint is configured.
+	defaultFalSoundEffectsVideoModel = "mirelo-ai/sfx2.0/video-to-video"
 	// defaultFalVoiceDesignModel is the voice-design endpoint used by the
 	// generate_voice tool when none is configured — MiniMax Voice Design turns a
 	// written voice description ("a sweet, natural voice of an 8-year-old …")
@@ -303,6 +316,39 @@ type falVideoFile struct {
 	ContentType string `json:"content_type,omitempty"`
 	FileName    string `json:"file_name,omitempty"`
 	FileSize    int64  `json:"file_size,omitempty"`
+}
+
+// falVideoField tolerates the two shapes fal video-soundtrack endpoints use
+// for the "video" result: a single File object (mmaudio-v2) or an array of
+// Files (mirelo sfx2.0 video-to-video returns one per sample; the first entry
+// is the clip). Mirrors falAudioField — without it json.Unmarshal rejects the
+// array shape before the SFX result walk can pick a URL.
+type falVideoField struct {
+	File *falVideoFile
+}
+
+func (field *falVideoField) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	if trimmed[0] == '[' {
+		var files []falVideoFile
+		if err := json.Unmarshal(trimmed, &files); err != nil {
+			return err
+		}
+		if len(files) > 0 {
+			first := files[0]
+			field.File = &first
+		}
+		return nil
+	}
+	var file falVideoFile
+	if err := json.Unmarshal(trimmed, &file); err != nil {
+		return err
+	}
+	field.File = &file
+	return nil
 }
 
 // GeneratedAudio is a downloaded text-to-audio result. Data holds the raw audio
@@ -997,6 +1043,143 @@ func (client FalClient) audioFromJob(ctx context.Context, resultURL string) (Gen
 		return GeneratedAudio{}, err
 	}
 	return GeneratedAudio{Data: data, MimeType: mimeType, SourceURL: audioURL}, nil
+}
+
+// GenerateSFX submits an already-native video-sound-effects request body (built
+// by resolveSFXBody against the model's schema) to the fal queue, polls until
+// completion, and downloads the result. The queue mechanics are identical to
+// GenerateVideo/GenerateAudio; only the result shape differs — the endpoint
+// family spans two output kinds, and which one came back is decided by the
+// response, not the request: video-soundtrack endpoints (mirelo sfx2.0
+// video-to-video, mmaudio-v2) return the input clip with the generated
+// soundtrack mixed in, while video-to-audio endpoints (mirelo sfx2.0
+// video-to-audio) return the soundtrack as a standalone audio clip. Exactly one
+// of the result's Video/Audio is populated; an empty both means failure.
+func (client FalClient) GenerateSFX(ctx context.Context, model string, body map[string]any) (SFXGenerateResult, error) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = defaultFalSoundEffectsVideoModel
+	}
+	if body == nil {
+		body = map[string]any{}
+	}
+
+	submit, err := client.submit(ctx, model, body)
+	if err != nil {
+		return SFXGenerateResult{}, err
+	}
+	requestID := strings.TrimSpace(submit.RequestID)
+	if requestID == "" {
+		return SFXGenerateResult{}, errors.New("fal submit returned no request id")
+	}
+	statusURL, resultURL := falQueueURLs(submit, model, requestID)
+	client.recordMediaJob(model, submit, requestID, statusURL, resultURL)
+
+	if err := client.waitForCompletion(ctx, statusURL); err != nil {
+		return SFXGenerateResult{}, err
+	}
+
+	return client.sfxFromJob(ctx, resultURL)
+}
+
+// falSFXResultResponse is the result shape the video-sound-effects endpoints
+// return: a "video" File (or File array), an "audio"/"audio_file" File, or
+// both absent on failure. The tolerant fields accept each family's spelling,
+// mirroring falResultResponse without the image members this call never
+// produces.
+type falSFXResultResponse struct {
+	Video     falVideoField `json:"video,omitempty"`
+	Audio     falAudioField `json:"audio,omitempty"`
+	AudioFile *falVideoFile `json:"audio_file,omitempty"`
+	Error     string        `json:"error,omitempty"`
+}
+
+// sfxFromJob fetches a completed SFX result and downloads whichever media kind
+// it holds — video first (the soundtrack-mixed clip is the richer deliverable),
+// then audio. The raw walk is the fallback for endpoints that nest the result
+// differently, the same ladder videoFromJob/audioFromJob run separately.
+func (client FalClient) sfxFromJob(ctx context.Context, resultURL string) (SFXGenerateResult, error) {
+	resp, err := client.do(ctx, "", http.MethodGet, resultURL, nil)
+	if err != nil {
+		return SFXGenerateResult{}, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 32*1024*1024))
+	if err != nil {
+		return SFXGenerateResult{}, err
+	}
+	var payload falSFXResultResponse
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return SFXGenerateResult{}, err
+	}
+	if strings.TrimSpace(payload.Error) != "" {
+		return SFXGenerateResult{}, errors.New(payload.Error)
+	}
+
+	videoURL := ""
+	if payload.Video.File != nil {
+		videoURL = strings.TrimSpace(payload.Video.File.URL)
+	}
+	if videoURL == "" {
+		videoURL = firstFalVideoURL(raw)
+	}
+	if videoURL != "" {
+		data, mimeType, err := client.downloadVideo(ctx, videoURL)
+		if err != nil {
+			return SFXGenerateResult{}, err
+		}
+		return SFXGenerateResult{Video: GeneratedVideo{Data: data, MimeType: mimeType, SourceURL: videoURL}}, nil
+	}
+
+	audioURL := ""
+	for _, file := range []*falVideoFile{payload.Audio.File, payload.AudioFile} {
+		if file != nil && strings.TrimSpace(file.URL) != "" {
+			audioURL = strings.TrimSpace(file.URL)
+			break
+		}
+	}
+	if audioURL == "" {
+		audioURL = firstFalAudioURL(raw)
+	}
+	if audioURL == "" {
+		return SFXGenerateResult{}, errors.New("fal result returned no video or audio")
+	}
+	data, mimeType, err := client.downloadAudio(ctx, audioURL)
+	if err != nil {
+		return SFXGenerateResult{}, err
+	}
+	return SFXGenerateResult{Audio: GeneratedAudio{Data: data, MimeType: mimeType, SourceURL: audioURL}}, nil
+}
+
+// RecoverSFXJob is RecoverVideoJob for sound-effects results, which may be a
+// video or a standalone audio clip: a completed job is fetched through
+// sfxFromJob (the kind-agnostic tail), a failed or cancelled one is reported,
+// and a still-running one is cancelled and re-checked — fal answers 400
+// ALREADY_COMPLETED when the cancel races a completion, and the finished
+// result is fetched in that case too.
+func (client FalClient) RecoverSFXJob(ctx context.Context, job mediaJob) (SFXGenerateResult, error) {
+	state, detail, err := client.jobStatus(ctx, job)
+	if err == nil {
+		switch state {
+		case mediaJobCompleted:
+			return client.sfxFromJob(ctx, job.ResultURL)
+		case mediaJobFailed:
+			msg := detail
+			if msg == "" {
+				msg = "fal reported a failed generation"
+			}
+			return SFXGenerateResult{}, fmt.Errorf("the fal job %s then failed: %s", job.ID, msg)
+		case mediaJobCanceled:
+			return SFXGenerateResult{}, fmt.Errorf("the fal job %s was cancelled", job.ID)
+		}
+	}
+	if cerr := client.CancelMediaJob(ctx, job); cerr != nil {
+		return SFXGenerateResult{}, fmt.Errorf("the fal job %s could not be cancelled (%s) and may still be running on fal's side", job.ID, cerr)
+	}
+	if state, _, err := client.jobStatus(ctx, job); err == nil && state == mediaJobCompleted {
+		return client.sfxFromJob(ctx, job.ResultURL)
+	}
+	return SFXGenerateResult{}, fmt.Errorf("the fal job %s was cancelled after the timeout", job.ID)
 }
 
 // GenerateVoiceDesign submits a voice-design request (a written description of
@@ -1805,6 +1988,12 @@ const (
 	// lister fetches it and post-filters for extend/outpaint/inpaint ids
 	// (stable-audio-25/inpaint, ace-step/audio-outpaint, sonauto/v2/extend).
 	falAudioToAudioCategory = "audio-to-audio"
+	// falVideoToAudioCategory is the /v1/models category filter for
+	// video-to-audio endpoints — video in, audio out. The video sound-effects
+	// lister fetches it alongside video-to-video because Mirelo's sfx2.0 family
+	// spans both (video-to-video returns the clip with the soundtrack mixed in,
+	// video-to-audio the standalone soundtrack).
+	falVideoToAudioCategory = "video-to-audio"
 	// falSpeechToTextCategory is the /v1/models category filter for
 	// speech-to-text (transcription) endpoints — fal-ai/wizper and friends.
 	// ListFalTranscribeModels is the only consumer.
