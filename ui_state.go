@@ -6,17 +6,19 @@ import (
 )
 
 // UI state persistence: which sections of the left navigation were collapsed
-// and which library/project tree nodes were expanded. The frontend saves on
-// every change, so the file is current at any shutdown — clean or otherwise —
-// and the next launch restores exactly what was left. It lives in
-// ~/.atelier/ui-state.json, deliberately NOT in config.json: the frontend's
-// debounced settings auto-save rewrites the whole config and would race or
-// wipe this slice (the same reasoning that keeps the updater's state in its
-// own file under ~/.atelier/updates).
+// and which library/project tree nodes were expanded, plus the Settings
+// screen's last-selected tab. The frontend saves on every change, so the file
+// is current at any shutdown — clean or otherwise — and the next launch
+// restores exactly what was left. It lives in ~/.atelier/ui-state.json,
+// deliberately NOT in config.json: the frontend's debounced settings auto-save
+// rewrites the whole config and would race or wipe this slice (the same
+// reasoning that keeps the updater's state in its own file under
+// ~/.atelier/updates).
 
 // UIState is the persisted slice of interface state restored on launch.
 type UIState struct {
-	Sidebar SidebarState `json:"sidebar"`
+	Sidebar  SidebarState  `json:"sidebar"`
+	Settings SettingsState `json:"settings"`
 }
 
 // SidebarState records the left navigation's collapse state. The two
@@ -30,6 +32,14 @@ type SidebarState struct {
 	LibrariesCollapsed bool     `json:"librariesCollapsed,omitempty"`
 	ExpandedLibraries  []string `json:"expandedLibraries,omitempty"`
 	ExpandedProjects   []string `json:"expandedProjects,omitempty"`
+}
+
+// SettingsState records the Settings screen's most recent tab selection so the
+// screen reopens where the user left it. The frontend validates the value
+// against its own tab list before applying it — an unrecognized tab (a tab
+// removed in an update) falls back to the screen's default.
+type SettingsState struct {
+	LastTab string `json:"lastTab,omitempty"`
 }
 
 func uiStatePath() (string, error) {

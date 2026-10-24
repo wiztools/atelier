@@ -12,12 +12,15 @@ func TestUIStateRoundTrip(t *testing.T) {
 	app := &App{}
 
 	chatsCollapsed, librariesCollapsed := true, true
-	state := UIState{Sidebar: SidebarState{
-		ChatsCollapsed:     chatsCollapsed,
-		LibrariesCollapsed: librariesCollapsed,
-		ExpandedLibraries:  []string{"lib_alpha", "lib_beta"},
-		ExpandedProjects:   []string{"proj_one"},
-	}}
+	state := UIState{
+		Sidebar: SidebarState{
+			ChatsCollapsed:     chatsCollapsed,
+			LibrariesCollapsed: librariesCollapsed,
+			ExpandedLibraries:  []string{"lib_alpha", "lib_beta"},
+			ExpandedProjects:   []string{"proj_one"},
+		},
+		Settings: SettingsState{LastTab: "models"},
+	}
 	if err := app.SaveUIState(state); err != nil {
 		t.Fatalf("SaveUIState: %v", err)
 	}
@@ -34,6 +37,9 @@ func TestUIStateRoundTrip(t *testing.T) {
 	}
 	if strings.Join(loaded.Sidebar.ExpandedProjects, ",") != "proj_one" {
 		t.Errorf("ExpandedProjects = %v, want [proj_one]", loaded.Sidebar.ExpandedProjects)
+	}
+	if loaded.Settings.LastTab != "models" {
+		t.Errorf("Settings.LastTab = %q, want %q", loaded.Settings.LastTab, "models")
 	}
 }
 

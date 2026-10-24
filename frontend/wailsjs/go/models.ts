@@ -3133,6 +3133,18 @@ export namespace main {
 	        this.artifactIds = source["artifactIds"];
 	    }
 	}
+	export class SettingsState {
+	    lastTab?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SettingsState(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.lastTab = source["lastTab"];
+	    }
+	}
 	export class SidebarState {
 	    chatsCollapsed?: boolean;
 	    librariesCollapsed?: boolean;
@@ -3449,6 +3461,7 @@ export namespace main {
 	
 	export class UIState {
 	    sidebar: SidebarState;
+	    settings: SettingsState;
 	
 	    static createFrom(source: any = {}) {
 	        return new UIState(source);
@@ -3457,6 +3470,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.sidebar = this.convertValues(source["sidebar"], SidebarState);
+	        this.settings = this.convertValues(source["settings"], SettingsState);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

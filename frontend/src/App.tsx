@@ -124,6 +124,10 @@ type View = 'app' | 'settings' | 'conversation-models';
 // Local Tools are binaries installed on this machine that chat shells out to
 // and never selects as a backend — the ConfigLocalProviders set in Go.
 type SettingsTab = 'providers' | 'models' | 'tools' | 'general';
+// The runtime form of the union, for validating the tab restored from the
+// persisted UI state — a value a past build wrote that no longer exists
+// falls back to the screen's default instead of selecting a dead tab.
+const settingsTabs: SettingsTab[] = ['providers', 'models', 'tools', 'general'];
 type ChatProviderID = 'ollama' | 'openrouter' | 'openai-compatible';
 // 'edit' marks an image-editor session child conversation: the sidebar lists
 // it, but opening it routes to the editor workspace, not the chat transcript.
@@ -1618,6 +1622,13 @@ function App() {
         const sidebar = state?.sidebar;
         setChatsOpen(!sidebar?.chatsCollapsed);
         applySidebarState(sidebar);
+        // Restore the Settings screen's last tab so a fresh launch opens it
+        // where the user left off. The save effect only runs once
+        // uiStateLoaded flips, so this value cannot be overwritten first.
+        const lastTab = state?.settings?.lastTab;
+        if (settingsTabs.includes(lastTab as SettingsTab)) {
+          setSettingsTab(lastTab as SettingsTab);
+        }
       })
       .catch(() => {
         // No saved state (first launch) or an unreadable file — defaults stand.
@@ -1646,10 +1657,13 @@ function App() {
         expandedLibraries: Object.keys(expandedLibraryIDs).filter((id) => expandedLibraryIDs[id]),
         expandedProjects: Object.keys(expandedProjectIDs).filter((id) => expandedProjectIDs[id]),
       },
+      settings: {
+        lastTab: settingsTab,
+      },
     })).catch((error) => {
       setStatus((current) => current ? {...current, error: String(error)} : current);
     });
-  }, [uiStateLoaded, chatsOpen, librariesOpen, expandedLibraryIDs, expandedProjectIDs]);
+  }, [uiStateLoaded, chatsOpen, librariesOpen, expandedLibraryIDs, expandedProjectIDs, settingsTab]);
 
   // The library scope the composer + assets panel use: the pending project
   // while composing a new chat inside one, else the active conversation's
