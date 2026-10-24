@@ -887,7 +887,7 @@ func referenceMediaPhrase(imagesUsed bool, videosUsed bool, imageCount, videoCou
 // lip_sync chain. The wording is generic — it never names the specific model —
 // so it survives a model swap without rewording.
 func videoGenerationDescription(audioCapable bool) string {
-	base := "Use this when the user asks to create, animate, extend, or render a video or short clip. Works from a text description; when the user attached an image, animates that image (image-to-video); when the user attached a video, extends it into a longer clip (Veo extend); when the user attached both an image and a video, transfers the video's motion onto the image's subject (motion control) — describe the desired result in the prompt and do not ask the user which source to use. These defaults interpret the attachments as sources to animate, extend, or copy motion from; pass useVideoAs:\"reference\" instead when the attachments are references — characters, style, or scenes that should guide a brand-new clip rather than serve as its source — and every attached image and video is sent as reference media. When the user's words name one source but the attachments imply another (\"animate the image\" while the newest conversation artifact is a video, or \"extend the clip\" while it is an image), pass source:\"image\", \"video\", or \"motion\" to make the named source drive the clip — it is fetched from conversation history when not attached. The clip is attached to the assistant reply. Generation runs for a minute or more. Pass negativePrompt to steer content away from unwanted elements, and generateAudio:false when the user wants a silent clip. To make a transition between two images — a start frame morphing into an end frame — attach exactly two images and pass imageRole:\"keyframes\" (the first image is the opening frame, the last is the closing frame)."
+	base := "Use this when the user asks to create, animate, extend, or render a video or short clip. Works from a text description; when the user attached an image, animates that image (image-to-video); when the user attached a video, extends it into a longer clip (Veo extend); when the user attached both an image and a video, transfers the video's motion onto the image's subject (motion control) — describe the desired result in the prompt and do not ask the user which source to use. These defaults interpret the attachments as sources to animate, extend, or copy motion from; pass useVideoAs:\"reference\" instead when the attachments are references — characters, style, or scenes that should guide a brand-new clip rather than serve as its source — and every attached image and video is sent as reference media. When the user's words name one source but the attachments imply another (\"animate the image\" while the newest conversation artifact is a video, or \"extend the clip\" while it is an image), pass source:\"image\", \"video\", or \"motion\" to make the named source drive the clip — it is fetched from conversation history when not attached. The clip is attached to the assistant reply. Generation runs for a minute or more. Pass negativePrompt to steer content away from unwanted elements, and generateAudio:false when the user wants a silent clip. To make a transition between two images — a start frame morphing into an end frame — attach exactly two images and pass imageRole:\"keyframes\" (the first image is the opening frame, the last is the closing frame; images resolve attached files first, then @-mentioned assets, so when the user's words name the start frame as an @-mention and the end frame as the attached file, pass openingFrame:\"second\" to open on the mention)."
 	if audioCapable {
 		return base + " This video model can also generate synchronized audio (speech, music, ambient sound) from the prompt. For narration, a voice-over, or a speaking character, prefer a single generate_video call with the spoken text in the prompt over chaining generate_speech + lip_sync."
 	}
@@ -914,6 +914,14 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 			}
 			if role := strings.TrimSpace(call.ImageRole); role != "" && role != "keyframes" {
 				return []string{prefix + ".imageRole must be \"keyframes\" for generate_video"}
+			}
+			if opening := strings.ToLower(strings.TrimSpace(call.OpeningFrame)); opening != "" {
+				if !strings.EqualFold(strings.TrimSpace(call.ImageRole), "keyframes") {
+					return []string{prefix + ".openingFrame only applies when imageRole is \"keyframes\" for generate_video"}
+				}
+				if opening != "first" && opening != "second" {
+					return []string{prefix + ".openingFrame must be \"first\" or \"second\" for generate_video"}
+				}
 			}
 			return nil
 		},
@@ -945,6 +953,20 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 				return nil, "video generation unavailable", fmt.Errorf(
 					"imageRole \"keyframes\" needs exactly two images (the first and last frames); %d were attached",
 					len(attachedImages))
+			}
+			// openingFrame places the transition's opening frame when the slot
+			// order disagrees with the user's words — the attachments-then-
+			// mentions resolution put the named start frame second. Applied
+			// before everything that reads attachedImages so the aspect-ratio
+			// inheritance and the resolver's start/end split both follow the
+			// named opening frame. The swap allocates rather than mutating
+			// tools.AttachedImages in place — the context is shared across a
+			// round's calls, and a sibling generate_video call must not
+			// inherit the reordered slots. The swap itself carries no notice:
+			// nothing is dropped, and the evidence shows the call the planner
+			// made.
+			if keyframes && strings.EqualFold(strings.TrimSpace(call.OpeningFrame), "second") && len(attachedImages) == 2 {
+				attachedImages = []string{attachedImages[1], attachedImages[0]}
 			}
 			// An explicit source overrides the attachment-count diagnosis when
 			// the planner judged the user's words point at one kind — "animate
@@ -2845,6 +2867,7 @@ func generateVideoParamSchema() map[string]any {
 			"useVideoAs":     enumParam("Optional — how an attached video is used. \"motion\" (the default) treats it as a source: with an image also attached, the video's motion is transferred onto the image's subject; with a video alone, the clip is extended. \"reference\" instead treats every attached image and video as references — characters, style, or scenes guiding a brand-new clip — which is the right choice whenever the user cites the attachments as examples to follow rather than the clip to continue or copy motion from.", "motion", "reference"),
 			"source":         enumParam("Optional — which media drives the clip, overriding the attachment-based default routing. \"image\" animates the attached image (any attached video is not used); \"video\" operates on the attached video (attached images are not used); \"motion\" transfers the attached video's motion onto the attached image (needs both). Set this when the user's words point at one kind and the attachments say another — \"animate the image\" on a turn where the newest conversation artifact is a video, or \"extend the clip\" where it is an image: the named kind is fetched from conversation history when it is not attached. Omit to use the defaults.", "image", "video", "motion"),
 			"imageRole":      enumParam("Optional — how attached images are used. Omit for the default (single image → image-to-video; two or more with useVideoAs:\"reference\" → reference media). Set \"keyframes\" to make a start→end transition from EXACTLY two attached images: the first is the opening frame, the last is the closing frame, and the model generates the video morphing between them. Use it when the user asks to transition, morph, or go from one image to another.", "keyframes"),
+			"openingFrame":   enumParam("Optional, imageRole:\"keyframes\" only — which of the two images opens the transition: \"first\" (the default) or \"second\". The images resolve in a fixed order — attached files first, then @-mentioned assets — which need not match the order the user's words name the frames: when the message says \"start @img_x … end keyframe @img_y\" and img_x is the @-mention, the named start frame is the SECOND image, so pass openingFrame:\"second\". Omit when the words already match the resolution order.", "first", "second"),
 		},
 		"required": []string{"content"},
 	}

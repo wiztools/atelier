@@ -353,6 +353,85 @@ func TestGenerateVideoImageRoleKeyframesRouting(t *testing.T) {
 	})
 }
 
+// TestGenerateVideoOpeningFrameValidation pins the guards for openingFrame: it
+// is keyframes-only (any other imageRole is a plan correction), enum-checked to
+// "first"/"second", and valid values pass.
+func TestGenerateVideoOpeningFrameValidation(t *testing.T) {
+	def := videoGenerationToolDefinition(AppConfig{}, false)
+	for _, opening := range []string{"first", "second"} {
+		valid := HarnessToolCall{Name: "generate_video", Content: "morph", ImageRole: "keyframes", OpeningFrame: opening}
+		if errs := def.Validate("toolCalls[0]", valid); len(errs) != 0 {
+			t.Fatalf("openingFrame %q with keyframes should validate, got %v", opening, errs)
+		}
+	}
+	badRole := HarnessToolCall{Name: "generate_video", Content: "morph", OpeningFrame: "second"}
+	if errs := def.Validate("toolCalls[0]", badRole); len(errs) == 0 {
+		t.Fatalf("openingFrame without imageRole \"keyframes\" should be rejected")
+	}
+	badEnum := HarnessToolCall{Name: "generate_video", Content: "morph", ImageRole: "keyframes", OpeningFrame: "last"}
+	errs := def.Validate("toolCalls[0]", badEnum)
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e, "openingFrame") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("openingFrame \"last\" should be rejected with an openingFrame correction, got %v", errs)
+	}
+}
+
+// TestGenerateVideoOpeningFrameSwapsKeyframes pins the executor contract for
+// openingFrame:"second": the two-image pair is swapped before the request is
+// built, so the resolver's start/end split (first → start_image_url, last →
+// end_image_url) opens on the second image. The slot order is attachments then
+// @-mentions (resolveTurnMedia), which need not match the order the user's
+// words name the frames — conv_0f9cc90f61402bae64acf707 named the mention as
+// the start frame, but the mention resolved second and the generated clip ran
+// the transition backwards. The default (no openingFrame) keeps slot order.
+func TestGenerateVideoOpeningFrameSwapsKeyframes(t *testing.T) {
+	const (
+		keyframeModel = "fal-ai/test/keyframe"
+		firstFrame    = "data:image/png;base64,AAA"
+		lastFrame     = "data:image/png;base64,BBB"
+	)
+
+	capture := func(call HarnessToolCall) VideoGenerateRequest {
+		config := defaultAppConfig()
+		config.Providers.Fal.VideoKeyframeModel = keyframeModel
+		var captured VideoGenerateRequest
+		def := videoGenerationToolDefinition(AppConfig{}, false)
+		exec := HarnessToolExecutionContext{
+			Config:         config,
+			AttachedImages: []string{firstFrame, lastFrame},
+			GenerateVideo: func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
+				captured = req
+				return GeneratedVideo{Data: []byte("mp4"), MimeType: "video/mp4", SourceURL: "https://example.com/v.mp4"}, nil
+			},
+		}
+		if _, _, err := def.Execute(context.Background(), exec, call); err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		return captured
+	}
+
+	t.Run("openingFrame second opens on the second image", func(t *testing.T) {
+		captured := capture(HarnessToolCall{Name: "generate_video", Content: "morph", ImageRole: "keyframes", OpeningFrame: "second"})
+		imgs := captured.SourceImages()
+		if len(imgs) != 2 || imgs[0] != lastFrame || imgs[1] != firstFrame {
+			t.Fatalf("forwarded images = %v, want [%s %s]", imgs, lastFrame, firstFrame)
+		}
+	})
+
+	t.Run("default keeps slot order", func(t *testing.T) {
+		captured := capture(HarnessToolCall{Name: "generate_video", Content: "morph", ImageRole: "keyframes"})
+		imgs := captured.SourceImages()
+		if len(imgs) != 2 || imgs[0] != firstFrame || imgs[1] != lastFrame {
+			t.Fatalf("forwarded images = %v, want [%s %s]", imgs, firstFrame, lastFrame)
+		}
+	})
+}
+
 // TestGenerateVideoParamSchemaDocumentsUseVideoAs pins the planner-facing
 // contract: the param schema must expose useVideoAs with exactly the motion and
 // reference enum values and a description that says what each interpretation
@@ -377,6 +456,34 @@ func TestGenerateVideoParamSchemaDocumentsUseVideoAs(t *testing.T) {
 	}
 	if !strings.Contains(videoGenerationDescription(false), "useVideoAs") {
 		t.Fatalf("generate_video description must surface the useVideoAs choice to the planner")
+	}
+}
+
+// TestGenerateVideoParamSchemaDocumentsOpeningFrame pins the planner-facing
+// contract for the keyframe ordering override: openingFrame is declared with
+// the first/second enum and a description that teaches the slot-resolution
+// order, and the tool description surfaces it beside the keyframes sentence so
+// a planner reading only the description still learns the rule.
+func TestGenerateVideoParamSchemaDocumentsOpeningFrame(t *testing.T) {
+	schema := generateVideoParamSchema()
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected properties map, got %T", schema["properties"])
+	}
+	prop, ok := props["openingFrame"].(map[string]any)
+	if !ok {
+		t.Fatalf("generate_video param schema must expose an `openingFrame` property; got %v", props)
+	}
+	enum, _ := prop["enum"].([]string)
+	if len(enum) != 2 || enum[0] != "first" || enum[1] != "second" {
+		t.Fatalf("openingFrame enum = %v, want [first second]", prop["enum"])
+	}
+	desc, _ := prop["description"].(string)
+	if !strings.Contains(desc, "attached files first") || !strings.Contains(desc, "second") {
+		t.Fatalf("openingFrame description = %q, want it to teach the attachment-then-mention order", desc)
+	}
+	if !strings.Contains(videoGenerationDescription(false), "openingFrame") {
+		t.Fatalf("generate_video description must surface the openingFrame choice to the planner")
 	}
 }
 

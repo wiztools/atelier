@@ -171,6 +171,18 @@ type HarnessToolCall struct {
 	// closing frame); the empty default keeps today's image-to-video / reference
 	// behavior. Planner-only, like UseVideoAs.
 	ImageRole string `json:"imageRole,omitempty"`
+	// OpeningFrame is an optional generate_video input for imageRole:"keyframes"
+	// turns choosing which of the two images opens the transition: "first" (the
+	// default) or "second". The image slots resolve in a fixed order — this
+	// turn's attached files, then @-mentioned assets — which need not match the
+	// order the user's words name the frames: "start @img_x … end keyframe
+	// @img_y" puts the mention second even though the words call it the start.
+	// The planner, which sees the @-spelling in the message but not the slot
+	// bytes, names the opening frame here instead of letting slot order decide
+	// (conv_0f9cc90f61402bae64acf707: the end frame rode the attachment slot and
+	// the generated clip ran the transformation backwards). Planner-only, like
+	// ImageRole.
+	OpeningFrame string `json:"openingFrame,omitempty"`
 	// FaceFrom is an optional lip_sync input choosing which attached face
 	// drives the sync when both an image and a video are attached: "video"
 	// (the default) re-lip-syncs the clip, "image" produces a talking head

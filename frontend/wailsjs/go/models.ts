@@ -2237,6 +2237,7 @@ export namespace main {
 	    useVideoAs?: string;
 	    source?: string;
 	    imageRole?: string;
+	    openingFrame?: string;
 	    faceFrom?: string;
 	    aspectRatio?: string;
 	    duration?: string;
@@ -2305,6 +2306,7 @@ export namespace main {
 	        this.useVideoAs = source["useVideoAs"];
 	        this.source = source["source"];
 	        this.imageRole = source["imageRole"];
+	        this.openingFrame = source["openingFrame"];
 	        this.faceFrom = source["faceFrom"];
 	        this.aspectRatio = source["aspectRatio"];
 	        this.duration = source["duration"];
