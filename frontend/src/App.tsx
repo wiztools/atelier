@@ -9891,48 +9891,6 @@ function ModelSelectionPanel({
             </select>
           </div>
           <div className="field">
-            <div className="field-label-row">
-              {fieldLabel('fal-voice-design-model', 'Voice Design Model (fal.ai)', 'voiceDesignModel')}
-              <InfoHint
-                label="Voice design model"
-                text="Creates a NEW voice from a written description (the generate_voice tool) — a preview clip of the described voice plus its reusable voice id. The id pairs with the MiniMax speech endpoints (marked in the Speech Model list) to speak new text in the designed voice; speech from text on other models and cloning an attached voice stay on their own tools."
-              />
-            </div>
-            <ModelCombobox
-              id="fal-voice-design-model"
-              ariaLabel="fal.ai voice design model"
-              placeholder={defaultFalVoiceDesignModel}
-              value={value.falVoiceDesignModel}
-              onChange={(next) => onChange({falVoiceDesignModel: next})}
-              options={falVoiceDesignOptions}
-              allowCustom
-            />
-          </div>
-          <div className="field">
-            {fieldLabel('fal-audio-model', 'Speech Model (TTS, fal.ai)', 'audioModel')}
-            <ModelCombobox
-              id="fal-audio-model"
-              ariaLabel="fal.ai speech model"
-              placeholder={defaultFalAudioModel}
-              value={value.falAudioModel}
-              onChange={(next) => onChange({falAudioModel: next})}
-              options={falAudioOptions}
-              allowCustom
-            />
-          </div>
-          <div className="field">
-            {fieldLabel('fal-audio-clone-model', 'Voice Cloning Model (fal.ai)', 'audioCloneModel')}
-            <ModelCombobox
-              id="fal-audio-clone-model"
-              ariaLabel="fal.ai voice cloning model"
-              placeholder={defaultFalAudioCloneModel}
-              value={value.falAudioCloneModel}
-              onChange={(next) => onChange({falAudioCloneModel: next})}
-              options={falAudioOptions}
-              allowCustom
-            />
-          </div>
-          <div className="field">
             {fieldLabel('fal-sound-effects-model', 'Music & Sound Effects Model (fal.ai)', 'soundEffectsModel')}
             <ModelCombobox
               id="fal-sound-effects-model"
@@ -9955,6 +9913,59 @@ function ModelSelectionPanel({
               options={falAudioExtendOptions}
               allowCustom
             />
+          </div>
+        </div>
+        <div className="voice-model-group">
+          <div className="voice-model-group-label">Voice models</div>
+          <div className="two-column">
+            <div className="field">
+              <div className="field-label-row">
+                {fieldLabel('fal-voice-design-model', 'Voice Design Model (fal.ai)', 'voiceDesignModel')}
+                <InfoHint
+                  label="Voice design model"
+                  text="Creates a NEW voice from a written description (the generate_voice tool) — a preview clip of the described voice plus its reusable voice id. The id pairs with the MiniMax speech endpoints (marked in the Speech Model list) to speak new text in the designed voice; speech from text on other models and cloning an attached voice stay on their own tools."
+                />
+              </div>
+              <ModelCombobox
+                id="fal-voice-design-model"
+                ariaLabel="fal.ai voice design model"
+                placeholder={defaultFalVoiceDesignModel}
+                value={value.falVoiceDesignModel}
+                onChange={(next) => onChange({falVoiceDesignModel: next})}
+                options={falVoiceDesignOptions}
+                allowCustom
+              />
+            </div>
+            <div className="field">
+              <div className="field-label-row">
+                {fieldLabel('fal-audio-clone-model', 'Voice Cloning Model (fal.ai)', 'audioCloneModel')}
+                <InfoHint
+                  label="Voice cloning model"
+                  text="Speaks new text in an ATTACHED voice (the generate_speech tool's cloning path): a short clip of the speaker rides as the reference and this endpoint renders the words in that timbre. A designed voice id or a voice named in the request outranks the clip, and speech without an attached reference never clones."
+                />
+              </div>
+              <ModelCombobox
+                id="fal-audio-clone-model"
+                ariaLabel="fal.ai voice cloning model"
+                placeholder={defaultFalAudioCloneModel}
+                value={value.falAudioCloneModel}
+                onChange={(next) => onChange({falAudioCloneModel: next})}
+                options={falAudioOptions}
+                allowCustom
+              />
+            </div>
+            <div className="field voice-model-speech-field">
+              {fieldLabel('fal-audio-model', 'Speech Model (TTS, fal.ai)', 'audioModel')}
+              <ModelCombobox
+                id="fal-audio-model"
+                ariaLabel="fal.ai speech model"
+                placeholder={defaultFalAudioModel}
+                value={value.falAudioModel}
+                onChange={(next) => onChange({falAudioModel: next})}
+                options={falAudioOptions}
+                allowCustom
+              />
+            </div>
           </div>
         </div>
         {!airplaneMode && !catalogs.falHasKey ? (

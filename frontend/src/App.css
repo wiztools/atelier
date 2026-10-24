@@ -1395,6 +1395,31 @@ button:disabled {
   gap: 18px;
 }
 
+/* Audio section's voice trio: the speech (TTS) model plus the two ways it
+   gets a voice — designed from a description or cloned from an attached
+   clip. The box makes the three read as one set at the section's end; the
+   speech select spans the full row beneath its two voice sources. */
+.voice-model-group {
+  margin-top: 18px;
+  padding: 14px 16px 16px;
+  border: 1px solid #2b2e30;
+  border-radius: 8px;
+  background: #1d1f20;
+}
+
+.voice-model-group-label {
+  margin-bottom: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #8a918e;
+}
+
+.voice-model-group .voice-model-speech-field {
+  grid-column: 1 / -1;
+}
+
 /* Stacks multiple grid rows (e.g. provider/model over width/height/steps)
    inside one titled settings section with even vertical spacing. */
 .settings-rows {
