@@ -62,6 +62,12 @@ export function GetConfig():Promise<main.AppConfig>;
 
 export function GetConversation(arg1:string):Promise<main.ConversationDetail>;
 
+export function GetConversationUsageReport(arg1:string):Promise<main.UsageReport>;
+
+export function GetLibraryUsageReport(arg1:string):Promise<main.UsageReport>;
+
+export function GetProjectUsageReport(arg1:string):Promise<main.UsageReport>;
+
 export function HasFalAPIKey():Promise<boolean>;
 
 export function HasOpenAICompatibleAPIKey():Promise<boolean>;

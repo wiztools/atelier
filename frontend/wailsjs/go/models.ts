@@ -3529,6 +3529,149 @@ export namespace main {
 	        this.error = source["error"];
 	    }
 	}
+	export class UsageChildRow {
+	    id: string;
+	    title: string;
+	    turns: number;
+	    toolCalls: number;
+	    costMicros: number;
+	    costUnknown?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new UsageChildRow(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.title = source["title"];
+	        this.turns = source["turns"];
+	        this.toolCalls = source["toolCalls"];
+	        this.costMicros = source["costMicros"];
+	        this.costUnknown = source["costUnknown"];
+	    }
+	}
+	export class UsageModelRow {
+	    provider: string;
+	    model: string;
+	    calls: number;
+	    promptTokens?: number;
+	    completionTokens?: number;
+	    mediaImages?: number;
+	    mediaVideos?: number;
+	    mediaAudios?: number;
+	    costMicros?: number;
+	    costUnknown?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new UsageModelRow(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.provider = source["provider"];
+	        this.model = source["model"];
+	        this.calls = source["calls"];
+	        this.promptTokens = source["promptTokens"];
+	        this.completionTokens = source["completionTokens"];
+	        this.mediaImages = source["mediaImages"];
+	        this.mediaVideos = source["mediaVideos"];
+	        this.mediaAudios = source["mediaAudios"];
+	        this.costMicros = source["costMicros"];
+	        this.costUnknown = source["costUnknown"];
+	    }
+	}
+	export class UsageToolRow {
+	    name: string;
+	    calls: number;
+	    failures?: number;
+	    mediaImages?: number;
+	    mediaVideos?: number;
+	    mediaAudios?: number;
+	    costMicros?: number;
+	    costUnknown?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new UsageToolRow(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.calls = source["calls"];
+	        this.failures = source["failures"];
+	        this.mediaImages = source["mediaImages"];
+	        this.mediaVideos = source["mediaVideos"];
+	        this.mediaAudios = source["mediaAudios"];
+	        this.costMicros = source["costMicros"];
+	        this.costUnknown = source["costUnknown"];
+	    }
+	}
+	export class UsageReport {
+	    scope: string;
+	    conversationId?: string;
+	    projectId?: string;
+	    libraryId?: string;
+	    title: string;
+	    conversations: number;
+	    turns: number;
+	    costMicros: number;
+	    costUnknown?: boolean;
+	    modelCalls: number;
+	    toolCalls: number;
+	    failedToolCalls?: number;
+	    mediaImages?: number;
+	    mediaVideos?: number;
+	    mediaAudios?: number;
+	    models: UsageModelRow[];
+	    tools: UsageToolRow[];
+	    children?: UsageChildRow[];
+	
+	    static createFrom(source: any = {}) {
+	        return new UsageReport(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.scope = source["scope"];
+	        this.conversationId = source["conversationId"];
+	        this.projectId = source["projectId"];
+	        this.libraryId = source["libraryId"];
+	        this.title = source["title"];
+	        this.conversations = source["conversations"];
+	        this.turns = source["turns"];
+	        this.costMicros = source["costMicros"];
+	        this.costUnknown = source["costUnknown"];
+	        this.modelCalls = source["modelCalls"];
+	        this.toolCalls = source["toolCalls"];
+	        this.failedToolCalls = source["failedToolCalls"];
+	        this.mediaImages = source["mediaImages"];
+	        this.mediaVideos = source["mediaVideos"];
+	        this.mediaAudios = source["mediaAudios"];
+	        this.models = this.convertValues(source["models"], UsageModelRow);
+	        this.tools = this.convertValues(source["tools"], UsageToolRow);
+	        this.children = this.convertValues(source["children"], UsageChildRow);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class VideoEditSubmitRequest {
 	    parentConversationId: string;
 	    sourceArtifactId: string;

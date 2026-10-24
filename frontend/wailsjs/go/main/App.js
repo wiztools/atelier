@@ -122,6 +122,18 @@ export function GetConversation(arg1) {
   return window['go']['main']['App']['GetConversation'](arg1);
 }
 
+export function GetConversationUsageReport(arg1) {
+  return window['go']['main']['App']['GetConversationUsageReport'](arg1);
+}
+
+export function GetLibraryUsageReport(arg1) {
+  return window['go']['main']['App']['GetLibraryUsageReport'](arg1);
+}
+
+export function GetProjectUsageReport(arg1) {
+  return window['go']['main']['App']['GetProjectUsageReport'](arg1);
+}
+
 export function HasFalAPIKey() {
   return window['go']['main']['App']['HasFalAPIKey']();
 }
