@@ -1585,6 +1585,53 @@ func TestResolveVideoBodyKeyframesPopulatesEndFrame(t *testing.T) {
 	}
 }
 
+// TestResolveVideoBodyKeyframesPopulateO1Fields covers the Kling o1 dialect
+// (schema captured from fal's live OpenAPI endpoint): the o1 editions renamed
+// the classic image_url start-frame input to start_image_url, beside
+// end_image_url, and the o1 image-to-video schema declares NO other image
+// field — so before start_image_url joined the sourceImage synonyms a keyframe
+// turn on the configured keyframe model was refused up front claiming the
+// model had no source-image input at all (conv_0be96ef58c6e66d6371afa7f).
+// Both keyframe images must land on their renamed fields, and a plain
+// single-image image-to-video turn must ride the same rename.
+func TestResolveVideoBodyKeyframesPopulateO1Fields(t *testing.T) {
+	req := VideoGenerateRequest{
+		Model:     "fal-ai/kling-video/o1/standard/image-to-video",
+		Prompt:    "morph the first frame into the second",
+		Keyframes: true,
+		Images:    []string{"https://x/first.jpg", "https://x/last.jpg"},
+	}
+	body, _, _, err := resolveVideoBody(loadSchema(t, "kling-o1-standard-image-to-video"), req, builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("resolveVideoBody error: %v", err)
+	}
+	if body["start_image_url"] != "https://x/first.jpg" {
+		t.Fatalf("start_image_url = %v, want the first image", body["start_image_url"])
+	}
+	if body["end_image_url"] != "https://x/last.jpg" {
+		t.Fatalf("end_image_url = %v, want the last image", body["end_image_url"])
+	}
+	if _, ok := body["image_url"]; ok {
+		t.Fatal("image_url should be absent — the o1 schema declares no such field")
+	}
+
+	solo := VideoGenerateRequest{
+		Model:  "fal-ai/kling-video/o1/standard/image-to-video",
+		Prompt: "animate the frame",
+		Images: []string{"https://x/only.jpg"},
+	}
+	body, _, _, err = resolveVideoBody(loadSchema(t, "kling-o1-standard-image-to-video"), solo, builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("resolveVideoBody (plain image-to-video) error: %v", err)
+	}
+	if body["start_image_url"] != "https://x/only.jpg" {
+		t.Fatalf("start_image_url = %v, want the attached frame", body["start_image_url"])
+	}
+	if _, ok := body["end_image_url"]; ok {
+		t.Fatal("end_image_url should be absent outside keyframe mode")
+	}
+}
+
 func TestResolveVideoBodyKeyframesDegradesWithoutEndField(t *testing.T) {
 	req := VideoGenerateRequest{
 		Model:     "fal-ai/kling-video/v2/master/image-to-video",

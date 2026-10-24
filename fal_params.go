@@ -250,13 +250,21 @@ var videoSynonyms = map[string][]string{
 	"resolution":     {"resolution"},
 	"fps":            {"fps", "frame_rate", "frameRate", "framerate"},
 	"negativePrompt": {"negative_prompt"},
-	"sourceImage":    {"image_url", "image_urls", "reference_image_urls"},
+	// start_image_url is the Kling o1 editions' rename of the classic
+	// image_url start-frame input (the end-frame sibling end_image_url rides
+	// endImage below); the o1 image-to-video schema declares NO other image
+	// field, so without this name a keyframe turn on the configured keyframe
+	// model was refused up front claiming the model had no source-image input
+	// at all (conv_0be96ef58c6e66d6371afa7f). Listed last so schemas carrying
+	// BOTH shapes keep binding the shared/reference fields first (kling o3/pro
+	// reference-to-video ships image_urls beside start_image_url).
+	"sourceImage": {"image_url", "image_urls", "reference_image_urls", "start_image_url"},
 	// endImage is the closing frame for a start→end keyframe transition. fal
 	// names it inconsistently — Seedance image-to-video declares end_image_url,
 	// Kling tail_image_url — so both are listed and findNative picks whichever
 	// the configured endpoint's schema declares. Populated only in keyframe mode
 	// (VideoGenerateRequest.Keyframes); resolveVideoBody sends the last source
-	// image here and the first onto image_url.
+	// image here and the first onto the start-frame field above.
 	"endImage":      {"end_image_url", "tail_image_url"},
 	"sourceVideo":   {"video_url", "video_urls", "reference_video_urls"},
 	"generateAudio": {"generate_audio"},
@@ -1425,8 +1433,10 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 				req.Model)
 		}
 	}
-	// Keyframe mode: the first source image is the opening frame (image_url via
-	// sourceImage), the last is the closing frame (the model's end-frame field).
+	// Keyframe mode: the first source image is the opening frame (the
+	// start-frame field sourceImage resolves — image_url on the classic
+	// dialects, start_image_url on the Kling o1 editions), the last is the
+	// closing frame (the model's end-frame field).
 	// The tool layer already guaranteed exactly two images. If the model has no
 	// end-frame input, drop the closing frame with a notice and let the request
 	// run as plain image-to-video from the opening frame — a partial loss that
