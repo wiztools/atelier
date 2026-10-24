@@ -360,6 +360,11 @@ type ConfigReplicate struct {
 	// on fal.
 	VideoRestyleModel string `json:"videoRestyleModel,omitempty"`
 	VideoReframeModel string `json:"videoReframeModel,omitempty"`
+	// TranscribeModel is the speech-to-text model transcribe_audio uses when
+	// replicate is the transcription provider (openai/whisper by default) —
+	// the Replicate sibling of ConfigFal.TranscribeModel. The picker lists
+	// Replicate's speech-to-text collection.
+	TranscribeModel string `json:"transcribeModel,omitempty"`
 }
 
 // ConfigOpenAICompatible addresses a local server that speaks OpenAI's API
@@ -2977,6 +2982,48 @@ func (a *App) ListReplicateVideoImageModels() ([]ReplicateModel, error) {
 	return a.listReplicateCollection(replicateImageToVideoCollection)
 }
 
+// ListReplicateTranscribeModels returns the official models of Replicate's
+// speech-to-text collection for the Settings transcription-model picker,
+// shown when replicate is the transcription provider. The collection mixes
+// in speech LLMs (gemini, granite) whose chat-shaped inputs the canonical
+// transcription request cannot fill, so entries are post-filtered by id
+// markers — the fal pattern of partitioning a broad category for a picker.
+// An empty result (a wholly unexpected collection shape) falls back to the
+// default model so the dropdown never goes bare.
+func (a *App) ListReplicateTranscribeModels() ([]ReplicateModel, error) {
+	models, err := a.listReplicateCollection(replicateSpeechToTextCollection)
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]ReplicateModel, 0, len(models))
+	for _, model := range models {
+		if isReplicateTranscribeModel(model) {
+			filtered = append(filtered, model)
+		}
+	}
+	if len(filtered) == 0 {
+		filtered = append(filtered, ReplicateModel{ID: defaultReplicateTranscribeModel})
+	}
+	return filtered, nil
+}
+
+// isReplicateTranscribeModel reports whether a speech-to-text collection
+// entry looks like a transcriber the canonical request can drive: it must
+// not carry a speech-LLM marker (the gemini and granite families take
+// prompt/messages arrays instead of an audio URI). Everything else —
+// whisper-class, gpt-4o-transcribe, parakeet — stays: the resolver's
+// audio-input requirement fails models that slip through, with a
+// provider-switch remedy.
+func isReplicateTranscribeModel(model ReplicateModel) bool {
+	lower := strings.ToLower(model.ID)
+	for _, marker := range []string{"gemini", "granite"} {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+	return true
+}
+
 // listReplicateCollection is the shared body of the Replicate catalog listers:
 // load the token, fetch one collection with a bounded timeout. Collections are
 // pre-bucketed server-side, so there is no pagination to walk.
@@ -4257,13 +4304,14 @@ func mergeAppConfig(config AppConfig) AppConfig {
 		config.Models.VideoProvider = "fal"
 	}
 	// TranscriptionProvider selects the transcribe_audio backend ("fal" |
-	// "local-whisper"). Unknown or empty normalizes to "" — empty
-	// auto-resolves at use time (fal when its key is configured, else a
-	// detected local whisper), so a config written before this setting
-	// existed keeps its old behaviour exactly. Deliberately not seeded from
-	// defaults: the effective provider depends on live key/detection state.
+	// "replicate" | "local-whisper"). Unknown or empty normalizes to "" —
+	// empty auto-resolves at use time (fal when its key is configured, else
+	// a detected local whisper; replicate only serves when pinned), so a
+	// config written before this setting existed keeps its old behaviour
+	// exactly. Deliberately not seeded from defaults: the effective provider
+	// depends on live key/detection state.
 	switch strings.TrimSpace(config.Models.TranscriptionProvider) {
-	case transcriptionProviderFal, transcriptionProviderLocalWhisper:
+	case transcriptionProviderFal, transcriptionProviderLocalWhisper, transcriptionProviderReplicate:
 		config.Models.TranscriptionProvider = strings.TrimSpace(config.Models.TranscriptionProvider)
 	default:
 		config.Models.TranscriptionProvider = ""

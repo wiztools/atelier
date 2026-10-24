@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -102,6 +103,17 @@ const (
 	// endpoints with audio, lipsync, and utility models; its two listers
 	// post-filter by id markers.
 	replicateVideoEditingCollection = "video-editing"
+	// replicateSpeechToTextCollection is the transcription picker's bucket.
+	// It carries speech LLMs (gemini, granite) whose chat-shaped inputs the
+	// canonical transcription request cannot fill, so its lister post-filters
+	// them out (isReplicateTranscribeModel) the same way.
+	replicateSpeechToTextCollection = "speech-to-text"
+	// defaultReplicateTranscribeModel is the speech-to-text model used when
+	// none is configured — openai/whisper, the collection's official
+	// whisper: a translate boolean, a two-letter language enum, and a
+	// "plain text" | "srt" | "vtt" output-format control a timestamped
+	// request sets to vtt so the returned document parses into segments.
+	defaultReplicateTranscribeModel = "openai/whisper"
 	// maxReplicateTransientRetries is the number of times do() re-issues a
 	// request after a transient 5xx, matching the fal client's posture.
 	maxReplicateTransientRetries = 1
@@ -628,6 +640,278 @@ func (client ReplicateClient) UpscaleImage(ctx context.Context, model string, in
 		return ollamaGenerateResponse{}, err
 	}
 	return client.imagesFromPrediction(ctx, prediction, model)
+}
+
+// TranscribeAudio submits an already-native input object (built by
+// resolveReplicateTranscribeInput against the model's schema), polls until the
+// prediction succeeds, and normalizes the output onto GeneratedTranscript —
+// the Replicate sibling of FalClient.TranscribeAudio. There is no recover
+// step: transcription rides the timeout policy's cancel-only path, a
+// transcript being cheap to redo.
+func (client ReplicateClient) TranscribeAudio(ctx context.Context, req TranscribeAudioRequest, input map[string]any) (GeneratedTranscript, error) {
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
+		model = defaultReplicateTranscribeModel
+	}
+	if input == nil {
+		input = map[string]any{}
+	}
+	prediction, err := client.runPrediction(ctx, model, input)
+	if err != nil {
+		return GeneratedTranscript{}, err
+	}
+	return replicateTranscriptFromPrediction(prediction, req)
+}
+
+// replicateTranscriptFromPrediction normalizes a succeeded prediction's output
+// onto GeneratedTranscript. The speech-to-text collection's outputs are
+// heterogeneous — openai/whisper returns an object carrying the transcript,
+// an optional English translation, whisper segment objects, and hosted
+// srt/txt files; gpt-4o-transcribe and parakeet return a plain string;
+// whisperx-class models return segments with word arrays — so the ladder
+// reads whichever shape arrives. The requested granularity is honored when
+// the output provides it: a "words" request stays words only when word
+// chunks materialized, degrades to segments with the wizper-style notice
+// when segment chunks did, and comes back plain (fal's silent downgrade)
+// when the model produced no chunks at all.
+func replicateTranscriptFromPrediction(prediction replicatePrediction, req TranscribeAudioRequest) (GeneratedTranscript, error) {
+	var output any
+	if len(prediction.Output) > 0 {
+		if err := json.Unmarshal(prediction.Output, &output); err != nil {
+			return GeneratedTranscript{}, fmt.Errorf("replicate transcription returned undecodable output: %w", err)
+		}
+	}
+	text, chunks, sawWords := replicateTranscriptOutput(output, strings.TrimSpace(req.Task))
+	if text == "" && len(chunks) > 0 {
+		// A chunk-only payload still yields a usable plain transcript —
+		// the fal chunk-only path.
+		parts := make([]string, 0, len(chunks))
+		for _, chunk := range chunks {
+			if trimmed := strings.TrimSpace(chunk.Text); trimmed != "" {
+				parts = append(parts, trimmed)
+			}
+		}
+		text = strings.Join(parts, " ")
+	}
+	if strings.TrimSpace(text) == "" {
+		return GeneratedTranscript{}, errors.New("replicate transcription returned no text")
+	}
+
+	transcript := GeneratedTranscript{Text: strings.TrimSpace(text)}
+	requested := strings.TrimSpace(req.Timestamps)
+	if requested == "" {
+		// A plain request stays plain even when the model volunteered
+		// segments — the fal chunk_level contract.
+		return transcript, nil
+	}
+	if len(chunks) == 0 {
+		// The model produced no timestamped units — report plain text
+		// rather than claiming a timestamped transcript (fal's stance).
+		return transcript, nil
+	}
+	if requested == "words" && !sawWords {
+		// No word-level units in the output — the model served segments
+		// (or the request's word control was absent), so say so instead of
+		// labeling segments as words.
+		transcript.Notices = append(transcript.Notices, fmt.Sprintf("%s provides segment-level timestamps only — returning segments", strings.TrimSpace(req.Model)))
+		requested = "segments"
+	}
+	transcript.Timestamps = requested
+	transcript.Chunks = chunks
+	transcript.TimestampedText = renderTimestampedChunks(chunks)
+	return transcript, nil
+}
+
+// replicateTranscriptOutput scavenges one speech-to-text output for the
+// transcript text and timestamped chunks. Object outputs are read field by
+// field: a translate task prefers the English "translation" field (the
+// transcription field holds the original-language text beside it), plain
+// requests take "transcription" then "text"; chunks come from the "segments"
+// array (the whisper and whisperx shapes alike, word arrays flattened when
+// present) and fall back to subtitle-parsing the text itself when it is a
+// VTT/SRT document (openai/whisper's vtt output format). String outputs are
+// the whole transcript — chunked only when the text itself is a subtitle
+// document.
+func replicateTranscriptOutput(output any, task string) (string, []transcriptChunk, bool) {
+	switch typed := output.(type) {
+	case string:
+		text := strings.TrimSpace(typed)
+		if text == "" {
+			return "", nil, false
+		}
+		if chunks, ok := subtitleChunksForTranscript(text); ok {
+			return subtitleTextFromChunks(chunks), chunks, false
+		}
+		return text, nil, false
+	case map[string]any:
+		var chunks []transcriptChunk
+		sawWords := false
+		if segments, ok := typed["segments"].([]any); ok {
+			chunks, sawWords = replicateSegmentsToChunks(segments)
+		}
+		fields := []string{"transcription", "text"}
+		if task == "translate" {
+			fields = []string{"translation", "transcription", "text"}
+		}
+		for _, field := range fields {
+			if s, ok := typed[field].(string); ok && strings.TrimSpace(s) != "" {
+				text := strings.TrimSpace(s)
+				if len(chunks) == 0 {
+					if parsed, ok := subtitleChunksForTranscript(text); ok {
+						return subtitleTextFromChunks(parsed), parsed, false
+					}
+				}
+				return text, chunks, sawWords
+			}
+		}
+		return "", chunks, sawWords
+	}
+	return "", nil, false
+}
+
+// subtitleChunksForTranscript parses a transcript that is itself a VTT or SRT
+// document into timestamped chunks. openai/whisper's vtt output format makes
+// the transcription field carry a WebVTT document; this recovers the timing
+// the plain-text output would lose. Only a parse that yields cues counts —
+// ordinary prose never parses as subtitles.
+func subtitleChunksForTranscript(text string) ([]transcriptChunk, bool) {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "WEBVTT") && !looksLikeSRTPattern(trimmed) {
+		return nil, false
+	}
+	cues, _, _, err := parseSubtitles([]byte(trimmed))
+	if err != nil || len(cues) == 0 {
+		return nil, false
+	}
+	chunks := make([]transcriptChunk, 0, len(cues))
+	for _, cue := range cues {
+		end := cue.End
+		chunks = append(chunks, transcriptChunk{Start: cue.Start, End: &end, Text: cue.Text})
+	}
+	return chunks, true
+}
+
+// looksLikeSRTPattern reports whether text opens like an SRT document — a
+// numeric cue counter followed by a timing line — so the SRT side of
+// parseSubtitles is reachable for string outputs (openai/whisper's srt
+// format is delivered as a hosted file, but some models inline SRT text).
+func looksLikeSRTPattern(text string) bool {
+	lines := strings.SplitN(text, "\n", 3)
+	if len(lines) < 2 {
+		return false
+	}
+	counter := strings.TrimSpace(lines[0])
+	if counter == "" {
+		return false
+	}
+	for _, r := range counter {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return strings.Contains(lines[1], "-->")
+}
+
+// subtitleTextFromChunks joins chunk text into the plain transcript — the
+// text half of a subtitle-parsed transcript.
+func subtitleTextFromChunks(chunks []transcriptChunk) string {
+	parts := make([]string, 0, len(chunks))
+	for _, chunk := range chunks {
+		if trimmed := strings.TrimSpace(chunk.Text); trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// replicateSegmentsToChunks walks a model's "segments" array — the whisper
+// segment shape {start, end, text} or the whisperx one that adds a nested
+// "words" array of {start, end, word} — into canonical chunks. Word objects
+// replace their parent segment only when every word carries a usable start
+// (a half-aligned word list would drop the timing precision the segments
+// themselves carry); unusable segments are skipped, never fatal.
+func replicateSegmentsToChunks(segments []any) ([]transcriptChunk, bool) {
+	chunks := make([]transcriptChunk, 0, len(segments))
+	sawWords := false
+	for _, segment := range segments {
+		obj, ok := segment.(map[string]any)
+		if !ok {
+			continue
+		}
+		if words, ok := obj["words"].([]any); ok && len(words) > 0 {
+			if wordChunks := replicateWordsToChunks(words); len(wordChunks) > 0 {
+				chunks = append(chunks, wordChunks...)
+				sawWords = true
+				continue
+			}
+		}
+		chunk := transcriptChunk{Text: stringField(obj, "text")}
+		start, ok := numberField(obj, "start")
+		if !ok {
+			continue // no timing — the unit cannot join a timestamped transcript
+		}
+		chunk.Start = start
+		if end, ok := numberField(obj, "end"); ok {
+			chunk.End = &end
+		}
+		chunks = append(chunks, chunk)
+	}
+	return chunks, sawWords
+}
+
+// replicateWordsToChunks walks a whisperx word array ({start, end, word})
+// into word-level chunks. A word missing timing or text drops out; an array
+// with no usable words yields nothing so the caller falls back to its
+// segment.
+func replicateWordsToChunks(words []any) []transcriptChunk {
+	chunks := make([]transcriptChunk, 0, len(words))
+	for _, word := range words {
+		obj, ok := word.(map[string]any)
+		if !ok {
+			continue
+		}
+		start, okStart := numberField(obj, "start")
+		if !okStart {
+			continue
+		}
+		text := stringField(obj, "word")
+		if text == "" {
+			text = stringField(obj, "text")
+		}
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		chunk := transcriptChunk{Start: start, Text: text}
+		if end, ok := numberField(obj, "end"); ok {
+			chunk.End = &end
+		}
+		chunks = append(chunks, chunk)
+	}
+	return chunks
+}
+
+// stringField reads a string field from a decoded JSON object, trimmed.
+func stringField(obj map[string]any, key string) string {
+	s, _ := obj[key].(string)
+	return strings.TrimSpace(s)
+}
+
+// numberField reads a numeric field (JSON number, or a string holding one —
+// some models serialize timestamps as strings) as float64.
+func numberField(obj map[string]any, key string) (float64, bool) {
+	switch v := obj[key].(type) {
+	case float64:
+		return v, true
+	case string:
+		if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+			return f, true
+		}
+	case json.Number:
+		if f, err := v.Float64(); err == nil {
+			return f, true
+		}
+	}
+	return 0, false
 }
 
 // ResolveMediaURL normalizes a media reference for Replicate, uploading it

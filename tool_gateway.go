@@ -1117,11 +1117,53 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			return generated, err
 		}
 		gateway.tools.TranscribeAudio = func(ctx context.Context, req TranscribeAudioRequest) (GeneratedTranscript, error) {
-			// fal-only: airplane mode refuses the call (the resolver routes to
-			// the local whisper backend in that mode, so this wrapper is the
-			// belt behind the executor's dispatch).
+			// Airplane mode refuses the call here (the resolver routes to the
+			// local whisper backend in that mode, so this wrapper is the belt
+			// behind the executor's dispatch). The cloud dispatch below routes
+			// by the resolved transcription provider: replicate when pinned,
+			// fal otherwise — the auto chain never resolves replicate.
 			if err := airplaneMediaError(config, "transcribe_audio"); err != nil {
 				return GeneratedTranscript{}, err
+			}
+			if resolveTranscriptionProvider(config) == transcriptionProviderReplicate {
+				apiKey, err := loadReplicateAPIKey()
+				if err != nil {
+					return GeneratedTranscript{}, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return GeneratedTranscript{}, errReplicateKeyNotConfigured
+				}
+				client := newReplicateClient(app.client, apiKey)
+				// Pre-resolve the audio clip: a long voice memo can exceed the
+				// inline data-URI budget, so it uploads through the Files API
+				// first when oversized — the fal resolveMediaURL pattern, on
+				// Replicate's own storage.
+				if resolved, err := client.ResolveMediaURL(ctx, req.Audio, "audio/mpeg", "audio.mp3"); err == nil && resolved != "" {
+					req.Audio = resolved
+				}
+				schema := replicateSchemaCache.Get(ctx, req.Model)
+				input, notices, err := resolveReplicateTranscribeInput(schema, req)
+				if err != nil {
+					return GeneratedTranscript{Notices: notices}, err
+				}
+				job := &mediaJob{}
+				client.jobSink = job
+				// Transcription rides the timeout policy cancel-only on both
+				// cloud backends: an abandoned prediction is stopped, but
+				// there is no recover step — a transcript is cheap to redo.
+				generated, _, err := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (GeneratedTranscript, error) {
+						return client.TranscribeAudio(jctx, req, input)
+					},
+					client.CancelMediaJob,
+					nil,
+				)
+				if err == nil {
+					// Replicate reports no per-generation cost — the image and
+					// video backends' CostUnknown stance.
+					generated.Notices = append(generated.Notices, notices...)
+				}
+				return generated, err
 			}
 			apiKey, err := loadFalAPIKey()
 			if err != nil {

@@ -151,7 +151,7 @@ func validateConversationModelOverrides(o ConversationModelOverrides) error {
 				return fmt.Errorf("unknown inpaint provider %q", value)
 			}
 		case "transcriptionProvider":
-			if value != "" && value != transcriptionProviderFal && value != transcriptionProviderLocalWhisper {
+			if value != "" && value != transcriptionProviderFal && value != transcriptionProviderLocalWhisper && value != transcriptionProviderReplicate {
 				return fmt.Errorf("unknown transcription provider %q", value)
 			}
 		default:
@@ -447,7 +447,19 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 		config.Providers.Fal.VoiceDesignModel = o.VoiceDesignModel
 	}
 	if o.TranscribeModel != "" {
-		config.Providers.Fal.TranscribeModel = o.TranscribeModel
+		// The override lands on the slot the effective transcription
+		// provider reads (the ImageModel pair's contract): a replicate-pinned
+		// conversation (explicitly, or via the global default) stores the
+		// model on the Replicate slot, everything else on fal's.
+		provider := o.TranscriptionProvider
+		if provider == "" {
+			provider = config.Models.TranscriptionProvider
+		}
+		if provider == transcriptionProviderReplicate {
+			config.Providers.Replicate.TranscribeModel = o.TranscribeModel
+		} else {
+			config.Providers.Fal.TranscribeModel = o.TranscribeModel
+		}
 	}
 	if o.LipsyncImageModel != "" {
 		config.Providers.Fal.LipsyncImageModel = o.LipsyncImageModel

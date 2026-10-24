@@ -61,6 +61,7 @@ import {
   ListReplicateVideoExtendModels,
   ListReplicateVideoModels,
   ListReplicateVideoImageModels,
+  ListReplicateTranscribeModels,
   ListInpaintModels,
   ListEditSession,
   ResolveAudioEditSource,
@@ -441,6 +442,7 @@ const defaultFalSoundEffectsVideoModel = 'mirelo-ai/sfx2.0/video-to-video';
 const defaultFalVoiceDesignModel = 'fal-ai/minimax/voice-design';
 const defaultFalAudioExtendModel = 'fal-ai/stable-audio-25/inpaint';
 const defaultFalTranscribeModel = 'fal-ai/wizper';
+const defaultReplicateTranscribeModel = 'openai/whisper';
 // Kling's lipsync/audio-to-video takes video_url + audio_url — a video-face
 // endpoint despite the name, so it defaults the video+audio slot; the
 // image+audio slot needs sync-lipsync's image-to-video endpoint (kling has no
@@ -1263,15 +1265,15 @@ function App() {
   const [falVoiceDesignModels, setFalVoiceDesignModels] = useState<main.FalModel[]>([]);
   const [falTranscribeModel, setFalTranscribeModel] = useState(defaultFalTranscribeModel);
   const [falTranscribeModels, setFalTranscribeModels] = useState<main.FalModel[]>([]);
-  // Transcription provider selection ("fal" cloud vs the locally installed
-  // whisper CLI) plus the local-whisper knobs. localToolsReport is the Go
-  // side's detection snapshot (DetectLocalTools): which binaries exist and
-  // which provider the config resolves to — the dropdown's local option only
-  // makes sense when a whisper was actually found. The provider is a
-  // Models-tab selection (per-conversation overridable); the model, binary,
-  // and VAD model are engine config edited under Local Tools, global like
-  // ffmpeg's.
-  const [transcriptionProvider, setTranscriptionProvider] = useState<'fal' | 'local-whisper'>('fal');
+  // Transcription provider selection ("fal" cloud, "replicate" cloud, or the
+  // locally installed whisper CLI) plus the local-whisper knobs.
+  // localToolsReport is the Go side's detection snapshot (DetectLocalTools):
+  // which binaries exist and which provider the config resolves to — the
+  // dropdown's local option only makes sense when a whisper was actually
+  // found. The provider is a Models-tab selection (per-conversation
+  // overridable); the model, binary, and VAD model are engine config edited
+  // under Local Tools, global like ffmpeg's.
+  const [transcriptionProvider, setTranscriptionProvider] = useState<'fal' | 'local-whisper' | 'replicate'>('fal');
   const [whisperModel, setWhisperModel] = useState('');
   const [whisperBinary, setWhisperBinary] = useState('');
   const [whisperVADModel, setWhisperVADModel] = useState('');
@@ -1317,6 +1319,8 @@ function App() {
   const [replicateVideoModels, setReplicateVideoModels] = useState<main.ReplicateModel[]>([]);
   const [replicateVideoImageModel, setReplicateVideoImageModel] = useState(defaultReplicateVideoImageModel);
   const [replicateVideoImageModels, setReplicateVideoImageModels] = useState<main.ReplicateModel[]>([]);
+  const [replicateTranscribeModel, setReplicateTranscribeModel] = useState(defaultReplicateTranscribeModel);
+  const [replicateTranscribeModels, setReplicateTranscribeModels] = useState<main.ReplicateModel[]>([]);
   // Each video picker owns its duration options + value, driven by its model's
   // published schema (ListFalVideoDurations). videoDuration (text-to-video) is
   // the canonical value persisted to config.generation.video.duration — the
@@ -1964,6 +1968,7 @@ function App() {
             videoExtendModel: replicateVideoExtendModel,
             videoModel: replicateVideoModel,
             videoImageModel: replicateVideoImageModel,
+            transcribeModel: replicateTranscribeModel,
           },
           openaiCompatible: {
             baseURL: openaiCompatibleBaseURL,
@@ -2032,7 +2037,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [airplaneMode, baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel, whisperVADModel]);
+  }, [airplaneMode, baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, replicateTranscribeModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel, whisperVADModel]);
 
   // Re-probe local CLI tools when a binary override changes — or the Local
   // Tools tab's Re-detect button bumps the nonce — so the transcription
@@ -2497,6 +2502,7 @@ function App() {
     falAudioExtendModel,
     transcriptionProvider,
     falTranscribeModel,
+    replicateTranscribeModel,
     falLipsyncImageModel,
     falLipsyncVideoModel,
     imageAspectRatio,
@@ -2507,7 +2513,7 @@ function App() {
     videoResolution,
     soundDuration,
     audioExtendDuration,
-  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, inpaintProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, transcriptionProvider, falTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration]);
+  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, inpaintProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, transcriptionProvider, falTranscribeModel, replicateTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration]);
 
   const conversationModelSelection = useMemo<ModelSelectionValue>(() => {
     const global = globalModelSelection;
@@ -2522,6 +2528,7 @@ function App() {
     const imageProvider = overrides.imageProvider === 'fal' || overrides.imageProvider === 'replicate' || overrides.imageProvider === 'openai-compatible' ? overrides.imageProvider : global.imageProvider;
     const videoProvider = overrides.videoProvider === 'replicate' ? 'replicate' : overrides.videoProvider === 'fal' ? 'fal' : global.videoProvider;
     const inpaintProvider = overrides.inpaintProvider === 'replicate' ? 'replicate' : overrides.inpaintProvider === 'fal' ? 'fal' : global.inpaintProvider;
+    const effectiveTranscriptionProvider = overrides.transcriptionProvider === 'fal' || overrides.transcriptionProvider === 'local-whisper' || overrides.transcriptionProvider === 'replicate' ? overrides.transcriptionProvider : global.transcriptionProvider;
     const next: ModelSelectionValue = {
       ...global,
       primaryProvider,
@@ -2560,8 +2567,9 @@ function App() {
       falSoundEffectsVideoModel: overrides.soundEffectsVideoModel || global.falSoundEffectsVideoModel,
       falVoiceDesignModel: overrides.voiceDesignModel || global.falVoiceDesignModel,
       falAudioExtendModel: overrides.audioExtendModel || global.falAudioExtendModel,
-      transcriptionProvider: overrides.transcriptionProvider === 'fal' || overrides.transcriptionProvider === 'local-whisper' ? overrides.transcriptionProvider : global.transcriptionProvider,
-      falTranscribeModel: overrides.transcribeModel || global.falTranscribeModel,
+      transcriptionProvider: effectiveTranscriptionProvider,
+      falTranscribeModel: overrides.transcribeModel && effectiveTranscriptionProvider !== 'replicate' ? overrides.transcribeModel : global.falTranscribeModel,
+      replicateTranscribeModel: overrides.transcribeModel && effectiveTranscriptionProvider === 'replicate' ? overrides.transcribeModel : global.replicateTranscribeModel,
       falLipsyncImageModel: overrides.lipsyncImageModel || global.falLipsyncImageModel,
       falLipsyncVideoModel: overrides.lipsyncVideoModel || global.falLipsyncVideoModel,
       imageAspectRatio: overrides.imageAspectRatio || global.imageAspectRatio,
@@ -2632,6 +2640,7 @@ function App() {
     if (patch.falAudioExtendModel !== undefined) setFalAudioExtendModel(patch.falAudioExtendModel);
     if (patch.transcriptionProvider !== undefined) setTranscriptionProvider(patch.transcriptionProvider);
     if (patch.falTranscribeModel !== undefined) setFalTranscribeModel(patch.falTranscribeModel);
+    if (patch.replicateTranscribeModel !== undefined) setReplicateTranscribeModel(patch.replicateTranscribeModel);
     if (patch.falLipsyncImageModel !== undefined) setFalLipsyncImageModel(patch.falLipsyncImageModel);
     if (patch.falLipsyncVideoModel !== undefined) setFalLipsyncVideoModel(patch.falLipsyncVideoModel);
     if (patch.imageAspectRatio !== undefined) setImageAspectRatio(patch.imageAspectRatio);
@@ -2685,6 +2694,15 @@ function App() {
         draftPatch.falVideoExtendModel = falVideoExtendModel;
       }
     }
+    // A transcription-provider switch carries the new backend's inherited
+    // model into the draft so the picker displays it (the video pair's rule).
+    if (draftPatch.transcriptionProvider !== undefined && patch.falTranscribeModel === undefined && patch.replicateTranscribeModel === undefined) {
+      if (draftPatch.transcriptionProvider === 'replicate') {
+        draftPatch.replicateTranscribeModel = replicateTranscribeModel;
+      } else {
+        draftPatch.falTranscribeModel = falTranscribeModel;
+      }
+    }
     if (draftPatch.primaryProvider !== undefined && patch.primaryModel === undefined) {
       draftPatch.primaryModel = primaryModels[draftPatch.primaryProvider];
     }
@@ -2728,7 +2746,7 @@ function App() {
       if (patch.falSoundEffectsVideoModel !== undefined) next.add('soundEffectsVideoModel');
       if (patch.falVoiceDesignModel !== undefined) next.add('voiceDesignModel');
       if (patch.falAudioExtendModel !== undefined) next.add('audioExtendModel');
-      if (patch.falTranscribeModel !== undefined) next.add('transcribeModel');
+      if (patch.falTranscribeModel !== undefined || patch.replicateTranscribeModel !== undefined) next.add('transcribeModel');
       if (patch.transcriptionProvider !== undefined) next.add('transcriptionProvider');
       if (patch.imageAspectRatio !== undefined) next.add('imageAspectRatio');
       if (patch.imageSizePreset !== undefined) next.add('imageSizePreset');
@@ -2823,7 +2841,10 @@ function App() {
         case 'soundEffectsVideoModel': next.falSoundEffectsVideoModel = global.falSoundEffectsVideoModel; break;
         case 'voiceDesignModel': next.falVoiceDesignModel = global.falVoiceDesignModel; break;
         case 'audioExtendModel': next.falAudioExtendModel = global.falAudioExtendModel; break;
-        case 'transcribeModel': next.falTranscribeModel = global.falTranscribeModel; break;
+        case 'transcribeModel':
+          next.falTranscribeModel = global.falTranscribeModel;
+          next.replicateTranscribeModel = global.replicateTranscribeModel;
+          break;
         case 'transcriptionProvider': next.transcriptionProvider = global.transcriptionProvider; break;
         case 'imageAspectRatio': next.imageAspectRatio = global.imageAspectRatio; break;
         case 'imageSizePreset': next.imageSizePreset = global.imageSizePreset; break;
@@ -3037,6 +3058,7 @@ function App() {
     replicateVideoExtendModels,
     replicateVideoModels,
     replicateVideoImageModels,
+    replicateTranscribeModels,
     falVideoModels,
     falVideoImageModels,
     falVideoKeyframeModels,
@@ -3288,7 +3310,8 @@ function App() {
 	const nextFalVoiceDesignModel = config.providers?.fal?.voiceDesignModel || defaultFalVoiceDesignModel;
 	const nextFalAudioExtendModel = config.providers?.fal?.audioExtendModel || defaultFalAudioExtendModel;
 	const nextFalTranscribeModel = config.providers?.fal?.transcribeModel || defaultFalTranscribeModel;
-	const nextTranscriptionProvider = config.models?.transcriptionProvider === 'local-whisper' ? 'local-whisper' : 'fal';
+	const nextReplicateTranscribeModel = config.providers?.replicate?.transcribeModel || defaultReplicateTranscribeModel;
+	const nextTranscriptionProvider = config.models?.transcriptionProvider === 'local-whisper' ? 'local-whisper' : config.models?.transcriptionProvider === 'replicate' ? 'replicate' : 'fal';
 	const nextWhisperModel = config.providers?.local?.whisper?.model ?? '';
 	const nextWhisperBinary = config.providers?.local?.whisper?.binary ?? '';
 	const nextWhisperVADModel = config.providers?.local?.whisper?.vadModel ?? '';
@@ -3362,6 +3385,7 @@ function App() {
     setFalVoiceDesignModel(nextFalVoiceDesignModel);
     setFalAudioExtendModel(nextFalAudioExtendModel);
     setFalTranscribeModel(nextFalTranscribeModel);
+		setReplicateTranscribeModel(nextReplicateTranscribeModel);
     setTranscriptionProvider(nextTranscriptionProvider);
     setWhisperModel(nextWhisperModel);
     setWhisperBinary(nextWhisperBinary);
@@ -3412,7 +3436,7 @@ function App() {
         // detected local whisper). Adopt that resolution here so the dropdown
         // shows — and the next save persists — what the backend would do.
         if (!config.models?.transcriptionProvider &&
-            (report.transcriptionProvider === 'fal' || report.transcriptionProvider === 'local-whisper')) {
+            (report.transcriptionProvider === 'fal' || report.transcriptionProvider === 'local-whisper' || report.transcriptionProvider === 'replicate')) {
           setTranscriptionProvider(report.transcriptionProvider);
         }
       }).catch(() => setLocalToolsReport(null)),
@@ -3791,6 +3815,11 @@ function App() {
       setReplicateVideoImageModels(asArray(await ListReplicateVideoImageModels()));
     } catch {
       setReplicateVideoImageModels([]);
+    }
+    try {
+      setReplicateTranscribeModels(asArray(await ListReplicateTranscribeModels()));
+    } catch {
+      setReplicateTranscribeModels([]);
     }
   }
 
@@ -8866,8 +8895,9 @@ type ModelSelectionValue = {
   falSoundEffectsVideoModel: string;
   falVoiceDesignModel: string;
   falAudioExtendModel: string;
-  transcriptionProvider: 'fal' | 'local-whisper';
+  transcriptionProvider: 'fal' | 'local-whisper' | 'replicate';
   falTranscribeModel: string;
+  replicateTranscribeModel: string;
   falLipsyncImageModel: string;
   falLipsyncVideoModel: string;
   imageAspectRatio: string;
@@ -8992,7 +9022,9 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   if (keys.has('soundEffectsVideoModel')) payload.soundEffectsVideoModel = draft.falSoundEffectsVideoModel;
   if (keys.has('voiceDesignModel')) payload.voiceDesignModel = draft.falVoiceDesignModel;
   if (keys.has('audioExtendModel')) payload.audioExtendModel = draft.falAudioExtendModel;
-  if (keys.has('transcribeModel')) payload.transcribeModel = draft.falTranscribeModel;
+  // The transcription model lands on the slot the effective provider reads,
+  // mirroring the video pair's provider-conditional overlay.
+  if (keys.has('transcribeModel')) payload.transcribeModel = draft.transcriptionProvider === 'replicate' ? draft.replicateTranscribeModel : draft.falTranscribeModel;
   if (keys.has('transcriptionProvider')) payload.transcriptionProvider = draft.transcriptionProvider;
   if (keys.has('imageAspectRatio')) payload.imageAspectRatio = draft.imageAspectRatio;
   if (keys.has('imageSizePreset')) payload.imageSizePreset = draft.imageSizePreset;
@@ -9051,6 +9083,7 @@ function ModelSelectionPanel({
     replicateVideoExtendModels: main.ReplicateModel[];
     replicateVideoModels: main.ReplicateModel[];
     replicateVideoImageModels: main.ReplicateModel[];
+    replicateTranscribeModels: main.ReplicateModel[];
     falVideoModels: main.FalModel[];
     falVideoImageModels: main.FalModel[];
     falVideoKeyframeModels: main.FalModel[];
@@ -9094,6 +9127,7 @@ function ModelSelectionPanel({
   const whisperFound = !!catalogs.whisperStatus?.available;
   const whisperDetail = catalogs.whisperStatus?.detail ?? 'Whisper not found.';
   const localTranscriptionSelected = airplaneMode || value.transcriptionProvider === 'local-whisper';
+  const replicateTranscriptionSelected = !airplaneMode && value.transcriptionProvider === 'replicate';
   const openLocalToolsLink = isSettings && onOpenLocalTools ? (
     <>
       {' '}
@@ -9114,6 +9148,7 @@ function ModelSelectionPanel({
   const replicateVideoExtendOptions = falModelOptionList(catalogs.replicateVideoExtendModels);
   const replicateVideoOptions = falModelOptionList(catalogs.replicateVideoModels);
   const replicateVideoImageOptions = falModelOptionList(catalogs.replicateVideoImageModels);
+  const replicateTranscribeOptions = falModelOptionList(catalogs.replicateTranscribeModels);
   const falUpscaleOptions = falModelOptionList(catalogs.falUpscaleModels);
   const falVideoOptions = falModelOptionList(catalogs.falVideoModels);
   const falVideoImageOptions = falModelOptionList(catalogs.falVideoImageModels);
@@ -10061,9 +10096,10 @@ function ModelSelectionPanel({
               <select
                 id="transcription-provider"
                 value={airplaneMode ? 'local-whisper' : value.transcriptionProvider}
-                onChange={(event) => onChange({transcriptionProvider: event.target.value as 'fal' | 'local-whisper'})}
+                onChange={(event) => onChange({transcriptionProvider: event.target.value as 'fal' | 'local-whisper' | 'replicate'})}
               >
                 <option value="fal" disabled={airplaneMode}>fal.ai (cloud)</option>
+                <option value="replicate" disabled={airplaneMode}>Replicate (cloud)</option>
                 <option
                   value="local-whisper"
                   disabled={!catalogs.whisperStatus?.available && value.transcriptionProvider !== 'local-whisper'}
@@ -10073,7 +10109,20 @@ function ModelSelectionPanel({
               </select>
             </div>
 
-            {localTranscriptionSelected ? null : (
+            {localTranscriptionSelected ? null : value.transcriptionProvider === 'replicate' ? (
+              <div className="field">
+                {fieldLabel('replicate-transcribe-model', 'Transcription Model (Replicate)', 'transcribeModel')}
+                <ModelCombobox
+                  id="replicate-transcribe-model"
+                  ariaLabel="Replicate transcription model"
+                  placeholder={defaultReplicateTranscribeModel}
+                  value={value.replicateTranscribeModel}
+                  onChange={(next) => onChange({replicateTranscribeModel: next})}
+                  options={replicateTranscribeOptions}
+                  allowCustom
+                />
+              </div>
+            ) : (
               <div className="field">
                 {fieldLabel('fal-transcribe-model', 'Transcription Model (fal.ai)', 'transcribeModel')}
                 <ModelCombobox
@@ -10094,6 +10143,13 @@ function ModelSelectionPanel({
               <span className="hint">The whisper binary, model, and VAD model are configured {toolWhere}.{openLocalToolsLink}</span>
             ) : (
               <span className="hint">{whisperDetail} Then re-detect or set its path {toolWhere}.{openLocalToolsLink}</span>
+            )
+          ) : replicateTranscriptionSelected ? (
+            catalogs.replicateHasKey ? null : (
+              <span className="hint">
+                Add a Replicate API token {keyWhere} — or {whisperFound ? 'switch to Whisper (local)' : <>set up whisper {toolWhere}</>} — to transcribe audio.
+                {whisperFound ? null : openLocalToolsLink}
+              </span>
             )
           ) : !catalogs.falHasKey ? (
             <span className="hint">

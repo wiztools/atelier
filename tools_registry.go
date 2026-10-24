@@ -1322,30 +1322,35 @@ func resolveDefaultAudioExtendModel(config AppConfig) string {
 // Transcription provider ids selectable in Settings
 // (Models.TranscriptionProvider). "local-whisper" routes transcribe_audio to
 // the locally installed whisper CLI (see local_tools.go); "fal" routes to
-// fal.ai's speech-to-text endpoints.
+// fal.ai's speech-to-text endpoints; "replicate" routes to Replicate's
+// speech-to-text collection (openai/whisper by default).
 const (
 	transcriptionProviderFal          = "fal"
 	transcriptionProviderLocalWhisper = "local-whisper"
+	transcriptionProviderReplicate    = "replicate"
 )
 
 // resolveTranscriptionProvider returns the backend transcribe_audio runs on
 // for this config. An explicit Models.TranscriptionProvider wins; otherwise
 // auto — fal when its key is configured (the pre-local behavior, so existing
 // setups are unchanged), else local whisper when a binary is found, so a
-// fal-less machine with whisper installed still transcribes. Folds in live
-// state (key presence, PATH detection) so the tool gate, the planner-facing
-// description, and the gateway wiring cannot disagree.
+// fal-less machine with whisper installed still transcribes. Replicate is
+// never auto-resolved: it only serves when pinned, so a stored replicate
+// token doesn't silently replace the fal backend an existing setup resolves
+// to. Folds in live state (key presence, PATH detection) so the tool gate,
+// the planner-facing description, and the gateway wiring cannot disagree.
 func resolveTranscriptionProvider(config AppConfig) string {
-	// Airplane mode never leaves the machine for transcription: the fal
-	// backend (pinned or auto-resolved) is ignored and the local whisper CLI
-	// is the only backend. With no whisper binary installed this still returns
-	// local-whisper — transcribeAudioConfigured then keeps the tool unoffered,
-	// and the Settings report names the backend that would run once installed.
+	// Airplane mode never leaves the machine for transcription: the cloud
+	// backends (pinned or auto-resolved) are ignored and the local whisper
+	// CLI is the only backend. With no whisper binary installed this still
+	// returns local-whisper — transcribeAudioConfigured then keeps the tool
+	// unoffered, and the Settings report names the backend that would run
+	// once installed.
 	if airplaneModeActive(config) {
 		return transcriptionProviderLocalWhisper
 	}
 	switch strings.TrimSpace(config.Models.TranscriptionProvider) {
-	case transcriptionProviderFal, transcriptionProviderLocalWhisper:
+	case transcriptionProviderFal, transcriptionProviderLocalWhisper, transcriptionProviderReplicate:
 		return strings.TrimSpace(config.Models.TranscriptionProvider)
 	}
 	if falKeyConfigured() {
@@ -1359,14 +1364,20 @@ func resolveTranscriptionProvider(config AppConfig) string {
 
 // transcribeAudioConfigured reports whether the transcribe_audio tool should
 // be offered: the resolved transcription provider must actually be able to
-// serve a call — fal needs its key, the local backend needs a found whisper
-// binary (detected on PATH or overridden in Settings). Like extend_audio and
-// lip_sync, no model needs to be configured first: fal defaults to
-// fal-ai/wizper and whisper to the CLI's own default model.
+// serve a call — fal needs its key, replicate its token, the local backend a
+// found whisper binary (detected on PATH or overridden in Settings). Like
+// extend_audio and lip_sync, no model needs to be configured first: fal
+// defaults to fal-ai/wizper, replicate to openai/whisper, and whisper to the
+// CLI's own default model.
 func transcribeAudioConfigured(config AppConfig) bool {
-	if resolveTranscriptionProvider(config) == transcriptionProviderLocalWhisper {
+	switch resolveTranscriptionProvider(config) {
+	case transcriptionProviderLocalWhisper:
 		_, ok := resolveLocalWhisperBinary(config)
 		return ok
+	case transcriptionProviderReplicate:
+		// Unreachable in airplane mode, which resolveTranscriptionProvider
+		// never resolves past the local backend.
+		return replicateKeyConfigured()
 	}
 	// The fal backend needs its key — and is unreachable in airplane mode,
 	// which resolveTranscriptionProvider never resolves to.
@@ -1374,12 +1385,23 @@ func transcribeAudioConfigured(config AppConfig) bool {
 }
 
 // resolveDefaultTranscribeModel returns the speech-to-text model the
-// transcribe_audio tool uses when the call doesn't override it.
+// transcribe_audio tool uses on the fal backend when the call doesn't
+// override it.
 func resolveDefaultTranscribeModel(config AppConfig) string {
 	if model := strings.TrimSpace(config.Providers.Fal.TranscribeModel); model != "" {
 		return model
 	}
 	return defaultFalTranscribeModel
+}
+
+// resolveDefaultReplicateTranscribeModel returns the speech-to-text model the
+// transcribe_audio tool uses on the Replicate backend when the call doesn't
+// override it — the Replicate sibling of resolveDefaultTranscribeModel.
+func resolveDefaultReplicateTranscribeModel(config AppConfig) string {
+	if model := strings.TrimSpace(config.Providers.Replicate.TranscribeModel); model != "" {
+		return model
+	}
+	return defaultReplicateTranscribeModel
 }
 
 // resolveDefaultLocalWhisperModel returns the whisper model the
@@ -1967,11 +1989,11 @@ func writeTempAudio(audio GeneratedAudio) (string, error) {
 // (fal-ai/wizper by default) or the locally installed whisper CLI. Requires an
 // attached audio clip, mirroring how upscale_image requires an attached image.
 func transcribeAudioToolDefinition(config AppConfig) HarnessToolDefinition {
-	local := resolveTranscriptionProvider(config) == transcriptionProviderLocalWhisper
+	provider := resolveTranscriptionProvider(config)
 	return HarnessToolDefinition{
 		Name:        "transcribe_audio",
 		Title:       "Transcribe audio",
-		Description: transcribeAudioDescription(local),
+		Description: transcribeAudioDescription(provider),
 		Example:     `{"name":"transcribe_audio"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: transcribeAudioParamSchema(),
@@ -1995,13 +2017,25 @@ func transcribeAudioToolDefinition(config AppConfig) HarnessToolDefinition {
 				Timestamps: strings.TrimSpace(call.Timestamps),
 			}
 			var backend string
-			if resolveTranscriptionProvider(tools.Config) == transcriptionProviderLocalWhisper {
+			switch resolveTranscriptionProvider(tools.Config) {
+			case transcriptionProviderLocalWhisper:
 				if tools.TranscribeAudioLocal == nil {
 					return nil, "audio transcription unavailable", errors.New("local whisper transcription is not available in this context")
 				}
 				req.Model = firstNonEmpty([]string{strings.TrimSpace(call.Model), resolveDefaultLocalWhisperModel(tools.Config)})
 				backend = "local whisper"
 				transcript, err := tools.TranscribeAudioLocal(ctx, req)
+				if err != nil {
+					return nil, "audio transcription failed", err
+				}
+				return transcribeAudioOutput(req, backend, transcript)
+			case transcriptionProviderReplicate:
+				if tools.TranscribeAudio == nil {
+					return nil, "audio transcription unavailable", errors.New("audio transcription is not available in this context")
+				}
+				req.Model = firstNonEmpty([]string{strings.TrimSpace(call.Model), resolveDefaultReplicateTranscribeModel(tools.Config)})
+				backend = "Replicate"
+				transcript, err := tools.TranscribeAudio(ctx, req)
 				if err != nil {
 					return nil, "audio transcription failed", err
 				}
@@ -2023,14 +2057,19 @@ func transcribeAudioToolDefinition(config AppConfig) HarnessToolDefinition {
 			if typed, ok := result.Result.(ToolTranscribeResult); ok {
 				// Backend attribution mirrors the ffmpeg tools' own stamp: the
 				// engine layer cannot know which runner served the call.
-				activity.Provider = map[bool]string{true: "whisper", false: "fal"}[local]
-				if local {
+				switch provider {
+				case transcriptionProviderLocalWhisper:
+					activity.Provider = "whisper"
 					command := []string{"whisper", "transcribe"}
 					if typed.Model != "" {
 						command = append(command, typed.Model)
 					}
 					activity.Command = command
-				} else {
+				case transcriptionProviderReplicate:
+					activity.Provider = "replicate"
+					activity.Command = []string{"replicate", "transcribe", typed.Model}
+				default:
+					activity.Provider = "fal"
 					activity.Command = []string{"fal", "transcribe", typed.Model}
 				}
 			}
@@ -2112,15 +2151,21 @@ func capPlainTranscriptPreview(text, artifact string) string {
 // transcribeAudioDescription assembles the transcribe_audio tool description,
 // naming the backend the turn will actually run on so the planner isn't told
 // about fal when the local whisper CLI is configured.
-func transcribeAudioDescription(local bool) string {
+func transcribeAudioDescription(provider string) string {
 	backend := "Runs the configured fal.ai speech-to-text model and returns the transcript as evidence."
 	modelHint := ""
-	if local {
+	timestampScope := "word-level where the backend supports it; fal's wizper provides segments only"
+	switch provider {
+	case transcriptionProviderLocalWhisper:
 		backend = "Runs the locally installed whisper CLI and returns the transcript as evidence."
 		modelHint = " The optional model names a whisper size (e.g. \"small\", \"large-v3\") or whisper.cpp ggml model, overriding the Settings default."
+	case transcriptionProviderReplicate:
+		backend = "Runs the configured Replicate speech-to-text model and returns the transcript as evidence."
+		modelHint = " The optional model names a Replicate model id (owner/name, e.g. \"openai/whisper\"), overriding the Settings default."
+		timestampScope = "word-level where the backend supports it; the Replicate speech-to-text models provide segments only"
 	}
 	return "Use this when the user asks to transcribe, caption, or get a text version of an attached audio clip (a voice memo, recording, interview, etc.). Requires an attached audio clip. " +
-		backend + modelHint + " Set task to \"translate\" to translate the audio's speech to English text instead of transcribing it — task \"translate\" together with timestamps turns foreign-language audio (a \"translate this Japanese audio to English subtitles\" ask) into an English subtitle track; the timestamped artifact rides the reply and convert_subtitles or burn_subtitles can rework its format or put it on the picture. Pass timestamps: \"words\" or \"segments\" when the user wants timing information — the result then also carries a time-stamped transcript (word-level where the backend supports it; fal's wizper provides segments only)."
+		backend + modelHint + " Set task to \"translate\" to translate the audio's speech to English text instead of transcribing it — task \"translate\" together with timestamps turns foreign-language audio (a \"translate this Japanese audio to English subtitles\" ask) into an English subtitle track; the timestamped artifact rides the reply and convert_subtitles or burn_subtitles can rework its format or put it on the picture. Pass timestamps: \"words\" or \"segments\" when the user wants timing information — the result then also carries a time-stamped transcript (" + timestampScope + ")."
 }
 
 // transcribeAudioSummary names the backend, model, and timestamp granularity
@@ -2156,14 +2201,14 @@ func transcribeAudioParamSchema() map[string]any {
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
-			"model": stringParam("Optional model override matching the configured transcription provider — a fal.ai speech-to-text endpoint id, or a local whisper size (e.g. \"small\", \"large-v3\")."),
+			"model": stringParam("Optional model override matching the configured transcription provider — a fal.ai speech-to-text endpoint id, a Replicate model id (owner/name), or a local whisper size (e.g. \"small\", \"large-v3\")."),
 			"task": stringParam("Optional — \"transcribe\" (default) to transcribe the audio in its " +
 				"original language, or \"translate\" to translate the speech to English text."),
 			"language": stringParam("Optional — the spoken language as a two-letter code (e.g. \"fr\") " +
 				"to guide transcription. Omit to let the model auto-detect."),
 			"timestamps": enumParam("Optional — \"segments\" or \"words\" to also return a time-stamped "+
 				"transcript (each segment or word with start–end times). Word-level requires a backend "+
-				"that supports it (local whisper, fal-ai/whisper); wizper serves segments only.",
+				"that supports it (local whisper, fal-ai/whisper); wizper and the Replicate speech-to-text models serve segments only.",
 				"words", "segments"),
 		},
 		"required": []string{},

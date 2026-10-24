@@ -142,6 +142,8 @@ export function ListReplicateImageEditModels():Promise<Array<main.ReplicateModel
 
 export function ListReplicateModels():Promise<Array<main.ReplicateModel>>;
 
+export function ListReplicateTranscribeModels():Promise<Array<main.ReplicateModel>>;
+
 export function ListReplicateUpscaleModels():Promise<Array<main.ReplicateModel>>;
 
 export function ListReplicateVideoDurations(arg1:string):Promise<Array<string>>;

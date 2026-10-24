@@ -2316,6 +2316,8 @@ func synonymsFor(category, canon string) []string {
 		return replicateVideoRestyleSynonyms[canon]
 	case "replicate-video-reframe":
 		return replicateVideoReframeSynonyms[canon]
+	case "replicate-transcribe":
+		return replicateTranscribeSynonyms[canon]
 	}
 	return nil
 }

@@ -901,3 +901,102 @@ func resolveReplicateInpaintInput(schema *ModelInputSchema, req ImageInpaintRequ
 	}
 	return body, notices, nil
 }
+
+// replicateTranscribeSynonyms lists, per canonical param, the native input
+// names Replicate speech-to-text models use. openai/whisper names its clip
+// "audio" while the gpt-4o-transcribe and whisperx shapes say "audio_file";
+// the translate task is a "transcribe"/"translate" enum on whisperx but a
+// plain boolean on openai/whisper, so the resolver tries the enum first and
+// falls back to the boolean. The output-format canonical covers openai/whisper's
+// "transcription" enum (plain text | srt | vtt) — the control a timestamped
+// request sets to "vtt" — and word_timestamps booleans on whisper-class
+// models that expose one.
+var replicateTranscribeSynonyms = map[string][]string{
+	"audio":          {"audio", "audio_file", "audio_url"},
+	"task":           {"task"},
+	"translate":      {"translate"},
+	"language":       {"language"},
+	"outputFormat":   {"transcription", "output_format"},
+	"wordTimestamps": {"word_timestamps"},
+}
+
+// resolveReplicateTranscribeInput maps a canonical TranscribeAudioRequest onto
+// the Replicate model's native input schema — the transcription sibling of
+// resolveReplicateImageInput. The audio input is required: models whose schema
+// declares none (speech LLMs that take a prompt/messages array) fail up front
+// with a provider-switch remedy instead of a 422. Task maps onto the
+// "translate" enum member when the model declares a task enum and the
+// "translate" boolean when it doesn't; a model with neither cannot translate
+// and the request degrades to a transcription under a notice. The language
+// hint is enum-gated like the image resolver's aspect ratio — a hint the
+// model's enum doesn't list is dropped rather than sent. Timestamps ride the
+// model's own controls: a timestamped request sets the output-format enum to
+// "vtt" (openai/whisper) and word-level ones additionally flip a
+// word_timestamps boolean when declared; models with neither control produce
+// plain text, and the output parser degrades the result. There is no plain
+// fallback body to invent: an unqueryable schema leaves only the audio clip
+// under the most common spelling, since Replicate rejects unknown inputs.
+func resolveReplicateTranscribeInput(schema *ModelInputSchema, req TranscribeAudioRequest) (map[string]any, []string, error) {
+	ov := Overrides{}
+	notices := []string{}
+	body := map[string]any{}
+
+	audio := strings.TrimSpace(req.Audio)
+	if audio == "" {
+		return nil, notices, errors.New("transcribe_audio requires an attached audio clip")
+	}
+	if schema == nil {
+		body["audio"] = audio
+		return body, []string{"Couldn't load the model's parameter schema; sent the audio clip only and may have dropped task, language, or timestamp settings."}, nil
+	}
+	path, prop, ok := findNative(schema, ov, "replicate-transcribe", req.Model, "audio")
+	if !ok || prop.Kind != schemaScalar || prop.Type != "string" {
+		// The kind guard rejects the speech-LLM shapes (gemini, granite)
+		// whose "audio" input is an array of prompt-side references — a
+		// string clip would 422 there, and nothing in the canonical
+		// transcription request can fill a messages array.
+		return nil, notices, fmt.Errorf("the configured Replicate model %q has no audio input — it cannot serve transcription; pick a whisper-class model in Settings → Models, or switch Transcription Provider to fal.ai", req.Model)
+	}
+	setBodyPath(schema, body, path, audio)
+
+	if strings.TrimSpace(req.Task) == "translate" {
+		if path, prop, ok := findNative(schema, ov, "replicate-transcribe", req.Model, "task"); ok && valueAllowedByEnum(prop, "translate") {
+			setBodyPath(schema, body, path, "translate")
+		} else if path, prop, ok := findNative(schema, ov, "replicate-transcribe", req.Model, "translate"); ok && prop.Kind == schemaScalar && prop.Type == "boolean" {
+			setBodyPath(schema, body, path, true)
+		} else {
+			notices = append(notices, fmt.Sprintf("The configured model %q cannot translate speech to English — transcribing instead.", req.Model))
+		}
+	}
+
+	if hint := strings.TrimSpace(req.Language); hint != "" {
+		if path, prop, ok := findNative(schema, ov, "replicate-transcribe", req.Model, "language"); ok {
+			if canonical, allowed := enumValueFor(prop, hint); allowed {
+				setBodyPath(schema, body, path, canonical)
+			} else {
+				notices = append(notices, fmt.Sprintf("The configured model %q does not list language %q; letting it auto-detect the spoken language.", req.Model, hint))
+			}
+		} else {
+			notices = append(notices, fmt.Sprintf("The configured model %q has no language input; it will auto-detect the spoken language.", req.Model))
+		}
+	}
+
+	switch strings.TrimSpace(req.Timestamps) {
+	case "segments", "words":
+		// The output-format canonical is enum-gated twice over: only an
+		// enum-declared control counts (openai/whisper's transcription enum),
+		// so a free-string input that merely shares a name never receives a
+		// format value it didn't document.
+		if path, prop, ok := findNative(schema, ov, "replicate-transcribe", req.Model, "outputFormat"); ok && len(prop.Enum) > 0 {
+			if canonical, allowed := enumValueFor(prop, "vtt"); allowed {
+				setBodyPath(schema, body, path, canonical)
+			}
+		}
+		if strings.TrimSpace(req.Timestamps) == "words" {
+			if path, prop, ok := findNative(schema, ov, "replicate-transcribe", req.Model, "wordTimestamps"); ok && prop.Kind == schemaScalar && prop.Type == "boolean" {
+				setBodyPath(schema, body, path, true)
+			}
+		}
+	}
+	return body, notices, nil
+}

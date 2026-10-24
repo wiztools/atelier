@@ -282,6 +282,10 @@ export function ListReplicateModels() {
   return window['go']['main']['App']['ListReplicateModels']();
 }
 
+export function ListReplicateTranscribeModels() {
+  return window['go']['main']['App']['ListReplicateTranscribeModels']();
+}
+
 export function ListReplicateUpscaleModels() {
   return window['go']['main']['App']['ListReplicateUpscaleModels']();
 }
