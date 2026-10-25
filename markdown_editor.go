@@ -109,10 +109,11 @@ func writeMarkdownAttachment(artifactsDir string, data []byte, extension string)
 // MarkdownSourceInfo is what the editor loads: the document text plus the
 // identity the reply chips and assets panel need. Format names the dialect
 // the artifact's extension carries (.md → "markdown", .fountain → "fountain")
-// — the editor's preview, outline, and keyboard model dispatch on it, and the
-// save's format select starts there. Unlike the subtitle resolve, there are
-// no cues or server-computed warnings to carry — the text is the whole
-// document, and the editor derives its review checklist from it.
+// — the editor's preview, outline, and keyboard model dispatch on it, and it
+// PINS the dialect: the editor presents as two distinct editors (Screenplay
+// vs Markdown) and never converts between them. Unlike the subtitle resolve,
+// there are no cues or server-computed warnings to carry — the text is the
+// whole document, and the editor derives its review checklist from it.
 type MarkdownSourceInfo struct {
 	ConversationID    string `json:"conversationId"`
 	ConversationTitle string `json:"conversationTitle,omitempty"`
@@ -202,9 +203,10 @@ func documentFormatForExtension(extension string) string {
 // into its conversation — the same single door the subtitle editor has: a new
 // md_ artifact plus a small assistant turn recording the edit. Format names
 // the dialect the document saves as ("markdown" | "fountain", empty →
-// markdown) — the artifact extension follows it, so switching the select and
-// saving IS the format conversion. The source artifact is provenance for the
-// turn's summary; the original file is never touched.
+// markdown) — the artifact extension follows it, and the frontend always
+// sends the source artifact's own format, so a save never changes the
+// dialect. The source artifact is provenance for the turn's summary; the
+// original file is never touched.
 type SaveMarkdownEditRequest struct {
 	ConversationID   string `json:"conversationId"`
 	SourceArtifactID string `json:"sourceArtifactId,omitempty"`

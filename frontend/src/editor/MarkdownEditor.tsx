@@ -160,11 +160,9 @@ export function MarkdownEditor(props: {
   const [log, setLog] = useState<EditorLogEntry[]>([]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
-  // The dialect the document saves (and previews) as — seeded from the
-  // source artifact's extension, switched from the save block's select.
-  // Switching and saving IS the format conversion: the artifact extension
-  // follows the format.
-  const [exportFormat, setExportFormat] = useState<DocumentFormat>(source.format === 'fountain' ? 'fountain' : 'markdown');
+  // The dialect IS the artifact's identity — a .fountain edits and saves as a
+  // screenplay, a .md as markdown; the editor never converts between them.
+  const format: DocumentFormat = source.format === 'fountain' ? 'fountain' : 'markdown';
 
   const [find, setFind] = useState('');
   const [replace, setReplace] = useState('');
@@ -178,7 +176,7 @@ export function MarkdownEditor(props: {
 
   const dirty = text !== baseline;
   const stats = useMemo(() => markdownStats(text), [text]);
-  const fountain = exportFormat === 'fountain';
+  const fountain = format === 'fountain';
   const outline = useMemo(
     () => (fountain ? fountainOutline(text) : markdownOutline(text)),
     [fountain, text],
@@ -284,7 +282,7 @@ export function MarkdownEditor(props: {
       run((state) => wrapSelection(state, '*', 'italic text'));
       return;
     }
-    if (meta && key === 'k') {
+    if (meta && key === 'k' && !fountain) {
       event.preventDefault();
       run(insertLink);
       return;
@@ -405,8 +403,8 @@ export function MarkdownEditor(props: {
   };
 
   // saveDoc commits the edited document into the conversation: a new md_
-  // artifact in the selected format plus a turn recording the edit. The
-  // draft is never touched.
+  // artifact in the artifact's own format plus a turn recording the edit.
+  // The draft is never touched.
   const saveDoc = async () => {
     setSaving(true);
     setSaveError('');
@@ -414,7 +412,7 @@ export function MarkdownEditor(props: {
       const result = await AppBindings.SaveMarkdownEdit(main.SaveMarkdownEditRequest.createFrom({
         conversationId: sourceConversationID,
         sourceArtifactId: activeArtifactID,
-        format: exportFormat,
+        format,
         text,
       }));
       setLog((entries) => [
@@ -443,7 +441,6 @@ export function MarkdownEditor(props: {
       setTextState(revision.text);
       setBaseline(revision.text);
       setActiveArtifactID(revision.artifactId);
-      setExportFormat(revision.format === 'fountain' ? 'fountain' : 'markdown');
       lastPushRef.current = 0;
     } catch (error) {
       setLoadError(formatEditorError(error));
@@ -478,7 +475,19 @@ export function MarkdownEditor(props: {
     }
   };
 
-  const toolbarGroups: Array<Array<{label: string; title: string; op: () => void}>> = [
+  // The formatting toolbar is dialect-shaped: markdown gets the full document
+  // set; Fountain's toolbar is only the emphasis Fountain itself supports —
+  // elements are typed by convention and structured with Tab/Enter, so the
+  // markdown heading/list/table ops would be foreign here.
+  const toolbarGroups: Array<Array<{label: string; title: string; op: () => void}>> = fountain
+    ? [
+        [
+          {label: 'B', title: 'Bold (⌘B)', op: () => run((state) => wrapSelection(state, '**', 'bold text'))},
+          {label: 'I', title: 'Italic (⌘I)', op: () => run((state) => wrapSelection(state, '*', 'italic text'))},
+          {label: 'U', title: 'Underline', op: () => run((state) => wrapSelection(state, '_', 'underlined text'))},
+        ],
+      ]
+    : [
     [
       {label: 'H', title: 'Cycle heading level (none → h1 → h2 → h3)', op: () => run(cycleHeading)},
       {label: 'B', title: 'Bold (⌘B)', op: () => run((state) => wrapSelection(state, '**', 'bold text'))},
@@ -573,7 +582,7 @@ export function MarkdownEditor(props: {
           <div className="markdown-outline">
             <strong>Outline</strong>
             {outline.length === 0 ? (
-              <p className="hint">No headings yet — start a line with # for one.</p>
+              <p className="hint">{fountain ? 'No scenes yet — start a line with INT. or EXT.' : 'No headings yet — start a line with # for one.'}</p>
             ) : (
               <ul>
                 {outline.map((entry, index) => (
@@ -642,17 +651,6 @@ export function MarkdownEditor(props: {
           </div>
 
           <div className="markdown-save">
-            <label>
-              Format
-              <select
-                value={exportFormat}
-                onChange={(event) => setExportFormat(event.target.value === 'fountain' ? 'fountain' : 'markdown')}
-                title="The dialect the document saves and previews as — the artifact extension follows it, so switching and saving converts the format"
-              >
-                <option value="markdown">Markdown (.md)</option>
-                <option value="fountain">Fountain screenplay (.fountain)</option>
-              </select>
-            </label>
             <button
               type="button"
               className="editor-generate"
@@ -660,7 +658,7 @@ export function MarkdownEditor(props: {
               title="Write the document back into the conversation as a new artifact — the original stays intact. Download the saved file from the Edits panel below."
               onClick={() => void saveDoc()}
             >
-              {saving ? 'Saving…' : `Save ${fountain ? 'Fountain' : 'Markdown'} to conversation`}
+              {saving ? 'Saving…' : `Save ${fountain ? 'Screenplay' : 'Markdown'} to conversation`}
             </button>
             {saveError ? <div className="editor-error">{saveError}</div> : null}
             <span className="editor-session-note">Edits stay in the editor until you save them — download the saved file from the Edits panel below.</span>
