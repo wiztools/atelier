@@ -740,7 +740,11 @@ type ChatStreamEvent struct {
 	Audios    []string `json:"audios,omitempty"`
 	// Transcripts carries the "/atelier-artifact" URLs of timestamped
 	// transcript artifacts (.vtt) a turn produced, parallel to Videos/Audios.
-	Transcripts    []string `json:"transcripts,omitempty"`
+	Transcripts []string `json:"transcripts,omitempty"`
+	// Markdowns carries the "/atelier-artifact" URLs of document artifacts
+	// (md_) the document authoring pass produced, parallel to Transcripts —
+	// the live UI renders their Edit/Download chips without a reload.
+	Markdowns      []string `json:"markdowns,omitempty"`
 	Done           bool     `json:"done"`
 	Error          string   `json:"error,omitempty"`
 	Model          string   `json:"model,omitempty"`
@@ -5033,6 +5037,17 @@ type chatTurnMedia struct {
 	transcripts          []ToolTranscriptFile
 	transcriptModel      string
 	transcriptTimestamps string
+	// markdowns carries the document authoring pass's documents
+	// (document_authoring.go): bytes persisted as md_ artifacts through
+	// writeMarkdownAttachment, the same identity user-attached documents and
+	// markdown-editor saves ride.
+	markdowns []chatTurnMarkdown
+}
+
+// chatTurnMarkdown is one model-authored document staged for the turn save.
+type chatTurnMarkdown struct {
+	data      []byte
+	extension string
 }
 
 // chatTurnMediaURLs holds the "/atelier-artifact" links per media kind; the
@@ -5041,6 +5056,7 @@ type chatTurnMediaURLs struct {
 	videos      []string
 	audios      []string
 	transcripts []string
+	markdowns   []string
 }
 
 // chatAssistantTurnMediaOutput is what a media build closure produced: the
@@ -5175,6 +5191,27 @@ func appendChatAssistantTurnWithTurnMedia(config AppConfig, conversationID, assi
 					tool["timestamps"] = media.transcriptTimestamps
 				}
 				tool["transcripts"] = len(transcriptContents)
+			}
+			if len(media.markdowns) > 0 {
+				if err := os.MkdirAll(artifactsDir, 0755); err != nil {
+					return chatAssistantTurnMediaOutput{}, err
+				}
+				absArtifactsDir, err := filepath.Abs(artifactsDir)
+				if err != nil {
+					absArtifactsDir = artifactsDir
+				}
+				for _, doc := range media.markdowns {
+					content, err := writeMarkdownAttachment(artifactsDir, doc.data, doc.extension)
+					if err != nil {
+						return chatAssistantTurnMediaOutput{}, err
+					}
+					contents = append(contents, content)
+					urls.markdowns = append(urls.markdowns, artifactPrefix+filepath.Join(absArtifactsDir, content.ArtifactID+doc.extension))
+				}
+				if tool["name"] == nil {
+					tool["name"] = "document_authoring"
+				}
+				tool["documentCount"] = len(media.markdowns)
 			}
 			return chatAssistantTurnMediaOutput{contents: contents, urls: urls, tool: tool}, nil
 		},

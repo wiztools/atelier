@@ -113,6 +113,14 @@ type HarnessPreparedTurn struct {
 	// responseMode so the notes can name the media kind.
 	MediaGenUnavailable bool
 	MediaGenMode        string
+	// DocumentAuthored carries the document the responseMode-"document"
+	// authoring pass produced (document_authoring.go): nil when the mode
+	// wasn't routed, or the pass failed and the turn degrades to a normal
+	// text response. The final response's note tells the model the artifact
+	// is delivered beneath the reply and must not be re-typed; the save path
+	// persists it through the markdown attachment identity
+	// (chatTurnMedia.markdowns).
+	DocumentAuthored *authoredChatDocument
 }
 
 type HarnessToolRound struct {
@@ -602,6 +610,23 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	// harness model for the final response.
 	responseModel := h.responseModelFor(decision.ResponseMode, primaryModel, harness)
 	responseProvider := h.responseProviderFor(decision.ResponseMode, primaryProvider, primaryProvider, harness)
+	// responseMode "document": the primary model authors the requested
+	// document in a dedicated side call before the final response streams
+	// (document_authoring.go). Pure document asks route here with needsTools
+	// false — no tools, keys, or CLI are involved — so preparation stays
+	// empty and the branch is the whole turn's work; a misrouted
+	// document+needsTools turn keeps the planner (no forced override: the
+	// tools the model asked for are real work that must not be dropped, and
+	// the authoring pass simply doesn't fire). A failed pass degrades the
+	// turn to a normal text response; the empty-response notices below name
+	// the delivered artifact when the pass succeeded but the reply didn't.
+	var authoredDocument *authoredChatDocument
+	if decision.ResponseMode == "document" && !decision.NeedsTools {
+		authoredDocument = h.authorChatDocument(ctx, req, responseModel, responseProvider, decision.ToolTask, &run)
+		if authoredDocument != nil {
+			preparation.DocumentAuthored = authoredDocument
+		}
+	}
 	// Vision chat forwards every attached image so users can reference several
 	// at once (e.g. "compare @a.png and @b.png"). Some chat models reject more
 	// than one image; those surface a provider error on multi-image turns rather
@@ -636,6 +661,13 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	// intermediates are excluded: a later call consumed them, so only the
 	// deliverable rides the reply (the .wav of an extract→convert chain, not
 	// also the .m4a it came from). Evidence and activities keep every result.
+	// The document authoring pass rides the same rule: the artifact is
+	// persisted with the turn even when the reply stream died, and the
+	// empty-response notices below say so.
+	authoredDocuments := []chatTurnMarkdown(nil)
+	if authoredDocument != nil {
+		authoredDocuments = []chatTurnMarkdown{{data: []byte(authoredDocument.Body), extension: markdownFormatExtension(authoredDocument.Format)}}
+	}
 	attachableResults := preparation.mediaFeeds.attachableResults(preparation.ToolResults)
 	images, imageReq := imagesFromToolResults(attachableResults)
 	videos, videoReq := videosFromToolResults(attachableResults)
@@ -652,9 +684,9 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	defer cleanupAudioTempFiles(audios)
 	defer cleanupTranscriptTempFiles(transcripts)
 	if err != nil {
-		if len(images) > 0 || len(videos) > 0 || len(audios) > 0 {
+		if len(images) > 0 || len(videos) > 0 || len(audios) > 0 || len(authoredDocuments) > 0 {
 			result = finalResponseAttempt{
-				Content: harnessEmptyResponseNotice(preparation.ToolResults),
+				Content: harnessEmptyResponseNotice(preparation.ToolResults) + documentDeliveredNotice(authoredDocuments),
 				Model:   responseModel,
 				Reason:  "response_stream_failed_media_delivered",
 			}
@@ -674,7 +706,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	finalContentEmitted := result.Emitted
 
 	if strings.TrimSpace(assistantContent) == "" {
-		assistantContent = harnessEmptyResponseNotice(preparation.ToolResults)
+		assistantContent = harnessEmptyResponseNotice(preparation.ToolResults) + documentDeliveredNotice(authoredDocuments)
 		finalContentEmitted = false
 		if strings.TrimSpace(finalReason) == "" {
 			finalReason = "empty_response_notice"
@@ -742,7 +774,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 	// turn. Combinations beyond videos+images only became reachable with the
 	// local ffmpeg tools (a screenshot plus an extracted audio track, say);
 	// before that, the save switch persisted exactly one kind per turn.
-	if len(videos) > 0 || len(audios) > 0 || len(images) > 0 || len(transcripts) > 0 {
+	if len(videos) > 0 || len(audios) > 0 || len(images) > 0 || len(transcripts) > 0 || len(authoredDocuments) > 0 {
 		mediaURLs, saveErr = appendChatAssistantTurnWithTurnMedia(h.config, conversationID, assistantContent, assistantThinking, finalModel, responseProvider, finalReason, chatTurnMedia{
 			images:               images,
 			imageReq:             imageReq,
@@ -753,6 +785,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			transcripts:          transcripts,
 			transcriptModel:      transcriptModel,
 			transcriptTimestamps: transcriptTimestamps,
+			markdowns:            authoredDocuments,
 		}, run)
 	} else {
 		saveErr = h.SaveAssistantTurn(conversationID, assistantContent, assistantThinking, finalModel, responseProvider, finalReason, finalTokens, run)
@@ -782,12 +815,24 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 		Videos:         videoURLs,
 		Audios:         audioURLs,
 		Transcripts:    transcriptURLs,
+		Markdowns:      mediaURLs.markdowns,
 		Done:           true,
 		Model:          finalModel,
 		Reason:         finalReason,
 		Tokens:         finalTokens,
 		ConversationID: conversationID,
 	})
+}
+
+// documentDeliveredNotice is the deterministic line appended to an
+// empty/failed-response notice when the authoring pass produced a document
+// the save path will still deliver: the artifact exists below the reply even
+// though the prose never streamed.
+func documentDeliveredNotice(docs []chatTurnMarkdown) string {
+	if len(docs) == 0 {
+		return ""
+	}
+	return "\n\nThe document authored this turn was saved into the conversation and is delivered below the reply."
 }
 
 // collectToolNotices gathers deterministic, user-facing caveats across all tool
@@ -2759,6 +2804,12 @@ func (h *HarnessEngine) preparedResponseRequest(ctx context.Context, req ChatReq
 		if note := mediaGenUnavailableNote(preparation.MediaGenMode, airplaneModeActive(h.config)); note != "" {
 			messages = append(messages, ChatMessage{Role: "user", Content: note})
 		}
+	}
+	// A document-mode turn whose authoring pass produced the document rides
+	// the same trailing-note channel: the final model learns the artifact is
+	// delivered beneath the reply and summarizes rather than re-types it.
+	if note := documentAuthoredEvidenceNote(preparation.DocumentAuthored); note != "" {
+		messages = append(messages, ChatMessage{Role: "user", Content: note})
 	}
 	numCtx := h.numCtx()
 	truncatedMessages := truncateChatHistory(messages, historyBudgetChars(numCtx, responseReq.System, numCtx/4))

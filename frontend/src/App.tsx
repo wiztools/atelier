@@ -181,6 +181,7 @@ type ChatChunk = {
   videos?: string[];
   audios?: string[];
   transcripts?: string[];
+  markdowns?: string[];
   done: boolean;
   error?: string;
   model?: string;
@@ -197,6 +198,7 @@ type ChatStreamDraft = {
   videos: string[];
   audios: string[];
   transcripts: string[];
+  markdowns: string[];
   streaming: boolean;
   error?: string;
   provider?: string;
@@ -246,8 +248,9 @@ type HarnessRunView = {
 
 // Model-call step kinds carry per-call token usage; bookkeeping steps
 // (queued/saved/evaluation/tool_call) never do, so summing over just these
-// counts each model call exactly once.
-const MODEL_CALL_STEP_KINDS = ['triage', 'skill', 'planning', 'model_call', 'streaming'];
+// counts each model call exactly once. Mirrors usageModelCallStepKinds in
+// usage_report.go plus the streaming body.
+const MODEL_CALL_STEP_KINDS = ['triage', 'skill', 'planning', 'document', 'model_call', 'streaming'];
 
 type HarnessStepView = {
   id?: string;
@@ -2129,7 +2132,7 @@ function App() {
       if (chunk.conversationId) {
         markConversationInFlight(chunk.conversationId, chunk.requestID, 'chat');
       }
-      const draft = chatStreamDraftsRef.current[chunk.requestID] ?? {content: '', thinking: '', images: [], videos: [], audios: [], transcripts: [], streaming: true};
+      const draft = chatStreamDraftsRef.current[chunk.requestID] ?? {content: '', thinking: '', images: [], videos: [], audios: [], transcripts: [], markdowns: [], streaming: true};
       chatStreamDraftsRef.current[chunk.requestID] = {
         content: `${draft.content}${chunk.content ?? ''}`,
         thinking: `${draft.thinking}${chunk.thinking ?? ''}`,
@@ -2137,6 +2140,7 @@ function App() {
         videos: chunk.videos?.length ? chunk.videos : draft.videos,
         audios: chunk.audios?.length ? chunk.audios : draft.audios,
         transcripts: chunk.transcripts?.length ? chunk.transcripts : draft.transcripts,
+        markdowns: chunk.markdowns?.length ? chunk.markdowns : draft.markdowns,
         streaming: !chunk.done && !chunk.error,
         error: chunk.error ?? draft.error,
         provider: chunk.provider ?? draft.provider,
@@ -2155,6 +2159,7 @@ function App() {
             videos: nextDraft.videos,
             audios: nextDraft.audios,
             transcripts: nextDraft.transcripts,
+            markdowns: nextDraft.markdowns,
             streaming: nextDraft.streaming,
             error: nextDraft.error,
             provider: nextDraft.provider ?? entry.provider,
@@ -4691,6 +4696,7 @@ function App() {
         videos: draft?.videos,
         audios: draft?.audios,
         transcripts: draft?.transcripts,
+        markdowns: draft?.markdowns,
         harnessRun: harnessRunDraftsRef.current[visibleRequestID],
         streaming: draft?.streaming ?? true,
         error: draft?.error,
@@ -4787,7 +4793,7 @@ function App() {
     // projectId fields below and the sidebar reveal when the start lands.
     const isNewConversation = !activeConversationID;
     visibleStreamRef.current = requestID;
-    chatStreamDraftsRef.current[requestID] = {content: '', thinking: '', images: [], videos: [], audios: [], transcripts: [], streaming: true};
+    chatStreamDraftsRef.current[requestID] = {content: '', thinking: '', images: [], videos: [], audios: [], transcripts: [], markdowns: [], streaming: true};
     setActiveStream(requestID);
     try {
       const start = await StreamChat(main.ChatRequest.createFrom({
@@ -11000,6 +11006,8 @@ function streamActivityLabel(step: HarnessStepView): string {
       }
       return 'running tools';
     }
+    case 'document':
+      return 'writing document';
     case 'model_call':
       return 'generating response';
     case 'streaming':
@@ -11113,6 +11121,7 @@ function summarizeRunLatency(run?: HarnessRunView): RunLatencyLanes | undefined 
         break;
       case 'model_call':
       case 'streaming':
+      case 'document':
         lanes.responseMs += duration;
         if (step.firstTokenMs) {
           lanes.firstTokenMs = Math.max(lanes.firstTokenMs, step.firstTokenMs);
@@ -11289,6 +11298,7 @@ function harnessStepLane(step: HarnessStepView): {label: string; className: stri
       return {label: 'Tools', className: 'harness-lane-tools'};
     case 'model_call':
     case 'streaming':
+    case 'document':
       return {label: 'Chat model', className: 'harness-lane-chat'};
     case 'evaluation':
     case 'saved':

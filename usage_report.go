@@ -27,15 +27,17 @@ const (
 )
 
 // usageModelCallStepKinds are the run-step kinds that each represent one real
-// model invocation: the harness-model calls (triage, skill, planning rounds)
-// and the final-response attempt. The streaming step is the body of the same
-// final-response call that model_call opened — its tokens and cost fold onto
-// the model's row, but it adds no second call. Bookkeeping steps (queued,
-// saved, evaluation) are excluded, matching how tokens are summed.
+// model invocation: the harness-model calls (triage, skill, planning rounds),
+// the document authoring pass (responseMode "document"'s primary-model side
+// call), and the final-response attempt. The streaming step is the body of
+// the same final-response call that model_call opened — its tokens and cost
+// fold onto the model's row, but it adds no second call. Bookkeeping steps
+// (queued, saved, evaluation) are excluded, matching how tokens are summed.
 var usageModelCallStepKinds = map[string]bool{
 	"triage":     true,
 	"skill":      true,
 	"planning":   true,
+	"document":   true,
 	"model_call": true,
 }
 
