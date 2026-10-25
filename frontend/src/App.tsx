@@ -7290,7 +7290,7 @@ function App() {
                                 <button
                                   type="button"
                                   disabled={editorOpening || !activeConversationID || !markdownArtifactIDFromURL(markdown)}
-                                  title={markdownArtifactIDFromURL(markdown) ? 'Open in the markdown editor' : 'Persisted document required'}
+                                  title={markdownArtifactIDFromURL(markdown) ? (markdown.toLowerCase().endsWith('.fountain') ? 'Open in the screenplay editor' : 'Open in the markdown editor') : 'Persisted document required'}
                                   onClick={() => {
                                     const artifactID = markdownArtifactIDFromURL(markdown);
                                     if (artifactID && activeConversationID) {

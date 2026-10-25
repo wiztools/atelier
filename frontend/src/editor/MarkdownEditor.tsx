@@ -503,7 +503,7 @@ export function MarkdownEditor(props: {
   return (
     <section className="markdown-editor">
       <EditorHeader
-        title="Markdown Editor"
+        title={fountain ? 'Screenplay Editor' : 'Markdown Editor'}
         parentAvailable
         parentConversationID={sourceConversationID}
         onClose={props.onClose}
