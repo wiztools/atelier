@@ -238,7 +238,7 @@ func TestTriagePromptListsAudioTools(t *testing.T) {
 		speechGenerationToolDefinition(false, "fal"),
 		soundEffectsGenerationToolDefinition("fal"),
 		voiceGenerationToolDefinition(),
-		extendAudioToolDefinition(),
+		extendAudioToolDefinition("fal"),
 		soundEffectsVideoToolDefinition("fal"),
 	})
 	catalog := registry.PromptCatalog()
@@ -856,7 +856,7 @@ func TestTriagePromptRoutesTranscriptionToText(t *testing.T) {
 	registry := newHarnessToolRegistry([]HarnessToolDefinition{
 		speechGenerationToolDefinition(false, "fal"),
 		soundEffectsGenerationToolDefinition("fal"),
-		extendAudioToolDefinition(),
+		extendAudioToolDefinition("fal"),
 		transcribeAudioToolDefinition(defaultAppConfig()),
 	})
 	prompt := triageSystemPrompt(registry, nil, "/tmp/ws", false)

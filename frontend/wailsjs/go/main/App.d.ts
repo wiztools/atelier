@@ -144,6 +144,8 @@ export function ListPrimaryModels(arg1:string,arg2:string):Promise<Array<main.Mo
 
 export function ListProjectConversations(arg1:string):Promise<Array<main.ConversationSummary>>;
 
+export function ListReplicateAudioExtendModels():Promise<Array<main.ReplicateModel>>;
+
 export function ListReplicateImageEditModels():Promise<Array<main.ReplicateModel>>;
 
 export function ListReplicateLipsyncImageModels():Promise<Array<main.ReplicateModel>>;

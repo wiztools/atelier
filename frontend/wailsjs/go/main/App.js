@@ -286,6 +286,10 @@ export function ListProjectConversations(arg1) {
   return window['go']['main']['App']['ListProjectConversations'](arg1);
 }
 
+export function ListReplicateAudioExtendModels() {
+  return window['go']['main']['App']['ListReplicateAudioExtendModels']();
+}
+
 export function ListReplicateImageEditModels() {
   return window['go']['main']['App']['ListReplicateImageEditModels']();
 }

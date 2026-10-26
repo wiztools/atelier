@@ -364,7 +364,7 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 		definitions = append(definitions, voiceGenerationToolDefinition())
 	}
 	if audioExtendConfigured(config) {
-		definitions = append(definitions, extendAudioToolDefinition())
+		definitions = append(definitions, extendAudioToolDefinition(resolveAudioProvider(config)))
 	}
 	if soundEffectsVideoConfigured(config) {
 		definitions = append(definitions, soundEffectsVideoToolDefinition(resolveAudioProvider(config)))
@@ -1387,23 +1387,34 @@ func resolveDefaultSoundEffectsVideoModel(config AppConfig) string {
 }
 
 // audioExtendConfigured reports whether the extend_audio tool should be
-// offered: fal is the only audio-extend backend (the Models.AudioProvider
-// dimension deliberately does not reach it — Replicate carries no extend
-// endpoints), and the default model always applies
-// (stable-audio-25/inpaint), so the gate is purely the fal key — like
-// transcribe_audio and lip_sync, no model needs to be configured first.
+// offered, routed by the audio provider like the sound pair: on fal the
+// default model always applies (stable-audio-25/inpaint), so the gate is
+// purely the fal key — like transcribe_audio and lip_sync, no model needs to
+// be configured first; on replicate the same key-only shape holds
+// (meta/musicgen is the resolver's default), so the routed provider's key is
+// the whole gate.
 func audioExtendConfigured(config AppConfig) bool {
-	// fal-only: airplane mode drops the tool.
+	// Cloud-only (fal or Replicate, by Models.AudioProvider): airplane mode
+	// drops the tool.
 	if airplaneModeActive(config) {
 		return false
+	}
+	if resolveAudioProvider(config) == "replicate" {
+		return replicateKeyConfigured()
 	}
 	return falKeyConfigured()
 }
 
 // resolveDefaultAudioExtendModel returns the audio-extend endpoint the
-// extend_audio tool uses when the call doesn't override it — the audio sibling
-// of resolveDefaultVideoExtendModel.
+// extend_audio tool uses when the call doesn't override it, routed by the
+// effective audio provider — the resolveDefaultSoundEffectsModel recipe.
 func resolveDefaultAudioExtendModel(config AppConfig) string {
+	if resolveAudioProvider(config) == "replicate" {
+		if model := strings.TrimSpace(config.Providers.Replicate.AudioExtendModel); model != "" {
+			return model
+		}
+		return defaultReplicateAudioExtendModel
+	}
 	if model := strings.TrimSpace(config.Providers.Fal.AudioExtendModel); model != "" {
 		return model
 	}
@@ -2091,11 +2102,11 @@ func soundEffectsVideoToolDefinition(provider string) HarnessToolDefinition {
 // "generate a bed, then extend it" chains. A missing source fails the call
 // rather than generating brand-new audio the user didn't ask for — the same
 // unfulfillable-source rule as generate_video.
-func extendAudioToolDefinition() HarnessToolDefinition {
+func extendAudioToolDefinition(provider string) HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "extend_audio",
 		Title:       "Extend audio",
-		Description: extendAudioDescription(),
+		Description: extendAudioDescription(provider),
 		Example:     `{"name":"extend_audio","content":"continue the ambient pad with soft rain, growing slightly brighter","duration":"20"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: extendAudioParamSchema(),
@@ -2153,13 +2164,33 @@ func extendAudioToolDefinition() HarnessToolDefinition {
 			}
 			return stageGeneratedAudio(req.Model, req.Prompt, generated)
 		},
-		Activity: audioExtendActivity,
+		Activity: func(result HarnessToolResult) HarnessToolActivity {
+			// The engine layer defaults audio activities to fal (the fal-era
+			// belt); extend routes by the audio provider, so the builder
+			// stamps it — the generate_sound captured-config pattern.
+			activity := audioExtendActivity(result)
+			if provider == "replicate" {
+				activity.Provider = "replicate"
+				if typed, ok := result.Result.(ToolAudioResult); ok {
+					activity.Command = []string{"replicate", "extend-audio", typed.Model}
+				}
+			}
+			return activity
+		},
 	}
 }
 
 // extendAudioDescription assembles the extend_audio tool description.
-func extendAudioDescription() string {
-	return "Use this when the user asks to extend, continue, or lengthen an existing audio clip (\"make this 30 seconds longer\", \"continue this song\", \"add more rain at the end\"). The newest audio clip in the conversation is the source: a clip attached or @-mentioned this turn, or the most recent generated one. A bare \"extend this clip by 20 seconds\" with no description of the addition is a valid request — call the tool with content \"continue in the same style\" and the duration; do not ask the user what the added audio should sound like. content describes how the ADDED audio should sound; duration is the length to add in seconds, not the total length; direction picks \"after\" (append, the default) or \"before\" (prepend). For music extensions pass style (genre tags) and optionally lyrics for the added portion; for ambience or sound effects a plain description is enough. The configured fal.ai extend model is used by default (it preserves the original audio exactly and suits ambience/sound); pass model \"fal-ai/ace-step/audio-outpaint\" or \"sonauto/v2/extend\" for music with vocals. To create brand-new audio from a description, use generate_sound instead. The extended clip replaces the source as the conversation's newest audio and is attached to the assistant reply."
+// Provider selects the backend facts (the sound-effects description's rule):
+// the fal wording names the preserve-exact inpaint default and the
+// vocals-capable alternatives; the replicate wording names the continuation
+// default and its forward-only, capped shape.
+func extendAudioDescription(provider string) string {
+	base := "Use this when the user asks to extend, continue, or lengthen an existing audio clip (\"make this 30 seconds longer\", \"continue this song\", \"add more rain at the end\"). The newest audio clip in the conversation is the source: a clip attached or @-mentioned this turn, or the most recent generated one. A bare \"extend this clip by 20 seconds\" with no description of the addition is a valid request — call the tool with content \"continue in the same style\" and the duration; do not ask the user what the added audio should sound like. content describes how the ADDED audio should sound; duration is the length to add in seconds, not the total length; direction picks \"after\" (append, the default) or \"before\" (prepend). For music extensions pass style (genre tags) and optionally lyrics for the added portion; for ambience or sound effects a plain description is enough."
+	if provider == "replicate" {
+		return base + " The configured Replicate extend model (meta/musicgen by default) continues the clip FORWARD from its end — direction \"before\" fails, and the model renders a bounded total length (about 30 seconds including the source), so very long sources refuse; style words fold into the prompt. Switch the Audio Provider to fal.ai for before-extensions, exact-preservation inpaint, or long sources. To create brand-new audio from a description, use generate_sound instead. The extended clip replaces the source as the conversation's newest audio and is attached to the assistant reply."
+	}
+	return base + " The configured fal.ai extend model is used by default (it preserves the original audio exactly and suits ambience/sound); pass model \"fal-ai/ace-step/audio-outpaint\" or \"sonauto/v2/extend\" for music with vocals. To create brand-new audio from a description, use generate_sound instead. The extended clip replaces the source as the conversation's newest audio and is attached to the assistant reply."
 }
 
 // audioExtendActivity renders the fal extend command for extend_audio's

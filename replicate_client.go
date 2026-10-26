@@ -155,6 +155,14 @@ const (
 	// official-only collection lister seldom surfaces it — the picker falls
 	// back to this entry by name, the transcribe lister's rule.
 	defaultReplicateSoundEffectsVideoModel = "zsxkib/mmaudio"
+	// defaultReplicateAudioExtendModel is the continuation model extend_audio
+	// uses when replicate is the AudioProvider and none is configured —
+	// meta/musicgen, the collection's official continuation endpoint: an
+	// attached clip plus a boolean continuation flag and a TOTAL output
+	// duration (source + added, clamped — the model renders ~30s at most).
+	// Forward continuations only; a before-direction refuses with the fal
+	// remedy, the resolveReplicateAudioExtendInput contract.
+	defaultReplicateAudioExtendModel = "meta/musicgen"
 	// maxReplicateTransientRetries is the number of times do() re-issues a
 	// request after a transient 5xx, matching the fal client's posture.
 	maxReplicateTransientRetries = 1

@@ -1221,9 +1221,56 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			return generated, err
 		}
 		gateway.tools.GenerateAudioExtend = func(ctx context.Context, req AudioExtendRequest) (GeneratedAudio, error) {
-			// fal-only: airplane mode refuses the call.
+			// Cloud-only (fal or Replicate, by Models.AudioProvider): airplane
+			// mode refuses the call.
 			if err := airplaneMediaError(config, "extend_audio"); err != nil {
 				return GeneratedAudio{}, err
+			}
+			// Probe the source clip's length while its bytes are still at hand:
+			// mask-based endpoints (stable-audio inpaint) need it to place the
+			// mask, the replicate continuation total is source plus added, and
+			// after the upload below only a URL remains.
+			if seconds, ok := dataURLAudioDuration(req.SourceAudio); ok {
+				req.SourceDurationSeconds = seconds
+			}
+			if resolveAudioProvider(config) == "replicate" {
+				apiKey, err := loadReplicateAPIKey()
+				if err != nil {
+					return GeneratedAudio{}, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return GeneratedAudio{}, errReplicateKeyNotConfigured
+				}
+				client := newReplicateClient(app.client, apiKey)
+				// The continuation models take a URI input, so the source rides
+				// the Files API above the inline threshold — the lipsync
+				// pattern. Fail-soft; the model's own error surfaces otherwise.
+				if strings.TrimSpace(req.SourceAudio) != "" {
+					if resolved, err := client.ResolveMediaURL(ctx, req.SourceAudio, "audio/mpeg", "source-audio.mp3"); err == nil {
+						req.SourceAudio = resolved
+					}
+				}
+				schema := replicateSchemaCache.Get(ctx, req.Model)
+				body, notices, err := resolveReplicateAudioExtendInput(schema, req)
+				if err != nil {
+					return GeneratedAudio{Notices: notices}, err
+				}
+				job := &mediaJob{}
+				client.jobSink = job
+				generated, recovered, err := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (GeneratedAudio, error) {
+						return client.GenerateAudio(jctx, req.Model, body)
+					},
+					client.CancelMediaJob,
+					client.RecoverAudioJob,
+				)
+				if err == nil && recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
+				// CostMicros stays unset: Replicate reports no cost — the
+				// engine layer stamps CostUnknown for the "?" render.
+				generated.Notices = notices
+				return generated, err
 			}
 			apiKey, err := loadFalAPIKey()
 			if err != nil {
@@ -1233,12 +1280,6 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				return GeneratedAudio{}, errFalKeyNotConfigured
 			}
 			client := newFalClient(app.client, apiKey)
-			// Probe the source clip's length while its bytes are still at hand:
-			// mask-based endpoints (stable-audio inpaint) need it to place the
-			// mask, and after the upload below only a URL remains.
-			if seconds, ok := dataURLAudioDuration(req.SourceAudio); ok {
-				req.SourceDurationSeconds = seconds
-			}
 			// sonauto/v2/extend rejects inline data URIs ("must be a valid
 			// publicly accessible URL"), so the source always goes through fal's
 			// CDN storage — the lipsync pattern — instead of the ≤1MB inline

@@ -7423,7 +7423,7 @@ func TestAudioExtendDurationPrecedence(t *testing.T) {
 			if tc.callDur != "" {
 				call.Duration = tc.callDur
 			}
-			if _, _, err := extendAudioToolDefinition().Execute(context.Background(), tools, call); err != nil {
+			if _, _, err := extendAudioToolDefinition("fal").Execute(context.Background(), tools, call); err != nil {
 				t.Fatalf("Execute: %v", err)
 			}
 			if sawDuration != tc.wantToWire {

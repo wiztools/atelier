@@ -60,10 +60,10 @@ type ConversationModelOverrides struct {
 	// SpeechProvider routes, so an ollama-pinned conversation stores the
 	// model on the Ollama Speech slot, everything else on fal's AudioModel —
 	// which is also where records written before the provider dimension
-	// existed keep landing. SoundEffectsModel/SoundEffectsVideoModel follow
-	// AudioProvider the same way (the TranscribeModel recipe); the rest of
-	// the audio family (clone, extend, design) stays fal-only 1:1 onto
-	// ConfigFal.
+	// existed keep landing. SoundEffectsModel/SoundEffectsVideoModel/
+	// AudioExtendModel follow AudioProvider the same way (the TranscribeModel
+	// recipe); the rest of the audio family (clone, design) stays fal-only
+	// 1:1 onto ConfigFal.
 	SpeechProvider         string `json:"speechProvider,omitempty"`
 	AudioModel             string `json:"audioModel,omitempty"`
 	SoundEffectsModel      string `json:"soundEffectsModel,omitempty"`
@@ -493,11 +493,12 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 		// their routing sees the overridden provider.
 		config.Models.AudioProvider = o.AudioProvider
 	}
-	if o.SoundEffectsModel != "" || o.SoundEffectsVideoModel != "" {
-		// The sound-slot overrides follow the effective audio provider — the
-		// lipsync-slots recipe one section over: the executor and the
+	if o.SoundEffectsModel != "" || o.SoundEffectsVideoModel != "" || o.AudioExtendModel != "" {
+		// The audio-slot overrides follow the effective audio provider —
+		// the lipsync-slots recipe one section over: the executor and the
 		// gateway route by Models.AudioProvider, so a Replicate-pinned
-		// conversation generates sound with its Replicate models.
+		// conversation generates sound and extends clips with its
+		// Replicate models.
 		provider := o.AudioProvider
 		if provider == "" {
 			provider = config.Models.AudioProvider
@@ -509,6 +510,9 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 			if o.SoundEffectsVideoModel != "" {
 				config.Providers.Replicate.SoundEffectsVideoModel = o.SoundEffectsVideoModel
 			}
+			if o.AudioExtendModel != "" {
+				config.Providers.Replicate.AudioExtendModel = o.AudioExtendModel
+			}
 		} else {
 			if o.SoundEffectsModel != "" {
 				config.Providers.Fal.SoundEffectsModel = o.SoundEffectsModel
@@ -516,13 +520,13 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 			if o.SoundEffectsVideoModel != "" {
 				config.Providers.Fal.SoundEffectsVideoModel = o.SoundEffectsVideoModel
 			}
+			if o.AudioExtendModel != "" {
+				config.Providers.Fal.AudioExtendModel = o.AudioExtendModel
+			}
 		}
 	}
 	if o.AudioCloneModel != "" {
 		config.Providers.Fal.AudioCloneModel = o.AudioCloneModel
-	}
-	if o.AudioExtendModel != "" {
-		config.Providers.Fal.AudioExtendModel = o.AudioExtendModel
 	}
 	if o.VoiceDesignModel != "" {
 		config.Providers.Fal.VoiceDesignModel = o.VoiceDesignModel

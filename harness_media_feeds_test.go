@@ -211,7 +211,7 @@ func TestToolConsumedMediaKindsMatchRegistry(t *testing.T) {
 	definitions = append(definitions, videoGenerationToolDefinition(config, false))
 	definitions = append(definitions, speechGenerationToolDefinition(false, "fal"))
 	definitions = append(definitions, soundEffectsGenerationToolDefinition("fal"))
-	definitions = append(definitions, extendAudioToolDefinition())
+	definitions = append(definitions, extendAudioToolDefinition("fal"))
 	definitions = append(definitions, transcribeAudioToolDefinition(config))
 	definitions = append(definitions, ffmpegToolDefinitions(config)...)
 	// The image tool constructors are backend-gated (they return empty when

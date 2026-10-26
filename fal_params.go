@@ -2355,6 +2355,8 @@ func synonymsFor(category, canon string) []string {
 		return replicateTranscribeSynonyms[canon]
 	case "replicate-audio":
 		return replicateAudioSynonyms[canon]
+	case "replicate-audio-extend":
+		return replicateAudioExtendSynonyms[canon]
 	case "replicate-sfx":
 		return replicateSFXSynonyms[canon]
 	}

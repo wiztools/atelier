@@ -337,6 +337,7 @@ export namespace main {
 	    lipsyncVideoModel?: string;
 	    soundEffectsModel?: string;
 	    soundEffectsVideoModel?: string;
+	    audioExtendModel?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigReplicate(source);
@@ -360,6 +361,7 @@ export namespace main {
 	        this.lipsyncVideoModel = source["lipsyncVideoModel"];
 	        this.soundEffectsModel = source["soundEffectsModel"];
 	        this.soundEffectsVideoModel = source["soundEffectsVideoModel"];
+	        this.audioExtendModel = source["audioExtendModel"];
 	    }
 	}
 	export class ConfigFal {

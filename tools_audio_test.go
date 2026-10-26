@@ -193,7 +193,7 @@ func TestGenerateSoundSurfacesNotices(t *testing.T) {
 func TestExtendAudioRoutingAndValidation(t *testing.T) {
 	const clip = "data:audio/mpeg;base64,QUJD"
 	const second = "data:audio/mpeg;base64,REVG"
-	def := extendAudioToolDefinition()
+	def := extendAudioToolDefinition("fal")
 
 	if errs := def.Validate("toolCalls[0]", HarnessToolCall{}); len(errs) != 1 || !strings.Contains(errs[0], "content is required") {
 		t.Fatalf("content validation = %v", errs)
@@ -290,7 +290,7 @@ func TestExtendAudioRoutingAndValidation(t *testing.T) {
 // read "content required" as "uncallable without a description" and routed
 // the turn to text.
 func TestExtendAudioDescriptionBlessesBareLength(t *testing.T) {
-	description := extendAudioDescription()
+	description := extendAudioDescription("fal")
 	if !strings.Contains(description, "continue in the same style") {
 		t.Fatalf("description should teach the bare-length default:\n%s", description)
 	}

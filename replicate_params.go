@@ -1173,3 +1173,185 @@ var replicateSFXSynonyms = map[string][]string{
 	"numSamples":     {"num_samples", "samples"},
 	"duration":       {"duration", "duration_seconds", "audio_duration"},
 }
+
+// replicateAudioExtendSynonyms lists, per canonical param, the native input
+// names Replicate audio-continuation models use (the extend_audio category —
+// resolveReplicateAudioExtendInput). meta/musicgen is the contract's anchor:
+// input_audio (a URI), a boolean continuation flag, a TOTAL output duration,
+// and a free prompt steering the added material. continuation_start/end are
+// deliberately not sent — meta/musicgen's packaging declares continuation_end
+// with minimum 0 while its own description promises -1 means "end of clip",
+// so the defaults (0 and end-of-clip) are the only schema-honest window, and
+// that window is exactly the whole source.
+var replicateAudioExtendSynonyms = map[string][]string{
+	"sourceAudio":  {"input_audio", "audio", "audio_url", "audio_file"},
+	"prompt":       {"prompt", "text"},
+	"continuation": {"continuation", "continue"},
+	"duration":     {"duration", "duration_seconds", "seconds_total"},
+}
+
+// musicgenContinuationMaxSeconds is the house ceiling on a
+// musicgen-family continuation's TOTAL output when the model's schema
+// declares no maximum: MusicGen renders at most ~30s per call, so a longer
+// ask is clamped with a notice (the stableAudioInpaintMaxSeconds stance)
+// and a source that already fills the cap refuses — the deliverable must
+// never claim an extension that didn't happen.
+const musicgenContinuationMaxSeconds = 30
+
+// replicateContinuationSchemaServes reports whether an ai-music-generation
+// collection model's input schema serves the canonical extend_audio request:
+// it must declare BOTH a scalar-string source-audio input and a scalar-boolean
+// continuation flag through the replicate-audio-extend synonyms (the
+// replicateLipsyncSchemaServes shape — the capability is only visible in the
+// schemas, so no id-marker partition can separate MusicGen's continuation
+// packaging from its text-to-music siblings).
+func replicateContinuationSchemaServes(schema *ModelInputSchema) bool {
+	if schema == nil {
+		return false
+	}
+	for _, canon := range []string{"sourceAudio", "continuation"} {
+		var prop SchemaProperty
+		found := false
+		for _, name := range synonymsFor("replicate-audio-extend", canon) {
+			if candidate, ok := schema.property(name); ok {
+				prop, found = candidate, true
+				break
+			}
+		}
+		if !found || prop.Kind != schemaScalar {
+			return false
+		}
+		switch canon {
+		case "sourceAudio":
+			if prop.Type != "string" {
+				return false
+			}
+		case "continuation":
+			if prop.Type != "boolean" {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// resolveReplicateAudioExtendInput maps a canonical AudioExtendRequest onto
+// the Replicate continuation model's native input schema, returning the
+// prediction input and user-facing notices. The source clip and the
+// continuation flag are the operation's whole point — an unmappable source
+// or a model without a boolean continuation control refuses up front (the
+// lipsync face-source rule), and a "before" direction refuses naming fal.ai
+// (meta/musicgen only continues forward). Duration is the ADDED length in
+// the canonical request but the TOTAL output length on the model side, so
+// the resolver adds the probed source length and clamps the sum to the
+// schema's declared maximum — or, for a musicgen-family model whose schema
+// declares none, the house 30s cap; a source that already fills the cap
+// refuses rather than re-rendering it. The style canonical folds into the
+// prompt (MusicGen steers through the prompt alone — the ace-step tags'
+// intent); lyrics and negativePrompt drop with notices. A nil schema
+// (unavailable) yields a minimal continuation body plus a notice, since
+// Replicate rejects unknown fields a richer fallback would invent.
+func resolveReplicateAudioExtendInput(schema *ModelInputSchema, req AudioExtendRequest) (map[string]any, []string, error) {
+	ov := Overrides{}
+	notices := []string{}
+
+	if strings.EqualFold(strings.TrimSpace(req.Direction), "before") {
+		return nil, notices, fmt.Errorf(
+			"the configured Replicate extend model %q can only continue a clip forward; a before-extension needs fal.ai — switch Audio Provider in Settings → Models",
+			req.Model)
+	}
+
+	if schema == nil {
+		body := map[string]any{"prompt": strings.TrimSpace(req.Prompt)}
+		if source := falAudioURL(strings.TrimSpace(req.SourceAudio)); source != "" {
+			body["input_audio"] = source
+			body["continuation"] = true
+		}
+		return body, []string{"Couldn't load the model's parameter schema; sent the source clip and continuation flag and may have dropped length or style settings."}, nil
+	}
+
+	body := map[string]any{}
+	source := falAudioURL(strings.TrimSpace(req.SourceAudio))
+	path, prop, ok := findNative(schema, ov, "replicate-audio-extend", req.Model, "sourceAudio")
+	if !ok || prop.Kind != schemaScalar || prop.Type != "string" {
+		return nil, notices, fmt.Errorf(
+			"the configured Replicate extend model %q has no source-audio input — it cannot continue an attached clip; pick a continuation model in Settings → Models, or switch Audio Provider to fal.ai",
+			req.Model)
+	}
+	setBodyPath(schema, body, path, source)
+
+	path, prop, ok = findNative(schema, ov, "replicate-audio-extend", req.Model, "continuation")
+	if !ok || prop.Kind != schemaScalar || prop.Type != "boolean" {
+		return nil, notices, fmt.Errorf(
+			"the configured Replicate extend model %q has no continuation control — it can mimic or remix the attached clip, but not extend it; pick a continuation model in Settings → Models, or switch Audio Provider to fal.ai",
+			req.Model)
+	}
+	setBodyPath(schema, body, path, true)
+
+	// prompt folds the style words in when present — MusicGen's only steer.
+	prompt := strings.TrimSpace(req.Prompt)
+	if style := strings.TrimSpace(req.Style); style != "" {
+		if prompt == "" {
+			prompt = style
+		} else {
+			prompt = prompt + " " + style
+		}
+	}
+	if prompt != "" {
+		if path, prop, ok := findNative(schema, ov, "replicate-audio-extend", req.Model, "prompt"); ok {
+			setBodyPath(schema, body, path, coerceImageValue(prop, prompt))
+		}
+	}
+	if strings.TrimSpace(req.Lyrics) != "" {
+		notices = append(notices, fmt.Sprintf(
+			"The selected model %q takes no lyrics input; the requested lyrics were ignored and the continuation follows the prompt.", req.Model))
+	}
+	if strings.TrimSpace(req.NegativePrompt) != "" {
+		notices = append(notices, fmt.Sprintf(
+			"The selected model %q has no negative-prompt input; the excluded sounds were ignored.", req.Model))
+	}
+
+	// Duration: the canonical ADDED seconds become the model's TOTAL output —
+	// source + added, clamped to the declared maximum (or the musicgen house
+	// cap) with a notice, refused when the source alone fills the cap.
+	// "auto" (or an invalid length) sends NO duration — each extend flavor
+	// keeps its own behavior, and this one's is the model's own default — so
+	// the duration work only runs for an explicit added length.
+	added, _, addedNotice := parseAudioExtendSeconds(req.Duration)
+	if addedNotice != "" {
+		notices = append(notices, addedNotice)
+	}
+	if added <= 0 {
+		return body, notices, nil
+	}
+	path, prop, ok = findNative(schema, ov, "replicate-audio-extend", req.Model, "duration")
+	if !ok {
+		notices = append(notices, fmt.Sprintf(
+			"The selected model %q picks its own continuation length; ignoring the %s-second request.",
+			req.Model, strings.TrimSpace(req.Duration)))
+		return body, notices, nil
+	}
+	maxSeconds := 0.0
+	if prop.Maximum != nil {
+		maxSeconds = *prop.Maximum
+	} else if strings.Contains(strings.ToLower(req.Model), "musicgen") {
+		maxSeconds = musicgenContinuationMaxSeconds
+	}
+	if maxSeconds > 0 && req.SourceDurationSeconds > 0 && req.SourceDurationSeconds >= maxSeconds {
+		return nil, notices, fmt.Errorf(
+			"the configured Replicate extend model %q renders at most %g seconds of total output and the attached clip is already %.1f seconds — a longer source needs fal.ai — switch Audio Provider in Settings → Models",
+			req.Model, maxSeconds, req.SourceDurationSeconds)
+	}
+	total := req.SourceDurationSeconds + added
+	if maxSeconds > 0 && total > maxSeconds {
+		total = maxSeconds
+		notices = append(notices, fmt.Sprintf(
+			"Clamped the continuation to the model's %g-second output cap (source plus added length).", maxSeconds))
+	}
+	if prop.Kind == schemaScalar && prop.Type == "integer" {
+		setBodyPath(schema, body, path, int(total+0.5))
+	} else {
+		setBodyPath(schema, body, path, coerceVideoValue(prop, total))
+	}
+	return body, notices, nil
+}

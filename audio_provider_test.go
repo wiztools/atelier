@@ -453,3 +453,203 @@ func TestReplicateSoundPickerFilters(t *testing.T) {
 		t.Fatal("reframe/extend ids must drop out of the video-sfx picker")
 	}
 }
+
+const replicateContinuationSchema = `{"components":{"schemas":{"Input":{"type":"object","properties":{
+	"prompt":{"type":"string"},
+	"input_audio":{"type":"string","format":"uri"},
+	"continuation":{"type":"boolean","default":false},
+	"duration":{"type":"integer","default":8}
+}}}}}`
+
+// TestResolveReplicateAudioExtendInput pins the continuation mapping: source
+// + flag + prompt are the operation (an unmappable one refuses), the canonical
+// ADDED length becomes the model's TOTAL output clamped to the musicgen house
+// cap, style folds into the prompt, "before" refuses naming fal, and "auto"
+// sends no duration so the model default applies.
+func TestResolveReplicateAudioExtendInput(t *testing.T) {
+	schema := parseReplicateFixtureSchema(t, replicateContinuationSchema)
+
+	body, notices, err := resolveReplicateAudioExtendInput(schema, AudioExtendRequest{
+		Model:                 "meta/musicgen",
+		Prompt:                "more rain",
+		Duration:              "25",
+		Style:                 "ambient",
+		SourceAudio:           "https://example.com/clip.mp3",
+		SourceDurationSeconds: 10,
+	})
+	if err != nil {
+		t.Fatalf("resolveReplicateAudioExtendInput: %v", err)
+	}
+	if got, ok := body["input_audio"].(string); !ok || got != "https://example.com/clip.mp3" {
+		t.Fatalf("input_audio = %#v", body["input_audio"])
+	}
+	if got, ok := body["continuation"].(bool); !ok || !got {
+		t.Fatalf("continuation = %#v, want true", body["continuation"])
+	}
+	if got, ok := body["duration"].(int); !ok || got != 30 {
+		t.Fatalf("duration = %#v, want the capped 30", body["duration"])
+	}
+	if got, ok := body["prompt"].(string); !ok || got != "more rain ambient" {
+		t.Fatalf("prompt = %#v, want style folded in", body["prompt"])
+	}
+	if !strings.Contains(strings.Join(notices, "\n"), "output cap") {
+		t.Fatalf("the clamp should ride a notice, got %v", notices)
+	}
+
+	// A source that already fills the cap refuses instead of re-rendering it.
+	if _, _, err := resolveReplicateAudioExtendInput(schema, AudioExtendRequest{
+		Model: "meta/musicgen", Prompt: "x", Duration: "5",
+		SourceAudio: "https://example.com/long.mp3", SourceDurationSeconds: 30,
+	}); err == nil || !strings.Contains(err.Error(), "fal.ai") {
+		t.Fatalf("a cap-filled source must refuse with the fal remedy, got %v", err)
+	}
+
+	// "auto" sends no duration (the model default applies).
+	body, _, err = resolveReplicateAudioExtendInput(schema, AudioExtendRequest{
+		Model: "meta/musicgen", Prompt: "continue", SourceAudio: "https://example.com/clip.mp3",
+	})
+	if err != nil {
+		t.Fatalf("auto extend: %v", err)
+	}
+	if _, ok := body["duration"]; ok {
+		t.Fatalf("auto must not send a duration, got %#v", body)
+	}
+
+	// "before" refuses naming fal; a model without the continuation flag
+	// refuses; a model without a source-audio input refuses.
+	if _, _, err := resolveReplicateAudioExtendInput(schema, AudioExtendRequest{
+		Model: "meta/musicgen", Prompt: "x", Direction: "before", SourceAudio: "https://example.com/c.mp3",
+	}); err == nil || !strings.Contains(err.Error(), "fal.ai") {
+		t.Fatalf("before must refuse with the fal remedy, got %v", err)
+	}
+	textOnly := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"prompt":{"type":"string"}
+	}}}}}`)
+	if _, _, err := resolveReplicateAudioExtendInput(textOnly, AudioExtendRequest{
+		Model: "acme/t2m", Prompt: "x", SourceAudio: "https://example.com/c.mp3",
+	}); err == nil || !strings.Contains(err.Error(), "continuation") {
+		t.Fatalf("a model without a continuation flag must refuse, got %v", err)
+	}
+	uriOnly := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"continuation":{"type":"boolean"}
+	}}}}}`)
+	if _, _, err := resolveReplicateAudioExtendInput(uriOnly, AudioExtendRequest{
+		Model: "acme/odd", Prompt: "x", SourceAudio: "https://example.com/c.mp3",
+	}); err == nil || !strings.Contains(err.Error(), "source-audio") {
+		t.Fatalf("a model without a source-audio input must refuse, got %v", err)
+	}
+
+	// A nil schema degrades to the minimal continuation body plus a notice.
+	body, notices, err = resolveReplicateAudioExtendInput(nil, AudioExtendRequest{
+		Model: "meta/musicgen", Prompt: "continue", SourceAudio: "https://example.com/c.mp3",
+	})
+	if err != nil {
+		t.Fatalf("nil schema: %v", err)
+	}
+	if body["continuation"] != true || body["input_audio"] != "https://example.com/c.mp3" {
+		t.Fatalf("nil-schema body = %#v", body)
+	}
+	if len(notices) != 1 {
+		t.Fatalf("nil schema should ride a notice, got %v", notices)
+	}
+}
+
+// TestReplicateContinuationSchemaServes pins the picker filter: a model needs
+// BOTH a scalar-string source-audio input and a scalar-boolean continuation
+// flag to serve extend_audio.
+func TestReplicateContinuationSchemaServes(t *testing.T) {
+	if !replicateContinuationSchemaServes(parseReplicateFixtureSchema(t, replicateContinuationSchema)) {
+		t.Fatal("the musicgen-style schema should serve continuations")
+	}
+	textToMusic := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"prompt":{"type":"string"},
+		"duration":{"type":"integer"}
+	}}}}}`)
+	if replicateContinuationSchemaServes(textToMusic) {
+		t.Fatal("a text-to-music schema without continuation inputs must not serve")
+	}
+	arrayAudio := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"input_audio":{"type":"array","items":{"type":"string"}},
+		"continuation":{"type":"boolean"}
+	}}}}}`)
+	if replicateContinuationSchemaServes(arrayAudio) {
+		t.Fatal("an array-shaped audio input is a chat wrapper the canonical request cannot fill")
+	}
+}
+
+// TestAudioExtendFollowsAudioProvider pins extend_audio's replicate route:
+// the gate checks the routed provider's key, the default resolver routes, the
+// merge seeds the slot, the override lands on the routed slot, the builder
+// stamps the activity, and the description carries the continuation facts.
+func TestAudioExtendFollowsAudioProvider(t *testing.T) {
+	keyring.MockInit()
+	t.Cleanup(func() {
+		_ = clearFalAPIKey()
+		_ = clearReplicateAPIKey()
+	})
+
+	replicate := mergeAppConfig(defaultAppConfig())
+	replicate.Models.AudioProvider = "replicate"
+	replicate = mergeAppConfig(replicate)
+	if got := replicate.Providers.Replicate.AudioExtendModel; got != defaultReplicateAudioExtendModel {
+		t.Fatalf("replicate extend slot should seed, got %q", got)
+	}
+	if audioExtendConfigured(replicate) {
+		t.Fatal("the replicate extend route needs the replicate key")
+	}
+	if err := saveReplicateAPIKey("replicate-test-key"); err != nil {
+		t.Fatalf("saveReplicateAPIKey: %v", err)
+	}
+	if !audioExtendConfigured(replicate) {
+		t.Fatal("the replicate extend route should serve with a key")
+	}
+	if got := resolveDefaultAudioExtendModel(replicate); got != defaultReplicateAudioExtendModel {
+		t.Fatalf("replicate extend default = %q, want %q", got, defaultReplicateAudioExtendModel)
+	}
+	replicate.Providers.Replicate.AudioExtendModel = "acme/continuer"
+	if got := resolveDefaultAudioExtendModel(replicate); got != "acme/continuer" {
+		t.Fatalf("configured replicate extend slot should win, got %q", got)
+	}
+
+	// The override lands on the slot the effective provider reads.
+	config := mergeAppConfig(defaultAppConfig())
+	var err error
+	config, _, err = applyConversationModelOverrides(config, ChatRequest{ModelOverrides: &ConversationModelOverrides{
+		AudioProvider:    "replicate",
+		AudioExtendModel: "acme/overridden",
+	}})
+	if err != nil {
+		t.Fatalf("applyConversationModelOverrides: %v", err)
+	}
+	if got := config.Providers.Replicate.AudioExtendModel; got != "acme/overridden" {
+		t.Fatalf("replicate-pinned extend model = %q, want it on the replicate slot", got)
+	}
+	if got := config.Providers.Fal.AudioExtendModel; got != "" {
+		t.Fatalf("replicate-pinned extend model must not touch the fal slot, got %q", got)
+	}
+
+	// The builder stamps the activity and the description names the shape.
+	const clip = "data:audio/mpeg;base64,QUJD"
+	tools := HarnessToolExecutionContext{
+		Config:         replicate,
+		AttachedAudios: []string{clip},
+		GenerateAudioExtend: func(ctx context.Context, req AudioExtendRequest) (GeneratedAudio, error) {
+			return GeneratedAudio{Data: []byte("x"), MimeType: "audio/mpeg"}, nil
+		},
+	}
+	def := extendAudioToolDefinition("replicate")
+	if !strings.Contains(def.Description, "continues the clip FORWARD") {
+		t.Fatalf("replicate extend description should name the forward-only shape: %q", def.Description)
+	}
+	out, _, err := def.Execute(context.Background(), tools, HarnessToolCall{Content: "more", Model: "acme/continuer"})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	activity := def.Activity(HarnessToolResult{Name: "extend_audio", Status: "completed", Result: out})
+	if activity.Provider != "replicate" {
+		t.Fatalf("replicate extend activity provider = %q", activity.Provider)
+	}
+	if command := strings.Join(activity.Command, " "); command != "replicate extend-audio acme/continuer" {
+		t.Fatalf("replicate extend activity command = %q", command)
+	}
+}

@@ -384,15 +384,17 @@ type ConfigReplicate struct {
 	LipsyncVideoModel string `json:"lipsyncVideoModel,omitempty"`
 	// SoundEffectsModel is the text-to-audio model generate_sound uses when
 	// replicate is the AudioProvider (music and sound effects —
-	// stable-audio-2.5 by default), and SoundEffectsVideoModel the
+	// stable-audio-2.5 by default), SoundEffectsVideoModel the
 	// video-to-sound model add_sound_effects uses (MMAudio by default,
 	// whose soundtrack arrives as a standalone clip the planner chains into
-	// replace_audio) — the Replicate siblings of ConfigFal's pair. The
-	// pickers list Replicate's ai-music-generation collection (post-filtered
-	// for non-voice ids) and the video-editing collection (post-filtered for
-	// video-to-audio ids) respectively.
+	// replace_audio), and AudioExtendModel the continuation model
+	// extend_audio uses (meta/musicgen by default — an attached clip is
+	// continued forward, total output capped around 30s) — the Replicate
+	// siblings of ConfigFal's audio slots. The pickers list Replicate's
+	// ai-music-generation collection post-filtered per picker.
 	SoundEffectsModel      string `json:"soundEffectsModel,omitempty"`
 	SoundEffectsVideoModel string `json:"soundEffectsVideoModel,omitempty"`
+	AudioExtendModel       string `json:"audioExtendModel,omitempty"`
 }
 
 // ConfigOpenAICompatible addresses a local server that speaks OpenAI's API
@@ -3227,6 +3229,40 @@ func isReplicateVideoSFXModel(model ReplicateModel) bool {
 	return false
 }
 
+// ListReplicateAudioExtendModels returns the ai-music-generation collection
+// models whose input schemas serve the canonical extend_audio request — a
+// scalar-string source-audio input plus a scalar-boolean continuation flag —
+// for the Settings audio-extend picker, shown when replicate is the
+// AudioProvider (extend follows it). The capability is only visible in the
+// schemas, so the lister checks each model's input schema through the
+// replicate schema cache (warming the same cache the gateway reads — the
+// lipsync pickers' pattern); MusicGen's text-to-music siblings without the
+// continuation packaging drop out. An empty result falls back to the default
+// model so the dropdown never goes bare.
+func (a *App) ListReplicateAudioExtendModels() ([]ReplicateModel, error) {
+	models, err := a.listReplicateCollection(replicateMusicGenerationCollection)
+	if err != nil {
+		return nil, err
+	}
+	config, err := loadAppConfig()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cache := newReplicateSchemaCache(a.client, config.Storage.Root)
+	filtered := make([]ReplicateModel, 0, len(models))
+	for _, model := range models {
+		if replicateContinuationSchemaServes(cache.Get(ctx, model.ID)) {
+			filtered = append(filtered, model)
+		}
+	}
+	if len(filtered) == 0 {
+		filtered = append(filtered, ReplicateModel{ID: defaultReplicateAudioExtendModel})
+	}
+	return filtered, nil
+}
+
 // ListReplicateVideoDurations returns the duration values the given Replicate
 // video model accepts, read from its input schema — the Replicate counterpart
 // of ListFalVideoDurations. Returns an empty slice (not an error) when the
@@ -4600,13 +4636,17 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	// Seed the Replicate sound pair the provider-selection way (the image and
 	// inpaint seeds above): selecting replicate as the AudioProvider without a
 	// model would leave the pickers empty and the gates closed, so pin the
-	// defaults once.
+	// defaults once. The extend slot seeds the same way — the audio family
+	// routes as one dimension.
 	if config.Models.AudioProvider == "replicate" {
 		if strings.TrimSpace(config.Providers.Replicate.SoundEffectsModel) == "" {
 			config.Providers.Replicate.SoundEffectsModel = defaultReplicateSoundEffectsModel
 		}
 		if strings.TrimSpace(config.Providers.Replicate.SoundEffectsVideoModel) == "" {
 			config.Providers.Replicate.SoundEffectsVideoModel = defaultReplicateSoundEffectsVideoModel
+		}
+		if strings.TrimSpace(config.Providers.Replicate.AudioExtendModel) == "" {
+			config.Providers.Replicate.AudioExtendModel = defaultReplicateAudioExtendModel
 		}
 	}
 	if strings.TrimSpace(config.Prompts.System) == "" {
