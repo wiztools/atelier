@@ -1219,13 +1219,21 @@ func writeTempVideo(video GeneratedVideo) (string, error) {
 // be offered, routing by resolveSpeechProvider: the fal path needs a speech
 // model configured AND a fal.ai key present — the key check avoids offering a
 // tool that is guaranteed to fail at call time with errFalKeyNotConfigured;
-// the ollama path needs only its model slot — no key exists to check and
-// airplane mode never blocks loopback Ollama, so speech stays available
-// offline. The other audio tools (sound, extend, design, cloning) remain
-// fal-only regardless.
+// the replicate path needs its own slot AND a Replicate token the same way
+// (the soundEffectsGenerationConfigured routed-provider rule); the ollama
+// path needs only its model slot — no key exists to check and airplane mode
+// never blocks loopback Ollama, so speech stays available offline. Both cloud
+// routes drop under airplane mode. The other voice tools (design, cloning)
+// remain fal-only regardless.
 func speechGenerationConfigured(config AppConfig) bool {
-	if resolveSpeechProvider(config) == "ollama" {
+	switch resolveSpeechProvider(config) {
+	case "ollama":
 		return strings.TrimSpace(config.Providers.Ollama.Models.Speech) != ""
+	case "replicate":
+		if airplaneModeActive(config) {
+			return false
+		}
+		return strings.TrimSpace(config.Providers.Replicate.SpeechModel) != "" && replicateKeyConfigured()
 	}
 	if airplaneModeActive(config) {
 		return false
@@ -1273,16 +1281,20 @@ func resolveDefaultAudioModel(config AppConfig) string {
 const defaultOllamaSpeechModel = "phonon"
 
 // resolveSpeechProvider returns the backend generate_speech runs on for this
-// config: "ollama" when Models.SpeechProvider says so, else fal — speech was
-// fal-only before Ollama's speech models existed, so an unset or unrecognized
-// value keeps routing there. The routing truth for the tool gate, the
-// gateway's GenerateAudio wiring, the executor's cloning stand-down, and
-// activity attribution. Scope is the voice models alone: generate_sound and
-// add_sound_effects route by resolveAudioProvider, and extend_audio,
-// generate_voice, and voice cloning stay fal-only regardless.
+// config: "ollama" or "replicate" when Models.SpeechProvider says so, else
+// fal — speech was fal-only before the other providers served it, so an unset
+// or unrecognized value keeps routing there. The routing truth for the tool
+// gate, the gateway's GenerateAudio wiring, the executor's cloning
+// stand-down, and activity attribution. Scope is the voice models alone:
+// generate_sound, add_sound_effects, and extend_audio route by
+// resolveAudioProvider, and generate_voice and voice cloning stay fal-only
+// regardless.
 func resolveSpeechProvider(config AppConfig) string {
-	if strings.TrimSpace(config.Models.SpeechProvider) == "ollama" {
+	switch strings.TrimSpace(config.Models.SpeechProvider) {
+	case "ollama":
 		return "ollama"
+	case "replicate":
+		return "replicate"
 	}
 	return "fal"
 }
@@ -1304,13 +1316,20 @@ func resolveAudioProvider(config AppConfig) string {
 
 // resolveDefaultSpeechModel returns the model generate_speech uses when the
 // call doesn't override it, routed by the effective speech provider — the
-// fal slot's AudioModel or the Ollama slot's Speech model.
+// fal slot's AudioModel, the Ollama slot's Speech model, or the Replicate
+// slot's SpeechModel.
 func resolveDefaultSpeechModel(config AppConfig) string {
-	if resolveSpeechProvider(config) == "ollama" {
+	switch resolveSpeechProvider(config) {
+	case "ollama":
 		if model := strings.TrimSpace(config.Providers.Ollama.Models.Speech); model != "" {
 			return model
 		}
 		return defaultOllamaSpeechModel
+	case "replicate":
+		if model := strings.TrimSpace(config.Providers.Replicate.SpeechModel); model != "" {
+			return model
+		}
+		return defaultReplicateSpeechModel
 	}
 	return resolveDefaultAudioModel(config)
 }
@@ -1586,18 +1605,21 @@ func resolveDefaultLipsyncVideoModel(config AppConfig, provider string) string {
 // correct path for putting narration behind a video on a non-audio video
 // model. Provider selects the paragraph's backend facts: the ollama wording
 // states the local model's contract (catalog voices, no cloning) instead of
-// fal's.
+// fal's, and the replicate wording the prediction backend's (the model's own
+// voice ids, emotion/speed where declared, no cloning or design).
 func speechGenerationDescription(videoAudioCapable bool, provider string) string {
-	if provider == "ollama" {
-		base := "Use this when the user asks to speak, narrate, or read text aloud (text-to-speech). The configured local Ollama speech model generates the clip and it is attached to the assistant reply — it runs locally, needs no API key, and works in airplane mode. Pass voice only when the user names one: the value is a catalog voice from the model (e.g. \"Zoey\"), and an unknown name fails listing the valid ones — retry with one of those. This model cannot clone voices from an attached clip and cannot design new voices."
-		if !videoAudioCapable {
-			return base + " To put generated speech behind a video, call generate_speech first then lip_sync in the same turn — the generated speech carries forward to lip_sync automatically."
-		}
-		return base
+	lipsyncChain := " To put generated speech behind a video, call generate_speech first then lip_sync in the same turn — the generated speech carries forward to lip_sync automatically."
+	var base string
+	switch provider {
+	case "ollama":
+		base = "Use this when the user asks to speak, narrate, or read text aloud (text-to-speech). The configured local Ollama speech model generates the clip and it is attached to the assistant reply — it runs locally, needs no API key, and works in airplane mode. Pass voice only when the user names one: the value is a catalog voice from the model (e.g. \"Zoey\"), and an unknown name fails listing the valid ones — retry with one of those. This model cannot clone voices from an attached clip and cannot design new voices."
+	case "replicate":
+		base = "Use this when the user asks to speak, narrate, or read text aloud (text-to-speech). The configured Replicate speech model generates the clip and it is attached to the assistant reply. Pass voice only when the user names one: the value is a voice id from the model's own catalog (the MiniMax speech models take names like \"Wise_Woman\" or \"English_Wiselady\", or a previously cloned voice id), and an unknown id fails the call. Pass emotion and speed when the user asks for a tone or pace — a model that declares the controls applies them, any other drops them with a notice. Cloning a voice from an attached clip and designing new voices stay on fal.ai: on this provider an attached clip is ignored with a notice."
+	default:
+		base = "Use this when the user asks to speak, narrate, or read text aloud (text-to-speech). The configured fal.ai speech model generates the clip and it is attached to the assistant reply. When the user attached an audio clip, the speech is generated in that voice (voice cloning) automatically; pass cloneVoice:false to keep the regular speech voice even though a clip is attached (e.g. the clip holds content to transcribe, not a voice to copy), or cloneVoice:true to require cloning. Naming a voice (voice) speaks in that named voice directly — a clip present in the turn is not cloned from unless cloneVoice:true is also passed."
 	}
-	base := "Use this when the user asks to speak, narrate, or read text aloud (text-to-speech). The configured fal.ai speech model generates the clip and it is attached to the assistant reply. When the user attached an audio clip, the speech is generated in that voice (voice cloning) automatically; pass cloneVoice:false to keep the regular speech voice even though a clip is attached (e.g. the clip holds content to transcribe, not a voice to copy), or cloneVoice:true to require cloning. Naming a voice (voice) speaks in that named voice directly — a clip present in the turn is not cloned from unless cloneVoice:true is also passed."
 	if !videoAudioCapable {
-		return base + " To put generated speech behind a video, call generate_speech first then lip_sync in the same turn — the generated speech carries forward to lip_sync automatically."
+		return base + lipsyncChain
 	}
 	return base
 }
@@ -1714,15 +1736,16 @@ func speechGenerationToolDefinition(videoAudioCapable bool, provider string) Har
 				reference = ""
 				namedVoiceOverReference = true
 			}
-			// The ollama route cannot clone: stand the reference down with a
-			// notice instead of routing the call to fal's clone endpoint —
-			// the provider choice is deterministic (local means local), and
-			// the fal slots' presence must not quietly move a local turn
-			// onto the network. cloneVoice:true cannot force it; the notice
-			// says what happened so the user can switch providers for
-			// cloning.
+			// The ollama and replicate routes cannot clone: stand the
+			// reference down with a notice instead of routing the call to
+			// fal's clone endpoint — the provider choice is deterministic
+			// (local means local; a Replicate-pinned turn must not quietly
+			// bill a fal endpoint), and the fal slots' presence must not move
+			// the turn onto another network. cloneVoice:true cannot force it;
+			// the notice says what happened so the user can switch providers
+			// for cloning.
 			providerCannotClone := false
-			if provider == "ollama" && reference != "" {
+			if provider != "fal" && reference != "" {
 				reference = ""
 				providerCannotClone = true
 			}
@@ -1759,7 +1782,11 @@ func speechGenerationToolDefinition(videoAudioCapable bool, provider string) Har
 			}
 			if providerCannotClone {
 				if audio, ok := out.(ToolAudioResult); ok {
-					audio.Notices = append(audio.Notices, "The local Ollama speech model can't clone voices, so the clip was ignored and the speech used a catalog voice. Switch the Speech Provider back to fal.ai to clone.")
+					notice := "The local Ollama speech model can't clone voices, so the clip was ignored and the speech used a catalog voice. Switch the Speech Provider back to fal.ai to clone."
+					if provider == "replicate" {
+						notice = "The Replicate speech route doesn't clone voices, so the clip was ignored and the speech used the model's own voice. Switch the Speech Provider to fal.ai to clone."
+					}
+					audio.Notices = append(audio.Notices, notice)
 					out = audio
 				}
 			}
@@ -1770,10 +1797,16 @@ func speechGenerationToolDefinition(videoAudioCapable bool, provider string) Har
 			// The engine layer defaults audio activities to fal (the fal-only
 			// era); speech routes by its own provider, so the builder stamps
 			// it — the transcribe_audio/lipsync captured-config pattern.
-			if provider == "ollama" {
+			switch provider {
+			case "ollama":
 				activity.Provider = "ollama"
 				if typed, ok := result.Result.(ToolAudioResult); ok {
 					activity.Command = []string{"ollama", "run", typed.Model}
+				}
+			case "replicate":
+				activity.Provider = "replicate"
+				if typed, ok := result.Result.(ToolAudioResult); ok {
+					activity.Command = []string{"replicate", "generate", typed.Model}
 				}
 			}
 			return activity

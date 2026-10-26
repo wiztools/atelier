@@ -58,12 +58,12 @@ type ConversationModelOverrides struct {
 	// AudioModel overrides generate_speech's model. It lands on the slot the
 	// effective speech provider reads (the ImageModel pair's contract):
 	// SpeechProvider routes, so an ollama-pinned conversation stores the
-	// model on the Ollama Speech slot, everything else on fal's AudioModel —
-	// which is also where records written before the provider dimension
-	// existed keep landing. SoundEffectsModel/SoundEffectsVideoModel/
-	// AudioExtendModel follow AudioProvider the same way (the TranscribeModel
-	// recipe); the rest of the audio family (clone, design) stays fal-only
-	// 1:1 onto ConfigFal.
+	// model on the Ollama Speech slot, a replicate-pinned one on Replicate's
+	// SpeechModel, everything else on fal's AudioModel — which is also where
+	// records written before the provider dimension existed keep landing.
+	// SoundEffectsModel/SoundEffectsVideoModel/AudioExtendModel follow
+	// AudioProvider the same way (the TranscribeModel recipe); the rest of
+	// the audio family (clone, design) stays fal-only 1:1 onto ConfigFal.
 	SpeechProvider         string `json:"speechProvider,omitempty"`
 	AudioModel             string `json:"audioModel,omitempty"`
 	SoundEffectsModel      string `json:"soundEffectsModel,omitempty"`
@@ -187,7 +187,7 @@ func validateConversationModelOverrides(o ConversationModelOverrides) error {
 				return fmt.Errorf("unknown audio provider %q", value)
 			}
 		case "speechProvider":
-			if value != "" && value != "fal" && value != "ollama" {
+			if value != "" && value != "fal" && value != "ollama" && value != "replicate" {
 				return fmt.Errorf("unknown speech provider %q", value)
 			}
 		case "transcriptionProvider":
@@ -470,9 +470,9 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 	}
 	if o.SpeechProvider != "" {
 		// The speech provider overrides generate_speech's backend directly —
-		// its own dimension (fal | ollama), validated at mutator time like
-		// InpaintProvider. Applied BEFORE the AudioModel override below so
-		// the model lands on the slot the overridden provider reads.
+		// its own dimension (fal | ollama | replicate), validated at mutator
+		// time like InpaintProvider. Applied BEFORE the AudioModel override
+		// below so the model lands on the slot the overridden provider reads.
 		config.Models.SpeechProvider = o.SpeechProvider
 	}
 	if o.AudioModel != "" {
@@ -480,9 +480,12 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 		// the TranscribeModel recipe one tool over. Speech was fal-only when
 		// the field was named, so records written before the provider
 		// dimension existed keep landing on fal's slot.
-		if resolveSpeechProvider(config) == "ollama" {
+		switch resolveSpeechProvider(config) {
+		case "ollama":
 			config.Providers.Ollama.Models.Speech = o.AudioModel
-		} else {
+		case "replicate":
+			config.Providers.Replicate.SpeechModel = o.AudioModel
+		default:
 			config.Providers.Fal.AudioModel = o.AudioModel
 		}
 	}

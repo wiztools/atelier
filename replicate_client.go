@@ -122,6 +122,13 @@ const (
 	// post-filters voice/tts ids out — the id-marker partition, kept
 	// belt-and-braces for future collection merges.
 	replicateMusicGenerationCollection = "ai-music-generation"
+	// replicateTextToSpeechCollection is the generate_speech picker's bucket
+	// when replicate is the SpeechProvider. It mixes TTS endpoints with
+	// voice-cloning utilities (minimax/voice-cloning mints a voice id from a
+	// clip and speaks nothing) and chat-shaped speech LLMs, so its lister
+	// post-filters by input schema (replicateSpeechSchemaServes — a scalar
+	// string text input, the lipsync pickers' pattern).
+	replicateTextToSpeechCollection = "text-to-speech"
 	// defaultReplicateTranscribeModel is the speech-to-text model used when
 	// none is configured — openai/whisper, the collection's official
 	// whisper: a translate boolean, a two-letter language enum, and a
@@ -163,6 +170,15 @@ const (
 	// Forward continuations only; a before-direction refuses with the fal
 	// remedy, the resolveReplicateAudioExtendInput contract.
 	defaultReplicateAudioExtendModel = "meta/musicgen"
+	// defaultReplicateSpeechModel is the text-to-speech model generate_speech
+	// uses when replicate is the SpeechProvider and none is configured —
+	// minimax/speech-2.8-hd, the collection's featured official endpoint and
+	// the same MiniMax family fal's speech endpoints drive: a required text
+	// input, voice_id (17+ catalog voices or a cloned id), an emotion enum,
+	// and a 0.5–2.0 speed, all flat where fal nests them under voice_setting.
+	// Quality-first like fal's elevenlabs multilingual default; the turbo
+	// sibling is a picker entry away.
+	defaultReplicateSpeechModel = "minimax/speech-2.8-hd"
 	// maxReplicateTransientRetries is the number of times do() re-issues a
 	// request after a transient 5xx, matching the fal client's posture.
 	maxReplicateTransientRetries = 1

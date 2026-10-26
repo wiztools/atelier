@@ -735,7 +735,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			toolNotices = imageNotice
 		}
 	}
-	if genNotice := mediaGenFallbackNotice(preparation.MediaGenUnavailable, preparation.MediaGenMode, assistantContent, airplaneModeActive(h.config), resolveSpeechProvider(h.config) == "ollama", resolveAudioProvider(h.config) == "replicate"); genNotice != "" {
+	if genNotice := mediaGenFallbackNotice(preparation.MediaGenUnavailable, preparation.MediaGenMode, assistantContent, airplaneModeActive(h.config), resolveSpeechProvider(h.config), resolveAudioProvider(h.config) == "replicate"); genNotice != "" {
 		if toolNotices != "" {
 			toolNotices += "\n" + genNotice
 		} else {
@@ -2801,7 +2801,7 @@ func (h *HarnessEngine) preparedResponseRequest(ctx context.Context, req ChatReq
 	// trailing-note channel: the final model learns the media cannot be produced
 	// and what to tell the user, instead of inventing a queued-render reply.
 	if preparation.MediaGenUnavailable {
-		if note := mediaGenUnavailableNote(preparation.MediaGenMode, airplaneModeActive(h.config), resolveSpeechProvider(h.config) == "ollama", resolveAudioProvider(h.config) == "replicate"); note != "" {
+		if note := mediaGenUnavailableNote(preparation.MediaGenMode, airplaneModeActive(h.config), resolveSpeechProvider(h.config), resolveAudioProvider(h.config) == "replicate"); note != "" {
 			messages = append(messages, ChatMessage{Role: "user", Content: note})
 		}
 	}

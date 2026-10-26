@@ -187,10 +187,12 @@ func TestOllamaGenerateSpeechTransport(t *testing.T) {
 	}
 }
 
-// TestSpeechProviderRouting pins the routing truth and both resolvers: unset
+// TestSpeechProviderRouting pins the routing truth and the resolvers: unset
 // or junk keeps the fal route (speech was fal-only before Ollama speech
 // existed), "ollama" routes local and reads its own slot with the phonon
-// belt, and mergeAppConfig normalizes like the other provider dimensions.
+// belt, "replicate" routes to the prediction backend and reads its own slot
+// with the MiniMax belt, and mergeAppConfig normalizes like the other
+// provider dimensions — seeding the Replicate slot on selection.
 func TestSpeechProviderRouting(t *testing.T) {
 	fal := defaultAppConfig()
 	if got := resolveSpeechProvider(fal); got != "fal" {
@@ -215,6 +217,22 @@ func TestSpeechProviderRouting(t *testing.T) {
 	if got := resolveDefaultSpeechModel(falModel); got != "fal-ai/tts" {
 		t.Fatalf("resolveDefaultSpeechModel(fal) = %q, want the fal slot", got)
 	}
+	replicate := defaultAppConfig()
+	replicate.Models.SpeechProvider = "replicate"
+	replicate.Providers.Replicate.SpeechModel = "minimax/speech-2.8-turbo"
+	// The other providers' slots must not leak into the replicate route.
+	replicate.Providers.Fal.AudioModel = "fal-ai/tts"
+	replicate.Providers.Ollama.Models.Speech = "phonon"
+	if got := resolveSpeechProvider(replicate); got != "replicate" {
+		t.Fatalf("resolveSpeechProvider(replicate) = %q, want replicate", got)
+	}
+	if got := resolveDefaultSpeechModel(replicate); got != "minimax/speech-2.8-turbo" {
+		t.Fatalf("resolveDefaultSpeechModel(replicate) = %q, want the replicate slot", got)
+	}
+	replicate.Providers.Replicate.SpeechModel = ""
+	if got := resolveDefaultSpeechModel(replicate); got != defaultReplicateSpeechModel {
+		t.Fatalf("resolveDefaultSpeechModel(empty replicate slot) = %q, want %q", got, defaultReplicateSpeechModel)
+	}
 
 	merged := defaultAppConfig()
 	merged.Models.SpeechProvider = "  ollama "
@@ -225,6 +243,28 @@ func TestSpeechProviderRouting(t *testing.T) {
 	junk.Models.SpeechProvider = "elevenlabs"
 	if got := mergeAppConfig(junk).Models.SpeechProvider; got != "fal" {
 		t.Fatalf("mergeAppConfig should normalize junk to fal, got %q", got)
+	}
+	seeded := defaultAppConfig()
+	seeded.Models.SpeechProvider = "replicate"
+	seededMerged := mergeAppConfig(seeded)
+	if seededMerged.Models.SpeechProvider != "replicate" {
+		t.Fatalf("mergeAppConfig should keep replicate, got %q", seededMerged.Models.SpeechProvider)
+	}
+	if seededMerged.Providers.Replicate.SpeechModel != defaultReplicateSpeechModel {
+		t.Fatalf("selecting the replicate speech provider should seed the slot, got %q", seededMerged.Providers.Replicate.SpeechModel)
+	}
+	if seededMerged.Providers.Fal.AudioModel != "" || seededMerged.Providers.Ollama.Models.Speech != "" {
+		t.Fatal("a replicate selection must not seed the fal or ollama speech slots")
+	}
+	chosen := defaultAppConfig()
+	chosen.Models.SpeechProvider = "replicate"
+	chosen.Providers.Replicate.SpeechModel = "acme/tts"
+	if got := mergeAppConfig(chosen).Providers.Replicate.SpeechModel; got != "acme/tts" {
+		t.Fatalf("an explicit replicate speech slot must win over the seed, got %q", got)
+	}
+	unselected := mergeAppConfig(defaultAppConfig())
+	if unselected.Providers.Replicate.SpeechModel != "" {
+		t.Fatalf("the replicate speech slot must not seed without the provider selected, got %q", unselected.Providers.Replicate.SpeechModel)
 	}
 }
 
@@ -417,10 +457,32 @@ func TestConversationModelOverridesSpeechRouting(t *testing.T) {
 		t.Fatalf("model-only override should follow the global ollama route, got %q", overlaid.Providers.Ollama.Models.Speech)
 	}
 
-	if err := validateConversationModelOverrides(normalizeConversationModelOverrides(ConversationModelOverrides{SpeechProvider: "replicate"})); err == nil {
+	// A replicate-pinned conversation lands the model on Replicate's speech
+	// slot and leaves the fal and ollama slots alone.
+	base.Providers.Replicate.SpeechModel = "global-replicate-tts"
+	replicatePinned, _, err := overlayModelOverrides(base, ChatRequest{}, ConversationModelOverrides{
+		SpeechProvider: "replicate",
+		AudioModel:     "minimax/speech-2.8-turbo",
+	})
+	if err != nil {
+		t.Fatalf("overlay: %v", err)
+	}
+	if replicatePinned.Models.SpeechProvider != "replicate" {
+		t.Fatalf("speech provider overlay = %q, want replicate", replicatePinned.Models.SpeechProvider)
+	}
+	if replicatePinned.Providers.Replicate.SpeechModel != "minimax/speech-2.8-turbo" {
+		t.Fatalf("replicate slot = %q, want the override", replicatePinned.Providers.Replicate.SpeechModel)
+	}
+	if replicatePinned.Providers.Fal.AudioModel != "global-fal-tts" || replicatePinned.Providers.Ollama.Models.Speech != "global-phonon" {
+		t.Fatal("a replicate-pinned speech model must not touch the fal or ollama slots")
+	}
+
+	if err := validateConversationModelOverrides(normalizeConversationModelOverrides(ConversationModelOverrides{SpeechProvider: "elevenlabs"})); err == nil {
 		t.Fatal("an unknown speech provider must be rejected")
 	}
-	if err := validateConversationModelOverrides(normalizeConversationModelOverrides(ConversationModelOverrides{SpeechProvider: "ollama"})); err != nil {
-		t.Fatalf("ollama speech provider must validate: %v", err)
+	for _, provider := range []string{"fal", "ollama", "replicate"} {
+		if err := validateConversationModelOverrides(normalizeConversationModelOverrides(ConversationModelOverrides{SpeechProvider: provider})); err != nil {
+			t.Fatalf("%s speech provider must validate: %v", provider, err)
+		}
 	}
 }

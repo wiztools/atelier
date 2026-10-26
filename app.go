@@ -332,10 +332,11 @@ type ConfigFal struct {
 // reframe_video (which follow VideoProvider). The API token lives in the OS
 // keychain (see keychain.go), not in config — Enabled mirrors the key's
 // presence for the frontend, like ConfigFal. The non-voice audio tools
-// (generate_sound, add_sound_effects) route by Models.AudioProvider, so the
-// sound slots below serve when it picks replicate; speech, voice design,
-// voice cloning, and extend_audio stay fal-only, and lip_sync routes by
-// Models.LipsyncProvider.
+// (generate_sound, add_sound_effects, extend_audio) route by
+// Models.AudioProvider, so the sound slots below serve when it picks
+// replicate; generate_speech routes by Models.SpeechProvider, so SpeechModel
+// serves when IT picks replicate; voice design and voice cloning stay
+// fal-only, and lip_sync routes by Models.LipsyncProvider.
 type ConfigReplicate struct {
 	Enabled bool `json:"enabled"`
 	// Model is the text-to-image model (an owner/name slug, e.g.
@@ -395,6 +396,15 @@ type ConfigReplicate struct {
 	SoundEffectsModel      string `json:"soundEffectsModel,omitempty"`
 	SoundEffectsVideoModel string `json:"soundEffectsVideoModel,omitempty"`
 	AudioExtendModel       string `json:"audioExtendModel,omitempty"`
+	// SpeechModel is the text-to-speech model generate_speech uses when
+	// replicate is the SpeechProvider (minimax/speech-2.8-turbo by default —
+	// the MiniMax family fal's speech endpoints already drive, flat voice_id/
+	// emotion/speed inputs) — the Replicate sibling of ConfigFal.AudioModel.
+	// Voice design and cloning have no Replicate slot: an attached reference
+	// stands down on this route with a notice, the Ollama route's contract.
+	// The picker lists Replicate's text-to-speech collection, input-schema
+	// checked.
+	SpeechModel string `json:"speechModel,omitempty"`
 }
 
 // ConfigOpenAICompatible addresses a local server that speaks OpenAI's API
@@ -510,12 +520,15 @@ type ConfigModels struct {
 	// would surprise. Normalized in mergeAppConfig like VideoProvider.
 	LipsyncProvider string `json:"lipsyncProvider,omitempty"`
 	// SpeechProvider selects the generate_speech backend: "fal" (the
-	// default) or "ollama" — Ollama's speech models (phonon and friends,
+	// default), "ollama" — Ollama's speech models (phonon and friends,
 	// the "speech" capability) served through its OpenAI-compatible
-	// /v1/audio/speech endpoint. The scope is the voice models alone:
-	// music, sound effects, audio extension, voice design, and voice
-	// cloning stay fal-only regardless. The Ollama model slot is
-	// Providers.Ollama.Models.Speech. Normalized in mergeAppConfig like
+	// /v1/audio/speech endpoint — or "replicate", the text-to-speech
+	// collection's models over the prediction lifecycle. The scope is the
+	// voice models alone: music, sound effects, and audio extension route
+	// by AudioProvider, and voice design and voice cloning stay fal-only
+	// regardless (the ollama and replicate routes stand a cloning reference
+	// down with a notice). The model slots are Providers.Ollama.Models.Speech
+	// and Providers.Replicate.SpeechModel. Normalized in mergeAppConfig like
 	// VideoProvider.
 	SpeechProvider string `json:"speechProvider,omitempty"`
 	// AudioProvider selects the NON-voice audio backend — generate_sound
@@ -3194,6 +3207,40 @@ func isReplicateSoundModel(model ReplicateModel) bool {
 	return true
 }
 
+// ListReplicateSpeechModels returns the text-to-speech collection models
+// whose input schemas serve the canonical generate_speech request — a
+// scalar-string text input — for the Settings speech-model picker, shown when
+// replicate is the SpeechProvider. The collection mixes TTS endpoints with
+// the voice-cloning utility (minimax/voice-cloning takes a clip and mints an
+// id, speaking nothing), and only the schemas tell them apart — the id
+// vocabulary ("voice", "speech") is shared — so each entry's input schema is
+// checked through the replicate schema cache (warming the same cache the
+// gateway reads, the extend/lipsync pickers' pattern). An empty result falls
+// back to the default model so the dropdown never goes bare.
+func (a *App) ListReplicateSpeechModels() ([]ReplicateModel, error) {
+	models, err := a.listReplicateCollection(replicateTextToSpeechCollection)
+	if err != nil {
+		return nil, err
+	}
+	config, err := loadAppConfig()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cache := newReplicateSchemaCache(a.client, config.Storage.Root)
+	filtered := make([]ReplicateModel, 0, len(models))
+	for _, model := range models {
+		if replicateSpeechSchemaServes(cache.Get(ctx, model.ID)) {
+			filtered = append(filtered, model)
+		}
+	}
+	if len(filtered) == 0 {
+		filtered = append(filtered, ReplicateModel{ID: defaultReplicateSpeechModel})
+	}
+	return filtered, nil
+}
+
 // ListReplicateSoundEffectsVideoModels returns the video-to-sound models of
 // Replicate's video-editing collection for the Settings video-sound-effects
 // picker, shown when replicate is the AudioProvider (add_sound_effects
@@ -4597,13 +4644,14 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	default:
 		config.Models.LipsyncProvider = "fal"
 	}
-	// SpeechProvider selects the generate_speech backend ("fal" | "ollama").
-	// Unknown or empty normalizes to "fal": speech was fal-only before
-	// Ollama's speech models existed, so a config written then must keep
-	// routing there. The Ollama model slot carries no forced default — the
-	// gate requires it and the resolver's constant is only a belt.
+	// SpeechProvider selects the generate_speech backend ("fal" | "ollama" |
+	// "replicate"). Unknown or empty normalizes to "fal": speech was
+	// fal-only before Ollama's speech models existed, so a config written
+	// then must keep routing there. The Ollama model slot carries no forced
+	// default — the gate requires it and the resolver's constant is only a
+	// belt; the Replicate slot seeds below the provider-selection way.
 	switch strings.TrimSpace(config.Models.SpeechProvider) {
-	case "fal", "ollama":
+	case "fal", "ollama", "replicate":
 		config.Models.SpeechProvider = strings.TrimSpace(config.Models.SpeechProvider)
 	default:
 		config.Models.SpeechProvider = "fal"
@@ -4681,6 +4729,12 @@ func mergeAppConfig(config AppConfig) AppConfig {
 		if strings.TrimSpace(config.Providers.Replicate.AudioExtendModel) == "" {
 			config.Providers.Replicate.AudioExtendModel = defaultReplicateAudioExtendModel
 		}
+	}
+	// Seed the Replicate speech slot the same way: selecting replicate as the
+	// SpeechProvider without a model would leave the picker empty and the
+	// generate_speech gate closed.
+	if config.Models.SpeechProvider == "replicate" && strings.TrimSpace(config.Providers.Replicate.SpeechModel) == "" {
+		config.Providers.Replicate.SpeechModel = defaultReplicateSpeechModel
 	}
 	if strings.TrimSpace(config.Prompts.System) == "" {
 		config.Prompts.System = defaults.Prompts.System

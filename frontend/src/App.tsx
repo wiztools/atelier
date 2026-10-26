@@ -70,6 +70,7 @@ import {
   ListReplicateSoundEffectModels,
   ListReplicateSoundEffectsVideoModels,
   ListReplicateAudioExtendModels,
+  ListReplicateSpeechModels,
   ListInpaintModels,
   ListEditSession,
   ResolveAudioEditSource,
@@ -139,6 +140,10 @@ type SettingsTab = 'providers' | 'models' | 'tools' | 'general';
 // falls back to the screen's default instead of selecting a dead tab.
 const settingsTabs: SettingsTab[] = ['providers', 'models', 'tools', 'general'];
 type ChatProviderID = 'ollama' | 'openrouter' | 'openai-compatible';
+// The generate_speech backends: fal.ai's cloud endpoints, a local Ollama
+// speech model, or Replicate's text-to-speech collection. Mirrors the Go
+// resolveSpeechProvider vocabulary (anything else normalizes to fal).
+type SpeechProviderID = 'fal' | 'ollama' | 'replicate';
 // 'edit' marks an image-editor session child conversation: the sidebar lists
 // it, but opening it routes to the editor workspace, not the chat transcript.
 type ConversationKind = 'chat' | 'edit';
@@ -489,6 +494,10 @@ const defaultReplicateVideoExtendModel = 'xai/grok-imagine-video-extension';
 // video). Mirrors the Go constants in replicate_client.go.
 const defaultReplicateSoundEffectsModel = 'stability-ai/stable-audio-2.5';
 const defaultReplicateSoundEffectsVideoModel = 'zsxkib/mmaudio';
+// generate_speech's Replicate model — minimax/speech-2.8-hd, the
+// text-to-speech collection's featured official endpoint (catalog voice ids,
+// an emotion enum, a 0.5–2 speed). Mirrors the Go constant.
+const defaultReplicateSpeechModel = 'minimax/speech-2.8-hd';
 // extend_audio's Replicate continuation model — meta/musicgen continues an
 // attached clip forward within a ~30s total ceiling. Mirrors the Go constant
 // in replicate_client.go.
@@ -1256,8 +1265,12 @@ function App() {
   // design, and cloning stay fal-only, and music/sound effects route by the
   // audio provider. Defaults mirror the Go merge (fal); the Ollama slot is
   // its own field so switching providers never loses the other side's model.
-  const [speechProvider, setSpeechProvider] = useState<'fal' | 'ollama'>('fal');
+  const [speechProvider, setSpeechProvider] = useState<SpeechProviderID>('fal');
   const [ollamaSpeechModel, setOllamaSpeechModel] = useState('');
+  // The Replicate speech slot — its own field for the same reason as the
+  // Ollama one: a provider switch must never lose the other sides' models.
+  const [replicateSpeechModel, setReplicateSpeechModel] = useState(defaultReplicateSpeechModel);
+  const [replicateSpeechModels, setReplicateSpeechModels] = useState<main.ReplicateModel[]>([]);
   // The NON-voice audio backend — generate_sound and add_sound_effects route
   // by it; speech routes by SpeechProvider, and extend/voice-design/cloning
   // stay fal-only. Defaults mirror the Go merge (fal); the per-provider
@@ -2062,6 +2075,7 @@ function App() {
             soundEffectsModel: replicateSoundEffectsModel,
             soundEffectsVideoModel: replicateSoundEffectsVideoModel,
             audioExtendModel: replicateAudioExtendModel,
+            speechModel: replicateSpeechModel,
           },
           openaiCompatible: {
             baseURL: openaiCompatibleBaseURL,
@@ -2133,7 +2147,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [airplaneMode, baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, replicateTranscribeModel, replicateLipsyncImageModel, replicateLipsyncVideoModel, lipsyncProvider, speechProvider, ollamaSpeechModel, audioProvider, replicateSoundEffectsModel, replicateSoundEffectsVideoModel, replicateAudioExtendModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel, whisperVADModel]);
+  }, [airplaneMode, baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, replicateTranscribeModel, replicateLipsyncImageModel, replicateLipsyncVideoModel, lipsyncProvider, speechProvider, ollamaSpeechModel, replicateSpeechModel, audioProvider, replicateSoundEffectsModel, replicateSoundEffectsVideoModel, replicateAudioExtendModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel, whisperVADModel]);
 
   // Re-probe local CLI tools when a binary override changes — or the Local
   // Tools tab's Re-detect button bumps the nonce — so the transcription
@@ -2573,6 +2587,7 @@ function App() {
     speechProvider,
     audioProvider,
     ollamaSpeechModel,
+    replicateSpeechModel,
     replicateSoundEffectsModel,
     replicateSoundEffectsVideoModel,
     replicateAudioExtendModel,
@@ -2620,7 +2635,7 @@ function App() {
     videoResolution,
     soundDuration,
     audioExtendDuration,
-  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, inpaintProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, transcriptionProvider, audioProvider, replicateSoundEffectsModel, replicateSoundEffectsVideoModel, replicateAudioExtendModel, falTranscribeModel, replicateTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, replicateLipsyncImageModel, replicateLipsyncVideoModel, lipsyncProvider, speechProvider, ollamaSpeechModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration]);
+  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, inpaintProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, transcriptionProvider, audioProvider, replicateSoundEffectsModel, replicateSoundEffectsVideoModel, replicateAudioExtendModel, falTranscribeModel, replicateTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, replicateLipsyncImageModel, replicateLipsyncVideoModel, lipsyncProvider, speechProvider, ollamaSpeechModel, replicateSpeechModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration]);
 
   const conversationModelSelection = useMemo<ModelSelectionValue>(() => {
     const global = globalModelSelection;
@@ -2636,7 +2651,7 @@ function App() {
     const videoProvider = overrides.videoProvider === 'replicate' ? 'replicate' : overrides.videoProvider === 'fal' ? 'fal' : global.videoProvider;
     const inpaintProvider = overrides.inpaintProvider === 'replicate' ? 'replicate' : overrides.inpaintProvider === 'fal' ? 'fal' : global.inpaintProvider;
     const lipsyncProvider = overrides.lipsyncProvider === 'replicate' ? 'replicate' : overrides.lipsyncProvider === 'fal' ? 'fal' : global.lipsyncProvider;
-    const speechProvider = overrides.speechProvider === 'ollama' ? 'ollama' : overrides.speechProvider === 'fal' ? 'fal' : global.speechProvider;
+    const speechProvider: SpeechProviderID = overrides.speechProvider === 'ollama' || overrides.speechProvider === 'replicate' || overrides.speechProvider === 'fal' ? overrides.speechProvider : global.speechProvider;
     const audioProvider = overrides.audioProvider === 'replicate' ? 'replicate' : overrides.audioProvider === 'fal' ? 'fal' : global.audioProvider;
     const effectiveTranscriptionProvider = overrides.transcriptionProvider === 'fal' || overrides.transcriptionProvider === 'local-whisper' || overrides.transcriptionProvider === 'replicate' ? overrides.transcriptionProvider : global.transcriptionProvider;
     const next: ModelSelectionValue = {
@@ -2674,8 +2689,9 @@ function App() {
       falVideoKeyframeModel: overrides.videoKeyframeModel || global.falVideoKeyframeModel,
       falVideoExtendModel: overrides.videoExtendModel && videoProvider !== 'replicate' ? overrides.videoExtendModel : global.falVideoExtendModel,
       falVideoMotionModel: overrides.videoMotionModel || global.falVideoMotionModel,
-      falAudioModel: overrides.audioModel && speechProvider !== 'ollama' ? overrides.audioModel : global.falAudioModel,
+      falAudioModel: overrides.audioModel && speechProvider === 'fal' ? overrides.audioModel : global.falAudioModel,
       ollamaSpeechModel: overrides.audioModel && speechProvider === 'ollama' ? overrides.audioModel : global.ollamaSpeechModel,
+      replicateSpeechModel: overrides.audioModel && speechProvider === 'replicate' ? overrides.audioModel : global.replicateSpeechModel,
       falAudioCloneModel: overrides.audioCloneModel || global.falAudioCloneModel,
       falSoundEffectsModel: overrides.soundEffectsModel && audioProvider !== 'replicate' ? overrides.soundEffectsModel : global.falSoundEffectsModel,
       falSoundEffectsVideoModel: overrides.soundEffectsVideoModel && audioProvider !== 'replicate' ? overrides.soundEffectsVideoModel : global.falSoundEffectsVideoModel,
@@ -2757,6 +2773,7 @@ function App() {
     if (patch.falAudioModel !== undefined) setFalAudioModel(patch.falAudioModel);
     if (patch.speechProvider !== undefined) setSpeechProvider(patch.speechProvider);
     if (patch.ollamaSpeechModel !== undefined) setOllamaSpeechModel(patch.ollamaSpeechModel);
+    if (patch.replicateSpeechModel !== undefined) setReplicateSpeechModel(patch.replicateSpeechModel);
     if (patch.audioProvider !== undefined) setAudioProvider(patch.audioProvider);
     if (patch.replicateSoundEffectsModel !== undefined) setReplicateSoundEffectsModel(patch.replicateSoundEffectsModel);
     if (patch.replicateSoundEffectsVideoModel !== undefined) setReplicateSoundEffectsVideoModel(patch.replicateSoundEffectsVideoModel);
@@ -2891,7 +2908,7 @@ function App() {
         next.add('speechProvider');
         next.delete('audioModel');
       }
-      if (patch.falAudioModel !== undefined || patch.ollamaSpeechModel !== undefined) next.add('audioModel');
+      if (patch.falAudioModel !== undefined || patch.ollamaSpeechModel !== undefined || patch.replicateSpeechModel !== undefined) next.add('audioModel');
       if (patch.falAudioCloneModel !== undefined) next.add('audioCloneModel');
       if (patch.audioProvider !== undefined) {
         // The speechProvider recipe: the stored sound models belong to the
@@ -3000,6 +3017,7 @@ function App() {
         case 'audioModel':
           next.falAudioModel = global.falAudioModel;
           next.ollamaSpeechModel = global.ollamaSpeechModel;
+          next.replicateSpeechModel = global.replicateSpeechModel;
           break;
         case 'speechProvider': next.speechProvider = global.speechProvider; break;
         case 'audioProvider': next.audioProvider = global.audioProvider; break;
@@ -3254,6 +3272,7 @@ function App() {
     replicateSoundEffectsModels,
     replicateSoundEffectsVideoModels,
     replicateAudioExtendModels,
+    replicateSpeechModels,
     falVideoModels,
     falVideoImageModels,
     falVideoKeyframeModels,
@@ -3524,8 +3543,9 @@ function App() {
 	const nextFalLipsyncImageModel = config.providers?.fal?.lipsyncImageModel || defaultFalLipsyncImageModel;
 	const nextFalLipsyncVideoModel = config.providers?.fal?.lipsyncVideoModel || defaultFalLipsyncVideoModel;
     const nextLipsyncProvider: 'fal' | 'replicate' = config.models?.lipsyncProvider === 'replicate' ? 'replicate' : 'fal';
-    const nextSpeechProvider: 'fal' | 'ollama' = config.models?.speechProvider === 'ollama' ? 'ollama' : 'fal';
+    const nextSpeechProvider: SpeechProviderID = config.models?.speechProvider === 'ollama' || config.models?.speechProvider === 'replicate' ? config.models.speechProvider : 'fal';
     const nextOllamaSpeechModel = config.providers?.ollama?.models?.speech ?? '';
+    const nextReplicateSpeechModel = config.providers?.replicate?.speechModel || defaultReplicateSpeechModel;
     const nextAudioProvider: 'fal' | 'replicate' = config.models?.audioProvider === 'replicate' ? 'replicate' : 'fal';
     const nextReplicateSoundEffectsModel = config.providers?.replicate?.soundEffectsModel || defaultReplicateSoundEffectsModel;
     const nextReplicateSoundEffectsVideoModel = config.providers?.replicate?.soundEffectsVideoModel || defaultReplicateSoundEffectsVideoModel;
@@ -3608,6 +3628,7 @@ function App() {
     setLipsyncProvider(nextLipsyncProvider);
     setSpeechProvider(nextSpeechProvider);
     setOllamaSpeechModel(nextOllamaSpeechModel);
+    setReplicateSpeechModel(nextReplicateSpeechModel);
     setReplicateLipsyncImageModel(nextReplicateLipsyncImageModel);
     setReplicateLipsyncVideoModel(nextReplicateLipsyncVideoModel);
     setAudioProvider(nextAudioProvider);
@@ -4055,6 +4076,11 @@ function App() {
       setReplicateSoundEffectsModels(asArray(await ListReplicateSoundEffectModels()));
     } catch {
       setReplicateSoundEffectsModels([]);
+    }
+    try {
+      setReplicateSpeechModels(asArray(await ListReplicateSpeechModels()));
+    } catch {
+      setReplicateSpeechModels([]);
     }
     try {
       setReplicateSoundEffectsVideoModels(asArray(await ListReplicateSoundEffectsVideoModels()));
@@ -9193,8 +9219,9 @@ type ModelSelectionValue = {
   falLipsyncImageModel: string;
   falLipsyncVideoModel: string;
   lipsyncProvider: 'fal' | 'replicate';
-  speechProvider: 'fal' | 'ollama';
+  speechProvider: SpeechProviderID;
   ollamaSpeechModel: string;
+  replicateSpeechModel: string;
   audioProvider: 'fal' | 'replicate';
   replicateSoundEffectsModel: string;
   replicateSoundEffectsVideoModel: string;
@@ -9321,7 +9348,7 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   if (keys.has('videoReframeModel')) payload.videoReframeModel = draft.videoProvider === 'replicate' ? draft.replicateVideoReframeModel : draft.falVideoReframeModel;
   if (keys.has('videoRestyleModel')) payload.videoRestyleModel = draft.videoProvider === 'replicate' ? draft.replicateVideoRestyleModel : draft.falVideoRestyleModel;
   if (keys.has('speechProvider')) payload.speechProvider = draft.speechProvider;
-  if (keys.has('audioModel')) payload.audioModel = draft.speechProvider === 'ollama' ? draft.ollamaSpeechModel : draft.falAudioModel;
+  if (keys.has('audioModel')) payload.audioModel = draft.speechProvider === 'ollama' ? draft.ollamaSpeechModel : draft.speechProvider === 'replicate' ? draft.replicateSpeechModel : draft.falAudioModel;
   if (keys.has('audioCloneModel')) payload.audioCloneModel = draft.falAudioCloneModel;
   // The sound-slot overrides land on the slot the effective audio provider
   // reads, mirroring the backend's provider-conditional overlay.
@@ -9397,6 +9424,7 @@ function ModelSelectionPanel({
     replicateSoundEffectsModels: main.ReplicateModel[];
     replicateSoundEffectsVideoModels: main.ReplicateModel[];
     replicateAudioExtendModels: main.ReplicateModel[];
+    replicateSpeechModels: main.ReplicateModel[];
     falVideoModels: main.FalModel[];
     falVideoImageModels: main.FalModel[];
     falVideoKeyframeModels: main.FalModel[];
@@ -9465,6 +9493,7 @@ function ModelSelectionPanel({
   const replicateLipsyncImageOptions = falModelOptionList(catalogs.replicateLipsyncImageModels);
   const replicateLipsyncVideoOptions = falModelOptionList(catalogs.replicateLipsyncVideoModels);
   const replicateSoundEffectOptions = falModelOptionList(catalogs.replicateSoundEffectsModels);
+  const replicateSpeechOptions = falModelOptionList(catalogs.replicateSpeechModels);
   const replicateSoundEffectsVideoOptions = falModelOptionList(catalogs.replicateSoundEffectsVideoModels);
   const replicateAudioExtendOptions = falModelOptionList(catalogs.replicateAudioExtendModels);
   const falUpscaleOptions = falModelOptionList(catalogs.falUpscaleModels);
@@ -10437,21 +10466,22 @@ function ModelSelectionPanel({
                 {fieldLabel('speech-provider', 'Speech Provider', 'speechProvider')}
                 <InfoHint
                   label="Speech provider"
-                  text="Where generate_speech runs: fal.ai's cloud speech endpoints, or a speech model pulled into the local Ollama (phonon and its language variants — Ollama 0.40.11+, macOS). Ollama speech needs no API key and keeps working in airplane mode, but it speaks only its model's catalog voices: voice design and voice cloning stay on fal.ai whichever provider is selected, as do music, sound effects, and audio extension."
+                  text="Where generate_speech runs: fal.ai's cloud speech endpoints, Replicate's text-to-speech collection (MiniMax speech, Chatterbox, Qwen3-TTS, …), or a speech model pulled into the local Ollama (phonon and its language variants — Ollama 0.40.11+, macOS). Ollama speech needs no API key and keeps working in airplane mode, but it speaks only its model's catalog voices. Voice design and voice cloning stay on fal.ai whichever provider is selected — on Ollama or Replicate an attached clip is ignored with a notice — and music, sound effects, and audio extension follow the Audio Provider above."
                 />
                 {airplaneMode && value.speechProvider !== 'ollama' ? (
                   <AirplaneHint
-                    label="fal.ai speech unavailable"
-                    text="fal.ai speech is blocked while airplane mode is on — switch the provider to Ollama for local text-to-speech."
+                    label="Cloud speech unavailable"
+                    text="Cloud speech (fal.ai or Replicate) is blocked while airplane mode is on — switch the provider to Ollama for local text-to-speech."
                   />
                 ) : null}
               </div>
               <select
                 id="speech-provider"
                 value={value.speechProvider}
-                onChange={(event) => onChange({speechProvider: event.target.value as 'fal' | 'ollama'})}
+                onChange={(event) => onChange({speechProvider: event.target.value as SpeechProviderID})}
               >
                 <option value="fal" disabled={airplaneMode}>fal.ai (cloud)</option>
+                <option value="replicate" disabled={airplaneMode}>Replicate (cloud)</option>
                 <option value="ollama">Ollama (local)</option>
               </select>
             </div>
@@ -10470,6 +10500,25 @@ function ModelSelectionPanel({
                 {ollamaSpeechOptions.length ? null : (
                   <span className="hint">No speech model is pulled — run <code>ollama pull phonon</code> (Ollama 0.40.11+ on macOS), then refresh the Ollama connection.</span>
                 )}
+              </div>
+            ) : value.speechProvider === 'replicate' ? (
+              <div className="field">
+                <div className="field-label-row">
+                  {fieldLabel('replicate-speech-model', 'Speech Model (TTS, Replicate)', 'audioModel')}
+                  <InfoHint
+                    label="Replicate speech model"
+                    text="Replicate's text-to-speech collection, filtered to the models that speak written text (the voice-cloning utility that only mints a voice id drops out). The MiniMax speech models take their catalog voice names (Wise_Woman, English_Wiselady, …) as the voice plus an emotion and a speed; other models apply whichever of those controls their schema declares and drop the rest with a notice. Replicate reports no per-run price, so these calls show as “?” in usage."
+                  />
+                </div>
+                <ModelCombobox
+                  id="replicate-speech-model"
+                  ariaLabel="Replicate speech model"
+                  placeholder={defaultReplicateSpeechModel}
+                  value={value.replicateSpeechModel}
+                  onChange={(next) => onChange({replicateSpeechModel: next})}
+                  options={replicateSpeechOptions}
+                  allowCustom
+                />
               </div>
             ) : (
               <div className="field">
@@ -10508,7 +10557,7 @@ function ModelSelectionPanel({
                 {fieldLabel('fal-audio-clone-model', 'Voice Cloning Model (fal.ai)', 'audioCloneModel')}
                 <InfoHint
                   label="Voice cloning model"
-                  text="Speaks new text in an ATTACHED voice (the generate_speech tool's cloning path): a short clip of the speaker rides as the reference and this endpoint renders the words in that timbre. A designed voice id or a voice named in the request outranks the clip, and speech without an attached reference never clones. Always fal.ai — with Ollama as the speech provider an attached clip is ignored with a notice, since the local models cannot clone."
+                  text="Speaks new text in an ATTACHED voice (the generate_speech tool's cloning path): a short clip of the speaker rides as the reference and this endpoint renders the words in that timbre. A designed voice id or a voice named in the request outranks the clip, and speech without an attached reference never clones. Always fal.ai — with Ollama or Replicate as the speech provider an attached clip is ignored with a notice, since those routes cannot clone."
                 />
               </div>
               <ModelCombobox
@@ -10525,14 +10574,21 @@ function ModelSelectionPanel({
         </div>
         {!airplaneMode && value.audioProvider === 'replicate' && !catalogs.replicateHasKey ? (
           <span className="hint">
-            Add a Replicate API token {keyWhere} to generate music or sound effects on Replicate — speech and the fal-only slots (extend, design, clone) still need a fal.ai key.
+            Add a Replicate API token {keyWhere} to generate music or sound effects{value.speechProvider === 'replicate' ? ' and speech' : ''} on Replicate — {value.speechProvider === 'fal' ? 'speech and ' : ''}the fal-only slots (design, clone) still need a fal.ai key.
+          </span>
+        ) : null}
+        {!airplaneMode && value.audioProvider !== 'replicate' && value.speechProvider === 'replicate' && !catalogs.replicateHasKey ? (
+          <span className="hint">
+            Add a Replicate API token {keyWhere} to generate speech on Replicate — music, sound effects, voice design, and cloning still run on fal.ai.
           </span>
         ) : null}
         {!airplaneMode && value.audioProvider !== 'replicate' && !catalogs.falHasKey ? (
           <span className="hint">
             {value.speechProvider === 'ollama'
               ? <>Add a fal.ai API key {keyWhere} to generate music or sound effects, design voices, or clone one — speech already runs locally on Ollama.</>
-              : <>Add a fal.ai API key {keyWhere} to generate speech, music, or sound effects.</>}
+              : value.speechProvider === 'replicate'
+                ? <>Add a fal.ai API key {keyWhere} to generate music or sound effects, design voices, or clone one — speech runs on Replicate.</>
+                : <>Add a fal.ai API key {keyWhere} to generate speech, music, or sound effects.</>}
           </span>
         ) : null}
       </section>

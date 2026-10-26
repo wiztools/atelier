@@ -158,6 +158,8 @@ export function ListReplicateSoundEffectModels():Promise<Array<main.ReplicateMod
 
 export function ListReplicateSoundEffectsVideoModels():Promise<Array<main.ReplicateModel>>;
 
+export function ListReplicateSpeechModels():Promise<Array<main.ReplicateModel>>;
+
 export function ListReplicateTranscribeModels():Promise<Array<main.ReplicateModel>>;
 
 export function ListReplicateUpscaleModels():Promise<Array<main.ReplicateModel>>;

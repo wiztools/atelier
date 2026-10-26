@@ -1061,9 +1061,10 @@ var replicateAudioSynonyms = map[string][]string{
 }
 
 // resolveReplicateAudioInput maps a canonical AudioGenerateRequest (the
-// generate_sound shape — Kind audioKindSound; speech never routes here) onto
-// the Replicate model's native input schema, returning the prediction input
-// and user-facing notices for anything dropped. It is the Replicate sibling
+// generate_sound shape — Kind audioKindSound; speech rides
+// resolveReplicateSpeechInput) onto the Replicate model's native input schema,
+// returning the prediction input and user-facing notices for anything
+// dropped. It is the Replicate sibling
 // of resolveAudioBody with the fal-specific moves removed: no speculative
 // prompt+text double-write (Replicate rejects unknown fields), so the prompt
 // is the hard requirement — an unmappable prompt fails up front rather than
@@ -1158,6 +1159,106 @@ func resolveReplicateAudioInput(schema *ModelInputSchema, req AudioGenerateReque
 		}
 	}
 	return body, notices, nil
+}
+
+// replicateSpeechSynonyms lists, per canonical param, the native input names
+// Replicate text-to-speech models use (the generate_speech category —
+// resolveReplicateSpeechInput). "text" leads the prompt list because the
+// collection speaks it almost unanimously (minimax speech-*, kokoro, qwen3-tts,
+// the gemini and elevenlabs endpoints); resemble-ai/chatterbox says "prompt"
+// and the f5-tts packagings "gen_text". Voice is MiniMax's flat voice_id (a
+// catalog name or a cloned id — a free string, so no enum check fires),
+// kokoro's enum "voice", qwen3-tts's preset "speaker". Emotion and speed are
+// MiniMax's flat controls (fal nests the same pair under voice_setting);
+// the parsed property carries the enum and bounds coerceValue checks and
+// clamps against, so a model without them drops the ask with a notice.
+var replicateSpeechSynonyms = map[string][]string{
+	"prompt":  {"text", "prompt", "gen_text", "input_text", "input"},
+	"voice":   {"voice_id", "voice", "voice_name", "speaker", "speaker_id"},
+	"emotion": {"emotion"},
+	"speed":   {"speed", "speaking_rate", "speech_rate"},
+}
+
+// resolveReplicateSpeechInput maps a canonical AudioGenerateRequest (the
+// generate_speech shape — Kind audioKindSpeech) onto the Replicate speech
+// model's native input schema, returning the prediction input and
+// user-facing notices for anything dropped. The Replicate sibling of
+// resolveAudioBody's speech half with the fal moves removed: the spoken text
+// is the hard requirement (no speculative prompt+text double-write — Replicate
+// rejects unknown fields — so an unmappable text refuses up front), and voice,
+// emotion, and speed each bind only when the schema declares a home, dropping
+// with a notice otherwise. A voice reference never binds: cloning stays
+// fal-only and the executor stands the clip down before the request reaches
+// here, so a reference arriving from a direct caller drops with the same
+// notice rather than inventing an audio input. The sound canonicals
+// (duration, loop, style, negative prompt) are not speech controls and
+// generate_speech never sets them, so they are skipped. A nil schema yields a
+// minimal {text} body plus a notice — the collection's dominant spelling, the
+// only honest guess when unknown fields 422.
+func resolveReplicateSpeechInput(schema *ModelInputSchema, req AudioGenerateRequest) (map[string]any, []string, error) {
+	prompt := strings.TrimSpace(req.Prompt)
+	ov := Overrides{}
+	notices := []string{}
+	if schema == nil {
+		return map[string]any{"text": prompt},
+			[]string{"Couldn't load the model's parameter schema; sent the text only and may have dropped the voice, emotion, or speed settings."}, nil
+	}
+
+	body := map[string]any{}
+	if path, prop, ok := findNative(schema, ov, "replicate-speech", req.Model, "prompt"); ok {
+		setBodyPath(schema, body, path, coerceImageValue(prop, prompt))
+	} else {
+		return nil, notices, fmt.Errorf(
+			"the configured Replicate model %q has no text input — it cannot speak written text; pick a text-to-speech model in Settings → Models",
+			req.Model)
+	}
+
+	for _, item := range canonicalAudioValues(req) {
+		if !item.present {
+			continue
+		}
+		switch item.canon {
+		case "voice", "emotion", "speed":
+			path, prop, ok := findNative(schema, ov, "replicate-speech", req.Model, item.canon)
+			if !ok {
+				label := canonLabel(item.canon)
+				notices = append(notices, fmt.Sprintf(
+					"The selected model %q has no %s control; ignoring the requested %s.",
+					req.Model, label, label))
+				continue
+			}
+			value, notice := coerceValue(item.canon, prop, item.value, req.Model)
+			if value != nil {
+				setBodyPath(schema, body, path, value)
+			}
+			if notice != "" {
+				notices = append(notices, notice)
+			}
+		case "sourceAudio":
+			notices = append(notices, "The Replicate speech route doesn't clone voices, so the reference clip was ignored. Switch the Speech Provider to fal.ai to clone.")
+		}
+	}
+	return body, notices, nil
+}
+
+// replicateSpeechSchemaServes reports whether a text-to-speech collection
+// entry's input schema serves the canonical generate_speech request: a
+// scalar-string text input through the replicate-speech prompt synonyms (the
+// replicateSFXSchemaServes shape). It is what keeps the collection's
+// voice-cloning utility out of the picker — minimax/voice-cloning takes a
+// voice_file and mints an id, speaking nothing — and the schema is the only
+// place the difference shows (its id carries the same "voice" marker as the
+// speech models it serves).
+func replicateSpeechSchemaServes(schema *ModelInputSchema) bool {
+	if schema == nil {
+		return false
+	}
+	for _, name := range synonymsFor("replicate-speech", "prompt") {
+		if prop, ok := schema.property(name); ok {
+			return prop.Kind == schemaScalar && prop.Type == "string"
+		}
+	}
+	return false
 }
 
 // replicateSFXSynonyms lists, per canonical param, the native input names

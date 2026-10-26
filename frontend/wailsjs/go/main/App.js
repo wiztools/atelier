@@ -314,6 +314,10 @@ export function ListReplicateSoundEffectsVideoModels() {
   return window['go']['main']['App']['ListReplicateSoundEffectsVideoModels']();
 }
 
+export function ListReplicateSpeechModels() {
+  return window['go']['main']['App']['ListReplicateSpeechModels']();
+}
+
 export function ListReplicateTranscribeModels() {
   return window['go']['main']['App']['ListReplicateTranscribeModels']();
 }

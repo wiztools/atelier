@@ -1067,8 +1067,8 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 		gateway.tools.GenerateAudio = func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error) {
 			// Speech routes by Models.SpeechProvider: the ollama branch runs
 			// the local model over loopback — no key to load, and airplane
-			// mode never applies. Sound generation (and speech whose
-			// provider is fal) falls through to the cloud paths below, which
+			// mode never applies. Sound generation (and speech on the fal or
+			// replicate routes) falls through to the cloud paths below, which
 			// is why the airplane refusal lives there and not here.
 			if req.Kind == audioKindSpeech && resolveSpeechProvider(config) == "ollama" {
 				generated, err := app.ollamaClient(config.Providers.Ollama.BaseURL).GenerateSpeech(ctx, req.Model, req.Voice, req.Prompt)
@@ -1087,17 +1087,48 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				}
 				return generated, err
 			}
-			// Cloud-only below (Replicate for sound on the AudioProvider
-			// route, fal for everything else): airplane mode refuses the call.
+			// Cloud-only below (Replicate for speech on the SpeechProvider
+			// route and for sound on the AudioProvider route, fal for
+			// everything else): airplane mode refuses the call.
 			if err := airplaneMediaError(config, "audio generation"); err != nil {
 				return GeneratedAudio{}, err
 			}
-			// Sound generation routes by Models.AudioProvider: the replicate
-			// branch runs the prediction lifecycle and downloads the clip —
-			// CostMicros stays unset (Replicate reports no cost; the engine
-			// layer stamps CostUnknown for the "?" render). Speech never
-			// routes here: the voice models ride SpeechProvider's fal/ollama
-			// pair alone.
+			// Each kind routes by its own provider — speech by
+			// Models.SpeechProvider, sound by Models.AudioProvider — and the
+			// replicate branches run the prediction lifecycle and download
+			// the clip. CostMicros stays unset (Replicate reports no cost; the
+			// engine layer stamps CostUnknown for the "?" render). The speech
+			// branch never carries a SourceAudio to resolve: cloning stays
+			// fal-only and the executor stands the reference down.
+			if req.Kind == audioKindSpeech && resolveSpeechProvider(config) == "replicate" {
+				apiKey, err := loadReplicateAPIKey()
+				if err != nil {
+					return GeneratedAudio{}, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return GeneratedAudio{}, errReplicateKeyNotConfigured
+				}
+				client := newReplicateClient(app.client, apiKey)
+				schema := replicateSchemaCache.Get(ctx, req.Model)
+				body, notices, err := resolveReplicateSpeechInput(schema, req)
+				if err != nil {
+					return GeneratedAudio{Notices: notices}, err
+				}
+				job := &mediaJob{}
+				client.jobSink = job
+				generated, recovered, err := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (GeneratedAudio, error) {
+						return client.GenerateAudio(jctx, req.Model, body)
+					},
+					client.CancelMediaJob,
+					client.RecoverAudioJob,
+				)
+				if err == nil && recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
+				generated.Notices = notices
+				return generated, err
+			}
 			if req.Kind == audioKindSound && resolveAudioProvider(config) == "replicate" {
 				apiKey, err := loadReplicateAPIKey()
 				if err != nil {
