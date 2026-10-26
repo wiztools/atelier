@@ -3198,30 +3198,63 @@ func isReplicateSoundModel(model ReplicateModel) bool {
 // Replicate's video-editing collection for the Settings video-sound-effects
 // picker, shown when replicate is the AudioProvider (add_sound_effects
 // follows it). The collection mixes in restyle, reframe, extend, and utility
-// models, so entries are post-filtered by audio id markers — the fal pattern
-// of partitioning a broad category. The collection's audio entries are
-// community-hosted and the lister keeps official models only, so an empty
-// result is the EXPECTED shape today; it falls back to the default model by
-// name (the transcribe lister's rule) and the field stays free-text editable
-// either way.
+// models, so entries are id-marker pre-filtered AND input-schema checked
+// (replicateSFXSchemaServes — a scalar-string video input through the
+// replicate-sfx synonyms, the lipsync/extend pickers' precise filter), which
+// keeps utility entries like extract-audio/video-audio-merge out. The whole
+// class is community-hosted today and the collection lists official models
+// only, so an empty result is the EXPECTED shape: it falls back to the
+// verified drivable packagings by name (the transcribe lister's rule,
+// widened to the family — MMAudio's L40S default, its T4 hardware variant,
+// and ThinkSound, steered through its caption input), and the field stays
+// free-text editable either way.
 func (a *App) ListReplicateSoundEffectsVideoModels() ([]ReplicateModel, error) {
 	models, err := a.listReplicateVideoEditingCollection(isReplicateVideoSFXModel)
 	if err != nil {
 		return nil, err
 	}
-	if len(models) == 0 {
-		models = append(models, ReplicateModel{ID: defaultReplicateSoundEffectsVideoModel})
+	config, err := loadAppConfig()
+	if err != nil {
+		return nil, err
 	}
-	return models, nil
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cache := newReplicateSchemaCache(a.client, config.Storage.Root)
+	filtered := make([]ReplicateModel, 0, len(models))
+	for _, model := range models {
+		if replicateSFXSchemaServes(cache.Get(ctx, model.ID)) {
+			filtered = append(filtered, model)
+		}
+	}
+	if len(filtered) == 0 {
+		for _, id := range replicateVideoSFXFallbacks {
+			filtered = append(filtered, ReplicateModel{ID: id})
+		}
+	}
+	return filtered, nil
+}
+
+// replicateVideoSFXFallbacks names the video-to-sound packagings verified
+// drivable against the canonical request — the picker's bare-dropdown
+// fallback, since the official-only collection listing never surfaces this
+// community-hosted class. The first entry is the default model.
+var replicateVideoSFXFallbacks = []string{
+	defaultReplicateSoundEffectsVideoModel,
+	"zsxkib/mmaudio-t4",
+	"zsxkib/thinksound",
 }
 
 // isReplicateVideoSFXModel reports whether a video-editing collection entry
-// is a video-to-sound endpoint — the id carries one of the audio/sfx markers
-// (mmaudio, the foley/sound-effect packagings). Skips the collection's
-// restyle, reframe, extend, and utility entries, which share no marker.
+// is a video-to-sound GENERATOR — the id carries one of the mmaudio/sfx/
+// sound/foley markers. Plain "audio" is deliberately not a marker: the
+// collection carries audio utilities (lucataco/extract-audio strips the
+// track, lucataco/video-audio-merge muxes one in) that no sound description
+// can drive; the schema check behind this pre-filter rejects them too, but
+// the vocabulary shouldn't invite them. Skips the collection's restyle,
+// reframe, and extend entries, which share no marker.
 func isReplicateVideoSFXModel(model ReplicateModel) bool {
 	lower := strings.ToLower(model.ID)
-	for _, marker := range []string{"mmaudio", "sfx", "sound", "foley", "audio"} {
+	for _, marker := range []string{"mmaudio", "sfx", "sound", "foley"} {
 		if strings.Contains(lower, marker) {
 			return true
 		}

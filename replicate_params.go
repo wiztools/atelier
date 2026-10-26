@@ -1164,14 +1164,36 @@ func resolveReplicateAudioInput(schema *ModelInputSchema, req AudioGenerateReque
 // Replicate video-to-sound models use (the add_sound_effects category —
 // resolveSFXBodyForCategory). MMAudio names its clip input "video" where
 // fal's endpoints say "video_url"; the steering names follow the same
-// prompt/text_prompt split the fal sfx table covers.
+// prompt/text_prompt split the fal sfx table covers, plus "caption" —
+// zsxkib/thinksound (ThinkSound) steers through a caption input alone, and
+// without the name the tool's required sound description would drop with a
+// notice and the model would self-describe from the picture.
 var replicateSFXSynonyms = map[string][]string{
 	"sourceVideo":    {"video", "video_url", "input_video"},
-	"prompt":         {"prompt", "text_prompt", "text", "description"},
+	"prompt":         {"prompt", "text_prompt", "text", "description", "caption"},
 	"negativePrompt": {"negative_prompt"},
 	"preserveSpeech": {"preserve_speech", "preserve_sounds", "keep_speech"},
 	"numSamples":     {"num_samples", "samples"},
 	"duration":       {"duration", "duration_seconds", "audio_duration"},
+}
+
+// replicateSFXSchemaServes reports whether a video-to-sound candidate's
+// input schema accepts the canonical add_sound_effects request: a
+// scalar-string source-video input through the replicate-sfx synonyms (the
+// replicateContinuationSchemaServes shape — the capability is only visible
+// in the schemas). The picker's id markers are the cheap pre-filter; this is
+// the precise one, so a utility or undeployed entry never reaches the
+// dropdown.
+func replicateSFXSchemaServes(schema *ModelInputSchema) bool {
+	if schema == nil {
+		return false
+	}
+	for _, name := range synonymsFor("replicate-sfx", "sourceVideo") {
+		if prop, ok := schema.property(name); ok {
+			return prop.Kind == schemaScalar && prop.Type == "string"
+		}
+	}
+	return false
 }
 
 // replicateAudioExtendSynonyms lists, per canonical param, the native input

@@ -452,6 +452,61 @@ func TestReplicateSoundPickerFilters(t *testing.T) {
 	if isReplicateVideoSFXModel(ReplicateModel{ID: "luma/reframe-video"}) || isReplicateVideoSFXModel(ReplicateModel{ID: "xai/grok-imagine-video-extension"}) {
 		t.Fatal("reframe/extend ids must drop out of the video-sfx picker")
 	}
+	// Plain "audio" is not a generator marker: the collection's audio
+	// utilities must never reach the video-sfx picker.
+	if isReplicateVideoSFXModel(ReplicateModel{ID: "lucataco/extract-audio"}) || isReplicateVideoSFXModel(ReplicateModel{ID: "lucataco/video-audio-merge"}) {
+		t.Fatal("audio-utility ids must drop out of the video-sfx picker")
+	}
+	if !isReplicateVideoSFXModel(ReplicateModel{ID: "zsxkib/mmaudio-t4"}) || !isReplicateVideoSFXModel(ReplicateModel{ID: "zsxkib/thinksound"}) {
+		t.Fatal("the verified mmaudio/thinksound packagings should pass the pre-filter")
+	}
+}
+
+// TestReplicateSFXSchemaServes pins the picker's precise filter: a model
+// needs a scalar-string video input through the replicate-sfx synonyms.
+func TestReplicateSFXSchemaServes(t *testing.T) {
+	mmaudio := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"video":{"type":"string","format":"uri"},
+		"prompt":{"type":"string"},
+		"duration":{"type":"number"}
+	}}}}}`)
+	if !replicateSFXSchemaServes(mmaudio) {
+		t.Fatal("an mmaudio-style schema should serve video sound effects")
+	}
+	utility := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"video_path":{"type":"string"},
+		"audio_path":{"type":"string"}
+	}}}}}`)
+	if replicateSFXSchemaServes(utility) {
+		t.Fatal("a schema without a source-video synonym must not serve")
+	}
+}
+
+// TestResolveSFXBodyCaptionSteering pins ThinkSound's caption input binding:
+// a model steering through "caption" alone receives the required sound
+// description there.
+func TestResolveSFXBodyCaptionSteering(t *testing.T) {
+	schema := parseReplicateFixtureSchema(t, `{"components":{"schemas":{"Input":{"type":"object","properties":{
+		"video":{"type":"string","format":"uri"},
+		"caption":{"type":"string"},
+		"cot":{"type":"boolean"}
+	}}}}}`)
+	body, notices, err := resolveSFXBodyForCategory(schema, SFXGenerateRequest{
+		Model:  "zsxkib/thinksound",
+		Video:  "https://example.com/clip.mp4",
+		Prompt: "distant thunder, footsteps on gravel",
+	}, Overrides{}, "replicate-sfx")
+	if err != nil {
+		t.Fatalf("resolveSFXBodyForCategory: %v", err)
+	}
+	if got, ok := body["caption"].(string); !ok || got != "distant thunder, footsteps on gravel" {
+		t.Fatalf("caption = %#v, want the steering prompt", body["caption"])
+	}
+	for _, notice := range notices {
+		if strings.Contains(notice, "takes no sound description") {
+			t.Fatalf("caption must bind, got a drop notice: %v", notices)
+		}
+	}
 }
 
 const replicateContinuationSchema = `{"components":{"schemas":{"Input":{"type":"object","properties":{
