@@ -1395,10 +1395,10 @@ button:disabled {
   gap: 18px;
 }
 
-/* Audio section's voice trio: the speech (TTS) model plus the two ways it
-   gets a voice — designed from a description or cloned from an attached
-   clip. The box makes the three read as one set at the section's end; the
-   speech select spans the full row beneath its two voice sources. */
+/* Audio section's voice group: the speech provider and its TTS model lead,
+   then the two ways speech gets a voice — designed from a description or
+   cloned from an attached clip. The box makes the set read as one unit at
+   the section's end. */
 .voice-model-group {
   margin-top: 18px;
   padding: 14px 16px 16px;
@@ -1414,10 +1414,6 @@ button:disabled {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: #8a918e;
-}
-
-.voice-model-group .voice-model-speech-field {
-  grid-column: 1 / -1;
 }
 
 /* Stacks multiple grid rows (e.g. provider/model over width/height/steps)

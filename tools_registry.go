@@ -355,7 +355,7 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 		definitions = append(definitions, videoGenerationToolDefinition(config, videoAudioCapable))
 	}
 	if speechGenerationConfigured(config) {
-		definitions = append(definitions, speechGenerationToolDefinition(videoAudioCapable))
+		definitions = append(definitions, speechGenerationToolDefinition(videoAudioCapable, resolveSpeechProvider(config)))
 	}
 	if soundEffectsGenerationConfigured(config) {
 		definitions = append(definitions, soundEffectsGenerationToolDefinition())
@@ -1215,12 +1215,18 @@ func writeTempVideo(video GeneratedVideo) (string, error) {
 	return writeTempMediaBytes(video.Data, "atelier-video-*", videoExtensionForMediaType(video.MimeType))
 }
 
-// speechGenerationConfigured reports whether the generate_speech tool should be
-// offered: a fal speech model must be configured AND a fal.ai key must be
-// present. fal is the only audio backend. The key check avoids offering a tool
-// that is guaranteed to fail at call time with errFalKeyNotConfigured.
+// speechGenerationConfigured reports whether the generate_speech tool should
+// be offered, routing by resolveSpeechProvider: the fal path needs a speech
+// model configured AND a fal.ai key present — the key check avoids offering a
+// tool that is guaranteed to fail at call time with errFalKeyNotConfigured;
+// the ollama path needs only its model slot — no key exists to check and
+// airplane mode never blocks loopback Ollama, so speech stays available
+// offline. The other audio tools (sound, extend, design, cloning) remain
+// fal-only regardless.
 func speechGenerationConfigured(config AppConfig) bool {
-	// fal-only: airplane mode drops the tool.
+	if resolveSpeechProvider(config) == "ollama" {
+		return strings.TrimSpace(config.Providers.Ollama.Models.Speech) != ""
+	}
 	if airplaneModeActive(config) {
 		return false
 	}
@@ -1252,6 +1258,48 @@ func resolveDefaultAudioModel(config AppConfig) string {
 	}
 	return defaultFalAudioModel
 }
+
+// defaultOllamaSpeechModel is the local speech model resolveDefaultSpeechModel
+// falls back to when the Ollama slot is empty. The tool gate keeps the slot
+// required, so this is a belt for direct callers, and the Settings picker's
+// placeholder.
+const defaultOllamaSpeechModel = "phonon"
+
+// resolveSpeechProvider returns the backend generate_speech runs on for this
+// config: "ollama" when Models.SpeechProvider says so, else fal — speech was
+// fal-only before Ollama's speech models existed, so an unset or unrecognized
+// value keeps routing there. The routing truth for the tool gate, the
+// gateway's GenerateAudio wiring, the executor's cloning stand-down, and
+// activity attribution. Scope is the voice models alone: generate_sound,
+// extend_audio, add_sound_effects, generate_voice, and voice cloning stay
+// fal-only regardless.
+func resolveSpeechProvider(config AppConfig) string {
+	if strings.TrimSpace(config.Models.SpeechProvider) == "ollama" {
+		return "ollama"
+	}
+	return "fal"
+}
+
+// resolveDefaultSpeechModel returns the model generate_speech uses when the
+// call doesn't override it, routed by the effective speech provider — the
+// fal slot's AudioModel or the Ollama slot's Speech model.
+func resolveDefaultSpeechModel(config AppConfig) string {
+	if resolveSpeechProvider(config) == "ollama" {
+		if model := strings.TrimSpace(config.Providers.Ollama.Models.Speech); model != "" {
+			return model
+		}
+		return defaultOllamaSpeechModel
+	}
+	return resolveDefaultAudioModel(config)
+}
+
+// The audio-generation kinds the shared AudioGenerateRequest carries: the
+// gateway routes only speech by Models.SpeechProvider; sound generation stays
+// fal-only even though both ride one transport hook.
+const (
+	audioKindSpeech = "speech"
+	audioKindSound  = "sound"
+)
 
 // resolveDefaultAudioCloneModel returns the voice-cloning model
 // generate_speech switches to when the user attached a reference clip — the
@@ -1482,8 +1530,18 @@ func resolveDefaultLipsyncVideoModel(config AppConfig, provider string) string {
 // videoAudioCapable reflects whether the configured video model can produce
 // audio on its own; when it cannot, the description tells the planner that
 // generated speech carries forward to a later lip_sync in the same turn — the
-// correct path for putting narration behind a video on a non-audio video model.
-func speechGenerationDescription(videoAudioCapable bool) string {
+// correct path for putting narration behind a video on a non-audio video
+// model. Provider selects the paragraph's backend facts: the ollama wording
+// states the local model's contract (catalog voices, no cloning) instead of
+// fal's.
+func speechGenerationDescription(videoAudioCapable bool, provider string) string {
+	if provider == "ollama" {
+		base := "Use this when the user asks to speak, narrate, or read text aloud (text-to-speech). The configured local Ollama speech model generates the clip and it is attached to the assistant reply — it runs locally, needs no API key, and works in airplane mode. Pass voice only when the user names one: the value is a catalog voice from the model (e.g. \"Zoey\"), and an unknown name fails listing the valid ones — retry with one of those. This model cannot clone voices from an attached clip and cannot design new voices."
+		if !videoAudioCapable {
+			return base + " To put generated speech behind a video, call generate_speech first then lip_sync in the same turn — the generated speech carries forward to lip_sync automatically."
+		}
+		return base
+	}
 	base := "Use this when the user asks to speak, narrate, or read text aloud (text-to-speech). The configured fal.ai speech model generates the clip and it is attached to the assistant reply. When the user attached an audio clip, the speech is generated in that voice (voice cloning) automatically; pass cloneVoice:false to keep the regular speech voice even though a clip is attached (e.g. the clip holds content to transcribe, not a voice to copy), or cloneVoice:true to require cloning. Naming a voice (voice) speaks in that named voice directly — a clip present in the turn is not cloned from unless cloneVoice:true is also passed."
 	if !videoAudioCapable {
 		return base + " To put generated speech behind a video, call generate_speech first then lip_sync in the same turn — the generated speech carries forward to lip_sync automatically."
@@ -1554,11 +1612,11 @@ func audioGenerationActivity(result HarnessToolResult) HarnessToolActivity {
 	return activity
 }
 
-func speechGenerationToolDefinition(videoAudioCapable bool) HarnessToolDefinition {
+func speechGenerationToolDefinition(videoAudioCapable bool, provider string) HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "generate_speech",
 		Title:       "Generate speech",
-		Description: speechGenerationDescription(videoAudioCapable),
+		Description: speechGenerationDescription(videoAudioCapable, provider),
 		Example:     `{"name":"generate_speech","content":"The quick brown fox jumps over the lazy dog."}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: generateSpeechParamSchema(),
@@ -1597,9 +1655,22 @@ func speechGenerationToolDefinition(videoAudioCapable bool) HarnessToolDefinitio
 				reference = ""
 				namedVoiceOverReference = true
 			}
+			// The ollama route cannot clone: stand the reference down with a
+			// notice instead of routing the call to fal's clone endpoint —
+			// the provider choice is deterministic (local means local), and
+			// the fal slots' presence must not quietly move a local turn
+			// onto the network. cloneVoice:true cannot force it; the notice
+			// says what happened so the user can switch providers for
+			// cloning.
+			providerCannotClone := false
+			if provider == "ollama" && reference != "" {
+				reference = ""
+				providerCannotClone = true
+			}
 			out, summary, err := audioGenerationExecute(ctx, tools, AudioGenerateRequest{
 				Model:       strings.TrimSpace(call.Model),
 				Prompt:      call.Content,
+				Kind:        audioKindSpeech,
 				Voice:       strings.TrimSpace(call.Voice),
 				Emotion:     strings.TrimSpace(call.Emotion),
 				Speed:       call.Speed,
@@ -1608,7 +1679,7 @@ func speechGenerationToolDefinition(videoAudioCapable bool) HarnessToolDefinitio
 				if reference != "" {
 					return resolveDefaultAudioCloneModel(config)
 				}
-				return resolveDefaultAudioModel(config)
+				return resolveDefaultSpeechModel(config)
 			})
 			// Degrade, don't fail: forced cloning without an attached clip still
 			// produces useful speech, and the notice tells the user why the voice
@@ -1627,9 +1698,27 @@ func speechGenerationToolDefinition(videoAudioCapable bool) HarnessToolDefinitio
 					out = audio
 				}
 			}
+			if providerCannotClone {
+				if audio, ok := out.(ToolAudioResult); ok {
+					audio.Notices = append(audio.Notices, "The local Ollama speech model can't clone voices, so the clip was ignored and the speech used a catalog voice. Switch the Speech Provider back to fal.ai to clone.")
+					out = audio
+				}
+			}
 			return out, summary, err
 		},
-		Activity: audioGenerationActivity,
+		Activity: func(result HarnessToolResult) HarnessToolActivity {
+			activity := audioGenerationActivity(result)
+			// The engine layer defaults audio activities to fal (the fal-only
+			// era); speech routes by its own provider, so the builder stamps
+			// it — the transcribe_audio/lipsync captured-config pattern.
+			if provider == "ollama" {
+				activity.Provider = "ollama"
+				if typed, ok := result.Result.(ToolAudioResult); ok {
+					activity.Command = []string{"ollama", "run", typed.Model}
+				}
+			}
+			return activity
+		},
 	}
 }
 
@@ -1789,6 +1878,7 @@ func soundEffectsGenerationToolDefinition() HarnessToolDefinition {
 			return audioGenerationExecute(ctx, tools, AudioGenerateRequest{
 				Model:          strings.TrimSpace(call.Model),
 				Prompt:         call.Content,
+				Kind:           audioKindSound,
 				Duration:       duration,
 				NegativePrompt: strings.TrimSpace(call.NegativePrompt),
 				Loop:           call.Loop,
@@ -3122,7 +3212,7 @@ func generateSpeechParamSchema() map[string]any {
 		"additionalProperties": false,
 		"properties": map[string]any{
 			"content": stringParam("The text to speak."),
-			"model":   stringParam("Optional fal.ai speech model override."),
+			"model":   stringParam("Optional speech model override (the configured provider's endpoint)."),
 			"voice": stringParam("Optional — the voice for the speech (e.g. \"Rachel\"). " +
 				"Only some speech models support it; ignored otherwise with a note to the user."),
 			"emotion": stringParam("Optional — the delivery tone when the user asks the speech to carry a mood " +
@@ -3445,6 +3535,24 @@ func (r HarnessToolRegistry) VideoAudioCapable() bool {
 		return false
 	}
 	return strings.Contains(def.Description, videoAudioCapabilityMarker)
+}
+
+// speechLocalProviderMarker is embedded in generate_speech's description when
+// the tool routes to the local Ollama speech provider — sniffed back by
+// SpeechServedLocally, the videoAudioCapabilityMarker pattern.
+const speechLocalProviderMarker = "local Ollama speech model"
+
+// SpeechServedLocally reports whether the registry's generate_speech routes to
+// the local Ollama speech provider. The registry carries no config, so this
+// reads the description's provider marker — the VideoAudioCapable pattern;
+// the triage airplane paragraph uses it to keep generate_speech out of the
+// cloud-only absent list.
+func (r HarnessToolRegistry) SpeechServedLocally() bool {
+	def, ok := r.Get("generate_speech")
+	if !ok {
+		return false
+	}
+	return strings.Contains(def.Description, speechLocalProviderMarker)
 }
 
 func (definition HarnessToolDefinition) RequiresPermission() bool {

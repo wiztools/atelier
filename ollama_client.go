@@ -113,6 +113,21 @@ func (client OllamaClient) enrichModelCapabilities(ctx context.Context, model *O
 		model.Parameter = show.Details.ParameterSize
 	}
 	model.ImageGeneration = show.SupportsImageGeneration(model.Name)
+	model.SpeechGeneration = hasSpeechCapability(show.Capabilities)
+}
+
+// hasSpeechCapability reports whether a model advertises Ollama's "speech"
+// capability — a text-to-speech model served through the OpenAI-compatible
+// /v1/audio/speech endpoint (phonon and friends). Chat models report
+// "completion", image models "image", so the token cleanly partitions the
+// catalog the way the image filter's tokens do.
+func hasSpeechCapability(capabilities []string) bool {
+	for _, capability := range capabilities {
+		if strings.ToLower(strings.TrimSpace(capability)) == "speech" {
+			return true
+		}
+	}
+	return false
 }
 
 func (client OllamaClient) ShowModel(ctx context.Context, name string) (ollamaShowResponse, error) {
@@ -389,6 +404,83 @@ func (client OllamaClient) GenerateImage(ctx context.Context, req ImageGenerateR
 		return ollamaGenerateResponse{}, nil, errors.New(payload.Error)
 	}
 	return payload, raw, nil
+}
+
+// GenerateSpeech renders text to speech through Ollama's OpenAI-compatible
+// /v1/audio/speech endpoint — the transport behind generate_speech when
+// Models.SpeechProvider is "ollama". Unlike /api/generate this is a plain
+// synchronous call that streams binary audio: a 24 kHz mono 16-bit PCM WAV
+// whose RIFF and data-chunk sizes are 0xFFFFFFFF streaming placeholders
+// (the encoder cannot know the length up front), so the buffered bytes get
+// their header rewritten before returning (fixStreamingWAVHeader) — every
+// downstream reader, strict or lenient, then sees honest sizes. Only wav and
+// pcm are offered by the server, and wav is the one with a container. An
+// empty voice leaves the model's default; the server matches names
+// case-insensitively and an unknown one fails listing the valid catalog, so
+// the error is relayed verbatim for the planner to retry against.
+func (client OllamaClient) GenerateSpeech(ctx context.Context, model, voice, input string) (GeneratedAudio, error) {
+	body := map[string]any{
+		"model":           model,
+		"input":           input,
+		"response_format": "wav",
+	}
+	if voice = strings.TrimSpace(voice); voice != "" {
+		body["voice"] = voice
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return GeneratedAudio{}, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, client.endpoint("/v1/audio/speech"), bytes.NewReader(data))
+	if err != nil {
+		return GeneratedAudio{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := client.httpClient.Do(httpReq)
+	if err != nil {
+		return GeneratedAudio{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if resp.StatusCode == http.StatusNotFound {
+			// A pre-speech Ollama has no /v1/audio/speech route at all.
+			return GeneratedAudio{}, fmt.Errorf("ollama speech returned %s: the speech endpoint needs Ollama 0.40.11 or newer (%s)", resp.Status, openAIErrorMessage(raw))
+		}
+		return GeneratedAudio{}, fmt.Errorf("ollama speech returned %s: %s", resp.Status, openAIErrorMessage(raw))
+	}
+	audio, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return GeneratedAudio{}, err
+	}
+	if len(audio) == 0 {
+		return GeneratedAudio{}, errors.New("ollama speech returned no audio data")
+	}
+	if len(audio) < 12 || !bytes.Equal(audio[:4], []byte("RIFF")) || !bytes.Equal(audio[8:12], []byte("WAVE")) {
+		return GeneratedAudio{}, fmt.Errorf("ollama speech returned %s instead of WAV audio", firstNonEmpty([]string{resp.Header.Get("Content-Type"), "an unrecognized payload"}))
+	}
+	return GeneratedAudio{Data: fixStreamingWAVHeader(audio), MimeType: "audio/wav"}, nil
+}
+
+// openAIErrorMessage pulls the human-readable message out of an OpenAI-shaped
+// error body ({"error":{"message":…}}), tolerating Ollama's native
+// {"error":"…"} string shape; anything else comes back trimmed verbatim.
+func openAIErrorMessage(raw []byte) string {
+	var shaped struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &shaped); err == nil && strings.TrimSpace(shaped.Error.Message) != "" {
+		return strings.TrimSpace(shaped.Error.Message)
+	}
+	var plain struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &plain); err == nil && strings.TrimSpace(plain.Error) != "" {
+		return strings.TrimSpace(plain.Error)
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 func (client OllamaClient) getJSON(ctx context.Context, path string) (*http.Response, error) {

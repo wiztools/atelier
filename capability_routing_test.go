@@ -135,8 +135,8 @@ func TestVideoGenerationDescription_NotCapableOmitsAudioHint(t *testing.T) {
 }
 
 func TestSpeechGenerationDescription_ChainHintOnlyWhenVideoLacksAudio(t *testing.T) {
-	withHint := speechGenerationDescription(false)
-	withoutHint := speechGenerationDescription(true)
+	withHint := speechGenerationDescription(false, "fal")
+	withoutHint := speechGenerationDescription(true, "fal")
 	if !strings.Contains(withHint, "carries forward to lip_sync") {
 		t.Fatalf("non-audio-video description should explain the chain: %q", withHint)
 	}
@@ -235,7 +235,7 @@ func TestTriageSystemPromptRoutingHintConditional(t *testing.T) {
 // the catalog.
 func TestTriagePromptListsAudioTools(t *testing.T) {
 	registry := newHarnessToolRegistry([]HarnessToolDefinition{
-		speechGenerationToolDefinition(false),
+		speechGenerationToolDefinition(false, "fal"),
 		soundEffectsGenerationToolDefinition(),
 		voiceGenerationToolDefinition(),
 		extendAudioToolDefinition(),
@@ -631,7 +631,7 @@ func TestGenerateSpeechFeedsLipSyncInSameBatch(t *testing.T) {
 	var lipsyncSawFace string
 
 	registry := newHarnessToolRegistry([]HarnessToolDefinition{
-		speechGenerationToolDefinition(false),
+		speechGenerationToolDefinition(false, "fal"),
 		lipsyncToolDefinition(defaultAppConfig(), false),
 	})
 	tools := HarnessToolExecutionContext{
@@ -701,7 +701,7 @@ func TestUserAttachedAudioNotOverwritten(t *testing.T) {
 
 	var lipsyncSawAudio string
 	registry := newHarnessToolRegistry([]HarnessToolDefinition{
-		speechGenerationToolDefinition(false),
+		speechGenerationToolDefinition(false, "fal"),
 		lipsyncToolDefinition(defaultAppConfig(), false),
 	})
 	const userAudio = "data:audio/mpeg;base64,USERCLIP"
@@ -754,7 +754,7 @@ func TestGeneratedAudioNeverBecomesVoiceReference(t *testing.T) {
 	config.Providers.Fal.AudioCloneModel = "fal-ai/clone/model"
 
 	var saw []AudioGenerateRequest
-	registry := newHarnessToolRegistry([]HarnessToolDefinition{speechGenerationToolDefinition(false)})
+	registry := newHarnessToolRegistry([]HarnessToolDefinition{speechGenerationToolDefinition(false, "fal")})
 	tools := HarnessToolExecutionContext{
 		Config: config,
 		GenerateAudio: func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error) {
@@ -809,7 +809,7 @@ func TestUserAttachedClipSelectsCloningPath(t *testing.T) {
 
 	const userClip = "data:audio/mpeg;base64,USERCLIP"
 	var saw []AudioGenerateRequest
-	registry := newHarnessToolRegistry([]HarnessToolDefinition{speechGenerationToolDefinition(false)})
+	registry := newHarnessToolRegistry([]HarnessToolDefinition{speechGenerationToolDefinition(false, "fal")})
 	tools := HarnessToolExecutionContext{
 		Config:         config,
 		AttachedAudios: []string{userClip},
@@ -854,7 +854,7 @@ func TestUserAttachedClipSelectsCloningPath(t *testing.T) {
 // a new clip is audio.
 func TestTriagePromptRoutesTranscriptionToText(t *testing.T) {
 	registry := newHarnessToolRegistry([]HarnessToolDefinition{
-		speechGenerationToolDefinition(false),
+		speechGenerationToolDefinition(false, "fal"),
 		soundEffectsGenerationToolDefinition(),
 		extendAudioToolDefinition(),
 		transcribeAudioToolDefinition(defaultAppConfig()),

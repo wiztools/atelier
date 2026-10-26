@@ -440,6 +440,10 @@ const defaultFalVideoUpscaleModel = 'fal-ai/video-upscaler';
 const defaultFalVideoReframeModel = 'fal-ai/ltx-2.3/reframe';
 const defaultFalVideoRestyleModel = 'fal-ai/kling-video/o3/pro/video-to-video/edit';
 const defaultFalAudioModel = 'fal-ai/elevenlabs/tts/multilingual-v2';
+// The Ollama speech slot's placeholder — the Go resolver's belt
+// (defaultOllamaSpeechModel); the picker lists whatever "speech"-capable
+// models the local Ollama has pulled.
+const defaultOllamaSpeechModel = 'phonon';
 const defaultFalAudioCloneModel = 'fal-ai/minimax/voice-clone';
 const defaultFalSoundEffectsModel = 'fal-ai/elevenlabs/sound-effects/v2';
 // Video-to-sound-effects endpoint (the add_sound_effects tool) — Mirelo SFX
@@ -1233,6 +1237,13 @@ function App() {
   // cloud. Defaults mirror the Go merge (fal).
   const [inpaintProvider, setInpaintProvider] = useState<'fal' | 'replicate'>('fal');
   const [lipsyncProvider, setLipsyncProvider] = useState<'fal' | 'replicate'>('fal');
+  // generate_speech's backend — fal.ai or the local Ollama speech models
+  // (phonon and friends). Scoped to the voice models alone: music, sound
+  // effects, extension, voice design, and cloning stay fal-only. Defaults
+  // mirror the Go merge (fal); the Ollama slot is its own field so switching
+  // providers never loses the other side's model.
+  const [speechProvider, setSpeechProvider] = useState<'fal' | 'ollama'>('fal');
+  const [ollamaSpeechModel, setOllamaSpeechModel] = useState('');
   const [falInpaintModel, setFalInpaintModel] = useState(defaultFalInpaintModel);
   const [replicateInpaintModel, setReplicateInpaintModel] = useState(defaultReplicateInpaintModel);
   const [openaiCompatibleBaseURL, setOpenaiCompatibleBaseURL] = useState('http://localhost:8080');
@@ -1974,6 +1985,7 @@ function App() {
               primary: primaryModels.ollama,
               harness: harnessModels.ollama,
               image: imageModel,
+              speech: ollamaSpeechModel,
             },
           },
           openrouter: {
@@ -2054,6 +2066,7 @@ function App() {
           videoProvider,
           inpaintProvider,
           lipsyncProvider,
+          speechProvider,
           transcriptionProvider,
         },
         prompts: {
@@ -2089,7 +2102,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [airplaneMode, baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, replicateTranscribeModel, replicateLipsyncImageModel, replicateLipsyncVideoModel, lipsyncProvider, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel, whisperVADModel]);
+  }, [airplaneMode, baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, replicateTranscribeModel, replicateLipsyncImageModel, replicateLipsyncVideoModel, lipsyncProvider, speechProvider, ollamaSpeechModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel, whisperVADModel]);
 
   // Re-probe local CLI tools when a binary override changes — or the Local
   // Tools tab's Re-detect button bumps the nonce — so the transcription
@@ -2526,6 +2539,8 @@ function App() {
     videoProvider,
     inpaintProvider,
     lipsyncProvider,
+    speechProvider,
+    ollamaSpeechModel,
     falModel,
     openaiImageModel: openaiCompatibleModel,
     replicateModel,
@@ -2570,7 +2585,7 @@ function App() {
     videoResolution,
     soundDuration,
     audioExtendDuration,
-  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, inpaintProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, transcriptionProvider, falTranscribeModel, replicateTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, replicateLipsyncImageModel, replicateLipsyncVideoModel, lipsyncProvider, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration]);
+  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, inpaintProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, transcriptionProvider, falTranscribeModel, replicateTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, replicateLipsyncImageModel, replicateLipsyncVideoModel, lipsyncProvider, speechProvider, ollamaSpeechModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration]);
 
   const conversationModelSelection = useMemo<ModelSelectionValue>(() => {
     const global = globalModelSelection;
@@ -2586,6 +2601,7 @@ function App() {
     const videoProvider = overrides.videoProvider === 'replicate' ? 'replicate' : overrides.videoProvider === 'fal' ? 'fal' : global.videoProvider;
     const inpaintProvider = overrides.inpaintProvider === 'replicate' ? 'replicate' : overrides.inpaintProvider === 'fal' ? 'fal' : global.inpaintProvider;
     const lipsyncProvider = overrides.lipsyncProvider === 'replicate' ? 'replicate' : overrides.lipsyncProvider === 'fal' ? 'fal' : global.lipsyncProvider;
+    const speechProvider = overrides.speechProvider === 'ollama' ? 'ollama' : overrides.speechProvider === 'fal' ? 'fal' : global.speechProvider;
     const effectiveTranscriptionProvider = overrides.transcriptionProvider === 'fal' || overrides.transcriptionProvider === 'local-whisper' || overrides.transcriptionProvider === 'replicate' ? overrides.transcriptionProvider : global.transcriptionProvider;
     const next: ModelSelectionValue = {
       ...global,
@@ -2597,6 +2613,7 @@ function App() {
       videoProvider,
       inpaintProvider,
       lipsyncProvider,
+      speechProvider,
       falModel: overrides.imageModel && imageProvider === 'fal' ? overrides.imageModel : global.falModel,
       openaiImageModel: overrides.imageModel && imageProvider === 'openai-compatible' ? overrides.imageModel : global.openaiImageModel,
       replicateModel: overrides.imageModel && imageProvider === 'replicate' ? overrides.imageModel : global.replicateModel,
@@ -2620,7 +2637,8 @@ function App() {
       falVideoKeyframeModel: overrides.videoKeyframeModel || global.falVideoKeyframeModel,
       falVideoExtendModel: overrides.videoExtendModel && videoProvider !== 'replicate' ? overrides.videoExtendModel : global.falVideoExtendModel,
       falVideoMotionModel: overrides.videoMotionModel || global.falVideoMotionModel,
-      falAudioModel: overrides.audioModel || global.falAudioModel,
+      falAudioModel: overrides.audioModel && speechProvider !== 'ollama' ? overrides.audioModel : global.falAudioModel,
+      ollamaSpeechModel: overrides.audioModel && speechProvider === 'ollama' ? overrides.audioModel : global.ollamaSpeechModel,
       falAudioCloneModel: overrides.audioCloneModel || global.falAudioCloneModel,
       falSoundEffectsModel: overrides.soundEffectsModel || global.falSoundEffectsModel,
       falSoundEffectsVideoModel: overrides.soundEffectsVideoModel || global.falSoundEffectsVideoModel,
@@ -2697,6 +2715,8 @@ function App() {
     if (patch.falVideoReframeModel !== undefined) setFalVideoReframeModel(patch.falVideoReframeModel);
     if (patch.falVideoRestyleModel !== undefined) setFalVideoRestyleModel(patch.falVideoRestyleModel);
     if (patch.falAudioModel !== undefined) setFalAudioModel(patch.falAudioModel);
+    if (patch.speechProvider !== undefined) setSpeechProvider(patch.speechProvider);
+    if (patch.ollamaSpeechModel !== undefined) setOllamaSpeechModel(patch.ollamaSpeechModel);
     if (patch.falAudioCloneModel !== undefined) setFalAudioCloneModel(patch.falAudioCloneModel);
     if (patch.falSoundEffectsModel !== undefined) setFalSoundEffectsModel(patch.falSoundEffectsModel);
     if (patch.falSoundEffectsVideoModel !== undefined) setFalSoundEffectsVideoModel(patch.falSoundEffectsVideoModel);
@@ -2807,7 +2827,13 @@ function App() {
       if (patch.falVideoUpscaleModel !== undefined || patch.replicateVideoUpscaleModel !== undefined) next.add('videoUpscaleModel');
       if (patch.falVideoReframeModel !== undefined || patch.replicateVideoReframeModel !== undefined) next.add('videoReframeModel');
       if (patch.falVideoRestyleModel !== undefined || patch.replicateVideoRestyleModel !== undefined) next.add('videoRestyleModel');
-      if (patch.falAudioModel !== undefined) next.add('audioModel');
+      if (patch.speechProvider !== undefined) {
+        // The imageProvider recipe: the stored speech model belongs to the
+        // previous provider's slot, so a provider change drops it.
+        next.add('speechProvider');
+        next.delete('audioModel');
+      }
+      if (patch.falAudioModel !== undefined || patch.ollamaSpeechModel !== undefined) next.add('audioModel');
       if (patch.falAudioCloneModel !== undefined) next.add('audioCloneModel');
       if (patch.falSoundEffectsModel !== undefined) next.add('soundEffectsModel');
       if (patch.falSoundEffectsVideoModel !== undefined) next.add('soundEffectsVideoModel');
@@ -2905,7 +2931,11 @@ function App() {
           next.falVideoRestyleModel = global.falVideoRestyleModel;
           next.replicateVideoRestyleModel = global.replicateVideoRestyleModel;
           break;
-        case 'audioModel': next.falAudioModel = global.falAudioModel; break;
+        case 'audioModel':
+          next.falAudioModel = global.falAudioModel;
+          next.ollamaSpeechModel = global.ollamaSpeechModel;
+          break;
+        case 'speechProvider': next.speechProvider = global.speechProvider; break;
         case 'audioCloneModel': next.falAudioCloneModel = global.falAudioCloneModel; break;
         case 'soundEffectsModel': next.falSoundEffectsModel = global.falSoundEffectsModel; break;
         case 'soundEffectsVideoModel': next.falSoundEffectsVideoModel = global.falSoundEffectsVideoModel; break;
@@ -3401,6 +3431,8 @@ function App() {
 	const nextFalLipsyncImageModel = config.providers?.fal?.lipsyncImageModel || defaultFalLipsyncImageModel;
 	const nextFalLipsyncVideoModel = config.providers?.fal?.lipsyncVideoModel || defaultFalLipsyncVideoModel;
     const nextLipsyncProvider: 'fal' | 'replicate' = config.models?.lipsyncProvider === 'replicate' ? 'replicate' : 'fal';
+    const nextSpeechProvider: 'fal' | 'ollama' = config.models?.speechProvider === 'ollama' ? 'ollama' : 'fal';
+    const nextOllamaSpeechModel = config.providers?.ollama?.models?.speech ?? '';
     const nextReplicateLipsyncImageModel = config.providers?.replicate?.lipsyncImageModel || defaultReplicateLipsyncImageModel;
     const nextReplicateLipsyncVideoModel = config.providers?.replicate?.lipsyncVideoModel || defaultReplicateLipsyncVideoModel;
     const nextFalUpscaleModel = config.providers?.fal?.upscaleModel || defaultFalUpscaleModel;
@@ -3477,6 +3509,8 @@ function App() {
     setSipsBinary(nextSipsBinary);
     setMagickBinary(nextMagickBinary);
     setLipsyncProvider(nextLipsyncProvider);
+    setSpeechProvider(nextSpeechProvider);
+    setOllamaSpeechModel(nextOllamaSpeechModel);
     setReplicateLipsyncImageModel(nextReplicateLipsyncImageModel);
     setReplicateLipsyncVideoModel(nextReplicateLipsyncVideoModel);
     setFalLipsyncImageModel(nextFalLipsyncImageModel);
@@ -9043,6 +9077,8 @@ type ModelSelectionValue = {
   falLipsyncImageModel: string;
   falLipsyncVideoModel: string;
   lipsyncProvider: 'fal' | 'replicate';
+  speechProvider: 'fal' | 'ollama';
+  ollamaSpeechModel: string;
   replicateLipsyncImageModel: string;
   replicateLipsyncVideoModel: string;
   imageAspectRatio: string;
@@ -9099,6 +9135,7 @@ function overrideKeysFromRecord(overrides: main.ConversationModelOverrides | nul
   if (overrides.videoReframeModel) keys.add('videoReframeModel');
   if (overrides.videoRestyleModel) keys.add('videoRestyleModel');
   if (overrides.audioModel) keys.add('audioModel');
+  if (overrides.speechProvider) keys.add('speechProvider');
   if (overrides.audioCloneModel) keys.add('audioCloneModel');
   if (overrides.soundEffectsModel) keys.add('soundEffectsModel');
   if (overrides.soundEffectsVideoModel) keys.add('soundEffectsVideoModel');
@@ -9162,7 +9199,8 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   if (keys.has('videoUpscaleModel')) payload.videoUpscaleModel = draft.videoProvider === 'replicate' ? draft.replicateVideoUpscaleModel : draft.falVideoUpscaleModel;
   if (keys.has('videoReframeModel')) payload.videoReframeModel = draft.videoProvider === 'replicate' ? draft.replicateVideoReframeModel : draft.falVideoReframeModel;
   if (keys.has('videoRestyleModel')) payload.videoRestyleModel = draft.videoProvider === 'replicate' ? draft.replicateVideoRestyleModel : draft.falVideoRestyleModel;
-  if (keys.has('audioModel')) payload.audioModel = draft.falAudioModel;
+  if (keys.has('speechProvider')) payload.speechProvider = draft.speechProvider;
+  if (keys.has('audioModel')) payload.audioModel = draft.speechProvider === 'ollama' ? draft.ollamaSpeechModel : draft.falAudioModel;
   if (keys.has('audioCloneModel')) payload.audioCloneModel = draft.falAudioCloneModel;
   if (keys.has('soundEffectsModel')) payload.soundEffectsModel = draft.falSoundEffectsModel;
   if (keys.has('soundEffectsVideoModel')) payload.soundEffectsVideoModel = draft.falSoundEffectsVideoModel;
@@ -9310,6 +9348,13 @@ function ModelSelectionPanel({
   const falVideoReframeOptions = falModelOptionList(catalogs.falVideoReframeModels);
   const falVideoRestyleOptions = falModelOptionList(catalogs.falVideoRestyleModels);
   const falAudioOptions = speechModelOptionsWithVoiceDesignBadge(falModelOptionList(catalogs.falAudioModels));
+  // The Ollama speech picker filters the shared Ollama catalog by the "speech"
+  // capability flag the Go side derives from /api/show — the image picker's
+  // imageGeneration rule one modality over. An empty list means no speech
+  // model is pulled (or the Ollama is too old to report one).
+  const ollamaSpeechOptions = asArray(catalogs.models)
+    .filter((item) => item.speechGeneration)
+    .map((item) => ({value: item.name, label: item.name}));
   const falSoundEffectOptions = falModelOptionList(catalogs.falSoundEffectModels);
   const falSoundEffectsVideoOptions = falModelOptionList(catalogs.falSoundEffectsVideoModels);
   const falAudioExtendOptions = falModelOptionList(catalogs.falAudioExtendModels);
@@ -10094,7 +10139,9 @@ function ModelSelectionPanel({
           {airplaneMode ? (
             <AirplaneHint
               label="Audio generation unavailable"
-              text="Speech, music, sound effects, and audio extension run on fal.ai, which airplane mode blocks. The local audio tools — trim, cut, split, join, convert — still work in chat and the audio editor."
+              text={value.speechProvider === 'ollama'
+                ? 'Music, sound effects, audio extension, voice design, and voice cloning run on fal.ai, which airplane mode blocks. Speech still works — it runs on the local Ollama speech model — and the local audio tools (trim, cut, split, join, convert) keep working in chat and the audio editor.'
+                : 'Speech, music, sound effects, and audio extension run on fal.ai, which airplane mode blocks. The local audio tools — trim, cut, split, join, convert — still work in chat and the audio editor. Switching Speech Provider to Ollama keeps text-to-speech available offline.'}
             />
           ) : null}
         </h3>
@@ -10171,10 +10218,63 @@ function ModelSelectionPanel({
           <div className="two-column">
             <div className="field">
               <div className="field-label-row">
+                {fieldLabel('speech-provider', 'Speech Provider', 'speechProvider')}
+                <InfoHint
+                  label="Speech provider"
+                  text="Where generate_speech runs: fal.ai's cloud speech endpoints, or a speech model pulled into the local Ollama (phonon and its language variants — Ollama 0.40.11+, macOS). Ollama speech needs no API key and keeps working in airplane mode, but it speaks only its model's catalog voices: voice design and voice cloning stay on fal.ai whichever provider is selected, as do music, sound effects, and audio extension."
+                />
+                {airplaneMode && value.speechProvider !== 'ollama' ? (
+                  <AirplaneHint
+                    label="fal.ai speech unavailable"
+                    text="fal.ai speech is blocked while airplane mode is on — switch the provider to Ollama for local text-to-speech."
+                  />
+                ) : null}
+              </div>
+              <select
+                id="speech-provider"
+                value={value.speechProvider}
+                onChange={(event) => onChange({speechProvider: event.target.value as 'fal' | 'ollama'})}
+              >
+                <option value="fal" disabled={airplaneMode}>fal.ai (cloud)</option>
+                <option value="ollama">Ollama (local)</option>
+              </select>
+            </div>
+            {value.speechProvider === 'ollama' ? (
+              <div className="field">
+                {fieldLabel('ollama-speech-model', 'Speech Model (TTS, Ollama)', 'audioModel')}
+                <ModelCombobox
+                  id="ollama-speech-model"
+                  ariaLabel="Ollama speech model"
+                  placeholder={defaultOllamaSpeechModel}
+                  value={value.ollamaSpeechModel}
+                  onChange={(next) => onChange({ollamaSpeechModel: next})}
+                  options={ollamaSpeechOptions}
+                  allowCustom
+                />
+                {ollamaSpeechOptions.length ? null : (
+                  <span className="hint">No speech model is pulled — run <code>ollama pull phonon</code> (Ollama 0.40.11+ on macOS), then refresh the Ollama connection.</span>
+                )}
+              </div>
+            ) : (
+              <div className="field">
+                {fieldLabel('fal-audio-model', 'Speech Model (TTS, fal.ai)', 'audioModel')}
+                <ModelCombobox
+                  id="fal-audio-model"
+                  ariaLabel="fal.ai speech model"
+                  placeholder={defaultFalAudioModel}
+                  value={value.falAudioModel}
+                  onChange={(next) => onChange({falAudioModel: next})}
+                  options={falAudioOptions}
+                  allowCustom
+                />
+              </div>
+            )}
+            <div className="field">
+              <div className="field-label-row">
                 {fieldLabel('fal-voice-design-model', 'Voice Design Model (fal.ai)', 'voiceDesignModel')}
                 <InfoHint
                   label="Voice design model"
-                  text="Creates a NEW voice from a written description (the generate_voice tool) — a preview clip of the described voice plus its reusable voice id. The id pairs with the MiniMax speech endpoints (marked in the Speech Model list) to speak new text in the designed voice; speech from text on other models and cloning an attached voice stay on their own tools."
+                  text="Creates a NEW voice from a written description (the generate_voice tool) — a preview clip of the described voice plus its reusable voice id. The id pairs with the MiniMax speech endpoints (marked in the Speech Model list) to speak new text in the designed voice; speech from text on other models and cloning an attached voice stay on their own tools. Always fal.ai, whichever speech provider is selected."
                 />
               </div>
               <ModelCombobox
@@ -10192,7 +10292,7 @@ function ModelSelectionPanel({
                 {fieldLabel('fal-audio-clone-model', 'Voice Cloning Model (fal.ai)', 'audioCloneModel')}
                 <InfoHint
                   label="Voice cloning model"
-                  text="Speaks new text in an ATTACHED voice (the generate_speech tool's cloning path): a short clip of the speaker rides as the reference and this endpoint renders the words in that timbre. A designed voice id or a voice named in the request outranks the clip, and speech without an attached reference never clones."
+                  text="Speaks new text in an ATTACHED voice (the generate_speech tool's cloning path): a short clip of the speaker rides as the reference and this endpoint renders the words in that timbre. A designed voice id or a voice named in the request outranks the clip, and speech without an attached reference never clones. Always fal.ai — with Ollama as the speech provider an attached clip is ignored with a notice, since the local models cannot clone."
                 />
               </div>
               <ModelCombobox
@@ -10205,22 +10305,14 @@ function ModelSelectionPanel({
                 allowCustom
               />
             </div>
-            <div className="field voice-model-speech-field">
-              {fieldLabel('fal-audio-model', 'Speech Model (TTS, fal.ai)', 'audioModel')}
-              <ModelCombobox
-                id="fal-audio-model"
-                ariaLabel="fal.ai speech model"
-                placeholder={defaultFalAudioModel}
-                value={value.falAudioModel}
-                onChange={(next) => onChange({falAudioModel: next})}
-                options={falAudioOptions}
-                allowCustom
-              />
-            </div>
           </div>
         </div>
         {!airplaneMode && !catalogs.falHasKey ? (
-          <span className="hint">Add a fal.ai API key {keyWhere} to generate speech, music, or sound effects.</span>
+          <span className="hint">
+            {value.speechProvider === 'ollama'
+              ? <>Add a fal.ai API key {keyWhere} to generate music or sound effects, design voices, or clone one — speech already runs locally on Ollama.</>
+              : <>Add a fal.ai API key {keyWhere} to generate speech, music, or sound effects.</>}
+          </span>
         ) : null}
       </section>
 

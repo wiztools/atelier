@@ -1017,7 +1017,30 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			return generated, genErr
 		}
 		gateway.tools.GenerateAudio = func(ctx context.Context, req AudioGenerateRequest) (GeneratedAudio, error) {
-			// fal-only (speech and sound effects): airplane mode refuses the call.
+			// Speech routes by Models.SpeechProvider: the ollama branch runs
+			// the local model over loopback — no key to load, and airplane
+			// mode never applies. Sound generation (and speech whose
+			// provider is fal) falls through to the cloud path below, which
+			// is why the airplane refusal lives there and not here.
+			if req.Kind == audioKindSpeech && resolveSpeechProvider(config) == "ollama" {
+				generated, err := app.ollamaClient(config.Providers.Ollama.BaseURL).GenerateSpeech(ctx, req.Model, req.Voice, req.Prompt)
+				if err == nil {
+					// Emotion and speed are fal voice controls the local
+					// speech model has no input for (the endpoint 400s on
+					// speed) — dropped with a notice so the reply doesn't
+					// imply they shaped the clip. Cost stays unset: a local
+					// generation is free by nature, not unknown.
+					if strings.TrimSpace(req.Emotion) != "" {
+						generated.Notices = append(generated.Notices, "The local speech model has no emotion control, so the requested tone was not applied.")
+					}
+					if req.Speed != 0 {
+						generated.Notices = append(generated.Notices, "The local speech model has no speed control, so the requested pace was not applied.")
+					}
+				}
+				return generated, err
+			}
+			// fal-only (sound effects, and speech on the fal route): airplane
+			// mode refuses the call.
 			if err := airplaneMediaError(config, "audio generation"); err != nil {
 				return GeneratedAudio{}, err
 			}

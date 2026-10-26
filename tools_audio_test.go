@@ -21,7 +21,7 @@ func TestGenerateSpeechSurfacesNotices(t *testing.T) {
 			return GeneratedAudio{Data: []byte("x"), MimeType: "audio/mpeg", Notices: []string{"voice ignored"}}, nil
 		},
 	}
-	def := speechGenerationToolDefinition(false)
+	def := speechGenerationToolDefinition(false, "fal")
 	out, _, err := def.Execute(context.Background(), tools, HarnessToolCall{Content: "hello there", Voice: "Rachel", Model: "m"})
 	if err != nil {
 		t.Fatalf("Execute error: %v", err)
@@ -82,7 +82,7 @@ func TestGenerateSpeechVoiceCloningRouting(t *testing.T) {
 					return GeneratedAudio{Data: []byte("x"), MimeType: "audio/mpeg"}, nil
 				},
 			}
-			def := speechGenerationToolDefinition(false)
+			def := speechGenerationToolDefinition(false, "fal")
 			out, _, err := def.Execute(context.Background(), tools, HarnessToolCall{Content: "hello", Model: tc.callModel, Voice: tc.callVoice, CloneVoice: tc.callClone})
 			if err != nil {
 				t.Fatalf("Execute error: %v", err)
@@ -125,7 +125,7 @@ func TestGenerateSpeechVoiceCloningRouting(t *testing.T) {
 			return GeneratedAudio{Data: []byte("x"), MimeType: "audio/mpeg"}, nil
 		},
 	}
-	if _, _, err := speechGenerationToolDefinition(false).Execute(context.Background(), tools, HarnessToolCall{Content: "hello"}); err != nil {
+	if _, _, err := speechGenerationToolDefinition(false, "fal").Execute(context.Background(), tools, HarnessToolCall{Content: "hello"}); err != nil {
 		t.Fatalf("Execute error: %v", err)
 	}
 	if gotModel != defaultFalAudioCloneModel {
@@ -138,7 +138,7 @@ func TestGenerateSpeechVoiceCloningRouting(t *testing.T) {
 // a voice speaks in that voice directly, so a history-backfilled clip doesn't
 // read as a cloning signal it needs cloneVoice:false to escape.
 func TestGenerateSpeechDescriptionTeachesVoicePrecedence(t *testing.T) {
-	description := speechGenerationDescription(true)
+	description := speechGenerationDescription(true, "fal")
 	if !strings.Contains(description, "Naming a voice (voice) speaks in that named voice directly") {
 		t.Fatalf("description should teach the named-voice precedence:\n%s", description)
 	}

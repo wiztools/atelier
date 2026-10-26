@@ -59,6 +59,38 @@ func dataURLAudioDuration(dataURL string) (seconds float64, ok bool) {
 	return probeAudioDuration(data)
 }
 
+// fixStreamingWAVHeader rewrites the size fields of a streamed WAV. Streaming
+// encoders cannot know the payload length up front, so they emit 0xFFFFFFFF
+// placeholders in the RIFF size and the data chunk's size (Ollama's
+// /v1/audio/speech does exactly this — the file is well-formed audio that
+// lenient parsers like ffprobe and the browsers accept, but strict ones such
+// as wavDuration below fail closed on it). A size is patched only where it
+// claims more than the buffer holds — a well-formed header is untouched —
+// and a non-RIFF/WAVE buffer comes back unchanged.
+func fixStreamingWAVHeader(data []byte) []byte {
+	if len(data) < 12 || !bytes.Equal(data[0:4], []byte("RIFF")) || !bytes.Equal(data[8:12], []byte("WAVE")) {
+		return data
+	}
+	if binary.LittleEndian.Uint32(data[4:8]) > uint32(len(data)-8) {
+		binary.LittleEndian.PutUint32(data[4:8], uint32(len(data)-8))
+	}
+	pos := 12 // past "RIFF" size "WAVE"
+	for pos+8 <= len(data) {
+		id := data[pos : pos+4]
+		size := binary.LittleEndian.Uint32(data[pos+4 : pos+8])
+		body := pos + 8
+		if size == 0xFFFFFFFF || int64(body)+int64(size) > int64(len(data)) {
+			if !bytes.Equal(id, []byte("data")) {
+				break // an unknown chunk claiming past the buffer: stop walking
+			}
+			size = uint32(len(data) - body)
+			binary.LittleEndian.PutUint32(data[pos+4:pos+8], size)
+		}
+		pos = body + int(size) + int(size)%2
+	}
+	return data
+}
+
 // wavDuration walks RIFF chunks for the fmt byte rate and the data payload
 // size. Chunks are word-aligned.
 func wavDuration(data []byte) (float64, bool) {

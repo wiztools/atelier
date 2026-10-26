@@ -230,6 +230,10 @@ type ConfigOllamaModels struct {
 	Primary string `json:"primary"`
 	Harness string `json:"harness"`
 	Image   string `json:"image"`
+	// Speech is the local speech model generate_speech runs on when
+	// Models.SpeechProvider is "ollama" (e.g. "phonon"). The gate requires
+	// it — like the fal AudioModel slot, the tool is opt-in per model.
+	Speech string `json:"speech,omitempty"`
 }
 
 type ConfigOpenRouter struct {
@@ -489,6 +493,15 @@ type ConfigModels struct {
 	// (audio plus an image or video face), so tying it to the video backend
 	// would surprise. Normalized in mergeAppConfig like VideoProvider.
 	LipsyncProvider string `json:"lipsyncProvider,omitempty"`
+	// SpeechProvider selects the generate_speech backend: "fal" (the
+	// default) or "ollama" — Ollama's speech models (phonon and friends,
+	// the "speech" capability) served through its OpenAI-compatible
+	// /v1/audio/speech endpoint. The scope is the voice models alone:
+	// music, sound effects, audio extension, voice design, and voice
+	// cloning stay fal-only regardless. The Ollama model slot is
+	// Providers.Ollama.Models.Speech. Normalized in mergeAppConfig like
+	// VideoProvider.
+	SpeechProvider string `json:"speechProvider,omitempty"`
 }
 
 type ConfigPrompts struct {
@@ -584,6 +597,10 @@ type OllamaModel struct {
 	Parameter       string   `json:"parameter,omitempty"`
 	Capabilities    []string `json:"capabilities,omitempty"`
 	ImageGeneration bool     `json:"imageGeneration,omitempty"`
+	// SpeechGeneration marks a text-to-speech model (Ollama's "speech"
+	// capability — phonon and friends), the Settings speech picker's filter
+	// the way ImageGeneration is the image picker's.
+	SpeechGeneration bool `json:"speechGeneration,omitempty"`
 }
 
 type ollamaTagsResponse struct {
@@ -1097,7 +1114,13 @@ type SaveVideoRequest struct {
 // NegativePrompt are forwarded only when set — text-to-speech models ignore them,
 // so callers can leave both empty (see FalClient.GenerateAudio).
 type AudioGenerateRequest struct {
-	Model          string `json:"model"`
+	Model string `json:"model"`
+	// Kind names the calling tool ("speech" from generate_speech, "sound"
+	// from generate_sound): the gateway routes only speech by
+	// Models.SpeechProvider — Ollama's local /v1/audio/speech path — while
+	// sound generation stays fal-only, even though both share this request
+	// shape and one transport hook. Empty keeps the historical fal routing.
+	Kind           string `json:"kind,omitempty"`
 	Prompt         string `json:"prompt"`
 	Duration       string `json:"duration,omitempty"`
 	NegativePrompt string `json:"negativePrompt,omitempty"`
@@ -4407,6 +4430,17 @@ func mergeAppConfig(config AppConfig) AppConfig {
 		config.Models.LipsyncProvider = strings.TrimSpace(config.Models.LipsyncProvider)
 	default:
 		config.Models.LipsyncProvider = "fal"
+	}
+	// SpeechProvider selects the generate_speech backend ("fal" | "ollama").
+	// Unknown or empty normalizes to "fal": speech was fal-only before
+	// Ollama's speech models existed, so a config written then must keep
+	// routing there. The Ollama model slot carries no forced default — the
+	// gate requires it and the resolver's constant is only a belt.
+	switch strings.TrimSpace(config.Models.SpeechProvider) {
+	case "fal", "ollama":
+		config.Models.SpeechProvider = strings.TrimSpace(config.Models.SpeechProvider)
+	default:
+		config.Models.SpeechProvider = "fal"
 	}
 	// Local CLI tool settings carry no forced defaults: an empty binary means
 	// PATH auto-detection and an empty model means the CLI's own default.

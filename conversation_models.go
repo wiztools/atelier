@@ -47,14 +47,22 @@ type ConversationModelOverrides struct {
 	// Models.InpaintProvider is independent of ImageProvider. The model lands
 	// on the slot the effective inpaint provider reads (fal InpaintModel /
 	// replicate InpaintModel).
-	InpaintProvider        string `json:"inpaintProvider,omitempty"`
-	InpaintModel           string `json:"inpaintModel,omitempty"`
-	VideoExtendModel       string `json:"videoExtendModel,omitempty"`
-	VideoMotionModel       string `json:"videoMotionModel,omitempty"`
-	VideoKeyframeModel     string `json:"videoKeyframeModel,omitempty"`
-	VideoUpscaleModel      string `json:"videoUpscaleModel,omitempty"`
-	VideoReframeModel      string `json:"videoReframeModel,omitempty"`
-	VideoRestyleModel      string `json:"videoRestyleModel,omitempty"`
+	InpaintProvider    string `json:"inpaintProvider,omitempty"`
+	InpaintModel       string `json:"inpaintModel,omitempty"`
+	VideoExtendModel   string `json:"videoExtendModel,omitempty"`
+	VideoMotionModel   string `json:"videoMotionModel,omitempty"`
+	VideoKeyframeModel string `json:"videoKeyframeModel,omitempty"`
+	VideoUpscaleModel  string `json:"videoUpscaleModel,omitempty"`
+	VideoReframeModel  string `json:"videoReframeModel,omitempty"`
+	VideoRestyleModel  string `json:"videoRestyleModel,omitempty"`
+	// AudioModel overrides generate_speech's model. It lands on the slot the
+	// effective speech provider reads (the ImageModel pair's contract):
+	// SpeechProvider routes, so an ollama-pinned conversation stores the
+	// model on the Ollama Speech slot, everything else on fal's AudioModel —
+	// which is also where records written before the provider dimension
+	// existed keep landing. SoundEffectsModel and the rest of the audio
+	// family stay fal-only 1:1 onto ConfigFal.
+	SpeechProvider         string `json:"speechProvider,omitempty"`
 	AudioModel             string `json:"audioModel,omitempty"`
 	SoundEffectsModel      string `json:"soundEffectsModel,omitempty"`
 	SoundEffectsVideoModel string `json:"soundEffectsVideoModel,omitempty"`
@@ -118,7 +126,7 @@ func normalizeConversationModelOverrides(o ConversationModelOverrides) Conversat
 		&o.ImageEditModel, &o.UpscaleModel,
 		&o.InpaintProvider, &o.InpaintModel,
 		&o.VideoExtendModel, &o.VideoMotionModel, &o.VideoKeyframeModel, &o.VideoUpscaleModel, &o.VideoReframeModel, &o.VideoRestyleModel,
-		&o.AudioModel, &o.SoundEffectsModel, &o.SoundEffectsVideoModel, &o.AudioCloneModel, &o.AudioExtendModel, &o.VoiceDesignModel, &o.TranscribeModel,
+		&o.SpeechProvider, &o.AudioModel, &o.SoundEffectsModel, &o.SoundEffectsVideoModel, &o.AudioCloneModel, &o.AudioExtendModel, &o.VoiceDesignModel, &o.TranscribeModel,
 		&o.LipsyncImageModel, &o.LipsyncVideoModel, &o.LipsyncProvider,
 		&o.TranscriptionProvider, &o.WhisperModel, &o.WhisperBinary, &o.WhisperVADModel,
 		&o.ImageAspectRatio, &o.ImageSizePreset, &o.VideoDuration, &o.VideoAspectRatio, &o.VideoResolution, &o.SoundDuration, &o.AudioExtendDuration,
@@ -144,6 +152,7 @@ func validateConversationModelOverrides(o ConversationModelOverrides) error {
 		"videoProvider":         o.VideoProvider,
 		"inpaintProvider":       o.InpaintProvider,
 		"lipsyncProvider":       o.LipsyncProvider,
+		"speechProvider":        o.SpeechProvider,
 		"transcriptionProvider": o.TranscriptionProvider,
 	} {
 		switch name {
@@ -162,6 +171,10 @@ func validateConversationModelOverrides(o ConversationModelOverrides) error {
 		case "lipsyncProvider":
 			if value != "" && value != "fal" && value != "replicate" {
 				return fmt.Errorf("unknown lipsync provider %q", value)
+			}
+		case "speechProvider":
+			if value != "" && value != "fal" && value != "ollama" {
+				return fmt.Errorf("unknown speech provider %q", value)
 			}
 		case "transcriptionProvider":
 			if value != "" && value != transcriptionProviderFal && value != transcriptionProviderLocalWhisper && value != transcriptionProviderReplicate {
@@ -441,8 +454,23 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 			config.Providers.Fal.VideoRestyleModel = o.VideoRestyleModel
 		}
 	}
+	if o.SpeechProvider != "" {
+		// The speech provider overrides generate_speech's backend directly —
+		// its own dimension (fal | ollama), validated at mutator time like
+		// InpaintProvider. Applied BEFORE the AudioModel override below so
+		// the model lands on the slot the overridden provider reads.
+		config.Models.SpeechProvider = o.SpeechProvider
+	}
 	if o.AudioModel != "" {
-		config.Providers.Fal.AudioModel = o.AudioModel
+		// The speech-model override follows the effective speech provider —
+		// the TranscribeModel recipe one tool over. Speech was fal-only when
+		// the field was named, so records written before the provider
+		// dimension existed keep landing on fal's slot.
+		if resolveSpeechProvider(config) == "ollama" {
+			config.Providers.Ollama.Models.Speech = o.AudioModel
+		} else {
+			config.Providers.Fal.AudioModel = o.AudioModel
+		}
 	}
 	if o.SoundEffectsModel != "" {
 		config.Providers.Fal.SoundEffectsModel = o.SoundEffectsModel

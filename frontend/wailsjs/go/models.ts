@@ -180,6 +180,7 @@ export namespace main {
 	    transcriptionProvider?: string;
 	    inpaintProvider?: string;
 	    lipsyncProvider?: string;
+	    speechProvider?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigModels(source);
@@ -194,6 +195,7 @@ export namespace main {
 	        this.transcriptionProvider = source["transcriptionProvider"];
 	        this.inpaintProvider = source["inpaintProvider"];
 	        this.lipsyncProvider = source["lipsyncProvider"];
+	        this.speechProvider = source["speechProvider"];
 	    }
 	}
 	export class ConfigLocalImageMagick {
@@ -428,6 +430,7 @@ export namespace main {
 	    primary: string;
 	    harness: string;
 	    image: string;
+	    speech?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigOllamaModels(source);
@@ -438,6 +441,7 @@ export namespace main {
 	        this.primary = source["primary"];
 	        this.harness = source["harness"];
 	        this.image = source["image"];
+	        this.speech = source["speech"];
 	    }
 	}
 	export class ConfigOllama {
@@ -793,6 +797,7 @@ export namespace main {
 	    videoUpscaleModel?: string;
 	    videoReframeModel?: string;
 	    videoRestyleModel?: string;
+	    speechProvider?: string;
 	    audioModel?: string;
 	    soundEffectsModel?: string;
 	    soundEffectsVideoModel?: string;
@@ -841,6 +846,7 @@ export namespace main {
 	        this.videoUpscaleModel = source["videoUpscaleModel"];
 	        this.videoReframeModel = source["videoReframeModel"];
 	        this.videoRestyleModel = source["videoRestyleModel"];
+	        this.speechProvider = source["speechProvider"];
 	        this.audioModel = source["audioModel"];
 	        this.soundEffectsModel = source["soundEffectsModel"];
 	        this.soundEffectsVideoModel = source["soundEffectsVideoModel"];
@@ -2764,6 +2770,7 @@ export namespace main {
 	    parameter?: string;
 	    capabilities?: string[];
 	    imageGeneration?: boolean;
+	    speechGeneration?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new OllamaModel(source);
@@ -2778,6 +2785,7 @@ export namespace main {
 	        this.parameter = source["parameter"];
 	        this.capabilities = source["capabilities"];
 	        this.imageGeneration = source["imageGeneration"];
+	        this.speechGeneration = source["speechGeneration"];
 	    }
 	}
 	export class OllamaStatus {

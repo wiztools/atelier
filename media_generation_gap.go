@@ -84,31 +84,41 @@ func generationMediaKindPhrase(mode string) string {
 // remedy to relay, so the model cannot pass off a from-knowledge answer as a
 // queued render. Empty for non-generation modes. The airplane variant names
 // airplane mode as the cause — "add a fal.ai key" would be false advice while
-// the mode blocks every cloud provider.
-func mediaGenUnavailableNote(mode string, airplane bool) string {
+// the mode blocks every cloud provider. speechLocal (the Ollama speech route,
+// regardless of the mode) appends the local text-to-speech remedy to the audio
+// case: the gap firing there means the slot is empty, and choosing one needs
+// no key and survives airplane mode.
+func mediaGenUnavailableNote(mode string, airplane bool, speechLocal bool) string {
 	kind := generationMediaKindPhrase(mode)
 	if kind == "" {
 		return ""
+	}
+	localSpeech := ""
+	if mode == "audio" && speechLocal {
+		localSpeech = " Speech generation can also run locally: choosing an Ollama speech model (e.g. phonon) in Settings → Models, under Speech Provider, enables it with no API key — airplane mode included."
 	}
 	if airplane {
 		return "Atelier note: the user's latest request asks Atelier to generate or extend " + kind +
 			", but airplane mode is on, so Atelier will not contact a cloud provider and has no local tool that can do it. " +
 			"Do not claim the " + kind + " was created, queued, or is rendering, and do not attempt it through other tools. " +
-			"Tell the user plainly that " + kind + " generation needs a cloud provider, which airplane mode blocks: turning it off in Settings → Providers re-enables it."
+			"Tell the user plainly that " + kind + " generation needs a cloud provider, which airplane mode blocks: turning it off in Settings → Providers re-enables it." +
+			localSpeech
 	}
 	return "Atelier note: the user's latest request asks Atelier to generate or extend " + kind +
 		", but no " + kind + " generation model is configured on this machine, so Atelier has no tool that can do it. " +
 		"Do not claim the " + kind + " was created, queued, or is rendering, and do not attempt it through other tools. " +
 		"Tell the user plainly that " + kind + " generation needs a one-time setup: add a fal.ai API key and choose a " + kind +
-		" model in Settings → Providers, and Atelier enables it automatically on the next message."
+		" model in Settings → Providers, and Atelier enables it automatically on the next message." +
+		localSpeech
 }
 
 // mediaGenFallbackNotice returns the deterministic one-line blockquote for the
 // chat reply when a generation capability is missing and the final model's
 // answer did not already name the remedy — mirroring mediaEditFallbackNotice.
 // Empty when the capability is available, the mode is not a generation mode, or
-// the answer already covered the remedy.
-func mediaGenFallbackNotice(unavailable bool, mode string, assistantContent string, airplane bool) string {
+// the answer already covered the remedy (fal.ai or, on the local speech route,
+// Ollama).
+func mediaGenFallbackNotice(unavailable bool, mode string, assistantContent string, airplane bool, speechLocal bool) string {
 	if !unavailable {
 		return ""
 	}
@@ -117,15 +127,30 @@ func mediaGenFallbackNotice(unavailable bool, mode string, assistantContent stri
 		return ""
 	}
 	lower := strings.ToLower(assistantContent)
+	localSpeech := mode == "audio" && speechLocal
 	if airplane {
 		if strings.Contains(lower, "airplane mode") {
 			return ""
 		}
-		return "> ⚠️ " + kind + " generation is unavailable while airplane mode is on — turn it off in Settings → Providers to use cloud " + kind + " models."
+		if localSpeech && strings.Contains(lower, "ollama") {
+			return ""
+		}
+		notice := "> ⚠️ " + kind + " generation is unavailable while airplane mode is on — turn it off in Settings → Providers to use cloud " + kind + " models."
+		if localSpeech {
+			notice += " Speech can also run locally — pick an Ollama speech model in Settings."
+		}
+		return notice
 	}
 	if strings.Contains(lower, "fal.ai") || strings.Contains(lower, "settings → providers") {
 		return ""
 	}
-	return "> ⚠️ " + kind + " generation isn't set up yet — add a fal.ai API key and choose a " + kind +
+	if localSpeech && strings.Contains(lower, "ollama") {
+		return ""
+	}
+	notice := "> ⚠️ " + kind + " generation isn't set up yet — add a fal.ai API key and choose a " + kind +
 		" model in Settings → Providers, and Atelier picks it up automatically."
+	if localSpeech {
+		notice += " Or set Speech Provider to Ollama and pick a local speech model (e.g. phonon)."
+	}
+	return notice
 }

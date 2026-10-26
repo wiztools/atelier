@@ -459,10 +459,19 @@ func triageSystemPrompt(registry HarnessToolRegistry, skillIndex []SkillIndexEnt
 	// with needsTools false — this paragraph tells the harness model why, so a
 	// weak model does not route the ask to "text" (which would answer from
 	// knowledge and never explain the block) or invent a local substitute for
-	// a capability the mode deliberately withholds.
+	// a capability the mode deliberately withholds. generate_speech is the
+	// one audio tool that can survive the mode: routed to the local Ollama
+	// speech provider it never leaves the machine, so the list names it
+	// absent only on the fal route and a follow-on sentence says so.
 	airplaneRouting := ""
 	if airplane {
-		airplaneRouting = "\nAirplane mode is ON: Atelier will not contact any cloud provider, so the cloud-only tools (generate_video, generate_speech, generate_sound, generate_voice, extend_audio, add_sound_effects, lip_sync, upscale_image, upscale_video, reframe_video, restyle_video) are absent above, and generate_image is absent too when no local image model is configured. The mode rules below already cover this: keep the matching generation responseMode with needsTools false — the harness itself delivers the decline notice that names airplane mode. Local media edits (screenshot/split/join/convert/transform and the image edits) and open_editor still work."
+		cloudOnlyTools := "generate_video, generate_speech, generate_sound, generate_voice, extend_audio, add_sound_effects, lip_sync, upscale_image, upscale_video, reframe_video, restyle_video"
+		speechSurvives := ""
+		if registry.SpeechServedLocally() {
+			cloudOnlyTools = "generate_video, generate_sound, generate_voice, extend_audio, add_sound_effects, lip_sync, upscale_image, upscale_video, reframe_video, restyle_video"
+			speechSurvives = " generate_speech is NOT affected — it runs on the local Ollama speech model and still works."
+		}
+		airplaneRouting = "\nAirplane mode is ON: Atelier will not contact any cloud provider, so the cloud-only tools (" + cloudOnlyTools + ") are absent above, and generate_image is absent too when no local image model is configured." + speechSurvives + " The mode rules below already cover this: keep the matching generation responseMode with needsTools false — the harness itself delivers the decline notice that names airplane mode. Local media edits (screenshot/split/join/convert/transform and the image edits) and open_editor still work."
 	}
 	return strings.TrimSpace(fmt.Sprintf(`You are Atelier's harness model. You decide how the primary model should respond to the latest user turn and whether workspace tools are needed first.
 You will not write the user-visible answer. Right now respond only with a JSON object matching the response schema:

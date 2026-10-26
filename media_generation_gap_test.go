@@ -17,7 +17,7 @@ import (
 // conv_20a0df2b2db9b4e9ea5a1ad9, where a small model answered "Video Extension
 // initiated … queued … rendering shortly" for a clip that never existed.
 func TestMediaGenUnavailableNoteForbidsFabrication(t *testing.T) {
-	note := mediaGenUnavailableNote("video", false)
+	note := mediaGenUnavailableNote("video", false, false)
 	if note == "" {
 		t.Fatal("expected a note for video mode, got empty")
 	}
@@ -31,8 +31,29 @@ func TestMediaGenUnavailableNoteForbidsFabrication(t *testing.T) {
 	if !strings.Contains(note, "Settings → Providers") {
 		t.Errorf("note must name the remedy (Settings → Providers): %q", note)
 	}
-	if mediaGenUnavailableNote("text", false) != "" {
+	if mediaGenUnavailableNote("text", false, false) != "" {
 		t.Errorf("non-generation mode should yield no note")
+	}
+}
+
+// TestMediaGenUnavailableNoteSpeechLocalAppendsTheOllamaRemedy asserts the
+// local-speech route's remedy lands on the audio case only — the gap firing
+// there means the Ollama slot is empty, and choosing one needs no key. Video
+// keeps its fal-only remedy even when speech routes locally.
+func TestMediaGenUnavailableNoteSpeechLocalAppendsTheOllamaRemedy(t *testing.T) {
+	audio := mediaGenUnavailableNote("audio", false, true)
+	if !strings.Contains(audio, "Ollama") {
+		t.Errorf("audio note on the local speech route should name the Ollama remedy: %q", audio)
+	}
+	if got := mediaGenUnavailableNote("video", false, true); strings.Contains(got, "Ollama") {
+		t.Errorf("video note must stay fal-only even when speech routes locally: %q", got)
+	}
+	airplane := mediaGenUnavailableNote("audio", true, true)
+	if !strings.Contains(strings.ToLower(airplane), "airplane mode") || !strings.Contains(airplane, "Ollama") {
+		t.Errorf("airplane audio note should name the mode and the local speech remedy: %q", airplane)
+	}
+	if got := mediaGenUnavailableNote("audio", true, false); strings.Contains(got, "Ollama") {
+		t.Errorf("airplane note on the fal speech route must not suggest Ollama: %q", got)
 	}
 }
 
@@ -40,7 +61,7 @@ func TestMediaGenUnavailableNoteForbidsFabrication(t *testing.T) {
 // blames airplane mode and never suggests adding a fal.ai key — that remedy
 // would be false advice while the mode blocks every cloud provider.
 func TestMediaGenUnavailableNoteAirplaneNamesTheMode(t *testing.T) {
-	note := mediaGenUnavailableNote("video", true)
+	note := mediaGenUnavailableNote("video", true, false)
 	lower := strings.ToLower(note)
 	if !strings.Contains(lower, "airplane mode") {
 		t.Errorf("airplane note must name the mode as the cause: %q", note)
@@ -58,25 +79,45 @@ func TestMediaGenUnavailableNoteAirplaneNamesTheMode(t *testing.T) {
 // the remedy, suppressed once the answer already covers it, and empty when the
 // capability is available.
 func TestMediaGenFallbackNotice(t *testing.T) {
-	if got := mediaGenFallbackNotice(false, "video", "anything", false); got != "" {
+	if got := mediaGenFallbackNotice(false, "video", "anything", false, false); got != "" {
 		t.Errorf("available capability should yield no notice, got %q", got)
 	}
-	notice := mediaGenFallbackNotice(true, "video", "Sure, I'll get right on that.", false)
+	notice := mediaGenFallbackNotice(true, "video", "Sure, I'll get right on that.", false, false)
 	if notice == "" || !strings.Contains(notice, "Settings → Providers") {
 		t.Errorf("missing capability with a silent answer should name the remedy, got %q", notice)
 	}
-	if got := mediaGenFallbackNotice(true, "video", "You need to add a fal.ai key first.", false); got != "" {
+	if got := mediaGenFallbackNotice(true, "video", "You need to add a fal.ai key first.", false, false); got != "" {
 		t.Errorf("answer already naming the remedy should suppress the notice, got %q", got)
 	}
-	if got := mediaGenFallbackNotice(true, "video", "Airplane mode is on, so I cannot generate video.", true); got != "" {
+	if got := mediaGenFallbackNotice(true, "video", "Airplane mode is on, so I cannot generate video.", true, false); got != "" {
 		t.Errorf("airplane answer naming the mode should suppress the notice, got %q", got)
 	}
-	airplaneNotice := mediaGenFallbackNotice(true, "video", "Sure, I'll get right on that.", true)
+	airplaneNotice := mediaGenFallbackNotice(true, "video", "Sure, I'll get right on that.", true, false)
 	if airplaneNotice == "" || !strings.Contains(strings.ToLower(airplaneNotice), "airplane mode") {
 		t.Errorf("airplane notice must name the mode, got %q", airplaneNotice)
 	}
 	if strings.Contains(airplaneNotice, "fal.ai") {
 		t.Errorf("airplane notice must not suggest adding a fal.ai key, got %q", airplaneNotice)
+	}
+}
+
+// TestMediaGenFallbackNoticeSpeechLocal covers the local speech route's
+// blockquote: the audio remedy gains the Ollama alternative, an answer that
+// already names Ollama suppresses it, and video keeps the fal-only remedy.
+func TestMediaGenFallbackNoticeSpeechLocal(t *testing.T) {
+	notice := mediaGenFallbackNotice(true, "audio", "Sure, I'll get right on that.", false, true)
+	if !strings.Contains(notice, "Ollama") {
+		t.Errorf("audio notice on the local speech route should name the Ollama remedy: %q", notice)
+	}
+	if got := mediaGenFallbackNotice(true, "audio", "Pull an Ollama speech model such as phonon.", false, true); got != "" {
+		t.Errorf("answer already naming Ollama should suppress the notice, got %q", got)
+	}
+	if got := mediaGenFallbackNotice(true, "video", "Sure, I'll get right on that.", false, true); strings.Contains(got, "Ollama") {
+		t.Errorf("video notice must stay fal-only even when speech routes locally, got %q", got)
+	}
+	airplane := mediaGenFallbackNotice(true, "audio", "Sure, I'll get right on that.", true, true)
+	if !strings.Contains(airplane, "Ollama") {
+		t.Errorf("airplane audio notice on the local route should name the local remedy: %q", airplane)
 	}
 }
 

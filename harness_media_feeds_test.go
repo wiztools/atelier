@@ -122,7 +122,7 @@ func TestMediaFeedLogNilSafety(t *testing.T) {
 func TestChainedToolIntermediateNotAttached(t *testing.T) {
 	audioBytes := []byte{0xFF, 0xE0, 0x00, 0x00, 'n', 'a', 'r', 'r', 'a', 't', 'e'}
 	registry := newHarnessToolRegistry([]HarnessToolDefinition{
-		speechGenerationToolDefinition(false),
+		speechGenerationToolDefinition(false, "fal"),
 		lipsyncToolDefinition(defaultAppConfig(), false),
 	})
 	tools := HarnessToolExecutionContext{
@@ -209,7 +209,7 @@ func TestToolConsumedMediaKindsMatchRegistry(t *testing.T) {
 	definitions = append(definitions, openEditorToolDefinition())
 	definitions = append(definitions, imageGenerationToolDefinition(config))
 	definitions = append(definitions, videoGenerationToolDefinition(config, false))
-	definitions = append(definitions, speechGenerationToolDefinition(false))
+	definitions = append(definitions, speechGenerationToolDefinition(false, "fal"))
 	definitions = append(definitions, soundEffectsGenerationToolDefinition())
 	definitions = append(definitions, extendAudioToolDefinition())
 	definitions = append(definitions, transcribeAudioToolDefinition(config))
