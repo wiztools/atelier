@@ -1889,10 +1889,24 @@ func resolveLipsyncBody(schema *ModelInputSchema, req LipsyncGenerateRequest, ov
 // lengths the value can't join. A nil schema yields a generic body with the
 // source video plus the steering inputs' raw names, plus a notice.
 func resolveSFXBody(schema *ModelInputSchema, req SFXGenerateRequest, ov Overrides) (map[string]any, []string, error) {
+	return resolveSFXBodyForCategory(schema, req, ov, "sfx")
+}
+
+// resolveSFXBodyForCategory is resolveSFXBody with the synonym category as a
+// parameter — the resolveLipsyncBody pattern. fal passes "sfx"; the Replicate
+// add_sound_effects route passes "replicate-sfx", whose table binds MMAudio's
+// "video" clip input and whose nil-schema fallback writes that same name
+// (Replicate rejects unknown fields, so the fal "video_url" spelling would
+// 422 there).
+func resolveSFXBodyForCategory(schema *ModelInputSchema, req SFXGenerateRequest, ov Overrides, category string) (map[string]any, []string, error) {
 	video := falVideoURL(strings.TrimSpace(req.Video))
 
 	if schema == nil {
-		body := map[string]any{"video_url": video}
+		videoKey := "video_url"
+		if category == "replicate-sfx" {
+			videoKey = "video"
+		}
+		body := map[string]any{videoKey: video}
 		if prompt := strings.TrimSpace(req.Prompt); prompt != "" {
 			body["prompt"] = prompt
 		}
@@ -1911,7 +1925,7 @@ func resolveSFXBody(schema *ModelInputSchema, req SFXGenerateRequest, ov Overrid
 	body := map[string]any{}
 	var notices []string
 
-	if path, prop, ok := findNative(schema, ov, "sfx", req.Model, "sourceVideo"); ok {
+	if path, prop, ok := findNative(schema, ov, category, req.Model, "sourceVideo"); ok {
 		setBodyPath(schema, body, path, coerceVideoValue(prop, video))
 	} else {
 		return nil, notices, fmt.Errorf(
@@ -1920,7 +1934,7 @@ func resolveSFXBody(schema *ModelInputSchema, req SFXGenerateRequest, ov Overrid
 	}
 
 	if prompt := strings.TrimSpace(req.Prompt); prompt != "" {
-		if path, prop, ok := findNative(schema, ov, "sfx", req.Model, "prompt"); ok {
+		if path, prop, ok := findNative(schema, ov, category, req.Model, "prompt"); ok {
 			value, notice := coerceValue("prompt", prop, prompt, req.Model)
 			if value != nil {
 				setBodyPath(schema, body, path, value)
@@ -1936,7 +1950,7 @@ func resolveSFXBody(schema *ModelInputSchema, req SFXGenerateRequest, ov Overrid
 	}
 
 	if negative := strings.TrimSpace(req.NegativePrompt); negative != "" {
-		if path, prop, ok := findNative(schema, ov, "sfx", req.Model, "negativePrompt"); ok {
+		if path, prop, ok := findNative(schema, ov, category, req.Model, "negativePrompt"); ok {
 			value, notice := coerceValue("negativePrompt", prop, negative, req.Model)
 			if value != nil {
 				setBodyPath(schema, body, path, value)
@@ -1953,12 +1967,12 @@ func resolveSFXBody(schema *ModelInputSchema, req SFXGenerateRequest, ov Overrid
 	// Per-sample billing (mirelo): pin one whenever the schema declares the
 	// dial. No notice — the endpoint's default of 2 exists for its own studio's
 	// variation gallery, not for a single-result tool call.
-	if path, prop, ok := findNative(schema, ov, "sfx", req.Model, "numSamples"); ok {
+	if path, prop, ok := findNative(schema, ov, category, req.Model, "numSamples"); ok {
 		setBodyPath(schema, body, path, coerceVideoValue(prop, 1))
 	}
 
 	if req.Duration > 0 {
-		if path, prop, ok := findNative(schema, ov, "sfx", req.Model, "duration"); ok {
+		if path, prop, ok := findNative(schema, ov, category, req.Model, "duration"); ok {
 			switch {
 			case len(prop.Enum) > 0:
 				notices = append(notices, fmt.Sprintf(
@@ -1989,7 +2003,7 @@ func resolveSFXBody(schema *ModelInputSchema, req SFXGenerateRequest, ov Overrid
 	}
 
 	if req.PreserveSpeech != nil {
-		if path, _, ok := findNative(schema, ov, "sfx", req.Model, "preserveSpeech"); ok {
+		if path, _, ok := findNative(schema, ov, category, req.Model, "preserveSpeech"); ok {
 			setBodyPath(schema, body, path, *req.PreserveSpeech)
 		} else {
 			notices = append(notices, fmt.Sprintf(
@@ -2339,6 +2353,10 @@ func synonymsFor(category, canon string) []string {
 		return replicateVideoReframeSynonyms[canon]
 	case "replicate-transcribe":
 		return replicateTranscribeSynonyms[canon]
+	case "replicate-audio":
+		return replicateAudioSynonyms[canon]
+	case "replicate-sfx":
+		return replicateSFXSynonyms[canon]
 	}
 	return nil
 }

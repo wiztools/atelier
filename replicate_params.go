@@ -1043,3 +1043,133 @@ func replicateLipsyncSchemaServes(schema *ModelInputSchema, faceKind string) boo
 	}
 	return true
 }
+
+// replicateAudioSynonyms lists, per canonical param, the native input names
+// Replicate audio models use (the generate_sound category —
+// resolveReplicateAudioInput). The prompt list carries the text-driven
+// variants because Replicate rejects unknown fields: a lyrics-driven music
+// model whose only prompt-bearing input is "lyrics" must bind it, never
+// receive a speculative "text" beside it. Duration is usually a free number
+// of seconds (stable-audio-2.5), which coerceValue's type-driven coercion
+// handles; the _ms variant covers minimax's music_length_ms spelling.
+var replicateAudioSynonyms = map[string][]string{
+	"prompt":         {"prompt", "text", "lyrics", "description"},
+	"duration":       {"duration", "duration_seconds", "music_length_ms"},
+	"negativePrompt": {"negative_prompt"},
+	"style":          {"style_prompt", "style", "genre"},
+	"loop":           {"loop"},
+}
+
+// resolveReplicateAudioInput maps a canonical AudioGenerateRequest (the
+// generate_sound shape — Kind audioKindSound; speech never routes here) onto
+// the Replicate model's native input schema, returning the prediction input
+// and user-facing notices for anything dropped. It is the Replicate sibling
+// of resolveAudioBody with the fal-specific moves removed: no speculative
+// prompt+text double-write (Replicate rejects unknown fields), so the prompt
+// is the hard requirement — an unmappable prompt fails up front rather than
+// 422ing downstream — and the voice/emotion/speed/sourceAudio canonicals
+// never resolve here (they are speech controls; generate_sound doesn't set
+// them). A nil schema (unavailable) yields a minimal {prompt} body plus a
+// notice, since Replicate rejects unknown fields a richer fallback would
+// invent.
+func resolveReplicateAudioInput(schema *ModelInputSchema, req AudioGenerateRequest) (map[string]any, []string, error) {
+	prompt := strings.TrimSpace(req.Prompt)
+	ov := Overrides{}
+	notices := []string{}
+	if schema == nil {
+		return map[string]any{"prompt": prompt},
+			[]string{"Couldn't load the model's parameter schema; sent the description only and may have dropped duration or style settings."}, nil
+	}
+
+	body := map[string]any{}
+	if path, prop, ok := findNative(schema, ov, "replicate-audio", req.Model, "prompt"); ok {
+		setBodyPath(schema, body, path, coerceImageValue(prop, prompt))
+	} else {
+		return nil, notices, fmt.Errorf(
+			"the configured Replicate model %q has no prompt input — it cannot generate a described sound; pick a music or sound-effects model in Settings → Models",
+			req.Model)
+	}
+
+	for _, item := range canonicalAudioValues(req) {
+		if !item.present {
+			continue
+		}
+		// The speech canonicals cannot fire here (see above), and duration
+		// carries a string canonical the resolver maps with the SFX body's
+		// numeric-clamp rules rather than coerceValue's duration branch.
+		switch item.canon {
+		case "voice", "emotion", "speed", "sourceAudio":
+			continue
+		case "duration":
+			seconds, ok, notice := parseAudioExtendSeconds(req.Duration)
+			if !ok {
+				if notice != "" {
+					notices = append(notices, notice)
+				}
+				continue
+			}
+			path, prop, found := findNative(schema, ov, "replicate-audio", req.Model, "duration")
+			if !found {
+				notices = append(notices, fmt.Sprintf(
+					"The selected model %q picks its own sound length; ignoring the %s-second request.",
+					req.Model, strings.TrimSpace(req.Duration)))
+				continue
+			}
+			if len(prop.Enum) > 0 {
+				if canonical, allowed := enumValueFor(prop, strings.TrimSpace(req.Duration)); allowed {
+					setBodyPath(schema, body, path, canonical)
+				} else {
+					notices = append(notices, fmt.Sprintf(
+						"The selected model %q picks its own sound length; ignoring the %s-second request.",
+						req.Model, strings.TrimSpace(req.Duration)))
+				}
+				continue
+			}
+			if prop.Minimum != nil && seconds < *prop.Minimum {
+				seconds = *prop.Minimum
+				notices = append(notices, fmt.Sprintf(
+					"Clamped the sound length to the model's minimum %g seconds.", seconds))
+			}
+			if prop.Maximum != nil && seconds > *prop.Maximum {
+				seconds = *prop.Maximum
+				notices = append(notices, fmt.Sprintf(
+					"Clamped the sound length to the model's maximum %g seconds.", seconds))
+			}
+			if strings.HasSuffix(prop.Name, "_ms") {
+				seconds *= 1000
+			}
+			setBodyPath(schema, body, path, coerceVideoValue(prop, seconds))
+		default:
+			path, prop, ok := findNative(schema, ov, "replicate-audio", req.Model, item.canon)
+			if !ok {
+				label := canonLabel(item.canon)
+				notices = append(notices, fmt.Sprintf(
+					"The selected model %q has no %s control; ignoring the requested %s.",
+					req.Model, label, label))
+				continue
+			}
+			value, notice := coerceValue(item.canon, prop, item.value, req.Model)
+			if value != nil {
+				setBodyPath(schema, body, path, value)
+			}
+			if notice != "" {
+				notices = append(notices, notice)
+			}
+		}
+	}
+	return body, notices, nil
+}
+
+// replicateSFXSynonyms lists, per canonical param, the native input names
+// Replicate video-to-sound models use (the add_sound_effects category —
+// resolveSFXBodyForCategory). MMAudio names its clip input "video" where
+// fal's endpoints say "video_url"; the steering names follow the same
+// prompt/text_prompt split the fal sfx table covers.
+var replicateSFXSynonyms = map[string][]string{
+	"sourceVideo":    {"video", "video_url", "input_video"},
+	"prompt":         {"prompt", "text_prompt", "text", "description"},
+	"negativePrompt": {"negative_prompt"},
+	"preserveSpeech": {"preserve_speech", "preserve_sounds", "keep_speech"},
+	"numSamples":     {"num_samples", "samples"},
+	"duration":       {"duration", "duration_seconds", "audio_duration"},
+}

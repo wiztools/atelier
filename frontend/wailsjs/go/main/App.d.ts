@@ -152,6 +152,10 @@ export function ListReplicateLipsyncVideoModels():Promise<Array<main.ReplicateMo
 
 export function ListReplicateModels():Promise<Array<main.ReplicateModel>>;
 
+export function ListReplicateSoundEffectModels():Promise<Array<main.ReplicateModel>>;
+
+export function ListReplicateSoundEffectsVideoModels():Promise<Array<main.ReplicateModel>>;
+
 export function ListReplicateTranscribeModels():Promise<Array<main.ReplicateModel>>;
 
 export function ListReplicateUpscaleModels():Promise<Array<main.ReplicateModel>>;

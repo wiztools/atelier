@@ -206,7 +206,7 @@ func TestSoundEffectsVideoToolDeliversVideo(t *testing.T) {
 			return SFXGenerateResult{Video: GeneratedVideo{Data: tinyMP4(), MimeType: "video/mp4"}}, nil
 		},
 	}
-	result, summary, err := soundEffectsVideoToolDefinition().Execute(context.Background(), tools,
+	result, summary, err := soundEffectsVideoToolDefinition("fal").Execute(context.Background(), tools,
 		HarnessToolCall{Name: "add_sound_effects", Content: "rain on a window"})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -234,7 +234,7 @@ func TestSoundEffectsVideoToolDeliversAudio(t *testing.T) {
 			return SFXGenerateResult{Audio: GeneratedAudio{Data: []byte("fake-mp3"), MimeType: "audio/mpeg"}}, nil
 		},
 	}
-	result, summary, err := soundEffectsVideoToolDefinition().Execute(context.Background(), tools,
+	result, summary, err := soundEffectsVideoToolDefinition("fal").Execute(context.Background(), tools,
 		HarnessToolCall{Name: "add_sound_effects", Content: "rain on a window"})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -262,12 +262,12 @@ func TestSoundEffectsVideoToolRequiresVideo(t *testing.T) {
 			return SFXGenerateResult{}, nil
 		},
 	}
-	_, _, err := soundEffectsVideoToolDefinition().Execute(context.Background(), tools,
+	_, _, err := soundEffectsVideoToolDefinition("fal").Execute(context.Background(), tools,
 		HarnessToolCall{Name: "add_sound_effects", Content: "rain"})
 	if err == nil || !strings.Contains(err.Error(), "requires an attached video") {
 		t.Fatalf("err = %v, want the attached-video guard", err)
 	}
-	if errs := soundEffectsVideoToolDefinition().Validate("toolCalls[0]", HarnessToolCall{Name: "add_sound_effects"}); len(errs) != 1 || !strings.Contains(errs[0], ".content is required") {
+	if errs := soundEffectsVideoToolDefinition("fal").Validate("toolCalls[0]", HarnessToolCall{Name: "add_sound_effects"}); len(errs) != 1 || !strings.Contains(errs[0], ".content is required") {
 		t.Fatalf("validate = %v, want the content requirement", errs)
 	}
 }

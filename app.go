@@ -331,8 +331,11 @@ type ConfigFal struct {
 // follow ImageProvider), generate_video, and upscale_video/restyle_video/
 // reframe_video (which follow VideoProvider). The API token lives in the OS
 // keychain (see keychain.go), not in config — Enabled mirrors the key's
-// presence for the frontend, like ConfigFal. Audio generation stays
-// fal-only; lip_sync routes by Models.LipsyncProvider.
+// presence for the frontend, like ConfigFal. The non-voice audio tools
+// (generate_sound, add_sound_effects) route by Models.AudioProvider, so the
+// sound slots below serve when it picks replicate; speech, voice design,
+// voice cloning, and extend_audio stay fal-only, and lip_sync routes by
+// Models.LipsyncProvider.
 type ConfigReplicate struct {
 	Enabled bool `json:"enabled"`
 	// Model is the text-to-image model (an owner/name slug, e.g.
@@ -379,6 +382,17 @@ type ConfigReplicate struct {
 	// by input schema.
 	LipsyncImageModel string `json:"lipsyncImageModel,omitempty"`
 	LipsyncVideoModel string `json:"lipsyncVideoModel,omitempty"`
+	// SoundEffectsModel is the text-to-audio model generate_sound uses when
+	// replicate is the AudioProvider (music and sound effects —
+	// stable-audio-2.5 by default), and SoundEffectsVideoModel the
+	// video-to-sound model add_sound_effects uses (MMAudio by default,
+	// whose soundtrack arrives as a standalone clip the planner chains into
+	// replace_audio) — the Replicate siblings of ConfigFal's pair. The
+	// pickers list Replicate's ai-music-generation collection (post-filtered
+	// for non-voice ids) and the video-editing collection (post-filtered for
+	// video-to-audio ids) respectively.
+	SoundEffectsModel      string `json:"soundEffectsModel,omitempty"`
+	SoundEffectsVideoModel string `json:"soundEffectsVideoModel,omitempty"`
 }
 
 // ConfigOpenAICompatible addresses a local server that speaks OpenAI's API
@@ -502,6 +516,15 @@ type ConfigModels struct {
 	// Providers.Ollama.Models.Speech. Normalized in mergeAppConfig like
 	// VideoProvider.
 	SpeechProvider string `json:"speechProvider,omitempty"`
+	// AudioProvider selects the NON-voice audio backend — generate_sound
+	// and add_sound_effects: "fal" (the default) or "replicate". Its own
+	// dimension, the LipsyncProvider shape: speech routes by SpeechProvider,
+	// and voice design, cloning, and extend_audio stay fal-only regardless,
+	// so tying the non-voice family to either the speech or the video
+	// backend would surprise. The model slots are Providers.Fal /
+	// Providers.Replicate's SoundEffectsModel + SoundEffectsVideoModel.
+	// Normalized in mergeAppConfig like VideoProvider.
+	AudioProvider string `json:"audioProvider,omitempty"`
 }
 
 type ConfigPrompts struct {
@@ -3130,6 +3153,80 @@ func (a *App) listReplicateLipsyncModels(faceKind, fallback string) ([]Replicate
 	return filtered, nil
 }
 
+// ListReplicateSoundEffectModels returns the non-voice models of Replicate's
+// ai-music-generation collection for the Settings music/sound-effects picker,
+// shown when replicate is the AudioProvider (generate_sound follows it). The
+// collection is music-weighted but its non-voice entries are exactly the
+// canonical request's domain (stable-audio-2.5 ships sound effects too), so
+// only voice/tts ids are filtered out. An empty result (a wholly unexpected
+// collection shape) falls back to the default model so the dropdown never
+// goes bare.
+func (a *App) ListReplicateSoundEffectModels() ([]ReplicateModel, error) {
+	models, err := a.listReplicateCollection(replicateMusicGenerationCollection)
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]ReplicateModel, 0, len(models))
+	for _, model := range models {
+		if isReplicateSoundModel(model) {
+			filtered = append(filtered, model)
+		}
+	}
+	if len(filtered) == 0 {
+		filtered = append(filtered, ReplicateModel{ID: defaultReplicateSoundEffectsModel})
+	}
+	return filtered, nil
+}
+
+// isReplicateSoundModel reports whether an ai-music-generation collection
+// entry serves generate_sound's canonical request: everything except the
+// voice/tts ids (none in the collection today — the filter is the
+// belt-and-braces partition that keeps a future speech entry out).
+func isReplicateSoundModel(model ReplicateModel) bool {
+	lower := strings.ToLower(model.ID)
+	for _, marker := range []string{"speech", "tts", "voice"} {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+	return true
+}
+
+// ListReplicateSoundEffectsVideoModels returns the video-to-sound models of
+// Replicate's video-editing collection for the Settings video-sound-effects
+// picker, shown when replicate is the AudioProvider (add_sound_effects
+// follows it). The collection mixes in restyle, reframe, extend, and utility
+// models, so entries are post-filtered by audio id markers — the fal pattern
+// of partitioning a broad category. The collection's audio entries are
+// community-hosted and the lister keeps official models only, so an empty
+// result is the EXPECTED shape today; it falls back to the default model by
+// name (the transcribe lister's rule) and the field stays free-text editable
+// either way.
+func (a *App) ListReplicateSoundEffectsVideoModels() ([]ReplicateModel, error) {
+	models, err := a.listReplicateVideoEditingCollection(isReplicateVideoSFXModel)
+	if err != nil {
+		return nil, err
+	}
+	if len(models) == 0 {
+		models = append(models, ReplicateModel{ID: defaultReplicateSoundEffectsVideoModel})
+	}
+	return models, nil
+}
+
+// isReplicateVideoSFXModel reports whether a video-editing collection entry
+// is a video-to-sound endpoint — the id carries one of the audio/sfx markers
+// (mmaudio, the foley/sound-effect packagings). Skips the collection's
+// restyle, reframe, extend, and utility entries, which share no marker.
+func isReplicateVideoSFXModel(model ReplicateModel) bool {
+	lower := strings.ToLower(model.ID)
+	for _, marker := range []string{"mmaudio", "sfx", "sound", "foley", "audio"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // ListReplicateVideoDurations returns the duration values the given Replicate
 // video model accepts, read from its input schema — the Replicate counterpart
 // of ListFalVideoDurations. Returns an empty slice (not an error) when the
@@ -4442,6 +4539,17 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	default:
 		config.Models.SpeechProvider = "fal"
 	}
+	// AudioProvider selects the non-voice audio backend ("fal" |
+	// "replicate") for generate_sound and add_sound_effects. Unknown or
+	// empty normalizes to "fal": audio was fal-only before Replicate served
+	// it, so a config written then must keep routing there. Like the lipsync
+	// slots, the model slots carry no forced defaults beyond the seeds below.
+	switch strings.TrimSpace(config.Models.AudioProvider) {
+	case "fal", "replicate":
+		config.Models.AudioProvider = strings.TrimSpace(config.Models.AudioProvider)
+	default:
+		config.Models.AudioProvider = "fal"
+	}
 	// Local CLI tool settings carry no forced defaults: an empty binary means
 	// PATH auto-detection and an empty model means the CLI's own default.
 	config.Providers.Local.Whisper.Binary = strings.TrimSpace(config.Providers.Local.Whisper.Binary)
@@ -4488,6 +4596,18 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	// ask routes to it without a Settings visit.
 	if strings.TrimSpace(config.Providers.Fal.AudioModel) != "" && strings.TrimSpace(config.Providers.Fal.SoundEffectsVideoModel) == "" {
 		config.Providers.Fal.SoundEffectsVideoModel = defaultFalSoundEffectsVideoModel
+	}
+	// Seed the Replicate sound pair the provider-selection way (the image and
+	// inpaint seeds above): selecting replicate as the AudioProvider without a
+	// model would leave the pickers empty and the gates closed, so pin the
+	// defaults once.
+	if config.Models.AudioProvider == "replicate" {
+		if strings.TrimSpace(config.Providers.Replicate.SoundEffectsModel) == "" {
+			config.Providers.Replicate.SoundEffectsModel = defaultReplicateSoundEffectsModel
+		}
+		if strings.TrimSpace(config.Providers.Replicate.SoundEffectsVideoModel) == "" {
+			config.Providers.Replicate.SoundEffectsVideoModel = defaultReplicateSoundEffectsVideoModel
+		}
 	}
 	if strings.TrimSpace(config.Prompts.System) == "" {
 		config.Prompts.System = defaults.Prompts.System

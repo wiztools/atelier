@@ -7466,7 +7466,7 @@ func TestSoundEffectsDurationPrecedence(t *testing.T) {
 			if tc.callDur != "" {
 				call.Duration = tc.callDur
 			}
-			if _, _, err := soundEffectsGenerationToolDefinition().Execute(context.Background(), tools, call); err != nil {
+			if _, _, err := soundEffectsGenerationToolDefinition("fal").Execute(context.Background(), tools, call); err != nil {
 				t.Fatalf("Execute: %v", err)
 			}
 			if sawDuration != tc.wantToWire {

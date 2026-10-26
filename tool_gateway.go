@@ -65,10 +65,11 @@ func imageGenerationProvider(config AppConfig) string {
 // routing truth for the gateway's GenerateVideo wiring, media telemetry
 // attribution (toolActivityFromResult), and the tool gates/resolvers. An unset
 // or unrecognized provider means fal: video was fal-only before the Replicate
-// backend existed, so a config written then must keep routing there. Audio
-// generation stays fal-only regardless; lip_sync routes by its own
-// Models.LipsyncProvider (resolveLipsyncProvider), and the video-source
-// transforms (upscale/reframe/restyle) follow this provider.
+// backend existed, so a config written then must keep routing there. The
+// non-voice audio tools route by their own Models.AudioProvider
+// (resolveAudioProvider), speech by Models.SpeechProvider, lip_sync by
+// Models.LipsyncProvider, and the video-source transforms
+// (upscale/reframe/restyle) follow this provider.
 func videoGenerationProvider(config AppConfig) string {
 	switch strings.TrimSpace(config.Models.VideoProvider) {
 	case "replicate":
@@ -558,9 +559,70 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			return generated, genErr
 		}
 		gateway.tools.GenerateSFX = func(ctx context.Context, req SFXGenerateRequest) (SFXGenerateResult, error) {
-			// fal-only: airplane mode refuses the call.
+			// Cloud-only (fal or Replicate, by Models.AudioProvider): airplane
+			// mode refuses the call.
 			if err := airplaneMediaError(config, "add_sound_effects"); err != nil {
 				return SFXGenerateResult{}, err
+			}
+			// The source clip rides fal-hosted like every fal media reference (a
+			// multi-MB video sent inline trips the queue's request-size cap). Its
+			// data URL is the only locally readable form of the length — probe it
+			// before the swap, so a call whose plan named no length soundtracks the
+			// whole clip instead of the endpoints' short API default (10s on
+			// mirelo). WebM/MOV sources the MP4 sniff can't read fall back to the
+			// model's own default, the shared fail-soft rule. The probe is
+			// provider-shared: the Replicate SFX models take the same duration
+			// hint (mirelo clamps it to the video, mmaudio renders that much
+			// sound), and its schema resolver carries the same bounds guard.
+			if req.Duration <= 0 {
+				if data, _, decErr := decodeMediaDataURL(req.Video); decErr == nil {
+					if seconds, ok := mp4DurationSeconds(data); ok {
+						req.Duration = seconds
+					}
+				}
+			}
+			if resolveAudioProvider(config) == "replicate" {
+				apiKey, err := loadReplicateAPIKey()
+				if err != nil {
+					return SFXGenerateResult{}, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return SFXGenerateResult{}, errReplicateKeyNotConfigured
+				}
+				client := newReplicateClient(app.client, apiKey)
+				if resolved, err := client.ResolveMediaURL(ctx, req.Video, "video/mp4", "sfx-source.mp4"); err == nil {
+					req.Video = resolved
+				}
+				schema := replicateSchemaCache.Get(ctx, req.Model)
+				body, notices, err := resolveSFXBodyForCategory(schema, req, Overrides{}, "replicate-sfx")
+				if err != nil {
+					return SFXGenerateResult{}, err
+				}
+				// The SFX endpoints return a video with the soundtrack mixed in
+				// or a standalone audio clip, so both the transport and the
+				// recovery are kind-agnostic (RecoverSFXJob sniffs the same
+				// ladder sfxFromPrediction runs). CostMicros stays unset:
+				// Replicate reports no cost — the engine layer stamps
+				// CostUnknown for the "?" render.
+				job := &mediaJob{}
+				client.jobSink = job
+				result, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (SFXGenerateResult, error) {
+						return client.GenerateSFX(jctx, req.Model, body)
+					},
+					client.CancelMediaJob,
+					client.RecoverSFXJob,
+				)
+				if genErr == nil && recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
+				if result.Video.Data != nil {
+					result.Video.Notices = notices
+				}
+				if result.Audio.Data != nil {
+					result.Audio.Notices = notices
+				}
+				return result, genErr
 			}
 			apiKey, err := loadFalAPIKey()
 			if err != nil {
@@ -570,20 +632,6 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				return SFXGenerateResult{}, errFalKeyNotConfigured
 			}
 			client := newFalClient(app.client, apiKey)
-			// The source clip rides fal-hosted like every fal media reference (a
-			// multi-MB video sent inline trips the queue's request-size cap). Its
-			// data URL is the only locally readable form of the length — probe it
-			// before the swap, so a call whose plan named no length soundtracks the
-			// whole clip instead of the endpoints' short API default (10s on
-			// mirelo). WebM/MOV sources the MP4 sniff can't read fall back to the
-			// model's own default, the shared fail-soft rule.
-			if req.Duration <= 0 {
-				if data, _, decErr := decodeMediaDataURL(req.Video); decErr == nil {
-					if seconds, ok := mp4DurationSeconds(data); ok {
-						req.Duration = seconds
-					}
-				}
-			}
 			if resolved, err := client.resolveMediaURLHosted(ctx, req.Video, "video/mp4", "sfx-source.mp4"); err == nil {
 				req.Video = resolved
 			}
@@ -1020,7 +1068,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			// Speech routes by Models.SpeechProvider: the ollama branch runs
 			// the local model over loopback — no key to load, and airplane
 			// mode never applies. Sound generation (and speech whose
-			// provider is fal) falls through to the cloud path below, which
+			// provider is fal) falls through to the cloud paths below, which
 			// is why the airplane refusal lives there and not here.
 			if req.Kind == audioKindSpeech && resolveSpeechProvider(config) == "ollama" {
 				generated, err := app.ollamaClient(config.Providers.Ollama.BaseURL).GenerateSpeech(ctx, req.Model, req.Voice, req.Prompt)
@@ -1039,10 +1087,45 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				}
 				return generated, err
 			}
-			// fal-only (sound effects, and speech on the fal route): airplane
-			// mode refuses the call.
+			// Cloud-only below (Replicate for sound on the AudioProvider
+			// route, fal for everything else): airplane mode refuses the call.
 			if err := airplaneMediaError(config, "audio generation"); err != nil {
 				return GeneratedAudio{}, err
+			}
+			// Sound generation routes by Models.AudioProvider: the replicate
+			// branch runs the prediction lifecycle and downloads the clip —
+			// CostMicros stays unset (Replicate reports no cost; the engine
+			// layer stamps CostUnknown for the "?" render). Speech never
+			// routes here: the voice models ride SpeechProvider's fal/ollama
+			// pair alone.
+			if req.Kind == audioKindSound && resolveAudioProvider(config) == "replicate" {
+				apiKey, err := loadReplicateAPIKey()
+				if err != nil {
+					return GeneratedAudio{}, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return GeneratedAudio{}, errReplicateKeyNotConfigured
+				}
+				client := newReplicateClient(app.client, apiKey)
+				schema := replicateSchemaCache.Get(ctx, req.Model)
+				body, notices, err := resolveReplicateAudioInput(schema, req)
+				if err != nil {
+					return GeneratedAudio{Notices: notices}, err
+				}
+				job := &mediaJob{}
+				client.jobSink = job
+				generated, recovered, err := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (GeneratedAudio, error) {
+						return client.GenerateAudio(jctx, req.Model, body)
+					},
+					client.CancelMediaJob,
+					client.RecoverAudioJob,
+				)
+				if err == nil && recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
+				generated.Notices = notices
+				return generated, err
 			}
 			apiKey, err := loadFalAPIKey()
 			if err != nil {

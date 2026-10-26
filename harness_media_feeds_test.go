@@ -210,7 +210,7 @@ func TestToolConsumedMediaKindsMatchRegistry(t *testing.T) {
 	definitions = append(definitions, imageGenerationToolDefinition(config))
 	definitions = append(definitions, videoGenerationToolDefinition(config, false))
 	definitions = append(definitions, speechGenerationToolDefinition(false, "fal"))
-	definitions = append(definitions, soundEffectsGenerationToolDefinition())
+	definitions = append(definitions, soundEffectsGenerationToolDefinition("fal"))
 	definitions = append(definitions, extendAudioToolDefinition())
 	definitions = append(definitions, transcribeAudioToolDefinition(config))
 	definitions = append(definitions, ffmpegToolDefinitions(config)...)

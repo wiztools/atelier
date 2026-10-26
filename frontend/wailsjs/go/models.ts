@@ -181,6 +181,7 @@ export namespace main {
 	    inpaintProvider?: string;
 	    lipsyncProvider?: string;
 	    speechProvider?: string;
+	    audioProvider?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigModels(source);
@@ -196,6 +197,7 @@ export namespace main {
 	        this.inpaintProvider = source["inpaintProvider"];
 	        this.lipsyncProvider = source["lipsyncProvider"];
 	        this.speechProvider = source["speechProvider"];
+	        this.audioProvider = source["audioProvider"];
 	    }
 	}
 	export class ConfigLocalImageMagick {
@@ -333,6 +335,8 @@ export namespace main {
 	    transcribeModel?: string;
 	    lipsyncImageModel?: string;
 	    lipsyncVideoModel?: string;
+	    soundEffectsModel?: string;
+	    soundEffectsVideoModel?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigReplicate(source);
@@ -354,6 +358,8 @@ export namespace main {
 	        this.transcribeModel = source["transcribeModel"];
 	        this.lipsyncImageModel = source["lipsyncImageModel"];
 	        this.lipsyncVideoModel = source["lipsyncVideoModel"];
+	        this.soundEffectsModel = source["soundEffectsModel"];
+	        this.soundEffectsVideoModel = source["soundEffectsVideoModel"];
 	    }
 	}
 	export class ConfigFal {
@@ -808,6 +814,7 @@ export namespace main {
 	    lipsyncImageModel?: string;
 	    lipsyncVideoModel?: string;
 	    lipsyncProvider?: string;
+	    audioProvider?: string;
 	    transcriptionProvider?: string;
 	    whisperModel?: string;
 	    whisperBinary?: string;
@@ -857,6 +864,7 @@ export namespace main {
 	        this.lipsyncImageModel = source["lipsyncImageModel"];
 	        this.lipsyncVideoModel = source["lipsyncVideoModel"];
 	        this.lipsyncProvider = source["lipsyncProvider"];
+	        this.audioProvider = source["audioProvider"];
 	        this.transcriptionProvider = source["transcriptionProvider"];
 	        this.whisperModel = source["whisperModel"];
 	        this.whisperBinary = source["whisperBinary"];

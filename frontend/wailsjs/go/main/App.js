@@ -302,6 +302,14 @@ export function ListReplicateModels() {
   return window['go']['main']['App']['ListReplicateModels']();
 }
 
+export function ListReplicateSoundEffectModels() {
+  return window['go']['main']['App']['ListReplicateSoundEffectModels']();
+}
+
+export function ListReplicateSoundEffectsVideoModels() {
+  return window['go']['main']['App']['ListReplicateSoundEffectsVideoModels']();
+}
+
 export function ListReplicateTranscribeModels() {
   return window['go']['main']['App']['ListReplicateTranscribeModels']();
 }

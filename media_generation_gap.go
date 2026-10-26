@@ -87,8 +87,11 @@ func generationMediaKindPhrase(mode string) string {
 // the mode blocks every cloud provider. speechLocal (the Ollama speech route,
 // regardless of the mode) appends the local text-to-speech remedy to the audio
 // case: the gap firing there means the slot is empty, and choosing one needs
-// no key and survives airplane mode.
-func mediaGenUnavailableNote(mode string, airplane bool, speechLocal bool) string {
+// no key and survives airplane mode. audioReplicate names the AudioProvider
+// selection: the audio gap's key remedy follows it (the generate_sound gate
+// checks the routed provider's key), so a replicate-pinned setup must be told
+// about the Replicate token, not a fal key that would light up nothing.
+func mediaGenUnavailableNote(mode string, airplane bool, speechLocal bool, audioReplicate bool) string {
 	kind := generationMediaKindPhrase(mode)
 	if kind == "" {
 		return ""
@@ -104,6 +107,14 @@ func mediaGenUnavailableNote(mode string, airplane bool, speechLocal bool) strin
 			"Tell the user plainly that " + kind + " generation needs a cloud provider, which airplane mode blocks: turning it off in Settings → Providers re-enables it." +
 			localSpeech
 	}
+	if mode == "audio" && audioReplicate {
+		return "Atelier note: the user's latest request asks Atelier to generate or extend " + kind +
+			", but no " + kind + " generation model is configured on this machine, so Atelier has no tool that can do it. " +
+			"Do not claim the " + kind + " was created, queued, or is rendering, and do not attempt it through other tools. " +
+			"Tell the user plainly that " + kind + " generation needs a one-time setup: add a Replicate API token and choose a " + kind +
+			" model in Settings → Providers (the Audio Provider there is set to Replicate), and Atelier enables it automatically on the next message." +
+			localSpeech
+	}
 	return "Atelier note: the user's latest request asks Atelier to generate or extend " + kind +
 		", but no " + kind + " generation model is configured on this machine, so Atelier has no tool that can do it. " +
 		"Do not claim the " + kind + " was created, queued, or is rendering, and do not attempt it through other tools. " +
@@ -116,9 +127,9 @@ func mediaGenUnavailableNote(mode string, airplane bool, speechLocal bool) strin
 // chat reply when a generation capability is missing and the final model's
 // answer did not already name the remedy — mirroring mediaEditFallbackNotice.
 // Empty when the capability is available, the mode is not a generation mode, or
-// the answer already covered the remedy (fal.ai or, on the local speech route,
-// Ollama).
-func mediaGenFallbackNotice(unavailable bool, mode string, assistantContent string, airplane bool, speechLocal bool) string {
+// the answer already covered the remedy (fal.ai, or the Replicate token on the
+// replicate audio route, or Ollama on the local speech route).
+func mediaGenFallbackNotice(unavailable bool, mode string, assistantContent string, airplane bool, speechLocal bool, audioReplicate bool) string {
 	if !unavailable {
 		return ""
 	}
@@ -144,8 +155,19 @@ func mediaGenFallbackNotice(unavailable bool, mode string, assistantContent stri
 	if strings.Contains(lower, "fal.ai") || strings.Contains(lower, "settings → providers") {
 		return ""
 	}
+	if mode == "audio" && audioReplicate && strings.Contains(lower, "replicate") {
+		return ""
+	}
 	if localSpeech && strings.Contains(lower, "ollama") {
 		return ""
+	}
+	if mode == "audio" && audioReplicate {
+		notice := "> ⚠️ " + kind + " generation isn't set up yet — add a Replicate API token and choose a " + kind +
+			" model in Settings → Providers, and Atelier picks it up automatically."
+		if localSpeech {
+			notice += " Or set Speech Provider to Ollama and pick a local speech model (e.g. phonon)."
+		}
+		return notice
 	}
 	notice := "> ⚠️ " + kind + " generation isn't set up yet — add a fal.ai API key and choose a " + kind +
 		" model in Settings → Providers, and Atelier picks it up automatically."

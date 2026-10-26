@@ -149,7 +149,7 @@ func TestSpeechGenerationDescription_ChainHintOnlyWhenVideoLacksAudio(t *testing
 }
 
 func TestSoundEffectsDescriptionHasNoChainHint(t *testing.T) {
-	desc := soundEffectsGenerationDescription()
+	desc := soundEffectsGenerationDescription("fal")
 	if strings.Contains(desc, "lip_sync") {
 		t.Fatalf("sound description must not suggest the speech-only lip_sync chain: %q", desc)
 	}
@@ -236,10 +236,10 @@ func TestTriageSystemPromptRoutingHintConditional(t *testing.T) {
 func TestTriagePromptListsAudioTools(t *testing.T) {
 	registry := newHarnessToolRegistry([]HarnessToolDefinition{
 		speechGenerationToolDefinition(false, "fal"),
-		soundEffectsGenerationToolDefinition(),
+		soundEffectsGenerationToolDefinition("fal"),
 		voiceGenerationToolDefinition(),
 		extendAudioToolDefinition(),
-		soundEffectsVideoToolDefinition(),
+		soundEffectsVideoToolDefinition("fal"),
 	})
 	catalog := registry.PromptCatalog()
 	for _, want := range []string{"generate_speech", "generate_sound", "generate_voice", "extend_audio", "add_sound_effects"} {
@@ -855,7 +855,7 @@ func TestUserAttachedClipSelectsCloningPath(t *testing.T) {
 func TestTriagePromptRoutesTranscriptionToText(t *testing.T) {
 	registry := newHarnessToolRegistry([]HarnessToolDefinition{
 		speechGenerationToolDefinition(false, "fal"),
-		soundEffectsGenerationToolDefinition(),
+		soundEffectsGenerationToolDefinition("fal"),
 		extendAudioToolDefinition(),
 		transcribeAudioToolDefinition(defaultAppConfig()),
 	})

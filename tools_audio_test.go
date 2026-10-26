@@ -170,7 +170,7 @@ func TestGenerateSoundSurfacesNotices(t *testing.T) {
 			return GeneratedAudio{Data: []byte("x"), MimeType: "audio/mpeg", Notices: []string{"loop ignored"}}, nil
 		},
 	}
-	def := soundEffectsGenerationToolDefinition()
+	def := soundEffectsGenerationToolDefinition("fal")
 	out, _, err := def.Execute(context.Background(), tools, HarnessToolCall{Content: "rain", Duration: "10", Loop: true, NegativePrompt: "vocals", Style: "jazz", Model: "m"})
 	if err != nil {
 		t.Fatalf("Execute error: %v", err)

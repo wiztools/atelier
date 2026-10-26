@@ -115,6 +115,13 @@ const (
 	// request cannot drive (a required text/prompt, a text-driven speech
 	// voice) never reaches the dropdown.
 	replicateLipsyncCollection = "lipsync"
+	// replicateMusicGenerationCollection is the generate_sound picker's
+	// bucket when replicate is the AudioProvider. It is music-weighted, but
+	// its non-voice entries are exactly the canonical request's domain
+	// (stable-audio-2.5 ships sound effects too), so its lister only
+	// post-filters voice/tts ids out — the id-marker partition, kept
+	// belt-and-braces for future collection merges.
+	replicateMusicGenerationCollection = "ai-music-generation"
 	// defaultReplicateTranscribeModel is the speech-to-text model used when
 	// none is configured — openai/whisper, the collection's official
 	// whisper: a translate boolean, a two-letter language enum, and a
@@ -133,6 +140,21 @@ const (
 	// as fal's default): required video + audio, a sync_mode enum, and an
 	// expressiveness temperature, all defaulted.
 	defaultReplicateLipsyncVideoModel = "sync/lipsync-2"
+	// defaultReplicateSoundEffectsModel is the text-to-audio model
+	// generate_sound uses when replicate is the AudioProvider and none is
+	// configured — stability-ai/stable-audio-2.5, the ai-music-generation
+	// collection's official music AND sound-effects endpoint (the only
+	// official entry whose contract covers both of generate_sound's kinds),
+	// with a ~3-minute ceiling a requested duration clamps against.
+	defaultReplicateSoundEffectsModel = "stability-ai/stable-audio-2.5"
+	// defaultReplicateSoundEffectsVideoModel is the video-to-sound model
+	// add_sound_effects uses when replicate is the AudioProvider and none is
+	// configured — zsxkib/mmaudio, the MMAudio V2 packaging: a video in, a
+	// synchronized standalone soundtrack out (a GeneratedAudio, which rides
+	// the executor's replace_audio chain summary). Community-hosted, so the
+	// official-only collection lister seldom surfaces it — the picker falls
+	// back to this entry by name, the transcribe lister's rule.
+	defaultReplicateSoundEffectsVideoModel = "zsxkib/mmaudio"
 	// maxReplicateTransientRetries is the number of times do() re-issues a
 	// request after a transient 5xx, matching the fal client's posture.
 	maxReplicateTransientRetries = 1
@@ -426,6 +448,219 @@ func (client ReplicateClient) RecoverImageJob(ctx context.Context, job mediaJob,
 		return client.imagesFromPrediction(ctx, prediction, model)
 	}
 	return ollamaGenerateResponse{}, fmt.Errorf("the replicate prediction %s was canceled after the timeout", job.ID)
+}
+
+// GenerateAudio submits an already-native input object (built by
+// resolveReplicateAudioInput against the model's schema), polls until the
+// prediction succeeds, and downloads the output clip as raw bytes — the
+// shared GeneratedAudio shape, so the audio tools' result normalization is
+// unchanged. It is the Replicate sibling of FalClient.GenerateAudio: a thin
+// transport that knows nothing about canonical params or notices. Output URLs
+// expire an hour after the prediction completes, so bytes are always
+// downloaded inside this call, never lazily.
+func (client ReplicateClient) GenerateAudio(ctx context.Context, model string, input map[string]any) (GeneratedAudio, error) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = defaultReplicateSoundEffectsModel
+	}
+	if input == nil {
+		input = map[string]any{}
+	}
+	prediction, err := client.runPrediction(ctx, model, input)
+	if err != nil {
+		return GeneratedAudio{}, err
+	}
+	return client.audioFromPrediction(ctx, prediction)
+}
+
+// audioFromPrediction downloads a succeeded audio prediction's output — the
+// shared tail of GenerateAudio and the timeout policy's RecoverAudioJob.
+func (client ReplicateClient) audioFromPrediction(ctx context.Context, prediction replicatePrediction) (GeneratedAudio, error) {
+	audioURL := replicateAudioURL(prediction.Output)
+	if audioURL == "" {
+		return GeneratedAudio{}, errors.New("replicate prediction returned no audio")
+	}
+	data, mimeType, err := client.downloadAudio(ctx, audioURL)
+	if err != nil {
+		return GeneratedAudio{}, err
+	}
+	return GeneratedAudio{Data: data, MimeType: mimeType, SourceURL: audioURL}, nil
+}
+
+// RecoverAudioJob is RecoverVideoJob for audio results (generate_sound on the
+// replicate route). A succeeded prediction's clip is fetched and delivered
+// immediately, a failed or canceled one is reported, and a still-running one
+// is cancelled and re-checked — a cancel racing a completion yields
+// succeeded, and the finished clip is fetched in that case too.
+func (client ReplicateClient) RecoverAudioJob(ctx context.Context, job mediaJob) (GeneratedAudio, error) {
+	prediction, err := client.fetchPrediction(ctx, job.ID)
+	if err == nil {
+		switch strings.ToLower(strings.TrimSpace(prediction.Status)) {
+		case "succeeded":
+			return client.audioFromPrediction(ctx, prediction)
+		case "failed":
+			return GeneratedAudio{}, fmt.Errorf("the replicate prediction %s then failed: %s", job.ID, replicateFailureMessage(prediction))
+		case "canceled":
+			return GeneratedAudio{}, fmt.Errorf("the replicate prediction %s was canceled", job.ID)
+		}
+	}
+	if cerr := client.CancelPrediction(ctx, job.ID); cerr != nil {
+		return GeneratedAudio{}, fmt.Errorf("the replicate prediction %s could not be canceled (%s) and may still be running", job.ID, cerr)
+	}
+	if prediction, err := client.fetchPrediction(ctx, job.ID); err == nil && strings.EqualFold(strings.TrimSpace(prediction.Status), "succeeded") {
+		return client.audioFromPrediction(ctx, prediction)
+	}
+	return GeneratedAudio{}, fmt.Errorf("the replicate prediction %s was canceled after the timeout", job.ID)
+}
+
+// RecoverSFXJob is the kind-agnostic recovery twin the add_sound_effects
+// replicate route shares with fal's: the endpoint family spans two output
+// kinds (a soundtrack-mixed video, a standalone soundtrack), so recovery
+// sniffs the same ladder sfxFromPrediction runs — video first, then audio.
+func (client ReplicateClient) RecoverSFXJob(ctx context.Context, job mediaJob) (SFXGenerateResult, error) {
+	prediction, err := client.fetchPrediction(ctx, job.ID)
+	if err == nil {
+		switch strings.ToLower(strings.TrimSpace(prediction.Status)) {
+		case "succeeded":
+			return client.sfxFromPrediction(ctx, prediction)
+		case "failed":
+			return SFXGenerateResult{}, fmt.Errorf("the replicate prediction %s then failed: %s", job.ID, replicateFailureMessage(prediction))
+		case "canceled":
+			return SFXGenerateResult{}, fmt.Errorf("the replicate prediction %s was canceled", job.ID)
+		}
+	}
+	if cerr := client.CancelPrediction(ctx, job.ID); cerr != nil {
+		return SFXGenerateResult{}, fmt.Errorf("the replicate prediction %s could not be canceled (%s) and may still be running", job.ID, cerr)
+	}
+	if prediction, err := client.fetchPrediction(ctx, job.ID); err == nil && strings.EqualFold(strings.TrimSpace(prediction.Status), "succeeded") {
+		return client.sfxFromPrediction(ctx, prediction)
+	}
+	return SFXGenerateResult{}, fmt.Errorf("the replicate prediction %s was canceled after the timeout", job.ID)
+}
+
+// GenerateSFX submits an already-native input object (built by resolveSFXBody
+// against the model's schema), polls until the prediction succeeds, and
+// downloads whichever media kind the model produced — a soundtrack-mixed
+// video (GeneratedVideo) or a standalone soundtrack (GeneratedAudio), the
+// same dual-kind SFXGenerateResult fal's queue path fills. Output URLs expire
+// an hour after the prediction completes, so bytes are always downloaded
+// inside this call.
+func (client ReplicateClient) GenerateSFX(ctx context.Context, model string, input map[string]any) (SFXGenerateResult, error) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = defaultReplicateSoundEffectsVideoModel
+	}
+	if input == nil {
+		input = map[string]any{}
+	}
+	prediction, err := client.runPrediction(ctx, model, input)
+	if err != nil {
+		return SFXGenerateResult{}, err
+	}
+	return client.sfxFromPrediction(ctx, prediction)
+}
+
+// sfxFromPrediction downloads a succeeded SFX prediction's output — video
+// first (the soundtrack-mixed clip is the richer deliverable), then audio —
+// the shared tail of GenerateSFX and RecoverSFXJob.
+func (client ReplicateClient) sfxFromPrediction(ctx context.Context, prediction replicatePrediction) (SFXGenerateResult, error) {
+	if videoURL := replicateVideoURL(prediction.Output); videoURL != "" {
+		data, mimeType, err := client.downloadVideo(ctx, videoURL)
+		if err != nil {
+			return SFXGenerateResult{}, err
+		}
+		return SFXGenerateResult{Video: GeneratedVideo{Data: data, MimeType: mimeType, SourceURL: videoURL}}, nil
+	}
+	audioURL := replicateAudioURL(prediction.Output)
+	if audioURL == "" {
+		return SFXGenerateResult{}, errors.New("replicate prediction returned no video or audio")
+	}
+	data, mimeType, err := client.downloadAudio(ctx, audioURL)
+	if err != nil {
+		return SFXGenerateResult{}, err
+	}
+	return SFXGenerateResult{Audio: GeneratedAudio{Data: data, MimeType: mimeType, SourceURL: audioURL}}, nil
+}
+
+// replicateAudioURL finds the clip URL in an audio prediction's output. Audio
+// models return a single URL string (or a one-element array); the fallback
+// walk matches http(s) URLs with audio extensions the way the fal client's
+// firstFalAudioURL does.
+func replicateAudioURL(raw json.RawMessage) string {
+	var single string
+	if err := json.Unmarshal(raw, &single); err == nil {
+		if strings.HasPrefix(single, "http") {
+			return strings.TrimSpace(single)
+		}
+	}
+	var list []any
+	if err := json.Unmarshal(raw, &list); err == nil {
+		for _, entry := range list {
+			if s, ok := entry.(string); ok && strings.HasPrefix(s, "http") {
+				return strings.TrimSpace(s)
+			}
+		}
+	}
+	var payload any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	found := ""
+	walkJSONStrings(payload, func(value string) {
+		if found != "" {
+			return
+		}
+		trimmed := strings.TrimSpace(value)
+		if !strings.HasPrefix(trimmed, "http://") && !strings.HasPrefix(trimmed, "https://") {
+			return
+		}
+		lower := strings.ToLower(trimmed)
+		for _, ext := range []string{".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac", ".opus"} {
+			if strings.Contains(lower, ext) {
+				found = trimmed
+				return
+			}
+		}
+	})
+	return found
+}
+
+// downloadAudio fetches a generated audio URL and returns its raw bytes and
+// MIME type — the fal client's downloadAudio contract, shared here because
+// audio bytes are handed back for the caller to write straight to a file-path
+// artifact. The byte sniff OR the declared audio/ content type is accepted:
+// Replicate delivery URLs may carry neither a sniffable container header nor
+// a set Content-Type (raw PCM WAV payloads), so failing closed on both would
+// drop valid clips.
+func (client ReplicateClient) downloadAudio(ctx context.Context, audioURL string) ([]byte, string, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, audioURL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	resp, err := client.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, "", fmt.Errorf("audio download failed: %s", resp.Status)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, falAudioMaxBytes))
+	if err != nil {
+		return nil, "", err
+	}
+	mimeType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if !isAudioBytes(data) && !strings.HasPrefix(mimeType, "audio/") {
+		return nil, "", errors.New("downloaded replicate result is not a supported audio clip")
+	}
+	if !strings.HasPrefix(mimeType, "audio/") {
+		if detected := http.DetectContentType(data); strings.HasPrefix(detected, "audio/") {
+			mimeType = detected
+		} else {
+			mimeType = "audio/mpeg"
+		}
+	}
+	return data, mimeType, nil
 }
 
 // replicateFailureMessage renders a failed prediction's error field, which may

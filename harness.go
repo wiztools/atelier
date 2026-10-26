@@ -735,7 +735,7 @@ func (h *HarnessEngine) RunChatStream(ctx context.Context, requestID string, req
 			toolNotices = imageNotice
 		}
 	}
-	if genNotice := mediaGenFallbackNotice(preparation.MediaGenUnavailable, preparation.MediaGenMode, assistantContent, airplaneModeActive(h.config), resolveSpeechProvider(h.config) == "ollama"); genNotice != "" {
+	if genNotice := mediaGenFallbackNotice(preparation.MediaGenUnavailable, preparation.MediaGenMode, assistantContent, airplaneModeActive(h.config), resolveSpeechProvider(h.config) == "ollama", resolveAudioProvider(h.config) == "replicate"); genNotice != "" {
 		if toolNotices != "" {
 			toolNotices += "\n" + genNotice
 		} else {
@@ -2801,7 +2801,7 @@ func (h *HarnessEngine) preparedResponseRequest(ctx context.Context, req ChatReq
 	// trailing-note channel: the final model learns the media cannot be produced
 	// and what to tell the user, instead of inventing a queued-render reply.
 	if preparation.MediaGenUnavailable {
-		if note := mediaGenUnavailableNote(preparation.MediaGenMode, airplaneModeActive(h.config), resolveSpeechProvider(h.config) == "ollama"); note != "" {
+		if note := mediaGenUnavailableNote(preparation.MediaGenMode, airplaneModeActive(h.config), resolveSpeechProvider(h.config) == "ollama", resolveAudioProvider(h.config) == "replicate"); note != "" {
 			messages = append(messages, ChatMessage{Role: "user", Content: note})
 		}
 	}
@@ -4033,18 +4033,20 @@ func (h *HarnessEngine) toolActivityFromResult(result HarnessToolResult) Harness
 	// Media provider attribution rides the engine layer, not the per-tool
 	// builders: generate_video routes by config.Models.VideoProvider — the
 	// same field the tool gateway reads, via videoGenerationProvider — while
-	// audio defaults to fal (generate_sound, extend_audio, and the
-	// sound-effects tool are fal-only), and generate_image routes by
-	// config.Models.ImageProvider; the builders don't receive config.
-	// generate_speech is the audio exception: its builder stamps its own
-	// provider (captured from the config the definition was built against —
-	// the transcribe_audio pattern), because speech routes by
-	// Models.SpeechProvider and the ollama route must not bill to fal. The
-	// lipsync builder stamps the same way, which then wins below. A failed
-	// call has no result payload, so no case matches and Provider stays
-	// empty. A builder that already named its provider (the ffmpeg tools
-	// stamp "ffmpeg") wins — the engine layer cannot know which backend a
-	// local tool ran on.
+	// audio defaults to fal (the fal-era belt for generate_speech on the fal
+	// route, extend_audio, and generate_voice — the tools that stay
+	// fal-only), and generate_image routes by config.Models.ImageProvider;
+	// the builders don't receive config. generate_speech is the audio
+	// exception: its builder stamps its own provider (captured from the
+	// config the definition was built against — the transcribe_audio
+	// pattern), because speech routes by Models.SpeechProvider and the
+	// ollama route must not bill to fal. generate_sound and
+	// add_sound_effects stamp the same way now that the non-voice pair
+	// routes by Models.AudioProvider. The lipsync builder stamps the same
+	// way, which then wins below. A failed call has no result payload, so no
+	// case matches and Provider stays empty. A builder that already named
+	// its provider (the ffmpeg tools stamp "ffmpeg") wins — the engine layer
+	// cannot know which backend a local tool ran on.
 	if activity.Provider == "" {
 		switch result.Result.(type) {
 		case ToolVideoResult:

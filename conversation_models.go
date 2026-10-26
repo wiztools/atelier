@@ -60,8 +60,10 @@ type ConversationModelOverrides struct {
 	// SpeechProvider routes, so an ollama-pinned conversation stores the
 	// model on the Ollama Speech slot, everything else on fal's AudioModel —
 	// which is also where records written before the provider dimension
-	// existed keep landing. SoundEffectsModel and the rest of the audio
-	// family stay fal-only 1:1 onto ConfigFal.
+	// existed keep landing. SoundEffectsModel/SoundEffectsVideoModel follow
+	// AudioProvider the same way (the TranscribeModel recipe); the rest of
+	// the audio family (clone, extend, design) stays fal-only 1:1 onto
+	// ConfigFal.
 	SpeechProvider         string `json:"speechProvider,omitempty"`
 	AudioModel             string `json:"audioModel,omitempty"`
 	SoundEffectsModel      string `json:"soundEffectsModel,omitempty"`
@@ -78,6 +80,13 @@ type ConversationModelOverrides struct {
 	// the video pair. The model slots above land on the ones the effective
 	// provider reads.
 	LipsyncProvider string `json:"lipsyncProvider,omitempty"`
+	// AudioProvider overrides the NON-voice audio backend ("fal" |
+	// "replicate") — generate_sound and add_sound_effects — the
+	// LipsyncProvider shape one section over: its own dimension, since the
+	// non-voice pair follows neither the speech nor the video backend, and
+	// speech/extend/design/cloning route elsewhere regardless. The sound
+	// slots above land on the ones the effective provider reads.
+	AudioProvider string `json:"audioProvider,omitempty"`
 	// TranscriptionProvider overrides transcribe_audio's backend — the Models
 	// tab's Transcription & Subtitles section. WhisperModel/WhisperBinary/
 	// WhisperVADModel are engine config the Settings → Local Tools tab edits
@@ -127,7 +136,7 @@ func normalizeConversationModelOverrides(o ConversationModelOverrides) Conversat
 		&o.InpaintProvider, &o.InpaintModel,
 		&o.VideoExtendModel, &o.VideoMotionModel, &o.VideoKeyframeModel, &o.VideoUpscaleModel, &o.VideoReframeModel, &o.VideoRestyleModel,
 		&o.SpeechProvider, &o.AudioModel, &o.SoundEffectsModel, &o.SoundEffectsVideoModel, &o.AudioCloneModel, &o.AudioExtendModel, &o.VoiceDesignModel, &o.TranscribeModel,
-		&o.LipsyncImageModel, &o.LipsyncVideoModel, &o.LipsyncProvider,
+		&o.LipsyncImageModel, &o.LipsyncVideoModel, &o.LipsyncProvider, &o.AudioProvider,
 		&o.TranscriptionProvider, &o.WhisperModel, &o.WhisperBinary, &o.WhisperVADModel,
 		&o.ImageAspectRatio, &o.ImageSizePreset, &o.VideoDuration, &o.VideoAspectRatio, &o.VideoResolution, &o.SoundDuration, &o.AudioExtendDuration,
 	}
@@ -152,6 +161,7 @@ func validateConversationModelOverrides(o ConversationModelOverrides) error {
 		"videoProvider":         o.VideoProvider,
 		"inpaintProvider":       o.InpaintProvider,
 		"lipsyncProvider":       o.LipsyncProvider,
+		"audioProvider":         o.AudioProvider,
 		"speechProvider":        o.SpeechProvider,
 		"transcriptionProvider": o.TranscriptionProvider,
 	} {
@@ -171,6 +181,10 @@ func validateConversationModelOverrides(o ConversationModelOverrides) error {
 		case "lipsyncProvider":
 			if value != "" && value != "fal" && value != "replicate" {
 				return fmt.Errorf("unknown lipsync provider %q", value)
+			}
+		case "audioProvider":
+			if value != "" && value != "fal" && value != "replicate" {
+				return fmt.Errorf("unknown audio provider %q", value)
 			}
 		case "speechProvider":
 			if value != "" && value != "fal" && value != "ollama" {
@@ -472,11 +486,37 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 			config.Providers.Fal.AudioModel = o.AudioModel
 		}
 	}
-	if o.SoundEffectsModel != "" {
-		config.Providers.Fal.SoundEffectsModel = o.SoundEffectsModel
+	if o.AudioProvider != "" {
+		// The audio provider overrides the non-voice pair's backend directly
+		// — its own dimension (fal | replicate), validated at mutator time
+		// like InpaintProvider. Applied BEFORE the sound slots below so
+		// their routing sees the overridden provider.
+		config.Models.AudioProvider = o.AudioProvider
 	}
-	if o.SoundEffectsVideoModel != "" {
-		config.Providers.Fal.SoundEffectsVideoModel = o.SoundEffectsVideoModel
+	if o.SoundEffectsModel != "" || o.SoundEffectsVideoModel != "" {
+		// The sound-slot overrides follow the effective audio provider — the
+		// lipsync-slots recipe one section over: the executor and the
+		// gateway route by Models.AudioProvider, so a Replicate-pinned
+		// conversation generates sound with its Replicate models.
+		provider := o.AudioProvider
+		if provider == "" {
+			provider = config.Models.AudioProvider
+		}
+		if provider == "replicate" {
+			if o.SoundEffectsModel != "" {
+				config.Providers.Replicate.SoundEffectsModel = o.SoundEffectsModel
+			}
+			if o.SoundEffectsVideoModel != "" {
+				config.Providers.Replicate.SoundEffectsVideoModel = o.SoundEffectsVideoModel
+			}
+		} else {
+			if o.SoundEffectsModel != "" {
+				config.Providers.Fal.SoundEffectsModel = o.SoundEffectsModel
+			}
+			if o.SoundEffectsVideoModel != "" {
+				config.Providers.Fal.SoundEffectsVideoModel = o.SoundEffectsVideoModel
+			}
+		}
 	}
 	if o.AudioCloneModel != "" {
 		config.Providers.Fal.AudioCloneModel = o.AudioCloneModel

@@ -358,7 +358,7 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 		definitions = append(definitions, speechGenerationToolDefinition(videoAudioCapable, resolveSpeechProvider(config)))
 	}
 	if soundEffectsGenerationConfigured(config) {
-		definitions = append(definitions, soundEffectsGenerationToolDefinition())
+		definitions = append(definitions, soundEffectsGenerationToolDefinition(resolveAudioProvider(config)))
 	}
 	if voiceDesignConfigured(config) {
 		definitions = append(definitions, voiceGenerationToolDefinition())
@@ -367,7 +367,7 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 		definitions = append(definitions, extendAudioToolDefinition())
 	}
 	if soundEffectsVideoConfigured(config) {
-		definitions = append(definitions, soundEffectsVideoToolDefinition())
+		definitions = append(definitions, soundEffectsVideoToolDefinition(resolveAudioProvider(config)))
 	}
 	if transcribeAudioConfigured(config) {
 		definitions = append(definitions, transcribeAudioToolDefinition(config))
@@ -1237,12 +1237,19 @@ func speechGenerationConfigured(config AppConfig) bool {
 }
 
 // soundEffectsGenerationConfigured mirrors speechGenerationConfigured for the
-// generate_sound tool (music and sound effects). mergeAppConfig seeds the
-// default once AudioModel is set, so anyone with speech configured gets both.
+// generate_sound tool (music and sound effects). On the fal route
+// mergeAppConfig seeds the default once AudioModel is set, so anyone with
+// speech configured gets both; on the replicate route the AudioProvider
+// selection seeds the default (mergeAppConfig), so the routed provider's key
+// is the other half — the imageUpscaleConfigured pattern of checking the
+// routed provider's key.
 func soundEffectsGenerationConfigured(config AppConfig) bool {
-	// fal-only: airplane mode drops the tool.
+	// Cloud-only (fal or Replicate): airplane mode drops the tool.
 	if airplaneModeActive(config) {
 		return false
+	}
+	if resolveAudioProvider(config) == "replicate" {
+		return strings.TrimSpace(config.Providers.Replicate.SoundEffectsModel) != "" && replicateKeyConfigured()
 	}
 	if strings.TrimSpace(config.Providers.Fal.SoundEffectsModel) == "" {
 		return false
@@ -1270,12 +1277,27 @@ const defaultOllamaSpeechModel = "phonon"
 // fal-only before Ollama's speech models existed, so an unset or unrecognized
 // value keeps routing there. The routing truth for the tool gate, the
 // gateway's GenerateAudio wiring, the executor's cloning stand-down, and
-// activity attribution. Scope is the voice models alone: generate_sound,
-// extend_audio, add_sound_effects, generate_voice, and voice cloning stay
-// fal-only regardless.
+// activity attribution. Scope is the voice models alone: generate_sound and
+// add_sound_effects route by resolveAudioProvider, and extend_audio,
+// generate_voice, and voice cloning stay fal-only regardless.
 func resolveSpeechProvider(config AppConfig) string {
 	if strings.TrimSpace(config.Models.SpeechProvider) == "ollama" {
 		return "ollama"
+	}
+	return "fal"
+}
+
+// resolveAudioProvider returns the backend the NON-voice audio tools run on
+// for this config: "replicate" when Models.AudioProvider says so, else fal —
+// audio was fal-only before Replicate served it, so an unset or unrecognized
+// value keeps routing there. The routing truth for the generate_sound and
+// add_sound_effects gates, the gateway's GenerateAudio/GenerateSFX branches,
+// and activity attribution. Scope is the non-voice pair alone: speech routes
+// by resolveSpeechProvider, and extend_audio, generate_voice, and voice
+// cloning stay fal-only regardless.
+func resolveAudioProvider(config AppConfig) string {
+	if strings.TrimSpace(config.Models.AudioProvider) == "replicate" {
+		return "replicate"
 	}
 	return "fal"
 }
@@ -1294,8 +1316,8 @@ func resolveDefaultSpeechModel(config AppConfig) string {
 }
 
 // The audio-generation kinds the shared AudioGenerateRequest carries: the
-// gateway routes only speech by Models.SpeechProvider; sound generation stays
-// fal-only even though both ride one transport hook.
+// gateway routes speech by Models.SpeechProvider and sound by
+// Models.AudioProvider, though both ride one transport hook.
 const (
 	audioKindSpeech = "speech"
 	audioKindSound  = "sound"
@@ -1313,8 +1335,15 @@ func resolveDefaultAudioCloneModel(config AppConfig) string {
 }
 
 // resolveDefaultSoundEffectsModel returns the model the generate_sound tool
-// uses when the call doesn't override it.
+// uses when the call doesn't override it, routed by the effective audio
+// provider — the resolveDefaultSpeechModel recipe one tool over.
 func resolveDefaultSoundEffectsModel(config AppConfig) string {
+	if resolveAudioProvider(config) == "replicate" {
+		if model := strings.TrimSpace(config.Providers.Replicate.SoundEffectsModel); model != "" {
+			return model
+		}
+		return defaultReplicateSoundEffectsModel
+	}
 	if model := strings.TrimSpace(config.Providers.Fal.SoundEffectsModel); model != "" {
 		return model
 	}
@@ -1322,14 +1351,18 @@ func resolveDefaultSoundEffectsModel(config AppConfig) string {
 }
 
 // soundEffectsVideoConfigured reports whether the add_sound_effects tool
-// should be offered: a fal video sound-effects model must be configured AND a
-// fal.ai key present — fal is the only backend. mergeAppConfig seeds the
-// default once AudioModel is set, so anyone with speech configured gets the
-// tool without a Settings visit.
+// should be offered: the routed audio provider's model must be configured AND
+// its key present (fal on the fal route, Replicate on the replicate route —
+// the soundEffectsGenerationConfigured pattern). mergeAppConfig seeds the
+// defaults on both routes, so anyone with speech configured (fal) or with the
+// provider selected (replicate) gets the tool without a Settings visit.
 func soundEffectsVideoConfigured(config AppConfig) bool {
-	// fal-only: airplane mode drops the tool.
+	// Cloud-only (fal or Replicate): airplane mode drops the tool.
 	if airplaneModeActive(config) {
 		return false
+	}
+	if resolveAudioProvider(config) == "replicate" {
+		return strings.TrimSpace(config.Providers.Replicate.SoundEffectsVideoModel) != "" && replicateKeyConfigured()
 	}
 	if strings.TrimSpace(config.Providers.Fal.SoundEffectsVideoModel) == "" {
 		return false
@@ -1338,8 +1371,15 @@ func soundEffectsVideoConfigured(config AppConfig) bool {
 }
 
 // resolveDefaultSoundEffectsVideoModel returns the video sound-effects model
-// the add_sound_effects tool uses when the call doesn't override it.
+// the add_sound_effects tool uses when the call doesn't override it, routed
+// by the effective audio provider like resolveDefaultSoundEffectsModel.
 func resolveDefaultSoundEffectsVideoModel(config AppConfig) string {
+	if resolveAudioProvider(config) == "replicate" {
+		if model := strings.TrimSpace(config.Providers.Replicate.SoundEffectsVideoModel); model != "" {
+			return model
+		}
+		return defaultReplicateSoundEffectsVideoModel
+	}
 	if model := strings.TrimSpace(config.Providers.Fal.SoundEffectsVideoModel); model != "" {
 		return model
 	}
@@ -1347,8 +1387,10 @@ func resolveDefaultSoundEffectsVideoModel(config AppConfig) string {
 }
 
 // audioExtendConfigured reports whether the extend_audio tool should be
-// offered: fal is the only audio-extend backend, and the default model always
-// applies (stable-audio-25/inpaint), so the gate is purely the fal key — like
+// offered: fal is the only audio-extend backend (the Models.AudioProvider
+// dimension deliberately does not reach it — Replicate carries no extend
+// endpoints), and the default model always applies
+// (stable-audio-25/inpaint), so the gate is purely the fal key — like
 // transcribe_audio and lip_sync, no model needs to be configured first.
 func audioExtendConfigured(config AppConfig) bool {
 	// fal-only: airplane mode drops the tool.
@@ -1552,8 +1594,14 @@ func speechGenerationDescription(videoAudioCapable bool, provider string) string
 // soundEffectsGenerationDescription assembles the generate_sound tool
 // description. It takes no videoAudioCapable hint: lip_sync is a face tool, so
 // the generate_speech + lip_sync chain never applies to music or sound effects.
-func soundEffectsGenerationDescription() string {
-	return "Use this when the user asks to create music, ambience, or a sound effect from a description. The configured fal.ai sound-effects model generates the clip and it is attached to the assistant reply. When the request names a genre or mood, pass it as style and keep content as the pure lyrics or sound description. To make an existing clip longer (\"extend this\", \"add 30 seconds to this clip\", \"continue this song\") use extend_audio instead."
+// Provider selects the backend facts the way speechGenerationDescription's
+// does — the planner's wording must name the configured backend.
+func soundEffectsGenerationDescription(provider string) string {
+	backend := "fal.ai sound-effects model"
+	if provider == "replicate" {
+		backend = "Replicate audio model"
+	}
+	return "Use this when the user asks to create music, ambience, or a sound effect from a description. The configured " + backend + " generates the clip and it is attached to the assistant reply. When the request names a genre or mood, pass it as style and keep content as the pure lyrics or sound description. To make an existing clip longer (\"extend this\", \"add 30 seconds to this clip\", \"continue this song\") use extend_audio instead."
 }
 
 // stageGeneratedAudio writes a downloaded clip to a temp file and wraps it in
@@ -1849,11 +1897,11 @@ func voiceGenerationToolDefinition() HarnessToolDefinition {
 	}
 }
 
-func soundEffectsGenerationToolDefinition() HarnessToolDefinition {
+func soundEffectsGenerationToolDefinition(provider string) HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "generate_sound",
 		Title:       "Generate sound",
-		Description: soundEffectsGenerationDescription(),
+		Description: soundEffectsGenerationDescription(provider),
 		Example:     `{"name":"generate_sound","content":"a calm lo-fi piano loop with soft rain in the background"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: generateSoundParamSchema(),
@@ -1885,7 +1933,20 @@ func soundEffectsGenerationToolDefinition() HarnessToolDefinition {
 				Style:          strings.TrimSpace(call.Style),
 			}, resolveDefaultSoundEffectsModel)
 		},
-		Activity: audioGenerationActivity,
+		Activity: func(result HarnessToolResult) HarnessToolActivity {
+			// The engine layer defaults audio activities to fal (the fal-era
+			// belt for speech, extend, and voice design); sound routes by its
+			// own provider, so the builder stamps it — the generate_speech
+			// captured-config pattern.
+			activity := audioGenerationActivity(result)
+			if provider == "replicate" {
+				activity.Provider = "replicate"
+				if typed, ok := result.Result.(ToolAudioResult); ok {
+					activity.Command = []string{"replicate", "generate", typed.Model}
+				}
+			}
+			return activity
+		},
 	}
 }
 
@@ -1893,9 +1954,16 @@ func soundEffectsGenerationToolDefinition() HarnessToolDefinition {
 // description. The deliverable wording covers both endpoint families: the
 // video-soundtrack ones return the clip with the sound mixed in, the
 // video-to-audio ones a standalone soundtrack the planner chains into
-// replace_audio.
-func soundEffectsVideoDescription() string {
-	return "Use this when the user asks to add or generate sound effects for an attached video — a synchronized soundtrack, foley, ambience for the picture (footsteps, rain, doors, whooshes, room tone). Requires an attached video; the configured fal.ai sound-effects model watches the clip and generates matching sound. Pass content describing the sound — name off-screen sources the picture doesn't show (\"distant thunder, footsteps on gravel, low room tone\"); when the user didn't name specific sounds, describe the scene's likely sound world. The result is the video with the new soundtrack mixed in, or — when the configured model delivers sound only — a soundtrack clip; chain replace_audio in the same turn to lay that one under the video. Pass preserveSpeech:false when the generated sound must replace everything including dialogue; leave it unset to keep any speech in the clip. Generation runs for a minute or more."
+// replace_audio. Provider selects the backend facts (the generate_sound
+// description's rule) — on Replicate the default endpoint is a
+// video-to-audio model, so the standalone-soundtrack wording is the expected
+// shape there.
+func soundEffectsVideoDescription(provider string) string {
+	backend := "fal.ai sound-effects model"
+	if provider == "replicate" {
+		backend = "Replicate sound-effects model"
+	}
+	return "Use this when the user asks to add or generate sound effects for an attached video — a synchronized soundtrack, foley, ambience for the picture (footsteps, rain, doors, whooshes, room tone). Requires an attached video; the configured " + backend + " watches the clip and generates matching sound. Pass content describing the sound — name off-screen sources the picture doesn't show (\"distant thunder, footsteps on gravel, low room tone\"); when the user didn't name specific sounds, describe the scene's likely sound world. The result is the video with the new soundtrack mixed in, or — when the configured model delivers sound only — a soundtrack clip; chain replace_audio in the same turn to lay that one under the video. Pass preserveSpeech:false when the generated sound must replace everything including dialogue; leave it unset to keep any speech in the clip. Generation runs for a minute or more."
 }
 
 // soundEffectsVideoParamSchema describes add_sound_effects's inputs. content
@@ -1919,11 +1987,11 @@ func soundEffectsVideoParamSchema() map[string]any {
 // the existing ToolVideoResult → artifact pipeline, a standalone soundtrack
 // rides ToolAudioResult (and carries forward to replace_audio) — so no new
 // persistence code. Mirrors lip_sync's attachment-guard pattern.
-func soundEffectsVideoToolDefinition() HarnessToolDefinition {
+func soundEffectsVideoToolDefinition(provider string) HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "add_sound_effects",
 		Title:       "Add sound effects",
-		Description: soundEffectsVideoDescription(),
+		Description: soundEffectsVideoDescription(provider),
 		Example:     `{"name":"add_sound_effects","content":"distant thunder, footsteps on gravel, low room tone"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: soundEffectsVideoParamSchema(),
@@ -1937,8 +2005,9 @@ func soundEffectsVideoToolDefinition() HarnessToolDefinition {
 			if tools.GenerateSFX == nil {
 				return nil, "sound effects unavailable", errors.New("sound-effects generation is not available in this context")
 			}
-			// fal's sound-effects endpoints take a single video_url, so only
-			// the first attached video is used even when several are attached.
+			// The sound-effects endpoints take a single video reference, so
+			// only the first attached video is used even when several are
+			// attached.
 			attachedVideo := firstAttachedVideo(tools.AttachedVideos)
 			if attachedVideo == "" {
 				return nil, "sound effects require an attached video", errors.New("add_sound_effects requires an attached video — ask the user to attach one first")
@@ -1996,13 +2065,17 @@ func soundEffectsVideoToolDefinition() HarnessToolDefinition {
 		Activity: func(result HarnessToolResult) HarnessToolActivity {
 			// audioGenerationActivity's shape for both output kinds: the
 			// video-with-soundtrack result reports MediaKind video, the
-			// standalone soundtrack audio — the usage ledger folds both.
+			// standalone soundtrack audio — the usage ledger folds both. The
+			// builder stamps the routed provider itself: the engine's
+			// ToolVideoResult default would attribute the clip to the video
+			// provider, which can disagree with the audio backend.
 			activity := defaultHarnessToolActivity(result)
+			activity.Provider = provider
 			switch typed := result.Result.(type) {
 			case ToolVideoResult:
-				activity.Command = []string{"fal", "generate", typed.Model}
+				activity.Command = []string{provider, "generate", typed.Model}
 			case ToolAudioResult:
-				activity.Command = []string{"fal", "generate", typed.Model}
+				activity.Command = []string{provider, "generate", typed.Model}
 			}
 			return activity
 		},
@@ -3238,7 +3311,7 @@ func generateSoundParamSchema() map[string]any {
 		"additionalProperties": false,
 		"properties": map[string]any{
 			"content": stringParam("A description of the music or sound effect to create."),
-			"model":   stringParam("Optional fal.ai sound model override."),
+			"model":   stringParam("Optional model override (an endpoint on the configured audio provider)."),
 			"duration": stringParam("Optional — target clip length in seconds (e.g. \"10\"). " +
 				"Omit to use the configured default length; pass \"auto\" to let the model decide from the prompt. " +
 				"Ignored by models that don't expose a duration control."),
