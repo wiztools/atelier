@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -33,9 +34,10 @@ type EditorLaunchEvent struct {
 	ConversationID string `json:"conversationId"`
 	ArtifactID     string `json:"artifactId"`
 	Kind           string `json:"kind"`
-	// SeedArtifactIDs carries the video composer's seeding — the turn's
-	// referenced video and audio, in order (empty for an unseeded open).
-	// Every other editor ignores it.
+	// SeedArtifactIDs carries the workspace editors' seeding — the video
+	// composer's referenced video and audio, the comic editor's referenced
+	// images, in order (empty for an unseeded open). The artifact editors
+	// ignore it.
 	SeedArtifactIDs []string `json:"seedArtifactIds,omitempty"`
 }
 
@@ -77,6 +79,10 @@ func editorOpenKind(content HistoryContent) string {
 		if markdownArtifactExtension(content) != "" {
 			return "markdown"
 		}
+	case "comic":
+		if comicArtifactExtension(content) != "" {
+			return "comic"
+		}
 	}
 	return ""
 }
@@ -100,7 +106,7 @@ func editorOpenKind(content HistoryContent) string {
 // @-mentions, and generated media all persist as artifacts, so every one of
 // them is openable; other text is skipped.
 func newestEditorArtifact(storage ConfigStorage, conversationID, kind string) (string, string, error) {
-	if kind != "" && kind != "image" && kind != "video" && kind != "audio" && kind != "subtitle" && kind != "markdown" {
+	if kind != "" && kind != "image" && kind != "video" && kind != "audio" && kind != "subtitle" && kind != "markdown" && kind != "comic" {
 		return "", "", fmt.Errorf("unknown editor kind %q", kind)
 	}
 	detail, err := getConversation(storage, conversationID)
@@ -151,6 +157,10 @@ func newestEditorArtifact(storage ConfigStorage, conversationID, kind string) (s
 				if content.Type != "markdown" || markdownArtifactExtension(content) == "" {
 					continue
 				}
+			} else if kind == "comic" {
+				if content.Type != "comic" || comicArtifactExtension(content) == "" {
+					continue
+				}
 			} else if kind != "" && content.Type != kind {
 				continue
 			}
@@ -199,14 +209,73 @@ func compositionSeedIDs(storage ConfigStorage, conversationID string) ([]string,
 	return append(videos, audios...), nil
 }
 
+// comicSeedIDs gathers the image artifact ids the comic editor's draft seeds
+// with — the tray's starting palette. The newest user turn's images come
+// first in content order (attachments, then @-mention references — the
+// deterministic reading of "reference order"); the walk then continues
+// BACKWARD through the rest of the conversation, newest artifact first, so
+// the art earlier turns produced fills the tray behind them — a
+// generate_image output lands on the assistant turn, not the ask, and the
+// comic-open ask itself usually carries no images (conv_0d2e8870b27af2acc0441794:
+// three images in the conversation, a bare newest user turn, an empty tray).
+// Ids dedupe by artifact id (a mention re-references an older artifact at
+// its newest position), entries whose files are gone on disk skip (the tray
+// stays pickable-and-real; the assets panel is where missing files surface),
+// and the list caps at comicMaxUnplacedImages — the tray's own ceiling.
+// Empty when the conversation holds no resolvable images at all: the comic
+// opens unseeded and the picker is right there.
+func comicSeedIDs(storage ConfigStorage, conversationID string) ([]string, error) {
+	detail, err := getConversation(storage, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	candidates := []HistoryContent{}
+	collect := func(turn HistoryTurn) {
+		for _, content := range turn.Content {
+			if content.ArtifactID == "" || content.Type != "image" || seen[content.ArtifactID] {
+				continue
+			}
+			seen[content.ArtifactID] = true
+			candidates = append(candidates, content)
+		}
+	}
+	if len(detail.Turns) > 0 && detail.Turns[len(detail.Turns)-1].Role == "user" {
+		collect(detail.Turns[len(detail.Turns)-1])
+	}
+	for i := len(detail.Turns) - 1; i >= 0; i-- {
+		if i == len(detail.Turns)-1 && detail.Turns[i].Role == "user" {
+			continue // the newest user turn already walked — its refs lead
+		}
+		collect(detail.Turns[i])
+	}
+	ids := make([]string, 0, len(candidates))
+	for _, content := range candidates {
+		if len(ids) >= comicMaxUnplacedImages {
+			break
+		}
+		path, err := contentArtifactPath(storage, conversationID, content)
+		if err != nil {
+			continue
+		}
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		ids = append(ids, content.ArtifactID)
+	}
+	return ids, nil
+}
+
 // executeOpenEditor resolves the artifact and delivers the launch event. The
 // editors open by (conversationID, artifactID) — the same identity every other
 // editor entry point takes — and the hook indirection keeps the definition
 // testable without a Wails runtime, like every other capability hook on the
-// tool execution context. The video composer is the exception: it opens no
-// artifact — it opens the workspace seeded with the turn's video and audio
-// (the seeded-only contract: media land exactly as if picked, in reference
-// order, and nothing is arranged).
+// tool execution context. The video composer and the comic editor are the
+// exceptions: neither opens an artifact — each opens the workspace seeded
+// with the turn's referenced media (the seeded-only contract: media land
+// exactly as if picked, in reference order, and nothing is arranged — for
+// the comic that means the images wait in the unplaced tray, since arranging
+// the frames is the human's half of the loop).
 func executeOpenEditor(tools HarnessToolExecutionContext, mode string) (ToolOpenEditorResult, string, error) {
 	if strings.TrimSpace(tools.ConversationID) == "" {
 		return ToolOpenEditorResult{}, "editor launch is unavailable", errors.New("open_editor opens a conversation asset, and no conversation is attached to this call")
@@ -234,6 +303,26 @@ func executeOpenEditor(tools HarnessToolExecutionContext, mode string) (ToolOpen
 		}
 		return ToolOpenEditorResult{Kind: "composition", ConversationID: tools.ConversationID}, summary, nil
 	}
+	if mode == "comic" {
+		seeds, err := comicSeedIDs(tools.Storage, tools.ConversationID)
+		if err != nil {
+			return ToolOpenEditorResult{}, "editor launch failed", err
+		}
+		if err := tools.OpenEditor("comic", tools.ConversationID, "", seeds); err != nil {
+			return ToolOpenEditorResult{}, "editor launch failed", err
+		}
+		summary := "Opened the comic editor on the user's screen"
+		if len(seeds) > 0 {
+			plural := "s"
+			if len(seeds) == 1 {
+				plural = ""
+			}
+			summary += fmt.Sprintf(", seeded with %d of the conversation's image%s (this turn's references first, then newer art first) — nothing was arranged: the images wait in the unplaced tray, and the comic is an unsaved draft until the user saves it", len(seeds), plural)
+		} else {
+			summary += " (unseeded — this conversation holds no images yet); the user adds art from the comic's picker"
+		}
+		return ToolOpenEditorResult{Kind: "comic", ConversationID: tools.ConversationID}, summary, nil
+	}
 	kind, artifactID, err := newestEditorArtifact(tools.Storage, tools.ConversationID, mode)
 	if err != nil {
 		return ToolOpenEditorResult{}, "editor launch failed", err
@@ -255,23 +344,23 @@ func openEditorToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "open_editor",
 		Title:       "Open in editor",
-		Description: "Opens one of the conversation's assets in Atelier's built-in editor on the user's screen. mode \"image\" opens the image editor, \"video\" the video editor, \"audio\" the audio editor, \"subtitle\" the subtitle editor (a .vtt or .srt transcript artifact), \"markdown\" the markdown editor (a .md document artifact), and \"composition\" the video composer — the multi-clip editing workspace, opened seeded with the turn's referenced video and audio in reference order (nothing is arranged); omit mode to open whichever editor matches the asset the user means — this turn's attachment when one exists, otherwise the conversation's newest image, video, or audio artifact. The asset is the newest artifact of that kind — this turn's attachment, an @-mentioned asset, or one from conversation history — and it is opened as-is, never modified or regenerated. Call this ONLY when the user asks to open an asset in the editor (e.g. \"open this in the video editor\", \"open the document in the markdown editor\", \"open the video composer\"); it does not perform edits — for a change the user described, use the edit or generation tools instead. When the user asks to JOIN or CONCATENATE clips into one rendered file with no editing workspace in the wording, that is join_videos/join_audios, not mode \"composition\" — the composer is for when the user names the composer or wants an editable composition.",
+		Description: "Opens one of the conversation's assets in Atelier's built-in editor on the user's screen. mode \"image\" opens the image editor, \"video\" the video editor, \"audio\" the audio editor, \"subtitle\" the subtitle editor (a .vtt or .srt transcript artifact), \"markdown\" the markdown editor (a .md document artifact), \"composition\" the video composer — the multi-clip editing workspace, opened seeded with the turn's referenced video and audio in reference order (nothing is arranged) — and \"comic\" the comic book editor — the page-and-panel workspace, opened seeded with the conversation's images (this turn's references first, then newer art first; nothing is arranged — the images wait in the unplaced tray). Omit mode to open whichever editor matches the asset the user means — this turn's attachment when one exists, otherwise the conversation's newest image, video, or audio artifact. The asset is the newest artifact of that kind — this turn's attachment, an @-mentioned asset, or one from conversation history — and it is opened as-is, never modified or regenerated. Call this ONLY when the user asks to open an asset in an editor or workspace (e.g. \"open this in the video editor\", \"open the document in the markdown editor\", \"open the video composer\", \"open the comic editor\"); it does not perform edits — for a change the user described, use the edit or generation tools instead. When the user asks to JOIN or CONCATENATE clips into one rendered file with no editing workspace in the wording, that is join_videos/join_audios, not mode \"composition\" — the composer is for when the user names the composer or wants an editable composition.",
 		Example:     `{"name":"open_editor","mode":"video"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"mode": enumParam(`Which editor to open — "image", "video", "audio", "subtitle" (a .vtt/.srt transcript artifact), "markdown" (a .md document artifact), or "composition" (the video composer, seeded with this turn's referenced video and audio). Omit when the user attached the asset this turn or the ask names the kind — omitting resolves this turn's attachment first, else the conversation's newest image, video, or audio artifact.`, "image", "video", "audio", "subtitle", "markdown", "composition"),
+				"mode": enumParam(`Which editor to open — "image", "video", "audio", "subtitle" (a .vtt/.srt transcript artifact), "markdown" (a .md document artifact), "composition" (the video composer, seeded with this turn's referenced video and audio), or "comic" (the comic book editor, seeded with the conversation's images). Omit when the user attached the asset this turn or the ask names the kind — omitting resolves this turn's attachment first, else the conversation's newest image, video, or audio artifact.`, "image", "video", "audio", "subtitle", "markdown", "composition", "comic"),
 			},
 			"required": []string{},
 		},
 		Validate: func(prefix string, call HarnessToolCall) []string {
 			switch strings.TrimSpace(call.Mode) {
-			case "", "image", "video", "audio", "subtitle", "markdown", "composition":
+			case "", "image", "video", "audio", "subtitle", "markdown", "composition", "comic":
 				return nil
 			default:
-				return []string{prefix + `.mode must be "image", "video", "audio", "subtitle", "markdown", or "composition" for open_editor`}
+				return []string{prefix + `.mode must be "image", "video", "audio", "subtitle", "markdown", "composition", or "comic" for open_editor`}
 			}
 		},
 		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {

@@ -74,6 +74,7 @@ import {
   ListInpaintModels,
   ListEditSession,
   ResolveAudioEditSource,
+  ResolveComicEditSource,
   ResolveCompositionEditSource,
   ResolveEditSource,
   ResolveSubtitleEditSource,
@@ -108,8 +109,10 @@ import {
   SaveOpenRouterAPIKey,
   SaveUIState,
   SaveMarkdown,
+  SaveComic,
   SaveComposition,
   SaveTranscript,
+  SeedComic,
   SeedComposition,
   StreamChat,
   UpdateConversationTitle,
@@ -126,6 +129,7 @@ import {AudioEditor, AudioEditorHandle} from './editor/AudioEditor';
 import {SubtitleEditor, SubtitleEditorHandle} from './editor/SubtitleEditor';
 import {MarkdownEditor, MarkdownEditorHandle} from './editor/MarkdownEditor';
 import {CompositionEditor, CompositionEditorHandle} from './editor/CompositionEditor';
+import {ComicEditor, ComicEditorHandle} from './editor/ComicEditor';
 import {detectEditorLaunchIntent} from './editorLaunch';
 import {composerHasMediaDrag, dropAcceptsFile, markdownMimeForFile, mediaKindForFile, mediaMimeForFile, subtitleMimeForFile, videoThumbnailOnlySrc} from './mediaIntake';
 
@@ -167,6 +171,9 @@ type ChatEntry = {
   // the video composer — one per saved revision. Rendered as chips with an
   // Edit door reopening that revision; never model input.
   compositions?: string[];
+  // Comic book documents (cbc_ .json) saved into the conversation by the
+  // comic editor — the same chip shape as compositions.
+  comics?: string[];
   // Timestamped-transcript artifacts (.vtt) produced by transcribe_audio —
   // "/atelier-artifact" URLs rendered as downloadable chips.
   transcripts?: string[];
@@ -1607,24 +1614,28 @@ function App() {
   const [subtitleEditorHandle, setSubtitleEditorHandle] = useState<SubtitleEditorHandle | null>(null);
   const [markdownEditorHandle, setMarkdownEditorHandle] = useState<MarkdownEditorHandle | null>(null);
   const [compositionEditorHandle, setCompositionEditorHandle] = useState<CompositionEditorHandle | null>(null);
+  const [comicEditorHandle, setComicEditorHandle] = useState<ComicEditorHandle | null>(null);
   const [videoEditorOpening, setVideoEditorOpening] = useState(false);
   const [imageEditorOpening, setImageEditorOpening] = useState(false);
   const [audioEditorOpening, setAudioEditorOpening] = useState(false);
   const [subtitleEditorOpening, setSubtitleEditorOpening] = useState(false);
   const [markdownEditorOpening, setMarkdownEditorOpening] = useState(false);
   const [compositionEditorOpening, setCompositionEditorOpening] = useState(false);
+  const [comicEditorOpening, setComicEditorOpening] = useState(false);
   const [videoEditorError, setVideoEditorError] = useState('');
-  const [discardEditorDraft, setDiscardEditorDraft] = useState<'video' | 'audio' | 'subtitle' | 'markdown' | 'composition' | null>(null);
+  const [discardEditorDraft, setDiscardEditorDraft] = useState<'video' | 'audio' | 'subtitle' | 'markdown' | 'composition' | 'comic' | null>(null);
   const videoEditorDirty = useRef(false);
   const audioEditorDirty = useRef(false);
   const subtitleEditorDirty = useRef(false);
   const markdownEditorDirty = useRef(false);
   const compositionEditorDirty = useRef(false);
+  const comicEditorDirty = useRef(false);
   const videoNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
   const audioNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
   const subtitleNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
   const markdownNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
   const compositionNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
+  const comicNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
   const videoOpenGeneration = useRef(0);
   const videoOpeningIdentity = useRef<{conversationID: string; artifactID: string} | null>(null);
   const imageOpenGeneration = useRef(0);
@@ -1632,6 +1643,7 @@ function App() {
   const subtitleOpenGeneration = useRef(0);
   const markdownOpenGeneration = useRef(0);
   const compositionOpenGeneration = useRef(0);
+  const comicOpenGeneration = useRef(0);
   // Mirror of editorOpen for the atelier:editor-launch listener (an empty-deps
   // effect): a mid-stream AI launch must not replace an editor already on
   // screen — an unsaved draft is never discarded by a tool-timed open.
@@ -1639,8 +1651,8 @@ function App() {
   // Either editor's source resolve in flight — every edit button disables on
   // it, so a slow open can't collect repeated clicks (or race the other
   // editor's later-landing handle into view).
-  const editorOpening = imageEditorOpening || videoEditorOpening || audioEditorOpening || subtitleEditorOpening || markdownEditorOpening || compositionEditorOpening;
-  const editorOpen = !!editorHandle || !!videoEditorHandle || !!audioEditorHandle || !!subtitleEditorHandle || !!markdownEditorHandle || !!compositionEditorHandle;
+  const editorOpening = imageEditorOpening || videoEditorOpening || audioEditorOpening || subtitleEditorOpening || markdownEditorOpening || compositionEditorOpening || comicEditorOpening;
+  const editorOpen = !!editorHandle || !!videoEditorHandle || !!audioEditorHandle || !!subtitleEditorHandle || !!markdownEditorHandle || !!compositionEditorHandle || !!comicEditorHandle;
   const [purgeBusy, setPurgeBusy] = useState(false);
   const [confirmPurgeArchived, setConfirmPurgeArchived] = useState(false);
   const [purgeStatus, setPurgeStatus] = useState('');
@@ -2293,8 +2305,11 @@ function App() {
       // The composer is the one kind that opens without an artifact — its
       // identity is the conversation, and the seeds ride the payload.
       const composition = kind === 'composition';
-      if (!conversationID || (!artifactID && !composition) ||
-          (kind !== 'image' && kind !== 'video' && kind !== 'audio' && kind !== 'subtitle' && kind !== 'markdown' && kind !== 'composition')) {
+      // The comic editor is the other kind that opens without an artifact —
+      // its seeds (this turn's images) ride the payload.
+      const comic = kind === 'comic';
+      if (!conversationID || (!artifactID && !composition && !comic) ||
+          (kind !== 'image' && kind !== 'video' && kind !== 'audio' && kind !== 'subtitle' && kind !== 'markdown' && kind !== 'composition' && kind !== 'comic')) {
         return;
       }
       if (conversationID !== activeConversationIDRef.current || editorOpenRef.current) {
@@ -2302,6 +2317,10 @@ function App() {
       }
       if (composition) {
         void openNewComposition(conversationID, asArray(event?.seedArtifactIds));
+        return;
+      }
+      if (comic) {
+        void openNewComic(conversationID, asArray(event?.seedArtifactIds));
         return;
       }
       if (kind === 'video') {
@@ -4327,6 +4346,24 @@ function App() {
     return /^cmp_[a-zA-Z0-9]+$/.test(stem) ? stem : null;
   }
 
+  // comicArtifactIDFromURL matches comic documents only — cbc_ stems with a
+  // .json extension, the comic editor's saved revisions.
+  function comicArtifactIDFromURL(url: string): string | null {
+    if (!url.startsWith('/atelier-artifact/')) return null;
+    const path = url.split(/[?#]/)[0];
+    const filename = path.split('/').pop() || '';
+    const stem = filename.replace(/\.[^.]+$/, '');
+    if (!/\.json$/i.test(filename)) return null;
+    return /^cbc_[a-zA-Z0-9]+$/.test(stem) ? stem : null;
+  }
+
+  function confirmLeaveComicEditor(): Promise<boolean> {
+    if (!comicEditorHandle || !comicEditorDirty.current) return Promise.resolve(true);
+    if (comicNavigationResolver.current) return Promise.resolve(false);
+    setDiscardEditorDraft('comic');
+    return new Promise((resolve) => { comicNavigationResolver.current = resolve; });
+  }
+
   function confirmLeaveVideoEditor(): Promise<boolean> {
     if (!videoEditorHandle || !videoEditorDirty.current) return Promise.resolve(true);
     if (videoNavigationResolver.current) return Promise.resolve(false);
@@ -4369,7 +4406,8 @@ function App() {
     if (!(await confirmLeaveAudioEditor())) return false;
     if (!(await confirmLeaveSubtitleEditor())) return false;
     if (!(await confirmLeaveMarkdownEditor())) return false;
-    return confirmLeaveCompositionEditor();
+    if (!(await confirmLeaveCompositionEditor())) return false;
+    return confirmLeaveComicEditor();
   }
 
   function resolveEditorNavigation(discard: boolean) {
@@ -4389,6 +4427,9 @@ function App() {
     const compositionResolve = compositionNavigationResolver.current;
     compositionNavigationResolver.current = null;
     compositionResolve?.(discard);
+    const comicResolve = comicNavigationResolver.current;
+    comicNavigationResolver.current = null;
+    comicResolve?.(discard);
   }
 
   function openSettings() {
@@ -4678,6 +4719,86 @@ function App() {
     }
   }
 
+  // openComicEditor reopens a saved comic revision — the assets panel's and
+  // the reply chips' Edit door. The fourth session-free editor: the resolve
+  // is the whole load, and the picker's library scope comes from the
+  // conversation's own record (the openSubtitleEditor rule).
+  async function openComicEditor(conversationID: string, artifactID: string) {
+    if (!(await confirmLeaveEditor())) return;
+    cancelVideoPreparation();
+    cancelImagePreparation();
+    cancelAudioPreparation();
+    const generation = ++comicOpenGeneration.current;
+    setComicEditorOpening(true);
+    try {
+      const owner = await GetConversation(conversationID);
+      if (generation !== comicOpenGeneration.current) return;
+      if (owner.conversation.kind === 'edit') {
+        await openEditSession(conversationID);
+        return;
+      }
+      const source = await ResolveComicEditSource(conversationID, artifactID);
+      if (generation !== comicOpenGeneration.current) return;
+      setEditorHandle(null);
+      setVideoEditorHandle(null);
+      setAudioEditorHandle(null);
+      setSubtitleEditorHandle(null);
+      setMarkdownEditorHandle(null);
+      setCompositionEditorHandle(null);
+      videoEditorDirty.current = false;
+      audioEditorDirty.current = false;
+      subtitleEditorDirty.current = false;
+      markdownEditorDirty.current = false;
+      compositionEditorDirty.current = false;
+      comicEditorDirty.current = false;
+      setComicEditorHandle({source, libraryID: libraryIDForProject(owner.conversation.projectId ?? '')});
+      setView((current) => (current === 'settings' ? current : 'app'));
+    } catch (error) {
+      if (generation === comicOpenGeneration.current) setStartupError(formatError(error));
+    } finally {
+      if (generation === comicOpenGeneration.current) setComicEditorOpening(false);
+    }
+  }
+
+  // openNewComic starts an unsaved draft — the "New comic" action and the
+  // editor-launch intent's door. Seeding resolves and measures the referenced
+  // images in order into the unplaced tray; nothing persists until the
+  // editor's first save, which is what lets this run mid-stream safely.
+  async function openNewComic(conversationID: string, seedArtifactIDs: string[]) {
+    if (!(await confirmLeaveEditor())) return;
+    cancelVideoPreparation();
+    cancelImagePreparation();
+    cancelAudioPreparation();
+    const generation = ++comicOpenGeneration.current;
+    setComicEditorOpening(true);
+    try {
+      const owner = await GetConversation(conversationID);
+      const source = await SeedComic(main.SeedComicRequest.createFrom({
+        conversationId: conversationID,
+        artifactIds: seedArtifactIDs,
+      }));
+      if (generation !== comicOpenGeneration.current) return;
+      setEditorHandle(null);
+      setVideoEditorHandle(null);
+      setAudioEditorHandle(null);
+      setSubtitleEditorHandle(null);
+      setMarkdownEditorHandle(null);
+      setCompositionEditorHandle(null);
+      videoEditorDirty.current = false;
+      audioEditorDirty.current = false;
+      subtitleEditorDirty.current = false;
+      markdownEditorDirty.current = false;
+      compositionEditorDirty.current = false;
+      comicEditorDirty.current = false;
+      setComicEditorHandle({source, libraryID: libraryIDForProject(owner.conversation.projectId ?? '')});
+      setView((current) => (current === 'settings' ? current : 'app'));
+    } catch (error) {
+      if (generation === comicOpenGeneration.current) setStartupError(formatError(error));
+    } finally {
+      if (generation === comicOpenGeneration.current) setComicEditorOpening(false);
+    }
+  }
+
   // openEditSession reopens a saved edit session — the sidebar/search path
   // for Kind "edit" conversations. The handle seeds from the loaded session's
   // own source copy, so the editor can submit iterations without guessing.
@@ -4743,11 +4864,13 @@ function App() {
     setSubtitleEditorHandle(null);
     setMarkdownEditorHandle(null);
     setCompositionEditorHandle(null);
+    setComicEditorHandle(null);
     videoEditorDirty.current = false;
     audioEditorDirty.current = false;
     subtitleEditorDirty.current = false;
     markdownEditorDirty.current = false;
     compositionEditorDirty.current = false;
+    comicEditorDirty.current = false;
     setEditorHandle(null);
     setPreviewEditContext(null);
   }
@@ -4856,6 +4979,7 @@ function App() {
       subtitles: turn.role === 'user' ? historySubtitles(turn.content) : undefined,
       markdowns: historyMarkdowns(turn.content),
       compositions: historyCompositions(turn.content),
+      comics: historyComics(turn.content),
       transcripts: historyTranscripts(turn.content),
       harnessRun: parseHarnessRun(turn.providerResponse?.harnessRun),
       mediaTool: turn.providerResponse?.tool as MediaToolSummaryView | undefined,
@@ -5092,7 +5216,8 @@ function App() {
     if (!activeConversationID) {
       const editorKind = detectEditorLaunchIntent(trimmed, attachments.map((item) => item.kind));
       const hasComposerMedia = attachments.some((item) => item.kind === 'video' || item.kind === 'audio');
-      if (editorKind && (editorKind !== 'composition' || hasComposerMedia)) {
+      const hasComicMedia = attachments.some((item) => item.kind === 'image');
+      if (editorKind && (editorKind !== 'composition' || hasComposerMedia) && (editorKind !== 'comic' || hasComicMedia)) {
         await launchEditorConversation(editorKind, trimmed);
         return;
       }
@@ -5181,7 +5306,7 @@ function App() {
   // artifact, the editors' one identity input. On a creation failure the
   // composer keeps its contents: nothing was persisted, so the send must look
   // like it never happened.
-  async function launchEditorConversation(kind: 'image' | 'video' | 'audio' | 'subtitle' | 'markdown' | 'composition', trimmed: string) {
+  async function launchEditorConversation(kind: 'image' | 'video' | 'audio' | 'subtitle' | 'markdown' | 'composition' | 'comic', trimmed: string) {
     const referencedAssetIds = [
       ...new Set(
         parseComposerMentions(trimmed, mentionBindingPool()).flatMap((segment) =>
@@ -5250,6 +5375,10 @@ function App() {
           ...asArray(result.videoArtifactIds),
           ...asArray(result.audioArtifactIds),
         ]);
+        return;
+      }
+      if (kind === 'comic') {
+        await openNewComic(result.conversationId, asArray(result.imageArtifactIds));
         return;
       }
       const artifactId = (kind === 'image' ? result.imageArtifactIds
@@ -6475,6 +6604,37 @@ function App() {
               }}
             />
           </div>
+        ) : comicEditorHandle ? (
+          <div className="editor-slot" hidden={view !== 'app'}>
+            <ComicEditor
+              key={comicEditorHandle.source.artifactId || 'comic-draft'}
+              handle={comicEditorHandle}
+              // The media picker widens to the library exactly when the
+              // comic's conversation belongs to a project — the scope
+              // resolved from its own record at open time.
+              libraryID={comicEditorHandle.libraryID || undefined}
+              suspended={view !== 'app'}
+              onClose={() => {void confirmLeaveEditor().then((discard) => {if (discard) closeImageEditor();});}}
+              onOpenParent={(conversationID) => {
+                void confirmLeaveEditor().then((discard) => {
+                  if (!discard) return;
+                  closeImageEditor();
+                  void openConversationSummary(main.ConversationSummary.createFrom({id: conversationID, kind: 'chat', title: ''}));
+                });
+              }}
+              onDirtyChange={(dirty) => {comicEditorDirty.current = dirty;}}
+              onSavedToConversation={() => {
+                void refreshConversations();
+                setAssetsRefreshTick((tick) => tick + 1);
+                const parentID = comicEditorHandle.source.conversationId;
+                if (activeConversationIDRef.current === parentID) {
+                  void GetConversation(parentID).then((detail) => {
+                    if (activeConversationIDRef.current === parentID) hydrateChatConversation(detail);
+                  }).catch((error) => setStartupError(formatError(error)));
+                }
+              }}
+            />
+          </div>
         ) : null}
         {view === 'settings' ? (
           <>
@@ -7525,6 +7685,37 @@ function App() {
                           ))}
                         </div>
                       ) : null}
+                      {entry.comics?.length ? (
+                        <div className="chat-transcript-results">
+                          {entry.comics.map((comic, index) => (
+                            <div key={`${entry.id}-comic-${index}`} className="chat-transcript-card">
+                              <span className="chat-transcript-name">📚 Comic · {(comic.split('/').pop() || 'comic.json').replace(/\.json$/i, '').slice(0, 16)}</span>
+                              <div className="chat-transcript-actions">
+                                <button
+                                  type="button"
+                                  disabled={editorOpening || !activeConversationID || !comicArtifactIDFromURL(comic)}
+                                  title={comicArtifactIDFromURL(comic) ? 'Open this revision in the comic editor' : 'Persisted comic required'}
+                                  onClick={() => {
+                                    const artifactID = comicArtifactIDFromURL(comic);
+                                    if (artifactID && activeConversationID) {
+                                      void openComicEditor(activeConversationID, artifactID);
+                                    }
+                                  }}
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void SaveComic(main.SaveTranscriptRequest.createFrom({path: comic, suggestedName: `comic-${Date.now()}-${index + 1}`}))}
+                                  disabled={!comic.startsWith('/atelier-artifact/')}
+                                >
+                                  Download project
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
                       {entry.thinking ? (
                         <div className="thinking-panel">
                           <button
@@ -7859,6 +8050,24 @@ function App() {
                 type="button"
                 className="assets-panel-new-composition"
                 disabled={editorOpening}
+                aria-label="New comic"
+                title="Open the comic editor on an unsaved draft for this conversation — add art from the picker inside it"
+                onClick={() => void openNewComic(activeConversationID, [])}
+              >
+                {/* A comic page: a framed grid with a plus. */}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <rect x="3" y="4" width="18" height="16" rx="1.5" strokeWidth="2" />
+                  <path d="M3 12h18M12 4v8" strokeWidth="2" />
+                  <path d="M19 15.5v5" strokeWidth="2" />
+                  <path d="M16.5 18h5" strokeWidth="2" />
+                </svg>
+              </button>
+            ) : null}
+            {activeConversationID ? (
+              <button
+                type="button"
+                className="assets-panel-new-composition"
+                disabled={editorOpening}
                 aria-label="New composition"
                 title="Open the video composer on an unsaved draft for this conversation — add clips from the picker inside it"
                 onClick={() => void openNewComposition(activeConversationID, [])}
@@ -7924,6 +8133,8 @@ function App() {
                       <span className="asset-transcript-chip">{asset.url.toLowerCase().endsWith('.fountain') ? '📝 Screenplay (.fountain)' : '📝 Markdown (.md)'}</span>
                     ) : asset.kind === 'composition' && asset.url ? (
                       <span className="asset-transcript-chip">🎬 Composition project</span>
+                    ) : asset.kind === 'comic' && asset.url ? (
+                      <span className="asset-transcript-chip">📚 Comic book</span>
                     ) : (
                       <span className="asset-missing">Artifact file is missing on disk</span>
                     )}
@@ -7931,10 +8142,10 @@ function App() {
                         zoom button — a button cannot contain a button) so the
                         hover reveal overlays every preview variant without
                         stealing the zoom/play gestures. */}
-                    {/* Compositions are not @-mentionable (v1): a mention has
-                        no slot and the model cannot read the project, so the
-                        affordance would be a dead end. */}
-                    {asset.kind !== 'composition' ? (
+                    {/* Compositions and comics are not @-mentionable (v1):
+                        a mention has no slot and the model cannot read the
+                        project, so the affordance would be a dead end. */}
+                    {asset.kind !== 'composition' && asset.kind !== 'comic' ? (
                       <button
                         type="button"
                         className="asset-reference-button"
@@ -8027,6 +8238,16 @@ function App() {
                         </svg>
                       </button>
                     ) : null}
+                    {asset.kind === 'comic' && asset.url && asset.conversationId ? (
+                      <button type="button" className="asset-edit-button" disabled={editorOpening}
+                        onClick={() => void openComicEditor(asset.conversationId, asset.id)}
+                        aria-label="Open comic" title="Open this comic revision in the comic editor">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M12 20h9" />
+                          <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                        </svg>
+                      </button>
+                    ) : null}
                     {asset.kind === 'composition' && asset.url && asset.conversationId ? (
                       <button type="button" className="asset-edit-button" disabled={editorOpening}
                         onClick={() => void openCompositionEditor(asset.conversationId, asset.id)}
@@ -8080,7 +8301,7 @@ function App() {
               if (event.key === 'Escape') {event.stopPropagation(); resolveEditorNavigation(false);}
             }}>
             <strong id="discard-video-title">Discard unsaved edits?</strong>
-            <p>{discardEditorDraft === 'subtitle' ? 'Your unexported changes will be lost.' : discardEditorDraft === 'markdown' ? 'Your unsaved changes will be lost. Saved versions remain in the conversation.' : discardEditorDraft === 'composition' ? 'Your unsaved timeline changes will be lost. Saved revisions remain in the conversation.' : 'Your unrendered changes will be lost. Saved edits remain available.'}</p>
+            <p>{discardEditorDraft === 'subtitle' ? 'Your unexported changes will be lost.' : discardEditorDraft === 'markdown' ? 'Your unsaved changes will be lost. Saved versions remain in the conversation.' : discardEditorDraft === 'composition' ? 'Your unsaved timeline changes will be lost. Saved revisions remain in the conversation.' : discardEditorDraft === 'comic' ? 'Your unsaved comic changes will be lost. Saved revisions remain in the conversation.' : 'Your unrendered changes will be lost. Saved edits remain available.'}</p>
             <button type="button" autoFocus onClick={() => resolveEditorNavigation(false)}>Keep editing</button>
             <button type="button" onClick={() => resolveEditorNavigation(true)}>Discard changes</button>
           </div>
@@ -11878,6 +12099,17 @@ function historyMarkdowns(contents: main.HistoryContent[] | null | undefined): s
 function historyCompositions(contents: main.HistoryContent[] | null | undefined): string[] | undefined {
   const urls = asArray(contents)
     .filter((content) => content.type === 'composition')
+    .map((content) => content.text || content.path || '')
+    .filter((path) => /\.json$/i.test(path));
+  return urls.length ? urls : undefined;
+}
+
+// historyComics picks the comic book documents off a turn's content — the
+// hydrated /atelier-artifact URLs cbc_ revisions persist as, one entry per
+// save. The chip's Edit door reopens that revision in the comic editor.
+function historyComics(contents: main.HistoryContent[] | null | undefined): string[] | undefined {
+  const urls = asArray(contents)
+    .filter((content) => content.type === 'comic')
     .map((content) => content.text || content.path || '')
     .filter((path) => /\.json$/i.test(path));
   return urls.length ? urls : undefined;

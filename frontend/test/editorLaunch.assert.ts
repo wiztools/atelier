@@ -92,3 +92,15 @@ assert(detectEditorLaunchIntent('Open the composer', kinds('video', 'video', 'au
 assert(detectEditorLaunchIntent('open the composers', []) === 'composition', 'plural composer');
 assert(detectEditorLaunchIntent('open the composer and crop it', kinds('video')) === null, 'a second intent abstains');
 assert(detectEditorLaunchIntent('open the video editor', kinds('video')) === 'video', 'video editor still resolves the editor');
+
+// The comic editor: "comic" names the kind, "comic book editor" binds the
+// compound noun, and — like the composer — the exactly-one-attachment rule
+// does not apply (the launch seeds whatever images the turn carries; the
+// tier-0 guard upstream only claims sends that actually carry one).
+assert(detectEditorLaunchIntent('Open the comic editor', []) === 'comic', 'comic editor phrasing');
+assert(detectEditorLaunchIntent('Open the comic book editor', []) === 'comic', 'comic book editor compound binds');
+assert(detectEditorLaunchIntent('open the comics in the editor', kinds('image')) === 'comic', 'comics media word resolves');
+assert(detectEditorLaunchIntent('please open up the comic editor for me', kinds('image', 'image')) === 'comic', 'politeness binds; multiple attachments are fine');
+assert(detectEditorLaunchIntent('Open the comic editor and crop it', kinds('image')) === null, 'a second intent abstains');
+assert(detectEditorLaunchIntent('Open the book editor', kinds('image')) === null, 'book alone does not name the comic');
+assert(detectEditorLaunchIntent('Open the comic', kinds('image')) === null, 'no editor head noun abstains');

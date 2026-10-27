@@ -6009,12 +6009,12 @@ func readJSONFile(path string, target any) error {
 func hydrateHistoryContent(conversationDir string, contents []HistoryContent) []HistoryContent {
 	hydrated := make([]HistoryContent, 0, len(contents))
 	for _, content := range contents {
-		// Image, video, audio, transcript, markdown, and composition artifacts
-		// are all stored on disk and served by the asset handler; resolve
-		// their path to an /atelier-artifact URL. Library-asset references
-		// carry absolute paths; local artifacts are relative to the
+		// Image, video, audio, transcript, markdown, composition, and comic
+		// artifacts are all stored on disk and served by the asset handler;
+		// resolve their path to an /atelier-artifact URL. Library-asset
+		// references carry absolute paths; local artifacts are relative to the
 		// conversation directory.
-		if (content.Type == "image" || content.Type == "video" || content.Type == "audio" || content.Type == "transcript" || content.Type == "markdown" || content.Type == "composition") && content.Path != "" && !strings.HasPrefix(content.Path, "data:") {
+		if (content.Type == "image" || content.Type == "video" || content.Type == "audio" || content.Type == "transcript" || content.Type == "markdown" || content.Type == "composition" || content.Type == "comic") && content.Path != "" && !strings.HasPrefix(content.Path, "data:") {
 			resolved := filepath.FromSlash(content.Path)
 			if !filepath.IsAbs(resolved) {
 				resolved = filepath.Join(conversationDir, resolved)

@@ -10,7 +10,7 @@
 // Abstention is decidable without understanding what the leftover content
 // means — that is what keeps this path safe to bypass the model with.
 
-export type EditorLaunchKind = 'image' | 'video' | 'audio' | 'subtitle' | 'markdown' | 'composition';
+export type EditorLaunchKind = 'image' | 'video' | 'audio' | 'subtitle' | 'markdown' | 'composition' | 'comic';
 // 'subtitle' marks a .vtt/.srt attachment: a real attachment kind (the
 // composer accepts subtitle files) and, since the subtitle editor exists, an
 // editor-launch subject. 'markdown' is the document twin (.md attachments).
@@ -69,6 +69,11 @@ const mediaKinds: Record<string, EditorLaunchKind> = {
   script: 'markdown',
   scripts: 'markdown',
   fountain: 'markdown',
+  // The comic editor's kind words — "comic" names the editor kind, and
+  // "book(s)" binds only beside a comic word ("comic book editor"), never
+  // alone ("open the book editor" is not an editor command).
+  comic: 'comic',
+  comics: 'comic',
 };
 
 // The closed vocabulary. Politeness particles are admitted; content words are
@@ -116,6 +121,11 @@ export function detectEditorLaunchIntent(text: string, attachmentKinds: Composer
       mediaSeen.push(media);
       continue;
     }
+    if ((word === 'book' || word === 'books') && mediaSeen.includes('comic')) {
+      // "comic book editor[s]" — the compound noun's tail binds beside the
+      // comic word that names the kind.
+      continue;
+    }
     if (determiners.has(word) || prepositions.has(word) || particles.has(word)) {
       continue;
     }
@@ -148,11 +158,18 @@ export function detectEditorLaunchIntent(text: string, attachmentKinds: Composer
     break;
   }
   const requested = named ?? mediaSeen[0] ?? null;
+  if (requested === 'comic') {
+    // The comic editor seeds whatever images the turn carries — no
+    // attachment-count rule (the composer's rule with images: the tier-0
+    // guard upstream only claims the send when an image is attached, and an
+    // unattached ask falls to the AI tier, which opens unseeded).
+    return 'comic';
+  }
   const attachedCount = (kind: EditorLaunchKind) => attachmentKinds.filter((item) => item === kind).length;
   if (requested) {
     return attachedCount(requested) === 1 ? requested : null;
   }
-  const isEditorSubject = (item: ComposerAttachmentKind): item is Exclude<EditorLaunchKind, 'composition'> =>
+  const isEditorSubject = (item: ComposerAttachmentKind): item is ComposerAttachmentKind =>
     item === 'image' || item === 'video' || item === 'audio' || item === 'subtitle' || item === 'markdown';
   const attached = attachmentKinds.filter(isEditorSubject);
   if (attached.length === 1) {

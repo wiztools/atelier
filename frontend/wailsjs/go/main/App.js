@@ -402,6 +402,14 @@ export function ResolveAudioEditSource(arg1, arg2) {
   return window['go']['main']['App']['ResolveAudioEditSource'](arg1, arg2);
 }
 
+export function ResolveComicEditSource(arg1, arg2) {
+  return window['go']['main']['App']['ResolveComicEditSource'](arg1, arg2);
+}
+
+export function ResolveComicMedia(arg1, arg2) {
+  return window['go']['main']['App']['ResolveComicMedia'](arg1, arg2);
+}
+
 export function ResolveCompositionEditSource(arg1, arg2) {
   return window['go']['main']['App']['ResolveCompositionEditSource'](arg1, arg2);
 }
@@ -440,6 +448,14 @@ export function RunToolCommand(arg1) {
 
 export function SaveAudio(arg1) {
   return window['go']['main']['App']['SaveAudio'](arg1);
+}
+
+export function SaveComic(arg1) {
+  return window['go']['main']['App']['SaveComic'](arg1);
+}
+
+export function SaveComicEdit(arg1) {
+  return window['go']['main']['App']['SaveComicEdit'](arg1);
 }
 
 export function SaveComposition(arg1) {
@@ -504,6 +520,10 @@ export function SaveVideo(arg1) {
 
 export function SearchConversations(arg1, arg2) {
   return window['go']['main']['App']['SearchConversations'](arg1, arg2);
+}
+
+export function SeedComic(arg1) {
+  return window['go']['main']['App']['SeedComic'](arg1);
 }
 
 export function SeedComposition(arg1) {

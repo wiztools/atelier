@@ -3220,7 +3220,10 @@ button:disabled {
   height: 62px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  /* The ＋ Comic / ＋ Composition actions group beside the title; only the
+     close button pins right (space-between flings the actions to the
+     panel's middle). */
+  justify-content: flex-start;
   padding: 0 14px 0 22px;
   border-bottom: 1px solid #2b2e30;
 }
@@ -3236,6 +3239,7 @@ button:disabled {
 .assets-panel-new-composition {
   width: 20px;
   height: 20px;
+  margin-left: 10px;
   padding: 0;
   border: 0;
   background: none;
@@ -3260,6 +3264,7 @@ button:disabled {
 .assets-panel-close {
   width: 20px;
   height: 20px;
+  margin-left: auto;
   padding: 0;
   border: 0;
   background: none;

@@ -1,0 +1,404 @@
+/* Comic editor specifics — the shared shell lives in App.css under the
+   .editor-* classes; everything here is scoped under .comic-editor. The
+   workbench holds the page tabs, the SVG stage (aspect-locked by the page's
+   ratio), and the art tray; the inspector mirrors the composer's aside. */
+
+.comic-editor .editor-body {
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.comic-editor-main {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 14px;
+  min-height: 0;
+  min-width: 0;
+}
+
+.comic-workbench {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  gap: 8px;
+}
+
+.comic-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.comic-name {
+  min-width: 150px;
+  max-width: 240px;
+}
+
+.comic-summary {
+  font-size: 12px;
+  color: #aeb4b8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.comic-toolbar-spacer {
+  flex: 1;
+}
+
+.comic-tools {
+  display: flex;
+  gap: 4px;
+}
+
+.comic-tools button,
+.comic-tool {
+  font-size: 12px;
+  padding: 4px 9px;
+}
+
+.comic-tools button.active {
+  background: #2e3a46;
+  border-color: #4a90d9;
+  color: #d7dde2;
+}
+
+.comic-warning {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #d9a441;
+  border: 1px solid #4a3f27;
+  border-radius: 6px;
+}
+
+.comic-seed-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #d9a441;
+  border: 1px solid #4a3f27;
+  border-radius: 6px;
+}
+
+/* Page tabs: one per page, aspect-labelled, plus add/duplicate. */
+.comic-pages {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.comic-page-tab {
+  display: flex;
+  align-items: center;
+  border: 1px solid #3b3f42;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.comic-page-tab.active {
+  border-color: #4a90d9;
+}
+
+.comic-page-tab button {
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  padding: 4px 10px;
+  color: #aeb4b8;
+}
+
+.comic-page-tab.active button {
+  color: #e6ebee;
+  background: #1e2225;
+}
+
+.comic-page-tab-remove {
+  color: #6f7477 !important;
+  padding: 4px 6px !important;
+}
+
+.comic-page-tab-remove:hover {
+  color: #d9a441 !important;
+}
+
+.comic-page-add {
+  font-size: 13px;
+  padding: 4px 9px;
+}
+
+/* The stage: the page floats centered at its own ratio; the tray docks
+   beneath it. */
+
+.comic-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #3b3f42;
+  border-radius: 8px;
+  background: #1b1f22;
+}
+
+.comic-page-frame {
+  width: min(100%, 620px);
+  max-height: 100%;
+  margin: 0 auto;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.45);
+  flex-shrink: 0;
+}
+
+.comic-page-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  user-select: none;
+}
+
+.comic-page-bg {
+  fill: #ffffff;
+}
+
+.comic-panel-bg {
+  fill: #f4f4f0;
+  cursor: pointer;
+}
+
+.comic-panel-bg.selected {
+  fill: #eef3f8;
+}
+
+.comic-panel-bg.missing {
+  fill: repeating-linear-gradient(45deg, #43302d, #43302d 6px, #352623 6px, #352623 12px);
+}
+
+.comic-panel-border {
+  fill: none;
+  stroke: #111111;
+  stroke-linejoin: miter;
+}
+
+.comic-panel-border.missing {
+  stroke: #8c4a42;
+}
+
+.comic-vertex {
+  fill: #4a90d9;
+  stroke: #ffffff;
+  stroke-width: 2;
+  cursor: move;
+}
+
+.comic-vertex.first {
+  fill: #3f9d63;
+}
+
+.comic-edge-midpoint {
+  fill: rgba(74, 144, 217, 0.45);
+  stroke: none;
+  cursor: copy;
+}
+
+.comic-edge-midpoint:hover {
+  fill: rgba(74, 144, 217, 0.9);
+}
+
+.comic-rect-preview {
+  fill: rgba(74, 144, 217, 0.12);
+  stroke: #4a90d9;
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
+}
+
+.comic-polygon-preview {
+  fill: rgba(74, 144, 217, 0.1);
+  stroke: #4a90d9;
+  stroke-width: 2;
+}
+
+.comic-stage-empty {
+  color: #7d8488;
+  font-size: 13px;
+  margin: auto;
+}
+
+/* The art tray: picked images wait here until a panel takes them. */
+.comic-tray {
+  width: 100%;
+  border: 1px solid #3b3f42;
+  border-radius: 8px;
+  background: #1e2225;
+  padding: 8px 10px;
+  flex-shrink: 0;
+}
+
+.comic-tray-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #aeb4b8;
+  margin-bottom: 6px;
+}
+
+.comic-tray-empty {
+  font-size: 12px;
+  color: #7d8488;
+  margin: 4px 0;
+}
+
+.comic-tray-items {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.comic-tray-item {
+  position: relative;
+  flex: 0 0 auto;
+  width: 84px;
+  border: 1px solid #3b3f42;
+  border-radius: 6px;
+  background: #23272a;
+  cursor: grab;
+  touch-action: none;
+  overflow: hidden;
+}
+
+.comic-tray-item.dragging {
+  opacity: 0.4;
+}
+
+.comic-tray-item img {
+  display: block;
+  width: 100%;
+  height: 56px;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+.comic-tray-item span {
+  display: block;
+  font-size: 10px;
+  color: #7d8488;
+  padding: 2px 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.comic-tray-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  border: none;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #cfd5da;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 5px;
+}
+
+.comic-tray-remove:hover {
+  color: #e8a0a0;
+}
+
+.comic-tray-ghost {
+  position: fixed;
+  z-index: 1000;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  border: 1px solid #4a90d9;
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+
+.comic-tray-ghost img {
+  display: block;
+  width: 96px;
+  height: 72px;
+  object-fit: cover;
+}
+
+/* The inspector mirrors the composer's aside. */
+.comic-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  font-size: 13px;
+}
+
+.comic-inspector strong {
+  font-size: 12px;
+  color: #9aa1a6;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.comic-field-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.comic-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: #aeb4b8;
+  min-width: 0;
+  flex: 1;
+}
+
+.comic-field select,
+.comic-field input {
+  min-width: 0;
+}
+
+.comic-range {
+  display: grid;
+  grid-template-columns: 52px 1fr 44px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #aeb4b8;
+}
+
+.comic-range input[type="range"] {
+  width: 100%;
+}
+
+.comic-range-value {
+  font-size: 11px;
+  color: #7d8488;
+  text-align: right;
+}
+
+.comic-danger {
+  color: #e8a0a0;
+  border-color: #5c3a36;
+}
+
+.comic-danger:hover {
+  background: #3a2a28;
+}

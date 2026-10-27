@@ -963,6 +963,254 @@ export namespace main {
 	        this.userMarkdowns = source["userMarkdowns"];
 	    }
 	}
+	export class ComicStyle {
+	    gutter?: number;
+	    border?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ComicStyle(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.gutter = source["gutter"];
+	        this.border = source["border"];
+	    }
+	}
+	export class ComicMediaRef {
+	    artifactId: string;
+	    conversationId?: string;
+	    path: string;
+	    mimeType?: string;
+	    kind: string;
+	    width: number;
+	    height: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ComicMediaRef(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.artifactId = source["artifactId"];
+	        this.conversationId = source["conversationId"];
+	        this.path = source["path"];
+	        this.mimeType = source["mimeType"];
+	        this.kind = source["kind"];
+	        this.width = source["width"];
+	        this.height = source["height"];
+	    }
+	}
+	export class ComicPanelImage {
+	    ref: ComicMediaRef;
+	    fit: string;
+	    focusX: number;
+	    focusY: number;
+	    zoom: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ComicPanelImage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ref = this.convertValues(source["ref"], ComicMediaRef);
+	        this.fit = source["fit"];
+	        this.focusX = source["focusX"];
+	        this.focusY = source["focusY"];
+	        this.zoom = source["zoom"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ComicPoint {
+	    x: number;
+	    y: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ComicPoint(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.x = source["x"];
+	        this.y = source["y"];
+	    }
+	}
+	export class ComicPanel {
+	    id: string;
+	    points: ComicPoint[];
+	    image?: ComicPanelImage;
+	
+	    static createFrom(source: any = {}) {
+	        return new ComicPanel(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.points = this.convertValues(source["points"], ComicPoint);
+	        this.image = this.convertValues(source["image"], ComicPanelImage);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ComicPage {
+	    id: string;
+	    aspect?: string;
+	    customAspect?: number;
+	    panels: ComicPanel[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ComicPage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.aspect = source["aspect"];
+	        this.customAspect = source["customAspect"];
+	        this.panels = this.convertValues(source["panels"], ComicPanel);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ComicDoc {
+	    schemaVersion: number;
+	    name?: string;
+	    pages: ComicPage[];
+	    unplaced: ComicMediaRef[];
+	    style: ComicStyle;
+	
+	    static createFrom(source: any = {}) {
+	        return new ComicDoc(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.schemaVersion = source["schemaVersion"];
+	        this.name = source["name"];
+	        this.pages = this.convertValues(source["pages"], ComicPage);
+	        this.unplaced = this.convertValues(source["unplaced"], ComicMediaRef);
+	        this.style = this.convertValues(source["style"], ComicStyle);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
+	
+	
+	
+	export class ComicSourceInfo {
+	    conversationId: string;
+	    conversationTitle?: string;
+	    artifactId?: string;
+	    url?: string;
+	    mimeType?: string;
+	    doc: ComicDoc;
+	    missingRefs: string[];
+	    warnings: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ComicSourceInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.conversationId = source["conversationId"];
+	        this.conversationTitle = source["conversationTitle"];
+	        this.artifactId = source["artifactId"];
+	        this.url = source["url"];
+	        this.mimeType = source["mimeType"];
+	        this.doc = this.convertValues(source["doc"], ComicDoc);
+	        this.missingRefs = source["missingRefs"];
+	        this.warnings = source["warnings"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class CompositionOriginalAudio {
 	    gainDb?: number;
 	    muted?: boolean;
@@ -2871,6 +3119,76 @@ export namespace main {
 	        this.suggestedName = source["suggestedName"];
 	    }
 	}
+	export class SaveComicEditRequest {
+	    conversationId: string;
+	    sourceArtifactId?: string;
+	    doc: ComicDoc;
+	
+	    static createFrom(source: any = {}) {
+	        return new SaveComicEditRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.conversationId = source["conversationId"];
+	        this.sourceArtifactId = source["sourceArtifactId"];
+	        this.doc = this.convertValues(source["doc"], ComicDoc);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class SaveComicEditResult {
+	    artifactId: string;
+	    url: string;
+	    doc: ComicDoc;
+	    summary: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SaveComicEditResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.artifactId = source["artifactId"];
+	        this.url = source["url"];
+	        this.doc = this.convertValues(source["doc"], ComicDoc);
+	        this.summary = source["summary"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class SaveCompositionEditRequest {
 	    conversationId: string;
 	    sourceArtifactId?: string;
@@ -3154,6 +3472,22 @@ export namespace main {
 		    }
 		    return a;
 		}
+	}
+	export class SeedComicRequest {
+	    conversationId: string;
+	    name?: string;
+	    artifactIds: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SeedComicRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.conversationId = source["conversationId"];
+	        this.name = source["name"];
+	        this.artifactIds = source["artifactIds"];
+	    }
 	}
 	export class SeedCompositionRequest {
 	    conversationId: string;

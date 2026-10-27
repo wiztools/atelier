@@ -23,8 +23,9 @@ type ConversationAsset struct {
 	ConversationID string `json:"conversationId"`
 	// Kind is the HistoryContent type: "image", "audio", "video",
 	// "transcript" (the subtitle files — .vtt/.srt only; plain .txt
-	// transcripts are not assets), "markdown" (.md documents), or
-	// "composition" (the video composer's cmp_ project documents).
+	// transcripts are not assets), "markdown" (.md documents),
+	// "composition" (the video composer's cmp_ project documents), or
+	// "comic" (the comic editor's cbc_ project documents).
 	Kind string `json:"kind"`
 	// MimeType is the persisted artifact MIME type, when recorded.
 	MimeType string `json:"mimeType,omitempty"`
@@ -68,11 +69,12 @@ func conversationAssetsFromDetail(detail ConversationDetail) []ConversationAsset
 	for _, turn := range detail.Turns {
 		for _, content := range turn.Content {
 			// Subtitle transcripts (.vtt/.srt — attached or converted), markdown
-			// documents (.md), and composition documents (cmp_ .json) are assets
-			// too: referenceable, downloadable, panel-visible. Plain .txt
-			// transcripts are text dumps and stay out.
+			// documents (.md), composition documents (cmp_ .json), and comic
+			// documents (cbc_ .json) are assets too: referenceable,
+			// downloadable, panel-visible. Plain .txt transcripts are text
+			// dumps and stay out.
 			media := content.Type == "image" || content.Type == "audio" || content.Type == "video"
-			if !media && subtitleArtifactExtension(content) == "" && markdownArtifactExtension(content) == "" && compositionArtifactExtension(content) == "" {
+			if !media && subtitleArtifactExtension(content) == "" && markdownArtifactExtension(content) == "" && compositionArtifactExtension(content) == "" && comicArtifactExtension(content) == "" {
 				continue
 			}
 			if strings.TrimSpace(content.Path) == "" {

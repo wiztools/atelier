@@ -335,9 +335,12 @@
 
 .composition-media-picker li button {
   width: 100%;
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
+  /* Two deliberate lines — name + state, provenance full-width below — so
+     the row holds at any inspector width (the composer's 320px aside and the
+     comic's 300px one alike); a single flex line clipped the state. */
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 10px;
   text-align: left;
   padding: 6px 8px;
   border: 1px solid #3b3f42;
@@ -356,24 +359,30 @@
 }
 
 .composition-picker-name {
+  grid-row: 1;
+  grid-column: 1;
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.composition-picker-provenance {
+.composition-picker-state {
+  grid-row: 1;
+  grid-column: 2;
+  justify-self: end;
   font-size: 11px;
-  color: #8d9498;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  color: #7fb98a;
   white-space: nowrap;
 }
 
-.composition-picker-state {
+.composition-picker-provenance {
+  grid-row: 2;
+  grid-column: 1 / -1;
   font-size: 11px;
-  color: #7fb98a;
+  color: #8d9498;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
