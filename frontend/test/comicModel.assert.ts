@@ -14,6 +14,16 @@ import {
   comicProblems,
   comicRectPoints,
   comicSelfIntersects,
+  comicSFXPoints,
+  comicBalloonTailBase,
+  comicWrapText,
+  addText,
+  removeText,
+  setTextContent,
+  setTextKind,
+  setTextRect,
+  setTextSize,
+  setTextTail,
   comicSignedArea,
   cloneComicDoc,
   duplicatePage,
@@ -193,3 +203,73 @@ const problems = comicProblems(foreign);
 assert(problems.some((problem) => problem.includes('at least one page')), 'the pageless refusal is named');
 assert(problems.some((problem) => problem.includes('stills only')), 'a non-image tray ref is named');
 assert(newPanelImage(imageRef('x')).fit === 'cover' && newPanelImage(imageRef('x')).focusX === 0.5, 'newPanelImage defaults');
+
+// ——— lettering: normalize, ops, geometry ———
+const wired = normalizeComicDoc({
+  schemaVersion: 1,
+  pages: [{id: 'p1', panels: [], texts: [
+    {id: 't1', kind: 'caption', x: 0.05, y: 0.02, width: 0.3, height: 0.05, text: 'Meanwhile…', size: 9, tail: {x: 0.5, y: 0.5}},
+    {id: 't2', kind: 'balloon', x: 0.4, y: 0.2, width: 0.2, height: 0.1, text: 'Hi', size: 0, tail: {x: 2, y: 0.6}},
+    {id: 't3', kind: 'whisper', x: 0.1, y: 0.5, width: 0.2, height: 0.1},
+  ]}],
+});
+assert(wired.pages[0].texts.length === 3, 'texts normalize');
+const capText = wired.pages[0].texts[0];
+assert(capText.size === 4 && capText.tail === null, 'caption size clamps and its stray tail drops');
+const balloonText = wired.pages[0].texts[1];
+assert(balloonText.size === 1 && balloonText.tail!.x === 1 && balloonText.tail!.y === 0.6, 'balloon size defaults and tail clamps');
+assert(String(wired.pages[0].texts[2].kind) === 'whisper', 'a foreign kind rides through for the problems report');
+assert(normalizeComicDoc({pages: [{id: 'p', panels: []}]}).pages[0].texts.length === 0, 'absent texts normalize to empty');
+
+let lettered = cloneComicDoc(seeded);
+const pageID = lettered.pages[0].id;
+lettered = addText(lettered, pageID, 'balloon', 0.5, 0.5);
+const balloon = lettered.pages[0].texts[0];
+assert(balloon.kind === 'balloon' && Math.abs(balloon.x + balloon.width / 2 - 0.5) < 1e-9, 'a balloon stamps centered in its default box');
+lettered = setTextContent(lettered, balloon.id, 'Look out!');
+assert(lettered.pages[0].texts[0].text === 'Look out!', 'setTextContent');
+lettered = setTextTail(lettered, balloon.id, 0.7, 0.9);
+assert(lettered.pages[0].texts[0].tail!.x === 0.7, 'setTextTail');
+lettered = setTextSize(lettered, balloon.id, 99);
+assert(lettered.pages[0].texts[0].size === 4, 'size clamps to the ceiling');
+lettered = setTextRect(lettered, balloon.id, 0.2, 0.2, 0.005, 0.1);
+assert(lettered.pages[0].texts[0].x === 0.42, 'a sub-floor resize is refused whole (the box never half-applies)');
+const beforeRect = lettered.pages[0].texts[0];
+assert(beforeRect.width === 0.16 && beforeRect.height === 0.1, 'the box keeps its floor-passing size');
+lettered = setTextKind(lettered, balloon.id, 'caption');
+assert(lettered.pages[0].texts[0].tail === null, 'a caption drops the balloon tail');
+lettered = setTextKind(lettered, balloon.id, 'sfx');
+lettered = setTextTail(lettered, balloon.id, 0.1, 0.1);
+assert(lettered.pages[0].texts[0].tail === null, 'a burst refuses a tail');
+lettered = setTextKind(lettered, balloon.id, 'balloon');
+lettered = setTextTail(lettered, balloon.id, 0.3, 0.8);
+assert(lettered.pages[0].texts[0].tail!.y === 0.8, 'a balloon takes a tail again');
+assert(addText(lettered, pageID, 'caption', 0.5, 0.5).pages[0].texts.length === 2, 'addText appends');
+let capped = lettered;
+for (let i = capped.pages[0].texts.length; i < 21; i++) capped = addText(capped, pageID, 'caption');
+assert(capped.pages[0].texts.length === 20, 'the 20-texts ceiling holds');
+assert(removeText(capped, capped.pages[0].texts[0].id).pages[0].texts.length === 19, 'removeText removes');
+
+// Geometry: the burst fills its box, the tail base hugs the bubble edge.
+const burst = comicSFXPoints({...lettered.pages[0].texts[0], kind: 'sfx', x: 0.4, y: 0.4, width: 0.2, height: 0.1, tail: null});
+assert(burst.length === 24, 'a 12-spike burst has 24 points');
+assert(burst.every((p) => p.x >= 0.4 - 1e-9 && p.x <= 0.6 + 1e-9 && p.y >= 0.4 - 1e-9 && p.y <= 0.5 + 1e-9), 'the burst stays inside its box');
+const tailBox = {...lettered.pages[0].texts[0], x: 0.4, y: 0.4, width: 0.2, height: 0.1, tail: {x: 0.8, y: 0.9}};
+const base = comicBalloonTailBase(tailBox);
+const inside = (p: ComicPoint) => p.x >= 0.5 - 1e-9 && p.x <= 0.6 + 1e-9 && p.y >= 0.45 - 1e-9 && p.y <= 0.5 + 1e-9;
+assert(inside(base.a) && inside(base.b), 'both tail base points sit on the bubble edge nearest the tip');
+
+// Wrap: greedy words, explicit newlines survive, a long word never splits.
+const wrapped = comicWrapText('the quick brown fox jumps over the dog', 120, 20);
+assert(wrapped.length === 4 && wrapped[0] === 'the quick' && wrapped[3] === 'the dog', `wrap lines were ${JSON.stringify(wrapped)}`);
+assert(comicWrapText('one\ntwo', 500, 20).length === 2, 'explicit newlines split');
+assert(comicWrapText('extraordinarily', 60, 20).length === 1, 'a long word stays whole');
+
+// Problems name lettering states; the wire round-trips them.
+const brokenText = normalizeComicDoc({pages: [{id: 'p', panels: [], texts: [{id: 't', kind: 'whisper', x: 0.1, y: 0.1, width: 0.001, height: 0.1}]}]});
+const textProblems = comicProblems(brokenText);
+assert(textProblems.some((p) => p.includes('kind must be')), 'an unknown text kind is named');
+assert(textProblems.some((p) => p.includes('box is too small')), 'a tiny text box is named');
+const roundTripped = normalizeComicDoc(toWireDoc(lettered));
+assert(sameComicDoc(roundTripped, lettered), 'texts round-trip through the wire');
+assert(JSON.stringify(toWireDoc(lettered)).includes('"kind":"balloon"'), 'wire carries the lettering kind');

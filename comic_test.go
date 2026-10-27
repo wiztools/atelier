@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -233,6 +234,71 @@ func TestComicSelfIntersects(t *testing.T) {
 				t.Fatalf("comicSelfIntersects(%s) = %v, want %v", tc.name, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestValidateComicDocTexts(t *testing.T) {
+	// Texts normalize: clamped boxes and tail points, defaulted font scale,
+	// a caption's stray tail dropped, nil slices filled.
+	doc := ComicDoc{Pages: []ComicPage{{
+		ID: "p1",
+		Texts: []ComicText{
+			{ID: "txt1", Kind: comicTextKindBalloon, X: -1, Y: 0.2, Width: 0.2, Height: 0.1, Text: "Hello!", Size: 0,
+				Tail: &ComicTail{X: 2, Y: 0.6}},
+			{ID: "txt2", Kind: comicTextKindCaption, X: 0.05, Y: 0.02, Width: 0.3, Height: 0.05, Text: "Meanwhile…", Size: 9,
+				Tail: &ComicTail{X: 0.5, Y: 0.5}},
+			{ID: "txt3", Kind: comicTextKindSFX, X: 0.6, Y: 0.1, Width: 0.15, Height: 0.12, Text: "POW!"},
+		},
+	}}}
+	if err := validateComicDoc(&doc); err != nil {
+		t.Fatalf("validateComicDoc returned error: %v", err)
+	}
+	balloon := doc.Pages[0].Texts[0]
+	if balloon.X != 0 || balloon.Size != 1 {
+		t.Fatalf("balloon = %+v, want clamped box and defaulted size", balloon)
+	}
+	if balloon.Tail == nil || balloon.Tail.X != 1 || balloon.Tail.Y != 0.6 {
+		t.Fatalf("balloon tail = %+v, want clamped to the page", balloon.Tail)
+	}
+	caption := doc.Pages[0].Texts[1]
+	if caption.Size != comicTextSizeMax {
+		t.Fatalf("caption size = %g, want the ceiling", caption.Size)
+	}
+	if caption.Tail != nil {
+		t.Fatalf("caption tail = %+v, want dropped", caption.Tail)
+	}
+	if doc.Pages[0].Texts[2].Kind != comicTextKindSFX {
+		t.Fatalf("sfx = %+v", doc.Pages[0].Texts[2])
+	}
+
+	tooMany := make([]ComicText, comicMaxTextsPerPage+1)
+	for i := range tooMany {
+		tooMany[i] = ComicText{ID: fmt.Sprintf("txt_%02d", i), Kind: comicTextKindCaption, X: 0.1, Y: 0.1, Width: 0.2, Height: 0.05}
+	}
+	cases := []struct {
+		name string
+		text ComicText
+		want string
+	}{
+		{"unknown kind", ComicText{ID: "t", Kind: "whisper", X: 0.1, Y: 0.1, Width: 0.2, Height: 0.05}, "kind must be"},
+		{"empty id", ComicText{Kind: comicTextKindCaption, X: 0.1, Y: 0.1, Width: 0.2, Height: 0.05}, "empty id"},
+		{"duplicate id", ComicText{ID: "px", Kind: comicTextKindCaption, X: 0.1, Y: 0.1, Width: 0.2, Height: 0.05}, "reuses id"},
+		{"non-finite box", ComicText{ID: "t", Kind: comicTextKindBalloon, X: math.NaN(), Y: 0.1, Width: 0.2, Height: 0.05}, "non-finite"},
+		{"box too small", ComicText{ID: "t", Kind: comicTextKindBalloon, X: 0.1, Y: 0.1, Width: 0.01, Height: 0.05}, "too small"},
+		{"non-finite tail", ComicText{ID: "t", Kind: comicTextKindBalloon, X: 0.1, Y: 0.1, Width: 0.2, Height: 0.05, Tail: &ComicTail{X: math.Inf(1), Y: 0.5}}, "non-finite tail"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := ComicDoc{Pages: []ComicPage{{ID: "px", Texts: []ComicText{tc.text}}}}
+			err := validateComicDoc(&candidate)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("validateComicDoc error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+	overflow := ComicDoc{Pages: []ComicPage{{ID: "px", Texts: tooMany}}}
+	if err := validateComicDoc(&overflow); err == nil || !strings.Contains(err.Error(), "at most 20 text elements") {
+		t.Fatalf("overflow error = %v", err)
 	}
 }
 

@@ -104,3 +104,11 @@ assert(detectEditorLaunchIntent('please open up the comic editor for me', kinds(
 assert(detectEditorLaunchIntent('Open the comic editor and crop it', kinds('image')) === null, 'a second intent abstains');
 assert(detectEditorLaunchIntent('Open the book editor', kinds('image')) === null, 'book alone does not name the comic');
 assert(detectEditorLaunchIntent('Open the comic', kinds('image')) === null, 'no editor head noun abstains');
+
+// "comic composer" is the comic editor by analogy — a comic word before the
+// composer head noun redirects; bare or video-flavored composer wording
+// stays the video workspace.
+assert(detectEditorLaunchIntent('Open the comic composer', []) === 'comic', 'comic composer aliases the comic editor');
+assert(detectEditorLaunchIntent('Open the comic book composer', []) === 'comic', 'comic book composer compound aliases too');
+assert(detectEditorLaunchIntent('Open the composer', []) === 'composition', 'bare composer still the video workspace');
+assert(detectEditorLaunchIntent('Open the video composer', []) === 'composition', 'video composer untouched');

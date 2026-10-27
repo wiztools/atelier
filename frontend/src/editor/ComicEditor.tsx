@@ -9,7 +9,10 @@ import {
   ComicDoc,
   ComicMediaRef,
   ComicPoint,
+  ComicText,
+  ComicTextKind,
   addPage,
+  addText,
   addPanel,
   addUnplacedImage,
   comicAspectPresets,
@@ -24,13 +27,19 @@ import {
   comicPageSize,
   comicPointInPolygon,
   comicPolygonPointsString,
+  comicBalloonTailBase,
   comicProblems,
   comicRectPoints,
+  comicSFXPoints,
+  comicTextDefaults,
+  comicTextKinds,
+  comicWrapText,
   duplicatePage,
   movePanel,
   normalizeComicDoc,
   removePage,
   removePanel,
+  removeText,
   removeUnplacedImage,
   renameComic,
   sameComicDoc,
@@ -40,6 +49,11 @@ import {
   setPanelImage,
   setPanelPoints,
   setPanelZoom,
+  setTextContent,
+  setTextKind,
+  setTextRect,
+  setTextSize,
+  setTextTail,
   setComicStyle,
   toWireDoc,
   validPanelGeometry,
@@ -65,15 +79,21 @@ type EditorLogEntry = {
 
 type Selection =
   | {kind: 'doc'}
-  | {kind: 'panel'; panelID: string};
+  | {kind: 'panel'; panelID: string}
+  | {kind: 'text'; textID: string};
 
 type Tool = 'select' | 'rect' | 'polygon';
+
+type TextCorner = 'nw' | 'ne' | 'sw' | 'se';
 
 type Drag =
   | {kind: 'panel-move'; panelID: string; startPage: ComicPoint; original: ComicPoint[]}
   | {kind: 'vertex'; panelID: string; index: number}
   | {kind: 'rect'; start: ComicPoint}
-  | {kind: 'pan-focus'; panelID: string; startClient: {x: number; y: number}; startFocusX: number; startFocusY: number};
+  | {kind: 'pan-focus'; panelID: string; startClient: {x: number; y: number}; startFocusX: number; startFocusY: number}
+  | {kind: 'text-move'; textID: string; startPage: ComicPoint; origX: number; origY: number}
+  | {kind: 'text-resize'; textID: string; corner: TextCorner; startPage: ComicPoint; origX: number; origY: number; origW: number; origH: number}
+  | {kind: 'tail'; textID: string};
 
 // The Edits panel's height clamp needs this editor's content floor: header +
 // toolbar + the stage's minimum + paddings.
@@ -104,6 +124,34 @@ function artifactImageURL(ref: ComicMediaRef): string {
   if (!ref.path) return '';
   if (ref.path.startsWith('/atelier-artifact/')) return ref.path;
   return '/atelier-artifact' + ref.path;
+}
+
+// BalloonIcon/CaptionIcon/SFXIcon — the app's 24-viewBox stroke glyphs; the
+// hover title carries the verb, the aria-label the name.
+function BalloonIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <ellipse cx="12" cy="9.5" rx="8.5" ry="6" />
+      <path d="M9.5 15.2 7 20l6-4.4" />
+    </svg>
+  );
+}
+
+function CaptionIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="6" width="18" height="12" rx="1.5" />
+      <path d="M6.5 10.5h11M6.5 13.5h7" />
+    </svg>
+  );
+}
+
+function SFXIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
+      <polygon points="12,2 14.37,6.27 19.07,4.93 17.73,9.63 22,12 17.73,14.37 19.07,19.07 14.37,17.73 12,22 9.63,17.73 4.93,19.07 6.27,14.37 2,12 6.27,9.63 4.93,4.93 9.63,6.27" />
+    </svg>
+  );
 }
 
 // clampRing bounds a polygon into the page — the live form of
@@ -175,6 +223,7 @@ export function ComicEditor(props: {
   const pageAspect = useMemo(() => (page ? comicPageAspect(page) : {ratio: 1, name: comicDefaultAspect}), [page]);
   const pageSize = useMemo(() => comicPageSize(pageAspect.ratio, pageViewWidth), [pageAspect]);
   const selectedPanel = selection.kind === 'panel' ? doc.pages.flatMap((candidate) => candidate.panels).find((panel) => panel.id === selection.panelID) : undefined;
+  const selectedText = selection.kind === 'text' ? doc.pages.flatMap((candidate) => candidate.texts).find((text) => text.id === selection.textID) : undefined;
   const refCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const candidate of doc.pages) {
@@ -309,6 +358,53 @@ export function ComicEditor(props: {
     setDrag({kind: 'vertex', panelID, index});
   };
 
+  const beginTextDrag = (event: React.PointerEvent, text: ComicText) => {
+    if (event.button !== 0 || props.suspended) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    setSelection({kind: 'text', textID: text.id});
+    dragChangedRef.current = false;
+    setDrag({kind: 'text-move', textID: text.id, startPage: clientToPage(event.clientX, event.clientY), origX: text.x, origY: text.y});
+  };
+
+  const beginTextResize = (event: React.PointerEvent, text: ComicText, corner: TextCorner) => {
+    if (event.button !== 0 || props.suspended) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    setSelection({kind: 'text', textID: text.id});
+    dragChangedRef.current = false;
+    setDrag({kind: 'text-resize', textID: text.id, corner, startPage: clientToPage(event.clientX, event.clientY), origX: text.x, origY: text.y, origW: text.width, origH: text.height});
+  };
+
+  const beginTailDrag = (event: React.PointerEvent, textID: string) => {
+    if (event.button !== 0 || props.suspended) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    setSelection({kind: 'text', textID});
+    dragChangedRef.current = false;
+    setDrag({kind: 'tail', textID});
+  };
+
+  // addLettering stamps a new element centered on the page and selects it —
+  // the toolbar buttons' one gesture.
+  const addLettering = (kind: ComicTextKind) => {
+    if (!page) {
+      return;
+    }
+    const next = addText(docRef.current, page.id, kind);
+    const created = next.pages.find((candidate) => candidate.id === page.id)?.texts.find((text) => !docRef.current.pages.flatMap((candidate) => candidate.texts).some((existing) => existing.id === text.id));
+    commit(next);
+    if (created) {
+      setSelection({kind: 'text', textID: created.id});
+    }
+  };
+
   // insertVertex splits the edge under the cursor at its midpoint (commit —
   // one undo entry); deleteVertex removes one (⌥-click), refusing when the
   // result would break the geometry gate.
@@ -421,6 +517,53 @@ export function ComicEditor(props: {
           const dx = (event.clientX - drag.startClient.x) / rect.width;
           const dy = (event.clientY - drag.startClient.y) / rect.height;
           applyLive(setPanelFocus(current, drag.panelID, drag.startFocusX - dx, drag.startFocusY - dy));
+          return;
+        }
+        case 'text-move': {
+          const current = docRef.current;
+          const text = current.pages.flatMap((candidate) => candidate.texts).find((candidate) => candidate.id === drag.textID);
+          if (!text) {
+            return;
+          }
+          const now = clientToPage(event.clientX, event.clientY);
+          applyLive(setTextRect(current, drag.textID, drag.origX + now.x - drag.startPage.x, drag.origY + now.y - drag.startPage.y, text.width, text.height));
+          return;
+        }
+        case 'text-resize': {
+          const current = docRef.current;
+          if (!current.pages.flatMap((candidate) => candidate.texts).some((candidate) => candidate.id === drag.textID)) {
+            return;
+          }
+          const now = clientToPage(event.clientX, event.clientY);
+          const dx = now.x - drag.startPage.x;
+          const dy = now.y - drag.startPage.y;
+          let x = drag.origX;
+          let y = drag.origY;
+          let width = drag.origW;
+          let height = drag.origH;
+          if (drag.corner === 'nw') {
+            x = drag.origX + dx;
+            y = drag.origY + dy;
+            width = drag.origW - dx;
+            height = drag.origH - dy;
+          } else if (drag.corner === 'ne') {
+            y = drag.origY + dy;
+            width = drag.origW + dx;
+            height = drag.origH - dy;
+          } else if (drag.corner === 'sw') {
+            x = drag.origX + dx;
+            width = drag.origW - dx;
+            height = drag.origH + dy;
+          } else {
+            width = drag.origW + dx;
+            height = drag.origH + dy;
+          }
+          applyLive(setTextRect(current, drag.textID, x, y, width, height));
+          return;
+        }
+        case 'tail': {
+          const now = clientToPage(event.clientX, event.clientY);
+          applyLive(setTextTail(docRef.current, drag.textID, now.x, now.y));
           return;
         }
       }
@@ -566,6 +709,11 @@ export function ComicEditor(props: {
         event.preventDefault();
         deleteSelectedPanel();
       }
+      if ((event.key === 'Delete' || event.key === 'Backspace') && selection.kind === 'text') {
+        event.preventDefault();
+        commit(removeText(docRef.current, selection.textID));
+        setSelection({kind: 'doc'});
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -676,6 +824,68 @@ export function ComicEditor(props: {
   };
 
   const missingInPanel = selectedPanel?.image ? missingRefs.has(selectedPanel.image.ref.artifactId) : false;
+
+  // renderText draws one lettering element — shape (balloon ellipse,
+  // caption rect, burst star) under wrapped centered text; a selected
+  // element shows corner resize handles and, for a balloon, the draggable
+  // tail tip. The tail triangle renders UNDER the bubble so its base edge
+  // never shows.
+  const renderText = (text: ComicText) => {
+    const W = pageSize.width;
+    const H = pageSize.height;
+    const bx = text.x * W;
+    const by = text.y * H;
+    const bw = text.width * W;
+    const bh = text.height * H;
+    const selected = selection.kind === 'text' && selection.textID === text.id;
+    const fontPx = text.size * W * 0.022;
+    const lines = comicWrapText(text.text, bw * 0.82, fontPx);
+    const lineHeight = fontPx * 1.15;
+    const burstPoints = text.kind === 'sfx' ? comicSFXPoints(text).map((point) => `${(point.x * W).toFixed(2)},${(point.y * H).toFixed(2)}`).join(' ') : '';
+    const tailBase = text.kind === 'balloon' && text.tail ? comicBalloonTailBase(text) : null;
+    const title = text.text || (text.kind === 'balloon' ? 'Speech balloon — select to edit' : text.kind === 'caption' ? 'Caption — select to edit' : 'Sound effect — select to edit');
+    return (
+      <g key={text.id} className={`comic-text comic-text-${text.kind}${selected ? ' selected' : ''}`}>
+        {tailBase && text.tail ? (
+          <polygon
+            points={`${text.tail.x * W},${text.tail.y * H} ${(tailBase.a.x * W).toFixed(2)},${(tailBase.a.y * H).toFixed(2)} ${(tailBase.b.x * W).toFixed(2)},${(tailBase.b.y * H).toFixed(2)}`}
+            className="comic-text-shape"
+            style={{pointerEvents: 'none'}}
+          />
+        ) : null}
+        {text.kind === 'caption' ? (
+          <rect x={bx} y={by} width={bw} height={bh} className="comic-text-shape" onPointerDown={(event) => beginTextDrag(event, text)}>
+            <title>{title}</title>
+          </rect>
+        ) : text.kind === 'sfx' ? (
+          <polygon points={burstPoints} className="comic-text-shape" onPointerDown={(event) => beginTextDrag(event, text)}>
+            <title>{title}</title>
+          </polygon>
+        ) : (
+          <ellipse cx={bx + bw / 2} cy={by + bh / 2} rx={bw / 2} ry={bh / 2} className="comic-text-shape" onPointerDown={(event) => beginTextDrag(event, text)}>
+            <title>{title}</title>
+          </ellipse>
+        )}
+        <text x={bx + bw / 2} y={by + bh / 2} className="comic-text-content" style={{fontSize: fontPx, pointerEvents: 'none'}}>
+          {lines.map((line, index) => (
+            <tspan key={index} x={bx + bw / 2} dy={index === 0 ? (-(lines.length - 1) / 2) * lineHeight : lineHeight}>{line || ' '}</tspan>
+          ))}
+        </text>
+        {selected ? (
+          <>
+            {([['nw', bx, by], ['ne', bx + bw, by], ['sw', bx, by + bh], ['se', bx + bw, by + bh]] as const).map(([corner, hx, hy]) => (
+              <circle key={corner} cx={hx} cy={hy} r={7} className="comic-vertex" onPointerDown={(event) => beginTextResize(event, text, corner)} />
+            ))}
+            {text.tail ? (
+              <circle cx={text.tail.x * W} cy={text.tail.y * H} r={8} className="comic-tail-handle" onPointerDown={(event) => beginTailDrag(event, text.id)}>
+                <title>Drag to aim the tail at the speaker</title>
+              </circle>
+            ) : null}
+          </>
+        ) : null}
+      </g>
+    );
+  };
 
   const renderPanel = (panel: (typeof page.panels)[number]) => {
     const points = comicPolygonPointsString(panel.points, pageSize.width);
@@ -831,6 +1041,24 @@ export function ComicEditor(props: {
             </button>
           ))}
         </div>
+        <div className="comic-tools" role="group" aria-label="Lettering">
+          {comicTextKinds.map((kind) => {
+            const label = kind === 'balloon' ? 'Add a speech balloon (drag its tail at a speaker)' : kind === 'caption' ? 'Add a caption box (the narrator\'s voice)' : 'Add a sound-effect burst';
+            return (
+              <button
+                key={kind}
+                type="button"
+                className="comic-tool-icon"
+                disabled={!page || page.texts.length >= 20}
+                title={label}
+                aria-label={label}
+                onClick={() => addLettering(kind)}
+              >
+                {kind === 'balloon' ? <BalloonIcon /> : kind === 'caption' ? <CaptionIcon /> : <SFXIcon />}
+              </button>
+            );
+          })}
+        </div>
         <button type="button" className="comic-tool" disabled={tool !== 'select' && draftPoints.length === 0} title="Back to selecting (Esc also works)" onClick={() => cancelDraft()}>Done</button>
         <div className="comic-toolbar-spacer" />
         <button type="button" onClick={undo} disabled={!undoStack.length} title="Undo (⌘Z)">↺</button>
@@ -909,6 +1137,7 @@ export function ComicEditor(props: {
                 >
                   <rect x={0} y={0} width={pageSize.width} height={pageSize.height} className="comic-page-bg" />
                   {page.panels.map(renderPanel)}
+                  {page.texts.map(renderText)}
                   {rectPreview}
                   {polygonPreview}
                 </svg>
@@ -972,7 +1201,48 @@ export function ComicEditor(props: {
               onClose={() => setPickerOpen(false)}
             />
           ) : null}
-          {selection.kind === 'panel' && selectedPanel ? (
+          {selection.kind === 'text' && selectedText ? (
+            <>
+              <strong>Lettering</strong>
+              <div className="comic-field-row">
+                <label className="comic-field" title="Balloon = speech, caption = narration, burst = a sound effect">
+                  <span>Kind</span>
+                  <select value={comicTextKinds.includes(selectedText.kind) ? selectedText.kind : 'balloon'} onChange={(event) => commit(setTextKind(docRef.current, selectedText.id, event.target.value as ComicTextKind))}>
+                    {comicTextKinds.map((kind) => (
+                      <option key={kind} value={kind}>{kind === 'balloon' ? 'Speech balloon' : kind === 'caption' ? 'Caption box' : 'Sound burst'}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <label className="comic-field" title="What the element says — Enter wraps, the box auto-centers the lines">
+                <span>Text</span>
+                <textarea
+                  rows={3}
+                  value={selectedText.text}
+                  onChange={(event) => applyLive(setTextContent(docRef.current, selectedText.id, event.target.value))}
+                  onBlur={() => {dragChangedRef.current = false;}}
+                />
+              </label>
+              <label className="comic-range" title="The font scale for this element">
+                <span>Size</span>
+                <input type="range" min={0.5} max={4} step={0.05} value={selectedText.size} onChange={(event) => applyLive(setTextSize(docRef.current, selectedText.id, parseFloat(event.target.value)))} onPointerUp={() => {dragChangedRef.current = false;}} />
+                <span className="comic-range-value">{selectedText.size.toFixed(2)}×</span>
+              </label>
+              {selectedText.kind === 'balloon' && selectedText.tail ? (
+                <p className="hint">Drag the round tail handle on the page to aim at the speaker.</p>
+              ) : null}
+              {selectedText.kind === 'balloon' && !selectedText.tail ? (
+                <button
+                  type="button"
+                  title="Grow a tail from the balloon's bottom — then drag its round tip at the speaker"
+                  onClick={() => commit(setTextTail(docRef.current, selectedText.id, selectedText.x + selectedText.width / 2, Math.min(1, selectedText.y + selectedText.height + 0.12)))}
+                >
+                  Add tail
+                </button>
+              ) : null}
+              <button type="button" className="comic-danger" onClick={() => {commit(removeText(docRef.current, selectedText.id)); setSelection({kind: 'doc'});}}>Delete lettering</button>
+            </>
+          ) : selection.kind === 'panel' && selectedPanel ? (
             <>
               <strong>Panel</strong>
               <p className="hint">{selectedPanel.points.length} corners · {selectedPanel.image ? `${selectedPanel.image.ref.width}×${selectedPanel.image.ref.height} art` : 'no art'}</p>

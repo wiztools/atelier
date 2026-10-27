@@ -977,6 +977,66 @@ export namespace main {
 	        this.border = source["border"];
 	    }
 	}
+	export class ComicTail {
+	    x: number;
+	    y: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ComicTail(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.x = source["x"];
+	        this.y = source["y"];
+	    }
+	}
+	export class ComicText {
+	    id: string;
+	    kind: string;
+	    x: number;
+	    y: number;
+	    width: number;
+	    height: number;
+	    text: string;
+	    size: number;
+	    tail?: ComicTail;
+	
+	    static createFrom(source: any = {}) {
+	        return new ComicText(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.kind = source["kind"];
+	        this.x = source["x"];
+	        this.y = source["y"];
+	        this.width = source["width"];
+	        this.height = source["height"];
+	        this.text = source["text"];
+	        this.size = source["size"];
+	        this.tail = this.convertValues(source["tail"], ComicTail);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class ComicMediaRef {
 	    artifactId: string;
 	    conversationId?: string;
@@ -1092,6 +1152,7 @@ export namespace main {
 	    aspect?: string;
 	    customAspect?: number;
 	    panels: ComicPanel[];
+	    texts: ComicText[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ComicPage(source);
@@ -1103,6 +1164,7 @@ export namespace main {
 	        this.aspect = source["aspect"];
 	        this.customAspect = source["customAspect"];
 	        this.panels = this.convertValues(source["panels"], ComicPanel);
+	        this.texts = this.convertValues(source["texts"], ComicText);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1210,6 +1272,8 @@ export namespace main {
 		    return a;
 		}
 	}
+	
+	
 	
 	export class CompositionOriginalAudio {
 	    gainDb?: number;

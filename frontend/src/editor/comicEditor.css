@@ -402,3 +402,42 @@
 .comic-danger:hover {
   background: #3a2a28;
 }
+
+/* Lettering: balloons, captions, and bursts float above the panels. */
+.comic-text-shape {
+  fill: #ffffff;
+  stroke: #111111;
+  stroke-width: 3;
+  stroke-linejoin: round;
+  cursor: move;
+}
+
+.comic-text.selected .comic-text-shape {
+  stroke: #4a90d9;
+}
+
+.comic-text-content {
+  font-family: "Comic Sans MS", "Chalkboard SE", "Segoe Print", sans-serif;
+  font-weight: 700;
+  fill: #111111;
+  text-anchor: middle;
+  dominant-baseline: central;
+}
+
+.comic-text-sfx .comic-text-content {
+  letter-spacing: 0.06em;
+}
+
+.comic-tail-handle {
+  fill: #f2c94c;
+  stroke: #ffffff;
+  stroke-width: 2;
+  cursor: move;
+}
+
+.comic-tool-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 7px !important;
+}

@@ -39,6 +39,25 @@ export type ComicPage = {
   aspect: string;
   customAspect: number;
   panels: ComicPanel[];
+  texts: ComicText[];
+};
+
+export type ComicTextKind = 'balloon' | 'caption' | 'sfx';
+
+// ComicTail aims a balloon at its speaker: one normalized point on the PAGE
+// (not the box — a dragged balloon keeps its aim).
+export type ComicTail = {x: number; y: number};
+
+export type ComicText = {
+  id: string;
+  kind: ComicTextKind;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text: string;
+  size: number;
+  tail: ComicTail | null;
 };
 
 export type ComicStyle = {
@@ -59,6 +78,7 @@ export const comicMaxPages = 64;
 export const comicMaxPanelsPerPage = 24;
 export const comicMaxPanelVertices = 16;
 export const comicMaxUnplacedImages = 50;
+export const comicMaxTextsPerPage = 20;
 export const comicMinPanelArea = 0.001;
 export const comicGutterMin = 0.0;
 export const comicGutterMax = 0.15;
@@ -71,8 +91,22 @@ export const comicZoomMin = 1.0;
 export const comicZoomMax = 4.0;
 export const comicCustomAspectMin = 0.25;
 export const comicCustomAspectMax = 4.0;
+export const comicTextMinDimension = 0.02;
+export const comicTextSizeMin = 0.5;
+export const comicTextSizeMax = 4.0;
 export const comicDefaultAspect = 'comic';
 export const comicDefaultName = 'Untitled comic';
+
+// comicTextKinds orders the lettering vocabulary for pickers.
+export const comicTextKinds: ComicTextKind[] = ['balloon', 'caption', 'sfx'];
+
+// comicTextDefaults is the creation box per kind — balloon, caption box,
+// burst — in normalized page units, with the burst's louder font scale.
+export const comicTextDefaults: Record<ComicTextKind, {w: number; h: number; size: number}> = {
+  balloon: {w: 0.16, h: 0.1, size: 1},
+  caption: {w: 0.2, h: 0.07, size: 1},
+  sfx: {w: 0.16, h: 0.12, size: 1.8},
+};
 
 // comicAspectPresets names the page shapes, width ÷ height — Go's map with a
 // stable order for pickers.
@@ -222,6 +256,28 @@ export function newPanelImage(ref: ComicMediaRef): ComicPanelImage {
   return {ref: {...ref}, fit: 'cover', focusX: comicFocusDefault, focusY: comicFocusDefault, zoom: 1};
 }
 
+function normalizeComicText(wire: any): ComicText {
+  // A foreign kind rides through (cast to the union) so comicProblems names
+  // it rather than silently re-typing the element — the media-ref rule.
+  const rawKind = typeof wire?.kind === 'string' && wire.kind ? wire.kind : 'balloon';
+  const kind = rawKind as ComicTextKind;
+  return {
+    id: wire?.id ?? '',
+    kind,
+    x: finite(wire?.x) ? wire.x : 0,
+    y: finite(wire?.y) ? wire.y : 0,
+    width: finite(wire?.width) ? wire.width : 0,
+    height: finite(wire?.height) ? wire.height : 0,
+    text: typeof wire?.text === 'string' ? wire.text : '',
+    // Missing or non-positive reads the default 1 (Go's rule); a positive
+    // value clamps into [0.5, 4].
+    size: finite(wire?.size) && wire.size > 0 ? comicClampRange(wire.size, comicTextSizeMin, comicTextSizeMax, 1) : 1,
+    tail: wire?.tail && kind === 'balloon'
+      ? {x: comicClampRange(wire.tail.x, 0, 1, 0), y: comicClampRange(wire.tail.y, 0, 1, 0)}
+      : null,
+  };
+}
+
 // normalizeComicDoc adapts the Go wire shape (omitempty means absent) into
 // the model's always-present form. Accepts the generated main.ComicDoc
 // instance or a plain object.
@@ -241,6 +297,7 @@ export function normalizeComicDoc(wire: any): ComicDoc {
         })),
         image: panel?.image ? normalizePanelImage(panel.image) : null,
       })),
+      texts: (Array.isArray(page?.texts) ? page.texts : []).map(normalizeComicText),
     })),
     unplaced: (Array.isArray(wire?.unplaced) ? wire.unplaced : []).map(normalizeComicMediaRef),
     style: {
@@ -275,6 +332,17 @@ export function toWireDoc(doc: ComicDoc): any {
             }
           : {}),
       })),
+      texts: page.texts.map((text) => ({
+        id: text.id,
+        kind: text.kind,
+        x: text.x,
+        y: text.y,
+        width: text.width,
+        height: text.height,
+        text: text.text,
+        size: text.size,
+        ...(text.tail ? {tail: {...text.tail}} : {}),
+      })),
     })),
     unplaced: doc.unplaced.map((ref) => ({...ref})),
     style: {...doc.style},
@@ -288,7 +356,7 @@ export function seedComicDoc(name: string, refs: ComicMediaRef[]): ComicDoc {
   return normalizeComicDoc({
     schemaVersion: 1,
     name: name.trim() || comicDefaultName,
-    pages: [{id: newComicID('cpg'), aspect: comicDefaultAspect, panels: []}],
+    pages: [{id: newComicID('cpg'), aspect: comicDefaultAspect, panels: [], texts: []}],
     unplaced: refs,
     style: {gutter: comicGutterDefault, border: comicBorderDefault},
   });
@@ -327,7 +395,7 @@ export function renameComic(doc: ComicDoc, name: string): ComicDoc {
 
 export function addPage(doc: ComicDoc, aspect = comicDefaultAspect): ComicDoc {
   if (doc.pages.length >= comicMaxPages) return cloneComicDoc(doc);
-  const page: ComicPage = {id: newComicID('cpg'), aspect, customAspect: 0, panels: []};
+  const page: ComicPage = {id: newComicID('cpg'), aspect, customAspect: 0, panels: [], texts: []};
   return {...doc, pages: [...doc.pages, page]};
 }
 
@@ -346,6 +414,7 @@ export function duplicatePage(doc: ComicDoc, pageID: string): ComicDoc {
       // (reuse), and the tray entry stays single.
       image: panel.image ? {...panel.image, ref: {...panel.image.ref}} : null,
     })),
+    texts: source.texts.map((text) => ({...text, tail: text.tail ? {...text.tail} : null})),
   };
   const pages = [...doc.pages.slice(0, index + 1), copy, ...doc.pages.slice(index + 1)];
   return {...doc, pages};
@@ -474,6 +543,146 @@ export function removeUnplacedImage(doc: ComicDoc, artifactId: string): ComicDoc
   return {...doc, unplaced: doc.unplaced.filter((ref) => ref.artifactId !== artifactId)};
 }
 
+// ——— lettering ops (page-level text elements; the mirrors of Go's
+// comicNormalizeTexts rules) ———
+
+function findText(doc: ComicDoc, textID: string): ComicText | undefined {
+  for (const page of doc.pages) {
+    const text = page.texts.find((candidate) => candidate.id === textID);
+    if (text) return text;
+  }
+  return undefined;
+}
+
+function updateText(doc: ComicDoc, textID: string, update: (text: ComicText) => ComicText): ComicDoc {
+  return {...doc, pages: doc.pages.map((page) => ({...page, texts: page.texts.map((text) => (text.id === textID ? update(text) : text))}))};
+}
+
+// addText stamps a new lettering element of the kind, centered on the
+// requested point (the page center when omitted) in the kind's default box.
+export function addText(doc: ComicDoc, pageID: string, kind: ComicTextKind, x = 0.5, y = 0.5): ComicDoc {
+  const page = doc.pages.find((candidate) => candidate.id === pageID);
+  if (!page || page.texts.length >= comicMaxTextsPerPage) return cloneComicDoc(doc);
+  const defaults = comicTextDefaults[kind];
+  const text: ComicText = {
+    id: newComicID('txt'),
+    kind,
+    x: Math.min(1 - defaults.w, Math.max(0, x - defaults.w / 2)),
+    y: Math.min(1 - defaults.h, Math.max(0, y - defaults.h / 2)),
+    width: defaults.w,
+    height: defaults.h,
+    text: '',
+    size: defaults.size,
+    tail: null,
+  };
+  return updatePage(doc, pageID, (current) => ({...current, texts: [...current.texts, text]}));
+}
+
+// setTextRect moves/resizes a lettering element; a box below the per-side
+// floor is a no-op (the editor's handles preview the rule).
+export function setTextRect(doc: ComicDoc, textID: string, x: number, y: number, width: number, height: number): ComicDoc {
+  if (!findText(doc, textID)) return cloneComicDoc(doc);
+  if (!finite(x, y, width, height)) return cloneComicDoc(doc);
+  const cx = comicClampRange(x, 0, 1, 0);
+  const cy = comicClampRange(y, 0, 1, 0);
+  const cw = comicClampRange(width, 0, 1, 0);
+  const ch = comicClampRange(height, 0, 1, 0);
+  if (cw < comicTextMinDimension || ch < comicTextMinDimension) return cloneComicDoc(doc);
+  return updateText(doc, textID, (text) => ({...text, x: cx, y: cy, width: cw, height: ch}));
+}
+
+export function setTextContent(doc: ComicDoc, textID: string, content: string): ComicDoc {
+  return updateText(doc, textID, (text) => ({...text, text: content}));
+}
+
+// setTextKind re-letters the element; only balloons keep a tail.
+export function setTextKind(doc: ComicDoc, textID: string, kind: ComicTextKind): ComicDoc {
+  return updateText(doc, textID, (text) => ({
+    ...text,
+    kind,
+    tail: kind === 'balloon' ? text.tail : null,
+  }));
+}
+
+export function setTextTail(doc: ComicDoc, textID: string, x: number, y: number): ComicDoc {
+  if (!findText(doc, textID)) return cloneComicDoc(doc);
+  return updateText(doc, textID, (text) =>
+    text.kind === 'balloon' ? {...text, tail: {x: comicClampRange(x, 0, 1, 0), y: comicClampRange(y, 0, 1, 0)}} : text);
+}
+
+export function setTextSize(doc: ComicDoc, textID: string, size: number): ComicDoc {
+  return updateText(doc, textID, (text) => ({
+    ...text,
+    size: finite(size) && size > 0 ? comicClampRange(size, comicTextSizeMin, comicTextSizeMax, 1) : text.size,
+  }));
+}
+
+export function removeText(doc: ComicDoc, textID: string): ComicDoc {
+  return {...doc, pages: doc.pages.map((page) => ({...page, texts: page.texts.filter((text) => text.id !== textID)}))};
+}
+
+// comicSFXPoints builds the burst polygon for a sound effect — alternating
+// outer/inner points on the box's ellipse (spikes pairs), in normalized page
+// coordinates.
+export function comicSFXPoints(text: ComicText): ComicPoint[] {
+  const cx = text.x + text.width / 2;
+  const cy = text.y + text.height / 2;
+  const rx = text.width / 2;
+  const ry = text.height / 2;
+  const spikes = 12;
+  const points: ComicPoint[] = [];
+  for (let i = 0; i < spikes * 2; i++) {
+    const angle = (Math.PI * 2 * i) / (spikes * 2) - Math.PI / 2;
+    const scale = i % 2 === 0 ? 1 : 0.72;
+    points.push({x: cx + Math.cos(angle) * rx * scale, y: cy + Math.sin(angle) * ry * scale});
+  }
+  return points;
+}
+
+// comicBalloonTailBase resolves the tail triangle's two base points on the
+// bubble's edge flanking the direction to the tip — the triangle
+// [tip, baseA, baseB] renders UNDER the bubble fill, so its base edge never
+// shows; the base arc is a quarter-radian wide.
+export function comicBalloonTailBase(text: ComicText, spike = 0.125): {a: ComicPoint; b: ComicPoint} {
+  const tip = text.tail ?? {x: text.x + text.width / 2, y: text.y + text.height};
+  const cx = text.x + text.width / 2;
+  const cy = text.y + text.height / 2;
+  const rx = text.width / 2;
+  const ry = text.height / 2;
+  const angle = Math.atan2((tip.y - cy) / (ry || 1), (tip.x - cx) / (rx || 1));
+  const pointAt = (theta: number) => ({x: cx + Math.cos(theta) * rx, y: cy + Math.sin(theta) * ry});
+  return {a: pointAt(angle - spike), b: pointAt(angle + spike)};
+}
+
+// comicWrapText wraps a lettering string to a pixel width the way SVG's
+// manual wrapping must: greedy words, the approximate Helvetica advance of
+// 0.6em per character (digits and capitals run wider; lettering is hand-tuned
+// anyway). Empty lines survive.
+export function comicWrapText(content: string, boxWidthPx: number, fontSizePx: number): string[] {
+  const charWidth = Math.max(1, fontSizePx * 0.6);
+  const maxChars = Math.max(4, Math.floor(boxWidthPx / charWidth));
+  const lines: string[] = [];
+  for (const paragraph of content.split('\n')) {
+    const words = paragraph.split(/\s+/).filter(Boolean);
+    if (!words.length) {
+      lines.push('');
+      continue;
+    }
+    let current = '';
+    for (const word of words) {
+      const candidate = current ? `${current} ${word}` : word;
+      if (candidate.length <= maxChars || !current) {
+        current = candidate;
+      } else {
+        lines.push(current);
+        current = word;
+      }
+    }
+    if (current) lines.push(current);
+  }
+  return lines.length ? lines : [''];
+}
+
 // comicProblems mirrors validateComicDoc's refusals — the states the reducers
 // refuse to build, so a hand-edited or foreign document still gets named
 // reasons before Save lights up.
@@ -509,6 +718,19 @@ export function comicProblems(doc: ComicDoc): string[] {
     if (page.panels.length > comicMaxPanelsPerPage) {
       problems.push(`${label} supports at most ${comicMaxPanelsPerPage} panels`);
     }
+    if (page.texts.length > comicMaxTextsPerPage) {
+      problems.push(`${label} supports at most ${comicMaxTextsPerPage} text elements`);
+    }
+    page.texts.forEach((text, textIndex) => {
+      const textLabel = `${label} text ${textIndex + 1}`;
+      claim(text.id, textLabel);
+      if (!comicTextKinds.includes(text.kind)) {
+        problems.push(`${textLabel}'s kind must be "balloon", "caption", or "sfx"`);
+      }
+      if (text.width < comicTextMinDimension || text.height < comicTextMinDimension) {
+        problems.push(`${textLabel}'s box is too small (the minimum is ${comicTextMinDimension} of the page per side)`);
+      }
+    });
     page.panels.forEach((panel, panelIndex) => {
       const panelLabel = `${label} panel ${panelIndex + 1}`;
       claim(panel.id, panelLabel);

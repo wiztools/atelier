@@ -35,6 +35,7 @@ const (
 	comicMaxPanelsPerPage  = 24
 	comicMaxPanelVertices  = 16
 	comicMaxUnplacedImages = 50
+	comicMaxTextsPerPage   = 20
 
 	// A panel smaller than this fraction of the page area is a degenerate
 	// sliver — it cannot hold a readable image or a visible border.
@@ -55,6 +56,14 @@ const (
 
 	comicCustomAspectMin = 0.25
 	comicCustomAspectMax = 4.0
+
+	comicTextKindBalloon = "balloon"
+	comicTextKindCaption = "caption"
+	comicTextKindSFX     = "sfx"
+
+	comicTextMinDimension = 0.02
+	comicTextSizeMin      = 0.5
+	comicTextSizeMax      = 4.0
 
 	comicFitCover   = "cover"
 	comicFitContain = "contain"
@@ -142,6 +151,37 @@ type ComicPanel struct {
 	Image  *ComicPanelImage `json:"image,omitempty"`
 }
 
+// ComicTail aims a balloon at its speaker: one normalized point on the PAGE
+// (not the box — a dragged balloon keeps its aim), where the tail's tip
+// points. The tail's base sits on the bubble's edge toward the tip, computed
+// at render time.
+type ComicTail struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+
+// ComicText is one lettering element on a page — a speech balloon (an
+// ellipse with an optional tail), a caption box (a rectangle, the
+// narrator's voice), or a sound-effect burst (a jagged star). The box is a
+// normalized rectangle the shape fits inside; text wraps inside it at the
+// element's font scale. Texts are PAGE-level, not panel children: balloons
+// and captions float over or between panels freely, and later texts paint
+// over earlier ones (array order is paint order, panels' rule).
+type ComicText struct {
+	ID     string  `json:"id"`
+	Kind   string  `json:"kind"`
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
+	Text   string  `json:"text"`
+	// Size is the font scale multiplier, clamped to [0.5, 4]; always
+	// written (the editor emits explicit values — a hand-written document
+	// without one, or with a non-positive one, reads the default 1).
+	Size float64    `json:"size"`
+	Tail *ComicTail `json:"tail,omitempty"`
+}
+
 // ComicPage is one page of the book: its own aspect ratio and its panels in
 // paint order. Aspect names a comicAspectPresets entry, or "custom" to take
 // CustomAspect (width ÷ height) directly.
@@ -150,6 +190,7 @@ type ComicPage struct {
 	Aspect       string       `json:"aspect,omitempty"`
 	CustomAspect float64      `json:"customAspect,omitempty"`
 	Panels       []ComicPanel `json:"panels"`
+	Texts        []ComicText  `json:"texts"`
 }
 
 // ComicStyle is the book's chrome: the gutter between panels and the panel
@@ -431,6 +472,9 @@ func validateComicDoc(doc *ComicDoc) error {
 				image.Zoom = comicClampRange(image.Zoom, comicZoomMin, comicZoomMax, 1)
 			}
 		}
+		if err := comicNormalizeTexts(page, label, claimID); err != nil {
+			return err
+		}
 	}
 
 	for ui := range doc.Unplaced {
@@ -441,6 +485,60 @@ func validateComicDoc(doc *ComicDoc) error {
 		if ref.Width <= 0 || ref.Height <= 0 {
 			return fmt.Errorf("unplaced image %d was never measured (no pixel size)", ui+1)
 		}
+	}
+	return nil
+}
+
+// comicNormalizeTexts checks and normalizes one page's lettering — the
+// texts walk of validateComicDoc. Normalizing (clamped boxes and tail
+// points, defaulted font scale, a caption's or burst's stray tail dropped)
+// matches what the editor does interactively; the errors are for the states
+// the editor refuses to build: unknown kinds, sub-floor boxes, non-finite
+// geometry, duplicate ids.
+func comicNormalizeTexts(page *ComicPage, label string, claimID func(id, label string) error) error {
+	if page.Texts == nil {
+		page.Texts = []ComicText{}
+	}
+	if len(page.Texts) > comicMaxTextsPerPage {
+		return fmt.Errorf("%s supports at most %d text elements, got %d", label, comicMaxTextsPerPage, len(page.Texts))
+	}
+	for ti := range page.Texts {
+		text := &page.Texts[ti]
+		textLabel := fmt.Sprintf("%s text %d", label, ti+1)
+		if err := claimID(text.ID, textLabel); err != nil {
+			return err
+		}
+		switch text.Kind {
+		case comicTextKindBalloon, comicTextKindCaption, comicTextKindSFX:
+		default:
+			return fmt.Errorf("%s's kind must be %q, %q, or %q, got %q", textLabel, comicTextKindBalloon, comicTextKindCaption, comicTextKindSFX, text.Kind)
+		}
+		if !comicFinite(text.X, text.Y, text.Width, text.Height) {
+			return fmt.Errorf("%s has a non-finite box", textLabel)
+		}
+		text.X = comicClampRange(text.X, 0, 1, 0)
+		text.Y = comicClampRange(text.Y, 0, 1, 0)
+		text.Width = comicClampRange(text.Width, 0, 1, 0)
+		text.Height = comicClampRange(text.Height, 0, 1, 0)
+		if text.Width < comicTextMinDimension || text.Height < comicTextMinDimension {
+			return fmt.Errorf("%s's box is too small (the minimum is %g of the page per side)", textLabel, comicTextMinDimension)
+		}
+		if !comicFinite(text.Size) || text.Size <= 0 {
+			text.Size = 1
+		}
+		text.Size = comicClampRange(text.Size, comicTextSizeMin, comicTextSizeMax, 1)
+		if text.Kind != comicTextKindBalloon {
+			text.Tail = nil // only balloons aim at a speaker
+			continue
+		}
+		if text.Tail == nil {
+			continue
+		}
+		if !comicFinite(text.Tail.X, text.Tail.Y) {
+			return fmt.Errorf("%s has a non-finite tail point", textLabel)
+		}
+		text.Tail.X = comicClampRange(text.Tail.X, 0, 1, 0)
+		text.Tail.Y = comicClampRange(text.Tail.Y, 0, 1, 0)
 	}
 	return nil
 }
@@ -487,6 +585,7 @@ func seedComicDoc(name string, refs []ComicMediaRef) ComicDoc {
 			ID:     randomID("cpg"),
 			Aspect: comicDefaultAspect,
 			Panels: []ComicPanel{},
+			Texts:  []ComicText{},
 		}},
 		Unplaced: []ComicMediaRef{},
 		Style:    ComicStyle{Gutter: comicGutterDefault, Border: comicBorderDefault},

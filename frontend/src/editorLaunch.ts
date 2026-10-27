@@ -142,11 +142,13 @@ export function detectEditorLaunchIntent(text: string, attachmentKinds: Composer
   }
   // "composer" is the video composer's head noun — the whole phrase is one
   // name, so a "video" prefix must not resolve the video EDITOR, and no
-  // attachment-count rule applies (the launch path seeds whatever video and
-  // audio the turn carries, including none).
+  // attachment-count rule applies (the launch seeds whatever video and
+  // audio the turn carries, including none) — EXCEPT when a comic word
+  // precedes it: "comic composer" is the comic editor by analogy with the
+  // video workspace's name, never the video composer itself.
   const headWord = words[editorIndex];
   if (headWord === 'composer' || headWord === 'composers') {
-    return 'composition';
+    return mediaSeen.includes('comic') ? 'comic' : 'composition';
   }
   let named: EditorLaunchKind | null = null;
   for (let scan = editorIndex - 1; scan >= 0; scan--) {
