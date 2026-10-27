@@ -6,6 +6,10 @@ export function AddEditResultToConversation(arg1, arg2) {
   return window['go']['main']['App']['AddEditResultToConversation'](arg1, arg2);
 }
 
+export function AdoptComicPagePNG(arg1) {
+  return window['go']['main']['App']['AdoptComicPagePNG'](arg1);
+}
+
 export function AppendMediaUploadChunk(arg1, arg2) {
   return window['go']['main']['App']['AppendMediaUploadChunk'](arg1, arg2);
 }
@@ -108,6 +112,10 @@ export function DiscardMediaUpload(arg1) {
 
 export function ExecuteTool(arg1) {
   return window['go']['main']['App']['ExecuteTool'](arg1);
+}
+
+export function ExportComicPDF(arg1, arg2) {
+  return window['go']['main']['App']['ExportComicPDF'](arg1, arg2);
 }
 
 export function ExportLibrary(arg1) {
@@ -456,6 +464,10 @@ export function SaveComic(arg1) {
 
 export function SaveComicEdit(arg1) {
   return window['go']['main']['App']['SaveComicEdit'](arg1);
+}
+
+export function SaveComicPDF(arg1) {
+  return window['go']['main']['App']['SaveComicPDF'](arg1);
 }
 
 export function SaveComposition(arg1) {

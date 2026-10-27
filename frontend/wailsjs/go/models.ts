@@ -1,5 +1,39 @@
 export namespace main {
 	
+	export class AdoptComicPagePNGRequest {
+	    conversationId: string;
+	    name?: string;
+	    revisionArtifactId?: string;
+	    pageLabel: string;
+	    pngBase64: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new AdoptComicPagePNGRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.conversationId = source["conversationId"];
+	        this.name = source["name"];
+	        this.revisionArtifactId = source["revisionArtifactId"];
+	        this.pageLabel = source["pageLabel"];
+	        this.pngBase64 = source["pngBase64"];
+	    }
+	}
+	export class AdoptComicPagePNGResult {
+	    artifactId: string;
+	    url: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new AdoptComicPagePNGResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.artifactId = source["artifactId"];
+	        this.url = source["url"];
+	    }
+	}
 	export class ConfigUpdates {
 	    manifestUrl: string;
 	    autoCheck?: boolean;

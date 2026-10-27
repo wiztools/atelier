@@ -1,6 +1,6 @@
 import {useEffect, useMemo, useRef, useState} from 'react';
 import * as AppBindings from '../../wailsjs/go/main/App';
-import {SaveComic, SaveComicEdit} from '../../wailsjs/go/main/App';
+import {AdoptComicPagePNG, ExportComicPDF, SaveComic, SaveComicEdit, SaveComicPDF, SaveImage} from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
 import {EditsPanel} from './EditsPanel';
 import {EditorHeader} from './EditorHeader';
@@ -75,6 +75,18 @@ type EditorLogEntry = {
   at: string;
   artifactId: string;
   url: string;
+};
+
+// One export row in the Edits panel — a PDF the user filed (Download
+// re-files it without re-rendering), or a page PNG adopted into the
+// conversation (Download reads the artifact back out).
+type EditorExportEntry = {
+  label: string;
+  at: string;
+  detail: string;
+  url?: string;
+  path?: string;
+  fileName?: string;
 };
 
 type Selection =
@@ -198,8 +210,11 @@ export function ComicEditor(props: {
   const [addingIDs, setAddingIDs] = useState<string[]>([]);
 
   const [log, setLog] = useState<EditorLogEntry[]>([]);
+  const [exportsLog, setExportsLog] = useState<EditorExportEntry[]>([]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState('');
 
   const [tool, setTool] = useState<Tool>('select');
   const [activePageID, setActivePageID] = useState(() => normalizeComicDoc(source.doc).pages[0]?.id ?? '');
@@ -809,6 +824,156 @@ export function ComicEditor(props: {
     }
   };
 
+  // COMIC_EXPORT_SVG_STYLE is the style block injected into the serialized
+  // page: a standalone SVG image carries no stylesheet, so the classes the
+  // editor draws with are restated here (the border widths already ride the
+  // elements as inline styles).
+  const COMIC_EXPORT_SVG_STYLE = `
+.comic-page-bg{fill:#ffffff}
+.comic-panel-bg{fill:#f4f4f0}
+.comic-panel-bg.selected{fill:#f4f4f0}
+.comic-panel-border{fill:none;stroke:#111111;stroke-linejoin:miter}
+.comic-text-shape{fill:#ffffff;stroke:#111111;stroke-width:3;stroke-linejoin:round}
+.comic-text-content{font-family:"Comic Sans MS","Chalkboard SE","Segoe Print",sans-serif;font-weight:700;fill:#111111;text-anchor:middle;dominant-baseline:central}
+`;
+
+  // rasterizePagePNG serializes the live page SVG (editing chrome stripped,
+  // panel art inlined as data URLs) and rasterizes it through a canvas at
+  // 2× page width. The inlining is the load-bearing step: a data:-URI SVG
+  // renders in a restricted context that loads NO external references, so
+  // the editor's relative /atelier-artifact hrefs would silently drop every
+  // panel image out of the export.
+  const panelArtDataURLCache = useRef(new Map<string, string>());
+  const rasterizePagePNG = async (): Promise<string> => {
+    const svg = svgRef.current;
+    if (!svg || !page) {
+      throw new Error('no page is on the stage');
+    }
+    const clone = svg.cloneNode(true) as SVGSVGElement;
+    clone.querySelectorAll('.comic-vertex, .comic-edge-midpoint, .comic-tail-handle, .comic-rect-preview, .comic-polygon-preview').forEach((node) => node.remove());
+    const imageNodes = Array.from(clone.querySelectorAll('image'));
+    await Promise.all(imageNodes.map(async (node) => {
+      const href = node.getAttribute('href') || node.getAttribute('xlink:href') || '';
+      if (!href || href.startsWith('data:')) {
+        return;
+      }
+      let dataURL = panelArtDataURLCache.current.get(href);
+      if (!dataURL) {
+        const response = await fetch(href);
+        if (!response.ok) {
+          return; // a missing file leaves the panel empty, the editor's own missing state
+        }
+        const blob = await response.blob();
+        dataURL = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result));
+          reader.onerror = () => reject(new Error('the panel art could not be read'));
+          reader.readAsDataURL(blob);
+        });
+        panelArtDataURLCache.current.set(href, dataURL);
+      }
+      node.setAttribute('href', dataURL);
+      node.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', dataURL);
+    }));
+    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    const width = pageSize.width * 2;
+    const height = pageSize.height * 2;
+    clone.setAttribute('width', String(width));
+    clone.setAttribute('height', String(height));
+    const style = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+    style.textContent = COMIC_EXPORT_SVG_STYLE;
+    clone.insertBefore(style, clone.firstChild);
+    const xml = new XMLSerializer().serializeToString(clone);
+    const image = new Image();
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error('the page could not be rasterized'));
+      image.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(xml);
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('the page could not be rasterized');
+    }
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(image, 0, 0, width, height);
+    const dataURL = canvas.toDataURL('image/png');
+    return dataURL.substring(dataURL.indexOf(',') + 1);
+  };
+
+  // exportPDF pins a revision first (the composer's EX-04 rule — saving the
+  // working book when anything is unsaved), then renders THAT revision and
+  // opens the save dialog.
+  const exportPDF = async () => {
+    setExporting(true);
+    setExportError('');
+    try {
+      let revisionID = activeArtifactID;
+      if (dirty || !revisionID) {
+        revisionID = await persistRevision();
+      }
+      const chosen = await ExportComicPDF(sourceConversationID, revisionID);
+      setExportsLog((entries) => [
+        {
+          label: `PDF · ${doc.name}`,
+          at: new Date().toLocaleTimeString(),
+          detail: chosen,
+          path: chosen,
+          fileName: `${doc.name.replace(/\s+/g, '-').toLowerCase() || 'comic'}.pdf`,
+        },
+        ...entries,
+      ]);
+    } catch (error) {
+      setExportError(formatEditorError(error));
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  // exportPagePNG rasterizes the CURRENT page and adopts it into the
+  // conversation as an image artifact — the piece that lets a rendered page
+  // flow back into chat like any generation.
+  const exportPagePNG = async () => {
+    if (!page) {
+      return;
+    }
+    setExporting(true);
+    setExportError('');
+    try {
+      let revisionID = activeArtifactID;
+      if (dirty || !revisionID) {
+        revisionID = await persistRevision();
+      }
+      const pngBase64 = await rasterizePagePNG();
+      const pageIndex = doc.pages.findIndex((candidate) => candidate.id === page.id) + 1;
+      const adopted = await AdoptComicPagePNG(main.AdoptComicPagePNGRequest.createFrom({
+        conversationId: sourceConversationID,
+        name: doc.name,
+        revisionArtifactId: revisionID || undefined,
+        pageLabel: String(pageIndex),
+        pngBase64,
+      }));
+      setExportsLog((entries) => [
+        {
+          label: `Page ${pageIndex} PNG · ${doc.name}`,
+          at: new Date().toLocaleTimeString(),
+          detail: 'adopted into the conversation as an image artifact',
+          url: adopted.url,
+          fileName: `${doc.name.replace(/\s+/g, '-').toLowerCase() || 'comic'}-page-${pageIndex}`,
+        },
+        ...entries,
+      ]);
+      props.onSavedToConversation?.();
+    } catch (error) {
+      setExportError(formatEditorError(error));
+    } finally {
+      setExporting(false);
+    }
+  };
+
   // ——— derived render values ———
 
   const gridStamp = (rows: number, cols: number) => {
@@ -888,7 +1053,7 @@ export function ComicEditor(props: {
   };
 
   const renderPanel = (panel: (typeof page.panels)[number]) => {
-    const points = comicPolygonPointsString(panel.points, pageSize.width);
+    const points = comicPolygonPointsString(panel.points, pageSize.width, pageSize.height);
     const selected = selection.kind === 'panel' && selection.panelID === panel.id;
     const missing = panel.image ? missingRefs.has(panel.image.ref.artifactId) : false;
     return (
@@ -929,7 +1094,7 @@ export function ComicEditor(props: {
           <title>{panel.image ? panel.image.ref.artifactId : 'Empty panel — drag art from the tray'}</title>
         </polygon>
         {panel.image && !missing ? (() => {
-          const placement = comicImagePlacement(panel.points, panel.image.ref.width, panel.image.ref.height, panel.image.fit, panel.image.focusX, panel.image.focusY, panel.image.zoom, pageSize.width);
+          const placement = comicImagePlacement(panel.points, panel.image.ref.width, panel.image.ref.height, panel.image.fit, panel.image.focusX, panel.image.focusY, panel.image.zoom, pageSize.width, pageSize.height);
           return (
             <image
               href={artifactImageURL(panel.image.ref)}
@@ -1325,12 +1490,66 @@ export function ComicEditor(props: {
               <p className="hint">Select a panel to shape it: drag corners, ⌥-click a corner to remove it, double-click an edge to add one.</p>
             </>
           )}
+          <strong>Export</strong>
+          <p className="hint">{doc.pages.length} {doc.pages.length === 1 ? 'page' : 'pages'} → PDF renders the whole book; PNG adopts the stage's page as an image artifact in the conversation.</p>
+          <div className="comic-field-row">
+            <button
+              type="button"
+              className="editor-generate"
+              disabled={exporting || saving || problems.length > 0}
+              title={dirty || !activeArtifactID
+                ? 'Save the working book as a revision, then render that revision to PDF'
+                : 'Render the pinned revision to PDF'}
+              onClick={() => void exportPDF()}
+            >
+              {dirty || !activeArtifactID ? 'Save & export PDF' : 'Export PDF'}
+            </button>
+            <button type="button" disabled={exporting || saving || !page} title={dirty || !activeArtifactID ? 'Save the working book as a revision, then rasterize this page and attach it to the conversation' : 'Rasterize this page (2× page width) and attach it to the conversation'} onClick={() => void exportPagePNG()}>
+              {dirty || !activeArtifactID ? 'Save & export page PNG' : 'Export page PNG'}
+            </button>
+          </div>
+          {exportError ? <div className="editor-error">{exportError}</div> : null}
           {saveError ? <div className="editor-error">{saveError}</div> : null}
           {loadError ? <div className="editor-error">{loadError}</div> : null}
         </aside>
       </div>
-      <EditsPanel count={log.length} emptyText="Nothing saved yet." bodyReservePx={editsPanelBodyReservePx}>
+      <EditsPanel count={log.length + exportsLog.length} emptyText="Nothing saved or exported yet." bodyReservePx={editsPanelBodyReservePx}>
         <ul className="editor-op-list">
+          {exportsLog.map((entry, index) => (
+            <li key={`export-${index}`} className="editor-op editor-op-done">
+              <span className="editor-op-thumb-glyph">⤓</span>
+              <div className="editor-op-meta">
+                <span className="editor-op-title">Exported · {entry.label}</span>
+                <span className="editor-op-sub" title={entry.detail}>{entry.at} → {entry.detail}</span>
+              </div>
+              <div className="editor-op-actions">
+                {entry.url ? (
+                  <button
+                    type="button"
+                    title="Save the exported page to disk"
+                    onClick={() => {
+                      void SaveImage(main.SaveImageRequest.createFrom({image: entry.url, suggestedName: entry.fileName}))
+                        .catch((error) => setExportError(formatEditorError(error)));
+                    }}
+                  >
+                    Download
+                  </button>
+                ) : null}
+                {entry.path ? (
+                  <button
+                    type="button"
+                    title="Save the exported PDF to disk again"
+                    onClick={() => {
+                      void SaveComicPDF(main.SaveTranscriptRequest.createFrom({path: entry.path, suggestedName: entry.fileName}))
+                        .catch((error) => setExportError(formatEditorError(error)));
+                    }}
+                  >
+                    Download
+                  </button>
+                ) : null}
+              </div>
+            </li>
+          ))}
           {log.map((entry, index) => (
             <li key={index} className="editor-op editor-op-done">
               <span className="editor-op-thumb-glyph">✓</span>

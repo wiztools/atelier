@@ -792,7 +792,8 @@ export type ComicImagePlacement = {
 // window slides so the focus fraction of the image sits at the focus
 // fraction of the box — that sliding IS focus panning. Contain: the whole
 // image fits, centered; focus is ignored. Points arrive in normalized page
-// coordinates with the page at pageSize pixels.
+// coordinates; each axis scales by ITS dimension (x by the page width, y by
+// the page height — the two are only equal on a square page).
 export function comicImagePlacement(
   points: ComicPoint[],
   imageWidth: number,
@@ -802,17 +803,18 @@ export function comicImagePlacement(
   focusY: number,
   zoom: number,
   pageWidth: number,
+  pageHeight: number,
 ): ComicImagePlacement {
   const box = panelBoundingBox(points);
   const bw = box.w * pageWidth;
-  const bh = box.h * pageWidth;
+  const bh = box.h * pageHeight;
   const safeImageWidth = imageWidth > 0 ? imageWidth : 1;
   const safeImageHeight = imageHeight > 0 ? imageHeight : 1;
   if (fit === 'contain') {
     const scale = Math.min(bw / safeImageWidth, bh / safeImageHeight);
     const width = safeImageWidth * scale;
     const height = safeImageHeight * scale;
-    return {x: box.x * pageWidth + (bw - width) / 2, y: box.y * pageWidth + (bh - height) / 2, width, height};
+    return {x: box.x * pageWidth + (bw - width) / 2, y: box.y * pageHeight + (bh - height) / 2, width, height};
   }
   const coverScale = Math.max(bw / safeImageWidth, bh / safeImageHeight);
   const scale = coverScale * comicClampRange(zoom, comicZoomMin, comicZoomMax, 1);
@@ -822,7 +824,7 @@ export function comicImagePlacement(
   const focusYClamped = comicClampRange(focusY, 0, 1, comicFocusDefault);
   const visibleLeft = focus * Math.max(0, width - bw);
   const visibleTop = focusYClamped * Math.max(0, height - bh);
-  return {x: box.x * pageWidth - visibleLeft, y: box.y * pageWidth - visibleTop, width, height};
+  return {x: box.x * pageWidth - visibleLeft, y: box.y * pageHeight - visibleTop, width, height};
 }
 
 // comicPointInPolygon is the ray-casting hit test the tray-drop and
@@ -872,9 +874,9 @@ export function comicRectPoints(x: number, y: number, w: number, h: number): Com
 }
 
 // comicPolygonPointsString renders an SVG points attribute for a polygon —
-// page pixel coordinates.
-export function comicPolygonPointsString(points: ComicPoint[], pageWidth: number): string {
-  return points.map((point) => `${(point.x * pageWidth).toFixed(2)},${(point.y * pageWidth).toFixed(2)}`).join(' ');
+// page pixel coordinates, each axis by its own dimension.
+export function comicPolygonPointsString(points: ComicPoint[], pageWidth: number, pageHeight: number): string {
+  return points.map((point) => `${(point.x * pageWidth).toFixed(2)},${(point.y * pageHeight).toFixed(2)}`).join(' ');
 }
 
 // comicDocSummary words the header's one-line record — Go's summary shape.

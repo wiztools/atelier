@@ -4,6 +4,8 @@ import {main} from '../models';
 
 export function AddEditResultToConversation(arg1:string,arg2:string):Promise<main.ConversationSummary>;
 
+export function AdoptComicPagePNG(arg1:main.AdoptComicPagePNGRequest):Promise<main.AdoptComicPagePNGResult>;
+
 export function AppendMediaUploadChunk(arg1:string,arg2:string):Promise<void>;
 
 export function BeginMediaUpload(arg1:string,arg2:string):Promise<string>;
@@ -55,6 +57,8 @@ export function DetectLocalTools(arg1:main.LocalToolOverrides):Promise<main.Loca
 export function DiscardMediaUpload(arg1:string):Promise<void>;
 
 export function ExecuteTool(arg1:main.ToolExecutionRequest):Promise<main.HarnessToolResult>;
+
+export function ExportComicPDF(arg1:string,arg2:string):Promise<string>;
 
 export function ExportLibrary(arg1:string):Promise<main.LibraryExportResult>;
 
@@ -229,6 +233,8 @@ export function SaveAudio(arg1:main.SaveAudioRequest):Promise<string>;
 export function SaveComic(arg1:main.SaveTranscriptRequest):Promise<string>;
 
 export function SaveComicEdit(arg1:main.SaveComicEditRequest):Promise<main.SaveComicEditResult>;
+
+export function SaveComicPDF(arg1:main.SaveTranscriptRequest):Promise<string>;
 
 export function SaveComposition(arg1:main.SaveTranscriptRequest):Promise<string>;
 

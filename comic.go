@@ -627,19 +627,25 @@ func writeComicArtifact(artifactsDir string, doc ComicDoc) (HistoryContent, erro
 }
 
 // comicMissingRefs lists the artifact ids whose files are gone on disk — the
-// composer's identify-only report. The document keeps the entries (the book
-// stays intact); the editor flags them and an export refuses while any
-// remain.
+// composer's identify-only report. An id reports missing when ANY reference
+// to it names a missing file (the same art placed twice with divergent paths
+// must not hide the dangling one behind the live one). The document keeps
+// the entries (the book stays intact); the editor flags them and an export
+// refuses while any remain.
 func comicMissingRefs(doc ComicDoc) []string {
 	seen := map[string]bool{}
-	missing := []string{}
+	order := []string{}
+	dangling := map[string]bool{}
 	check := func(ref ComicMediaRef) {
-		if ref.ArtifactID == "" || seen[ref.ArtifactID] {
+		if ref.ArtifactID == "" {
 			return
 		}
-		seen[ref.ArtifactID] = true
+		if !seen[ref.ArtifactID] {
+			seen[ref.ArtifactID] = true
+			order = append(order, ref.ArtifactID)
+		}
 		if _, err := os.Stat(ref.Path); err != nil {
-			missing = append(missing, ref.ArtifactID)
+			dangling[ref.ArtifactID] = true
 		}
 	}
 	for _, page := range doc.Pages {
@@ -651,6 +657,12 @@ func comicMissingRefs(doc ComicDoc) []string {
 	}
 	for _, ref := range doc.Unplaced {
 		check(ref)
+	}
+	missing := []string{}
+	for _, id := range order {
+		if dangling[id] {
+			missing = append(missing, id)
+		}
 	}
 	return missing
 }
