@@ -488,6 +488,112 @@ func renderTranscriptVTT(chunks []transcriptChunk) string {
 	return strings.TrimSpace(builder.String())
 }
 
+// maxIdenticalTranscriptCues bounds how many consecutive identical cue texts a
+// legitimate transcript may carry. Real repetition exists (a song's refrain),
+// but a decoder hallucination loop dwarfs it — conv_863887f9cfcfc746ee9b7a4c's
+// VTT carried the same line 471 times across half an hour of near-silent
+// audio, each VAD blip decoded independently into the model's silence prior.
+const maxIdenticalTranscriptCues = 10
+
+// collapseTranscriptLoops tames the speech-to-text decoders' repetition
+// failure: on non-speech audio the model emits one confident phrase over and
+// over, and whisper.cpp's VAD time-mapping then smears those cues across the
+// gated stretches (the conv above's 77% cue coverage from 29% decoded audio).
+// Segment-level cue runs longer than maxIdenticalTranscriptCues collapse to
+// the first occurrence, and the plain text follows (rebuilt from the surviving
+// chunks, since a backend's top-level text still carries the loop). A
+// timestamp-less transcript collapses repeated identical LINES under the same
+// bound — whisper's plain .txt writes one segment per line, so its loops look
+// identical there (conv_8ef7cf03a54ec7d30b62bce1's first transcript carried
+// the same 471). Word-level chunks are never touched: consecutive identical
+// words are ordinary speech, not a loop. The returned transcript carries a
+// notice when anything was dropped, so the reply states the collapse.
+func collapseTranscriptLoops(transcript GeneratedTranscript) GeneratedTranscript {
+	if transcript.Timestamps == "segments" && len(transcript.Chunks) > 0 {
+		filtered, dropped := collapseTranscriptCueLoops(transcript.Chunks, maxIdenticalTranscriptCues)
+		if dropped == 0 {
+			return transcript
+		}
+		transcript.Chunks = filtered
+		if rendered := renderTimestampedChunks(filtered); rendered != "" {
+			transcript.TimestampedText = rendered
+		}
+		if joined := joinTranscriptChunkText(filtered); joined != "" {
+			transcript.Text = joined
+		}
+		transcript.Notices = append(transcript.Notices, fmt.Sprintf("The transcription repeated the same line %d consecutive times — a decoder loop over non-speech audio; the repetition was collapsed to the first occurrence.", dropped))
+		return transcript
+	}
+	text, dropped := collapseTranscriptLineLoops(transcript.Text, maxIdenticalTranscriptCues)
+	if dropped == 0 {
+		return transcript
+	}
+	transcript.Text = text
+	transcript.Notices = append(transcript.Notices, fmt.Sprintf("The transcription repeated the same line %d consecutive times — a decoder loop over non-speech audio; the repetition was collapsed to the first occurrence.", dropped))
+	return transcript
+}
+
+// collapseTranscriptCueLoops drops every cue beyond the first of a consecutive
+// identical-text run longer than maxRun (trimmed texts must match exactly) and
+// returns the surviving chunks plus how many cues were dropped.
+func collapseTranscriptCueLoops(chunks []transcriptChunk, maxRun int) ([]transcriptChunk, int) {
+	filtered := make([]transcriptChunk, 0, len(chunks))
+	dropped := 0
+	runText := ""
+	runKept := 0
+	for _, chunk := range chunks {
+		text := strings.TrimSpace(chunk.Text)
+		if text != "" && text == runText {
+			if runKept < maxRun {
+				filtered = append(filtered, chunk)
+				runKept++
+			} else {
+				dropped++
+			}
+			continue
+		}
+		runText = text
+		runKept = 0
+		if text != "" {
+			runKept = 1
+		}
+		filtered = append(filtered, chunk)
+	}
+	return filtered, dropped
+}
+
+// collapseTranscriptLineLoops applies the same bound to a plain transcript's
+// lines and returns the collapsed text plus the dropped-line count.
+func collapseTranscriptLineLoops(text string, maxRun int) (string, int) {
+	lines := strings.Split(text, "\n")
+	filtered := make([]string, 0, len(lines))
+	dropped := 0
+	runLine := ""
+	runKept := 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" && trimmed == runLine {
+			if runKept < maxRun {
+				filtered = append(filtered, line)
+				runKept++
+			} else {
+				dropped++
+			}
+			continue
+		}
+		runLine = trimmed
+		runKept = 0
+		if trimmed != "" {
+			runKept = 1
+		}
+		filtered = append(filtered, line)
+	}
+	if dropped == 0 {
+		return text, 0
+	}
+	return strings.Join(filtered, "\n"), dropped
+}
+
 // GeneratedVideo is a downloaded text-to-video result. Data holds the raw video
 // bytes so the caller can write them to disk as a file-path artifact — video is
 // never carried as a base64 data URL the way images are.

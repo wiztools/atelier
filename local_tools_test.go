@@ -1438,3 +1438,133 @@ func TestTranscriptExtensionForMimeType(t *testing.T) {
 		}
 	}
 }
+
+// TestCollapseTranscriptLoops pins the decoder-loop collapse behind
+// transcribe_audio: a segment-level run of identical cues beyond
+// maxIdenticalTranscriptCues collapses to the first occurrence (the plain text
+// and the timestamped render follow the surviving chunks), a run under the
+// bound survives untouched, non-consecutive repeats are not a loop, word-level
+// chunks are never touched, and a plain transcript collapses repeated lines
+// under the same bound. Each collapse rides a notice so the reply states it.
+func TestCollapseTranscriptLoops(t *testing.T) {
+	cue := func(start float64, text string) transcriptChunk {
+		end := start + 1.0
+		return transcriptChunk{Start: start, End: &end, Text: text}
+	}
+	t.Run("segment cues over the bound collapse", func(t *testing.T) {
+		chunks := []transcriptChunk{cue(0, "real speech"), cue(1, "real speech two")}
+		for i := 0; i < 20; i++ {
+			chunks = append(chunks, cue(float64(2+i), "It's beautiful, isn't it?"))
+		}
+		chunks = append(chunks, cue(22, "more real speech"))
+		transcript := collapseTranscriptLoops(GeneratedTranscript{Timestamps: "segments", Chunks: chunks})
+		if len(transcript.Chunks) != 2+maxIdenticalTranscriptCues+1 {
+			t.Fatalf("chunks = %d, want real bookends plus the kept run", len(transcript.Chunks))
+		}
+		if got := transcript.Chunks[len(transcript.Chunks)-1].Text; got != "more real speech" {
+			t.Fatalf("last chunk = %q, want the trailing real cue kept", got)
+		}
+		if !strings.Contains(transcript.TimestampedText, "more real speech") {
+			t.Fatalf("timestamped render %q must follow the surviving chunks", transcript.TimestampedText)
+		}
+		if got := strings.Count(transcript.Text, "It's beautiful, isn't it?"); got != maxIdenticalTranscriptCues {
+			t.Fatalf("plain text carries %d loop cues, want exactly the kept run", got)
+		}
+		if len(transcript.Notices) != 1 || !strings.Contains(transcript.Notices[0], "decoder loop") {
+			t.Fatalf("notices = %v, want the collapse note", transcript.Notices)
+		}
+	})
+	t.Run("runs under the bound and non-consecutive repeats survive", func(t *testing.T) {
+		chunks := []transcriptChunk{}
+		for i := 0; i < maxIdenticalTranscriptCues; i++ {
+			chunks = append(chunks, cue(float64(i), "yes"))
+		}
+		chunks = append(chunks, cue(10, "other"), cue(11, "yes"))
+		transcript := collapseTranscriptLoops(GeneratedTranscript{Timestamps: "segments", Chunks: chunks})
+		if len(transcript.Chunks) != len(chunks) {
+			t.Fatalf("chunks = %d, want everything kept under the bound", len(transcript.Chunks))
+		}
+		if len(transcript.Notices) != 0 {
+			t.Fatalf("notices = %v, want none", transcript.Notices)
+		}
+	})
+	t.Run("word-level chunks are never touched", func(t *testing.T) {
+		chunks := []transcriptChunk{}
+		for i := 0; i < maxIdenticalTranscriptCues+5; i++ {
+			chunks = append(chunks, cue(float64(i)*0.3, "no"))
+		}
+		transcript := collapseTranscriptLoops(GeneratedTranscript{Timestamps: "words", Chunks: chunks})
+		if len(transcript.Chunks) != len(chunks) {
+			t.Fatalf("word-level chunks = %d, want untouched", len(transcript.Chunks))
+		}
+	})
+	t.Run("plain transcript lines collapse", func(t *testing.T) {
+		lines := []string{"intro", "It's beautiful, isn't it?"}
+		for i := 0; i < 30; i++ {
+			lines = append(lines, "It's beautiful, isn't it?")
+		}
+		lines = append(lines, "outro")
+		transcript := collapseTranscriptLoops(GeneratedTranscript{Text: strings.Join(lines, "\n")})
+		if got := strings.Count(transcript.Text, "It's beautiful, isn't it?"); got != maxIdenticalTranscriptCues {
+			t.Fatalf("loop line count = %d, want %d", got, maxIdenticalTranscriptCues)
+		}
+		if !strings.HasPrefix(transcript.Text, "intro\n") || !strings.HasSuffix(transcript.Text, "\noutro") {
+			t.Fatalf("text = %q, want bookends kept", transcript.Text)
+		}
+		if len(transcript.Notices) != 1 || !strings.Contains(transcript.Notices[0], "collapsed") {
+			t.Fatalf("notices = %v, want the collapse note", transcript.Notices)
+		}
+	})
+	t.Run("clean transcripts pass through untouched", func(t *testing.T) {
+		transcript := GeneratedTranscript{Timestamps: "segments", Chunks: []transcriptChunk{cue(0, "a"), cue(1, "b")}, Text: "a b"}
+		if got := collapseTranscriptLoops(transcript); len(got.Chunks) != 2 || got.Text != "a b" || len(got.Notices) != 0 {
+			t.Fatalf("clean transcript changed: %+v", got)
+		}
+	})
+}
+
+// TestTranscribeAudioOutputCollapsesLoop pins the executor-side wiring: a loop
+// handed to transcribeAudioOutput comes out collapsed — the staged .vtt
+// artifact carries the bound, not the 471, and the notice rides the result.
+func TestTranscribeAudioOutputCollapsesLoop(t *testing.T) {
+	cue := func(start float64, text string) transcriptChunk {
+		end := start + 1.0
+		return transcriptChunk{Start: start, End: &end, Text: text}
+	}
+	chunks := []transcriptChunk{cue(0, "real speech")}
+	for i := 0; i < 40; i++ {
+		chunks = append(chunks, cue(float64(1+i), "It's beautiful, isn't it?"))
+	}
+	transcript := GeneratedTranscript{
+		Text:            joinTranscriptChunkText(chunks),
+		Timestamps:      "segments",
+		TimestampedText: renderTimestampedChunks(chunks),
+		Chunks:          chunks,
+	}
+	output, _, err := transcribeAudioOutput(TranscribeAudioRequest{}, "local whisper", transcript)
+	if err != nil {
+		t.Fatalf("transcribeAudioOutput: %v", err)
+	}
+	loopInText := strings.Count(output.Transcript, "It's beautiful, isn't it?")
+	if loopInText > maxIdenticalTranscriptCues {
+		t.Fatalf("evidence preview carries %d loop cues, want at most the kept run", loopInText)
+	}
+	found := false
+	for _, notice := range output.Notices {
+		if strings.Contains(notice, "decoder loop") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("notices = %v, want the collapse note", output.Notices)
+	}
+	if len(output.Transcripts) == 1 {
+		raw, err := os.ReadFile(output.Transcripts[0].TempPath)
+		if err != nil {
+			t.Fatalf("staged vtt: %v", err)
+		}
+		if got := strings.Count(string(raw), "It's beautiful, isn't it?"); got > maxIdenticalTranscriptCues {
+			t.Fatalf("staged vtt carries %d loop cues, want the bound", got)
+		}
+	}
+}

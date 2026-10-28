@@ -2392,6 +2392,11 @@ func transcribeAudioToolDefinition(config AppConfig) HarnessToolDefinition {
 // re-type it (see transcriptEvidencePreviewLines). If a temp write fails, the
 // full text stays in evidence instead — no artifact to point at.
 func transcribeAudioOutput(req TranscribeAudioRequest, backend string, transcript GeneratedTranscript) (ToolTranscribeResult, string, error) {
+	// A decoder loop over non-speech audio repeats one line hundreds of times
+	// (conv_863887f9cfcfc746ee9b7a4c: a VTT whose last 32 minutes were the
+	// same cue) — collapse it before the result renders, and let the notice
+	// tell the reply what was dropped.
+	transcript = collapseTranscriptLoops(transcript)
 	output := ToolTranscribeResult{
 		Model:                 req.Model,
 		Transcript:            transcript.Text,
