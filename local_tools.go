@@ -392,36 +392,37 @@ const localWhisperTimeout = 10 * time.Minute
 // runLocalWhisperTranscription runs the locally installed whisper CLI over an
 // attached audio clip (a data URL) and returns its transcript — the local
 // sibling of FalClient.TranscribeAudio, taking the same canonical request. The
-// clip is decoded to a temp file (whisper CLIs read real files, not data URLs),
-// the CLI writes its transcript into a temp dir, and both are cleaned up
-// afterwards. Plain turns read a .txt; req.Timestamps set switches the output
-// format (json for the pip CLI, VTT for whisper.cpp) and parses it into a
-// timestamped transcript — words via --word_timestamps / -ml 1 -sow, segments
-// via each CLI's default segmentation.
-func runLocalWhisperTranscription(ctx context.Context, config AppConfig, req TranscribeAudioRequest) (GeneratedTranscript, error) {
+// second return is the executed argv for the activity record (nil when nothing
+// executed). The clip is decoded to a temp file (whisper CLIs read real files,
+// not data URLs), the CLI writes its transcript into a temp dir, and both are
+// cleaned up afterwards. Plain turns read a .txt; req.Timestamps set switches
+// the output format (json for the pip CLI, VTT for whisper.cpp) and parses it
+// into a timestamped transcript — words via --word_timestamps / -ml 1 -sow,
+// segments via each CLI's default segmentation.
+func runLocalWhisperTranscription(ctx context.Context, config AppConfig, req TranscribeAudioRequest) (GeneratedTranscript, []string, error) {
 	resolved, ok := resolveLocalWhisperBinary(config)
 	if !ok {
-		return GeneratedTranscript{}, errors.New("no local whisper CLI found — install openai-whisper (pip) or whisper.cpp (brew), or clear the configured binary override in Settings → Transcription")
+		return GeneratedTranscript{}, nil, errors.New("no local whisper CLI found — install openai-whisper (pip) or whisper.cpp (brew), or clear the configured binary override in Settings → Transcription")
 	}
 	data, mediaType, err := decodeAudioDataURL(req.Audio)
 	if err != nil {
-		return GeneratedTranscript{}, err
+		return GeneratedTranscript{}, nil, err
 	}
 	input, err := os.CreateTemp("", "atelier-whisper-in-*"+audioExtensionForMediaType(mediaType))
 	if err != nil {
-		return GeneratedTranscript{}, err
+		return GeneratedTranscript{}, nil, err
 	}
 	defer os.Remove(input.Name())
 	if _, err := input.Write(data); err != nil {
 		input.Close()
-		return GeneratedTranscript{}, err
+		return GeneratedTranscript{}, nil, err
 	}
 	if err := input.Close(); err != nil {
-		return GeneratedTranscript{}, err
+		return GeneratedTranscript{}, nil, err
 	}
 	outDir, err := os.MkdirTemp("", "atelier-whisper-out-*")
 	if err != nil {
-		return GeneratedTranscript{}, err
+		return GeneratedTranscript{}, nil, err
 	}
 	defer os.RemoveAll(outDir)
 
@@ -468,6 +469,10 @@ func runLocalWhisperTranscription(ctx context.Context, config AppConfig, req Tra
 		}
 	}
 
+	// The executed argv rides the result for the activity record: the full
+	// whisper command line — resolved binary, model, -otxt/-ovtt, the VAD
+	// flags — is what a turn record cannot reconstruct otherwise.
+	argv := append([]string{resolved.path}, args...)
 	runCtx, cancel := context.WithTimeout(ctx, localWhisperTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, resolved.path, args...)
@@ -486,20 +491,20 @@ func runLocalWhisperTranscription(ctx context.Context, config AppConfig, req Tra
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if runCtx.Err() == context.DeadlineExceeded {
-			return GeneratedTranscript{}, fmt.Errorf("whisper timed out after %s: %s", localWhisperTimeout, truncateLocalToolOutput(output))
+			return GeneratedTranscript{}, argv, fmt.Errorf("whisper timed out after %s: %s", localWhisperTimeout, truncateLocalToolOutput(output))
 		}
-		return GeneratedTranscript{}, fmt.Errorf("whisper failed: %v: %s", err, truncateLocalToolOutput(output))
+		return GeneratedTranscript{}, argv, fmt.Errorf("whisper failed: %v: %s", err, truncateLocalToolOutput(output))
 	}
 	raw, err := os.ReadFile(outputPath)
 	if err != nil {
-		return GeneratedTranscript{}, fmt.Errorf("whisper produced no transcript at %s: %s", outputPath, truncateLocalToolOutput(output))
+		return GeneratedTranscript{}, argv, fmt.Errorf("whisper produced no transcript at %s: %s", outputPath, truncateLocalToolOutput(output))
 	}
 	if timestamps == "" {
 		text := strings.TrimSpace(string(raw))
 		if text == "" {
-			return GeneratedTranscript{}, fmt.Errorf("whisper returned an empty transcript: %s", truncateLocalToolOutput(output))
+			return GeneratedTranscript{}, argv, fmt.Errorf("whisper returned an empty transcript: %s", truncateLocalToolOutput(output))
 		}
-		return GeneratedTranscript{Text: text, Notices: notices}, nil
+		return GeneratedTranscript{Text: text, Notices: notices}, argv, nil
 	}
 	// Timestamped modes parse the structured output back into chunks, and the
 	// plain text always comes FROM the chunks — the raw file is a VTT/JSON
@@ -518,7 +523,7 @@ func runLocalWhisperTranscription(ctx context.Context, config AppConfig, req Tra
 		plain = joinTranscriptChunkText(chunks)
 	}
 	if plain == "" {
-		return GeneratedTranscript{}, fmt.Errorf("whisper returned an empty transcript: %s", truncateLocalToolOutput(output))
+		return GeneratedTranscript{}, argv, fmt.Errorf("whisper returned an empty transcript: %s", truncateLocalToolOutput(output))
 	}
 	transcript := GeneratedTranscript{Text: plain, Timestamps: timestamps, Notices: notices}
 	if rendered := renderTimestampedChunks(chunks); rendered != "" {
@@ -527,7 +532,7 @@ func runLocalWhisperTranscription(ctx context.Context, config AppConfig, req Tra
 	} else {
 		transcript.Timestamps = ""
 	}
-	return transcript, nil
+	return transcript, argv, nil
 }
 
 // whisperCPPNeedsTranscode reports whether an audio clip of this media type
@@ -557,7 +562,7 @@ func transcodeAudioForWhisperCPP(ctx context.Context, config AppConfig, input st
 		return "", err
 	}
 	wav.Close()
-	if err := runLocalFFmpeg(ctx, config, whisperTranscodeWAVArgs(input, wav.Name())); err != nil {
+	if _, err := runLocalFFmpeg(ctx, config, whisperTranscodeWAVArgs(input, wav.Name())); err != nil {
 		os.Remove(wav.Name())
 		return "", err
 	}
@@ -926,26 +931,29 @@ const localFFmpegTimeout = 10 * time.Minute
 // binary is re-resolved per call, so a Settings change takes effect on the next
 // tool call without rebuilding the gateway. ffmpeg's stderr carries progress
 // and diagnostics, so the combined output rides any error message (capped).
-func runLocalFFmpeg(ctx context.Context, config AppConfig, args []string) error {
+// The first return is the executed argv (binary path, the -hide_banner
+// prepend included) for the activity record.
+func runLocalFFmpeg(ctx context.Context, config AppConfig, args []string) ([]string, error) {
 	resolved, ok := resolveLocalFFmpegBinary(config)
 	if !ok {
-		return errors.New("no local ffmpeg CLI found — install ffmpeg (brew install ffmpeg), or clear the configured binary override in Settings → Local Tools")
+		return nil, errors.New("no local ffmpeg CLI found — install ffmpeg (brew install ffmpeg), or clear the configured binary override in Settings → Local Tools")
 	}
 	// -hide_banner first, so a failure's capped output (the last 2000 chars
 	// survive) starts with the actual error instead of the 3-line build
 	// banner and version dump.
-	_, err := runLocalMediaCLI(ctx, resolved, "ffmpeg", localFFmpegTimeout, append([]string{"-hide_banner"}, args...))
-	return err
+	_, argv, err := runLocalMediaCLI(ctx, resolved, "ffmpeg", localFFmpegTimeout, append([]string{"-hide_banner"}, args...))
+	return argv, err
 }
 
 // runLocalFFprobe executes the locally installed ffprobe CLI with args and
 // returns its combined output — the metadata sibling the ffmpeg tools use for
 // codec/container decisions (probe_media, join copy-vs-reencode, extract
-// copy-vs-convert). JSON output lands on stdout; diagnostics on stderr.
-func runLocalFFprobe(ctx context.Context, config AppConfig, args []string) ([]byte, error) {
+// copy-vs-convert). JSON output lands on stdout; diagnostics on stderr. The
+// second return is the executed argv for the activity record.
+func runLocalFFprobe(ctx context.Context, config AppConfig, args []string) ([]byte, []string, error) {
 	resolved, ok := resolveLocalFFprobeBinary(config)
 	if !ok {
-		return nil, errors.New("no local ffprobe CLI found — it ships with ffmpeg (brew install ffmpeg)")
+		return nil, nil, errors.New("no local ffprobe CLI found — it ships with ffmpeg (brew install ffmpeg)")
 	}
 	return runLocalMediaCLI(ctx, resolved, "ffprobe", localFFmpegTimeout, args)
 }
@@ -956,38 +964,43 @@ func runLocalFFprobe(ctx context.Context, config AppConfig, args []string) ([]by
 const localImageToolTimeout = 5 * time.Minute
 
 // runLocalSips executes the macOS sips CLI with args, re-resolved per call so
-// a Settings change applies without rebuilding the gateway.
-func runLocalSips(ctx context.Context, config AppConfig, args []string) ([]byte, error) {
+// a Settings change applies without rebuilding the gateway. The second return
+// is the executed argv for the activity record.
+func runLocalSips(ctx context.Context, config AppConfig, args []string) ([]byte, []string, error) {
 	resolved, ok := resolveLocalSipsBinary(config)
 	if !ok {
-		return nil, errors.New("no sips CLI found — it ships with macOS; check Settings → Local Tools for a configured override")
+		return nil, nil, errors.New("no sips CLI found — it ships with macOS; check Settings → Local Tools for a configured override")
 	}
 	return runLocalMediaCLI(ctx, resolved, "sips", localImageToolTimeout, args)
 }
 
 // runLocalImageMagick executes the detected ImageMagick CLI (magick or
 // convert) with args, re-resolved per call so a Settings change applies
-// without rebuilding the gateway.
-func runLocalImageMagick(ctx context.Context, config AppConfig, args []string) ([]byte, error) {
+// without rebuilding the gateway. The second return is the executed argv for
+// the activity record.
+func runLocalImageMagick(ctx context.Context, config AppConfig, args []string) ([]byte, []string, error) {
 	resolved, ok := resolveLocalImageMagickBinary(config)
 	if !ok {
-		return nil, errors.New("no ImageMagick CLI found — install one (brew install imagemagick), or clear the configured binary override in Settings → Local Tools")
+		return nil, nil, errors.New("no ImageMagick CLI found — install one (brew install imagemagick), or clear the configured binary override in Settings → Local Tools")
 	}
 	return runLocalMediaCLI(ctx, resolved, "imagemagick", localImageToolTimeout, args)
 }
 
 // runLocalMediaCLI is the shared exec body for the local media CLIs: a bounded
 // context, combined output, and an error that embeds the (capped) output so a
-// chatty ffmpeg failure is still useful in chat.
-func runLocalMediaCLI(ctx context.Context, resolved resolvedLocalBinary, label string, timeout time.Duration, args []string) ([]byte, error) {
+// chatty ffmpeg failure is still useful in chat. The second return is the
+// executed argv — the resolved binary path plus the args exactly as run — for
+// the activity record; callers that don't record a primary action discard it.
+func runLocalMediaCLI(ctx context.Context, resolved resolvedLocalBinary, label string, timeout time.Duration, args []string) ([]byte, []string, error) {
+	argv := append([]string{resolved.path}, args...)
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	output, err := exec.CommandContext(runCtx, resolved.path, args...).CombinedOutput()
 	if err != nil {
 		if runCtx.Err() == context.DeadlineExceeded {
-			return output, fmt.Errorf("%s timed out after %s: %s", label, timeout, truncateLocalToolOutput(output))
+			return output, argv, fmt.Errorf("%s timed out after %s: %s", label, timeout, truncateLocalToolOutput(output))
 		}
-		return output, fmt.Errorf("%s failed: %v: %s", label, err, truncateLocalToolOutput(output))
+		return output, argv, fmt.Errorf("%s failed: %v: %s", label, err, truncateLocalToolOutput(output))
 	}
-	return output, nil
+	return output, argv, nil
 }

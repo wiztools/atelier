@@ -391,40 +391,44 @@ func isEndTimestampToken(token string) bool {
 // runs first; when it produces no frame — the timestamp is at or past the
 // clip's end, which is what the rounded container duration a user (or the
 // planner, off probe_media's report) quotes always is — an end-relative grab
-// supplies the clip's final frame. The second return reports that fallback;
+// supplies the clip's final frame. The third return reports that fallback;
 // on total failure the ORIGINAL seek error comes back, because it names the
 // timestamp behavior while the fallback's error would only name the window.
-func captureFrameAtTimestamp(ctx context.Context, config AppConfig, input, timestamp, framePath string, displayWidth, displayHeight int) ([]byte, bool, error) {
+// The second return is the executed argv of the capture that produced the
+// frame (the fallback's when it fired) for the activity record.
+func captureFrameAtTimestamp(ctx context.Context, config AppConfig, input, timestamp, framePath string, displayWidth, displayHeight int) ([]byte, []string, bool, error) {
 	if isEndTimestampToken(timestamp) {
-		data, err := runFrameCapture(ctx, config, ffmpegLastFrameArgs(input, framePath, displayWidth, displayHeight), framePath)
-		return data, err == nil, err
+		data, argv, err := runFrameCapture(ctx, config, ffmpegLastFrameArgs(input, framePath, displayWidth, displayHeight), framePath)
+		return data, argv, err == nil, err
 	}
-	data, err := runFrameCapture(ctx, config, ffmpegScreenshotArgs(input, timestamp, framePath, displayWidth, displayHeight), framePath)
+	data, argv, err := runFrameCapture(ctx, config, ffmpegScreenshotArgs(input, timestamp, framePath, displayWidth, displayHeight), framePath)
 	if err == nil {
-		return data, false, nil
+		return data, argv, false, nil
 	}
-	retryData, retryErr := runFrameCapture(ctx, config, ffmpegLastFrameArgs(input, framePath, displayWidth, displayHeight), framePath)
+	retryData, retryArgv, retryErr := runFrameCapture(ctx, config, ffmpegLastFrameArgs(input, framePath, displayWidth, displayHeight), framePath)
 	if retryErr != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
-	return retryData, true, nil
+	return retryData, retryArgv, true, nil
 }
 
 // runFrameCapture runs one ffmpeg frame capture and reads the JPEG back — the
 // shared body of the screenshot/contact-sheet capture loops: a nil error
-// always carries the frame bytes.
-func runFrameCapture(ctx context.Context, config AppConfig, args []string, framePath string) ([]byte, error) {
-	if err := runLocalFFmpeg(ctx, config, args); err != nil {
-		return nil, err
+// always carries the frame bytes, and the second return is the executed argv
+// for the activity record.
+func runFrameCapture(ctx context.Context, config AppConfig, args []string, framePath string) ([]byte, []string, error) {
+	argv, err := runLocalFFmpeg(ctx, config, args)
+	if err != nil {
+		return nil, nil, err
 	}
 	data, err := os.ReadFile(framePath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(data) == 0 {
-		return nil, errors.New("the frame file was empty")
+		return nil, nil, errors.New("the frame file was empty")
 	}
-	return data, nil
+	return data, argv, nil
 }
 
 // ffmpegContactSheetArgs tiles a consecutively numbered JPEG sequence into one
@@ -1090,23 +1094,23 @@ func parseFFmpegVersion(versionOutput []byte) string {
 // absent, could not run, or the help output did not parse — the join skips
 // the capability check and lets ffmpeg validate the transition itself, and
 // list_video_transitions reports the failure (fail-soft, like every probe).
-func installedXFadeTransitions(ctx context.Context, config AppConfig) (transitions []string, version string, ok bool) {
+func installedXFadeTransitions(ctx context.Context, config AppConfig) (transitions []string, version string, probeArgv []string, ok bool) {
 	resolved, resolvedOK := resolveLocalFFmpegBinary(config)
 	if !resolvedOK {
-		return nil, "", false
+		return nil, "", nil, false
 	}
-	help, err := runLocalMediaCLI(ctx, resolved, "ffmpeg", localFFmpegTimeout, []string{"-hide_banner", "-h", "filter=xfade"})
+	help, argv, err := runLocalMediaCLI(ctx, resolved, "ffmpeg", localFFmpegTimeout, []string{"-hide_banner", "-h", "filter=xfade"})
 	if err != nil {
-		return nil, "", false
+		return nil, "", nil, false
 	}
 	names := parseXFadeTransitions(help)
 	if len(names) == 0 {
-		return nil, "", false
+		return nil, "", nil, false
 	}
-	if out, err := runLocalMediaCLI(ctx, resolved, "ffmpeg", localFFmpegTimeout, []string{"-version"}); err == nil {
+	if out, _, err := runLocalMediaCLI(ctx, resolved, "ffmpeg", localFFmpegTimeout, []string{"-version"}); err == nil {
 		version = parseFFmpegVersion(out)
 	}
-	return names, version, true
+	return names, version, argv, true
 }
 
 // audioMP3FallbackArgs is the shared re-encode target for the audio tools'
@@ -1879,7 +1883,13 @@ type ToolProbeResult struct {
 	DisplayWidth       int     `json:"displayWidth,omitempty"`
 	DisplayHeight      int     `json:"displayHeight,omitempty"`
 	Rotation           int     `json:"rotation,omitempty"`
+	// Command records the executed ffprobe argv that produced these facts
+	// (the CommandProvider contract).
+	Command []string `json:"-"`
 }
+
+// ToolCommand names the executed argv of the local CLI run behind this result.
+func (r ToolProbeResult) ToolCommand() []string { return r.Command }
 
 // ffprobeSideData is the rotation-bearing subset of ffprobe's per-stream
 // side_data_list entries.
@@ -1915,7 +1925,7 @@ type ffprobeReport struct {
 // the compact ToolProbeResult. kind labels the clip for evidence ("video" or
 // "audio").
 func probeStagedMedia(ctx context.Context, config AppConfig, path, kind string) (ToolProbeResult, error) {
-	output, err := runLocalFFprobe(ctx, config, []string{
+	output, probeArgv, err := runLocalFFprobe(ctx, config, []string{
 		"-v", "error", "-print_format", "json", "-show_format", "-show_streams", path,
 	})
 	if err != nil {
@@ -1925,7 +1935,7 @@ func probeStagedMedia(ctx context.Context, config AppConfig, path, kind string) 
 	if err := json.Unmarshal(output, &report); err != nil {
 		return ToolProbeResult{}, fmt.Errorf("ffprobe output could not be parsed: %v: %s", err, truncateLocalToolOutput(output))
 	}
-	result := ToolProbeResult{Kind: kind, Format: report.Format.FormatName, BitRate: report.Format.BitRate}
+	result := ToolProbeResult{Kind: kind, Format: report.Format.FormatName, BitRate: report.Format.BitRate, Command: probeArgv}
 	if seconds, err := strconv.ParseFloat(strings.TrimSpace(report.Format.Duration), 64); err == nil {
 		result.Duration = seconds
 	}
@@ -2159,11 +2169,15 @@ func screenshotVideoToolDefinition() HarnessToolDefinition {
 			images := make([]string, 0, len(timestamps))
 			var missed []string
 			var endSubstituted []string
+			var captureArgv []string
 			for i, timestamp := range timestamps {
 				framePath := filepath.Join(staging, fmt.Sprintf("frame_%02d.jpg", i+1))
-				data, finalFrame, captureErr := captureFrameAtTimestamp(ctx, tools.Config, input, timestamp, framePath, correction.DisplayWidth, correction.DisplayHeight)
+				data, argv, finalFrame, captureErr := captureFrameAtTimestamp(ctx, tools.Config, input, timestamp, framePath, correction.DisplayWidth, correction.DisplayHeight)
 				if captureErr == nil {
 					images = append(images, "data:image/jpeg;base64,"+base64.StdEncoding.EncodeToString(data))
+					if captureArgv == nil {
+						captureArgv = argv
+					}
 					if finalFrame && !isEndTimestampToken(timestamp) {
 						endSubstituted = append(endSubstituted, timestamp)
 					}
@@ -2210,6 +2224,7 @@ func screenshotVideoToolDefinition() HarnessToolDefinition {
 				Count:   len(images),
 				Images:  images,
 				Notices: notices,
+				Command: captureArgv,
 			}
 			return output, summary, nil
 		},
@@ -2297,7 +2312,7 @@ func contactSheetVideoToolDefinition() HarnessToolDefinition {
 			var endSubstituted []string
 			for i, timestamp := range timestamps {
 				framePath := filepath.Join(staging, fmt.Sprintf("frame_%02d.jpg", i+1))
-				_, finalFrame, captureErr := captureFrameAtTimestamp(ctx, tools.Config, input, timestamp, framePath, correction.DisplayWidth, correction.DisplayHeight)
+				_, _, finalFrame, captureErr := captureFrameAtTimestamp(ctx, tools.Config, input, timestamp, framePath, correction.DisplayWidth, correction.DisplayHeight)
 				if captureErr == nil {
 					if finalFrame && !isEndTimestampToken(timestamp) {
 						endSubstituted = append(endSubstituted, timestamp)
@@ -2326,7 +2341,8 @@ func contactSheetVideoToolDefinition() HarnessToolDefinition {
 			}
 			columns, rows := contactSheetGrid(len(captured), call.Columns)
 			sheetPath := filepath.Join(staging, "contact_sheet.jpg")
-			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegContactSheetArgs(filepath.Join(staging, "tile_%03d.jpg"), columns, rows, sheetPath)); err != nil {
+			composeArgv, err := runLocalFFmpeg(ctx, tools.Config, ffmpegContactSheetArgs(filepath.Join(staging, "tile_%03d.jpg"), columns, rows, sheetPath))
+			if err != nil {
 				return nil, "contact sheet failed", err
 			}
 			data, err := os.ReadFile(sheetPath)
@@ -2359,6 +2375,7 @@ func contactSheetVideoToolDefinition() HarnessToolDefinition {
 				Count:   1,
 				Images:  []string{"data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(data)},
 				Notices: notices,
+				Command: composeArgv,
 			}
 			return output, summary, nil
 		},
@@ -2423,7 +2440,8 @@ func splitVideoToolDefinition() HarnessToolDefinition {
 				return nil, "split failed", err
 			}
 			staged := filepath.Join(staging, "split.mp4")
-			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegSplitArgs(input, startRaw, duration, fast, staged)); err != nil {
+			splitArgv, err := runLocalFFmpeg(ctx, tools.Config, ffmpegSplitArgs(input, startRaw, duration, fast, staged))
+			if err != nil {
 				return nil, "split failed", err
 			}
 			tempPath, err := promoteStagedOutput(staged, "atelier-video-*", ".mp4")
@@ -2431,10 +2449,11 @@ func splitVideoToolDefinition() HarnessToolDefinition {
 				return nil, "split failed", err
 			}
 			output := ToolVideoResult{
-				Model:  ffmpegModelName,
-				Prompt: splitPrompt(startRaw, endRaw),
-				Count:  1,
-				Videos: []ToolVideoFile{{TempPath: tempPath, MimeType: "video/mp4"}},
+				Model:   ffmpegModelName,
+				Prompt:  splitPrompt(startRaw, endRaw),
+				Count:   1,
+				Videos:  []ToolVideoFile{{TempPath: tempPath, MimeType: "video/mp4"}},
+				Command: splitArgv,
 			}
 			if fast {
 				output.Notices = append(output.Notices, "fast mode cuts on the video's keyframes, so the clip may begin slightly before the requested start; pass mode \"accurate\" for an exact cut.")
@@ -2500,7 +2519,8 @@ func splitAudioToolDefinition() HarnessToolDefinition {
 			}
 			ext, mimeType, codecArgs, targetNotice := splitAudioTarget(mediaType)
 			staged := filepath.Join(staging, "split"+ext)
-			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegSplitAudioArgs(input, startRaw, duration, codecArgs, staged)); err != nil {
+			splitArgv, err := runLocalFFmpeg(ctx, tools.Config, ffmpegSplitAudioArgs(input, startRaw, duration, codecArgs, staged))
+			if err != nil {
 				return nil, "split failed", err
 			}
 			tempPath, err := promoteStagedOutput(staged, "atelier-audio-*", ext)
@@ -2508,10 +2528,11 @@ func splitAudioToolDefinition() HarnessToolDefinition {
 				return nil, "split failed", err
 			}
 			output := ToolAudioResult{
-				Model:  ffmpegModelName,
-				Prompt: splitPrompt(startRaw, endRaw),
-				Count:  1,
-				Audios: []ToolAudioFile{{TempPath: tempPath, MimeType: mimeType}},
+				Model:   ffmpegModelName,
+				Prompt:  splitPrompt(startRaw, endRaw),
+				Count:   1,
+				Audios:  []ToolAudioFile{{TempPath: tempPath, MimeType: mimeType}},
+				Command: splitArgv,
 			}
 			if targetNotice != "" {
 				output.Notices = append(output.Notices, targetNotice)
@@ -2628,7 +2649,8 @@ func runConcatJoin(ctx context.Context, tools HarnessToolExecutionContext, call 
 		notices = append(notices, notice)
 	}
 	staged := filepath.Join(staging, "joined.mp4")
-	if err := runLocalFFmpeg(ctx, tools.Config, ffmpegJoinArgs(listFile, streamCopy, staged)); err != nil {
+	joinArgv, err := runLocalFFmpeg(ctx, tools.Config, ffmpegJoinArgs(listFile, streamCopy, staged))
+	if err != nil {
 		return nil, "join failed", err
 	}
 	tempPath, err := promoteStagedOutput(staged, "atelier-video-*", ".mp4")
@@ -2641,6 +2663,7 @@ func runConcatJoin(ctx context.Context, tools HarnessToolExecutionContext, call 
 		Count:   1,
 		Videos:  []ToolVideoFile{{TempPath: tempPath, MimeType: "video/mp4"}},
 		Notices: notices,
+		Command: joinArgv,
 	}
 	return output, fmt.Sprintf("joined %d clips in attachment order with ffmpeg (%s)", len(inputs), joinModePhrase(streamCopy)), nil
 }
@@ -2657,7 +2680,7 @@ func executeTransitionedJoin(ctx context.Context, tools HarnessToolExecutionCont
 		return nil, "join failed", fmt.Errorf("join_videos does not know the %q transition — run list_video_transitions to see what the installed ffmpeg supports", requested)
 	}
 	var notices []string
-	if installed, _, capabilityKnown := installedXFadeTransitions(ctx, tools.Config); capabilityKnown && !slices.Contains(installed, transition) {
+	if installed, _, _, capabilityKnown := installedXFadeTransitions(ctx, tools.Config); capabilityKnown && !slices.Contains(installed, transition) {
 		notices = append(notices, fmt.Sprintf("the installed ffmpeg does not support the %q transition, so \"fade\" was used instead — run list_video_transitions to see what it supports.", requested))
 		transition = "fade"
 	}
@@ -2681,7 +2704,8 @@ func executeTransitionedJoin(ctx context.Context, tools HarnessToolExecutionCont
 		notices = append(notices, fmt.Sprintf("%s %s had no audio, so silence was generated for the crossfade and the joined video stays in sync.", noun, joinClipNumbers(plan.Synthesized)))
 	}
 	staged := filepath.Join(staging, "joined.mp4")
-	if err := runLocalFFmpeg(ctx, tools.Config, ffmpegJoinTransitionArgs(inputs, plan, staged)); err != nil {
+	joinArgv, err := runLocalFFmpeg(ctx, tools.Config, ffmpegJoinTransitionArgs(inputs, plan, staged))
+	if err != nil {
 		return nil, "join failed", err
 	}
 	tempPath, err := promoteStagedOutput(staged, "atelier-video-*", ".mp4")
@@ -2693,10 +2717,11 @@ func executeTransitionedJoin(ctx context.Context, tools HarnessToolExecutionCont
 		combined += fact.Duration
 	}
 	output := ToolVideoResult{
-		Model:  ffmpegModelName,
-		Prompt: fmt.Sprintf("joined %d clips with a %s transition", len(inputs), plan.Transition),
-		Count:  1,
-		Videos: []ToolVideoFile{{TempPath: tempPath, MimeType: "video/mp4"}},
+		Model:   ffmpegModelName,
+		Prompt:  fmt.Sprintf("joined %d clips with a %s transition", len(inputs), plan.Transition),
+		Count:   1,
+		Videos:  []ToolVideoFile{{TempPath: tempPath, MimeType: "video/mp4"}},
+		Command: joinArgv,
 		Notices: append(notices, fmt.Sprintf("the %s transition overlaps the clips by %ss at each junction, so the video is %ss shorter than the clips combined; the join was re-encoded (transitions cannot stream-copy).",
 			plan.Transition, formatJoinSeconds(plan.Seconds), formatJoinSeconds(combined-plan.OutputSeconds))),
 	}
@@ -2833,7 +2858,8 @@ func runConcatAudioJoin(ctx context.Context, tools HarnessToolExecutionContext, 
 		}
 	}
 	staged := filepath.Join(staging, "joined"+ext)
-	if err := runLocalFFmpeg(ctx, tools.Config, ffmpegJoinAudioArgs(listFile, staged, streamCopy, codecArgs)); err != nil {
+	joinArgv, err := runLocalFFmpeg(ctx, tools.Config, ffmpegJoinAudioArgs(listFile, staged, streamCopy, codecArgs))
+	if err != nil {
 		return nil, "join failed", err
 	}
 	tempPath, err := promoteStagedOutput(staged, "atelier-audio-*", ext)
@@ -2849,6 +2875,7 @@ func runConcatAudioJoin(ctx context.Context, tools HarnessToolExecutionContext, 
 		Count:   1,
 		Audios:  []ToolAudioFile{{TempPath: tempPath, MimeType: mimeType}},
 		Notices: notices,
+		Command: joinArgv,
 	}
 	return output, fmt.Sprintf("joined %d audio clips in attachment order with ffmpeg (%s)", len(inputs), joinModePhrase(streamCopy)), nil
 }
@@ -2897,7 +2924,8 @@ func executeTransitionedAudioJoin(ctx context.Context, tools HarnessToolExecutio
 		notices = append(notices, targetNotice)
 	}
 	staged := filepath.Join(staging, "joined"+ext)
-	if err := runLocalFFmpeg(ctx, tools.Config, ffmpegJoinAudioTransitionArgs(inputs, plan, codecArgs, staged)); err != nil {
+	joinArgv, err := runLocalFFmpeg(ctx, tools.Config, ffmpegJoinAudioTransitionArgs(inputs, plan, codecArgs, staged))
+	if err != nil {
 		return nil, "join failed", err
 	}
 	tempPath, err := promoteStagedOutput(staged, "atelier-audio-*", ext)
@@ -2918,6 +2946,7 @@ func executeTransitionedAudioJoin(ctx context.Context, tools HarnessToolExecutio
 		Count:   1,
 		Audios:  []ToolAudioFile{{TempPath: tempPath, MimeType: mimeType}},
 		Notices: notices,
+		Command: joinArgv,
 	}
 	summary := fmt.Sprintf("joined %d audio clips in attachment order with ffmpeg (%s, %ss at each junction, re-encoded, %ss output)",
 		len(inputs), transition, formatJoinSeconds(plan.Seconds), formatJoinSeconds(plan.OutputSeconds))
@@ -3058,7 +3087,8 @@ func extractAudioToolDefinition() HarnessToolDefinition {
 			}
 			ext, mimeType, streamCopy, convertNotice := extractAudioTarget(ctx, tools.Config, input)
 			staged := filepath.Join(staging, "audio"+ext)
-			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegExtractAudioArgs(input, staged, streamCopy)); err != nil {
+			extractArgv, err := runLocalFFmpeg(ctx, tools.Config, ffmpegExtractAudioArgs(input, staged, streamCopy))
+			if err != nil {
 				return nil, "audio extraction failed", err
 			}
 			tempPath, err := promoteStagedOutput(staged, "atelier-audio-*", ext)
@@ -3066,10 +3096,11 @@ func extractAudioToolDefinition() HarnessToolDefinition {
 				return nil, "audio extraction failed", err
 			}
 			output := ToolAudioResult{
-				Model:  ffmpegModelName,
-				Prompt: "audio track extracted from the attached video",
-				Count:  1,
-				Audios: []ToolAudioFile{{TempPath: tempPath, MimeType: mimeType}},
+				Model:   ffmpegModelName,
+				Prompt:  "audio track extracted from the attached video",
+				Count:   1,
+				Audios:  []ToolAudioFile{{TempPath: tempPath, MimeType: mimeType}},
+				Command: extractArgv,
 			}
 			if convertNotice != "" {
 				output.Notices = append(output.Notices, convertNotice)
@@ -3126,7 +3157,8 @@ func removeAudioToolDefinition() HarnessToolDefinition {
 			}
 			ext, mimeType := silentVideoTarget(input)
 			staged := filepath.Join(staging, "silent"+ext)
-			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegRemoveAudioArgs(input, staged)); err != nil {
+			removeArgv, err := runLocalFFmpeg(ctx, tools.Config, ffmpegRemoveAudioArgs(input, staged))
+			if err != nil {
 				return nil, "audio removal failed", err
 			}
 			tempPath, err := promoteStagedOutput(staged, "atelier-video-*", ext)
@@ -3134,10 +3166,11 @@ func removeAudioToolDefinition() HarnessToolDefinition {
 				return nil, "audio removal failed", err
 			}
 			output := ToolVideoResult{
-				Model:  ffmpegModelName,
-				Prompt: "audio track removed from the attached video",
-				Count:  1,
-				Videos: []ToolVideoFile{{TempPath: tempPath, MimeType: mimeType}},
+				Model:   ffmpegModelName,
+				Prompt:  "audio track removed from the attached video",
+				Count:   1,
+				Videos:  []ToolVideoFile{{TempPath: tempPath, MimeType: mimeType}},
+				Command: removeArgv,
 			}
 			summary := "removed the audio track from the attached video with ffmpeg (stream copy)"
 			if probe, err := probeStagedMedia(ctx, tools.Config, input, "video"); err == nil && probe.AudioCodec == "" {
@@ -3212,7 +3245,8 @@ func convertAudioToolDefinition() HarnessToolDefinition {
 			}
 			ext, mimeType, codecArgs := convertAudioTarget(format, quality)
 			staged := filepath.Join(staging, "converted"+ext)
-			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegConvertAudioArgs(input, staged, codecArgs)); err != nil {
+			convertArgv, err := runLocalFFmpeg(ctx, tools.Config, ffmpegConvertAudioArgs(input, staged, codecArgs))
+			if err != nil {
 				return nil, "conversion failed", err
 			}
 			tempPath, err := promoteStagedOutput(staged, "atelier-audio-*", ext)
@@ -3220,10 +3254,11 @@ func convertAudioToolDefinition() HarnessToolDefinition {
 				return nil, "conversion failed", err
 			}
 			return ToolAudioResult{
-				Model:  ffmpegModelName,
-				Prompt: "converted to " + convertAudioTargetPhrase(format, quality),
-				Count:  1,
-				Audios: []ToolAudioFile{{TempPath: tempPath, MimeType: mimeType}},
+				Model:   ffmpegModelName,
+				Prompt:  "converted to " + convertAudioTargetPhrase(format, quality),
+				Count:   1,
+				Audios:  []ToolAudioFile{{TempPath: tempPath, MimeType: mimeType}},
+				Command: convertArgv,
 			}, fmt.Sprintf("converted the attached audio to %s with ffmpeg", convertAudioTargetPhrase(format, quality)), nil
 		},
 		Activity: ffmpegActivity("convert-audio"),
@@ -3341,7 +3376,8 @@ func convertVideoToolDefinition() HarnessToolDefinition {
 			}
 			ext, mimeType, codecArgs := convertVideoTarget(format, quality)
 			staged := filepath.Join(staging, "converted"+ext)
-			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegConvertVideoArgs(input, staged, codecArgs)); err != nil {
+			convertArgv, err := runLocalFFmpeg(ctx, tools.Config, ffmpegConvertVideoArgs(input, staged, codecArgs))
+			if err != nil {
 				return nil, "conversion failed", err
 			}
 			tempPath, err := promoteStagedOutput(staged, "atelier-video-*", ext)
@@ -3349,10 +3385,11 @@ func convertVideoToolDefinition() HarnessToolDefinition {
 				return nil, "conversion failed", err
 			}
 			return ToolVideoResult{
-				Model:  ffmpegModelName,
-				Prompt: "converted to " + convertVideoTargetPhrase(format, quality),
-				Count:  1,
-				Videos: []ToolVideoFile{{TempPath: tempPath, MimeType: mimeType}},
+				Model:   ffmpegModelName,
+				Prompt:  "converted to " + convertVideoTargetPhrase(format, quality),
+				Count:   1,
+				Videos:  []ToolVideoFile{{TempPath: tempPath, MimeType: mimeType}},
+				Command: convertArgv,
 			}, fmt.Sprintf("converted the attached video to %s with ffmpeg", convertVideoTargetPhrase(format, quality)), nil
 		},
 		Activity: ffmpegActivity("convert-video"),
@@ -3496,7 +3533,8 @@ func replaceAudioToolDefinition() HarnessToolDefinition {
 			}
 			copyVideo, notice := replaceAudioCopyVideo(ctx, tools.Config, videoPath)
 			staged := filepath.Join(staging, "replaced.mp4")
-			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegReplaceAudioArgs(videoPath, audioPath, copyVideo, staged)); err != nil {
+			replaceArgv, err := runLocalFFmpeg(ctx, tools.Config, ffmpegReplaceAudioArgs(videoPath, audioPath, copyVideo, staged))
+			if err != nil {
 				return nil, "audio replacement failed", err
 			}
 			tempPath, err := promoteStagedOutput(staged, "atelier-video-*", ".mp4")
@@ -3504,10 +3542,11 @@ func replaceAudioToolDefinition() HarnessToolDefinition {
 				return nil, "audio replacement failed", err
 			}
 			output := ToolVideoResult{
-				Model:  ffmpegModelName,
-				Prompt: "attached audio laid under the attached video",
-				Count:  1,
-				Videos: []ToolVideoFile{{TempPath: tempPath, MimeType: "video/mp4"}},
+				Model:   ffmpegModelName,
+				Prompt:  "attached audio laid under the attached video",
+				Count:   1,
+				Videos:  []ToolVideoFile{{TempPath: tempPath, MimeType: "video/mp4"}},
+				Command: replaceArgv,
 			}
 			if notice != "" {
 				output.Notices = append(output.Notices, notice)
@@ -3610,7 +3649,8 @@ func executeBurnSubtitles(ctx context.Context, tools HarnessToolExecutionContext
 		return ToolVideoResult{}, "subtitle burning failed", fmt.Errorf("staging the subtitle file failed: %w", err)
 	}
 	staged := filepath.Join(staging, "burned.mp4")
-	if err := runLocalFFmpeg(ctx, tools.Config, ffmpegBurnSubtitlesArgs(videoPath, subtitlePath, staged)); err != nil {
+	burnArgv, err := runLocalFFmpeg(ctx, tools.Config, ffmpegBurnSubtitlesArgs(videoPath, subtitlePath, staged))
+	if err != nil {
 		return ToolVideoResult{}, "subtitle burning failed", err
 	}
 	tempPath, err := promoteStagedOutput(staged, "atelier-video-*", ".mp4")
@@ -3618,10 +3658,11 @@ func executeBurnSubtitles(ctx context.Context, tools HarnessToolExecutionContext
 		return ToolVideoResult{}, "subtitle burning failed", err
 	}
 	output := ToolVideoResult{
-		Model:  ffmpegModelName,
-		Prompt: "the conversation's subtitles burned into the attached video",
-		Count:  1,
-		Videos: []ToolVideoFile{{TempPath: tempPath, MimeType: "video/mp4"}},
+		Model:   ffmpegModelName,
+		Prompt:  "the conversation's subtitles burned into the attached video",
+		Count:   1,
+		Videos:  []ToolVideoFile{{TempPath: tempPath, MimeType: "video/mp4"}},
+		Command: burnArgv,
 	}
 	if skipped > 0 {
 		output.Notices = append(output.Notices, fmt.Sprintf("%d malformed cue block(s) in the subtitle file were skipped.", skipped))
@@ -3648,7 +3689,7 @@ func subtitlesFilterAvailable(ctx context.Context, config AppConfig) (available,
 	if !ok {
 		return false, false
 	}
-	help, err := runLocalMediaCLI(ctx, resolved, "ffmpeg", localFFmpegTimeout, []string{"-hide_banner", "-h", "filter=subtitles"})
+	help, _, err := runLocalMediaCLI(ctx, resolved, "ffmpeg", localFFmpegTimeout, []string{"-hide_banner", "-h", "filter=subtitles"})
 	if err != nil {
 		return false, false
 	}
@@ -3890,7 +3931,8 @@ func transformVideoToolDefinition() HarnessToolDefinition {
 				}
 				args = ffmpegTransformArgs(input, appendFilterChain(filters, videoFades), appendFilterChain(audioFilters, audioFades), staged)
 			}
-			if err := runLocalFFmpeg(ctx, tools.Config, args); err != nil {
+			transformArgv, err := runLocalFFmpeg(ctx, tools.Config, args)
+			if err != nil {
 				return nil, "transform failed", err
 			}
 			tempPath, err := promoteStagedOutput(staged, "atelier-video-*", ".mp4")
@@ -3903,6 +3945,7 @@ func transformVideoToolDefinition() HarnessToolDefinition {
 				Count:   1,
 				Videos:  []ToolVideoFile{{TempPath: tempPath, MimeType: "video/mp4"}},
 				Notices: notices,
+				Command: transformArgv,
 			}
 			return output, fmt.Sprintf("transformed the attached video with ffmpeg (%s)", strings.Join(ops, ", ")), nil
 		},
@@ -3995,7 +4038,8 @@ func transformAudioToolDefinition() HarnessToolDefinition {
 			}
 			staged := filepath.Join(staging, "transformed"+ext)
 			args := ffmpegTransformAudioArgs(input, strings.Join(audioFadeFilters(fades), ","), codecArgs, staged)
-			if err := runLocalFFmpeg(ctx, tools.Config, args); err != nil {
+			transformArgv, err := runLocalFFmpeg(ctx, tools.Config, args)
+			if err != nil {
 				return nil, "transform failed", err
 			}
 			tempPath, err := promoteStagedOutput(staged, "atelier-audio-*", ext)
@@ -4009,6 +4053,7 @@ func transformAudioToolDefinition() HarnessToolDefinition {
 				Count:   1,
 				Audios:  []ToolAudioFile{{TempPath: tempPath, MimeType: mimeType}},
 				Notices: notices,
+				Command: transformArgv,
 			}, fmt.Sprintf("transformed the attached audio with ffmpeg (%s)", strings.Join(ops, ", ")), nil
 		},
 		Activity: ffmpegActivity("transform-audio"),
@@ -4058,7 +4103,8 @@ func reverseVideoToolDefinition() HarnessToolDefinition {
 			}
 			mute := strings.TrimSpace(call.Mode) == "mute"
 			staged := filepath.Join(staging, "reversed.mp4")
-			if err := runLocalFFmpeg(ctx, tools.Config, ffmpegReverseVideoArgs(input, staged, mute)); err != nil {
+			reverseArgv, err := runLocalFFmpeg(ctx, tools.Config, ffmpegReverseVideoArgs(input, staged, mute))
+			if err != nil {
 				return nil, "reverse failed", err
 			}
 			tempPath, err := promoteStagedOutput(staged, "atelier-video-*", ".mp4")
@@ -4083,6 +4129,7 @@ func reverseVideoToolDefinition() HarnessToolDefinition {
 				Count:   1,
 				Videos:  []ToolVideoFile{{TempPath: tempPath, MimeType: "video/mp4"}},
 				Notices: notices,
+				Command: reverseArgv,
 			}
 			return output, summary, nil
 		},
@@ -4225,7 +4272,13 @@ type ToolTransitionListResult struct {
 	Version     string   `json:"version"`
 	Transitions []string `json:"transitions"`
 	Default     string   `json:"default"`
+	// Command records the executed ffmpeg argv behind the reported facts (the
+	// CommandProvider contract).
+	Command []string `json:"-"`
 }
+
+// ToolCommand names the executed argv of the local CLI run behind this result.
+func (r ToolTransitionListResult) ToolCommand() []string { return r.Command }
 
 // listVideoTransitionsToolDefinition exposes list_video_transitions: the
 // installed ffmpeg's xfade vocabulary as evidence. Unlike the media tools it
@@ -4240,11 +4293,11 @@ func listVideoTransitionsToolDefinition() HarnessToolDefinition {
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: listVideoTransitionsParamSchema(),
 		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
-			transitions, version, ok := installedXFadeTransitions(ctx, tools.Config)
+			transitions, version, probeArgv, ok := installedXFadeTransitions(ctx, tools.Config)
 			if !ok {
 				return nil, "transition list failed", errors.New("list_video_transitions could not read the installed ffmpeg's xfade transitions — install ffmpeg (`brew install ffmpeg`, or set the binary in Settings → Local Tools) and try again")
 			}
-			result := ToolTransitionListResult{Version: version, Transitions: transitions, Default: "fade"}
+			result := ToolTransitionListResult{Version: version, Transitions: transitions, Default: "fade", Command: probeArgv}
 			phrase := "the installed ffmpeg"
 			if version != "" {
 				phrase = "ffmpeg " + version

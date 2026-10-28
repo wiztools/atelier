@@ -242,7 +242,7 @@ func normalizeVideoEditSource(ctx context.Context, config AppConfig, input strin
 	if !videoReframeDimension(inputProbe.Width) || !videoReframeDimension(inputProbe.Height) || !videoReframeFinite(inputProbe.Duration) || inputProbe.Duration <= 0 {
 		return "", ToolProbeResult{}, nil, errors.New("the video has unsupported dimensions or timing")
 	}
-	data, probeErr := runLocalFFprobe(ctx, config, []string{"-v", "error", "-select_streams", "v:0", "-show_entries", "stream=start_time,pix_fmt", "-of", "json", input})
+	data, _, probeErr := runLocalFFprobe(ctx, config, []string{"-v", "error", "-select_streams", "v:0", "-show_entries", "stream=start_time,pix_fmt", "-of", "json", input})
 	var timing struct {
 		Streams []struct {
 			Start       string `json:"start_time"`
@@ -275,7 +275,7 @@ func normalizeVideoEditSource(ctx context.Context, config AppConfig, input strin
 		args = append(args, "-map", "0:a:0", "-af", "asetpts=PTS-("+origin+")/TB", "-c:a", "aac", "-b:a", "192k")
 	}
 	args = append(args, "-avoid_negative_ts", "disabled", "-movflags", "+faststart", output)
-	if err := runLocalFFmpeg(ctx, config, args); err != nil {
+	if _, err := runLocalFFmpeg(ctx, config, args); err != nil {
 		_ = os.Remove(output)
 		return "", ToolProbeResult{}, nil, err
 	}
@@ -330,7 +330,7 @@ func videoEditThumbnailURLs(ctx context.Context, config AppConfig, input string,
 			continue
 		}
 		at := duration * (float64(i) + 0.5) / float64(count)
-		err := runLocalFFmpeg(ctx, config, []string{"-nostdin", "-y", "-ss", strconv.FormatFloat(at, 'f', 3, 64), "-i", input, "-frames:v", "1", "-vf", "scale='min(240,iw)':-2", "-q:v", "4", path})
+		_, err := runLocalFFmpeg(ctx, config, []string{"-nostdin", "-y", "-ss", strconv.FormatFloat(at, 'f', 3, 64), "-i", input, "-frames:v", "1", "-vf", "scale='min(240,iw)':-2", "-q:v", "4", path})
 		if err != nil {
 			_ = os.Remove(path)
 		}

@@ -97,7 +97,7 @@ func generateVideoPosterWithFFmpeg(resolved resolvedLocalBinary, videoPath, post
 	defer os.Remove(staged)
 	for _, attempt := range videoPosterSeekAttempts(seekAt) {
 		args := ffmpegPosterArgs(videoPath, attempt, staged, displayWidth, displayHeight)
-		if _, err := runLocalMediaCLI(context.Background(), resolved, "ffmpeg", videoPosterTimeout, args); err != nil {
+		if _, _, err := runLocalMediaCLI(context.Background(), resolved, "ffmpeg", videoPosterTimeout, args); err != nil {
 			continue
 		}
 		if info, err := os.Stat(staged); err == nil && info.Size() > 0 {
@@ -129,7 +129,7 @@ func generateVideoPosterWithQuickLook(videoPath, posterPath string) bool {
 	// Only resolvedLocalBinary.path is read by the shared runner; the spec
 	// fields would carry detection detail qlmanage doesn't have.
 	resolved := resolvedLocalBinary{path: binary}
-	if _, err := runLocalMediaCLI(context.Background(), resolved, "qlmanage", videoPosterTimeout, args); err != nil {
+	if _, _, err := runLocalMediaCLI(context.Background(), resolved, "qlmanage", videoPosterTimeout, args); err != nil {
 		return false
 	}
 	// qlmanage names its output after the input file plus .png in -o's dir.

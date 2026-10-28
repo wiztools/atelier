@@ -1449,7 +1449,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 	// re-resolves the binary per call, so a Settings change takes effect on the
 	// next tool call without rebuilding the gateway.
 	if _, ok := resolveLocalWhisperBinary(config); ok {
-		gateway.tools.TranscribeAudioLocal = func(ctx context.Context, req TranscribeAudioRequest) (GeneratedTranscript, error) {
+		gateway.tools.TranscribeAudioLocal = func(ctx context.Context, req TranscribeAudioRequest) (GeneratedTranscript, []string, error) {
 			return runLocalWhisperTranscription(ctx, config, req)
 		}
 	}

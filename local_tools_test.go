@@ -307,7 +307,7 @@ func TestRunLocalWhisperTranscription(t *testing.T) {
 
 	t.Run("openai-whisper flavor", func(t *testing.T) {
 		config := newConfig()
-		transcript, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Model: "small", Audio: wavDataURL(), Task: "translate", Language: "fr"})
+		transcript, argv, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Model: "small", Audio: wavDataURL(), Task: "translate", Language: "fr"})
 		if err != nil {
 			t.Fatalf("runLocalWhisperTranscription: %v", err)
 		}
@@ -316,11 +316,20 @@ func TestRunLocalWhisperTranscription(t *testing.T) {
 				t.Errorf("transcript %q missing %q", transcript.Text, want)
 			}
 		}
+		joined := strings.Join(argv, " ")
+		for _, want := range []string{"--output_format txt", "--model small", "--language fr", "--task translate"} {
+			if !strings.Contains(joined, want) {
+				t.Errorf("argv %q missing %q", joined, want)
+			}
+		}
+		if len(argv) == 0 || filepath.Base(argv[0]) != "whisper" {
+			t.Errorf("argv = %v, want the resolved whisper binary first", argv)
+		}
 	})
 	t.Run("whisper-cpp flavor", func(t *testing.T) {
 		config := newConfig()
 		config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, filepath.Join(dir, "cpp"), "whisper-cli", cppWhisperScript)
-		transcript, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Model: "/models/ggml-base.en.bin", Audio: wavDataURL()})
+		transcript, argv, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Model: "/models/ggml-base.en.bin", Audio: wavDataURL()})
 		if err != nil {
 			t.Fatalf("runLocalWhisperTranscription: %v", err)
 		}
@@ -328,6 +337,13 @@ func TestRunLocalWhisperTranscription(t *testing.T) {
 			if !strings.Contains(transcript.Text, want) {
 				t.Errorf("transcript %q missing %q", transcript.Text, want)
 			}
+		}
+		joined := strings.Join(argv, " ")
+		if !strings.Contains(joined, "-otxt") || strings.Contains(joined, "-ovtt") {
+			t.Errorf("argv %q must carry -otxt for a plain turn, never -ovtt", joined)
+		}
+		if len(argv) == 0 || filepath.Base(argv[0]) != "whisper-cli" {
+			t.Errorf("argv = %v, want the resolved whisper-cli binary first", argv)
 		}
 	})
 	t.Run("whisper-cpp tilde model expands before the CLI sees it", func(t *testing.T) {
@@ -339,7 +355,7 @@ func TestRunLocalWhisperTranscription(t *testing.T) {
 		t.Setenv("HOME", home)
 		config := newConfig()
 		config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, filepath.Join(dir, "cpp-tilde"), "whisper-cli", cppWhisperScript)
-		transcript, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Model: "~/.cache/whisper.cpp/ggml-large-v3.bin", Audio: wavDataURL()})
+		transcript, _, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Model: "~/.cache/whisper.cpp/ggml-large-v3.bin", Audio: wavDataURL()})
 		if err != nil {
 			t.Fatalf("runLocalWhisperTranscription: %v", err)
 		}
@@ -357,7 +373,7 @@ func TestRunLocalWhisperTranscription(t *testing.T) {
 		config := newConfig()
 		config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, filepath.Join(dir, "cpp-vad"), "whisper-cli", cppWhisperScript)
 		config.Providers.Local.Whisper.VADModel = "~/.cache/whisper.cpp/ggml-silero-v6.2.0.bin"
-		transcript, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL()})
+		transcript, argv, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL()})
 		if err != nil {
 			t.Fatalf("runLocalWhisperTranscription: %v", err)
 		}
@@ -368,16 +384,29 @@ func TestRunLocalWhisperTranscription(t *testing.T) {
 		if strings.Contains(transcript.Text, "--vad-model ~/") {
 			t.Fatalf("transcript %q leaked the unexpanded tilde VAD path", transcript.Text)
 		}
+		// The returned argv is the turn record's evidence that the VAD model
+		// actually reached the CLI — the question a persisted run must answer
+		// without re-deriving the config (conv_8ef7cf03a54ec7d30b62bce1).
+		joined := strings.Join(argv, " ")
+		if !strings.Contains(joined, want) {
+			t.Fatalf("argv %q must carry the expanded VAD flags", joined)
+		}
+		if strings.Contains(joined, "--vad-model ~/") {
+			t.Fatalf("argv %q leaked the unexpanded tilde VAD path", joined)
+		}
 	})
 	t.Run("openai-whisper ignores the configured vad model with a notice", func(t *testing.T) {
 		config := newConfig()
 		config.Providers.Local.Whisper.VADModel = "/models/ggml-silero-v6.2.0.bin"
-		transcript, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL()})
+		transcript, argv, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL()})
 		if err != nil {
 			t.Fatalf("runLocalWhisperTranscription: %v", err)
 		}
 		if strings.Contains(transcript.Text, "--vad") {
 			t.Fatalf("openai-whisper has no VAD flags — transcript %q must not carry them", transcript.Text)
+		}
+		if joined := strings.Join(argv, " "); strings.Contains(joined, "--vad") {
+			t.Fatalf("openai-whisper argv %q must not carry VAD flags", joined)
 		}
 		found := false
 		for _, notice := range transcript.Notices {
@@ -391,7 +420,7 @@ func TestRunLocalWhisperTranscription(t *testing.T) {
 	})
 	t.Run("openai-whisper words parse the json output", func(t *testing.T) {
 		config := newConfig()
-		transcript, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL(), Timestamps: "words"})
+		transcript, _, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL(), Timestamps: "words"})
 		if err != nil {
 			t.Fatalf("runLocalWhisperTranscription: %v", err)
 		}
@@ -410,7 +439,10 @@ func TestRunLocalWhisperTranscription(t *testing.T) {
 		config := newConfig()
 		config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, filepath.Join(dir, "cpp-ts"), "whisper-cli", cppWhisperScript)
 		config.Providers.Local.Whisper.Model = "/models/ggml-base.en.bin"
-		transcript, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL(), Timestamps: "words"})
+		transcript, argv, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL(), Timestamps: "words"})
+		if joined := strings.Join(argv, " "); !strings.Contains(joined, "-ovtt") {
+			t.Errorf("argv %q must carry -ovtt for a timestamped turn", joined)
+		}
 		if err != nil {
 			t.Fatalf("runLocalWhisperTranscription: %v", err)
 		}
@@ -444,7 +476,7 @@ func TestRunLocalWhisperTranscription(t *testing.T) {
 		}
 		config := newConfig()
 		config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, filepath.Join(dir, "cpp-cache"), "whisper-cli", cppWhisperScript)
-		transcript, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL()})
+		transcript, _, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL()})
 		if err != nil {
 			t.Fatalf("runLocalWhisperTranscription: %v", err)
 		}
@@ -462,7 +494,7 @@ func TestRunLocalWhisperTranscription(t *testing.T) {
 		}
 		config := newConfig()
 		config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, filepath.Join(dir, "cpp-homeroot"), "whisper-cli", cppWhisperScript)
-		transcript, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL()})
+		transcript, _, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL()})
 		if err != nil {
 			t.Fatalf("runLocalWhisperTranscription: %v", err)
 		}
@@ -487,7 +519,7 @@ func TestRunLocalWhisperTranscription(t *testing.T) {
 		}
 		config := newConfig()
 		config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, filepath.Join(dir, "cpp-homeroot-cache"), "whisper-cli", cppWhisperScript)
-		transcript, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL()})
+		transcript, _, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL()})
 		if err != nil {
 			t.Fatalf("runLocalWhisperTranscription: %v", err)
 		}
@@ -509,7 +541,7 @@ func TestRunLocalWhisperTranscription(t *testing.T) {
 		t.Setenv("WHISPER_MODEL", envModel)
 		config := newConfig()
 		config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, filepath.Join(dir, "cpp-env"), "whisper-cli", cppWhisperScript)
-		transcript, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL()})
+		transcript, _, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL()})
 		if err != nil {
 			t.Fatalf("runLocalWhisperTranscription: %v", err)
 		}
@@ -524,7 +556,7 @@ func TestRunLocalWhisperTranscription(t *testing.T) {
 		t.Setenv("WHISPER_MODEL", "/env/models/should-not-win.bin")
 		config := newConfig()
 		config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, filepath.Join(dir, "cpp-explicit"), "whisper-cli", cppWhisperScript)
-		transcript, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Model: "/models/ggml-base.en.bin", Audio: wavDataURL()})
+		transcript, _, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Model: "/models/ggml-base.en.bin", Audio: wavDataURL()})
 		if err != nil {
 			t.Fatalf("runLocalWhisperTranscription: %v", err)
 		}
@@ -541,7 +573,7 @@ func TestRunLocalWhisperTranscription(t *testing.T) {
 		t.Setenv("WHISPER_MODEL", "") // pin the env tier off — hermetic on any machine
 		config := newConfig()
 		config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, filepath.Join(dir, "cpp-bare"), "whisper-cli", cppWhisperScript)
-		transcript, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL()})
+		transcript, _, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL()})
 		if err != nil {
 			t.Fatalf("runLocalWhisperTranscription: %v", err)
 		}
@@ -552,27 +584,27 @@ func TestRunLocalWhisperTranscription(t *testing.T) {
 	t.Run("missing binary", func(t *testing.T) {
 		config := newConfig()
 		config.Providers.Local.Whisper.Binary = filepath.Join(dir, "no-such-whisper") // deterministic miss
-		if _, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL()}); err == nil || !strings.Contains(err.Error(), "no local whisper CLI found") {
+		if _, _, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL()}); err == nil || !strings.Contains(err.Error(), "no local whisper CLI found") {
 			t.Fatalf("err = %v, want the install-hint error", err)
 		}
 	})
 	t.Run("non-data-URL input", func(t *testing.T) {
 		config := newConfig()
-		if _, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: "https://example.com/a.wav"}); err == nil || !strings.Contains(err.Error(), "not a data URL") {
+		if _, _, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: "https://example.com/a.wav"}); err == nil || !strings.Contains(err.Error(), "not a data URL") {
 			t.Fatalf("err = %v, want the data-URL error", err)
 		}
 	})
 	t.Run("cli failure surfaces output", func(t *testing.T) {
 		config := newConfig()
 		config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, filepath.Join(dir, "fail"), "whisper", "#!/bin/sh\necho 'boom: bad audio' >&2\nexit 1\n")
-		if _, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL()}); err == nil || !strings.Contains(err.Error(), "boom: bad audio") {
+		if _, _, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL()}); err == nil || !strings.Contains(err.Error(), "boom: bad audio") {
 			t.Fatalf("err = %v, want the CLI output in the error", err)
 		}
 	})
 	t.Run("empty transcript is an error", func(t *testing.T) {
 		config := newConfig()
 		config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, filepath.Join(dir, "empty"), "whisper", "#!/bin/sh\n: > /dev/null\nout=\"\"\nprev=\"\"\nfor a in \"$@\"; do\n  if [ \"$prev\" = \"--output_dir\" ]; then out=\"$a\"; fi\n  prev=\"$a\"\ndone\nbase=$(basename \"$1\"); base=\"${base%.*}\"\n: > \"$out/$base.txt\"\n")
-		if _, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL()}); err == nil || !strings.Contains(err.Error(), "empty transcript") {
+		if _, _, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: wavDataURL()}); err == nil || !strings.Contains(err.Error(), "empty transcript") {
 			t.Fatalf("err = %v, want the empty-transcript error", err)
 		}
 	})
@@ -611,7 +643,7 @@ func TestWhisperCPPTranscodesUndecodableAudio(t *testing.T) {
 		config := defaultAppConfig()
 		config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, filepath.Join(dir, "cpp"), "whisper-cli", cppWhisperScript)
 		config.Providers.Local.FFmpeg.Binary = writeFakeWhisper(t, filepath.Join(dir, "ff"), "ffmpeg", ffmpegTranscodeScript)
-		transcript, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: m4aDataURL()})
+		transcript, _, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: m4aDataURL()})
 		if err != nil {
 			t.Fatalf("runLocalWhisperTranscription: %v", err)
 		}
@@ -659,7 +691,7 @@ func TestWhisperCPPTranscodesUndecodableAudio(t *testing.T) {
 		config := defaultAppConfig()
 		config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, filepath.Join(dir, "cpp-soft"), "whisper-cli", cppWhisperScript)
 		config.Providers.Local.FFmpeg.Binary = writeFakeWhisper(t, filepath.Join(dir, "ff-broken"), "ffmpeg", "#!/bin/sh\necho 'conversion boom' >&2\nexit 1\n")
-		transcript, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: m4aDataURL()})
+		transcript, _, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: m4aDataURL()})
 		if err != nil {
 			t.Fatalf("a failed conversion must not fail the transcription: %v", err)
 		}
@@ -676,7 +708,7 @@ func TestWhisperCPPTranscodesUndecodableAudio(t *testing.T) {
 		config := defaultAppConfig()
 		config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, filepath.Join(dir, "pip"), "whisper", openaiWhisperScript)
 		config.Providers.Local.FFmpeg.Binary = writeFakeWhisper(t, filepath.Join(dir, "ff-untouched"), "ffmpeg", "#!/bin/sh\ntouch '"+sentinel+"'\nexit 1\n")
-		transcript, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: m4aDataURL()})
+		transcript, _, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: m4aDataURL()})
 		if err != nil {
 			t.Fatalf("runLocalWhisperTranscription: %v", err)
 		}
@@ -905,12 +937,15 @@ func TestToolGatewayWiresLocalWhisper(t *testing.T) {
 	if gateway.tools.TranscribeAudio != nil {
 		t.Fatal("fal transcription must stay unwired without a key (and app)")
 	}
-	transcript, err := gateway.tools.TranscribeAudioLocal(context.Background(), TranscribeAudioRequest{Audio: wavDataURL()})
+	transcript, argv, err := gateway.tools.TranscribeAudioLocal(context.Background(), TranscribeAudioRequest{Audio: wavDataURL()})
 	if err != nil {
 		t.Fatalf("TranscribeAudioLocal: %v", err)
 	}
 	if !strings.Contains(transcript.Text, "TRANSCRIPT-TOKEN") {
 		t.Fatalf("transcript = %q", transcript.Text)
+	}
+	if joined := strings.Join(argv, " "); !strings.Contains(joined, "--output_format txt") {
+		t.Fatalf("hook argv %q missing the openai-whisper flags", joined)
 	}
 
 	notFound := defaultAppConfig()

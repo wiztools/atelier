@@ -663,6 +663,42 @@ func TestTriageFailureSkipsSkillSelection(t *testing.T) {
 	}
 }
 
+func TestToolActivitiesPreferExecutedArgvOverCommandStub(t *testing.T) {
+	// A registered transcribe_audio (local whisper via a fake binary, since
+	// detection is pinned off in tests) builds the display-stub command; the
+	// executed argv must outrank it on the activity record.
+	withRealLocalLookup(t)
+	dir := t.TempDir()
+	config := defaultAppConfig()
+	config.Models.TranscriptionProvider = transcriptionProviderLocalWhisper
+	config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, dir, "whisper-cli", cppWhisperScript)
+	engine := newHarnessEngine(config)
+	argv := []string{"/usr/local/bin/whisper-cli", "-m", "/models/ggml-base.en.bin", "-f", "/tmp/in.wav", "-otxt", "--vad", "--vad-model", "/models/silero.bin"}
+	results := []HarnessToolResult{
+		// A local CLI result carries the executed argv — the full command
+		// line is what the persisted run must answer with (conv_8ef7cf03:
+		// "was the VAD model on the command?" was unanswerable from the
+		// record's display stub).
+		{Name: "transcribe_audio", Status: "completed", Result: ToolTranscribeResult{Model: "/models/ggml-base.en.bin", Transcript: "hello", Command: argv}},
+		// A result without one (a cloud backend, or a failure before exec)
+		// keeps the builder's display stub.
+		{Name: "transcribe_audio", Status: "completed", Result: ToolTranscribeResult{Model: "/models/ggml-base.en.bin", Transcript: "hello"}},
+	}
+
+	activities := engine.toolActivities(results, []HarnessToolCall{
+		{Name: "transcribe_audio"},
+		{Name: "transcribe_audio"},
+	})
+
+	if strings.Join(activities[0].Command, " ") != strings.Join(argv, " ") {
+		t.Fatalf("activity command = %v, want the executed argv", activities[0].Command)
+	}
+	stub := strings.Join(activities[1].Command, " ")
+	if !strings.Contains(stub, "whisper transcribe") {
+		t.Fatalf("stub activity command = %q, want the builder's display stub", stub)
+	}
+}
+
 func TestToolActivitiesRecordPermissionDecision(t *testing.T) {
 	engine := newHarnessEngine(defaultAppConfig())
 	results := []HarnessToolResult{

@@ -112,9 +112,10 @@ type HarnessToolExecutionContext struct {
 	// TranscribeAudioRequest so the tool layer cannot drift between backends;
 	// Models.TranscriptionProvider selects which one serves a call (see
 	// local_tools.go). The local hook needs no API key, so it wires even
-	// without any cloud provider configured.
+	// without any cloud provider configured, and its second return is the
+	// executed argv for the activity record (nil when nothing executed).
 	TranscribeAudio      func(ctx context.Context, req TranscribeAudioRequest) (GeneratedTranscript, error)
-	TranscribeAudioLocal func(ctx context.Context, req TranscribeAudioRequest) (GeneratedTranscript, error)
+	TranscribeAudioLocal func(ctx context.Context, req TranscribeAudioRequest) (GeneratedTranscript, []string, error)
 	// UpscaleImage raises an attached image's resolution via the configured
 	// cloud upscaler — fal by default, Replicate when replicate is the image
 	// provider (upscale follows ImageProvider). The notices slot carries the
@@ -165,9 +166,14 @@ type ToolImageResult struct {
 	// CostMicros estimates what this generation cost in USD millionths
 	// (fal_pricing.go); zero on the local backends.
 	CostMicros int64 `json:"costMicros,omitempty"`
+	// Command records the executed argv of the local CLI run that produced
+	// this result (the CommandProvider contract); empty on the cloud backends.
+	Command []string `json:"-"`
 }
 
-// ToolVideoResult carries generated videos as on-disk temp-file references, not
+// ToolCommand names the executed argv of the local CLI run behind this result.
+func (r ToolImageResult) ToolCommand() []string { return r.Command }
+
 // bytes — video is a file-path artifact end to end. The Videos slice is stripped
 // before the result is rendered into a tool message (the temp path is not useful
 // model evidence); the harness moves each temp file into the conversation's
@@ -188,7 +194,13 @@ type ToolVideoResult struct {
 	// CostMicros estimates what this generation cost in USD millionths
 	// (fal_pricing.go); zero for the local ffmpeg tools.
 	CostMicros int64 `json:"costMicros,omitempty"`
+	// Command records the executed argv of the local ffmpeg run that produced
+	// this result (the CommandProvider contract); empty on the cloud backends.
+	Command []string `json:"-"`
 }
+
+// ToolCommand names the executed argv of the local CLI run behind this result.
+func (r ToolVideoResult) ToolCommand() []string { return r.Command }
 
 type ToolVideoFile struct {
 	TempPath  string `json:"tempPath,omitempty"`
@@ -208,7 +220,13 @@ type ToolAudioResult struct {
 	// CostMicros estimates what this generation cost in USD millionths
 	// (fal_pricing.go); zero for the local ffmpeg tools.
 	CostMicros int64 `json:"costMicros,omitempty"`
+	// Command records the executed argv of the local ffmpeg run that produced
+	// this result (the CommandProvider contract); empty on the cloud backends.
+	Command []string `json:"-"`
 }
+
+// ToolCommand names the executed argv of the local CLI run behind this result.
+func (r ToolAudioResult) ToolCommand() []string { return r.Command }
 
 // ToolTranscriptFile mirrors ToolVideoFile/ToolAudioFile: a timestamped
 // transcript persisted as an on-disk temp-file reference. The harness moves it
@@ -265,7 +283,16 @@ type ToolTranscribeResult struct {
 	// CostMicros estimates what this transcription cost in USD millionths
 	// (fal_pricing.go); zero for the local whisper runner.
 	CostMicros int64 `json:"costMicros,omitempty"`
+	// Command records the executed argv of the local whisper run that produced
+	// this transcript (the CommandProvider contract); empty on the cloud
+	// backends. This is the post-hoc record of which flags actually reached
+	// the CLI — the VAD model, -otxt vs -ovtt, the resolved model path —
+	// none of which the planner's Call carries.
+	Command []string `json:"-"`
 }
+
+// ToolCommand names the executed argv of the local CLI run behind this result.
+func (r ToolTranscribeResult) ToolCommand() []string { return r.Command }
 
 // ToolNotices reports deterministic, user-facing caveats produced while
 // generating the audio (e.g. a requested loop the model can't honor).
@@ -288,6 +315,15 @@ func (r ToolTranscribeResult) ToolNotices() []string { return r.Notices }
 // NoticeProvider lets a tool's output carry deterministic user-facing caveats
 // that the harness surfaces verbatim in the chat reply.
 type NoticeProvider interface{ ToolNotices() []string }
+
+// CommandProvider lets a tool's output carry the executed argv of the local
+// CLI run that produced it — the binary path plus every flag, captured at the
+// exec site. The harness zips it onto the persisted activity's command field
+// (preferring it over the builder's display stub) exactly the way Permission
+// rides the activity; json:"-" on the carrying field keeps it out of
+// role:"tool" evidence, so a whisper command line's temp paths never enter a
+// model context.
+type CommandProvider interface{ ToolCommand() []string }
 
 // ToolDiagnostics reports machine-facing resolution decisions recorded on a
 // successful image generation (e.g. the Replicate reference rebind). Mirrors
@@ -2286,11 +2322,13 @@ func transcribeAudioToolDefinition(config AppConfig) HarnessToolDefinition {
 				}
 				req.Model = firstNonEmpty([]string{strings.TrimSpace(call.Model), resolveDefaultLocalWhisperModel(tools.Config)})
 				backend = "local whisper"
-				transcript, err := tools.TranscribeAudioLocal(ctx, req)
+				transcript, argv, err := tools.TranscribeAudioLocal(ctx, req)
 				if err != nil {
 					return nil, "audio transcription failed", err
 				}
-				return transcribeAudioOutput(req, backend, transcript)
+				output, summary, outErr := transcribeAudioOutput(req, backend, transcript)
+				output.Command = argv
+				return output, summary, outErr
 			case transcriptionProviderReplicate:
 				if tools.TranscribeAudio == nil {
 					return nil, "audio transcription unavailable", errors.New("audio transcription is not available in this context")

@@ -104,7 +104,7 @@ func convertImageBytesForModel(ctx context.Context, config AppConfig, data []byt
 	}
 	output := filepath.Join(staging, "model-safe.jpg")
 	dialect := basicImageDialectFor(backend)
-	if _, err := dialect.run(ctx, config, dialect.convertArgs(input, "jpeg", "", output)); err != nil {
+	if _, _, err := dialect.run(ctx, config, dialect.convertArgs(input, "jpeg", "", output)); err != nil {
 		return nil, err
 	}
 	return os.ReadFile(output)

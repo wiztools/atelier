@@ -4030,6 +4030,17 @@ func (h *HarnessEngine) toolActivityFromResult(result HarnessToolResult) Harness
 	} else {
 		activity = defaultHarnessToolActivity(result)
 	}
+	// The executed argv outranks the builder's display stub: a local CLI
+	// run's record should be the command that actually executed — the VAD
+	// flags, -otxt vs -ovtt, the resolved binary — not its label. The
+	// CommandProvider check rides the typed result (json:"-" keeps the argv
+	// and its staged temp paths out of model evidence), so a cloud result
+	// without one simply keeps the stub.
+	if cp, ok := result.Result.(CommandProvider); ok {
+		if argv := cp.ToolCommand(); len(argv) > 0 {
+			activity.Command = argv
+		}
+	}
 	// Media provider attribution rides the engine layer, not the per-tool
 	// builders: generate_video routes by config.Models.VideoProvider — the
 	// same field the tool gateway reads, via videoGenerationProvider — while

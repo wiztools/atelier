@@ -213,7 +213,13 @@ type ToolImageProbeResult struct {
 	ColorSpace    string `json:"colorSpace,omitempty"`
 	BitsPerSample int    `json:"bitsPerSample,omitempty"`
 	SizeBytes     int64  `json:"sizeBytes,omitempty"`
+	// Command records the executed probe argv that produced these facts (the
+	// CommandProvider contract).
+	Command []string `json:"-"`
 }
+
+// ToolCommand names the executed argv of the local CLI run behind this result.
+func (r ToolImageProbeResult) ToolCommand() []string { return r.Command }
 
 // parseSipsProperties reads `sips -g all` output: a first line naming the
 // file, then one indented "key: value" property per line. Unknown keys are
@@ -240,10 +246,10 @@ func parseSipsProperties(output []byte) map[string]string {
 // probeStagedImageWithSips runs sips -g all over a staged image file and
 // parses it into the compact ToolImageProbeResult. Size comes from os.Stat,
 // not sips.
-func probeStagedImageWithSips(ctx context.Context, config AppConfig, path string) (ToolImageProbeResult, error) {
-	output, err := runLocalSips(ctx, config, []string{"-g", "all", path})
+func probeStagedImageWithSips(ctx context.Context, config AppConfig, path string) (ToolImageProbeResult, []string, error) {
+	output, probeArgv, err := runLocalSips(ctx, config, []string{"-g", "all", path})
 	if err != nil {
-		return ToolImageProbeResult{}, err
+		return ToolImageProbeResult{}, nil, err
 	}
 	properties := parseSipsProperties(output)
 	result := ToolImageProbeResult{
@@ -258,9 +264,9 @@ func probeStagedImageWithSips(ctx context.Context, config AppConfig, path string
 		result.SizeBytes = info.Size()
 	}
 	if result.Width <= 0 || result.Height <= 0 {
-		return ToolImageProbeResult{}, fmt.Errorf("sips reported no dimensions for the image: %s", truncateLocalToolOutput(output))
+		return ToolImageProbeResult{}, probeArgv, fmt.Errorf("sips reported no dimensions for the image: %s", truncateLocalToolOutput(output))
 	}
-	return result, nil
+	return result, probeArgv, nil
 }
 
 // magickIdentifyFormat is the -format escape string the ImageMagick probe
@@ -274,19 +280,19 @@ const magickIdentifyFormat = "%m|%w|%h|%z|%[channels]|%[colorspace]"
 // convert-style idiom — `input -format ... info:` — which works under both
 // the `magick` and legacy `convert` spellings, so no separate identify
 // binary is ever resolved. Size comes from os.Stat, as with sips.
-func probeStagedImageWithMagick(ctx context.Context, config AppConfig, path string) (ToolImageProbeResult, error) {
-	output, err := runLocalImageMagick(ctx, config, []string{path, "-format", magickIdentifyFormat, "info:"})
+func probeStagedImageWithMagick(ctx context.Context, config AppConfig, path string) (ToolImageProbeResult, []string, error) {
+	output, probeArgv, err := runLocalImageMagick(ctx, config, []string{path, "-format", magickIdentifyFormat, "info:"})
 	if err != nil {
-		return ToolImageProbeResult{}, err
+		return ToolImageProbeResult{}, nil, err
 	}
 	result, err := parseMagickIdentifyOutput(output)
 	if err != nil {
-		return ToolImageProbeResult{}, err
+		return ToolImageProbeResult{}, nil, err
 	}
 	if info, statErr := os.Stat(path); statErr == nil {
 		result.SizeBytes = info.Size()
 	}
-	return result, nil
+	return result, probeArgv, nil
 }
 
 // parseMagickIdentifyOutput reads the pipe-separated facts line. Channels
@@ -505,7 +511,7 @@ func magickFlipArgs(input, direction, output string) []string {
 type basicImageDialect struct {
 	name             string // telemetry label: result Model + activity Provider
 	command          string // activity Command token ("sips" / "magick")
-	run              func(ctx context.Context, config AppConfig, args []string) ([]byte, error)
+	run              func(ctx context.Context, config AppConfig, args []string) ([]byte, []string, error)
 	convertArgs      func(input, format, quality, output string) []string
 	cropArgs         func(input string, height, width int, output string) []string
 	resizeExactArgs  func(input string, height, width int, output string) []string
@@ -513,7 +519,7 @@ type basicImageDialect struct {
 	resizeHeightArgs func(input string, height int, output string) []string
 	rotateArgs       func(input string, degrees int, output string) []string
 	flipArgs         func(input, direction, output string) []string
-	probe            func(ctx context.Context, config AppConfig, path string) (ToolImageProbeResult, error)
+	probe            func(ctx context.Context, config AppConfig, path string) (ToolImageProbeResult, []string, error)
 	formatFor        func(mediaType string) (format string, notice string)
 }
 
@@ -791,7 +797,8 @@ func convertImageToolDefinition(dialect basicImageDialect) HarnessToolDefinition
 				return nil, "conversion failed", err
 			}
 			output := filepath.Join(staging, "converted"+imageFormatExtension(format))
-			if _, err := dialect.run(ctx, tools.Config, dialect.convertArgs(input, format, quality, output)); err != nil {
+			_, convertArgv, err := dialect.run(ctx, tools.Config, dialect.convertArgs(input, format, quality, output))
+			if err != nil {
 				return nil, "conversion failed", err
 			}
 			prompt := "converted to " + format
@@ -802,6 +809,7 @@ func convertImageToolDefinition(dialect basicImageDialect) HarnessToolDefinition
 			if err != nil {
 				return nil, "conversion failed", err
 			}
+			result.Command = convertArgv
 			return result, fmt.Sprintf("converted the attached image to %s with %s", format, dialect.name), nil
 		},
 		Activity: basicImageActivity(dialect, "convert"),
@@ -864,17 +872,20 @@ func transformImageToolDefinition(dialect basicImageDialect) HarnessToolDefiniti
 				return filepath.Join(staging, fmt.Sprintf("step-%02d%s", step, ext))
 			}
 			ops := []string{}
+			var lastArgv []string
 			if aspect := strings.TrimSpace(call.AspectRatio); aspect != "" {
-				probe, err := dialect.probe(ctx, tools.Config, current)
+				probe, _, err := dialect.probe(ctx, tools.Config, current)
 				if err != nil {
 					return nil, "transform failed", fmt.Errorf("the image's dimensions could not be read for the %s crop: %w", aspect, err)
 				}
 				aspectWidth, aspectHeight, _ := parseAspectRatio(aspect)
 				cropWidth, cropHeight := aspectCropDimensions(probe.Width, probe.Height, aspectWidth, aspectHeight)
 				target := next(imageFormatExtension(outputFormat))
-				if _, err := dialect.run(ctx, tools.Config, dialect.cropArgs(current, cropHeight, cropWidth, target)); err != nil {
+				_, argv, err := dialect.run(ctx, tools.Config, dialect.cropArgs(current, cropHeight, cropWidth, target))
+				if err != nil {
 					return nil, "transform failed", err
 				}
+				lastArgv = argv
 				current = target
 				ops = append(ops, fmt.Sprintf("cropped to %s (center %dx%d)", aspect, cropWidth, cropHeight))
 			}
@@ -892,24 +903,30 @@ func transformImageToolDefinition(dialect basicImageDialect) HarnessToolDefiniti
 					args = dialect.resizeHeightArgs(current, call.Height, target)
 					ops = append(ops, fmt.Sprintf("resized to %d pixels tall", call.Height))
 				}
-				if _, err := dialect.run(ctx, tools.Config, args); err != nil {
+				_, argv, err := dialect.run(ctx, tools.Config, args)
+				if err != nil {
 					return nil, "transform failed", err
 				}
+				lastArgv = argv
 				current = target
 			}
 			if call.Rotate != 0 {
 				target := next(imageFormatExtension(outputFormat))
-				if _, err := dialect.run(ctx, tools.Config, dialect.rotateArgs(current, call.Rotate, target)); err != nil {
+				_, argv, err := dialect.run(ctx, tools.Config, dialect.rotateArgs(current, call.Rotate, target))
+				if err != nil {
 					return nil, "transform failed", err
 				}
+				lastArgv = argv
 				current = target
 				ops = append(ops, fmt.Sprintf("rotated %d° clockwise", call.Rotate))
 			}
 			if flip := strings.TrimSpace(call.Flip); flip != "" {
 				target := next(imageFormatExtension(outputFormat))
-				if _, err := dialect.run(ctx, tools.Config, dialect.flipArgs(current, flip, target)); err != nil {
+				_, argv, err := dialect.run(ctx, tools.Config, dialect.flipArgs(current, flip, target))
+				if err != nil {
 					return nil, "transform failed", err
 				}
+				lastArgv = argv
 				current = target
 				ops = append(ops, "flipped "+flip)
 			}
@@ -918,6 +935,7 @@ func transformImageToolDefinition(dialect basicImageDialect) HarnessToolDefiniti
 			if err != nil {
 				return nil, "transform failed", err
 			}
+			result.Command = lastArgv
 			if transcodeNotice != "" {
 				result.Notices = append(result.Notices, transcodeNotice)
 			}
@@ -952,10 +970,11 @@ func probeImageToolDefinition(dialect basicImageDialect) HarnessToolDefinition {
 			if err != nil {
 				return nil, "probe failed", err
 			}
-			result, err := dialect.probe(ctx, tools.Config, input)
+			result, probeArgv, err := dialect.probe(ctx, tools.Config, input)
 			if err != nil {
 				return nil, "probe failed", err
 			}
+			result.Command = probeArgv
 			return result, probeImageSummary(dialect.name, result), nil
 		},
 		Activity: basicImageActivity(dialect, "probe"),
@@ -1034,13 +1053,15 @@ func composeImagesToolDefinition() HarnessToolDefinition {
 				}
 				columns := int(math.Ceil(math.Sqrt(float64(len(inputs)))))
 				output := filepath.Join(staging, "collage.png")
-				if _, err := runLocalImageMagick(ctx, tools.Config, magickCollageArgs(inputs, columns, 1024, output)); err != nil {
+				_, collageArgv, err := runLocalImageMagick(ctx, tools.Config, magickCollageArgs(inputs, columns, 1024, output))
+				if err != nil {
 					return nil, "collage failed", err
 				}
 				result, err := imageResultFromStagedFile(output, "png", fmt.Sprintf("collage of %d images", len(inputs)), imageMagickModelName)
 				if err != nil {
 					return nil, "collage failed", err
 				}
+				result.Command = collageArgv
 				return result, fmt.Sprintf("combined %d attached images into a %d-column grid with ImageMagick", len(inputs), columns), nil
 			}
 			base, _, err := stageAttachedImage(staging, "base", images[0])
@@ -1058,7 +1079,8 @@ func composeImagesToolDefinition() HarnessToolDefinition {
 			gravity, offset := magickGravity(position)
 			scale := parseScalePercent(call.Scale)
 			output := filepath.Join(staging, "watermarked.png")
-			if _, err := runLocalImageMagick(ctx, tools.Config, magickWatermarkArgs(base, overlay, gravity, offset, scale, call.Opacity, call.Opacity > 0, output)); err != nil {
+			_, watermarkArgv, err := runLocalImageMagick(ctx, tools.Config, magickWatermarkArgs(base, overlay, gravity, offset, scale, call.Opacity, call.Opacity > 0, output))
+			if err != nil {
 				return nil, "watermark failed", err
 			}
 			prompt := "watermark at " + position
@@ -1072,6 +1094,7 @@ func composeImagesToolDefinition() HarnessToolDefinition {
 			if err != nil {
 				return nil, "watermark failed", err
 			}
+			result.Command = watermarkArgv
 			return result, fmt.Sprintf("composited the second attached image over the first (%s) with ImageMagick", position), nil
 		},
 		Activity: magickActivity("compose"),
@@ -1124,7 +1147,8 @@ func adjustImageToolDefinition() HarnessToolDefinition {
 			output := filepath.Join(staging, "adjusted"+imageFormatExtension(format))
 			hasBrightnessContrast := call.Brightness != 0 || call.Contrast != 0
 			hasSaturation := call.Saturation != 0 && call.Saturation != 100
-			if _, err := runLocalImageMagick(ctx, tools.Config, magickAdjustArgs(input, call.Brightness, call.Contrast, hasBrightnessContrast, call.Saturation, hasSaturation, call.Grayscale, call.Sepia, output)); err != nil {
+			_, adjustArgv, err := runLocalImageMagick(ctx, tools.Config, magickAdjustArgs(input, call.Brightness, call.Contrast, hasBrightnessContrast, call.Saturation, hasSaturation, call.Grayscale, call.Sepia, output))
+			if err != nil {
 				return nil, "adjust failed", err
 			}
 			var ops []string
@@ -1145,6 +1169,7 @@ func adjustImageToolDefinition() HarnessToolDefinition {
 			if err != nil {
 				return nil, "adjust failed", err
 			}
+			result.Command = adjustArgv
 			return result, fmt.Sprintf("adjusted the attached image with ImageMagick (%s)", strings.Join(ops, ", ")), nil
 		},
 		Activity: magickActivity("adjust"),
@@ -1197,7 +1222,8 @@ func optimizeImageToolDefinition() HarnessToolDefinition {
 				}
 			}
 			output := filepath.Join(staging, "optimized"+imageFormatExtension(format))
-			if _, err := runLocalImageMagick(ctx, tools.Config, magickOptimizeArgs(input, quality, output)); err != nil {
+			_, optimizeArgv, err := runLocalImageMagick(ctx, tools.Config, magickOptimizeArgs(input, quality, output))
+			if err != nil {
 				return nil, "optimize failed", err
 			}
 			prompt := "metadata stripped"
@@ -1208,6 +1234,7 @@ func optimizeImageToolDefinition() HarnessToolDefinition {
 			if err != nil {
 				return nil, "optimize failed", err
 			}
+			result.Command = optimizeArgv
 			return result, fmt.Sprintf("stripped metadata and re-encoded the attached image as %s with ImageMagick", format), nil
 		},
 		Activity: magickActivity("optimize"),

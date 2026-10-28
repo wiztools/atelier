@@ -855,7 +855,7 @@ func (a *App) executeCompositionRender(ctx context.Context, config AppConfig, ru
 	var installed []string
 	for _, clip := range doc.Video {
 		if clip.Transition != nil {
-			if names, _, ok := installedXFadeTransitions(ctx, config); ok {
+			if names, _, _, ok := installedXFadeTransitions(ctx, config); ok {
 				installed = names
 			}
 			break
@@ -1048,7 +1048,7 @@ func compositionClippingNotice(ctx context.Context, config AppConfig, path strin
 	if !ok {
 		return ""
 	}
-	output, err := runLocalMediaCLI(ctx, resolved, "ffmpeg", localFFmpegTimeout, []string{"-i", path, "-af", "volumedetect", "-f", "null", "-"})
+	output, _, err := runLocalMediaCLI(ctx, resolved, "ffmpeg", localFFmpegTimeout, []string{"-i", path, "-af", "volumedetect", "-f", "null", "-"})
 	if err != nil {
 		return ""
 	}
