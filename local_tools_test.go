@@ -1568,3 +1568,211 @@ func TestTranscribeAudioOutputCollapsesLoop(t *testing.T) {
 		}
 	}
 }
+
+// ffmpegChunkScript fakes ffmpeg for the chunking path: the segment pass's
+// output pattern (chunk-%03d.wav) produces two chunk copies of the input; the
+// plain transcode pass (a plain .wav output) is the cp of
+// ffmpegTranscodeScript. Every invocation records its args beside the output.
+const ffmpegChunkScript = `#!/bin/sh
+prev=""
+input=""
+for a in "$@"; do
+  if [ "$prev" = "-i" ]; then input="$a"; fi
+  prev="$a"
+done
+for a in "$@"; do out="$a"; done
+printf 'FFMPEG-TOKEN %s' "$*" > "$out.args"
+case "$out" in
+  *%03d.wav)
+    first="${out//%03d/000}"
+    second="${out//%03d/001}"
+    cp "$input" "$first"
+    cp "$input" "$second"
+    ;;
+  *)
+    cp "$input" "$out"
+    ;;
+esac
+`
+
+// TestWhisperSegmentArgs pins the segment cut: fixed-length chunks via the
+// segment muxer, stream-copied (PCM needs no re-encode), zero-padded pattern.
+func TestWhisperSegmentArgs(t *testing.T) {
+	args := whisperSegmentArgs("/tmp/in.wav", "/tmp/chunks", 300)
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"-y", "-i /tmp/in.wav", "-f segment", "-segment_time 300", "-c copy", "chunk-%03d.wav"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("segment args %q missing %q", joined, want)
+		}
+	}
+}
+
+// TestOffsetTranscriptChunks pins the stitch math: starts and ends shift by
+// the chunk's timeline offset, and the shifted End pointer is chunk-owned (no
+// shared mutable end times across chunks).
+func TestOffsetTranscriptChunks(t *testing.T) {
+	end := 2.0
+	shifted := offsetTranscriptChunks([]transcriptChunk{
+		{Start: 0, End: &end, Text: "hello"},
+		{Start: 2.5, Text: "open"},
+	}, 120)
+	if shifted[0].Start != 120 || shifted[0].End == nil || *shifted[0].End != 122 {
+		t.Fatalf("timed chunk = %+v, want start 120 end 122", shifted[0])
+	}
+	if end != 2.0 {
+		t.Fatalf("original end mutated to %v", end)
+	}
+	if shifted[1].Start != 122.5 || shifted[1].End != nil {
+		t.Fatalf("open chunk = %+v, want start 122.5 with no end", shifted[1])
+	}
+}
+
+// TestWhisperCPPChunksLongClips pins the long-clip chunking path: a clip
+// measuring past the configured chunk size is transcoded to 16 kHz mono, cut
+// into exactly-sized segments by one ffmpeg pass, transcribed chunk by chunk
+// with the same flags, and stitched back with offset timestamps — chunk 1's
+// cues land a full chunk length after chunk 0's. The chunk dir and transcode
+// temp die with the call, the notice names the chunking, and the recorded
+// argv is the first chunk's invocation.
+func TestWhisperCPPChunksLongClips(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WHISPER_MODEL", "")
+	withRealLocalLookup(t)
+	dir := t.TempDir()
+
+	longWAV := func() string {
+		return "data:audio/wav;base64," + base64.StdEncoding.EncodeToString(buildWAV(488000)) // 61 s at 8 kHz
+	}
+	newConfig := func(ffmpegScript string) AppConfig {
+		config := defaultAppConfig()
+		config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, filepath.Join(dir, "cpp"), "whisper-cli", cppWhisperScript)
+		config.Providers.Local.FFmpeg.Binary = writeFakeWhisper(t, filepath.Join(dir, "ff"), "ffmpeg", ffmpegScript)
+		config.Providers.Local.Whisper.VADModel = "/models/ggml-silero-v6.2.0.bin"
+		config.Providers.Local.Whisper.ChunkMinutes = 1
+		return config
+	}
+
+	chunkTempDirs := func() int {
+		matches, _ := filepath.Glob(filepath.Join(os.TempDir(), "atelier-whisper-chunks-*"))
+		return len(matches)
+	}
+
+	t.Run("61-second clip transcribes in two 1-minute chunks", func(t *testing.T) {
+		before := chunkTempDirs()
+		transcript, argv, err := runLocalWhisperTranscription(context.Background(), newConfig(ffmpegChunkScript), TranscribeAudioRequest{Audio: longWAV(), Timestamps: "segments", Task: "translate", Language: "it"})
+		if err != nil {
+			t.Fatalf("runLocalWhisperTranscription: %v", err)
+		}
+		if after := chunkTempDirs(); after != before {
+			t.Fatalf("chunk temp dirs leaked: %d before, %d after", before, after)
+		}
+		if len(transcript.Chunks) != 4 {
+			t.Fatalf("chunks = %d, want two cues per chunk", len(transcript.Chunks))
+		}
+		// Chunk 0's cues ride their parsed times; chunk 1's shift a full chunk.
+		if transcript.Chunks[2].Start != 60 || transcript.Chunks[2].End == nil || *transcript.Chunks[2].End != 61 {
+			t.Fatalf("chunk 1's first cue = %+v, want 60–61", transcript.Chunks[2])
+		}
+		if !strings.Contains(transcript.TimestampedText, "[00:01:00.000 --> 00:01:01.000] hello") {
+			t.Fatalf("timestamped render missing the offset cue: %q", transcript.TimestampedText)
+		}
+		found := false
+		for _, notice := range transcript.Notices {
+			if strings.Contains(notice, "2 chunks") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("notices = %v, want the chunking note", transcript.Notices)
+		}
+		if len(argv) == 0 || filepath.Base(argv[0]) != "whisper-cli" {
+			t.Fatalf("argv = %v, want the resolved whisper-cli first", argv)
+		}
+		joined := strings.Join(argv, " ")
+		if !strings.Contains(joined, "-f ") || !strings.Contains(joined, "chunk-000.wav") {
+			t.Fatalf("argv %q must name the first chunk as the whisper input", joined)
+		}
+		if !strings.Contains(joined, "--vad --vad-model /models/ggml-silero-v6.2.0.bin") {
+			t.Errorf("argv %q lost the VAD flags on the chunk path", joined)
+		}
+	})
+
+	t.Run("plain mode stitches chunk texts", func(t *testing.T) {
+		transcript, _, err := runLocalWhisperTranscription(context.Background(), newConfig(ffmpegChunkScript), TranscribeAudioRequest{Audio: longWAV()})
+		if err != nil {
+			t.Fatalf("runLocalWhisperTranscription: %v", err)
+		}
+		if transcript.Timestamps != "" || len(transcript.Chunks) != 0 {
+			t.Fatalf("plain transcript = %+v, want text only", transcript)
+		}
+		lines := strings.Split(transcript.Text, "\n")
+		if len(lines) != 2 {
+			t.Fatalf("plain text lines = %d, want one per chunk", len(lines))
+		}
+	})
+
+	t.Run("failed chunk is skipped under a notice", func(t *testing.T) {
+		config := newConfig(ffmpegChunkScript)
+		config.Providers.Local.Whisper.Binary = writeFakeWhisper(t, filepath.Join(dir, "cpp-flaky"), "whisper-cli", `#!/bin/sh
+case "$*" in
+  *chunk-001.wav*) echo 'chunk boom' >&2; exit 1 ;;
+esac
+`+cppWhisperScript)
+		transcript, _, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: longWAV(), Timestamps: "segments"})
+		if err != nil {
+			t.Fatalf("a failed chunk must not fail the transcription: %v", err)
+		}
+		if len(transcript.Chunks) != 2 {
+			t.Fatalf("chunks = %d, want only chunk 0's cues", len(transcript.Chunks))
+		}
+		found := false
+		for _, notice := range transcript.Notices {
+			if strings.Contains(notice, "Chunk 1") && strings.Contains(notice, "gap") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("notices = %v, want the skipped-chunk note", transcript.Notices)
+		}
+	})
+
+	t.Run("conditions that cannot hold run the single pass", func(t *testing.T) {
+		// A clip under the chunk size, a zero chunk size, an unmeasurable
+		// payload, and a broken ffmpeg all fall back to today's single pass.
+		singlePass := func(config AppConfig, audio string) string {
+			_, argv, err := runLocalWhisperTranscription(context.Background(), config, TranscribeAudioRequest{Audio: audio, Timestamps: "segments"})
+			if err != nil {
+				t.Fatalf("runLocalWhisperTranscription: %v", err)
+			}
+			return strings.Join(argv, " ")
+		}
+		short := newConfig(ffmpegChunkScript)
+		if joined := singlePass(short, wavDataURL()); strings.Contains(joined, "chunk-000.wav") {
+			t.Fatalf("short clip took the chunk path: %q", joined)
+		}
+		off := newConfig(ffmpegChunkScript)
+		off.Providers.Local.Whisper.ChunkMinutes = 0
+		if joined := singlePass(off, longWAV()); strings.Contains(joined, "chunk-000.wav") {
+			t.Fatalf("chunk size 0 took the chunk path: %q", joined)
+		}
+		broken := newConfig("#!/bin/sh\necho 'segment boom' >&2\nexit 1\n")
+		if joined := singlePass(broken, longWAV()); strings.Contains(joined, "chunk-000.wav") {
+			t.Fatalf("a broken ffmpeg took the chunk path: %q", joined)
+		}
+	})
+}
+
+// TestMergeAppConfigClampsWhisperChunkMinutes pins the normalization: a
+// negative or nonsense-large chunk size disables chunking rather than
+// poisoning every transcription.
+func TestMergeAppConfigClampsWhisperChunkMinutes(t *testing.T) {
+	if got := mergeAppConfig(AppConfig{Providers: ConfigProviders{Local: ConfigLocalProviders{Whisper: ConfigLocalWhisper{ChunkMinutes: -5}}}}).Providers.Local.Whisper.ChunkMinutes; got != 0 {
+		t.Fatalf("negative chunk minutes = %d, want 0", got)
+	}
+	if got := mergeAppConfig(AppConfig{Providers: ConfigProviders{Local: ConfigLocalProviders{Whisper: ConfigLocalWhisper{ChunkMinutes: 999}}}}).Providers.Local.Whisper.ChunkMinutes; got != 0 {
+		t.Fatalf("nonsense chunk minutes = %d, want 0", got)
+	}
+	if got := mergeAppConfig(AppConfig{Providers: ConfigProviders{Local: ConfigLocalProviders{Whisper: ConfigLocalWhisper{ChunkMinutes: 5}}}}).Providers.Local.Whisper.ChunkMinutes; got != 5 {
+		t.Fatalf("5 chunk minutes = %d, want 5", got)
+	}
+}

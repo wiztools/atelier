@@ -286,6 +286,7 @@ export namespace main {
 	    binary?: string;
 	    model?: string;
 	    vadModel?: string;
+	    chunkMinutes?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigLocalWhisper(source);
@@ -296,6 +297,7 @@ export namespace main {
 	        this.binary = source["binary"];
 	        this.model = source["model"];
 	        this.vadModel = source["vadModel"];
+	        this.chunkMinutes = source["chunkMinutes"];
 	    }
 	}
 	export class ConfigLocalProviders {
@@ -2635,6 +2637,7 @@ export namespace main {
 	    task?: string;
 	    language?: string;
 	    timestamps?: string;
+	    subtitle?: boolean;
 	    at?: string;
 	    count?: number;
 	    start?: string;
@@ -2705,6 +2708,7 @@ export namespace main {
 	        this.task = source["task"];
 	        this.language = source["language"];
 	        this.timestamps = source["timestamps"];
+	        this.subtitle = source["subtitle"];
 	        this.at = source["at"];
 	        this.count = source["count"];
 	        this.start = source["start"];

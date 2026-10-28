@@ -1342,6 +1342,7 @@ function App() {
   const [whisperModel, setWhisperModel] = useState('');
   const [whisperBinary, setWhisperBinary] = useState('');
   const [whisperVADModel, setWhisperVADModel] = useState('');
+  const [whisperChunkMinutes, setWhisperChunkMinutes] = useState('');
   const [ffmpegBinary, setFfmpegBinary] = useState('');
   const [ffprobeBinary, setFfprobeBinary] = useState('');
   const [sipsBinary, setSipsBinary] = useState('');
@@ -2100,6 +2101,7 @@ function App() {
               binary: whisperBinary,
               model: whisperModel,
               vadModel: whisperVADModel,
+              chunkMinutes: positiveIntOrDefault(whisperChunkMinutes, 0),
             },
             ffmpeg: {
               binary: ffmpegBinary,
@@ -2159,7 +2161,7 @@ function App() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [airplaneMode, baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, replicateTranscribeModel, replicateLipsyncImageModel, replicateLipsyncVideoModel, lipsyncProvider, speechProvider, ollamaSpeechModel, replicateSpeechModel, audioProvider, replicateSoundEffectsModel, replicateSoundEffectsVideoModel, replicateAudioExtendModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel, whisperVADModel]);
+  }, [airplaneMode, baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, replicateTranscribeModel, replicateLipsyncImageModel, replicateLipsyncVideoModel, lipsyncProvider, speechProvider, ollamaSpeechModel, replicateSpeechModel, audioProvider, replicateSoundEffectsModel, replicateSoundEffectsVideoModel, replicateAudioExtendModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel, whisperVADModel, whisperChunkMinutes]);
 
   // Re-probe local CLI tools when a binary override changes — or the Local
   // Tools tab's Re-detect button bumps the nonce — so the transcription
@@ -3555,6 +3557,7 @@ function App() {
 	const nextWhisperModel = config.providers?.local?.whisper?.model ?? '';
 	const nextWhisperBinary = config.providers?.local?.whisper?.binary ?? '';
 	const nextWhisperVADModel = config.providers?.local?.whisper?.vadModel ?? '';
+	const nextWhisperChunkMinutes = config.providers?.local?.whisper?.chunkMinutes ? String(config.providers.local.whisper.chunkMinutes) : '';
 	const nextFfmpegBinary = config.providers?.local?.ffmpeg?.binary ?? '';
 	const nextFfprobeBinary = config.providers?.local?.ffprobe?.binary ?? '';
 	const nextSipsBinary = config.providers?.local?.sips?.binary ?? '';
@@ -3640,6 +3643,7 @@ function App() {
     setWhisperModel(nextWhisperModel);
     setWhisperBinary(nextWhisperBinary);
     setWhisperVADModel(nextWhisperVADModel);
+    setWhisperChunkMinutes(nextWhisperChunkMinutes);
     setFfmpegBinary(nextFfmpegBinary);
     setFfprobeBinary(nextFfprobeBinary);
     setSipsBinary(nextSipsBinary);
@@ -7135,6 +7139,23 @@ function App() {
                         value={whisperVADModel}
                         onChange={(event) => setWhisperVADModel(event.target.value)}
                         placeholder="optional: ~/.cache/whisper.cpp/ggml-silero-v6.2.0.bin"
+                      />
+                    </div>
+
+                    <div className="field">
+                      <div className="field-label-row">
+                        <label htmlFor="whisper-chunk-minutes">Whisper Chunk Size (minutes)</label>
+                        <InfoHint
+                          label="Long-clip chunking"
+                          text="For whisper.cpp: clips longer than this are transcoded to 16 kHz mono, cut into equal chunks with one ffmpeg pass, transcribed chunk by chunk, and stitched back together with offset timestamps — whisper.cpp's VAD misbehaves on long inputs (it can hallucinate one repeated line across the quiet stretches). Each chunk runs under its own timeout; a failed chunk is skipped with a notice. Empty or 0 disables chunking (single pass). whisper.cpp only; needs ffmpeg."
+                        />
+                      </div>
+                      <input
+                        id="whisper-chunk-minutes"
+                        inputMode="numeric"
+                        value={whisperChunkMinutes}
+                        onChange={(event) => setWhisperChunkMinutes(event.target.value)}
+                        placeholder="optional: e.g. 5"
                       />
                     </div>
                   </div>

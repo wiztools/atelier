@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -460,6 +461,17 @@ func runLocalWhisperTranscription(ctx context.Context, config AppConfig, req Tra
 			model = resolveDefaultWhisperCPPModel()
 		}
 		model = expandTildePath(model)
+		// The configured chunk size (Settings → Local Tools) carves long clips
+		// into ffmpeg segments transcribed independently — the full-file run's
+		// VAD behaves differently on long inputs and hallucinates over the
+		// quiet stretches (conv_863887f9cfcfc746ee9b7a4c). Any condition that
+		// can't hold (no chunk size, an unmeasurable or short clip, no ffmpeg)
+		// returns chunked=false and the single pass below runs as before.
+		if config.Providers.Local.Whisper.ChunkMinutes > 0 {
+			if transcript, chunkArgv, chunked, chunkErr := runWhisperCPPChunked(ctx, config, resolved, input.Name(), data, outDir, model, req, timestamps, vadModel); chunked {
+				return transcript, chunkArgv, chunkErr
+			}
+		}
 		args, outputPath = whisperCPPArgs(inputPath, outDir, model, req.Task, req.Language, timestamps, vadModel)
 		runFromHome = true
 	default:
@@ -574,6 +586,136 @@ func transcodeAudioForWhisperCPP(ctx context.Context, config AppConfig, input st
 // /dev/null), -vn drops embedded cover art (the audio tools' idiom).
 func whisperTranscodeWAVArgs(input, output string) []string {
 	return []string{"-y", "-i", input, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", output}
+}
+
+// whisperSegmentArgs cuts the transcoded WAV into fixed-length chunks with the
+// segment muxer — `-c copy` on PCM is sample-accurate and instant (no
+// re-encode), and every chunk is exactly chunkSeconds long except the last, so
+// chunk i's cues offset by i×chunkSeconds land on the clip's real timeline.
+func whisperSegmentArgs(input, dir string, chunkSeconds int) []string {
+	return []string{"-y", "-i", input, "-vn", "-f", "segment", "-segment_time", strconv.Itoa(chunkSeconds), "-c", "copy", filepath.Join(dir, "chunk-%03d.wav")}
+}
+
+// offsetTranscriptChunks shifts a parsed chunk's cue times onto the clip's
+// timeline. Ends shift with starts; the pointer is re-pointed (a transcriptChunk
+// End is shared nowhere else by the time the chunk list is stitched).
+func offsetTranscriptChunks(chunks []transcriptChunk, offset float64) []transcriptChunk {
+	out := make([]transcriptChunk, len(chunks))
+	for i, chunk := range chunks {
+		chunk.Start += offset
+		if chunk.End != nil {
+			end := *chunk.End + offset
+			chunk.End = &end
+		}
+		out[i] = chunk
+	}
+	return out
+}
+
+// runWhisperCPPChunked transcribes a long clip in fixed chunks when the
+// configured chunk size (Providers.Local.Whisper.ChunkMinutes) says so. The
+// full-file run's VAD selects different regions on long inputs and whisper
+// hallucinates over the quiet stretches (conv_863887f9cfcfc746ee9b7a4c: a
+// 44-minute clip transcribed as one call looped one line for its last 32
+// minutes, while 1–4 minute slices of the same audio transcribed cleanly and
+// gated true silence). Flow: measure the staged clip with the pure-Go sniff,
+// transcode to 16 kHz mono once, cut chunks with one segment pass, run
+// whisper-cli per chunk under its own timeout, parse each output, and offset
+// the cues back onto the clip's timeline. Every precondition that cannot hold
+// (no size, an unmeasurable or short clip, no ffmpeg, an empty segment) returns
+// chunked=false so the caller's single pass runs unchanged; once chunking
+// commits, a failing chunk is skipped under a notice naming its span (the
+// stitched VTT carries an honest gap) and only a total failure errors.
+// Everything temporary — the transcoded WAV and the chunk dir — dies with the
+// call. The returned argv is the first chunk's invocation: every chunk runs
+// the same flags, and the notice names the chunk count.
+func runWhisperCPPChunked(ctx context.Context, config AppConfig, resolved resolvedLocalBinary, inputPath string, audioBytes []byte, outDir, model string, req TranscribeAudioRequest, timestamps, vadModel string) (GeneratedTranscript, []string, bool, error) {
+	chunkSeconds := config.Providers.Local.Whisper.ChunkMinutes * 60
+	if chunkSeconds <= 0 {
+		return GeneratedTranscript{}, nil, false, nil
+	}
+	duration, ok := probeAudioDuration(audioBytes)
+	if !ok || duration <= float64(chunkSeconds) {
+		return GeneratedTranscript{}, nil, false, nil
+	}
+	wavPath, err := transcodeAudioForWhisperCPP(ctx, config, inputPath)
+	if err != nil {
+		return GeneratedTranscript{}, nil, false, nil
+	}
+	defer os.Remove(wavPath)
+	chunkDir, err := os.MkdirTemp("", "atelier-whisper-chunks-*")
+	if err != nil {
+		return GeneratedTranscript{}, nil, false, nil
+	}
+	defer os.RemoveAll(chunkDir)
+	if _, err := runLocalFFmpeg(ctx, config, whisperSegmentArgs(wavPath, chunkDir, chunkSeconds)); err != nil {
+		return GeneratedTranscript{}, nil, false, nil
+	}
+	segmentPattern := filepath.Join(chunkDir, "chunk-*.wav")
+	chunks, err := filepath.Glob(segmentPattern)
+	if err != nil || len(chunks) == 0 {
+		return GeneratedTranscript{}, nil, false, nil
+	}
+	sort.Strings(chunks)
+
+	// Committed: chunking owns this transcription from here.
+	notices := []string{
+		fmt.Sprintf("The clip (%s) exceeded the configured chunk size (%d min), so it was transcribed in %d chunks and the cues stitched back together — whisper.cpp's VAD misbehaves on long inputs.", formatTranscriptSeconds(duration), config.Providers.Local.Whisper.ChunkMinutes, len(chunks)),
+		"The input audio was converted to 16 kHz mono WAV before transcription, so local ffmpeg could cut it into equal chunks.",
+	}
+	timestamped := strings.TrimSpace(timestamps) != ""
+	var all []transcriptChunk
+	var plainParts []string
+	var firstArgv []string
+	succeeded := 0
+	var lastFailure error
+	for i, chunkPath := range chunks {
+		args, outputPath := whisperCPPArgs(chunkPath, outDir, model, req.Task, req.Language, timestamps, vadModel)
+		argv := append([]string{resolved.path}, args...)
+		if firstArgv == nil {
+			firstArgv = argv
+		}
+		runCtx, cancel := context.WithTimeout(ctx, localWhisperTimeout)
+		cmd := exec.CommandContext(runCtx, resolved.path, args...)
+		if home, homeErr := os.UserHomeDir(); homeErr == nil && home != "" {
+			cmd.Dir = home
+		}
+		combined, runErr := cmd.CombinedOutput()
+		cancel()
+		if runErr != nil {
+			lastFailure = fmt.Errorf("whisper failed on chunk %d: %v: %s", i, runErr, truncateLocalToolOutput(combined))
+			notices = append(notices, fmt.Sprintf("Chunk %d (%s–%s) failed to transcribe and was skipped — the stitched transcript has a gap there.", i, formatTranscriptSeconds(float64(i*chunkSeconds)), formatTranscriptSeconds(float64((i+1)*chunkSeconds))))
+			continue
+		}
+		raw, readErr := os.ReadFile(outputPath)
+		if readErr != nil {
+			lastFailure = fmt.Errorf("whisper produced no transcript for chunk %d at %s", i, outputPath)
+			notices = append(notices, fmt.Sprintf("Chunk %d (%s–%s) produced no transcript and was skipped.", i, formatTranscriptSeconds(float64(i*chunkSeconds)), formatTranscriptSeconds(float64((i+1)*chunkSeconds))))
+			continue
+		}
+		succeeded++
+		if timestamped {
+			parsed := parseWhisperVTT(raw)
+			all = append(all, offsetTranscriptChunks(parsed, float64(i)*float64(chunkSeconds))...)
+		} else {
+			if text := strings.TrimSpace(string(raw)); text != "" {
+				plainParts = append(plainParts, text)
+			}
+		}
+	}
+	if succeeded == 0 {
+		err := fmt.Errorf("every transcription chunk failed (%d chunks); last error: %w", len(chunks), lastFailure)
+		return GeneratedTranscript{}, firstArgv, true, err
+	}
+	transcript := GeneratedTranscript{Timestamps: timestamps, Notices: notices}
+	if timestamped {
+		transcript.Chunks = all
+		transcript.TimestampedText = renderTimestampedChunks(all)
+		transcript.Text = joinTranscriptChunkText(all)
+	} else {
+		transcript.Text = strings.Join(plainParts, "\n")
+	}
+	return transcript, firstArgv, true, nil
 }
 
 // truncateLocalToolOutput bounds a CLI's combined output inside an error

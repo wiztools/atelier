@@ -448,10 +448,20 @@ type ConfigLocalProviders struct {
 // long silences are skipped instead of transcribed as hallucinated text.
 // whisper.cpp only — the openai-whisper CLI has no VAD flags, so a set value
 // there rides a notice rather than the command line.
+// ChunkMinutes is the optional long-clip chunk size for whisper.cpp (0
+// disables): when the clip measures longer than this many minutes, the runner
+// transcodes it to 16 kHz mono once, cuts it into that-many-minute segments
+// with one ffmpeg pass, transcribes each chunk under its own timeout, and
+// stitches the cues back together with offset timestamps — the full-file run's
+// VAD behaves differently on long inputs (conv_863887f9cfcfc746ee9b7a4c: it
+// decodes the silent gaps and hallucinates instead of the quiet speech), and
+// short clips do not. Needs local ffmpeg; without it, or when the clip can't
+// be measured, the runner falls back to the single pass.
 type ConfigLocalWhisper struct {
-	Binary   string `json:"binary,omitempty"`
-	Model    string `json:"model,omitempty"`
-	VADModel string `json:"vadModel,omitempty"`
+	Binary       string `json:"binary,omitempty"`
+	Model        string `json:"model,omitempty"`
+	VADModel     string `json:"vadModel,omitempty"`
+	ChunkMinutes int    `json:"chunkMinutes,omitempty"`
 }
 
 // ConfigLocalFFmpeg configures the local ffmpeg CLI behind the video tools
@@ -4672,6 +4682,12 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	config.Providers.Local.Whisper.Binary = strings.TrimSpace(config.Providers.Local.Whisper.Binary)
 	config.Providers.Local.Whisper.Model = strings.TrimSpace(config.Providers.Local.Whisper.Model)
 	config.Providers.Local.Whisper.VADModel = strings.TrimSpace(config.Providers.Local.Whisper.VADModel)
+	// The chunk size is minutes; a non-positive value disables chunking and a
+	// nonsense-large one would make single-invocation runs pointless, so it
+	// clamps to [0, 120].
+	if config.Providers.Local.Whisper.ChunkMinutes < 0 || config.Providers.Local.Whisper.ChunkMinutes > 120 {
+		config.Providers.Local.Whisper.ChunkMinutes = 0
+	}
 	config.Providers.Local.FFmpeg.Binary = strings.TrimSpace(config.Providers.Local.FFmpeg.Binary)
 	config.Providers.Local.FFprobe.Binary = strings.TrimSpace(config.Providers.Local.FFprobe.Binary)
 	if config.Models.ImageProvider == "fal" && strings.TrimSpace(config.Providers.Fal.Model) == "" {
