@@ -283,11 +283,15 @@ type HarnessToolCall struct {
 	// Task and Language are optional transcribe_audio inputs. Task selects
 	// "transcribe" (default) or "translate"; Language is an optional hint
 	// (empty lets the model auto-detect). Timestamps requests a time-stamped
-	// transcript — "words" or "segments" (empty returns plain text). See
-	// transcribeAudioParamSchema.
+	// transcript — "words" or "segments" (empty returns plain text). Subtitle
+	// is the intent-shaped form of the same ask: true whenever the user wants
+	// a subtitle/caption file (vtt, srt, captions), folding to segment
+	// timestamps when Timestamps is empty so the .vtt artifact rides the
+	// reply. See transcribeAudioParamSchema.
 	Task       string `json:"task,omitempty"`
 	Language   string `json:"language,omitempty"`
 	Timestamps string `json:"timestamps,omitempty"`
+	Subtitle   bool   `json:"subtitle,omitempty"`
 	// At is the optional screenshot_video input naming the timestamp(s) of the
 	// frame(s) to capture — one timestamp ("42") or a comma-separated list
 	// ("0,9.08,18.17"), each in seconds or clock ("00:01:30") form. Count is
@@ -2695,6 +2699,15 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 						// optional artifact id names a specific transcript
 						// artifact when the newest one isn't the source.
 						"artifactId": map[string]any{"type": "string"},
+						// transcribe_audio inputs: the spoken-language task
+						// and hint, the timestamp granularity, and the
+						// intent-shaped subtitle flag (a subtitle/caption ask
+						// — folds to segment timestamps). Per-tool validated;
+						// the schema only frees the grammar to emit them.
+						"task":       map[string]any{"type": "string"},
+						"language":   map[string]any{"type": "string"},
+						"timestamps": map[string]any{"type": "string"},
+						"subtitle":   map[string]any{"type": "boolean"},
 						// generate_voice input (voice design): the line the
 						// designed voice's preview clip speaks; omitted for the
 						// tool's default preview line.
@@ -3368,6 +3381,10 @@ func setToolCallField(call *HarnessToolCall, key, raw string) {
 		call.Language = raw
 	case "task":
 		call.Task = raw
+	case "timestamps":
+		call.Timestamps = raw
+	case "subtitle":
+		call.Subtitle = raw == "true"
 	case "scale":
 		call.Scale = raw
 	case "command":

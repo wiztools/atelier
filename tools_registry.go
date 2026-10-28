@@ -2312,7 +2312,7 @@ func transcribeAudioToolDefinition(config AppConfig) HarnessToolDefinition {
 				Audio:      attachedAudio,
 				Task:       strings.TrimSpace(call.Task),
 				Language:   strings.TrimSpace(call.Language),
-				Timestamps: strings.TrimSpace(call.Timestamps),
+				Timestamps: transcribeRequestTimestamps(call),
 			}
 			var backend string
 			switch resolveTranscriptionProvider(tools.Config) {
@@ -2465,7 +2465,7 @@ func transcribeAudioDescription(provider string) string {
 		timestampScope = "word-level where the backend supports it; the Replicate speech-to-text models provide segments only"
 	}
 	return "Use this when the user asks to transcribe, caption, or get a text version of an attached audio clip (a voice memo, recording, interview, etc.). Requires an attached audio clip. " +
-		backend + modelHint + " Set task to \"translate\" to translate the audio's speech to English text instead of transcribing it — task \"translate\" together with timestamps turns foreign-language audio (a \"translate this Japanese audio to English subtitles\" ask) into an English subtitle track; the timestamped artifact rides the reply and convert_subtitles or burn_subtitles can rework its format or put it on the picture. Pass timestamps: \"words\" or \"segments\" when the user wants timing information — the result then also carries a time-stamped transcript (" + timestampScope + ")."
+		backend + modelHint + " Set subtitle to true whenever the user asks for a subtitle or caption file (\"generate vtt\", \"make an srt\", \"add captions\") — the transcription then carries segment timings and a .vtt subtitle artifact rides the reply; without it the result is a plain text transcript with no timing, from which no subtitle file can be built. Chain convert_subtitles (format \"srt\") for SubRip output, or burn_subtitles to render the captions onto an attached video. Pass timestamps: \"words\" or \"segments\" when the user wants timing information in the transcript itself — the result then also carries a time-stamped transcript (" + timestampScope + "). Set task to \"translate\" to translate the audio's speech to English text instead of transcribing it — combine it with subtitle for a \"translate this Japanese audio to English subtitles\" ask."
 }
 
 // transcribeAudioSummary names the backend, model, and timestamp granularity
@@ -2494,8 +2494,8 @@ func transcribeAudioSummary(backend, model, task, timestamps string) string {
 
 // transcribeAudioParamSchema describes transcribe_audio's optional inputs. There
 // is no "content" param — the audio comes from the user's attachment, not a
-// prompt. task, language, and timestamps are the steering inputs the planner
-// can set; all are optional with sensible defaults.
+// prompt. task, language, timestamps, and subtitle are the steering inputs the
+// planner can set; all are optional with sensible defaults.
 func transcribeAudioParamSchema() map[string]any {
 	return map[string]any{
 		"type":                 "object",
@@ -2506,6 +2506,10 @@ func transcribeAudioParamSchema() map[string]any {
 				"original language, or \"translate\" to translate the speech to English text."),
 			"language": stringParam("Optional — the spoken language as a two-letter code (e.g. \"fr\") " +
 				"to guide transcription. Omit to let the model auto-detect."),
+			"subtitle": boolParam("Set true whenever the user asks for a subtitle or caption file — " +
+				"\"generate vtt\", \"make an srt\", \"add captions\". The transcription then carries segment timings " +
+				"and a .vtt subtitle artifact rides the reply; chain convert_subtitles (format \"srt\") for SubRip " +
+				"or burn_subtitles to render it onto a video."),
 			"timestamps": enumParam("Optional — \"segments\" or \"words\" to also return a time-stamped "+
 				"transcript (each segment or word with start–end times). Word-level requires a backend "+
 				"that supports it (local whisper, fal-ai/whisper); wizper and the Replicate speech-to-text models serve segments only.",
@@ -2513,6 +2517,23 @@ func transcribeAudioParamSchema() map[string]any {
 		},
 		"required": []string{},
 	}
+}
+
+// transcribeRequestTimestamps resolves the transcription's timestamp
+// granularity from the planner call. An explicit timestamps value wins;
+// subtitle:true folds to segment-level when none was named, because a
+// subtitle/caption file cannot exist without timings — the fold is what flips
+// the local whisper runner from -otxt to -ovtt (and the cloud bodies to their
+// chunk-level inputs), so a subtitle ask delivers a .vtt artifact even when
+// the planner expressed the intent only through subtitle.
+func transcribeRequestTimestamps(call HarnessToolCall) string {
+	if ts := strings.TrimSpace(call.Timestamps); ts != "" {
+		return ts
+	}
+	if call.Subtitle {
+		return "segments"
+	}
+	return ""
 }
 
 // lipsyncDescription assembles the lip_sync tool description. When the

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -915,5 +916,120 @@ func TestHarnessRunCostMicros(t *testing.T) {
 	}
 	if got := harnessRunCostMicros(HarnessRun{}); got != 0 {
 		t.Fatalf("empty run cost = %d, want 0", got)
+	}
+}
+
+// TestTranscribeAudioSubtitleParamContract pins the planner-facing contract of
+// the subtitle ask: the param schema declares `subtitle` with a description
+// naming the file formats, the tool description teaches it unconditionally (a
+// same-language "create subtitle" ask has no translate clause to lean on —
+// conv_8ef7cf03a54ec7d30b62bce1's turn 6), and transcribeRequestTimestamps
+// folds subtitle:true to segment timings so the whisper runner writes -ovtt
+// and the .vtt artifact rides the reply.
+func TestTranscribeAudioSubtitleParamContract(t *testing.T) {
+	schema := transcribeAudioParamSchema()
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected properties map, got %T", schema["properties"])
+	}
+	prop, ok := props["subtitle"].(map[string]any)
+	if !ok {
+		t.Fatalf("transcribe_audio param schema must expose a `subtitle` property; got %v", props)
+	}
+	if prop["type"] != "boolean" {
+		t.Fatalf("subtitle type = %v, want boolean", prop["type"])
+	}
+	desc, _ := prop["description"].(string)
+	for _, want := range []string{"vtt", "srt", "captions"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("subtitle description %q must name %q", desc, want)
+		}
+	}
+	toolDesc := transcribeAudioDescription(transcriptionProviderFal)
+	if !strings.Contains(toolDesc, "subtitle") {
+		t.Fatalf("transcribe_audio description must surface the subtitle flag to the planner")
+	}
+	if !strings.Contains(toolDesc, "plain text transcript with no timing") {
+		t.Fatalf("transcribe_audio description must state the consequence of omitting subtitle")
+	}
+}
+
+// TestTranscribeRequestTimestampsFoldsSubtitle pins the fold: an explicit
+// timestamps value wins (word-level stays word-level beside subtitle), and
+// subtitle:true alone lands on segment-level — the granularity that becomes a
+// subtitle file on every backend.
+func TestTranscribeRequestTimestampsFoldsSubtitle(t *testing.T) {
+	cases := []struct {
+		name string
+		call HarnessToolCall
+		want string
+	}{
+		{"plain call", HarnessToolCall{}, ""},
+		{"subtitle alone", HarnessToolCall{Subtitle: true}, "segments"},
+		{"explicit segments", HarnessToolCall{Timestamps: "segments"}, "segments"},
+		{"subtitle plus words", HarnessToolCall{Subtitle: true, Timestamps: "words"}, "words"},
+		{"whitespace timestamps wins", HarnessToolCall{Subtitle: true, Timestamps: " words "}, "words"},
+	}
+	for _, tc := range cases {
+		if got := transcribeRequestTimestamps(tc.call); got != tc.want {
+			t.Errorf("%s: transcribeRequestTimestamps = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	// The native tool-call dialect decodes by json tag, so the planner's
+	// subtitle flag must land on the field the fold reads.
+	var call HarnessToolCall
+	if err := json.Unmarshal([]byte(`{"name":"transcribe_audio","subtitle":true}`), &call); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !call.Subtitle {
+		t.Fatalf("native decode lost the subtitle flag: %+v", call)
+	}
+}
+
+// TestHarnessToolPlanSchemaHasTranscribeParams pins the format-mode grammar:
+// without task/language/timestamps/subtitle in the plan schema, a
+// grammar-constrained planner cannot emit them at all and every transcription
+// degrades to a plain same-language transcript.
+func TestHarnessToolPlanSchemaHasTranscribeParams(t *testing.T) {
+	schema := harnessToolPlanSchema(filesystemToolRegistry())
+	items := schema["properties"].(map[string]any)["toolCalls"].(map[string]any)["items"].(map[string]any)
+	properties := items["properties"].(map[string]any)
+	if _, ok := properties["task"].(map[string]any); !ok {
+		t.Errorf("plan schema properties missing %q", "task")
+	}
+	if _, ok := properties["language"].(map[string]any); !ok {
+		t.Errorf("plan schema properties missing %q", "language")
+	}
+	if _, ok := properties["timestamps"].(map[string]any); !ok {
+		t.Errorf("plan schema properties missing %q", "timestamps")
+	}
+	subtitle, ok := properties["subtitle"].(map[string]any)
+	if !ok {
+		t.Fatalf("plan schema properties missing %q", "subtitle")
+	}
+	if subtitle["type"] != "boolean" {
+		t.Fatalf("plan schema subtitle type = %v, want boolean", subtitle["type"])
+	}
+}
+
+// TestApplyKwargsSubtitleAndTimestamps covers the kwargs/XML recovery dialect:
+// both keys must reach the fields the executor's fold reads, with subtitle
+// parsed as a boolean.
+func TestApplyKwargsSubtitleAndTimestamps(t *testing.T) {
+	var call HarnessToolCall
+	applyKwargs(&call, "task='translate', language='it', subtitle=true")
+	if call.Task != "translate" || call.Language != "it" || !call.Subtitle {
+		t.Fatalf("applyKwargs = %+v, want task/language/subtitle mapped", call)
+	}
+	if got := transcribeRequestTimestamps(call); got != "segments" {
+		t.Fatalf("folded timestamps = %q, want segments", got)
+	}
+	var wordy HarnessToolCall
+	applyKwargs(&wordy, "timestamps='words'")
+	if wordy.Timestamps != "words" {
+		t.Fatalf("timestamps kwarg = %q, want words", wordy.Timestamps)
+	}
+	if got := transcribeRequestTimestamps(wordy); got != "words" {
+		t.Fatalf("folded timestamps = %q, want words", got)
 	}
 }
