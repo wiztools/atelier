@@ -260,6 +260,11 @@ export function SubtitleEditor(props: {
         {format: result.format, cueCount: result.cueCount, at: new Date().toLocaleTimeString(), artifactId: result.artifactId, url: result.url},
         ...entries,
       ]);
+      // Re-baseline on exactly what was saved: the working cues now ARE this
+      // revision, so confirm-leave sees nothing unsaved and the next save
+      // chains its provenance from it.
+      setBaseline(cloneSubtitleDoc(doc));
+      setActiveArtifactID(result.artifactId);
       props.onSavedToConversation?.();
     } catch (error) {
       setSaveError(formatEditorError(error));

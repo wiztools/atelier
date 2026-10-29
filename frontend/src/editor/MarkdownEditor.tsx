@@ -419,6 +419,11 @@ export function MarkdownEditor(props: {
         {at: new Date().toLocaleTimeString(), artifactId: result.artifactId, url: result.url, wordCount: result.wordCount, format: result.format === 'fountain' ? 'fountain' : 'markdown'},
         ...entries,
       ]);
+      // Re-baseline on exactly what was saved: the working text now IS this
+      // revision, so confirm-leave sees nothing unsaved and the next save
+      // chains its provenance from it.
+      setBaseline(text);
+      setActiveArtifactID(result.artifactId);
       props.onSavedToConversation?.();
     } catch (error) {
       setSaveError(formatEditorError(error));
