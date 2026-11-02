@@ -889,8 +889,9 @@ func nonEmptyImages(images []string) []string {
 }
 
 // firstAttachedImage returns the first non-empty attached image, for the
-// single-image consumers of AttachedImages (the local image tools, image
-// upscaling).
+// single-image consumers of AttachedImages (transform_image, probe_image,
+// optimize_image, image upscaling — convert_image loops over every attached
+// image instead).
 func firstAttachedImage(images []string) string {
 	for _, image := range images {
 		if s := strings.TrimSpace(image); s != "" {

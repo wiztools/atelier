@@ -749,13 +749,14 @@ func basicImageToolDefinitions(config AppConfig) []HarnessToolDefinition {
 	}
 }
 
-// convertImageToolDefinition exposes convert_image: change an attached
-// image's format (and quality) on the platform's basic image backend.
+// convertImageToolDefinition exposes convert_image: change EVERY attached
+// image's format (and quality) in one call on the platform's basic image
+// backend.
 func convertImageToolDefinition(dialect basicImageDialect) HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "convert_image",
 		Title:       "Convert image",
-		Description: "Use this when the user asks to convert an attached image to another format — make a JPEG or PNG out of an iPhone HEIC photo, export as HEIC/AVIF/TIFF/GIF/BMP/JP2, or re-encode at a smaller size. Requires an attached image (one attached or @-mentioned this turn, or the conversation's newest image). format is one of \"jpeg\", \"png\", \"heic\", \"avif\", \"tiff\", \"gif\", \"bmp\", \"jp2\" (webp output needs the optimize_image tool); quality is optional, 1-100, and applies to jpeg/heic/jp2. The converted image is attached to the assistant reply and becomes the conversation's newest image.",
+		Description: "Use this when the user asks to convert an attached image to another format — make a JPEG or PNG out of an iPhone HEIC photo, export as HEIC/AVIF/TIFF/GIF/BMP/JP2, or re-encode at a smaller size. Requires an attached image (any images attached or @-mentioned this turn, or the conversation's newest image) and converts EVERY attached image in one call, in attachment order — a bare \"convert these to png\" ask with several attachments is exactly one call. A failure on one image skips it with a notice; the call fails only when nothing converts. format is one of \"jpeg\", \"png\", \"heic\", \"avif\", \"tiff\", \"gif\", \"bmp\", \"jp2\" (webp output needs the optimize_image tool); quality is optional, 1-100, and applies to jpeg/heic/jp2. The converted images are attached to the assistant reply and the last becomes the conversation's newest image.",
 		Example:     `{"name":"convert_image","format":"jpeg","quality":85}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: convertImageParamSchema(),
@@ -778,8 +779,8 @@ func convertImageToolDefinition(dialect basicImageDialect) HarnessToolDefinition
 			return nil
 		},
 		Execute: func(ctx context.Context, tools HarnessToolExecutionContext, call HarnessToolCall) (any, string, error) {
-			source := firstAttachedImage(tools.AttachedImages)
-			if source == "" {
+			sources := nonEmptyImages(tools.AttachedImages)
+			if len(sources) == 0 {
 				return nil, "conversion requires an attached image", errors.New("convert_image requires an attached image — ask the user to attach one first")
 			}
 			format := strings.TrimSpace(call.Format)
@@ -787,30 +788,64 @@ func convertImageToolDefinition(dialect basicImageDialect) HarnessToolDefinition
 			if call.Quality > 0 && convertQualityFormats[format] {
 				quality = strconv.Itoa(call.Quality)
 			}
+			prompt := "converted to " + format
+			if quality != "" {
+				prompt += " (quality " + quality + ")"
+			}
 			staging, err := os.MkdirTemp("", "atelier-image-*")
 			if err != nil {
 				return nil, "conversion failed", err
 			}
 			defer os.RemoveAll(staging)
-			input, _, err := stageAttachedImage(staging, "input", source)
-			if err != nil {
-				return nil, "conversion failed", err
+			// Every attached image converts in one call (the compose_images
+			// collage loop): a failure on one image skips it under a notice
+			// and only a zero-success run fails the call.
+			var result ToolImageResult
+			var firstArgv []string
+			var lastErr error
+			var notices []string
+			for i, source := range sources {
+				input, _, err := stageAttachedImage(staging, fmt.Sprintf("input-%03d", i+1), source)
+				if err != nil {
+					notices = append(notices, fmt.Sprintf("skipped image %d of %d: %v", i+1, len(sources), err))
+					lastErr = err
+					continue
+				}
+				output := filepath.Join(staging, fmt.Sprintf("converted-%03d", i+1)+imageFormatExtension(format))
+				_, convertArgv, err := dialect.run(ctx, tools.Config, dialect.convertArgs(input, format, quality, output))
+				if err != nil {
+					notices = append(notices, fmt.Sprintf("skipped image %d of %d: %v", i+1, len(sources), err))
+					lastErr = err
+					continue
+				}
+				if firstArgv == nil {
+					// Every image runs the same flags, so the activity records
+					// the first invocation's argv (the whisper-chunk pattern).
+					firstArgv = convertArgv
+				}
+				part, err := imageResultFromStagedFile(output, format, prompt, dialect.name)
+				if err != nil {
+					notices = append(notices, fmt.Sprintf("skipped image %d of %d: %v", i+1, len(sources), err))
+					lastErr = err
+					continue
+				}
+				result.Count += part.Count
+				result.Images = append(result.Images, part.Images...)
 			}
-			output := filepath.Join(staging, "converted"+imageFormatExtension(format))
-			_, convertArgv, err := dialect.run(ctx, tools.Config, dialect.convertArgs(input, format, quality, output))
-			if err != nil {
-				return nil, "conversion failed", err
+			if result.Count == 0 {
+				return nil, "conversion failed", fmt.Errorf("all %d attached images failed to convert: %w", len(sources), lastErr)
 			}
-			prompt := "converted to " + format
-			if quality != "" {
-				prompt += " (quality " + quality + ")"
+			result.Model = dialect.name
+			result.Prompt = prompt
+			result.Notices = notices
+			result.Command = firstArgv
+			if result.Count == len(sources) {
+				if result.Count == 1 {
+					return result, fmt.Sprintf("converted the attached image to %s with %s", format, dialect.name), nil
+				}
+				return result, fmt.Sprintf("converted %d attached images to %s with %s", result.Count, format, dialect.name), nil
 			}
-			result, err := imageResultFromStagedFile(output, format, prompt, dialect.name)
-			if err != nil {
-				return nil, "conversion failed", err
-			}
-			result.Command = convertArgv
-			return result, fmt.Sprintf("converted the attached image to %s with %s", format, dialect.name), nil
+			return result, fmt.Sprintf("converted %d of %d attached images to %s with %s", result.Count, len(sources), format, dialect.name), nil
 		},
 		Activity: basicImageActivity(dialect, "convert"),
 	}

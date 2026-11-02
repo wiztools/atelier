@@ -474,6 +474,118 @@ func TestSipsConvertExecutes(t *testing.T) {
 	if !strings.HasPrefix(result.Result.(ToolImageResult).Images[0], "data:image/jpeg;base64,") {
 		t.Errorf("result image is not a jpeg data URL")
 	}
+	if !strings.Contains(result.Summary, "converted the attached image to jpeg") {
+		t.Errorf("summary = %q, want the singular conversion named", result.Summary)
+	}
+}
+
+// TestSipsConvertExecutesMultipleImages pins the multi-image contract: every
+// attached image converts in one call (conv_ffc9301ac5dcb54eb15d914b — a
+// two-attachment "convert these to png" converted only the first), the result
+// merges one entry per image, and the summary pluralizes.
+func TestSipsConvertExecutesMultipleImages(t *testing.T) {
+	config, bin := sipsTestConfig(t)
+	result := executeImageTool(t, config, HarnessToolExecutionContext{AttachedImages: []string{imageDataURL("FIRST"), imageDataURL("SECOND")}}, "convert_image", HarnessToolCall{Format: "png"})
+	if result.Status != "completed" {
+		t.Fatalf("status = %s (%s)", result.Status, result.Error)
+	}
+	args := fakeCLIArgs(t, bin)
+	if len(args) != 2 {
+		t.Fatalf("sips invocations = %d (%v), want one per attached image", len(args), args)
+	}
+	converted := result.Result.(ToolImageResult)
+	if converted.Count != 2 || len(converted.Images) != 2 {
+		t.Fatalf("result count/images = %d/%d, want 2/2", converted.Count, len(converted.Images))
+	}
+	for _, image := range converted.Images {
+		if !strings.HasPrefix(image, "data:image/png;base64,") {
+			t.Errorf("converted image is not a png data URL")
+		}
+	}
+	if !strings.Contains(result.Summary, "converted 2 attached images to png") {
+		t.Errorf("summary = %q, want the plural conversion named", result.Summary)
+	}
+	if len(converted.Command) == 0 || !strings.Contains(strings.Join(converted.Command, " "), "input-001") {
+		t.Errorf("command = %v, want the first invocation's argv", converted.Command)
+	}
+}
+
+// TestSipsConvertSkipsUndecodableImage pins the partial-success rule: a slot
+// entry that does not decode is skipped under a notice while the decodable
+// images still convert.
+func TestSipsConvertSkipsUndecodableImage(t *testing.T) {
+	config, bin := sipsTestConfig(t)
+	result := executeImageTool(t, config, HarnessToolExecutionContext{AttachedImages: []string{imageDataURL("GOOD"), "not-a-data-url"}}, "convert_image", HarnessToolCall{Format: "png"})
+	if result.Status != "completed" {
+		t.Fatalf("status = %s (%s)", result.Status, result.Error)
+	}
+	if args := fakeCLIArgs(t, bin); len(args) != 1 {
+		t.Fatalf("sips invocations = %d (%v), want one for the decodable image", len(args), args)
+	}
+	converted := result.Result.(ToolImageResult)
+	if converted.Count != 1 || len(converted.Images) != 1 {
+		t.Fatalf("result count/images = %d/%d, want 1/1", converted.Count, len(converted.Images))
+	}
+	if len(result.Notices) != 1 || !strings.Contains(result.Notices[0], "skipped image 2 of 2") {
+		t.Fatalf("notices = %v, want one naming the skipped image", result.Notices)
+	}
+	if !strings.Contains(result.Summary, "converted 1 of 2 attached images") {
+		t.Errorf("summary = %q, want the partial count named", result.Summary)
+	}
+}
+
+// TestSipsConvertAllUndecodableFails pins the zero-success rule: when nothing
+// converts the call fails instead of delivering an empty result.
+func TestSipsConvertAllUndecodableFails(t *testing.T) {
+	config, bin := sipsTestConfig(t)
+	result := executeImageTool(t, config, HarnessToolExecutionContext{AttachedImages: []string{"junk-one", "junk-two"}}, "convert_image", HarnessToolCall{Format: "png"})
+	if result.Status != "failed" || !strings.Contains(result.Error, "all 2 attached images failed to convert") {
+		t.Fatalf("status/error = %s/%s, want the all-failed error", result.Status, result.Error)
+	}
+	if _, err := os.Stat(filepath.Join(bin, "args.txt")); !os.IsNotExist(err) {
+		t.Errorf("the fake CLI ran on undecodable attachments: %v", err)
+	}
+}
+
+// TestSipsConvertSkipsFailedImage pins the CLI-failure skip: when the backend
+// fails on one image mid-loop, the call still delivers the rest under a
+// notice (the contact-sheet misses pattern) instead of aborting the call.
+func TestSipsConvertSkipsFailedImage(t *testing.T) {
+	withRealLocalLookup(t)
+	pinRuntimeGOOS(t, "darwin")
+	dir := t.TempDir()
+	failingScript := `#!/bin/sh
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+printf '%s\n' "$*" >> "$dir/args.txt"
+for a in "$@"; do
+  case "$a" in *input-002*) exit 1;; esac
+done
+in=""
+out=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--out" ]; then out="$a"; fi
+  if [ "$a" = "--out" ]; then in="$prev"; fi
+  prev="$a"
+done
+if [ -n "$in" ] && [ -n "$out" ]; then cp "$in" "$out"; fi
+`
+	config := defaultAppConfig()
+	config.Providers.Local.Sips.Binary = writeFakeWhisper(t, filepath.Join(dir, "bin"), "sips", failingScript)
+	result := executeImageTool(t, config, HarnessToolExecutionContext{AttachedImages: []string{imageDataURL("A"), imageDataURL("B"), imageDataURL("C")}}, "convert_image", HarnessToolCall{Format: "png"})
+	if result.Status != "completed" {
+		t.Fatalf("status = %s (%s)", result.Status, result.Error)
+	}
+	converted := result.Result.(ToolImageResult)
+	if converted.Count != 2 || len(converted.Images) != 2 {
+		t.Fatalf("result count/images = %d/%d, want 2/2 (the images around the failed one)", converted.Count, len(converted.Images))
+	}
+	if len(result.Notices) != 1 || !strings.Contains(result.Notices[0], "skipped image 2 of 3") {
+		t.Fatalf("notices = %v, want one naming the failed image", result.Notices)
+	}
+	if !strings.Contains(result.Summary, "converted 2 of 3 attached images") {
+		t.Errorf("summary = %q, want the partial count named", result.Summary)
+	}
 }
 
 // TestSipsTransformExecutes pins the one-op-per-invocation contract: an
@@ -542,7 +654,7 @@ func TestBasicImageToolsOnImageMagick(t *testing.T) {
 	if result.Status != "completed" {
 		t.Fatalf("convert status = %s (%s)", result.Status, result.Error)
 	}
-	if args := fakeCLIArgs(t, bin); len(args) != 1 || !strings.Contains(args[0], "-quality 85") || !strings.Contains(args[0], "converted.jpg") || strings.Contains(args[0], "-s format") {
+	if args := fakeCLIArgs(t, bin); len(args) != 1 || !strings.Contains(args[0], "-quality 85") || !strings.Contains(args[0], "converted-001.jpg") || strings.Contains(args[0], "-s format") {
 		t.Fatalf("convert invocation = %v", args)
 	}
 	if image := result.Result.(ToolImageResult); image.Model != imageMagickModelName {
@@ -1121,12 +1233,12 @@ func TestHarnessHEIFAttachmentConverts(t *testing.T) {
 	}
 	stagedHEIC := false
 	for _, args := range invocations {
-		if strings.Contains(args, "input.heic") {
+		if strings.Contains(args, "input-001.heic") {
 			stagedHEIC = true
 		}
 	}
 	if !stagedHEIC {
-		t.Fatalf("sips args = %v, want the staged input named input.heic", invocations)
+		t.Fatalf("sips args = %v, want the staged input named input-001.heic", invocations)
 	}
 	// The user turn persists the HEIF bytes as a .heic artifact; the assistant
 	// turn carries the converted image.
