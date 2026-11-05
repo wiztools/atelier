@@ -683,7 +683,11 @@ func TestWritePendingChatConversationAdoptsStagedUpload(t *testing.T) {
 		t.Fatalf("staged upload should remain resolvable after adoption: %v", err)
 	}
 	adoptedPath := strings.TrimPrefix(videoURLs[0], artifactPrefix)
-	if !strings.Contains(adoptedPath, filepath.Join("conversations", "2026", "10", conversationID, "artifacts")) {
+	// The artifacts dir carries a year/month segment between "conversations"
+	// and the id — asserted as id + "artifacts", so the check survives a
+	// month rollover (the date is incidental; the conversation scoping is
+	// the fact under test).
+	if !strings.Contains(adoptedPath, filepath.Join(conversationID, "artifacts")) {
 		t.Fatalf("adopted URL %q does not point at the conversation's artifacts dir", videoURLs[0])
 	}
 	if !isVideoBytes(mustRead(t, adoptedPath)) {
