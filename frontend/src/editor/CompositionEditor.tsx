@@ -3,6 +3,7 @@ import * as AppBindings from '../../wailsjs/go/main/App';
 import {CancelCompositionRender, SaveComposition, SaveVideo} from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
 import {EventsOff, EventsOn} from '../../wailsjs/runtime/runtime';
+import {AudioPeaksEntry, loadAudioPeaks, sliceAudioPeaks, waveformPath} from './audioPeaks';
 import {EditsPanel} from './EditsPanel';
 import {EditorHeader} from './EditorHeader';
 import {MediaPicker} from './MediaPicker';
@@ -11,6 +12,7 @@ import {
   CompositionClip,
   CompositionDoc,
   CompositionFit,
+  CompositionMediaRef,
   CompositionSegment,
   addClip,
   addDuck,
@@ -20,6 +22,7 @@ import {
   clipDurationSeconds,
   compositionAudioExtent,
   compositionClipLayout,
+  compositionIsAudioOnly,
   compositionMaxAudioLanes,
   compositionProblems,
   compositionSequenceDuration,
@@ -63,6 +66,11 @@ export type CompositionEditorHandle = {
   // rule: a project conversation outside the sidebar's recency window keeps
   // its library scope, an independent conversation passes none.
   libraryID: string;
+  // The ＋ Audio action's opening intent: an empty draft presents audio-first
+  // (one starter lane, no video-frame chrome) instead of waiting for content
+  // to decide. Once any video clip exists — or on any saved revision — the
+  // content rule (compositionIsAudioOnly) takes over and this is moot.
+  audioFirst?: boolean;
 };
 
 type EditorLogEntry = {
@@ -225,6 +233,55 @@ function TransitionControls(props: {doc: CompositionDoc; clipID: string; commit:
   );
 }
 
+// segmentWaveformBars is each segment waveform's bar count — the SVG
+// stretches (preserveAspectRatio="none") to whatever width the segment
+// renders at, so one fixed resolution serves every zoom level.
+const segmentWaveformBars = 140;
+
+// initialCompositionDoc adapts the wire source. An audio-first draft (＋
+// Audio) with nothing measured yet starts on one empty lane so the timeline
+// reads as an audio project from the first frame; doc and baseline share the
+// same instance, so the starter lane is scaffolding, not a pending edit (and
+// an empty-lane save is valid — validateCompositionDoc normalizes it).
+function initialCompositionDoc(source: main.CompositionSourceInfo, audioFirst?: boolean): CompositionDoc {
+  const doc = normalizeCompositionDoc(source.doc);
+  return audioFirst && doc.video.length === 0 && doc.audioLanes.length === 0 ? addLane(doc) : doc;
+}
+
+// useAudioPeaksEntry resolves one ref's decoded waveform peaks through
+// audioPeaks.ts's per-URL cache. Null while loading or when the file cannot
+// be fetched/decoded — the segment then renders plain, as before.
+function useAudioPeaksEntry(ref: CompositionMediaRef): AudioPeaksEntry | null {
+  const url = ref.path && ref.path.startsWith('/') ? `/atelier-artifact${ref.path}` : '';
+  const [entry, setEntry] = useState<AudioPeaksEntry | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setEntry(null);
+    if (!url) return;
+    void loadAudioPeaks(url).then((result) => {
+      if (!cancelled && result) setEntry(result);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [url]);
+  return entry;
+}
+
+// SegmentWaveform draws the segment's source span as mirrored peak bars —
+// the audio sees itself. Pure display: every drag/trims interaction stays on
+// the button wrapping it.
+function SegmentWaveform(props: {segment: CompositionSegment}) {
+  const entry = useAudioPeaksEntry(props.segment.ref);
+  if (!entry) return null;
+  const bars = sliceAudioPeaks(entry.peaks, entry.durationSeconds, props.segment.inSeconds, props.segment.outSeconds, segmentWaveformBars);
+  return (
+    <svg className="composition-segment-waveform" viewBox={`0 0 ${segmentWaveformBars} 100`} preserveAspectRatio="none" aria-hidden="true">
+      <path d={waveformPath(bars)} vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
 export function CompositionEditor(props: {
   handle: CompositionEditorHandle;
   libraryID?: string;
@@ -241,12 +298,12 @@ export function CompositionEditor(props: {
   const {source} = props.handle;
   const sourceConversationID = useState(source.conversationId)[0];
 
-  const [doc, setDoc] = useState<CompositionDoc>(() => normalizeCompositionDoc(source.doc));
-  const [baseline, setBaseline] = useState<CompositionDoc>(() => normalizeCompositionDoc(source.doc));
+  const [doc, setDoc] = useState<CompositionDoc>(() => initialCompositionDoc(source, props.handle.audioFirst));
+  const [baseline, setBaseline] = useState<CompositionDoc>(() => initialCompositionDoc(source, props.handle.audioFirst));
   const [undoStack, setUndoStack] = useState<CompositionDoc[]>([]);
   const [redoStack, setRedoStack] = useState<CompositionDoc[]>([]);
   const [selection, setSelection] = useState<Selection>({kind: 'doc'});
-  const [nameDraft, setNameDraft] = useState(() => normalizeCompositionDoc(source.doc).name);
+  const [nameDraft, setNameDraft] = useState(() => initialCompositionDoc(source, props.handle.audioFirst).name);
 
   const [activeArtifactID, setActiveArtifactID] = useState(source.artifactId ?? '');
   const [loadingRevision, setLoadingRevision] = useState(false);
@@ -301,6 +358,11 @@ export function CompositionEditor(props: {
   const overhang = useMemo(() => audioOverhangSeconds(doc), [doc]);
   const problems = useMemo(() => compositionProblems(doc), [doc]);
   const frame = useMemo(() => resolveOutputFrame(doc), [doc]);
+  // The presentation flag: content decides (the renderer's plan.AudioOnly
+  // rule) once anything is on the timeline; a brand-new empty draft falls
+  // back to how it was opened, so a fresh video project still presents as
+  // one. Adding a video clip flips an audio project into a video one.
+  const audioOnly = compositionIsAudioOnly(doc) && (doc.audioLanes.length > 0 || props.handle.audioFirst === true);
   const refCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const clip of doc.video) counts[clip.ref.artifactId] = (counts[clip.ref.artifactId] ?? 0) + 1;
@@ -939,9 +1001,9 @@ export function CompositionEditor(props: {
   const selectedSegmentLane = selection.kind === 'segment' ? doc.audioLanes.find((lane) => lane.id === selection.laneID) : undefined;
 
   return (
-    <section className="composition-editor">
+    <section className={`composition-editor${audioOnly ? ' audio-first' : ''}`}>
       <EditorHeader
-        title="Video Composer"
+        title={audioOnly ? 'Audio Composer' : 'Video Composer'}
         parentAvailable
         parentConversationID={sourceConversationID}
         onClose={props.onClose}
@@ -973,9 +1035,13 @@ export function CompositionEditor(props: {
               }}
             />
             <span className="composition-summary" aria-live="polite">
-              {doc.video.length} clips · {formatCompositionClock(sequenceDuration)}
-              {doc.audioLanes.length ? ` · ${doc.audioLanes.length} audio ${doc.audioLanes.length === 1 ? 'lane' : 'lanes'}` : ''}
-              {` · ${frame.width}×${frame.height} @ ${Math.round(frame.fps)}fps ${doc.output.fit}`}
+              {audioOnly ? (
+                <>Audio mix · {formatCompositionClock(audioExtent)}{doc.audioLanes.length ? ` · ${doc.audioLanes.length} audio ${doc.audioLanes.length === 1 ? 'lane' : 'lanes'}` : ''}</>
+              ) : (
+                <>{doc.video.length} clips · {formatCompositionClock(sequenceDuration)}
+                  {doc.audioLanes.length ? ` · ${doc.audioLanes.length} audio ${doc.audioLanes.length === 1 ? 'lane' : 'lanes'}` : ''}
+                  {` · ${frame.width}×${frame.height} @ ${Math.round(frame.fps)}fps ${doc.output.fit}`}</>
+              )}
               {activeArtifactID ? ` · ${activeArtifactID.slice(0, 12)}${dirty ? ' · edited' : ''}` : ' · unsaved draft'}
             </span>
             {missingRefs.size ? <span className="composition-warning">⚠ {missingRefs.size} missing source{missingRefs.size === 1 ? '' : 's'}</span> : null}
@@ -1092,7 +1158,7 @@ export function CompositionEditor(props: {
                 itself stays bounded by the editor body. */}
             <div className="composition-lane-scroll">
             <div
-              className={`composition-lane composition-lane-video${selection.kind === 'doc' ? ' focused' : ''}`}
+              className={`composition-lane composition-lane-video${audioOnly ? ' audio-first' : ''}${selection.kind === 'doc' ? ' focused' : ''}`}
               onClick={(event) => {
                 if (suppressLaneClickRef.current) {
                   suppressLaneClickRef.current = false;
@@ -1142,7 +1208,7 @@ export function CompositionEditor(props: {
                   </button>
                 );
               })}
-              {doc.video.length === 0 ? <span className="composition-lane-empty">No clips — add media from the picker.</span> : null}
+              {doc.video.length === 0 ? <span className="composition-lane-empty">{audioOnly ? 'Audio-only project — a video added from the picker opens its lane here.' : 'No clips — add media from the picker.'}</span> : null}
               </div>
             </div>
             {doc.audioLanes.map((lane) => (
@@ -1158,8 +1224,21 @@ export function CompositionEditor(props: {
                   setSelection({kind: 'lane', laneID: lane.id});
                 }}
               >
-                <span className="composition-lane-label" title={`${lane.name}${lane.muted ? ' (muted)' : ''}`}>
-                  {lane.name}{lane.gainDb !== 0 ? ` ${lane.gainDb > 0 ? '+' : ''}${lane.gainDb}dB` : ''}
+                <span className="composition-lane-label" title={`${lane.name}${lane.gainDb !== 0 ? ` ${lane.gainDb > 0 ? '+' : ''}${lane.gainDb}dB` : ''}${lane.muted ? ' (muted)' : ''}`}>
+                  <span className="composition-lane-name">{lane.name}{lane.gainDb !== 0 ? ` ${lane.gainDb > 0 ? '+' : ''}${lane.gainDb}dB` : ''}</span>
+                  {audioOnly ? (
+                    <button
+                      type="button"
+                      className={`composition-lane-mute${lane.muted ? ' on' : ''}`}
+                      title={lane.muted ? 'Unmute this lane in the mix' : 'Mute this lane in the mix'}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        commit(setLaneMix(docRef.current, lane.id, {muted: !lane.muted}));
+                      }}
+                    >
+                      M
+                    </button>
+                  ) : null}
                 </span>
                 <div className="composition-lane-track">
                   {lane.segments.map((segment) => (
@@ -1171,6 +1250,7 @@ export function CompositionEditor(props: {
                       title={`${segment.ref.artifactId} · ${formatCompositionClock(segmentDurationSeconds(segment))}${segment.ducks.length ? ` · ${segment.ducks.length} duck${segment.ducks.length === 1 ? '' : 's'}` : ''}\nDrag to move · drag an edge to trim · select to edit`}
                       onPointerDown={(event) => beginSegmentDrag(event, segment)}
                     >
+                      <SegmentWaveform segment={segment} />
                       {segment.ref.artifactId.slice(0, 10)}
                     </button>
                   ))}
@@ -1210,23 +1290,31 @@ export function CompositionEditor(props: {
           ) : selection.kind === 'doc' || !selectedClip ? (
             <div className="composition-inspect-doc">
               <strong>Project</strong>
-              <div className="composition-field-row">
-                <label className="composition-field" title="How differently-shaped clips conform to the output frame — pad letterboxes, crop center-crops, blur fills the margin with an enlarged blurred copy">
-                  <span>Fit</span>
-                  <select value={doc.output.fit} onChange={(event) => commit(setCompositionOutput(docRef.current, {fit: event.target.value as CompositionFit}))}>
-                    <option value="pad">pad</option>
-                    <option value="crop">crop</option>
-                    <option value="blur">blur</option>
-                  </select>
-                </label>
-                {/* The fields show the frame the project will actually render
-                    — the doc stores 0 for "inherit the first clip", so the
-                    resolved value fills the box until an edit pins it. */}
-                <NumberField label="Width" value={frame.width} step={2} min={0} title="Overrides the first clip's width — 0 restores the inheritance" onCommit={(value) => commit(setCompositionOutput(docRef.current, {width: value}))} />
-                <NumberField label="Height" value={frame.height} step={2} min={0} title="Overrides the first clip's height — 0 restores the inheritance" onCommit={(value) => commit(setCompositionOutput(docRef.current, {height: value}))} />
-                <NumberField label="FPS" value={frame.fps} step={1} min={0} max={60} title="Overrides the first clip's frame rate — 0 restores the inheritance" onCommit={(value) => commit(setCompositionOutput(docRef.current, {fps: value}))} />
-              </div>
-              <p className="hint">Output frame: {frame.width}×{frame.height} @ {Math.round(frame.fps)}fps · {doc.output.fit}</p>
+              {audioOnly ? (
+                <p className="hint" title="An audio-only project renders its lane mix as an M4A file — the video frame settings return if a clip is added">
+                  Audio-only project — the lane mix renders as M4A · {formatCompositionClock(audioExtent)} long. Adding a video from the picker turns it into a video sequence.
+                </p>
+              ) : (
+                <>
+                  <div className="composition-field-row">
+                    <label className="composition-field" title="How differently-shaped clips conform to the output frame — pad letterboxes, crop center-crops, blur fills the margin with an enlarged blurred copy">
+                      <span>Fit</span>
+                      <select value={doc.output.fit} onChange={(event) => commit(setCompositionOutput(docRef.current, {fit: event.target.value as CompositionFit}))}>
+                        <option value="pad">pad</option>
+                        <option value="crop">crop</option>
+                        <option value="blur">blur</option>
+                      </select>
+                    </label>
+                    {/* The fields show the frame the project will actually render
+                        — the doc stores 0 for "inherit the first clip", so the
+                        resolved value fills the box until an edit pins it. */}
+                    <NumberField label="Width" value={frame.width} step={2} min={0} title="Overrides the first clip's width — 0 restores the inheritance" onCommit={(value) => commit(setCompositionOutput(docRef.current, {width: value}))} />
+                    <NumberField label="Height" value={frame.height} step={2} min={0} title="Overrides the first clip's height — 0 restores the inheritance" onCommit={(value) => commit(setCompositionOutput(docRef.current, {height: value}))} />
+                    <NumberField label="FPS" value={frame.fps} step={1} min={0} max={60} title="Overrides the first clip's frame rate — 0 restores the inheritance" onCommit={(value) => commit(setCompositionOutput(docRef.current, {fps: value}))} />
+                  </div>
+                  <p className="hint">Output frame: {frame.width}×{frame.height} @ {Math.round(frame.fps)}fps · {doc.output.fit}</p>
+                </>
+              )}
               <div className="composition-problems">
                 <strong>{problems.length === 0 ? 'No problems' : `${problems.length} problem${problems.length === 1 ? '' : 's'}`}</strong>
                 {problems.length ? (
@@ -1381,29 +1469,37 @@ export function CompositionEditor(props: {
             <strong>Export</strong>
             {/* EX-03's pre-render summary: what the file will be. */}
             <p className="hint">
-              {frame.width}×{frame.height} @ {Math.round(frame.fps)}fps · {formatCompositionClock(sequenceDuration)}
-              {exportIncludeAudio ? ' · audio included' : ' · no audio'}
-              {exportIncludeAudio && overhang > 0 ? ` · ${overhang.toFixed(1)}s audio tail trims at the video end` : ''}
+              {audioOnly ? (
+                <>Audio-only mix · M4A · {formatCompositionClock(audioExtent)}</>
+              ) : (
+                <>{frame.width}×{frame.height} @ {Math.round(frame.fps)}fps · {formatCompositionClock(sequenceDuration)}
+                  {exportIncludeAudio ? ' · audio included' : ' · no audio'}
+                  {exportIncludeAudio && overhang > 0 ? ` · ${overhang.toFixed(1)}s audio tail trims at the video end` : ''}</>
+              )}
             </p>
-            <label className="composition-toggle" title="The mix rides the video (original audio, lanes, ducks). Turn it off for a silent file.">
-              <input type="checkbox" checked={exportIncludeAudio} onChange={(event) => setExportIncludeAudio(event.target.checked)} />
-              include audio
-            </label>
+            {audioOnly ? null : (
+              <label className="composition-toggle" title="The mix rides the video (original audio, lanes, ducks). Turn it off for a silent file.">
+                <input type="checkbox" checked={exportIncludeAudio} onChange={(event) => setExportIncludeAudio(event.target.checked)} />
+                include audio
+              </label>
+            )}
             <button
               type="button"
               className="editor-generate"
               disabled={exporting || renderDisabled}
               title={dirty || !activeArtifactID
                 ? 'Save the working timeline as a revision, then export that revision — later edits cannot change the file'
-                : 'Export the pinned revision into the conversation as a new video artifact'}
+                : `Export the pinned revision into the conversation as a new ${audioOnly ? 'audio' : 'video'} artifact`}
               onClick={() => void saveAndExport()}
             >
               {exporting ? 'Exporting…' : dirty || !activeArtifactID ? 'Save & export' : 'Export revision'}
             </button>
             {exportError ? <div className="editor-error">{exportError}</div> : null}
-            <button type="button" className="composition-advanced-toggle" onClick={() => setExportAdvancedOpen((open) => !open)}>
-              {exportAdvancedOpen ? '− Advanced' : '+ Advanced'}
-            </button>
+            {audioOnly ? null : (
+              <button type="button" className="composition-advanced-toggle" onClick={() => setExportAdvancedOpen((open) => !open)}>
+                {exportAdvancedOpen ? '− Advanced' : '+ Advanced'}
+              </button>
+            )}
             {exportAdvancedOpen ? (
               <div className="composition-field-row">
                 <NumberField label="Width" value={exportWidth === '' ? frame.width : parseFloat(exportWidth)} step={2} min={0} title="Overrides the saved width — 0 restores it" onCommit={(value) => setExportWidth(value > 0 ? String(value) : '')} />

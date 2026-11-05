@@ -583,3 +583,73 @@
   touch-action: none;
   user-select: none;
 }
+
+/* Audio-first presentation: an audio-only document reads as an audio
+   project — wider lane headers (track-header style, with the ruler margin
+   matching label + gap), a slim ghosted video lane, per-lane mute. The
+   playhead and seeking read the track's live geometry, so only the ruler's
+   static margin needs the widened column. */
+
+.composition-editor.audio-first .composition-lane-label {
+  flex-basis: 128px;
+  gap: 4px;
+}
+
+.composition-editor.audio-first .composition-ruler {
+  margin-left: 136px;
+}
+
+.composition-lane-video.audio-first {
+  min-height: 30px;
+  background: transparent;
+  border-style: dashed;
+}
+
+.composition-lane-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composition-lane-mute {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  line-height: 1;
+  font-size: 10px;
+  border-radius: 3px;
+  border: 1px solid #3f5c4a;
+  background: transparent;
+  color: #9aa1a6;
+  cursor: pointer;
+}
+
+.composition-lane-mute.on {
+  color: #d9a441;
+  border-color: #8a6a2c;
+  text-decoration: line-through;
+}
+
+/* The segment waveform: mirrored peak bars under the label text, decoded
+   once per artifact URL (audioPeaks.ts's cache). Pure display — pointer
+   events stay on the segment button. */
+.composition-segment-waveform {
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  bottom: 1px;
+  height: 62%;
+  pointer-events: none;
+}
+
+.composition-segment-waveform path {
+  fill: none;
+  stroke: rgba(230, 238, 233, 0.55);
+  stroke-width: 1;
+}
+
+.composition-segment.selected .composition-segment-waveform path {
+  stroke: rgba(240, 246, 250, 0.8);
+}

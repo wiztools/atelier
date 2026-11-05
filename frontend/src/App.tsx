@@ -4686,11 +4686,14 @@ function App() {
     }
   }
 
-  // openNewComposition starts an unsaved draft — the "New composition" action
-  // and (later) the editor-launch intent's door. Seeding resolves and
-  // measures the referenced artifacts in order; nothing persists until the
-  // editor's first save, which is what lets this run mid-stream safely.
-  async function openNewComposition(conversationID: string, seedArtifactIDs: string[]) {
+  // openNewComposition starts an unsaved draft — the "New composition" and
+  // "New audio mix" actions and the editor-launch intent's door. Seeding
+  // resolves and measures the referenced artifacts in order; nothing
+  // persists until the editor's first save, which is what lets this run
+  // mid-stream safely. audioFirst is the ＋ Audio intent: an empty draft
+  // presents audio-first (starter lane, no video-frame chrome) until content
+  // decides otherwise.
+  async function openNewComposition(conversationID: string, seedArtifactIDs: string[], audioFirst = false) {
     if (!(await confirmLeaveEditor())) return;
     cancelVideoPreparation();
     cancelImagePreparation();
@@ -4714,7 +4717,7 @@ function App() {
       subtitleEditorDirty.current = false;
       markdownEditorDirty.current = false;
       compositionEditorDirty.current = false;
-      setCompositionEditorHandle({source, libraryID: libraryIDForProject(owner.conversation.projectId ?? '')});
+      setCompositionEditorHandle({source, libraryID: libraryIDForProject(owner.conversation.projectId ?? ''), ...(audioFirst ? {audioFirst: true} : {})});
       setView((current) => (current === 'settings' ? current : 'app'));
     } catch (error) {
       if (generation === compositionOpenGeneration.current) setStartupError(formatError(error));
@@ -8101,6 +8104,25 @@ function App() {
                   <path d="M3 18.5h7" strokeWidth="3" />
                   <path d="M18.5 15v6" strokeWidth="2" />
                   <path d="M15.5 18h6" strokeWidth="2" />
+                </svg>
+              </button>
+            ) : null}
+            {activeConversationID ? (
+              <button
+                type="button"
+                className="assets-panel-new-composition"
+                disabled={editorOpening}
+                aria-label="New audio mix"
+                title="Open the composer on an audio-only draft — arrange music, voice, and sound on the audio lanes; a video added later turns it into a video sequence"
+                onClick={() => void openNewComposition(activeConversationID, [], true)}
+              >
+                {/* A note head + stem with an equalizer bar and a plus — the
+                    audio-first sibling of the composition glyph. */}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <circle cx="7.5" cy="16.5" r="2.5" strokeWidth="2" />
+                  <path d="M10 16.5V4.5l6 1.5" strokeWidth="2" />
+                  <path d="M15 12v2M18 10v4" strokeWidth="2" />
+                  <path d="M19.5 17v4M17.5 19h4" strokeWidth="2" />
                 </svg>
               </button>
             ) : null}

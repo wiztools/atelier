@@ -303,6 +303,15 @@ export function compositionSequenceDuration(doc: CompositionDoc): number {
   return compositionClipLayout(doc).duration;
 }
 
+// compositionIsAudioOnly mirrors the renderer's content rule (plan.AudioOnly
+// = len(doc.Video) == 0, composition_render.go): a document with no video
+// clips renders as an M4A mix, so the editor presents it audio-first. A
+// brand-new empty draft has no content to decide with, so the editor layers
+// the opening intent (＋ Audio) on top of this.
+export function compositionIsAudioOnly(doc: CompositionDoc): boolean {
+  return doc.video.length === 0;
+}
+
 export function laneExtent(lane: CompositionLane): number {
   return lane.segments.reduce((end, segment) => Math.max(end, segment.startSeconds + segmentDurationSeconds(segment)), 0);
 }

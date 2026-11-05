@@ -8,6 +8,7 @@ import {
   audioOverhangSeconds,
   cloneCompositionDoc,
   compositionClipLayout,
+  compositionIsAudioOnly,
   compositionProblems,
   compositionSequenceDuration,
   detachClipAudio,
@@ -165,6 +166,11 @@ assert(bothDetached.audioLanes[0].segments[1].startSeconds === 10, 'the second d
 assert(resolveOutputFrame(threeClips()).width === 1280 && resolveOutputFrame(threeClips()).fps === 30, 'output inherits the first clip');
 const sized = setCompositionOutput(threeClips(), {width: 1081, height: 1921, fit: 'blur'});
 assert(sized.output.width === 1080 && sized.output.height === 1920 && sized.output.fit === 'blur', 'output clamps even and takes the fit');
+
+// Audio-only presentation follows content — the renderer's plan.AudioOnly rule.
+assert(!compositionIsAudioOnly(threeClips()), 'a video sequence is not audio-only');
+assert(compositionIsAudioOnly(normalizeCompositionDoc({schemaVersion: 1, name: 'Mix', video: [], audioLanes: [{id: 'lane_1', name: 'Audio 1', gainDb: 0, muted: false, segments: []}]})), 'a lane-only document is audio-only');
+assert(compositionIsAudioOnly(normalizeCompositionDoc({schemaVersion: 1, name: 'Empty', video: [], audioLanes: []})), 'an empty document reads audio-only by content — opening intent decides its presentation');
 
 // Junction vocabulary (the composer's xfade names).
 assert(normalizeTransitionKind('fade') === 'dissolve' && normalizeTransitionKind('wipeleft') === 'wipeleft', "'fade' aliases to dissolve; curated names pass");
