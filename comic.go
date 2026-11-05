@@ -74,12 +74,13 @@ const (
 
 // comicAspectPresets names the page shapes the editor offers. "comic" is the
 // standard US comic page (6.625″ × 10.25″); the rest cover manga, the
-// webtoon-style tall strip, and the common screens. Values are width ÷
-// height.
+// Instagram carousel portrait, the webtoon-style tall strip, and the common
+// screens. Values are width ÷ height.
 var comicAspectPresets = map[string]float64{
 	"comic":      6.625 / 10.25,
 	"manga":      5.0 / 7.5,
 	"portrait":   3.0 / 4.0,
+	"instagram":  4.0 / 5.0,
 	"square":     1.0,
 	"landscape":  4.0 / 3.0,
 	"widescreen": 16.0 / 9.0,
@@ -88,7 +89,7 @@ var comicAspectPresets = map[string]float64{
 
 // comicAspectPresetNames orders the presets for pickers and error text — a
 // map alone would randomize both.
-var comicAspectPresetNames = []string{"comic", "manga", "portrait", "square", "landscape", "widescreen", "tall"}
+var comicAspectPresetNames = []string{"comic", "manga", "portrait", "instagram", "square", "landscape", "widescreen", "tall"}
 
 // ComicMediaRef pins one image artifact the comic uses — CompositionMediaRef
 // scaled to stills: an absolute Path plus the owning conversation (the

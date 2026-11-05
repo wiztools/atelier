@@ -144,6 +144,8 @@ book = setPageAspect(book, book.pages[1].id, 'custom', 0.1);
 assert(comicPageAspect(book.pages[1]).ratio === 0.25, 'custom aspect clamps to the floor');
 book = setPageAspect(book, book.pages[1].id, 'manga');
 assert(book.pages[1].aspect === 'manga' && comicPageAspect(book.pages[1]).ratio === 5 / 7.5, 'preset aspect resolves');
+book = setPageAspect(book, book.pages[1].id, 'instagram');
+assert(book.pages[1].aspect === 'instagram' && comicPageAspect(book.pages[1]).ratio === 4 / 5, 'the instagram preset resolves');
 const doubled = duplicatePage(book, book.pages[0].id);
 assert(doubled.pages.length === 3 && doubled.pages[1].panels.length === book.pages[0].panels.length, 'duplicatePage copies panels');
 assert(doubled.pages[1].panels.every((panel, index) => panel.id !== doubled.pages[0].panels[index].id), 'the copy has fresh ids');

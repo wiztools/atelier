@@ -306,6 +306,9 @@ func TestComicPageAspect(t *testing.T) {
 	if ratio, name := comicPageAspect(ComicPage{Aspect: "manga"}); ratio != 5.0/7.5 || name != "manga" {
 		t.Fatalf("manga = %g/%q", ratio, name)
 	}
+	if ratio, name := comicPageAspect(ComicPage{Aspect: "instagram"}); ratio != 4.0/5.0 || name != "instagram" {
+		t.Fatalf("instagram = %g/%q", ratio, name)
+	}
 	if ratio, _ := comicPageAspect(ComicPage{Aspect: "custom", CustomAspect: 0.1}); ratio != comicCustomAspectMin {
 		t.Fatalf("extreme custom = %g, want clamped to %g", ratio, comicCustomAspectMin)
 	}

@@ -114,6 +114,7 @@ export const comicAspectPresets: Array<{name: string; ratio: number; label: stri
   {name: 'comic', ratio: 6.625 / 10.25, label: 'Comic (6.625″ × 10.25″)'},
   {name: 'manga', ratio: 5.0 / 7.5, label: 'Manga (5″ × 7.5″)'},
   {name: 'portrait', ratio: 3.0 / 4.0, label: 'Portrait (3:4)'},
+  {name: 'instagram', ratio: 4.0 / 5.0, label: 'Instagram (4:5)'},
   {name: 'square', ratio: 1.0, label: 'Square (1:1)'},
   {name: 'landscape', ratio: 4.0 / 3.0, label: 'Landscape (4:3)'},
   {name: 'widescreen', ratio: 16.0 / 9.0, label: 'Widescreen (16:9)'},
