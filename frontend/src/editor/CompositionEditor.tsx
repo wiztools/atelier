@@ -3,6 +3,7 @@ import * as AppBindings from '../../wailsjs/go/main/App';
 import {CancelCompositionRender, SaveComposition, SaveVideo} from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
 import {EventsOn} from '../../wailsjs/runtime/runtime';
+import {notifyError, notifySuccess, trackSave} from '../notifications';
 import {AudioPeaksEntry, loadAudioPeaks, sliceAudioPeaks, waveformPath} from './audioPeaks';
 import {EditsPanel} from './EditsPanel';
 import {EditorHeader} from './EditorHeader';
@@ -317,7 +318,6 @@ export function CompositionEditor(props: {
 
   const [log, setLog] = useState<EditorLogEntry[]>([]);
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState('');
 
   // Render ops this session, newest first — every transition arrives as an
   // atelier:composition-op event and folds into the row (terminal states
@@ -341,7 +341,6 @@ export function CompositionEditor(props: {
   const [exportFPS, setExportFPS] = useState('');
   const [exportCRF, setExportCRF] = useState('18');
   const [exporting, setExporting] = useState(false);
-  const [exportError, setExportError] = useState('');
 
   // A ref mirror of the doc so async picker adds always commit against the
   // newest state (the video editor's stale-resolve discipline).
@@ -910,11 +909,11 @@ export function CompositionEditor(props: {
 
   const saveDoc = async () => {
     setSaving(true);
-    setSaveError('');
     try {
       await persistRevision();
+      notifySuccess('Saved to the conversation', {message: docRef.current.name || 'Composition'});
     } catch (error) {
-      setSaveError(formatEditorError(error));
+      notifyError("Couldn't save to the conversation", error);
     } finally {
       setSaving(false);
     }
@@ -922,14 +921,21 @@ export function CompositionEditor(props: {
 
   // saveAndExport is the export door: pin a revision first (saving the
   // working doc when anything is unsaved), then render THAT artifact with
-  // the house encode — later edits cannot touch what export produces.
+  // the house encode — later edits cannot touch what export produces. The
+  // save step's failure toasts its own outcome and stands the export down;
+  // a successful submit toasts nothing here — the render runs in the
+  // background and its completion reports through the op rows.
   const saveAndExport = async () => {
     setExporting(true);
-    setExportError('');
     try {
       let artifactID = activeArtifactID;
       if (dirty || !artifactID) {
-        artifactID = await persistRevision();
+        try {
+          artifactID = await persistRevision();
+        } catch (error) {
+          notifyError("Couldn't save the composition", error);
+          return;
+        }
       }
       const width = parseInt(exportWidth, 10);
       const height = parseInt(exportHeight, 10);
@@ -947,7 +953,7 @@ export function CompositionEditor(props: {
       }));
       addRenderOp(op);
     } catch (error) {
-      setExportError(formatEditorError(error));
+      notifyError("Couldn't start the export", error);
     } finally {
       setExporting(false);
     }
@@ -980,14 +986,10 @@ export function CompositionEditor(props: {
   };
 
   const downloadSaved = async (url: string, index: number) => {
-    try {
-      await SaveComposition(main.SaveTranscriptRequest.createFrom({
-        path: url,
-        suggestedName: `${doc.name.replace(/\s+/g, '-').toLowerCase() || 'composition'}-${Date.now()}-${index + 1}`,
-      }));
-    } catch (error) {
-      setSaveError(formatEditorError(error));
-    }
+    await trackSave('composition project', SaveComposition(main.SaveTranscriptRequest.createFrom({
+      path: url,
+      suggestedName: `${doc.name.replace(/\s+/g, '-').toLowerCase() || 'composition'}-${Date.now()}-${index + 1}`,
+    })));
   };
 
   const pct = (seconds: number) => `${Math.max(0, Math.min(100, (seconds / timelineExtent) * 100))}%`;
@@ -1460,7 +1462,6 @@ export function CompositionEditor(props: {
             >
               {saving ? 'Saving…' : 'Save to conversation'}
             </button>
-            {saveError ? <div className="editor-error">{saveError}</div> : null}
             <span className="editor-session-note">Edits stay in the editor until saved; every save is a new revision. Downloads land in the panel below.</span>
           </div>
 
@@ -1493,7 +1494,6 @@ export function CompositionEditor(props: {
             >
               {exporting ? 'Exporting…' : dirty || !activeArtifactID ? 'Save & export' : 'Export revision'}
             </button>
-            {exportError ? <div className="editor-error">{exportError}</div> : null}
             {audioOnly ? null : (
               <button type="button" className="composition-advanced-toggle" onClick={() => setExportAdvancedOpen((open) => !open)}>
                 {exportAdvancedOpen ? '− Advanced' : '+ Advanced'}
@@ -1546,10 +1546,10 @@ export function CompositionEditor(props: {
                     type="button"
                     title="Save the exported file to disk"
                     onClick={() => {
-                      void SaveVideo(main.SaveVideoRequest.createFrom({
+                      void trackSave(op.audioOnly ? 'audio' : 'video', SaveVideo(main.SaveVideoRequest.createFrom({
                         path: op.resultUrl,
                         suggestedName: `${doc.name.replace(/\s+/g, '-').toLowerCase() || 'composition'}-${(op.exportArtifactId || op.id).slice(0, 10)}`,
-                      })).catch((error) => setRenderError(formatEditorError(error)));
+                      })));
                     }}
                   >
                     Download

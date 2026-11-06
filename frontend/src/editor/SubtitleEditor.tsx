@@ -2,6 +2,7 @@ import {useEffect, useMemo, useRef, useState} from 'react';
 import * as AppBindings from '../../wailsjs/go/main/App';
 import {SaveTranscript} from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
+import {notifyError, notifySuccess, trackSave} from '../notifications';
 import {EditsPanel} from './EditsPanel';
 import {EditorHeader} from './EditorHeader';
 import {
@@ -116,7 +117,6 @@ export function SubtitleEditor(props: {
   );
   const [log, setLog] = useState<EditorLogEntry[]>([]);
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState('');
 
   const [find, setFind] = useState('');
   const [replace, setReplace] = useState('');
@@ -248,7 +248,6 @@ export function SubtitleEditor(props: {
   // door, minus the render. The machine draft is never touched.
   const saveDoc = async () => {
     setSaving(true);
-    setSaveError('');
     try {
       const result = await AppBindings.SaveSubtitleEdit(main.SaveSubtitleEditRequest.createFrom({
         conversationId: sourceConversationID,
@@ -266,8 +265,9 @@ export function SubtitleEditor(props: {
       setBaseline(cloneSubtitleDoc(doc));
       setActiveArtifactID(result.artifactId);
       props.onSavedToConversation?.();
+      notifySuccess('Saved to the conversation', {message: 'Subtitles'});
     } catch (error) {
-      setSaveError(formatEditorError(error));
+      notifyError("Couldn't save to the conversation", error);
     } finally {
       setSaving(false);
     }
@@ -301,14 +301,12 @@ export function SubtitleEditor(props: {
   };
 
   const downloadSaved = async (url: string, index: number) => {
-    try {
-      await SaveTranscript(main.SaveTranscriptRequest.createFrom({
-        path: url,
-        suggestedName: `${source.conversationTitle || 'subtitles'}-${Date.now()}-${index + 1}`,
-      }));
-    } catch (error) {
-      setSaveError(formatEditorError(error));
-    }
+    // trackSave owns the whole save-dialog outcome (saved / cancelled / failed)
+    // as toasts and never rejects.
+    await trackSave('subtitles', SaveTranscript(main.SaveTranscriptRequest.createFrom({
+      path: url,
+      suggestedName: `${source.conversationTitle || 'subtitles'}-${Date.now()}-${index + 1}`,
+    })));
   };
 
   // Global shortcuts, detached while suspended and skipped for text targets.
@@ -673,7 +671,6 @@ export function SubtitleEditor(props: {
             >
               {saving ? 'Saving…' : `Save ${exportFormat.toUpperCase()} to conversation`}
             </button>
-            {saveError ? <div className="editor-error">{saveError}</div> : null}
             <span className="editor-session-note">Edits stay in the editor until you save them — download the saved file from the Edits panel below.</span>
           </div>
         </aside>

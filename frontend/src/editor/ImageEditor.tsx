@@ -2,6 +2,7 @@ import {Fragment, useCallback, useEffect, useMemo, useRef, useState} from 'react
 import {AddEditResultToConversation, CancelImageEdit, DeleteEditOperation, ListEditSession, ListInpaintModels, ReleaseEditSourcePreview, SubmitImageEdit} from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
 import {EventsOn} from '../../wailsjs/runtime/runtime';
+import {notifyError, notifySuccess} from '../notifications';
 import {EditsPanel} from './EditsPanel';
 import {EditKebabMenu} from './EditKebabMenu';
 import {EditorHeader} from './EditorHeader';
@@ -157,7 +158,6 @@ export function ImageEditor(props: {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const [adoptingID, setAdoptingID] = useState('');
-  const [adoptError, setAdoptError] = useState('');
   const [deletingID, setDeletingID] = useState('');
   const [deleteError, setDeleteError] = useState('');
   const [compareOpID, setCompareOpID] = useState('');
@@ -490,7 +490,6 @@ export function ImageEditor(props: {
     submitLock.current = true;
     setSubmitting(true);
     setSubmitError('');
-    setAdoptError('');
     try {
       const state = await SubmitImageEdit(main.ImageEditSubmitRequest.createFrom({
         kind: tool,
@@ -552,7 +551,6 @@ export function ImageEditor(props: {
       return;
     }
     setAdoptingID(op.id);
-    setAdoptError('');
     try {
       await AddEditResultToConversation(sessionID, op.id);
       setSession((current) => {
@@ -564,8 +562,9 @@ export function ImageEditor(props: {
         );
         return main.EditSessionState.createFrom({...current, operations});
       });
+      notifySuccess('Added to the conversation', {message: 'Edited image'});
     } catch (error) {
-      setAdoptError(formatEditorError(error));
+      notifyError("Couldn't add to the conversation", error);
     } finally {
       setAdoptingID('');
     }
@@ -802,12 +801,7 @@ export function ImageEditor(props: {
       <EditsPanel
         count={ops.length}
         emptyText={tool === 'crop' ? 'No edits yet — adjust the crop and apply.' : 'No edits yet — paint a selection and generate.'}
-        adoptError={
-          <>
-            {adoptError ? <span className="editor-error">{adoptError}</span> : null}
-            {deleteError ? <span className="editor-error">{deleteError}</span> : null}
-          </>
-        }
+        adoptError={deleteError ? <span className="editor-error">{deleteError}</span> : null}
         scrollRef={resultsScrollRef}
       >
         <ul className="editor-op-list">

@@ -132,7 +132,7 @@ import {CompositionEditor, CompositionEditorHandle} from './editor/CompositionEd
 import {ComicEditor, ComicEditorHandle} from './editor/ComicEditor';
 import {detectEditorLaunchIntent} from './editorLaunch';
 import {composerHasMediaDrag, dropAcceptsFile, markdownMimeForFile, mediaKindForFile, mediaMimeForFile, subtitleMimeForFile, videoThumbnailOnlySrc} from './mediaIntake';
-import {notifications, notifyError, notifySuccess, splitSavedPath} from './notifications';
+import {notifications, notifyError, notifySuccess, splitSavedPath, trackSave} from './notifications';
 import {ToastStack} from './ToastStack';
 
 type View = 'app' | 'settings' | 'conversation-models' | 'usage';
@@ -5914,81 +5914,56 @@ function App() {
     );
   }
 
-  async function saveGeneratedImage(image: string, index: number) {
-    try {
-      await SaveImage(main.SaveImageRequest.createFrom({
-        image,
-        suggestedName: `atelier-${Date.now()}-${index + 1}`,
-      }));
-    } catch (error) {
-      setStartupError(error instanceof Error ? error.message : String(error));
-    }
+  // The chat's download helpers: each hands its Save* binding to trackSave,
+  // which toasts the saved file and its folder, stays silent when the save
+  // dialog was cancelled, and toasts a failure.
+  function saveGeneratedImage(image: string, index: number) {
+    return trackSave('image', SaveImage(main.SaveImageRequest.createFrom({
+      image,
+      suggestedName: `atelier-${Date.now()}-${index + 1}`,
+    })));
   }
 
-  async function saveGeneratedVideo(video: string, index: number) {
-    try {
-      await SaveVideo(main.SaveVideoRequest.createFrom({
-        path: video,
-        suggestedName: `atelier-${Date.now()}-${index + 1}`,
-      }));
-    } catch (error) {
-      setStartupError(error instanceof Error ? error.message : String(error));
-    }
+  function saveGeneratedVideo(video: string, index: number) {
+    return trackSave('video', SaveVideo(main.SaveVideoRequest.createFrom({
+      path: video,
+      suggestedName: `atelier-${Date.now()}-${index + 1}`,
+    })));
   }
 
-  async function saveGeneratedAudio(audio: string, index: number) {
-    try {
-      await SaveAudio(main.SaveAudioRequest.createFrom({
-        path: audio,
-        suggestedName: `atelier-${Date.now()}-${index + 1}`,
-      }));
-    } catch (error) {
-      setStartupError(error instanceof Error ? error.message : String(error));
-    }
+  function saveGeneratedAudio(audio: string, index: number) {
+    return trackSave('audio', SaveAudio(main.SaveAudioRequest.createFrom({
+      path: audio,
+      suggestedName: `atelier-${Date.now()}-${index + 1}`,
+    })));
   }
 
-  async function saveGeneratedTranscript(transcript: string, index: number) {
-    try {
-      await SaveTranscript(main.SaveTranscriptRequest.createFrom({
-        path: transcript,
-        suggestedName: `atelier-${Date.now()}-${index + 1}`,
-      }));
-    } catch (error) {
-      setStartupError(error instanceof Error ? error.message : String(error));
-    }
+  function saveGeneratedTranscript(transcript: string, index: number) {
+    return trackSave('transcript', SaveTranscript(main.SaveTranscriptRequest.createFrom({
+      path: transcript,
+      suggestedName: `atelier-${Date.now()}-${index + 1}`,
+    })));
   }
 
-  async function saveGeneratedMarkdown(markdown: string, index: number) {
-    try {
-      await SaveMarkdown(main.SaveTranscriptRequest.createFrom({
-        path: markdown,
-        suggestedName: `atelier-${Date.now()}-${index + 1}`,
-      }));
-    } catch (error) {
-      setStartupError(error instanceof Error ? error.message : String(error));
-    }
+  function saveGeneratedMarkdown(markdown: string, index: number) {
+    return trackSave('document', SaveMarkdown(main.SaveTranscriptRequest.createFrom({
+      path: markdown,
+      suggestedName: `atelier-${Date.now()}-${index + 1}`,
+    })));
   }
 
-  async function saveGeneratedComposition(composition: string, index: number) {
-    try {
-      await SaveComposition(main.SaveTranscriptRequest.createFrom({
-        path: composition,
-        suggestedName: `composition-${Date.now()}-${index + 1}`,
-      }));
-    } catch (error) {
-      setStartupError(error instanceof Error ? error.message : String(error));
-    }
+  function saveGeneratedComposition(composition: string, index: number) {
+    return trackSave('composition project', SaveComposition(main.SaveTranscriptRequest.createFrom({
+      path: composition,
+      suggestedName: `composition-${Date.now()}-${index + 1}`,
+    })));
   }
 
-  async function saveGeneratedComic(comic: string, index: number) {
-    try {
-      await SaveComic(main.SaveTranscriptRequest.createFrom({
-        path: comic,
-        suggestedName: `comic-${Date.now()}-${index + 1}`,
-      }));
-    } catch (error) {
-      setStartupError(error instanceof Error ? error.message : String(error));
-    }
+  function saveGeneratedComic(comic: string, index: number) {
+    return trackSave('comic project', SaveComic(main.SaveTranscriptRequest.createFrom({
+      path: comic,
+      suggestedName: `comic-${Date.now()}-${index + 1}`,
+    })));
   }
 
   // downloadAsset is the assets-panel download affordance: every Save* binding

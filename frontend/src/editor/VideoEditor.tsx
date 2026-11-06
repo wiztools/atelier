@@ -2,6 +2,7 @@ import {Fragment, useEffect, useMemo, useRef, useState} from 'react';
 import * as AppBindings from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
 import {EventsOn} from '../../wailsjs/runtime/runtime';
+import {notifyError, notifySuccess, trackSave} from '../notifications';
 import {EditsPanel} from './EditsPanel';
 import {EditKebabMenu} from './EditKebabMenu';
 import {EditorHeader} from './EditorHeader';
@@ -191,7 +192,6 @@ export function VideoEditor(props: {
   const [trimRedoStack, setTrimRedoStack] = useState<VideoTrimDraft[]>([]);
   const [loadError, setLoadError] = useState('');
   const [submitError, setSubmitError] = useState('');
-  const [adoptError, setAdoptError] = useState('');
   const [adoptingID, setAdoptingID] = useState('');
   const [deletingID, setDeletingID] = useState('');
   const [deleteError, setDeleteError] = useState('');
@@ -511,7 +511,6 @@ export function VideoEditor(props: {
     submitLock.current = true;
     setSubmitting(true);
     setSubmitError('');
-    setAdoptError('');
     try {
       const submittedTrim = tool === 'trim'
         ? validateVideoTrimParams({version: 1, source: sourceForParams(source), segments: segmentsFromDraft(trimDraft, duration)})
@@ -684,7 +683,6 @@ export function VideoEditor(props: {
   async function addToOriginal(op: VideoEditOperation) {
     if (!sessionID || op.adoptedAt) return;
     setAdoptingID(op.id);
-    setAdoptError('');
     try {
       await AppBindings.AddEditResultToConversation(sessionID, op.id);
       setSession((current) => {
@@ -692,8 +690,9 @@ export function VideoEditor(props: {
         return {...current, operations: current.operations.map((item) => item.id === op.id ? {...item, adoptedAt: new Date().toISOString()} : item)};
       });
       props.onResultAdded?.();
+      notifySuccess('Added to the conversation', {message: 'Edited video'});
     } catch (error) {
-      setAdoptError(formatEditorError(error));
+      notifyError("Couldn't add to the conversation", error);
     } finally {
       setAdoptingID('');
     }
@@ -701,11 +700,9 @@ export function VideoEditor(props: {
 
   async function download(op: VideoEditOperation) {
     if (!op.resultUrl) return;
-    try {
-      await AppBindings.SaveVideo(main.SaveVideoRequest.createFrom({path: op.resultUrl, suggestedName: op.trim ? 'trimmed-video.mp4' : 'reframed-video.mp4'}));
-    } catch (error) {
-      setAdoptError(formatEditorError(error));
-    }
+    // trackSave owns the whole save-dialog outcome (saved / cancelled / failed)
+    // as toasts and never rejects.
+    await trackSave('video', AppBindings.SaveVideo(main.SaveVideoRequest.createFrom({path: op.resultUrl, suggestedName: op.trim ? 'trimmed-video.mp4' : 'reframed-video.mp4'})));
   }
 
   // Delete one edit from the session — its turn and the files it owns (the
@@ -948,12 +945,7 @@ export function VideoEditor(props: {
       <EditsPanel
         count={ops.length}
         emptyText="No renders yet."
-        adoptError={
-          <>
-            {adoptError ? <span className="editor-error">{adoptError}</span> : null}
-            {deleteError ? <span className="editor-error">{deleteError}</span> : null}
-          </>
-        }
+        adoptError={deleteError ? <span className="editor-error">{deleteError}</span> : null}
         bodyReservePx={editsPanelBodyReservePx}
       >
         <ul className="editor-op-list">

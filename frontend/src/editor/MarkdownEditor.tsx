@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import * as AppBindings from '../../wailsjs/go/main/App';
 import {SaveDocumentExport, SaveMarkdown} from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
+import {notifyError, notifySuccess, trackSave} from '../notifications';
 import {EditsPanel} from './EditsPanel';
 import {EditorHeader} from './EditorHeader';
 import {
@@ -159,7 +160,6 @@ export function MarkdownEditor(props: {
   const [loadError, setLoadError] = useState('');
   const [log, setLog] = useState<EditorLogEntry[]>([]);
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState('');
   // The dialect IS the artifact's identity — a .fountain edits and saves as a
   // screenplay, a .md as markdown; the editor never converts between them.
   const format: DocumentFormat = source.format === 'fountain' ? 'fountain' : 'markdown';
@@ -407,7 +407,6 @@ export function MarkdownEditor(props: {
   // The draft is never touched.
   const saveDoc = async () => {
     setSaving(true);
-    setSaveError('');
     try {
       const result = await AppBindings.SaveMarkdownEdit(main.SaveMarkdownEditRequest.createFrom({
         conversationId: sourceConversationID,
@@ -425,8 +424,9 @@ export function MarkdownEditor(props: {
       setBaseline(text);
       setActiveArtifactID(result.artifactId);
       props.onSavedToConversation?.();
+      notifySuccess('Saved to the conversation', {message: fountain ? 'Screenplay' : 'Document'});
     } catch (error) {
-      setSaveError(formatEditorError(error));
+      notifyError("Couldn't save to the conversation", error);
     } finally {
       setSaving(false);
     }
@@ -455,29 +455,21 @@ export function MarkdownEditor(props: {
   };
 
   const downloadSaved = async (url: string, index: number) => {
-    try {
-      await SaveMarkdown(main.SaveTranscriptRequest.createFrom({
-        path: url,
-        suggestedName: `${source.conversationTitle || 'document'}-${Date.now()}-${index + 1}`,
-      }));
-    } catch (error) {
-      setSaveError(formatEditorError(error));
-    }
+    await trackSave('document', SaveMarkdown(main.SaveTranscriptRequest.createFrom({
+      path: url,
+      suggestedName: `${source.conversationTitle || 'document'}-${Date.now()}-${index + 1}`,
+    })));
   };
 
   // exportSaved is the fountain rows' derived-export door: the saved
   // artifact renders to PDF or Final Draft on its way to disk — never from
   // the editor's uncommitted draft.
   const exportSaved = async (url: string, format: 'pdf' | 'fdx', index: number) => {
-    try {
-      await SaveDocumentExport(main.SaveDocumentExportRequest.createFrom({
-        path: url,
-        format,
-        suggestedName: `${source.conversationTitle || 'screenplay'}-${Date.now()}-${index + 1}`,
-      }));
-    } catch (error) {
-      setSaveError(formatEditorError(error));
-    }
+    await trackSave(format === 'fdx' ? 'Final Draft file' : 'PDF', SaveDocumentExport(main.SaveDocumentExportRequest.createFrom({
+      path: url,
+      format,
+      suggestedName: `${source.conversationTitle || 'screenplay'}-${Date.now()}-${index + 1}`,
+    })));
   };
 
   // The formatting toolbar is dialect-shaped: markdown gets the full document
@@ -665,7 +657,6 @@ export function MarkdownEditor(props: {
             >
               {saving ? 'Saving…' : `Save ${fountain ? 'Screenplay' : 'Markdown'} to conversation`}
             </button>
-            {saveError ? <div className="editor-error">{saveError}</div> : null}
             <span className="editor-session-note">Edits stay in the editor until you save them — download the saved file from the Edits panel below.</span>
           </div>
         </aside>

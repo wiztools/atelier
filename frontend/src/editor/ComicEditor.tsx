@@ -2,6 +2,7 @@ import {useEffect, useMemo, useRef, useState} from 'react';
 import * as AppBindings from '../../wailsjs/go/main/App';
 import {AdoptComicPagePNG, ExportComicPDF, SaveComic, SaveComicEdit, SaveComicPDF, SaveImage} from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
+import {notifyError, notifySuccess, trackSave} from '../notifications';
 import {EditsPanel} from './EditsPanel';
 import {EditorHeader} from './EditorHeader';
 import {MediaPicker} from './MediaPicker';
@@ -212,9 +213,7 @@ export function ComicEditor(props: {
   const [log, setLog] = useState<EditorLogEntry[]>([]);
   const [exportsLog, setExportsLog] = useState<EditorExportEntry[]>([]);
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState('');
   const [exporting, setExporting] = useState(false);
-  const [exportError, setExportError] = useState('');
 
   const [tool, setTool] = useState<Tool>('select');
   const [activePageID, setActivePageID] = useState(() => normalizeComicDoc(source.doc).pages[0]?.id ?? '');
@@ -781,11 +780,11 @@ export function ComicEditor(props: {
 
   const saveDoc = async () => {
     setSaving(true);
-    setSaveError('');
     try {
       await persistRevision();
+      notifySuccess('Saved to the conversation', {message: docRef.current.name || 'Comic'});
     } catch (error) {
-      setSaveError(formatEditorError(error));
+      notifyError("Couldn't save to the conversation", error);
     } finally {
       setSaving(false);
     }
@@ -814,14 +813,10 @@ export function ComicEditor(props: {
   };
 
   const downloadSaved = async (url: string, index: number) => {
-    try {
-      await SaveComic(main.SaveTranscriptRequest.createFrom({
-        path: url,
-        suggestedName: `${doc.name.replace(/\s+/g, '-').toLowerCase() || 'comic'}-${Date.now()}-${index + 1}`,
-      }));
-    } catch (error) {
-      setSaveError(formatEditorError(error));
-    }
+    await trackSave('comic project', SaveComic(main.SaveTranscriptRequest.createFrom({
+      path: url,
+      suggestedName: `${doc.name.replace(/\s+/g, '-').toLowerCase() || 'comic'}-${Date.now()}-${index + 1}`,
+    })));
   };
 
   // COMIC_EXPORT_SVG_STYLE is the style block injected into the serialized
@@ -906,16 +901,21 @@ export function ComicEditor(props: {
 
   // exportPDF pins a revision first (the composer's EX-04 rule — saving the
   // working book when anything is unsaved), then renders THAT revision and
-  // opens the save dialog.
+  // opens the save dialog. The save step's failure toasts its own outcome
+  // and stands the export down; trackSave owns the dialog's whole outcome.
   const exportPDF = async () => {
     setExporting(true);
-    setExportError('');
     try {
       let revisionID = activeArtifactID;
       if (dirty || !revisionID) {
-        revisionID = await persistRevision();
+        try {
+          revisionID = await persistRevision();
+        } catch (error) {
+          notifyError("Couldn't save the comic", error);
+          return;
+        }
       }
-      const chosen = await ExportComicPDF(sourceConversationID, revisionID);
+      const chosen = await trackSave('PDF', ExportComicPDF(sourceConversationID, revisionID));
       if (!chosen) {
         return; // the save dialog was cancelled — nothing was exported
       }
@@ -929,8 +929,6 @@ export function ComicEditor(props: {
         },
         ...entries,
       ]);
-    } catch (error) {
-      setExportError(formatEditorError(error));
     } finally {
       setExporting(false);
     }
@@ -944,11 +942,15 @@ export function ComicEditor(props: {
       return;
     }
     setExporting(true);
-    setExportError('');
     try {
       let revisionID = activeArtifactID;
       if (dirty || !revisionID) {
-        revisionID = await persistRevision();
+        try {
+          revisionID = await persistRevision();
+        } catch (error) {
+          notifyError("Couldn't save the comic", error);
+          return;
+        }
       }
       const pngBase64 = await rasterizePagePNG();
       const pageIndex = doc.pages.findIndex((candidate) => candidate.id === page.id) + 1;
@@ -970,8 +972,9 @@ export function ComicEditor(props: {
         ...entries,
       ]);
       props.onSavedToConversation?.();
+      notifySuccess('Added to the conversation', {message: `Page ${pageIndex} image`});
     } catch (error) {
-      setExportError(formatEditorError(error));
+      notifyError("Couldn't add the page image", error);
     } finally {
       setExporting(false);
     }
@@ -1511,8 +1514,6 @@ export function ComicEditor(props: {
               {dirty || !activeArtifactID ? 'Save & export page PNG' : 'Export page PNG'}
             </button>
           </div>
-          {exportError ? <div className="editor-error">{exportError}</div> : null}
-          {saveError ? <div className="editor-error">{saveError}</div> : null}
           {loadError ? <div className="editor-error">{loadError}</div> : null}
         </aside>
       </div>
@@ -1531,8 +1532,7 @@ export function ComicEditor(props: {
                     type="button"
                     title="Save the exported page to disk"
                     onClick={() => {
-                      void SaveImage(main.SaveImageRequest.createFrom({image: entry.url, suggestedName: entry.fileName}))
-                        .catch((error) => setExportError(formatEditorError(error)));
+                      void trackSave('page image', SaveImage(main.SaveImageRequest.createFrom({image: entry.url, suggestedName: entry.fileName})));
                     }}
                   >
                     Download
@@ -1543,8 +1543,7 @@ export function ComicEditor(props: {
                     type="button"
                     title="Save the exported PDF to disk again"
                     onClick={() => {
-                      void SaveComicPDF(main.SaveTranscriptRequest.createFrom({path: entry.path, suggestedName: entry.fileName}))
-                        .catch((error) => setExportError(formatEditorError(error)));
+                      void trackSave('PDF', SaveComicPDF(main.SaveTranscriptRequest.createFrom({path: entry.path, suggestedName: entry.fileName})));
                     }}
                   >
                     Download

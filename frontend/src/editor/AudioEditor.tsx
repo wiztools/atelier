@@ -2,6 +2,7 @@ import {Fragment, useEffect, useMemo, useRef, useState} from 'react';
 import * as AppBindings from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
 import {EventsOn} from '../../wailsjs/runtime/runtime';
+import {notifyError, notifySuccess, trackSave} from '../notifications';
 import {EditsPanel} from './EditsPanel';
 import {EditKebabMenu} from './EditKebabMenu';
 import {EditorHeader} from './EditorHeader';
@@ -129,7 +130,6 @@ export function AudioEditor(props: {
   const [peaks, setPeaks] = useState<number[] | null>(null);
   const [loadError, setLoadError] = useState('');
   const [submitError, setSubmitError] = useState('');
-  const [adoptError, setAdoptError] = useState('');
   const [adoptingID, setAdoptingID] = useState('');
   const [deletingID, setDeletingID] = useState('');
   const [deleteError, setDeleteError] = useState('');
@@ -340,7 +340,6 @@ export function AudioEditor(props: {
     submitLock.current = true;
     setSubmitting(true);
     setSubmitError('');
-    setAdoptError('');
     try {
       const submittedTrim = validateAudioTrimParams({version: 1, source: {durationSeconds: duration}, segments: segmentsFromDraft(trimDraft, duration)});
       const request: AudioEditSubmitRequest = {
@@ -469,7 +468,6 @@ export function AudioEditor(props: {
   async function addToOriginal(op: AudioEditOperation) {
     if (!sessionID || op.adoptedAt) return;
     setAdoptingID(op.id);
-    setAdoptError('');
     try {
       await AppBindings.AddEditResultToConversation(sessionID, op.id);
       setSession((current) => {
@@ -477,8 +475,9 @@ export function AudioEditor(props: {
         return {...current, operations: current.operations.map((item) => item.id === op.id ? {...item, adoptedAt: new Date().toISOString()} : item)};
       });
       props.onResultAdded?.();
+      notifySuccess('Added to the conversation', {message: 'Edited audio'});
     } catch (error) {
-      setAdoptError(formatEditorError(error));
+      notifyError("Couldn't add to the conversation", error);
     } finally {
       setAdoptingID('');
     }
@@ -486,11 +485,9 @@ export function AudioEditor(props: {
 
   async function download(op: AudioEditOperation) {
     if (!op.resultUrl) return;
-    try {
-      await AppBindings.SaveAudio(main.SaveAudioRequest.createFrom({path: op.resultUrl, suggestedName: 'trimmed-audio.m4a'}));
-    } catch (error) {
-      setAdoptError(formatEditorError(error));
-    }
+    // trackSave owns the whole save-dialog outcome (saved / cancelled / failed)
+    // as toasts and never rejects.
+    await trackSave('audio', AppBindings.SaveAudio(main.SaveAudioRequest.createFrom({path: op.resultUrl, suggestedName: 'trimmed-audio.m4a'})));
   }
 
   // Delete one edit from the session — its turn and the result file it owns.
@@ -635,12 +632,7 @@ export function AudioEditor(props: {
       <EditsPanel
         count={ops.length}
         emptyText="No renders yet."
-        adoptError={
-          <>
-            {adoptError ? <span className="editor-error">{adoptError}</span> : null}
-            {deleteError ? <span className="editor-error">{deleteError}</span> : null}
-          </>
-        }
+        adoptError={deleteError ? <span className="editor-error">{deleteError}</span> : null}
         bodyReservePx={editsPanelBodyReservePx}
       >
         <ul className="editor-op-list">
