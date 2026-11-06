@@ -453,17 +453,17 @@ export function CompositionEditor(props: {
     };
   }, [sourceConversationID, props.libraryID]);
 
-  // Render-op events fold into the rows; a completion also takes the stage,
-  // and a completed EXPORT adopted a new artifact into the conversation —
-  // the same refresh the save fires. The callback rides a ref because this
-  // effect's deps are deliberately empty (one subscription).
-  const savedToConversationRef = useRef(props.onSavedToConversation);
-  useEffect(() => {
-    savedToConversationRef.current = props.onSavedToConversation;
-  }, [props.onSavedToConversation]);
+  // Render-op events fold into the rows, and a completed preview takes the
+  // stage. The event is app-global, so another conversation's op — a render
+  // still running after its editor closed — is ignored. A completed EXPORT's
+  // refresh and toast belong to App's listener, which hears it whether or not
+  // this editor is still open.
   useEffect(() => {
     const onUpdate = (event: any) => {
       const op = main.CompositionRenderOperation.createFrom(event);
+      if (op.conversationId !== sourceConversationID) {
+        return;
+      }
       setRenders((current) => {
         const index = current.findIndex((candidate) => candidate.id === op.id);
         if (index < 0) {
@@ -473,11 +473,7 @@ export function CompositionEditor(props: {
         next[index] = op;
         return next;
       });
-      if (op.status === 'completed' && op.resultUrl) {
-        if (op.mode === 'export') {
-          savedToConversationRef.current?.();
-          return;
-        }
+      if (op.status === 'completed' && op.resultUrl && op.mode !== 'export') {
         setPreview({url: op.resultUrl, audioOnly: op.audioOnly, offsetSeconds: op.rangeStartSeconds ?? 0});
       }
     };

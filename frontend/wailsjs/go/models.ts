@@ -1579,6 +1579,7 @@ export namespace main {
 	export class CompositionRenderOperation {
 	    id: string;
 	    mode: string;
+	    conversationId: string;
 	    status: string;
 	    progress: number;
 	    error?: string;
@@ -1606,6 +1607,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
 	        this.mode = source["mode"];
+	        this.conversationId = source["conversationId"];
 	        this.status = source["status"];
 	        this.progress = source["progress"];
 	        this.error = source["error"];

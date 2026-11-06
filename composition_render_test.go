@@ -385,9 +385,17 @@ func TestCompositionRenderLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SubmitCompositionRender returned error: %v", err)
 	}
+	// The op names its conversation from submit through every transition:
+	// the event is app-global, so listeners filter and attribute by it.
+	if op.ConversationID != "conv_comp" {
+		t.Fatalf("submitted op conversationId = %q, want conv_comp", op.ConversationID)
+	}
 	terminal := waitCompositionRenderTerminal(t, app, op.ID)
 	if terminal.Status != "completed" {
 		t.Fatalf("terminal = %+v, want completed", terminal)
+	}
+	if terminal.ConversationID != "conv_comp" {
+		t.Fatalf("terminal op conversationId = %q, want conv_comp", terminal.ConversationID)
 	}
 	if terminal.Error != "" || terminal.ResultURL == "" || terminal.OutputSeconds != 8 || terminal.AudioOnly || terminal.Width != 1280 {
 		t.Fatalf("completed op = %+v", terminal)

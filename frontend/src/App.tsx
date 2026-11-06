@@ -256,6 +256,24 @@ function libraryArchiveToastKey(op: LibraryArchiveOp): string {
   return `library-archive:${op}`;
 }
 
+// EditOpEvent is atelier:edit-op's payload (edit_session.go). The editors
+// type it fully; App's background-job listener reads only what a toast needs.
+type EditOpEvent = {
+  sessionConversationId?: string;
+  operation?: {id: string; kind: string; status: string; error?: string};
+};
+
+type EditSessionEditor = 'image' | 'video' | 'audio';
+
+// editOpKinds names each edit kind for its toast and the editor that owns it.
+const editOpKinds: Record<string, {label: string; editor: EditSessionEditor}> = {
+  inpaint: {label: 'Inpaint', editor: 'image'},
+  crop: {label: 'Crop', editor: 'image'},
+  'video-reframe': {label: 'Reframe', editor: 'video'},
+  'video-trim': {label: 'Trim', editor: 'video'},
+  'audio-trim': {label: 'Audio trim', editor: 'audio'},
+};
+
 type InFlightConversation = {
   requestID: string;
   kind: ConversationKind;
@@ -2401,6 +2419,70 @@ function App() {
     return EventsOn('atelier:update-available', onUpdateAvailable);
   }, []);
 
+  // Background jobs report when they finish. App owns the RESULT, so it
+  // reaches the user even when the job's editor closed mid-run (the editors
+  // fold the same events into their own rows). Composition EXPORTS: a
+  // completed one adopted a new artifact into its conversation — toast it and
+  // refresh what shows that conversation; a failed one toasts. Previews and
+  // cancels report nothing (the stage and the row are their feedback). Edit
+  // ops: a failure always toasts; a completion toasts only when its editor
+  // isn't on screen (otherwise the stage shows the result), with an Open
+  // action back to the session. Each op reports once.
+  useEffect(() => {
+    const reported = new Set<string>();
+    const offComposition = EventsOn('atelier:composition-op', (event: unknown) => {
+      const op = main.CompositionRenderOperation.createFrom(event);
+      if (op.mode !== 'export' || (op.status !== 'completed' && op.status !== 'failed') || reported.has(op.id)) {
+        return;
+      }
+      reported.add(op.id);
+      if (op.status === 'failed') {
+        notifyError('Composition export failed', op.error || 'The render stopped without reporting why.');
+        return;
+      }
+      notifySuccess('Exported to the conversation', {message: op.audioOnly ? 'Composition audio' : 'Composition video'});
+      if (op.conversationId) {
+        refreshAfterConversationWriteRef.current(op.conversationId);
+      }
+    });
+    const offEdit = EventsOn('atelier:edit-op', (event: EditOpEvent) => {
+      const op = event?.operation;
+      const sessionID = event?.sessionConversationId ?? '';
+      if (!op?.id || (op.status !== 'completed' && op.status !== 'failed') || reported.has(op.id)) {
+        return;
+      }
+      reported.add(op.id);
+      const kind = editOpKinds[op.kind];
+      const label = kind?.label ?? 'Edit';
+      if (op.status === 'failed') {
+        notifyError(`${label} failed`, op.error || 'The edit stopped without reporting why.');
+        return;
+      }
+      if (kind && editSessionOnScreen(kind.editor, sessionID)) {
+        return;
+      }
+      notifySuccess(`${label} finished`, {
+        message: 'Open the editor to review the result.',
+        action: sessionID && kind ? {label: 'Open', run: () => openFinishedEditSessionRef.current(kind.editor, sessionID)} : undefined,
+      });
+    });
+    return () => {
+      offComposition();
+      offEdit();
+    };
+  }, []);
+
+  // editSessionOpen: an editor of this kind is open on that session — or on a
+  // session App doesn't know yet, which is the only one an op can belong to.
+  function editSessionOpen(editor: EditSessionEditor, sessionID: string): boolean {
+    const open = openEditorSessionsRef.current[editor];
+    return open !== undefined && (open === '' || open === sessionID);
+  }
+
+  function editSessionOnScreen(editor: EditSessionEditor, sessionID: string): boolean {
+    return openEditorSessionsRef.current.onScreen && editSessionOpen(editor, sessionID);
+  }
+
   // File-menu creation actions (main.go's File menu emits these; see the
   // menuNew* handlers in app.go). The refs always point at the latest handler
   // closures, so the empty-deps subscription never fires a stale one.
@@ -4274,6 +4356,19 @@ function App() {
   useEffect(() => {
     editorOpenRef.current = editorOpen;
   }, [editorOpen]);
+  // openEditorSessionsRef mirrors which edit-session editor is open, and
+  // whether it's on screen, for the app-global edit-op listener: undefined =
+  // no editor of that kind is open, '' = open but its session isn't known to
+  // App yet (the editors mint a session on their first submit).
+  const openEditorSessionsRef = useRef<{onScreen: boolean} & Partial<Record<EditSessionEditor, string>>>({onScreen: false});
+  useEffect(() => {
+    openEditorSessionsRef.current = {
+      onScreen: view === 'app',
+      image: editorHandle ? editorHandle.sessionID ?? '' : undefined,
+      video: videoEditorHandle ? videoEditorHandle.sessionID ?? '' : undefined,
+      audio: audioEditorHandle ? audioEditorHandle.sessionID ?? '' : undefined,
+    };
+  }, [view, editorHandle, videoEditorHandle, audioEditorHandle]);
 
   // Snapshot the current composer (prompt + attachments) under the conversation
   // being left, so it can be restored when returning. Empty drafts are deleted
@@ -4867,6 +4962,38 @@ function App() {
   // openEditSession reopens a saved edit session — the sidebar/search path
   // for Kind "edit" conversations. The handle seeds from the loaded session's
   // own source copy, so the editor can submit iterations without guessing.
+  // refreshAfterConversationWrite re-reads everything that shows a
+  // conversation after something wrote into it from outside the chat stream
+  // (an editor save, a finished export): the sidebar list, the assets panel,
+  // and the transcript when that conversation is the one on screen.
+  function refreshAfterConversationWrite(conversationID: string) {
+    void refreshConversations();
+    setAssetsRefreshTick((tick) => tick + 1);
+    if (activeConversationIDRef.current === conversationID) {
+      void GetConversation(conversationID).then((detail) => {
+        if (activeConversationIDRef.current === conversationID) hydrateChatConversation(detail);
+      }).catch((error) => setStartupError(formatError(error)));
+    }
+  }
+
+  // Mirrors for the empty-deps background-job listener, which must call the
+  // latest closures. The Open action returns to a finished edit's session:
+  // when its editor is still open behind another view, just bring the editor
+  // back; otherwise leave whatever editor is open (confirming unsaved edits)
+  // and open the session on screen.
+  const refreshAfterConversationWriteRef = useRef((_conversationID: string) => {});
+  refreshAfterConversationWriteRef.current = refreshAfterConversationWrite;
+  const openFinishedEditSessionRef = useRef((_editor: EditSessionEditor, _sessionID: string) => {});
+  openFinishedEditSessionRef.current = (editor, sessionID) => {
+    if (editSessionOpen(editor, sessionID)) {
+      setView('app');
+      return;
+    }
+    void leaveEditorThen(() => {
+      void openEditSession(sessionID).then(() => setView('app'));
+    });
+  };
+
   async function openEditSession(sessionID: string) {
     try {
       const state = await ListEditSession(sessionID);
@@ -6648,16 +6775,7 @@ function App() {
                 });
               }}
               onDirtyChange={(dirty) => {compositionEditorDirty.current = dirty;}}
-              onSavedToConversation={() => {
-                void refreshConversations();
-                setAssetsRefreshTick((tick) => tick + 1);
-                const parentID = compositionEditorHandle.source.conversationId;
-                if (activeConversationIDRef.current === parentID) {
-                  void GetConversation(parentID).then((detail) => {
-                    if (activeConversationIDRef.current === parentID) hydrateChatConversation(detail);
-                  }).catch((error) => setStartupError(formatError(error)));
-                }
-              }}
+              onSavedToConversation={() => refreshAfterConversationWrite(compositionEditorHandle.source.conversationId)}
             />
           </div>
         ) : comicEditorHandle ? (

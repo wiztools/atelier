@@ -559,13 +559,19 @@ type CompositionRenderRequest struct {
 // CompositionRenderOperation is the live op the editor tracks; every
 // transition rides the atelier:composition-op event.
 type CompositionRenderOperation struct {
-	ID        string   `json:"id"`
-	Mode      string   `json:"mode"`
-	Status    string   `json:"status"`
-	Progress  float64  `json:"progress"`
-	Error     string   `json:"error,omitempty"`
-	Notices   []string `json:"notices"`
-	ResultURL string   `json:"resultUrl,omitempty"`
+	ID   string `json:"id"`
+	Mode string `json:"mode"`
+	// ConversationID attributes the op to its composition's conversation: the
+	// event is app-global, so a listener must filter by it — the open editor
+	// to ignore another composition's still-running render, and App's
+	// listener to refresh and toast the right conversation when an export
+	// finishes after its editor closed.
+	ConversationID string   `json:"conversationId"`
+	Status         string   `json:"status"`
+	Progress       float64  `json:"progress"`
+	Error          string   `json:"error,omitempty"`
+	Notices        []string `json:"notices"`
+	ResultURL      string   `json:"resultUrl,omitempty"`
 	// ResultPosterURL rides the _poster.jpg convention the assets panel and
 	// players already mirror — WKWebView paints a black rectangle until
 	// playback, so the preview needs a still.
@@ -674,16 +680,17 @@ func (a *App) SubmitCompositionRender(req CompositionRenderRequest) (Composition
 
 	nowText := time.Now().Format(time.RFC3339)
 	op := CompositionRenderOperation{
-		ID:           randomID("crend"),
-		Mode:         mode,
-		Status:       "queued",
-		Notices:      []string{},
-		StartedAt:    nowText,
-		UpdatedAt:    nowText,
-		RangeStart:   req.StartSeconds,
-		RangeEnd:     req.EndSeconds,
-		SoloLaneID:   strings.TrimSpace(req.SoloLaneID),
-		IncludeAudio: includeAudio,
+		ID:             randomID("crend"),
+		Mode:           mode,
+		ConversationID: conversationID,
+		Status:         "queued",
+		Notices:        []string{},
+		StartedAt:      nowText,
+		UpdatedAt:      nowText,
+		RangeStart:     req.StartSeconds,
+		RangeEnd:       req.EndSeconds,
+		SoloLaneID:     strings.TrimSpace(req.SoloLaneID),
+		IncludeAudio:   includeAudio,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	run := &compositionRenderRun{conversationID: conversationID, cancel: cancel, op: op,
