@@ -249,6 +249,28 @@ func TestCompositionFFmpegArgsShape(t *testing.T) {
 	}
 }
 
+func TestCompositionDocForRenderOwnsItsCopy(t *testing.T) {
+	// A render normalizes its own deep copy: the caller's document keeps its
+	// values and shares no memory with what the executor reads. A struct
+	// copy once aliased the caller's slices, so normalizing wrote through and
+	// a reused doc raced the previous render's executor.
+	callerDoc := renderTestDoc(renderTestClip("c1", renderTestVideoRef("vid_a", "/v.mp4", 5, true), 0, 5, nil))
+	callerDoc.Video[0].Audio.GainDb = 40 // past the +12 dB cap: normalization clamps it
+	rendered, err := compositionDocForRender(AppConfig{}, "conv_comp", "", &callerDoc)
+	if err != nil {
+		t.Fatalf("compositionDocForRender returned %v", err)
+	}
+	if rendered.Video[0].Audio.GainDb != compositionGainMaxDb {
+		t.Fatalf("rendered gain = %g, want the clamped %g", rendered.Video[0].Audio.GainDb, compositionGainMaxDb)
+	}
+	if callerDoc.Video[0].Audio.GainDb != 40 {
+		t.Fatalf("normalizing wrote through to the caller's doc: gain = %g", callerDoc.Video[0].Audio.GainDb)
+	}
+	if &rendered.Video[0] == &callerDoc.Video[0] {
+		t.Fatal("the rendered doc shares its clip slice with the caller's")
+	}
+}
+
 func TestNormalizeCompositionRange(t *testing.T) {
 	full := 22.0
 	nine := 9.0

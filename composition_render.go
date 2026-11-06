@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -752,7 +753,11 @@ func (a *App) ListCompositionRenders(conversationID string) []CompositionRenderO
 
 // compositionDocForRender resolves the document a render targets: a saved
 // revision (the export discipline — the artifact is the immutable input), or
-// the caller's working draft for a preview.
+// the caller's working draft for a preview. The render owns its document: a
+// struct copy would share the caller's slices, so normalizing would write
+// through into them while an earlier render's executor reads the same
+// memory — the app's binding hands each call a freshly decoded doc, but any
+// caller that reuses one (the lifecycle test did) raced.
 func compositionDocForRender(config AppConfig, conversationID, artifactID string, doc *CompositionDoc) (CompositionDoc, error) {
 	if id := strings.TrimSpace(artifactID); id != "" {
 		info, err := resolveCompositionRevision(config.Storage, conversationID, id)
@@ -764,7 +769,10 @@ func compositionDocForRender(config AppConfig, conversationID, artifactID string
 	if doc == nil {
 		return CompositionDoc{}, errors.New("a render needs a saved revision id or the working document")
 	}
-	normalized := *doc
+	normalized, err := cloneCompositionDoc(*doc)
+	if err != nil {
+		return CompositionDoc{}, err
+	}
 	if err := validateCompositionDoc(&normalized); err != nil {
 		return CompositionDoc{}, err
 	}
@@ -772,6 +780,21 @@ func compositionDocForRender(config AppConfig, conversationID, artifactID string
 		return CompositionDoc{}, errors.New("the composition is empty — add clips or audio before rendering")
 	}
 	return normalized, nil
+}
+
+// cloneCompositionDoc deep-copies a document through its JSON form — the
+// form it is saved and reopened in, and the form the binding decodes — so
+// the copy shares no slice or pointer with its source.
+func cloneCompositionDoc(doc CompositionDoc) (CompositionDoc, error) {
+	data, err := json.Marshal(doc)
+	if err != nil {
+		return CompositionDoc{}, fmt.Errorf("copying the composition failed: %w", err)
+	}
+	var clone CompositionDoc
+	if err := json.Unmarshal(data, &clone); err != nil {
+		return CompositionDoc{}, fmt.Errorf("copying the composition failed: %w", err)
+	}
+	return clone, nil
 }
 
 // resolveCompositionRevision is ResolveCompositionEditSource's pure half —
