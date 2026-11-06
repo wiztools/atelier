@@ -132,7 +132,7 @@ import {CompositionEditor, CompositionEditorHandle} from './editor/CompositionEd
 import {ComicEditor, ComicEditorHandle} from './editor/ComicEditor';
 import {detectEditorLaunchIntent} from './editorLaunch';
 import {composerHasMediaDrag, dropAcceptsFile, markdownMimeForFile, mediaKindForFile, mediaMimeForFile, subtitleMimeForFile, videoThumbnailOnlySrc} from './mediaIntake';
-import {notifications, notifyError, notifySuccess, splitSavedPath, trackSave} from './notifications';
+import {notifications, notifyError, notifyInfo, notifySuccess, splitSavedPath, trackSave} from './notifications';
 import {ToastStack} from './ToastStack';
 
 type View = 'app' | 'settings' | 'conversation-models' | 'usage';
@@ -644,7 +644,8 @@ function positiveIntOrDefault(value: string, fallback: number): number {
 
 // LibrariesEnvironment is everything useLibraries needs from App() — the seam
 // the hook crosses. Refs are typed structurally ({current}) so the hook stays
-// independent of React's namespace types.
+// independent of React's namespace types. Failures don't cross it: the hook
+// toasts them itself through the shared notifications store.
 type LibrariesEnvironment = {
   activeConversationID: string;
   activeConversationProjectID: string;
@@ -653,7 +654,6 @@ type LibrariesEnvironment = {
   composerDraftsRef: {current: Record<string, ComposerDraft>};
   pendingProjectRef: {current: {projectID: string; libraryID: string} | null};
   refreshConversations: () => Promise<main.ConversationSummary[]>;
-  reportError: (error: unknown) => void;
   resetWorkspace: () => Promise<void>;
   setPendingProject: (project: {projectID: string; libraryID: string} | null) => void;
   setView: (view: View) => void;
@@ -826,7 +826,7 @@ function useLibraries(env: LibrariesEnvironment) {
       setNewLibraryName('');
       bumpLibrariesRefresh();
     } catch (error) {
-      env.reportError(error);
+      notifyError("Couldn't create library", error);
     }
   }
 
@@ -841,7 +841,7 @@ function useLibraries(env: LibrariesEnvironment) {
       setNewProjectName('');
       bumpLibrariesRefresh();
     } catch (error) {
-      env.reportError(error);
+      notifyError("Couldn't create project", error);
     }
   }
 
@@ -871,7 +871,7 @@ function useLibraries(env: LibrariesEnvironment) {
       }
       bumpLibrariesRefresh();
     } catch (error) {
-      env.reportError(error);
+      notifyError(id.startsWith('lib_') ? "Couldn't rename the library" : "Couldn't rename the project", error);
     }
   }
 
@@ -901,7 +901,7 @@ function useLibraries(env: LibrariesEnvironment) {
       closeProjectNotes();
       bumpLibrariesRefresh();
     } catch (error) {
-      env.reportError(error);
+      notifyError("Couldn't save project notes", error);
     } finally {
       setNotesSaving(false);
     }
@@ -961,7 +961,7 @@ function useLibraries(env: LibrariesEnvironment) {
         await env.resetWorkspace();
       }
     } catch (error) {
-      env.reportError(error);
+      notifyError(id.startsWith('lib_') ? "Couldn't delete the library" : "Couldn't delete the project", error);
     } finally {
       setContainerBusy(false);
     }
@@ -1081,7 +1081,7 @@ function useLibraries(env: LibrariesEnvironment) {
         bumpLibrariesRefresh();
       }
     } catch (error) {
-      env.reportError(error);
+      notifyError("Couldn't move the conversation", error);
     }
   }
 
@@ -1125,7 +1125,7 @@ function useLibraries(env: LibrariesEnvironment) {
       const plan = await InspectLibraryExport(libraryID);
       setExportPlan(plan ?? null);
     } catch (error) {
-      env.reportError(error);
+      notifyError("Couldn't prepare the library export", error);
     }
   }
 
@@ -1495,11 +1495,6 @@ function App() {
   const [stagingAttachments, setStagingAttachments] = useState<StagingAttachment[]>([]);
   const [composerDragging, setComposerDragging] = useState(false);
   const composerDragDepth = useRef(0);
-  // Why the last attachment intake failed (a rejected staging sniff, a disk
-  // error mid-chunks). Silent failures here read as a swallowed drop — the
-  // staging row ran to 100% and vanished — so the composer shows the reason
-  // until dismissed or the next attach.
-  const [attachError, setAttachError] = useState('');
   // @-mention autocomplete state. mentionOpen/mentionIndex drive renders;
   // mentionStateRef holds the active {@-position, query} for the keydown and
   // accept handlers to read synchronously (avoiding stale-closure reads of
@@ -1637,6 +1632,9 @@ function App() {
   const [storageConfig, setStorageConfig] = useState<main.ConfigStorage | null>(null);
   const [toolConfig, setToolConfig] = useState<main.ConfigTools | null>(null);
   const [toolPermissions, setToolPermissions] = useState<ToolPermissionEvent[]>([]);
+  // startupError is boot-only: the one genuine startup failure (the launch
+  // loadConfig rejecting), cleared by applyConfig or the card's Dismiss.
+  // Every other failure is an action result and toasts instead.
   const [startupError, setStartupError] = useState('');
   const [editingTitleID, setEditingTitleID] = useState('');
   const [editingTitle, setEditingTitle] = useState('');
@@ -1650,12 +1648,11 @@ function App() {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('providers');
   // Per-conversation model-override editing state: the draft is a snapshot of
   // the effective selection taken when the conversation-models view opens
-  // (the panel edits it; the record is the truth it converges to), the keys
-  // are the fields this conversation pins, and convModelsError surfaces
-  // mutator failures (e.g. changing overrides while the turn streams).
+  // (the panel edits it; the record is the truth it converges to), and the
+  // keys are the fields this conversation pins. Mutator failures (e.g.
+  // changing overrides while the turn streams) toast under 'conv-models'.
   const [convModelsDraft, setConvModelsDraft] = useState<ModelSelectionValue | null>(null);
   const [convModelsKeys, setConvModelsKeys] = useState<ReadonlySet<string>>(() => new Set());
-  const [convModelsError, setConvModelsError] = useState('');
   // draftModelOverrides is the turn-1 twin of the record's override: what the
   // NEXT conversation (none active yet) will run on, from its first message.
   // It travels once with ChatRequest.modelOverrides and the backend pins it
@@ -1686,7 +1683,6 @@ function App() {
   const [markdownEditorOpening, setMarkdownEditorOpening] = useState(false);
   const [compositionEditorOpening, setCompositionEditorOpening] = useState(false);
   const [comicEditorOpening, setComicEditorOpening] = useState(false);
-  const [videoEditorError, setVideoEditorError] = useState('');
   const [discardEditorDraft, setDiscardEditorDraft] = useState<'video' | 'audio' | 'subtitle' | 'markdown' | 'composition' | 'comic' | null>(null);
   const videoEditorDirty = useRef(false);
   const audioEditorDirty = useRef(false);
@@ -1719,7 +1715,6 @@ function App() {
   const editorOpen = !!editorHandle || !!videoEditorHandle || !!audioEditorHandle || !!subtitleEditorHandle || !!markdownEditorHandle || !!compositionEditorHandle || !!comicEditorHandle;
   const [purgeBusy, setPurgeBusy] = useState(false);
   const [confirmPurgeArchived, setConfirmPurgeArchived] = useState(false);
-  const [purgeStatus, setPurgeStatus] = useState('');
   const [openCapabilityID, setOpenCapabilityID] = useState('');
   // Self-update UI state: the banner rides the atelier:update-available event
   // (raised by startup, ticker, and manual checks alike); an install clicked
@@ -1729,8 +1724,6 @@ function App() {
   const [updateQueued, setUpdateQueued] = useState(false);
   const [updateError, setUpdateError] = useState('');
   const [updateCheckBusy, setUpdateCheckBusy] = useState(false);
-  const [updateCheckStatus, setUpdateCheckStatus] = useState('');
-  const [updateCheckError, setUpdateCheckError] = useState('');
   const [updatesConfig, setUpdatesConfig] = useState<main.ConfigUpdates | null>(null);
   // Updates wait out any running conversation; both the banner's queue and
   // the backend's InstallUpdate gate read this shape of "busy".
@@ -1766,9 +1759,9 @@ function App() {
   // The Libraries & projects sidebar tree — data, expansion/creation/rename/
   // delete state, and every tree action — lives in the useLibraries hook;
   // App destructures the same names its JSX uses. Everything crossing the
-  // boundary (error surfacing, conversation refresh, workspace reset, the
-  // composer's pending project) arrives via env, so the hook never reaches
-  // into App state.
+  // boundary (conversation refresh, workspace reset, the composer's pending
+  // project) arrives via env, so the hook never reaches into App state; its
+  // failures toast directly through the shared notifications store.
   const {
     libraries, librariesOpen, expandedLibraryIDs, expandedProjectIDs, projectConversations,
     creatingLibrary, newLibraryName, creatingProjectLibraryID, newProjectName,
@@ -1791,7 +1784,6 @@ function App() {
     composerDraftsRef,
     pendingProjectRef,
     refreshConversations,
-    reportError: (error) => setStartupError(formatError(error)),
     resetWorkspace,
     setPendingProject,
     setView,
@@ -1834,7 +1826,9 @@ function App() {
 
   // Persist the navigation state on every change rather than at quit: each
   // toggle is one tiny atomic write, so the file is already current whenever
-  // the app shuts down — cleanly or not.
+  // the app shuts down — cleanly or not. A failure toasts under one key (this
+  // fires on every sidebar toggle and tab switch, so repeats count in place
+  // instead of stacking), and the next successful write dismisses it.
   useEffect(() => {
     if (!uiStateLoaded) {
       return;
@@ -1849,8 +1843,8 @@ function App() {
       settings: {
         lastTab: settingsTab,
       },
-    })).catch((error) => {
-      setStatus((current) => current ? {...current, error: String(error)} : current);
+    })).then(() => notifications.dismissKey('ui-state-save')).catch((error) => {
+      notifyError("Couldn't save the window state", error, {key: 'ui-state-save'});
     });
   }, [uiStateLoaded, chatsOpen, librariesOpen, expandedLibraryIDs, expandedProjectIDs, settingsTab]);
 
@@ -2220,8 +2214,8 @@ function App() {
         // and dropping it here would reset a manually-edited manifestUrl or
         // autoCheck on every unrelated settings save.
         updates: updatesConfig ?? undefined,
-      })).then(clearStatusError).catch((error) => {
-        setStatus((current) => current ? {...current, error: String(error)} : current);
+      })).then(() => notifications.dismissKey('config-save')).catch((error) => {
+        notifyError("Couldn't save settings", error, {key: 'config-save'});
       });
     }, 400);
     return () => window.clearTimeout(timeout);
@@ -2500,7 +2494,7 @@ function App() {
     try {
       await ResolveToolPermission(permissionID, approved);
     } catch (error) {
-      setStartupError(formatError(error));
+      notifyError("Couldn't send the permission decision", error);
     }
   }
 
@@ -2541,24 +2535,26 @@ function App() {
     setUpdateError('');
   }
 
+  // The manual check reports its outcome as a toast. A newer version needs no
+  // toast of its own: the check raises atelier:update-available, so the update
+  // banner appears beside the stack.
   async function checkForUpdates() {
     setUpdateCheckBusy(true);
-    setUpdateCheckStatus('');
-    setUpdateCheckError('');
     try {
       const status = await CheckForUpdates();
       if (status.state === 'available') {
-        setUpdateCheckStatus(`Atelier ${status.latestVersion} is available — install from the banner.`);
-      } else if (status.state === 'current') {
-        setUpdateCheckStatus(`Atelier is up to date (${status.currentVersion}).`);
+        return;
+      }
+      if (status.state === 'current') {
+        notifySuccess('Atelier is up to date', {message: `Version ${status.currentVersion}`});
       } else if (status.error?.startsWith('Airplane mode')) {
         // A policy refusal, not a failure — surface it as-is.
-        setUpdateCheckStatus(status.error);
+        notifyInfo(status.error);
       } else {
-        setUpdateCheckError(`Update check failed: ${status.error || 'unknown error'}`);
+        notifyError('Update check failed', status.error || 'unknown error');
       }
     } catch (error) {
-      setUpdateCheckError(formatError(error));
+      notifyError('Update check failed', error);
     } finally {
       setUpdateCheckBusy(false);
     }
@@ -2952,7 +2948,6 @@ function App() {
     // conversation carries from its first message; otherwise the record's.
     setConvModelsDraft(conversationModelSelection);
     setConvModelsKeys(overrideKeysFromRecord(uiModelOverrides));
-    setConvModelsError('');
     setView('conversation-models');
   };
 
@@ -3215,15 +3210,18 @@ function App() {
 
   // closeConversationModels leaves the screen with a synchronous flush: the
   // debounced save below would otherwise be cancelled by the view change and
-  // silently drop an edit made within the debounce window.
+  // silently drop an edit made within the debounce window. Every override
+  // write toasts its failure under one key (the flush, the debounced save,
+  // and the composer's primary pin), and the next successful save dismisses
+  // it.
   const closeConversationModels = () => {
     if (convModelsDraft && activeConversationID) {
       SetConversationModelOverrides(activeConversationID, conversationOverridesPayload(convModelsDraft, convModelsKeys))
         .then((summary) => {
           setConversations((prev) => prev.map((item) => (item.id === summary.id ? main.ConversationSummary.createFrom({...item, modelOverrides: summary.modelOverrides ?? undefined}) : item)));
-          setConvModelsError('');
+          notifications.dismissKey('conv-models');
         })
-        .catch((error) => setConvModelsError(error instanceof Error ? error.message : String(error)));
+        .catch((error) => notifyError("Couldn't save the conversation's models", error, {key: 'conv-models'}));
     }
     setView('app');
   };
@@ -3247,9 +3245,9 @@ function App() {
       SetConversationModelOverrides(activeConversationID, conversationOverridesPayload(convModelsDraft, convModelsKeys))
         .then((summary) => {
           setConversations((prev) => prev.map((item) => (item.id === summary.id ? main.ConversationSummary.createFrom({...item, modelOverrides: summary.modelOverrides ?? undefined}) : item)));
-          setConvModelsError('');
+          notifications.dismissKey('conv-models');
         })
-        .catch((error) => setConvModelsError(error instanceof Error ? error.message : String(error)));
+        .catch((error) => notifyError("Couldn't save the conversation's models", error, {key: 'conv-models'}));
     }, 300);
     return () => window.clearTimeout(timeout);
   }, [view, convModelsDraft, convModelsKeys, activeConversationID]);
@@ -3347,9 +3345,9 @@ function App() {
     try {
       const summary = await SetConversationModelOverrides(activeConversationID, payload);
       setConversations((prev) => prev.map((item) => (item.id === summary.id ? main.ConversationSummary.createFrom({...item, modelOverrides: summary.modelOverrides ?? undefined}) : item)));
-      setConvModelsError('');
+      notifications.dismissKey('conv-models');
     } catch (error) {
-      setConvModelsError(error instanceof Error ? error.message : String(error));
+      notifyError("Couldn't save the conversation's models", error, {key: 'conv-models'});
     }
   };
 
@@ -3836,14 +3834,19 @@ function App() {
     ]);
   }
 
+  // refreshConversations runs from the chat:chunk listener and after every
+  // write into a conversation, so a failing listing toasts under one key —
+  // repeats count in place instead of stacking — and the next successful
+  // load dismisses it.
   async function refreshConversations(): Promise<main.ConversationSummary[]> {
     try {
       const nextConversations = await ListConversations();
       setConversations(asArray(nextConversations));
       setVisibleHistoryCount((current) => historyExpanded ? Math.max(current, compactHistoryLimit) : compactHistoryLimit);
+      notifications.dismissKey('conversations-load');
       return asArray(nextConversations);
     } catch (error) {
-      setStartupError(formatError(error));
+      notifyError("Couldn't load conversations", error, {key: 'conversations-load'});
       setConversations([]);
       return [];
     }
@@ -3867,7 +3870,7 @@ function App() {
         },
       }));
     } catch (error) {
-      setStartupError(formatError(error));
+      notifyError("Couldn't choose the workspace folder", error);
     }
   }
 
@@ -3885,7 +3888,7 @@ function App() {
       }
       setDraftWorkspace(selected);
     } catch (error) {
-      setStartupError(formatError(error));
+      notifyError("Couldn't choose the workspace folder", error);
     }
   }
 
@@ -3933,15 +3936,6 @@ function App() {
     } finally {
       setRefreshing(false);
     }
-  }
-
-  // clearStatusError drops a write failure parked on status.error once a later
-  // config or key write succeeds. Online only: offline, the field holds
-  // CheckOllama's own reason, which a successful save says nothing about.
-  // SaveUIState's success doesn't call this — it fires on every sidebar
-  // toggle and Settings tab switch, which would wipe a config failure unseen.
-  function clearStatusError() {
-    setStatus((current) => current?.online && current.error ? {...current, error: undefined} : current);
   }
 
   async function refreshOpenRouterModels() {
@@ -4121,13 +4115,13 @@ function App() {
       setFalHasKey(hasKey);
       setFalStatus('unknown');
       setFalError('');
-      clearStatusError();
+      notifications.dismissKey('key-fal');
       if (hasKey) {
         await refreshFalModels();
         await checkFalConnection();
       }
     } catch (error) {
-      setStatus((current) => current ? {...current, error: String(error)} : current);
+      notifyError("Couldn't save the fal.ai key", error, {key: 'key-fal'});
     }
   }
 
@@ -4160,11 +4154,11 @@ function App() {
       setFalLipsyncVideoModels([]);
       setFalStatus('unknown');
       setFalError('');
-      clearStatusError();
+      notifications.dismissKey('key-fal');
       setImageProvider((current) => current === 'fal' ? 'openai-compatible' : current);
       setVideoProvider((current) => current === 'fal' ? 'replicate' : current);
     } catch (error) {
-      setStatus((current) => current ? {...current, error: String(error)} : current);
+      notifyError("Couldn't remove the fal.ai key", error, {key: 'key-fal'});
     }
   }
 
@@ -4261,13 +4255,13 @@ function App() {
       setReplicateHasKey(hasKey);
       setReplicateStatus('unknown');
       setReplicateError('');
-      clearStatusError();
+      notifications.dismissKey('key-replicate');
       if (hasKey) {
         await refreshReplicateModels();
         await checkReplicateConnection();
       }
     } catch (error) {
-      setStatus((current) => current ? {...current, error: String(error)} : current);
+      notifyError("Couldn't save the Replicate key", error, {key: 'key-replicate'});
     }
   }
 
@@ -4298,12 +4292,12 @@ function App() {
       setReplicateLipsyncVideoModels([]);
       setReplicateStatus('unknown');
       setReplicateError('');
-      clearStatusError();
+      notifications.dismissKey('key-replicate');
       setImageProvider((current) => current === 'replicate' ? 'openai-compatible' : current);
       setVideoProvider((current) => current === 'replicate' ? 'fal' : current);
       setLipsyncProvider((current) => current === 'replicate' ? 'fal' : current);
     } catch (error) {
-      setStatus((current) => current ? {...current, error: String(error)} : current);
+      notifyError("Couldn't remove the Replicate key", error, {key: 'key-replicate'});
     }
   }
 
@@ -4326,9 +4320,9 @@ function App() {
       await SaveOpenAICompatibleAPIKey(openaiCompatibleKeyInput);
       setOpenaiCompatibleKeyInput('');
       setOpenaiCompatibleHasKey(await HasOpenAICompatibleAPIKey());
-      clearStatusError();
+      notifications.dismissKey('key-openai-compatible');
     } catch (error) {
-      setStatus((current) => current ? {...current, error: String(error)} : current);
+      notifyError("Couldn't save the OpenAI-compatible key", error, {key: 'key-openai-compatible'});
     }
   }
 
@@ -4336,9 +4330,9 @@ function App() {
     try {
       await ClearOpenAICompatibleAPIKey();
       setOpenaiCompatibleHasKey(false);
-      clearStatusError();
+      notifications.dismissKey('key-openai-compatible');
     } catch (error) {
-      setStatus((current) => current ? {...current, error: String(error)} : current);
+      notifyError("Couldn't remove the OpenAI-compatible key", error, {key: 'key-openai-compatible'});
     }
   }
 
@@ -4610,7 +4604,6 @@ function App() {
     const generation = ++videoOpenGeneration.current;
     videoOpeningIdentity.current = {conversationID, artifactID};
     setVideoEditorOpening(true);
-    setVideoEditorError('');
     try {
       const owner = await GetConversation(conversationID);
       if (generation !== videoOpenGeneration.current) return;
@@ -4636,7 +4629,12 @@ function App() {
       // editor must not yank them out of it — Back will reveal it.
       setView((current) => (current === 'settings' ? current : 'app'));
     } catch (error) {
-      if (generation === videoOpenGeneration.current) setVideoEditorError(formatError(error));
+      // The common cause is a missing ffmpeg/ffprobe (the editor's preview
+      // needs both), so the toast offers the Settings door the old error
+      // card carried.
+      if (generation === videoOpenGeneration.current) {
+        notifyError("Couldn't open the video editor", error, {action: {label: 'Open Settings', run: () => void openSettings()}});
+      }
     } finally {
       if (generation === videoOpenGeneration.current) {
         setVideoEditorOpening(false);
@@ -4688,7 +4686,7 @@ function App() {
       setEditorHandle({source, sessionID: ''});
       setView((current) => (current === 'settings' ? current : 'app'));
     } catch (error) {
-      if (generation === imageOpenGeneration.current) setStartupError(formatError(error));
+      if (generation === imageOpenGeneration.current) notifyError("Couldn't open the image editor", error);
     } finally {
       if (generation === imageOpenGeneration.current) setImageEditorOpening(false);
     }
@@ -4721,7 +4719,7 @@ function App() {
       setAudioEditorHandle({source, sessionID: ''});
       setView((current) => (current === 'settings' ? current : 'app'));
     } catch (error) {
-      if (generation === audioOpenGeneration.current) setStartupError(formatError(error));
+      if (generation === audioOpenGeneration.current) notifyError("Couldn't open the audio editor", error);
     } finally {
       if (generation === audioOpenGeneration.current) setAudioEditorOpening(false);
     }
@@ -4763,7 +4761,7 @@ function App() {
       setSubtitleEditorHandle({source, libraryID: libraryIDForProject(owner.conversation.projectId ?? '')});
       setView((current) => (current === 'settings' ? current : 'app'));
     } catch (error) {
-      if (generation === subtitleOpenGeneration.current) setStartupError(formatError(error));
+      if (generation === subtitleOpenGeneration.current) notifyError("Couldn't open the subtitle editor", error);
     } finally {
       if (generation === subtitleOpenGeneration.current) setSubtitleEditorOpening(false);
     }
@@ -4794,7 +4792,7 @@ function App() {
       setMarkdownEditorHandle({source});
       setView((current) => (current === 'settings' ? current : 'app'));
     } catch (error) {
-      if (generation === markdownOpenGeneration.current) setStartupError(formatError(error));
+      if (generation === markdownOpenGeneration.current) notifyError("Couldn't open the document editor", error);
     } finally {
       if (generation === markdownOpenGeneration.current) setMarkdownEditorOpening(false);
     }
@@ -4833,7 +4831,7 @@ function App() {
       setCompositionEditorHandle({source, libraryID: libraryIDForProject(owner.conversation.projectId ?? '')});
       setView((current) => (current === 'settings' ? current : 'app'));
     } catch (error) {
-      if (generation === compositionOpenGeneration.current) setStartupError(formatError(error));
+      if (generation === compositionOpenGeneration.current) notifyError("Couldn't open the composer", error);
     } finally {
       if (generation === compositionOpenGeneration.current) setCompositionEditorOpening(false);
     }
@@ -4873,7 +4871,7 @@ function App() {
       setCompositionEditorHandle({source, libraryID: libraryIDForProject(owner.conversation.projectId ?? ''), ...(audioFirst ? {audioFirst: true} : {})});
       setView((current) => (current === 'settings' ? current : 'app'));
     } catch (error) {
-      if (generation === compositionOpenGeneration.current) setStartupError(formatError(error));
+      if (generation === compositionOpenGeneration.current) notifyError("Couldn't open the composer", error);
     } finally {
       if (generation === compositionOpenGeneration.current) setCompositionEditorOpening(false);
     }
@@ -4914,7 +4912,7 @@ function App() {
       setComicEditorHandle({source, libraryID: libraryIDForProject(owner.conversation.projectId ?? '')});
       setView((current) => (current === 'settings' ? current : 'app'));
     } catch (error) {
-      if (generation === comicOpenGeneration.current) setStartupError(formatError(error));
+      if (generation === comicOpenGeneration.current) notifyError("Couldn't open the comic editor", error);
     } finally {
       if (generation === comicOpenGeneration.current) setComicEditorOpening(false);
     }
@@ -4953,15 +4951,12 @@ function App() {
       setComicEditorHandle({source, libraryID: libraryIDForProject(owner.conversation.projectId ?? '')});
       setView((current) => (current === 'settings' ? current : 'app'));
     } catch (error) {
-      if (generation === comicOpenGeneration.current) setStartupError(formatError(error));
+      if (generation === comicOpenGeneration.current) notifyError("Couldn't open the comic editor", error);
     } finally {
       if (generation === comicOpenGeneration.current) setComicEditorOpening(false);
     }
   }
 
-  // openEditSession reopens a saved edit session — the sidebar/search path
-  // for Kind "edit" conversations. The handle seeds from the loaded session's
-  // own source copy, so the editor can submit iterations without guessing.
   // refreshAfterConversationWrite re-reads everything that shows a
   // conversation after something wrote into it from outside the chat stream
   // (an editor save, a finished export): the sidebar list, the assets panel,
@@ -4972,7 +4967,7 @@ function App() {
     if (activeConversationIDRef.current === conversationID) {
       void GetConversation(conversationID).then((detail) => {
         if (activeConversationIDRef.current === conversationID) hydrateChatConversation(detail);
-      }).catch((error) => setStartupError(formatError(error)));
+      }).catch((error) => notifyError("Couldn't refresh the conversation", error));
     }
   }
 
@@ -4994,6 +4989,9 @@ function App() {
     });
   };
 
+  // openEditSession reopens a saved edit session — the sidebar/search path
+  // for Kind "edit" conversations. The handle seeds from the loaded session's
+  // own source copy, so the editor can submit iterations without guessing.
   async function openEditSession(sessionID: string) {
     try {
       const state = await ListEditSession(sessionID);
@@ -5043,7 +5041,7 @@ function App() {
       });
       setView((current) => (current === 'settings' ? current : 'app'));
     } catch (error) {
-      setStartupError(formatError(error));
+      notifyError("Couldn't open the edit session", error);
     }
   }
 
@@ -5097,7 +5095,7 @@ function App() {
         }, 80);
       }
     } catch (error) {
-      setStartupError(formatError(error));
+      notifyError("Couldn't open the conversation", error);
     } finally {
       if (openingConversationRef.current === conversation.id) {
         openingConversationRef.current = '';
@@ -5135,7 +5133,7 @@ function App() {
         asArray(items).map((item) => item.id === updated.id ? main.ConversationSummary.createFrom({...item, ...updated}) : item),
       );
     } catch (error) {
-      setStartupError(formatError(error));
+      notifyError("Couldn't rename the conversation", error);
       setConversations((items) =>
         asArray(items).map((item) => item.id === conversation.id ? main.ConversationSummary.createFrom({...item, title: conversation.title}) : item),
       );
@@ -5214,7 +5212,7 @@ function App() {
       }
       copyResetRef.current = window.setTimeout(() => setCopiedConversationID(''), 1600);
     } catch (error) {
-      console.error('copy failed', error);
+      notifyError("Couldn't copy to the clipboard", error);
     }
   }
 
@@ -5233,7 +5231,7 @@ function App() {
         setChat([]);
       }
     } catch (error) {
-      setStartupError(formatError(error));
+      notifyError("Couldn't archive the conversation", error);
     }
   }
 
@@ -5243,12 +5241,10 @@ function App() {
     }
     if (!confirmPurgeArchived) {
       setConfirmPurgeArchived(true);
-      setPurgeStatus('');
       return;
     }
     try {
       setPurgeBusy(true);
-      setPurgeStatus('');
       const result = await PurgeArchivedConversations();
       const remaining = await refreshConversations();
       // Drop any session drafts for conversations that no longer exist, but
@@ -5260,10 +5256,9 @@ function App() {
         }
       }
       setConfirmPurgeArchived(false);
-      setPurgeStatus(`${result.deletedConversations} archived ${result.deletedConversations === 1 ? 'conversation' : 'conversations'} and ${result.deletedAssets} ${result.deletedAssets === 1 ? 'asset' : 'assets'} deleted.`);
+      notifySuccess(`${result.deletedConversations} archived ${result.deletedConversations === 1 ? 'conversation' : 'conversations'} and ${result.deletedAssets} ${result.deletedAssets === 1 ? 'asset' : 'assets'} deleted.`);
     } catch (error) {
-      setPurgeStatus('');
-      setStartupError(formatError(error));
+      notifyError("Couldn't purge archived conversations", error);
     } finally {
       setPurgeBusy(false);
     }
@@ -5534,7 +5529,7 @@ function App() {
         ...(referencedAssetIds.length ? {referencedAssetIds} : {}),
       }));
     } catch (error) {
-      setStartupError(formatError(error));
+      notifyError("Couldn't open the editor", error);
       return;
     }
     // The launch is on disk — the composer contents are being sent, not
@@ -5593,7 +5588,7 @@ function App() {
         await openAudioEditor(result.conversationId, artifactId);
       }
     } catch (error) {
-      setStartupError(formatError(error));
+      notifyError("Couldn't open the editor", error);
     }
   }
 
@@ -5887,7 +5882,7 @@ function App() {
       }
       copyResetRef.current = window.setTimeout(() => setCopiedMessageID(''), 1600);
     } catch (error) {
-      console.error('copy failed', error);
+      notifyError("Couldn't copy to the clipboard", error);
     }
   }
 
@@ -5896,7 +5891,6 @@ function App() {
   // synthetic name for files without one (pasted bytes, anonymous drops); the
   // staging rows are keyed per call so parallel drops don't cross-talk.
   async function attachFiles(files: File[], nameFor?: (file: File, index: number) => string) {
-    setAttachError('');
     const stagingKeys = files.map((file, index): {key: string; kind: 'audio' | 'video'} | null => {
       const kind = mediaKindForFile(file);
       if (!kind || file.size <= mediaStageThresholdBytes) {
@@ -5937,7 +5931,10 @@ function App() {
           setStagingAttachments((items) => items.filter((item) => item.key !== entry.key));
         }
       });
-      setAttachError(formatError(error));
+      // A failed intake (a rejected staging sniff, a disk error mid-chunks)
+      // must never be silent: it reads as a swallowed drop — the staging row
+      // ran to 100% and vanished — so the reason toasts.
+      notifyError("Couldn't attach", error);
       console.error('attaching files failed', error);
     }
   }
@@ -6535,18 +6532,11 @@ function App() {
               ) : null}
             </div>
           ) : null}
-          {videoEditorError && view === 'app' ? (
-            <div className="startup-error" role="alert">
-              <strong>Could not open Video Editor.</strong>
-              <span>{videoEditorError}</span>
-              <button type="button" onClick={() => {setVideoEditorError(''); void openSettings();}}>Open Settings</button>
-              <button type="button" onClick={() => setVideoEditorError('')}>Dismiss</button>
-            </div>
-          ) : null}
           {startupError ? (
             <div className="startup-error">
               <strong>Atelier started with a local data warning.</strong>
               <span>{startupError}</span>
+              <button type="button" onClick={() => setStartupError('')}>Dismiss</button>
             </div>
           ) : null}
           {updateAvailable ? (
@@ -6655,16 +6645,7 @@ function App() {
                 });
               }}
               onSessionCreated={() => {void refreshConversations();}}
-              onResultAdded={() => {
-                void refreshConversations();
-                setAssetsRefreshTick((tick) => tick + 1);
-                const parentID = videoEditorHandle.source.conversationId;
-                if (activeConversationIDRef.current === parentID) {
-                  void GetConversation(parentID).then((detail) => {
-                    if (activeConversationIDRef.current === parentID) hydrateChatConversation(detail);
-                  }).catch((error) => setStartupError(formatError(error)));
-                }
-              }}
+              onResultAdded={() => refreshAfterConversationWrite(videoEditorHandle.source.conversationId)}
               onDirtyChange={(dirty) => {videoEditorDirty.current = dirty;}}
               onOpenSettings={() => {void openSettings();}}
             />
@@ -6684,16 +6665,7 @@ function App() {
                 });
               }}
               onSessionCreated={() => {void refreshConversations();}}
-              onResultAdded={() => {
-                void refreshConversations();
-                setAssetsRefreshTick((tick) => tick + 1);
-                const parentID = audioEditorHandle.source.conversationId;
-                if (activeConversationIDRef.current === parentID) {
-                  void GetConversation(parentID).then((detail) => {
-                    if (activeConversationIDRef.current === parentID) hydrateChatConversation(detail);
-                  }).catch((error) => setStartupError(formatError(error)));
-                }
-              }}
+              onResultAdded={() => refreshAfterConversationWrite(audioEditorHandle.source.conversationId)}
               onDirtyChange={(dirty) => {audioEditorDirty.current = dirty;}}
             />
           </div>
@@ -6717,16 +6689,7 @@ function App() {
                 });
               }}
               onDirtyChange={(dirty) => {subtitleEditorDirty.current = dirty;}}
-              onSavedToConversation={() => {
-                void refreshConversations();
-                setAssetsRefreshTick((tick) => tick + 1);
-                const parentID = subtitleEditorHandle.source.conversationId;
-                if (activeConversationIDRef.current === parentID) {
-                  void GetConversation(parentID).then((detail) => {
-                    if (activeConversationIDRef.current === parentID) hydrateChatConversation(detail);
-                  }).catch((error) => setStartupError(formatError(error)));
-                }
-              }}
+              onSavedToConversation={() => refreshAfterConversationWrite(subtitleEditorHandle.source.conversationId)}
             />
           </div>
         ) : markdownEditorHandle ? (
@@ -6744,16 +6707,7 @@ function App() {
                 });
               }}
               onDirtyChange={(dirty) => {markdownEditorDirty.current = dirty;}}
-              onSavedToConversation={() => {
-                void refreshConversations();
-                setAssetsRefreshTick((tick) => tick + 1);
-                const parentID = markdownEditorHandle.source.conversationId;
-                if (activeConversationIDRef.current === parentID) {
-                  void GetConversation(parentID).then((detail) => {
-                    if (activeConversationIDRef.current === parentID) hydrateChatConversation(detail);
-                  }).catch((error) => setStartupError(formatError(error)));
-                }
-              }}
+              onSavedToConversation={() => refreshAfterConversationWrite(markdownEditorHandle.source.conversationId)}
             />
           </div>
         ) : compositionEditorHandle ? (
@@ -6797,16 +6751,7 @@ function App() {
                 });
               }}
               onDirtyChange={(dirty) => {comicEditorDirty.current = dirty;}}
-              onSavedToConversation={() => {
-                void refreshConversations();
-                setAssetsRefreshTick((tick) => tick + 1);
-                const parentID = comicEditorHandle.source.conversationId;
-                if (activeConversationIDRef.current === parentID) {
-                  void GetConversation(parentID).then((detail) => {
-                    if (activeConversationIDRef.current === parentID) hydrateChatConversation(detail);
-                  }).catch((error) => setStartupError(formatError(error)));
-                }
-              }}
+              onSavedToConversation={() => refreshAfterConversationWrite(comicEditorHandle.source.conversationId)}
             />
           </div>
         ) : null}
@@ -6906,9 +6851,10 @@ function App() {
                       ? `Online${status.version ? ` ${status.version}` : ''} — ${asArray(models).length} local models available`
                       : status ? 'Offline' : 'Not checked'}
                   </div>
-                  {/* Not gated on the offline branch: the field also carries
-                      SaveConfig/SaveUIState/key-write failures, which happen
-                      while Ollama is online too. */}
+                  {/* Ollama's own reachability reason: CheckOllama's error
+                      when the endpoint is down, or the boot fallback's
+                      refresh failure. Nothing else writes the field — config,
+                      window-state, and key-write failures toast instead. */}
                   {status?.error ? <div className="status-error">{status.error}</div> : null}
                   <div className="field-label-row">
                     <label htmlFor="ollama-num-ctx">Context Window (num_ctx)</label>
@@ -7372,7 +7318,6 @@ function App() {
                   {confirmPurgeArchived && !purgeBusy ? (
                     <button onClick={() => setConfirmPurgeArchived(false)}>Cancel</button>
                   ) : null}
-                  {purgeStatus ? <span>{purgeStatus}</span> : null}
                 </div>
                 {confirmPurgeArchived ? (
                   <div className="storage-confirmation">
@@ -7386,8 +7331,6 @@ function App() {
                   <button onClick={checkForUpdates} disabled={updateCheckBusy}>
                     {updateCheckBusy ? 'Checking...' : 'Check for Updates'}
                   </button>
-                  {updateCheckStatus ? <span>{updateCheckStatus}</span> : null}
-                  {updateCheckError ? <span className="status-error">{updateCheckError}</span> : null}
                 </div>
                 <div className="storage-hint">
                   Atelier checks for updates automatically once a day and installs only when you choose to.
@@ -7494,7 +7437,6 @@ function App() {
                 onResetField={resetConversationModelField}
                 airplaneMode={airplaneMode}
               />
-              {convModelsError ? <div className="conversation-models-error">{convModelsError}</div> : null}
             </div>
           </>
         ) : view === 'usage' ? (
@@ -7997,14 +7939,6 @@ function App() {
                         Staging {item.name}… {Math.round(item.fraction * 100)}%
                       </span>
                     ))}
-                  </div>
-                ) : null}
-                {attachError ? (
-                  <div className="composer-attach-error">
-                    <span>{attachError}</span>
-                    <button type="button" onClick={() => setAttachError('')} aria-label="Dismiss attachment error">
-                      ✕
-                    </button>
                   </div>
                 ) : null}
                 {asArray(attachments).length ? (

@@ -44,7 +44,7 @@
 }
 
 /* Bottom-right stack hosting every floating card (editor preparation, the
-   error cards, the update banner, toasts, tool permissions): one anchored
+   boot error card, the update banner, toasts, tool permissions): one anchored
    column so any combination stacks instead of overlapping. The stack owns
    position and z-index — the cards inside stay static. z 25 sits over the
    dialogs (z 20) and under menus (z 30+), so toasts and permission requests
@@ -83,8 +83,17 @@
   color: #f0a09a;
 }
 
+/* The global button rule is a 36px control; the card's Dismiss is compact
+   and sits at the trailing edge (the toast action's proportions). */
+.startup-error button {
+  align-self: flex-end;
+  height: auto;
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
 /* Floating "work is happening" toast for an editor source resolve in flight
-   (image or video). Rides the .floating-cards stack beside the error cards;
+   (image or video). Rides the .floating-cards stack beside the other cards;
    the video path adds a Cancel (its backend resolve is cancellable, the
    image's isn't). */
 .editor-preparation-status {
@@ -1234,16 +1243,6 @@ button:disabled {
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
-}
-
-.storage-actions span {
-  color: #9fcba3;
-  font-size: 12px;
-}
-
-/* Failures share the row with the green success messages above. */
-.storage-actions .status-error {
-  color: #f0a09a;
 }
 
 .storage-confirmation {
@@ -2471,37 +2470,6 @@ button:disabled {
   gap: 6px;
   font-size: 12px;
   color: #9a9a92;
-}
-
-/* Why the last attachment intake failed (a staging sniff rejection, a disk
-   error mid-chunks) — the same row vocabulary as the staging progress, in the
-   error tone, dismissible; the next attach clears it either way. */
-.composer-attach-error {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: #ff9c91;
-}
-
-.composer-attach-error span {
-  flex: 1;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.composer-attach-error button {
-  height: auto;
-  padding: 1px 5px;
-  border: 0;
-  background: transparent;
-  color: #9a9a92;
-  cursor: pointer;
-  font-size: 11px;
-}
-
-.composer-attach-error button:hover {
-  color: #e8ebec;
 }
 
 .attachment-strip img,
@@ -3914,16 +3882,6 @@ button:disabled {
 .conversation-models-toggle.has-overrides {
   color: #d5a64f;
   border-color: rgba(213, 166, 79, 0.55);
-}
-
-.conversation-models-error {
-  margin-top: 16px;
-  padding: 10px 12px;
-  border: 1px solid rgba(203, 92, 92, 0.5);
-  border-radius: 8px;
-  color: #e2b1b1;
-  background: rgba(203, 92, 92, 0.08);
-  font-size: 12px;
 }
 
 /* ---- Usage report (view === 'usage') ---- */

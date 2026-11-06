@@ -1,8 +1,9 @@
 /* The toast stack (ToastStack.tsx). The surrounding .floating-cards column
    (App.css) owns position; this file styles the toasts. The palette reuses
    the app's card vocabulary: the neutral card (.editor-preparation-status)
-   for success and progress, the info card (.update-banner), the error card
-   (.startup-error), and the green success text (.storage-actions span). */
+   for success and progress, the info card (.update-banner), and the error
+   card (.startup-error); success titles keep the green the Settings success
+   lines used before they became toasts. */
 
 .toast-stack {
   display: flex;
