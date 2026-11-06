@@ -323,7 +323,6 @@ export function CompositionEditor(props: {
   // atelier:composition-op event and folds into the row (terminal states
   // never overwrite a later one because the op id keys the merge).
   const [renders, setRenders] = useState<main.CompositionRenderOperation[]>([]);
-  const [renderError, setRenderError] = useState('');
   // The stage plays the chosen completed render; renderedDoc is the snapshot
   // it was built from, so edits after a render show the stale note.
   const [preview, setPreview] = useState<{url: string; audioOnly: boolean; offsetSeconds: number} | null>(null);
@@ -617,7 +616,6 @@ export function CompositionEditor(props: {
   // submitRender previews the WORKING document — the no-forced-save
   // contract; the export path (next milestone) will pin a saved revision.
   const submitRender = async () => {
-    setRenderError('');
     const from = parseFloat(rangeFrom);
     const to = parseFloat(rangeTo);
     try {
@@ -632,7 +630,7 @@ export function CompositionEditor(props: {
       setRenderedDoc(normalizeCompositionDoc(docRef.current));
       addRenderOp(op);
     } catch (error) {
-      setRenderError(formatEditorError(error));
+      notifyError("Couldn't start the preview", error);
     }
   };
 
@@ -640,7 +638,7 @@ export function CompositionEditor(props: {
     try {
       await CancelCompositionRender(operationID);
     } catch (error) {
-      setRenderError(formatEditorError(error));
+      notifyError("Couldn't cancel the render", error);
     }
   };
 
@@ -961,7 +959,6 @@ export function CompositionEditor(props: {
   const loadRevision = async (entry: EditorLogEntry) => {
     if (loadingRevision || entry.artifactId === activeArtifactID) return;
     setLoadingRevision(true);
-    setLoadError('');
     try {
       const revision = await AppBindings.ResolveCompositionEditSource(sourceConversationID, entry.artifactId);
       const next = normalizeCompositionDoc(revision.doc);
@@ -975,7 +972,7 @@ export function CompositionEditor(props: {
       setMissingRefs(new Set(asArray(revision.missingRefs)));
       setSelection({kind: 'doc'});
     } catch (error) {
-      setLoadError(formatEditorError(error));
+      notifyError("Couldn't open that revision", error);
     } finally {
       setLoadingRevision(false);
     }
@@ -1125,7 +1122,6 @@ export function CompositionEditor(props: {
                 </label>
               ) : null}
               {previewOutdated ? <span className="composition-warning" title="The timeline changed after this preview was rendered">preview outdated — re-render</span> : null}
-              {renderError ? <span className="composition-warning" role="alert">{renderError}</span> : null}
             </div>
           </div>
 

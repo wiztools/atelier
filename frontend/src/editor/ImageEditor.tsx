@@ -156,10 +156,8 @@ export function ImageEditor(props: {
   }, []);
 
   const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState('');
   const [adoptingID, setAdoptingID] = useState('');
   const [deletingID, setDeletingID] = useState('');
-  const [deleteError, setDeleteError] = useState('');
   const [compareOpID, setCompareOpID] = useState('');
 
   // The Edits panel's scroll pane: the compare-scroll effect scrolls it
@@ -489,7 +487,6 @@ export function ImageEditor(props: {
     if (tool === 'inpaint' && (props.airplaneMode || !mask)) return;
     submitLock.current = true;
     setSubmitting(true);
-    setSubmitError('');
     try {
       const state = await SubmitImageEdit(main.ImageEditSubmitRequest.createFrom({
         kind: tool,
@@ -514,7 +511,7 @@ export function ImageEditor(props: {
         props.onSessionCreated(state.sessionConversationId);
       }
     } catch (error) {
-      setSubmitError(formatEditorError(error));
+      notifyError(tool === 'crop' ? "Couldn't start the crop" : "Couldn't start the inpaint", error);
     } finally {
       submitLock.current = false;
       setSubmitting(false);
@@ -528,7 +525,7 @@ export function ImageEditor(props: {
     try {
       await CancelImageEdit(sessionID, runningOpID);
     } catch (error) {
-      setSubmitError(formatEditorError(error));
+      notifyError("Couldn't cancel the edit", error);
     }
   }
 
@@ -580,7 +577,6 @@ export function ImageEditor(props: {
       return;
     }
     setDeletingID(op.id);
-    setDeleteError('');
     try {
       await DeleteEditOperation(sessionID, op.id);
       eventOperations.current.delete(op.id);
@@ -612,7 +608,7 @@ export function ImageEditor(props: {
         }
       }
     } catch (error) {
-      setDeleteError(formatEditorError(error));
+      notifyError("Couldn't delete the edit", error);
     } finally {
       setDeletingID('');
     }
@@ -785,7 +781,6 @@ export function ImageEditor(props: {
               Cancel
             </button>
           ) : null}
-          {submitError ? <div className="editor-error">{submitError}</div> : null}
           {tool === 'inpaint' && !selectionPresent && prompt.trim() ? (
             <span className="hint">Paint a selection on the image first — only the painted region is edited.</span>
           ) : null}
@@ -801,7 +796,6 @@ export function ImageEditor(props: {
       <EditsPanel
         count={ops.length}
         emptyText={tool === 'crop' ? 'No edits yet — adjust the crop and apply.' : 'No edits yet — paint a selection and generate.'}
-        adoptError={deleteError ? <span className="editor-error">{deleteError}</span> : null}
         scrollRef={resultsScrollRef}
       >
         <ul className="editor-op-list">
@@ -881,18 +875,4 @@ export function ImageEditor(props: {
       </EditsPanel>
     </section>
   );
-}
-
-function formatEditorError(error: unknown): string {
-  if (typeof error === 'string') {
-    return error;
-  }
-  if (error instanceof Error) {
-    return error.message;
-  }
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return String(error);
-  }
 }

@@ -792,7 +792,6 @@ export function ComicEditor(props: {
 
   const loadRevision = async (artifactID: string) => {
     setLoadingRevision(true);
-    setLoadError('');
     try {
       const reloaded = await AppBindings.ResolveComicEditSource(sourceConversationID, artifactID);
       const normalized = normalizeComicDoc(reloaded.doc);
@@ -806,7 +805,7 @@ export function ComicEditor(props: {
       setUndoStack([]);
       setRedoStack([]);
     } catch (error) {
-      setLoadError(formatEditorError(error));
+      notifyError("Couldn't open that revision", error);
     } finally {
       setLoadingRevision(false);
     }

@@ -7,7 +7,8 @@ import {ReactNode, Ref, RefObject, useEffect, useRef, useState} from 'react';
 // slim restore bar), keyboard resizing on the separator, and the
 // scroll-contained list pane. It does NOT own the rows — the thumb element,
 // the action buttons, and the compare expansion are media-specific and arrive
-// as children.
+// as children. Nor does it carry an error slot: a row action's failure is a
+// toast, since anything rendered in the panel vanishes when it collapses.
 //
 // bodyReservePx is the vertical floor of everything above the panel for THIS
 // editor (header + stage minimum + tool rows + paddings). The height clamp
@@ -39,7 +40,6 @@ function loadEditsPanelHeight(bodyReservePx: number): number {
 export function EditsPanel(props: {
   count: number;
   emptyText: string;
-  adoptError?: ReactNode;
   scrollRef?: RefObject<HTMLDivElement | null>;
   bodyReservePx?: number;
   children: ReactNode;
@@ -131,7 +131,6 @@ export function EditsPanel(props: {
           <footer className="editor-results" style={{height}}>
             <div className="editor-results-header">
               <h4>Edits</h4>
-              {props.adoptError}
             </div>
             <div className="editor-results-scroll" ref={(props.scrollRef ?? undefined) as Ref<HTMLDivElement> | undefined}>
               {props.count === 0 ? <p className="editor-results-empty">{props.emptyText}</p> : props.children}

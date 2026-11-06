@@ -190,11 +190,11 @@ export function VideoEditor(props: {
   const [selectedCutIndex, setSelectedCutIndex] = useState(-1);
   const [trimUndoStack, setTrimUndoStack] = useState<VideoTrimDraft[]>([]);
   const [trimRedoStack, setTrimRedoStack] = useState<VideoTrimDraft[]>([]);
+  // loadError is the session load's alone — it disables Render, so an action
+  // failure (submit, "Use as source", a restore) toasts instead of landing here.
   const [loadError, setLoadError] = useState('');
-  const [submitError, setSubmitError] = useState('');
   const [adoptingID, setAdoptingID] = useState('');
   const [deletingID, setDeletingID] = useState('');
-  const [deleteError, setDeleteError] = useState('');
   const [compareOpID, setCompareOpID] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(Boolean(props.handle.sessionID));
@@ -510,7 +510,6 @@ export function VideoEditor(props: {
     if (submitLock.current || busy) return;
     submitLock.current = true;
     setSubmitting(true);
-    setSubmitError('');
     try {
       const submittedTrim = tool === 'trim'
         ? validateVideoTrimParams({version: 1, source: sourceForParams(source), segments: segmentsFromDraft(trimDraft, duration)})
@@ -553,7 +552,7 @@ export function VideoEditor(props: {
         setSource((current) => ({...current, artifactId: state.operation.inputArtifactId || current.artifactId, url: state.sourceUrl || current.url}));
       }
     } catch (error) {
-      setSubmitError(formatEditorError(error));
+      notifyError(tool === 'trim' ? "Couldn't start the trim" : "Couldn't start the reframe", error);
     } finally {
       submitLock.current = false;
       setSubmitting(false);
@@ -565,7 +564,7 @@ export function VideoEditor(props: {
     try {
       await AppBindings.CancelVideoEdit(sessionID, runningOpID);
     } catch (error) {
-      setSubmitError(formatEditorError(error));
+      notifyError("Couldn't cancel the edit", error);
     }
   }
 
@@ -586,7 +585,7 @@ export function VideoEditor(props: {
     try {
       nextSource = await AppBindings.ResolveVideoEditInput(sessionID, op.resultArtifactId);
     } catch (error) {
-      setLoadError(formatEditorError(error));
+      notifyError("Couldn't use the result as the source", error);
       return;
     }
     setSource(nextSource);
@@ -621,9 +620,8 @@ export function VideoEditor(props: {
       setPlaying(false);
       setUndoStack([]);
       setRedoStack([]);
-      setLoadError('');
     } catch (error) {
-      setLoadError(formatEditorError(error));
+      notifyError("Couldn't open the framing editor", error);
     }
   }
 
@@ -643,9 +641,8 @@ export function VideoEditor(props: {
       setPlaying(false);
       setTrimUndoStack([]);
       setTrimRedoStack([]);
-      setLoadError('');
     } catch (error) {
-      setLoadError(formatEditorError(error));
+      notifyError("Couldn't open the cut editor", error);
     }
   }
 
@@ -713,7 +710,6 @@ export function VideoEditor(props: {
   async function deleteOp(op: VideoEditOperation) {
     if (!sessionID || deletingID) return;
     setDeletingID(op.id);
-    setDeleteError('');
     try {
       await AppBindings.DeleteEditOperation(sessionID, op.id);
       eventOperations.current.delete(op.id);
@@ -747,7 +743,7 @@ export function VideoEditor(props: {
         }
       }
     } catch (error) {
-      setDeleteError(formatEditorError(error));
+      notifyError("Couldn't delete the edit", error);
     } finally {
       setDeletingID('');
     }
@@ -935,7 +931,6 @@ export function VideoEditor(props: {
               Cancel render
             </button>
           ) : null}
-          {submitError ? <div className="editor-error">{submitError}</div> : null}
           <div className="editor-session-note">
             {sessionID ? 'Edits are saved.' : 'Your first render saves this edit.'}
           </div>
@@ -945,7 +940,6 @@ export function VideoEditor(props: {
       <EditsPanel
         count={ops.length}
         emptyText="No renders yet."
-        adoptError={deleteError ? <span className="editor-error">{deleteError}</span> : null}
         bodyReservePx={editsPanelBodyReservePx}
       >
         <ul className="editor-op-list">

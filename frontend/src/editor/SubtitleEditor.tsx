@@ -280,7 +280,6 @@ export function SubtitleEditor(props: {
   const loadRevision = async (entry: EditorLogEntry) => {
     if (loadingRevision || entry.artifactId === activeArtifactID) return;
     setLoadingRevision(true);
-    setLoadError('');
     try {
       const revision = await AppBindings.ResolveSubtitleEditSource(sourceConversationID, entry.artifactId);
       const format: SubtitleFormat = revision.format === 'srt' ? 'srt' : 'vtt';
@@ -294,7 +293,7 @@ export function SubtitleEditor(props: {
       setSelected(0);
       setEditingText(false);
     } catch (error) {
-      setLoadError(formatEditorError(error));
+      notifyError("Couldn't open that revision", error);
     } finally {
       setLoadingRevision(false);
     }

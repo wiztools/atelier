@@ -76,16 +76,6 @@ const scrollEchoWindowMs = 250;
 
 type ScrollEcho = {value: number; until: number};
 
-function formatEditorError(error: unknown): string {
-  if (typeof error === 'string') return error;
-  if (error instanceof Error) return error.message;
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return String(error);
-  }
-}
-
 // The scroll position that puts the line containing `offset` at the top of
 // the textarea's viewport, measured in a mirror div that reproduces the
 // textarea's wrapping (font, padding, width). Line-count proportions go
@@ -157,7 +147,6 @@ export function MarkdownEditor(props: {
   const [redoStack, setRedoStack] = useState<string[]>([]);
 
   const [view, setView] = useState<ViewMode>('split');
-  const [loadError, setLoadError] = useState('');
   const [log, setLog] = useState<EditorLogEntry[]>([]);
   const [saving, setSaving] = useState(false);
   // The dialect IS the artifact's identity — a .fountain edits and saves as a
@@ -438,7 +427,6 @@ export function MarkdownEditor(props: {
   const loadRevision = async (entry: EditorLogEntry) => {
     if (loadingRevision || entry.artifactId === activeArtifactID) return;
     setLoadingRevision(true);
-    setLoadError('');
     try {
       const revision = await AppBindings.ResolveMarkdownEditSource(sourceConversationID, entry.artifactId);
       setUndoStack((stack) => [...stack, text].slice(-undoLimit));
@@ -448,7 +436,7 @@ export function MarkdownEditor(props: {
       setActiveArtifactID(revision.artifactId);
       lastPushRef.current = 0;
     } catch (error) {
-      setLoadError(formatEditorError(error));
+      notifyError("Couldn't open that revision", error);
     } finally {
       setLoadingRevision(false);
     }
@@ -515,8 +503,6 @@ export function MarkdownEditor(props: {
         onClose={props.onClose}
         onOpenParent={props.onOpenParent}
       />
-
-      {loadError ? <div className="editor-error">{loadError}</div> : null}
 
       <div className="editor-body">
         <div className="markdown-editor-main">

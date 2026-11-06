@@ -128,11 +128,11 @@ export function AudioEditor(props: {
   const [playing, setPlaying] = useState(false);
   const [previewMuted, setPreviewMuted] = useState(false);
   const [peaks, setPeaks] = useState<number[] | null>(null);
+  // loadError is the session load's alone — it disables Render, so an action
+  // failure (submit, "Use as source", a restore) toasts instead of landing here.
   const [loadError, setLoadError] = useState('');
-  const [submitError, setSubmitError] = useState('');
   const [adoptingID, setAdoptingID] = useState('');
   const [deletingID, setDeletingID] = useState('');
-  const [deleteError, setDeleteError] = useState('');
   const [compareOpID, setCompareOpID] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(Boolean(props.handle.sessionID));
@@ -339,7 +339,6 @@ export function AudioEditor(props: {
     if (submitLock.current || busy) return;
     submitLock.current = true;
     setSubmitting(true);
-    setSubmitError('');
     try {
       const submittedTrim = validateAudioTrimParams({version: 1, source: {durationSeconds: duration}, segments: segmentsFromDraft(trimDraft, duration)});
       const request: AudioEditSubmitRequest = {
@@ -377,7 +376,7 @@ export function AudioEditor(props: {
         setSource((current) => ({...current, artifactId: state.operation.inputArtifactId || current.artifactId, url: state.sourceUrl || current.url}));
       }
     } catch (error) {
-      setSubmitError(formatEditorError(error));
+      notifyError("Couldn't start the trim", error);
     } finally {
       submitLock.current = false;
       setSubmitting(false);
@@ -389,7 +388,7 @@ export function AudioEditor(props: {
     try {
       await AppBindings.CancelAudioEdit(sessionID, runningOpID);
     } catch (error) {
-      setSubmitError(formatEditorError(error));
+      notifyError("Couldn't cancel the edit", error);
     }
   }
 
@@ -406,7 +405,7 @@ export function AudioEditor(props: {
     try {
       nextSource = await AppBindings.ResolveAudioEditInput(sessionID, op.resultArtifactId);
     } catch (error) {
-      setLoadError(formatEditorError(error));
+      notifyError("Couldn't use the result as the source", error);
       return;
     }
     setSource(nextSource);
@@ -436,9 +435,8 @@ export function AudioEditor(props: {
       setPlaying(false);
       setTrimUndoStack([]);
       setTrimRedoStack([]);
-      setLoadError('');
     } catch (error) {
-      setLoadError(formatEditorError(error));
+      notifyError("Couldn't open the cut editor", error);
     }
   }
 
@@ -496,7 +494,6 @@ export function AudioEditor(props: {
   async function deleteOp(op: AudioEditOperation) {
     if (!sessionID || deletingID) return;
     setDeletingID(op.id);
-    setDeleteError('');
     try {
       await AppBindings.DeleteEditOperation(sessionID, op.id);
       eventOperations.current.delete(op.id);
@@ -524,7 +521,7 @@ export function AudioEditor(props: {
         }
       }
     } catch (error) {
-      setDeleteError(formatEditorError(error));
+      notifyError("Couldn't delete the edit", error);
     } finally {
       setDeletingID('');
     }
@@ -622,7 +619,6 @@ export function AudioEditor(props: {
               Cancel render
             </button>
           ) : null}
-          {submitError ? <div className="editor-error">{submitError}</div> : null}
           <div className="editor-session-note">
             {sessionID ? 'Edits are saved.' : 'Your first render saves this edit.'}
           </div>
@@ -632,7 +628,6 @@ export function AudioEditor(props: {
       <EditsPanel
         count={ops.length}
         emptyText="No renders yet."
-        adoptError={deleteError ? <span className="editor-error">{deleteError}</span> : null}
         bodyReservePx={editsPanelBodyReservePx}
       >
         <ul className="editor-op-list">
