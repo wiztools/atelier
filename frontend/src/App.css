@@ -4446,6 +4446,32 @@ body.editor-results-resizing {
   border-color: #3563c4;
 }
 
+/* The row's own status is legible at a glance, not just in its words: a
+   failure carries the error tone and lets its reason wrap (up to three lines
+   — the full text rides the title hover and the failure toast), and a
+   cancelled row is dashed and muted, since nothing came of it. */
+.editor-op-failed {
+  border-color: #8f4a45;
+}
+
+.editor-op-failed .editor-op-sub {
+  color: #f0a09a;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.editor-op-cancelled {
+  border-style: dashed;
+}
+
+.editor-op-cancelled .editor-op-title,
+.editor-op-cancelled .editor-op-thumb {
+  opacity: 0.6;
+}
+
 .editor-op-thumb {
   width: 64px;
   height: 64px;

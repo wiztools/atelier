@@ -116,6 +116,25 @@ function asArray<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : [];
 }
 
+// compositionRenderSummary is a render row's status line. Only a preview is
+// ephemeral (its file is swept when the app restarts); a finished export was
+// adopted into the conversation, and a cancelled render produced nothing.
+function compositionRenderSummary(op: main.CompositionRenderOperation): string {
+  switch (op.status) {
+    case 'queued':
+    case 'running':
+      return `${Math.round((op.progress || 0) * 100)}%`;
+    case 'failed':
+      return op.error || 'failed';
+    case 'cancelled':
+      return 'cancelled';
+    default: {
+      const outcome = op.mode !== 'export' ? 'rendered for this session' : op.exportArtifactId ? 'saved to the conversation' : 'export finished';
+      return [outcome, ...asArray(op.notices)].join(' · ');
+    }
+  }
+}
+
 function findSegment(doc: CompositionDoc, segmentID: string): CompositionSegment | undefined {
   for (const lane of doc.audioLanes) {
     const segment = lane.segments.find((candidate) => candidate.id === segmentID);
@@ -1524,9 +1543,7 @@ export function CompositionEditor(props: {
                     : ''}
                 </span>
                 <span className="editor-op-sub" title={op.error || undefined}>
-                  {op.status === 'running' || op.status === 'queued'
-                    ? `${Math.round((op.progress || 0) * 100)}%`
-                    : op.error || asArray(op.notices).join(' · ') || 'rendered for this session'}
+                  {compositionRenderSummary(op)}
                 </span>
               </div>
               <div className="editor-op-actions">

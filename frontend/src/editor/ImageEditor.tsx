@@ -823,7 +823,7 @@ export function ImageEditor(props: {
                   <span className="editor-op-sub">
                     {op.backend ? 'Local' : op.provider && op.model ? `${op.provider} · ${op.model}` : ''}
                     {formatOperationCost(op) ? ` · ${formatOperationCost(op)}` : ''}
-                    {op.status === 'completed' ? '' : op.error ? ` — ${op.error}` : ''}
+                    {op.status === 'failed' && op.error ? ` — ${op.error}` : ''}
                   </span>
                   {(op.notices ?? []).map((notice, index) => (
                     <span key={index} className="editor-op-notice">{notice}</span>

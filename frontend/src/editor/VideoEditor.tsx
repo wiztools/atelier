@@ -960,7 +960,7 @@ export function VideoEditor(props: {
                       {op.backend ? 'Local ffmpeg' : op.provider && op.model ? `${op.provider} · ${op.model}` : ''}
                       {op.resultDurationSeconds ? ` · ${formatTime(op.resultDurationSeconds)}` : ''}
                       {op.status === 'running' && op.progress ? ` · ${Math.round(op.progress * 100)}%` : ''}
-                      {op.status === 'completed' ? '' : op.error ? ` - ${op.error}` : ''}
+                      {op.status === 'failed' && op.error ? ` - ${op.error}` : ''}
                     </span>
                     {(op.notices ?? []).map((notice, index) => <span key={index} className="editor-op-notice">{notice}</span>)}
                   </div>
