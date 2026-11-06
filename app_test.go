@@ -8445,3 +8445,62 @@ func TestFalImageToImageCacheSharedAndFiltered(t *testing.T) {
 		t.Fatalf("expected a refetch after TTL, got %d fetches", calls)
 	}
 }
+
+func TestRevealFileCommand(t *testing.T) {
+	for _, tc := range []struct {
+		goos, wantName string
+		wantArgs       []string
+	}{
+		{"darwin", "open", []string{"-R", "/Users/ana/Downloads/poster.png"}},
+		{"linux", "xdg-open", []string{"/Users/ana/Downloads"}},
+		{"windows", "explorer", []string{"/Users/ana/Downloads"}},
+	} {
+		name, args := revealFileCommand(tc.goos, "/Users/ana/Downloads/poster.png")
+		if name != tc.wantName || strings.Join(args, "|") != strings.Join(tc.wantArgs, "|") {
+			t.Errorf("revealFileCommand(%s) = %s %v, want %s %v", tc.goos, name, args, tc.wantName, tc.wantArgs)
+		}
+	}
+}
+
+func TestRevealFile(t *testing.T) {
+	var launched []string
+	startErr := error(nil)
+	previous := revealFileStart
+	revealFileStart = func(name string, args []string) error {
+		launched = append([]string{name}, args...)
+		return startErr
+	}
+	t.Cleanup(func() { revealFileStart = previous })
+	pinRuntimeGOOS(t, "darwin")
+	app := &App{}
+
+	saved := filepath.Join(t.TempDir(), "poster.png")
+	if err := os.WriteFile(saved, []byte("png"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := app.RevealFile("  " + saved + " "); err != nil {
+		t.Fatalf("RevealFile(saved file) returned %v", err)
+	}
+	if strings.Join(launched, "|") != "open|-R|"+saved {
+		t.Fatalf("launched %v, want open -R on the trimmed path", launched)
+	}
+
+	// Refusals never launch anything: a relative path, and a file that was
+	// moved or deleted since the save (named, not answered with a folder).
+	launched = nil
+	if err := app.RevealFile("poster.png"); err == nil || !strings.Contains(err.Error(), "not an absolute path") {
+		t.Fatalf("relative path error = %v", err)
+	}
+	if err := app.RevealFile(filepath.Join(t.TempDir(), "gone.png")); err == nil || !strings.Contains(err.Error(), "gone.png is no longer there") {
+		t.Fatalf("missing file error = %v", err)
+	}
+	if launched != nil {
+		t.Fatalf("a refused reveal launched %v", launched)
+	}
+
+	// A launch failure (no file manager) is the caller's error.
+	startErr = errors.New("executable file not found")
+	if err := app.RevealFile(saved); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("launch failure error = %v", err)
+	}
+}

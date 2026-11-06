@@ -228,6 +228,8 @@ export function ResolveVideoEditInput(arg1:string,arg2:string):Promise<main.Edit
 
 export function ResolveVideoEditSource(arg1:string,arg2:string):Promise<main.EditSourceInfo>;
 
+export function RevealFile(arg1:string):Promise<void>;
+
 export function RunToolCommand(arg1:main.ToolCommandRequest):Promise<main.ToolCommandResult>;
 
 export function SaveAudio(arg1:main.SaveAudioRequest):Promise<string>;

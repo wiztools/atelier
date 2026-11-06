@@ -454,6 +454,10 @@ export function ResolveVideoEditSource(arg1, arg2) {
   return window['go']['main']['App']['ResolveVideoEditSource'](arg1, arg2);
 }
 
+export function RevealFile(arg1) {
+  return window['go']['main']['App']['RevealFile'](arg1);
+}
+
 export function RunToolCommand(arg1) {
   return window['go']['main']['App']['RunToolCommand'](arg1);
 }

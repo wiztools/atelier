@@ -120,9 +120,10 @@ import {
   BeginMediaUpload,
   CompleteMediaUpload,
   DiscardMediaUpload,
+  RevealFile,
 } from '../wailsjs/go/main/App';
 import {main} from '../wailsjs/go/models';
-import {EventsOn} from '../wailsjs/runtime/runtime';
+import {Environment, EventsOn} from '../wailsjs/runtime/runtime';
 import {ImageEditor, ImageEditorHandle} from './editor/ImageEditor';
 import {VideoEditor, VideoEditorHandle} from './editor/VideoEditor';
 import {AudioEditor, AudioEditorHandle} from './editor/AudioEditor';
@@ -132,7 +133,7 @@ import {CompositionEditor, CompositionEditorHandle} from './editor/CompositionEd
 import {ComicEditor, ComicEditorHandle} from './editor/ComicEditor';
 import {detectEditorLaunchIntent} from './editorLaunch';
 import {composerHasMediaDrag, dropAcceptsFile, markdownMimeForFile, mediaKindForFile, mediaMimeForFile, subtitleMimeForFile, videoThumbnailOnlySrc} from './mediaIntake';
-import {notifications, notifyError, notifyInfo, notifySuccess, splitSavedPath, trackSave} from './notifications';
+import {notifications, notifyError, notifyInfo, notifySuccess, savedFileAction, setSavedFileReveal, splitSavedPath, trackSave} from './notifications';
 import {ToastStack} from './ToastStack';
 
 type View = 'app' | 'settings' | 'conversation-models' | 'usage';
@@ -1146,7 +1147,7 @@ function useLibraries(env: LibrariesEnvironment) {
       const result = await ExportLibrary(libraryID);
       if (result?.path) {
         const {name, folder} = splitSavedPath(result.path);
-        notifySuccess('Exported library', {key, message: name, detail: folder ? `in ${folder}` : undefined});
+        notifySuccess('Exported library', {key, message: name, detail: folder ? `in ${folder}` : undefined, action: savedFileAction(result.path)});
       } else {
         notifications.dismissKey(key);
       }
@@ -2411,6 +2412,30 @@ function App() {
       setUpdateError('');
     };
     return EventsOn('atelier:update-available', onUpdateAvailable);
+  }, []);
+
+  // Toasts that name a saved file offer to show it (trackSave's saves, the
+  // library export). notifications.ts can't import bindings, so App installs
+  // the action; the label follows the platform's file manager — Finder
+  // selects the file, elsewhere RevealFile opens its folder. A reveal that
+  // fails (the file moved since) toasts why.
+  useEffect(() => {
+    let disposed = false;
+    void Environment().then((env) => {
+      if (disposed) {
+        return;
+      }
+      setSavedFileReveal({
+        label: env.platform === 'darwin' ? 'Show in Finder' : 'Show in folder',
+        reveal: (path) => {
+          void RevealFile(path).catch((error) => notifyError("Couldn't show the file", error));
+        },
+      });
+    }).catch(() => {});
+    return () => {
+      disposed = true;
+      setSavedFileReveal(null);
+    };
   }, []);
 
   // Background jobs report when they finish. App owns the RESULT, so it

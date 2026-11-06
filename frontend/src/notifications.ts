@@ -260,16 +260,32 @@ export function errorMessage(error: unknown): string {
 
 type ToastExtras = Omit<ToastInput, 'kind' | 'title'>;
 
+// SavedFileReveal is the platform's "show this file" action for success
+// toasts that name a file on disk ("Show in Finder" on macOS, opening the
+// folder elsewhere). App configures it at startup through the RevealFile
+// binding, which keeps this module free of wailsjs imports.
+export interface SavedFileReveal {
+  label: string;
+  reveal: (path: string) => void;
+}
+
 export interface Notifiers {
   notifySuccess: (title: string, extras?: ToastExtras) => Toast;
   notifyInfo: (title: string, extras?: ToastExtras) => Toast;
   // notifyError formats the thrown value itself (string or Error).
   notifyError: (title: string, error: unknown, extras?: Omit<ToastExtras, 'message'>) => Toast;
   // trackSave owns one save-dialog binding's whole outcome: a returned path
-  // is a success toast naming the file and folder, the empty path a cancelled
-  // dialog (silent), a throw an error toast. Resolves the path, or null when
-  // nothing was saved, for callers that log the result (comic's Edits row).
+  // is a success toast naming the file and folder (with the reveal action
+  // when configured), the empty path a cancelled dialog (silent), a throw an
+  // error toast. Resolves the path, or null when nothing was saved, for
+  // callers that log the result (comic's Edits row).
   trackSave: (what: string, save: Promise<string>) => Promise<string | null>;
+  // setSavedFileReveal installs (or, with null, removes) the reveal action.
+  setSavedFileReveal: (reveal: SavedFileReveal | null) => void;
+  // savedFileAction is the reveal action for one saved path, or undefined
+  // while none is configured — for success toasts trackSave doesn't raise
+  // (the library export).
+  savedFileAction: (path: string) => ToastAction | undefined;
 }
 
 export function createNotifiers(store: NotificationStore): Notifiers {
@@ -277,6 +293,15 @@ export function createNotifiers(store: NotificationStore): Notifiers {
   const notifyInfo = (title: string, extras: ToastExtras = {}) => store.notify({...extras, kind: 'info', title});
   const notifyError = (title: string, error: unknown, extras: Omit<ToastExtras, 'message'> = {}) =>
     store.notify({...extras, kind: 'error', title, message: errorMessage(error)});
+
+  let savedFileReveal: SavedFileReveal | null = null;
+  function setSavedFileReveal(reveal: SavedFileReveal | null): void {
+    savedFileReveal = reveal;
+  }
+  function savedFileAction(path: string): ToastAction | undefined {
+    const reveal = savedFileReveal;
+    return reveal ? {label: reveal.label, run: () => reveal.reveal(path)} : undefined;
+  }
 
   async function trackSave(what: string, save: Promise<string>): Promise<string | null> {
     let path: string;
@@ -290,13 +315,13 @@ export function createNotifiers(store: NotificationStore): Notifiers {
       return null;
     }
     const {name, folder} = splitSavedPath(path);
-    notifySuccess(`Saved ${what}`, {message: name, detail: folder ? `in ${folder}` : undefined});
+    notifySuccess(`Saved ${what}`, {message: name, detail: folder ? `in ${folder}` : undefined, action: savedFileAction(path)});
     return path;
   }
 
-  return {notifySuccess, notifyInfo, notifyError, trackSave};
+  return {notifySuccess, notifyInfo, notifyError, trackSave, setSavedFileReveal, savedFileAction};
 }
 
 // The app's shared store and helpers; tests build their own pair.
 export const notifications = createNotificationStore();
-export const {notifySuccess, notifyInfo, notifyError, trackSave} = createNotifiers(notifications);
+export const {notifySuccess, notifyInfo, notifyError, trackSave, setSavedFileReveal, savedFileAction} = createNotifiers(notifications);

@@ -214,8 +214,24 @@ async function trackSaveAssertions(): Promise<void> {
     assert(toast.title === 'Saved image', 'the title names what was saved');
     assert(toast.message === 'poster.png', 'the message names the file');
     assert(toast.detail === 'in ~/Downloads', 'the detail names the folder');
+    assert(toast.action === undefined, 'no reveal action until one is configured');
     clock.advance(TOAST_SUCCESS_MS);
     assert(store.getSnapshot().length === 0, 'the success toast auto-dismisses');
+  }
+  {
+    // With a reveal configured (App wires RevealFile at startup), the save
+    // toast offers it for the saved path; removing it drops the action.
+    const {store, trackSave, setSavedFileReveal, savedFileAction} = setup();
+    const revealed: string[] = [];
+    setSavedFileReveal({label: 'Show in Finder', reveal: (path) => revealed.push(path)});
+    await trackSave('PDF', Promise.resolve('/Users/ana/Documents/comic.pdf'));
+    const [toast] = store.getSnapshot();
+    assert(toast.action?.label === 'Show in Finder', 'the save toast offers the reveal');
+    toast.action?.run();
+    assert(revealed.length === 1 && revealed[0] === '/Users/ana/Documents/comic.pdf', 'the reveal opens the saved path');
+    assert(savedFileAction('/x/library.atelier')?.label === 'Show in Finder', 'other success toasts can borrow the action');
+    setSavedFileReveal(null);
+    assert(savedFileAction('/x/library.atelier') === undefined, 'removing the reveal drops the action');
   }
   {
     const {store, trackSave} = setup();

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -2353,6 +2354,52 @@ func (a *App) saveArtifactDialog(data []byte, suggestedName, defaultName, extens
 		return "", err
 	}
 	return path, nil
+}
+
+// RevealFile shows a saved file in the platform's file manager — the save
+// toasts' "Show in Finder" action. macOS selects the file in a Finder window
+// (open -R); elsewhere the containing folder opens (xdg-open cannot select a
+// file, and Explorer's /select needs raw command-line quoting Go's argument
+// escaping can't express). The path comes from a save dialog's result and
+// must still exist: a file moved or deleted since is reported, not answered
+// with a stale folder.
+func (a *App) RevealFile(path string) error {
+	path = strings.TrimSpace(path)
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("can't show %q: not an absolute path", path)
+	}
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%s is no longer there — it was moved or deleted", filepath.Base(path))
+		}
+		return err
+	}
+	name, args := revealFileCommand(runtimeGOOS, path)
+	return revealFileStart(name, args)
+}
+
+// revealFileCommand is the platform's file-manager invocation for path.
+func revealFileCommand(goos, path string) (string, []string) {
+	switch goos {
+	case "darwin":
+		return "open", []string{"-R", path}
+	case "windows":
+		return "explorer", []string{filepath.Dir(path)}
+	default:
+		return "xdg-open", []string{filepath.Dir(path)}
+	}
+}
+
+// revealFileStart launches the file manager without waiting on it (Explorer
+// exits nonzero even on success) and reaps it in the background so no zombie
+// outlives it. The test seam: tests swap it to record the invocation.
+var revealFileStart = func(name string, args []string) error {
+	cmd := exec.Command(name, args...)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
 }
 
 func decodeImagePayload(image string) ([]byte, string, error) {
