@@ -723,6 +723,33 @@ func (a *App) CancelCompositionRender(operationID string) error {
 	return nil
 }
 
+// ListCompositionRenders snapshots the conversation's registered render: the
+// one in flight (renders are one per conversation), or one finishing this
+// instant. A render outlives its editor, so a reopened composer seeds its
+// rows from this — without it, the running job had no row and no Cancel
+// until its next progress tick, and a new render was refused as "already
+// running" with nothing on screen to cancel. Finished renders aren't listed:
+// an export's record is its artifact in the conversation, and a preview is
+// ephemeral. Never nil, so the frontend always gets an array.
+func (a *App) ListCompositionRenders(conversationID string) []CompositionRenderOperation {
+	ops := []CompositionRenderOperation{}
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return ops
+	}
+	a.compositionRendersMu.Lock()
+	defer a.compositionRendersMu.Unlock()
+	for _, run := range a.compositionRenders {
+		if run.conversationID != conversationID {
+			continue
+		}
+		snapshot := run.op
+		snapshot.Notices = append([]string{}, run.op.Notices...)
+		ops = append(ops, snapshot)
+	}
+	return ops
+}
+
 // compositionDocForRender resolves the document a render targets: a saved
 // revision (the export discipline — the artifact is the immutable input), or
 // the caller's working draft for a preview.

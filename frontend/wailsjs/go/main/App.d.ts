@@ -86,6 +86,8 @@ export function InspectLibraryExport(arg1:string):Promise<main.LibraryExportPlan
 
 export function InstallUpdate():Promise<void>;
 
+export function ListCompositionRenders(arg1:string):Promise<Array<main.CompositionRenderOperation>>;
+
 export function ListConversationAssets(arg1:string):Promise<Array<main.ConversationAsset>>;
 
 export function ListConversations():Promise<Array<main.ConversationSummary>>;

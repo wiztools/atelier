@@ -500,6 +500,27 @@ export function CompositionEditor(props: {
     return EventsOn('atelier:composition-op', onUpdate);
   }, []);
 
+  // A render keeps running after its editor closes, so a reopened composer
+  // seeds its rows from the conversation's registered render: the job is
+  // visible and cancellable again instead of waiting for its next progress
+  // tick (meanwhile a new render was refused as "already running" with
+  // nothing on screen to cancel). A row an event already delivered wins — the
+  // event is at least as new as this snapshot. Best-effort: when the list
+  // fails, the next event brings the row back.
+  useEffect(() => {
+    let stale = false;
+    void AppBindings.ListCompositionRenders(sourceConversationID).then((ops) => {
+      const seeded = asArray(ops).map((op) => main.CompositionRenderOperation.createFrom(op));
+      if (stale || seeded.length === 0) {
+        return;
+      }
+      setRenders((current) => [...seeded.filter((op) => !current.some((candidate) => candidate.id === op.id)), ...current]);
+    }).catch(() => {});
+    return () => {
+      stale = true;
+    };
+  }, [sourceConversationID]);
+
   const runningRender = renders.find((op) => op.status === 'queued' || op.status === 'running') ?? null;
   // SubmitCompositionRender emits the queued op as an event BEFORE its
   // promise resolves, so the event handler usually inserts the row first —

@@ -170,6 +170,10 @@ export function InstallUpdate() {
   return window['go']['main']['App']['InstallUpdate']();
 }
 
+export function ListCompositionRenders(arg1) {
+  return window['go']['main']['App']['ListCompositionRenders'](arg1);
+}
+
 export function ListConversationAssets(arg1) {
   return window['go']['main']['App']['ListConversationAssets'](arg1);
 }

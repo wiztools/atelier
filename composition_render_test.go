@@ -444,12 +444,25 @@ func TestCompositionRenderLifecycle(t *testing.T) {
 		t.Fatalf("a concurrent render must refuse, got %v", err)
 	}
 	waitCompositionRenderRunning(t, app, op.ID)
+	// A render outlives its editor: the lister hands a reopened composer the
+	// in-flight op — its own conversation's only.
+	if listed := app.ListCompositionRenders("conv_comp"); len(listed) != 1 || listed[0].ID != op.ID || listed[0].Status != "running" || listed[0].ConversationID != "conv_comp" {
+		t.Fatalf("ListCompositionRenders(conv_comp) = %+v, want the running op", listed)
+	}
+	if listed := app.ListCompositionRenders("conv_other"); listed == nil || len(listed) != 0 {
+		t.Fatalf("ListCompositionRenders(conv_other) = %#v, want an empty non-nil list", listed)
+	}
 	if err := app.CancelCompositionRender(op.ID); err != nil {
 		t.Fatalf("CancelCompositionRender returned error: %v", err)
 	}
 	terminal = waitCompositionRenderTerminal(t, app, op.ID)
 	if terminal.Status != "cancelled" || terminal.ResultURL != "" {
 		t.Fatalf("cancelled op = %+v", terminal)
+	}
+	// The terminal op files into history in the same locked step that
+	// deregisters it, so a finished render is never listed.
+	if listed := app.ListCompositionRenders("conv_comp"); len(listed) != 0 {
+		t.Fatalf("a finished render must not be listed, got %+v", listed)
 	}
 
 	// A failing ffmpeg surfaces its stderr as the op's error.
