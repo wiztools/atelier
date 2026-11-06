@@ -122,7 +122,7 @@ import {
   DiscardMediaUpload,
 } from '../wailsjs/go/main/App';
 import {main} from '../wailsjs/go/models';
-import {EventsOff, EventsOn} from '../wailsjs/runtime/runtime';
+import {EventsOn} from '../wailsjs/runtime/runtime';
 import {ImageEditor, ImageEditorHandle} from './editor/ImageEditor';
 import {VideoEditor, VideoEditorHandle} from './editor/VideoEditor';
 import {AudioEditor, AudioEditorHandle} from './editor/AudioEditor';
@@ -2260,8 +2260,10 @@ function App() {
         void refreshConversations();
       }
     };
-    EventsOn('chat:chunk', onChunk);
-    return () => EventsOff('chat:chunk');
+    // Unsubscribe with the canceller EventsOn returns: EventsOff(name) drops
+    // EVERY listener for the event, so an editor closing its own subscription
+    // would take this one down too.
+    return EventsOn('chat:chunk', onChunk);
   }, []);
 
   // Live harness telemetry: every step transition arrives as a full run
@@ -2280,16 +2282,14 @@ function App() {
       const entryID = `assistant-${event.requestId}`;
       setChat((current) => current.map((entry) => entry.id === entryID ? {...entry, harnessRun: run} : entry));
     };
-    EventsOn('atelier:harness-run', onHarnessRun);
-    return () => EventsOff('atelier:harness-run');
+    return EventsOn('atelier:harness-run', onHarnessRun);
   }, []);
 
   useEffect(() => {
     const onToolPermission = (event: ToolPermissionEvent) => {
       setToolPermissions((current) => current.some((item) => item.id === event.id) ? current : [...current, event]);
     };
-    EventsOn('atelier:tool-permission', onToolPermission);
-    return () => EventsOff('atelier:tool-permission');
+    return EventsOn('atelier:tool-permission', onToolPermission);
   }, []);
 
   // AI-routed editor launches: the harness's open_editor tool fired (its
@@ -2338,8 +2338,7 @@ function App() {
         void openImageEditor(conversationID, artifactID);
       }
     };
-    EventsOn('atelier:editor-launch', onEditorLaunch);
-    return () => EventsOff('atelier:editor-launch');
+    return EventsOn('atelier:editor-launch', onEditorLaunch);
   }, []);
 
   // Update availability mirrors the tool-permission pattern: setState only, no
@@ -2354,22 +2353,19 @@ function App() {
       setUpdateAvailable(event);
       setUpdateError('');
     };
-    EventsOn('atelier:update-available', onUpdateAvailable);
-    return () => EventsOff('atelier:update-available');
+    return EventsOn('atelier:update-available', onUpdateAvailable);
   }, []);
 
   // File-menu creation actions (main.go's File menu emits these; see the
   // menuNew* handlers in app.go). The refs always point at the latest handler
   // closures, so the empty-deps subscription never fires a stale one.
   useEffect(() => {
-    EventsOn('atelier:menu-new-conversation', () => newConversationActionRef.current());
-    EventsOn('atelier:menu-new-library', () => newLibraryActionRef.current());
-    EventsOn('atelier:menu-new-project', () => newProjectActionRef.current());
-    return () => {
-      EventsOff('atelier:menu-new-conversation');
-      EventsOff('atelier:menu-new-library');
-      EventsOff('atelier:menu-new-project');
-    };
+    const offs = [
+      EventsOn('atelier:menu-new-conversation', () => newConversationActionRef.current()),
+      EventsOn('atelier:menu-new-library', () => newLibraryActionRef.current()),
+      EventsOn('atelier:menu-new-project', () => newProjectActionRef.current()),
+    ];
+    return () => offs.forEach((off) => off());
   }, []);
 
   async function resolveToolPermission(permissionID: string, approved: boolean) {

@@ -2,7 +2,7 @@ import {useEffect, useMemo, useRef, useState} from 'react';
 import * as AppBindings from '../../wailsjs/go/main/App';
 import {CancelCompositionRender, SaveComposition, SaveVideo} from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
-import {EventsOff, EventsOn} from '../../wailsjs/runtime/runtime';
+import {EventsOn} from '../../wailsjs/runtime/runtime';
 import {AudioPeaksEntry, loadAudioPeaks, sliceAudioPeaks, waveformPath} from './audioPeaks';
 import {EditsPanel} from './EditsPanel';
 import {EditorHeader} from './EditorHeader';
@@ -482,10 +482,9 @@ export function CompositionEditor(props: {
         setPreview({url: op.resultUrl, audioOnly: op.audioOnly, offsetSeconds: op.rangeStartSeconds ?? 0});
       }
     };
-    EventsOn('atelier:composition-op', onUpdate);
-    return () => {
-      EventsOff('atelier:composition-op');
-    };
+    // The canceller, not EventsOff(name): that drops every listener for the
+    // event, including App's own.
+    return EventsOn('atelier:composition-op', onUpdate);
   }, []);
 
   const runningRender = renders.find((op) => op.status === 'queued' || op.status === 'running') ?? null;

@@ -1,7 +1,7 @@
 import {Fragment, useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {AddEditResultToConversation, CancelImageEdit, DeleteEditOperation, ListEditSession, ListInpaintModels, ReleaseEditSourcePreview, SubmitImageEdit} from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
-import {EventsOff, EventsOn} from '../../wailsjs/runtime/runtime';
+import {EventsOn} from '../../wailsjs/runtime/runtime';
 import {EditsPanel} from './EditsPanel';
 import {EditKebabMenu} from './EditKebabMenu';
 import {EditorHeader} from './EditorHeader';
@@ -309,8 +309,9 @@ export function ImageEditor(props: {
           runningOperationId: operations.find((op) => !terminalStatus(op.status))?.id || ''});
       });
     };
-    EventsOn(editEventOp, onUpdate);
-    return () => EventsOff(editEventOp);
+    // The canceller, not EventsOff(name): that drops every listener for the
+    // event, including App's own.
+    return EventsOn(editEventOp, onUpdate);
   }, []);
 
   function commitCrop(before: CropRect, ratio = cropRatio) {

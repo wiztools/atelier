@@ -1,7 +1,7 @@
 import {Fragment, useEffect, useMemo, useRef, useState} from 'react';
 import * as AppBindings from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
-import {EventsOff, EventsOn} from '../../wailsjs/runtime/runtime';
+import {EventsOn} from '../../wailsjs/runtime/runtime';
 import {EditsPanel} from './EditsPanel';
 import {EditKebabMenu} from './EditKebabMenu';
 import {EditorHeader} from './EditorHeader';
@@ -327,8 +327,9 @@ export function VideoEditor(props: {
         return {...current, operations, runningOperationId: operations.find((op) => !terminalStatus(op.status))?.id || ''};
       });
     };
-    EventsOn(editEventOp, onUpdate);
-    return () => EventsOff(editEventOp);
+    // The canceller, not EventsOff(name): that drops every listener for the
+    // event, including App's own.
+    return EventsOn(editEventOp, onUpdate);
   }, []);
 
   function commit(next: VideoReframeParams, selectIndex = selectedMarkerIndex) {

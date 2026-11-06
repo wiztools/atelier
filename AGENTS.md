@@ -130,3 +130,4 @@ A chat turn flows through `App.StreamChat` → `HarnessEngine.RunChatStream`:
 - The OpenRouter API key is stored in the OS keychain, **not** in config.json. An absent key returns `("", nil)`; callers treat "not configured" and "empty" uniformly.
 - `go.mod` has a commented-out `replace` directive for local Wails development — uncomment only when hacking on Wails itself.
 - Permission requests time out after 2 minutes and fail closed (denied) if no UI is attached.
+- **Wails listeners unsubscribe via the canceller `EventsOn` returns, never `EventsOff(name)`.** Wails's `EventsOff` deletes ALL listeners registered for the event, so an editor component unmounting its own subscription silently takes down App's (or another editor's) listener for the same event — and StrictMode's double-mount would too. `const off = EventsOn(name, handler); return off;` in the effect cleanup.
