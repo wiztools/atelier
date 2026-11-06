@@ -1667,6 +1667,7 @@ function App() {
   const [updateError, setUpdateError] = useState('');
   const [updateCheckBusy, setUpdateCheckBusy] = useState(false);
   const [updateCheckStatus, setUpdateCheckStatus] = useState('');
+  const [updateCheckError, setUpdateCheckError] = useState('');
   const [updatesConfig, setUpdatesConfig] = useState<main.ConfigUpdates | null>(null);
   // Updates wait out any running conversation; both the banner's queue and
   // the backend's InstallUpdate gate read this shape of "busy".
@@ -2156,7 +2157,7 @@ function App() {
         // and dropping it here would reset a manually-edited manifestUrl or
         // autoCheck on every unrelated settings save.
         updates: updatesConfig ?? undefined,
-      })).catch((error) => {
+      })).then(clearStatusError).catch((error) => {
         setStatus((current) => current ? {...current, error: String(error)} : current);
       });
     }, 400);
@@ -2420,6 +2421,7 @@ function App() {
   async function checkForUpdates() {
     setUpdateCheckBusy(true);
     setUpdateCheckStatus('');
+    setUpdateCheckError('');
     try {
       const status = await CheckForUpdates();
       if (status.state === 'available') {
@@ -2430,10 +2432,10 @@ function App() {
         // A policy refusal, not a failure — surface it as-is.
         setUpdateCheckStatus(status.error);
       } else {
-        setUpdateCheckStatus(`Update check failed: ${status.error || 'unknown error'}`);
+        setUpdateCheckError(`Update check failed: ${status.error || 'unknown error'}`);
       }
     } catch (error) {
-      setUpdateCheckStatus(formatError(error));
+      setUpdateCheckError(formatError(error));
     } finally {
       setUpdateCheckBusy(false);
     }
@@ -3810,6 +3812,15 @@ function App() {
     }
   }
 
+  // clearStatusError drops a write failure parked on status.error once a later
+  // config or key write succeeds. Online only: offline, the field holds
+  // CheckOllama's own reason, which a successful save says nothing about.
+  // SaveUIState's success doesn't call this — it fires on every sidebar
+  // toggle and Settings tab switch, which would wipe a config failure unseen.
+  function clearStatusError() {
+    setStatus((current) => current?.online && current.error ? {...current, error: undefined} : current);
+  }
+
   async function refreshOpenRouterModels() {
     // The catalog is a discovery aid like fal's and Replicate's collections
     // (the model field stays free text without it), and OpenRouter's /models
@@ -3987,6 +3998,7 @@ function App() {
       setFalHasKey(hasKey);
       setFalStatus('unknown');
       setFalError('');
+      clearStatusError();
       if (hasKey) {
         await refreshFalModels();
         await checkFalConnection();
@@ -4025,6 +4037,7 @@ function App() {
       setFalLipsyncVideoModels([]);
       setFalStatus('unknown');
       setFalError('');
+      clearStatusError();
       setImageProvider((current) => current === 'fal' ? 'openai-compatible' : current);
       setVideoProvider((current) => current === 'fal' ? 'replicate' : current);
     } catch (error) {
@@ -4125,6 +4138,7 @@ function App() {
       setReplicateHasKey(hasKey);
       setReplicateStatus('unknown');
       setReplicateError('');
+      clearStatusError();
       if (hasKey) {
         await refreshReplicateModels();
         await checkReplicateConnection();
@@ -4161,6 +4175,7 @@ function App() {
       setReplicateLipsyncVideoModels([]);
       setReplicateStatus('unknown');
       setReplicateError('');
+      clearStatusError();
       setImageProvider((current) => current === 'replicate' ? 'openai-compatible' : current);
       setVideoProvider((current) => current === 'replicate' ? 'fal' : current);
       setLipsyncProvider((current) => current === 'replicate' ? 'fal' : current);
@@ -4188,6 +4203,7 @@ function App() {
       await SaveOpenAICompatibleAPIKey(openaiCompatibleKeyInput);
       setOpenaiCompatibleKeyInput('');
       setOpenaiCompatibleHasKey(await HasOpenAICompatibleAPIKey());
+      clearStatusError();
     } catch (error) {
       setStatus((current) => current ? {...current, error: String(error)} : current);
     }
@@ -4197,6 +4213,7 @@ function App() {
     try {
       await ClearOpenAICompatibleAPIKey();
       setOpenaiCompatibleHasKey(false);
+      clearStatusError();
     } catch (error) {
       setStatus((current) => current ? {...current, error: String(error)} : current);
     }
@@ -5922,6 +5939,17 @@ function App() {
     }
   }
 
+  async function saveGeneratedComic(comic: string, index: number) {
+    try {
+      await SaveComic(main.SaveTranscriptRequest.createFrom({
+        path: comic,
+        suggestedName: `comic-${Date.now()}-${index + 1}`,
+      }));
+    } catch (error) {
+      setStartupError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   // downloadAsset is the assets-panel download affordance: every Save* binding
   // accepts the panel's /atelier-artifact URL (each resolves it back to the
   // artifact bytes on disk), so one per-kind dispatcher covers every card.
@@ -5941,6 +5969,9 @@ function App() {
     }
     if (asset.kind === 'composition') {
       return saveGeneratedComposition(asset.url, 0);
+    }
+    if (asset.kind === 'comic') {
+      return saveGeneratedComic(asset.url, 0);
     }
     return saveGeneratedImage(asset.url, 0);
   }
@@ -6351,94 +6382,96 @@ function App() {
       )}
 
       <section className="workspace">
-        {editorOpening && view === 'app' ? (
-          <div className="editor-preparation-status" role="status">
-            <span>{videoEditorOpening ? 'Preparing video for editing…' : audioEditorOpening ? 'Preparing audio for editing…' : 'Preparing image for editing…'}</span>
-            {videoEditorOpening ? (
-              <button type="button" onClick={() => {
-                cancelVideoPreparation();
-              }}>Cancel</button>
-            ) : null}
-          </div>
-        ) : null}
-        {videoEditorError && view === 'app' ? (
-          <div className="startup-error" role="alert">
-            <strong>Could not open Video Editor.</strong>
-            <span>{videoEditorError}</span>
-            <button type="button" onClick={() => {setVideoEditorError(''); void openSettings();}}>Open Settings</button>
-            <button type="button" onClick={() => setVideoEditorError('')}>Dismiss</button>
-          </div>
-        ) : null}
-        {startupError ? (
-          <div className="startup-error">
-            <strong>Atelier started with a local data warning.</strong>
-            <span>{startupError}</span>
-          </div>
-        ) : null}
-        {updateAvailable ? (
-          <div className="update-banner">
-            <div className="update-banner-content">
-              <strong>Atelier {updateAvailable.latest} is available.</strong>
-              {updateAvailable.notes ? <span>{updateAvailable.notes}</span> : null}
-              {updateQueued ? (
-                <span className="update-queued">Installing when the current conversation finishes…</span>
+        <div className="floating-cards">
+          {editorOpening && view === 'app' ? (
+            <div className="editor-preparation-status" role="status">
+              <span>{videoEditorOpening ? 'Preparing video for editing…' : audioEditorOpening ? 'Preparing audio for editing…' : 'Preparing image for editing…'}</span>
+              {videoEditorOpening ? (
+                <button type="button" onClick={() => {
+                  cancelVideoPreparation();
+                }}>Cancel</button>
               ) : null}
-              {updateError ? <span className="update-error">{updateError}</span> : null}
             </div>
-            <div className="update-banner-actions">
-              <button onClick={dismissUpdate} disabled={updateBusy}>Later</button>
-              <button className="primary" onClick={requestUpdateInstall} disabled={updateBusy}>
-                {updateBusy ? 'Installing…' : 'Install & Relaunch'}
-              </button>
+          ) : null}
+          {videoEditorError && view === 'app' ? (
+            <div className="startup-error" role="alert">
+              <strong>Could not open Video Editor.</strong>
+              <span>{videoEditorError}</span>
+              <button type="button" onClick={() => {setVideoEditorError(''); void openSettings();}}>Open Settings</button>
+              <button type="button" onClick={() => setVideoEditorError('')}>Dismiss</button>
             </div>
-          </div>
-        ) : null}
-        {toolPermissions.length ? (
-          <div className="tool-permission-panel">
-            {toolPermissions.map((permission) => (
-              <div className="tool-permission-card" key={permission.id}>
-                <div className="tool-permission-content">
-                  <strong>{toolPermissionTitle(permission)}</strong>
-                  <span>{toolPermissionSummary(permission)}</span>
-                  {permission.cwd ? <small>in {shortenHomePath(permission.cwd)}</small> : null}
-                  {hasToolPermissionDetails(permission) ? (
-                    <details className="tool-permission-details">
-                      <summary>Details</summary>
-                      {permission.command?.length ? (
-                        <div>
-                          <small>Command</small>
-                          <code>{permission.command.join(' ')}</code>
-                        </div>
-                      ) : null}
-                      {permission.summary && permission.summary !== toolPermissionSummary(permission) ? (
-                        <div>
-                          <small>Summary</small>
-                          <pre>{permission.summary}</pre>
-                        </div>
-                      ) : null}
-                      {permission.path ? (
-                        <div>
-                          <small>Path</small>
-                          <code>{shortenHomePath(permission.path)}</code>
-                        </div>
-                      ) : null}
-                      {permission.contentPreview ? (
-                        <div>
-                          <small>Preview</small>
-                          <pre>{permission.contentPreview}</pre>
-                        </div>
-                      ) : null}
-                    </details>
-                  ) : null}
-                </div>
-                <div className="tool-permission-actions">
-                  <button onClick={() => resolveToolPermission(permission.id, false)}>Deny</button>
-                  <button className="primary" onClick={() => resolveToolPermission(permission.id, true)}>Allow</button>
-                </div>
+          ) : null}
+          {startupError ? (
+            <div className="startup-error">
+              <strong>Atelier started with a local data warning.</strong>
+              <span>{startupError}</span>
+            </div>
+          ) : null}
+          {updateAvailable ? (
+            <div className="update-banner">
+              <div className="update-banner-content">
+                <strong>Atelier {updateAvailable.latest} is available.</strong>
+                {updateAvailable.notes ? <span>{updateAvailable.notes}</span> : null}
+                {updateQueued ? (
+                  <span className="update-queued">Installing when the current conversation finishes…</span>
+                ) : null}
+                {updateError ? <span className="update-error">{updateError}</span> : null}
               </div>
-            ))}
-          </div>
-        ) : null}
+              <div className="update-banner-actions">
+                <button onClick={dismissUpdate} disabled={updateBusy}>Later</button>
+                <button className="primary" onClick={requestUpdateInstall} disabled={updateBusy}>
+                  {updateBusy ? 'Installing…' : 'Install & Relaunch'}
+                </button>
+              </div>
+            </div>
+          ) : null}
+          {toolPermissions.length ? (
+            <div className="tool-permission-panel">
+              {toolPermissions.map((permission) => (
+                <div className="tool-permission-card" key={permission.id}>
+                  <div className="tool-permission-content">
+                    <strong>{toolPermissionTitle(permission)}</strong>
+                    <span>{toolPermissionSummary(permission)}</span>
+                    {permission.cwd ? <small>in {shortenHomePath(permission.cwd)}</small> : null}
+                    {hasToolPermissionDetails(permission) ? (
+                      <details className="tool-permission-details">
+                        <summary>Details</summary>
+                        {permission.command?.length ? (
+                          <div>
+                            <small>Command</small>
+                            <code>{permission.command.join(' ')}</code>
+                          </div>
+                        ) : null}
+                        {permission.summary && permission.summary !== toolPermissionSummary(permission) ? (
+                          <div>
+                            <small>Summary</small>
+                            <pre>{permission.summary}</pre>
+                          </div>
+                        ) : null}
+                        {permission.path ? (
+                          <div>
+                            <small>Path</small>
+                            <code>{shortenHomePath(permission.path)}</code>
+                          </div>
+                        ) : null}
+                        {permission.contentPreview ? (
+                          <div>
+                            <small>Preview</small>
+                            <pre>{permission.contentPreview}</pre>
+                          </div>
+                        ) : null}
+                      </details>
+                    ) : null}
+                  </div>
+                  <div className="tool-permission-actions">
+                    <button onClick={() => resolveToolPermission(permission.id, false)}>Deny</button>
+                    <button className="primary" onClick={() => resolveToolPermission(permission.id, true)}>Allow</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
         {editorHandle ? (
           <div className="editor-slot" hidden={view !== 'app'}>
             <ImageEditor
@@ -6737,8 +6770,12 @@ function App() {
                     <span />
                     {status?.online
                       ? `Online${status.version ? ` ${status.version}` : ''} — ${asArray(models).length} local models available`
-                      : status?.error ?? 'Not checked'}
+                      : status ? 'Offline' : 'Not checked'}
                   </div>
+                  {/* Not gated on the offline branch: the field also carries
+                      SaveConfig/SaveUIState/key-write failures, which happen
+                      while Ollama is online too. */}
+                  {status?.error ? <div className="status-error">{status.error}</div> : null}
                   <div className="field-label-row">
                     <label htmlFor="ollama-num-ctx">Context Window (num_ctx)</label>
                     <InfoHint
@@ -7216,6 +7253,7 @@ function App() {
                     {updateCheckBusy ? 'Checking...' : 'Check for Updates'}
                   </button>
                   {updateCheckStatus ? <span>{updateCheckStatus}</span> : null}
+                  {updateCheckError ? <span className="status-error">{updateCheckError}</span> : null}
                 </div>
                 <div className="storage-hint">
                   Atelier checks for updates automatically once a day and installs only when you choose to.
@@ -7730,7 +7768,7 @@ function App() {
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => void SaveComic(main.SaveTranscriptRequest.createFrom({path: comic, suggestedName: `comic-${Date.now()}-${index + 1}`}))}
+                                  onClick={() => saveGeneratedComic(comic, index)}
                                   disabled={!comic.startsWith('/atelier-artifact/')}
                                 >
                                   Download project

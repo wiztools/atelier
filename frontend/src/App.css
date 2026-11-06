@@ -43,11 +43,28 @@
   color: #f0a09a;
 }
 
-.startup-error {
+/* Bottom-right stack hosting every floating card (editor preparation, the
+   error cards, the update banner, tool permissions): one anchored column so
+   any combination stacks instead of overlapping. The stack owns position and
+   z-index — the cards inside stay static. Clicks pass through the stack's
+   empty area to the composer beneath; only the cards themselves catch them. */
+.floating-cards {
   position: absolute;
-  z-index: 5;
+  z-index: 20;
   right: 18px;
   bottom: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.floating-cards > * {
+  pointer-events: auto;
+}
+
+.startup-error {
   max-width: min(680px, calc(100vw - 360px));
   display: flex;
   flex-direction: column;
@@ -65,13 +82,10 @@
 }
 
 /* Floating "work is happening" toast for an editor source resolve in flight
-   (image or video). Fixed like the error overlays it sits beside; the video
-   path adds a Cancel (its backend resolve is cancellable, the image's isn't). */
+   (image or video). Rides the .floating-cards stack beside the error cards;
+   the video path adds a Cancel (its backend resolve is cancellable, the
+   image's isn't). */
 .editor-preparation-status {
-  position: fixed;
-  z-index: 20;
-  right: 22px;
-  bottom: 24px;
   display: flex;
   align-items: center;
   gap: 14px;
@@ -83,10 +97,6 @@
 }
 
 .tool-permission-panel {
-  position: absolute;
-  right: 18px;
-  bottom: 18px;
-  z-index: 20;
   display: grid;
   gap: 10px;
   width: min(420px, calc(100vw - 36px));
@@ -916,6 +926,12 @@ button:disabled {
   background: #65b06b;
 }
 
+.status-error {
+  color: #f0a09a;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .workspace {
   position: relative;
   display: grid;
@@ -1221,6 +1237,11 @@ button:disabled {
 .storage-actions span {
   color: #9fcba3;
   font-size: 12px;
+}
+
+/* Failures share the row with the green success messages above. */
+.storage-actions .status-error {
+  color: #f0a09a;
 }
 
 .storage-confirmation {
@@ -3555,10 +3576,6 @@ button:disabled {
 }
 
 .update-banner {
-  position: absolute;
-  right: 18px;
-  bottom: 18px;
-  z-index: 15;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;

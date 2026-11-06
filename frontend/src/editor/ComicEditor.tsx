@@ -916,6 +916,9 @@ export function ComicEditor(props: {
         revisionID = await persistRevision();
       }
       const chosen = await ExportComicPDF(sourceConversationID, revisionID);
+      if (!chosen) {
+        return; // the save dialog was cancelled — nothing was exported
+      }
       setExportsLog((entries) => [
         {
           label: `PDF · ${doc.name}`,
