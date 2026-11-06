@@ -44,13 +44,15 @@
 }
 
 /* Bottom-right stack hosting every floating card (editor preparation, the
-   error cards, the update banner, tool permissions): one anchored column so
-   any combination stacks instead of overlapping. The stack owns position and
-   z-index — the cards inside stay static. Clicks pass through the stack's
-   empty area to the composer beneath; only the cards themselves catch them. */
+   error cards, the update banner, toasts, tool permissions): one anchored
+   column so any combination stacks instead of overlapping. The stack owns
+   position and z-index — the cards inside stay static. z 25 sits over the
+   dialogs (z 20) and under menus (z 30+), so toasts and permission requests
+   stay visible while a modal is open. Clicks pass through the stack's empty
+   area to the composer beneath; only the cards themselves catch them. */
 .floating-cards {
   position: absolute;
-  z-index: 20;
+  z-index: 25;
   right: 18px;
   bottom: 18px;
   display: flex;
@@ -3652,13 +3654,6 @@ button:disabled {
   gap: 4px;
 }
 
-/* Transient export/import status line under the Libraries header. */
-.libraries-notice {
-  color: #9ea5a3;
-  font-size: 12px;
-  padding: 0 4px;
-  overflow-wrap: anywhere;
-}
 
 /* Shared section-header toggle (chats, libraries). */
 .section-toggle {

@@ -1,0 +1,139 @@
+/* The toast stack (ToastStack.tsx). The surrounding .floating-cards column
+   (App.css) owns position; this file styles the toasts. The palette reuses
+   the app's card vocabulary: the neutral card (.editor-preparation-status)
+   for success and progress, the info card (.update-banner), the error card
+   (.startup-error), and the green success text (.storage-actions span). */
+
+.toast-stack {
+  display: flex;
+  /* The store keeps newest first; reverse so the newest sits nearest the
+     corner. */
+  flex-direction: column-reverse;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: min(420px, calc(100vw - 36px));
+  padding: 10px 12px;
+  border: 1px solid #3a3e41;
+  border-radius: 8px;
+  background: #202326;
+  box-shadow: 0 16px 40px rgb(0 0 0 / 36%);
+  color: #d9d7cf;
+  font-size: 12px;
+}
+
+.toast-info {
+  border-color: #3d5570;
+  background: #1a222c;
+}
+
+.toast-error {
+  border-color: #8f4a45;
+  background: #2b1817;
+}
+
+.toast-body {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.toast-body strong {
+  color: #f3f0e8;
+  font-size: 13px;
+}
+
+.toast-success strong {
+  color: #9fcba3;
+}
+
+.toast-error strong {
+  color: #f0a09a;
+}
+
+.toast-count {
+  color: #b5b1a8;
+  font-weight: 400;
+}
+
+.toast-message {
+  /* Long backend errors scroll rather than push the stack off-screen. */
+  max-height: 9em;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+
+.toast-detail {
+  color: #9ea5a3;
+  overflow-wrap: anywhere;
+}
+
+.toast-meter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 3px;
+}
+
+.toast-meter-track {
+  flex: 1;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: #3a3e41;
+}
+
+.toast-meter-fill {
+  display: block;
+  height: 100%;
+  background: #65b06b;
+  transition: width 0.2s ease;
+}
+
+.toast-meter-count {
+  color: #b5b1a8;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The global button rule is a 36px control; toast buttons are compact. */
+.toast-action {
+  height: auto;
+  padding: 3px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.toast-dismiss {
+  height: auto;
+  border: none;
+  padding: 0 2px;
+  background: transparent;
+  color: #9ea5a3;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.toast-dismiss:hover {
+  background: transparent;
+  color: #f3f0e8;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .toast {
+    animation: toast-in 0.16s ease-out;
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}

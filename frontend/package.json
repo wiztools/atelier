@@ -19,7 +19,8 @@
     "test:comic-model": "node test/run-comic-model-tests.cjs",
     "test:markdown-model": "node test/run-markdown-model-tests.cjs",
     "test:fountain-model": "node test/run-fountain-model-tests.cjs",
-    "test:media-intake": "node test/run-media-intake-tests.cjs"
+    "test:media-intake": "node test/run-media-intake-tests.cjs",
+    "test:notifications": "node test/run-notifications-tests.cjs"
   },
   "dependencies": {
     "react": "^18.2.0",

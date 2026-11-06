@@ -132,6 +132,8 @@ import {CompositionEditor, CompositionEditorHandle} from './editor/CompositionEd
 import {ComicEditor, ComicEditorHandle} from './editor/ComicEditor';
 import {detectEditorLaunchIntent} from './editorLaunch';
 import {composerHasMediaDrag, dropAcceptsFile, markdownMimeForFile, mediaKindForFile, mediaMimeForFile, subtitleMimeForFile, videoThumbnailOnlySrc} from './mediaIntake';
+import {notifications, notifyError, notifySuccess, splitSavedPath} from './notifications';
+import {ToastStack} from './ToastStack';
 
 type View = 'app' | 'settings' | 'conversation-models' | 'usage';
 // Settings tabs draw one line: Providers are endpoints and keys you connect to
@@ -237,6 +239,22 @@ type UpdateAvailableEvent = {
   latest: string;
   notes?: string;
 };
+
+// LibraryArchiveEvent mirrors app.go's LibraryArchiveEvent: one tick per
+// verified archive file (import's "verify") or written conversation ("write").
+// Emitted only, never returned by a binding, so it isn't in models.ts.
+type LibraryArchiveOp = 'export' | 'import';
+type LibraryArchiveEvent = {
+  op: LibraryArchiveOp;
+  libraryId?: string;
+  phase: 'verify' | 'write';
+  done: number;
+  total: number;
+};
+
+function libraryArchiveToastKey(op: LibraryArchiveOp): string {
+  return `library-archive:${op}`;
+}
 
 type InFlightConversation = {
   requestID: string;
@@ -674,11 +692,13 @@ function useLibraries(env: LibrariesEnvironment) {
   const [notesSaving, setNotesSaving] = useState(false);
   // Library export/import: exportPlan holds the pre-flight for the ⋮ menu's
   // two-step confirm (counts, size, missing assets); importingLibrary disables
-  // the header button while an archive is being verified and written;
-  // archiveNotice is the transient status line under the Libraries header.
+  // the header button while an archive is being verified and written.
+  // archiveOpRef names the archive op in flight, so the progress listener
+  // only paints ticks for a live op (an IPC tick landing after the call
+  // settled must not resurrect its finished toast).
   const [exportPlan, setExportPlan] = useState<main.LibraryExportPlan | null>(null);
   const [importingLibrary, setImportingLibrary] = useState(false);
-  const [archiveNotice, setArchiveNotice] = useState('');
+  const archiveOpRef = useRef<LibraryArchiveOp | null>(null);
   // The last project the user started a chat in / expanded a library into —
   // the fallback context for the File-menu actions.
   const lastProjectRef = useRef<{projectID: string; libraryID: string} | null>(null);
@@ -1093,6 +1113,8 @@ function useLibraries(env: LibrariesEnvironment) {
 
   // Export confirm: the backend opens the save dialog and writes the archive;
   // a cancel comes back as an empty result and leaves everything as it was.
+  // Progress ticks ride atelier:library-archive into a toast that this
+  // function settles in place (success, error, or gone on cancel).
   async function confirmExportLibrary(libraryID: string) {
     if (containerBusy) {
       return;
@@ -1100,47 +1122,71 @@ function useLibraries(env: LibrariesEnvironment) {
     setContainerBusy(true);
     setOpenContainerMenuID('');
     setExportPlan(null);
+    archiveOpRef.current = 'export';
+    const key = libraryArchiveToastKey('export');
     try {
       const result = await ExportLibrary(libraryID);
       if (result?.path) {
-        showArchiveNotice(`Exported to ${result.path}`);
+        const {name, folder} = splitSavedPath(result.path);
+        notifySuccess('Exported library', {key, message: name, detail: folder ? `in ${folder}` : undefined});
+      } else {
+        notifications.dismissKey(key);
       }
     } catch (error) {
-      env.reportError(error);
+      notifyError("Couldn't export library", error, {key});
     } finally {
+      archiveOpRef.current = null;
       setContainerBusy(false);
     }
   }
 
   // Import: the file picker is the confirmation; everything after it is
-  // backend verification and writing. A failed verification surfaces through
-  // reportError; success refreshes the tree and reveals the imported library.
+  // backend verification and writing, ticking a progress toast. Success
+  // refreshes the tree and reveals the imported library.
   async function importLibrary() {
     if (importingLibrary) {
       return;
     }
     setImportingLibrary(true);
+    archiveOpRef.current = 'import';
+    const key = libraryArchiveToastKey('import');
     try {
       const result = await ImportLibrary();
       if (result?.library?.id) {
         bumpLibrariesRefresh();
         setExpandedLibraryIDs((current) => ({...current, [result.library.id]: true}));
         lastExpandedLibraryIDRef.current = result.library.id;
-        showArchiveNotice(`Imported “${result.library.name}” — ${result.conversations} conversation${result.conversations === 1 ? '' : 's'}`);
+        notifySuccess(`Imported “${result.library.name}”`, {
+          key,
+          message: `${result.conversations} conversation${result.conversations === 1 ? '' : 's'}`,
+        });
+      } else {
+        notifications.dismissKey(key);
       }
     } catch (error) {
-      env.reportError(error);
+      notifyError("Couldn't import library", error, {key});
     } finally {
+      archiveOpRef.current = null;
       setImportingLibrary(false);
     }
   }
 
-  function showArchiveNotice(text: string) {
-    setArchiveNotice(text);
-    window.setTimeout(() => {
-      setArchiveNotice((current) => (current === text ? '' : current));
-    }, 6000);
-  }
+  // Archive progress: the backend ticks per verified file and per written
+  // conversation. Ticks only paint while their op is in flight — the toast
+  // first appears on the first tick, after the dialog closed, so "Exporting…"
+  // never shows while the user is still picking a file.
+  useEffect(() => EventsOn('atelier:library-archive', (event: LibraryArchiveEvent) => {
+    if (!event?.op || event.op !== archiveOpRef.current) {
+      return;
+    }
+    notifications.notify({
+      kind: 'progress',
+      key: libraryArchiveToastKey(event.op),
+      title: event.op === 'export' ? 'Exporting library…' : 'Importing library…',
+      message: event.phase === 'verify' ? 'Verifying archive files' : 'Writing conversations',
+      progress: {done: event.done, total: event.total},
+    });
+  }), []);
 
   return {
     libraries,
@@ -1159,7 +1205,6 @@ function useLibraries(env: LibrariesEnvironment) {
     containerBusy,
     exportPlan,
     importingLibrary,
-    archiveNotice,
     moveTargetGroups,
     libraryIDForProject,
     bumpLibrariesRefresh,
@@ -1710,7 +1755,7 @@ function App() {
     libraries, librariesOpen, expandedLibraryIDs, expandedProjectIDs, projectConversations,
     creatingLibrary, newLibraryName, creatingProjectLibraryID, newProjectName,
     editingContainerID, editingContainerName, openContainerMenuID, confirmDeleteContainerID, containerBusy,
-    exportPlan, importingLibrary, archiveNotice,
+    exportPlan, importingLibrary,
     moveTargetGroups, libraryIDForProject, bumpLibrariesRefresh,
     startCreatingLibrary, startCreatingProject, submitNewLibrary, submitNewProject,
     startEditingContainer, cancelEditingContainer, saveContainerName, toggleContainerMenu, closeContainerMenu,
@@ -6164,7 +6209,6 @@ function App() {
                         +
                       </button>
                     </div>
-                    {archiveNotice ? <div className="libraries-notice">{archiveNotice}</div> : null}
                     {librariesOpen ? (
                       <div className="libraries-body">
                         {creatingLibrary ? (
@@ -6421,6 +6465,7 @@ function App() {
               </div>
             </div>
           ) : null}
+          <ToastStack />
           {toolPermissions.length ? (
             <div className="tool-permission-panel">
               {toolPermissions.map((permission) => (
