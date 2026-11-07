@@ -3,7 +3,6 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import './App.css';
 import {
-  CheckForUpdates,
   CheckOllama,
   ChooseToolWorkspace,
   CreateEditorConversation,
@@ -11,19 +10,13 @@ import {
   DetectLocalTools,
   GetConversation,
   GetConfig,
-  GetConversationUsageReport,
-  GetLibraryUsageReport,
-  GetProjectUsageReport,
   HasFalAPIKey,
   HasReplicateAPIKey,
   HasOpenAICompatibleAPIKey,
   HasOpenRouterAPIKey,
-  InstallUpdate,
-  ListConversationAssets,
   ListFalVideoDurations,
   ListFalSoundEffectDurations,
   ListReplicateVideoDurations,
-  ListLibraryAssets,
   ListModels,
   ListOpenAICompatibleModels,
   LoadUIState,
@@ -62,7 +55,6 @@ import {
 import {
   notifications,
   notifyError,
-  notifyInfo,
   notifySuccess,
   setSavedFileReveal,
   trackSave,
@@ -76,7 +68,6 @@ import {
   ChatProviderID,
   SpeechProviderID,
   ChatEntry,
-  UpdateAvailableEvent,
   EditOpEvent,
   MediaToolSummaryView,
 } from './types';
@@ -85,9 +76,7 @@ import {
   defaultOllamaNumCtx,
   numCtxOptions,
   numCtxLabel,
-  defaultVideoDuration,
   defaultVideoDurationOptions,
-  defaultSoundDuration,
   defaultSoundDurationOptions,
   defaultMediaTimeoutSeconds,
 } from './modelDefaults';
@@ -145,6 +134,12 @@ import {useComposer} from './composer/useComposer';
 import {useConversations} from './sidebar/useConversations';
 import {useEditors} from './editor/useEditors';
 import {useChatStream} from './chat/useChatStream';
+import {useLocalTools} from './settings/useLocalTools';
+import {useDurationOptions} from './settings/useDurationOptions';
+import {useOverlays} from './ui/useOverlays';
+import {useAssets} from './assets/useAssets';
+import {useUsageReport} from './usage/useUsageReport';
+import {useUpdates} from './updates/useUpdates';
 
 function App() {
   const {
@@ -231,25 +226,16 @@ function App() {
     setOpenRouterModels,
     setOpenaiCompatibleModels,
   } = useModelCatalogs();
-  const [localToolsReport, setLocalToolsReport] = useState<main.LocalToolsReport | null>(null);
-  // The Local Tools tab's Re-detect button bumps the nonce so detection
-  // re-runs without a binary edit — a `brew install` made while Settings is
-  // open would otherwise never flip the status until the next launch.
-  const [localToolsDetectNonce, setLocalToolsDetectNonce] = useState(0);
-  const [localToolsDetecting, setLocalToolsDetecting] = useState(false);
-  const [videoDurationOptions, setVideoDurationOptions] = useState<string[]>(defaultVideoDurationOptions);
-  const [videoDurationImageOptions, setVideoDurationImageOptions] = useState<string[]>(defaultVideoDurationOptions);
-  const [videoDurationKeyframeOptions, setVideoDurationKeyframeOptions] = useState<string[]>(defaultVideoDurationOptions);
-  const [videoDurationExtendOptions, setVideoDurationExtendOptions] = useState<string[]>(defaultVideoDurationOptions);
-  const [soundDurationOptions, setSoundDurationOptions] = useState<string[]>(defaultSoundDurationOptions);
-  // Assets panel: closed by default; lists the active conversation's derived
-  // media assets (ListConversationAssets) — or, when the conversation is
-  // project-scoped, every asset in its library (ListLibraryAssets).
-  // assetsRefreshTick re-runs the fetch when a turn finishes — the index
-  // derives from persisted history, so it lags until the turn is saved.
-  const [assetsPanelOpen, setAssetsPanelOpen] = useState(false);
-  const [conversationAssets, setConversationAssets] = useState<main.ConversationAsset[]>([]);
-  const [libraryAssets, setLibraryAssets] = useState<main.ConversationAsset[]>([]);
+  const {
+    ffmpegStatus,
+    ffprobeStatus,
+    localToolsDetecting,
+    magickStatus,
+    redetectLocalTools,
+    setLocalToolsReport,
+    sipsStatus,
+    whisperStatus,
+  } = useLocalTools({configLoaded, whisperBinary, ffmpegBinary, ffprobeBinary, sipsBinary, magickBinary});
   const [assetsRefreshTick, setAssetsRefreshTick] = useState(0);
   const [activeConversationID, setActiveConversationID] = useState('');
   const copyResetRef = useRef<number | null>(null);
@@ -312,53 +298,17 @@ function App() {
   // which read the pending project synchronously rather than from state.
   const pendingProjectRef = useRef<{projectID: string; libraryID: string} | null>(null);
   useEffect(() => {
-    if (!activeConversationID) {
-      setConversationAssets([]);
-      return;
-    }
-    let cancelled = false;
-    ListConversationAssets(activeConversationID)
-      .then((assets) => {
-        if (!cancelled) setConversationAssets(asArray(assets));
-      })
-      .catch(() => {
-        if (!cancelled) setConversationAssets([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeConversationID, assetsRefreshTick]);
-  useEffect(() => {
     pendingProjectRef.current = pendingProject;
   }, [pendingProject]);
-  // Usage report: the aggregated cost + tool-call view (view === 'usage'),
-  // opened at conversation, project, or library scope from the sidebar menus
-  // and the chat toolbar. The report is derived on demand — nothing is
-  // cached, so a drill-down always reflects the history as it stands now.
-  const [usageReport, setUsageReport] = useState<main.UsageReport | null>(null);
-  const [usageLoading, setUsageLoading] = useState(false);
-  const [usageError, setUsageError] = useState('');
-  const openUsageReport = (fetcher: () => Promise<main.UsageReport>) => {
-    setUsageError('');
-    setUsageLoading(true);
-    setView('usage');
-    fetcher()
-      .then((report) => setUsageReport(report))
-      .catch((err) => {
-        setUsageReport(null);
-        setUsageError(String(err));
-      })
-      .finally(() => setUsageLoading(false));
-  };
-  const openConversationUsageReport = (conversationID: string) => {
-    openUsageReport(() => GetConversationUsageReport(conversationID));
-  };
-  const openProjectUsageReport = (projectID: string) => {
-    openUsageReport(() => GetProjectUsageReport(projectID));
-  };
-  const openLibraryUsageReport = (libraryID: string) => {
-    openUsageReport(() => GetLibraryUsageReport(libraryID));
-  };
+  const [view, setView] = useState<View>('app');
+  const {
+    openConversationUsageReport,
+    openLibraryUsageReport,
+    openProjectUsageReport,
+    usageError,
+    usageLoading,
+    usageReport,
+  } = useUsageReport({setView});
   // The project the ACTIVE conversation belongs to (from its summary). Feeds
   // the useLibraries env, the composer's library scope, and the mention pool.
   const activeConversationProjectID = activeConversationID
@@ -372,7 +322,6 @@ function App() {
   // loadConfig rejecting), cleared by applyConfig or the card's Dismiss.
   // Every other failure is an action result and toasts instead.
   const [startupError, setStartupError] = useState('');
-  const [view, setView] = useState<View>('app');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('providers');
   // Per-conversation model-override editing state: the draft is a snapshot of
   // the effective selection taken when the conversation-models view opens
@@ -388,16 +337,17 @@ function App() {
   // the record is the truth. Dormant while an older conversation is open —
   // same posture as draftWorkspace.
   const [draftModelOverrides, setDraftModelOverrides] = useState<main.ConversationModelOverrides | null>(null);
-  const [previewImage, setPreviewImage] = useState('');
-  const [openCapabilityID, setOpenCapabilityID] = useState('');
-  // Self-update UI state: the banner rides the atelier:update-available event
-  // (raised by startup, ticker, and manual checks alike); an install clicked
-  // mid-turn queues until the last conversation finishes.
-  const [updateAvailable, setUpdateAvailable] = useState<UpdateAvailableEvent | null>(null);
-  const [updateBusy, setUpdateBusy] = useState(false);
-  const [updateQueued, setUpdateQueued] = useState(false);
-  const [updateError, setUpdateError] = useState('');
-  const [updateCheckBusy, setUpdateCheckBusy] = useState(false);
+  const {openCapabilityID, previewImage, setOpenCapabilityID, setPreviewImage} = useOverlays();
+  const {
+    checkForUpdates,
+    dismissUpdate,
+    requestUpdateInstall,
+    updateAvailable,
+    updateBusy,
+    updateCheckBusy,
+    updateError,
+    updateQueued,
+  } = useUpdates({anyConversationInFlight});
   const shellRef = useRef<HTMLElement | null>(null);
   // The conversation whose open is in flight; a repeat click on the same row
   // (double-click enters rename) must not fetch it twice.
@@ -510,43 +460,14 @@ function App() {
   // project.
   const composerLibraryID = pendingProject?.libraryID
     || (activeConversationProjectID ? libraryIDForProject(activeConversationProjectID) : '');
-  // Library-scoped assets refresh like the conversation's do: the fold derives
-  // from persisted history, so a finished turn's artifacts need a re-fetch.
-  useEffect(() => {
-    if (!composerLibraryID) {
-      setLibraryAssets([]);
-      return;
-    }
-    let cancelled = false;
-    ListLibraryAssets(composerLibraryID)
-      .then((assets) => {
-        if (!cancelled) setLibraryAssets(asArray(assets));
-      })
-      .catch(() => {
-        if (!cancelled) setLibraryAssets([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [composerLibraryID, assetsRefreshTick]);
+  const {
+    assetsPanelOpen,
+    libraryAssets,
+    panelAssets,
+    setAssetsPanelOpen,
+  } = useAssets({activeConversationID, composerLibraryID, assetsRefreshTick});
 
   const selectedConversationID = activeConversationID;
-  // Panel view of the asset list: library-scoped when the composer sits in a
-  // project context (every asset across the library's conversations), else the
-  // active conversation's own. Deduped by ID (a @-mention re-reference adds
-  // another entry for the same artifact — keep the newest turn's). The
-  // conversation listing arrives oldest-first (reversed to newest-first); the
-  // library fold already arrives newest-first.
-  const panelAssets = useMemo(() => {
-    const source = composerLibraryID ? libraryAssets : conversationAssets;
-    const byID = new Map<string, main.ConversationAsset>();
-    for (const asset of source) {
-      byID.set(asset.id, asset);
-    }
-    const list = [...byID.values()];
-    return composerLibraryID ? list : list.reverse();
-  }, [composerLibraryID, libraryAssets, conversationAssets]);
-
   // Names for the toolbar breadcrumb and composer chip: the library (and
   // project) the current composition is scoped to.
   const composerProjectNames = useMemo(() => {
@@ -656,29 +577,6 @@ function App() {
     };
   }, []);
 
-  // Re-probe local CLI tools when a binary override changes — or the Local
-  // Tools tab's Re-detect button bumps the nonce — so the transcription
-  // dropdown and the tool statuses reflect an unsaved override or a fresh
-  // install without waiting for a save (an empty override means PATH
-  // auto-detection — the Go side treats it that way too).
-  useEffect(() => {
-    if (!configLoaded) {
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      DetectLocalTools(new main.LocalToolOverrides({binaries: {whisper: whisperBinary, ffmpeg: ffmpegBinary, ffprobe: ffprobeBinary, sips: sipsBinary, imagemagick: magickBinary}}))
-        .then((report) => setLocalToolsReport(report))
-        .catch(() => setLocalToolsReport(null))
-        .finally(() => setLocalToolsDetecting(false));
-    }, 300);
-    return () => window.clearTimeout(timer);
-  }, [configLoaded, whisperBinary, ffmpegBinary, ffprobeBinary, sipsBinary, magickBinary, localToolsDetectNonce]);
-
-  const redetectLocalTools = () => {
-    setLocalToolsDetecting(true);
-    setLocalToolsDetectNonce((nonce) => nonce + 1);
-  };
-
   // On a fresh launch, put the cursor in the chat box so the user can start
   // typing immediately. Fires once, when config finishes loading.
   useEffect(() => {
@@ -746,21 +644,6 @@ function App() {
       }
     };
     return EventsOn('atelier:editor-launch', onEditorLaunch);
-  }, []);
-
-  // Update availability mirrors the tool-permission pattern: setState only, no
-  // stale closures. Every check that finds a newer version (startup, daily
-  // ticker, manual) re-emits, so a dismissed banner reappears on the next
-  // check rather than being permanently silenced.
-  useEffect(() => {
-    const onUpdateAvailable = (event: UpdateAvailableEvent) => {
-      if (!event?.latest) {
-        return;
-      }
-      setUpdateAvailable(event);
-      setUpdateError('');
-    };
-    return EventsOn('atelier:update-available', onUpdateAvailable);
   }, []);
 
   // Toasts that name a saved file offer to show it (trackSave's saves, the
@@ -852,68 +735,6 @@ function App() {
     return () => offs.forEach((off) => off());
   }, []);
 
-  // Installing while a turn runs would kill the conversation mid-stream, so a
-  // click during a turn queues the install; this effect fires it once the last
-  // conversation finishes. The Go-side gate in InstallUpdate stays
-  // authoritative — this queue is UX, not enforcement.
-  useEffect(() => {
-    if (!updateQueued || updateBusy || anyConversationInFlight) {
-      return;
-    }
-    setUpdateQueued(false);
-    void requestUpdateInstall();
-  }, [updateQueued, updateBusy, anyConversationInFlight]);
-
-  async function requestUpdateInstall() {
-    if (anyConversationInFlight) {
-      setUpdateQueued(true);
-      return;
-    }
-    setUpdateBusy(true);
-    setUpdateError('');
-    try {
-      await InstallUpdate();
-      // Success ends the session: the backend quits, the detached helper
-      // swaps the bundle, and the new version reopens. Nothing to render.
-    } catch (error) {
-      setUpdateError(formatError(error));
-      setUpdateQueued(false);
-    } finally {
-      setUpdateBusy(false);
-    }
-  }
-
-  function dismissUpdate() {
-    setUpdateAvailable(null);
-    setUpdateQueued(false);
-    setUpdateError('');
-  }
-
-  // The manual check reports its outcome as a toast. A newer version needs no
-  // toast of its own: the check raises atelier:update-available, so the update
-  // banner appears beside the stack.
-  async function checkForUpdates() {
-    setUpdateCheckBusy(true);
-    try {
-      const status = await CheckForUpdates();
-      if (status.state === 'available') {
-        return;
-      }
-      if (status.state === 'current') {
-        notifySuccess('Atelier is up to date', {message: `Version ${status.currentVersion}`});
-      } else if (status.error?.startsWith('Airplane mode')) {
-        // A policy refusal, not a failure — surface it as-is.
-        notifyInfo(status.error);
-      } else {
-        notifyError('Update check failed', status.error || 'unknown error');
-      }
-    } catch (error) {
-      notifyError('Update check failed', error);
-    } finally {
-      setUpdateCheckBusy(false);
-    }
-  }
-
   const {
     assetsWidth,
     resizingAssets,
@@ -922,42 +743,6 @@ function App() {
     setResizingSidebar,
     sidebarWidth,
   } = useResizablePanels({shellRef, setAssetsPanelOpen});
-
-  useEffect(() => {
-    if (!previewImage) {
-      return;
-    }
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setPreviewImage('');
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [previewImage]);
-
-  useEffect(() => {
-    if (!openCapabilityID) {
-      return;
-    }
-    const onPointerDown = (event: MouseEvent) => {
-      if (event.target instanceof Element && event.target.closest('.model-capability')) {
-        return;
-      }
-      setOpenCapabilityID('');
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setOpenCapabilityID('');
-      }
-    };
-    document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [openCapabilityID]);
 
   // modelOptions feeds the Ollama-only lists (primary picker's Ollama branch,
   // harness dropdown, image-model fallback). It is built from the fetched
@@ -1514,10 +1299,6 @@ function App() {
     setModel(next);
   };
 
-  const whisperStatus = useMemo(
-    () => localToolsReport?.binaries?.find((entry) => entry.key === 'whisper') ?? null,
-    [localToolsReport],
-  );
   // modelSelectionCatalogs feeds ModelSelectionPanel's pickers: the fetched
   // model lists plus the key/detection state. One object serves both the
   // Settings Models tab and the conversation-models screen.
@@ -1568,126 +1349,16 @@ function App() {
     openCapabilityID,
     setOpenCapabilityID,
   };
-  const ffmpegStatus = useMemo(
-    () => localToolsReport?.binaries?.find((entry) => entry.key === 'ffmpeg') ?? null,
-    [localToolsReport],
-  );
-  const ffprobeStatus = useMemo(
-    () => localToolsReport?.binaries?.find((entry) => entry.key === 'ffprobe') ?? null,
-    [localToolsReport],
-  );
-  const sipsStatus = useMemo(
-    () => localToolsReport?.binaries?.find((entry) => entry.key === 'sips') ?? null,
-    [localToolsReport],
-  );
-  const magickStatus = useMemo(
-    () => localToolsReport?.binaries?.find((entry) => entry.key === 'imagemagick') ?? null,
-    [localToolsReport],
-  );
-
-  // Each video picker fetches the duration values its selected model accepts
-  // (ListFalVideoDurations → the model's published schema enum), then reconciles
-  // the picker's current value into that set — so switching models never leaves
-  // a duration selected that the model would 422 on (e.g. Seedance-only "auto"
-  // on an integer-only model; see conv_4feb919a). The fetch refires only on
-  // model change; the value reconcile reads the latest state inside the setter.
-  // An empty/error result falls back to the generic option set.
-  useEffect(() => {
-    let cancelled = false;
-    // The fetch follows the routed backend: fal's schema cache on fal,
-    // Replicate's on replicate — the same seam generate_video routes by.
-    const fetchDurations = videoProvider === 'replicate'
-      ? ListReplicateVideoDurations(replicateVideoModel)
-      : ListFalVideoDurations(falVideoModel);
-    fetchDurations
-      .then((durations) => {
-        if (cancelled) return;
-        const opts = durations && durations.length ? durations : defaultVideoDurationOptions;
-        setVideoDurationOptions(opts);
-        setVideoDuration((current) => (opts.includes(current) ? current : opts[0] ?? defaultVideoDuration));
-      })
-      .catch(() => setVideoDurationOptions(defaultVideoDurationOptions));
-    return () => {
-      cancelled = true;
-    };
-  }, [videoProvider, falVideoModel, replicateVideoModel]);
-
-  // Sound duration options follow the selected sound-effects model the same
-  // way: ListFalSoundEffectDurations returns the model's accepted durations
-  // (elevenlabs' numeric 0.5–22 range synthesizes the ladder 1..22). 'auto' is
-  // always offered first — the synthesized ladder carries only numbers, and
-  // auto is the send-no-duration escape hatch the backend honors everywhere.
-  // An empty/error result falls back to the generic option set, like video.
-  // A Replicate-pinned audio provider skips the fal lookup and rides the
-  // generic ladder (the replicate resolver clamps or drops an unsupported
-  // length with a notice at call time).
-  useEffect(() => {
-    let cancelled = false;
-    if (audioProvider === 'replicate') {
-      setSoundDurationOptions(defaultSoundDurationOptions);
-      return;
-    }
-    ListFalSoundEffectDurations(falSoundEffectsModel)
-      .then((durations) => {
-        if (cancelled) return;
-        const schemaOpts = durations && durations.length ? durations : defaultSoundDurationOptions;
-        const opts = schemaOpts.includes('auto') ? schemaOpts : ['auto', ...schemaOpts];
-        setSoundDurationOptions(opts);
-        setSoundDuration((current) => (opts.includes(current) ? current : defaultSoundDuration));
-      })
-      .catch(() => setSoundDurationOptions(defaultSoundDurationOptions));
-    return () => {
-      cancelled = true;
-    };
-  }, [audioProvider, falSoundEffectsModel]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const fetchDurations = videoProvider === 'replicate'
-      ? ListReplicateVideoDurations(replicateVideoImageModel)
-      : ListFalVideoDurations(falVideoImageModel);
-    fetchDurations
-      .then((durations) => {
-        if (cancelled) return;
-        setVideoDurationImageOptions(durations && durations.length ? durations : defaultVideoDurationOptions);
-      })
-      .catch(() => setVideoDurationImageOptions(defaultVideoDurationOptions));
-    return () => {
-      cancelled = true;
-    };
-  }, [videoProvider, falVideoImageModel, replicateVideoImageModel]);
-
-  useEffect(() => {
-    let cancelled = false;
-    ListFalVideoDurations(falVideoKeyframeModel)
-      .then((durations) => {
-        if (cancelled) return;
-        setVideoDurationKeyframeOptions(durations && durations.length ? durations : defaultVideoDurationOptions);
-      })
-      .catch(() => setVideoDurationKeyframeOptions(defaultVideoDurationOptions));
-    return () => {
-      cancelled = true;
-    };
-  }, [falVideoKeyframeModel]);
-
-  useEffect(() => {
-    let cancelled = false;
-    // The extend picker's durations follow the routed backend like the t2v/i2v
-    // pickers above.
-    const fetchDurations = videoProvider === 'replicate'
-      ? ListReplicateVideoDurations(replicateVideoExtendModel)
-      : ListFalVideoDurations(falVideoExtendModel);
-    fetchDurations
-      .then((durations) => {
-        if (cancelled) return;
-        setVideoDurationExtendOptions(durations && durations.length ? durations : defaultVideoDurationOptions);
-      })
-      .catch(() => setVideoDurationExtendOptions(defaultVideoDurationOptions));
-    return () => {
-      cancelled = true;
-    };
-  }, [videoProvider, falVideoExtendModel, replicateVideoExtendModel]);
-
+  // Called here, not beside the other Settings hooks, to keep its loader
+  // effects in their original place in the mount order (they reconcile the
+  // selected durations as the ladders land).
+  const {
+    soundDurationOptions,
+    videoDurationExtendOptions,
+    videoDurationImageOptions,
+    videoDurationKeyframeOptions,
+    videoDurationOptions,
+  } = useDurationOptions({videoProvider, falVideoModel, replicateVideoModel, setVideoDuration, audioProvider, falSoundEffectsModel, setSoundDuration, falVideoImageModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, replicateVideoExtendModel});
   useEffect(() => {
     // Only re-run when the option list itself changes (provider switch, or
     // the OpenRouter list finishing a load) — not on every keystroke of

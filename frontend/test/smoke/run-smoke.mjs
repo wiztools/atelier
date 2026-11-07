@@ -348,13 +348,29 @@ function runProblems(label, report) {
   return problems;
 }
 
+// Steps whose binding calls may compare as a multiset instead of a sequence,
+// with the reason. Order stays meaningful everywhere else: most call orders
+// ARE behavior (a save before the fetch that reads it). An entry must name the
+// independent reads whose relative order cannot change anything.
+const CALL_ORDER_FLEX = {
+  // On a turn finishing, three refreshes fire: the conversation list (a call
+  // from the chunk listener), the libraries tree, and the assets panel (effect
+  // callbacks, so their order is hook-call order). The libraries tree and the
+  // assets listings are independent read-only fetches; useAssets' effects
+  // register after useLibraries' since its library scope derives from
+  // useLibraries' libraryIDForProject, so the two listings may swap relative
+  // to main. Which responds first changes nothing either renders from.
+  'stream-done': 'independent read-only refreshes (assets panel vs libraries tree)',
+};
+
 function compareRuns(baseDir, base, headDir, head) {
   const problems = [];
   let identical = 0;
   for (const [name] of SCENARIO) {
     const baseCalls = base.steps[name].calls;
     const headCalls = head.steps[name].calls;
-    const callsSame = JSON.stringify(baseCalls) === JSON.stringify(headCalls);
+    const callsSame = JSON.stringify(baseCalls) === JSON.stringify(headCalls)
+      || (name in CALL_ORDER_FLEX && JSON.stringify([...baseCalls].sort()) === JSON.stringify([...headCalls].sort()));
     if (!callsSame) {
       problems.push(`${name}: backend calls differ\n    baseline: ${baseCalls.join(', ') || '(none)'}\n    head:     ${headCalls.join(', ') || '(none)'}`);
     }
