@@ -3,7 +3,7 @@
 // payloads App listens for, and the composer's attachment/draft shapes —
 // plus the few value vocabularies tied to them (settings tabs, edit-op
 // labels, model-call step kinds, the archive toast key).
-import {main} from '../wailsjs/go/models';
+import type {main} from '../wailsjs/go/models';
 
 type View = 'app' | 'settings' | 'conversation-models' | 'usage';
 // Settings tabs draw one line: Providers are endpoints and keys you connect to

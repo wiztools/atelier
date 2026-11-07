@@ -21,7 +21,12 @@
     "test:fountain-model": "node test/run-fountain-model-tests.cjs",
     "test:document-compare-model": "node test/run-document-compare-model-tests.cjs",
     "test:media-intake": "node test/run-media-intake-tests.cjs",
-    "test:notifications": "node test/run-notifications-tests.cjs"
+    "test:notifications": "node test/run-notifications-tests.cjs",
+    "test:history-content": "node test/run-history-content-tests.cjs",
+    "test:composer-mentions": "node test/run-composer-mentions-tests.cjs",
+    "test:tool-permission": "node test/run-tool-permission-tests.cjs",
+    "test:utils": "node test/run-utils-tests.cjs",
+    "test:usage-model": "node test/run-usage-model-tests.cjs"
   },
   "dependencies": {
     "react": "^18.2.0",

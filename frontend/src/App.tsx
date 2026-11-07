@@ -115,9 +115,6 @@ import {
   SeedComposition,
   StreamChat,
   UpdateConversationTitle,
-  AppendMediaUploadChunk,
-  BeginMediaUpload,
-  CompleteMediaUpload,
   DiscardMediaUpload,
   RevealFile,
 } from '../wailsjs/go/main/App';
@@ -135,11 +132,11 @@ import {detectEditorLaunchIntent} from './editorLaunch';
 import {
   composerHasMediaDrag,
   dropAcceptsFile,
-  markdownMimeForFile,
   mediaKindForFile,
-  mediaMimeForFile,
-  subtitleMimeForFile,
   videoThumbnailOnlySrc,
+  imagePayloadForOllama,
+  mediaExtensionForType,
+  uniqueAttachmentName,
 } from './mediaIntake';
 import {
   notifications,
@@ -182,8 +179,6 @@ import {
 } from './types';
 import {
   defaultBaseURL,
-  mediaStageThresholdBytes,
-  mediaUploadChunkBytes,
   defaultOllamaNumCtx,
   numCtxOptions,
   numCtxLabel,
@@ -250,7 +245,7 @@ import {
   loadAssetsPanelWidth,
   clampAssetsPanelWidth,
 } from './uiLayout';
-import {asArray, formatModelSize, shortenHomePath} from './utils';
+import {asArray, formatModelSize, shortenHomePath, formatError, formatFalError, formatOpenRouterError} from './utils';
 import {falCatalogWithRetry, falModelOptionList} from './settings/modelOptions';
 import {ModelCombobox} from './settings/ModelCombobox';
 import {InfoHint, AirplaneHint} from './ui/Hints';
@@ -275,6 +270,29 @@ import {TurnUsage, ConversationUsage} from './usage/TurnUsage';
 import {UsageReportView} from './usage/UsageReportView';
 import {HarnessRunPanel} from './usage/HarnessRunPanel';
 import {StreamingActivity} from './usage/StreamingActivity';
+import {
+  MentionCandidate,
+  assetMentionLabel,
+  assetTurnLabel,
+  detectMentionAt,
+  mentionMatches,
+  parseComposerMentions,
+} from './composerMentions';
+import {copyTextWithTextarea, isNearScrollBottom} from './dom';
+import {hasToolPermissionDetails, toolPermissionSummary, toolPermissionTitle} from './toolPermission';
+import {
+  historyAudios,
+  historyComics,
+  historyCompositions,
+  historyImages,
+  historyMarkdowns,
+  historySubtitles,
+  historyText,
+  historyTranscripts,
+  historyVideos,
+  transcriptChipLabel,
+} from './historyContent';
+import {mediaStageThresholdBytes, readFileAsAttachment} from './attachments';
 
 // useLibraries owns the sidebar's Libraries tree: the library/project data,
 // the expansion/creation/rename/delete UI state, and the actions over them.
@@ -8238,593 +8256,6 @@ function App() {
       ) : null}
     </main>
   );
-}
-
-function isNearScrollBottom(element: HTMLElement, threshold = 48): boolean {
-  return element.scrollHeight - element.scrollTop - element.clientHeight < threshold;
-}
-
-function historyText(contents: main.HistoryContent[] | null | undefined, type: string): string {
-  return asArray(contents)
-    .filter((content) => content.type === type)
-    .map((content) => content.text ?? '')
-    .filter(Boolean)
-    .join('\n\n');
-}
-
-function historyImages(contents: main.HistoryContent[] | null | undefined): string[] {
-  return asArray(contents)
-    .filter((content) => content.type === 'image')
-    .map((content) => content.text || content.path || '')
-    .filter(Boolean);
-}
-
-function historyVideos(contents: main.HistoryContent[] | null | undefined): string[] {
-  return asArray(contents)
-    .filter((content) => content.type === 'video')
-    .map((content) => content.text || content.path || '')
-    .filter(Boolean);
-}
-
-function historyAudios(contents: main.HistoryContent[] | null | undefined): string[] {
-  return asArray(contents)
-    .filter((content) => content.type === 'audio')
-    .map((content) => content.text || content.path || '')
-    .filter(Boolean);
-}
-
-function historyTranscripts(contents: main.HistoryContent[] | null | undefined): string[] {
-  return asArray(contents)
-    .filter((content) => content.type === 'transcript')
-    .map((content) => content.text || content.path || '')
-    .filter(Boolean);
-}
-
-// historySubtitles picks the SUBTITLE artifacts (.vtt/.srt) off a user turn's
-// content — the hydrated /atelier-artifact URLs attached subtitle files
-// persist as. Plain .txt transcripts are not subtitles and never match, and
-// assistant-produced transcript artifacts stay in `transcripts` (they render
-// there), which is why the caller guards this to user turns.
-function historySubtitles(contents: main.HistoryContent[] | null | undefined): string[] | undefined {
-  const urls = asArray(contents)
-    .filter((content) => {
-      if (content.type !== 'transcript') return false;
-      const path = content.text || content.path || '';
-      return path.toLowerCase().endsWith('.vtt') || path.toLowerCase().endsWith('.srt');
-    })
-    .map((content) => content.text || content.path || '')
-    .filter(Boolean);
-  return urls.length ? urls : undefined;
-}
-
-// historyMarkdowns picks the markdown artifacts off a turn's content — the
-// hydrated /atelier-artifact URLs md_ documents persist as, on either side of
-// the conversation (attached by the user, saved by the markdown editor). Both
-// dialects match — .md and .fountain — the same extension set
-// markdownArtifactIDFromURL gates the chip's Edit button on.
-function historyMarkdowns(contents: main.HistoryContent[] | null | undefined): string[] | undefined {
-  const urls = asArray(contents)
-    .filter((content) => content.type === 'markdown')
-    .map((content) => content.text || content.path || '')
-    .filter((path) => /\.(md|fountain)$/i.test(path));
-  return urls.length ? urls : undefined;
-}
-
-// historyCompositions picks the composition project documents off a turn's
-// content — the hydrated /atelier-artifact URLs cmp_ revisions persist as,
-// one entry per save. The chip's Edit door reopens that revision in the
-// video composer.
-function historyCompositions(contents: main.HistoryContent[] | null | undefined): string[] | undefined {
-  const urls = asArray(contents)
-    .filter((content) => content.type === 'composition')
-    .map((content) => content.text || content.path || '')
-    .filter((path) => /\.json$/i.test(path));
-  return urls.length ? urls : undefined;
-}
-
-// historyComics picks the comic book documents off a turn's content — the
-// hydrated /atelier-artifact URLs cbc_ revisions persist as, one entry per
-// save. The chip's Edit door reopens that revision in the comic editor.
-function historyComics(contents: main.HistoryContent[] | null | undefined): string[] | undefined {
-  const urls = asArray(contents)
-    .filter((content) => content.type === 'comic')
-    .map((content) => content.text || content.path || '')
-    .filter((path) => /\.json$/i.test(path));
-  return urls.length ? urls : undefined;
-}
-
-// Transcript artifacts come in three kinds — the WebVTT rendering of a
-// timestamped transcript (.vtt), its converted SubRip form (.srt, from
-// convert_subtitles), and an oversized plain transcript staged as text (.txt).
-// The URL's extension says which; the chip label follows it.
-function transcriptChipLabel(url: string): string {
-  const lower = url.toLowerCase();
-  if (lower.endsWith('.vtt')) return '📄 Timestamped transcript (.vtt)';
-  if (lower.endsWith('.srt')) return '📄 Subtitles (.srt)';
-  return '📄 Transcript (.txt)';
-}
-
-function imagePayloadForOllama(image: string): string {
-  const match = /^data:image\/[a-z+.-]+;base64,(.*)$/i.exec(image);
-  if (match) {
-    return match[1];
-  }
-  // Not an inline data URL — e.g. a hydrated /atelier-artifact/ history URL or a
-  // file path. These are display references, not valid model image payloads, so
-  // drop them rather than sending a string Ollama can't base64-decode.
-  return '';
-}
-
-function formatError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function formatOpenRouterError(error: unknown): string {
-  const message = formatError(error);
-  const lower = message.toLowerCase();
-  if (lower.includes('authentication failed') || lower.includes('401') || lower.includes('unauthorized')) {
-    return 'Invalid API key — check your OpenRouter key in Settings';
-  }
-  return message;
-}
-
-function formatFalError(error: unknown): string {
-  const message = formatError(error);
-  const lower = message.toLowerCase();
-  if (lower.includes('authentication failed') || lower.includes('401') || lower.includes('unauthorized')) {
-    return 'Invalid API key — check your fal.ai key in Settings';
-  }
-  return message;
-}
-
-function copyTextWithTextarea(text: string) {
-  const textarea = document.createElement('textarea');
-  textarea.value = text;
-  textarea.setAttribute('readonly', 'true');
-  textarea.style.position = 'fixed';
-  textarea.style.left = '-9999px';
-  textarea.style.top = '0';
-  document.body.appendChild(textarea);
-  textarea.select();
-  document.execCommand('copy');
-  document.body.removeChild(textarea);
-}
-
-function toolPermissionTitle(permission: ToolPermissionEvent): string {
-  if (permission.toolName === 'run_command') {
-    return 'Run command?';
-  }
-  if (permission.toolName === 'write_file') {
-    return 'Write file?';
-  }
-  return 'Allow tool action?';
-}
-
-function toolPermissionSummary(permission: ToolPermissionEvent): string {
-  if (permission.toolName === 'run_command' && permission.command?.length) {
-    return permission.command.slice(0, 2).join(' ');
-  }
-  if (permission.path) {
-    return shortenHomePath(permission.path);
-  }
-  return permission.summary;
-}
-
-function hasToolPermissionDetails(permission: ToolPermissionEvent): boolean {
-  return Boolean(
-    permission.command?.length ||
-    permission.path ||
-    permission.contentPreview ||
-    (permission.summary && permission.summary !== toolPermissionSummary(permission)),
-  );
-}
-
-async function readImageFile(file: File, nameOverride?: string): Promise<Attachment> {
-  const dataURL = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-
-  return {
-    name: nameOverride ?? file.name,
-    src: dataURL,
-    payload: imagePayloadForOllama(dataURL),
-    kind: 'image',
-  };
-}
-
-// readAudioFile mirrors readImageFile but keeps the full data URL as the
-// payload — unlike Ollama-bound images, the OpenRouter input_audio part needs
-// the data:audio/<fmt>;base64,... wrapper so openRouterInputAudio can split off
-// the format. Audio input is OpenRouter-only; the harness rejects an audio turn
-// on any other provider before it runs.
-async function readAudioFile(file: File, nameOverride?: string): Promise<Attachment> {
-  const dataURL = await mediaFileDataURL(file, 'audio');
-
-  return {
-    name: nameOverride ?? file.name,
-    src: dataURL,
-    payload: dataURL,
-    kind: 'audio',
-  };
-}
-
-// readVideoFile mirrors readAudioFile: it keeps the full data URL as the
-// payload, since video input is tool-only and the backend resolves
-// AttachedVideo from the data URL the frontend sends (decodeVideoPayload /
-// readVideoArtifactAsDataURL).
-async function readVideoFile(file: File, nameOverride?: string): Promise<Attachment> {
-  const dataURL = await mediaFileDataURL(file, 'video');
-
-  return {
-    name: nameOverride ?? file.name,
-    src: dataURL,
-    payload: dataURL,
-    kind: 'video',
-  };
-}
-
-// mediaFileDataURL builds an audio/video attachment's data URL. FileReader
-// labels a container the OS left unlabeled (.mkv) application/octet-stream,
-// which the Go decoders and the OpenRouter audio part read as an unknown
-// format — so the extension's mime stands in when the OS offered no type
-// (mediaIntake.ts).
-async function mediaFileDataURL(file: File, kind: 'audio' | 'video'): Promise<string> {
-  if (file.type) {
-    return await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(file);
-    });
-  }
-  const bytes = await file.arrayBuffer();
-  return `data:${mediaMimeForFile(file, kind)};base64,${bytesToBase64(bytes)}`;
-}
-
-// readSubtitleFile keeps the full data URL as the payload, mirroring
-// audio/video: subtitle attachments are tool-only (convert_subtitles reads the
-// persisted artifact), never model input, and the backend decodes the data URL
-// exactly like the other media kinds.
-async function readSubtitleFile(file: File, nameOverride?: string): Promise<Attachment> {
-  const mime = subtitleMimeForFile(file) ?? 'text/vtt';
-  const bytes = await file.arrayBuffer();
-  const dataURL = `data:${mime};base64,${bytesToBase64(bytes)}`;
-  return {
-    name: nameOverride ?? file.name,
-    src: dataURL,
-    payload: dataURL,
-    kind: 'subtitle',
-  };
-}
-
-// readMarkdownFile keeps the full data URL as the payload, mirroring
-// subtitles: markdown attachments are tool-only (the markdown editor reads the
-// persisted artifact), never model input.
-async function readMarkdownFile(file: File, nameOverride?: string): Promise<Attachment> {
-  const mime = markdownMimeForFile(file) ?? 'text/markdown';
-  const bytes = await file.arrayBuffer();
-  const dataURL = `data:${mime};base64,${bytesToBase64(bytes)}`;
-  return {
-    name: nameOverride ?? file.name,
-    src: dataURL,
-    payload: dataURL,
-    kind: 'markdown',
-  };
-}
-
-// readFileAsAttachment dispatches to the right reader. Audio files route to
-// readAudioFile, video files to readVideoFile (kind decided by
-// mediaKindForFile — extension first, since real containers like .mkv carry no
-// MIME on macOS), subtitle files (.vtt/.srt — by extension first, the OS type
-// is unreliable) to readSubtitleFile, markdown documents (.md/.markdown) to
-// readMarkdownFile; everything else (images today, and an unknown type the OS
-// picker let through) routes to readImageFile, which produced the historical
-// behavior.
-//
-// Audio/video past mediaStageThresholdBytes never become data URLs at all: the
-// base64 payload would have to cross the Wails bridge inside the StreamChat
-// JSON — a 700MB clip becomes a ~933MB string that the WebView cannot
-// stringify, the bridge cannot carry, and a <video> element cannot load. They
-// are staged to disk in chunks instead (media_upload.go) and carry the staged
-// artifact URL, which renders, plays, and persists like any other artifact.
-async function readFileAsAttachment(file: File, nameOverride?: string, onProgress?: (fraction: number) => void): Promise<Attachment> {
-  if (subtitleMimeForFile(file)) {
-    return readSubtitleFile(file, nameOverride);
-  }
-  if (markdownMimeForFile(file)) {
-    return readMarkdownFile(file, nameOverride);
-  }
-  const kind = mediaKindForFile(file);
-  if (kind) {
-    if (file.size > mediaStageThresholdBytes) {
-      return stageMediaFileAsAttachment(file, kind, nameOverride, onProgress);
-    }
-    return kind === 'audio' ? readAudioFile(file, nameOverride) : readVideoFile(file, nameOverride);
-  }
-  return readImageFile(file, nameOverride);
-}
-
-// bytesToBase64 encodes an ArrayBuffer in 0x8000-char slices — the largest
-// argument btoa's String.fromCharCode spread accepts without blowing the
-// engine's argument limit.
-function bytesToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  const parts: string[] = [];
-  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-    parts.push(String.fromCharCode(...bytes.subarray(offset, offset + 0x8000)));
-  }
-  return btoa(parts.join(''));
-}
-
-// stageMediaFileAsAttachment streams a large media file to the backend in
-// base64 chunks (mediaUploadChunkBytes each, so no single IPC call grows past
-// a few MB) and attaches the completed /atelier-artifact/ URL. The upload ID
-// sequencing is strict — begin, appends, complete — and a thrown error aborts
-// the attachment: the composer keeps the rest of the drop and the uploads
-// sweep eventually reclaims the partial file.
-async function stageMediaFileAsAttachment(file: File, kind: 'audio' | 'video', nameOverride?: string, onProgress?: (fraction: number) => void): Promise<Attachment> {
-  const uploadID = await BeginMediaUpload(nameOverride ?? file.name, kind);
-  try {
-    for (let offset = 0; offset < file.size; offset += mediaUploadChunkBytes) {
-      const slice = file.slice(offset, Math.min(offset + mediaUploadChunkBytes, file.size));
-      const chunk = bytesToBase64(await slice.arrayBuffer());
-      await AppendMediaUploadChunk(uploadID, chunk);
-      onProgress?.(Math.min((offset + mediaUploadChunkBytes) / file.size, 1));
-    }
-    const staged = await CompleteMediaUpload(uploadID);
-    return {
-      name: nameOverride ?? file.name,
-      src: staged.url,
-      payload: staged.url,
-      kind,
-      stagedPath: staged.path,
-    };
-  } catch (error) {
-    // A failed staging (disk error, vanished file) discards the partial file
-    // right away — DiscardMediaUpload also resolves in-flight upload IDs —
-    // and the caller surfaces the error while the drop continues with the
-    // remaining files.
-    await DiscardMediaUpload(uploadID).catch(() => {});
-    throw error;
-  }
-}
-
-// uniqueAttachmentName returns a name that does not collide with any existing
-// name, appending " (2)", " (3)", … before the extension as needed. Attachment
-// names are the key @-mentions match against, and they back the React key for
-// attachment chips, so duplicates would both break @ resolution and collide in
-// the chip list. Pure/module-level so it can be unit-tested in isolation.
-function uniqueAttachmentName(requested: string, existing: string[]): string {
-  if (!requested) {
-    requested = 'attachment';
-  }
-  if (!existing.includes(requested)) {
-    return requested;
-  }
-  const taken = new Set(existing);
-  const dot = requested.lastIndexOf('.');
-  const stem = dot > 0 ? requested.slice(0, dot) : requested;
-  const ext = dot > 0 ? requested.slice(dot) : '';
-  for (let counter = 2; ; counter++) {
-    const candidate = `${stem} (${counter})${ext}`;
-    if (!taken.has(candidate)) {
-      return candidate;
-    }
-  }
-}
-
-// MentionMatch describes an open @-token at the caret: `at` is the index of the
-// '@', `query` is the text typed after it (no whitespace allowed mid-token).
-type MentionMatch = { at: number; query: string };
-
-// detectMentionAt finds an open @-mention token ending at the caret. A token is
-// valid only when '@' sits at the start of text or right after whitespace (so
-// "foo@bar" is not a mention), and contains no whitespace after the '@'. A
-// leading double quote is allowed: accepted multi-word mentions insert as
-// @"quoted name" tokens, and placing the caret back inside the opening word
-// re-opens completions — the quote stays part of the query so acceptMention's
-// replacement consumes it (mentionMatches strips it for matching). Returns
-// null when no token is active. Pure/module-level for unit testing.
-function detectMentionAt(text: string, caret: number): MentionMatch | null {
-  if (caret <= 0) {
-    return null;
-  }
-  const slice = text.slice(0, caret);
-  const at = slice.lastIndexOf('@');
-  if (at < 0) {
-    return null;
-  }
-  // The '@' must start a token: begin-of-text or preceded by whitespace.
-  if (at > 0 && !/\s/.test(text[at - 1])) {
-    return null;
-  }
-  const query = slice.slice(at + 1);
-  // The token ends at the first whitespace; if any is present, the mention is
-  // no longer open at the caret.
-  if (/\s/.test(query)) {
-    return null;
-  }
-  return { at, query };
-}
-
-// ParsedMention is one resolved @-reference read out of composer text: the
-// verbatim source token (quotes included) plus what it binds to. assetID is
-// set only for asset mentions (their hex labels are self-describing — the
-// identity rides in the text itself); attachment mentions bind to this turn's
-// attached file by name and carry none, since the bytes ride the request's
-// payload arrays regardless of the text.
-type ParsedMention = {
-  source: string;
-  label: string;
-  assetID?: string;
-};
-
-// ComposerSegment splits composer text into plain runs and resolved mentions
-// — the shared view model for the chip overlay and the send-time
-// referencedAssetIds scan.
-type ComposerSegment = { text: string; mention?: ParsedMention };
-
-// parseComposerMentions splits composer text into plain runs and mention
-// tokens, resolving each against pool (this turn's attachments first, then the
-// same asset list the mention menu offers). A token is '@' at text start or
-// after whitespace, either bare (`@img_ab12…`, whitespace-delimited) or quoted
-// (`@"sunset beach.png"`, the only form multi-word names are inserted in).
-// Tokens that resolve against nothing — prose like "ping @john", a half-edited
-// name — stay plain, so the chip decoration only ever marks references that
-// will actually carry media. Un-closed quotes are plain text to the end. Pure/
-// module-level for unit testing.
-function parseComposerMentions(text: string, pool: { label: string; assetID?: string }[]): ComposerSegment[] {
-  const byLabel = new Map<string, { label: string; assetID?: string }>();
-  for (const item of pool) {
-    const key = item.label.toLowerCase();
-    // First wins: attachments outrank a same-named asset, mirroring the menu's
-    // candidate order.
-    if (!byLabel.has(key)) {
-      byLabel.set(key, item);
-    }
-  }
-  const segments: ComposerSegment[] = [];
-  let plain = '';
-  const flushPlain = () => {
-    if (plain) {
-      segments.push({ text: plain });
-      plain = '';
-    }
-  };
-  let i = 0;
-  while (i < text.length) {
-    if (text[i] === '@' && (i === 0 || /\s/.test(text[i - 1]))) {
-      let source = '';
-      let label = '';
-      let end = i + 1;
-      if (text[i + 1] === '"') {
-        const close = text.indexOf('"', i + 2);
-        if (close < 0) {
-          // Un-closed quote: not a mention; the rest cannot contain a fresh
-          // token (any '@' inside sits mid-quote), so take it all as plain.
-          plain += text.slice(i);
-          break;
-        }
-        source = text.slice(i, close + 1);
-        label = text.slice(i + 2, close);
-        end = close + 1;
-      } else {
-        let j = i + 1;
-        while (j < text.length && !/\s/.test(text[j])) {
-          j += 1;
-        }
-        source = text.slice(i, j);
-        label = text.slice(i + 1, j);
-        end = j;
-      }
-      const bound = label ? byLabel.get(label.toLowerCase()) : undefined;
-      if (bound) {
-        flushPlain();
-        segments.push({ text: source, mention: { source, label: bound.label, ...(bound.assetID ? { assetID: bound.assetID } : {}) } });
-      } else {
-        plain += source;
-      }
-      i = end;
-      continue;
-    }
-    plain += text[i];
-    i += 1;
-  }
-  flushPlain();
-  return segments;
-}
-
-// assetTurnLabel renders an origin turn ID (turn_000003) as a human label
-// ("turn 3") for the assets panel; anything unparsable passes through as-is.
-function assetTurnLabel(turnID: string): string {
-  const n = Number(turnID.replace(/^turn_/, ''));
-  return Number.isFinite(n) && n > 0 ? `turn ${n}` : turnID;
-}
-
-// MentionCandidate extends an in-composer attachment with the menu's provenance
-// label. Candidates carry no binding state: mention resolution happens at
-// render/send time from the text itself (parseComposerMentions against the
-// binding pool), so accepting one only inserts text.
-type MentionCandidate = Attachment & {
-  hint?: string;
-};
-
-// assetMentionLabel derives the @-token for a conversation asset from its ID —
-// kind prefix plus enough hex to be unique in practice, and token-safe (no
-// spaces) so the open-token detection and the send-time text scan agree. The
-// label is a prefix of the asset ID, so it is self-describing: resolving a
-// mention is a lookup of the token against the asset list, never a recorded
-// side-channel that the text could drift from.
-function assetMentionLabel(asset: main.ConversationAsset): string {
-  return asset.id.slice(0, 12);
-}
-
-// mentionMatches returns the candidates whose name contains the query as a
-// case-insensitive substring, preserving order. An empty query lists every
-// candidate (the menu is most useful right after typing '@'). A leading double
-// quote (re-opening a @"quoted name" token) is stripped before matching.
-function mentionMatches(query: string, items: MentionCandidate[]): MentionCandidate[] {
-  const q = query.trim().toLowerCase().replace(/^"/, '');
-  if (!q) {
-    return items;
-  }
-  return items.filter((item) => item.name.toLowerCase().includes(q));
-}
-
-function imageExtensionForType(type: string): string {
-  const subtype = type.split('/')[1]?.split(';')[0]?.trim();
-  if (!subtype) {
-    return '.png';
-  }
-  return `.${subtype === 'jpeg' ? 'jpg' : subtype}`;
-}
-
-function audioExtensionForType(type: string): string {
-  const subtype = type.split('/')[1]?.split(';')[0]?.trim().toLowerCase();
-  switch (subtype) {
-    case 'wav':
-    case 'wave':
-    case 'x-wav':
-      return '.wav';
-    case 'ogg':
-    case 'opus':
-      return '.ogg';
-    case 'flac':
-      return '.flac';
-    case 'mp4':
-    case 'aac':
-    case 'x-m4a':
-      return '.m4a';
-    default:
-      return '.mp3';
-  }
-}
-
-function videoExtensionForType(type: string): string {
-  const subtype = type.split('/')[1]?.split(';')[0]?.trim().toLowerCase();
-  switch (subtype) {
-    case 'webm':
-      return '.webm';
-    case 'quicktime':
-      return '.mov';
-    default:
-      return '.mp4';
-  }
-}
-
-// mediaExtensionForType picks a fallback extension for a synthesized filename
-// (pasted/dropped media that has no name), branching on the MIME category.
-function mediaExtensionForType(type: string): string {
-  if (type.startsWith('audio/')) {
-    return audioExtensionForType(type);
-  }
-  if (type.startsWith('video/')) {
-    return videoExtensionForType(type);
-  }
-  return imageExtensionForType(type);
 }
 
 export default App;

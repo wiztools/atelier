@@ -1,6 +1,7 @@
 // Small shared utilities with no home of their own yet — generic value
-// helpers (asArray), byte formatting (formatModelSize), and home-directory
-// path shortening (shortenHomePath) that several screens and modules read.
+// helpers (asArray), byte formatting (formatModelSize), home-directory path
+// shortening (shortenHomePath), and error-message text (formatError and its
+// provider-key variants) that several screens and modules read.
 
 function asArray<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : [];
@@ -35,4 +36,34 @@ function inferHomePath(path: string): string {
   return path.match(/^\/Users\/[^/]+/)?.[0] ?? path.match(/^\/home\/[^/]+/)?.[0] ?? '';
 }
 
-export {asArray, formatModelSize, shortenHomePath, inferHomePath};
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function formatOpenRouterError(error: unknown): string {
+  const message = formatError(error);
+  const lower = message.toLowerCase();
+  if (lower.includes('authentication failed') || lower.includes('401') || lower.includes('unauthorized')) {
+    return 'Invalid API key — check your OpenRouter key in Settings';
+  }
+  return message;
+}
+
+function formatFalError(error: unknown): string {
+  const message = formatError(error);
+  const lower = message.toLowerCase();
+  if (lower.includes('authentication failed') || lower.includes('401') || lower.includes('unauthorized')) {
+    return 'Invalid API key — check your fal.ai key in Settings';
+  }
+  return message;
+}
+
+export {
+  asArray,
+  formatModelSize,
+  shortenHomePath,
+  inferHomePath,
+  formatError,
+  formatOpenRouterError,
+  formatFalError,
+};

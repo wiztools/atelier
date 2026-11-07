@@ -5,16 +5,6 @@
 // every default here must stay in sync with its Go counterpart.
 
 const defaultBaseURL = 'http://localhost:11434';
-// Attachments above mediaStageThresholdBytes are staged to disk in chunks
-// (stageMediaFileAsAttachment) instead of carried as data URLs. 24MiB keeps
-// the data-URL path for everything it is proven to serve (larger attachments
-// persisted fine as ~32MB of base64 in the request JSON) and moves anything
-// bigger off the WebView/bridge/JSON pipeline that cannot carry it.
-const mediaStageThresholdBytes = 24 * 1024 * 1024;
-// Raw bytes per staging chunk — ~11MB of base64 per IPC call: small enough
-// that no single bridge message or JSON allocation gets large, large enough
-// that a 700MB clip is ~90 calls instead of thousands.
-const mediaUploadChunkBytes = 8 * 1024 * 1024;
 // Mirrors Go's defaultOllamaNumCtx (app.go): 16K because planner prompts
 // carry the tool catalog (~5K tokens in native tool mode) before any
 // conversation or evidence. Must stay in sync with the Go default so a config
@@ -207,8 +197,6 @@ function positiveIntOrDefault(value: string, fallback: number): number {
 export type {ImageSizePreset};
 export {
   defaultBaseURL,
-  mediaStageThresholdBytes,
-  mediaUploadChunkBytes,
   defaultOllamaNumCtx,
   projectNotesMaxLength,
   numCtxOptions,

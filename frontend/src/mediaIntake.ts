@@ -139,3 +139,103 @@ export function dropAcceptsFile(file: {name: string; type: string}): boolean {
     markdownMimeForFile(file) !== null
   );
 }
+
+export function imagePayloadForOllama(image: string): string {
+  const match = /^data:image\/[a-z+.-]+;base64,(.*)$/i.exec(image);
+  if (match) {
+    return match[1];
+  }
+  // Not an inline data URL — e.g. a hydrated /atelier-artifact/ history URL or a
+  // file path. These are display references, not valid model image payloads, so
+  // drop them rather than sending a string Ollama can't base64-decode.
+  return '';
+}
+
+// bytesToBase64 encodes an ArrayBuffer in 0x8000-char slices — the largest
+// argument btoa's String.fromCharCode spread accepts without blowing the
+// engine's argument limit.
+export function bytesToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const parts: string[] = [];
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    parts.push(String.fromCharCode(...bytes.subarray(offset, offset + 0x8000)));
+  }
+  return btoa(parts.join(''));
+}
+
+// uniqueAttachmentName returns a name that does not collide with any existing
+// name, appending " (2)", " (3)", … before the extension as needed. Attachment
+// names are the key @-mentions match against, and they back the React key for
+// attachment chips, so duplicates would both break @ resolution and collide in
+// the chip list. Pure/module-level so it can be unit-tested in isolation.
+export function uniqueAttachmentName(requested: string, existing: string[]): string {
+  if (!requested) {
+    requested = 'attachment';
+  }
+  if (!existing.includes(requested)) {
+    return requested;
+  }
+  const taken = new Set(existing);
+  const dot = requested.lastIndexOf('.');
+  const stem = dot > 0 ? requested.slice(0, dot) : requested;
+  const ext = dot > 0 ? requested.slice(dot) : '';
+  for (let counter = 2; ; counter++) {
+    const candidate = `${stem} (${counter})${ext}`;
+    if (!taken.has(candidate)) {
+      return candidate;
+    }
+  }
+}
+
+function imageExtensionForType(type: string): string {
+  const subtype = type.split('/')[1]?.split(';')[0]?.trim();
+  if (!subtype) {
+    return '.png';
+  }
+  return `.${subtype === 'jpeg' ? 'jpg' : subtype}`;
+}
+
+function audioExtensionForType(type: string): string {
+  const subtype = type.split('/')[1]?.split(';')[0]?.trim().toLowerCase();
+  switch (subtype) {
+    case 'wav':
+    case 'wave':
+    case 'x-wav':
+      return '.wav';
+    case 'ogg':
+    case 'opus':
+      return '.ogg';
+    case 'flac':
+      return '.flac';
+    case 'mp4':
+    case 'aac':
+    case 'x-m4a':
+      return '.m4a';
+    default:
+      return '.mp3';
+  }
+}
+
+function videoExtensionForType(type: string): string {
+  const subtype = type.split('/')[1]?.split(';')[0]?.trim().toLowerCase();
+  switch (subtype) {
+    case 'webm':
+      return '.webm';
+    case 'quicktime':
+      return '.mov';
+    default:
+      return '.mp4';
+  }
+}
+
+// mediaExtensionForType picks a fallback extension for a synthesized filename
+// (pasted/dropped media that has no name), branching on the MIME category.
+export function mediaExtensionForType(type: string): string {
+  if (type.startsWith('audio/')) {
+    return audioExtensionForType(type);
+  }
+  if (type.startsWith('video/')) {
+    return videoExtensionForType(type);
+  }
+  return imageExtensionForType(type);
+}

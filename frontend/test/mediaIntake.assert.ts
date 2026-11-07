@@ -1,4 +1,4 @@
-import {composerHasMediaDrag, dropAcceptsFile, markdownMimeForFile, mediaKindForFile, mediaMimeForFile, subtitleMimeForFile, videoThumbnailOnlySrc} from '../src/mediaIntake';
+import {bytesToBase64, composerHasMediaDrag, dropAcceptsFile, imagePayloadForOllama, markdownMimeForFile, mediaExtensionForType, mediaKindForFile, mediaMimeForFile, subtitleMimeForFile, uniqueAttachmentName, videoThumbnailOnlySrc} from '../src/mediaIntake';
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -88,3 +88,47 @@ assert(!videoThumbnailOnlySrc('/atelier-artifact/x/vid_g7.mkv'), 'mkv keeps its 
 assert(!videoThumbnailOnlySrc('data:video/mp4;base64,AAAA'), 'an mp4 data URL plays');
 assert(!videoThumbnailOnlySrc('data:image/png;base64,AAAA'), 'a non-video data URL is not a still');
 assert(!videoThumbnailOnlySrc('/atelier-artifact/x/vid_h8'), 'an extensionless URL is not a still');
+
+// Pasted or dropped media can arrive without a filename; the synthesized name's
+// extension comes from the MIME category (family) and subtype (container).
+assert(mediaExtensionForType('image/jpeg') === '.jpg', 'jpeg images save as .jpg');
+assert(mediaExtensionForType('image/webp; charset=binary') === '.webp', 'mime parameters are ignored');
+assert(mediaExtensionForType('') === '.png', 'an unknown type falls back to png');
+assert(mediaExtensionForType('audio/x-wav') === '.wav', 'wav spellings land on .wav');
+assert(mediaExtensionForType('audio/opus') === '.ogg', 'opus lands in an ogg container');
+assert(mediaExtensionForType('audio/AAC') === '.m4a', 'audio subtypes match in any case');
+assert(mediaExtensionForType('audio/mpeg') === '.mp3', 'audio falls back to mp3');
+assert(mediaExtensionForType('video/quicktime') === '.mov', 'quicktime saves as .mov');
+assert(mediaExtensionForType('video/webm') === '.webm', 'webm keeps its container');
+assert(mediaExtensionForType('video/x-matroska') === '.mp4', 'video falls back to mp4');
+
+// Attachment names key the @-mention lookup and the chip list, so a repeated
+// name is suffixed before its extension instead of colliding.
+assert(uniqueAttachmentName('photo.png', []) === 'photo.png', 'a free name is kept');
+assert(uniqueAttachmentName('photo.png', ['photo.png']) === 'photo (2).png', 'a taken name gets (2) before the extension');
+assert(uniqueAttachmentName('photo.png', ['photo.png', 'photo (2).png']) === 'photo (3).png', 'the counter skips taken suffixes');
+assert(uniqueAttachmentName('README', ['README']) === 'README (2)', 'a name without an extension is suffixed at the end');
+assert(uniqueAttachmentName('.env', ['.env']) === '.env (2)', 'a dotfile name is all stem');
+assert(uniqueAttachmentName('', []) === 'attachment', 'an empty name becomes attachment');
+
+// Ollama takes bare base64 image payloads: an image data URL is stripped to
+// its base64, and display references (artifact URLs, paths) drop out.
+assert(imagePayloadForOllama('data:image/png;base64,iVBORw0KGgo=') === 'iVBORw0KGgo=', 'a png data URL yields its base64');
+assert(imagePayloadForOllama('data:image/svg+xml;base64,PHN2Zy8+') === 'PHN2Zy8+', 'subtypes with + parse');
+assert(imagePayloadForOllama('/atelier-artifact/conv/img_1.png') === '', 'an artifact URL is not a payload');
+assert(imagePayloadForOllama('data:audio/mpeg;base64,SUQz') === '', 'only image data URLs qualify');
+
+// bytesToBase64 encodes in 0x8000-byte slices (String.fromCharCode's argument
+// limit), so a buffer spanning several slices must still round-trip exactly.
+const helloBuffer = new ArrayBuffer(5);
+new Uint8Array(helloBuffer).set([104, 101, 108, 108, 111]);
+assert(bytesToBase64(helloBuffer) === 'aGVsbG8=', 'known answer for "hello"');
+assert(bytesToBase64(new ArrayBuffer(0)) === '', 'an empty buffer encodes to nothing');
+const bigBuffer = new ArrayBuffer(0x8000 * 2 + 123);
+const bigBytes = new Uint8Array(bigBuffer);
+for (let index = 0; index < bigBytes.length; index++) {
+  bigBytes[index] = (index * 31 + 7) % 256;
+}
+const decoded = atob(bytesToBase64(bigBuffer));
+assert(decoded.length === bigBytes.length, 'a multi-slice buffer keeps its length');
+assert(bigBytes.every((byte, index) => decoded.charCodeAt(index) === byte), 'a multi-slice buffer round-trips byte for byte');
