@@ -46,7 +46,8 @@ import {falCatalogWithRetry} from './modelOptions';
 // OpenAI-compatible model lists, with the loaders that fill them. Every catalog
 // is a discovery aid, so a failed load leaves a picker's field free text. It
 // reads nothing from App: loadConfig and the key savers call the refreshers,
-// and the key-clear handlers empty lists through the returned setters.
+// and removing a key empties that provider's lists (clearFalCatalogs,
+// clearReplicateCatalogs; OpenRouter's single list through its setter).
 function useModelCatalogs() {
   const [openRouterModels, setOpenRouterModels] = useState<main.ModelInfo[]>([]);
   const [openaiCompatibleModels, setOpenaiCompatibleModels] = useState<string[]>([]);
@@ -87,6 +88,50 @@ function useModelCatalogs() {
   const [replicateSoundEffectsModels, setReplicateSoundEffectsModels] = useState<main.ReplicateModel[]>([]);
   const [replicateSoundEffectsVideoModels, setReplicateSoundEffectsVideoModels] = useState<main.ReplicateModel[]>([]);
   const [replicateAudioExtendModels, setReplicateAudioExtendModels] = useState<main.ReplicateModel[]>([]);
+
+  // Removing a provider's key empties every catalog that provider fills. A
+  // list declared above must join its provider's clear here, or its picker
+  // keeps stale entries after the key is gone.
+  function clearFalCatalogs() {
+    setFalModels([]);
+    setFalImageEditModels([]);
+    setFalVideoModels([]);
+    setFalVideoImageModels([]);
+    setFalVideoKeyframeModels([]);
+    setFalVideoExtendModels([]);
+    setFalVideoMotionModels([]);
+    setFalVideoUpscaleModels([]);
+    setFalVideoReframeModels([]);
+    setFalVideoRestyleModels([]);
+    setFalAudioModels([]);
+    setFalSoundEffectModels([]);
+    setFalSoundEffectsVideoModels([]);
+    setFalAudioExtendModels([]);
+    setFalVoiceDesignModels([]);
+    setFalTranscribeModels([]);
+    setFalLipsyncImageModels([]);
+    setFalLipsyncVideoModels([]);
+    setFalUpscaleModels([]);
+  }
+
+  function clearReplicateCatalogs() {
+    setReplicateSpeechModels([]);
+    setReplicateModels([]);
+    setReplicateImageEditModels([]);
+    setReplicateUpscaleModels([]);
+    setReplicateVideoUpscaleModels([]);
+    setReplicateVideoRestyleModels([]);
+    setReplicateVideoReframeModels([]);
+    setReplicateVideoExtendModels([]);
+    setReplicateVideoModels([]);
+    setReplicateVideoImageModels([]);
+    setReplicateTranscribeModels([]);
+    setReplicateLipsyncImageModels([]);
+    setReplicateLipsyncVideoModels([]);
+    setReplicateSoundEffectsModels([]);
+    setReplicateSoundEffectsVideoModels([]);
+    setReplicateAudioExtendModels([]);
+  }
 
   const openaiCompatibleModelOptions = useMemo(
     () => openaiCompatibleModels.map((id) => ({value: id, label: id})),
@@ -302,6 +347,8 @@ function useModelCatalogs() {
   }
 
   return {
+    clearFalCatalogs,
+    clearReplicateCatalogs,
     falAudioExtendModels,
     falAudioModels,
     falImageEditModels,
@@ -321,9 +368,9 @@ function useModelCatalogs() {
     falVideoRestyleModels,
     falVideoUpscaleModels,
     falVoiceDesignModels,
-    openRouterModels,
     openaiCompatibleModelOptions,
     openaiCompatibleModels,
+    openRouterModels,
     refreshFalModels,
     refreshOpenRouterModels,
     refreshReplicateModels,
@@ -343,30 +390,8 @@ function useModelCatalogs() {
     replicateVideoReframeModels,
     replicateVideoRestyleModels,
     replicateVideoUpscaleModels,
-    setFalAudioExtendModels,
-    setFalAudioModels,
-    setFalLipsyncImageModels,
-    setFalLipsyncVideoModels,
-    setFalModels,
-    setFalSoundEffectModels,
-    setFalSoundEffectsVideoModels,
-    setFalTranscribeModels,
-    setFalVideoExtendModels,
-    setFalVideoImageModels,
-    setFalVideoKeyframeModels,
-    setFalVideoModels,
-    setOpenRouterModels,
     setOpenaiCompatibleModels,
-    setReplicateImageEditModels,
-    setReplicateLipsyncImageModels,
-    setReplicateLipsyncVideoModels,
-    setReplicateModels,
-    setReplicateUpscaleModels,
-    setReplicateVideoImageModels,
-    setReplicateVideoModels,
-    setReplicateVideoReframeModels,
-    setReplicateVideoRestyleModels,
-    setReplicateVideoUpscaleModels,
+    setOpenRouterModels,
   };
 }
 

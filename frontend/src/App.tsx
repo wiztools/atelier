@@ -278,6 +278,8 @@ function App() {
     });
   };
   const {
+    clearFalCatalogs,
+    clearReplicateCatalogs,
     falAudioExtendModels,
     falAudioModels,
     falImageEditModels,
@@ -319,30 +321,8 @@ function App() {
     replicateVideoReframeModels,
     replicateVideoRestyleModels,
     replicateVideoUpscaleModels,
-    setFalAudioExtendModels,
-    setFalAudioModels,
-    setFalLipsyncImageModels,
-    setFalLipsyncVideoModels,
-    setFalModels,
-    setFalSoundEffectModels,
-    setFalSoundEffectsVideoModels,
-    setFalTranscribeModels,
-    setFalVideoExtendModels,
-    setFalVideoImageModels,
-    setFalVideoKeyframeModels,
-    setFalVideoModels,
     setOpenRouterModels,
     setOpenaiCompatibleModels,
-    setReplicateImageEditModels,
-    setReplicateLipsyncImageModels,
-    setReplicateLipsyncVideoModels,
-    setReplicateModels,
-    setReplicateUpscaleModels,
-    setReplicateVideoImageModels,
-    setReplicateVideoModels,
-    setReplicateVideoReframeModels,
-    setReplicateVideoRestyleModels,
-    setReplicateVideoUpscaleModels,
   } = useModelCatalogs();
   const [openRouterAPIKeyInput, setOpenRouterAPIKeyInput] = useState('');
   const [openRouterHasKey, setOpenRouterHasKey] = useState(false);
@@ -2924,18 +2904,7 @@ function App() {
     try {
       await SaveFalAPIKey('');
       setFalHasKey(false);
-      setFalModels([]);
-      setFalVideoModels([]);
-      setFalVideoImageModels([]);
-      setFalVideoKeyframeModels([]);
-      setFalVideoExtendModels([]);
-      setFalAudioModels([]);
-      setFalSoundEffectModels([]);
-      setFalSoundEffectsVideoModels([]);
-      setFalAudioExtendModels([]);
-      setFalTranscribeModels([]);
-      setFalLipsyncImageModels([]);
-      setFalLipsyncVideoModels([]);
+      clearFalCatalogs();
       setFalStatus('unknown');
       setFalError('');
       notifications.dismissKey('key-fal');
@@ -2979,16 +2948,7 @@ function App() {
     try {
       await SaveReplicateAPIKey('');
       setReplicateHasKey(false);
-      setReplicateModels([]);
-      setReplicateImageEditModels([]);
-      setReplicateUpscaleModels([]);
-      setReplicateVideoUpscaleModels([]);
-      setReplicateVideoRestyleModels([]);
-      setReplicateVideoReframeModels([]);
-      setReplicateVideoModels([]);
-      setReplicateVideoImageModels([]);
-      setReplicateLipsyncImageModels([]);
-      setReplicateLipsyncVideoModels([]);
+      clearReplicateCatalogs();
       setReplicateStatus('unknown');
       setReplicateError('');
       notifications.dismissKey('key-replicate');

@@ -153,9 +153,10 @@ type MediaUsageRow = {
 // Per-model media generation for a single run, folded from tool_call step
 // activities. Only completed media calls carry model/mediaKind/mediaCount, so
 // failed calls drop out of the fold instead of counting phantom consumption.
-// Cost-carrying activities without a mediaKind (fal transcription) join too —
-// rows then show a cost with no output counts, keeping the fold's rows
-// reconcilable with the turn's money total.
+// Cost-carrying activities without a mediaKind (fal transcription) join too,
+// and so do unpriceable ones (Replicate transcription) — rows then show a cost,
+// or "?", with no output counts, keeping the fold's rows reconcilable with the
+// turn's money total. usage_report.go keeps exactly the same rows.
 function summarizeRunMediaUsage(run?: HarnessRunView): MediaUsageRow[] {
   if (!run) {
     return [];
@@ -168,7 +169,7 @@ function summarizeRunMediaUsage(run?: HarnessRunView): MediaUsageRow[] {
     for (const tool of asArray(step.tools)) {
       const kind = tool.mediaKind;
       const cost = tool.costMicros ?? 0;
-      if (!tool.model || (kind !== 'video' && kind !== 'audio' && kind !== 'image' && cost <= 0)) {
+      if (!tool.model || (kind !== 'video' && kind !== 'audio' && kind !== 'image' && cost <= 0 && !tool.costUnknown)) {
         continue;
       }
       const provider = tool.provider || '—';
@@ -224,7 +225,10 @@ function legacyMediaProvider(name: string | undefined, model: string): string {
 
 // Per-model media generation for the whole conversation. Each turn prefers its
 // run's activities; the legacy tool-summary fallback applies only when the run
-// recorded no media (old turns), so a turn is never counted through both.
+// recorded no media (old turns), so a turn is never counted through both. A
+// row stays when it produced media or carries a cost, known or not: the
+// conversation's money total sums these rows, so dropping a cost-only row
+// (fal transcription) undercounted spend — usage_report.go keeps the same rows.
 function summarizeMediaUsage(chat: ChatEntry[]): MediaUsageRow[] {
   const byModel = new Map<string, MediaUsageRow>();
   for (const entry of chat) {
@@ -247,7 +251,7 @@ function summarizeMediaUsage(chat: ChatEntry[]): MediaUsageRow[] {
       byModel.set(key, merged);
     }
   }
-  return [...byModel.values()].filter((row) => row.video + row.audio + row.image > 0);
+  return [...byModel.values()].filter((row) => row.video + row.audio + row.image > 0 || row.costMicros > 0 || row.costUnknown);
 }
 
 // Human label for a media row's output counts, e.g. "1 video · 2 images".

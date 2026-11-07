@@ -46,6 +46,7 @@ const run: HarnessRunView = {
       {name: 'generate_video', status: 'failed', error: 'quota exhausted'},
       {name: 'generate_image', provider: 'replicate', model: 'black-forest-labs/flux-schnell', mediaKind: 'image', mediaCount: 2, costUnknown: true},
       {name: 'generate_image', provider: 'fal', model: 'fal-ai/flux/schnell', mediaKind: 'image', mediaCount: 1, costMicros: 3000},
+      {name: 'transcribe_audio', provider: 'replicate', model: 'openai/whisper', costUnknown: true},
     ]},
     {kind: 'model_call', provider: 'openrouter', model: 'claude', promptTokens: 5000, costMicros: 15000, durationMs: 600, firstTokenMs: 550},
     {kind: 'streaming', provider: 'openrouter', model: 'claude', tokens: 800, costMicros: 12000, durationMs: 4000},
@@ -76,12 +77,14 @@ assert(summarizeRunLatency(undefined) === undefined, 'no run, no lanes');
 // Media rows count outputs by kind. A failed call carries no model and drops
 // out; a priced call with no media (fal transcription) joins with its cost so
 // the rows reconcile with the turn's money total; an unpriceable Replicate
-// call marks its row.
+// call marks its row "?" — with media or without (Replicate transcription),
+// the same rows usage_report.go keeps.
 same(summarizeRunMediaUsage(run), [
   media('fal', 'fal-ai/kling-video', {video: 1}, 1, 350000),
   media('fal', 'fal-ai/wizper', {}, 1, 1200),
   media('replicate', 'black-forest-labs/flux-schnell', {image: 2}, 1, 0, true),
   media('fal', 'fal-ai/flux/schnell', {image: 1}, 1, 3000),
+  media('replicate', 'openai/whisper', {}, 1, 0, true),
 ], 'media rows per generation model');
 
 // Conversation folds merge the assistant turns' runs; a user entry never
@@ -94,6 +97,7 @@ const chat: ChatEntry[] = [
   {id: 'a1', role: 'assistant', content: 'done', harnessRun: run, mediaTool: {name: 'video_generation', model: 'fal-ai/kling-video', videoCount: 1}},
   {id: 'a2', role: 'assistant', content: 'again', harnessRun: secondRun},
   {id: 'a3', role: 'assistant', content: 'legacy turn', mediaTool: {name: 'video_generation', model: 'fal-ai/kling-video', videoCount: 1, imageCount: 1}},
+  {id: 'a4', role: 'assistant', content: 'empty legacy turn', mediaTool: {name: 'video_generation', model: 'fal-ai/empty', videoCount: 0}},
 ];
 same(summarizeModelUsage(chat), [
   {provider: 'ollama', model: 'qwen3', promptTokens: 3600, completionTokens: 160, calls: 2, costMicros: 0, durationMs: 2300},
@@ -106,6 +110,13 @@ const conversationMedia = summarizeMediaUsage(chat);
 const mediaFor = (model: string) => conversationMedia.find((row) => row.model === model);
 same(mediaFor('fal-ai/kling-video'), media('fal', 'fal-ai/kling-video', {video: 2, image: 1}, 2, 350000), 'run and legacy turns merge without double counting');
 same(mediaFor('black-forest-labs/flux-schnell'), media('replicate', 'black-forest-labs/flux-schnell', {image: 2}, 1, 0, true), 'an unpriceable row stays marked');
+// Rows that produced nothing still count when they cost something, known or
+// not: the conversation total sums these rows, and dropping the fal
+// transcription undercounted spend against the usage report.
+same(mediaFor('fal-ai/wizper'), media('fal', 'fal-ai/wizper', {}, 1, 1200), 'a cost-only row survives the conversation fold');
+same(mediaFor('openai/whisper'), media('replicate', 'openai/whisper', {}, 1, 0, true), 'an unpriceable row without media survives too');
+same(conversationMedia.reduce((sum, row) => sum + row.costMicros, 0), 350000 + 1200 + 3000, 'the conversation media total includes transcription spend');
+assert(mediaFor('fal-ai/empty') === undefined, 'a legacy row that produced and cost nothing drops out');
 
 // Legacy summaries never recorded the backend: video and audio were fal-only,
 // and an image model outside the fal-ai/ namespace ran locally.

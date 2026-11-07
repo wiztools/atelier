@@ -21,19 +21,11 @@ function formatModelSize(size: number): string {
   return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
 }
 
+// shortenHomePath renders a home-relative path in ~ form (macOS
+// /Users/<name>, Linux /home/<name>; /Users/Shared is not a home).
 function shortenHomePath(path: string): string {
-  const home = inferHomePath(path);
-  if (!home || !path.startsWith(home)) {
-    return path;
-  }
-  if (path.length === home.length) {
-    return '~';
-  }
-  return `~${path.slice(home.length)}`;
-}
-
-function inferHomePath(path: string): string {
-  return path.match(/^\/Users\/[^/]+/)?.[0] ?? path.match(/^\/home\/[^/]+/)?.[0] ?? '';
+  const match = /^\/(?:Users\/(?!Shared(?:\/|$))[^/]+|home\/[^/]+)/.exec(path);
+  return match ? `~${path.slice(match[0].length)}` : path;
 }
 
 function formatError(error: unknown): string {
@@ -62,7 +54,6 @@ export {
   asArray,
   formatModelSize,
   shortenHomePath,
-  inferHomePath,
   formatError,
   formatOpenRouterError,
   formatFalError,

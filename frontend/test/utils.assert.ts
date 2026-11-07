@@ -1,4 +1,4 @@
-import {asArray, formatError, formatFalError, formatModelSize, formatOpenRouterError, inferHomePath, shortenHomePath} from '../src/utils';
+import {asArray, formatError, formatFalError, formatModelSize, formatOpenRouterError, shortenHomePath} from '../src/utils';
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -26,13 +26,16 @@ same(formatModelSize(20 * 1024 * 1024), '20 MB', 'whole numbers from 10 up');
 same(formatModelSize(4.7 * 1024 ** 3), '4.7 GB', 'model-sized files read in GB');
 same(formatModelSize(2048 * 1024 ** 4), '2048 TB', 'TB is the largest unit');
 
-// A home directory prefix collapses to ~.
+// A home directory prefix collapses to ~. /Users/Shared is macOS's shared
+// folder, not anyone's home: the permission prompt and the harness panel once
+// showed /Users/Shared/x as ~/x through a second copy of this helper.
 same(shortenHomePath('/Users/alice/project/a.txt'), '~/project/a.txt', 'macOS home');
 same(shortenHomePath('/home/bob/work'), '~/work', 'Linux home');
 same(shortenHomePath('/Users/alice'), '~', 'the home itself');
+same(shortenHomePath('/Users/Shared/x'), '/Users/Shared/x', '/Users/Shared is not a home');
+same(shortenHomePath('/Users/Shared'), '/Users/Shared', 'nor is the shared folder itself');
+same(shortenHomePath('/Users/SharedSpace/x'), '~/x', 'a user named like the shared folder still has a home');
 same(shortenHomePath('/tmp/scratch'), '/tmp/scratch', 'paths outside a home stay as they are');
-same(inferHomePath('/Users/alice/project'), '/Users/alice', 'the home is the user directory');
-same(inferHomePath('relative/path'), '', 'a relative path has no home');
 
 // formatError reads an Error's message and stringifies anything else; the
 // provider variants turn an auth failure into the remedy.

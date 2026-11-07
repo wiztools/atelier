@@ -4,7 +4,6 @@ import {
   TOAST_SUCCESS_MS,
   createNotificationStore,
   createNotifiers,
-  shortenHomePath,
   splitSavedPath,
 } from '../src/notifications';
 
@@ -191,15 +190,11 @@ function setup() {
   assert(store.getSnapshot().length === 0 && clock.pending() === 0, 'clear empties the stack and its timers');
 }
 
-// Path display.
+// Path display (home shortening itself is utils.ts's, tested in test:utils).
 {
-  assert(shortenHomePath('/Users/ana/Downloads') === '~/Downloads', 'macOS homes shorten to ~');
-  assert(shortenHomePath('/Users/ana') === '~', 'the home itself is ~');
-  assert(shortenHomePath('/home/ana/Videos') === '~/Videos', 'Linux homes shorten to ~');
-  assert(shortenHomePath('/Users/Shared/x') === '/Users/Shared/x', '/Users/Shared is not a home');
-  assert(shortenHomePath('/Volumes/exports') === '/Volumes/exports', 'other paths stay whole');
   const saved = splitSavedPath('/Users/ana/Downloads/poster.png');
   assert(saved.name === 'poster.png' && saved.folder === '~/Downloads', 'a saved path splits into name and folder');
+  assert(splitSavedPath('/Users/Shared/exports/poster.png').folder === '/Users/Shared/exports', 'a /Users/Shared folder stays whole');
   assert(splitSavedPath('/poster.png').folder === '/', 'a root file keeps the root folder');
 }
 

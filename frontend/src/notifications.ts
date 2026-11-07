@@ -1,14 +1,17 @@
 // The notification store behind the app's toast stack. Pure TypeScript on
-// purpose (no React, no wailsjs imports): the .cjs runner compiles it alone,
-// so every timing rule here is table-testable (test:notifications). The React
-// side lives in ToastStack.tsx; callers import the shared helpers at the
-// bottom (notifySuccess/notifyInfo/notifyError/trackSave).
+// purpose (no React, no wailsjs imports — its one import is the pure utils.ts):
+// the .cjs runner compiles it outside the app, so every timing rule here is
+// table-testable (test:notifications). The React side lives in ToastStack.tsx;
+// callers import the shared helpers at the bottom (notifySuccess/notifyInfo/
+// notifyError/trackSave).
 //
 // Where feedback goes (AGENTS.md "Conventions"): a toast reports the RESULT
 // of an action — every failure, and a success whose result lands somewhere
 // other than the control the user clicked (a file on disk, an artifact in a
 // conversation, a finished background job). State stays inline; decisions
 // keep their own cards and dialogs.
+
+import {formatError, shortenHomePath} from './utils';
 
 // Auto-dismiss delays. Errors never auto-dismiss (a failure the user must act
 // on can't vanish unread) and progress waits for its job; successes and info
@@ -234,13 +237,6 @@ export function createNotificationStore(clock: ToastClock = defaultClock): Notif
   };
 }
 
-// shortenHomePath renders a home-relative path in ~ form (macOS
-// /Users/<name>, Linux /home/<name>; /Users/Shared is not a home).
-export function shortenHomePath(path: string): string {
-  const match = /^\/(?:Users\/(?!Shared(?:\/|$))[^/]+|home\/[^/]+)/.exec(path);
-  return match ? `~${path.slice(match[0].length)}` : path;
-}
-
 // splitSavedPath separates a saved file's name from the folder it landed in,
 // the folder shortened for display.
 export function splitSavedPath(path: string): {name: string; folder: string} {
@@ -252,10 +248,6 @@ export function splitSavedPath(path: string): {name: string; folder: string} {
     name: path.slice(slash + 1),
     folder: slash === 0 ? '/' : shortenHomePath(path.slice(0, slash)),
   };
-}
-
-export function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 type ToastExtras = Omit<ToastInput, 'kind' | 'title'>;
@@ -292,7 +284,7 @@ export function createNotifiers(store: NotificationStore): Notifiers {
   const notifySuccess = (title: string, extras: ToastExtras = {}) => store.notify({...extras, kind: 'success', title});
   const notifyInfo = (title: string, extras: ToastExtras = {}) => store.notify({...extras, kind: 'info', title});
   const notifyError = (title: string, error: unknown, extras: Omit<ToastExtras, 'message'> = {}) =>
-    store.notify({...extras, kind: 'error', title, message: errorMessage(error)});
+    store.notify({...extras, kind: 'error', title, message: formatError(error)});
 
   let savedFileReveal: SavedFileReveal | null = null;
   function setSavedFileReveal(reveal: SavedFileReveal | null): void {
