@@ -430,6 +430,10 @@ export function ResolveCompositionMedia(arg1, arg2) {
   return window['go']['main']['App']['ResolveCompositionMedia'](arg1, arg2);
 }
 
+export function ResolveDocumentCompare(arg1) {
+  return window['go']['main']['App']['ResolveDocumentCompare'](arg1);
+}
+
 export function ResolveEditSource(arg1, arg2) {
   return window['go']['main']['App']['ResolveEditSource'](arg1, arg2);
 }

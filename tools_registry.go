@@ -378,6 +378,10 @@ func defaultHarnessToolRegistry(ctx context.Context, config AppConfig, app *App)
 	// no keys, CLI, or model behind them, so an editor-open ask is always
 	// servable (see editor_launch.go).
 	definitions = append(definitions, openEditorToolDefinition())
+	// compare_documents rides the same unconditional reasoning: it diffs two
+	// of the conversation's documents in pure Go and opens the compare
+	// workspace — no key, CLI, or model (see document_compare.go).
+	definitions = append(definitions, compareDocumentsToolDefinition())
 	// convert_subtitles is unconditional for the same reason: pure-Go WebVTT ↔
 	// SubRip conversion over the conversation's transcript artifacts (see
 	// subtitle.go), with no ffmpeg, key, or model behind it.

@@ -79,6 +79,7 @@ import {
   ResolveEditSource,
   ResolveSubtitleEditSource,
   ResolveMarkdownEditSource,
+  ResolveDocumentCompare,
   ResolveVideoEditSource,
   CancelVideoEditSource,
   ReleaseVideoEditSourcePreview,
@@ -131,6 +132,7 @@ import {SubtitleEditor, SubtitleEditorHandle} from './editor/SubtitleEditor';
 import {MarkdownEditor, MarkdownEditorHandle} from './editor/MarkdownEditor';
 import {CompositionEditor, CompositionEditorHandle} from './editor/CompositionEditor';
 import {ComicEditor, ComicEditorHandle} from './editor/ComicEditor';
+import {DocumentCompare, DocumentCompareHandle} from './editor/DocumentCompare';
 import {detectEditorLaunchIntent} from './editorLaunch';
 import {composerHasMediaDrag, dropAcceptsFile, markdownMimeForFile, mediaKindForFile, mediaMimeForFile, subtitleMimeForFile, videoThumbnailOnlySrc} from './mediaIntake';
 import {notifications, notifyError, notifyInfo, notifySuccess, savedFileAction, setSavedFileReveal, splitSavedPath, trackSave} from './notifications';
@@ -1677,6 +1679,9 @@ function App() {
   const [markdownEditorHandle, setMarkdownEditorHandle] = useState<MarkdownEditorHandle | null>(null);
   const [compositionEditorHandle, setCompositionEditorHandle] = useState<CompositionEditorHandle | null>(null);
   const [comicEditorHandle, setComicEditorHandle] = useState<ComicEditorHandle | null>(null);
+  // The compare workspace (two documents diffed, read-only) shares the
+  // editor slot but holds nothing unsaved: no dirty ref, no confirm-leave.
+  const [documentCompareHandle, setDocumentCompareHandle] = useState<DocumentCompareHandle | null>(null);
   const [videoEditorOpening, setVideoEditorOpening] = useState(false);
   const [imageEditorOpening, setImageEditorOpening] = useState(false);
   const [audioEditorOpening, setAudioEditorOpening] = useState(false);
@@ -1684,6 +1689,7 @@ function App() {
   const [markdownEditorOpening, setMarkdownEditorOpening] = useState(false);
   const [compositionEditorOpening, setCompositionEditorOpening] = useState(false);
   const [comicEditorOpening, setComicEditorOpening] = useState(false);
+  const [documentCompareOpening, setDocumentCompareOpening] = useState(false);
   const [discardEditorDraft, setDiscardEditorDraft] = useState<'video' | 'audio' | 'subtitle' | 'markdown' | 'composition' | 'comic' | null>(null);
   const videoEditorDirty = useRef(false);
   const audioEditorDirty = useRef(false);
@@ -1705,6 +1711,7 @@ function App() {
   const markdownOpenGeneration = useRef(0);
   const compositionOpenGeneration = useRef(0);
   const comicOpenGeneration = useRef(0);
+  const documentCompareOpenGeneration = useRef(0);
   // Mirror of editorOpen for the atelier:editor-launch listener (an empty-deps
   // effect): a mid-stream AI launch must not replace an editor already on
   // screen — an unsaved draft is never discarded by a tool-timed open.
@@ -1712,8 +1719,8 @@ function App() {
   // Either editor's source resolve in flight — every edit button disables on
   // it, so a slow open can't collect repeated clicks (or race the other
   // editor's later-landing handle into view).
-  const editorOpening = imageEditorOpening || videoEditorOpening || audioEditorOpening || subtitleEditorOpening || markdownEditorOpening || compositionEditorOpening || comicEditorOpening;
-  const editorOpen = !!editorHandle || !!videoEditorHandle || !!audioEditorHandle || !!subtitleEditorHandle || !!markdownEditorHandle || !!compositionEditorHandle || !!comicEditorHandle;
+  const editorOpening = imageEditorOpening || videoEditorOpening || audioEditorOpening || subtitleEditorOpening || markdownEditorOpening || compositionEditorOpening || comicEditorOpening || documentCompareOpening;
+  const editorOpen = !!editorHandle || !!videoEditorHandle || !!audioEditorHandle || !!subtitleEditorHandle || !!markdownEditorHandle || !!compositionEditorHandle || !!comicEditorHandle || !!documentCompareHandle;
   const [purgeBusy, setPurgeBusy] = useState(false);
   const [confirmPurgeArchived, setConfirmPurgeArchived] = useState(false);
   const [openCapabilityID, setOpenCapabilityID] = useState('');
@@ -2369,11 +2376,19 @@ function App() {
       // The comic editor is the other kind that opens without an artifact —
       // its seeds (this turn's images) ride the payload.
       const comic = kind === 'comic';
-      if (!conversationID || (!artifactID && !composition && !comic) ||
-          (kind !== 'image' && kind !== 'video' && kind !== 'audio' && kind !== 'subtitle' && kind !== 'markdown' && kind !== 'composition' && kind !== 'comic')) {
+      // The compare workspace opens on two documents — before, then after —
+      // riding the seeds the same way (compare_documents' launch).
+      const compare = kind === 'compare';
+      if (!conversationID || (!artifactID && !composition && !comic && !compare) ||
+          (kind !== 'image' && kind !== 'video' && kind !== 'audio' && kind !== 'subtitle' && kind !== 'markdown' && kind !== 'composition' && kind !== 'comic' && kind !== 'compare')) {
         return;
       }
       if (conversationID !== activeConversationIDRef.current || editorOpenRef.current) {
+        return;
+      }
+      if (compare) {
+        const seeds = asArray(event?.seedArtifactIds);
+        if (seeds.length === 2) void openDocumentCompare(conversationID, seeds[0], seeds[1]);
         return;
       }
       if (composition) {
@@ -4643,6 +4658,7 @@ function App() {
         return;
       }
       setEditorHandle(null);
+      setDocumentCompareHandle(null);
       setAudioEditorHandle(null);
       setSubtitleEditorHandle(null);
       setMarkdownEditorHandle(null);
@@ -4705,6 +4721,7 @@ function App() {
       setAudioEditorHandle(null);
       setSubtitleEditorHandle(null);
       setMarkdownEditorHandle(null);
+      setDocumentCompareHandle(null);
       subtitleEditorDirty.current = false;
       videoEditorDirty.current = false;
       markdownEditorDirty.current = false;
@@ -4734,6 +4751,7 @@ function App() {
       const source = await ResolveAudioEditSource(conversationID, artifactID);
       if (generation !== audioOpenGeneration.current) return;
       setEditorHandle(null);
+      setDocumentCompareHandle(null);
       setVideoEditorHandle(null);
       setSubtitleEditorHandle(null);
       setMarkdownEditorHandle(null);
@@ -4770,6 +4788,7 @@ function App() {
       const source = await ResolveSubtitleEditSource(conversationID, artifactID);
       if (generation !== subtitleOpenGeneration.current) return;
       setEditorHandle(null);
+      setDocumentCompareHandle(null);
       setVideoEditorHandle(null);
       setAudioEditorHandle(null);
       setMarkdownEditorHandle(null);
@@ -4807,6 +4826,7 @@ function App() {
       const source = await ResolveMarkdownEditSource(conversationID, artifactID);
       if (generation !== markdownOpenGeneration.current) return;
       setEditorHandle(null);
+      setDocumentCompareHandle(null);
       setVideoEditorHandle(null);
       setAudioEditorHandle(null);
       setSubtitleEditorHandle(null);
@@ -4820,6 +4840,47 @@ function App() {
       if (generation === markdownOpenGeneration.current) notifyError("Couldn't open the document editor", error);
     } finally {
       if (generation === markdownOpenGeneration.current) setMarkdownEditorOpening(false);
+    }
+  }
+
+  // openDocumentCompare opens the compare workspace on two of a
+  // conversation's documents — the compare_documents tool's launch (the
+  // pair rides the event's seeds, before then after). The resolve is the
+  // whole load: the diff arrives computed. Read-only, so it takes the slot
+  // from every editor (after their own confirm-leave) and needs none itself.
+  async function openDocumentCompare(conversationID: string, beforeArtifactID: string, afterArtifactID: string) {
+    if (!(await confirmLeaveEditor())) return;
+    cancelVideoPreparation();
+    cancelImagePreparation();
+    cancelAudioPreparation();
+    const generation = ++documentCompareOpenGeneration.current;
+    setDocumentCompareOpening(true);
+    try {
+      const source = await ResolveDocumentCompare(main.DocumentCompareRequest.createFrom({
+        conversationId: conversationID,
+        beforeArtifactId: beforeArtifactID,
+        afterArtifactId: afterArtifactID,
+      }));
+      if (generation !== documentCompareOpenGeneration.current) return;
+      setEditorHandle(null);
+      setVideoEditorHandle(null);
+      setAudioEditorHandle(null);
+      setSubtitleEditorHandle(null);
+      setMarkdownEditorHandle(null);
+      setCompositionEditorHandle(null);
+      setComicEditorHandle(null);
+      videoEditorDirty.current = false;
+      audioEditorDirty.current = false;
+      subtitleEditorDirty.current = false;
+      markdownEditorDirty.current = false;
+      compositionEditorDirty.current = false;
+      comicEditorDirty.current = false;
+      setDocumentCompareHandle({source});
+      setView((current) => (current === 'settings' ? current : 'app'));
+    } catch (error) {
+      if (generation === documentCompareOpenGeneration.current) notifyError("Couldn't open the comparison", error);
+    } finally {
+      if (generation === documentCompareOpenGeneration.current) setDocumentCompareOpening(false);
     }
   }
 
@@ -4844,6 +4905,7 @@ function App() {
       const source = await ResolveCompositionEditSource(conversationID, artifactID);
       if (generation !== compositionOpenGeneration.current) return;
       setEditorHandle(null);
+      setDocumentCompareHandle(null);
       setVideoEditorHandle(null);
       setAudioEditorHandle(null);
       setSubtitleEditorHandle(null);
@@ -4884,6 +4946,7 @@ function App() {
       }));
       if (generation !== compositionOpenGeneration.current) return;
       setEditorHandle(null);
+      setDocumentCompareHandle(null);
       setVideoEditorHandle(null);
       setAudioEditorHandle(null);
       setSubtitleEditorHandle(null);
@@ -4923,6 +4986,7 @@ function App() {
       const source = await ResolveComicEditSource(conversationID, artifactID);
       if (generation !== comicOpenGeneration.current) return;
       setEditorHandle(null);
+      setDocumentCompareHandle(null);
       setVideoEditorHandle(null);
       setAudioEditorHandle(null);
       setSubtitleEditorHandle(null);
@@ -4962,6 +5026,7 @@ function App() {
       }));
       if (generation !== comicOpenGeneration.current) return;
       setEditorHandle(null);
+      setDocumentCompareHandle(null);
       setVideoEditorHandle(null);
       setAudioEditorHandle(null);
       setSubtitleEditorHandle(null);
@@ -5022,6 +5087,7 @@ function App() {
       const state = await ListEditSession(sessionID);
       if (state.source.mediaKind === 'video') {
         setEditorHandle(null);
+        setDocumentCompareHandle(null);
         setAudioEditorHandle(null);
         setSubtitleEditorHandle(null);
         subtitleEditorDirty.current = false;
@@ -5036,6 +5102,7 @@ function App() {
       }
       if (state.source.mediaKind === 'audio') {
         setEditorHandle(null);
+        setDocumentCompareHandle(null);
         setVideoEditorHandle(null);
         setSubtitleEditorHandle(null);
         subtitleEditorDirty.current = false;
@@ -5051,6 +5118,7 @@ function App() {
       setVideoEditorHandle(null);
       setAudioEditorHandle(null);
       setSubtitleEditorHandle(null);
+      setDocumentCompareHandle(null);
       subtitleEditorDirty.current = false;
       audioEditorDirty.current = false;
       setEditorHandle({
@@ -5087,6 +5155,7 @@ function App() {
     compositionEditorDirty.current = false;
     comicEditorDirty.current = false;
     setEditorHandle(null);
+    setDocumentCompareHandle(null);
     setPreviewEditContext(null);
   }
 
@@ -6549,7 +6618,7 @@ function App() {
         <div className="floating-cards">
           {editorOpening && view === 'app' ? (
             <div className="editor-preparation-status" role="status">
-              <span>{videoEditorOpening ? 'Preparing video for editing…' : audioEditorOpening ? 'Preparing audio for editing…' : 'Preparing image for editing…'}</span>
+              <span>{videoEditorOpening ? 'Preparing video for editing…' : audioEditorOpening ? 'Preparing audio for editing…' : documentCompareOpening ? 'Preparing comparison…' : 'Preparing image for editing…'}</span>
               {videoEditorOpening ? (
                 <button type="button" onClick={() => {
                   cancelVideoPreparation();
@@ -6777,6 +6846,21 @@ function App() {
               }}
               onDirtyChange={(dirty) => {comicEditorDirty.current = dirty;}}
               onSavedToConversation={() => refreshAfterConversationWrite(comicEditorHandle.source.conversationId)}
+            />
+          </div>
+        ) : documentCompareHandle ? (
+          <div className="editor-slot" hidden={view !== 'app'}>
+            <DocumentCompare
+              key={`${documentCompareHandle.source.before.artifactId}:${documentCompareHandle.source.after.artifactId}`}
+              handle={documentCompareHandle}
+              suspended={view !== 'app'}
+              // Read-only: nothing to confirm on the way out.
+              onClose={closeImageEditor}
+              onOpenParent={(conversationID) => {
+                closeImageEditor();
+                void openConversationSummary(main.ConversationSummary.createFrom({id: conversationID, kind: 'chat', title: ''}));
+              }}
+              onOpenDocument={(conversationID, artifactID) => void openMarkdownEditor(conversationID, artifactID)}
             />
           </div>
         ) : null}
@@ -8040,7 +8124,7 @@ function App() {
                             <img src={item.src} alt="" className="mention-thumb" />
                           ) : (
                             <span className="mention-icon" aria-hidden="true">
-                              {item.kind === 'audio' ? '♪' : item.kind === 'subtitle' ? '💬' : '▶'}
+                              {item.kind === 'audio' ? '♪' : item.kind === 'subtitle' ? '💬' : item.kind === 'markdown' ? '📝' : '▶'}
                             </span>
                           )}
                           <span className="mention-name">{item.name}</span>

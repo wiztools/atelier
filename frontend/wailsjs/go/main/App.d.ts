@@ -216,6 +216,8 @@ export function ResolveCompositionEditSource(arg1:string,arg2:string):Promise<ma
 
 export function ResolveCompositionMedia(arg1:string,arg2:string):Promise<main.CompositionMediaRef>;
 
+export function ResolveDocumentCompare(arg1:main.DocumentCompareRequest):Promise<main.DocumentCompareInfo>;
+
 export function ResolveEditSource(arg1:string,arg2:string):Promise<main.EditSourceInfo>;
 
 export function ResolveMarkdownEditSource(arg1:string,arg2:string):Promise<main.MarkdownSourceInfo>;

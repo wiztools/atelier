@@ -36,8 +36,9 @@ type EditorLaunchEvent struct {
 	Kind           string `json:"kind"`
 	// SeedArtifactIDs carries the workspace editors' seeding — the video
 	// composer's referenced video and audio, the comic editor's referenced
-	// images, in order (empty for an unseeded open). The artifact editors
-	// ignore it.
+	// images, in order (empty for an unseeded open) — and the compare
+	// workspace's two documents, [before, after] (kind "compare", see
+	// document_compare.go). The artifact editors ignore it.
 	SeedArtifactIDs []string `json:"seedArtifactIds,omitempty"`
 }
 

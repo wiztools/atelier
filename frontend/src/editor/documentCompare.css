@@ -1,0 +1,349 @@
+/* The compare workspace's own rules, scoped under .document-compare — the
+   shared shell (header, body grid, inspector) lives in App.css under the
+   .editor-* classes and arrives with the .editor-slot mount. The palette is
+   the markdown editor's: the two are the same documents, read two ways. */
+
+.document-compare .editor-body {
+  min-height: 0;
+}
+
+.compare-main {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  min-width: 0;
+}
+
+.compare-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.compare-view-modes {
+  display: flex;
+  border: 1px solid #3b3f42;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.compare-view-modes button {
+  border: none;
+  background: none;
+  color: #9a9a92;
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.compare-view-modes button + button {
+  border-left: 1px solid #3b3f42;
+}
+
+.compare-view-modes button.selected {
+  background: #232527;
+  color: #d7d1c3;
+}
+
+.compare-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #c7cdd1;
+}
+
+.compare-toolbar-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.compare-toolbar-actions button {
+  border: 1px solid #3a3e41;
+  border-radius: 6px;
+  background: transparent;
+  color: #d7d1c3;
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.compare-toolbar-actions button:hover:not(:disabled) {
+  background: #232527;
+}
+
+.compare-toolbar-actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* The comparison: one scroll container for both sides, so a row's two
+   halves can never drift apart and no scroll syncing is needed. */
+.compare-panel {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid #3b3f42;
+  border-radius: 6px;
+  background: #121415;
+  overflow: hidden;
+}
+
+.compare-columns,
+.compare-row {
+  display: grid;
+  grid-template-columns: 3.5em minmax(0, 1fr) 3.5em minmax(0, 1fr);
+}
+
+.compare-unified .compare-columns,
+.compare-unified .compare-row {
+  grid-template-columns: 3.5em 3.5em 1.6em minmax(0, 1fr);
+}
+
+.compare-columns {
+  border-bottom: 1px solid #2c2f31;
+  background: #17191c;
+  color: #9a9a92;
+  font-size: 11px;
+}
+
+.compare-columns span {
+  padding: 5px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compare-identical {
+  padding: 6px 12px;
+  border-bottom: 1px solid #2c2f31;
+  color: #9fc9a9;
+  font-size: 12px;
+}
+
+.compare-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.compare-num {
+  padding: 0 8px;
+  text-align: right;
+  color: #5f625f;
+  user-select: none;
+}
+
+.compare-split .compare-num-after {
+  border-left: 1px solid #2c2f31;
+}
+
+.compare-sign {
+  color: #8f8c84;
+  text-align: center;
+  user-select: none;
+}
+
+.compare-text {
+  min-height: 1.55em;
+  padding: 0 10px;
+  color: #d7d1c3;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Removed text tints red on the before side, added text green on the
+   after side; the changed words of a paired line take the stronger shade. */
+.compare-split .compare-delete .compare-before,
+.compare-split .compare-change .compare-before,
+.compare-line-minus .compare-text,
+.compare-line-minus .compare-sign {
+  background: rgba(214, 84, 72, 0.13);
+}
+
+.compare-split .compare-insert .compare-after,
+.compare-split .compare-change .compare-after,
+.compare-line-plus .compare-text,
+.compare-line-plus .compare-sign {
+  background: rgba(76, 176, 106, 0.13);
+}
+
+.compare-text mark {
+  border-radius: 2px;
+  color: inherit;
+}
+
+.compare-before mark {
+  background: rgba(228, 94, 82, 0.42);
+}
+
+.compare-after mark {
+  background: rgba(86, 196, 118, 0.4);
+}
+
+/* The side a row has no line on — a deletion's after half, an insertion's
+   before half — hatched so the gap reads as absence, not a blank line. */
+.compare-text.compare-empty {
+  background: repeating-linear-gradient(135deg, transparent 0 6px, rgba(255, 255, 255, 0.025) 6px 12px);
+}
+
+.compare-row.current .compare-num:first-child {
+  box-shadow: inset 3px 0 0 #3563c4;
+}
+
+.compare-fold {
+  display: block;
+  width: 100%;
+  padding: 3px 12px;
+  border: none;
+  border-top: 1px dashed #2c2f31;
+  border-bottom: 1px dashed #2c2f31;
+  background: #17191c;
+  color: #8f8c84;
+  font-family: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.compare-fold:hover {
+  background: #1d2023;
+  color: #d7d1c3;
+}
+
+/* The inspector stretches and scrolls like the markdown editor's: a long
+   change list must not spill past the workspace. */
+.compare-inspector {
+  align-self: stretch;
+  min-height: 0;
+  overflow-y: auto;
+  gap: 14px;
+}
+
+.compare-inspector > * {
+  flex-shrink: 0;
+}
+
+.compare-summary {
+  display: grid;
+  gap: 2px;
+}
+
+.compare-summary strong {
+  color: #d7d1c3;
+  font-size: 14px;
+}
+
+.compare-summary span {
+  font-size: 11px;
+  color: #9a9a92;
+}
+
+.compare-sides {
+  display: grid;
+  gap: 8px;
+}
+
+.compare-side {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid #3a3e41;
+  border-radius: 8px;
+}
+
+.compare-side-label {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #9a9a92;
+}
+
+.compare-side strong {
+  color: #d7d1c3;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.compare-side button {
+  justify-self: start;
+  margin-top: 4px;
+  border: 1px solid #3a3e41;
+  border-radius: 6px;
+  background: transparent;
+  color: #d7d1c3;
+  font-size: 11px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.compare-side button:hover {
+  background: #232527;
+}
+
+.compare-changes {
+  display: grid;
+  gap: 6px;
+}
+
+.compare-changes strong {
+  font-size: 12px;
+}
+
+.compare-changes ul {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.compare-changes button {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 6px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: #b9b4a8;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.compare-changes button:hover,
+.compare-changes button.selected {
+  background: #232527;
+  color: #d7d1c3;
+}
+
+.compare-change-section {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compare-change-counts {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.compare-added {
+  color: #6cc68a;
+}
+
+.compare-removed {
+  color: #e07b72;
+}

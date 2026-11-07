@@ -271,12 +271,19 @@ type HarnessToolCall struct {
 	// applies the tool's default preview line. Planner-only, like Voice — see
 	// generateVoiceParamSchema.
 	PreviewText string `json:"previewText,omitempty"`
-	// ArtifactID is an optional convert_subtitles input naming a specific
-	// transcript artifact in the conversation to convert (e.g. "trc_ab12cd34").
-	// Omit to convert the newest .vtt/.srt artifact, or the subtitle file an
-	// earlier call in this same turn produced. Planner-only — declared in
-	// harnessToolPlanSchema and validated per-tool.
+	// ArtifactID is an optional input naming a specific artifact in the
+	// conversation: for convert_subtitles (and burn_subtitles) the transcript
+	// artifact to read (e.g. "trc_ab12cd34") — omit to use the newest
+	// .vtt/.srt artifact, or the subtitle file an earlier call in this same
+	// turn produced; for compare_documents the BEFORE document. The planner
+	// may pass the composer's @-mention form ("@md_3fa09c1b2"); each tool
+	// resolves it as an exact id or a unique prefix. Planner-only — declared
+	// in harnessToolPlanSchema and validated per-tool.
 	ArtifactID string `json:"artifactId,omitempty"`
+	// CompareArtifactID is compare_documents' AFTER document, in the same
+	// forms as ArtifactID. Omit (with ArtifactID) to compare the two
+	// documents the turn attaches or @-mentions, in the order given.
+	CompareArtifactID string `json:"compareArtifactId,omitempty"`
 	// Scale is an optional upscale_image input naming the upscale factor
 	// ("2x" or "4x"). Omit for the default 2x. See imageUpscaleParamSchema.
 	Scale string `json:"scale,omitempty"`
@@ -2698,7 +2705,11 @@ func harnessToolPlanSchema(registry HarnessToolRegistry) map[string]any {
 						// format rides the shared `format` string above; the
 						// optional artifact id names a specific transcript
 						// artifact when the newest one isn't the source.
-						"artifactId": map[string]any{"type": "string"},
+						// compare_documents (document_compare.go) reuses it
+						// for the BEFORE document and takes the AFTER one in
+						// compareArtifactId.
+						"artifactId":        map[string]any{"type": "string"},
+						"compareArtifactId": map[string]any{"type": "string"},
 						// transcribe_audio inputs: the spoken-language task
 						// and hint, the timestamp granularity, and the
 						// intent-shaped subtitle flag (a subtitle/caption ask
@@ -3387,6 +3398,10 @@ func setToolCallField(call *HarnessToolCall, key, raw string) {
 		call.Subtitle = raw == "true"
 	case "scale":
 		call.Scale = raw
+	case "artifact_id", "artifactId":
+		call.ArtifactID = raw
+	case "compare_artifact_id", "compareArtifactId":
+		call.CompareArtifactID = raw
 	case "command":
 		call.Command = raw
 	case "path":

@@ -161,11 +161,27 @@ func (a *App) ResolveMarkdownEditSource(conversationID, artifactID string) (Mark
 	if conversationID == "" {
 		return MarkdownSourceInfo{}, errors.New("markdown editing opens a conversation asset, and no conversation was given")
 	}
-	content, title, err := resolveMarkdownContent(config.Storage, conversationID, artifactID)
+	return loadMarkdownSource(config.Storage, conversationID, artifactID)
+}
+
+// loadMarkdownSource reads a conversation's markdown artifact (artifactID
+// exact) into the editor's source shape — the one load the markdown editor
+// and the document compare workspace share. A mention from another
+// conversation resolves too: its entry rides this conversation's user turn
+// under the original id with an absolute path.
+func loadMarkdownSource(storage ConfigStorage, conversationID, artifactID string) (MarkdownSourceInfo, error) {
+	content, title, err := resolveMarkdownContent(storage, conversationID, artifactID)
 	if err != nil {
 		return MarkdownSourceInfo{}, err
 	}
-	path, err := contentArtifactPath(config.Storage, conversationID, *content)
+	return markdownSourceForContent(storage, conversationID, title, *content)
+}
+
+// markdownSourceForContent reads an already-resolved markdown entry — the
+// half of loadMarkdownSource a caller holding the conversation's detail
+// (the compare tool's own id resolution) reuses without a second walk.
+func markdownSourceForContent(storage ConfigStorage, conversationID, title string, content HistoryContent) (MarkdownSourceInfo, error) {
+	path, err := contentArtifactPath(storage, conversationID, content)
 	if err != nil {
 		return MarkdownSourceInfo{}, err
 	}
@@ -183,7 +199,7 @@ func (a *App) ResolveMarkdownEditSource(conversationID, artifactID string) (Mark
 		ArtifactID:        content.ArtifactID,
 		URL:               artifactPrefix + absPath,
 		MimeType:          content.MimeType,
-		Format:            documentFormatForExtension(markdownArtifactExtension(*content)),
+		Format:            documentFormatForExtension(markdownArtifactExtension(content)),
 		Text:              string(data),
 		WordCount:         markdownWordCount(string(data)),
 	}
