@@ -23,8 +23,10 @@ import (
 // everywhere else: narrower and taller, so the same margins hold 57
 // characters × 59 lines instead of 60 × 55, and a script runs a few pages
 // shorter with its breaks in different places. Which page to print is the
-// writer's call: the editor's Print block starts at the machine's region's
-// paper (defaultDocumentPaperSize) and remembers the last choice.
+// writer's call: the editor's Print block starts a screenplay on US Letter
+// whatever the region (the industry page travels), a markdown document at the
+// machine's region's paper (defaultDocumentPaperSize), and remembers the last
+// choice per dialect.
 
 const (
 	documentPaperLetter = "letter"
@@ -152,10 +154,11 @@ func isASCIILetters(s string) bool {
 	return s != ""
 }
 
-// defaultDocumentPaperSize is the Print block's starting paper until the
-// writer picks one: the region's office paper — US Letter where CLDR says
-// so, A4 everywhere else — and US Letter, the industry page and the export's
-// historical one, when no region can be read.
+// defaultDocumentPaperSize is a markdown document's starting paper in the
+// Print block until the writer picks one: the region's office paper — US
+// Letter where CLDR says so, A4 everywhere else — and US Letter, the export's
+// historical page, when no region can be read. Screenplays don't ask: they
+// start on US Letter everywhere.
 func defaultDocumentPaperSize() string {
 	region := localeRegion(systemLocaleIdentifier())
 	if region == "" || letterPaperRegions[region] {
@@ -164,8 +167,8 @@ func defaultDocumentPaperSize() string {
 	return documentPaperA4
 }
 
-// DefaultDocumentPaperSize is the Print block's starting choice before the
-// writer has made one ("letter" or "a4").
+// DefaultDocumentPaperSize is the Print block's starting choice for a
+// markdown document before the writer has made one ("letter" or "a4").
 func (a *App) DefaultDocumentPaperSize() string {
 	return defaultDocumentPaperSize()
 }

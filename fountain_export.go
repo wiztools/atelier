@@ -43,7 +43,8 @@ import (
 // sections and synopses as gray notes, the way the preview shows them; left
 // off they stay out of the page. PaperSize names the sheet the PDF prints
 // on — "letter" (the default) or "a4"; the frontend remembers the last
-// choice and starts at DefaultDocumentPaperSize (the region's office paper).
+// choice per dialect, starting a screenplay on US Letter and a markdown
+// document at DefaultDocumentPaperSize (the region's office paper).
 // FDX ignores it: Final Draft paginates with its own page setup.
 type SaveDocumentExportRequest struct {
 	Path          string `json:"path"`

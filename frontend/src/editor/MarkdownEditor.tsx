@@ -124,10 +124,12 @@ function lineScrollTop(textarea: HTMLTextAreaElement, text: string, offset: numb
 
 type ViewMode = 'split' | 'source' | 'preview';
 
-// The chosen sheet persists across editor re-opens for the app's run — pick
-// A4 once, every export this session prints A4. null = untouched, follow the
-// machine's region default.
-let sessionPaperSize: 'letter' | 'a4' | null = null;
+// The chosen sheet persists across editor re-opens for the app's run, per
+// dialect — pick A4 for a screenplay once and every screenplay export this
+// session prints A4, while markdown keeps its own choice. null = untouched:
+// a screenplay starts on US Letter (the industry page, whatever the region),
+// markdown on the machine's region default.
+const sessionPaperSize: Record<DocumentFormat, 'letter' | 'a4' | null> = {markdown: null, fountain: null};
 
 // defaultDocumentPaper resolves the region default once per app run — the
 // machine's paper doesn't change mid-session, and a StrictMode double-mounted
@@ -171,26 +173,29 @@ export function MarkdownEditor(props: {
   // Sections and synopses print as gray notes, the way the preview shows
   // them; off keeps them out and the page count true to the script.
   const [printNotes, setPrintNotes] = useState(true);
-  // The sheet the PDF prints on. Starts at the machine's region's paper once
-  // the binding answers (US Letter until then), and a made choice outlives
-  // the editor for the app's run — a US submission this morning, A4 at home
-  // all week.
-  const [paperSize, setPaperSizeState] = useState<'letter' | 'a4'>(sessionPaperSize ?? 'letter');
+  // The dialect IS the artifact's identity — a .fountain edits and saves as a
+  // screenplay, a .md as markdown; the editor never converts between them.
+  const format: DocumentFormat = source.format === 'fountain' ? 'fountain' : 'markdown';
+  // The sheet the PDF prints on. A screenplay starts on US Letter — the
+  // industry's page, the one page counts are judged on, wherever the writer
+  // lives; markdown starts at the machine's region's paper once the binding
+  // answers (US Letter until then). A made choice outlives the editor for the
+  // app's run, per dialect — an A4 script for a BBC submission doesn't turn
+  // the next memo's paper.
+  const [paperSize, setPaperSizeState] = useState<'letter' | 'a4'>(sessionPaperSize[format] ?? 'letter');
   useEffect(() => {
-    if (sessionPaperSize) return; // a choice this session outranks the region default
+    if (format === 'fountain') return; // a screenplay's default is US Letter, not the region's
+    if (sessionPaperSize[format]) return; // a choice this session outranks the region default
     let cancelled = false;
     defaultDocumentPaper().then((paper) => {
       if (!cancelled && (paper === 'letter' || paper === 'a4')) setPaperSizeState(paper);
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, []);
+  }, [format]);
   const setPaperSize = (paper: 'letter' | 'a4') => {
-    sessionPaperSize = paper;
+    sessionPaperSize[format] = paper;
     setPaperSizeState(paper);
   };
-  // The dialect IS the artifact's identity — a .fountain edits and saves as a
-  // screenplay, a .md as markdown; the editor never converts between them.
-  const format: DocumentFormat = source.format === 'fountain' ? 'fountain' : 'markdown';
 
   const [find, setFind] = useState('');
   const [replace, setReplace] = useState('');
