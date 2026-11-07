@@ -12,6 +12,7 @@ package main
 // workspace without writing a turn into a streaming conversation.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -120,9 +121,9 @@ func (a *App) ResolveCompositionEditSource(conversationID, artifactID string) (C
 // compositionMediaRefFor resolves an artifact id into an unmeasured ref —
 // conversation-locally first, then across the conversation's library when it
 // belongs to a project (the picker's dual scope, and resolveReferencedAssets'
-// widening rule). Only video and audio artifacts qualify; the file must exist
-// on disk, since a ref that is missing at add time is a mistake rather than a
-// later loss.
+// widening rule). Video, audio, and image artifacts qualify — an image enters
+// as a still on the video lane; the file must exist on disk, since a ref that
+// is missing at add time is a mistake rather than a later loss.
 func compositionMediaRefFor(storage ConfigStorage, conversationID, artifactID string) (CompositionMediaRef, error) {
 	artifactID = strings.TrimSpace(artifactID)
 	if artifactID == "" {
@@ -134,8 +135,8 @@ func compositionMediaRefFor(storage ConfigStorage, conversationID, artifactID st
 	}
 	var ref CompositionMediaRef
 	if content, ok := assetContentIndex(detail)[artifactID]; ok {
-		if content.Type != "video" && content.Type != "audio" {
-			return CompositionMediaRef{}, fmt.Errorf("%s is %s media — the composer takes video and audio", artifactID, compositionRefKindPhrase(content.Type))
+		if !compositionMediaKind(content.Type) {
+			return CompositionMediaRef{}, fmt.Errorf("%s is %s media — the composer takes video, audio, and images", artifactID, compositionRefKindPhrase(content.Type))
 		}
 		path, err := contentArtifactPath(storage, conversationID, content)
 		if err != nil {
@@ -154,7 +155,7 @@ func compositionMediaRefFor(storage ConfigStorage, conversationID, artifactID st
 	} else {
 		projectID := detail.Conversation.ProjectID
 		if projectID == "" {
-			return CompositionMediaRef{}, fmt.Errorf("no video or audio asset with id %q in this conversation", artifactID)
+			return CompositionMediaRef{}, fmt.Errorf("no video, audio, or image asset with id %q in this conversation", artifactID)
 		}
 		lookup, err := libraryAssetLookup(storage, projectID)
 		if err != nil {
@@ -162,10 +163,10 @@ func compositionMediaRefFor(storage ConfigStorage, conversationID, artifactID st
 		}
 		asset, found := lookup[artifactID]
 		if !found {
-			return CompositionMediaRef{}, fmt.Errorf("no video or audio asset with id %q in this conversation or its library", artifactID)
+			return CompositionMediaRef{}, fmt.Errorf("no video, audio, or image asset with id %q in this conversation or its library", artifactID)
 		}
-		if asset.Kind != "video" && asset.Kind != "audio" {
-			return CompositionMediaRef{}, fmt.Errorf("%s is %s media — the composer takes video and audio", artifactID, compositionRefKindPhrase(asset.Kind))
+		if !compositionMediaKind(asset.Kind) {
+			return CompositionMediaRef{}, fmt.Errorf("%s is %s media — the composer takes video, audio, and images", artifactID, compositionRefKindPhrase(asset.Kind))
 		}
 		if asset.URL == "" {
 			return CompositionMediaRef{}, fmt.Errorf("the file for %s is missing on disk", artifactID)
@@ -193,8 +194,18 @@ func compositionMediaRefFor(storage ConfigStorage, conversationID, artifactID st
 // WAV/MP3/FLAC/OGG/M4A headers for audio) — the join tools' measurement
 // ladder. A clip the ladder cannot measure is refused: the timeline cannot
 // lay out a clip of unknown length, and guessing would make every later
-// trim wrong.
+// trim wrong. A still needs no ladder: its own bytes name its display size
+// (measureCompositionStill), and it has no duration to find.
 func probeCompositionMediaRef(ctx context.Context, config AppConfig, ref CompositionMediaRef) (CompositionMediaRef, error) {
+	if ref.Kind == "image" {
+		still, err := measureCompositionStillFile(ref.Path)
+		if err != nil {
+			return CompositionMediaRef{}, fmt.Errorf("could not use %s as a still (%v) — convert it to PNG or JPEG (convert_image) to add it", ref.ArtifactID, err)
+		}
+		ref.Width, ref.Height = still.Width, still.Height
+		ref.DurationSeconds, ref.FPS, ref.HasAudio = 0, 0, false
+		return ref, nil
+	}
 	artifactURL := artifactPrefix + ref.Path
 	if ref.Kind == "audio" {
 		fact, ok := joinAudioClipFactFor(ctx, config, ref.Path, artifactURL)
@@ -217,6 +228,88 @@ func probeCompositionMediaRef(ctx context.Context, config AppConfig, ref Composi
 	return ref, nil
 }
 
+// compositionMediaKind reports whether an artifact kind can enter a
+// composition: video and images on the video lane (an image as a still),
+// audio on the lanes.
+func compositionMediaKind(kind string) bool {
+	return kind == "video" || kind == "audio" || kind == "image"
+}
+
+// compositionStillFact is one still image's measurement — what the timeline
+// places it by and the renderer reads it with: the DISPLAY size (the pixel
+// size with any JPEG EXIF orientation applied — a portrait phone photo reads
+// portrait), the ffmpeg decoder its magic bytes name (the render forces it
+// rather than trusting the file extension), and the EXIF orientation
+// (jpegEXIFOrientation's 2–8 turn the picture; 0 or 1 leave it as stored) the
+// render graph applies itself, so the result is the same on an ffmpeg that
+// auto-rotates EXIF and on one that does not.
+type compositionStillFact struct {
+	Width       int
+	Height      int
+	Decoder     string
+	Orientation int
+}
+
+// measureCompositionStill sniffs a still from its bytes: PNG, JPEG, WebP, and
+// GIF — the formats ffmpeg's image2 reader decodes under a forced decoder —
+// sized by imagePixelDimensions's header read (no codec import, no CLI). An
+// animated WebP refuses (ffmpeg's webp decoder cannot read its frames, so the
+// render would fail); an animated GIF holds its first frame. HEIC, AVIF, and
+// everything else refuse — convert_image is the way in.
+func measureCompositionStill(data []byte) (compositionStillFact, error) {
+	decoder := compositionStillDecoder(data)
+	if decoder == "" {
+		return compositionStillFact{}, errors.New("not a PNG, JPEG, WebP, or GIF image")
+	}
+	if decoder == "webp" && webpAnimated(data) {
+		return compositionStillFact{}, errors.New("an animated WebP cannot be held as a still")
+	}
+	width, height, ok := imagePixelDimensions(data)
+	if !ok {
+		return compositionStillFact{}, errors.New("its pixel size is unreadable")
+	}
+	fact := compositionStillFact{Width: int(width), Height: int(height), Decoder: decoder}
+	if decoder == "mjpeg" {
+		fact.Orientation = jpegEXIFOrientation(data)
+		if fact.Orientation >= 5 {
+			// Orientations 5–8 transpose the axes: the stored landscape
+			// pixels display portrait.
+			fact.Width, fact.Height = fact.Height, fact.Width
+		}
+	}
+	return fact, nil
+}
+
+// measureCompositionStillFile is measureCompositionStill over a file on disk.
+func measureCompositionStillFile(path string) (compositionStillFact, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return compositionStillFact{}, err
+	}
+	return measureCompositionStill(data)
+}
+
+// compositionStillDecoder names the ffmpeg decoder for a still's bytes by
+// their magic, or "" for a format the composer does not hold as a still.
+func compositionStillDecoder(data []byte) string {
+	switch {
+	case len(data) >= 8 && bytes.Equal(data[:8], []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}):
+		return "png"
+	case len(data) >= 2 && data[0] == 0xff && data[1] == 0xd8:
+		return "mjpeg"
+	case len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP":
+		return "webp"
+	case len(data) >= 6 && (string(data[:6]) == "GIF87a" || string(data[:6]) == "GIF89a"):
+		return "gif"
+	}
+	return ""
+}
+
+// webpAnimated reports an extended (VP8X) WebP whose animation flag is set.
+func webpAnimated(data []byte) bool {
+	return len(data) >= 21 && string(data[12:16]) == "VP8X" && data[20]&0x02 != 0
+}
+
 // resolveCompositionMedia is the shared resolve-and-measure the picker's add
 // and the seed path both run.
 func resolveCompositionMedia(config AppConfig, conversationID, artifactID string) (CompositionMediaRef, error) {
@@ -229,11 +322,11 @@ func resolveCompositionMedia(config AppConfig, conversationID, artifactID string
 	return probeCompositionMediaRef(ctx, config, ref)
 }
 
-// ResolveCompositionMedia resolves and measures one video or audio artifact
-// into a ref the editor appends to its document — the picker's add path.
-// conversationID is the composition's OWNING conversation (its picker scope),
-// not necessarily the artifact's: a library sibling's asset resolves through
-// the widening rule and carries its own conversation on the ref.
+// ResolveCompositionMedia resolves and measures one video, audio, or image
+// artifact into a ref the editor appends to its document — the picker's add
+// path. conversationID is the composition's OWNING conversation (its picker
+// scope), not necessarily the artifact's: a library sibling's asset resolves
+// through the widening rule and carries its own conversation on the ref.
 func (a *App) ResolveCompositionMedia(conversationID, artifactID string) (CompositionMediaRef, error) {
 	config, err := loadReadyConfig()
 	if err != nil {

@@ -6,20 +6,28 @@ import {
   addLane,
   addSegmentToLane,
   audioOverhangSeconds,
+  clampStillLength,
   cloneCompositionDoc,
   compositionClipLayout,
   compositionIsAudioOnly,
   compositionProblems,
   compositionSequenceDuration,
+  compositionStillDefaultSeconds,
+  compositionStillFrameMaxEdge,
+  compositionStillMaxSeconds,
+  compositionStillMinSeconds,
   detachClipAudio,
   duplicateClip,
   duplicateSegment,
+  fitStillFrame,
   formatCompositionClock,
+  isStillClip,
   moveClip,
   moveSegment,
   newCompositionID,
   normalizeCompositionDoc,
   normalizeTransitionKind,
+  outputFrameSource,
   reattachClipAudio,
   removeDuck,
   removeSegment,
@@ -31,6 +39,7 @@ import {
   setCompositionOutput,
   setSegmentMix,
   setSegmentRange,
+  setStillDuration,
   toWireDoc,
   transitionBounds,
   updateDuck,
@@ -44,6 +53,12 @@ function videoRef(id: string, seconds: number, hasAudio = true): CompositionMedi
 
 function audioRef(id: string, seconds: number): CompositionMediaRef {
   return {artifactId: id, path: `/tmp/${id}.wav`, kind: 'audio', durationSeconds: seconds, hasAudio: true};
+}
+
+// A portrait phone photo measured by its display size: no duration, no sound
+// — the shape normalizeCompositionMediaRef gives the editor's add path.
+function stillRef(id: string, width = 1080, height = 1920): CompositionMediaRef {
+  return {artifactId: id, path: `/tmp/${id}.jpg`, kind: 'image', durationSeconds: 0, width, height, hasAudio: false};
 }
 
 // A three-clip doc: 10s, 5s, 8s with a 1s dissolve after clip 1.
@@ -190,5 +205,66 @@ assert(problems.some((problem) => problem.includes('video lane holds video clips
 const overlapped = cloneCompositionDoc(lanes);
 overlapped.audioLanes[0].segments[1] = {...overlapped.audioLanes[0].segments[1], startSeconds: 1};
 assert(compositionProblems(overlapped).some((problem) => problem.includes('overlaps the previous segment')), 'a lane overlap is named');
+
+// Stills on the video lane: the length IS the edit, and the mirrors hold.
+const withStill = addClip(threeClips(), stillRef('img_1'));
+assert(isStillClip(withStill.video[3]) && withStill.video[3].outSeconds === compositionStillDefaultSeconds && withStill.video[3].inSeconds === 0,
+  'a still lands as a default-length hold');
+assert(sameCompositionDoc(addClip(withStill, audioRef('aud_x', 5)), withStill), 'an audio ref cannot land on the video lane');
+assert(sameCompositionDoc(addClip(withStill, {artifactId: 'img_2', path: '/tmp/x.png', kind: 'image', durationSeconds: 0}), withStill), 'an unmeasured still is a no-op add');
+const resized = setStillDuration(withStill, withStill.video[3].id, 2.5);
+assert(resized.video[3].inSeconds === 0 && resized.video[3].outSeconds === 2.5, 'setStillDuration resizes and re-pins to [0, length]');
+assert(sameCompositionDoc(setStillDuration(withStill, withStill.video[0].id, 9), withStill), 'setStillDuration on a video clip is a no-op');
+assert(setStillDuration(withStill, withStill.video[3].id, NaN).video[3].outSeconds === compositionStillDefaultSeconds, 'a NaN length is refused');
+assert(setStillDuration(withStill, withStill.video[3].id, 1e12).video[3].outSeconds === compositionStillMaxSeconds, 'a still length clamps to the ceiling');
+assert(setStillDuration(withStill, withStill.video[3].id, 0.001).video[3].outSeconds === compositionStillMinSeconds, 'a still length clamps to the floor');
+const stillTrimmed = setClipRange(withStill, withStill.video[3].id, 2, 9);
+assert(stillTrimmed.video[3].inSeconds === 0 && stillTrimmed.video[3].outSeconds === 7, 'setClipRange on a still resizes it');
+assert(sameCompositionDoc(setClipAudio(withStill, withStill.video[3].id, {muted: true}), withStill), 'a still has no audio to mix');
+const stillMoved = moveClip(withStill, withStill.video[3].id, 0);
+assert(stillMoved.video[0].ref.artifactId === 'img_1', 'a still reorders like any clip');
+const stillDissolved = setClipTransition(withStill, withStill.video[2].id, {seconds: 30, audioCrossfade: true});
+assert(stillDissolved.video[2].transitionToNext?.seconds === 2, 'a clip-to-still dissolve clamps by the still length (half of 4s)');
+const stillDetached = detachClipAudio(withStill, withStill.video[3].id);
+assert(sameCompositionDoc(stillDetached, withStill), 'a still cannot detach audio it does not have');
+const stillDup = duplicateClip(withStill, withStill.video[3].id);
+assert(stillDup.video.length === 5 && stillDup.video[4].outSeconds === compositionStillDefaultSeconds, 'a still duplicates at its hold');
+assert(compositionProblems(withStill).length === 0, 'a doc with a still has no problems');
+const unmeasured = cloneCompositionDoc(withStill);
+unmeasured.video[3] = {...unmeasured.video[3], ref: {...unmeasured.video[3].ref, width: undefined, height: undefined}};
+assert(compositionProblems(unmeasured).some((problem) => problem.includes("still was never measured")), 'an unmeasured still is named');
+const badKind = cloneCompositionDoc(withStill);
+badKind.video[3] = {...badKind.video[3], ref: {...unmeasured.video[3].ref, kind: 'comic' as any}};
+assert(compositionProblems(badKind).some((problem) => problem.includes('the video lane holds video clips and stills')), 'a foreign kind on the lane is named');
+
+// Layout: the still's length joins the sum.
+const stillFirst = addClip(addClip(normalizeCompositionDoc({video: [], audioLanes: []}), stillRef('img_1')), videoRef('vid_9', 6, false));
+const stillLayout = compositionClipLayout(stillFirst);
+assert(stillLayout.starts[1] === compositionStillDefaultSeconds && compositionSequenceDuration(stillFirst) === compositionStillDefaultSeconds + 6,
+  'a still holds its length then the clip follows');
+assert(!compositionIsAudioOnly(stillFirst), 'a still flips audio-first off');
+assert(compositionIsAudioOnly(normalizeCompositionDoc({video: [], audioLanes: []})), 'an empty doc still reads audio-only');
+
+// Output frame: the first VIDEO clip decides; a stills-only sequence
+// inherits the fitted still; tiny stills fall back to the default.
+const titled = addClip(addClip(normalizeCompositionDoc({video: [], audioLanes: []}), stillRef('img_1')), videoRef('vid_9', 6, false));
+const titledFrame = resolveOutputFrame(titled);
+assert(titledFrame.width === 1280 && titledFrame.height === 720 && titledFrame.fps === 30, 'a title still never decides the frame');
+assert(outputFrameSource(titled).fps === 30, 'the frame source is the video clip');
+const slideshow = addClip(normalizeCompositionDoc({video: [], audioLanes: []}), stillRef('img_big', 4032, 3024));
+const slideshowFrame = resolveOutputFrame(slideshow);
+assert(slideshowFrame.width === 1920 && slideshowFrame.height === 1440 && slideshowFrame.fps === 30, 'a stills-only sequence inherits the fitted still at 30fps');
+assert(outputFrameSource(slideshow).width === 1920, 'the fitted still is the frame source');
+assert(fitStillFrame(4032, 3024).width === 1920 && fitStillFrame(4032, 3024).height === 1440, 'fitStillFrame caps the long edge');
+assert(fitStillFrame(3024, 4032).width === 1440 && fitStillFrame(3024, 4032).height === 1920, 'fitStillFrame keeps portrait');
+assert(fitStillFrame(1024, 768).width === 1024 && fitStillFrame(1024, 768).height === 768, 'fitStillFrame never enlarges');
+assert(fitStillFrame(1081, 721).width === 1080 && fitStillFrame(1081, 721).height === 720, 'fitStillFrame evens dimensions');
+assert(fitStillFrame(1, 1).width === 0, 'a still too small to frame returns zero');
+const speck = addClip(normalizeCompositionDoc({video: [], audioLanes: []}), stillRef('img_speck', 1, 1));
+assert(resolveOutputFrame(speck).width === 1280 && resolveOutputFrame(speck).height === 720, 'a frameless still falls back to 720p');
+assert(clampStillLength(compositionStillMaxSeconds + 1) === compositionStillMaxSeconds, 'clampStillLength clamps to the ceiling');
+assert(clampStillLength(-3) === compositionStillMinSeconds, 'clampStillLength clamps to the floor');
+assert(clampStillLength(NaN) === null, 'clampStillLength refuses NaN');
+assert(compositionStillFrameMaxEdge === 1920, 'the frame cap mirrors Go');
 
 console.log('composition model assertions passed');

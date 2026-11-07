@@ -27,12 +27,15 @@ import {
   compositionMaxAudioLanes,
   compositionProblems,
   compositionSequenceDuration,
+  compositionStillMaxSeconds,
+  compositionStillMinSeconds,
   compositionTransitions,
   compositionTransitionMinSeconds,
   detachClipAudio,
   duplicateClip,
   duplicateSegment,
   formatCompositionClock,
+  isStillClip,
   moveClip,
   moveSegment,
   normalizeCompositionDoc,
@@ -54,6 +57,7 @@ import {
   setLaneMix,
   setSegmentMix,
   setSegmentRange,
+  setStillDuration,
   toWireDoc,
   transitionBounds,
   updateDuck,
@@ -268,11 +272,17 @@ function initialCompositionDoc(source: main.CompositionSourceInfo, audioFirst?: 
   return audioFirst && doc.video.length === 0 && doc.audioLanes.length === 0 ? addLane(doc) : doc;
 }
 
+// compositionRefURL serves a ref's file through the asset handler — the
+// /atelier-artifact + absolute-path convention every editor hydrates by.
+function compositionRefURL(ref: CompositionMediaRef): string {
+  return ref.path && ref.path.startsWith('/') ? `/atelier-artifact${ref.path}` : '';
+}
+
 // useAudioPeaksEntry resolves one ref's decoded waveform peaks through
 // audioPeaks.ts's per-URL cache. Null while loading or when the file cannot
 // be fetched/decoded — the segment then renders plain, as before.
 function useAudioPeaksEntry(ref: CompositionMediaRef): AudioPeaksEntry | null {
-  const url = ref.path && ref.path.startsWith('/') ? `/atelier-artifact${ref.path}` : '';
+  const url = compositionRefURL(ref);
   const [entry, setEntry] = useState<AudioPeaksEntry | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -388,6 +398,7 @@ export function CompositionEditor(props: {
     }
     return counts;
   }, [doc]);
+  const stillCount = useMemo(() => doc.video.reduce((count, clip) => count + (isStillClip(clip) ? 1 : 0), 0), [doc]);
 
   // commit folds one edit into the document: the previous doc lands on the
   // undo stack (capped), redo clears.
@@ -716,14 +727,19 @@ export function CompositionEditor(props: {
 
   // ---- Direct timeline manipulation ----
   // One generic pointer drag covers every timeline gesture: a clip's body
-  // reorders, its edges trim the source range, a junction badge resizes its
-  // dissolve (dragging a cut right CREATES the dissolve), a segment's body
-  // slides along its lane, its edges trim. All of them funnel into the
-  // model's clamping ops, and all of them coalesce to a single undo entry.
+  // reorders, its edges trim the source range (a still's edges resize its
+  // length), a junction badge resizes its dissolve (dragging a cut right
+  // CREATES the dissolve), a segment's body slides along its lane, its edges
+  // trim. All of them funnel into the model's clamping ops, and all of them
+  // coalesce to a single undo entry.
 
   type DragState =
     | {kind: 'clip-move'; clipID: string; fromIndex: number; targetIndex: number; startClientX: number}
     | {kind: 'clip-trim'; clipID: string; edge: 'in' | 'out'; startClientX: number; startValue: number}
+    // A still's length has no source bound, so the drag keeps the scale it
+    // began at: the timeline fits its extent, and a live scale would feed back
+    // — every second the still grows shrinks what the next pixel is worth.
+    | {kind: 'still-trim'; clipID: string; edge: 'in' | 'out'; startClientX: number; startLength: number; pxPerSecond: number}
     | {kind: 'junction'; clipID: string; startClientX: number; startSeconds: number; hadTransition: boolean}
     | {kind: 'segment-move'; segmentID: string; grabOffset: number; startClientX: number}
     | {kind: 'segment-trim'; segmentID: string; edge: 'in' | 'out'; startClientX: number; startValue: number};
@@ -767,7 +783,9 @@ export function CompositionEditor(props: {
     suppressLaneClickRef.current = true;
     const edge = edgeAt(event.currentTarget, event.clientX);
     dragChangedRef.current = false;
-    if (edge) {
+    if (edge && isStillClip(clip)) {
+      setDrag({kind: 'still-trim', clipID: clip.id, edge, startClientX: event.clientX, startLength: clipDurationSeconds(clip), pxPerSecond: pxPerSecond()});
+    } else if (edge) {
       setDrag({kind: 'clip-trim', clipID: clip.id, edge, startClientX: event.clientX, startValue: edge === 'in' ? clip.inSeconds : clip.outSeconds});
     } else {
       setDrag({kind: 'clip-move', clipID: clip.id, fromIndex: index, targetIndex: index, startClientX: event.clientX});
@@ -839,6 +857,14 @@ export function CompositionEditor(props: {
           applyLive(next);
           return;
         }
+        case 'still-trim': {
+          // Either edge resizes: the out edge grows with the pointer, the in
+          // edge shrinks with it — the lane is sequential, so the still keeps
+          // its start and everything after it ripples, as a clip trim does.
+          const seconds = (event.clientX - drag.startClientX) / drag.pxPerSecond;
+          applyLive(setStillDuration(docRef.current, drag.clipID, drag.edge === 'in' ? drag.startLength - seconds : drag.startLength + seconds));
+          return;
+        }
         case 'junction': {
           const current = docRef.current;
           const clip = current.video.find((candidate) => candidate.id === drag.clipID);
@@ -887,18 +913,17 @@ export function CompositionEditor(props: {
   }, [drag, timelineExtent, props.suspended]);
 
   // addMedia resolves and measures one picked asset, then lands it: videos
-  // append to the video lane, audio queues onto the selected lane when one is
-  // selected, else the last lane (a lane is created when none exists) at the
-  // sequence end — the picker's landing rules and the seed's are one shape.
+  // and images (as stills held for the default length) append to the video
+  // lane, audio queues onto the selected lane when one is selected, else the
+  // last lane (a lane is created when none exists) at the sequence end — the
+  // picker's landing rules and the seed's are one shape.
   const addMedia = async (asset: main.ConversationAsset) => {
     setPickerError('');
     setAddingIDs((ids) => [...ids, asset.id]);
     try {
       const wireRef = await AppBindings.ResolveCompositionMedia(sourceConversationID, asset.id);
       const ref = normalizeCompositionMediaRef(wireRef);
-      if (ref.kind === 'video') {
-        commit(addClip(docRef.current, ref));
-      } else {
+      if (ref.kind === 'audio') {
         let next = docRef.current;
         let targetLane = selection.kind === 'lane' ? next.audioLanes.find((lane) => lane.id === selection.laneID) : undefined;
         if (!targetLane) {
@@ -908,6 +933,8 @@ export function CompositionEditor(props: {
           targetLane = next.audioLanes[next.audioLanes.length - 1];
         }
         commit(addSegmentToLane(next, targetLane.id, ref, compositionSequenceDuration(next)));
+      } else {
+        commit(addClip(docRef.current, ref));
       }
     } catch (error) {
       setPickerError(formatEditorError(error));
@@ -1072,7 +1099,7 @@ export function CompositionEditor(props: {
               {audioOnly ? (
                 <>Audio mix · {formatCompositionClock(audioExtent)}{doc.audioLanes.length ? ` · ${doc.audioLanes.length} audio ${doc.audioLanes.length === 1 ? 'lane' : 'lanes'}` : ''}</>
               ) : (
-                <>{doc.video.length} clips · {formatCompositionClock(sequenceDuration)}
+                <>{doc.video.length} clips{stillCount > 0 ? ` (${stillCount} still${stillCount === 1 ? '' : 's'})` : ''} · {formatCompositionClock(sequenceDuration)}
                   {doc.audioLanes.length ? ` · ${doc.audioLanes.length} audio ${doc.audioLanes.length === 1 ? 'lane' : 'lanes'}` : ''}
                   {` · ${frame.width}×${frame.height} @ ${Math.round(frame.fps)}fps ${doc.output.fit}`}</>
               )}
@@ -1103,9 +1130,12 @@ export function CompositionEditor(props: {
             <MediaPicker
               assets={mediaAssets}
               editedConversationID={sourceConversationID}
+              kinds={['video', 'audio', 'image']}
+              addTitles={{image: 'Add this image to the end of the video lane as a still'}}
               refCounts={refCounts}
               busyIDs={addingIDs}
               error={pickerError}
+              emptyText="No video, audio, or image assets found."
               onAdd={(asset) => void addMedia(asset)}
               onClose={() => setPickerOpen(false)}
             />
@@ -1209,15 +1239,20 @@ export function CompositionEditor(props: {
               <div className="composition-lane-track" ref={laneElementRef}>
               {doc.video.map((clip, index) => {
                 const missing = missingRefs.has(clip.ref.artifactId);
+                const still = isStillClip(clip);
+                const refURL = compositionRefURL(clip.ref);
                 return (
                   <button
                     key={clip.id}
                     type="button"
-                    className={`composition-clip${selection.kind === 'clip' && selection.clipID === clip.id ? ' selected' : ''}${missing ? ' missing' : ''}${clip.audio.muted ? ' audio-muted' : ''}${clip.audio.detached ? ' audio-detached' : ''}${drag?.kind === 'clip-move' && drag.clipID === clip.id ? ' dragging' : ''}`}
+                    className={`composition-clip${still ? ' still' : ''}${selection.kind === 'clip' && selection.clipID === clip.id ? ' selected' : ''}${missing ? ' missing' : ''}${clip.audio.muted ? ' audio-muted' : ''}${clip.audio.detached ? ' audio-detached' : ''}${drag?.kind === 'clip-move' && drag.clipID === clip.id ? ' dragging' : ''}`}
                     style={{left: pct(layout.starts[index]), width: pct(clipDurationSeconds(clip))}}
-                    title={`${clip.ref.artifactId} · ${formatCompositionClock(clipDurationSeconds(clip))}${missing ? ' · source file missing' : ''}\nDrag to reorder · drag an edge to trim · select to edit`}
+                    title={`${clip.ref.artifactId}${still ? ' · still' : ''} · ${formatCompositionClock(clipDurationSeconds(clip))}${missing ? ' · source file missing' : ''}\nDrag to reorder · drag an edge to ${still ? 'resize' : 'trim'} · select to edit`}
                     onPointerDown={(event) => beginClipDrag(event, clip, index)}
                   >
+                    {still && refURL && !missing ? (
+                      <span className="composition-clip-thumb" aria-hidden="true"><img src={refURL} alt="" loading="lazy" draggable={false} /></span>
+                    ) : null}
                     <span className="composition-clip-name">{clip.ref.artifactId.slice(0, 12)}</span>
                     <span className="composition-clip-duration">{formatCompositionClock(clipDurationSeconds(clip))}</span>
                   </button>
@@ -1241,7 +1276,7 @@ export function CompositionEditor(props: {
                   </button>
                 );
               })}
-              {doc.video.length === 0 ? <span className="composition-lane-empty">{audioOnly ? 'Audio-only project — a video added from the picker opens its lane here.' : 'No clips — add media from the picker.'}</span> : null}
+              {doc.video.length === 0 ? <span className="composition-lane-empty">{audioOnly ? 'Audio-only project — a video or image added from the picker opens its lane here.' : 'No clips — add videos or images from the picker.'}</span> : null}
               </div>
             </div>
             {doc.audioLanes.map((lane) => (
@@ -1359,16 +1394,38 @@ export function CompositionEditor(props: {
             </div>
           ) : (
             <div className="composition-inspect-clip">
-              <strong>Clip {doc.video.findIndex((clip) => clip.id === selectedClip.id) + 1}</strong>
+              <strong>{isStillClip(selectedClip) ? 'Still' : 'Clip'} {doc.video.findIndex((clip) => clip.id === selectedClip.id) + 1}</strong>
               <p className="hint composition-ref-line" title={selectedClip.ref.path}>
-                {selectedClip.ref.artifactId} · {selectedClip.ref.width ?? '?'}×{selectedClip.ref.height ?? '?'} · {formatCompositionClock(selectedClip.ref.durationSeconds)}
+                {selectedClip.ref.artifactId} · {selectedClip.ref.width ?? '?'}×{selectedClip.ref.height ?? '?'} · {isStillClip(selectedClip) ? 'still image' : formatCompositionClock(selectedClip.ref.durationSeconds)}
                 {selectedClip.ref.conversationId && selectedClip.ref.conversationId !== sourceConversationID ? ' · another chat' : ''}
               </p>
-              <div className="composition-field-row">
-                <NumberField label="In (s)" value={selectedClip.inSeconds} step={0.1} min={0} onCommit={(value) => commit(setClipRange(docRef.current, selectedClip.id, value, selectedClip.outSeconds))} />
-                <NumberField label="Out (s)" value={selectedClip.outSeconds} step={0.1} onCommit={(value) => commit(setClipRange(docRef.current, selectedClip.id, selectedClip.inSeconds, value))} />
-              </div>
-              <p className="hint">Plays {formatCompositionClock(clipDurationSeconds(selectedClip))} starting at {formatCompositionClock(layout.starts[doc.video.findIndex((clip) => clip.id === selectedClip.id)] ?? 0)}</p>
+              {isStillClip(selectedClip) ? (
+                <>
+                  <div className="composition-field-row">
+                    {/* A still's only timing is how long it holds: no source
+                        to trim into, so the NumberField resizes the length
+                        (its min is the floor, not a source bound). */}
+                    <NumberField
+                      label="Hold (s)"
+                      value={clipDurationSeconds(selectedClip)}
+                      step={0.5}
+                      min={compositionStillMinSeconds}
+                      max={compositionStillMaxSeconds}
+                      title="How long the still holds — drag its edges on the lane to resize, or type here"
+                      onCommit={(value) => commit(setStillDuration(docRef.current, selectedClip.id, value))}
+                    />
+                  </div>
+                  <p className="hint">Holds {formatCompositionClock(clipDurationSeconds(selectedClip))} starting at {formatCompositionClock(layout.starts[doc.video.findIndex((clip) => clip.id === selectedClip.id)] ?? 0)}.</p>
+                </>
+              ) : (
+                <>
+                  <div className="composition-field-row">
+                    <NumberField label="In (s)" value={selectedClip.inSeconds} step={0.1} min={0} onCommit={(value) => commit(setClipRange(docRef.current, selectedClip.id, value, selectedClip.outSeconds))} />
+                    <NumberField label="Out (s)" value={selectedClip.outSeconds} step={0.1} onCommit={(value) => commit(setClipRange(docRef.current, selectedClip.id, selectedClip.inSeconds, value))} />
+                  </div>
+                  <p className="hint">Plays {formatCompositionClock(clipDurationSeconds(selectedClip))} starting at {formatCompositionClock(layout.starts[doc.video.findIndex((clip) => clip.id === selectedClip.id)] ?? 0)}</p>
+                </>
+              )}
 
               <div className="editor-tool-group">
                 {/* Arrows only — the lane runs left to right, so direction reads
@@ -1398,6 +1455,8 @@ export function CompositionEditor(props: {
                       <button type="button" title="Move this clip's sound onto the Detached audio lane at its timeline position — it keeps playing exactly once, and becomes independently editable" onClick={() => commit(detachClipAudio(docRef.current, selectedClip.id))}>Detach audio</button>
                     )}
                   </>
+                ) : isStillClip(selectedClip) ? (
+                  <p className="hint">A still carries no sound — put music or narration on an audio lane beneath it.</p>
                 ) : (
                   <p className="hint">This clip has no audio track.</p>
                 )}

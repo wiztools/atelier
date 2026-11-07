@@ -3,7 +3,9 @@ package main
 // The composition renderer: one ffmpeg filter_complex built from the
 // document, assembled from the join tools' vocabulary — per-clip trim +
 // conform onto the project frame (the joinTransitionsFilterGraph
-// normalization, transform_video's fill modes), junction chaining where a
+// normalization, transform_video's fill modes; a still image instead reads
+// one frame, stands it upright by its EXIF orientation, conforms it once, and
+// holds it for its length), junction chaining where a
 // cut concats and a dissolve xfades at the merged-timeline offset with an
 // equal-power acrossfade (or a trimmed hard cut) on the audio side, lane
 // segments through atrim/adelay/volume/afade/duck-enable stages, and a final
@@ -59,16 +61,25 @@ type compositionRenderOptions struct {
 	// it renders as a plain dissolve under a notice. Nil skips the check —
 	// the pure-builder tests, and any render whose doc has no transitions.
 	InstalledTransitions []string
+	// Stills carries each still's render-time read details, keyed by
+	// artifact id like facts (which hold its display size, the geometry
+	// every clip shares): the decoder its bytes named and the EXIF
+	// orientation the graph applies. A still without an entry reads with
+	// image2's extension guess and no orientation.
+	Stills map[string]compositionStillFact
 }
 
 // compositionRenderPlan is everything the ffmpeg invocation needs, plus the
 // decisions the editor surfaces as notices. InputPaths are the real media
-// files in input-index order; ExtraInputArgs the synthetic anullsrc inputs
-// that follow them (the join precedent: acrossfade errors on a silent side,
-// so a clip without usable audio gets synthesized silence).
+// files in input-index order, InputOptions the options that precede each
+// one's -i (parallel to InputPaths: a still's single-frame image2 read; nil
+// for a media file); ExtraInputArgs the synthetic anullsrc inputs that follow
+// them (the join precedent: acrossfade errors on a silent side, so a clip
+// without usable audio gets synthesized silence).
 type compositionRenderPlan struct {
 	FilterComplex  string
 	InputPaths     []string
+	InputOptions   [][]string
 	ExtraInputArgs []string
 	Notices        []string
 	// SequenceSeconds is the video lane's merged length; OutputSeconds the
@@ -84,23 +95,20 @@ type compositionRenderPlan struct {
 }
 
 // compositionFrame resolves the project's output frame — resolveOutputFrame's
-// Go twin: the explicit frame when set, else the first clip's probed display
-// size and fps, else the 720p/30 fallback, even-dimensioned.
+// Go twin: the explicit frame when set, else the inherited source's
+// (compositionFrameSource), else the 720p/30 fallback, even-dimensioned.
 func compositionFrame(doc CompositionDoc, facts map[string]joinClipFact) (int, int, float64) {
 	width, height, fps := doc.Output.Width, doc.Output.Height, doc.Output.FPS
 	if width == 0 || height == 0 || fps == 0 {
-		if len(doc.Video) > 0 {
-			if fact, ok := facts[doc.Video[0].Ref.ArtifactID]; ok {
-				if width == 0 {
-					width = fact.Width
-				}
-				if height == 0 {
-					height = fact.Height
-				}
-				if fps == 0 && fact.FPS > 0 {
-					fps = fact.FPS
-				}
-			}
+		sourceWidth, sourceHeight, sourceFPS := compositionFrameSource(doc, facts)
+		if width == 0 {
+			width = sourceWidth
+		}
+		if height == 0 {
+			height = sourceHeight
+		}
+		if fps == 0 && sourceFPS > 0 {
+			fps = sourceFPS
 		}
 	}
 	if width <= 0 {
@@ -116,6 +124,47 @@ func compositionFrame(doc CompositionDoc, facts map[string]joinClipFact) (int, i
 		fps = compositionMaxFPS
 	}
 	return evenDown(width), evenDown(height), fps
+}
+
+// compositionFrameSource is the clip an unset output frame inherits from:
+// the first VIDEO clip — a still opening the sequence (a title card) must not
+// decide the format the footage after it renders in — else, for a
+// stills-only sequence, the first still, fitted so a photo's native size
+// never becomes the video frame. A still sets no fps; it has none.
+func compositionFrameSource(doc CompositionDoc, facts map[string]joinClipFact) (int, int, float64) {
+	for _, clip := range doc.Video {
+		if clip.Ref.Kind == "image" {
+			continue
+		}
+		fact := facts[clip.Ref.ArtifactID]
+		return fact.Width, fact.Height, fact.FPS
+	}
+	if len(doc.Video) == 0 {
+		return 0, 0, 0
+	}
+	fact := facts[doc.Video[0].Ref.ArtifactID]
+	width, height := compositionFitStillFrame(fact.Width, fact.Height)
+	return width, height, 0
+}
+
+// compositionFitStillFrame scales a still's display size to fit within
+// compositionStillFrameMaxEdge on its long edge, keeping its shape and never
+// enlarging, even-dimensioned; zero when the still is too small to frame (the
+// caller then falls back to the default).
+func compositionFitStillFrame(width, height int) (int, int) {
+	if width <= 0 || height <= 0 {
+		return 0, 0
+	}
+	if long := max(width, height); long > compositionStillFrameMaxEdge {
+		scale := float64(compositionStillFrameMaxEdge) / float64(long)
+		width = int(math.Round(float64(width) * scale))
+		height = int(math.Round(float64(height) * scale))
+	}
+	width, height = evenDown(width), evenDown(height)
+	if width < 2 || height < 2 {
+		return 0, 0
+	}
+	return width, height
 }
 
 // compositionConformChain renders one clip's video chain: the source range,
@@ -142,6 +191,78 @@ func compositionConformStatements(inputIndex int, clip CompositionClip, fact joi
 	}
 }
 
+// compositionStillStatements renders one still's video chain: the EXIF
+// orientation the graph applies itself, the fit's conform onto the project
+// frame, then the hold — the single conformed frame looped and trimmed to
+// exactly the still's frame count — then the shared tail. The conform runs
+// ONCE, before the loop, so a 12MP photo is scaled (and the blur fit's gblur
+// computed) one time rather than per output frame. trim, not the loop's own
+// count, ends the hold: a finite loop's EOF timestamp lets the tail's fps
+// filter round one extra frame in, and the timeline's junction offsets need
+// the still to last exactly its length. The chain opens by deleting the
+// frame's display matrix: -noautorotate stops ffmpeg APPLYING a JPEG's EXIF
+// turn, but the decoder still attaches it to every frame, and left there it
+// reaches the muxer — the rendered file would carry the rotation and every
+// player would turn the already-upright picture again (for a still opening
+// the sequence, the WHOLE composition's video).
+func compositionStillStatements(inputIndex, frames, orientation int, fact joinClipFact, fit string, width, height int, fpsText string, outLabel string) []string {
+	stages := append([]string{"sidedata=mode=delete:type=DISPLAYMATRIX"}, compositionOrientationStages(orientation)...)
+	switch fit {
+	case compositionFitCrop:
+		stages = append(stages, fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d", width, height, width, height))
+	case compositionFitBlur:
+		stages = append(stages, fillFilterChain(compositionFitBlur, fact.Width, fact.Height, width, height))
+	default:
+		stages = append(stages, fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2", width, height, width, height))
+	}
+	stages = append(stages,
+		"loop=loop=-1:size=1:start=0",
+		fmt.Sprintf("trim=end_frame=%d", frames),
+		fmt.Sprintf("setsar=1,fps=%s,format=yuv420p", fpsText))
+	return []string{fmt.Sprintf("[%d:v]%s[%s]", inputIndex, strings.Join(stages, ","), outLabel)}
+}
+
+// compositionOrientationStages maps a JPEG EXIF orientation onto the filters
+// that stand the picture upright — the same transforms ffmpeg's own
+// autorotate inserts. The still is read with -noautorotate and the graph owns
+// the turn, so a portrait photo renders the same on an ffmpeg that honors
+// EXIF orientation and on one that ignores it. 1 (and 0, none) needs nothing.
+func compositionOrientationStages(orientation int) []string {
+	switch orientation {
+	case 2:
+		return []string{"hflip"}
+	case 3:
+		return []string{"hflip", "vflip"}
+	case 4:
+		return []string{"vflip"}
+	case 5:
+		return []string{"transpose=0"}
+	case 6:
+		return []string{"transpose=1"}
+	case 7:
+		return []string{"transpose=3"}
+	case 8:
+		return []string{"transpose=2"}
+	}
+	return nil
+}
+
+// compositionStillInputOptions reads a still ONCE — its one decoded frame is
+// held by the graph: the image2 reader with the filename taken literally
+// (-pattern_type none, so a % in the path is not a sequence pattern), the
+// decoder the bytes named (image2 guesses by extension and cannot guess GIF
+// at all), the project frame rate as the frame's duration (the step the
+// hold's loop advances by), and ffmpeg's EXIF autorotate off (the graph
+// applies the orientation). No -loop 1 input loop: it re-decodes the image
+// for every output frame, and it spins forever on a file that won't decode.
+func compositionStillInputOptions(decoder, fpsText string) []string {
+	options := []string{"-noautorotate", "-f", "image2", "-pattern_type", "none", "-framerate", fpsText}
+	if decoder != "" {
+		options = append(options, "-c:v", decoder)
+	}
+	return options
+}
+
 // compositionDuckStages renders a segment's duck ranges as enable-gated
 // volume stages, plus the between() terms they cover. A duck sets the
 // segment's level ABSOLUTELY inside its range — sequential volume filters
@@ -163,9 +284,10 @@ func compositionDuckStages(segment CompositionSegment) (stages []string, between
 
 // compositionClipAudioUsable reports whether a clip's original audio enters
 // the mix: the probed clip must carry sound, and neither the clip's own
-// mute/detach state nor a solo preview may silence it.
+// mute/detach state nor a solo preview may silence it. A still never does —
+// it has no sound; synthesized silence holds its place in the junctions.
 func compositionClipAudioUsable(clip CompositionClip, facts map[string]joinClipFact, soloLaneID string) bool {
-	if clip.Audio.Muted || clip.Audio.Detached || soloLaneID != "" {
+	if clip.Ref.Kind == "image" || clip.Audio.Muted || clip.Audio.Detached || soloLaneID != "" {
 		return false
 	}
 	fact, ok := facts[clip.Ref.ArtifactID]
@@ -199,7 +321,10 @@ func buildCompositionRenderPlan(doc CompositionDoc, facts map[string]joinClipFac
 	plan.Width, plan.Height, plan.FPS = width, height, fps
 	fpsText := formatJoinSeconds(fps)
 
-	// Real inputs: unique refs in first-use order (clips, then segments).
+	// Real inputs: unique refs in first-use order (clips, then segments). A
+	// still is the exception: it is read once per USE — its single decoded
+	// frame is held for that clip's length — so each still clip registers its
+	// own input, with the image2 read options.
 	inputIndex := map[string]int{}
 	inputFor := func(ref CompositionMediaRef) int {
 		key := ref.ArtifactID
@@ -212,10 +337,18 @@ func buildCompositionRenderPlan(doc CompositionDoc, facts map[string]joinClipFac
 		index := len(plan.InputPaths)
 		inputIndex[key] = index
 		plan.InputPaths = append(plan.InputPaths, ref.Path)
+		plan.InputOptions = append(plan.InputOptions, nil)
 		return index
 	}
-	for _, clip := range doc.Video {
-		inputFor(clip.Ref)
+	clipInputs := make([]int, len(doc.Video))
+	for i, clip := range doc.Video {
+		if clip.Ref.Kind == "image" {
+			clipInputs[i] = len(plan.InputPaths)
+			plan.InputPaths = append(plan.InputPaths, clip.Ref.Path)
+			plan.InputOptions = append(plan.InputOptions, compositionStillInputOptions(opts.Stills[clip.Ref.ArtifactID].Decoder, fpsText))
+			continue
+		}
+		clipInputs[i] = inputFor(clip.Ref)
 	}
 	for _, lane := range doc.AudioLanes {
 		for _, segment := range lane.Segments {
@@ -257,7 +390,13 @@ func buildCompositionRenderPlan(doc CompositionDoc, facts map[string]joinClipFac
 	if len(doc.Video) > 0 {
 		for i, clip := range doc.Video {
 			fact := facts[clip.Ref.ArtifactID]
-			statements = append(statements, compositionConformStatements(inputFor(clip.Ref), clip, fact, doc.Output.Fit, width, height, fpsText, fmt.Sprintf("v%d", i))...)
+			label := fmt.Sprintf("v%d", i)
+			if clip.Ref.Kind == "image" {
+				frames := int(math.Max(1, math.Round((clip.OutSeconds-clip.InSeconds)*fps)))
+				statements = append(statements, compositionStillStatements(clipInputs[i], frames, opts.Stills[clip.Ref.ArtifactID].Orientation, fact, doc.Output.Fit, width, height, fpsText, label)...)
+				continue
+			}
+			statements = append(statements, compositionConformStatements(clipInputs[i], clip, fact, doc.Output.Fit, width, height, fpsText, label)...)
 		}
 		videoLabel = "[v0]"
 		unsupportedXfades := map[string]bool{}
@@ -310,6 +449,7 @@ func buildCompositionRenderPlan(doc CompositionDoc, facts map[string]joinClipFac
 	// ---- Original audio, junction-chained in step with the video ----
 	// (skipped entirely when the export omits audio — AU-11's choice)
 	audioLabel := ""
+	silentVideoClips := 0
 	if len(doc.Video) > 0 && !opts.MuteAudio {
 		for i, clip := range doc.Video {
 			duration := clip.OutSeconds - clip.InSeconds
@@ -320,8 +460,13 @@ func buildCompositionRenderPlan(doc CompositionDoc, facts map[string]joinClipFac
 					gain = fmt.Sprintf(",volume=%sdB", formatJoinSeconds(clip.Audio.GainDb))
 				}
 				statements = append(statements, fmt.Sprintf("[%d:a]atrim=start=%s:end=%s,asetpts=PTS-STARTPTS,aformat=sample_rates=%d:channel_layouts=stereo%s%s",
-					inputFor(clip.Ref), formatJoinSeconds(clip.InSeconds), formatJoinSeconds(clip.OutSeconds), compositionAudioSampleRate, gain, label))
+					clipInputs[i], formatJoinSeconds(clip.InSeconds), formatJoinSeconds(clip.OutSeconds), compositionAudioSampleRate, gain, label))
 			} else {
+				// A still is silent by nature, so only a VIDEO clip that
+				// lost its sound is worth the notice.
+				if clip.Ref.Kind != "image" {
+					silentVideoClips++
+				}
 				statements = append(statements, fmt.Sprintf("[%d:a]aformat=sample_rates=%d:channel_layouts=stereo%s",
 					nextSynthetic(duration), compositionAudioSampleRate, label))
 			}
@@ -420,15 +565,15 @@ func buildCompositionRenderPlan(doc CompositionDoc, facts map[string]joinClipFac
 		}
 	}
 
-	if syntheticCount > 0 {
+	if silentVideoClips > 0 {
 		plural := "s"
 		possessive := "their"
-		if syntheticCount == 1 {
+		if silentVideoClips == 1 {
 			plural = ""
 			possessive = "its"
 		}
 		plan.Notices = append(plan.Notices, fmt.Sprintf("%d clip%s carried no usable audio — silence holds %s place in the mix",
-			syntheticCount, plural, possessive))
+			silentVideoClips, plural, possessive))
 	}
 	if opts.SoloLaneID != "" {
 		plan.Notices = append(plan.Notices, "solo preview — only the soloed lane is audible")
@@ -511,11 +656,15 @@ func compositionEncodeArgs(preview bool, crf int, audioOnly, includeAudio bool) 
 	return append(args, "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
 }
 
-// compositionFFmpegArgs assembles the invocation: real inputs, synthetic
-// inputs, the graph, the maps, the encode block, and the output path.
+// compositionFFmpegArgs assembles the invocation: real inputs (each behind
+// its own options), synthetic inputs, the graph, the maps, the encode block,
+// and the output path.
 func compositionFFmpegArgs(plan compositionRenderPlan, encodeArgs []string, output string) []string {
 	args := []string{"-y"}
-	for _, path := range plan.InputPaths {
+	for i, path := range plan.InputPaths {
+		if i < len(plan.InputOptions) {
+			args = append(args, plan.InputOptions[i]...)
+		}
 		args = append(args, "-i", path)
 	}
 	args = append(args, plan.ExtraInputArgs...)
@@ -876,7 +1025,8 @@ func (a *App) executeCompositionRender(ctx context.Context, config AppConfig, ru
 	defer os.RemoveAll(staging)
 
 	// Probe the video refs (existence for every ref — PR-06's render-time
-	// refusal — and facts for the video lane).
+	// refusal — and facts for the video lane; a still is measured from its
+	// own bytes, no ffprobe involved).
 	if missing := compositionMissingRefs(doc); len(missing) > 0 {
 		plural := "s"
 		pronoun := "them"
@@ -892,8 +1042,22 @@ func (a *App) executeCompositionRender(ctx context.Context, config AppConfig, ru
 		return
 	}
 	facts := map[string]joinClipFact{}
+	stills := map[string]compositionStillFact{}
 	for _, clip := range doc.Video {
 		if _, done := facts[clip.Ref.ArtifactID]; done {
+			continue
+		}
+		if clip.Ref.Kind == "image" {
+			still, err := measureCompositionStillFile(clip.Ref.Path)
+			if err != nil {
+				update(func(o *CompositionRenderOperation) {
+					o.Status = "failed"
+					o.Error = fmt.Sprintf("could not read the still %s (%v) — convert it to PNG or JPEG (convert_image) and add that instead", clip.Ref.ArtifactID, err)
+				})
+				return
+			}
+			facts[clip.Ref.ArtifactID] = joinClipFact{Width: still.Width, Height: still.Height}
+			stills[clip.Ref.ArtifactID] = still
 			continue
 		}
 		fact, ok := joinClipFactFor(ctx, config, clip.Ref.Path, artifactPrefix+clip.Ref.Path)
@@ -928,6 +1092,7 @@ func (a *App) executeCompositionRender(ctx context.Context, config AppConfig, ru
 		Height:               run.height,
 		FPS:                  run.fps,
 		InstalledTransitions: installed,
+		Stills:               stills,
 	})
 	if err != nil {
 		update(func(o *CompositionRenderOperation) { o.Status = "failed"; o.Error = err.Error() })

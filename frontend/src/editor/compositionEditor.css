@@ -220,6 +220,33 @@
   border-style: dashed;
 }
 
+/* A still shows its picture behind the label — dimmed so the id and length
+   stay legible; the webview applies the photo's EXIF orientation, matching
+   the render. The thumbnail never takes the pointer: every drag, edge
+   resize, and select stays on the clip button. */
+.composition-clip.still {
+  background: #2a2f3a;
+}
+
+.composition-clip-thumb {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.composition-clip-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.45;
+}
+
+.composition-clip.still .composition-clip-name,
+.composition-clip.still .composition-clip-duration {
+  position: relative;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+}
+
 .composition-clip-name,
 .composition-clip-duration {
   max-width: 100%;

@@ -2,9 +2,13 @@ package main
 
 import (
 	"fmt"
+	"image"
+	"image/color"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +39,165 @@ func renderTestFacts(refs ...CompositionMediaRef) map[string]joinClipFact {
 		facts[ref.ArtifactID] = joinClipFact{Duration: ref.DurationSeconds, Width: ref.Width, Height: ref.Height, FPS: ref.FPS, HasAudio: ref.HasAudio}
 	}
 	return facts
+}
+
+func renderTestStillRef(id, path string, width, height int) CompositionMediaRef {
+	return CompositionMediaRef{ArtifactID: id, Path: path, Kind: "image", Width: width, Height: height}
+}
+
+func TestBuildCompositionRenderPlanStillThenClip(t *testing.T) {
+	// A portrait phone photo (stored landscape, EXIF 6) opens the sequence
+	// and dissolves into a 720p clip: the clip sets the frame, the still is
+	// read once and held for exactly 4s worth of frames, and its silence
+	// holds the audio junction without a "no usable audio" notice.
+	still := renderTestStillRef("img_a", "/a.jpg", 1080, 1920)
+	clip := renderTestVideoRef("vid_b", "/b.mp4", 10, true)
+	doc := renderTestDoc(
+		renderTestClip("c1", still, 0, 4, &CompositionTransition{Kind: "dissolve", Seconds: 1, AudioCrossfade: true}),
+		renderTestClip("c2", clip, 0, 10, nil),
+	)
+	plan, err := buildCompositionRenderPlan(doc, renderTestFacts(still, clip), compositionRenderOptions{
+		Stills: map[string]compositionStillFact{"img_a": {Width: 1080, Height: 1920, Decoder: "mjpeg", Orientation: 6}},
+	})
+	if err != nil {
+		t.Fatalf("buildCompositionRenderPlan returned error: %v", err)
+	}
+	want := "[0:v]sidedata=mode=delete:type=DISPLAYMATRIX,transpose=1,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2," +
+		"loop=loop=-1:size=1:start=0,trim=end_frame=120,setsar=1,fps=30,format=yuv420p[v0];" +
+		"[1:v]trim=start=0:end=10,setpts=PTS-STARTPTS," +
+		"scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v1];" +
+		"[v0][v1]xfade=transition=fade:duration=1:offset=3[vx0];" +
+		"[vx0]null[vout];" +
+		"[2:a]aformat=sample_rates=48000:channel_layouts=stereo[ac0];" +
+		"[1:a]atrim=start=0:end=10,asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo[ac1];" +
+		"[ac0]atrim=start=0:end=3,asetpts=PTS-STARTPTS[at0];" +
+		"[at0][ac1]concat=n=2:v=0:a=1[ax0];" +
+		"[ax0]anull[aout]"
+	if plan.FilterComplex != want {
+		t.Fatalf("FilterComplex =\n%s\nwant\n%s", plan.FilterComplex, want)
+	}
+	if plan.Width != 1280 || plan.Height != 720 || plan.FPS != 30 || plan.SequenceSeconds != 13 {
+		t.Fatalf("plan scalars = %dx%d @%g, %gs; want the clip's 1280x720 @30 and 13s", plan.Width, plan.Height, plan.FPS, plan.SequenceSeconds)
+	}
+	if strings.Join(plan.InputPaths, " ") != "/a.jpg /b.mp4" || len(plan.InputOptions) != 2 ||
+		strings.Join(plan.InputOptions[0], " ") != "-noautorotate -f image2 -pattern_type none -framerate 30 -c:v mjpeg" || plan.InputOptions[1] != nil {
+		t.Fatalf("inputs = %v / %q", plan.InputPaths, plan.InputOptions)
+	}
+	if strings.Join(plan.ExtraInputArgs, " ") != "-f lavfi -t 4 -i anullsrc=channel_layout=stereo:sample_rate=48000" {
+		t.Fatalf("ExtraInputArgs = %+v", plan.ExtraInputArgs)
+	}
+	if len(plan.Notices) != 0 {
+		t.Fatalf("notices = %v, want none — a still is silent by nature", plan.Notices)
+	}
+}
+
+func TestBuildCompositionRenderPlanStillFramesAndFits(t *testing.T) {
+	photo := renderTestStillRef("img_p", "/p.png", 4032, 3024)
+	portrait := renderTestStillRef("img_q", "/q.webp", 1080, 1920)
+	stills := map[string]compositionStillFact{
+		"img_p": {Width: 4032, Height: 3024, Decoder: "png"},
+		"img_q": {Width: 1080, Height: 1920, Decoder: "webp"},
+	}
+
+	// Stills only: the frame inherits the first still's shape, fitted to the
+	// 1920 long edge; no fps to inherit, so 30. The same photo used twice is
+	// read twice (each use holds its own frame), and the blur fit composites
+	// each still once by its own display size.
+	slideshow := renderTestDoc(
+		renderTestClip("c1", photo, 0, 2.5, nil),
+		renderTestClip("c2", portrait, 0, 3, nil),
+		renderTestClip("c3", photo, 0, 1, nil),
+	)
+	slideshow.Output.Fit = compositionFitBlur
+	plan, err := buildCompositionRenderPlan(slideshow, renderTestFacts(photo, portrait), compositionRenderOptions{Stills: stills})
+	if err != nil {
+		t.Fatalf("slideshow plan returned error: %v", err)
+	}
+	if plan.Width != 1920 || plan.Height != 1440 || plan.FPS != 30 {
+		t.Fatalf("slideshow frame = %dx%d @%g, want the photo fitted to 1920x1440 @30", plan.Width, plan.Height, plan.FPS)
+	}
+	if strings.Join(plan.InputPaths, " ") != "/p.png /q.webp /p.png" {
+		t.Fatalf("inputs = %v, want one read per still use", plan.InputPaths)
+	}
+	for _, want := range []string{
+		"[0:v]sidedata=mode=delete:type=DISPLAYMATRIX," + fillFilterChain(compositionFitBlur, 4032, 3024, 1920, 1440) + ",loop=loop=-1:size=1:start=0,trim=end_frame=75,",
+		"[1:v]sidedata=mode=delete:type=DISPLAYMATRIX," + fillFilterChain(compositionFitBlur, 1080, 1920, 1920, 1440) + ",loop=loop=-1:size=1:start=0,trim=end_frame=90,",
+		"[2:v]sidedata=mode=delete:type=DISPLAYMATRIX," + fillFilterChain(compositionFitBlur, 4032, 3024, 1920, 1440) + ",loop=loop=-1:size=1:start=0,trim=end_frame=30,",
+		"[v0][v1]concat=n=2:v=1:a=0[vx0]",
+		"[vx0][v2]concat=n=2:v=1:a=0[vx1]",
+	} {
+		if !strings.Contains(plan.FilterComplex, want) {
+			t.Fatalf("slideshow graph missing %q:\n%s", want, plan.FilterComplex)
+		}
+	}
+	if strings.Contains(plan.FilterComplex, "transpose") || len(plan.Notices) != 0 {
+		t.Fatalf("an upright still needs no turn and raises no notice:\n%s\n%v", plan.FilterComplex, plan.Notices)
+	}
+	if strings.Join(plan.InputOptions[1], " ") != "-noautorotate -f image2 -pattern_type none -framerate 30 -c:v webp" {
+		t.Fatalf("webp read options = %q", plan.InputOptions[1])
+	}
+
+	// A still opening the sequence never decides the format: the first VIDEO
+	// clip does, fps included.
+	clip := CompositionMediaRef{ArtifactID: "vid_c", Path: "/c.mp4", Kind: "video", DurationSeconds: 5, Width: 1280, Height: 720, FPS: 24, HasAudio: true}
+	titled := renderTestDoc(renderTestClip("c1", photo, 0, 2, nil), renderTestClip("c2", clip, 0, 5, nil))
+	titled.Output.Fit = compositionFitCrop
+	plan, err = buildCompositionRenderPlan(titled, renderTestFacts(photo, clip), compositionRenderOptions{Stills: stills})
+	if err != nil {
+		t.Fatalf("titled plan returned error: %v", err)
+	}
+	if plan.Width != 1280 || plan.Height != 720 || plan.FPS != 24 {
+		t.Fatalf("titled frame = %dx%d @%g, want the clip's 1280x720 @24", plan.Width, plan.Height, plan.FPS)
+	}
+	if !strings.Contains(plan.FilterComplex, "[0:v]sidedata=mode=delete:type=DISPLAYMATRIX,scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,loop=loop=-1:size=1:start=0,trim=end_frame=48,setsar=1,fps=24,") {
+		t.Fatalf("the cropped still must hold 2s at the clip's 24fps:\n%s", plan.FilterComplex)
+	}
+	if !strings.Contains(strings.Join(plan.InputOptions[0], " "), "-framerate 24") {
+		t.Fatalf("the still must read at the project rate: %q", plan.InputOptions[0])
+	}
+
+	// A still too small to frame falls back to the 720p default.
+	speck := renderTestStillRef("img_s", "/s.gif", 1, 1)
+	plan, err = buildCompositionRenderPlan(renderTestDoc(renderTestClip("c1", speck, 0, 1, nil)), renderTestFacts(speck), compositionRenderOptions{})
+	if err != nil {
+		t.Fatalf("speck plan returned error: %v", err)
+	}
+	if plan.Width != 1280 || plan.Height != 720 {
+		t.Fatalf("speck frame = %dx%d, want the 1280x720 fallback", plan.Width, plan.Height)
+	}
+	// Without read details the still reads by image2's extension guess.
+	if strings.Join(plan.InputOptions[0], " ") != "-noautorotate -f image2 -pattern_type none -framerate 30" {
+		t.Fatalf("detail-less read options = %q", plan.InputOptions[0])
+	}
+}
+
+func TestCompositionFitStillFrame(t *testing.T) {
+	cases := []struct {
+		width, height int
+		wantW, wantH  int
+	}{
+		{4032, 3024, 1920, 1440},
+		{3024, 4032, 1440, 1920},
+		{1024, 1024, 1024, 1024}, // never enlarged
+		{1081, 721, 1080, 720},   // even-dimensioned
+		{6000, 1000, 1920, 320},
+		{1, 1, 0, 0}, // too small to frame
+		{0, 600, 0, 0},
+	}
+	for _, tc := range cases {
+		if w, h := compositionFitStillFrame(tc.width, tc.height); w != tc.wantW || h != tc.wantH {
+			t.Fatalf("compositionFitStillFrame(%d, %d) = %dx%d, want %dx%d", tc.width, tc.height, w, h, tc.wantW, tc.wantH)
+		}
+	}
+}
+
+func TestCompositionOrientationStages(t *testing.T) {
+	want := map[int]string{0: "", 1: "", 2: "hflip", 3: "hflip,vflip", 4: "vflip", 5: "transpose=0", 6: "transpose=1", 7: "transpose=3", 8: "transpose=2", 9: ""}
+	for orientation, stages := range want {
+		if got := strings.Join(compositionOrientationStages(orientation), ","); got != stages {
+			t.Fatalf("compositionOrientationStages(%d) = %q, want %q", orientation, got, stages)
+		}
+	}
 }
 
 func TestBuildCompositionRenderPlanSingleClip(t *testing.T) {
@@ -246,6 +409,25 @@ func TestCompositionFFmpegArgsShape(t *testing.T) {
 		" -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p -c:a aac -b:a 128k -movflags +faststart /out.mp4"
 	if strings.Join(args, " ") != want {
 		t.Fatalf("args =\n%v\nwant\n%s", args, want)
+	}
+
+	// A still's read options sit right before its own -i; the synthetic
+	// silence holding its audio place follows the real inputs.
+	still := renderTestStillRef("img_a", "/s.png", 640, 480)
+	plan, err = buildCompositionRenderPlan(renderTestDoc(renderTestClip("c1", still, 0, 4, nil)), renderTestFacts(still), compositionRenderOptions{
+		Stills: map[string]compositionStillFact{"img_a": {Width: 640, Height: 480, Decoder: "png"}},
+	})
+	if err != nil {
+		t.Fatalf("still buildCompositionRenderPlan returned error: %v", err)
+	}
+	args = compositionFFmpegArgs(plan, compositionEncodeArgs(true, 0, false, true), "/out.mp4")
+	want = "-y -noautorotate -f image2 -pattern_type none -framerate 30 -c:v png -i /s.png" +
+		" -f lavfi -t 4 -i anullsrc=channel_layout=stereo:sample_rate=48000" +
+		" -filter_complex " + plan.FilterComplex +
+		" -map [vout] -map [aout]" +
+		" -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p -c:a aac -b:a 128k -movflags +faststart /out.mp4"
+	if strings.Join(args, " ") != want {
+		t.Fatalf("still args =\n%v\nwant\n%s", args, want)
 	}
 }
 
@@ -504,6 +686,70 @@ func TestCompositionRenderLifecycle(t *testing.T) {
 	}
 }
 
+func TestCompositionRenderReadsStills(t *testing.T) {
+	config := editTestHome(t)
+	artifacts := compositionConversationFixture(t, config.Storage)
+	app := NewApp()
+	okConfig := config
+	okConfig.Providers.Local.FFmpeg.Binary = writeFakeCompositionFFmpeg(t, filepath.Join(t.TempDir(), "ok"), "ok")
+	if err := writeAppConfig(okConfig); err != nil {
+		t.Fatalf("writeAppConfig: %v", err)
+	}
+	stubLocalLookup(t, map[string]string{okConfig.Providers.Local.FFmpeg.Binary: okConfig.Providers.Local.FFmpeg.Binary})
+
+	// A portrait EXIF still opens a sequence before a 720p clip: the render
+	// measures it from its bytes (no ffprobe — TestMain pins lookups off),
+	// reads it once under the decoder its magic named, turns it upright in
+	// the graph, and lets the clip set the frame.
+	seed, err := app.SeedComposition(SeedCompositionRequest{ConversationID: "conv_comp", ArtifactIDs: []string{"img_r", "vid_a"}})
+	if err != nil {
+		t.Fatalf("SeedComposition returned error: %v", err)
+	}
+	op, err := app.SubmitCompositionRender(CompositionRenderRequest{ConversationID: "conv_comp", Doc: &seed.Doc})
+	if err != nil {
+		t.Fatalf("SubmitCompositionRender returned error: %v", err)
+	}
+	terminal := waitCompositionRenderTerminal(t, app, op.ID)
+	if terminal.Status != "completed" || terminal.Width != 1280 || terminal.Height != 720 {
+		t.Fatalf("still render = %+v, want completed at the clip's 1280x720", terminal)
+	}
+	for _, notice := range terminal.Notices {
+		if strings.Contains(notice, "no usable audio") {
+			t.Fatalf("a still's silence must not raise the silent-clip notice: %v", terminal.Notices)
+		}
+	}
+	recorded, err := os.ReadFile(filepath.Join(filepath.Dir(okConfig.Providers.Local.FFmpeg.Binary), "args.txt"))
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	for _, want := range []string{
+		"-noautorotate\n-f\nimage2\n-pattern_type\nnone\n-framerate\n",
+		"\n-c:v\nmjpeg\n-i\n" + filepath.Join(artifacts, "img_r.jpg") + "\n",
+		"[0:v]sidedata=mode=delete:type=DISPLAYMATRIX,transpose=1,scale=1280:720:",
+		"loop=loop=-1:size=1:start=0,trim=end_frame=",
+	} {
+		if !strings.Contains(string(recorded), want) {
+			t.Fatalf("render argv missing %q:\n%s", want, recorded)
+		}
+	}
+
+	// A still whose bytes are not an image fails the render naming it and
+	// the way out, before ffmpeg ever runs on it.
+	junkPath := filepath.Join(artifacts, "img_junk.png")
+	if err := os.WriteFile(junkPath, []byte("not an image"), 0644); err != nil {
+		t.Fatalf("write junk: %v", err)
+	}
+	junk := renderTestDoc(renderTestClip("c1", CompositionMediaRef{ArtifactID: "img_junk", Path: junkPath, Kind: "image", Width: 10, Height: 10}, 0, 2, nil))
+	op, err = app.SubmitCompositionRender(CompositionRenderRequest{ConversationID: "conv_comp", Doc: &junk})
+	if err != nil {
+		t.Fatalf("junk SubmitCompositionRender returned error: %v", err)
+	}
+	terminal = waitCompositionRenderTerminal(t, app, op.ID)
+	if terminal.Status != "failed" || !strings.Contains(terminal.Error, "could not read the still img_junk") || !strings.Contains(terminal.Error, "convert_image") {
+		t.Fatalf("junk still render = %+v, want a named failure", terminal)
+	}
+}
+
 func TestCompositionExportLifecycle(t *testing.T) {
 	config := editTestHome(t)
 	artifacts := compositionConversationFixture(t, config.Storage)
@@ -696,6 +942,45 @@ func TestCompositionRenderGraphsOnRealFFmpeg(t *testing.T) {
 	refC := CompositionMediaRef{ArtifactID: "vid_c", Path: silent, Kind: "video", DurationSeconds: 3, Width: 640, Height: 360, FPS: 24, HasAudio: false}
 	refM := CompositionMediaRef{ArtifactID: "aud_m", Path: wav, Kind: "audio", DurationSeconds: 3, HasAudio: true}
 	facts := renderTestFacts(refA, refB, refC, refM)
+
+	// Stills, each measured the executor's way: an 800x600 PNG, a GIF, a
+	// WebP, and a JPEG stored 64x32 — left half red, right half blue — whose
+	// EXIF 6 turns it portrait with red on top.
+	pngStill := encode("s.png", "-f", "lavfi", "-i", "testsrc2=size=800x600:rate=1:duration=1", "-frames:v", "1")
+	gifStill := encode("s.gif", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=5:duration=1")
+	webpStill := encode("s.webp", "-f", "lavfi", "-i", "testsrc2=size=640x480:rate=1:duration=1", "-frames:v", "1")
+	split := image.NewRGBA(image.Rect(0, 0, 64, 32))
+	for y := 0; y < 32; y++ {
+		for x := 0; x < 64; x++ {
+			if x < 32 {
+				split.Set(x, y, color.RGBA{R: 230, A: 255})
+			} else {
+				split.Set(x, y, color.RGBA{B: 230, A: 255})
+			}
+		}
+	}
+	rotatedStill := filepath.Join(dir, "rot.jpg")
+	if err := os.WriteFile(rotatedStill, compositionEXIFJPEGOf(t, split, 6), 0644); err != nil {
+		t.Fatalf("write rot.jpg: %v", err)
+	}
+	stills := map[string]compositionStillFact{}
+	stillRef := func(id, path string) CompositionMediaRef {
+		t.Helper()
+		fact, err := measureCompositionStillFile(path)
+		if err != nil {
+			t.Fatalf("measure %s: %v", path, err)
+		}
+		stills[id] = fact
+		facts[id] = joinClipFact{Width: fact.Width, Height: fact.Height}
+		return CompositionMediaRef{ArtifactID: id, Path: path, Kind: "image", Width: fact.Width, Height: fact.Height}
+	}
+	refP := stillRef("img_p", pngStill)
+	refG := stillRef("img_g", gifStill)
+	refW := stillRef("img_w", webpStill)
+	refR := stillRef("img_r", rotatedStill)
+	if refR.Width != 32 || refR.Height != 64 {
+		t.Fatalf("the EXIF-6 still measured %dx%d, want its portrait display size 32x64", refR.Width, refR.Height)
+	}
 	musicLane := CompositionLane{ID: "lane1", Name: "Music", Segments: []CompositionSegment{{
 		ID: "seg1", Ref: refM, InSeconds: 0, OutSeconds: 3, StartSeconds: 1,
 		GainDb: -6, FadeInSeconds: 0.5, FadeOutSeconds: 0.5,
@@ -715,6 +1000,29 @@ func TestCompositionRenderGraphsOnRealFFmpeg(t *testing.T) {
 	}
 	one := 1.0
 	four := 4.0
+	// Stills: a slideshow that wipes and dissolves between three image
+	// formats under music, a portrait EXIF still beside footage under the
+	// blur fit (two blur composites in one graph), and a still alone (its
+	// frame inherits the still's portrait display size).
+	slideshow := func() CompositionDoc {
+		doc := renderTestDoc(
+			renderTestClip("c1", refP, 0, 2, &CompositionTransition{Kind: "wipeleft", Seconds: 0.5}),
+			renderTestClip("c2", refG, 0, 1.5, &CompositionTransition{Kind: "dissolve", Seconds: 0.5, AudioCrossfade: true}),
+			renderTestClip("c3", refW, 0, 2, nil),
+		)
+		doc.AudioLanes = []CompositionLane{musicLane}
+		return doc
+	}
+	portraitBlur := func() CompositionDoc {
+		doc := renderTestDoc(renderTestClip("c1", refR, 0, 2, dissolve), renderTestClip("c2", refB, 0, 3, nil))
+		doc.Output.Fit = compositionFitBlur
+		return doc
+	}
+	croppedStills := func() CompositionDoc {
+		doc := renderTestDoc(renderTestClip("c1", refA, 0, 3, nil), renderTestClip("c2", refG, 0, 1.5, nil), renderTestClip("c3", refR, 0, 1, nil))
+		doc.Output.Fit = compositionFitCrop
+		return doc
+	}
 
 	scenarios := []struct {
 		name         string
@@ -732,10 +1040,18 @@ func TestCompositionRenderGraphsOnRealFFmpeg(t *testing.T) {
 		{"audio only", CompositionDoc{SchemaVersion: compositionSchemaVersion, Name: "Test", Output: CompositionOutput{Fit: compositionFitPad}, AudioLanes: []CompositionLane{musicLane}}, compositionRenderOptions{}, true, 0, true},
 		{"range preview", cutWithSilent(), compositionRenderOptions{StartSeconds: &one, EndSeconds: &four}, true, 0, true},
 		{"export muted", dissolveDoc(), compositionRenderOptions{MuteAudio: true}, false, 20, false},
+		{"still dissolves into clip", renderTestDoc(renderTestClip("c1", refP, 0, 2, dissolve), renderTestClip("c2", refA, 0, 3, nil)), compositionRenderOptions{}, true, 0, true},
+		{"stills slideshow", slideshow(), compositionRenderOptions{}, true, 0, true},
+		{"portrait still blur", portraitBlur(), compositionRenderOptions{}, true, 0, true},
+		{"cropped stills export", croppedStills(), compositionRenderOptions{}, false, 20, true},
+		{"still range preview", renderTestDoc(renderTestClip("c1", refP, 0, 3, nil), renderTestClip("c2", refC, 0, 3, nil)), compositionRenderOptions{StartSeconds: &one, EndSeconds: &four}, true, 0, true},
+		{"portrait still alone", renderTestDoc(renderTestClip("c1", refR, 0, 1, nil)), compositionRenderOptions{}, true, 0, true},
 	}
 	for _, scenario := range scenarios {
 		t.Run(scenario.name, func(t *testing.T) {
-			plan, err := buildCompositionRenderPlan(scenario.doc, facts, scenario.opts)
+			opts := scenario.opts
+			opts.Stills = stills
+			plan, err := buildCompositionRenderPlan(scenario.doc, facts, opts)
 			if err != nil {
 				t.Fatalf("buildCompositionRenderPlan returned error: %v", err)
 			}
@@ -746,6 +1062,67 @@ func TestCompositionRenderGraphsOnRealFFmpeg(t *testing.T) {
 				t.Fatalf("ffmpeg refused the graph: %v\nfilter_complex: %s\n%s", err, plan.FilterComplex, out)
 			}
 		})
+	}
+
+	// A still holds exactly its length: the slideshow renders the layout's
+	// frame count (2 + 1.5 + 2s less two 0.5s overlaps, at the PNG-inherited
+	// default 30fps — 135 frames).
+	ffprobe, err := exec.LookPath("ffprobe")
+	if err != nil {
+		t.Skip("no ffprobe on PATH — the still length and orientation checks need it")
+	}
+	countOut, err := exec.Command(ffprobe, "-v", "error", "-count_frames", "-select_streams", "v:0",
+		"-show_entries", "stream=nb_read_frames,width,height", "-of", "csv=p=0", filepath.Join(dir, "stills-slideshow.mp4")).Output()
+	if err != nil {
+		t.Fatalf("ffprobe slideshow: %v", err)
+	}
+	fields := strings.Split(strings.TrimSpace(string(countOut)), ",")
+	_, sequence := compositionClipLayout(slideshow())
+	wantFrames := int(math.Round(sequence * 30))
+	if len(fields) != 3 || fields[0] != "800" || fields[1] != "600" || fields[2] != strconv.Itoa(wantFrames) {
+		t.Fatalf("slideshow = %v, want 800x600 at exactly %d frames", fields, wantFrames)
+	}
+
+	// The EXIF-6 photo alone renders portrait (32x64) and upright: its stored
+	// left-red/right-blue halves turn red-on-top. The file must carry NO
+	// display matrix — the decoder attaches the EXIF turn to every frame even
+	// under -noautorotate, and a leaked matrix makes players turn the
+	// upright picture again — and the byte count cannot tell 32x64 from
+	// 64x32, so the coded size is checked separately. Both portrait outputs
+	// are checked: the still alone, and the still opening a blur sequence
+	// (where a leaked matrix would turn the whole composition).
+	for _, name := range []string{"portrait-still-alone.mp4", "portrait-still-blur.mp4"} {
+		sideData, err := exec.Command(ffprobe, "-v", "error", "-select_streams", "v:0",
+			"-show_entries", "stream_side_data=side_data_type", "-of", "csv=p=0", filepath.Join(dir, name)).Output()
+		if err != nil {
+			t.Fatalf("ffprobe %s side data: %v", name, err)
+		}
+		if strings.Contains(string(sideData), "Display Matrix") {
+			t.Fatalf("%s carries a display matrix — players would turn it again: %s", name, sideData)
+		}
+	}
+	sizeOut, err := exec.Command(ffprobe, "-v", "error", "-select_streams", "v:0",
+		"-show_entries", "stream=width,height", "-of", "csv=p=0", filepath.Join(dir, "portrait-still-alone.mp4")).Output()
+	if err != nil || strings.TrimSpace(string(sizeOut)) != "32,64" {
+		t.Fatalf("portrait still coded size = %q (err %v), want 32,64", sizeOut, err)
+	}
+	frame, err := exec.Command(binary, "-v", "error", "-i", filepath.Join(dir, "portrait-still-alone.mp4"),
+		"-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-").Output()
+	if err != nil {
+		t.Fatalf("decode portrait frame: %v", err)
+	}
+	if len(frame) != 32*64*3 {
+		t.Fatalf("portrait frame is %d bytes, want a 32x64 rgb24 frame (%d)", len(frame), 32*64*3)
+	}
+	pixel := func(x, y int) (int, int, int) {
+		offset := (y*32 + x) * 3
+		return int(frame[offset]), int(frame[offset+1]), int(frame[offset+2])
+	}
+	if r, _, b := pixel(16, 10); r < 150 || b > 100 {
+		t.Fatalf("top of the portrait still = rgb(%d,_,%d), want red — the EXIF turn is wrong", r, b)
+	}
+	if r, _, b := pixel(16, 54); b < 150 || r > 100 {
+		t.Fatalf("bottom of the portrait still = rgb(%d,_,%d), want blue — the EXIF turn is wrong", r, b)
 	}
 }
 

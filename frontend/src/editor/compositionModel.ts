@@ -6,7 +6,7 @@
 // bindings so test/run-composition-model-tests.cjs can compile it alone,
 // like the other editor models.
 
-export type CompositionMediaRefKind = 'video' | 'audio';
+export type CompositionMediaRefKind = 'video' | 'audio' | 'image';
 
 export type CompositionMediaRef = {
   artifactId: string;
@@ -14,7 +14,10 @@ export type CompositionMediaRef = {
   path: string;
   mimeType?: string;
   kind: CompositionMediaRefKind;
+  // Zero for a still: an image has no source duration — its clip's range
+  // is its length.
   durationSeconds: number;
+  // The display size — for a still, with any JPEG EXIF orientation applied.
   width?: number;
   height?: number;
   fps?: number;
@@ -100,6 +103,13 @@ export const compositionMaxFPS = 60.0;
 export const compositionDefaultFPS = 30.0;
 export const compositionDefaultName = 'Untitled composition';
 export const detachedAudioLaneName = 'Detached audio';
+// A still lands at Final Cut Pro's default length, resizes freely down to the
+// floor, and stops at a sanity ceiling (a still under a full podcast); a
+// stills-only sequence's inherited frame fits within the long-edge cap.
+export const compositionStillDefaultSeconds = 4.0;
+export const compositionStillMinSeconds = 0.1;
+export const compositionStillMaxSeconds = 3 * 60 * 60;
+export const compositionStillFrameMaxEdge = 1920;
 
 // compositionTransitions is the junction vocabulary — 'dissolve' (the
 // composer's name for a plain cross-fade) plus the join tools' curated xfade
@@ -220,7 +230,7 @@ export function normalizeCompositionMediaRef(ref: any): CompositionMediaRef {
     conversationId: typeof ref?.conversationId === 'string' ? ref.conversationId : undefined,
     path: typeof ref?.path === 'string' ? ref.path : '',
     mimeType: typeof ref?.mimeType === 'string' ? ref.mimeType : undefined,
-    kind: ref?.kind === 'audio' ? 'audio' : 'video',
+    kind: ref?.kind === 'audio' ? 'audio' : ref?.kind === 'image' ? 'image' : 'video',
     durationSeconds: finite(ref?.durationSeconds) ? ref.durationSeconds : 0,
     width: typeof ref?.width === 'number' ? ref.width : undefined,
     height: typeof ref?.height === 'number' ? ref.height : undefined,
@@ -279,6 +289,20 @@ export function clipDurationSeconds(clip: CompositionClip): number {
   return Math.max(0, clip.outSeconds - clip.inSeconds);
 }
 
+// isStillClip reports a video-lane entry holding a still image: no source to
+// trim and no sound — its range is only ever [0, length].
+export function isStillClip(clip: CompositionClip): boolean {
+  return clip.ref.kind === 'image';
+}
+
+// clampStillLength pulls a still's length into [min, max] — Go's
+// compositionNormalizeStill. Null for a non-finite request: there is no
+// length to recover from NaN.
+export function clampStillLength(seconds: number): number | null {
+  if (!finite(seconds)) return null;
+  return Math.min(compositionStillMaxSeconds, Math.max(compositionStillMinSeconds, seconds));
+}
+
 export function segmentDurationSeconds(segment: CompositionSegment): number {
   return Math.max(0, segment.outSeconds - segment.inSeconds);
 }
@@ -305,9 +329,9 @@ export function compositionSequenceDuration(doc: CompositionDoc): number {
 
 // compositionIsAudioOnly mirrors the renderer's content rule (plan.AudioOnly
 // = len(doc.Video) == 0, composition_render.go): a document with no video
-// clips renders as an M4A mix, so the editor presents it audio-first. A
-// brand-new empty draft has no content to decide with, so the editor layers
-// the opening intent (＋ Audio) on top of this.
+// clips or stills renders as an M4A mix, so the editor presents it
+// audio-first. A brand-new empty draft has no content to decide with, so the
+// editor layers the opening intent (＋ Audio) on top of this.
 export function compositionIsAudioOnly(doc: CompositionDoc): boolean {
   return doc.video.length === 0;
 }
@@ -431,18 +455,22 @@ export function renameComposition(doc: CompositionDoc, name: string): Compositio
   return {...doc, name: trimmed || compositionDefaultName};
 }
 
-// addClip appends (or inserts at index) a full-range clip from a measured
-// ref — the picker's add and the seed's landing share this shape. No-op at
-// the clip limit.
+// addClip appends (or inserts at index) a clip from a measured ref — the
+// picker's add and the seed's landing share this shape: a video at its full
+// range, an image as a still held for the default length. No-op at the clip
+// limit, or for a ref the video lane cannot hold (audio, or an unmeasured
+// source).
 export function addClip(doc: CompositionDoc, ref: CompositionMediaRef, index?: number): CompositionDoc {
-  if (ref.kind !== 'video' || ref.durationSeconds <= 0 || doc.video.length >= compositionMaxClips) {
+  const still = ref.kind === 'image';
+  const measured = still ? (ref.width ?? 0) > 0 && (ref.height ?? 0) > 0 : ref.kind === 'video' && ref.durationSeconds > 0;
+  if (!measured || doc.video.length >= compositionMaxClips) {
     return cloneCompositionDoc(doc);
   }
   const clip: CompositionClip = {
     id: newCompositionID('clp'),
     ref: {...ref},
     inSeconds: 0,
-    outSeconds: ref.durationSeconds,
+    outSeconds: still ? compositionStillDefaultSeconds : ref.durationSeconds,
     transitionToNext: null,
     audio: {gainDb: 0, muted: false, detached: false},
   };
@@ -484,13 +512,28 @@ export function duplicateClip(doc: CompositionDoc, clipID: string): CompositionD
 }
 
 // setClipRange clamps the source in/out points and re-clamps the junctions
-// the change touches (a shorter clip narrows what its dissolves may be).
+// the change touches (a shorter clip narrows what its dissolves may be). A
+// still has no source to clamp into: its range only ever names a length, so
+// the request resizes it (setStillDuration) and the range re-pins to [0, out].
 export function setClipRange(doc: CompositionDoc, clipID: string, inSeconds: number, outSeconds: number): CompositionDoc {
   const clip = doc.video.find((candidate) => candidate.id === clipID);
   if (!clip) return cloneCompositionDoc(doc);
+  if (isStillClip(clip)) return setStillDuration(doc, clipID, outSeconds - inSeconds);
   const clamped = clampRange(inSeconds, outSeconds, clip.ref.durationSeconds);
   if (!clamped) return cloneCompositionDoc(doc);
   const next = updateClip(doc, clipID, (current) => ({...current, inSeconds: clamped.inSeconds, outSeconds: clamped.outSeconds}));
+  return {...next, video: normalizeTransitions(next.video)};
+}
+
+// setStillDuration resizes a still: the length clamps into its bounds, the
+// range re-pins to [0, length], and the junctions it touches re-clamp. No-op
+// on a video clip (its length is a source range — setClipRange) or a
+// non-finite length.
+export function setStillDuration(doc: CompositionDoc, clipID: string, seconds: number): CompositionDoc {
+  const clip = doc.video.find((candidate) => candidate.id === clipID);
+  const length = clampStillLength(seconds);
+  if (!clip || !isStillClip(clip) || length === null) return cloneCompositionDoc(doc);
+  const next = updateClip(doc, clipID, (current) => ({...current, inSeconds: 0, outSeconds: length}));
   return {...next, video: normalizeTransitions(next.video)};
 }
 
@@ -508,7 +551,12 @@ export function setClipTransition(doc: CompositionDoc, clipID: string, transitio
   return {...next, video: normalizeTransitions(next.video)};
 }
 
+// setClipAudio patches a clip's original-audio mix. A still has no sound to
+// mix, mute, or detach — the request is a no-op (Go normalizes stray state
+// away, so building it here would only make a save that doesn't round-trip).
 export function setClipAudio(doc: CompositionDoc, clipID: string, patch: Partial<CompositionOriginalAudio>): CompositionDoc {
+  const target = doc.video.find((clip) => clip.id === clipID);
+  if (target && isStillClip(target)) return cloneCompositionDoc(doc);
   return updateClip(doc, clipID, (clip) => ({
     ...clip,
     audio: {
@@ -773,14 +821,49 @@ export function setCompositionOutput(doc: CompositionDoc, patch: Partial<Composi
 }
 
 // resolveOutputFrame is the display answer for "what does this project render
-// as": the explicit frame when set, else the first clip's display size and
-// fps (else the 720p/30 fallback), with even dimensions.
+// as": the explicit frame when set, else the inherited source's
+// (outputFrameSource), else the 720p/30 fallback, with even dimensions —
+// Go's compositionFrame.
 export function resolveOutputFrame(doc: CompositionDoc): {width: number; height: number; fps: number} {
-  const first = doc.video[0];
-  const width = doc.output.width || (first?.ref.width ?? 0) || 1280;
-  const height = doc.output.height || (first?.ref.height ?? 0) || 720;
-  const fps = doc.output.fps || (first?.ref.fps ?? 0) || compositionDefaultFPS;
+  const source = outputFrameSource(doc);
+  const width = doc.output.width || source.width || 1280;
+  const height = doc.output.height || source.height || 720;
+  const fps = doc.output.fps || source.fps || compositionDefaultFPS;
   return {width: evenDown(width), height: evenDown(height), fps: Math.min(compositionMaxFPS, Math.max(1, fps))};
+}
+
+// outputFrameSource is the clip an unset output frame inherits from — Go's
+// compositionFrameSource: the first VIDEO clip (a still opening the
+// sequence, a title card, must not decide the format the footage after it
+// renders in), else for a stills-only sequence the first still, fitted so a
+// photo's native size never becomes the video frame. A still sets no fps.
+export function outputFrameSource(doc: CompositionDoc): {width: number; height: number; fps: number} {
+  const firstVideo = doc.video.find((clip) => !isStillClip(clip));
+  if (firstVideo) {
+    return {width: firstVideo.ref.width ?? 0, height: firstVideo.ref.height ?? 0, fps: firstVideo.ref.fps ?? 0};
+  }
+  const first = doc.video[0];
+  if (!first) return {width: 0, height: 0, fps: 0};
+  return {...fitStillFrame(first.ref.width ?? 0, first.ref.height ?? 0), fps: 0};
+}
+
+// fitStillFrame scales a still's display size to fit the long-edge cap,
+// keeping its shape and never enlarging, even-dimensioned; zero when the
+// still is too small to frame — Go's compositionFitStillFrame.
+export function fitStillFrame(width: number, height: number): {width: number; height: number} {
+  if (!(width > 0 && height > 0)) return {width: 0, height: 0};
+  const long = Math.max(width, height);
+  let fittedWidth = width;
+  let fittedHeight = height;
+  if (long > compositionStillFrameMaxEdge) {
+    const scale = compositionStillFrameMaxEdge / long;
+    fittedWidth = Math.round(width * scale);
+    fittedHeight = Math.round(height * scale);
+  }
+  fittedWidth = evenDown(fittedWidth);
+  fittedHeight = evenDown(fittedHeight);
+  if (fittedWidth < 2 || fittedHeight < 2) return {width: 0, height: 0};
+  return {width: fittedWidth, height: fittedHeight};
 }
 
 // compositionProblems mirrors validateCompositionDoc's refusals — the states
@@ -806,14 +889,23 @@ export function compositionProblems(doc: CompositionDoc): string[] {
   doc.video.forEach((clip, index) => {
     const label = `clip ${index + 1}`;
     claim(clip.id, label);
-    if (clip.ref.kind !== 'video') {
-      problems.push(`${label} references ${clip.ref.kind || 'unknown'} media — the video lane holds video clips`);
-    }
-    if (clip.ref.durationSeconds <= 0) {
-      problems.push(`${label}'s source was never measured`);
-    }
-    if (!finite(clip.inSeconds, clip.outSeconds) || clip.outSeconds - clip.inSeconds < compositionMinRangeSeconds) {
-      problems.push(`${label}'s source range is too short`);
+    if (isStillClip(clip)) {
+      if (!((clip.ref.width ?? 0) > 0 && (clip.ref.height ?? 0) > 0)) {
+        problems.push(`${label}'s still was never measured`);
+      }
+      if (!finite(clip.inSeconds, clip.outSeconds)) {
+        problems.push(`${label} has a non-finite length`);
+      }
+    } else {
+      if (clip.ref.kind !== 'video') {
+        problems.push(`${label} references ${clip.ref.kind || 'unknown'} media — the video lane holds video clips and stills`);
+      }
+      if (clip.ref.durationSeconds <= 0) {
+        problems.push(`${label}'s source was never measured`);
+      }
+      if (!finite(clip.inSeconds, clip.outSeconds) || clip.outSeconds - clip.inSeconds < compositionMinRangeSeconds) {
+        problems.push(`${label}'s source range is too short`);
+      }
     }
     if (clip.transitionToNext) {
       const kind = clip.transitionToNext.kind;

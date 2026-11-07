@@ -15,13 +15,26 @@ import {linkedMediaProvenance} from './subtitleModel';
 // list, this filter is the picker's own.
 const defaultPickerKinds = ['video', 'audio'] as const;
 
+type MediaPickerKind = 'video' | 'audio' | 'image';
+
+// Each row's Add hover title by kind — where the picked asset lands. A
+// caller whose landing differs passes its own (the composer's images become
+// stills on its video lane rather than art in the comic's tray).
+const defaultAddTitles: Record<MediaPickerKind, string> = {
+  video: 'Add this clip to the end of the video lane',
+  audio: 'Add this recording to the last audio lane',
+  image: 'Add this image to the art tray',
+};
+
 export type MediaPickerAsset = main.ConversationAsset;
 
 export function MediaPicker(props: {
   assets: MediaPickerAsset[];
   editedConversationID: string;
   // Which asset kinds this picker offers.
-  kinds?: Array<'video' | 'audio' | 'image'>;
+  kinds?: MediaPickerKind[];
+  // Per-kind Add titles over defaultAddTitles.
+  addTitles?: Partial<Record<MediaPickerKind, string>>;
   // How many times each asset id already appears in the composition.
   refCounts: Record<string, number>;
   // Asset ids currently being resolved and measured (their rows show busy).
@@ -70,7 +83,7 @@ export function MediaPicker(props: {
                 type="button"
                 className={count > 0 ? 'added' : ''}
                 disabled={busy}
-                title={asset.kind === 'video' ? 'Add this clip to the end of the video lane' : asset.kind === 'image' ? 'Add this image to the art tray' : 'Add this recording to the last audio lane'}
+                title={props.addTitles?.[asset.kind as MediaPickerKind] ?? defaultAddTitles[asset.kind as MediaPickerKind]}
                 onClick={() => props.onAdd(asset)}
               >
                 <span className="composition-picker-name">{asset.id.slice(0, 16)} · {asset.kind}</span>

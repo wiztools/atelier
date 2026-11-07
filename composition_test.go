@@ -1,7 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
+	"image"
+	"image/color"
+	"image/gif"
+	"image/jpeg"
 	"math"
 	"os"
 	"path/filepath"
@@ -37,8 +42,31 @@ func compositionMP4Fixture(seconds float64, width, height uint32, withAudio bool
 	return append(tinyMP4(), mp4TestBox("moov", moov)...)
 }
 
+// compositionEXIFJPEG encodes a real width x height JPEG and splices
+// exifJPEGBytes' APP1 orientation block in after SOI — a photo whose stored
+// pixels are one shape and whose EXIF tells every viewer to turn it.
+func compositionEXIFJPEG(t *testing.T, width, height int, orientation uint16) []byte {
+	t.Helper()
+	return compositionEXIFJPEGOf(t, editSolidImage(width, height, color.RGBA{G: 200, A: 255}), orientation)
+}
+
+// compositionEXIFJPEGOf is compositionEXIFJPEG over a caller's picture.
+func compositionEXIFJPEGOf(t *testing.T, img image.Image, orientation uint16) []byte {
+	t.Helper()
+	encoded := &bytes.Buffer{}
+	if err := jpeg.Encode(encoded, img, nil); err != nil {
+		t.Fatalf("jpeg.Encode: %v", err)
+	}
+	header := exifJPEGBytes(orientation)
+	app1 := header[2 : len(header)-2]
+	data := encoded.Bytes()
+	return append(append(append([]byte{}, data[:2]...), app1...), data[2:]...)
+}
+
 // compositionConversationFixture writes conv_comp with two video artifacts
-// (one silent), one WAV, and an image whose file is deliberately absent.
+// (one silent), one WAV, a PNG still and a JPEG still whose EXIF turns it
+// portrait, a markdown document (a kind the composer refuses), and an image
+// whose file is deliberately absent.
 func compositionConversationFixture(t *testing.T, storage ConfigStorage) string {
 	t.Helper()
 	artifacts := filepath.Join(storage.History, "conversations", "2026/10/conv_comp", "artifacts")
@@ -49,6 +77,9 @@ func compositionConversationFixture(t *testing.T, storage ConfigStorage) string 
 		"vid_a.mp4": compositionMP4Fixture(8, 1280, 720, true),
 		"vid_b.mp4": compositionMP4Fixture(4, 640, 480, false),
 		"aud_a.wav": buildWAV(16000), // 2s at the 8000 byte/s fixture rate
+		"img_y.png": editTestPNG(t, editSolidImage(64, 48, color.RGBA{B: 200, A: 255})),
+		"img_r.jpg": compositionEXIFJPEG(t, 64, 48, 6),
+		"md_x.md":   []byte("# Notes\n"),
 	}
 	for name, data := range files {
 		if err := os.WriteFile(filepath.Join(artifacts, name), data, 0644); err != nil {
@@ -62,7 +93,10 @@ func compositionConversationFixture(t *testing.T, storage ConfigStorage) string 
 		searchTurnFixture("turn_000002", "assistant", "2026-10-01T10:05:00Z",
 			HistoryContent{Type: "video", ArtifactID: "vid_b", Path: "artifacts/vid_b.mp4", MimeType: "video/mp4"},
 			HistoryContent{Type: "audio", ArtifactID: "aud_a", Path: "artifacts/aud_a.wav", MimeType: "audio/wav"},
-			HistoryContent{Type: "image", ArtifactID: "img_x", Path: "artifacts/img_x.png", MimeType: "image/png"}),
+			HistoryContent{Type: "image", ArtifactID: "img_x", Path: "artifacts/img_x.png", MimeType: "image/png"},
+			HistoryContent{Type: "image", ArtifactID: "img_y", Path: "artifacts/img_y.png", MimeType: "image/png"},
+			HistoryContent{Type: "image", ArtifactID: "img_r", Path: "artifacts/img_r.jpg", MimeType: "image/jpeg"},
+			HistoryContent{Type: "markdown", ArtifactID: "md_x", Path: "artifacts/md_x.md", MimeType: "text/markdown"}),
 	)
 	return artifacts
 }
@@ -73,6 +107,10 @@ func testVideoRef(id string, seconds float64, hasAudio bool) CompositionMediaRef
 
 func testAudioRef(id string, seconds float64) CompositionMediaRef {
 	return CompositionMediaRef{ArtifactID: id, Path: "/tmp/" + id + ".wav", Kind: "audio", DurationSeconds: seconds, HasAudio: true}
+}
+
+func testStillRef(id string, width, height int) CompositionMediaRef {
+	return CompositionMediaRef{ArtifactID: id, Path: "/tmp/" + id + ".png", Kind: "image", Width: width, Height: height}
 }
 
 func TestCompositionArtifactExtension(t *testing.T) {
@@ -204,6 +242,8 @@ func TestValidateCompositionDocRefusals(t *testing.T) {
 		{"duplicate id", video(clip("c1", testVideoRef("vid", 5, true), 0, 5), clip("c1", testVideoRef("vid", 5, true), 0, 5)), "reuses id"},
 		{"audio on video lane", video(clip("c1", testAudioRef("aud", 5), 0, 5)), "video lane holds video clips"},
 		{"unmeasured clip", video(clip("c1", testVideoRef("vid", 0, true), 0, 5)), "never measured"},
+		{"unmeasured still", video(clip("c1", testStillRef("img", 0, 0), 0, 4)), "still was never measured"},
+		{"still length not finite", video(clip("c1", testStillRef("img", 640, 480), 0, math.Inf(1))), "non-finite length"},
 		{"range too short", video(clip("c1", testVideoRef("vid", 5, true), 2, 2.001)), "too short"},
 		{"range not finite", video(clip("c1", testVideoRef("vid", 5, true), math.NaN(), 5)), "non-finite"},
 		{"unknown transition", video(CompositionClip{ID: "c1", Ref: testVideoRef("vid", 5, true), OutSeconds: 5, Transition: &CompositionTransition{Kind: "wipe"}}, clip("c2", testVideoRef("vid2", 5, true), 0, 5)), "transition kind must be"},
@@ -232,6 +272,100 @@ func TestValidateCompositionDocRefusals(t *testing.T) {
 	}
 }
 
+func TestValidateCompositionDocStills(t *testing.T) {
+	// A still's range is only ever a length: in pins to 0, the length clamps
+	// into [min, max], and audio state it cannot have normalizes away.
+	doc := CompositionDoc{Video: []CompositionClip{
+		{ID: "c1", Ref: testStillRef("img_1", 1280, 720), InSeconds: 2, OutSeconds: 7,
+			Audio:      CompositionOriginalAudio{GainDb: -6, Muted: true, Detached: true},
+			Transition: &CompositionTransition{Kind: "dissolve", Seconds: 4, AudioCrossfade: true}},
+		{ID: "c2", Ref: testVideoRef("vid_1", 8, true), InSeconds: 0, OutSeconds: 8},
+		{ID: "c3", Ref: testStillRef("img_2", 640, 480), InSeconds: 0, OutSeconds: 0.01},
+		{ID: "c4", Ref: testStillRef("img_3", 640, 480), InSeconds: 0, OutSeconds: 1e9},
+	}}
+	if err := validateCompositionDoc(&doc); err != nil {
+		t.Fatalf("validateCompositionDoc returned error: %v", err)
+	}
+	c1 := doc.Video[0]
+	if c1.InSeconds != 0 || c1.OutSeconds != 5 || c1.Audio != (CompositionOriginalAudio{}) {
+		t.Fatalf("still 1 = in %g out %g audio %+v, want [0, 5] and no audio state", c1.InSeconds, c1.OutSeconds, c1.Audio)
+	}
+	// A still's dissolve clamps by its length like any clip's: half the
+	// shorter neighbor (the 5s still).
+	if c1.Transition == nil || c1.Transition.Seconds != 2.5 {
+		t.Fatalf("still 1 transition = %+v, want the 4s dissolve clamped to 2.5s", c1.Transition)
+	}
+	if c3 := doc.Video[2]; c3.InSeconds != 0 || c3.OutSeconds != compositionStillMinSeconds {
+		t.Fatalf("still 3 = [%g, %g], want the floor %g", c3.InSeconds, c3.OutSeconds, compositionStillMinSeconds)
+	}
+	if c4 := doc.Video[3]; c4.OutSeconds != compositionStillMaxSeconds {
+		t.Fatalf("still 4 out = %g, want the ceiling %g", c4.OutSeconds, compositionStillMaxSeconds)
+	}
+	want := 5 + 8 + compositionStillMinSeconds + compositionStillMaxSeconds - 2.5
+	if _, duration := compositionClipLayout(doc); math.Abs(duration-want) > 1e-6 {
+		t.Fatalf("layout duration = %g, want %g — the still lengths in the sum", duration, want)
+	}
+	// An image never lives on an audio lane, whatever it claims.
+	onLane := CompositionDoc{AudioLanes: []CompositionLane{{ID: "l1", Name: "Lane", Segments: []CompositionSegment{
+		{ID: "s1", Ref: testStillRef("img", 640, 480), InSeconds: 0, OutSeconds: 4},
+	}}}}
+	if err := validateCompositionDoc(&onLane); err == nil || !strings.Contains(err.Error(), "audio lanes hold audio") {
+		t.Fatalf("a still on an audio lane must be refused, got %v", err)
+	}
+}
+
+func TestMeasureCompositionStill(t *testing.T) {
+	gifBytes := &bytes.Buffer{}
+	palette := image.NewPaletted(image.Rect(0, 0, 30, 20), color.Palette{color.Black, color.White})
+	if err := gif.Encode(gifBytes, palette, nil); err != nil {
+		t.Fatalf("gif.Encode: %v", err)
+	}
+	// A VP8X WebP header carries the canvas size and the feature flags — all
+	// the measurement reads (0x10 alpha, 0x02 animation).
+	webp := func(flags byte) []byte {
+		data := append([]byte("RIFF"), 0, 0, 0, 0)
+		data = append(data, []byte("WEBPVP8X")...)
+		data = append(data, 10, 0, 0, 0, flags, 0, 0, 0)
+		data = append(data, 99, 0, 0) // width - 1 = 99
+		return append(data, 49, 0, 0) // height - 1 = 49
+	}
+	plainJPEG := &bytes.Buffer{}
+	if err := jpeg.Encode(plainJPEG, editSolidImage(64, 48, color.RGBA{R: 200, A: 255}), nil); err != nil {
+		t.Fatalf("jpeg.Encode: %v", err)
+	}
+	cases := []struct {
+		name  string
+		data  []byte
+		want  compositionStillFact
+		error string
+	}{
+		{"png", editTestPNG(t, editSolidImage(64, 48, color.RGBA{B: 200, A: 255})), compositionStillFact{Width: 64, Height: 48, Decoder: "png"}, ""},
+		{"plain jpeg reads upright", plainJPEG.Bytes(), compositionStillFact{Width: 64, Height: 48, Decoder: "mjpeg", Orientation: 1}, ""},
+		{"exif 6 jpeg measures portrait", compositionEXIFJPEG(t, 64, 48, 6), compositionStillFact{Width: 48, Height: 64, Decoder: "mjpeg", Orientation: 6}, ""},
+		{"exif 3 jpeg keeps its axes", compositionEXIFJPEG(t, 64, 48, 3), compositionStillFact{Width: 64, Height: 48, Decoder: "mjpeg", Orientation: 3}, ""},
+		{"exif 5 jpeg transposes", compositionEXIFJPEG(t, 64, 48, 5), compositionStillFact{Width: 48, Height: 64, Decoder: "mjpeg", Orientation: 5}, ""},
+		{"gif", gifBytes.Bytes(), compositionStillFact{Width: 30, Height: 20, Decoder: "gif"}, ""},
+		{"static webp", webp(0x10), compositionStillFact{Width: 100, Height: 50, Decoder: "webp"}, ""},
+		{"animated webp refuses", webp(0x12), compositionStillFact{}, "animated WebP"},
+		{"heic refuses", append([]byte{0, 0, 0, 24}, []byte("ftypheic")...), compositionStillFact{}, "not a PNG, JPEG, WebP, or GIF"},
+		{"truncated png refuses", []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 1}, compositionStillFact{}, "pixel size is unreadable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := measureCompositionStill(tc.data)
+			if tc.error != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.error) {
+					t.Fatalf("measureCompositionStill error = %v, want it to contain %q", err, tc.error)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("measureCompositionStill = %+v (err %v), want %+v", got, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestCompositionClipLayout(t *testing.T) {
 	doc := CompositionDoc{Video: []CompositionClip{
 		{ID: "c1", Ref: testVideoRef("a", 10, true), InSeconds: 0, OutSeconds: 10, Transition: &CompositionTransition{Kind: "dissolve", Seconds: 1}},
@@ -251,12 +385,24 @@ func TestCompositionClipLayout(t *testing.T) {
 	if summary := compositionDocSummary(doc); !strings.Contains(summary, "3 clips") || !strings.Contains(summary, "no audio lanes") || !strings.Contains(summary, "22s") {
 		t.Fatalf("summary = %q", summary)
 	}
+	if strings.Contains(compositionDocSummary(doc), "still") {
+		t.Fatalf("a stills-free summary must not mention stills: %q", compositionDocSummary(doc))
+	}
+	doc.Video = append(doc.Video, CompositionClip{ID: "c4", Ref: testStillRef("img", 640, 480), InSeconds: 0, OutSeconds: 4})
+	if summary := compositionDocSummary(doc); !strings.Contains(summary, "4 clips (1 still)") || !strings.Contains(summary, "26s") {
+		t.Fatalf("summary with a still = %q", summary)
+	}
+	doc.Video = append(doc.Video, CompositionClip{ID: "c5", Ref: testStillRef("img", 640, 480), InSeconds: 0, OutSeconds: 4})
+	if summary := compositionDocSummary(doc); !strings.Contains(summary, "5 clips (2 stills)") {
+		t.Fatalf("summary with stills = %q", summary)
+	}
 }
 
 func TestSeedCompositionDoc(t *testing.T) {
 	refs := []CompositionMediaRef{
 		testAudioRef("aud_1", 2),
 		testVideoRef("vid_1", 8, true),
+		testStillRef("img_1", 640, 480),
 		testAudioRef("aud_2", 3),
 		testVideoRef("vid_2", 4, false),
 	}
@@ -264,11 +410,14 @@ func TestSeedCompositionDoc(t *testing.T) {
 	if doc.Name != compositionDefaultName || doc.Output.Fit != compositionFitPad {
 		t.Fatalf("doc = name %q fit %q", doc.Name, doc.Output.Fit)
 	}
-	if len(doc.Video) != 2 || doc.Video[0].Ref.ArtifactID != "vid_1" || doc.Video[1].Ref.ArtifactID != "vid_2" {
-		t.Fatalf("video = %+v, want vid_1 then vid_2 in reference order", doc.Video)
+	if len(doc.Video) != 3 || doc.Video[0].Ref.ArtifactID != "vid_1" || doc.Video[1].Ref.ArtifactID != "img_1" || doc.Video[2].Ref.ArtifactID != "vid_2" {
+		t.Fatalf("video = %+v, want vid_1, img_1, vid_2 in reference order", doc.Video)
 	}
 	if doc.Video[0].OutSeconds != 8 || doc.Video[0].Transition != nil || !strings.HasPrefix(doc.Video[0].ID, "clp_") {
 		t.Fatalf("clip 1 = %+v, want its full range, no transition, a clp_ id", doc.Video[0])
+	}
+	if still := doc.Video[1]; still.InSeconds != 0 || still.OutSeconds != compositionStillDefaultSeconds || !strings.HasPrefix(still.ID, "clp_") {
+		t.Fatalf("still = %+v, want the default %gs hold and a clp_ id", still, compositionStillDefaultSeconds)
 	}
 	if len(doc.AudioLanes) != 1 || len(doc.AudioLanes[0].Segments) != 2 {
 		t.Fatalf("lanes = %+v, want one lane with two segments", doc.AudioLanes)
@@ -312,10 +461,29 @@ func TestResolveCompositionMediaMeasuresWithoutFFprobe(t *testing.T) {
 		t.Fatalf("aud_a = %+v (err %v), want a 2s audio ref", audio, err)
 	}
 
-	if _, err := app.ResolveCompositionMedia("conv_comp", "img_x"); err == nil || !strings.Contains(err.Error(), "image media") {
-		t.Fatalf("an image must be refused naming its kind, got %v", err)
+	// An image enters as a still: measured from its bytes (no ffprobe), with
+	// no duration and no sound.
+	still, err := app.ResolveCompositionMedia("conv_comp", "img_y")
+	if err != nil || still.Kind != "image" || still.Width != 64 || still.Height != 48 || still.DurationSeconds != 0 || still.FPS != 0 || still.HasAudio {
+		t.Fatalf("img_y = %+v (err %v), want a measured 64x48 still with no duration or audio", still, err)
 	}
-	if _, err := app.ResolveCompositionMedia("conv_comp", "vid_nope"); err == nil || !strings.Contains(err.Error(), "no video or audio asset") {
+	if !filepath.IsAbs(still.Path) || still.MimeType != "image/png" {
+		t.Fatalf("img_y identity = %+v, want an absolute path and its mime", still)
+	}
+	// A JPEG whose EXIF turns it measures by its DISPLAY size — what the
+	// webview shows and the render graph produces.
+	rotated, err := app.ResolveCompositionMedia("conv_comp", "img_r")
+	if err != nil || rotated.Width != 48 || rotated.Height != 64 {
+		t.Fatalf("img_r = %+v (err %v), want the orientation-6 photo measured portrait (48x64)", rotated, err)
+	}
+
+	if _, err := app.ResolveCompositionMedia("conv_comp", "md_x"); err == nil || !strings.Contains(err.Error(), "markdown media") {
+		t.Fatalf("a document must be refused naming its kind, got %v", err)
+	}
+	if _, err := app.ResolveCompositionMedia("conv_comp", "img_x"); err == nil || !strings.Contains(err.Error(), "missing on disk") {
+		t.Fatalf("an image whose file is gone must be refused at add time, got %v", err)
+	}
+	if _, err := app.ResolveCompositionMedia("conv_comp", "vid_nope"); err == nil || !strings.Contains(err.Error(), "no video, audio, or image asset") {
 		t.Fatalf("an unknown id must be refused, got %v", err)
 	}
 	if _, err := app.ResolveCompositionMedia("", "vid_a"); err == nil {
@@ -403,6 +571,54 @@ func TestSeedCompositionSkipsUnresolvable(t *testing.T) {
 	}
 	if _, err := app.SeedComposition(SeedCompositionRequest{ConversationID: "conv_missing"}); err == nil {
 		t.Fatal("an unknown conversation must fail the seed")
+	}
+}
+
+func TestSeedCompositionHoldsStillsAndRoundTrips(t *testing.T) {
+	config := editTestHome(t)
+	compositionConversationFixture(t, config.Storage)
+	app := NewApp()
+
+	// Images land on the video lane in reference order beside the clips, as
+	// default-length stills measured by their display size.
+	seed, err := app.SeedComposition(SeedCompositionRequest{ConversationID: "conv_comp", ArtifactIDs: []string{"img_y", "vid_a", "img_r", "aud_a"}})
+	if err != nil {
+		t.Fatalf("SeedComposition returned error: %v", err)
+	}
+	if len(seed.Warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", seed.Warnings)
+	}
+	video := seed.Doc.Video
+	if len(video) != 3 || video[0].Ref.ArtifactID != "img_y" || video[1].Ref.ArtifactID != "vid_a" || video[2].Ref.ArtifactID != "img_r" {
+		t.Fatalf("video lane = %+v, want img_y, vid_a, img_r", video)
+	}
+	if video[0].Ref.Kind != "image" || video[0].OutSeconds != compositionStillDefaultSeconds || video[2].Ref.Width != 48 || video[2].Ref.Height != 64 {
+		t.Fatalf("stills = %+v / %+v, want default holds with display sizes", video[0], video[2])
+	}
+	if len(seed.Doc.AudioLanes) != 1 || seed.Doc.AudioLanes[0].Segments[0].Ref.ArtifactID != "aud_a" {
+		t.Fatalf("lanes = %+v, want aud_a on the starter lane", seed.Doc.AudioLanes)
+	}
+
+	// A resized still saves, and the revision reopens with it intact.
+	doc := seed.Doc
+	doc.Video[0].OutSeconds = 2.5
+	saved, err := app.SaveCompositionEdit(SaveCompositionEditRequest{ConversationID: "conv_comp", Doc: doc})
+	if err != nil {
+		t.Fatalf("SaveCompositionEdit returned error: %v", err)
+	}
+	if !strings.Contains(saved.Summary, "3 clips (2 stills)") {
+		t.Fatalf("save summary = %q, want the stills counted", saved.Summary)
+	}
+	source, err := app.ResolveCompositionEditSource("conv_comp", saved.ArtifactID)
+	if err != nil {
+		t.Fatalf("ResolveCompositionEditSource returned error: %v", err)
+	}
+	reopened := source.Doc.Video[0]
+	if reopened.Ref.Kind != "image" || reopened.InSeconds != 0 || reopened.OutSeconds != 2.5 || reopened.Ref.Width != 64 {
+		t.Fatalf("reopened still = %+v, want the 2.5s hold of the 64-wide image", reopened)
+	}
+	if len(source.MissingRefs) != 0 {
+		t.Fatalf("missing refs = %v, want none", source.MissingRefs)
 	}
 }
 

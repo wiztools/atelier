@@ -331,9 +331,10 @@ func TestOpenEditorToolResolvesAndEmits(t *testing.T) {
 }
 
 // TestOpenEditorCompositionSeeds pins the seeded-only contract: mode
-// "composition" opens the workspace with this turn's video and audio in
-// persisted order (images never seed), the artifact id stays empty, and a
-// turn without video or audio opens unseeded rather than failing.
+// "composition" opens the workspace with this turn's video, images (as
+// stills), and audio in the kinds-then-attachment order, the artifact id
+// stays empty, and a turn without video, image, or audio opens unseeded
+// rather than failing.
 func TestOpenEditorCompositionSeeds(t *testing.T) {
 	config := newEditorLaunchTestConfig(t)
 	app := NewApp()
@@ -371,8 +372,9 @@ func TestOpenEditorCompositionSeeds(t *testing.T) {
 	if !ok || typed.Kind != "composition" || typed.ArtifactID != "" || typed.ConversationID != result.ConversationID {
 		t.Fatalf("composition result = %+v", typed)
 	}
-	// The video and the audio seed, in attachment order; the image never does.
-	wantSeeds := []string{result.VideoArtifactIDs[0], result.AudioArtifactIDs[0]}
+	// The video, the image (a still on the same lane), then the audio — the
+	// kinds in that order, each kind in attachment order.
+	wantSeeds := []string{result.VideoArtifactIDs[0], result.ImageArtifactIDs[0], result.AudioArtifactIDs[0]}
 	if len(*fired) != 1 || (*fired)[0][0] != "composition" || (*fired)[0][2] != "" {
 		t.Fatalf("launch hook fired %v, want a composition launch with no artifact", *fired)
 	}
@@ -380,18 +382,46 @@ func TestOpenEditorCompositionSeeds(t *testing.T) {
 	if strings.Join(gotSeeds, ",") != strings.Join(wantSeeds, ",") {
 		t.Fatalf("seeds = %v, want %v", gotSeeds, wantSeeds)
 	}
-	if !strings.Contains(summary, "seeded with 2") || !strings.Contains(summary, "unsaved draft") {
-		t.Fatalf("summary = %q, want the seeding count and the draft caveat", summary)
+	if !strings.Contains(summary, "seeded with 3") || !strings.Contains(summary, "stills") || !strings.Contains(summary, "unsaved draft") {
+		t.Fatalf("summary = %q, want the seeding count, the stills note, and the draft caveat", summary)
 	}
 
-	// A turn with no video or audio opens the composer unseeded.
-	imageOnly, _, imageFired := openEditorLaunchConversation(t, config, app)
-	_, unseededSummary, err := definition.Execute(t.Context(), imageOnly, HarnessToolCall{Name: "open_editor", Mode: "composition"})
+	// An image alone seeds the composer with that still.
+	imageOnly, imageResult, imageFired := openEditorLaunchConversation(t, config, app)
+	if _, _, err := definition.Execute(t.Context(), imageOnly, HarnessToolCall{Name: "open_editor", Mode: "composition"}); err != nil {
+		t.Fatalf("open_editor composition (image only) returned error: %v", err)
+	}
+	if len(*imageFired) != 1 || strings.Join((*imageFired)[0][3:], ",") != imageResult.ImageArtifactIDs[0] {
+		t.Fatalf("image-only launch = %v, want the image seeded", *imageFired)
+	}
+
+	// A turn with no video, image, or audio — a subtitle file alone — opens
+	// the composer unseeded.
+	subtitleOnly, err := app.CreateEditorConversation(ChatRequest{
+		Model: "chat-box-model",
+		Messages: []ChatMessage{{
+			Role:      "user",
+			Content:   "Open the video composer",
+			Subtitles: []string{"data:text/vtt;base64," + base64.StdEncoding.EncodeToString([]byte("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello\n"))},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateEditorConversation (subtitle only) returned error: %v", err)
+	}
+	unseededTools := newHarnessToolExecutionContext(config)
+	unseededTools.Storage = config.Storage
+	unseededTools.ConversationID = subtitleOnly.ConversationID
+	unseededFired := &[][]string{}
+	unseededTools.OpenEditor = func(kind, conversationID, artifactID string, seedArtifactIDs []string) error {
+		*unseededFired = append(*unseededFired, append([]string{kind, conversationID, artifactID}, seedArtifactIDs...))
+		return nil
+	}
+	_, unseededSummary, err := definition.Execute(t.Context(), unseededTools, HarnessToolCall{Name: "open_editor", Mode: "composition"})
 	if err != nil {
 		t.Fatalf("open_editor composition (unseeded) returned error: %v", err)
 	}
-	if len(*imageFired) != 1 || len((*imageFired)[0]) != 3 {
-		t.Fatalf("unseeded launch = %v, want no seeds", *imageFired)
+	if len(*unseededFired) != 1 || len((*unseededFired)[0]) != 3 {
+		t.Fatalf("unseeded launch = %v, want no seeds", *unseededFired)
 	}
 	if !strings.Contains(unseededSummary, "unseeded") {
 		t.Fatalf("unseeded summary = %q", unseededSummary)
