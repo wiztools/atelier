@@ -44,6 +44,8 @@ export function CreateLibrary(arg1:string):Promise<main.LibrarySummary>;
 
 export function CreateProject(arg1:string,arg2:string):Promise<main.ProjectSummary>;
 
+export function DefaultDocumentPaperSize():Promise<string>;
+
 export function DeleteConversation(arg1:string):Promise<void>;
 
 export function DeleteEditOperation(arg1:string,arg2:string):Promise<void>;

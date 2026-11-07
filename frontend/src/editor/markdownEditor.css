@@ -418,6 +418,27 @@
   color: #c7cdd1;
 }
 
+/* The paper picker follows the subtitle export's Format label: name left,
+   the select taking the rest of the row. */
+.markdown-print-paper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: #9a9a92;
+}
+
+.markdown-print-paper select {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #3a3e41;
+  border-radius: 6px;
+  background: #1d1f20;
+  color: #f3f0e8;
+  padding: 4px 6px;
+}
+
 .markdown-print button {
   width: 100%;
   border: 1px solid #3a3e41;

@@ -86,6 +86,10 @@ export function CreateProject(arg1, arg2) {
   return window['go']['main']['App']['CreateProject'](arg1, arg2);
 }
 
+export function DefaultDocumentPaperSize() {
+  return window['go']['main']['App']['DefaultDocumentPaperSize']();
+}
+
 export function DeleteConversation(arg1) {
   return window['go']['main']['App']['DeleteConversation'](arg1);
 }

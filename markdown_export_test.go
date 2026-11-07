@@ -189,3 +189,36 @@ func TestMarkdownHeadingWrapsAtItsOwnSize(t *testing.T) {
 		t.Fatalf("heading wrapped into %d rows, want it long enough to wrap at least once", rows)
 	}
 }
+
+// Every row of the typed page ends inside the text block on both sheets —
+// body, quotes, top-level lists, rules, headings at their sizes, and code and
+// table lines at their clip widths (A4's narrower block clips them shorter).
+func TestMarkdownRowsStayInsideTheTextBlock(t *testing.T) {
+	doc := "# " + strings.Repeat("heading ", 12) + "\n\n### " + strings.Repeat("subhead ", 12) + "\n\n" +
+		strings.Repeat("Body words wrap at the paper's column. ", 6) + "\n\n" +
+		"> " + strings.Repeat("quoted words wrap too. ", 6) + "\n\n" +
+		"- " + strings.Repeat("bullet words wrap under the hang. ", 4) + "\n" +
+		"1. " + strings.Repeat("ordered words wrap under the hang. ", 4) + "\n\n" +
+		"---\n\n```\n" + strings.Repeat("c", 90) + "\n```\n\n| " + strings.Repeat("t", 100) + " |\n"
+	for _, paper := range []pdfPaper{pdfPaperLetter, pdfPaperA4} {
+		for _, block := range markdownPDFLines(paper, parseMarkdownBlocks([]byte(doc))) {
+			for _, line := range block {
+				if strings.TrimSpace(line.text) == "" {
+					continue
+				}
+				charWidth := pdfCharWidthAt(line.pdfSize())
+				right := pdfMarginLeft + float64(line.indent+len([]rune(line.text)))*charWidth
+				if right > paper.textRight+1e-6 {
+					t.Errorf("%s: row %q ends at %.1fpt, past the text block's %.1fpt", paper.name, line.text, right, paper.textRight)
+				}
+			}
+		}
+	}
+	data, err := markdownPDF(pdfPaperA4, parseMarkdownBlocks([]byte(doc)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "/MediaBox [0 0 595.28 841.89]") {
+		t.Fatal("the markdown export must print on the requested sheet")
+	}
+}

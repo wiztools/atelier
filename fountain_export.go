@@ -41,12 +41,16 @@ import (
 // SaveDocumentExportRequest names a saved document artifact and the export
 // rendering to write — "pdf" or "fdx". IncludeNotes prints a screenplay's
 // sections and synopses as gray notes, the way the preview shows them; left
-// off they stay out of the page.
+// off they stay out of the page. PaperSize names the sheet the PDF prints
+// on — "letter" (the default) or "a4"; the frontend remembers the last
+// choice and starts at DefaultDocumentPaperSize (the region's office paper).
+// FDX ignores it: Final Draft paginates with its own page setup.
 type SaveDocumentExportRequest struct {
 	Path          string `json:"path"`
 	Format        string `json:"format"`
 	SuggestedName string `json:"suggestedName,omitempty"`
 	IncludeNotes  bool   `json:"includeNotes,omitempty"`
+	PaperSize     string `json:"paperSize,omitempty"`
 }
 
 // SaveDocumentExport renders a saved document artifact to the requested
@@ -58,6 +62,10 @@ func (a *App) SaveDocumentExport(req SaveDocumentExportRequest) (string, error) 
 	format := strings.ToLower(strings.TrimSpace(req.Format))
 	if format != "pdf" && format != "fdx" {
 		return "", fmt.Errorf(`document export format must be "pdf" or "fdx", got %q`, req.Format)
+	}
+	paper, err := documentPaperFor(req.PaperSize)
+	if err != nil {
+		return "", err
 	}
 	sourcePath := strings.TrimSpace(req.Path)
 	sourcePath = strings.TrimPrefix(sourcePath, artifactPrefix)
@@ -71,7 +79,7 @@ func (a *App) SaveDocumentExport(req SaveDocumentExportRequest) (string, error) 
 	if len(bytes.TrimSpace(data)) == 0 {
 		return "", errors.New("document artifact is empty")
 	}
-	rendered, extension, filterName, pattern, err := renderDocumentExport(data, sourcePath, format, req.IncludeNotes, pdfPaperLetter)
+	rendered, extension, filterName, pattern, err := renderDocumentExport(data, sourcePath, format, req.IncludeNotes, paper)
 	if err != nil {
 		return "", err
 	}

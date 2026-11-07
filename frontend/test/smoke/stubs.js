@@ -65,6 +65,7 @@
   const answers = {
     GetConfig: () => ({}),
     LoadUIState: () => ({sidebar: {chatsCollapsed: false, librariesCollapsed: false, expandedLibraries: ['lib_1'], expandedProjects: ['proj_1']}, settings: {lastTab: 'providers'}}),
+    DefaultDocumentPaperSize: () => 'a4',
     ListConversations: () => conversations,
     ListLibraries: () => libraries,
     ListProjectConversations: (id) => conversations.filter((c) => c.projectId === id),

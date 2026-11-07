@@ -2,7 +2,7 @@ import {Fragment, useEffect, useMemo, useRef, useState} from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import * as AppBindings from '../../wailsjs/go/main/App';
-import {SaveDocumentExport, SaveMarkdown} from '../../wailsjs/go/main/App';
+import {DefaultDocumentPaperSize, SaveDocumentExport, SaveMarkdown} from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
 import {notifyError, notifySuccess, trackSave} from '../notifications';
 import {EditsPanel} from './EditsPanel';
@@ -124,6 +124,20 @@ function lineScrollTop(textarea: HTMLTextAreaElement, text: string, offset: numb
 
 type ViewMode = 'split' | 'source' | 'preview';
 
+// The chosen sheet persists across editor re-opens for the app's run — pick
+// A4 once, every export this session prints A4. null = untouched, follow the
+// machine's region default.
+let sessionPaperSize: 'letter' | 'a4' | null = null;
+
+// defaultDocumentPaper resolves the region default once per app run — the
+// machine's paper doesn't change mid-session, and a StrictMode double-mounted
+// editor must not read it twice.
+let defaultDocumentPaperOnce: Promise<string> | null = null;
+function defaultDocumentPaper(): Promise<string> {
+  defaultDocumentPaperOnce ??= DefaultDocumentPaperSize();
+  return defaultDocumentPaperOnce;
+}
+
 export function MarkdownEditor(props: {
   handle: MarkdownEditorHandle;
   // True while the editor is hidden beneath another screen (Settings).
@@ -157,6 +171,23 @@ export function MarkdownEditor(props: {
   // Sections and synopses print as gray notes, the way the preview shows
   // them; off keeps them out and the page count true to the script.
   const [printNotes, setPrintNotes] = useState(true);
+  // The sheet the PDF prints on. Starts at the machine's region's paper once
+  // the binding answers (US Letter until then), and a made choice outlives
+  // the editor for the app's run — a US submission this morning, A4 at home
+  // all week.
+  const [paperSize, setPaperSizeState] = useState<'letter' | 'a4'>(sessionPaperSize ?? 'letter');
+  useEffect(() => {
+    if (sessionPaperSize) return; // a choice this session outranks the region default
+    let cancelled = false;
+    defaultDocumentPaper().then((paper) => {
+      if (!cancelled && (paper === 'letter' || paper === 'a4')) setPaperSizeState(paper);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+  const setPaperSize = (paper: 'letter' | 'a4') => {
+    sessionPaperSize = paper;
+    setPaperSizeState(paper);
+  };
   // The dialect IS the artifact's identity — a .fountain edits and saves as a
   // screenplay, a .md as markdown; the editor never converts between them.
   const format: DocumentFormat = source.format === 'fountain' ? 'fountain' : 'markdown';
@@ -464,13 +495,15 @@ export function MarkdownEditor(props: {
 
   // exportArtifact renders a SAVED artifact to PDF or Final Draft on its way
   // to disk — never the editor's uncommitted draft. A screenplay's PDF prints
-  // as the preview shows it, notes included when printNotes is on.
+  // as the preview shows it, notes included when printNotes is on, on the
+  // chosen sheet.
   const exportArtifact = async (url: string, format: 'pdf' | 'fdx', suggestedName: string) => {
     await trackSave(format === 'fdx' ? 'Final Draft file' : 'PDF', SaveDocumentExport(main.SaveDocumentExportRequest.createFrom({
       path: url,
       format,
       suggestedName,
       includeNotes: fountain && printNotes,
+      paperSize: format === 'pdf' ? paperSize : undefined,
     })));
   };
 
@@ -687,6 +720,13 @@ export function MarkdownEditor(props: {
 
           <div className="markdown-print">
             <strong>Print</strong>
+            <label className="markdown-print-paper" title="The sheet the PDF prints on. A4's taller, narrower text block fits more lines per page, so page breaks land elsewhere and a long script comes out a few pages shorter — pick US Letter for US submissions and page-count rules.">
+              Paper
+              <select value={paperSize} onChange={(event) => setPaperSize(event.target.value === 'a4' ? 'a4' : 'letter')}>
+                <option value="letter">US Letter (60 × 55 lines)</option>
+                <option value="a4">A4 (57 × 59 lines)</option>
+              </select>
+            </label>
             {fountain ? (
               <label className="markdown-print-toggle" title="Sections and synopses print as gray notes, the way the preview shows them — leave them out for a page count true to the script">
                 <input type="checkbox" checked={printNotes} onChange={(event) => setPrintNotes(event.target.checked)} />
@@ -703,8 +743,8 @@ export function MarkdownEditor(props: {
             </button>
             <span className="hint">
               {fountain
-                ? 'US Letter pages laid out as the preview shows them. Scene headings stay with their action, and a speech that turns the page carries (MORE) and (CONT’D).'
-                : 'The saved document as typed Courier pages.'}
+                ? `${paperSize === 'a4' ? 'A4' : 'US Letter'} pages laid out as the preview shows them. Scene headings stay with their action, and a speech that turns the page carries (MORE) and (CONT’D).`
+                : `${paperSize === 'a4' ? 'A4' : 'US Letter'} pages of typed Courier.`}
             </span>
           </div>
         </aside>

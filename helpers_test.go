@@ -21,10 +21,14 @@ import (
 // ProviderRegistry.Resolve and checkForUpdates stay machine-independent — the
 // developer's own config.json must not decide whether a test sees airplane
 // mode on. Tests that exercise the airplane path re-pin via
-// pinAirplaneDiskConfig (airplane_mode_test.go).
+// pinAirplaneDiskConfig (airplane_mode_test.go). And it pins the machine's
+// locale away, so the export's default paper never follows the developer's
+// region; tests that exercise it re-pin systemLocaleIdentifier
+// (document_paper_test.go).
 func TestMain(m *testing.M) {
 	localBinaryLookPath = func(string) (string, error) { return "", exec.ErrNotFound }
 	airplaneDiskConfig = func() (AppConfig, bool) { return AppConfig{}, false }
+	systemLocaleIdentifier = func() string { return "" }
 	os.Exit(m.Run())
 }
 
