@@ -302,24 +302,6 @@ type ComposerDraft = {
   attachments: Attachment[];
 };
 
-// LibrariesEnvironment is everything useLibraries needs from App() — the seam
-// the hook crosses. Refs are typed structurally ({current}) so the hook stays
-// independent of React's namespace types. Failures don't cross it: the hook
-// toasts them itself through the shared notifications store.
-type LibrariesEnvironment = {
-  activeConversationID: string;
-  activeConversationProjectID: string;
-  closeConversationMenu: () => void;
-  expandChatsSection: () => void;
-  composerDraftsRef: {current: Record<string, ComposerDraft>};
-  pendingProjectRef: {current: {projectID: string; libraryID: string} | null};
-  refreshConversations: () => Promise<main.ConversationSummary[]>;
-  resetWorkspace: () => Promise<void>;
-  setPendingProject: (project: {projectID: string; libraryID: string} | null) => void;
-  setView: (view: View) => void;
-  startNewChat: () => Promise<void>;
-};
-
 // MoveTargetGroup is one library's slice of the move dialog's target list:
 // the dialog groups projects under their library instead of the flat
 // `library › project` button list the ⋮ menu used to inline.
@@ -354,7 +336,6 @@ export type {
   Attachment,
   StagingAttachment,
   ComposerDraft,
-  LibrariesEnvironment,
   MoveTargetGroup,
 };
 export {settingsTabs, libraryArchiveToastKey, editOpKinds, MODEL_CALL_STEP_KINDS};
