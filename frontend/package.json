@@ -7,6 +7,7 @@
     "build": "tsc && vite build",
     "dev": "vite",
     "preview": "vite preview",
+    "smoke": "node test/smoke/run-smoke.mjs",
     "test:crop": "node test/run-crop-tests.cjs",
     "test:editor-launch": "node test/run-editor-launch-tests.cjs",
     "test:video-reframe": "node test/run-video-reframe-tests.cjs",

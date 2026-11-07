@@ -3,7 +3,6 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import './App.css';
 import {
-  CancelStream,
   CheckForUpdates,
   CheckOllama,
   ChooseToolWorkspace,
@@ -21,27 +20,13 @@ import {
   HasOpenRouterAPIKey,
   InstallUpdate,
   ListConversationAssets,
-  ListConversations,
   ListFalVideoDurations,
   ListFalSoundEffectDurations,
-  ListEditSession,
-  ResolveAudioEditSource,
-  ResolveComicEditSource,
-  ResolveCompositionEditSource,
-  ResolveEditSource,
-  ResolveSubtitleEditSource,
-  ResolveMarkdownEditSource,
-  ResolveDocumentCompare,
-  ResolveVideoEditSource,
-  CancelVideoEditSource,
-  ReleaseVideoEditSourcePreview,
   ListReplicateVideoDurations,
   ListLibraryAssets,
   ListModels,
   ListOpenAICompatibleModels,
   LoadUIState,
-  PurgeArchivedConversations,
-  ResolveToolPermission,
   SaveImage,
   SaveVideo,
   SaveAudio,
@@ -54,23 +39,20 @@ import {
   SaveComic,
   SaveComposition,
   SaveTranscript,
-  SeedComic,
-  SeedComposition,
   StreamChat,
-  UpdateConversationTitle,
   DiscardMediaUpload,
   RevealFile,
 } from '../wailsjs/go/main/App';
 import {main} from '../wailsjs/go/models';
 import {Environment, EventsOn} from '../wailsjs/runtime/runtime';
-import {ImageEditor, ImageEditorHandle} from './editor/ImageEditor';
-import {VideoEditor, VideoEditorHandle} from './editor/VideoEditor';
-import {AudioEditor, AudioEditorHandle} from './editor/AudioEditor';
-import {SubtitleEditor, SubtitleEditorHandle} from './editor/SubtitleEditor';
-import {MarkdownEditor, MarkdownEditorHandle} from './editor/MarkdownEditor';
-import {CompositionEditor, CompositionEditorHandle} from './editor/CompositionEditor';
-import {ComicEditor, ComicEditorHandle} from './editor/ComicEditor';
-import {DocumentCompare, DocumentCompareHandle} from './editor/DocumentCompare';
+import {ImageEditor} from './editor/ImageEditor';
+import {VideoEditor} from './editor/VideoEditor';
+import {AudioEditor} from './editor/AudioEditor';
+import {SubtitleEditor} from './editor/SubtitleEditor';
+import {MarkdownEditor} from './editor/MarkdownEditor';
+import {CompositionEditor} from './editor/CompositionEditor';
+import {ComicEditor} from './editor/ComicEditor';
+import {DocumentCompare} from './editor/DocumentCompare';
 import {detectEditorLaunchIntent} from './editorLaunch';
 import {
   composerHasMediaDrag,
@@ -93,17 +75,9 @@ import {
   SettingsTab,
   ChatProviderID,
   SpeechProviderID,
-  ConversationKind,
   ChatEntry,
-  ChatChunk,
-  ChatStreamDraft,
-  ToolPermissionEvent,
   UpdateAvailableEvent,
   EditOpEvent,
-  EditSessionEditor,
-  InFlightConversation,
-  HarnessRunView,
-  HarnessRunEventView,
   MediaToolSummaryView,
 } from './types';
 import {
@@ -117,10 +91,6 @@ import {
   defaultSoundDurationOptions,
   defaultMediaTimeoutSeconds,
 } from './modelDefaults';
-import {
-  compactHistoryLimit,
-  expandedHistoryBatchSize,
-} from './uiLayout';
 import {asArray, formatModelSize, shortenHomePath, formatError} from './utils';
 import {ModelCombobox} from './settings/ModelCombobox';
 import {InfoHint, AirplaneHint} from './ui/Hints';
@@ -140,7 +110,7 @@ import {
   ModelSelectionPanel,
   ModelSelectionValue,
 } from './settings/ModelSelectionPanel';
-import {parseHarnessRun, summarizeModelUsage, summarizeMediaUsage} from './usage/usageModel';
+import {parseHarnessRun} from './usage/usageModel';
 import {TurnUsage, ConversationUsage} from './usage/TurnUsage';
 import {UsageReportView} from './usage/UsageReportView';
 import {HarnessRunPanel} from './usage/HarnessRunPanel';
@@ -151,7 +121,7 @@ import {
   assetTurnLabel,
   parseComposerMentions,
 } from './composerMentions';
-import {copyTextWithTextarea, isNearScrollBottom} from './dom';
+import {isNearScrollBottom} from './dom';
 import {hasToolPermissionDetails, toolPermissionSummary, toolPermissionTitle} from './toolPermission';
 import {
   historyAudios,
@@ -172,6 +142,9 @@ import {useModelCatalogs} from './settings/useModelCatalogs';
 import {useProviderKeys} from './settings/useProviderKeys';
 import {useAppConfig} from './useAppConfig';
 import {useComposer} from './composer/useComposer';
+import {useConversations} from './sidebar/useConversations';
+import {useEditors} from './editor/useEditors';
+import {useChatStream} from './chat/useChatStream';
 
 function App() {
   const {
@@ -269,9 +242,35 @@ function App() {
   const [videoDurationKeyframeOptions, setVideoDurationKeyframeOptions] = useState<string[]>(defaultVideoDurationOptions);
   const [videoDurationExtendOptions, setVideoDurationExtendOptions] = useState<string[]>(defaultVideoDurationOptions);
   const [soundDurationOptions, setSoundDurationOptions] = useState<string[]>(defaultSoundDurationOptions);
-  const [chat, setChat] = useState<ChatEntry[]>([]);
-  const chatIsEmpty = chat.length === 0;
+  // Assets panel: closed by default; lists the active conversation's derived
+  // media assets (ListConversationAssets) — or, when the conversation is
+  // project-scoped, every asset in its library (ListLibraryAssets).
+  // assetsRefreshTick re-runs the fetch when a turn finishes — the index
+  // derives from persisted history, so it lags until the turn is saved.
+  const [assetsPanelOpen, setAssetsPanelOpen] = useState(false);
+  const [conversationAssets, setConversationAssets] = useState<main.ConversationAsset[]>([]);
+  const [libraryAssets, setLibraryAssets] = useState<main.ConversationAsset[]>([]);
+  const [assetsRefreshTick, setAssetsRefreshTick] = useState(0);
   const [activeConversationID, setActiveConversationID] = useState('');
+  const copyResetRef = useRef<number | null>(null);
+  // useChatStream registers its chunk listener before the conversation list
+  // and the libraries tree exist (its transcript feeds the composer, which both
+  // of those need), so it reaches them through these hoisted forwarders,
+  // resolved when a chunk arrives. Like the functions they forward to, they
+  // touch only stable setters, so the empty-deps listener never goes stale.
+  function refreshConversationsOnChunk() {
+    return refreshConversations();
+  }
+  function bumpLibrariesOnChunk() {
+    bumpLibrariesRefresh();
+  }
+  const {
+    activeStream, anyConversationInFlight, chat, chatIsEmpty, chatStreamDraftsRef, collapsedThinkingIDs,
+    copiedMessageID, copyMessage, harnessRunDraftsRef, inFlightConversations, inFlightConversationsRef,
+    markConversationInFlight, mediaUsage, modelUsage, resolveToolPermission, setActiveStream, setChat,
+    setCollapsedThinkingIDs, shouldFollowTranscriptRef, stopChat, toggleThinkingCollapsed, toolPermissions,
+    transcriptRef, visibleHarnessRun, visibleStreamRef,
+  } = useChatStream({setActiveConversationID, setAssetsRefreshTick, copyResetRef, refreshConversationsOnChunk, bumpLibrariesOnChunk});
   const activeConversationIDRef = useRef('');
   const {
     acceptMention, addFiles, attachments, attachmentsRef, chatPromptMirrorRef, chatPromptRef,
@@ -281,12 +280,14 @@ function App() {
     mentionMatchesState, mentionOpen, prompt, restoreDraftFor, setAttachments, setMentionIndex, setPrompt,
     stagingAttachments, stashCurrentDraft,
   } = useComposer({chatIsEmpty, activeConversationID, activeConversationIDRef, mentionCandidates, submitChat});
-  const [collapsedThinkingIDs, setCollapsedThinkingIDs] = useState<Record<string, boolean>>({});
-  const [copiedMessageID, setCopiedMessageID] = useState('');
-  const [copiedConversationID, setCopiedConversationID] = useState('');
-  const [conversations, setConversations] = useState<main.ConversationSummary[]>([]);
-  const [historyExpanded, setHistoryExpanded] = useState(false);
-  const [visibleHistoryCount, setVisibleHistoryCount] = useState(compactHistoryLimit);
+  const {
+    cancelEditingConversationTitle, chatsOpen, confirmPurgeArchived, conversationList, conversations,
+    copiedConversationID, copyConversationID, editingTitle, editingTitleID, handleConversationTitleKeyDown,
+    handleHistoryScroll, hasMoreConversations, moveDialogConversation, openHistoryMenuID,
+    purgeArchivedConversations, purgeBusy, refreshConversations, saveConversationTitle, setChatsOpen,
+    setConfirmPurgeArchived, setConversations, setEditingTitle, setMoveDialogConversation,
+    setOpenHistoryMenuID, showMoreConversations, startEditingConversationTitle, visibleConversations,
+  } = useConversations({composerDraftsRef, copyResetRef});
   const {
     historyQuery,
     historyResults,
@@ -297,9 +298,6 @@ function App() {
     setHistoryQuery,
     setSearchOpen,
   } = useHistorySearch();
-  // chatsOpen collapses the standalone Chats section to just its header, the
-  // same affordance the Libraries section below it has.
-  const [chatsOpen, setChatsOpen] = useState(true);
   // uiStateLoaded flips once the persisted navigation state is hydrated; the
   // save effect below waits for it so launch-time defaults can't clobber the
   // saved file.
@@ -313,15 +311,6 @@ function App() {
   // Mirror ref for the empty-deps menu/keyboard listeners and the send path,
   // which read the pending project synchronously rather than from state.
   const pendingProjectRef = useRef<{projectID: string; libraryID: string} | null>(null);
-  // Assets panel: closed by default; lists the active conversation's derived
-  // media assets (ListConversationAssets) — or, when the conversation is
-  // project-scoped, every asset in its library (ListLibraryAssets).
-  // assetsRefreshTick re-runs the fetch when a turn finishes — the index
-  // derives from persisted history, so it lags until the turn is saved.
-  const [assetsPanelOpen, setAssetsPanelOpen] = useState(false);
-  const [conversationAssets, setConversationAssets] = useState<main.ConversationAsset[]>([]);
-  const [libraryAssets, setLibraryAssets] = useState<main.ConversationAsset[]>([]);
-  const [assetsRefreshTick, setAssetsRefreshTick] = useState(0);
   useEffect(() => {
     if (!activeConversationID) {
       setConversationAssets([]);
@@ -379,19 +368,10 @@ function App() {
   // chat before its first message locks it as immutable on the record. Empty
   // means "inherit the configured default." Reset whenever a new chat starts.
   const [draftWorkspace, setDraftWorkspace] = useState('');
-  const [activeStream, setActiveStream] = useState<string | null>(null);
-  const [inFlightConversations, setInFlightConversations] = useState<Record<string, InFlightConversation>>({});
-  const [toolPermissions, setToolPermissions] = useState<ToolPermissionEvent[]>([]);
   // startupError is boot-only: the one genuine startup failure (the launch
   // loadConfig rejecting), cleared by applyConfig or the card's Dismiss.
   // Every other failure is an action result and toasts instead.
   const [startupError, setStartupError] = useState('');
-  const [editingTitleID, setEditingTitleID] = useState('');
-  const [editingTitle, setEditingTitle] = useState('');
-  const [openHistoryMenuID, setOpenHistoryMenuID] = useState('');
-  // The conversation whose "Move to…" picker is open; null keeps the dialog
-  // unmounted so its filter state resets on every open.
-  const [moveDialogConversation, setMoveDialogConversation] = useState<main.ConversationSummary | null>(null);
   const [view, setView] = useState<View>('app');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('providers');
   // Per-conversation model-override editing state: the draft is a snapshot of
@@ -409,65 +389,6 @@ function App() {
   // same posture as draftWorkspace.
   const [draftModelOverrides, setDraftModelOverrides] = useState<main.ConversationModelOverrides | null>(null);
   const [previewImage, setPreviewImage] = useState('');
-  // The edit context the preview's Edit button uses: the conversation whose
-  // card opened the preview plus the artifact id parsed from its URL. Null
-  // for data: URLs (the image isn't persisted yet, so there is nothing to
-  // seed an edit from).
-  const [previewEditContext, setPreviewEditContext] = useState<{conversationID: string; artifactID: string} | null>(null);
-  // The image editor workspace: a draft seeded from a source image (no
-  // conversation exists yet) or a reopened session. Rendering it replaces the
-  // chat transcript area, like the settings screens do.
-  const [editorHandle, setEditorHandle] = useState<ImageEditorHandle | null>(null);
-  const [videoEditorHandle, setVideoEditorHandle] = useState<VideoEditorHandle | null>(null);
-  const [audioEditorHandle, setAudioEditorHandle] = useState<AudioEditorHandle | null>(null);
-  const [subtitleEditorHandle, setSubtitleEditorHandle] = useState<SubtitleEditorHandle | null>(null);
-  const [markdownEditorHandle, setMarkdownEditorHandle] = useState<MarkdownEditorHandle | null>(null);
-  const [compositionEditorHandle, setCompositionEditorHandle] = useState<CompositionEditorHandle | null>(null);
-  const [comicEditorHandle, setComicEditorHandle] = useState<ComicEditorHandle | null>(null);
-  // The compare workspace (two documents diffed, read-only) shares the
-  // editor slot but holds nothing unsaved: no dirty ref, no confirm-leave.
-  const [documentCompareHandle, setDocumentCompareHandle] = useState<DocumentCompareHandle | null>(null);
-  const [videoEditorOpening, setVideoEditorOpening] = useState(false);
-  const [imageEditorOpening, setImageEditorOpening] = useState(false);
-  const [audioEditorOpening, setAudioEditorOpening] = useState(false);
-  const [subtitleEditorOpening, setSubtitleEditorOpening] = useState(false);
-  const [markdownEditorOpening, setMarkdownEditorOpening] = useState(false);
-  const [compositionEditorOpening, setCompositionEditorOpening] = useState(false);
-  const [comicEditorOpening, setComicEditorOpening] = useState(false);
-  const [documentCompareOpening, setDocumentCompareOpening] = useState(false);
-  const [discardEditorDraft, setDiscardEditorDraft] = useState<'video' | 'audio' | 'subtitle' | 'markdown' | 'composition' | 'comic' | null>(null);
-  const videoEditorDirty = useRef(false);
-  const audioEditorDirty = useRef(false);
-  const subtitleEditorDirty = useRef(false);
-  const markdownEditorDirty = useRef(false);
-  const compositionEditorDirty = useRef(false);
-  const comicEditorDirty = useRef(false);
-  const videoNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
-  const audioNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
-  const subtitleNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
-  const markdownNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
-  const compositionNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
-  const comicNavigationResolver = useRef<((discard: boolean) => void) | null>(null);
-  const videoOpenGeneration = useRef(0);
-  const videoOpeningIdentity = useRef<{conversationID: string; artifactID: string} | null>(null);
-  const imageOpenGeneration = useRef(0);
-  const audioOpenGeneration = useRef(0);
-  const subtitleOpenGeneration = useRef(0);
-  const markdownOpenGeneration = useRef(0);
-  const compositionOpenGeneration = useRef(0);
-  const comicOpenGeneration = useRef(0);
-  const documentCompareOpenGeneration = useRef(0);
-  // Mirror of editorOpen for the atelier:editor-launch listener (an empty-deps
-  // effect): a mid-stream AI launch must not replace an editor already on
-  // screen — an unsaved draft is never discarded by a tool-timed open.
-  const editorOpenRef = useRef(false);
-  // Either editor's source resolve in flight — every edit button disables on
-  // it, so a slow open can't collect repeated clicks (or race the other
-  // editor's later-landing handle into view).
-  const editorOpening = imageEditorOpening || videoEditorOpening || audioEditorOpening || subtitleEditorOpening || markdownEditorOpening || compositionEditorOpening || comicEditorOpening || documentCompareOpening;
-  const editorOpen = !!editorHandle || !!videoEditorHandle || !!audioEditorHandle || !!subtitleEditorHandle || !!markdownEditorHandle || !!compositionEditorHandle || !!comicEditorHandle || !!documentCompareHandle;
-  const [purgeBusy, setPurgeBusy] = useState(false);
-  const [confirmPurgeArchived, setConfirmPurgeArchived] = useState(false);
   const [openCapabilityID, setOpenCapabilityID] = useState('');
   // Self-update UI state: the banner rides the atelier:update-available event
   // (raised by startup, ticker, and manual checks alike); an install clicked
@@ -477,26 +398,10 @@ function App() {
   const [updateQueued, setUpdateQueued] = useState(false);
   const [updateError, setUpdateError] = useState('');
   const [updateCheckBusy, setUpdateCheckBusy] = useState(false);
-  // Updates wait out any running conversation; both the banner's queue and
-  // the backend's InstallUpdate gate read this shape of "busy".
-  const anyConversationInFlight = activeStream !== null || Object.keys(inFlightConversations).length > 0;
   const shellRef = useRef<HTMLElement | null>(null);
-  const transcriptRef = useRef<HTMLDivElement | null>(null);
-  const shouldFollowTranscriptRef = useRef(true);
-  const visibleStreamRef = useRef<string | null>(null);
   // The conversation whose open is in flight; a repeat click on the same row
   // (double-click enters rename) must not fetch it twice.
   const openingConversationRef = useRef<string>('');
-  const inFlightConversationsRef = useRef<Record<string, InFlightConversation>>({});
-  const requestConversationRef = useRef<Record<string, {conversationID: string; kind: ConversationKind}>>({});
-  const chatStreamDraftsRef = useRef<Record<string, ChatStreamDraft>>({});
-  // Live harness runs keyed by requestID, mirrored from atelier:harness-run
-  // events. The chat:chunk effect pattern: refs only, so the empty-deps event
-  // listener never closes over stale state. Used to re-attach the live run
-  // when the user switches conversations mid-stream.
-  const harnessRunDraftsRef = useRef<Record<string, HarnessRunView>>({});
-  const copyResetRef = useRef<number | null>(null);
-
   // The Libraries & projects sidebar tree — data, expansion/creation/rename/
   // delete state, and every tree action — lives in the useLibraries hook;
   // App destructures the same names its JSX uses. Everything crossing the
@@ -531,6 +436,17 @@ function App() {
     startNewChat,
   });
 
+  const {
+    audioEditorDirty, audioEditorHandle, audioEditorOpening, cancelVideoPreparation, closeImageEditor,
+    comicEditorDirty, comicEditorHandle, compositionEditorDirty, compositionEditorHandle, confirmLeaveEditor,
+    discardEditorDraft, documentCompareHandle, documentCompareOpening, editSessionOnScreen, editorHandle,
+    editorOpen, editorOpenRef, editorOpening, leaveEditorThen, markdownEditorDirty, markdownEditorHandle,
+    openAudioEditor, openComicEditor, openCompositionEditor, openDocumentCompare, openEditSession,
+    openEditorSessionsRef, openFinishedEditSessionRef, openImageEditor, openMarkdownEditor, openNewComic,
+    openNewComposition, openSubtitleEditor, openVideoEditor, previewEditContext, resolveEditorNavigation,
+    setPreviewEditContext, subtitleEditorDirty, subtitleEditorHandle, videoEditorDirty, videoEditorHandle,
+    videoEditorOpening,
+  } = useEditors({setView, openSettings, libraryIDForProject});
   // Restore the left navigation's collapsed/expanded sections from the last
   // session. applySidebarState is a first-render copy by design (it only
   // touches stable setters and a ref), so this mount effect never refires.
@@ -614,22 +530,7 @@ function App() {
     };
   }, [composerLibraryID, assetsRefreshTick]);
 
-  const assistantEntryID = activeStream ? `assistant-${activeStream}` : '';
-  // The standalone chats list hides project-scoped conversations — they live
-  // under their library's project rows instead, so they are never orphaned in
-  // neither place.
-  const conversationList = asArray(conversations).filter((item) => !item.projectId);
-  const visibleConversations = historyExpanded
-    ? conversationList.slice(0, visibleHistoryCount)
-    : conversationList.slice(0, compactHistoryLimit);
-  const hasMoreConversations = visibleConversations.length < conversationList.length;
   const selectedConversationID = activeConversationID;
-  const latestHarnessRun = [...chat].reverse().find((entry) => entry.role === 'assistant' && entry.harnessRun)?.harnessRun;
-  // Live turns receive real run snapshots via atelier:harness-run, so the
-  // latest entry's run is always current — streamed or persisted.
-  const visibleHarnessRun = latestHarnessRun ?? null;
-  const modelUsage = useMemo(() => summarizeModelUsage(chat), [chat]);
-  const mediaUsage = useMemo(() => summarizeMediaUsage(chat), [chat]);
   // Panel view of the asset list: library-scoped when the composer sits in a
   // project context (every asset across the library's conversations), else the
   // active conversation's own. Deduped by ID (a @-mention re-reference adds
@@ -735,30 +636,6 @@ function App() {
     );
   }
 
-  function markConversationInFlight(conversationID: string, requestID: string, kind: ConversationKind) {
-    requestConversationRef.current[requestID] = {conversationID, kind};
-    const next = {
-      ...inFlightConversationsRef.current,
-      [conversationID]: {requestID, kind},
-    };
-    inFlightConversationsRef.current = next;
-    setInFlightConversations(next);
-  }
-
-  function clearConversationInFlight(requestID: string) {
-    const tracked = requestConversationRef.current[requestID];
-    if (!tracked) {
-      return;
-    }
-    delete requestConversationRef.current[requestID];
-    const next = {...inFlightConversationsRef.current};
-    if (next[tracked.conversationID]?.requestID === requestID) {
-      delete next[tracked.conversationID];
-    }
-    inFlightConversationsRef.current = next;
-    setInFlightConversations(next);
-  }
-
   useEffect(() => {
     loadConfig().catch((error) => {
       setStartupError(formatError(error));
@@ -813,99 +690,6 @@ function App() {
     }, 0);
     return () => window.clearTimeout(timeout);
   }, [configLoaded]);
-
-  useEffect(() => {
-    const onChunk = (chunk: ChatChunk) => {
-      const isVisibleStream = visibleStreamRef.current === chunk.requestID;
-      if (chunk.conversationId) {
-        markConversationInFlight(chunk.conversationId, chunk.requestID, 'chat');
-      }
-      const draft = chatStreamDraftsRef.current[chunk.requestID] ?? {content: '', thinking: '', images: [], videos: [], audios: [], transcripts: [], markdowns: [], streaming: true};
-      chatStreamDraftsRef.current[chunk.requestID] = {
-        content: `${draft.content}${chunk.content ?? ''}`,
-        thinking: `${draft.thinking}${chunk.thinking ?? ''}`,
-        images: chunk.images?.length ? chunk.images : draft.images,
-        videos: chunk.videos?.length ? chunk.videos : draft.videos,
-        audios: chunk.audios?.length ? chunk.audios : draft.audios,
-        transcripts: chunk.transcripts?.length ? chunk.transcripts : draft.transcripts,
-        markdowns: chunk.markdowns?.length ? chunk.markdowns : draft.markdowns,
-        streaming: !chunk.done && !chunk.error,
-        error: chunk.error ?? draft.error,
-        provider: chunk.provider ?? draft.provider,
-      };
-      setChat((entries) =>
-        entries.map((entry) => {
-          if (entry.id !== `assistant-${chunk.requestID}`) {
-            return entry;
-          }
-          const nextDraft = chatStreamDraftsRef.current[chunk.requestID];
-          return {
-            ...entry,
-            content: nextDraft.content,
-            thinking: nextDraft.thinking,
-            images: nextDraft.images,
-            videos: nextDraft.videos,
-            audios: nextDraft.audios,
-            transcripts: nextDraft.transcripts,
-            markdowns: nextDraft.markdowns,
-            streaming: nextDraft.streaming,
-            error: nextDraft.error,
-            provider: nextDraft.provider ?? entry.provider,
-          };
-        }),
-      );
-      if (chunk.done || chunk.error) {
-        clearConversationInFlight(chunk.requestID);
-        setActiveStream((current) => current === chunk.requestID ? null : current);
-        if (isVisibleStream) {
-          visibleStreamRef.current = null;
-        }
-        // The finished turn's artifacts are now in history — re-derive the
-        // asset list (and the library tree, whose project listings may have
-        // gained a conversation) so an open panel shows them. The bump closure
-        // only touches a stable useState setter, so this empty-deps listener
-        // never goes stale — the same reason refreshConversations is safe here.
-        setAssetsRefreshTick((tick) => tick + 1);
-        bumpLibrariesRefresh();
-      }
-      if (chunk.conversationId && isVisibleStream) {
-        setActiveConversationID(chunk.conversationId);
-      }
-      if (chunk.conversationId || chunk.done || chunk.error) {
-        void refreshConversations();
-      }
-    };
-    // Unsubscribe with the canceller EventsOn returns: EventsOff(name) drops
-    // EVERY listener for the event, so an editor closing its own subscription
-    // would take this one down too.
-    return EventsOn('chat:chunk', onChunk);
-  }, []);
-
-  // Live harness telemetry: every step transition arrives as a full run
-  // snapshot (the same shape history persists), so the panel renders real
-  // in-flight state. Mirrors the chat:chunk effect — refs + setState only.
-  useEffect(() => {
-    const onHarnessRun = (event: HarnessRunEventView) => {
-      if (!event?.requestId) {
-        return;
-      }
-      const run = parseHarnessRun(event.run);
-      if (!run) {
-        return;
-      }
-      harnessRunDraftsRef.current[event.requestId] = run;
-      const entryID = `assistant-${event.requestId}`;
-      setChat((current) => current.map((entry) => entry.id === entryID ? {...entry, harnessRun: run} : entry));
-    };
-    return EventsOn('atelier:harness-run', onHarnessRun);
-  }, []);
-
-  useEffect(() => {
-    const onToolPermission = (event: ToolPermissionEvent) => {
-      setToolPermissions((current) => current.some((item) => item.id === event.id) ? current : [...current, event]);
-    };
-    return EventsOn('atelier:tool-permission', onToolPermission);
-  }, []);
 
   // AI-routed editor launches: the harness's open_editor tool fired (its
   // evidence line names what was opened) and the named conversation's asset
@@ -1056,17 +840,6 @@ function App() {
     };
   }, []);
 
-  // editSessionOpen: an editor of this kind is open on that session — or on a
-  // session App doesn't know yet, which is the only one an op can belong to.
-  function editSessionOpen(editor: EditSessionEditor, sessionID: string): boolean {
-    const open = openEditorSessionsRef.current[editor];
-    return open !== undefined && (open === '' || open === sessionID);
-  }
-
-  function editSessionOnScreen(editor: EditSessionEditor, sessionID: string): boolean {
-    return openEditorSessionsRef.current.onScreen && editSessionOpen(editor, sessionID);
-  }
-
   // File-menu creation actions (main.go's File menu emits these; see the
   // menuNew* handlers in app.go). The refs always point at the latest handler
   // closures, so the empty-deps subscription never fires a stale one.
@@ -1078,15 +851,6 @@ function App() {
     ];
     return () => offs.forEach((off) => off());
   }, []);
-
-  async function resolveToolPermission(permissionID: string, approved: boolean) {
-    setToolPermissions((current) => current.filter((item) => item.id !== permissionID));
-    try {
-      await ResolveToolPermission(permissionID, approved);
-    } catch (error) {
-      notifyError("Couldn't send the permission decision", error);
-    }
-  }
 
   // Installing while a turn runs would kill the conversation mid-stream, so a
   // click during a turn queues the install; this effect fires it once the last
@@ -1149,14 +913,6 @@ function App() {
       setUpdateCheckBusy(false);
     }
   }
-
-  useEffect(() => {
-    const transcript = transcriptRef.current;
-    if (!transcript || !shouldFollowTranscriptRef.current) {
-      return;
-    }
-    transcript.scrollTo({top: transcript.scrollHeight, behavior: 'smooth'});
-  }, [chat]);
 
   const {
     assetsWidth,
@@ -2004,29 +1760,6 @@ function App() {
     ]);
   }
 
-  // refreshConversations runs from the chat:chunk listener and after every
-  // write into a conversation, so a failing listing toasts under one key —
-  // repeats count in place instead of stacking — and the next successful
-  // load dismisses it.
-  async function refreshConversations(): Promise<main.ConversationSummary[]> {
-    try {
-      const nextConversations = await ListConversations();
-      setConversations(asArray(nextConversations));
-      setVisibleHistoryCount((current) => historyExpanded ? Math.max(current, compactHistoryLimit) : compactHistoryLimit);
-      notifications.dismissKey('conversations-load');
-      return asArray(nextConversations);
-    } catch (error) {
-      notifyError("Couldn't load conversations", error, {key: 'conversations-load'});
-      setConversations([]);
-      return [];
-    }
-  }
-
-  function showMoreConversations() {
-    setHistoryExpanded(true);
-    setVisibleHistoryCount((current) => Math.max(current, compactHistoryLimit) + expandedHistoryBatchSize);
-  }
-
   // chooseDraftWorkspace is the per-conversation picker for a NEW chat. It
   // reuses the same native dialog as the Settings default picker, but writes
   // the result into draftWorkspace (the per-conversation override) rather than
@@ -2056,13 +1789,6 @@ function App() {
   const displayedWorkspace = activeConversationID
     ? (activeConversationWorkspace || defaultWorkspaceRoot)
     : (draftWorkspace || defaultWorkspaceRoot);
-
-  function handleHistoryScroll(event: React.UIEvent<HTMLDivElement>) {
-    if (!historyExpanded || !hasMoreConversations || !isNearScrollBottom(event.currentTarget, 96)) {
-      return;
-    }
-    setVisibleHistoryCount((current) => Math.min(current + expandedHistoryBatchSize, conversationList.length));
-  }
 
   async function refreshOllama(endpoint = baseURL) {
     setRefreshing(true);
@@ -2206,14 +1932,6 @@ function App() {
     activeConversationIDRef.current = activeConversationID;
   }, [activeConversationID]);
   useEffect(() => {
-    editorOpenRef.current = editorOpen;
-  }, [editorOpen]);
-  // openEditorSessionsRef mirrors which edit-session editor is open, and
-  // whether it's on screen, for the app-global edit-op listener: undefined =
-  // no editor of that kind is open, '' = open but its session isn't known to
-  // App yet (the editors mint a session on their first submit).
-  const openEditorSessionsRef = useRef<{onScreen: boolean} & Partial<Record<EditSessionEditor, string>>>({onScreen: false});
-  useEffect(() => {
     openEditorSessionsRef.current = {
       onScreen: view === 'app',
       image: editorHandle ? editorHandle.sessionID ?? '' : undefined,
@@ -2342,503 +2060,11 @@ function App() {
     return /^cbc_[a-zA-Z0-9]+$/.test(stem) ? stem : null;
   }
 
-  function confirmLeaveComicEditor(): Promise<boolean> {
-    if (!comicEditorHandle || !comicEditorDirty.current) return Promise.resolve(true);
-    if (comicNavigationResolver.current) return Promise.resolve(false);
-    setDiscardEditorDraft('comic');
-    return new Promise((resolve) => { comicNavigationResolver.current = resolve; });
-  }
-
-  function confirmLeaveVideoEditor(): Promise<boolean> {
-    if (!videoEditorHandle || !videoEditorDirty.current) return Promise.resolve(true);
-    if (videoNavigationResolver.current) return Promise.resolve(false);
-    setDiscardEditorDraft('video');
-    return new Promise((resolve) => { videoNavigationResolver.current = resolve; });
-  }
-
-  function confirmLeaveAudioEditor(): Promise<boolean> {
-    if (!audioEditorHandle || !audioEditorDirty.current) return Promise.resolve(true);
-    if (audioNavigationResolver.current) return Promise.resolve(false);
-    setDiscardEditorDraft('audio');
-    return new Promise((resolve) => { audioNavigationResolver.current = resolve; });
-  }
-
-  function confirmLeaveSubtitleEditor(): Promise<boolean> {
-    if (!subtitleEditorHandle || !subtitleEditorDirty.current) return Promise.resolve(true);
-    if (subtitleNavigationResolver.current) return Promise.resolve(false);
-    setDiscardEditorDraft('subtitle');
-    return new Promise((resolve) => { subtitleNavigationResolver.current = resolve; });
-  }
-
-  function confirmLeaveMarkdownEditor(): Promise<boolean> {
-    if (!markdownEditorHandle || !markdownEditorDirty.current) return Promise.resolve(true);
-    if (markdownNavigationResolver.current) return Promise.resolve(false);
-    setDiscardEditorDraft('markdown');
-    return new Promise((resolve) => { markdownNavigationResolver.current = resolve; });
-  }
-
-  function confirmLeaveCompositionEditor(): Promise<boolean> {
-    if (!compositionEditorHandle || !compositionEditorDirty.current) return Promise.resolve(true);
-    if (compositionNavigationResolver.current) return Promise.resolve(false);
-    setDiscardEditorDraft('composition');
-    return new Promise((resolve) => { compositionNavigationResolver.current = resolve; });
-  }
-
-  // confirmLeaveEditor walks whichever editors hold unsaved work — only one
-  // confirm flow is ever active, so the dialog resolves both waiters.
-  async function confirmLeaveEditor(): Promise<boolean> {
-    if (!(await confirmLeaveVideoEditor())) return false;
-    if (!(await confirmLeaveAudioEditor())) return false;
-    if (!(await confirmLeaveSubtitleEditor())) return false;
-    if (!(await confirmLeaveMarkdownEditor())) return false;
-    if (!(await confirmLeaveCompositionEditor())) return false;
-    return confirmLeaveComicEditor();
-  }
-
-  function resolveEditorNavigation(discard: boolean) {
-    setDiscardEditorDraft(null);
-    const videoResolve = videoNavigationResolver.current;
-    videoNavigationResolver.current = null;
-    videoResolve?.(discard);
-    const audioResolve = audioNavigationResolver.current;
-    audioNavigationResolver.current = null;
-    audioResolve?.(discard);
-    const subtitleResolve = subtitleNavigationResolver.current;
-    subtitleNavigationResolver.current = null;
-    subtitleResolve?.(discard);
-    const markdownResolve = markdownNavigationResolver.current;
-    markdownNavigationResolver.current = null;
-    markdownResolve?.(discard);
-    const compositionResolve = compositionNavigationResolver.current;
-    compositionNavigationResolver.current = null;
-    compositionResolve?.(discard);
-    const comicResolve = comicNavigationResolver.current;
-    comicNavigationResolver.current = null;
-    comicResolve?.(discard);
-  }
-
   function openSettings() {
     // Settings overlays the editors (hidden, not unmounted) so Back returns to
     // the exact edit in progress — uncommitted tweaks included — and there is
     // nothing to discard-confirm.
     setView('settings');
-  }
-
-  async function leaveEditorThen(action: () => void) {
-    if (!(await confirmLeaveEditor())) return;
-    closeImageEditor();
-    action();
-  }
-
-  async function openVideoEditor(conversationID: string, artifactID: string) {
-    if (!(await confirmLeaveEditor())) return;
-    cancelVideoPreparation();
-    cancelImagePreparation();
-    cancelAudioPreparation();
-    const generation = ++videoOpenGeneration.current;
-    videoOpeningIdentity.current = {conversationID, artifactID};
-    setVideoEditorOpening(true);
-    try {
-      const owner = await GetConversation(conversationID);
-      if (generation !== videoOpenGeneration.current) return;
-      if (owner.conversation.kind === 'edit') {
-        await openEditSession(conversationID);
-        return;
-      }
-      const source = await ResolveVideoEditSource(conversationID, artifactID);
-      if (generation !== videoOpenGeneration.current) {
-        void ReleaseVideoEditSourcePreview(source.url);
-        for (const thumbnail of source.thumbnails ?? []) void ReleaseVideoEditSourcePreview(thumbnail);
-        return;
-      }
-      setEditorHandle(null);
-      setDocumentCompareHandle(null);
-      setAudioEditorHandle(null);
-      setSubtitleEditorHandle(null);
-      setMarkdownEditorHandle(null);
-      subtitleEditorDirty.current = false;
-      videoEditorDirty.current = false;
-      markdownEditorDirty.current = false;
-      setVideoEditorHandle({source, sessionID: ''});
-      // Preparation can complete while the user is in Settings; loading the
-      // editor must not yank them out of it — Back will reveal it.
-      setView((current) => (current === 'settings' ? current : 'app'));
-    } catch (error) {
-      // The common cause is a missing ffmpeg/ffprobe (the editor's preview
-      // needs both), so the toast offers the Settings door the old error
-      // card carried.
-      if (generation === videoOpenGeneration.current) {
-        notifyError("Couldn't open the video editor", error, {action: {label: 'Open Settings', run: () => void openSettings()}});
-      }
-    } finally {
-      if (generation === videoOpenGeneration.current) {
-        setVideoEditorOpening(false);
-        videoOpeningIdentity.current = null;
-      }
-    }
-  }
-
-  function cancelVideoPreparation() {
-    videoOpenGeneration.current++;
-    setVideoEditorOpening(false);
-    const identity = videoOpeningIdentity.current;
-    videoOpeningIdentity.current = null;
-    if (identity) void CancelVideoEditSource(identity.conversationID, identity.artifactID).catch(() => {});
-  }
-
-  function cancelImagePreparation() {
-    // The image resolve has no backend cancellation (unlike the video
-    // source's CancelVideoEditSource) — dropping the generation only makes
-    // the finished resolve's result land nowhere.
-    imageOpenGeneration.current++;
-    setImageEditorOpening(false);
-  }
-
-  function cancelAudioPreparation() {
-    // The audio resolve is a probe, not a preparation: dropping the
-    // generation only makes the finished resolve's result land nowhere.
-    audioOpenGeneration.current++;
-    setAudioEditorOpening(false);
-  }
-
-  async function openImageEditor(conversationID: string, artifactID: string) {
-    if (!(await confirmLeaveEditor())) return;
-    cancelVideoPreparation();
-    cancelImagePreparation();
-    cancelAudioPreparation();
-    const generation = ++imageOpenGeneration.current;
-    setImageEditorOpening(true);
-    try {
-      const source = await ResolveEditSource(conversationID, artifactID);
-      if (generation !== imageOpenGeneration.current) return;
-      setVideoEditorHandle(null);
-      setAudioEditorHandle(null);
-      setSubtitleEditorHandle(null);
-      setMarkdownEditorHandle(null);
-      setDocumentCompareHandle(null);
-      subtitleEditorDirty.current = false;
-      videoEditorDirty.current = false;
-      markdownEditorDirty.current = false;
-      setEditorHandle({source, sessionID: ''});
-      setView((current) => (current === 'settings' ? current : 'app'));
-    } catch (error) {
-      if (generation === imageOpenGeneration.current) notifyError("Couldn't open the image editor", error);
-    } finally {
-      if (generation === imageOpenGeneration.current) setImageEditorOpening(false);
-    }
-  }
-
-  async function openAudioEditor(conversationID: string, artifactID: string) {
-    if (!(await confirmLeaveEditor())) return;
-    cancelVideoPreparation();
-    cancelImagePreparation();
-    cancelAudioPreparation();
-    const generation = ++audioOpenGeneration.current;
-    setAudioEditorOpening(true);
-    try {
-      const owner = await GetConversation(conversationID);
-      if (generation !== audioOpenGeneration.current) return;
-      if (owner.conversation.kind === 'edit') {
-        await openEditSession(conversationID);
-        return;
-      }
-      const source = await ResolveAudioEditSource(conversationID, artifactID);
-      if (generation !== audioOpenGeneration.current) return;
-      setEditorHandle(null);
-      setDocumentCompareHandle(null);
-      setVideoEditorHandle(null);
-      setSubtitleEditorHandle(null);
-      setMarkdownEditorHandle(null);
-      subtitleEditorDirty.current = false;
-      videoEditorDirty.current = false;
-      markdownEditorDirty.current = false;
-      audioEditorDirty.current = false;
-      setAudioEditorHandle({source, sessionID: ''});
-      setView((current) => (current === 'settings' ? current : 'app'));
-    } catch (error) {
-      if (generation === audioOpenGeneration.current) notifyError("Couldn't open the audio editor", error);
-    } finally {
-      if (generation === audioOpenGeneration.current) setAudioEditorOpening(false);
-    }
-  }
-
-  // openSubtitleEditor mirrors openAudioEditor minus the session machinery:
-  // the subtitle editor is local-until-export, so the resolve is the whole
-  // load — cues, format, and the artifact identity the reply chips opened by.
-  async function openSubtitleEditor(conversationID: string, artifactID: string) {
-    if (!(await confirmLeaveEditor())) return;
-    cancelVideoPreparation();
-    cancelImagePreparation();
-    cancelAudioPreparation();
-    const generation = ++subtitleOpenGeneration.current;
-    setSubtitleEditorOpening(true);
-    try {
-      const owner = await GetConversation(conversationID);
-      if (generation !== subtitleOpenGeneration.current) return;
-      if (owner.conversation.kind === 'edit') {
-        await openEditSession(conversationID);
-        return;
-      }
-      const source = await ResolveSubtitleEditSource(conversationID, artifactID);
-      if (generation !== subtitleOpenGeneration.current) return;
-      setEditorHandle(null);
-      setDocumentCompareHandle(null);
-      setVideoEditorHandle(null);
-      setAudioEditorHandle(null);
-      setMarkdownEditorHandle(null);
-      videoEditorDirty.current = false;
-      audioEditorDirty.current = false;
-      markdownEditorDirty.current = false;
-      subtitleEditorDirty.current = false;
-      // The linked-media picker's scope comes from the conversation's own
-      // record: the library that owns its project, or none for an independent
-      // conversation. Resolved here rather than at render time — the sidebar's
-      // conversation list is only the newest slice by mtime, so a project
-      // conversation outside it would otherwise silently lose its library
-      // scope.
-      setSubtitleEditorHandle({source, libraryID: libraryIDForProject(owner.conversation.projectId ?? '')});
-      setView((current) => (current === 'settings' ? current : 'app'));
-    } catch (error) {
-      if (generation === subtitleOpenGeneration.current) notifyError("Couldn't open the subtitle editor", error);
-    } finally {
-      if (generation === subtitleOpenGeneration.current) setSubtitleEditorOpening(false);
-    }
-  }
-
-  // openMarkdownEditor mirrors openSubtitleEditor: the markdown editor is
-  // local-until-save, so the resolve is the whole load — the document text and
-  // the artifact identity the reply chips opened by. No session machinery, no
-  // edit conversation kind: documents are never media-edit subjects.
-  async function openMarkdownEditor(conversationID: string, artifactID: string) {
-    if (!(await confirmLeaveEditor())) return;
-    cancelVideoPreparation();
-    cancelImagePreparation();
-    cancelAudioPreparation();
-    const generation = ++markdownOpenGeneration.current;
-    setMarkdownEditorOpening(true);
-    try {
-      const source = await ResolveMarkdownEditSource(conversationID, artifactID);
-      if (generation !== markdownOpenGeneration.current) return;
-      setEditorHandle(null);
-      setDocumentCompareHandle(null);
-      setVideoEditorHandle(null);
-      setAudioEditorHandle(null);
-      setSubtitleEditorHandle(null);
-      videoEditorDirty.current = false;
-      audioEditorDirty.current = false;
-      subtitleEditorDirty.current = false;
-      markdownEditorDirty.current = false;
-      setMarkdownEditorHandle({source});
-      setView((current) => (current === 'settings' ? current : 'app'));
-    } catch (error) {
-      if (generation === markdownOpenGeneration.current) notifyError("Couldn't open the document editor", error);
-    } finally {
-      if (generation === markdownOpenGeneration.current) setMarkdownEditorOpening(false);
-    }
-  }
-
-  // openDocumentCompare opens the compare workspace on two of a
-  // conversation's documents — the compare_documents tool's launch (the
-  // pair rides the event's seeds, before then after). The resolve is the
-  // whole load: the diff arrives computed. Read-only, so it takes the slot
-  // from every editor (after their own confirm-leave) and needs none itself.
-  async function openDocumentCompare(conversationID: string, beforeArtifactID: string, afterArtifactID: string) {
-    if (!(await confirmLeaveEditor())) return;
-    cancelVideoPreparation();
-    cancelImagePreparation();
-    cancelAudioPreparation();
-    const generation = ++documentCompareOpenGeneration.current;
-    setDocumentCompareOpening(true);
-    try {
-      const source = await ResolveDocumentCompare(main.DocumentCompareRequest.createFrom({
-        conversationId: conversationID,
-        beforeArtifactId: beforeArtifactID,
-        afterArtifactId: afterArtifactID,
-      }));
-      if (generation !== documentCompareOpenGeneration.current) return;
-      setEditorHandle(null);
-      setVideoEditorHandle(null);
-      setAudioEditorHandle(null);
-      setSubtitleEditorHandle(null);
-      setMarkdownEditorHandle(null);
-      setCompositionEditorHandle(null);
-      setComicEditorHandle(null);
-      videoEditorDirty.current = false;
-      audioEditorDirty.current = false;
-      subtitleEditorDirty.current = false;
-      markdownEditorDirty.current = false;
-      compositionEditorDirty.current = false;
-      comicEditorDirty.current = false;
-      setDocumentCompareHandle({source});
-      setView((current) => (current === 'settings' ? current : 'app'));
-    } catch (error) {
-      if (generation === documentCompareOpenGeneration.current) notifyError("Couldn't open the comparison", error);
-    } finally {
-      if (generation === documentCompareOpenGeneration.current) setDocumentCompareOpening(false);
-    }
-  }
-
-  // openCompositionEditor reopens a saved composition revision — the assets
-  // panel's and the reply chips' Edit door. The third session-free editor:
-  // the resolve is the whole load, and the picker's library scope comes from
-  // the conversation's own record (the openSubtitleEditor rule).
-  async function openCompositionEditor(conversationID: string, artifactID: string) {
-    if (!(await confirmLeaveEditor())) return;
-    cancelVideoPreparation();
-    cancelImagePreparation();
-    cancelAudioPreparation();
-    const generation = ++compositionOpenGeneration.current;
-    setCompositionEditorOpening(true);
-    try {
-      const owner = await GetConversation(conversationID);
-      if (generation !== compositionOpenGeneration.current) return;
-      if (owner.conversation.kind === 'edit') {
-        await openEditSession(conversationID);
-        return;
-      }
-      const source = await ResolveCompositionEditSource(conversationID, artifactID);
-      if (generation !== compositionOpenGeneration.current) return;
-      setEditorHandle(null);
-      setDocumentCompareHandle(null);
-      setVideoEditorHandle(null);
-      setAudioEditorHandle(null);
-      setSubtitleEditorHandle(null);
-      setMarkdownEditorHandle(null);
-      videoEditorDirty.current = false;
-      audioEditorDirty.current = false;
-      subtitleEditorDirty.current = false;
-      markdownEditorDirty.current = false;
-      compositionEditorDirty.current = false;
-      setCompositionEditorHandle({source, libraryID: libraryIDForProject(owner.conversation.projectId ?? '')});
-      setView((current) => (current === 'settings' ? current : 'app'));
-    } catch (error) {
-      if (generation === compositionOpenGeneration.current) notifyError("Couldn't open the composer", error);
-    } finally {
-      if (generation === compositionOpenGeneration.current) setCompositionEditorOpening(false);
-    }
-  }
-
-  // openNewComposition starts an unsaved draft — the "New composition" and
-  // "New audio mix" actions and the editor-launch intent's door. Seeding
-  // resolves and measures the referenced artifacts in order; nothing
-  // persists until the editor's first save, which is what lets this run
-  // mid-stream safely. audioFirst is the ＋ Audio intent: an empty draft
-  // presents audio-first (starter lane, no video-frame chrome) until content
-  // decides otherwise.
-  async function openNewComposition(conversationID: string, seedArtifactIDs: string[], audioFirst = false) {
-    if (!(await confirmLeaveEditor())) return;
-    cancelVideoPreparation();
-    cancelImagePreparation();
-    cancelAudioPreparation();
-    const generation = ++compositionOpenGeneration.current;
-    setCompositionEditorOpening(true);
-    try {
-      const owner = await GetConversation(conversationID);
-      const source = await SeedComposition(main.SeedCompositionRequest.createFrom({
-        conversationId: conversationID,
-        artifactIds: seedArtifactIDs,
-      }));
-      if (generation !== compositionOpenGeneration.current) return;
-      setEditorHandle(null);
-      setDocumentCompareHandle(null);
-      setVideoEditorHandle(null);
-      setAudioEditorHandle(null);
-      setSubtitleEditorHandle(null);
-      setMarkdownEditorHandle(null);
-      videoEditorDirty.current = false;
-      audioEditorDirty.current = false;
-      subtitleEditorDirty.current = false;
-      markdownEditorDirty.current = false;
-      compositionEditorDirty.current = false;
-      setCompositionEditorHandle({source, libraryID: libraryIDForProject(owner.conversation.projectId ?? ''), ...(audioFirst ? {audioFirst: true} : {})});
-      setView((current) => (current === 'settings' ? current : 'app'));
-    } catch (error) {
-      if (generation === compositionOpenGeneration.current) notifyError("Couldn't open the composer", error);
-    } finally {
-      if (generation === compositionOpenGeneration.current) setCompositionEditorOpening(false);
-    }
-  }
-
-  // openComicEditor reopens a saved comic revision — the assets panel's and
-  // the reply chips' Edit door. The fourth session-free editor: the resolve
-  // is the whole load, and the picker's library scope comes from the
-  // conversation's own record (the openSubtitleEditor rule).
-  async function openComicEditor(conversationID: string, artifactID: string) {
-    if (!(await confirmLeaveEditor())) return;
-    cancelVideoPreparation();
-    cancelImagePreparation();
-    cancelAudioPreparation();
-    const generation = ++comicOpenGeneration.current;
-    setComicEditorOpening(true);
-    try {
-      const owner = await GetConversation(conversationID);
-      if (generation !== comicOpenGeneration.current) return;
-      if (owner.conversation.kind === 'edit') {
-        await openEditSession(conversationID);
-        return;
-      }
-      const source = await ResolveComicEditSource(conversationID, artifactID);
-      if (generation !== comicOpenGeneration.current) return;
-      setEditorHandle(null);
-      setDocumentCompareHandle(null);
-      setVideoEditorHandle(null);
-      setAudioEditorHandle(null);
-      setSubtitleEditorHandle(null);
-      setMarkdownEditorHandle(null);
-      setCompositionEditorHandle(null);
-      videoEditorDirty.current = false;
-      audioEditorDirty.current = false;
-      subtitleEditorDirty.current = false;
-      markdownEditorDirty.current = false;
-      compositionEditorDirty.current = false;
-      comicEditorDirty.current = false;
-      setComicEditorHandle({source, libraryID: libraryIDForProject(owner.conversation.projectId ?? '')});
-      setView((current) => (current === 'settings' ? current : 'app'));
-    } catch (error) {
-      if (generation === comicOpenGeneration.current) notifyError("Couldn't open the comic editor", error);
-    } finally {
-      if (generation === comicOpenGeneration.current) setComicEditorOpening(false);
-    }
-  }
-
-  // openNewComic starts an unsaved draft — the "New comic" action and the
-  // editor-launch intent's door. Seeding resolves and measures the referenced
-  // images in order into the unplaced tray; nothing persists until the
-  // editor's first save, which is what lets this run mid-stream safely.
-  async function openNewComic(conversationID: string, seedArtifactIDs: string[]) {
-    if (!(await confirmLeaveEditor())) return;
-    cancelVideoPreparation();
-    cancelImagePreparation();
-    cancelAudioPreparation();
-    const generation = ++comicOpenGeneration.current;
-    setComicEditorOpening(true);
-    try {
-      const owner = await GetConversation(conversationID);
-      const source = await SeedComic(main.SeedComicRequest.createFrom({
-        conversationId: conversationID,
-        artifactIds: seedArtifactIDs,
-      }));
-      if (generation !== comicOpenGeneration.current) return;
-      setEditorHandle(null);
-      setDocumentCompareHandle(null);
-      setVideoEditorHandle(null);
-      setAudioEditorHandle(null);
-      setSubtitleEditorHandle(null);
-      setMarkdownEditorHandle(null);
-      setCompositionEditorHandle(null);
-      videoEditorDirty.current = false;
-      audioEditorDirty.current = false;
-      subtitleEditorDirty.current = false;
-      markdownEditorDirty.current = false;
-      compositionEditorDirty.current = false;
-      comicEditorDirty.current = false;
-      setComicEditorHandle({source, libraryID: libraryIDForProject(owner.conversation.projectId ?? '')});
-      setView((current) => (current === 'settings' ? current : 'app'));
-    } catch (error) {
-      if (generation === comicOpenGeneration.current) notifyError("Couldn't open the comic editor", error);
-    } finally {
-      if (generation === comicOpenGeneration.current) setComicEditorOpening(false);
-    }
   }
 
   // refreshAfterConversationWrite re-reads everything that shows a
@@ -2862,97 +2088,6 @@ function App() {
   // and open the session on screen.
   const refreshAfterConversationWriteRef = useRef((_conversationID: string) => {});
   refreshAfterConversationWriteRef.current = refreshAfterConversationWrite;
-  const openFinishedEditSessionRef = useRef((_editor: EditSessionEditor, _sessionID: string) => {});
-  openFinishedEditSessionRef.current = (editor, sessionID) => {
-    if (editSessionOpen(editor, sessionID)) {
-      setView('app');
-      return;
-    }
-    void leaveEditorThen(() => {
-      void openEditSession(sessionID).then(() => setView('app'));
-    });
-  };
-
-  // openEditSession reopens a saved edit session — the sidebar/search path
-  // for Kind "edit" conversations. The handle seeds from the loaded session's
-  // own source copy, so the editor can submit iterations without guessing.
-  async function openEditSession(sessionID: string) {
-    try {
-      const state = await ListEditSession(sessionID);
-      if (state.source.mediaKind === 'video') {
-        setEditorHandle(null);
-        setDocumentCompareHandle(null);
-        setAudioEditorHandle(null);
-        setSubtitleEditorHandle(null);
-        subtitleEditorDirty.current = false;
-        audioEditorDirty.current = false;
-        videoEditorDirty.current = false;
-        setVideoEditorHandle({source: main.EditSourceInfo.createFrom({...state.source,
-          conversationId: state.parentConversationId || state.source.conversationId,
-          conversationTitle: state.parentTitle,
-        }), sessionID});
-        setView((current) => (current === 'settings' ? current : 'app'));
-        return;
-      }
-      if (state.source.mediaKind === 'audio') {
-        setEditorHandle(null);
-        setDocumentCompareHandle(null);
-        setVideoEditorHandle(null);
-        setSubtitleEditorHandle(null);
-        subtitleEditorDirty.current = false;
-        videoEditorDirty.current = false;
-        audioEditorDirty.current = false;
-        setAudioEditorHandle({source: main.EditSourceInfo.createFrom({...state.source,
-          conversationId: state.parentConversationId || state.source.conversationId,
-          conversationTitle: state.parentTitle,
-        }), sessionID});
-        setView((current) => (current === 'settings' ? current : 'app'));
-        return;
-      }
-      setVideoEditorHandle(null);
-      setAudioEditorHandle(null);
-      setSubtitleEditorHandle(null);
-      setDocumentCompareHandle(null);
-      subtitleEditorDirty.current = false;
-      audioEditorDirty.current = false;
-      setEditorHandle({
-        source: main.EditSourceInfo.createFrom({
-          conversationId: state.parentConversationId || state.source.conversationId,
-          conversationTitle: state.parentTitle,
-          artifactId: state.source.artifactId,
-          url: state.source.url,
-          width: state.source.width,
-          height: state.source.height,
-        }),
-        sessionID,
-      });
-      setView((current) => (current === 'settings' ? current : 'app'));
-    } catch (error) {
-      notifyError("Couldn't open the edit session", error);
-    }
-  }
-
-  function closeImageEditor() {
-    cancelVideoPreparation();
-    cancelImagePreparation();
-    cancelAudioPreparation();
-    setVideoEditorHandle(null);
-    setAudioEditorHandle(null);
-    setSubtitleEditorHandle(null);
-    setMarkdownEditorHandle(null);
-    setCompositionEditorHandle(null);
-    setComicEditorHandle(null);
-    videoEditorDirty.current = false;
-    audioEditorDirty.current = false;
-    subtitleEditorDirty.current = false;
-    markdownEditorDirty.current = false;
-    compositionEditorDirty.current = false;
-    comicEditorDirty.current = false;
-    setEditorHandle(null);
-    setDocumentCompareHandle(null);
-    setPreviewEditContext(null);
-  }
-
   // focusTurnID, when set, scrolls the opened transcript to that turn's
   // message — used by history search results to land on the match.
   async function openConversationSummary(conversation: main.ConversationSummary, focusTurnID = '') {
@@ -2988,54 +2123,6 @@ function App() {
       if (openingConversationRef.current === conversation.id) {
         openingConversationRef.current = '';
       }
-    }
-  }
-
-  function startEditingConversationTitle(conversation: main.ConversationSummary) {
-    setOpenHistoryMenuID('');
-    setEditingTitleID(conversation.id);
-    setEditingTitle(conversation.title);
-  }
-
-  function cancelEditingConversationTitle() {
-    setEditingTitleID('');
-    setEditingTitle('');
-  }
-
-  async function saveConversationTitle(conversation: main.ConversationSummary) {
-    const title = editingTitle.trim();
-    if (!title || title === conversation.title) {
-      cancelEditingConversationTitle();
-      return;
-    }
-    // Optimistic: the sidebar shows the new title immediately; the backend
-    // response reconciles the normalized form (whitespace collapsed, capped
-    // length), and a failure restores the previous title.
-    setConversations((items) =>
-      asArray(items).map((item) => item.id === conversation.id ? main.ConversationSummary.createFrom({...item, title}) : item),
-    );
-    cancelEditingConversationTitle();
-    try {
-      const updated = await UpdateConversationTitle(conversation.id, title);
-      setConversations((items) =>
-        asArray(items).map((item) => item.id === updated.id ? main.ConversationSummary.createFrom({...item, ...updated}) : item),
-      );
-    } catch (error) {
-      notifyError("Couldn't rename the conversation", error);
-      setConversations((items) =>
-        asArray(items).map((item) => item.id === conversation.id ? main.ConversationSummary.createFrom({...item, title: conversation.title}) : item),
-      );
-    }
-  }
-
-  function handleConversationTitleKeyDown(event: React.KeyboardEvent<HTMLInputElement>, conversation: main.ConversationSummary) {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      void saveConversationTitle(conversation);
-    }
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      cancelEditingConversationTitle();
     }
   }
 
@@ -3087,23 +2174,6 @@ function App() {
     restoreDraftFor(detail.conversation.id);
   }
 
-  async function copyConversationID(conversation: main.ConversationSummary) {
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(conversation.id);
-      } else {
-        copyTextWithTextarea(conversation.id);
-      }
-      setCopiedConversationID(conversation.id);
-      if (copyResetRef.current) {
-        window.clearTimeout(copyResetRef.current);
-      }
-      copyResetRef.current = window.setTimeout(() => setCopiedConversationID(''), 1600);
-    } catch (error) {
-      notifyError("Couldn't copy to the clipboard", error);
-    }
-  }
-
   async function archiveConversation(conversation: main.ConversationSummary) {
     try {
       setOpenHistoryMenuID('');
@@ -3122,36 +2192,6 @@ function App() {
       notifyError("Couldn't archive the conversation", error);
     }
   }
-
-  async function purgeArchivedConversations() {
-    if (purgeBusy) {
-      return;
-    }
-    if (!confirmPurgeArchived) {
-      setConfirmPurgeArchived(true);
-      return;
-    }
-    try {
-      setPurgeBusy(true);
-      const result = await PurgeArchivedConversations();
-      const remaining = await refreshConversations();
-      // Drop any session drafts for conversations that no longer exist, but
-      // always keep the '' new-chat key.
-      const liveIDs = new Set(remaining.map((item) => item.id));
-      for (const id of Object.keys(composerDraftsRef.current)) {
-        if (id !== '' && !liveIDs.has(id)) {
-          delete composerDraftsRef.current[id];
-        }
-      }
-      setConfirmPurgeArchived(false);
-      notifySuccess(`${result.deletedConversations} archived ${result.deletedConversations === 1 ? 'conversation' : 'conversations'} and ${result.deletedAssets} ${result.deletedAssets === 1 ? 'asset' : 'assets'} deleted.`);
-    } catch (error) {
-      notifyError("Couldn't purge archived conversations", error);
-    } finally {
-      setPurgeBusy(false);
-    }
-  }
-
 
   // executeChatStream is the shared core of a chat turn: it wires up the
   // streaming-state refs, opens the StreamChat call, and on failure marks the
@@ -3567,51 +2607,6 @@ function App() {
     return parseComposerMentions(text, mentionBindingPool()).map((segment, index) =>
       segment.mention ? <span key={index} className="mention-chip">{segment.mention.source}</span> : segment.text,
     );
-  }
-
-  async function stopChat() {
-    if (activeStream) {
-      await CancelStream(activeStream);
-      chatStreamDraftsRef.current[activeStream] = {
-        ...(chatStreamDraftsRef.current[activeStream] ?? {content: '', thinking: '', images: [], videos: [], audios: []}),
-        streaming: false,
-        error: 'Stopped',
-      };
-      setActiveStream(null);
-      visibleStreamRef.current = null;
-      setChat((entries) =>
-        entries.map((entry) =>
-          entry.id === assistantEntryID ? {...entry, streaming: false, error: 'Stopped'} : entry,
-        ),
-      );
-    }
-  }
-
-  function toggleThinkingCollapsed(entryID: string) {
-    setCollapsedThinkingIDs((current) => ({
-      ...current,
-      [entryID]: !current[entryID],
-    }));
-  }
-
-  async function copyMessage(entry: ChatEntry) {
-    if (!entry.content) {
-      return;
-    }
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(entry.content);
-      } else {
-        copyTextWithTextarea(entry.content);
-      }
-      setCopiedMessageID(entry.id);
-      if (copyResetRef.current) {
-        window.clearTimeout(copyResetRef.current);
-      }
-      copyResetRef.current = window.setTimeout(() => setCopiedMessageID(''), 1600);
-    } catch (error) {
-      notifyError("Couldn't copy to the clipboard", error);
-    }
   }
 
   function handleComposerDragOver(event: React.DragEvent<HTMLDivElement>) {
