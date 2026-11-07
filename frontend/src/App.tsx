@@ -21,7 +21,6 @@ import {
   HasOpenRouterAPIKey,
   InstallUpdate,
   ListConversationAssets,
-  ListConversations,
   ListFalVideoDurations,
   ListFalSoundEffectDurations,
   ListEditSession,
@@ -40,7 +39,6 @@ import {
   ListModels,
   ListOpenAICompatibleModels,
   LoadUIState,
-  PurgeArchivedConversations,
   ResolveToolPermission,
   SaveImage,
   SaveVideo,
@@ -57,7 +55,6 @@ import {
   SeedComic,
   SeedComposition,
   StreamChat,
-  UpdateConversationTitle,
   DiscardMediaUpload,
   RevealFile,
 } from '../wailsjs/go/main/App';
@@ -117,10 +114,6 @@ import {
   defaultSoundDurationOptions,
   defaultMediaTimeoutSeconds,
 } from './modelDefaults';
-import {
-  compactHistoryLimit,
-  expandedHistoryBatchSize,
-} from './uiLayout';
 import {asArray, formatModelSize, shortenHomePath, formatError} from './utils';
 import {ModelCombobox} from './settings/ModelCombobox';
 import {InfoHint, AirplaneHint} from './ui/Hints';
@@ -172,6 +165,7 @@ import {useModelCatalogs} from './settings/useModelCatalogs';
 import {useProviderKeys} from './settings/useProviderKeys';
 import {useAppConfig} from './useAppConfig';
 import {useComposer} from './composer/useComposer';
+import {useConversations} from './sidebar/useConversations';
 
 function App() {
   const {
@@ -283,10 +277,15 @@ function App() {
   } = useComposer({chatIsEmpty, activeConversationID, activeConversationIDRef, mentionCandidates, submitChat});
   const [collapsedThinkingIDs, setCollapsedThinkingIDs] = useState<Record<string, boolean>>({});
   const [copiedMessageID, setCopiedMessageID] = useState('');
-  const [copiedConversationID, setCopiedConversationID] = useState('');
-  const [conversations, setConversations] = useState<main.ConversationSummary[]>([]);
-  const [historyExpanded, setHistoryExpanded] = useState(false);
-  const [visibleHistoryCount, setVisibleHistoryCount] = useState(compactHistoryLimit);
+  const copyResetRef = useRef<number | null>(null);
+  const {
+    cancelEditingConversationTitle, chatsOpen, confirmPurgeArchived, conversationList, conversations,
+    copiedConversationID, copyConversationID, editingTitle, editingTitleID, handleConversationTitleKeyDown,
+    handleHistoryScroll, hasMoreConversations, moveDialogConversation, openHistoryMenuID,
+    purgeArchivedConversations, purgeBusy, refreshConversations, saveConversationTitle, setChatsOpen,
+    setConfirmPurgeArchived, setConversations, setEditingTitle, setMoveDialogConversation,
+    setOpenHistoryMenuID, showMoreConversations, startEditingConversationTitle, visibleConversations,
+  } = useConversations({composerDraftsRef, copyResetRef});
   const {
     historyQuery,
     historyResults,
@@ -297,9 +296,6 @@ function App() {
     setHistoryQuery,
     setSearchOpen,
   } = useHistorySearch();
-  // chatsOpen collapses the standalone Chats section to just its header, the
-  // same affordance the Libraries section below it has.
-  const [chatsOpen, setChatsOpen] = useState(true);
   // uiStateLoaded flips once the persisted navigation state is hydrated; the
   // save effect below waits for it so launch-time defaults can't clobber the
   // saved file.
@@ -386,12 +382,6 @@ function App() {
   // loadConfig rejecting), cleared by applyConfig or the card's Dismiss.
   // Every other failure is an action result and toasts instead.
   const [startupError, setStartupError] = useState('');
-  const [editingTitleID, setEditingTitleID] = useState('');
-  const [editingTitle, setEditingTitle] = useState('');
-  const [openHistoryMenuID, setOpenHistoryMenuID] = useState('');
-  // The conversation whose "Move to…" picker is open; null keeps the dialog
-  // unmounted so its filter state resets on every open.
-  const [moveDialogConversation, setMoveDialogConversation] = useState<main.ConversationSummary | null>(null);
   const [view, setView] = useState<View>('app');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('providers');
   // Per-conversation model-override editing state: the draft is a snapshot of
@@ -466,8 +456,6 @@ function App() {
   // editor's later-landing handle into view).
   const editorOpening = imageEditorOpening || videoEditorOpening || audioEditorOpening || subtitleEditorOpening || markdownEditorOpening || compositionEditorOpening || comicEditorOpening || documentCompareOpening;
   const editorOpen = !!editorHandle || !!videoEditorHandle || !!audioEditorHandle || !!subtitleEditorHandle || !!markdownEditorHandle || !!compositionEditorHandle || !!comicEditorHandle || !!documentCompareHandle;
-  const [purgeBusy, setPurgeBusy] = useState(false);
-  const [confirmPurgeArchived, setConfirmPurgeArchived] = useState(false);
   const [openCapabilityID, setOpenCapabilityID] = useState('');
   // Self-update UI state: the banner rides the atelier:update-available event
   // (raised by startup, ticker, and manual checks alike); an install clicked
@@ -495,7 +483,6 @@ function App() {
   // listener never closes over stale state. Used to re-attach the live run
   // when the user switches conversations mid-stream.
   const harnessRunDraftsRef = useRef<Record<string, HarnessRunView>>({});
-  const copyResetRef = useRef<number | null>(null);
 
   // The Libraries & projects sidebar tree — data, expansion/creation/rename/
   // delete state, and every tree action — lives in the useLibraries hook;
@@ -615,14 +602,6 @@ function App() {
   }, [composerLibraryID, assetsRefreshTick]);
 
   const assistantEntryID = activeStream ? `assistant-${activeStream}` : '';
-  // The standalone chats list hides project-scoped conversations — they live
-  // under their library's project rows instead, so they are never orphaned in
-  // neither place.
-  const conversationList = asArray(conversations).filter((item) => !item.projectId);
-  const visibleConversations = historyExpanded
-    ? conversationList.slice(0, visibleHistoryCount)
-    : conversationList.slice(0, compactHistoryLimit);
-  const hasMoreConversations = visibleConversations.length < conversationList.length;
   const selectedConversationID = activeConversationID;
   const latestHarnessRun = [...chat].reverse().find((entry) => entry.role === 'assistant' && entry.harnessRun)?.harnessRun;
   // Live turns receive real run snapshots via atelier:harness-run, so the
@@ -2004,29 +1983,6 @@ function App() {
     ]);
   }
 
-  // refreshConversations runs from the chat:chunk listener and after every
-  // write into a conversation, so a failing listing toasts under one key —
-  // repeats count in place instead of stacking — and the next successful
-  // load dismisses it.
-  async function refreshConversations(): Promise<main.ConversationSummary[]> {
-    try {
-      const nextConversations = await ListConversations();
-      setConversations(asArray(nextConversations));
-      setVisibleHistoryCount((current) => historyExpanded ? Math.max(current, compactHistoryLimit) : compactHistoryLimit);
-      notifications.dismissKey('conversations-load');
-      return asArray(nextConversations);
-    } catch (error) {
-      notifyError("Couldn't load conversations", error, {key: 'conversations-load'});
-      setConversations([]);
-      return [];
-    }
-  }
-
-  function showMoreConversations() {
-    setHistoryExpanded(true);
-    setVisibleHistoryCount((current) => Math.max(current, compactHistoryLimit) + expandedHistoryBatchSize);
-  }
-
   // chooseDraftWorkspace is the per-conversation picker for a NEW chat. It
   // reuses the same native dialog as the Settings default picker, but writes
   // the result into draftWorkspace (the per-conversation override) rather than
@@ -2056,13 +2012,6 @@ function App() {
   const displayedWorkspace = activeConversationID
     ? (activeConversationWorkspace || defaultWorkspaceRoot)
     : (draftWorkspace || defaultWorkspaceRoot);
-
-  function handleHistoryScroll(event: React.UIEvent<HTMLDivElement>) {
-    if (!historyExpanded || !hasMoreConversations || !isNearScrollBottom(event.currentTarget, 96)) {
-      return;
-    }
-    setVisibleHistoryCount((current) => Math.min(current + expandedHistoryBatchSize, conversationList.length));
-  }
 
   async function refreshOllama(endpoint = baseURL) {
     setRefreshing(true);
@@ -2991,54 +2940,6 @@ function App() {
     }
   }
 
-  function startEditingConversationTitle(conversation: main.ConversationSummary) {
-    setOpenHistoryMenuID('');
-    setEditingTitleID(conversation.id);
-    setEditingTitle(conversation.title);
-  }
-
-  function cancelEditingConversationTitle() {
-    setEditingTitleID('');
-    setEditingTitle('');
-  }
-
-  async function saveConversationTitle(conversation: main.ConversationSummary) {
-    const title = editingTitle.trim();
-    if (!title || title === conversation.title) {
-      cancelEditingConversationTitle();
-      return;
-    }
-    // Optimistic: the sidebar shows the new title immediately; the backend
-    // response reconciles the normalized form (whitespace collapsed, capped
-    // length), and a failure restores the previous title.
-    setConversations((items) =>
-      asArray(items).map((item) => item.id === conversation.id ? main.ConversationSummary.createFrom({...item, title}) : item),
-    );
-    cancelEditingConversationTitle();
-    try {
-      const updated = await UpdateConversationTitle(conversation.id, title);
-      setConversations((items) =>
-        asArray(items).map((item) => item.id === updated.id ? main.ConversationSummary.createFrom({...item, ...updated}) : item),
-      );
-    } catch (error) {
-      notifyError("Couldn't rename the conversation", error);
-      setConversations((items) =>
-        asArray(items).map((item) => item.id === conversation.id ? main.ConversationSummary.createFrom({...item, title: conversation.title}) : item),
-      );
-    }
-  }
-
-  function handleConversationTitleKeyDown(event: React.KeyboardEvent<HTMLInputElement>, conversation: main.ConversationSummary) {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      void saveConversationTitle(conversation);
-    }
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      cancelEditingConversationTitle();
-    }
-  }
-
   function hydrateChatConversation(detail: main.ConversationDetail) {
     stashCurrentDraft();
     const inFlight = inFlightConversationsRef.current[detail.conversation.id];
@@ -3087,23 +2988,6 @@ function App() {
     restoreDraftFor(detail.conversation.id);
   }
 
-  async function copyConversationID(conversation: main.ConversationSummary) {
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(conversation.id);
-      } else {
-        copyTextWithTextarea(conversation.id);
-      }
-      setCopiedConversationID(conversation.id);
-      if (copyResetRef.current) {
-        window.clearTimeout(copyResetRef.current);
-      }
-      copyResetRef.current = window.setTimeout(() => setCopiedConversationID(''), 1600);
-    } catch (error) {
-      notifyError("Couldn't copy to the clipboard", error);
-    }
-  }
-
   async function archiveConversation(conversation: main.ConversationSummary) {
     try {
       setOpenHistoryMenuID('');
@@ -3122,36 +3006,6 @@ function App() {
       notifyError("Couldn't archive the conversation", error);
     }
   }
-
-  async function purgeArchivedConversations() {
-    if (purgeBusy) {
-      return;
-    }
-    if (!confirmPurgeArchived) {
-      setConfirmPurgeArchived(true);
-      return;
-    }
-    try {
-      setPurgeBusy(true);
-      const result = await PurgeArchivedConversations();
-      const remaining = await refreshConversations();
-      // Drop any session drafts for conversations that no longer exist, but
-      // always keep the '' new-chat key.
-      const liveIDs = new Set(remaining.map((item) => item.id));
-      for (const id of Object.keys(composerDraftsRef.current)) {
-        if (id !== '' && !liveIDs.has(id)) {
-          delete composerDraftsRef.current[id];
-        }
-      }
-      setConfirmPurgeArchived(false);
-      notifySuccess(`${result.deletedConversations} archived ${result.deletedConversations === 1 ? 'conversation' : 'conversations'} and ${result.deletedAssets} ${result.deletedAssets === 1 ? 'asset' : 'assets'} deleted.`);
-    } catch (error) {
-      notifyError("Couldn't purge archived conversations", error);
-    } finally {
-      setPurgeBusy(false);
-    }
-  }
-
 
   // executeChatStream is the shared core of a chat turn: it wires up the
   // streaming-state refs, opens the StreamChat call, and on failure marks the
