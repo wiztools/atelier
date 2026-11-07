@@ -81,28 +81,28 @@ func TestFountainTitlePageKeepsLineBreaks(t *testing.T) {
 	if titlePage["Contact"] != "Subhash Chandran\n42 Lantern Lane" {
 		t.Fatalf("contact = %q, want its two lines", titlePage["Contact"])
 	}
-	lines := fountainTitlePageLines(titlePage)
-	if len(lines) != pdfLinesPerPage {
-		t.Fatalf("title page rows = %d, want the full %d-row page (contact pinned to the bottom)", len(lines), pdfLinesPerPage)
+	lines := fountainTitlePageLines(pdfPaperLetter, titlePage)
+	if len(lines) != pdfPaperLetter.linesPerPage {
+		t.Fatalf("title page rows = %d, want the full %d-row page (contact pinned to the bottom)", len(lines), pdfPaperLetter.linesPerPage)
 	}
-	if lines[pdfLinesPerPage-2].text != "Subhash Chandran" || lines[pdfLinesPerPage-1].text != "42 Lantern Lane" {
-		t.Fatalf("bottom rows = %q / %q, want the contact block a line apiece", lines[pdfLinesPerPage-2].text, lines[pdfLinesPerPage-1].text)
+	if lines[pdfPaperLetter.linesPerPage-2].text != "Subhash Chandran" || lines[pdfPaperLetter.linesPerPage-1].text != "42 Lantern Lane" {
+		t.Fatalf("bottom rows = %q / %q, want the contact block a line apiece", lines[pdfPaperLetter.linesPerPage-2].text, lines[pdfPaperLetter.linesPerPage-1].text)
 	}
-	title := lines[fountainTitleTopRow]
+	title := lines[pdfPaperLetter.titleTopRow()]
 	if title.text != "THE LONG NIGHT" || !title.center || len(title.spans) != 1 || !title.spans[0].bold || !title.spans[0].underline {
 		t.Fatalf("title row = %+v, want it centered, uppercase, bold and underlined", title)
 	}
 	// The draft date sits centered under the title the way the preview shows
 	// it — and is never cut off the page.
-	if lines[fountainTitleTopRow+2].text != "November 7, 2026" || !lines[fountainTitleTopRow+2].center {
-		t.Fatalf("draft date row = %+v", lines[fountainTitleTopRow+2])
+	if lines[pdfPaperLetter.titleTopRow()+2].text != "November 7, 2026" || !lines[pdfPaperLetter.titleTopRow()+2].center {
+		t.Fatalf("draft date row = %+v", lines[pdfPaperLetter.titleTopRow()+2])
 	}
 }
 
 // paginatedScript runs the body pipeline the export uses.
 func paginatedScript(script string, includeNotes bool) [][]fountainPDFLine {
 	elements, _ := fountainParse([]byte(script))
-	return fountainPaginate(fountainBlocks(elements, includeNotes))
+	return fountainPaginate(pdfPaperLetter, fountainBlocks(pdfPaperLetter, elements, includeNotes))
 }
 
 func rowTexts(page []fountainPDFLine) []string {
@@ -250,7 +250,7 @@ func TestFountainPaginateSpeechLongerThanAPage(t *testing.T) {
 		t.Fatalf("pages = %d, want the speech across several", len(pages))
 	}
 	for i, page := range pages {
-		if len(page) > pdfLinesPerPage {
+		if len(page) > pdfPaperLetter.linesPerPage {
 			t.Fatalf("page %d has %d rows", i+1, len(page))
 		}
 		if i > 0 && page[0].text != "MAYA (CONT'D)" {
@@ -275,7 +275,7 @@ func TestFountainPaginatePageTopsAreNeverBlank(t *testing.T) {
 		if len(page) == 0 || page[0].text == "" || page[len(page)-1].text == "" {
 			t.Fatalf("page %d starts or ends blank: %q", i+1, rowTexts(page))
 		}
-		if len(page) > pdfLinesPerPage {
+		if len(page) > pdfPaperLetter.linesPerPage {
 			t.Fatalf("page %d overflows: %d rows", i+1, len(page))
 		}
 		if page[len(page)-1].text == "MAYA" || strings.HasPrefix(page[len(page)-1].text, "INT.") {
@@ -288,7 +288,7 @@ func TestFountainLongWordBreaksToTheColumn(t *testing.T) {
 	long := strings.Repeat("x", 70)
 	pages := paginatedScript("A link: "+long+" ends here.\n", false)
 	for _, line := range pages[0] {
-		if n := len([]rune(line.text)); n > fountainWidthAction {
+		if n := len([]rune(line.text)); n > pdfPaperLetter.columns {
 			t.Fatalf("row %q is %d characters, wider than the column", line.text, n)
 		}
 	}
@@ -297,14 +297,14 @@ func TestFountainLongWordBreaksToTheColumn(t *testing.T) {
 func TestFountainPDFNotesToggle(t *testing.T) {
 	script := "# ACT ONE\n\n= The archive opens.\n\nINT. ROOM - DAY\n\nAction.\n"
 	elements, titlePage := fountainParse([]byte(script))
-	without, err := fountainPDF(elements, titlePage, false)
+	without, err := fountainPDF(pdfPaperLetter, elements, titlePage, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(without), "ACT ONE") || strings.Contains(string(without), "archive opens") {
 		t.Fatal("notes stay out of the page unless asked for")
 	}
-	with, err := fountainPDF(elements, titlePage, true)
+	with, err := fountainPDF(pdfPaperLetter, elements, titlePage, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +319,7 @@ func TestFountainPDFNotesToggle(t *testing.T) {
 
 func TestFountainPDFFacesAndEncoding(t *testing.T) {
 	elements, titlePage := fountainParse([]byte("INT. CAFÉ - DAY\n\nJosé *waits*. The “end” — almost…\n"))
-	pdf, err := fountainPDF(elements, titlePage, false)
+	pdf, err := fountainPDF(pdfPaperLetter, elements, titlePage, false)
 	if err != nil {
 		t.Fatal(err)
 	}

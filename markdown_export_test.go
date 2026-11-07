@@ -83,7 +83,7 @@ func TestMarkdownPlainInline(t *testing.T) {
 func TestMarkdownPDFShape(t *testing.T) {
 	doc := "# The Document\n\nIntro paragraph with enough words to need a wrap at the sixty character column width of the page.\n\n- a bullet\n\n```\ncode line\n```\n"
 	blocks := parseMarkdownBlocks([]byte(doc))
-	pdf, err := markdownPDF(blocks)
+	pdf, err := markdownPDF(pdfPaperLetter, blocks)
 	if err != nil {
 		t.Fatalf("markdownPDF returned error: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestMarkdownPDFShape(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		long.WriteString("Body line of the long document to force pagination past one page.\n\n")
 	}
-	pdf2, err := markdownPDF(parseMarkdownBlocks([]byte(long.String())))
+	pdf2, err := markdownPDF(pdfPaperLetter, parseMarkdownBlocks([]byte(long.String())))
 	if err != nil {
 		t.Fatalf("markdownPDF(long) returned error: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestSaveDocumentExportMarkdown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SaveMarkdownEdit returned error: %v", err)
 	}
-	data, extension, _, _, err := renderDocumentExport([]byte("# Saved doc\n\nBody text.\n"), result.URL, "pdf", false)
+	data, extension, _, _, err := renderDocumentExport([]byte("# Saved doc\n\nBody text.\n"), result.URL, "pdf", false, pdfPaperLetter)
 	if err != nil {
 		t.Fatalf("renderDocumentExport(pdf) returned error: %v", err)
 	}
@@ -140,12 +140,12 @@ func TestSaveDocumentExportMarkdown(t *testing.T) {
 	}
 
 	// FDX renders screenplays: a markdown artifact refuses with the fix.
-	if _, _, _, _, err := renderDocumentExport([]byte("# doc"), result.URL, "fdx", false); err == nil || !strings.Contains(err.Error(), ".fountain") {
+	if _, _, _, _, err := renderDocumentExport([]byte("# doc"), result.URL, "fdx", false, pdfPaperLetter); err == nil || !strings.Contains(err.Error(), ".fountain") {
 		t.Fatalf("fdx on a markdown artifact = %v, want the .fountain guidance", err)
 	}
 
 	// The fountain path still works end to end.
-	fdx, extension, _, _, err := renderDocumentExport([]byte("INT. ROOM - DAY\n\nMAYA\nHello.\n"), scriptArtifactURL(t, config), "fdx", false)
+	fdx, extension, _, _, err := renderDocumentExport([]byte("INT. ROOM - DAY\n\nMAYA\nHello.\n"), scriptArtifactURL(t, config), "fdx", false, pdfPaperLetter)
 	if err != nil || extension != ".fdx" || !strings.Contains(string(fdx), "FinalDraft") {
 		t.Fatalf("fdx render = %v, ext %q", err, extension)
 	}

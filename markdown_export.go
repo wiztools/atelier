@@ -260,16 +260,21 @@ func markdownPlainInline(text string) string {
 	return replacer.Replace(text)
 }
 
-// markdownPDFLines lays a parsed document onto the page grid: bold headings
-// at stepped sizes, hanging-indent lists, verbatim clipped code, quoted
-// lines, rules of underscores.
-func markdownPDFLines(blocks []markdownBlock) [][]fountainPDFLine {
+// markdownPDFLines lays a parsed document onto the paper's page grid: bold
+// headings at stepped sizes, hanging-indent lists, verbatim clipped code,
+// quoted lines, rules of underscores. Body text wraps to the paper's column;
+// code and table lines clip where their smaller text meets the margin.
+func markdownPDFLines(paper pdfPaper, blocks []markdownBlock) [][]fountainPDFLine {
 	const (
 		headingLarge  = 16.0
 		headingMedium = 14.0
 		codeSize      = 11.0
+		codeIndent    = 2
 		tableSize     = 10.0
 	)
+	columns := paper.columns
+	codeWidth := paper.columnsAt(codeSize) - codeIndent
+	tableWidth := paper.columnsAt(tableSize)
 	wrap := fountainWrapText
 	blank := fountainPDFLine{}
 	out := [][]fountainPDFLine{}
@@ -288,28 +293,28 @@ func markdownPDFLines(blocks []markdownBlock) [][]fountainPDFLine {
 				size = headingMedium
 			}
 			text := markdownPlainInline(strings.Join(block.lines, " "))
-			for _, piece := range wrap(text, fountainWidthAction) {
+			for _, piece := range wrap(text, columns) {
 				appendLine(fountainPDFLine{text: piece, font: "/F2", size: size})
 			}
 			appendBlank()
 		case markdownBlockParagraph:
 			text := markdownPlainInline(strings.Join(block.lines, " "))
-			for _, piece := range wrap(text, fountainWidthAction) {
+			for _, piece := range wrap(text, columns) {
 				appendLine(fountainPDFLine{text: piece})
 			}
 			appendBlank()
 		case markdownBlockCode:
 			for _, raw := range block.lines {
 				line := raw
-				if len(line) > 63 {
-					line = line[:63]
+				if len(line) > codeWidth {
+					line = line[:codeWidth]
 				}
-				appendLine(fountainPDFLine{text: line, indent: 2, size: codeSize})
+				appendLine(fountainPDFLine{text: line, indent: codeIndent, size: codeSize})
 			}
 			appendBlank()
 		case markdownBlockQuote:
 			for _, raw := range block.lines {
-				for _, piece := range wrap(markdownPlainInline(raw), fountainWidthAction-4) {
+				for _, piece := range wrap(markdownPlainInline(raw), columns-4) {
 					appendLine(fountainPDFLine{text: "> " + piece, indent: 2})
 				}
 			}
@@ -317,7 +322,7 @@ func markdownPDFLines(blocks []markdownBlock) [][]fountainPDFLine {
 		case markdownBlockBullet:
 			hang := strings.Repeat("  ", block.level)
 			text := markdownPlainInline(strings.Join(block.lines, " "))
-			pieces := wrap(text, fountainWidthAction-len(hang)-2)
+			pieces := wrap(text, columns-len(hang)-2)
 			for i, piece := range pieces {
 				if i == 0 {
 					appendLine(fountainPDFLine{text: hang + "- " + piece, indent: len(hang)})
@@ -329,7 +334,7 @@ func markdownPDFLines(blocks []markdownBlock) [][]fountainPDFLine {
 		case markdownBlockOrdered:
 			hang := strings.Repeat("  ", block.level)
 			text := markdownPlainInline(strings.Join(block.lines, " "))
-			pieces := wrap(text, fountainWidthAction-len(hang)-3)
+			pieces := wrap(text, columns-len(hang)-3)
 			for i, piece := range pieces {
 				if i == 0 {
 					appendLine(fountainPDFLine{text: hang + block.marker + " " + piece, indent: len(hang)})
@@ -339,13 +344,13 @@ func markdownPDFLines(blocks []markdownBlock) [][]fountainPDFLine {
 			}
 			appendBlank()
 		case markdownBlockRule:
-			appendLine(fountainPDFLine{text: strings.Repeat("_", fountainWidthAction)})
+			appendLine(fountainPDFLine{text: strings.Repeat("_", columns)})
 			appendBlank()
 		case markdownBlockTable:
 			for _, raw := range block.lines {
 				line := raw
-				if len(line) > 72 {
-					line = line[:72]
+				if len(line) > tableWidth {
+					line = line[:tableWidth]
 				}
 				appendLine(fountainPDFLine{text: line, size: tableSize})
 			}
@@ -355,14 +360,14 @@ func markdownPDFLines(blocks []markdownBlock) [][]fountainPDFLine {
 	return out
 }
 
-// markdownPDF renders a parsed document to the page writer: the layout is
-// paginated with the markdown widow rule (a heading keeps a body line below
-// it) and no title page — the document's own H1 opens page 1, which numbers
-// from page 2 like every rendered document.
-func markdownPDF(blocks []markdownBlock) ([]byte, error) {
-	lines := markdownPDFLines(blocks)
-	pages := pdfPaginate(lines, markdownKeepRoom)
-	return pdfWrite(pages, false), nil
+// markdownPDF renders a parsed document to the page writer on the paper: the
+// layout is paginated with the markdown widow rule (a heading keeps a body
+// line below it) and no title page — the document's own H1 opens page 1,
+// which numbers from page 2 like every rendered document.
+func markdownPDF(paper pdfPaper, blocks []markdownBlock) ([]byte, error) {
+	lines := markdownPDFLines(paper, blocks)
+	pages := pdfPaginate(paper, lines, markdownKeepRoom)
+	return pdfWrite(paper, pages, false), nil
 }
 
 // markdownKeepRoom is the print layout's widow rule: a heading needs a body
