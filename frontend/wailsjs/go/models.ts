@@ -3593,6 +3593,7 @@ export namespace main {
 	    format: string;
 	    suggestedName?: string;
 	    includeNotes?: boolean;
+	    paperSize?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new SaveDocumentExportRequest(source);
@@ -3604,6 +3605,7 @@ export namespace main {
 	        this.format = source["format"];
 	        this.suggestedName = source["suggestedName"];
 	        this.includeNotes = source["includeNotes"];
+	        this.paperSize = source["paperSize"];
 	    }
 	}
 	export class SaveImageRequest {

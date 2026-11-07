@@ -83,7 +83,7 @@ func TestMarkdownPlainInline(t *testing.T) {
 func TestMarkdownPDFShape(t *testing.T) {
 	doc := "# The Document\n\nIntro paragraph with enough words to need a wrap at the sixty character column width of the page.\n\n- a bullet\n\n```\ncode line\n```\n"
 	blocks := parseMarkdownBlocks([]byte(doc))
-	pdf, err := markdownPDF(blocks)
+	pdf, err := markdownPDF(pdfPaperLetter, blocks)
 	if err != nil {
 		t.Fatalf("markdownPDF returned error: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestMarkdownPDFShape(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		long.WriteString("Body line of the long document to force pagination past one page.\n\n")
 	}
-	pdf2, err := markdownPDF(parseMarkdownBlocks([]byte(long.String())))
+	pdf2, err := markdownPDF(pdfPaperLetter, parseMarkdownBlocks([]byte(long.String())))
 	if err != nil {
 		t.Fatalf("markdownPDF(long) returned error: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestSaveDocumentExportMarkdown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SaveMarkdownEdit returned error: %v", err)
 	}
-	data, extension, _, _, err := renderDocumentExport([]byte("# Saved doc\n\nBody text.\n"), result.URL, "pdf", false)
+	data, extension, _, _, err := renderDocumentExport([]byte("# Saved doc\n\nBody text.\n"), result.URL, "pdf", false, pdfPaperLetter)
 	if err != nil {
 		t.Fatalf("renderDocumentExport(pdf) returned error: %v", err)
 	}
@@ -140,12 +140,12 @@ func TestSaveDocumentExportMarkdown(t *testing.T) {
 	}
 
 	// FDX renders screenplays: a markdown artifact refuses with the fix.
-	if _, _, _, _, err := renderDocumentExport([]byte("# doc"), result.URL, "fdx", false); err == nil || !strings.Contains(err.Error(), ".fountain") {
+	if _, _, _, _, err := renderDocumentExport([]byte("# doc"), result.URL, "fdx", false, pdfPaperLetter); err == nil || !strings.Contains(err.Error(), ".fountain") {
 		t.Fatalf("fdx on a markdown artifact = %v, want the .fountain guidance", err)
 	}
 
 	// The fountain path still works end to end.
-	fdx, extension, _, _, err := renderDocumentExport([]byte("INT. ROOM - DAY\n\nMAYA\nHello.\n"), scriptArtifactURL(t, config), "fdx", false)
+	fdx, extension, _, _, err := renderDocumentExport([]byte("INT. ROOM - DAY\n\nMAYA\nHello.\n"), scriptArtifactURL(t, config), "fdx", false, pdfPaperLetter)
 	if err != nil || extension != ".fdx" || !strings.Contains(string(fdx), "FinalDraft") {
 		t.Fatalf("fdx render = %v, ext %q", err, extension)
 	}
@@ -166,4 +166,59 @@ func scriptArtifactURL(t *testing.T, config AppConfig) string {
 		t.Fatalf("SaveMarkdownEdit(fountain) returned error: %v", err)
 	}
 	return result.URL
+}
+
+// A heading wraps at its own size's column, not the body's: a 16pt heading
+// wrapped at the 12pt column printed its last glyphs past the right margin.
+func TestMarkdownHeadingWrapsAtItsOwnSize(t *testing.T) {
+	paper := pdfPaperLetter
+	long := strings.Repeat("heading ", 30)
+	blocks := parseMarkdownBlocks([]byte("# " + long + "\n\nbody.\n"))
+	pages := pdfPaginate(paper, markdownPDFLines(paper, blocks), markdownKeepRoom)
+	rows := 0
+	for _, line := range pages[0] {
+		if line.pdfSize() != 16 {
+			continue
+		}
+		rows++
+		if n := len([]rune(line.text)); n > paper.columnsAt(16) {
+			t.Fatalf("16pt heading row is %d characters, wider than its %d-char column: %q", n, paper.columnsAt(16), line.text)
+		}
+	}
+	if rows < 2 {
+		t.Fatalf("heading wrapped into %d rows, want it long enough to wrap at least once", rows)
+	}
+}
+
+// Every row of the typed page ends inside the text block on both sheets —
+// body, quotes, top-level lists, rules, headings at their sizes, and code and
+// table lines at their clip widths (A4's narrower block clips them shorter).
+func TestMarkdownRowsStayInsideTheTextBlock(t *testing.T) {
+	doc := "# " + strings.Repeat("heading ", 12) + "\n\n### " + strings.Repeat("subhead ", 12) + "\n\n" +
+		strings.Repeat("Body words wrap at the paper's column. ", 6) + "\n\n" +
+		"> " + strings.Repeat("quoted words wrap too. ", 6) + "\n\n" +
+		"- " + strings.Repeat("bullet words wrap under the hang. ", 4) + "\n" +
+		"1. " + strings.Repeat("ordered words wrap under the hang. ", 4) + "\n\n" +
+		"---\n\n```\n" + strings.Repeat("c", 90) + "\n```\n\n| " + strings.Repeat("t", 100) + " |\n"
+	for _, paper := range []pdfPaper{pdfPaperLetter, pdfPaperA4} {
+		for _, block := range markdownPDFLines(paper, parseMarkdownBlocks([]byte(doc))) {
+			for _, line := range block {
+				if strings.TrimSpace(line.text) == "" {
+					continue
+				}
+				charWidth := pdfCharWidthAt(line.pdfSize())
+				right := pdfMarginLeft + float64(line.indent+len([]rune(line.text)))*charWidth
+				if right > paper.textRight+1e-6 {
+					t.Errorf("%s: row %q ends at %.1fpt, past the text block's %.1fpt", paper.name, line.text, right, paper.textRight)
+				}
+			}
+		}
+	}
+	data, err := markdownPDF(pdfPaperA4, parseMarkdownBlocks([]byte(doc)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "/MediaBox [0 0 595.28 841.89]") {
+		t.Fatal("the markdown export must print on the requested sheet")
+	}
 }

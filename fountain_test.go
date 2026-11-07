@@ -118,7 +118,7 @@ func TestFountainWarnings(t *testing.T) {
 func TestFountainPDFShape(t *testing.T) {
 	script := "Title: The Draft\nAuthor: Subhash\n\nINT. ROOM - DAY\n\nAction text.\n\nMAYA\nDialogue here.\n"
 	elements, titlePage := fountainParse([]byte(script))
-	pdf, err := fountainPDF(elements, titlePage, false)
+	pdf, err := fountainPDF(pdfPaperLetter, elements, titlePage, false)
 	if err != nil {
 		t.Fatalf("fountainPDF returned error: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestFountainPDFShape(t *testing.T) {
 		long.WriteString("Action line of the long script to force pagination.\n\n")
 	}
 	elements2, _ := fountainParse([]byte(long.String()))
-	pdf2, err := fountainPDF(elements2, map[string]string{}, false)
+	pdf2, err := fountainPDF(pdfPaperLetter, elements2, map[string]string{}, false)
 	if err != nil {
 		t.Fatalf("fountainPDF(long) returned error: %v", err)
 	}

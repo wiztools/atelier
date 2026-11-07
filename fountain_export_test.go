@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/xml"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -81,28 +82,28 @@ func TestFountainTitlePageKeepsLineBreaks(t *testing.T) {
 	if titlePage["Contact"] != "Subhash Chandran\n42 Lantern Lane" {
 		t.Fatalf("contact = %q, want its two lines", titlePage["Contact"])
 	}
-	lines := fountainTitlePageLines(titlePage)
-	if len(lines) != pdfLinesPerPage {
-		t.Fatalf("title page rows = %d, want the full %d-row page (contact pinned to the bottom)", len(lines), pdfLinesPerPage)
+	lines := fountainTitlePageLines(pdfPaperLetter, titlePage)
+	if len(lines) != pdfPaperLetter.linesPerPage {
+		t.Fatalf("title page rows = %d, want the full %d-row page (contact pinned to the bottom)", len(lines), pdfPaperLetter.linesPerPage)
 	}
-	if lines[pdfLinesPerPage-2].text != "Subhash Chandran" || lines[pdfLinesPerPage-1].text != "42 Lantern Lane" {
-		t.Fatalf("bottom rows = %q / %q, want the contact block a line apiece", lines[pdfLinesPerPage-2].text, lines[pdfLinesPerPage-1].text)
+	if lines[pdfPaperLetter.linesPerPage-2].text != "Subhash Chandran" || lines[pdfPaperLetter.linesPerPage-1].text != "42 Lantern Lane" {
+		t.Fatalf("bottom rows = %q / %q, want the contact block a line apiece", lines[pdfPaperLetter.linesPerPage-2].text, lines[pdfPaperLetter.linesPerPage-1].text)
 	}
-	title := lines[fountainTitleTopRow]
+	title := lines[pdfPaperLetter.titleTopRow()]
 	if title.text != "THE LONG NIGHT" || !title.center || len(title.spans) != 1 || !title.spans[0].bold || !title.spans[0].underline {
 		t.Fatalf("title row = %+v, want it centered, uppercase, bold and underlined", title)
 	}
 	// The draft date sits centered under the title the way the preview shows
 	// it — and is never cut off the page.
-	if lines[fountainTitleTopRow+2].text != "November 7, 2026" || !lines[fountainTitleTopRow+2].center {
-		t.Fatalf("draft date row = %+v", lines[fountainTitleTopRow+2])
+	if lines[pdfPaperLetter.titleTopRow()+2].text != "November 7, 2026" || !lines[pdfPaperLetter.titleTopRow()+2].center {
+		t.Fatalf("draft date row = %+v", lines[pdfPaperLetter.titleTopRow()+2])
 	}
 }
 
 // paginatedScript runs the body pipeline the export uses.
 func paginatedScript(script string, includeNotes bool) [][]fountainPDFLine {
 	elements, _ := fountainParse([]byte(script))
-	return fountainPaginate(fountainBlocks(elements, includeNotes))
+	return fountainPaginate(pdfPaperLetter, fountainBlocks(pdfPaperLetter, elements, includeNotes))
 }
 
 func rowTexts(page []fountainPDFLine) []string {
@@ -250,7 +251,7 @@ func TestFountainPaginateSpeechLongerThanAPage(t *testing.T) {
 		t.Fatalf("pages = %d, want the speech across several", len(pages))
 	}
 	for i, page := range pages {
-		if len(page) > pdfLinesPerPage {
+		if len(page) > pdfPaperLetter.linesPerPage {
 			t.Fatalf("page %d has %d rows", i+1, len(page))
 		}
 		if i > 0 && page[0].text != "MAYA (CONT'D)" {
@@ -275,7 +276,7 @@ func TestFountainPaginatePageTopsAreNeverBlank(t *testing.T) {
 		if len(page) == 0 || page[0].text == "" || page[len(page)-1].text == "" {
 			t.Fatalf("page %d starts or ends blank: %q", i+1, rowTexts(page))
 		}
-		if len(page) > pdfLinesPerPage {
+		if len(page) > pdfPaperLetter.linesPerPage {
 			t.Fatalf("page %d overflows: %d rows", i+1, len(page))
 		}
 		if page[len(page)-1].text == "MAYA" || strings.HasPrefix(page[len(page)-1].text, "INT.") {
@@ -288,7 +289,7 @@ func TestFountainLongWordBreaksToTheColumn(t *testing.T) {
 	long := strings.Repeat("x", 70)
 	pages := paginatedScript("A link: "+long+" ends here.\n", false)
 	for _, line := range pages[0] {
-		if n := len([]rune(line.text)); n > fountainWidthAction {
+		if n := len([]rune(line.text)); n > pdfPaperLetter.columns {
 			t.Fatalf("row %q is %d characters, wider than the column", line.text, n)
 		}
 	}
@@ -297,14 +298,14 @@ func TestFountainLongWordBreaksToTheColumn(t *testing.T) {
 func TestFountainPDFNotesToggle(t *testing.T) {
 	script := "# ACT ONE\n\n= The archive opens.\n\nINT. ROOM - DAY\n\nAction.\n"
 	elements, titlePage := fountainParse([]byte(script))
-	without, err := fountainPDF(elements, titlePage, false)
+	without, err := fountainPDF(pdfPaperLetter, elements, titlePage, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(without), "ACT ONE") || strings.Contains(string(without), "archive opens") {
 		t.Fatal("notes stay out of the page unless asked for")
 	}
-	with, err := fountainPDF(elements, titlePage, true)
+	with, err := fountainPDF(pdfPaperLetter, elements, titlePage, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +320,7 @@ func TestFountainPDFNotesToggle(t *testing.T) {
 
 func TestFountainPDFFacesAndEncoding(t *testing.T) {
 	elements, titlePage := fountainParse([]byte("INT. CAFÉ - DAY\n\nJosé *waits*. The “end” — almost…\n"))
-	pdf, err := fountainPDF(elements, titlePage, false)
+	pdf, err := fountainPDF(pdfPaperLetter, elements, titlePage, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,5 +373,133 @@ func TestFountainFDXTitlePageLines(t *testing.T) {
 	}
 	if strings.Join(got, "|") != "Draft|Line One|Line Two" {
 		t.Fatalf("title paragraphs = %q, want a multi-line value one paragraph per line", got)
+	}
+}
+
+// paginatedScriptOnPaper is paginatedScript on a chosen sheet.
+func paginatedScriptOnPaper(paper pdfPaper, script string, includeNotes bool) [][]fountainPDFLine {
+	elements, _ := fountainParse([]byte(script))
+	return fountainPaginate(paper, fountainBlocks(paper, elements, includeNotes))
+}
+
+// renderedPageCount runs a script through the full PDF pipeline on a sheet
+// and returns the page count — the end-to-end check for the paper's effect.
+func renderedPageCount(t *testing.T, paper pdfPaper, script string) int {
+	t.Helper()
+	elements, titlePage := fountainParse([]byte(script))
+	pdf, err := fountainPDF(paper, elements, titlePage, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	match := pdfCountRe.FindSubmatch(pdf)
+	if match == nil {
+		t.Fatalf("no /Count in the rendered PDF")
+	}
+	var count int
+	fmt.Sscanf(string(match[1]), "%d", &count)
+	return count
+}
+
+var pdfCountRe = regexp.MustCompile(`/Count (\d+)`)
+
+// The same filler script on both sheets: each page fills to its own
+// paper's line count — A4's taller text block carries more per page, so
+// the geometry reaches the paginator and not just the page box.
+func TestFountainA4CarriesMoreLinesPerPage(t *testing.T) {
+	script := fillerParagraphs(30) // 59 rows: one page on A4 (59 lines), two on Letter (55)
+	if got := renderedPageCount(t, pdfPaperLetter, script); got != 2 {
+		t.Fatalf("Letter pages = %d, want 2", got)
+	}
+	if got := renderedPageCount(t, pdfPaperA4, script); got != 1 {
+		t.Fatalf("A4 pages = %d, want 1 — the taller sheet fits all 59 rows", got)
+	}
+	pages := paginatedScriptOnPaper(pdfPaperA4, script, false)
+	if len(pages[0]) != pdfPaperA4.linesPerPage {
+		t.Fatalf("A4 page rows = %d, want a full %d-row page", len(pages[0]), pdfPaperA4.linesPerPage)
+	}
+}
+
+// The A4 page box and grid land in the content: a metric sheet writes
+// fractional MediaBox points, its first baseline sits 1" down the taller
+// sheet, and no row outgrows the narrower column.
+func TestFountainA4Geometry(t *testing.T) {
+	script := "INT. ROOM - DAY\n\n" + strings.Repeat("Word ", 30) + "\n"
+	elements, titlePage := fountainParse([]byte(script))
+	pdf, err := fountainPDF(pdfPaperA4, elements, titlePage, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(pdf)
+	if !strings.Contains(content, "/MediaBox [0 0 595.28 841.89]") {
+		t.Fatal("the A4 page box must be 210 × 297 mm in points")
+	}
+	if !strings.Contains(content, "1 0 0 1 108.00 769.89 Tm (INT. ROOM - DAY) Tj") {
+		t.Fatal("the first row must start at the left margin, 1 inch down the taller sheet")
+	}
+	for _, line := range paginatedScriptOnPaper(pdfPaperA4, script, false)[0] {
+		if n := len([]rune(line.text)); n > pdfPaperA4.columns {
+			t.Fatalf("row %q is %d characters, wider than the A4 column of %d", line.text, n, pdfPaperA4.columns)
+		}
+	}
+}
+
+// The same long script paginates shorter on A4 — the extra lines a page
+// add up, and the breaks land in different places. That trade is what the
+// Print block's hint tells the writer.
+func TestFountainA4BreaksInDifferentPlaces(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 80; i++ {
+		fmt.Fprintf(&b, "INT. ROOM %d - DAY\n\nSomething happens here and it takes a while to describe properly on the page.\n\nMAYA\nAnd then?\n\n", i)
+	}
+	letter, a4 := renderedPageCount(t, pdfPaperLetter, b.String()), renderedPageCount(t, pdfPaperA4, b.String())
+	if a4 >= letter {
+		t.Fatalf("A4 pages = %d, Letter = %d — the taller sheet must come out shorter", a4, letter)
+	}
+}
+
+// The title page keeps its shape on A4: the creative block starts a third
+// of the way down the taller sheet and the contact stays pinned to the
+// bottom.
+func TestFountainA4TitlePage(t *testing.T) {
+	script := "Title: The Long Night\nDraft date: November 7, 2026\nContact:\n    Subhash Chandran\n    42 Lantern Lane\n\nINT. ROOM - DAY\n"
+	_, titlePage := fountainParse([]byte(script))
+	lines := fountainTitlePageLines(pdfPaperA4, titlePage)
+	if len(lines) != pdfPaperA4.linesPerPage {
+		t.Fatalf("A4 title page rows = %d, want the full %d-row page", len(lines), pdfPaperA4.linesPerPage)
+	}
+	if lines[pdfPaperA4.linesPerPage-1].text != "42 Lantern Lane" {
+		t.Fatalf("bottom row = %q, want the contact pinned to the bottom", lines[pdfPaperA4.linesPerPage-1].text)
+	}
+	if lines[pdfPaperA4.titleTopRow()].text != "THE LONG NIGHT" {
+		t.Fatalf("title row = %q, want it at row %d — a third down the sheet", lines[pdfPaperA4.titleTopRow()].text, pdfPaperA4.titleTopRow())
+	}
+}
+
+// The paper reaches the export's front door: the request's paperSize picks
+// the sheet, empty stays Letter, and a bad name fails naming the choices.
+func TestSaveDocumentExportPaperSize(t *testing.T) {
+	script := []byte(fillerParagraphs(40))
+	for _, tc := range []struct {
+		paperSize string
+		wantBox   string
+	}{
+		{"", "/MediaBox [0 0 612 792]"},
+		{"letter", "/MediaBox [0 0 612 792]"},
+		{"A4", "/MediaBox [0 0 595.28 841.89]"},
+	} {
+		paper, err := documentPaperFor(tc.paperSize)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _, _, _, err := renderDocumentExport(script, "/x/script.fountain", "pdf", false, paper)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), tc.wantBox) {
+			t.Fatalf("paperSize %q: MediaBox missing %s", tc.paperSize, tc.wantBox)
+		}
+	}
+	if _, err := documentPaperFor("legal"); err == nil || !strings.Contains(err.Error(), `"letter"`) {
+		t.Fatalf("documentPaperFor(legal) = %v, want the choices named", err)
 	}
 }
