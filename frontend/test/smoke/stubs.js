@@ -78,6 +78,14 @@
       window.__atelier.lastStream = req;
       return {requestID: req.requestID, conversationId: req.conversationId || 'conv_new'};
     },
+    SetConversationModelOverrides: (id) => ({...conversations[0], id, modelOverrides: {primaryProvider: 'ollama'}}),
+    GetConversationUsageReport: (id) => ({
+      scope: 'conversation', conversationId: id, title: 'Storyboard ideas',
+      conversations: 1, turns: 4, costMicros: 18000, costUnknown: true,
+      modelCalls: 2, toolCalls: 3, failedToolCalls: 1, mediaImages: 1, mediaVideos: 0, mediaAudios: 0,
+      models: [{provider: 'ollama', model: 'qwen3:8b', calls: 1, promptTokens: 3600, completionTokens: 160, costMicros: 0, costUnknown: false, durationMs: 2300}],
+      tools: [{name: 'generate_image', calls: 1, failures: 0, costMicros: 3000, costUnknown: false}],
+    }),
     ResolveMarkdownEditSource: () => ({conversationId: 'conv_alpha', conversationTitle: 'Storyboard ideas', artifactId: 'md_0a1b2c3d', url: '/atelier-artifact/conv_alpha/md_0a1b2c3d.md', mimeType: 'text/markdown', format: 'markdown', text: '# Shot list\n\n- Opening wide on the city\n- Close-up on the poster\n', wordCount: 11}),
     SearchConversations: () => ({results: [{conversation: conversations[1], titleMatched: true, matches: []}], truncated: false}),
   };
