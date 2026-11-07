@@ -3,7 +3,6 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import './App.css';
 import {
-  CancelStream,
   CheckForUpdates,
   CheckOllama,
   ChooseToolWorkspace,
@@ -28,7 +27,6 @@ import {
   ListModels,
   ListOpenAICompatibleModels,
   LoadUIState,
-  ResolveToolPermission,
   SaveImage,
   SaveVideo,
   SaveAudio,
@@ -77,16 +75,9 @@ import {
   SettingsTab,
   ChatProviderID,
   SpeechProviderID,
-  ConversationKind,
   ChatEntry,
-  ChatChunk,
-  ChatStreamDraft,
-  ToolPermissionEvent,
   UpdateAvailableEvent,
   EditOpEvent,
-  InFlightConversation,
-  HarnessRunView,
-  HarnessRunEventView,
   MediaToolSummaryView,
 } from './types';
 import {
@@ -119,7 +110,7 @@ import {
   ModelSelectionPanel,
   ModelSelectionValue,
 } from './settings/ModelSelectionPanel';
-import {parseHarnessRun, summarizeModelUsage, summarizeMediaUsage} from './usage/usageModel';
+import {parseHarnessRun} from './usage/usageModel';
 import {TurnUsage, ConversationUsage} from './usage/TurnUsage';
 import {UsageReportView} from './usage/UsageReportView';
 import {HarnessRunPanel} from './usage/HarnessRunPanel';
@@ -130,7 +121,7 @@ import {
   assetTurnLabel,
   parseComposerMentions,
 } from './composerMentions';
-import {copyTextWithTextarea, isNearScrollBottom} from './dom';
+import {isNearScrollBottom} from './dom';
 import {hasToolPermissionDetails, toolPermissionSummary, toolPermissionTitle} from './toolPermission';
 import {
   historyAudios,
@@ -153,6 +144,7 @@ import {useAppConfig} from './useAppConfig';
 import {useComposer} from './composer/useComposer';
 import {useConversations} from './sidebar/useConversations';
 import {useEditors} from './editor/useEditors';
+import {useChatStream} from './chat/useChatStream';
 
 function App() {
   const {
@@ -250,9 +242,35 @@ function App() {
   const [videoDurationKeyframeOptions, setVideoDurationKeyframeOptions] = useState<string[]>(defaultVideoDurationOptions);
   const [videoDurationExtendOptions, setVideoDurationExtendOptions] = useState<string[]>(defaultVideoDurationOptions);
   const [soundDurationOptions, setSoundDurationOptions] = useState<string[]>(defaultSoundDurationOptions);
-  const [chat, setChat] = useState<ChatEntry[]>([]);
-  const chatIsEmpty = chat.length === 0;
+  // Assets panel: closed by default; lists the active conversation's derived
+  // media assets (ListConversationAssets) — or, when the conversation is
+  // project-scoped, every asset in its library (ListLibraryAssets).
+  // assetsRefreshTick re-runs the fetch when a turn finishes — the index
+  // derives from persisted history, so it lags until the turn is saved.
+  const [assetsPanelOpen, setAssetsPanelOpen] = useState(false);
+  const [conversationAssets, setConversationAssets] = useState<main.ConversationAsset[]>([]);
+  const [libraryAssets, setLibraryAssets] = useState<main.ConversationAsset[]>([]);
+  const [assetsRefreshTick, setAssetsRefreshTick] = useState(0);
   const [activeConversationID, setActiveConversationID] = useState('');
+  const copyResetRef = useRef<number | null>(null);
+  // useChatStream registers its chunk listener before the conversation list
+  // and the libraries tree exist (its transcript feeds the composer, which both
+  // of those need), so it reaches them through these hoisted forwarders,
+  // resolved when a chunk arrives. Like the functions they forward to, they
+  // touch only stable setters, so the empty-deps listener never goes stale.
+  function refreshConversationsOnChunk() {
+    return refreshConversations();
+  }
+  function bumpLibrariesOnChunk() {
+    bumpLibrariesRefresh();
+  }
+  const {
+    activeStream, anyConversationInFlight, chat, chatIsEmpty, chatStreamDraftsRef, collapsedThinkingIDs,
+    copiedMessageID, copyMessage, harnessRunDraftsRef, inFlightConversations, inFlightConversationsRef,
+    markConversationInFlight, mediaUsage, modelUsage, resolveToolPermission, setActiveStream, setChat,
+    setCollapsedThinkingIDs, shouldFollowTranscriptRef, stopChat, toggleThinkingCollapsed, toolPermissions,
+    transcriptRef, visibleHarnessRun, visibleStreamRef,
+  } = useChatStream({setActiveConversationID, setAssetsRefreshTick, copyResetRef, refreshConversationsOnChunk, bumpLibrariesOnChunk});
   const activeConversationIDRef = useRef('');
   const {
     acceptMention, addFiles, attachments, attachmentsRef, chatPromptMirrorRef, chatPromptRef,
@@ -262,9 +280,6 @@ function App() {
     mentionMatchesState, mentionOpen, prompt, restoreDraftFor, setAttachments, setMentionIndex, setPrompt,
     stagingAttachments, stashCurrentDraft,
   } = useComposer({chatIsEmpty, activeConversationID, activeConversationIDRef, mentionCandidates, submitChat});
-  const [collapsedThinkingIDs, setCollapsedThinkingIDs] = useState<Record<string, boolean>>({});
-  const [copiedMessageID, setCopiedMessageID] = useState('');
-  const copyResetRef = useRef<number | null>(null);
   const {
     cancelEditingConversationTitle, chatsOpen, confirmPurgeArchived, conversationList, conversations,
     copiedConversationID, copyConversationID, editingTitle, editingTitleID, handleConversationTitleKeyDown,
@@ -296,15 +311,6 @@ function App() {
   // Mirror ref for the empty-deps menu/keyboard listeners and the send path,
   // which read the pending project synchronously rather than from state.
   const pendingProjectRef = useRef<{projectID: string; libraryID: string} | null>(null);
-  // Assets panel: closed by default; lists the active conversation's derived
-  // media assets (ListConversationAssets) — or, when the conversation is
-  // project-scoped, every asset in its library (ListLibraryAssets).
-  // assetsRefreshTick re-runs the fetch when a turn finishes — the index
-  // derives from persisted history, so it lags until the turn is saved.
-  const [assetsPanelOpen, setAssetsPanelOpen] = useState(false);
-  const [conversationAssets, setConversationAssets] = useState<main.ConversationAsset[]>([]);
-  const [libraryAssets, setLibraryAssets] = useState<main.ConversationAsset[]>([]);
-  const [assetsRefreshTick, setAssetsRefreshTick] = useState(0);
   useEffect(() => {
     if (!activeConversationID) {
       setConversationAssets([]);
@@ -362,9 +368,6 @@ function App() {
   // chat before its first message locks it as immutable on the record. Empty
   // means "inherit the configured default." Reset whenever a new chat starts.
   const [draftWorkspace, setDraftWorkspace] = useState('');
-  const [activeStream, setActiveStream] = useState<string | null>(null);
-  const [inFlightConversations, setInFlightConversations] = useState<Record<string, InFlightConversation>>({});
-  const [toolPermissions, setToolPermissions] = useState<ToolPermissionEvent[]>([]);
   // startupError is boot-only: the one genuine startup failure (the launch
   // loadConfig rejecting), cleared by applyConfig or the card's Dismiss.
   // Every other failure is an action result and toasts instead.
@@ -395,25 +398,10 @@ function App() {
   const [updateQueued, setUpdateQueued] = useState(false);
   const [updateError, setUpdateError] = useState('');
   const [updateCheckBusy, setUpdateCheckBusy] = useState(false);
-  // Updates wait out any running conversation; both the banner's queue and
-  // the backend's InstallUpdate gate read this shape of "busy".
-  const anyConversationInFlight = activeStream !== null || Object.keys(inFlightConversations).length > 0;
   const shellRef = useRef<HTMLElement | null>(null);
-  const transcriptRef = useRef<HTMLDivElement | null>(null);
-  const shouldFollowTranscriptRef = useRef(true);
-  const visibleStreamRef = useRef<string | null>(null);
   // The conversation whose open is in flight; a repeat click on the same row
   // (double-click enters rename) must not fetch it twice.
   const openingConversationRef = useRef<string>('');
-  const inFlightConversationsRef = useRef<Record<string, InFlightConversation>>({});
-  const requestConversationRef = useRef<Record<string, {conversationID: string; kind: ConversationKind}>>({});
-  const chatStreamDraftsRef = useRef<Record<string, ChatStreamDraft>>({});
-  // Live harness runs keyed by requestID, mirrored from atelier:harness-run
-  // events. The chat:chunk effect pattern: refs only, so the empty-deps event
-  // listener never closes over stale state. Used to re-attach the live run
-  // when the user switches conversations mid-stream.
-  const harnessRunDraftsRef = useRef<Record<string, HarnessRunView>>({});
-
   // The Libraries & projects sidebar tree — data, expansion/creation/rename/
   // delete state, and every tree action — lives in the useLibraries hook;
   // App destructures the same names its JSX uses. Everything crossing the
@@ -542,14 +530,7 @@ function App() {
     };
   }, [composerLibraryID, assetsRefreshTick]);
 
-  const assistantEntryID = activeStream ? `assistant-${activeStream}` : '';
   const selectedConversationID = activeConversationID;
-  const latestHarnessRun = [...chat].reverse().find((entry) => entry.role === 'assistant' && entry.harnessRun)?.harnessRun;
-  // Live turns receive real run snapshots via atelier:harness-run, so the
-  // latest entry's run is always current — streamed or persisted.
-  const visibleHarnessRun = latestHarnessRun ?? null;
-  const modelUsage = useMemo(() => summarizeModelUsage(chat), [chat]);
-  const mediaUsage = useMemo(() => summarizeMediaUsage(chat), [chat]);
   // Panel view of the asset list: library-scoped when the composer sits in a
   // project context (every asset across the library's conversations), else the
   // active conversation's own. Deduped by ID (a @-mention re-reference adds
@@ -655,30 +636,6 @@ function App() {
     );
   }
 
-  function markConversationInFlight(conversationID: string, requestID: string, kind: ConversationKind) {
-    requestConversationRef.current[requestID] = {conversationID, kind};
-    const next = {
-      ...inFlightConversationsRef.current,
-      [conversationID]: {requestID, kind},
-    };
-    inFlightConversationsRef.current = next;
-    setInFlightConversations(next);
-  }
-
-  function clearConversationInFlight(requestID: string) {
-    const tracked = requestConversationRef.current[requestID];
-    if (!tracked) {
-      return;
-    }
-    delete requestConversationRef.current[requestID];
-    const next = {...inFlightConversationsRef.current};
-    if (next[tracked.conversationID]?.requestID === requestID) {
-      delete next[tracked.conversationID];
-    }
-    inFlightConversationsRef.current = next;
-    setInFlightConversations(next);
-  }
-
   useEffect(() => {
     loadConfig().catch((error) => {
       setStartupError(formatError(error));
@@ -733,99 +690,6 @@ function App() {
     }, 0);
     return () => window.clearTimeout(timeout);
   }, [configLoaded]);
-
-  useEffect(() => {
-    const onChunk = (chunk: ChatChunk) => {
-      const isVisibleStream = visibleStreamRef.current === chunk.requestID;
-      if (chunk.conversationId) {
-        markConversationInFlight(chunk.conversationId, chunk.requestID, 'chat');
-      }
-      const draft = chatStreamDraftsRef.current[chunk.requestID] ?? {content: '', thinking: '', images: [], videos: [], audios: [], transcripts: [], markdowns: [], streaming: true};
-      chatStreamDraftsRef.current[chunk.requestID] = {
-        content: `${draft.content}${chunk.content ?? ''}`,
-        thinking: `${draft.thinking}${chunk.thinking ?? ''}`,
-        images: chunk.images?.length ? chunk.images : draft.images,
-        videos: chunk.videos?.length ? chunk.videos : draft.videos,
-        audios: chunk.audios?.length ? chunk.audios : draft.audios,
-        transcripts: chunk.transcripts?.length ? chunk.transcripts : draft.transcripts,
-        markdowns: chunk.markdowns?.length ? chunk.markdowns : draft.markdowns,
-        streaming: !chunk.done && !chunk.error,
-        error: chunk.error ?? draft.error,
-        provider: chunk.provider ?? draft.provider,
-      };
-      setChat((entries) =>
-        entries.map((entry) => {
-          if (entry.id !== `assistant-${chunk.requestID}`) {
-            return entry;
-          }
-          const nextDraft = chatStreamDraftsRef.current[chunk.requestID];
-          return {
-            ...entry,
-            content: nextDraft.content,
-            thinking: nextDraft.thinking,
-            images: nextDraft.images,
-            videos: nextDraft.videos,
-            audios: nextDraft.audios,
-            transcripts: nextDraft.transcripts,
-            markdowns: nextDraft.markdowns,
-            streaming: nextDraft.streaming,
-            error: nextDraft.error,
-            provider: nextDraft.provider ?? entry.provider,
-          };
-        }),
-      );
-      if (chunk.done || chunk.error) {
-        clearConversationInFlight(chunk.requestID);
-        setActiveStream((current) => current === chunk.requestID ? null : current);
-        if (isVisibleStream) {
-          visibleStreamRef.current = null;
-        }
-        // The finished turn's artifacts are now in history — re-derive the
-        // asset list (and the library tree, whose project listings may have
-        // gained a conversation) so an open panel shows them. The bump closure
-        // only touches a stable useState setter, so this empty-deps listener
-        // never goes stale — the same reason refreshConversations is safe here.
-        setAssetsRefreshTick((tick) => tick + 1);
-        bumpLibrariesRefresh();
-      }
-      if (chunk.conversationId && isVisibleStream) {
-        setActiveConversationID(chunk.conversationId);
-      }
-      if (chunk.conversationId || chunk.done || chunk.error) {
-        void refreshConversations();
-      }
-    };
-    // Unsubscribe with the canceller EventsOn returns: EventsOff(name) drops
-    // EVERY listener for the event, so an editor closing its own subscription
-    // would take this one down too.
-    return EventsOn('chat:chunk', onChunk);
-  }, []);
-
-  // Live harness telemetry: every step transition arrives as a full run
-  // snapshot (the same shape history persists), so the panel renders real
-  // in-flight state. Mirrors the chat:chunk effect — refs + setState only.
-  useEffect(() => {
-    const onHarnessRun = (event: HarnessRunEventView) => {
-      if (!event?.requestId) {
-        return;
-      }
-      const run = parseHarnessRun(event.run);
-      if (!run) {
-        return;
-      }
-      harnessRunDraftsRef.current[event.requestId] = run;
-      const entryID = `assistant-${event.requestId}`;
-      setChat((current) => current.map((entry) => entry.id === entryID ? {...entry, harnessRun: run} : entry));
-    };
-    return EventsOn('atelier:harness-run', onHarnessRun);
-  }, []);
-
-  useEffect(() => {
-    const onToolPermission = (event: ToolPermissionEvent) => {
-      setToolPermissions((current) => current.some((item) => item.id === event.id) ? current : [...current, event]);
-    };
-    return EventsOn('atelier:tool-permission', onToolPermission);
-  }, []);
 
   // AI-routed editor launches: the harness's open_editor tool fired (its
   // evidence line names what was opened) and the named conversation's asset
@@ -988,15 +852,6 @@ function App() {
     return () => offs.forEach((off) => off());
   }, []);
 
-  async function resolveToolPermission(permissionID: string, approved: boolean) {
-    setToolPermissions((current) => current.filter((item) => item.id !== permissionID));
-    try {
-      await ResolveToolPermission(permissionID, approved);
-    } catch (error) {
-      notifyError("Couldn't send the permission decision", error);
-    }
-  }
-
   // Installing while a turn runs would kill the conversation mid-stream, so a
   // click during a turn queues the install; this effect fires it once the last
   // conversation finishes. The Go-side gate in InstallUpdate stays
@@ -1058,14 +913,6 @@ function App() {
       setUpdateCheckBusy(false);
     }
   }
-
-  useEffect(() => {
-    const transcript = transcriptRef.current;
-    if (!transcript || !shouldFollowTranscriptRef.current) {
-      return;
-    }
-    transcript.scrollTo({top: transcript.scrollHeight, behavior: 'smooth'});
-  }, [chat]);
 
   const {
     assetsWidth,
@@ -2760,51 +2607,6 @@ function App() {
     return parseComposerMentions(text, mentionBindingPool()).map((segment, index) =>
       segment.mention ? <span key={index} className="mention-chip">{segment.mention.source}</span> : segment.text,
     );
-  }
-
-  async function stopChat() {
-    if (activeStream) {
-      await CancelStream(activeStream);
-      chatStreamDraftsRef.current[activeStream] = {
-        ...(chatStreamDraftsRef.current[activeStream] ?? {content: '', thinking: '', images: [], videos: [], audios: []}),
-        streaming: false,
-        error: 'Stopped',
-      };
-      setActiveStream(null);
-      visibleStreamRef.current = null;
-      setChat((entries) =>
-        entries.map((entry) =>
-          entry.id === assistantEntryID ? {...entry, streaming: false, error: 'Stopped'} : entry,
-        ),
-      );
-    }
-  }
-
-  function toggleThinkingCollapsed(entryID: string) {
-    setCollapsedThinkingIDs((current) => ({
-      ...current,
-      [entryID]: !current[entryID],
-    }));
-  }
-
-  async function copyMessage(entry: ChatEntry) {
-    if (!entry.content) {
-      return;
-    }
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(entry.content);
-      } else {
-        copyTextWithTextarea(entry.content);
-      }
-      setCopiedMessageID(entry.id);
-      if (copyResetRef.current) {
-        window.clearTimeout(copyResetRef.current);
-      }
-      copyResetRef.current = window.setTimeout(() => setCopiedMessageID(''), 1600);
-    } catch (error) {
-      notifyError("Couldn't copy to the clipboard", error);
-    }
   }
 
   function handleComposerDragOver(event: React.DragEvent<HTMLDivElement>) {
