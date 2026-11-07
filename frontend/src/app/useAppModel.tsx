@@ -112,6 +112,8 @@ import {useAssets} from '../assets/useAssets';
 import {useUsageReport} from '../usage/useUsageReport';
 import {useUpdates} from '../updates/useUpdates';
 
+export type AppModel = ReturnType<typeof useAppModel>;
+
 export function useAppModel() {
   const {
     checkFalConnection, checkOpenRouterConnection, checkReplicateConnection, clearOpenAICompatibleKey,
