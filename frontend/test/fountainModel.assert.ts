@@ -3,9 +3,10 @@ import {
   fountainCharacterName,
   fountainContinueElementOnEnter,
   fountainCycleElementOnTab,
+  fountainInlineSpans,
   fountainOutline,
   fountainParse,
-  fountainStripEmphasis,
+  fountainSpaceBefore,
   fountainWarnings,
 } from '../src/editor/fountainModel';
 
@@ -76,7 +77,51 @@ const headless = fountainWarnings(fountainParse('Just prose.\n'));
 assert(headless.length === 1 && headless[0].message.includes('no scene headings'), 'a scene-less script warns');
 assert(fountainWarnings(script).length === 0, 'a clean script has no warnings');
 
-assert(fountainStripEmphasis('he *yells* and _points_') === 'he yells and points', 'emphasis strips for print');
+// Inline emphasis — the same table as TestFountainInlineSpans in
+// fountain_export_test.go: the preview and the PDF read every marker alike.
+function spanNotation(text: string): string {
+  return fountainInlineSpans(text)
+    .map((span) => `${span.bold ? 'b' : ''}${span.italic ? 'i' : ''}${span.underline ? 'u' : ''}:${span.text}`)
+    .join('|');
+}
+const spanCases: Array<[string, string]> = [
+  ['plain text', ':plain text'],
+  ['a *quiet* word', ':a |i:quiet|: word'],
+  ['a **loud** word', ':a |b:loud|: word'],
+  ['***both***', 'bi:both'],
+  ['one _underlined_ word', ':one |u:underlined|: word'],
+  ['**bold *and italic* text**', 'b:bold |bi:and italic|b: text'],
+  ['_*underlined italic*_', 'iu:underlined italic'],
+  ['un*believ*able', ':un|i:believ|:able'],
+  ['snake_case_name', ':snake_case_name'],
+  ['5 * 3 * 2', ':5 * 3 * 2'],
+  ['He falls*', ':He falls*'],
+  ['\\*not italic\\*', ':*not italic*'],
+  ['****', ':****'],
+  ['**', ':**'],
+  ['*_text*_', 'i:_text|:_'],
+  ['', ''],
+];
+for (const [input, want] of spanCases) {
+  assert(spanNotation(input) === want, `fountainInlineSpans(${JSON.stringify(input)}) = ${spanNotation(input)}, want ${want}`);
+}
+
+// Spacing — the same script as TestFountainSpaceBefore: the preview's
+// margins and the PDF's blank lines come from this one rule.
+const spaced = fountainParse('INT. ROOM - DAY\n\nLine one.\nLine two.\n\nAnother paragraph.\nMAYA\n(beat)\nHello.\n~ la la\n\n> THE END <\n> REALLY <\n\nCUT TO:\n\nEXT. STREET - NIGHT\n').elements;
+const gaps = spaced.map((element, index) => `${element.kind}=${fountainSpaceBefore(index > 0 ? spaced[index - 1] : null, element)}`);
+assert(
+  gaps.join(' ') === [
+    'Scene Heading=0', 'Action=1', 'Action=0', 'Action=1', 'Character=1', 'Parenthetical=0',
+    'Dialogue=0', 'Lyric=0', 'Centered=1', 'Centered=0', 'Transition=1', 'Scene Heading=2',
+  ].join(' '),
+  `spacing = ${gaps.join(' ')}`,
+);
+assert(fountainSpaceBefore(null, spaced[0]) === 0, 'the script opens with no gap');
+
+// A continued title-page value keeps its line breaks (mirrors fountain.go).
+const contact = fountainParse('Title: Draft\nContact:\n    Subhash Chandran\n    42 Lantern Lane\n\nINT. ROOM\n').titlePage['Contact'];
+assert(contact === 'Subhash Chandran\n42 Lantern Lane', `contact = ${JSON.stringify(contact)}`);
 
 // The Tab cycle re-types the current line through the force markers.
 const cycled = fountainCycleElementOnTab(state('INT. ROOM\n\nAction line', 'Action line'.length + 13, 13 + 11))!;

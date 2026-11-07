@@ -3367,6 +3367,7 @@ export namespace main {
 	    path: string;
 	    format: string;
 	    suggestedName?: string;
+	    includeNotes?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new SaveDocumentExportRequest(source);
@@ -3377,6 +3378,7 @@ export namespace main {
 	        this.path = source["path"];
 	        this.format = source["format"];
 	        this.suggestedName = source["suggestedName"];
+	        this.includeNotes = source["includeNotes"];
 	    }
 	}
 	export class SaveImageRequest {

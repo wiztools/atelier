@@ -131,7 +131,7 @@ func TestSaveDocumentExportMarkdown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SaveMarkdownEdit returned error: %v", err)
 	}
-	data, extension, _, _, err := renderDocumentExport([]byte("# Saved doc\n\nBody text.\n"), result.URL, "pdf")
+	data, extension, _, _, err := renderDocumentExport([]byte("# Saved doc\n\nBody text.\n"), result.URL, "pdf", false)
 	if err != nil {
 		t.Fatalf("renderDocumentExport(pdf) returned error: %v", err)
 	}
@@ -140,12 +140,12 @@ func TestSaveDocumentExportMarkdown(t *testing.T) {
 	}
 
 	// FDX renders screenplays: a markdown artifact refuses with the fix.
-	if _, _, _, _, err := renderDocumentExport([]byte("# doc"), result.URL, "fdx"); err == nil || !strings.Contains(err.Error(), ".fountain") {
+	if _, _, _, _, err := renderDocumentExport([]byte("# doc"), result.URL, "fdx", false); err == nil || !strings.Contains(err.Error(), ".fountain") {
 		t.Fatalf("fdx on a markdown artifact = %v, want the .fountain guidance", err)
 	}
 
 	// The fountain path still works end to end.
-	fdx, extension, _, _, err := renderDocumentExport([]byte("INT. ROOM - DAY\n\nMAYA\nHello.\n"), scriptArtifactURL(t, config), "fdx")
+	fdx, extension, _, _, err := renderDocumentExport([]byte("INT. ROOM - DAY\n\nMAYA\nHello.\n"), scriptArtifactURL(t, config), "fdx", false)
 	if err != nil || extension != ".fdx" || !strings.Contains(string(fdx), "FinalDraft") {
 		t.Fatalf("fdx render = %v, ext %q", err, extension)
 	}

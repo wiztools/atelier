@@ -1,0 +1,376 @@
+package main
+
+import (
+	"encoding/xml"
+	"fmt"
+	"strings"
+	"testing"
+)
+
+// spanNotation renders spans compactly — face flags, a colon, the text —
+// so the inline table below reads like the frontend model's mirror of it.
+func spanNotation(spans []FountainSpan) string {
+	parts := make([]string, len(spans))
+	for i, span := range spans {
+		flags := ""
+		if span.Bold {
+			flags += "b"
+		}
+		if span.Italic {
+			flags += "i"
+		}
+		if span.Underline {
+			flags += "u"
+		}
+		parts[i] = flags + ":" + span.Text
+	}
+	return strings.Join(parts, "|")
+}
+
+// The same table runs in frontend/test/fountainModel.assert.ts — the preview
+// and the PDF must read every marker the same way.
+func TestFountainInlineSpans(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"plain text", ":plain text"},
+		{"a *quiet* word", ":a |i:quiet|: word"},
+		{"a **loud** word", ":a |b:loud|: word"},
+		{"***both***", "bi:both"},
+		{"one _underlined_ word", ":one |u:underlined|: word"},
+		{"**bold *and italic* text**", "b:bold |bi:and italic|b: text"},
+		{"_*underlined italic*_", "iu:underlined italic"},
+		{"un*believ*able", ":un|i:believ|:able"},
+		{"snake_case_name", ":snake_case_name"},
+		{"5 * 3 * 2", ":5 * 3 * 2"},
+		{"He falls*", ":He falls*"},
+		{`\*not italic\*`, ":*not italic*"},
+		{"****", ":****"},
+		{"**", ":**"},
+		{"*_text*_", "i:_text|:_"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := spanNotation(fountainInlineSpans(tc.in)); got != tc.want {
+			t.Errorf("fountainInlineSpans(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// The same script runs in the frontend model's assertions: the preview's
+// margins and the PDF's blank lines come from this one rule.
+func TestFountainSpaceBefore(t *testing.T) {
+	script := "INT. ROOM - DAY\n\nLine one.\nLine two.\n\nAnother paragraph.\nMAYA\n(beat)\nHello.\n~ la la\n\n> THE END <\n> REALLY <\n\nCUT TO:\n\nEXT. STREET - NIGHT\n"
+	elements, _ := fountainParse([]byte(script))
+	got := []string{}
+	var prev *FountainElement
+	for i := range elements {
+		got = append(got, fmt.Sprintf("%s=%d", elements[i].Kind, fountainSpaceBefore(prev, elements[i])))
+		prev = &elements[i]
+	}
+	want := []string{
+		"Scene Heading=0", "Action=1", "Action=0", "Action=1", "Character=1", "Parenthetical=0",
+		"Dialogue=0", "Lyric=0", "Centered=1", "Centered=0", "Transition=1", "Scene Heading=2",
+	}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("spacing = %v\nwant      %v", got, want)
+	}
+}
+
+func TestFountainTitlePageKeepsLineBreaks(t *testing.T) {
+	script := "Title: The Long Night\nDraft date: November 7, 2026\nContact:\n    Subhash Chandran\n    42 Lantern Lane\n\nINT. ROOM - DAY\n"
+	_, titlePage := fountainParse([]byte(script))
+	if titlePage["Contact"] != "Subhash Chandran\n42 Lantern Lane" {
+		t.Fatalf("contact = %q, want its two lines", titlePage["Contact"])
+	}
+	lines := fountainTitlePageLines(titlePage)
+	if len(lines) != pdfLinesPerPage {
+		t.Fatalf("title page rows = %d, want the full %d-row page (contact pinned to the bottom)", len(lines), pdfLinesPerPage)
+	}
+	if lines[pdfLinesPerPage-2].text != "Subhash Chandran" || lines[pdfLinesPerPage-1].text != "42 Lantern Lane" {
+		t.Fatalf("bottom rows = %q / %q, want the contact block a line apiece", lines[pdfLinesPerPage-2].text, lines[pdfLinesPerPage-1].text)
+	}
+	title := lines[fountainTitleTopRow]
+	if title.text != "THE LONG NIGHT" || !title.center || len(title.spans) != 1 || !title.spans[0].bold || !title.spans[0].underline {
+		t.Fatalf("title row = %+v, want it centered, uppercase, bold and underlined", title)
+	}
+	// The draft date sits centered under the title the way the preview shows
+	// it — and is never cut off the page.
+	if lines[fountainTitleTopRow+2].text != "November 7, 2026" || !lines[fountainTitleTopRow+2].center {
+		t.Fatalf("draft date row = %+v", lines[fountainTitleTopRow+2])
+	}
+}
+
+// paginatedScript runs the body pipeline the export uses.
+func paginatedScript(script string, includeNotes bool) [][]fountainPDFLine {
+	elements, _ := fountainParse([]byte(script))
+	return fountainPaginate(fountainBlocks(elements, includeNotes))
+}
+
+func rowTexts(page []fountainPDFLine) []string {
+	texts := make([]string, len(page))
+	for i, line := range page {
+		texts[i] = line.text
+	}
+	return texts
+}
+
+// fillerParagraphs is n one-row action paragraphs: 2n-1 rows of a page.
+func fillerParagraphs(n int) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, "Filler paragraph %d.\n\n", i+1)
+	}
+	return b.String()
+}
+
+func TestFountainLayoutMirrorsThePreview(t *testing.T) {
+	script := "INT. ROOM - DAY\n\nShe *whispers*, then **shouts**.\nThe _door_ slams.\n\n@maya (v.o.)\n(beat)\nWho is there?\n\n~ la la la\n\n> the end <\n\n> fade out.\n"
+	pages := paginatedScript(script, false)
+	if len(pages) != 1 {
+		t.Fatalf("pages = %d, want 1", len(pages))
+	}
+	rows := pages[0]
+	got := rowTexts(rows)
+	want := []string{
+		"INT. ROOM - DAY", "",
+		"She whispers, then shouts.", "The door slams.", "",
+		"MAYA (V.O.)", "(beat)", "Who is there?", "",
+		"la la la", "",
+		"the end", "",
+		"FADE OUT.",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("rows =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if !rows[0].spans[0].bold {
+		t.Fatal("a scene heading prints bold")
+	}
+	if spans := rows[2].spans; len(spans) != 5 || !spans[1].italic || !spans[3].bold {
+		t.Fatalf("action emphasis = %+v, want italic and bold runs", spans)
+	}
+	if spans := rows[3].spans; len(spans) != 3 || !spans[1].underline || spans[1].text != "door" {
+		t.Fatalf("underline run = %+v", spans)
+	}
+	if rows[5].indent != fountainIndentChar || rows[6].indent != fountainIndentPar || rows[7].indent != fountainIndentDia {
+		t.Fatalf("speech columns = %d/%d/%d", rows[5].indent, rows[6].indent, rows[7].indent)
+	}
+	if rows[9].indent != fountainIndentChar || !rows[9].spans[0].italic {
+		t.Fatalf("lyric row = %+v, want italic at the cue column", rows[9])
+	}
+	if !rows[11].center || !rows[13].right {
+		t.Fatalf("centered/transition rows = %+v / %+v", rows[11], rows[13])
+	}
+}
+
+func TestFountainPaginateForcedBreaks(t *testing.T) {
+	// A break opening the script, doubled breaks, and a trailing break never
+	// print blank pages; one between two scenes starts the second on a new page.
+	pages := paginatedScript("===\n\nINT. ONE\n\nAction.\n\n===\n\n===\n\nINT. TWO\n\nMore.\n\n===\n", false)
+	if len(pages) != 2 {
+		t.Fatalf("pages = %d (%v), want 2", len(pages), pages)
+	}
+	if pages[0][0].text != "INT. ONE" || pages[1][0].text != "INT. TWO" {
+		t.Fatalf("page tops = %q / %q", pages[0][0].text, pages[1][0].text)
+	}
+	if strings.Contains(strings.Join(rowTexts(pages[0]), "\n"), "===") {
+		t.Fatal("a page break must never print as text")
+	}
+}
+
+func TestFountainPaginateSceneHeadingKeepsWithNext(t *testing.T) {
+	// 26 filler paragraphs fill rows 0-50; the heading's two blank lines and
+	// its own row would fit, but its action could not follow on this page —
+	// so the heading opens the next one.
+	pages := paginatedScript(fillerParagraphs(26)+"INT. NEXT ROOM - DAY\n\nThe door opens.\n", false)
+	if len(pages) != 2 {
+		t.Fatalf("pages = %d, want 2", len(pages))
+	}
+	last := pages[0][len(pages[0])-1]
+	if last.text != "Filler paragraph 26." {
+		t.Fatalf("page one ends with %q, want the last filler (no stranded heading)", last.text)
+	}
+	if pages[1][0].text != "INT. NEXT ROOM - DAY" || pages[1][1].text != "" || pages[1][2].text != "The door opens." {
+		t.Fatalf("page two = %q", rowTexts(pages[1]))
+	}
+}
+
+func TestFountainPaginateCueNeverStrands(t *testing.T) {
+	// Three rows of room: a four-row speech can't split (two rows of speech
+	// on each page, plus its cue and (MORE)), so it moves whole.
+	pages := paginatedScript(fillerParagraphs(26)+"MAYA\nLine one.\nLine two.\nLine three.\n", false)
+	if len(pages) != 2 {
+		t.Fatalf("pages = %d, want 2", len(pages))
+	}
+	if got := rowTexts(pages[1]); strings.Join(got, "|") != "MAYA|Line one.|Line two.|Line three." {
+		t.Fatalf("page two = %q, want the whole speech", got)
+	}
+}
+
+func TestFountainPaginateSpeechContinues(t *testing.T) {
+	var speech strings.Builder
+	for i := 0; i < 12; i++ {
+		fmt.Fprintf(&speech, "This is sentence number %d of the speech. ", i+1)
+	}
+	pages := paginatedScript(fillerParagraphs(22)+"MAYA (V.O.)\n"+speech.String()+"\n", false)
+	if len(pages) != 2 {
+		t.Fatalf("pages = %d, want 2", len(pages))
+	}
+	first, second := pages[0], pages[1]
+	more := first[len(first)-1]
+	if more.text != "(MORE)" || more.indent != fountainIndentChar {
+		t.Fatalf("page one ends %+v, want (MORE) at the cue column", more)
+	}
+	if !strings.HasSuffix(first[len(first)-2].text, "speech.") {
+		t.Fatalf("the break must land on a sentence's end, got %q", first[len(first)-2].text)
+	}
+	if second[0].text != "MAYA (V.O.) (CONT'D)" || second[0].indent != fountainIndentChar {
+		t.Fatalf("page two opens %+v, want the continued cue", second[0])
+	}
+	if !strings.HasPrefix(second[1].text, "This is sentence number") {
+		t.Fatalf("the continued speech re-wraps from the sentence: %q", second[1].text)
+	}
+	// Nothing is lost or doubled across the break.
+	var words []string
+	for _, line := range append(append([]fountainPDFLine{}, first...), second...) {
+		if line.indent == fountainIndentDia {
+			words = append(words, strings.Fields(line.text)...)
+		}
+	}
+	if strings.Join(words, " ") != strings.TrimSpace(speech.String()) {
+		t.Fatal("the split speech must carry exactly the source's words")
+	}
+}
+
+func TestFountainPaginateSpeechLongerThanAPage(t *testing.T) {
+	var speech strings.Builder
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(&speech, "Sentence %d goes on. ", i+1)
+	}
+	pages := paginatedScript("MAYA\n"+speech.String()+"\n", false)
+	if len(pages) < 2 {
+		t.Fatalf("pages = %d, want the speech across several", len(pages))
+	}
+	for i, page := range pages {
+		if len(page) > pdfLinesPerPage {
+			t.Fatalf("page %d has %d rows", i+1, len(page))
+		}
+		if i > 0 && page[0].text != "MAYA (CONT'D)" {
+			t.Fatalf("page %d opens %q, want one (CONT'D), never doubled", i+1, page[0].text)
+		}
+		if i < len(pages)-1 && page[len(page)-1].text != "(MORE)" {
+			t.Fatalf("page %d ends %q, want (MORE)", i+1, page[len(page)-1].text)
+		}
+	}
+}
+
+func TestFountainPaginatePageTopsAreNeverBlank(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 30; i++ {
+		fmt.Fprintf(&b, "INT. ROOM %d - DAY\n\nSomething happens in room %d, and it takes a while to describe properly.\n\nMAYA\nAnd then?\n\n", i, i)
+	}
+	pages := paginatedScript(b.String(), false)
+	if len(pages) < 3 {
+		t.Fatalf("pages = %d", len(pages))
+	}
+	for i, page := range pages {
+		if len(page) == 0 || page[0].text == "" || page[len(page)-1].text == "" {
+			t.Fatalf("page %d starts or ends blank: %q", i+1, rowTexts(page))
+		}
+		if len(page) > pdfLinesPerPage {
+			t.Fatalf("page %d overflows: %d rows", i+1, len(page))
+		}
+		if page[len(page)-1].text == "MAYA" || strings.HasPrefix(page[len(page)-1].text, "INT.") {
+			t.Fatalf("page %d strands %q at its foot", i+1, page[len(page)-1].text)
+		}
+	}
+}
+
+func TestFountainLongWordBreaksToTheColumn(t *testing.T) {
+	long := strings.Repeat("x", 70)
+	pages := paginatedScript("A link: "+long+" ends here.\n", false)
+	for _, line := range pages[0] {
+		if n := len([]rune(line.text)); n > fountainWidthAction {
+			t.Fatalf("row %q is %d characters, wider than the column", line.text, n)
+		}
+	}
+}
+
+func TestFountainPDFNotesToggle(t *testing.T) {
+	script := "# ACT ONE\n\n= The archive opens.\n\nINT. ROOM - DAY\n\nAction.\n"
+	elements, titlePage := fountainParse([]byte(script))
+	without, err := fountainPDF(elements, titlePage, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(without), "ACT ONE") || strings.Contains(string(without), "archive opens") {
+		t.Fatal("notes stay out of the page unless asked for")
+	}
+	with, err := fountainPDF(elements, titlePage, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(with)
+	if !strings.Contains(content, "(ACT ONE) Tj") || !strings.Contains(content, "(The archive opens.) Tj") {
+		t.Fatal("asked-for notes print")
+	}
+	if !strings.Contains(content, fmt.Sprintf("q %.2f g", pdfNoteGray)) {
+		t.Fatal("notes print gray")
+	}
+}
+
+func TestFountainPDFFacesAndEncoding(t *testing.T) {
+	elements, titlePage := fountainParse([]byte("INT. CAFÉ - DAY\n\nJosé *waits*. The “end” — almost…\n"))
+	pdf, err := fountainPDF(elements, titlePage, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(pdf)
+	for _, face := range []string{"Courier", "Courier-Bold", "Courier-Oblique", "Courier-BoldOblique"} {
+		if !strings.Contains(content, "/BaseFont /"+face+" /Encoding /WinAnsiEncoding") {
+			t.Fatalf("font %s missing or not WinAnsi", face)
+		}
+	}
+	if !strings.Contains(content, `/F2 12 Tf 1 0 0 1 108.00 720.00 Tm (INT. CAF\311 - DAY) Tj`) {
+		t.Fatal("the scene heading prints bold and uppercase, its accent as a WinAnsi byte")
+	}
+	if !strings.Contains(content, "/F3 12 Tf") {
+		t.Fatal("emphasis prints in the oblique face")
+	}
+	if !strings.Contains(content, `(. The "end" -- almost...) Tj`) {
+		t.Fatal("typographic punctuation prints in its typewriter form")
+	}
+}
+
+func TestPDFEscapeWinAnsi(t *testing.T) {
+	cases := map[string]string{
+		"plain":         "plain",
+		"(paren) \\":    `\(paren\) \\`,
+		"café":          `caf\351`,
+		"“quoted” — it": `"quoted" -- it`,
+		"日本":            "??",
+		"tab\there":     "tab here",
+	}
+	for in, want := range cases {
+		if got := pdfEscape(in); got != want {
+			t.Errorf("pdfEscape(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestFountainFDXTitlePageLines(t *testing.T) {
+	_, titlePage := fountainParse([]byte("Title: Draft\nContact:\n    Line One\n    Line Two\n\nINT. ROOM\n"))
+	fdx, err := fountainFDX(nil, titlePage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc fdxDocument
+	if err := xml.Unmarshal(fdx, &doc); err != nil {
+		t.Fatal(err)
+	}
+	got := []string{}
+	for _, paragraph := range doc.TitlePage.Paragraphs {
+		got = append(got, paragraph.Text)
+	}
+	if strings.Join(got, "|") != "Draft|Line One|Line Two" {
+		t.Fatalf("title paragraphs = %q, want a multi-line value one paragraph per line", got)
+	}
+}

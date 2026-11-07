@@ -1,4 +1,4 @@
-import {useEffect, useMemo, useRef, useState} from 'react';
+import {Fragment, useEffect, useMemo, useRef, useState} from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import * as AppBindings from '../../wailsjs/go/main/App';
@@ -31,8 +31,10 @@ import {
   FountainElement,
   fountainContinueElementOnEnter,
   fountainCycleElementOnTab,
+  fountainInlineSpans,
   fountainOutline,
   fountainParse,
+  fountainSpaceBefore,
   fountainWarnings,
 } from './fountainModel';
 import './markdownEditor.css';
@@ -136,8 +138,10 @@ export function MarkdownEditor(props: {
 }) {
   const {source} = props.handle;
   // The revision the editor is currently working from — the provenance the
-  // next save records ("Use as source" retargets it).
+  // next save records ("Use as source" retargets it) and, with its URL, the
+  // saved artifact Export PDF renders while nothing is unsaved.
   const [activeArtifactID, setActiveArtifactID] = useState(source.artifactId);
+  const [activeURL, setActiveURL] = useState(source.url);
   const [loadingRevision, setLoadingRevision] = useState(false);
   const sourceConversationID = useState(source.conversationId)[0];
 
@@ -149,6 +153,10 @@ export function MarkdownEditor(props: {
   const [view, setView] = useState<ViewMode>('split');
   const [log, setLog] = useState<EditorLogEntry[]>([]);
   const [saving, setSaving] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  // Sections and synopses print as gray notes, the way the preview shows
+  // them; off keeps them out and the page count true to the script.
+  const [printNotes, setPrintNotes] = useState(true);
   // The dialect IS the artifact's identity — a .fountain edits and saves as a
   // screenplay, a .md as markdown; the editor never converts between them.
   const format: DocumentFormat = source.format === 'fountain' ? 'fountain' : 'markdown';
@@ -393,8 +401,9 @@ export function MarkdownEditor(props: {
 
   // saveDoc commits the edited document into the conversation: a new md_
   // artifact in the artifact's own format plus a turn recording the edit.
-  // The draft is never touched.
-  const saveDoc = async () => {
+  // The draft is never touched. Resolves the saved revision, or null when
+  // the save failed (its toast already said why).
+  const saveDoc = async (): Promise<main.SaveMarkdownEditResult | null> => {
     setSaving(true);
     try {
       const result = await AppBindings.SaveMarkdownEdit(main.SaveMarkdownEditRequest.createFrom({
@@ -412,10 +421,13 @@ export function MarkdownEditor(props: {
       // chains its provenance from it.
       setBaseline(text);
       setActiveArtifactID(result.artifactId);
+      setActiveURL(result.url);
       props.onSavedToConversation?.();
       notifySuccess('Saved to the conversation', {message: fountain ? 'Screenplay' : 'Document'});
+      return result;
     } catch (error) {
       notifyError("Couldn't save to the conversation", error);
+      return null;
     } finally {
       setSaving(false);
     }
@@ -434,6 +446,7 @@ export function MarkdownEditor(props: {
       setTextState(revision.text);
       setBaseline(revision.text);
       setActiveArtifactID(revision.artifactId);
+      setActiveURL(revision.url);
       lastPushRef.current = 0;
     } catch (error) {
       notifyError("Couldn't open that revision", error);
@@ -449,15 +462,41 @@ export function MarkdownEditor(props: {
     })));
   };
 
-  // exportSaved is the fountain rows' derived-export door: the saved
-  // artifact renders to PDF or Final Draft on its way to disk — never from
-  // the editor's uncommitted draft.
-  const exportSaved = async (url: string, format: 'pdf' | 'fdx', index: number) => {
+  // exportArtifact renders a SAVED artifact to PDF or Final Draft on its way
+  // to disk — never the editor's uncommitted draft. A screenplay's PDF prints
+  // as the preview shows it, notes included when printNotes is on.
+  const exportArtifact = async (url: string, format: 'pdf' | 'fdx', suggestedName: string) => {
     await trackSave(format === 'fdx' ? 'Final Draft file' : 'PDF', SaveDocumentExport(main.SaveDocumentExportRequest.createFrom({
       path: url,
       format,
-      suggestedName: `${source.conversationTitle || 'screenplay'}-${Date.now()}-${index + 1}`,
+      suggestedName,
+      includeNotes: fountain && printNotes,
     })));
+  };
+
+  // exportSaved is the Edits rows' derived-export door for one saved revision.
+  const exportSaved = (url: string, format: 'pdf' | 'fdx', index: number) =>
+    exportArtifact(url, format, `${source.conversationTitle || (fountain ? 'screenplay' : 'document')}-${Date.now()}-${index + 1}`);
+
+  // exportPDF is the inspector's print door: it renders the revision the
+  // editor is on, saving the working text as a new revision first when
+  // anything is unsaved (the comic and composer editors' Save & export
+  // rule) — the PDF always derives from a saved artifact.
+  const exportPDF = async () => {
+    setExporting(true);
+    try {
+      let url = activeURL;
+      if (dirty) {
+        const saved = await saveDoc();
+        if (!saved) {
+          return;
+        }
+        url = saved.url;
+      }
+      await exportArtifact(url, 'pdf', source.conversationTitle || (fountain ? 'screenplay' : 'document'));
+    } finally {
+      setExporting(false);
+    }
   };
 
   // The formatting toolbar is dialect-shaped: markdown gets the full document
@@ -645,6 +684,29 @@ export function MarkdownEditor(props: {
             </button>
             <span className="editor-session-note">Edits stay in the editor until you save them — download the saved file from the Edits panel below.</span>
           </div>
+
+          <div className="markdown-print">
+            <strong>Print</strong>
+            {fountain ? (
+              <label className="markdown-print-toggle" title="Sections and synopses print as gray notes, the way the preview shows them — leave them out for a page count true to the script">
+                <input type="checkbox" checked={printNotes} onChange={(event) => setPrintNotes(event.target.checked)} />
+                Include sections &amp; synopses
+              </label>
+            ) : null}
+            <button
+              type="button"
+              disabled={exporting || saving || text.trim() === ''}
+              title={dirty ? 'Save the working text as a new revision, then render that revision to PDF' : 'Render the revision you are editing to PDF'}
+              onClick={() => void exportPDF()}
+            >
+              {exporting ? 'Exporting…' : dirty ? 'Save & export PDF' : 'Export PDF'}
+            </button>
+            <span className="hint">
+              {fountain
+                ? 'US Letter pages laid out as the preview shows them. Scene headings stay with their action, and a speech that turns the page carries (MORE) and (CONT’D).'
+                : 'The saved document as typed Courier pages.'}
+            </span>
+          </div>
         </aside>
       </div>
 
@@ -673,7 +735,7 @@ export function MarkdownEditor(props: {
                 ) : null}
                 <button
                   type="button"
-                  title={entry.format === 'fountain' ? 'Render the saved screenplay to a production-layout PDF' : 'Render the saved document to a print-layout PDF'}
+                  title={entry.format === 'fountain' ? 'Render this saved screenplay to PDF, laid out as the preview shows it' : 'Render the saved document to a print-layout PDF'}
                   onClick={() => void exportSaved(entry.url, 'pdf', index)}
                 >
                   PDF
@@ -690,9 +752,10 @@ export function MarkdownEditor(props: {
 
 // FountainPreview renders the screenplay page: the title page block when the
 // script opens with one, then every element in its industry column — the
-// preview IS the formatted script, the way the PDF will print it. Element
-// text renders through react-markdown (one inline block each) so Fountain's
-// *emphasis* markers style instead of printing.
+// preview IS the formatted script, the way the PDF prints it. Spacing and
+// emphasis come from the model rules the PDF uses too (fountainSpaceBefore,
+// fountainInlineSpans), so the screen and the page can't drift; only the
+// page turns — (MORE), (CONT'D), keep-with-next — are print's alone.
 function FountainPreview({text}: {text: string}) {
   const script = useMemo(() => fountainParse(text), [text]);
   const titleKeys = Object.keys(script.titlePage);
@@ -708,20 +771,30 @@ function FountainPreview({text}: {text: string}) {
         </div>
       ) : null}
       {script.elements.map((element, index) => (
-        <FountainElementView key={index} element={element} />
+        <FountainElementView
+          key={index}
+          element={element}
+          gap={fountainSpaceBefore(index > 0 ? script.elements[index - 1] : null, element)}
+        />
       ))}
     </div>
   );
 }
 
-function FountainElementView({element}: {element: FountainElement}) {
+function FountainElementView({element, gap}: {element: FountainElement; gap: number}) {
   if (element.kind === 'Page Break') {
     return <hr className="fountain-page-break" />;
   }
-  const className = `fountain-${element.kind.toLowerCase().replace(' ', '-')}`;
+  const className = `fountain-${element.kind.toLowerCase().replace(' ', '-')} fountain-gap-${gap}`;
   return (
     <div className={className}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{element.text}</ReactMarkdown>
+      {fountainInlineSpans(element.text).map((span, index) => {
+        let node: React.ReactNode = span.text;
+        if (span.underline) node = <u>{node}</u>;
+        if (span.italic) node = <em>{node}</em>;
+        if (span.bold) node = <strong>{node}</strong>;
+        return <Fragment key={index}>{node}</Fragment>;
+      })}
     </div>
   );
 }

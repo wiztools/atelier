@@ -56,7 +56,9 @@ const (
 
 // fountainTitlePage is the raw key/value block a script may open with. Keys
 // keep their source spelling ("Draft date"); the PDF/FDX writers render the
-// keys they know in a fixed order and ignore the rest.
+// keys they know in a fixed order and ignore the rest. A value continued on
+// indented lines keeps those line breaks ("\n"-joined) — a Contact block is
+// an address, one fragment per line, and a title may break deliberately.
 func fountainParse(data []byte) ([]FountainElement, map[string]string) {
 	text := strings.ReplaceAll(string(data), "\r\n", "\n")
 	lines := strings.Split(text, "\n")
@@ -84,7 +86,7 @@ func fountainParse(data []byte) ([]FountainElement, map[string]string) {
 			if strings.TrimSpace(cont) == "" || (cont[0] != ' ' && cont[0] != '\t') {
 				break
 			}
-			value += " " + strings.TrimSpace(cont)
+			value += "\n" + strings.TrimSpace(cont)
 			i = j + 1
 		}
 		titlePage[key] = strings.TrimSpace(value)
@@ -307,4 +309,185 @@ func fountainWarnings(elements []FountainElement) []string {
 		warnings = append(warnings, "no scene headings — an INT. or EXT. line marks where each scene starts")
 	}
 	return warnings
+}
+
+// fountainSpaceBefore is how many blank lines open an element in the
+// formatted script — the PDF prints them as real blank lines and the preview
+// as margins, so the screen and the page space a script identically. A scene
+// heading takes two (the preview's larger gap above sluglines); lines the
+// source keeps together — consecutive action lines, a cue and its
+// parentheticals, dialogue and lyrics, consecutive lyric or centered lines —
+// take none, being the line breaks of one paragraph; everything else takes
+// one. prev is nil at the top of the script, and nothing follows a page
+// break on its page.
+func fountainSpaceBefore(prev *FountainElement, element FountainElement) int {
+	if prev == nil || prev.Kind == fountainPageBreak || element.Kind == fountainPageBreak {
+		return 0
+	}
+	if element.Kind == fountainScene {
+		return 2
+	}
+	if element.Line == prev.Line+1 && fountainSameBlock(prev.Kind, element.Kind) {
+		return 0
+	}
+	return 1
+}
+
+// fountainSameBlock names the pairs a paragraph is made of: a speech runs
+// from its cue through its parentheticals, dialogue and lyrics; action,
+// lyric and centered lines continue their own kind.
+func fountainSameBlock(prev, next string) bool {
+	switch next {
+	case fountainAction, fountainCentered:
+		return prev == next
+	case fountainLyric:
+		return prev == fountainLyric || fountainSpeechKind(prev)
+	case fountainParenthetical, fountainDialogue:
+		return fountainSpeechKind(prev)
+	}
+	return false
+}
+
+func fountainSpeechKind(kind string) bool {
+	return kind == fountainCharacter || kind == fountainParenthetical || kind == fountainDialogue
+}
+
+// FountainSpan is one run of element text with the emphasis Fountain marks
+// inline — *italic*, **bold**, ***bold italic***, _underline_ — the styling
+// the preview draws and the PDF prints.
+type FountainSpan struct {
+	Text      string
+	Bold      bool
+	Italic    bool
+	Underline bool
+}
+
+// fountainInlineSpans splits element text into styled runs, mirrored by the
+// frontend model so the screen and the page agree on every marker. A run of
+// one to three asterisks (italic, bold, both) or a single underscore
+// (underline) is a delimiter: it can open when text follows it and close when
+// text precedes it, and an underscore never opens or closes inside a word, so
+// snake_case stays literal. A closer pairs with the nearest open delimiter of
+// the same kind and length; openers it skips over stay literal, as does every
+// delimiter left unpaired, and a backslash escapes a marker. Emphasis never
+// spans lines — each element is one line.
+func fountainInlineSpans(text string) []FountainSpan {
+	type token struct {
+		text     string // literal text, or the delimiter's own characters
+		delim    rune   // '*' or '_' for a delimiter, 0 for literal text
+		count    int
+		canOpen  bool
+		canClose bool
+		pair     int // the partner delimiter's index, -1 when unpaired
+	}
+	runes := []rune(text)
+	tokens := []token{}
+	literal := []rune{}
+	flush := func() {
+		if len(literal) > 0 {
+			tokens = append(tokens, token{text: string(literal), pair: -1})
+			literal = []rune{}
+		}
+	}
+	for i := 0; i < len(runes); {
+		r := runes[i]
+		if r == '\\' && i+1 < len(runes) && (runes[i+1] == '*' || runes[i+1] == '_') {
+			literal = append(literal, runes[i+1])
+			i += 2
+			continue
+		}
+		if r != '*' && r != '_' {
+			literal = append(literal, r)
+			i++
+			continue
+		}
+		end := i
+		for end < len(runes) && runes[end] == r {
+			end++
+		}
+		count := end - i
+		if (r == '*' && count > 3) || (r == '_' && count > 1) {
+			literal = append(literal, runes[i:end]...)
+			i = end
+			continue
+		}
+		before, after := rune(0), rune(0)
+		if i > 0 {
+			before = runes[i-1]
+		}
+		if end < len(runes) {
+			after = runes[end]
+		}
+		canOpen := after != 0 && !unicode.IsSpace(after)
+		canClose := before != 0 && !unicode.IsSpace(before)
+		if r == '_' {
+			canOpen = canOpen && !fountainWordRune(before)
+			canClose = canClose && !fountainWordRune(after)
+		}
+		flush()
+		tokens = append(tokens, token{text: string(runes[i:end]), delim: r, count: count, canOpen: canOpen, canClose: canClose, pair: -1})
+		i = end
+	}
+	flush()
+
+	openers := []int{}
+	for idx := range tokens {
+		tok := tokens[idx]
+		if tok.delim == 0 {
+			continue
+		}
+		if tok.canClose {
+			match := -1
+			for s := len(openers) - 1; s >= 0; s-- {
+				if open := tokens[openers[s]]; open.delim == tok.delim && open.count == tok.count {
+					match = s
+					break
+				}
+			}
+			if match >= 0 {
+				tokens[openers[match]].pair = idx
+				tokens[idx].pair = openers[match]
+				openers = openers[:match]
+				continue
+			}
+		}
+		if tok.canOpen {
+			openers = append(openers, idx)
+		}
+	}
+
+	spans := []FountainSpan{}
+	bold, italic, underline := 0, 0, 0
+	for idx, tok := range tokens {
+		if tok.delim == 0 || tok.pair < 0 {
+			span := FountainSpan{Text: tok.text, Bold: bold > 0, Italic: italic > 0, Underline: underline > 0}
+			if n := len(spans); n > 0 && spans[n-1].Bold == span.Bold && spans[n-1].Italic == span.Italic && spans[n-1].Underline == span.Underline {
+				spans[n-1].Text += span.Text
+			} else {
+				spans = append(spans, span)
+			}
+			continue
+		}
+		step := 1
+		if tok.pair < idx {
+			step = -1
+		}
+		switch {
+		case tok.delim == '_':
+			underline += step
+		case tok.count == 1:
+			italic += step
+		case tok.count == 2:
+			bold += step
+		default:
+			bold += step
+			italic += step
+		}
+	}
+	return spans
+}
+
+// fountainWordRune is the "inside a word" test the underscore rule needs.
+func fountainWordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }

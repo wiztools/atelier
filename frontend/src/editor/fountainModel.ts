@@ -123,7 +123,8 @@ export function fountainParse(text: string): FountainScript {
 
   let i = 0;
   // Title page: `Key: value` lines from the very top, values continuing on
-  // indented lines, ended by the first blank line.
+  // indented lines, ended by the first blank line. A continued value keeps
+  // its line breaks (a contact block is an address, one fragment per line).
   for (; i < lines.length; i++) {
     const line = lines[i];
     if (line.trim() === '') {
@@ -141,7 +142,7 @@ export function fountainParse(text: string): FountainScript {
       if (cont.trim() === '' || (cont[0] !== ' ' && cont[0] !== '\t')) {
         break;
       }
-      value += ' ' + cont.trim();
+      value += '\n' + cont.trim();
     }
     titlePage[key[0]] = value.trim();
     i--;
@@ -265,10 +266,173 @@ export function fountainWarnings(script: FountainScript): FountainWarning[] {
   return warnings;
 }
 
-// fountainStripEmphasis removes the *bold* / _underline_ markers — the
-// print path renders plain Courier.
-export function fountainStripEmphasis(text: string): string {
-  return text.replace(/[*_]/g, '');
+// fountainSpaceBefore is how many blank lines open an element in the
+// formatted script — the twin of fountainSpaceBefore in fountain.go. The PDF
+// prints them as real blank lines and the preview as margins, so the screen
+// and the page space a script identically: a scene heading takes two, lines
+// the source keeps together (consecutive action lines, a cue and its
+// parentheticals, dialogue and lyrics, consecutive lyric or centered lines)
+// take none, everything else takes one.
+export function fountainSpaceBefore(prev: FountainElement | null, element: FountainElement): number {
+  if (!prev || prev.kind === 'Page Break' || element.kind === 'Page Break') {
+    return 0;
+  }
+  if (element.kind === 'Scene Heading') {
+    return 2;
+  }
+  if (element.line === prev.line + 1 && sameBlock(prev.kind, element.kind)) {
+    return 0;
+  }
+  return 1;
+}
+
+function isSpeechKind(kind: FountainElementKind): boolean {
+  return kind === 'Character' || kind === 'Parenthetical' || kind === 'Dialogue';
+}
+
+function sameBlock(prev: FountainElementKind, next: FountainElementKind): boolean {
+  switch (next) {
+    case 'Action':
+    case 'Centered':
+      return prev === next;
+    case 'Lyric':
+      return prev === 'Lyric' || isSpeechKind(prev);
+    case 'Parenthetical':
+    case 'Dialogue':
+      return isSpeechKind(prev);
+    default:
+      return false;
+  }
+}
+
+// FountainSpan is one run of element text with Fountain's inline emphasis —
+// *italic*, **bold**, ***bold italic***, _underline_.
+export type FountainSpan = {
+  text: string;
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
+};
+
+function isSpaceChar(ch: string | undefined): boolean {
+  return ch !== undefined && /\s/u.test(ch);
+}
+
+function isWordChar(ch: string | undefined): boolean {
+  return ch !== undefined && /[\p{L}\p{Nd}]/u.test(ch);
+}
+
+// fountainInlineSpans splits element text into styled runs — the twin of
+// fountainInlineSpans in fountain.go, so the preview and the PDF read every
+// marker the same way. A run of one to three asterisks (italic, bold, both)
+// or a single underscore (underline) is a delimiter: it can open when text
+// follows it and close when text precedes it, and an underscore never opens
+// or closes inside a word (snake_case stays literal). A closer pairs with the
+// nearest open delimiter of the same kind and length; openers it skips over
+// stay literal, as does every unpaired delimiter, and a backslash escapes a
+// marker.
+export function fountainInlineSpans(text: string): FountainSpan[] {
+  type Token = {text: string; delim: '' | '*' | '_'; count: number; canOpen: boolean; canClose: boolean; pair: number};
+  const chars = Array.from(text);
+  const tokens: Token[] = [];
+  let literal = '';
+  const flush = () => {
+    if (literal) {
+      tokens.push({text: literal, delim: '', count: 0, canOpen: false, canClose: false, pair: -1});
+      literal = '';
+    }
+  };
+  for (let i = 0; i < chars.length; ) {
+    const ch = chars[i];
+    if (ch === '\\' && i + 1 < chars.length && (chars[i + 1] === '*' || chars[i + 1] === '_')) {
+      literal += chars[i + 1];
+      i += 2;
+      continue;
+    }
+    if (ch !== '*' && ch !== '_') {
+      literal += ch;
+      i++;
+      continue;
+    }
+    let end = i;
+    while (end < chars.length && chars[end] === ch) {
+      end++;
+    }
+    const count = end - i;
+    const run = chars.slice(i, end).join('');
+    if ((ch === '*' && count > 3) || (ch === '_' && count > 1)) {
+      literal += run;
+      i = end;
+      continue;
+    }
+    const before = i > 0 ? chars[i - 1] : undefined;
+    const after = end < chars.length ? chars[end] : undefined;
+    let canOpen = after !== undefined && !isSpaceChar(after);
+    let canClose = before !== undefined && !isSpaceChar(before);
+    if (ch === '_') {
+      canOpen = canOpen && !isWordChar(before);
+      canClose = canClose && !isWordChar(after);
+    }
+    flush();
+    tokens.push({text: run, delim: ch as '*' | '_', count, canOpen, canClose, pair: -1});
+    i = end;
+  }
+  flush();
+
+  let openers: number[] = [];
+  tokens.forEach((token, index) => {
+    if (token.delim === '') {
+      return;
+    }
+    if (token.canClose) {
+      let match = -1;
+      for (let s = openers.length - 1; s >= 0; s--) {
+        const open = tokens[openers[s]];
+        if (open.delim === token.delim && open.count === token.count) {
+          match = s;
+          break;
+        }
+      }
+      if (match >= 0) {
+        tokens[openers[match]].pair = index;
+        token.pair = openers[match];
+        openers = openers.slice(0, match);
+        return;
+      }
+    }
+    if (token.canOpen) {
+      openers.push(index);
+    }
+  });
+
+  const spans: FountainSpan[] = [];
+  let bold = 0;
+  let italic = 0;
+  let underline = 0;
+  tokens.forEach((token, index) => {
+    if (token.delim === '' || token.pair < 0) {
+      const span = {text: token.text, bold: bold > 0, italic: italic > 0, underline: underline > 0};
+      const last = spans[spans.length - 1];
+      if (last && last.bold === span.bold && last.italic === span.italic && last.underline === span.underline) {
+        last.text += span.text;
+      } else {
+        spans.push(span);
+      }
+      return;
+    }
+    const step = token.pair < index ? -1 : 1;
+    if (token.delim === '_') {
+      underline += step;
+    } else if (token.count === 1) {
+      italic += step;
+    } else if (token.count === 2) {
+      bold += step;
+    } else {
+      bold += step;
+      italic += step;
+    }
+  });
+  return spans;
 }
 
 // --- The keyboard model -------------------------------------------------

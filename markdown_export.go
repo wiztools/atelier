@@ -362,7 +362,7 @@ func markdownPDFLines(blocks []markdownBlock) [][]fountainPDFLine {
 func markdownPDF(blocks []markdownBlock) ([]byte, error) {
 	lines := markdownPDFLines(blocks)
 	pages := pdfPaginate(lines, markdownKeepRoom)
-	return pdfWrite(pages, nil, -1), nil
+	return pdfWrite(pages, false), nil
 }
 
 // markdownKeepRoom is the print layout's widow rule: a heading needs a body
