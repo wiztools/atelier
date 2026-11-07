@@ -26,7 +26,8 @@
     "test:composer-mentions": "node test/run-composer-mentions-tests.cjs",
     "test:tool-permission": "node test/run-tool-permission-tests.cjs",
     "test:utils": "node test/run-utils-tests.cjs",
-    "test:usage-model": "node test/run-usage-model-tests.cjs"
+    "test:usage-model": "node test/run-usage-model-tests.cjs",
+    "test:app-config": "node test/run-app-config-tests.cjs"
   },
   "dependencies": {
     "react": "^18.2.0",

@@ -4,13 +4,9 @@ import remarkGfm from 'remark-gfm';
 import './App.css';
 import {
   CancelStream,
-  CheckFalConnection,
-  CheckOpenRouterConnection,
-  CheckReplicateConnection,
   CheckForUpdates,
   CheckOllama,
   ChooseToolWorkspace,
-  ClearOpenAICompatibleAPIKey,
   CreateEditorConversation,
   DeleteConversation,
   DetectLocalTools,
@@ -50,11 +46,9 @@ import {
   SaveImage,
   SaveVideo,
   SaveAudio,
-  SaveConfig,
   SetConversationModelOverrides,
   SaveFalAPIKey,
   SaveReplicateAPIKey,
-  SaveOpenAICompatibleAPIKey,
   SaveOpenRouterAPIKey,
   SaveUIState,
   SaveMarkdown,
@@ -125,63 +119,17 @@ import {
   defaultOllamaNumCtx,
   numCtxOptions,
   numCtxLabel,
-  defaultImageAspectRatio,
-  defaultImageSizePreset,
-  defaultImageSteps,
-  imageSizePresetOptions,
-  defaultFalImageModel,
-  defaultFalImageEditModel,
-  defaultFalInpaintModel,
-  defaultFalVideoModel,
-  defaultFalVideoImageModel,
-  defaultFalVideoKeyframeModel,
-  defaultFalVideoExtendModel,
-  defaultFalVideoMotionModel,
-  defaultFalVideoUpscaleModel,
-  defaultFalVideoReframeModel,
-  defaultFalVideoRestyleModel,
-  defaultFalAudioModel,
-  defaultFalAudioCloneModel,
-  defaultFalSoundEffectsModel,
-  defaultFalSoundEffectsVideoModel,
-  defaultFalVoiceDesignModel,
-  defaultFalAudioExtendModel,
-  defaultFalTranscribeModel,
-  defaultReplicateTranscribeModel,
-  defaultReplicateLipsyncImageModel,
-  defaultReplicateLipsyncVideoModel,
-  defaultFalLipsyncImageModel,
-  defaultFalLipsyncVideoModel,
-  defaultFalUpscaleModel,
-  defaultReplicateImageModel,
-  defaultReplicateImageEditModel,
-  defaultReplicateVideoModel,
-  defaultReplicateVideoImageModel,
-  defaultReplicateUpscaleModel,
-  defaultReplicateInpaintModel,
-  defaultReplicateVideoUpscaleModel,
-  defaultReplicateVideoRestyleModel,
-  defaultReplicateVideoReframeModel,
-  defaultReplicateVideoExtendModel,
-  defaultReplicateSoundEffectsModel,
-  defaultReplicateSoundEffectsVideoModel,
-  defaultReplicateSpeechModel,
-  defaultReplicateAudioExtendModel,
   defaultVideoDuration,
-  defaultVideoAspectRatio,
-  defaultVideoResolution,
   defaultVideoDurationOptions,
   defaultSoundDuration,
   defaultSoundDurationOptions,
-  defaultAudioExtendDuration,
   defaultMediaTimeoutSeconds,
-  positiveIntOrDefault,
 } from './modelDefaults';
 import {
   compactHistoryLimit,
   expandedHistoryBatchSize,
 } from './uiLayout';
-import {asArray, formatModelSize, shortenHomePath, formatError, formatFalError, formatOpenRouterError} from './utils';
+import {asArray, formatModelSize, shortenHomePath, formatError} from './utils';
 import {ModelCombobox} from './settings/ModelCombobox';
 import {InfoHint, AirplaneHint} from './ui/Hints';
 import {InlineMediaActions, AudioCardActions} from './media/MediaActions';
@@ -232,51 +180,47 @@ import {useLibraries} from './sidebar/useLibraries';
 import {useHistorySearch} from './sidebar/useHistorySearch';
 import {useResizablePanels} from './useResizablePanels';
 import {useModelCatalogs} from './settings/useModelCatalogs';
+import {useProviderKeys} from './settings/useProviderKeys';
+import {useAppConfig} from './useAppConfig';
 
 function App() {
-  const [baseURL, setBaseURL] = useState(defaultBaseURL);
-  const [ollamaNumCtx, setOllamaNumCtx] = useState(defaultOllamaNumCtx);
+  const {
+    checkFalConnection, checkOpenRouterConnection, checkReplicateConnection, clearOpenAICompatibleKey,
+    falAPIKeyInput, falError, falHasKey, falStatus, openRouterAPIKeyInput, openRouterError, openRouterHasKey,
+    openRouterStatus, openaiCompatibleHasKey, openaiCompatibleKeyInput, openaiCompatibleStatus,
+    replicateAPIKeyInput, replicateError, replicateHasKey, replicateStatus, saveOpenAICompatibleKey,
+    setFalAPIKeyInput, setFalError, setFalHasKey, setFalStatus, setOpenRouterAPIKeyInput, setOpenRouterError,
+    setOpenRouterHasKey, setOpenRouterStatus, setOpenaiCompatibleHasKey, setOpenaiCompatibleKeyInput,
+    setOpenaiCompatibleStatus, setReplicateAPIKeyInput, setReplicateError, setReplicateHasKey,
+    setReplicateStatus,
+  } = useProviderKeys();
+  const {
+    airplaneMode, applyConfig, audioExtendDuration, audioProvider, baseURL, chooseToolWorkspace,
+    configLoaded, defaultWorkspaceRoot, falAudioCloneModel, falAudioExtendModel, falAudioModel,
+    falImageEditModel, falInpaintModel, falLipsyncImageModel, falLipsyncVideoModel, falModel,
+    falSoundEffectsModel, falSoundEffectsVideoModel, falTranscribeModel, falUpscaleModel,
+    falVideoExtendModel, falVideoImageModel, falVideoKeyframeModel, falVideoModel, falVideoMotionModel,
+    falVideoReframeModel, falVideoRestyleModel, falVideoUpscaleModel, falVoiceDesignModel, ffmpegBinary,
+    ffprobeBinary, globalModelSelection, harnessModel, harnessModels, harnessProvider, imageAspectRatio,
+    imageModel, imageProvider, imageSizePreset, imageSteps, inpaintProvider, lipsyncProvider, magickBinary,
+    mediaTimeoutMinutes, model, ollamaNumCtx, ollamaSpeechModel, openaiCompatibleBaseURL,
+    openaiCompatibleModel, patchSettingsModelSelection, primaryModels, primaryProvider,
+    replicateAudioExtendModel, replicateImageEditModel, replicateInpaintModel, replicateLipsyncImageModel,
+    replicateLipsyncVideoModel, replicateModel, replicateSoundEffectsModel, replicateSoundEffectsVideoModel,
+    replicateSpeechModel, replicateTranscribeModel, replicateUpscaleModel, replicateVideoExtendModel,
+    replicateVideoImageModel, replicateVideoModel, replicateVideoReframeModel, replicateVideoRestyleModel,
+    replicateVideoUpscaleModel, setAirplaneMode, setBaseURL, setConfigLoaded, setFfmpegBinary,
+    setFfprobeBinary, setHarnessModels, setHarnessProvider, setImageProvider, setLipsyncProvider,
+    setMagickBinary, setMediaTimeoutMinutes, setModel, setOllamaNumCtx, setOpenaiCompatibleBaseURL,
+    setPrimaryModels, setPrimaryProvider, setSipsBinary, setSoundDuration, setSystem,
+    setTranscriptionProvider, setVideoDuration, setVideoProvider, setWhisperBinary, setWhisperChunkMinutes,
+    setWhisperModel, setWhisperVADModel, sipsBinary, soundDuration, speechProvider, storageConfig, system,
+    toolConfig, transcriptionProvider, videoAspectRatio, videoDuration, videoProvider, videoResolution,
+    whisperBinary, whisperChunkMinutes, whisperModel, whisperVADModel,
+  } = useAppConfig({openRouterHasKey, falHasKey, replicateHasKey});
   const [status, setStatus] = useState<main.OllamaStatus | null>(null);
   const [models, setModels] = useState<main.OllamaModel[]>([]);
   const [refreshing, setRefreshing] = useState(false);
-  const [harnessProvider, setHarnessProvider] = useState<ChatProviderID>('ollama');
-  // The harness model is remembered per provider, mirroring primaryModels, so
-  // switching providers restores that provider's last selection instead of
-  // stranding an Ollama model name under OpenRouter.
-  const [harnessModels, setHarnessModels] = useState<Record<ChatProviderID, string>>({ollama: '', openrouter: '', 'openai-compatible': ''});
-  const harnessModel = harnessModels[harnessProvider];
-  const setHarnessModel = (next: string | ((current: string) => string)) => {
-    setHarnessModels((prev) => {
-      const current = prev[harnessProvider];
-      const resolved = typeof next === 'function' ? (next as (c: string) => string)(current) : next;
-      if (resolved === current) {
-        return prev;
-      }
-      return {...prev, [harnessProvider]: resolved};
-    });
-  };
-  const [imageModel, setImageModel] = useState('');
-  const [primaryProvider, setPrimaryProvider] = useState<ChatProviderID>('ollama');
-  // Airplane mode: the offline guarantee (airplane_mode.go). While on, the
-  // backend refuses every cloud call, so the UI restricts the provider
-  // pickers to the local ones and hides the cloud-only surfaces rather than
-  // letting turns fail mysteriously.
-  const [airplaneMode, setAirplaneMode] = useState(false);
-  // The primary model is remembered per provider so switching providers
-  // restores that provider's last selection (falling back to the first
-  // available model when the remembered one isn't in the current list).
-  const [primaryModels, setPrimaryModels] = useState<Record<ChatProviderID, string>>({ollama: '', openrouter: '', 'openai-compatible': ''});
-  const model = primaryModels[primaryProvider];
-  const setModel = (next: string | ((current: string) => string)) => {
-    setPrimaryModels((prev) => {
-      const current = prev[primaryProvider];
-      const resolved = typeof next === 'function' ? (next as (c: string) => string)(current) : next;
-      if (resolved === current) {
-        return prev;
-      }
-      return {...prev, [primaryProvider]: resolved};
-    });
-  };
   const {
     clearFalCatalogs,
     clearReplicateCatalogs,
@@ -324,144 +268,17 @@ function App() {
     setOpenRouterModels,
     setOpenaiCompatibleModels,
   } = useModelCatalogs();
-  const [openRouterAPIKeyInput, setOpenRouterAPIKeyInput] = useState('');
-  const [openRouterHasKey, setOpenRouterHasKey] = useState(false);
-  const [openRouterStatus, setOpenRouterStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
-  const [openRouterError, setOpenRouterError] = useState('');
-  // Ollama is no longer offered as an image provider in the UI (its runtime
-  // dropped image-generation support); a config still saying "ollama" loads as
-  // the local OpenAI-compatible server. The Go backend keeps accepting the id.
-  const [imageProvider, setImageProvider] = useState<'fal' | 'replicate' | 'openai-compatible'>('openai-compatible');
-  // The generate_video backend: fal.ai (the historical default) or Replicate.
-  // A config written before the second backend existed says "fal" via the Go
-  // merge, so the state mirrors that default.
-  const [videoProvider, setVideoProvider] = useState<'fal' | 'replicate'>('fal');
-  // The image editor's mask-inpainting backend — independent of ImageProvider
-  // on purpose (the plan's Inpainting section): a user's ordinary image
-  // generator and their verified mask-capable editor model need not share a
-  // cloud. Defaults mirror the Go merge (fal).
-  const [inpaintProvider, setInpaintProvider] = useState<'fal' | 'replicate'>('fal');
-  const [lipsyncProvider, setLipsyncProvider] = useState<'fal' | 'replicate'>('fal');
-  // generate_speech's backend — fal.ai or the local Ollama speech models
-  // (phonon and friends). Scoped to the voice models alone: extension, voice
-  // design, and cloning stay fal-only, and music/sound effects route by the
-  // audio provider. Defaults mirror the Go merge (fal); the Ollama slot is
-  // its own field so switching providers never loses the other side's model.
-  const [speechProvider, setSpeechProvider] = useState<SpeechProviderID>('fal');
-  const [ollamaSpeechModel, setOllamaSpeechModel] = useState('');
-  // The Replicate speech slot — its own field for the same reason as the
-  // Ollama one: a provider switch must never lose the other sides' models.
-  const [replicateSpeechModel, setReplicateSpeechModel] = useState(defaultReplicateSpeechModel);
-  // The NON-voice audio backend — generate_sound and add_sound_effects route
-  // by it; speech routes by SpeechProvider, and extend/voice-design/cloning
-  // stay fal-only. Defaults mirror the Go merge (fal); the per-provider
-  // model slots are their own fields so switching providers never loses the
-  // other side's model.
-  const [audioProvider, setAudioProvider] = useState<'fal' | 'replicate'>('fal');
-  const [replicateAudioExtendModel, setReplicateAudioExtendModel] = useState(defaultReplicateAudioExtendModel);
-  const [falInpaintModel, setFalInpaintModel] = useState(defaultFalInpaintModel);
-  const [replicateInpaintModel, setReplicateInpaintModel] = useState(defaultReplicateInpaintModel);
-  const [openaiCompatibleBaseURL, setOpenaiCompatibleBaseURL] = useState('http://localhost:8080');
-  const [openaiCompatibleModel, setOpenaiCompatibleModel] = useState('');
-  const [openaiCompatibleKeyInput, setOpenaiCompatibleKeyInput] = useState('');
-  const [openaiCompatibleHasKey, setOpenaiCompatibleHasKey] = useState(false);
-  const [openaiCompatibleStatus, setOpenaiCompatibleStatus] = useState<'unknown' | 'ok' | 'error'>('unknown');
-  const [falAPIKeyInput, setFalAPIKeyInput] = useState('');
-  const [falHasKey, setFalHasKey] = useState(false);
-  const [falStatus, setFalStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
-  const [falError, setFalError] = useState('');
-  const [falModel, setFalModel] = useState(defaultFalImageModel);
-  const [falImageEditModel, setFalImageEditModel] = useState(defaultFalImageEditModel);
-  const [falVideoModel, setFalVideoModel] = useState(defaultFalVideoModel);
-  const [falVideoImageModel, setFalVideoImageModel] = useState(defaultFalVideoImageModel);
-  const [falVideoKeyframeModel, setFalVideoKeyframeModel] = useState(defaultFalVideoKeyframeModel);
-  const [falVideoExtendModel, setFalVideoExtendModel] = useState(defaultFalVideoExtendModel);
-  const [falVideoMotionModel, setFalVideoMotionModel] = useState(defaultFalVideoMotionModel);
-  const [falVideoUpscaleModel, setFalVideoUpscaleModel] = useState(defaultFalVideoUpscaleModel);
-  const [falVideoReframeModel, setFalVideoReframeModel] = useState(defaultFalVideoReframeModel);
-  const [falVideoRestyleModel, setFalVideoRestyleModel] = useState(defaultFalVideoRestyleModel);
-  const [falAudioModel, setFalAudioModel] = useState(defaultFalAudioModel);
-  const [falAudioCloneModel, setFalAudioCloneModel] = useState(defaultFalAudioCloneModel);
-  const [falSoundEffectsModel, setFalSoundEffectsModel] = useState(defaultFalSoundEffectsModel);
-  const [falSoundEffectsVideoModel, setFalSoundEffectsVideoModel] = useState(defaultFalSoundEffectsVideoModel);
-  const [falVoiceDesignModel, setFalVoiceDesignModel] = useState(defaultFalVoiceDesignModel);
-  const [falAudioExtendModel, setFalAudioExtendModel] = useState(defaultFalAudioExtendModel);
-  const [falTranscribeModel, setFalTranscribeModel] = useState(defaultFalTranscribeModel);
-  // Transcription provider selection ("fal" cloud, "replicate" cloud, or the
-  // locally installed whisper CLI) plus the local-whisper knobs.
-  // localToolsReport is the Go side's detection snapshot (DetectLocalTools):
-  // which binaries exist and which provider the config resolves to — the
-  // dropdown's local option only makes sense when a whisper was actually
-  // found. The provider is a Models-tab selection (per-conversation
-  // overridable); the model, binary, and VAD model are engine config edited
-  // under Local Tools, global like ffmpeg's.
-  const [transcriptionProvider, setTranscriptionProvider] = useState<'fal' | 'local-whisper' | 'replicate'>('fal');
-  const [whisperModel, setWhisperModel] = useState('');
-  const [whisperBinary, setWhisperBinary] = useState('');
-  const [whisperVADModel, setWhisperVADModel] = useState('');
-  const [whisperChunkMinutes, setWhisperChunkMinutes] = useState('');
-  const [ffmpegBinary, setFfmpegBinary] = useState('');
-  const [ffprobeBinary, setFfprobeBinary] = useState('');
-  const [sipsBinary, setSipsBinary] = useState('');
-  const [magickBinary, setMagickBinary] = useState('');
   const [localToolsReport, setLocalToolsReport] = useState<main.LocalToolsReport | null>(null);
   // The Local Tools tab's Re-detect button bumps the nonce so detection
   // re-runs without a binary edit — a `brew install` made while Settings is
   // open would otherwise never flip the status until the next launch.
   const [localToolsDetectNonce, setLocalToolsDetectNonce] = useState(0);
   const [localToolsDetecting, setLocalToolsDetecting] = useState(false);
-  const [falLipsyncImageModel, setFalLipsyncImageModel] = useState(defaultFalLipsyncImageModel);
-  const [falLipsyncVideoModel, setFalLipsyncVideoModel] = useState(defaultFalLipsyncVideoModel);
-  const [falUpscaleModel, setFalUpscaleModel] = useState(defaultFalUpscaleModel);
-  // Replicate backend state — the key row, the generation slots (text-to-image,
-  // image edit, text-to-video, image-to-video, video extend), and the
-  // transform slots that follow VideoProvider (upscale, reframe, restyle),
-  // plus their catalogs. The non-voice audio slots follow AudioProvider the
-  // same way; voice stays fal-only.
-  const [replicateAPIKeyInput, setReplicateAPIKeyInput] = useState('');
-  const [replicateHasKey, setReplicateHasKey] = useState(false);
-  const [replicateStatus, setReplicateStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
-  const [replicateError, setReplicateError] = useState('');
-  const [replicateModel, setReplicateModel] = useState(defaultReplicateImageModel);
-  const [replicateImageEditModel, setReplicateImageEditModel] = useState(defaultReplicateImageEditModel);
-  const [replicateUpscaleModel, setReplicateUpscaleModel] = useState(defaultReplicateUpscaleModel);
-  const [replicateVideoUpscaleModel, setReplicateVideoUpscaleModel] = useState(defaultReplicateVideoUpscaleModel);
-  const [replicateVideoRestyleModel, setReplicateVideoRestyleModel] = useState(defaultReplicateVideoRestyleModel);
-  const [replicateVideoReframeModel, setReplicateVideoReframeModel] = useState(defaultReplicateVideoReframeModel);
-  const [replicateVideoExtendModel, setReplicateVideoExtendModel] = useState(defaultReplicateVideoExtendModel);
-  const [replicateVideoModel, setReplicateVideoModel] = useState(defaultReplicateVideoModel);
-  const [replicateVideoImageModel, setReplicateVideoImageModel] = useState(defaultReplicateVideoImageModel);
-  const [replicateTranscribeModel, setReplicateTranscribeModel] = useState(defaultReplicateTranscribeModel);
-  const [replicateLipsyncImageModel, setReplicateLipsyncImageModel] = useState(defaultReplicateLipsyncImageModel);
-  const [replicateLipsyncVideoModel, setReplicateLipsyncVideoModel] = useState(defaultReplicateLipsyncVideoModel);
-  const [replicateSoundEffectsModel, setReplicateSoundEffectsModel] = useState(defaultReplicateSoundEffectsModel);
-  const [replicateSoundEffectsVideoModel, setReplicateSoundEffectsVideoModel] = useState(defaultReplicateSoundEffectsVideoModel);
-  // Each video picker owns its duration options + value, driven by its model's
-  // published schema (ListFalVideoDurations). videoDuration (text-to-video) is
-  // the canonical value persisted to config.generation.video.duration — the
-  // backend reads one shared duration for all three video paths
-  // (tools_registry.go), and resolveVideoBody drops values invalid for the
-  // actually-selected model with a notice, so the image/extend pickers are a
-  // per-model discovery/preview aid that stays correct where the value is valid.
-  const [videoDuration, setVideoDuration] = useState(defaultVideoDuration);
   const [videoDurationOptions, setVideoDurationOptions] = useState<string[]>(defaultVideoDurationOptions);
   const [videoDurationImageOptions, setVideoDurationImageOptions] = useState<string[]>(defaultVideoDurationOptions);
   const [videoDurationKeyframeOptions, setVideoDurationKeyframeOptions] = useState<string[]>(defaultVideoDurationOptions);
   const [videoDurationExtendOptions, setVideoDurationExtendOptions] = useState<string[]>(defaultVideoDurationOptions);
-  const [videoAspectRatio, setVideoAspectRatio] = useState(defaultVideoAspectRatio);
-  const [videoResolution, setVideoResolution] = useState(defaultVideoResolution);
-  // soundDuration is the generate_sound default clip length, persisted to
-  // config.generation.audio.duration and fetched per-model like videoDuration.
-  const [soundDuration, setSoundDuration] = useState(defaultSoundDuration);
   const [soundDurationOptions, setSoundDurationOptions] = useState<string[]>(defaultSoundDurationOptions);
-  // audioExtendDuration is extend_audio's default ADDED length, persisted to
-  // config.generation.audio.extendDuration; its option ladder is static.
-  const [audioExtendDuration, setAudioExtendDuration] = useState(defaultAudioExtendDuration);
-  // mediaTimeoutMinutes is the per-call bound for queued media generations
-  // (fal / Replicate), persisted to config.generation.mediaTimeoutSeconds —
-  // the UI edits minutes, the config stores seconds.
-  const [mediaTimeoutMinutes, setMediaTimeoutMinutes] = useState(Math.round(defaultMediaTimeoutSeconds / 60));
-  const [system, setSystem] = useState('You are Atelier, a precise local AI collaborator.');
   const [prompt, setPrompt] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   // In-progress staged uploads (large dropped/picked media): the composer
@@ -598,12 +415,6 @@ function App() {
   const [draftWorkspace, setDraftWorkspace] = useState('');
   const [activeStream, setActiveStream] = useState<string | null>(null);
   const [inFlightConversations, setInFlightConversations] = useState<Record<string, InFlightConversation>>({});
-  const [imageAspectRatio, setImageAspectRatio] = useState(defaultImageAspectRatio);
-  const [imageSizePreset, setImageSizePreset] = useState(defaultImageSizePreset);
-  const [imageSteps, setImageSteps] = useState(defaultImageSteps);
-  const [configLoaded, setConfigLoaded] = useState(false);
-  const [storageConfig, setStorageConfig] = useState<main.ConfigStorage | null>(null);
-  const [toolConfig, setToolConfig] = useState<main.ConfigTools | null>(null);
   const [toolPermissions, setToolPermissions] = useState<ToolPermissionEvent[]>([]);
   // startupError is boot-only: the one genuine startup failure (the launch
   // loadConfig rejecting), cleared by applyConfig or the card's Dismiss.
@@ -700,7 +511,6 @@ function App() {
   const [updateQueued, setUpdateQueued] = useState(false);
   const [updateError, setUpdateError] = useState('');
   const [updateCheckBusy, setUpdateCheckBusy] = useState(false);
-  const [updatesConfig, setUpdatesConfig] = useState<main.ConfigUpdates | null>(null);
   // Updates wait out any running conversation; both the banner's queue and
   // the backend's InstallUpdate gate read this shape of "busy".
   const anyConversationInFlight = activeStream !== null || Object.keys(inFlightConversations).length > 0;
@@ -1013,148 +823,6 @@ function App() {
       }
     };
   }, []);
-
-  useEffect(() => {
-    if (!configLoaded) {
-      return;
-    }
-    const timeout = window.setTimeout(() => {
-      SaveConfig(main.AppConfig.createFrom({
-        version: 1,
-        airplaneMode,
-        storage: storageConfig ?? undefined,
-        providers: {
-          ollama: {
-            baseURL,
-            numCtx: ollamaNumCtx,
-            models: {
-              primary: primaryModels.ollama,
-              harness: harnessModels.ollama,
-              image: imageModel,
-              speech: ollamaSpeechModel,
-            },
-          },
-          openrouter: {
-            enabled: openRouterHasKey,
-            primary: primaryModels.openrouter,
-            harness: harnessModels.openrouter,
-          },
-          fal: {
-            enabled: falHasKey,
-            model: falModel,
-            imageEditModel: falImageEditModel,
-            videoModel: falVideoModel,
-            videoImageModel: falVideoImageModel,
-            videoKeyframeModel: falVideoKeyframeModel,
-            videoExtendModel: falVideoExtendModel,
-            videoMotionModel: falVideoMotionModel,
-            videoUpscaleModel: falVideoUpscaleModel,
-            videoReframeModel: falVideoReframeModel,
-            videoRestyleModel: falVideoRestyleModel,
-            audioModel: falAudioModel,
-            soundEffectsModel: falSoundEffectsModel,
-            soundEffectsVideoModel: falSoundEffectsVideoModel,
-            voiceDesignModel: falVoiceDesignModel,
-            audioCloneModel: falAudioCloneModel,
-            audioExtendModel: falAudioExtendModel,
-            transcribeModel: falTranscribeModel,
-            upscaleModel: falUpscaleModel,
-            inpaintModel: falInpaintModel,
-            lipsyncImageModel: falLipsyncImageModel,
-            lipsyncVideoModel: falLipsyncVideoModel,
-          },
-          replicate: {
-            enabled: replicateHasKey,
-            model: replicateModel,
-            imageEditModel: replicateImageEditModel,
-            upscaleModel: replicateUpscaleModel,
-            inpaintModel: replicateInpaintModel,
-            videoUpscaleModel: replicateVideoUpscaleModel,
-            videoRestyleModel: replicateVideoRestyleModel,
-            videoReframeModel: replicateVideoReframeModel,
-            videoExtendModel: replicateVideoExtendModel,
-            videoModel: replicateVideoModel,
-            videoImageModel: replicateVideoImageModel,
-            transcribeModel: replicateTranscribeModel,
-            lipsyncImageModel: replicateLipsyncImageModel,
-            lipsyncVideoModel: replicateLipsyncVideoModel,
-            soundEffectsModel: replicateSoundEffectsModel,
-            soundEffectsVideoModel: replicateSoundEffectsVideoModel,
-            audioExtendModel: replicateAudioExtendModel,
-            speechModel: replicateSpeechModel,
-          },
-          openaiCompatible: {
-            baseURL: openaiCompatibleBaseURL,
-            primary: primaryModels['openai-compatible'],
-            harness: harnessModels['openai-compatible'],
-            model: openaiCompatibleModel,
-          },
-          local: {
-            whisper: {
-              binary: whisperBinary,
-              model: whisperModel,
-              vadModel: whisperVADModel,
-              chunkMinutes: positiveIntOrDefault(whisperChunkMinutes, 0),
-            },
-            ffmpeg: {
-              binary: ffmpegBinary,
-            },
-            ffprobe: {
-              binary: ffprobeBinary,
-            },
-            sips: {
-              binary: sipsBinary,
-            },
-            magick: {
-              binary: magickBinary,
-            },
-          },
-        },
-        models: {
-          primaryProvider,
-          harnessProvider,
-          imageProvider,
-          videoProvider,
-          inpaintProvider,
-          lipsyncProvider,
-          speechProvider,
-          audioProvider,
-          transcriptionProvider,
-        },
-        prompts: {
-          system,
-        },
-        generation: {
-          image: {
-            aspectRatio: imageAspectRatio,
-            sizePreset: imageSizePreset,
-            steps: imageSteps,
-          },
-          video: {
-            duration: videoDuration,
-            aspectRatio: videoAspectRatio,
-            resolution: videoResolution || undefined,
-          },
-          audio: {
-            duration: soundDuration,
-            extendDuration: audioExtendDuration,
-          },
-          mediaTimeoutSeconds: mediaTimeoutMinutes * 60,
-        },
-        tools: toolConfig ?? undefined,
-        ui: {
-          mode: 'chat',
-        },
-        // Round-trip the updater section untouched: it has no Settings UI yet,
-        // and dropping it here would reset a manually-edited manifestUrl or
-        // autoCheck on every unrelated settings save.
-        updates: updatesConfig ?? undefined,
-      })).then(() => notifications.dismissKey('config-save')).catch((error) => {
-        notifyError("Couldn't save settings", error, {key: 'config-save'});
-      });
-    }, 400);
-    return () => window.clearTimeout(timeout);
-  }, [airplaneMode, baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, replicateModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, replicateTranscribeModel, replicateLipsyncImageModel, replicateLipsyncVideoModel, lipsyncProvider, speechProvider, ollamaSpeechModel, replicateSpeechModel, audioProvider, replicateSoundEffectsModel, replicateSoundEffectsVideoModel, replicateAudioExtendModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel, whisperVADModel, whisperChunkMinutes]);
 
   // Re-probe local CLI tools when a binary override changes — or the Local
   // Tools tab's Re-detect button bumps the nonce — so the transcription
@@ -1630,68 +1298,6 @@ function App() {
   const uiModelOverrides = activeConversationID ? conversationOverrides : draftModelOverrides;
   const uiOverridesActive = overrideKeysFromRecord(uiModelOverrides).size > 0;
 
-  const globalModelSelection = useMemo<ModelSelectionValue>(() => ({
-    primaryProvider,
-    primaryModel: primaryModels[primaryProvider],
-    harnessProvider,
-    harnessModel: harnessModels[harnessProvider],
-    imageProvider,
-    videoProvider,
-    inpaintProvider,
-    lipsyncProvider,
-    speechProvider,
-    audioProvider,
-    ollamaSpeechModel,
-    replicateSpeechModel,
-    replicateSoundEffectsModel,
-    replicateSoundEffectsVideoModel,
-    replicateAudioExtendModel,
-    falModel,
-    openaiImageModel: openaiCompatibleModel,
-    replicateModel,
-    replicateImageEditModel,
-    replicateUpscaleModel,
-    falImageEditModel,
-    falUpscaleModel,
-    falInpaintModel,
-    replicateInpaintModel,
-    replicateVideoUpscaleModel,
-    replicateVideoRestyleModel,
-    replicateVideoReframeModel,
-    replicateVideoExtendModel,
-    falVideoModel,
-    falVideoImageModel,
-    replicateVideoModel,
-    replicateVideoImageModel,
-    falVideoKeyframeModel,
-    falVideoExtendModel,
-    falVideoMotionModel,
-    falVideoUpscaleModel,
-    falVideoReframeModel,
-    falVideoRestyleModel,
-    falAudioModel,
-    falAudioCloneModel,
-    falSoundEffectsModel,
-    falSoundEffectsVideoModel,
-    falVoiceDesignModel,
-    falAudioExtendModel,
-    transcriptionProvider,
-    falTranscribeModel,
-    replicateTranscribeModel,
-    falLipsyncImageModel,
-    falLipsyncVideoModel,
-    replicateLipsyncImageModel,
-    replicateLipsyncVideoModel,
-    imageAspectRatio,
-    imageSizePreset,
-    imageSteps,
-    videoDuration,
-    videoAspectRatio,
-    videoResolution,
-    soundDuration,
-    audioExtendDuration,
-  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, inpaintProvider, falModel, openaiCompatibleModel, replicateModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, transcriptionProvider, audioProvider, replicateSoundEffectsModel, replicateSoundEffectsVideoModel, replicateAudioExtendModel, falTranscribeModel, replicateTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, replicateLipsyncImageModel, replicateLipsyncVideoModel, lipsyncProvider, speechProvider, ollamaSpeechModel, replicateSpeechModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration]);
-
   const conversationModelSelection = useMemo<ModelSelectionValue>(() => {
     const global = globalModelSelection;
     const overrides = uiModelOverrides;
@@ -1790,71 +1396,6 @@ function App() {
     [composerProvider, modelOptions, openRouterModels, openaiCompatibleModelOptions],
   );
   const composerModelIsValid = composerModelOptions.some((option) => option.value === composerModel);
-
-  const patchSettingsModelSelection = (patch: Partial<ModelSelectionValue>) => {
-    if (patch.primaryProvider !== undefined) setPrimaryProvider(patch.primaryProvider);
-    if (patch.primaryModel !== undefined) setModel(patch.primaryModel);
-    if (patch.harnessProvider !== undefined) setHarnessProvider(patch.harnessProvider);
-    if (patch.harnessModel !== undefined) setHarnessModel(patch.harnessModel);
-    if (patch.imageProvider !== undefined) setImageProvider(patch.imageProvider);
-    if (patch.videoProvider !== undefined) setVideoProvider(patch.videoProvider);
-    if (patch.inpaintProvider !== undefined) setInpaintProvider(patch.inpaintProvider);
-    if (patch.lipsyncProvider !== undefined) setLipsyncProvider(patch.lipsyncProvider);
-    if (patch.replicateLipsyncImageModel !== undefined) setReplicateLipsyncImageModel(patch.replicateLipsyncImageModel);
-    if (patch.replicateLipsyncVideoModel !== undefined) setReplicateLipsyncVideoModel(patch.replicateLipsyncVideoModel);
-    if (patch.falInpaintModel !== undefined) setFalInpaintModel(patch.falInpaintModel);
-    if (patch.replicateInpaintModel !== undefined) setReplicateInpaintModel(patch.replicateInpaintModel);
-    if (patch.falModel !== undefined) setFalModel(patch.falModel);
-    if (patch.openaiImageModel !== undefined) setOpenaiCompatibleModel(patch.openaiImageModel);
-    if (patch.replicateModel !== undefined) setReplicateModel(patch.replicateModel);
-    if (patch.replicateImageEditModel !== undefined) setReplicateImageEditModel(patch.replicateImageEditModel);
-    if (patch.replicateUpscaleModel !== undefined) setReplicateUpscaleModel(patch.replicateUpscaleModel);
-    if (patch.replicateVideoUpscaleModel !== undefined) setReplicateVideoUpscaleModel(patch.replicateVideoUpscaleModel);
-    if (patch.replicateVideoRestyleModel !== undefined) setReplicateVideoRestyleModel(patch.replicateVideoRestyleModel);
-    if (patch.replicateVideoReframeModel !== undefined) setReplicateVideoReframeModel(patch.replicateVideoReframeModel);
-    if (patch.replicateVideoExtendModel !== undefined) setReplicateVideoExtendModel(patch.replicateVideoExtendModel);
-    if (patch.falImageEditModel !== undefined) setFalImageEditModel(patch.falImageEditModel);
-    if (patch.falUpscaleModel !== undefined) setFalUpscaleModel(patch.falUpscaleModel);
-    if (patch.falVideoModel !== undefined) setFalVideoModel(patch.falVideoModel);
-    if (patch.falVideoImageModel !== undefined) setFalVideoImageModel(patch.falVideoImageModel);
-    if (patch.replicateVideoModel !== undefined) setReplicateVideoModel(patch.replicateVideoModel);
-    if (patch.replicateVideoImageModel !== undefined) setReplicateVideoImageModel(patch.replicateVideoImageModel);
-    if (patch.falVideoKeyframeModel !== undefined) setFalVideoKeyframeModel(patch.falVideoKeyframeModel);
-    if (patch.falVideoExtendModel !== undefined) setFalVideoExtendModel(patch.falVideoExtendModel);
-    if (patch.falVideoMotionModel !== undefined) setFalVideoMotionModel(patch.falVideoMotionModel);
-    if (patch.falVideoUpscaleModel !== undefined) setFalVideoUpscaleModel(patch.falVideoUpscaleModel);
-    if (patch.falVideoReframeModel !== undefined) setFalVideoReframeModel(patch.falVideoReframeModel);
-    if (patch.falVideoRestyleModel !== undefined) setFalVideoRestyleModel(patch.falVideoRestyleModel);
-    if (patch.falAudioModel !== undefined) setFalAudioModel(patch.falAudioModel);
-    if (patch.speechProvider !== undefined) setSpeechProvider(patch.speechProvider);
-    if (patch.ollamaSpeechModel !== undefined) setOllamaSpeechModel(patch.ollamaSpeechModel);
-    if (patch.replicateSpeechModel !== undefined) setReplicateSpeechModel(patch.replicateSpeechModel);
-    if (patch.audioProvider !== undefined) setAudioProvider(patch.audioProvider);
-    if (patch.replicateSoundEffectsModel !== undefined) setReplicateSoundEffectsModel(patch.replicateSoundEffectsModel);
-    if (patch.replicateSoundEffectsVideoModel !== undefined) setReplicateSoundEffectsVideoModel(patch.replicateSoundEffectsVideoModel);
-    if (patch.replicateAudioExtendModel !== undefined) setReplicateAudioExtendModel(patch.replicateAudioExtendModel);
-    if (patch.falAudioCloneModel !== undefined) setFalAudioCloneModel(patch.falAudioCloneModel);
-    if (patch.falSoundEffectsModel !== undefined) setFalSoundEffectsModel(patch.falSoundEffectsModel);
-    if (patch.falSoundEffectsVideoModel !== undefined) setFalSoundEffectsVideoModel(patch.falSoundEffectsVideoModel);
-    if (patch.falVoiceDesignModel !== undefined) setFalVoiceDesignModel(patch.falVoiceDesignModel);
-    if (patch.falAudioExtendModel !== undefined) setFalAudioExtendModel(patch.falAudioExtendModel);
-    if (patch.transcriptionProvider !== undefined) setTranscriptionProvider(patch.transcriptionProvider);
-    if (patch.falTranscribeModel !== undefined) setFalTranscribeModel(patch.falTranscribeModel);
-    if (patch.replicateTranscribeModel !== undefined) setReplicateTranscribeModel(patch.replicateTranscribeModel);
-    if (patch.falLipsyncImageModel !== undefined) setFalLipsyncImageModel(patch.falLipsyncImageModel);
-    if (patch.falLipsyncVideoModel !== undefined) setFalLipsyncVideoModel(patch.falLipsyncVideoModel);
-    if (patch.lipsyncProvider !== undefined) setLipsyncProvider(patch.lipsyncProvider);
-    if (patch.replicateLipsyncImageModel !== undefined) setReplicateLipsyncImageModel(patch.replicateLipsyncImageModel);
-    if (patch.replicateLipsyncVideoModel !== undefined) setReplicateLipsyncVideoModel(patch.replicateLipsyncVideoModel);
-    if (patch.imageAspectRatio !== undefined) setImageAspectRatio(patch.imageAspectRatio);
-    if (patch.imageSizePreset !== undefined) setImageSizePreset(patch.imageSizePreset);
-    if (patch.imageSteps !== undefined) setImageSteps(patch.imageSteps);
-    if (patch.videoDuration !== undefined) setVideoDuration(patch.videoDuration);
-    if (patch.videoAspectRatio !== undefined) setVideoAspectRatio(patch.videoAspectRatio);
-    if (patch.videoResolution !== undefined) setVideoResolution(patch.videoResolution);
-    if (patch.soundDuration !== undefined) setSoundDuration(patch.soundDuration);
-    if (patch.audioExtendDuration !== undefined) setAudioExtendDuration(patch.audioExtendDuration);
-  };
 
   const openConversationModels = () => {
     // With no conversation active this edits the PENDING override the next
@@ -2351,36 +1892,6 @@ function App() {
     [localToolsReport],
   );
 
-  // imageSizeOptions derives one labeled option per Size preset, annotated with
-  // the concrete pixels the backend will receive for the selected aspect ratio
-  // (e.g. "Standard (1536×864)"). Mirrors the Go imageSizeForAspectRatio math
-  // (round to multiple of 16, floor 256) so the dropdown labels stay in sync
-  // with imageSizeForPresetAndRatio in tools_registry.go. Re-derived when the
-  // aspect ratio changes; each preset's long edge differs, so every option
-  // updates together.
-  const imageSizeOptions = useMemo(() => {
-    const parts = imageAspectRatio.split(':').map((value) => Number(value));
-    const valid = parts.length === 2 && parts.every((value) => Number.isFinite(value) && value > 0);
-    let wr = valid ? parts[0] : 1;
-    let hr = valid ? parts[1] : 1;
-    const roundTo16 = (n: number) => {
-      const rounded = Math.round(n / 16) * 16;
-      return rounded < 256 ? 256 : rounded;
-    };
-    return imageSizePresetOptions.map((preset) => {
-      const baseLong = preset.longEdge;
-      const longEdge = roundTo16(baseLong);
-      let shortRatio = wr;
-      let longRatio = hr;
-      if (shortRatio > longRatio) {
-        [shortRatio, longRatio] = [longRatio, shortRatio];
-      }
-      const shortEdge = roundTo16((baseLong * shortRatio) / longRatio);
-      const dims = wr >= hr ? {width: longEdge, height: shortEdge} : {width: shortEdge, height: longEdge};
-      return {value: preset.value, label: `${preset.label} (${dims.width}×${dims.height})`};
-    });
-  }, [imageAspectRatio]);
-
   // Each video picker fetches the duration values its selected model accepts
   // (ListFalVideoDurations → the model's published schema enum), then reconciles
   // the picker's current value into that set — so switching models never leaves
@@ -2508,176 +2019,11 @@ function App() {
 
   async function loadConfig() {
     const config = await GetConfig();
-    const nextBaseURL = config.providers?.ollama?.baseURL || defaultBaseURL;
-    const nextNumCtx = config.providers?.ollama?.numCtx || defaultOllamaNumCtx;
-    const nextAirplaneMode = Boolean(config.airplaneMode);
-    const nextPrimaryModel = config.providers?.ollama?.models?.primary ?? '';
-    const nextOpenRouterModel = config.providers?.openrouter?.primary ?? '';
-    const nextOpenAICompatiblePrimary = config.providers?.openaiCompatible?.primary ?? '';
-    const nextPrimaryProvider: ChatProviderID = config.models?.primaryProvider === 'openrouter'
-      ? 'openrouter'
-      : config.models?.primaryProvider === 'openai-compatible'
-        ? 'openai-compatible'
-        : 'ollama';
-    const nextHarnessModel = config.providers?.ollama?.models?.harness || nextPrimaryModel;
-    const nextOpenRouterHarness = config.providers?.openrouter?.harness ?? '';
-    const nextOpenAICompatibleHarness = config.providers?.openaiCompatible?.harness ?? '';
-    const nextHarnessProvider: ChatProviderID = config.models?.harnessProvider === 'openrouter'
-      ? 'openrouter'
-      : config.models?.harnessProvider === 'openai-compatible'
-        ? 'openai-compatible'
-        : 'ollama';
-    const nextImageModel = config.providers?.ollama?.models?.image ?? '';
-    const nextSystem = config.prompts?.system || 'You are Atelier, a precise local AI collaborator.';
-    const nextImageAspectRatio = config.generation?.image?.aspectRatio || defaultImageAspectRatio;
-    const nextImageSizePreset = config.generation?.image?.sizePreset || defaultImageSizePreset;
-    const nextImageSteps = config.generation?.image?.steps || defaultImageSteps;
-    const nextImageProvider = config.models?.imageProvider === 'fal' ? 'fal' : config.models?.imageProvider === 'replicate' ? 'replicate' : 'openai-compatible';
-    const nextVideoProvider: 'fal' | 'replicate' = config.models?.videoProvider === 'replicate' ? 'replicate' : 'fal';
-    const nextOpenAICompatibleBaseURL = config.providers?.openaiCompatible?.baseURL || 'http://localhost:8080';
-    const nextOpenAICompatibleModel = config.providers?.openaiCompatible?.model ?? '';
-    const nextReplicateModel = config.providers?.replicate?.model || defaultReplicateImageModel;
-    const nextReplicateImageEditModel = config.providers?.replicate?.imageEditModel || defaultReplicateImageEditModel;
-    const nextReplicateUpscaleModel = config.providers?.replicate?.upscaleModel || defaultReplicateUpscaleModel;
-    const nextReplicateVideoUpscaleModel = config.providers?.replicate?.videoUpscaleModel || defaultReplicateVideoUpscaleModel;
-    const nextReplicateVideoRestyleModel = config.providers?.replicate?.videoRestyleModel || defaultReplicateVideoRestyleModel;
-    const nextReplicateVideoReframeModel = config.providers?.replicate?.videoReframeModel || defaultReplicateVideoReframeModel;
-    const nextReplicateVideoExtendModel = config.providers?.replicate?.videoExtendModel || defaultReplicateVideoExtendModel;
-    const nextReplicateVideoModel = config.providers?.replicate?.videoModel || defaultReplicateVideoModel;
-    const nextReplicateVideoImageModel = config.providers?.replicate?.videoImageModel || defaultReplicateVideoImageModel;
-    const nextFalModel = config.providers?.fal?.model || defaultFalImageModel;
-    const nextFalImageEditModel = config.providers?.fal?.imageEditModel || defaultFalImageEditModel;
-	const nextFalVideoModel = config.providers?.fal?.videoModel || defaultFalVideoModel;
-	const nextFalVideoImageModel = config.providers?.fal?.videoImageModel || defaultFalVideoImageModel;
-	const nextFalVideoKeyframeModel = config.providers?.fal?.videoKeyframeModel || defaultFalVideoKeyframeModel;
-	const nextFalVideoExtendModel = config.providers?.fal?.videoExtendModel || defaultFalVideoExtendModel;
-	const nextFalVideoMotionModel = config.providers?.fal?.videoMotionModel || defaultFalVideoMotionModel;
-	const nextFalVideoUpscaleModel = config.providers?.fal?.videoUpscaleModel || defaultFalVideoUpscaleModel;
-	const nextFalVideoReframeModel = config.providers?.fal?.videoReframeModel || defaultFalVideoReframeModel;
-	const nextFalVideoRestyleModel = config.providers?.fal?.videoRestyleModel || defaultFalVideoRestyleModel;
-	const nextFalAudioModel = config.providers?.fal?.audioModel || defaultFalAudioModel;
-	const nextFalAudioCloneModel = config.providers?.fal?.audioCloneModel || defaultFalAudioCloneModel;
-	const nextFalSoundEffectsModel = config.providers?.fal?.soundEffectsModel || defaultFalSoundEffectsModel;
-	const nextFalSoundEffectsVideoModel = config.providers?.fal?.soundEffectsVideoModel || defaultFalSoundEffectsVideoModel;
-	const nextFalVoiceDesignModel = config.providers?.fal?.voiceDesignModel || defaultFalVoiceDesignModel;
-	const nextFalAudioExtendModel = config.providers?.fal?.audioExtendModel || defaultFalAudioExtendModel;
-	const nextFalTranscribeModel = config.providers?.fal?.transcribeModel || defaultFalTranscribeModel;
-	const nextReplicateTranscribeModel = config.providers?.replicate?.transcribeModel || defaultReplicateTranscribeModel;
-	const nextTranscriptionProvider = config.models?.transcriptionProvider === 'local-whisper' ? 'local-whisper' : config.models?.transcriptionProvider === 'replicate' ? 'replicate' : 'fal';
-	const nextWhisperModel = config.providers?.local?.whisper?.model ?? '';
-	const nextWhisperBinary = config.providers?.local?.whisper?.binary ?? '';
-	const nextWhisperVADModel = config.providers?.local?.whisper?.vadModel ?? '';
-	const nextWhisperChunkMinutes = config.providers?.local?.whisper?.chunkMinutes ? String(config.providers.local.whisper.chunkMinutes) : '';
-	const nextFfmpegBinary = config.providers?.local?.ffmpeg?.binary ?? '';
-	const nextFfprobeBinary = config.providers?.local?.ffprobe?.binary ?? '';
-	const nextSipsBinary = config.providers?.local?.sips?.binary ?? '';
-	const nextMagickBinary = config.providers?.local?.magick?.binary ?? '';
-	const nextFalLipsyncImageModel = config.providers?.fal?.lipsyncImageModel || defaultFalLipsyncImageModel;
-	const nextFalLipsyncVideoModel = config.providers?.fal?.lipsyncVideoModel || defaultFalLipsyncVideoModel;
-    const nextLipsyncProvider: 'fal' | 'replicate' = config.models?.lipsyncProvider === 'replicate' ? 'replicate' : 'fal';
-    const nextSpeechProvider: SpeechProviderID = config.models?.speechProvider === 'ollama' || config.models?.speechProvider === 'replicate' ? config.models.speechProvider : 'fal';
-    const nextOllamaSpeechModel = config.providers?.ollama?.models?.speech ?? '';
-    const nextReplicateSpeechModel = config.providers?.replicate?.speechModel || defaultReplicateSpeechModel;
-    const nextAudioProvider: 'fal' | 'replicate' = config.models?.audioProvider === 'replicate' ? 'replicate' : 'fal';
-    const nextReplicateSoundEffectsModel = config.providers?.replicate?.soundEffectsModel || defaultReplicateSoundEffectsModel;
-    const nextReplicateSoundEffectsVideoModel = config.providers?.replicate?.soundEffectsVideoModel || defaultReplicateSoundEffectsVideoModel;
-    const nextReplicateAudioExtendModel = config.providers?.replicate?.audioExtendModel || defaultReplicateAudioExtendModel;
-    const nextReplicateLipsyncImageModel = config.providers?.replicate?.lipsyncImageModel || defaultReplicateLipsyncImageModel;
-    const nextReplicateLipsyncVideoModel = config.providers?.replicate?.lipsyncVideoModel || defaultReplicateLipsyncVideoModel;
-    const nextFalUpscaleModel = config.providers?.fal?.upscaleModel || defaultFalUpscaleModel;
-    const nextInpaintProvider: 'fal' | 'replicate' = config.models?.inpaintProvider === 'replicate' ? 'replicate' : 'fal';
-    const nextFalInpaintModel = config.providers?.fal?.inpaintModel || defaultFalInpaintModel;
-    const nextReplicateInpaintModel = config.providers?.replicate?.inpaintModel || defaultReplicateInpaintModel;
-    const nextVideoDuration = config.generation?.video?.duration || defaultVideoDuration;
-    const nextVideoAspectRatio = config.generation?.video?.aspectRatio || defaultVideoAspectRatio;
-    const nextVideoResolution = config.generation?.video?.resolution || defaultVideoResolution;
-    const nextSoundDuration = config.generation?.audio?.duration || defaultSoundDuration;
-    const nextAudioExtendDuration = config.generation?.audio?.extendDuration || defaultAudioExtendDuration;
-    const nextMediaTimeoutSeconds = config.generation?.mediaTimeoutSeconds ?? 0;
-    const nextMediaTimeoutMinutes = Math.max(1, Math.round((nextMediaTimeoutSeconds > 0 ? nextMediaTimeoutSeconds : defaultMediaTimeoutSeconds) / 60));
-
     setStartupError('');
-    setStorageConfig(config.storage ?? null);
-    setToolConfig(config.tools ?? null);
-    setUpdatesConfig(config.updates ?? null);
-    setBaseURL(nextBaseURL);
-    setOllamaNumCtx(nextNumCtx);
-    setAirplaneMode(nextAirplaneMode);
-    setPrimaryModels({ollama: nextPrimaryModel, openrouter: nextOpenRouterModel, 'openai-compatible': nextOpenAICompatiblePrimary});
-    setPrimaryProvider(nextPrimaryProvider);
-    setHarnessModels({ollama: nextHarnessModel, openrouter: nextOpenRouterHarness, 'openai-compatible': nextOpenAICompatibleHarness});
-    setHarnessProvider(nextHarnessProvider);
-    setImageModel(nextImageModel);
-    setSystem(nextSystem);
-    setImageAspectRatio(nextImageAspectRatio);
-    setImageSizePreset(nextImageSizePreset);
-    setImageSteps(nextImageSteps);
-    setImageProvider(nextImageProvider);
-    setVideoProvider(nextVideoProvider);
-    setInpaintProvider(nextInpaintProvider);
-    setFalInpaintModel(nextFalInpaintModel);
-    setReplicateInpaintModel(nextReplicateInpaintModel);
-    setSoundDuration(nextSoundDuration);
-    setAudioExtendDuration(nextAudioExtendDuration);
-    setMediaTimeoutMinutes(nextMediaTimeoutMinutes);
-    setOpenaiCompatibleBaseURL(nextOpenAICompatibleBaseURL);
-    setOpenaiCompatibleModel(nextOpenAICompatibleModel);
-    setReplicateModel(nextReplicateModel);
-    setReplicateImageEditModel(nextReplicateImageEditModel);
-    setReplicateUpscaleModel(nextReplicateUpscaleModel);
-    setReplicateVideoUpscaleModel(nextReplicateVideoUpscaleModel);
-    setReplicateVideoRestyleModel(nextReplicateVideoRestyleModel);
-    setReplicateVideoReframeModel(nextReplicateVideoReframeModel);
-    setReplicateVideoExtendModel(nextReplicateVideoExtendModel);
-    setReplicateVideoModel(nextReplicateVideoModel);
-    setReplicateVideoImageModel(nextReplicateVideoImageModel);
-    setFalModel(nextFalModel);
-    setFalImageEditModel(nextFalImageEditModel);
-    setFalVideoModel(nextFalVideoModel);
-    setFalVideoImageModel(nextFalVideoImageModel);
-    setFalVideoKeyframeModel(nextFalVideoKeyframeModel);
-    setFalVideoExtendModel(nextFalVideoExtendModel);
-    setFalVideoMotionModel(nextFalVideoMotionModel);
-    setFalVideoUpscaleModel(nextFalVideoUpscaleModel);
-    setFalVideoReframeModel(nextFalVideoReframeModel);
-    setFalVideoRestyleModel(nextFalVideoRestyleModel);
-    setFalAudioModel(nextFalAudioModel);
-    setFalAudioCloneModel(nextFalAudioCloneModel);
-    setFalSoundEffectsModel(nextFalSoundEffectsModel);
-    setFalSoundEffectsVideoModel(nextFalSoundEffectsVideoModel);
-    setFalVoiceDesignModel(nextFalVoiceDesignModel);
-    setFalAudioExtendModel(nextFalAudioExtendModel);
-    setFalTranscribeModel(nextFalTranscribeModel);
-		setReplicateTranscribeModel(nextReplicateTranscribeModel);
-    setTranscriptionProvider(nextTranscriptionProvider);
-    setWhisperModel(nextWhisperModel);
-    setWhisperBinary(nextWhisperBinary);
-    setWhisperVADModel(nextWhisperVADModel);
-    setWhisperChunkMinutes(nextWhisperChunkMinutes);
-    setFfmpegBinary(nextFfmpegBinary);
-    setFfprobeBinary(nextFfprobeBinary);
-    setSipsBinary(nextSipsBinary);
-    setMagickBinary(nextMagickBinary);
-    setLipsyncProvider(nextLipsyncProvider);
-    setSpeechProvider(nextSpeechProvider);
-    setOllamaSpeechModel(nextOllamaSpeechModel);
-    setReplicateSpeechModel(nextReplicateSpeechModel);
-    setReplicateLipsyncImageModel(nextReplicateLipsyncImageModel);
-    setReplicateLipsyncVideoModel(nextReplicateLipsyncVideoModel);
-    setAudioProvider(nextAudioProvider);
-    setReplicateSoundEffectsModel(nextReplicateSoundEffectsModel);
-    setReplicateSoundEffectsVideoModel(nextReplicateSoundEffectsVideoModel);
-    setReplicateAudioExtendModel(nextReplicateAudioExtendModel);
-    setFalLipsyncImageModel(nextFalLipsyncImageModel);
-    setFalLipsyncVideoModel(nextFalLipsyncVideoModel);
-    setFalUpscaleModel(nextFalUpscaleModel);
-    setVideoDuration(nextVideoDuration);
-    setVideoAspectRatio(nextVideoAspectRatio);
-    setVideoResolution(nextVideoResolution);
-    setConfigLoaded(true);
+    const next = applyConfig(config);
     await Promise.all([
       refreshConversations(),
-      refreshOllama(nextBaseURL),
+      refreshOllama(next.baseURL),
       // Every provider with a stored key gets the same startup pair: a catalog
       // refresh (discovery aid, errors swallowed) and a cheap authenticated key
       // ping that sets the Settings status light — so all three lights mean the
@@ -2717,7 +2063,7 @@ function App() {
       HasOpenAICompatibleAPIKey().then((hasKey) => {
         setOpenaiCompatibleHasKey(hasKey);
       }).catch(() => setOpenaiCompatibleHasKey(false)),
-      refreshOpenAICompatibleModels(nextOpenAICompatibleBaseURL),
+      refreshOpenAICompatibleModels(next.openaiCompatibleBaseURL),
     ]);
   }
 
@@ -2742,23 +2088,6 @@ function App() {
   function showMoreConversations() {
     setHistoryExpanded(true);
     setVisibleHistoryCount((current) => Math.max(current, compactHistoryLimit) + expandedHistoryBatchSize);
-  }
-
-  async function chooseToolWorkspace() {
-    try {
-      const selected = await ChooseToolWorkspace(toolConfig?.filesystem?.root ?? '');
-      if (!selected) {
-        return;
-      }
-      setToolConfig((currentConfig) => main.ConfigTools.createFrom({
-        filesystem: {
-          ...(currentConfig?.filesystem ?? {}),
-          root: selected,
-        },
-      }));
-    } catch (error) {
-      notifyError("Couldn't choose the workspace folder", error);
-    }
   }
 
   // chooseDraftWorkspace is the per-conversation picker for a NEW chat. It
@@ -2787,11 +2116,6 @@ function App() {
     ? conversations.find((item) => item.id === activeConversationID)?.workspace ?? ''
     : '';
 
-  // displayedWorkspace is what the composer chip shows: the active
-  // conversation's immutable root for an existing chat, the draft selection
-  // (or the default) for a new chat. Always falls back to the configured
-  // default root so the user is never left guessing where a message will run.
-  const defaultWorkspaceRoot = toolConfig?.filesystem?.root ?? '~/Documents';
   const displayedWorkspace = activeConversationID
     ? (activeConversationWorkspace || defaultWorkspaceRoot)
     : (draftWorkspace || defaultWorkspaceRoot);
@@ -2822,17 +2146,6 @@ function App() {
       setHarnessModels((current) => (current.ollama ? current : {...current, ollama: firstModel}));
     } finally {
       setRefreshing(false);
-    }
-  }
-
-  async function checkOpenRouterConnection() {
-    try {
-      await CheckOpenRouterConnection();
-      setOpenRouterStatus('connected');
-      setOpenRouterError('');
-    } catch (error) {
-      setOpenRouterStatus('error');
-      setOpenRouterError(formatOpenRouterError(error));
     }
   }
 
@@ -2889,17 +2202,6 @@ function App() {
     }
   }
 
-  async function checkFalConnection() {
-    try {
-      await CheckFalConnection();
-      setFalStatus('connected');
-      setFalError('');
-    } catch (error) {
-      setFalStatus('error');
-      setFalError(formatFalError(error));
-    }
-  }
-
   async function clearFalKey() {
     try {
       await SaveFalAPIKey('');
@@ -2933,17 +2235,6 @@ function App() {
     }
   }
 
-  async function checkReplicateConnection() {
-    try {
-      await CheckReplicateConnection();
-      setReplicateStatus('connected');
-      setReplicateError('');
-    } catch (error) {
-      setReplicateStatus('error');
-      setReplicateError(formatError(error));
-    }
-  }
-
   async function clearReplicateKey() {
     try {
       await SaveReplicateAPIKey('');
@@ -2971,27 +2262,6 @@ function App() {
     } catch {
       setOpenaiCompatibleModels([]);
       setOpenaiCompatibleStatus('error');
-    }
-  }
-
-  async function saveOpenAICompatibleKey() {
-    try {
-      await SaveOpenAICompatibleAPIKey(openaiCompatibleKeyInput);
-      setOpenaiCompatibleKeyInput('');
-      setOpenaiCompatibleHasKey(await HasOpenAICompatibleAPIKey());
-      notifications.dismissKey('key-openai-compatible');
-    } catch (error) {
-      notifyError("Couldn't save the OpenAI-compatible key", error, {key: 'key-openai-compatible'});
-    }
-  }
-
-  async function clearOpenAICompatibleKey() {
-    try {
-      await ClearOpenAICompatibleAPIKey();
-      setOpenaiCompatibleHasKey(false);
-      notifications.dismissKey('key-openai-compatible');
-    } catch (error) {
-      notifyError("Couldn't remove the OpenAI-compatible key", error, {key: 'key-openai-compatible'});
     }
   }
 
