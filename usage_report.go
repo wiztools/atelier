@@ -17,8 +17,9 @@ import (
 // operation turn carries its EditOperation in Request.operation — so a report
 // at any scope is a pure fold over existing records, with nothing new written.
 // The fold mirrors the frontend's per-conversation usage tables
-// (summarizeModelUsage/summarizeMediaUsage in App.tsx) so a report for the
-// open conversation can never disagree with the live toolbar numbers.
+// (summarizeModelUsage/summarizeMediaUsage in frontend/src/usage/usageModel.ts)
+// so a report for the open conversation can never disagree with the live
+// toolbar numbers.
 
 const (
 	usageScopeConversation = "conversation"

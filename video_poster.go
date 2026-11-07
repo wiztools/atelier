@@ -5,8 +5,9 @@ package main
 // all), so every video artifact gets a still frame beside it at persist time:
 // vid_<hex>.mp4 → vid_<hex>_poster.jpg, same directory. The name is a
 // convention, not schema — the frontend derives the poster URL from the video
-// URL (posterURLForVideoSrc in App.tsx) and a missing poster degrades to the
-// plain video/placeholder, so old history without posters renders as before.
+// URL (posterURLForVideoSrc in frontend/src/media/mediaTime.ts) and a missing
+// poster degrades to the plain video/placeholder, so old history without
+// posters renders as before.
 //
 // Extraction is best-effort and never fails the turn save: ffmpeg when a local
 // CLI resolves (the screenshot_video idiom — input seek, one decoded frame),

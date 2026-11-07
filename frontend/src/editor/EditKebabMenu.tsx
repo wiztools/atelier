@@ -6,14 +6,14 @@ import {createPortal} from 'react-dom';
 // fixed-positioned at the trigger's viewport rect. The portal is the point —
 // the edits list scrolls (overflow-y: auto), so an absolutely-positioned menu
 // inside it is clipped to the scroll pane; the same reasoning as the sidebar's
-// AnchoredMenu in App.tsx, whose placement and dismissal behavior this mirrors
-// (flip above when the window edge leaves no room below; close on outside
-// press, Escape, scroll, resize). Unlike the sidebar variant it owns its open
-// state — rows are independent, so there is no cross-menu coordination to
-// lift — and it renders the single Delete item itself: the item closes the
-// menu from its own click handler, because a capture-phase auto-close on the
-// container unmounts the portal before the item's handler can run (a click on
-// Delete would close the menu and delete nothing).
+// AnchoredMenu (dialogs/AnchoredMenu.tsx), whose placement and dismissal
+// behavior this mirrors (flip above when the window edge leaves no room below;
+// close on outside press, Escape, scroll, resize). Unlike the sidebar variant
+// it owns its open state — rows are independent, so there is no cross-menu
+// coordination to lift — and it renders the single Delete item itself: the
+// item closes the menu from its own click handler, because a capture-phase
+// auto-close on the container unmounts the portal before the item's handler
+// can run (a click on Delete would close the menu and delete nothing).
 //
 // Deleting an edit is a hard delete (the result leaves the disk), so the item
 // is the sidebar's two-step confirm: "Delete…" only arms, and the second
