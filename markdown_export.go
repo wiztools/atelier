@@ -293,7 +293,10 @@ func markdownPDFLines(paper pdfPaper, blocks []markdownBlock) [][]fountainPDFLin
 				size = headingMedium
 			}
 			text := markdownPlainInline(strings.Join(block.lines, " "))
-			for _, piece := range wrap(text, columns) {
+			// A heading wraps at its own size's column: wrapped at the body's
+			// 12pt column, a 16pt heading ran past the right margin and off
+			// the page's edge.
+			for _, piece := range wrap(text, paper.columnsAt(size)) {
 				appendLine(fountainPDFLine{text: piece, font: "/F2", size: size})
 			}
 			appendBlank()

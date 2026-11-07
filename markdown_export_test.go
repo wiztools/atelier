@@ -167,3 +167,25 @@ func scriptArtifactURL(t *testing.T, config AppConfig) string {
 	}
 	return result.URL
 }
+
+// A heading wraps at its own size's column, not the body's: a 16pt heading
+// wrapped at the 12pt column printed its last glyphs past the right margin.
+func TestMarkdownHeadingWrapsAtItsOwnSize(t *testing.T) {
+	paper := pdfPaperLetter
+	long := strings.Repeat("heading ", 30)
+	blocks := parseMarkdownBlocks([]byte("# " + long + "\n\nbody.\n"))
+	pages := pdfPaginate(paper, markdownPDFLines(paper, blocks), markdownKeepRoom)
+	rows := 0
+	for _, line := range pages[0] {
+		if line.pdfSize() != 16 {
+			continue
+		}
+		rows++
+		if n := len([]rune(line.text)); n > paper.columnsAt(16) {
+			t.Fatalf("16pt heading row is %d characters, wider than its %d-char column: %q", n, paper.columnsAt(16), line.text)
+		}
+	}
+	if rows < 2 {
+		t.Fatalf("heading wrapped into %d rows, want it long enough to wrap at least once", rows)
+	}
+}
