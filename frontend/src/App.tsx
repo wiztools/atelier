@@ -1,43 +1,11 @@
-import {useEffect, useMemo, useRef, useState} from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import './App.css';
 import {
   CheckOllama,
-  ChooseToolWorkspace,
-  CreateEditorConversation,
-  DeleteConversation,
-  DetectLocalTools,
-  GetConversation,
-  GetConfig,
-  HasFalAPIKey,
-  HasReplicateAPIKey,
-  HasOpenAICompatibleAPIKey,
-  HasOpenRouterAPIKey,
-  ListFalVideoDurations,
-  ListFalSoundEffectDurations,
-  ListReplicateVideoDurations,
-  ListModels,
-  ListOpenAICompatibleModels,
-  LoadUIState,
-  SaveImage,
-  SaveVideo,
-  SaveAudio,
-  SetConversationModelOverrides,
-  SaveFalAPIKey,
-  SaveReplicateAPIKey,
-  SaveOpenRouterAPIKey,
-  SaveUIState,
-  SaveMarkdown,
-  SaveComic,
-  SaveComposition,
-  SaveTranscript,
-  StreamChat,
   DiscardMediaUpload,
-  RevealFile,
 } from '../wailsjs/go/main/App';
 import {main} from '../wailsjs/go/models';
-import {Environment, EventsOn} from '../wailsjs/runtime/runtime';
 import {ImageEditor} from './editor/ImageEditor';
 import {VideoEditor} from './editor/VideoEditor';
 import {AudioEditor} from './editor/AudioEditor';
@@ -46,41 +14,20 @@ import {MarkdownEditor} from './editor/MarkdownEditor';
 import {CompositionEditor} from './editor/CompositionEditor';
 import {ComicEditor} from './editor/ComicEditor';
 import {DocumentCompare} from './editor/DocumentCompare';
-import {detectEditorLaunchIntent} from './editorLaunch';
 import {
-  composerHasMediaDrag,
   videoThumbnailOnlySrc,
-  imagePayloadForOllama,
 } from './mediaIntake';
-import {
-  notifications,
-  notifyError,
-  notifySuccess,
-  setSavedFileReveal,
-  trackSave,
-} from './notifications';
 import {ToastStack} from './ToastStack';
 import {
-  settingsTabs,
-  editOpKinds,
-  View,
-  SettingsTab,
   ChatProviderID,
-  SpeechProviderID,
-  ChatEntry,
-  EditOpEvent,
-  MediaToolSummaryView,
 } from './types';
 import {
-  defaultBaseURL,
   defaultOllamaNumCtx,
   numCtxOptions,
   numCtxLabel,
-  defaultVideoDurationOptions,
-  defaultSoundDurationOptions,
   defaultMediaTimeoutSeconds,
 } from './modelDefaults';
-import {asArray, formatModelSize, shortenHomePath, formatError} from './utils';
+import {asArray, formatModelSize, shortenHomePath} from './utils';
 import {ModelCombobox} from './settings/ModelCombobox';
 import {InfoHint, AirplaneHint} from './ui/Hints';
 import {InlineMediaActions, AudioCardActions} from './media/MediaActions';
@@ -93,2311 +40,52 @@ import {MoveConversationDialog} from './dialogs/MoveConversationDialog';
 import {ProjectNotesDialog} from './dialogs/ProjectNotesDialog';
 import {
   ModelCapabilityLink,
-  chatModelOptionsFor,
-  overrideKeysFromRecord,
-  conversationOverridesPayload,
   ModelSelectionPanel,
-  ModelSelectionValue,
 } from './settings/ModelSelectionPanel';
-import {parseHarnessRun} from './usage/usageModel';
 import {TurnUsage, ConversationUsage} from './usage/TurnUsage';
 import {UsageReportView} from './usage/UsageReportView';
 import {HarnessRunPanel} from './usage/HarnessRunPanel';
 import {StreamingActivity} from './usage/StreamingActivity';
 import {
-  MentionCandidate,
-  assetMentionLabel,
   assetTurnLabel,
-  parseComposerMentions,
 } from './composerMentions';
 import {isNearScrollBottom} from './dom';
 import {hasToolPermissionDetails, toolPermissionSummary, toolPermissionTitle} from './toolPermission';
 import {
-  historyAudios,
-  historyComics,
-  historyCompositions,
-  historyImages,
-  historyMarkdowns,
-  historySubtitles,
-  historyText,
-  historyTranscripts,
-  historyVideos,
   transcriptChipLabel,
 } from './historyContent';
-import {useLibraries} from './sidebar/useLibraries';
-import {useHistorySearch} from './sidebar/useHistorySearch';
-import {useResizablePanels} from './useResizablePanels';
-import {useModelCatalogs} from './settings/useModelCatalogs';
-import {useProviderKeys} from './settings/useProviderKeys';
-import {useAppConfig} from './useAppConfig';
-import {useComposer} from './composer/useComposer';
-import {useConversations} from './sidebar/useConversations';
-import {useEditors} from './editor/useEditors';
-import {useChatStream} from './chat/useChatStream';
-import {useLocalTools} from './settings/useLocalTools';
-import {useDurationOptions} from './settings/useDurationOptions';
-import {useOverlays} from './ui/useOverlays';
-import {useAssets} from './assets/useAssets';
-import {useUsageReport} from './usage/useUsageReport';
-import {useUpdates} from './updates/useUpdates';
-
+import {useAppModel} from './app/useAppModel';
 function App() {
+  const app = useAppModel();
+  // Values the JSX null-checks and then captures in a callback stay const
+  // locals: TypeScript narrows a const through a closure, never a property.
   const {
-    checkFalConnection, checkOpenRouterConnection, checkReplicateConnection, clearOpenAICompatibleKey,
-    falAPIKeyInput, falError, falHasKey, falStatus, openRouterAPIKeyInput, openRouterError, openRouterHasKey,
-    openRouterStatus, openaiCompatibleHasKey, openaiCompatibleKeyInput, openaiCompatibleStatus,
-    replicateAPIKeyInput, replicateError, replicateHasKey, replicateStatus, saveOpenAICompatibleKey,
-    setFalAPIKeyInput, setFalError, setFalHasKey, setFalStatus, setOpenRouterAPIKeyInput, setOpenRouterError,
-    setOpenRouterHasKey, setOpenRouterStatus, setOpenaiCompatibleHasKey, setOpenaiCompatibleKeyInput,
-    setOpenaiCompatibleStatus, setReplicateAPIKeyInput, setReplicateError, setReplicateHasKey,
-    setReplicateStatus,
-  } = useProviderKeys();
-  const {
-    airplaneMode, applyConfig, audioExtendDuration, audioProvider, baseURL, chooseToolWorkspace,
-    configLoaded, defaultWorkspaceRoot, falAudioCloneModel, falAudioExtendModel, falAudioModel,
-    falImageEditModel, falInpaintModel, falLipsyncImageModel, falLipsyncVideoModel, falModel,
-    falSoundEffectsModel, falSoundEffectsVideoModel, falTranscribeModel, falUpscaleModel,
-    falVideoExtendModel, falVideoImageModel, falVideoKeyframeModel, falVideoModel, falVideoMotionModel,
-    falVideoReframeModel, falVideoRestyleModel, falVideoUpscaleModel, falVoiceDesignModel, ffmpegBinary,
-    ffprobeBinary, globalModelSelection, harnessModel, harnessModels, harnessProvider, imageAspectRatio,
-    imageModel, imageProvider, imageSizePreset, imageSteps, inpaintProvider, lipsyncProvider, magickBinary,
-    mediaTimeoutMinutes, model, ollamaNumCtx, ollamaSpeechModel, openaiCompatibleBaseURL,
-    openaiCompatibleModel, patchSettingsModelSelection, primaryModels, primaryProvider,
-    replicateAudioExtendModel, replicateImageEditModel, replicateInpaintModel, replicateLipsyncImageModel,
-    replicateLipsyncVideoModel, replicateModel, replicateSoundEffectsModel, replicateSoundEffectsVideoModel,
-    replicateSpeechModel, replicateTranscribeModel, replicateUpscaleModel, replicateVideoExtendModel,
-    replicateVideoImageModel, replicateVideoModel, replicateVideoReframeModel, replicateVideoRestyleModel,
-    replicateVideoUpscaleModel, setAirplaneMode, setBaseURL, setConfigLoaded, setFfmpegBinary,
-    setFfprobeBinary, setHarnessModels, setHarnessProvider, setImageProvider, setLipsyncProvider,
-    setMagickBinary, setMediaTimeoutMinutes, setModel, setOllamaNumCtx, setOpenaiCompatibleBaseURL,
-    setPrimaryModels, setPrimaryProvider, setSipsBinary, setSoundDuration, setSystem,
-    setTranscriptionProvider, setVideoDuration, setVideoProvider, setWhisperBinary, setWhisperChunkMinutes,
-    setWhisperModel, setWhisperVADModel, sipsBinary, soundDuration, speechProvider, storageConfig, system,
-    toolConfig, transcriptionProvider, videoAspectRatio, videoDuration, videoProvider, videoResolution,
-    whisperBinary, whisperChunkMinutes, whisperModel, whisperVADModel,
-  } = useAppConfig({openRouterHasKey, falHasKey, replicateHasKey});
-  const [status, setStatus] = useState<main.OllamaStatus | null>(null);
-  const [models, setModels] = useState<main.OllamaModel[]>([]);
-  const [refreshing, setRefreshing] = useState(false);
-  const {
-    clearFalCatalogs,
-    clearReplicateCatalogs,
-    falAudioExtendModels,
-    falAudioModels,
-    falImageEditModels,
-    falLipsyncImageModels,
-    falLipsyncVideoModels,
-    falModels,
-    falSoundEffectModels,
-    falSoundEffectsVideoModels,
-    falTranscribeModels,
-    falUpscaleModels,
-    falVideoExtendModels,
-    falVideoImageModels,
-    falVideoKeyframeModels,
-    falVideoModels,
-    falVideoMotionModels,
-    falVideoReframeModels,
-    falVideoRestyleModels,
-    falVideoUpscaleModels,
-    falVoiceDesignModels,
-    openRouterModels,
-    openaiCompatibleModelOptions,
-    openaiCompatibleModels,
-    refreshFalModels,
-    refreshOpenRouterModels,
-    refreshReplicateModels,
-    replicateAudioExtendModels,
-    replicateImageEditModels,
-    replicateLipsyncImageModels,
-    replicateLipsyncVideoModels,
-    replicateModels,
-    replicateSoundEffectsModels,
-    replicateSoundEffectsVideoModels,
-    replicateSpeechModels,
-    replicateTranscribeModels,
-    replicateUpscaleModels,
-    replicateVideoExtendModels,
-    replicateVideoImageModels,
-    replicateVideoModels,
-    replicateVideoReframeModels,
-    replicateVideoRestyleModels,
-    replicateVideoUpscaleModels,
-    setOpenRouterModels,
-    setOpenaiCompatibleModels,
-  } = useModelCatalogs();
-  const {
-    ffmpegStatus,
-    ffprobeStatus,
-    localToolsDetecting,
-    magickStatus,
-    redetectLocalTools,
-    setLocalToolsReport,
-    sipsStatus,
-    whisperStatus,
-  } = useLocalTools({configLoaded, whisperBinary, ffmpegBinary, ffprobeBinary, sipsBinary, magickBinary});
-  const [assetsRefreshTick, setAssetsRefreshTick] = useState(0);
-  const [activeConversationID, setActiveConversationID] = useState('');
-  const copyResetRef = useRef<number | null>(null);
-  // useChatStream registers its chunk listener before the conversation list
-  // and the libraries tree exist (its transcript feeds the composer, which both
-  // of those need), so it reaches them through these hoisted forwarders,
-  // resolved when a chunk arrives. Like the functions they forward to, they
-  // touch only stable setters, so the empty-deps listener never goes stale.
-  function refreshConversationsOnChunk() {
-    return refreshConversations();
-  }
-  function bumpLibrariesOnChunk() {
-    bumpLibrariesRefresh();
-  }
-  const {
-    activeStream, anyConversationInFlight, chat, chatIsEmpty, chatStreamDraftsRef, collapsedThinkingIDs,
-    copiedMessageID, copyMessage, harnessRunDraftsRef, inFlightConversations, inFlightConversationsRef,
-    markConversationInFlight, mediaUsage, modelUsage, resolveToolPermission, setActiveStream, setChat,
-    setCollapsedThinkingIDs, shouldFollowTranscriptRef, stopChat, toggleThinkingCollapsed, toolPermissions,
-    transcriptRef, visibleHarnessRun, visibleStreamRef,
-  } = useChatStream({setActiveConversationID, setAssetsRefreshTick, copyResetRef, refreshConversationsOnChunk, bumpLibrariesOnChunk});
-  const activeConversationIDRef = useRef('');
-  const {
-    acceptMention, addFiles, attachments, attachmentsRef, chatPromptMirrorRef, chatPromptRef,
-    composerDraftsRef, composerDragging, composerRef, emptyPrompt, handleChatPromptChange,
-    handleChatPromptKeyDown, handleChatPromptPaste, handleChatPromptScroll, handleComposerDragEnter,
-    handleComposerDragLeave, handleComposerDrop, insertAssetReference, mentionIndex, mentionListRef,
-    mentionMatchesState, mentionOpen, prompt, restoreDraftFor, setAttachments, setMentionIndex, setPrompt,
-    stagingAttachments, stashCurrentDraft,
-  } = useComposer({chatIsEmpty, activeConversationID, activeConversationIDRef, mentionCandidates, submitChat});
-  const {
-    cancelEditingConversationTitle, chatsOpen, confirmPurgeArchived, conversationList, conversations,
-    copiedConversationID, copyConversationID, editingTitle, editingTitleID, handleConversationTitleKeyDown,
-    handleHistoryScroll, hasMoreConversations, moveDialogConversation, openHistoryMenuID,
-    purgeArchivedConversations, purgeBusy, refreshConversations, saveConversationTitle, setChatsOpen,
-    setConfirmPurgeArchived, setConversations, setEditingTitle, setMoveDialogConversation,
-    setOpenHistoryMenuID, showMoreConversations, startEditingConversationTitle, visibleConversations,
-  } = useConversations({composerDraftsRef, copyResetRef});
-  const {
-    historyQuery,
-    historyResults,
-    historySearchBusy,
-    historySearchError,
-    historySearchTruncated,
-    searchOpen,
-    setHistoryQuery,
-    setSearchOpen,
-  } = useHistorySearch();
-  // uiStateLoaded flips once the persisted navigation state is hydrated; the
-  // save effect below waits for it so launch-time defaults can't clobber the
-  // saved file.
-  const [uiStateLoaded, setUiStateLoaded] = useState(false);
-  // pendingProject is the {projectID, libraryID} a NEW chat will be filed into
-  // on its first send (ChatRequest.projectId). Set by "New chat" inside a
-  // project; cleared once the conversation exists (the record carries its own
-  // membership from there) and when opening any existing conversation. The
-  // library tree's own state and actions live in the useLibraries hook.
-  const [pendingProject, setPendingProject] = useState<{projectID: string; libraryID: string} | null>(null);
-  // Mirror ref for the empty-deps menu/keyboard listeners and the send path,
-  // which read the pending project synchronously rather than from state.
-  const pendingProjectRef = useRef<{projectID: string; libraryID: string} | null>(null);
-  useEffect(() => {
-    pendingProjectRef.current = pendingProject;
-  }, [pendingProject]);
-  const [view, setView] = useState<View>('app');
-  const {
-    openConversationUsageReport,
-    openLibraryUsageReport,
-    openProjectUsageReport,
-    usageError,
-    usageLoading,
-    usageReport,
-  } = useUsageReport({setView});
-  // The project the ACTIVE conversation belongs to (from its summary). Feeds
-  // the useLibraries env, the composer's library scope, and the mention pool.
-  const activeConversationProjectID = activeConversationID
-    ? conversations.find((item) => item.id === activeConversationID)?.projectId ?? ''
-    : '';
-  // draftWorkspace holds the per-conversation workspace selected for a NEW
-  // chat before its first message locks it as immutable on the record. Empty
-  // means "inherit the configured default." Reset whenever a new chat starts.
-  const [draftWorkspace, setDraftWorkspace] = useState('');
-  // startupError is boot-only: the one genuine startup failure (the launch
-  // loadConfig rejecting), cleared by applyConfig or the card's Dismiss.
-  // Every other failure is an action result and toasts instead.
-  const [startupError, setStartupError] = useState('');
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>('providers');
-  // Per-conversation model-override editing state: the draft is a snapshot of
-  // the effective selection taken when the conversation-models view opens
-  // (the panel edits it; the record is the truth it converges to), and the
-  // keys are the fields this conversation pins. Mutator failures (e.g.
-  // changing overrides while the turn streams) toast under 'conv-models'.
-  const [convModelsDraft, setConvModelsDraft] = useState<ModelSelectionValue | null>(null);
-  const [convModelsKeys, setConvModelsKeys] = useState<ReadonlySet<string>>(() => new Set());
-  // draftModelOverrides is the turn-1 twin of the record's override: what the
-  // NEXT conversation (none active yet) will run on, from its first message.
-  // It travels once with ChatRequest.modelOverrides and the backend pins it
-  // onto the new record; cleared once that conversation exists, after which
-  // the record is the truth. Dormant while an older conversation is open —
-  // same posture as draftWorkspace.
-  const [draftModelOverrides, setDraftModelOverrides] = useState<main.ConversationModelOverrides | null>(null);
-  const {openCapabilityID, previewImage, setOpenCapabilityID, setPreviewImage} = useOverlays();
-  const {
-    checkForUpdates,
-    dismissUpdate,
-    requestUpdateInstall,
-    updateAvailable,
-    updateBusy,
-    updateCheckBusy,
-    updateError,
-    updateQueued,
-  } = useUpdates({anyConversationInFlight});
-  const shellRef = useRef<HTMLElement | null>(null);
-  // The conversation whose open is in flight; a repeat click on the same row
-  // (double-click enters rename) must not fetch it twice.
-  const openingConversationRef = useRef<string>('');
-  // The Libraries & projects sidebar tree — data, expansion/creation/rename/
-  // delete state, and every tree action — lives in the useLibraries hook;
-  // App destructures the same names its JSX uses. Everything crossing the
-  // boundary (conversation refresh, workspace reset, the composer's pending
-  // project) arrives via env, so the hook never reaches into App state; its
-  // failures toast directly through the shared notifications store.
-  const {
-    libraries, librariesOpen, expandedLibraryIDs, expandedProjectIDs, projectConversations,
-    creatingLibrary, newLibraryName, creatingProjectLibraryID, newProjectName,
-    editingContainerID, editingContainerName, openContainerMenuID, confirmDeleteContainerID, containerBusy,
-    exportPlan, importingLibrary,
-    moveTargetGroups, libraryIDForProject, bumpLibrariesRefresh,
-    startCreatingLibrary, startCreatingProject, submitNewLibrary, submitNewProject,
-    startEditingContainer, cancelEditingContainer, saveContainerName, toggleContainerMenu, closeContainerMenu,
-    confirmDeleteContainer, toggleLibraryExpanded, toggleProjectExpanded,
-    startNewChatInProject, revealConversationInProject, handleNewConversationAction, handleNewProjectAction, moveConversation,
-    forgetConversation, toggleLibrariesOpen, cancelCreatingLibrary, cancelCreatingProject, armContainerDelete,
-    armLibraryExport, confirmExportLibrary, importLibrary, applySidebarState,
-    notesDialogProject, notesDraft, notesSaving, openProjectNotes, closeProjectNotes, saveProjectNotes,
-    setNewLibraryName, setNewProjectName, setEditingContainerName, setNotesDraft,
-  } = useLibraries({
-    activeConversationID,
-    activeConversationProjectID,
-    closeConversationMenu: () => setOpenHistoryMenuID(''),
-    expandChatsSection: () => setChatsOpen(true),
-    composerDraftsRef,
-    pendingProjectRef,
-    refreshConversations,
-    resetWorkspace,
-    setPendingProject,
-    setView,
-    startNewChat,
-  });
-
-  const {
-    audioEditorDirty, audioEditorHandle, audioEditorOpening, cancelVideoPreparation, closeImageEditor,
-    comicEditorDirty, comicEditorHandle, compositionEditorDirty, compositionEditorHandle, confirmLeaveEditor,
-    discardEditorDraft, documentCompareHandle, documentCompareOpening, editSessionOnScreen, editorHandle,
-    editorOpen, editorOpenRef, editorOpening, leaveEditorThen, markdownEditorDirty, markdownEditorHandle,
-    openAudioEditor, openComicEditor, openCompositionEditor, openDocumentCompare, openEditSession,
-    openEditorSessionsRef, openFinishedEditSessionRef, openImageEditor, openMarkdownEditor, openNewComic,
-    openNewComposition, openSubtitleEditor, openVideoEditor, previewEditContext, resolveEditorNavigation,
-    setPreviewEditContext, subtitleEditorDirty, subtitleEditorHandle, videoEditorDirty, videoEditorHandle,
-    videoEditorOpening,
-  } = useEditors({setView, openSettings, libraryIDForProject});
-  // Restore the left navigation's collapsed/expanded sections from the last
-  // session. applySidebarState is a first-render copy by design (it only
-  // touches stable setters and a ref), so this mount effect never refires.
-  useEffect(() => {
-    let cancelled = false;
-    LoadUIState()
-      .then((state) => {
-        if (cancelled) {
-          return;
-        }
-        const sidebar = state?.sidebar;
-        setChatsOpen(!sidebar?.chatsCollapsed);
-        applySidebarState(sidebar);
-        // Restore the Settings screen's last tab so a fresh launch opens it
-        // where the user left off. The save effect only runs once
-        // uiStateLoaded flips, so this value cannot be overwritten first.
-        const lastTab = state?.settings?.lastTab;
-        if (settingsTabs.includes(lastTab as SettingsTab)) {
-          setSettingsTab(lastTab as SettingsTab);
-        }
-      })
-      .catch(() => {
-        // No saved state (first launch) or an unreadable file — defaults stand.
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setUiStateLoaded(true);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Persist the navigation state on every change rather than at quit: each
-  // toggle is one tiny atomic write, so the file is already current whenever
-  // the app shuts down — cleanly or not. A failure toasts under one key (this
-  // fires on every sidebar toggle and tab switch, so repeats count in place
-  // instead of stacking), and the next successful write dismisses it.
-  useEffect(() => {
-    if (!uiStateLoaded) {
-      return;
-    }
-    SaveUIState(main.UIState.createFrom({
-      sidebar: {
-        chatsCollapsed: !chatsOpen,
-        librariesCollapsed: !librariesOpen,
-        expandedLibraries: Object.keys(expandedLibraryIDs).filter((id) => expandedLibraryIDs[id]),
-        expandedProjects: Object.keys(expandedProjectIDs).filter((id) => expandedProjectIDs[id]),
-      },
-      settings: {
-        lastTab: settingsTab,
-      },
-    })).then(() => notifications.dismissKey('ui-state-save')).catch((error) => {
-      notifyError("Couldn't save the window state", error, {key: 'ui-state-save'});
-    });
-  }, [uiStateLoaded, chatsOpen, librariesOpen, expandedLibraryIDs, expandedProjectIDs, settingsTab]);
-
-  // The library scope the composer + assets panel use: the pending project
-  // while composing a new chat inside one, else the active conversation's
-  // project.
-  const composerLibraryID = pendingProject?.libraryID
-    || (activeConversationProjectID ? libraryIDForProject(activeConversationProjectID) : '');
-  const {
-    assetsPanelOpen,
-    libraryAssets,
-    panelAssets,
-    setAssetsPanelOpen,
-  } = useAssets({activeConversationID, composerLibraryID, assetsRefreshTick});
-
-  const selectedConversationID = activeConversationID;
-  // Names for the toolbar breadcrumb and composer chip: the library (and
-  // project) the current composition is scoped to.
-  const composerProjectNames = useMemo(() => {
-    if (!composerLibraryID) {
-      return null;
-    }
-    const library = libraries.find((item) => item.id === composerLibraryID);
-    if (!library) {
-      return null;
-    }
-    const projectID = pendingProject?.projectID || activeConversationProjectID;
-    const project = projectID ? asArray(library.projects).find((item) => item.id === projectID) : undefined;
-    return {libraryName: library.name, projectName: project?.name ?? ''};
-  }, [composerLibraryID, libraries, pendingProject, activeConversationProjectID]);
-
-  // One conversation row, shared by the standalone chats list and the project
-  // listings: open/rename/archive behave identically; the ⋮ menu's Move to…
-  // opens the picker dialog for both row kinds (project rows included, so a
-  // project → project move no longer detours through standalone).
-  function renderConversationRow(conversation: main.ConversationSummary) {
-    const inFlight = inFlightConversations[conversation.id];
-    const selected = selectedConversationID === conversation.id;
-    // A standalone row with no defined projects has nowhere to move; a
-    // project row always offers at least the return to standalone.
-    const canMove = moveTargetGroups.length > 0 || Boolean(conversation.projectId);
-    return (
-      <div key={conversation.id} className={`history-item${selected ? ' selected' : ''}`}>
-        {editingTitleID === conversation.id ? (
-          <input
-            value={editingTitle}
-            onChange={(event) => setEditingTitle(event.target.value)}
-            onBlur={() => saveConversationTitle(conversation)}
-            onKeyDown={(event) => handleConversationTitleKeyDown(event, conversation)}
-            autoFocus
-          />
-        ) : (
-          <>
-            <button className="history-open" onClick={() => openConversationSummary(conversation)} onDoubleClick={(event) => { event.preventDefault(); startEditingConversationTitle(conversation); }}>
-              <span>{conversation.title}</span>
-              {/* The running indicator mounts only while the turn streams —
-                  idle rows don't reserve the slot, so the title runs to the
-                  full row width and the kebab sits flush after hover reveal. */}
-              {inFlight ? (
-                <small
-                  className="history-kind in-flight"
-                  title="Running"
-                  aria-label="Conversation running"
-                >
-                  <span className="history-spinner" />
-                </small>
-              ) : null}
-            </button>
-            <div className="history-actions">
-              <AnchoredMenu
-                label={`More actions for ${conversation.title}`}
-                open={openHistoryMenuID === conversation.id}
-                onToggle={() => {
-                  // Opening one menu family closes the other — both float in
-                  // portals now, and two open at once reads as broken.
-                  if (openHistoryMenuID !== conversation.id) {
-                    closeContainerMenu();
-                  }
-                  setOpenHistoryMenuID((current) => current === conversation.id ? '' : conversation.id);
-                }}
-                onClose={() => setOpenHistoryMenuID('')}
-              >
-                <button onClick={() => startEditingConversationTitle(conversation)}>Rename</button>
-                <button onClick={() => copyConversationID(conversation)}>
-                  {copiedConversationID === conversation.id ? '✓ Copied' : 'Copy ID'}
-                </button>
-                <button onClick={() => {
-                  setOpenHistoryMenuID('');
-                  openConversationUsageReport(conversation.id);
-                }}>Usage report</button>
-                <button onClick={() => archiveConversation(conversation)}>Archive</button>
-                {canMove ? (
-                  <button onClick={() => {
-                    setOpenHistoryMenuID('');
-                    setMoveDialogConversation(conversation);
-                  }}>Move to…</button>
-                ) : null}
-              </AnchoredMenu>
-            </div>
-          </>
-        )}
-      </div>
-    );
-  }
-
-  useEffect(() => {
-    loadConfig().catch((error) => {
-      setStartupError(formatError(error));
-      setConfigLoaded(true);
-      refreshOllama(defaultBaseURL).catch((refreshError) => setStatus({
-        online: false,
-        baseURL: defaultBaseURL,
-        error: formatError(refreshError),
-      }));
-    });
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (copyResetRef.current) {
-        window.clearTimeout(copyResetRef.current);
-      }
-    };
-  }, []);
-
-  // On a fresh launch, put the cursor in the chat box so the user can start
-  // typing immediately. Fires once, when config finishes loading.
-  useEffect(() => {
-    if (!configLoaded || view !== 'app') {
-      return;
-    }
-    const timeout = window.setTimeout(() => {
-      chatPromptRef.current?.focus();
-    }, 0);
-    return () => window.clearTimeout(timeout);
-  }, [configLoaded]);
-
-  // AI-routed editor launches: the harness's open_editor tool fired (its
-  // evidence line names what was opened) and the named conversation's asset
-  // should appear in the matching editor. Two guards keep a mid-stream launch
-  // from hijacking the workspace: the event's conversation must be the one on
-  // screen, and an already-open editor is never replaced — an unsaved draft is
-  // not discarded by a tool-timed open, and the reply's evidence still tells
-  // the user what was opened. Mirrors the chat:chunk pattern — refs only, so
-  // the empty-deps subscription never fires a stale closure.
-  useEffect(() => {
-    const onEditorLaunch = (event: {conversationId?: string; artifactId?: string; kind?: string; seedArtifactIds?: string[]}) => {
-      const conversationID = event?.conversationId ?? '';
-      const artifactID = event?.artifactId ?? '';
-      const kind = event?.kind;
-      // The composer is the one kind that opens without an artifact — its
-      // identity is the conversation, and the seeds ride the payload.
-      const composition = kind === 'composition';
-      // The comic editor is the other kind that opens without an artifact —
-      // its seeds (this turn's images) ride the payload.
-      const comic = kind === 'comic';
-      // The compare workspace opens on two documents — before, then after —
-      // riding the seeds the same way (compare_documents' launch).
-      const compare = kind === 'compare';
-      if (!conversationID || (!artifactID && !composition && !comic && !compare) ||
-          (kind !== 'image' && kind !== 'video' && kind !== 'audio' && kind !== 'subtitle' && kind !== 'markdown' && kind !== 'composition' && kind !== 'comic' && kind !== 'compare')) {
-        return;
-      }
-      if (conversationID !== activeConversationIDRef.current || editorOpenRef.current) {
-        return;
-      }
-      if (compare) {
-        const seeds = asArray(event?.seedArtifactIds);
-        if (seeds.length === 2) void openDocumentCompare(conversationID, seeds[0], seeds[1]);
-        return;
-      }
-      if (composition) {
-        void openNewComposition(conversationID, asArray(event?.seedArtifactIds));
-        return;
-      }
-      if (comic) {
-        void openNewComic(conversationID, asArray(event?.seedArtifactIds));
-        return;
-      }
-      if (kind === 'video') {
-        void openVideoEditor(conversationID, artifactID);
-      } else if (kind === 'audio') {
-        void openAudioEditor(conversationID, artifactID);
-      } else if (kind === 'subtitle') {
-        void openSubtitleEditor(conversationID, artifactID);
-      } else if (kind === 'markdown') {
-        void openMarkdownEditor(conversationID, artifactID);
-      } else {
-        void openImageEditor(conversationID, artifactID);
-      }
-    };
-    return EventsOn('atelier:editor-launch', onEditorLaunch);
-  }, []);
-
-  // Toasts that name a saved file offer to show it (trackSave's saves, the
-  // library export). notifications.ts can't import bindings, so App installs
-  // the action; the label follows the platform's file manager — Finder
-  // selects the file, elsewhere RevealFile opens its folder. A reveal that
-  // fails (the file moved since) toasts why.
-  useEffect(() => {
-    let disposed = false;
-    void Environment().then((env) => {
-      if (disposed) {
-        return;
-      }
-      setSavedFileReveal({
-        label: env.platform === 'darwin' ? 'Show in Finder' : 'Show in folder',
-        reveal: (path) => {
-          void RevealFile(path).catch((error) => notifyError("Couldn't show the file", error));
-        },
-      });
-    }).catch(() => {});
-    return () => {
-      disposed = true;
-      setSavedFileReveal(null);
-    };
-  }, []);
-
-  // Background jobs report when they finish. App owns the RESULT, so it
-  // reaches the user even when the job's editor closed mid-run (the editors
-  // fold the same events into their own rows). Composition EXPORTS: a
-  // completed one adopted a new artifact into its conversation — toast it and
-  // refresh what shows that conversation; a failed one toasts. Previews and
-  // cancels report nothing (the stage and the row are their feedback). Edit
-  // ops: a failure always toasts; a completion toasts only when its editor
-  // isn't on screen (otherwise the stage shows the result), with an Open
-  // action back to the session. Each op reports once.
-  useEffect(() => {
-    const reported = new Set<string>();
-    const offComposition = EventsOn('atelier:composition-op', (event: unknown) => {
-      const op = main.CompositionRenderOperation.createFrom(event);
-      if (op.mode !== 'export' || (op.status !== 'completed' && op.status !== 'failed') || reported.has(op.id)) {
-        return;
-      }
-      reported.add(op.id);
-      if (op.status === 'failed') {
-        notifyError('Composition export failed', op.error || 'The render stopped without reporting why.');
-        return;
-      }
-      notifySuccess('Exported to the conversation', {message: op.audioOnly ? 'Composition audio' : 'Composition video'});
-      if (op.conversationId) {
-        refreshAfterConversationWriteRef.current(op.conversationId);
-      }
-    });
-    const offEdit = EventsOn('atelier:edit-op', (event: EditOpEvent) => {
-      const op = event?.operation;
-      const sessionID = event?.sessionConversationId ?? '';
-      if (!op?.id || (op.status !== 'completed' && op.status !== 'failed') || reported.has(op.id)) {
-        return;
-      }
-      reported.add(op.id);
-      const kind = editOpKinds[op.kind];
-      const label = kind?.label ?? 'Edit';
-      if (op.status === 'failed') {
-        notifyError(`${label} failed`, op.error || 'The edit stopped without reporting why.');
-        return;
-      }
-      if (kind && editSessionOnScreen(kind.editor, sessionID)) {
-        return;
-      }
-      notifySuccess(`${label} finished`, {
-        message: 'Open the editor to review the result.',
-        action: sessionID && kind ? {label: 'Open', run: () => openFinishedEditSessionRef.current(kind.editor, sessionID)} : undefined,
-      });
-    });
-    return () => {
-      offComposition();
-      offEdit();
-    };
-  }, []);
-
-  // File-menu creation actions (main.go's File menu emits these; see the
-  // menuNew* handlers in app.go). The refs always point at the latest handler
-  // closures, so the empty-deps subscription never fires a stale one.
-  useEffect(() => {
-    const offs = [
-      EventsOn('atelier:menu-new-conversation', () => newConversationActionRef.current()),
-      EventsOn('atelier:menu-new-library', () => newLibraryActionRef.current()),
-      EventsOn('atelier:menu-new-project', () => newProjectActionRef.current()),
-    ];
-    return () => offs.forEach((off) => off());
-  }, []);
-
-  const {
-    assetsWidth,
-    resizingAssets,
-    resizingSidebar,
-    setResizingAssets,
-    setResizingSidebar,
-    sidebarWidth,
-  } = useResizablePanels({shellRef, setAssetsPanelOpen});
-
-  // modelOptions feeds the Ollama-only lists (primary picker's Ollama branch,
-  // harness dropdown, image-model fallback). It is built from the fetched
-  // Ollama models plus the configured harness/image models (so those stay
-  // selectable), but deliberately NOT the primary model: if the stored primary
-  // isn't a real Ollama model (e.g. an OpenRouter id that leaked in), it must
-  // fall out of the list so the validation effect below heals it to a real
-  // model instead of letting the bad value self-validate.
-  const modelOptions = useMemo(() => {
-    return Array.from(new Set([...asArray(models).map((item) => item.name), harnessModels.ollama, imageModel].filter(Boolean)));
-  }, [harnessModels.ollama, imageModel, models]);
-  const primaryModelOptions = useMemo(
-    () => chatModelOptionsFor(primaryProvider, {modelOptions, openRouterModels, openaiCompatibleModels: openaiCompatibleModelOptions}),
-    [modelOptions, openRouterModels, openaiCompatibleModelOptions, primaryProvider],
-  );
-  const primaryModelIsValid = primaryModelOptions.some((option) => option.value === model);
-
-  // ---- Per-conversation model overrides ---------------------------------
-  // The active conversation's record may pin model selections that override
-  // the global Settings (differential: unset fields inherit). Everything the
-  // UI shows derives from globalModelSelection ⊕ conversationOverrides so the
-  // composer, the badge, and the conversation-models screen agree.
-
-  const activeConversation = useMemo(
-    () => conversations.find((conversation) => conversation.id === activeConversationID) ?? null,
-    [conversations, activeConversationID],
-  );
-  const conversationOverrides = activeConversation?.modelOverrides ?? null;
-  // Before any conversation exists, the pending draft stands in for the
-  // record everywhere the UI derives effective selections.
-  const uiModelOverrides = activeConversationID ? conversationOverrides : draftModelOverrides;
-  const uiOverridesActive = overrideKeysFromRecord(uiModelOverrides).size > 0;
-
-  const conversationModelSelection = useMemo<ModelSelectionValue>(() => {
-    const global = globalModelSelection;
-    const overrides = uiModelOverrides;
-    if (!overrides) {
-      return global;
-    }
-    const isChatProvider = (value?: string): value is ChatProviderID =>
-      value === 'ollama' || value === 'openrouter' || value === 'openai-compatible';
-    const harnessProvider = isChatProvider(overrides.harnessProvider) ? overrides.harnessProvider : global.harnessProvider;
-    const primaryProvider = isChatProvider(overrides.primaryProvider) ? overrides.primaryProvider : global.primaryProvider;
-    const imageProvider = overrides.imageProvider === 'fal' || overrides.imageProvider === 'replicate' || overrides.imageProvider === 'openai-compatible' ? overrides.imageProvider : global.imageProvider;
-    const videoProvider = overrides.videoProvider === 'replicate' ? 'replicate' : overrides.videoProvider === 'fal' ? 'fal' : global.videoProvider;
-    const inpaintProvider = overrides.inpaintProvider === 'replicate' ? 'replicate' : overrides.inpaintProvider === 'fal' ? 'fal' : global.inpaintProvider;
-    const lipsyncProvider = overrides.lipsyncProvider === 'replicate' ? 'replicate' : overrides.lipsyncProvider === 'fal' ? 'fal' : global.lipsyncProvider;
-    const speechProvider: SpeechProviderID = overrides.speechProvider === 'ollama' || overrides.speechProvider === 'replicate' || overrides.speechProvider === 'fal' ? overrides.speechProvider : global.speechProvider;
-    const audioProvider = overrides.audioProvider === 'replicate' ? 'replicate' : overrides.audioProvider === 'fal' ? 'fal' : global.audioProvider;
-    const effectiveTranscriptionProvider = overrides.transcriptionProvider === 'fal' || overrides.transcriptionProvider === 'local-whisper' || overrides.transcriptionProvider === 'replicate' ? overrides.transcriptionProvider : global.transcriptionProvider;
-    const next: ModelSelectionValue = {
-      ...global,
-      primaryProvider,
-      primaryModel: overrides.primaryModel || primaryModels[primaryProvider],
-      harnessProvider,
-      harnessModel: overrides.harnessModel || harnessModels[harnessProvider],
-      imageProvider,
-      videoProvider,
-      inpaintProvider,
-      lipsyncProvider,
-      speechProvider,
-      audioProvider,
-      falModel: overrides.imageModel && imageProvider === 'fal' ? overrides.imageModel : global.falModel,
-      openaiImageModel: overrides.imageModel && imageProvider === 'openai-compatible' ? overrides.imageModel : global.openaiImageModel,
-      replicateModel: overrides.imageModel && imageProvider === 'replicate' ? overrides.imageModel : global.replicateModel,
-      replicateImageEditModel: overrides.imageEditModel && imageProvider === 'replicate' ? overrides.imageEditModel : global.replicateImageEditModel,
-      falImageEditModel: overrides.imageEditModel && imageProvider !== 'replicate' ? overrides.imageEditModel : global.falImageEditModel,
-      replicateUpscaleModel: overrides.upscaleModel && imageProvider === 'replicate' ? overrides.upscaleModel : global.replicateUpscaleModel,
-      falUpscaleModel: overrides.upscaleModel && imageProvider !== 'replicate' ? overrides.upscaleModel : global.falUpscaleModel,
-      falInpaintModel: overrides.inpaintModel && inpaintProvider !== 'replicate' ? overrides.inpaintModel : global.falInpaintModel,
-      replicateInpaintModel: overrides.inpaintModel && inpaintProvider === 'replicate' ? overrides.inpaintModel : global.replicateInpaintModel,
-      falVideoModel: overrides.videoModel && videoProvider === 'fal' ? overrides.videoModel : global.falVideoModel,
-      falVideoImageModel: overrides.videoImageModel && videoProvider === 'fal' ? overrides.videoImageModel : global.falVideoImageModel,
-      falVideoUpscaleModel: overrides.videoUpscaleModel && videoProvider !== 'replicate' ? overrides.videoUpscaleModel : global.falVideoUpscaleModel,
-      falVideoRestyleModel: overrides.videoRestyleModel && videoProvider !== 'replicate' ? overrides.videoRestyleModel : global.falVideoRestyleModel,
-      falVideoReframeModel: overrides.videoReframeModel && videoProvider !== 'replicate' ? overrides.videoReframeModel : global.falVideoReframeModel,
-      replicateVideoModel: overrides.videoModel && videoProvider === 'replicate' ? overrides.videoModel : global.replicateVideoModel,
-      replicateVideoUpscaleModel: overrides.videoUpscaleModel && videoProvider === 'replicate' ? overrides.videoUpscaleModel : global.replicateVideoUpscaleModel,
-      replicateVideoRestyleModel: overrides.videoRestyleModel && videoProvider === 'replicate' ? overrides.videoRestyleModel : global.replicateVideoRestyleModel,
-      replicateVideoReframeModel: overrides.videoReframeModel && videoProvider === 'replicate' ? overrides.videoReframeModel : global.replicateVideoReframeModel,
-      replicateVideoExtendModel: overrides.videoExtendModel && videoProvider === 'replicate' ? overrides.videoExtendModel : global.replicateVideoExtendModel,
-      replicateVideoImageModel: overrides.videoImageModel && videoProvider === 'replicate' ? overrides.videoImageModel : global.replicateVideoImageModel,
-      falVideoKeyframeModel: overrides.videoKeyframeModel || global.falVideoKeyframeModel,
-      falVideoExtendModel: overrides.videoExtendModel && videoProvider !== 'replicate' ? overrides.videoExtendModel : global.falVideoExtendModel,
-      falVideoMotionModel: overrides.videoMotionModel || global.falVideoMotionModel,
-      falAudioModel: overrides.audioModel && speechProvider === 'fal' ? overrides.audioModel : global.falAudioModel,
-      ollamaSpeechModel: overrides.audioModel && speechProvider === 'ollama' ? overrides.audioModel : global.ollamaSpeechModel,
-      replicateSpeechModel: overrides.audioModel && speechProvider === 'replicate' ? overrides.audioModel : global.replicateSpeechModel,
-      falAudioCloneModel: overrides.audioCloneModel || global.falAudioCloneModel,
-      falSoundEffectsModel: overrides.soundEffectsModel && audioProvider !== 'replicate' ? overrides.soundEffectsModel : global.falSoundEffectsModel,
-      falSoundEffectsVideoModel: overrides.soundEffectsVideoModel && audioProvider !== 'replicate' ? overrides.soundEffectsVideoModel : global.falSoundEffectsVideoModel,
-      replicateSoundEffectsModel: overrides.soundEffectsModel && audioProvider === 'replicate' ? overrides.soundEffectsModel : global.replicateSoundEffectsModel,
-      replicateSoundEffectsVideoModel: overrides.soundEffectsVideoModel && audioProvider === 'replicate' ? overrides.soundEffectsVideoModel : global.replicateSoundEffectsVideoModel,
-      falVoiceDesignModel: overrides.voiceDesignModel || global.falVoiceDesignModel,
-      falAudioExtendModel: overrides.audioExtendModel && audioProvider !== 'replicate' ? overrides.audioExtendModel : global.falAudioExtendModel,
-      replicateAudioExtendModel: overrides.audioExtendModel && audioProvider === 'replicate' ? overrides.audioExtendModel : global.replicateAudioExtendModel,
-      transcriptionProvider: effectiveTranscriptionProvider,
-      falTranscribeModel: overrides.transcribeModel && effectiveTranscriptionProvider !== 'replicate' ? overrides.transcribeModel : global.falTranscribeModel,
-      replicateTranscribeModel: overrides.transcribeModel && effectiveTranscriptionProvider === 'replicate' ? overrides.transcribeModel : global.replicateTranscribeModel,
-      falLipsyncImageModel: overrides.lipsyncImageModel && lipsyncProvider !== 'replicate' ? overrides.lipsyncImageModel : global.falLipsyncImageModel,
-      falLipsyncVideoModel: overrides.lipsyncVideoModel && lipsyncProvider !== 'replicate' ? overrides.lipsyncVideoModel : global.falLipsyncVideoModel,
-      replicateLipsyncImageModel: overrides.lipsyncImageModel && lipsyncProvider === 'replicate' ? overrides.lipsyncImageModel : global.replicateLipsyncImageModel,
-      replicateLipsyncVideoModel: overrides.lipsyncVideoModel && lipsyncProvider === 'replicate' ? overrides.lipsyncVideoModel : global.replicateLipsyncVideoModel,
-      imageAspectRatio: overrides.imageAspectRatio || global.imageAspectRatio,
-      imageSizePreset: overrides.imageSizePreset || global.imageSizePreset,
-      imageSteps: overrides.imageSteps || global.imageSteps,
-      videoDuration: overrides.videoDuration || global.videoDuration,
-      videoAspectRatio: overrides.videoAspectRatio || global.videoAspectRatio,
-      videoResolution: overrides.videoResolution || global.videoResolution,
-      soundDuration: overrides.soundDuration || global.soundDuration,
-      audioExtendDuration: overrides.audioExtendDuration || global.audioExtendDuration,
-    };
-    return next;
-  }, [globalModelSelection, uiModelOverrides, primaryModels, harnessModels]);
-
-  // The composer speaks the effective pair: while a primary override is
-  // pinned, the picker shows it and edits rewrite the override instead of the
-  // global config (the backend record wins either way).
-  const conversationPrimaryOverride =
-    uiModelOverrides && (uiModelOverrides.primaryProvider || uiModelOverrides.primaryModel) ? uiModelOverrides : null;
-  const composerProvider: ChatProviderID = conversationPrimaryOverride?.primaryProvider === 'openrouter'
-    || conversationPrimaryOverride?.primaryProvider === 'openai-compatible'
-    || conversationPrimaryOverride?.primaryProvider === 'ollama'
-    ? conversationPrimaryOverride.primaryProvider as ChatProviderID
-    : primaryProvider;
-  const composerModel = conversationPrimaryOverride?.primaryModel || primaryModels[composerProvider];
-  const composerModelOptions = useMemo(
-    () => chatModelOptionsFor(composerProvider, {modelOptions, openRouterModels, openaiCompatibleModels: openaiCompatibleModelOptions}),
-    [composerProvider, modelOptions, openRouterModels, openaiCompatibleModelOptions],
-  );
-  const composerModelIsValid = composerModelOptions.some((option) => option.value === composerModel);
-
-  const openConversationModels = () => {
-    // With no conversation active this edits the PENDING override the next
-    // conversation carries from its first message; otherwise the record's.
-    setConvModelsDraft(conversationModelSelection);
-    setConvModelsKeys(overrideKeysFromRecord(uiModelOverrides));
-    setView('conversation-models');
-  };
-
-  // patchConversationModels applies a panel edit to the conversation draft.
-  // A provider switch also carries the new provider's inherited global model
-  // into the draft (so the paired picker displays it) and drops any model
-  // pinned to the old provider — the patch argument drives the override keys,
-  // the derived display values never do.
-  const patchConversationModels = (patch: Partial<ModelSelectionValue>) => {
-    const draftPatch: Partial<ModelSelectionValue> = {...patch};
-    if (draftPatch.harnessProvider !== undefined && patch.harnessModel === undefined) {
-      draftPatch.harnessModel = harnessModels[draftPatch.harnessProvider];
-    }
-    if (draftPatch.imageProvider !== undefined && patch.falModel === undefined && patch.openaiImageModel === undefined && patch.replicateModel === undefined) {
-      if (draftPatch.imageProvider === 'fal') {
-        draftPatch.falModel = falModel;
-      } else if (draftPatch.imageProvider === 'replicate') {
-        draftPatch.replicateModel = replicateModel;
-      } else {
-        draftPatch.openaiImageModel = openaiCompatibleModel;
-      }
-    }
-    // A video-provider switch carries the new backend's inherited models into
-    // the draft so the paired pickers display them (the image-provider rule).
-    if (draftPatch.videoProvider !== undefined && patch.falVideoModel === undefined && patch.replicateVideoModel === undefined) {
-      if (draftPatch.videoProvider === 'replicate') {
-        draftPatch.replicateVideoModel = replicateVideoModel;
-        draftPatch.replicateVideoImageModel = replicateVideoImageModel;
-        draftPatch.replicateVideoExtendModel = replicateVideoExtendModel;
-      } else {
-        draftPatch.falVideoModel = falVideoModel;
-        draftPatch.falVideoImageModel = falVideoImageModel;
-        draftPatch.falVideoExtendModel = falVideoExtendModel;
-      }
-    }
-    // A transcription-provider switch carries the new backend's inherited
-    // model into the draft so the picker displays it (the video pair's rule).
-    if (draftPatch.transcriptionProvider !== undefined && patch.falTranscribeModel === undefined && patch.replicateTranscribeModel === undefined) {
-      if (draftPatch.transcriptionProvider === 'replicate') {
-        draftPatch.replicateTranscribeModel = replicateTranscribeModel;
-      } else {
-        draftPatch.falTranscribeModel = falTranscribeModel;
-      }
-    }
-    // An audio-provider switch carries the new backend's inherited sound
-    // models into the draft so the paired pickers display them (the video
-    // pair's rule).
-    if (draftPatch.audioProvider !== undefined && patch.falSoundEffectsModel === undefined && patch.replicateSoundEffectsModel === undefined) {
-      if (draftPatch.audioProvider === 'replicate') {
-        draftPatch.replicateSoundEffectsModel = replicateSoundEffectsModel;
-        draftPatch.replicateSoundEffectsVideoModel = replicateSoundEffectsVideoModel;
-        draftPatch.replicateAudioExtendModel = replicateAudioExtendModel;
-      } else {
-        draftPatch.falSoundEffectsModel = falSoundEffectsModel;
-        draftPatch.falSoundEffectsVideoModel = falSoundEffectsVideoModel;
-        draftPatch.falAudioExtendModel = falAudioExtendModel;
-      }
-    }
-    if (draftPatch.primaryProvider !== undefined && patch.primaryModel === undefined) {
-      draftPatch.primaryModel = primaryModels[draftPatch.primaryProvider];
-    }
-    setConvModelsDraft((prev) => (prev ? {...prev, ...draftPatch} : prev));
-    setConvModelsKeys((prev) => {
-      const next = new Set(prev);
-      if (patch.primaryProvider !== undefined || patch.primaryModel !== undefined) next.add('primary');
-      if (patch.harnessProvider !== undefined) {
-        next.add('harnessProvider');
-        next.delete('harnessModel');
-      }
-      if (patch.harnessModel !== undefined) next.add('harnessModel');
-      if (patch.imageProvider !== undefined) {
-        next.add('imageProvider');
-        next.delete('imageModel');
-      }
-      if (patch.falModel !== undefined || patch.openaiImageModel !== undefined || patch.replicateModel !== undefined) next.add('imageModel');
-      if (patch.videoProvider !== undefined) {
-        next.add('videoProvider');
-        next.delete('videoModel');
-        next.delete('videoImageModel');
-      }
-      if (patch.falImageEditModel !== undefined || patch.replicateImageEditModel !== undefined) next.add('imageEditModel');
-      if (patch.falUpscaleModel !== undefined || patch.replicateUpscaleModel !== undefined) next.add('upscaleModel');
-      if (patch.inpaintProvider !== undefined) {
-        next.add('inpaintProvider');
-        next.delete('inpaintModel');
-      }
-      if (patch.falInpaintModel !== undefined || patch.replicateInpaintModel !== undefined) next.add('inpaintModel');
-      if (patch.falVideoModel !== undefined || patch.replicateVideoModel !== undefined) next.add('videoModel');
-      if (patch.falVideoImageModel !== undefined || patch.replicateVideoImageModel !== undefined) next.add('videoImageModel');
-      if (patch.falVideoKeyframeModel !== undefined) next.add('videoKeyframeModel');
-      if (patch.falVideoExtendModel !== undefined || patch.replicateVideoExtendModel !== undefined) next.add('videoExtendModel');
-      if (patch.falVideoMotionModel !== undefined) next.add('videoMotionModel');
-      if (patch.falVideoUpscaleModel !== undefined || patch.replicateVideoUpscaleModel !== undefined) next.add('videoUpscaleModel');
-      if (patch.falVideoReframeModel !== undefined || patch.replicateVideoReframeModel !== undefined) next.add('videoReframeModel');
-      if (patch.falVideoRestyleModel !== undefined || patch.replicateVideoRestyleModel !== undefined) next.add('videoRestyleModel');
-      if (patch.speechProvider !== undefined) {
-        // The imageProvider recipe: the stored speech model belongs to the
-        // previous provider's slot, so a provider change drops it.
-        next.add('speechProvider');
-        next.delete('audioModel');
-      }
-      if (patch.falAudioModel !== undefined || patch.ollamaSpeechModel !== undefined || patch.replicateSpeechModel !== undefined) next.add('audioModel');
-      if (patch.falAudioCloneModel !== undefined) next.add('audioCloneModel');
-      if (patch.audioProvider !== undefined) {
-        // The speechProvider recipe: the stored sound models belong to the
-        // previous provider's slots, so a provider change drops them.
-        next.add('audioProvider');
-        next.delete('soundEffectsModel');
-        next.delete('soundEffectsVideoModel');
-      }
-      if (patch.falSoundEffectsModel !== undefined || patch.replicateSoundEffectsModel !== undefined) next.add('soundEffectsModel');
-      if (patch.falSoundEffectsVideoModel !== undefined || patch.replicateSoundEffectsVideoModel !== undefined) next.add('soundEffectsVideoModel');
-      if (patch.falAudioExtendModel !== undefined || patch.replicateAudioExtendModel !== undefined) next.add('audioExtendModel');
-      if (patch.falVoiceDesignModel !== undefined) next.add('voiceDesignModel');
-      if (patch.falAudioExtendModel !== undefined) next.add('audioExtendModel');
-      if (patch.falTranscribeModel !== undefined || patch.replicateTranscribeModel !== undefined) next.add('transcribeModel');
-      if (patch.transcriptionProvider !== undefined) next.add('transcriptionProvider');
-      if (patch.imageAspectRatio !== undefined) next.add('imageAspectRatio');
-      if (patch.imageSizePreset !== undefined) next.add('imageSizePreset');
-      if (patch.imageSteps !== undefined) next.add('imageSteps');
-      if (patch.videoDuration !== undefined) next.add('videoDuration');
-      if (patch.videoAspectRatio !== undefined) next.add('videoAspectRatio');
-      if (patch.videoResolution !== undefined) next.add('videoResolution');
-      if (patch.soundDuration !== undefined) next.add('soundDuration');
-      if (patch.audioExtendDuration !== undefined) next.add('audioExtendDuration');
-      if (patch.falLipsyncImageModel !== undefined) next.add('lipsyncImageModel');
-      if (patch.falLipsyncVideoModel !== undefined) next.add('lipsyncVideoModel');
-      if (patch.lipsyncProvider !== undefined) next.add('lipsyncProvider');
-      if (patch.replicateLipsyncImageModel !== undefined) next.add('lipsyncImageModel');
-      if (patch.replicateLipsyncVideoModel !== undefined) next.add('lipsyncVideoModel');
-      return next;
-    });
-  };
-
-  const resetConversationModelField = (key: string) => {
-    setConvModelsKeys((prev) => {
-      const next = new Set(prev);
-      next.delete(key);
-      return next;
-    });
-    setConvModelsDraft((prev) => {
-      if (!prev) {
-        return prev;
-      }
-      const global = globalModelSelection;
-      const next = {...prev};
-      switch (key) {
-        case 'primary':
-          next.primaryProvider = global.primaryProvider;
-          next.primaryModel = primaryModels[global.primaryProvider];
-          break;
-        case 'harnessProvider':
-          next.harnessProvider = global.harnessProvider;
-          break;
-        case 'harnessModel':
-          next.harnessModel = harnessModels[next.harnessProvider];
-          break;
-        case 'imageProvider':
-          next.imageProvider = global.imageProvider;
-          break;
-        case 'imageModel':
-          if (next.imageProvider === 'fal') {
-            next.falModel = global.falModel;
-          } else if (next.imageProvider === 'replicate') {
-            next.replicateModel = global.replicateModel;
-          } else {
-            next.openaiImageModel = global.openaiImageModel;
-          }
-          break;
-        case 'videoProvider':
-          next.videoProvider = global.videoProvider;
-          break;
-        case 'imageEditModel':
-          next.falImageEditModel = global.falImageEditModel;
-          next.replicateImageEditModel = global.replicateImageEditModel;
-          break;
-        case 'upscaleModel':
-          next.falUpscaleModel = global.falUpscaleModel;
-          next.replicateUpscaleModel = global.replicateUpscaleModel;
-          break;
-        case 'inpaintProvider':
-          next.inpaintProvider = global.inpaintProvider;
-          break;
-        case 'inpaintModel':
-          next.falInpaintModel = global.falInpaintModel;
-          next.replicateInpaintModel = global.replicateInpaintModel;
-          break;
-        case 'videoModel': next.falVideoModel = global.falVideoModel; next.replicateVideoModel = global.replicateVideoModel; break;
-        case 'videoImageModel': next.falVideoImageModel = global.falVideoImageModel; next.replicateVideoImageModel = global.replicateVideoImageModel; break;
-        case 'videoKeyframeModel': next.falVideoKeyframeModel = global.falVideoKeyframeModel; break;
-        case 'videoExtendModel':
-          next.falVideoExtendModel = global.falVideoExtendModel;
-          next.replicateVideoExtendModel = global.replicateVideoExtendModel;
-          break;
-        case 'videoMotionModel': next.falVideoMotionModel = global.falVideoMotionModel; break;
-        case 'videoUpscaleModel':
-          next.falVideoUpscaleModel = global.falVideoUpscaleModel;
-          next.replicateVideoUpscaleModel = global.replicateVideoUpscaleModel;
-          break;
-        case 'videoReframeModel':
-          next.falVideoReframeModel = global.falVideoReframeModel;
-          next.replicateVideoReframeModel = global.replicateVideoReframeModel;
-          break;
-        case 'videoRestyleModel':
-          next.falVideoRestyleModel = global.falVideoRestyleModel;
-          next.replicateVideoRestyleModel = global.replicateVideoRestyleModel;
-          break;
-        case 'audioModel':
-          next.falAudioModel = global.falAudioModel;
-          next.ollamaSpeechModel = global.ollamaSpeechModel;
-          next.replicateSpeechModel = global.replicateSpeechModel;
-          break;
-        case 'speechProvider': next.speechProvider = global.speechProvider; break;
-        case 'audioProvider': next.audioProvider = global.audioProvider; break;
-        case 'audioCloneModel': next.falAudioCloneModel = global.falAudioCloneModel; break;
-        case 'soundEffectsModel':
-          next.falSoundEffectsModel = global.falSoundEffectsModel;
-          next.replicateSoundEffectsModel = global.replicateSoundEffectsModel;
-          break;
-        case 'soundEffectsVideoModel':
-          next.falSoundEffectsVideoModel = global.falSoundEffectsVideoModel;
-          next.replicateSoundEffectsVideoModel = global.replicateSoundEffectsVideoModel;
-          break;
-        case 'voiceDesignModel': next.falVoiceDesignModel = global.falVoiceDesignModel; break;
-        case 'audioExtendModel':
-          next.falAudioExtendModel = global.falAudioExtendModel;
-          next.replicateAudioExtendModel = global.replicateAudioExtendModel;
-          break;
-        case 'transcribeModel':
-          next.falTranscribeModel = global.falTranscribeModel;
-          next.replicateTranscribeModel = global.replicateTranscribeModel;
-          break;
-        case 'transcriptionProvider': next.transcriptionProvider = global.transcriptionProvider; break;
-        case 'imageAspectRatio': next.imageAspectRatio = global.imageAspectRatio; break;
-        case 'imageSizePreset': next.imageSizePreset = global.imageSizePreset; break;
-        case 'imageSteps': next.imageSteps = global.imageSteps; break;
-        case 'videoDuration': next.videoDuration = global.videoDuration; break;
-        case 'videoAspectRatio': next.videoAspectRatio = global.videoAspectRatio; break;
-        case 'videoResolution': next.videoResolution = global.videoResolution; break;
-        case 'soundDuration': next.soundDuration = global.soundDuration; break;
-        case 'audioExtendDuration': next.audioExtendDuration = global.audioExtendDuration; break;
-        case 'lipsyncProvider': next.lipsyncProvider = global.lipsyncProvider; break;
-        case 'lipsyncImageModel':
-          next.falLipsyncImageModel = global.falLipsyncImageModel;
-          next.replicateLipsyncImageModel = global.replicateLipsyncImageModel;
-          break;
-        case 'lipsyncVideoModel':
-          next.falLipsyncVideoModel = global.falLipsyncVideoModel;
-          next.replicateLipsyncVideoModel = global.replicateLipsyncVideoModel;
-          break;
-      }
-      return next;
-    });
-  };
-
-  const resetAllConversationModels = () => {
-    setConvModelsKeys(new Set());
-    setConvModelsDraft(globalModelSelection);
-  };
-
-  // closeConversationModels leaves the screen with a synchronous flush: the
-  // debounced save below would otherwise be cancelled by the view change and
-  // silently drop an edit made within the debounce window. Every override
-  // write toasts its failure under one key (the flush, the debounced save,
-  // and the composer's primary pin), and the next successful save dismisses
-  // it.
-  const closeConversationModels = () => {
-    if (convModelsDraft && activeConversationID) {
-      SetConversationModelOverrides(activeConversationID, conversationOverridesPayload(convModelsDraft, convModelsKeys))
-        .then((summary) => {
-          setConversations((prev) => prev.map((item) => (item.id === summary.id ? main.ConversationSummary.createFrom({...item, modelOverrides: summary.modelOverrides ?? undefined}) : item)));
-          notifications.dismissKey('conv-models');
-        })
-        .catch((error) => notifyError("Couldn't save the conversation's models", error, {key: 'conv-models'}));
-    }
-    setView('app');
-  };
-
-  // Write the conversation draft through, debounced like the Settings
-  // auto-save. With a conversation open it goes to the record via the
-  // mutator — the returned summary keeps the local conversation list
-  // current, so the toolbar badge and the composer pick up the override
-  // without a refetch. With NO conversation yet (pending mode) the draft IS
-  // the storage: it lands in draftModelOverrides and travels with the first
-  // message (ChatRequest.modelOverrides), so no backend call happens.
-  useEffect(() => {
-    if (view !== 'conversation-models' || !convModelsDraft) {
-      return;
-    }
-    if (!activeConversationID) {
-      setDraftModelOverrides(convModelsKeys.size ? conversationOverridesPayload(convModelsDraft, convModelsKeys) : null);
-      return;
-    }
-    const timeout = window.setTimeout(() => {
-      SetConversationModelOverrides(activeConversationID, conversationOverridesPayload(convModelsDraft, convModelsKeys))
-        .then((summary) => {
-          setConversations((prev) => prev.map((item) => (item.id === summary.id ? main.ConversationSummary.createFrom({...item, modelOverrides: summary.modelOverrides ?? undefined}) : item)));
-          notifications.dismissKey('conv-models');
-        })
-        .catch((error) => notifyError("Couldn't save the conversation's models", error, {key: 'conv-models'}));
-    }, 300);
-    return () => window.clearTimeout(timeout);
-  }, [view, convModelsDraft, convModelsKeys, activeConversationID]);
-
-  // The per-model duration selects in the conversation screen must follow the
-  // DRAFT's video models (which may be overridden), not the global ones. Same
-  // fetch-and-fallback as the global pickers; the current draft value is kept
-  // selectable at render time even when the model's schema doesn't list it,
-  // so the select never silently shows a value the conversation won't use.
-  const [convDurationOptions, setConvDurationOptions] = useState<{video: string[]; image: string[]; keyframe: string[]; extend: string[]; sound: string[]}>({
-    video: defaultVideoDurationOptions,
-    image: defaultVideoDurationOptions,
-    keyframe: defaultVideoDurationOptions,
-    extend: defaultVideoDurationOptions,
-    sound: defaultSoundDurationOptions,
-  });
-  const convDraftVideoModel = convModelsDraft?.falVideoModel ?? '';
-  const convDraftVideoImageModel = convModelsDraft?.falVideoImageModel ?? '';
-  const convDraftVideoKeyframeModel = convModelsDraft?.falVideoKeyframeModel ?? '';
-  const convDraftVideoProvider = convModelsDraft?.videoProvider ?? videoProvider;
-  // Extend routes by the draft's video provider like the t2v/i2v pair;
-  // keyframes stay fal-only.
-  const convDraftVideoExtendModel = convDraftVideoProvider === 'replicate'
-    ? (convModelsDraft?.replicateVideoExtendModel ?? '')
-    : (convModelsDraft?.falVideoExtendModel ?? '');
-  const convDraftSoundEffectsModel = convModelsDraft?.falSoundEffectsModel ?? '';
-  useEffect(() => {
-    if (view !== 'conversation-models') {
-      return;
-    }
-    let cancelled = false;
-    // The t2v/i2v/extend duration lookups follow the draft's video provider
-    // (the replicate backend reads its own schema cache); keyframes are a
-    // fal-only tool and always read fal's.
-    const fetchOptions = async (model: string, provider: 'fal' | 'replicate') => {
-      const fetcher = provider === 'replicate' ? ListReplicateVideoDurations : ListFalVideoDurations;
-      try {
-        const durations = await fetcher(model);
-        return durations && durations.length ? durations : defaultVideoDurationOptions;
-      } catch {
-        return defaultVideoDurationOptions;
-      }
-    };
-    const fetchSoundOptions = async () => {
-      // The duration lookup reads the selected model's published schema, a
-      // fal binding — a Replicate-pinned draft falls back to the generic
-      // ladder (the replicate resolver clamps or drops an unsupported length
-      // with a notice at call time).
-      if (convModelsDraft?.audioProvider === 'replicate') {
-        return defaultSoundDurationOptions;
-      }
-      try {
-        const durations = await ListFalSoundEffectDurations(convDraftSoundEffectsModel);
-        const schemaOpts = durations && durations.length ? durations : defaultSoundDurationOptions;
-        return schemaOpts.includes('auto') ? schemaOpts : ['auto', ...schemaOpts];
-      } catch {
-        return defaultSoundDurationOptions;
-      }
-    };
-    Promise.all([
-      fetchOptions(convDraftVideoProvider === 'replicate' ? (convModelsDraft?.replicateVideoModel ?? '') : convDraftVideoModel, convDraftVideoProvider),
-      fetchOptions(convDraftVideoProvider === 'replicate' ? (convModelsDraft?.replicateVideoImageModel ?? '') : convDraftVideoImageModel, convDraftVideoProvider),
-      fetchOptions(convDraftVideoKeyframeModel, 'fal'),
-      fetchOptions(convDraftVideoExtendModel, convDraftVideoProvider),
-      fetchSoundOptions(),
-    ])
-      .then(([video, image, keyframe, extend, sound]) => {
-        if (!cancelled) {
-          setConvDurationOptions({video, image, keyframe, extend, sound});
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [view, videoProvider, convDraftVideoProvider, convModelsDraft, convDraftVideoModel, convDraftVideoImageModel, convDraftVideoKeyframeModel, convDraftVideoExtendModel, convDraftSoundEffectsModel]);
-
-  const saveComposerPrimaryOverride = async (provider: ChatProviderID, modelValue: string) => {
-    if (!activeConversationID) {
-      // No conversation yet: the pair pins onto the pending override the
-      // first message will carry — no record exists to write.
-      const pendingKeys = new Set(overrideKeysFromRecord(draftModelOverrides));
-      pendingKeys.add('primary');
-      setDraftModelOverrides(conversationOverridesPayload(
-        {...conversationModelSelection, primaryProvider: provider, primaryModel: modelValue},
-        pendingKeys,
-      ));
-      return;
-    }
-    const keys = new Set(overrideKeysFromRecord(conversationOverrides));
-    keys.add('primary');
-    const payload = conversationOverridesPayload(
-      {...conversationModelSelection, primaryProvider: provider, primaryModel: modelValue},
-      keys,
-    );
-    try {
-      const summary = await SetConversationModelOverrides(activeConversationID, payload);
-      setConversations((prev) => prev.map((item) => (item.id === summary.id ? main.ConversationSummary.createFrom({...item, modelOverrides: summary.modelOverrides ?? undefined}) : item)));
-      notifications.dismissKey('conv-models');
-    } catch (error) {
-      notifyError("Couldn't save the conversation's models", error, {key: 'conv-models'});
-    }
-  };
-
-  const selectComposerProvider = (next: ChatProviderID) => {
-    if (conversationPrimaryOverride) {
-      saveComposerPrimaryOverride(next, primaryModels[next] || composerModel);
-      return;
-    }
-    setPrimaryProvider(next);
-  };
-
-  const selectComposerModel = (next: string) => {
-    if (conversationPrimaryOverride) {
-      saveComposerPrimaryOverride(composerProvider, next);
-      return;
-    }
-    setModel(next);
-  };
-
-  // modelSelectionCatalogs feeds ModelSelectionPanel's pickers: the fetched
-  // model lists plus the key/detection state. One object serves both the
-  // Settings Models tab and the conversation-models screen.
-  const modelSelectionCatalogs = {
-    models,
-    modelOptions,
-    openRouterModels,
-    openaiCompatibleModels: openaiCompatibleModelOptions,
-    falModels,
-    falImageEditModels,
-    replicateModels,
-    replicateImageEditModels,
-    replicateUpscaleModels,
-    replicateVideoUpscaleModels,
-    replicateVideoRestyleModels,
-    replicateVideoReframeModels,
-    replicateVideoExtendModels,
-    replicateVideoModels,
-    replicateVideoImageModels,
-    replicateTranscribeModels,
-    replicateLipsyncImageModels,
-    replicateLipsyncVideoModels,
-    replicateSoundEffectsModels,
-    replicateSoundEffectsVideoModels,
-    replicateAudioExtendModels,
-    replicateSpeechModels,
-    falVideoModels,
-    falVideoImageModels,
-    falVideoKeyframeModels,
-    falVideoExtendModels,
-    falVideoMotionModels,
-    falVideoUpscaleModels,
-    falVideoReframeModels,
-    falVideoRestyleModels,
-    falAudioModels,
-    falSoundEffectModels,
-    falSoundEffectsVideoModels,
-    falAudioExtendModels,
-    falVoiceDesignModels,
-    falTranscribeModels,
-    falUpscaleModels,
-    falLipsyncImageModels,
-    falLipsyncVideoModels,
-    openRouterHasKey,
-    falHasKey,
-    replicateHasKey,
-    whisperStatus,
-    openCapabilityID,
-    setOpenCapabilityID,
-  };
-  // Called here, not beside the other Settings hooks, to keep its loader
-  // effects in their original place in the mount order (they reconcile the
-  // selected durations as the ladders land).
-  const {
-    soundDurationOptions,
-    videoDurationExtendOptions,
-    videoDurationImageOptions,
-    videoDurationKeyframeOptions,
-    videoDurationOptions,
-  } = useDurationOptions({videoProvider, falVideoModel, replicateVideoModel, setVideoDuration, audioProvider, falSoundEffectsModel, setSoundDuration, falVideoImageModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, replicateVideoExtendModel});
-  useEffect(() => {
-    // Only re-run when the option list itself changes (provider switch, or
-    // the OpenRouter list finishing a load) — not on every keystroke of
-    // `model`, since the primary-model field is now free-text (filterable)
-    // and is expected to be transiently "invalid" while the user is typing.
-    if (!primaryModelOptions.length) {
-      return;
-    }
-    setModel((current) => (primaryModelOptions.some((option) => option.value === current) ? current : primaryModelOptions[0].value));
-  }, [primaryModelOptions]);
-
-  useEffect(() => {
-    const needsCatalog = primaryProvider === 'openrouter' || harnessProvider === 'openrouter';
-    if (needsCatalog && openRouterHasKey && openRouterModels.length === 0 && openRouterStatus !== 'error') {
-      refreshOpenRouterModels();
-    }
-    const needsLocalCatalog = primaryProvider === 'openai-compatible' || harnessProvider === 'openai-compatible';
-    if (needsLocalCatalog && openaiCompatibleModels.length === 0 && openaiCompatibleStatus !== 'error') {
-      refreshOpenAICompatibleModels();
-    }
-  }, [primaryProvider, harnessProvider, openRouterHasKey, openRouterModels.length, openRouterStatus, openaiCompatibleModels.length, openaiCompatibleStatus]);
-
-  async function loadConfig() {
-    const config = await GetConfig();
-    setStartupError('');
-    const next = applyConfig(config);
-    await Promise.all([
-      refreshConversations(),
-      refreshOllama(next.baseURL),
-      // Every provider with a stored key gets the same startup pair: a catalog
-      // refresh (discovery aid, errors swallowed) and a cheap authenticated key
-      // ping that sets the Settings status light — so all three lights mean the
-      // same thing ("last key validation") instead of OpenRouter's meaning
-      // "public model list reachable".
-      HasOpenRouterAPIKey().then((hasKey) => {
-        setOpenRouterHasKey(hasKey);
-        if (hasKey) {
-          refreshOpenRouterModels();
-          checkOpenRouterConnection();
-        }
-      }).catch(() => setOpenRouterHasKey(false)),
-      HasFalAPIKey().then((hasKey) => {
-        setFalHasKey(hasKey);
-        if (hasKey) {
-          refreshFalModels();
-          checkFalConnection();
-        }
-      }).catch(() => setFalHasKey(false)),
-      HasReplicateAPIKey().then((hasKey) => {
-        setReplicateHasKey(hasKey);
-        if (hasKey) {
-          refreshReplicateModels();
-          checkReplicateConnection();
-        }
-      }).catch(() => setReplicateHasKey(false)),
-      DetectLocalTools(new main.LocalToolOverrides()).then((report) => {
-        setLocalToolsReport(report);
-        // An unset provider auto-resolves in Go (fal when a key exists, else a
-        // detected local whisper). Adopt that resolution here so the dropdown
-        // shows — and the next save persists — what the backend would do.
-        if (!config.models?.transcriptionProvider &&
-            (report.transcriptionProvider === 'fal' || report.transcriptionProvider === 'local-whisper' || report.transcriptionProvider === 'replicate')) {
-          setTranscriptionProvider(report.transcriptionProvider);
-        }
-      }).catch(() => setLocalToolsReport(null)),
-      HasOpenAICompatibleAPIKey().then((hasKey) => {
-        setOpenaiCompatibleHasKey(hasKey);
-      }).catch(() => setOpenaiCompatibleHasKey(false)),
-      refreshOpenAICompatibleModels(next.openaiCompatibleBaseURL),
-    ]);
-  }
-
-  // chooseDraftWorkspace is the per-conversation picker for a NEW chat. It
-  // reuses the same native dialog as the Settings default picker, but writes
-  // the result into draftWorkspace (the per-conversation override) rather than
-  // the global toolConfig. After the first send the workspace is immutable and
-  // this handler is no longer reachable from the UI.
-  async function chooseDraftWorkspace() {
-    try {
-      const seed = draftWorkspace || (toolConfig?.filesystem?.root ?? '');
-      const selected = await ChooseToolWorkspace(seed);
-      if (!selected) {
-        return;
-      }
-      setDraftWorkspace(selected);
-    } catch (error) {
-      notifyError("Couldn't choose the workspace folder", error);
-    }
-  }
-
-  // activeConversationWorkspace is the immutable workspace of the conversation
-  // currently in view, looked up from the conversation list. Empty for a new
-  // chat (where draftWorkspace takes over) or for legacy conversations without
-  // one (the UI falls back to the configured default).
-  const activeConversationWorkspace = activeConversationID
-    ? conversations.find((item) => item.id === activeConversationID)?.workspace ?? ''
-    : '';
-
-  const displayedWorkspace = activeConversationID
-    ? (activeConversationWorkspace || defaultWorkspaceRoot)
-    : (draftWorkspace || defaultWorkspaceRoot);
-
-  async function refreshOllama(endpoint = baseURL) {
-    setRefreshing(true);
-    try {
-      const nextStatus = await CheckOllama(endpoint);
-      setStatus(nextStatus);
-      if (!nextStatus.online) {
-        setModels([]);
-        return;
-      }
-      const nextModels = asArray(await ListModels(endpoint));
-      setModels(nextModels);
-      const firstModel = nextModels[0]?.name ?? '';
-      setPrimaryModels((current) => (current.ollama ? current : {...current, ollama: firstModel}));
-      // Target the Ollama slot explicitly: this default comes from the Ollama
-      // catalog and must not land in the OpenRouter slot when that provider is
-      // the active one.
-      setHarnessModels((current) => (current.ollama ? current : {...current, ollama: firstModel}));
-    } finally {
-      setRefreshing(false);
-    }
-  }
-
-  async function saveOpenRouterKey() {
-    try {
-      await SaveOpenRouterAPIKey(openRouterAPIKeyInput);
-      setOpenRouterAPIKeyInput('');
-      const hasKey = await HasOpenRouterAPIKey();
-      setOpenRouterHasKey(hasKey);
-      setOpenRouterStatus('unknown');
-      setOpenRouterError('');
-      if (hasKey) {
-        await refreshOpenRouterModels();
-        await checkOpenRouterConnection();
-      }
-    } catch (error) {
-      setOpenRouterStatus('error');
-      setOpenRouterError(formatError(error));
-    }
-  }
-
-  async function clearOpenRouterKey() {
-    try {
-      await SaveOpenRouterAPIKey('');
-      setOpenRouterHasKey(false);
-      setOpenRouterModels([]);
-      setOpenRouterStatus('unknown');
-      setOpenRouterError('');
-      setPrimaryProvider((current) => current === 'openrouter' ? 'ollama' : current);
-      // The harness cannot reach OpenRouter without a key either, and an
-      // unreachable harness now fails the turn up front rather than degrading.
-      setHarnessProvider((current) => current === 'openrouter' ? 'ollama' : current);
-    } catch (error) {
-      setOpenRouterStatus('error');
-      setOpenRouterError(formatError(error));
-    }
-  }
-
-  async function saveFalKey() {
-    try {
-      await SaveFalAPIKey(falAPIKeyInput);
-      setFalAPIKeyInput('');
-      const hasKey = await HasFalAPIKey();
-      setFalHasKey(hasKey);
-      setFalStatus('unknown');
-      setFalError('');
-      notifications.dismissKey('key-fal');
-      if (hasKey) {
-        await refreshFalModels();
-        await checkFalConnection();
-      }
-    } catch (error) {
-      notifyError("Couldn't save the fal.ai key", error, {key: 'key-fal'});
-    }
-  }
-
-  async function clearFalKey() {
-    try {
-      await SaveFalAPIKey('');
-      setFalHasKey(false);
-      clearFalCatalogs();
-      setFalStatus('unknown');
-      setFalError('');
-      notifications.dismissKey('key-fal');
-      setImageProvider((current) => current === 'fal' ? 'openai-compatible' : current);
-      setVideoProvider((current) => current === 'fal' ? 'replicate' : current);
-    } catch (error) {
-      notifyError("Couldn't remove the fal.ai key", error, {key: 'key-fal'});
-    }
-  }
-
-  async function saveReplicateKey() {
-    try {
-      await SaveReplicateAPIKey(replicateAPIKeyInput);
-      setReplicateAPIKeyInput('');
-      const hasKey = await HasReplicateAPIKey();
-      setReplicateHasKey(hasKey);
-      setReplicateStatus('unknown');
-      setReplicateError('');
-      notifications.dismissKey('key-replicate');
-      if (hasKey) {
-        await refreshReplicateModels();
-        await checkReplicateConnection();
-      }
-    } catch (error) {
-      notifyError("Couldn't save the Replicate key", error, {key: 'key-replicate'});
-    }
-  }
-
-  async function clearReplicateKey() {
-    try {
-      await SaveReplicateAPIKey('');
-      setReplicateHasKey(false);
-      clearReplicateCatalogs();
-      setReplicateStatus('unknown');
-      setReplicateError('');
-      notifications.dismissKey('key-replicate');
-      setImageProvider((current) => current === 'replicate' ? 'openai-compatible' : current);
-      setVideoProvider((current) => current === 'replicate' ? 'fal' : current);
-      setLipsyncProvider((current) => current === 'replicate' ? 'fal' : current);
-    } catch (error) {
-      notifyError("Couldn't remove the Replicate key", error, {key: 'key-replicate'});
-    }
-  }
-
-  // The OpenAI-compatible image server list is a discovery aid like fal's
-  // catalog: a server without /v1/models only loses the suggestions, never the
-  // free-text model field. The status feeds the Providers tab endpoint row.
-  async function refreshOpenAICompatibleModels(endpoint = openaiCompatibleBaseURL) {
-    try {
-      const ids = await ListOpenAICompatibleModels(endpoint);
-      setOpenaiCompatibleModels(asArray(ids));
-      setOpenaiCompatibleStatus('ok');
-    } catch {
-      setOpenaiCompatibleModels([]);
-      setOpenaiCompatibleStatus('error');
-    }
-  }
-
-  useEffect(() => {
-    activeConversationIDRef.current = activeConversationID;
-  }, [activeConversationID]);
-  useEffect(() => {
-    openEditorSessionsRef.current = {
-      onScreen: view === 'app',
-      image: editorHandle ? editorHandle.sessionID ?? '' : undefined,
-      video: videoEditorHandle ? videoEditorHandle.sessionID ?? '' : undefined,
-      audio: audioEditorHandle ? audioEditorHandle.sessionID ?? '' : undefined,
-    };
-  }, [view, editorHandle, videoEditorHandle, audioEditorHandle]);
-
-  async function resetWorkspace() {
-    stashCurrentDraft();
-    visibleStreamRef.current = null;
-    setActiveStream(null);
-    setChat([]);
-    setCollapsedThinkingIDs({});
-    restoreDraftFor('');
-    setActiveConversationID('');
-    setDraftWorkspace('');
-    // A blank composer is standalone unless the caller (startNewChatInProject)
-    // immediately re-stashes a project context for this composition.
-    setPendingProject(null);
-    setView('app');
-    window.setTimeout(() => {
-      chatPromptRef.current?.focus();
-    }, 0);
-  }
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.repeat || event.altKey || event.shiftKey) {
-        return;
-      }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'n') {
-        event.preventDefault();
-        // Same context-aware flow as File → New Conversation: the native menu
-        // accelerator usually intercepts ⌘N first; this web-side listener
-        // covers the case where it doesn't (both paths are idempotent).
-        newConversationActionRef.current();
-      }
-      if ((event.metaKey || event.ctrlKey) && event.key === ',') {
-        event.preventDefault();
-        void openSettings();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeStream, videoEditorHandle]);
-
-  async function startNewChat() {
-    if (!(await confirmLeaveEditor())) return;
-    // Starting a new conversation leaves the editor — an unsaved draft has no
-    // conversation to return to.
-    closeImageEditor();
-    await resetWorkspace();
-  }
-
-  // editArtifactIDFromURL extracts an img_<hex> artifact id from a hydrated
-  // /atelier-artifact URL. Only persisted images are editable — data: URLs
-  // (the live transcript's inline form) parse to null and hide the Edit
-  // affordances rather than guessing identity.
-  function editArtifactIDFromURL(url: string): string | null {
-    const prefix = '/atelier-artifact/';
-    if (!url || !url.startsWith(prefix)) {
-      return null;
-    }
-    const file = url.slice(prefix.length).split(/[?#]/)[0].split('/').pop() ?? '';
-    const stem = file.replace(/\.[^.]+$/, '');
-    return stem.startsWith('img_') ? stem : null;
-  }
-
-  function videoArtifactIDFromURL(url: string): string | null {
-    if (!url.startsWith('/atelier-artifact/')) return null;
-    const filename = url.split(/[?#]/)[0].split('/').pop() || '';
-    const stem = filename.replace(/\.[^.]+$/, '');
-    return /^vid_[a-zA-Z0-9]+$/.test(stem) ? stem : null;
-  }
-
-  function audioArtifactIDFromURL(url: string): string | null {
-    if (!url.startsWith('/atelier-artifact/')) return null;
-    const filename = url.split(/[?#]/)[0].split('/').pop() || '';
-    const stem = filename.replace(/\.[^.]+$/, '');
-    return /^aud_[a-zA-Z0-9]+$/.test(stem) ? stem : null;
-  }
-
-  // transcriptArtifactIDFromURL matches subtitle artifacts only — trc_ stems
-  // with a .vtt/.srt extension. Plain .txt transcripts are not editor
-  // material, mirroring the assets layer's exclusion.
-  function transcriptArtifactIDFromURL(url: string): string | null {
-    if (!url.startsWith('/atelier-artifact/')) return null;
-    const path = url.split(/[?#]/)[0];
-    const filename = path.split('/').pop() || '';
-    const stem = filename.replace(/\.[^.]+$/, '');
-    if (!/\.(vtt|srt)$/i.test(filename)) return null;
-    return /^trc_[a-zA-Z0-9]+$/.test(stem) ? stem : null;
-  }
-
-  // markdownArtifactIDFromURL matches document artifacts only — md_ stems
-  // with a .md or .fountain extension (the two document dialects).
-  function markdownArtifactIDFromURL(url: string): string | null {
-    if (!url.startsWith('/atelier-artifact/')) return null;
-    const path = url.split(/[?#]/)[0];
-    const filename = path.split('/').pop() || '';
-    const stem = filename.replace(/\.[^.]+$/, '');
-    if (!/\.(md|fountain)$/i.test(filename)) return null;
-    return /^md_[a-zA-Z0-9]+$/.test(stem) ? stem : null;
-  }
-
-  // compositionArtifactIDFromURL matches project documents only — cmp_ stems
-  // with a .json extension, the video composer's saved revisions.
-  function compositionArtifactIDFromURL(url: string): string | null {
-    if (!url.startsWith('/atelier-artifact/')) return null;
-    const path = url.split(/[?#]/)[0];
-    const filename = path.split('/').pop() || '';
-    const stem = filename.replace(/\.[^.]+$/, '');
-    if (!/\.json$/i.test(filename)) return null;
-    return /^cmp_[a-zA-Z0-9]+$/.test(stem) ? stem : null;
-  }
-
-  // comicArtifactIDFromURL matches comic documents only — cbc_ stems with a
-  // .json extension, the comic editor's saved revisions.
-  function comicArtifactIDFromURL(url: string): string | null {
-    if (!url.startsWith('/atelier-artifact/')) return null;
-    const path = url.split(/[?#]/)[0];
-    const filename = path.split('/').pop() || '';
-    const stem = filename.replace(/\.[^.]+$/, '');
-    if (!/\.json$/i.test(filename)) return null;
-    return /^cbc_[a-zA-Z0-9]+$/.test(stem) ? stem : null;
-  }
-
-  function openSettings() {
-    // Settings overlays the editors (hidden, not unmounted) so Back returns to
-    // the exact edit in progress — uncommitted tweaks included — and there is
-    // nothing to discard-confirm.
-    setView('settings');
-  }
-
-  // refreshAfterConversationWrite re-reads everything that shows a
-  // conversation after something wrote into it from outside the chat stream
-  // (an editor save, a finished export): the sidebar list, the assets panel,
-  // and the transcript when that conversation is the one on screen.
-  function refreshAfterConversationWrite(conversationID: string) {
-    void refreshConversations();
-    setAssetsRefreshTick((tick) => tick + 1);
-    if (activeConversationIDRef.current === conversationID) {
-      void GetConversation(conversationID).then((detail) => {
-        if (activeConversationIDRef.current === conversationID) hydrateChatConversation(detail);
-      }).catch((error) => notifyError("Couldn't refresh the conversation", error));
-    }
-  }
-
-  // Mirrors for the empty-deps background-job listener, which must call the
-  // latest closures. The Open action returns to a finished edit's session:
-  // when its editor is still open behind another view, just bring the editor
-  // back; otherwise leave whatever editor is open (confirming unsaved edits)
-  // and open the session on screen.
-  const refreshAfterConversationWriteRef = useRef((_conversationID: string) => {});
-  refreshAfterConversationWriteRef.current = refreshAfterConversationWrite;
-  // focusTurnID, when set, scrolls the opened transcript to that turn's
-  // message — used by history search results to land on the match.
-  async function openConversationSummary(conversation: main.ConversationSummary, focusTurnID = '') {
-    if (!(await confirmLeaveEditor())) return;
-    // Skip redundant opens: the row being viewed (or already loading) needs
-    // no re-fetch or transcript re-render. Search-result jumps re-enter with
-    // focusTurnID and must still run to scroll to the requested turn.
-    if (!focusTurnID && !editorOpen && (conversation.id === activeConversationID || openingConversationRef.current === conversation.id)) {
-      return;
-    }
-    // Edit sessions are not chats: route them to the editor workspace.
-    if (conversation.kind === 'edit') {
-      await openEditSession(conversation.id);
-      return;
-    }
-    openingConversationRef.current = conversation.id;
-    try {
-      // Opening an existing conversation supersedes any pending in-project
-      // composition — the panel and mention scope follow its own project.
-      setPendingProject(null);
-      const detail = await GetConversation(conversation.id);
-      closeImageEditor();
-      setView('app');
-      hydrateChatConversation(detail);
-      if (focusTurnID) {
-        window.setTimeout(() => {
-          document.getElementById(`msg-${focusTurnID}`)?.scrollIntoView({behavior: 'smooth', block: 'center'});
-        }, 80);
-      }
-    } catch (error) {
-      notifyError("Couldn't open the conversation", error);
-    } finally {
-      if (openingConversationRef.current === conversation.id) {
-        openingConversationRef.current = '';
-      }
-    }
-  }
-
-  function hydrateChatConversation(detail: main.ConversationDetail) {
-    stashCurrentDraft();
-    const inFlight = inFlightConversationsRef.current[detail.conversation.id];
-    const visibleRequestID = inFlight?.kind === 'chat' ? inFlight.requestID : null;
-    visibleStreamRef.current = visibleRequestID;
-    setActiveStream(visibleRequestID);
-    shouldFollowTranscriptRef.current = true;
-    const entries: ChatEntry[] = asArray(detail.turns).map((turn) => ({
-      id: turn.id,
-      role: turn.role === 'user' || turn.role === 'system' ? turn.role : 'assistant',
-      content: historyText(turn.content, 'text'),
-      thinking: historyText(turn.content, 'thinking'),
-      images: historyImages(turn.content),
-      videos: historyVideos(turn.content),
-      audios: historyAudios(turn.content),
-      subtitles: turn.role === 'user' ? historySubtitles(turn.content) : undefined,
-      markdowns: historyMarkdowns(turn.content),
-      compositions: historyCompositions(turn.content),
-      comics: historyComics(turn.content),
-      transcripts: historyTranscripts(turn.content),
-      harnessRun: parseHarnessRun(turn.providerResponse?.harnessRun),
-      mediaTool: turn.providerResponse?.tool as MediaToolSummaryView | undefined,
-      provider: turn.provider,
-    }));
-    if (visibleRequestID && !entries.some((entry) => entry.id === `assistant-${visibleRequestID}`)) {
-      const draft = chatStreamDraftsRef.current[visibleRequestID];
-      entries.push({
-        id: `assistant-${visibleRequestID}`,
-        role: 'assistant',
-        content: draft?.content ?? '',
-        thinking: draft?.thinking,
-        images: draft?.images,
-        videos: draft?.videos,
-        audios: draft?.audios,
-        transcripts: draft?.transcripts,
-        markdowns: draft?.markdowns,
-        harnessRun: harnessRunDraftsRef.current[visibleRequestID],
-        streaming: draft?.streaming ?? true,
-        error: draft?.error,
-        provider: draft?.provider,
-      });
-    }
-    setChat(entries);
-    setCollapsedThinkingIDs({});
-    setActiveConversationID(detail.conversation.id);
-    restoreDraftFor(detail.conversation.id);
-  }
-
-  async function archiveConversation(conversation: main.ConversationSummary) {
-    try {
-      setOpenHistoryMenuID('');
-      await DeleteConversation(conversation.id);
-      delete composerDraftsRef.current[conversation.id];
-      setConversations((items) => asArray(items).filter((item) => item.id !== conversation.id));
-      forgetConversation(conversation.id);
-      if (editingTitleID === conversation.id) {
-        cancelEditingConversationTitle();
-      }
-      if (activeConversationID === conversation.id) {
-        setActiveConversationID('');
-        setChat([]);
-      }
-    } catch (error) {
-      notifyError("Couldn't archive the conversation", error);
-    }
-  }
-
-  // executeChatStream is the shared core of a chat turn: it wires up the
-  // streaming-state refs, opens the StreamChat call, and on failure marks the
-  // matching assistant entry with the error. Callers are responsible for
-  // pushing/replacing the user + assistant entries in `chat` and building
-  // requestMessages before calling this — submitChat for a fresh send,
-  // retryFailedTurn for a retry. Extracted so both paths share one error path.
-  // referencedAssetIds carries @-mentioned asset IDs; the retry path omits it
-  // and the backend's latest-wins walk picks up the persisted mention refs.
-  async function executeChatStream(opts: {requestID: string; requestMessages: main.ChatMessage[]; referencedAssetIds?: string[]; userEntryId?: string}) {
-    const {requestID} = opts;
-    // Captured before any await: whether this send creates a brand-new
-    // conversation — the same turn-1 condition that gates the workspace/
-    // projectId fields below and the sidebar reveal when the start lands.
-    const isNewConversation = !activeConversationID;
-    visibleStreamRef.current = requestID;
-    chatStreamDraftsRef.current[requestID] = {content: '', thinking: '', images: [], videos: [], audios: [], transcripts: [], markdowns: [], streaming: true};
-    setActiveStream(requestID);
-    try {
-      const start = await StreamChat(main.ChatRequest.createFrom({
-        requestID,
-        conversationId: activeConversationID || undefined,
-        baseURL,
-        // The composer's effective pair — the conversation's primary override
-        // when one is pinned, else the global selection. The backend's record
-        // wins regardless; this keeps the request honest with what was shown.
-        provider: composerProvider,
-        model: composerModel,
-        selectedModel: composerModel,
-        system,
-        messages: opts.requestMessages,
-        // Only sent for a new chat (turn 1). The backend ignores it for an
-        // existing conversation — the record's immutable workspace wins.
-        ...(activeConversationID ? {} : {workspace: draftWorkspace || undefined}),
-        // Same turn-1-only lifecycle as the workspace: the pending project the
-        // composition started in, pinned onto the new conversation's record.
-        ...(activeConversationID ? {} : pendingProjectRef.current?.projectID ? {projectId: pendingProjectRef.current.projectID} : {}),
-        // Same turn-1-only lifecycle: the pending model override the composer
-        // pinned for this conversation, applied to the first turn and pinned
-        // onto the record by the backend.
-        ...(activeConversationID ? {} : draftModelOverrides ? {modelOverrides: draftModelOverrides} : {}),
-        ...(opts.referencedAssetIds?.length ? {referencedAssetIds: opts.referencedAssetIds} : {}),
-      }));
-      markConversationInFlight(start.conversationId, start.requestID, 'chat');
-      setActiveConversationID(start.conversationId);
-      // The just-persisted upload URLs ride the start result
-      // (ChatStreamStart.userVideos): swap the user entry's srcs for the
-      // artifact srcs the moment the turn begins. A data: URL can carry no
-      // poster, and a staged upload's URL points at a transient staging file
-      // the backend's age sweep eventually reclaims — both must repoint to
-      // the persisted artifact. Positional — both sides list the same
-      // attachments in composer order; a count mismatch (a decode failure
-      // persisted fewer) leaves the original srcs.
-      const persistedVideos = asArray(start.userVideos);
-      if (opts.userEntryId && persistedVideos.length) {
-        setChat((entries) => entries.map((entry) =>
-          entry.id === opts.userEntryId && entry.videos?.length === persistedVideos.length
-            ? {...entry, videos: persistedVideos}
-            : entry,
-        ));
-      }
-      // Same swap for subtitles (ChatStreamStart.userSubtitles): the Save
-      // binding reads artifact paths only, so the persisted URLs are what
-      // make a just-attached subtitle downloadable without a reload.
-      // Positional and count-guarded like the video swap.
-      const persistedSubtitles = asArray(start.userSubtitles);
-      if (opts.userEntryId && persistedSubtitles.length) {
-        setChat((entries) => entries.map((entry) =>
-          entry.id === opts.userEntryId && entry.subtitles?.length === persistedSubtitles.length
-            ? {...entry, subtitles: persistedSubtitles}
-            : entry,
-        ));
-      }
-      // Documents swap the same way (ChatStreamStart.userMarkdowns).
-      const persistedMarkdowns = asArray(start.userMarkdowns);
-      if (opts.userEntryId && persistedMarkdowns.length) {
-        setChat((entries) => entries.map((entry) =>
-          entry.id === opts.userEntryId && entry.markdowns?.length === persistedMarkdowns.length
-            ? {...entry, markdowns: persistedMarkdowns}
-            : entry,
-        ));
-      }
-      // The conversation now carries its own membership — the pending context
-      // has done its job. Captured before the clear: it names where the new
-      // row appears in the sidebar tree.
-      const createdInProject = isNewConversation ? pendingProjectRef.current : null;
-      setPendingProject(null);
-      // The pending model override is pinned onto the record by this same
-      // turn — the record is the truth now, so a future new conversation
-      // shouldn't silently inherit it.
-      if (isNewConversation) {
-        setDraftModelOverrides(null);
-      }
-      // The new row is selected via activeConversationID; expand the section
-      // that owns it so the selection is actually visible — the Chats list
-      // for a standalone chat, the library → project chain for a pinned one.
-      if (isNewConversation) {
-        if (createdInProject?.projectID && createdInProject?.libraryID) {
-          revealConversationInProject(createdInProject);
-        } else {
-          setChatsOpen(true);
-        }
-      }
-      void refreshConversations();
-    } catch (error) {
-      chatStreamDraftsRef.current[requestID] = {
-        ...(chatStreamDraftsRef.current[requestID] ?? {content: '', thinking: '', images: [], videos: [], audios: []}),
-        streaming: false,
-        error: formatError(error),
-      };
-      setActiveStream(null);
-      if (visibleStreamRef.current === requestID) {
-        visibleStreamRef.current = null;
-      }
-      setChat((entries) =>
-        entries.map((entry) =>
-          entry.id === `assistant-${requestID}` ? {...entry, streaming: false, error: formatError(error)} : entry,
-        ),
-      );
-    }
-  }
-
-  async function submitChat() {
-    const trimmed = prompt.trim();
-    if (!trimmed || !composerModel || activeStream || !composerModelIsValid) {
-      return;
-    }
-
-    // Editor-launch prompts ("Open this image in image editor") are UI
-    // navigation, not chat: on a brand-new conversation they route straight to
-    // the editor — no model call, no assistant turn. Inside an existing
-    // conversation the same words stay a normal chat turn. The composer's
-    // claim additionally needs media to seed with — the tier-0 path persists
-    // a conversation from attachments, so an unattached "open the composer"
-    // falls through to the AI tier (which creates the conversation, and
-    // open_editor opens the composer unseeded).
-    if (!activeConversationID) {
-      const editorKind = detectEditorLaunchIntent(trimmed, attachments.map((item) => item.kind));
-      const hasComposerMedia = attachments.some((item) => item.kind === 'video' || item.kind === 'audio');
-      const hasComicMedia = attachments.some((item) => item.kind === 'image');
-      if (editorKind && (editorKind !== 'composition' || hasComposerMedia) && (editorKind !== 'comic' || hasComicMedia)) {
-        await launchEditorConversation(editorKind, trimmed);
-        return;
-      }
-    }
-
-    const userEntry: ChatEntry = {
-      id: `user-${Date.now()}`,
-      role: 'user',
-      content: trimmed,
-      images: attachments.filter((item) => item.kind === 'image').map((item) => item.src),
-      audios: attachments.filter((item) => item.kind === 'audio').map((item) => item.src),
-      videos: attachments.filter((item) => item.kind === 'video').map((item) => item.src),
-      subtitles: attachments.filter((item) => item.kind === 'subtitle').map((item) => item.src),
-      markdowns: attachments.filter((item) => item.kind === 'markdown').map((item) => item.src),
-    };
-    // @-mentioned assets ride the request as IDs (backend resolves them into
-    // the tool attachment slots); the readable @token stays in the message
-    // text for the model — multi-word names quoted (@"my clip.mp4") so the
-    // reference boundary is unambiguous. IDs are derived from the text at send
-    // time by the same parser the chip overlay renders from, against the same
-    // binding pool: the prompt is the single source of truth, so a mention
-    // deleted, half-edited, or re-typed by hand resolves (or drops out)
-    // exactly as it reads.
-    const referencedAssetIds = [
-      ...new Set(
-        parseComposerMentions(trimmed, mentionBindingPool()).flatMap((segment) =>
-          segment.mention?.assetID ? [segment.mention.assetID] : [],
-        ),
-      ),
-    ];
-    const requestID = `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    // Only data: URLs are valid model-input parts; a staged upload's artifact
-    // URL is not (the backend resolves the bytes from disk for the tools).
-    const audioAttachments = attachments
-      .filter((item) => item.kind === 'audio')
-      .map((item) => item.payload)
-      .filter((payload) => payload.startsWith('data:'));
-    const imageAttachments = attachments.filter((item) => item.kind === 'image').map((item) => item.payload).filter(Boolean);
-    const videoAttachments = attachments.filter((item) => item.kind === 'video').map((item) => item.payload).filter(Boolean);
-    const subtitleAttachments = attachments.filter((item) => item.kind === 'subtitle').map((item) => item.payload).filter(Boolean);
-    const markdownAttachments = attachments.filter((item) => item.kind === 'markdown').map((item) => item.payload).filter(Boolean);
-    const requestMessages: main.ChatMessage[] = [
-      ...chat
-        .filter((entry) => entry.role !== 'system' && (entry.content || entry.images?.length || entry.audios?.length || entry.videos?.length || entry.subtitles?.length || entry.markdowns?.length))
-        .map((entry) => ({
-          role: entry.role,
-          content: entry.content,
-          ...(entry.images?.length ? {images: entry.images.map(imagePayloadForOllama).filter(Boolean)} : {}),
-          // Hydrated history audios/videos are /atelier-artifact/ display URLs;
-          // only inline data: URLs are valid payloads, so filter like images.
-          ...(entry.audios?.length ? {audios: entry.audios.filter((audio) => audio.startsWith('data:'))} : {}),
-          ...(entry.videos?.length ? {videos: entry.videos.filter((video) => video.startsWith('data:'))} : {}),
-          ...(entry.subtitles?.length ? {subtitles: entry.subtitles.filter((subtitle) => subtitle.startsWith('data:'))} : {}),
-          ...(entry.markdowns?.length ? {markdowns: entry.markdowns.filter((markdown) => markdown.startsWith('data:'))} : {}),
-        }) as main.ChatMessage),
-      {
-        role: 'user',
-        content: trimmed,
-        ...(imageAttachments.length ? {images: imageAttachments} : {}),
-        ...(audioAttachments.length ? {audios: audioAttachments} : {}),
-        ...(videoAttachments.length ? {videos: videoAttachments} : {}),
-        ...(subtitleAttachments.length ? {subtitles: subtitleAttachments} : {}),
-        ...(markdownAttachments.length ? {markdowns: markdownAttachments} : {}),
-      } as main.ChatMessage,
-    ];
-
-    setPrompt('');
-    setAttachments([]);
-    // The composer contents are being sent, not stashed — drop any stored draft
-    // for the current key ('' for a brand-new chat) so it isn't resurrected.
-    delete composerDraftsRef.current[activeConversationIDRef.current];
-    shouldFollowTranscriptRef.current = true;
-    setChat((entries) => [
-      ...entries,
-      userEntry,
-      {id: `assistant-${requestID}`, role: 'assistant', content: '', streaming: true, provider: primaryProvider},
-    ]);
-    await executeChatStream({requestID, requestMessages, referencedAssetIds, userEntryId: userEntry.id});
-  }
-
-  // launchEditorConversation implements the editor-launch prompts submitChat
-  // detects ("Open this image in image editor"): persist a new conversation
-  // holding the user turn with the attachment — the same turn-1 creation path
-  // a chat send uses, so workspace/project/override pinning and artifact
-  // persistence are identical — then open the matching editor on the persisted
-  // artifact, the editors' one identity input. On a creation failure the
-  // composer keeps its contents: nothing was persisted, so the send must look
-  // like it never happened.
-  async function launchEditorConversation(kind: 'image' | 'video' | 'audio' | 'subtitle' | 'markdown' | 'composition' | 'comic', trimmed: string) {
-    const referencedAssetIds = [
-      ...new Set(
-        parseComposerMentions(trimmed, mentionBindingPool()).flatMap((segment) =>
-          segment.mention?.assetID ? [segment.mention.assetID] : [],
-        ),
-      ),
-    ];
-    const imagePayloads = attachments.filter((item) => item.kind === 'image').map((item) => item.payload).filter(Boolean);
-    const videoPayloads = attachments.filter((item) => item.kind === 'video').map((item) => item.payload).filter(Boolean);
-    const audioPayloads = attachments.filter((item) => item.kind === 'audio').map((item) => item.payload).filter(Boolean);
-    const subtitlePayloads = attachments.filter((item) => item.kind === 'subtitle').map((item) => item.payload).filter(Boolean);
-    const markdownPayloads = attachments.filter((item) => item.kind === 'markdown').map((item) => item.payload).filter(Boolean);
-    let result: main.EditorLaunchResult;
-    try {
-      result = await CreateEditorConversation(main.ChatRequest.createFrom({
-        provider: composerProvider,
-        model: composerModel,
-        selectedModel: composerModel,
-        system,
-        messages: [{
-          role: 'user',
-          content: trimmed,
-          ...(imagePayloads.length ? {images: imagePayloads} : {}),
-          ...(videoPayloads.length ? {videos: videoPayloads} : {}),
-          ...(audioPayloads.length ? {audios: audioPayloads} : {}),
-          ...(subtitlePayloads.length ? {subtitles: subtitlePayloads} : {}),
-          ...(markdownPayloads.length ? {markdowns: markdownPayloads} : {}),
-        } as main.ChatMessage],
-        // Same turn-1-only lifecycle fields a streamed first turn carries.
-        ...(draftWorkspace ? {workspace: draftWorkspace} : {}),
-        ...(pendingProjectRef.current?.projectID ? {projectId: pendingProjectRef.current.projectID} : {}),
-        ...(draftModelOverrides ? {modelOverrides: draftModelOverrides} : {}),
-        ...(referencedAssetIds.length ? {referencedAssetIds} : {}),
-      }));
-    } catch (error) {
-      notifyError("Couldn't open the editor", error);
-      return;
-    }
-    // The launch is on disk — the composer contents are being sent, not
-    // stashed; drop the new-chat draft so it isn't resurrected.
-    setPrompt('');
-    setAttachments([]);
-    delete composerDraftsRef.current[activeConversationIDRef.current];
-    try {
-      await refreshConversations();
-      // Same reveal choreography as a streamed first turn: the new row is
-      // selected via the hydration below, so expand the sidebar section that
-      // owns it to make the selection visible.
-      const createdInProject = pendingProjectRef.current;
-      setPendingProject(null);
-      if (draftModelOverrides) {
-        setDraftModelOverrides(null);
-      }
-      if (createdInProject?.projectID && createdInProject?.libraryID) {
-        revealConversationInProject(createdInProject);
-      } else {
-        setChatsOpen(true);
-      }
-      const detail = await GetConversation(result.conversationId);
-      hydrateChatConversation(detail);
-      // The composer opens on the conversation itself, seeded with the
-      // persisted media (videos then audio — the seed's deterministic
-      // order); every other editor opens the turn's first artifact of kind.
-      if (kind === 'composition') {
-        await openNewComposition(result.conversationId, [
-          ...asArray(result.videoArtifactIds),
-          ...asArray(result.audioArtifactIds),
-        ]);
-        return;
-      }
-      if (kind === 'comic') {
-        await openNewComic(result.conversationId, asArray(result.imageArtifactIds));
-        return;
-      }
-      const artifactId = (kind === 'image' ? result.imageArtifactIds
-        : kind === 'video' ? result.videoArtifactIds
-        : kind === 'subtitle' ? result.subtitleArtifactIds
-        : kind === 'markdown' ? result.markdownArtifactIds
-        : result.audioArtifactIds)?.[0];
-      if (!artifactId) {
-        throw new Error('the attached asset was not persisted');
-      }
-      if (kind === 'image') {
-        await openImageEditor(result.conversationId, artifactId);
-      } else if (kind === 'video') {
-        await openVideoEditor(result.conversationId, artifactId);
-      } else if (kind === 'subtitle') {
-        await openSubtitleEditor(result.conversationId, artifactId);
-      } else if (kind === 'markdown') {
-        await openMarkdownEditor(result.conversationId, artifactId);
-      } else {
-        await openAudioEditor(result.conversationId, artifactId);
-      }
-    } catch (error) {
-      notifyError("Couldn't open the editor", error);
-    }
-  }
-
-  // retryFailedTurn resends the user message preceding a failed assistant entry,
-  // replacing the failed entry in place with a fresh streaming placeholder. Used
-  // by the Retry button shown next to an error. The preceding user entry stays in
-  // the transcript; no duplicate is pushed — cleaner than re-typing the message,
-  // which would show the user message twice. Note: StartChatTurn on the backend
-  // will append a fresh user turn to disk, same as a retyped message; failed
-  // turns are never persisted, so on reload the failed entry is gone.
-  async function retryFailedTurn(failedAssistantId: string) {
-    if (!composerModel || activeStream || !composerModelIsValid) {
-      return;
-    }
-    const failedIdx = chat.findIndex((entry) => entry.id === failedAssistantId);
-    if (failedIdx < 0) {
-      return;
-    }
-    // Build request messages from everything before the failed assistant entry.
-    // The preceding user message is included; the empty failed entry is not.
-    const historyForRequest = chat.slice(0, failedIdx);
-    if (!historyForRequest.some((entry) => entry.role === 'user')) {
-      return;
-    }
-    const requestMessages: main.ChatMessage[] = historyForRequest
-      .filter((entry) => entry.role !== 'system' && (entry.content || entry.images?.length || entry.audios?.length || entry.videos?.length))
-      .map((entry) => ({
-        role: entry.role,
-        content: entry.content,
-        ...(entry.images?.length ? {images: entry.images.map(imagePayloadForOllama).filter(Boolean)} : {}),
-        ...(entry.audios?.length ? {audios: entry.audios.filter((audio) => audio.startsWith('data:'))} : {}),
-        ...(entry.videos?.length ? {videos: entry.videos.filter((video) => video.startsWith('data:'))} : {}),
-      }) as main.ChatMessage);
-    const requestID = `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    shouldFollowTranscriptRef.current = true;
-    setChat((entries) => entries.map((entry) =>
-      entry.id === failedAssistantId
-        ? {id: `assistant-${requestID}`, role: 'assistant', content: '', streaming: true, provider: primaryProvider}
-        : entry,
-    ));
-    await executeChatStream({requestID, requestMessages});
-  }
-
-  // File-menu handler mirrors: the menu-event subscription runs with empty
-  // deps, so it must call through to the latest closure, not the first one.
-  const newConversationActionRef = useRef(() => {});
-  const newLibraryActionRef = useRef(() => {});
-  const newProjectActionRef = useRef(() => {});
-  newConversationActionRef.current = () => {void leaveEditorThen(handleNewConversationAction);};
-  newLibraryActionRef.current = () => {void leaveEditorThen(startCreatingLibrary);};
-  newProjectActionRef.current = () => {void leaveEditorThen(handleNewProjectAction);};
-
-  // mentionCandidates is the autocomplete pool: this turn's attachments first
-  // (most immediate), then the referable assets newest-first. In a project
-  // context the pool is the whole library — every conversation's uploads and
-  // generated media, per-conversation provenance in the hint — so an
-  // @-mention can cite any asset in the library.
-  function mentionCandidates(): MentionCandidate[] {
-    const source = composerLibraryID ? libraryAssets : panelAssets;
-    const assets: MentionCandidate[] = source.map((asset) => ({
-      name: assetMentionLabel(asset),
-      src: asset.url ?? '',
-      payload: '',
-      kind: asset.kind === 'audio' ? 'audio' : asset.kind === 'video' ? 'video' : asset.kind === 'transcript' ? 'subtitle' : asset.kind === 'markdown' ? 'markdown' : 'image',
-      hint: composerLibraryID
-        ? `${asset.role === 'user' ? 'attached' : 'generated'} · ${asset.conversationTitle || 'another chat'}`
-        : `${asset.role === 'user' ? 'attached' : 'generated'} · ${assetTurnLabel(asset.originTurnId)}`,
-    }));
-    return [...attachmentsRef.current, ...assets];
-  }
-
-  // The mention binding pool for parseComposerMentions: this turn's
-  // attachments plus the same asset list the menu offers (panelAssets already
-  // scopes library-vs-conversation). Both the chip overlay and submit-time
-  // referencedAssetIds resolve through this — the composer text is the single
-  // source of truth; nothing is recorded at accept time.
-  function mentionBindingPool(): { label: string; assetID?: string }[] {
-    return [
-      ...attachmentsRef.current.map((item) => ({ label: item.name })),
-      ...panelAssets.map((asset) => ({ label: assetMentionLabel(asset), assetID: asset.id })),
-    ];
-  }
-
-  // renderMentionOverlay renders the prompt as the chip mirror's children:
-  // resolved mentions as chip spans, everything else as plain (invisible)
-  // text so wrapping matches the textarea exactly.
-  function renderMentionOverlay(text: string): React.ReactNode {
-    return parseComposerMentions(text, mentionBindingPool()).map((segment, index) =>
-      segment.mention ? <span key={index} className="mention-chip">{segment.mention.source}</span> : segment.text,
-    );
-  }
-
-  function handleComposerDragOver(event: React.DragEvent<HTMLDivElement>) {
-    if (!composerHasMediaDrag(Array.from(event.dataTransfer?.items ?? []), Array.from(event.dataTransfer?.types ?? []))) {
-      return;
-    }
-    // Signal that dropping here is allowed and stop the browser from opening the file.
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'copy';
-  }
-
-  // The chat's download helpers: each hands its Save* binding to trackSave,
-  // which toasts the saved file and its folder, stays silent when the save
-  // dialog was cancelled, and toasts a failure.
-  function saveGeneratedImage(image: string, index: number) {
-    return trackSave('image', SaveImage(main.SaveImageRequest.createFrom({
-      image,
-      suggestedName: `atelier-${Date.now()}-${index + 1}`,
-    })));
-  }
-
-  function saveGeneratedVideo(video: string, index: number) {
-    return trackSave('video', SaveVideo(main.SaveVideoRequest.createFrom({
-      path: video,
-      suggestedName: `atelier-${Date.now()}-${index + 1}`,
-    })));
-  }
-
-  function saveGeneratedAudio(audio: string, index: number) {
-    return trackSave('audio', SaveAudio(main.SaveAudioRequest.createFrom({
-      path: audio,
-      suggestedName: `atelier-${Date.now()}-${index + 1}`,
-    })));
-  }
-
-  function saveGeneratedTranscript(transcript: string, index: number) {
-    return trackSave('transcript', SaveTranscript(main.SaveTranscriptRequest.createFrom({
-      path: transcript,
-      suggestedName: `atelier-${Date.now()}-${index + 1}`,
-    })));
-  }
-
-  function saveGeneratedMarkdown(markdown: string, index: number) {
-    return trackSave('document', SaveMarkdown(main.SaveTranscriptRequest.createFrom({
-      path: markdown,
-      suggestedName: `atelier-${Date.now()}-${index + 1}`,
-    })));
-  }
-
-  function saveGeneratedComposition(composition: string, index: number) {
-    return trackSave('composition project', SaveComposition(main.SaveTranscriptRequest.createFrom({
-      path: composition,
-      suggestedName: `composition-${Date.now()}-${index + 1}`,
-    })));
-  }
-
-  function saveGeneratedComic(comic: string, index: number) {
-    return trackSave('comic project', SaveComic(main.SaveTranscriptRequest.createFrom({
-      path: comic,
-      suggestedName: `comic-${Date.now()}-${index + 1}`,
-    })));
-  }
-
-  // downloadAsset is the assets-panel download affordance: every Save* binding
-  // accepts the panel's /atelier-artifact URL (each resolves it back to the
-  // artifact bytes on disk), so one per-kind dispatcher covers every card.
-  function downloadAsset(asset: main.ConversationAsset) {
-    if (!asset.url) return;
-    if (asset.kind === 'audio') {
-      return saveGeneratedAudio(asset.url, 0);
-    }
-    if (asset.kind === 'video') {
-      return saveGeneratedVideo(asset.url, 0);
-    }
-    if (asset.kind === 'transcript') {
-      return saveGeneratedTranscript(asset.url, 0);
-    }
-    if (asset.kind === 'markdown') {
-      return saveGeneratedMarkdown(asset.url, 0);
-    }
-    if (asset.kind === 'composition') {
-      return saveGeneratedComposition(asset.url, 0);
-    }
-    if (asset.kind === 'comic') {
-      return saveGeneratedComic(asset.url, 0);
-    }
-    return saveGeneratedImage(asset.url, 0);
-  }
-
-  // openAssetConversation is the assets-panel navigation affordance: it opens
-  // the conversation that owns the asset with the origin turn focused, so the
-  // click lands on the message that attached or produced the media. In library
-  // scope that switches chats; within a conversation the focus turn makes it a
-  // jump-to-source shortcut. openConversationSummary only reads the id (it
-  // re-fetches the detail), so a synthesized summary carries the asset's own
-  // conversationId/Title.
-  function openAssetConversation(asset: main.ConversationAsset) {
-    if (!asset.conversationId) return;
-    openConversationSummary(
-      main.ConversationSummary.createFrom({ id: asset.conversationId, title: asset.conversationTitle || '' }),
-      asset.originTurnId || '',
-    );
-  }
+    videoEditorHandle,
+    audioEditorHandle,
+    subtitleEditorHandle,
+    markdownEditorHandle,
+    compositionEditorHandle,
+    comicEditorHandle,
+    previewEditContext,
+    moveDialogConversation,
+  } = app;
 
   return (
     <main
-      ref={shellRef}
+      ref={app.shellRef}
       className={[
         'shell',
-        view !== 'app' || editorOpen ? 'settings-open' : '',
-        resizingSidebar ? 'resizing resizing-sidebar' : '',
-        resizingAssets ? 'resizing resizing-assets' : '',
-        view === 'app' && assetsPanelOpen ? 'assets-open' : '',
+        app.view !== 'app' || app.editorOpen ? 'settings-open' : '',
+        app.resizingSidebar ? 'resizing resizing-sidebar' : '',
+        app.resizingAssets ? 'resizing resizing-assets' : '',
+        app.view === 'app' && app.assetsPanelOpen ? 'assets-open' : '',
       ].filter(Boolean).join(' ')}
-      style={view !== 'app' || editorOpen ? undefined : {
-        '--sidebar-width': `${sidebarWidth}px`,
-        '--assets-width': `${assetsWidth}px`,
+      style={app.view !== 'app' || app.editorOpen ? undefined : {
+        '--sidebar-width': `${app.sidebarWidth}px`,
+        '--assets-width': `${app.assetsWidth}px`,
       } as Record<string, string>}
     >
-      {view !== 'app' || editorOpen ? null : (
+      {app.view !== 'app' || app.editorOpen ? null : (
         <aside className="sidebar">
           <div className="sidebar-main">
             <div className="brand">
@@ -2410,15 +98,15 @@ function App() {
 
             <nav className="side-nav" aria-label="Atelier navigation">
               <div className="nav-top-row">
-                <button className="nav-new-chat" onClick={startNewChat}>
+                <button className="nav-new-chat" onClick={app.startNewChat}>
                   <span className="nav-icon">+</span>
                   New chat
                 </button>
                 <button
-                  className={`nav-search-toggle${searchOpen || historyQuery.trim() ? ' active' : ''}`}
-                  onClick={() => setSearchOpen(true)}
+                  className={`nav-search-toggle${app.searchOpen || app.historyQuery.trim() ? ' active' : ''}`}
+                  onClick={() => app.setSearchOpen(true)}
                   aria-label="Search chats"
-                  aria-expanded={searchOpen || Boolean(historyQuery.trim())}
+                  aria-expanded={app.searchOpen || Boolean(app.historyQuery.trim())}
                   title="Search chats"
                 >
                   <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
@@ -2427,23 +115,23 @@ function App() {
                   </svg>
                 </button>
               </div>
-              {searchOpen || historyQuery.trim() ? (
+              {app.searchOpen || app.historyQuery.trim() ? (
                 <div className="history-search">
                   <input
                     type="search"
                     autoFocus
-                    value={historyQuery}
-                    onChange={(event) => setHistoryQuery(event.target.value)}
+                    value={app.historyQuery}
+                    onChange={(event) => app.setHistoryQuery(event.target.value)}
                     onBlur={() => {
-                      if (!historyQuery.trim()) {
-                        setSearchOpen(false);
+                      if (!app.historyQuery.trim()) {
+                        app.setSearchOpen(false);
                       }
                     }}
                     onKeyDown={(event) => {
                       if (event.key === 'Escape') {
                         event.preventDefault();
-                        setHistoryQuery('');
-                        setSearchOpen(false);
+                        app.setHistoryQuery('');
+                        app.setSearchOpen(false);
                       }
                     }}
                     placeholder="Search chats…"
@@ -2454,17 +142,17 @@ function App() {
             </nav>
 
             <div className="history-area">
-              {historyQuery.trim() ? (
+              {app.historyQuery.trim() ? (
                 <div className="history-chats">
-                  <div className="section-label">{historySearchBusy ? 'Searching…' : 'Results'}</div>
-                  {historySearchError ? (
-                    <div className="history-empty">{historySearchError}</div>
-                  ) : historyResults.length ? (
-                    historyResults.map((result) => (
+                  <div className="section-label">{app.historySearchBusy ? 'Searching…' : 'Results'}</div>
+                  {app.historySearchError ? (
+                    <div className="history-empty">{app.historySearchError}</div>
+                  ) : app.historyResults.length ? (
+                    app.historyResults.map((result) => (
                       <div key={result.conversation.id} className="search-result">
                         <button
                           className="search-result-open"
-                          onClick={() => openConversationSummary(result.conversation, result.matches[0]?.turnId ?? '')}
+                          onClick={() => app.openConversationSummary(result.conversation, result.matches[0]?.turnId ?? '')}
                           title={result.conversation.title}
                         >
                           <span className={`search-result-title${result.titleMatched ? ' matched' : ''}`}>
@@ -2481,22 +169,22 @@ function App() {
                         </button>
                       </div>
                     ))
-                  ) : !historySearchBusy ? (
+                  ) : !app.historySearchBusy ? (
                     <div className="history-empty">No matches in chat history.</div>
                   ) : null}
-                  {historySearchTruncated ? (
+                  {app.historySearchTruncated ? (
                     <div className="history-empty">Older matches hidden — refine the query to narrow results.</div>
                   ) : null}
                 </div>
               ) : (
                 <>
-                  <div className={`history-chats${chatsOpen ? '' : ' collapsed'}`}>
+                  <div className={`history-chats${app.chatsOpen ? '' : ' collapsed'}`}>
                     <div className="section-label chats-header">
                       <button
                         type="button"
                         className="section-toggle"
-                        onClick={() => setChatsOpen((open) => !open)}
-                        aria-expanded={chatsOpen}
+                        onClick={() => app.setChatsOpen((open) => !open)}
+                        aria-expanded={app.chatsOpen}
                       >
                         Chats
                       </button>
@@ -2506,22 +194,22 @@ function App() {
                       <button
                         type="button"
                         className="history-icon-button"
-                        onClick={() => void startNewChat()}
+                        onClick={() => void app.startNewChat()}
                         aria-label="New chat"
                         title="New chat"
                       >
                         +
                       </button>
                     </div>
-                    {chatsOpen ? (
-                      <div className="chats-body" onScroll={handleHistoryScroll}>
-                        {conversationList.length ? (
-                          visibleConversations.map(renderConversationRow)
+                    {app.chatsOpen ? (
+                      <div className="chats-body" onScroll={app.handleHistoryScroll}>
+                        {app.conversationList.length ? (
+                          app.visibleConversations.map(app.renderConversationRow)
                         ) : (
                           <div className="history-empty">No conversations yet.</div>
                         )}
-                        {hasMoreConversations ? (
-                          <button className="history-more" onClick={showMoreConversations}>
+                        {app.hasMoreConversations ? (
+                          <button className="history-more" onClick={app.showMoreConversations}>
                             More
                           </button>
                         ) : null}
@@ -2529,66 +217,66 @@ function App() {
                     ) : null}
                   </div>
 
-                  <div className={`libraries-section${librariesOpen ? '' : ' collapsed'}`}>
+                  <div className={`libraries-section${app.librariesOpen ? '' : ' collapsed'}`}>
                     <div className="section-label libraries-header">
                       <button
                         type="button"
                         className="section-toggle"
-                        onClick={toggleLibrariesOpen}
-                        aria-expanded={librariesOpen}
+                        onClick={app.toggleLibrariesOpen}
+                        aria-expanded={app.librariesOpen}
                       >
                         Libraries
                       </button>
                       <button
                         type="button"
                         className="history-icon-button"
-                        onClick={() => void importLibrary()}
-                        disabled={importingLibrary}
+                        onClick={() => void app.importLibrary()}
+                        disabled={app.importingLibrary}
                         aria-label="Import library archive"
-                        title={importingLibrary ? 'Importing…' : 'Import library archive'}
+                        title={app.importingLibrary ? 'Importing…' : 'Import library archive'}
                       >
                         ⇩
                       </button>
                       <button
                         type="button"
                         className="history-icon-button"
-                        onClick={startCreatingLibrary}
+                        onClick={app.startCreatingLibrary}
                         aria-label="New library"
                         title="New library"
                       >
                         +
                       </button>
                     </div>
-                    {librariesOpen ? (
+                    {app.librariesOpen ? (
                       <div className="libraries-body">
-                        {creatingLibrary ? (
+                        {app.creatingLibrary ? (
                           <ContainerNameInput
-                            value={newLibraryName}
+                            value={app.newLibraryName}
                             placeholder="Library name…"
-                            onChange={setNewLibraryName}
-                            onSubmit={() => void submitNewLibrary()}
-                            onCancel={cancelCreatingLibrary}
+                            onChange={app.setNewLibraryName}
+                            onSubmit={() => void app.submitNewLibrary()}
+                            onCancel={app.cancelCreatingLibrary}
                           />
                         ) : null}
-                        {libraries.length ? libraries.map((library) => {
-                          const libraryOpen = Boolean(expandedLibraryIDs[library.id]);
+                        {app.libraries.length ? app.libraries.map((library) => {
+                          const libraryOpen = Boolean(app.expandedLibraryIDs[library.id]);
                           return (
                             <div key={library.id} className="library-item">
-                              {editingContainerID === library.id ? (
+                              {app.editingContainerID === library.id ? (
                                 <ContainerNameInput
-                                  value={editingContainerName}
+                                  value={app.editingContainerName}
                                   placeholder="Library name…"
-                                  onChange={setEditingContainerName}
-                                  onSubmit={() => void saveContainerName()}
-                                  onCancel={cancelEditingContainer}
+                                  onChange={app.setEditingContainerName}
+                                  onSubmit={() => void app.saveContainerName()}
+                                  onCancel={app.cancelEditingContainer}
                                 />
                               ) : (
                                 <div className={`container-row library-row${libraryOpen ? ' open' : ''}`}>
                                   <button
                                     type="button"
                                     className="container-open"
-                                    onClick={() => toggleLibraryExpanded(library.id)}
-                                    onDoubleClick={() => startEditingContainer(library.id, library.name)}
+                                    onClick={() => app.toggleLibraryExpanded(library.id)}
+                                    onDoubleClick={() => app.startEditingContainer(library.id, library.name)}
                                     title={library.name}
                                   >
                                     <span className={`tree-chevron${libraryOpen ? ' open' : ''}`} aria-hidden="true">▸</span>
@@ -2599,7 +287,7 @@ function App() {
                                     <button
                                       type="button"
                                       className="history-icon-button"
-                                      onClick={() => startCreatingProject(library)}
+                                      onClick={() => app.startCreatingProject(library)}
                                       aria-label={`New project in ${library.name}`}
                                       title="New project"
                                     >
@@ -2607,68 +295,68 @@ function App() {
                                     </button>
                                     <AnchoredMenu
                                       label={`More actions for ${library.name}`}
-                                      open={openContainerMenuID === library.id}
-                                      onToggle={() => toggleContainerMenu(library.id)}
-                                      onClose={closeContainerMenu}
+                                      open={app.openContainerMenuID === library.id}
+                                      onToggle={() => app.toggleContainerMenu(library.id)}
+                                      onClose={app.closeContainerMenu}
                                     >
-                                      <button onClick={() => startCreatingProject(library)}>New Project</button>
-                                      <button onClick={() => startEditingContainer(library.id, library.name)}>Rename</button>
+                                      <button onClick={() => app.startCreatingProject(library)}>New Project</button>
+                                      <button onClick={() => app.startEditingContainer(library.id, library.name)}>Rename</button>
                                       <button onClick={() => {
-                                        closeContainerMenu();
-                                        openLibraryUsageReport(library.id);
+                                        app.closeContainerMenu();
+                                        app.openLibraryUsageReport(library.id);
                                       }}>Usage report</button>
-                                      {exportPlan && exportPlan.libraryId === library.id ? (
-                                        <button disabled={containerBusy} onClick={() => void confirmExportLibrary(library.id)}>
-                                          {`Export ${exportPlan.conversations} conversation${exportPlan.conversations === 1 ? '' : 's'} (${formatModelSize(exportPlan.bytes)})`
-                                            + (asArray(exportPlan.missingAssets).length
-                                              ? ` — ${asArray(exportPlan.missingAssets).length} missing asset${asArray(exportPlan.missingAssets).length === 1 ? '' : 's'} marked`
+                                      {app.exportPlan && app.exportPlan.libraryId === library.id ? (
+                                        <button disabled={app.containerBusy} onClick={() => void app.confirmExportLibrary(library.id)}>
+                                          {`Export ${app.exportPlan.conversations} conversation${app.exportPlan.conversations === 1 ? '' : 's'} (${formatModelSize(app.exportPlan.bytes)})`
+                                            + (asArray(app.exportPlan.missingAssets).length
+                                              ? ` — ${asArray(app.exportPlan.missingAssets).length} missing asset${asArray(app.exportPlan.missingAssets).length === 1 ? '' : 's'} marked`
                                               : '')
                                             + '?'}
                                         </button>
                                       ) : (
-                                        <button onClick={() => void armLibraryExport(library.id)}>Export…</button>
+                                        <button onClick={() => void app.armLibraryExport(library.id)}>Export…</button>
                                       )}
-                                      {confirmDeleteContainerID === library.id ? (
-                                        <button className="menu-danger" disabled={containerBusy} onClick={() => void confirmDeleteContainer(library.id)}>
+                                      {app.confirmDeleteContainerID === library.id ? (
+                                        <button className="menu-danger" disabled={app.containerBusy} onClick={() => void app.confirmDeleteContainer(library.id)}>
                                           Delete library and everything in it?
                                         </button>
                                       ) : (
-                                        <button className="menu-danger" onClick={() => armContainerDelete(library.id)}>Delete…</button>
+                                        <button className="menu-danger" onClick={() => app.armContainerDelete(library.id)}>Delete…</button>
                                       )}
                                     </AnchoredMenu>
                                   </div>
                                 </div>
                               )}
-                              {libraryOpen && editingContainerID !== library.id ? (
+                              {libraryOpen && app.editingContainerID !== library.id ? (
                                 <div className="library-children">
-                                  {creatingProjectLibraryID === library.id ? (
+                                  {app.creatingProjectLibraryID === library.id ? (
                                     <ContainerNameInput
-                                      value={newProjectName}
+                                      value={app.newProjectName}
                                       placeholder="Project name…"
-                                      onChange={setNewProjectName}
-                                      onSubmit={() => void submitNewProject(library.id)}
-                                      onCancel={cancelCreatingProject}
+                                      onChange={app.setNewProjectName}
+                                      onSubmit={() => void app.submitNewProject(library.id)}
+                                      onCancel={app.cancelCreatingProject}
                                     />
                                   ) : null}
                                   {asArray(library.projects).map((project) => {
-                                    const projectOpen = Boolean(expandedProjectIDs[project.id]);
+                                    const projectOpen = Boolean(app.expandedProjectIDs[project.id]);
                                     return (
                                       <div key={project.id} className="project-item">
-                                        {editingContainerID === project.id ? (
+                                        {app.editingContainerID === project.id ? (
                                           <ContainerNameInput
-                                            value={editingContainerName}
+                                            value={app.editingContainerName}
                                             placeholder="Project name…"
-                                            onChange={setEditingContainerName}
-                                            onSubmit={() => void saveContainerName()}
-                                            onCancel={cancelEditingContainer}
+                                            onChange={app.setEditingContainerName}
+                                            onSubmit={() => void app.saveContainerName()}
+                                            onCancel={app.cancelEditingContainer}
                                           />
                                         ) : (
                                           <div className={`container-row project-row${projectOpen ? ' open' : ''}`}>
                                             <button
                                               type="button"
                                               className="container-open"
-                                              onClick={() => toggleProjectExpanded(project.id)}
-                                              onDoubleClick={() => startEditingContainer(project.id, project.name)}
+                                              onClick={() => app.toggleProjectExpanded(project.id)}
+                                              onDoubleClick={() => app.startEditingContainer(project.id, project.name)}
                                               title={project.name}
                                             >
                                               <span className={`tree-chevron${projectOpen ? ' open' : ''}`} aria-hidden="true">▸</span>
@@ -2687,7 +375,7 @@ function App() {
                                               <button
                                                 type="button"
                                                 className="history-icon-button"
-                                                onClick={() => void startNewChatInProject(project.id, library.id)}
+                                                onClick={() => void app.startNewChatInProject(project.id, library.id)}
                                                 aria-label={`New chat in ${project.name}`}
                                                 title="New chat in project"
                                               >
@@ -2695,32 +383,32 @@ function App() {
                                               </button>
                                               <AnchoredMenu
                                                 label={`More actions for ${project.name}`}
-                                                open={openContainerMenuID === project.id}
-                                                onToggle={() => toggleContainerMenu(project.id)}
-                                                onClose={closeContainerMenu}
+                                                open={app.openContainerMenuID === project.id}
+                                                onToggle={() => app.toggleContainerMenu(project.id)}
+                                                onClose={app.closeContainerMenu}
                                               >
-                                                <button onClick={() => void startNewChatInProject(project.id, library.id)}>New Chat</button>
-                                                <button onClick={() => startEditingContainer(project.id, project.name)}>Rename</button>
-                                                <button onClick={() => openProjectNotes(project)}>Notes…</button>
+                                                <button onClick={() => void app.startNewChatInProject(project.id, library.id)}>New Chat</button>
+                                                <button onClick={() => app.startEditingContainer(project.id, project.name)}>Rename</button>
+                                                <button onClick={() => app.openProjectNotes(project)}>Notes…</button>
                                                 <button onClick={() => {
-                                                  closeContainerMenu();
-                                                  openProjectUsageReport(project.id);
+                                                  app.closeContainerMenu();
+                                                  app.openProjectUsageReport(project.id);
                                                 }}>Usage report</button>
-                                                {confirmDeleteContainerID === project.id ? (
-                                                  <button className="menu-danger" disabled={containerBusy} onClick={() => void confirmDeleteContainer(project.id)}>
+                                                {app.confirmDeleteContainerID === project.id ? (
+                                                  <button className="menu-danger" disabled={app.containerBusy} onClick={() => void app.confirmDeleteContainer(project.id)}>
                                                     Delete project and its chats?
                                                   </button>
                                                 ) : (
-                                                  <button className="menu-danger" onClick={() => armContainerDelete(project.id)}>Delete…</button>
+                                                  <button className="menu-danger" onClick={() => app.armContainerDelete(project.id)}>Delete…</button>
                                                 )}
                                               </AnchoredMenu>
                                             </div>
                                           </div>
                                         )}
-                                        {projectOpen && editingContainerID !== project.id ? (
+                                        {projectOpen && app.editingContainerID !== project.id ? (
                                           <div className="project-conversations">
-                                            {asArray(projectConversations[project.id]).length ? (
-                                              asArray(projectConversations[project.id]).map(renderConversationRow)
+                                            {asArray(app.projectConversations[project.id]).length ? (
+                                              asArray(app.projectConversations[project.id]).map(app.renderConversationRow)
                                             ) : (
                                               <div className="history-empty">No chats in this project yet.</div>
                                             )}
@@ -2729,8 +417,8 @@ function App() {
                                       </div>
                                     );
                                   })}
-                                  {!asArray(library.projects).length && creatingProjectLibraryID !== library.id ? (
-                                    <button type="button" className="project-add" onClick={() => startCreatingProject(library)}>
+                                  {!asArray(library.projects).length && app.creatingProjectLibraryID !== library.id ? (
+                                    <button type="button" className="project-add" onClick={() => app.startCreatingProject(library)}>
                                       + Project
                                     </button>
                                   ) : null}
@@ -2738,7 +426,7 @@ function App() {
                               ) : null}
                             </div>
                           );
-                        }) : (!creatingLibrary ? (
+                        }) : (!app.creatingLibrary ? (
                           <div className="history-empty">No libraries yet.</div>
                         ) : null)}
                       </div>
@@ -2749,7 +437,7 @@ function App() {
             </div>
           </div>
 
-          <button className="settings-button" onClick={() => void openSettings()}>
+          <button className="settings-button" onClick={() => void app.openSettings()}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
@@ -2758,7 +446,7 @@ function App() {
           </button>
         </aside>
       )}
-      {view !== 'app' || editorOpen ? null : (
+      {app.view !== 'app' || app.editorOpen ? null : (
         <div
           className="sidebar-resizer"
           role="separator"
@@ -2766,52 +454,52 @@ function App() {
           aria-label="Resize sidebar"
           onMouseDown={(event) => {
             event.preventDefault();
-            setResizingSidebar(true);
+            app.setResizingSidebar(true);
           }}
         />
       )}
 
       <section className="workspace">
         <div className="floating-cards">
-          {editorOpening && view === 'app' ? (
+          {app.editorOpening && app.view === 'app' ? (
             <div className="editor-preparation-status" role="status">
-              <span>{videoEditorOpening ? 'Preparing video for editing…' : audioEditorOpening ? 'Preparing audio for editing…' : documentCompareOpening ? 'Preparing comparison…' : 'Preparing image for editing…'}</span>
-              {videoEditorOpening ? (
+              <span>{app.videoEditorOpening ? 'Preparing video for editing…' : app.audioEditorOpening ? 'Preparing audio for editing…' : app.documentCompareOpening ? 'Preparing comparison…' : 'Preparing image for editing…'}</span>
+              {app.videoEditorOpening ? (
                 <button type="button" onClick={() => {
-                  cancelVideoPreparation();
+                  app.cancelVideoPreparation();
                 }}>Cancel</button>
               ) : null}
             </div>
           ) : null}
-          {startupError ? (
+          {app.startupError ? (
             <div className="startup-error">
               <strong>Atelier started with a local data warning.</strong>
-              <span>{startupError}</span>
-              <button type="button" onClick={() => setStartupError('')}>Dismiss</button>
+              <span>{app.startupError}</span>
+              <button type="button" onClick={() => app.setStartupError('')}>Dismiss</button>
             </div>
           ) : null}
-          {updateAvailable ? (
+          {app.updateAvailable ? (
             <div className="update-banner">
               <div className="update-banner-content">
-                <strong>Atelier {updateAvailable.latest} is available.</strong>
-                {updateAvailable.notes ? <span>{updateAvailable.notes}</span> : null}
-                {updateQueued ? (
+                <strong>Atelier {app.updateAvailable.latest} is available.</strong>
+                {app.updateAvailable.notes ? <span>{app.updateAvailable.notes}</span> : null}
+                {app.updateQueued ? (
                   <span className="update-queued">Installing when the current conversation finishes…</span>
                 ) : null}
-                {updateError ? <span className="update-error">{updateError}</span> : null}
+                {app.updateError ? <span className="update-error">{app.updateError}</span> : null}
               </div>
               <div className="update-banner-actions">
-                <button onClick={dismissUpdate} disabled={updateBusy}>Later</button>
-                <button className="primary" onClick={requestUpdateInstall} disabled={updateBusy}>
-                  {updateBusy ? 'Installing…' : 'Install & Relaunch'}
+                <button onClick={app.dismissUpdate} disabled={app.updateBusy}>Later</button>
+                <button className="primary" onClick={app.requestUpdateInstall} disabled={app.updateBusy}>
+                  {app.updateBusy ? 'Installing…' : 'Install & Relaunch'}
                 </button>
               </div>
             </div>
           ) : null}
           <ToastStack />
-          {toolPermissions.length ? (
+          {app.toolPermissions.length ? (
             <div className="tool-permission-panel">
-              {toolPermissions.map((permission) => (
+              {app.toolPermissions.map((permission) => (
                 <div className="tool-permission-card" key={permission.id}>
                   <div className="tool-permission-content">
                     <strong>{toolPermissionTitle(permission)}</strong>
@@ -2848,80 +536,80 @@ function App() {
                     ) : null}
                   </div>
                   <div className="tool-permission-actions">
-                    <button onClick={() => resolveToolPermission(permission.id, false)}>Deny</button>
-                    <button className="primary" onClick={() => resolveToolPermission(permission.id, true)}>Allow</button>
+                    <button onClick={() => app.resolveToolPermission(permission.id, false)}>Deny</button>
+                    <button className="primary" onClick={() => app.resolveToolPermission(permission.id, true)}>Allow</button>
                   </div>
                 </div>
               ))}
             </div>
           ) : null}
         </div>
-        {editorHandle ? (
-          <div className="editor-slot" hidden={view !== 'app'}>
+        {app.editorHandle ? (
+          <div className="editor-slot" hidden={app.view !== 'app'}>
             <ImageEditor
-              handle={editorHandle}
-              defaultProvider={inpaintProvider}
-              falDefaultModel={falInpaintModel}
-              replicateDefaultModel={replicateInpaintModel}
-              falHasKey={falHasKey}
-              replicateHasKey={replicateHasKey}
-              airplaneMode={airplaneMode}
-              suspended={view !== 'app'}
-              onClose={closeImageEditor}
+              handle={app.editorHandle}
+              defaultProvider={app.inpaintProvider}
+              falDefaultModel={app.falInpaintModel}
+              replicateDefaultModel={app.replicateInpaintModel}
+              falHasKey={app.falHasKey}
+              replicateHasKey={app.replicateHasKey}
+              airplaneMode={app.airplaneMode}
+              suspended={app.view !== 'app'}
+              onClose={app.closeImageEditor}
               onOpenParent={(parentConversationID) => {
-                closeImageEditor();
-                void openConversationSummary(main.ConversationSummary.createFrom({
+                app.closeImageEditor();
+                void app.openConversationSummary(main.ConversationSummary.createFrom({
                   id: parentConversationID,
                   kind: 'chat',
                   title: '',
                 }));
               }}
               onSessionCreated={() => {
-                void refreshConversations();
+                void app.refreshConversations();
               }}
             />
           </div>
         ) : videoEditorHandle ? (
-          <div className="editor-slot" hidden={view !== 'app'}>
+          <div className="editor-slot" hidden={app.view !== 'app'}>
             <VideoEditor
               key={videoEditorHandle.sessionID || videoEditorHandle.source.artifactId}
               handle={videoEditorHandle}
-              suspended={view !== 'app'}
-              onClose={() => {void confirmLeaveEditor().then((discard) => {if (discard) closeImageEditor();});}}
+              suspended={app.view !== 'app'}
+              onClose={() => {void app.confirmLeaveEditor().then((discard) => {if (discard) app.closeImageEditor();});}}
               onOpenParent={(conversationID) => {
-                void confirmLeaveEditor().then((discard) => {
+                void app.confirmLeaveEditor().then((discard) => {
                   if (!discard) return;
-                  closeImageEditor();
-                  void openConversationSummary(main.ConversationSummary.createFrom({id: conversationID, kind: 'chat', title: ''}));
+                  app.closeImageEditor();
+                  void app.openConversationSummary(main.ConversationSummary.createFrom({id: conversationID, kind: 'chat', title: ''}));
                 });
               }}
-              onSessionCreated={() => {void refreshConversations();}}
-              onResultAdded={() => refreshAfterConversationWrite(videoEditorHandle.source.conversationId)}
-              onDirtyChange={(dirty) => {videoEditorDirty.current = dirty;}}
-              onOpenSettings={() => {void openSettings();}}
+              onSessionCreated={() => {void app.refreshConversations();}}
+              onResultAdded={() => app.refreshAfterConversationWrite(videoEditorHandle.source.conversationId)}
+              onDirtyChange={(dirty) => {app.videoEditorDirty.current = dirty;}}
+              onOpenSettings={() => {void app.openSettings();}}
             />
           </div>
         ) : audioEditorHandle ? (
-          <div className="editor-slot" hidden={view !== 'app'}>
+          <div className="editor-slot" hidden={app.view !== 'app'}>
             <AudioEditor
               key={audioEditorHandle.sessionID || audioEditorHandle.source.artifactId}
               handle={audioEditorHandle}
-              suspended={view !== 'app'}
-              onClose={() => {void confirmLeaveEditor().then((discard) => {if (discard) closeImageEditor();});}}
+              suspended={app.view !== 'app'}
+              onClose={() => {void app.confirmLeaveEditor().then((discard) => {if (discard) app.closeImageEditor();});}}
               onOpenParent={(conversationID) => {
-                void confirmLeaveEditor().then((discard) => {
+                void app.confirmLeaveEditor().then((discard) => {
                   if (!discard) return;
-                  closeImageEditor();
-                  void openConversationSummary(main.ConversationSummary.createFrom({id: conversationID, kind: 'chat', title: ''}));
+                  app.closeImageEditor();
+                  void app.openConversationSummary(main.ConversationSummary.createFrom({id: conversationID, kind: 'chat', title: ''}));
                 });
               }}
-              onSessionCreated={() => {void refreshConversations();}}
-              onResultAdded={() => refreshAfterConversationWrite(audioEditorHandle.source.conversationId)}
-              onDirtyChange={(dirty) => {audioEditorDirty.current = dirty;}}
+              onSessionCreated={() => {void app.refreshConversations();}}
+              onResultAdded={() => app.refreshAfterConversationWrite(audioEditorHandle.source.conversationId)}
+              onDirtyChange={(dirty) => {app.audioEditorDirty.current = dirty;}}
             />
           </div>
         ) : subtitleEditorHandle ? (
-          <div className="editor-slot" hidden={view !== 'app'}>
+          <div className="editor-slot" hidden={app.view !== 'app'}>
             <SubtitleEditor
               key={subtitleEditorHandle.source.artifactId}
               handle={subtitleEditorHandle}
@@ -2930,39 +618,39 @@ function App() {
               // from its own record at open time, so an independent
               // conversation lists only its own assets.
               libraryID={subtitleEditorHandle.libraryID || undefined}
-              suspended={view !== 'app'}
-              onClose={() => {void confirmLeaveEditor().then((discard) => {if (discard) closeImageEditor();});}}
+              suspended={app.view !== 'app'}
+              onClose={() => {void app.confirmLeaveEditor().then((discard) => {if (discard) app.closeImageEditor();});}}
               onOpenParent={(conversationID) => {
-                void confirmLeaveEditor().then((discard) => {
+                void app.confirmLeaveEditor().then((discard) => {
                   if (!discard) return;
-                  closeImageEditor();
-                  void openConversationSummary(main.ConversationSummary.createFrom({id: conversationID, kind: 'chat', title: ''}));
+                  app.closeImageEditor();
+                  void app.openConversationSummary(main.ConversationSummary.createFrom({id: conversationID, kind: 'chat', title: ''}));
                 });
               }}
-              onDirtyChange={(dirty) => {subtitleEditorDirty.current = dirty;}}
-              onSavedToConversation={() => refreshAfterConversationWrite(subtitleEditorHandle.source.conversationId)}
+              onDirtyChange={(dirty) => {app.subtitleEditorDirty.current = dirty;}}
+              onSavedToConversation={() => app.refreshAfterConversationWrite(subtitleEditorHandle.source.conversationId)}
             />
           </div>
         ) : markdownEditorHandle ? (
-          <div className="editor-slot" hidden={view !== 'app'}>
+          <div className="editor-slot" hidden={app.view !== 'app'}>
             <MarkdownEditor
               key={markdownEditorHandle.source.artifactId}
               handle={markdownEditorHandle}
-              suspended={view !== 'app'}
-              onClose={() => {void confirmLeaveEditor().then((discard) => {if (discard) closeImageEditor();});}}
+              suspended={app.view !== 'app'}
+              onClose={() => {void app.confirmLeaveEditor().then((discard) => {if (discard) app.closeImageEditor();});}}
               onOpenParent={(conversationID) => {
-                void confirmLeaveEditor().then((discard) => {
+                void app.confirmLeaveEditor().then((discard) => {
                   if (!discard) return;
-                  closeImageEditor();
-                  void openConversationSummary(main.ConversationSummary.createFrom({id: conversationID, kind: 'chat', title: ''}));
+                  app.closeImageEditor();
+                  void app.openConversationSummary(main.ConversationSummary.createFrom({id: conversationID, kind: 'chat', title: ''}));
                 });
               }}
-              onDirtyChange={(dirty) => {markdownEditorDirty.current = dirty;}}
-              onSavedToConversation={() => refreshAfterConversationWrite(markdownEditorHandle.source.conversationId)}
+              onDirtyChange={(dirty) => {app.markdownEditorDirty.current = dirty;}}
+              onSavedToConversation={() => app.refreshAfterConversationWrite(markdownEditorHandle.source.conversationId)}
             />
           </div>
         ) : compositionEditorHandle ? (
-          <div className="editor-slot" hidden={view !== 'app'}>
+          <div className="editor-slot" hidden={app.view !== 'app'}>
             <CompositionEditor
               key={compositionEditorHandle.source.artifactId || 'composition-draft'}
               handle={compositionEditorHandle}
@@ -2970,21 +658,21 @@ function App() {
               // composition's conversation belongs to a project — the scope
               // resolved from its own record at open time.
               libraryID={compositionEditorHandle.libraryID || undefined}
-              suspended={view !== 'app'}
-              onClose={() => {void confirmLeaveEditor().then((discard) => {if (discard) closeImageEditor();});}}
+              suspended={app.view !== 'app'}
+              onClose={() => {void app.confirmLeaveEditor().then((discard) => {if (discard) app.closeImageEditor();});}}
               onOpenParent={(conversationID) => {
-                void confirmLeaveEditor().then((discard) => {
+                void app.confirmLeaveEditor().then((discard) => {
                   if (!discard) return;
-                  closeImageEditor();
-                  void openConversationSummary(main.ConversationSummary.createFrom({id: conversationID, kind: 'chat', title: ''}));
+                  app.closeImageEditor();
+                  void app.openConversationSummary(main.ConversationSummary.createFrom({id: conversationID, kind: 'chat', title: ''}));
                 });
               }}
-              onDirtyChange={(dirty) => {compositionEditorDirty.current = dirty;}}
-              onSavedToConversation={() => refreshAfterConversationWrite(compositionEditorHandle.source.conversationId)}
+              onDirtyChange={(dirty) => {app.compositionEditorDirty.current = dirty;}}
+              onSavedToConversation={() => app.refreshAfterConversationWrite(compositionEditorHandle.source.conversationId)}
             />
           </div>
         ) : comicEditorHandle ? (
-          <div className="editor-slot" hidden={view !== 'app'}>
+          <div className="editor-slot" hidden={app.view !== 'app'}>
             <ComicEditor
               key={comicEditorHandle.source.artifactId || 'comic-draft'}
               handle={comicEditorHandle}
@@ -2992,39 +680,39 @@ function App() {
               // comic's conversation belongs to a project — the scope
               // resolved from its own record at open time.
               libraryID={comicEditorHandle.libraryID || undefined}
-              suspended={view !== 'app'}
-              onClose={() => {void confirmLeaveEditor().then((discard) => {if (discard) closeImageEditor();});}}
+              suspended={app.view !== 'app'}
+              onClose={() => {void app.confirmLeaveEditor().then((discard) => {if (discard) app.closeImageEditor();});}}
               onOpenParent={(conversationID) => {
-                void confirmLeaveEditor().then((discard) => {
+                void app.confirmLeaveEditor().then((discard) => {
                   if (!discard) return;
-                  closeImageEditor();
-                  void openConversationSummary(main.ConversationSummary.createFrom({id: conversationID, kind: 'chat', title: ''}));
+                  app.closeImageEditor();
+                  void app.openConversationSummary(main.ConversationSummary.createFrom({id: conversationID, kind: 'chat', title: ''}));
                 });
               }}
-              onDirtyChange={(dirty) => {comicEditorDirty.current = dirty;}}
-              onSavedToConversation={() => refreshAfterConversationWrite(comicEditorHandle.source.conversationId)}
+              onDirtyChange={(dirty) => {app.comicEditorDirty.current = dirty;}}
+              onSavedToConversation={() => app.refreshAfterConversationWrite(comicEditorHandle.source.conversationId)}
             />
           </div>
-        ) : documentCompareHandle ? (
-          <div className="editor-slot" hidden={view !== 'app'}>
+        ) : app.documentCompareHandle ? (
+          <div className="editor-slot" hidden={app.view !== 'app'}>
             <DocumentCompare
-              key={`${documentCompareHandle.source.before.artifactId}:${documentCompareHandle.source.after.artifactId}`}
-              handle={documentCompareHandle}
-              suspended={view !== 'app'}
+              key={`${app.documentCompareHandle.source.before.artifactId}:${app.documentCompareHandle.source.after.artifactId}`}
+              handle={app.documentCompareHandle}
+              suspended={app.view !== 'app'}
               // Read-only: nothing to confirm on the way out.
-              onClose={closeImageEditor}
+              onClose={app.closeImageEditor}
               onOpenParent={(conversationID) => {
-                closeImageEditor();
-                void openConversationSummary(main.ConversationSummary.createFrom({id: conversationID, kind: 'chat', title: ''}));
+                app.closeImageEditor();
+                void app.openConversationSummary(main.ConversationSummary.createFrom({id: conversationID, kind: 'chat', title: ''}));
               }}
-              onOpenDocument={(conversationID, artifactID) => void openMarkdownEditor(conversationID, artifactID)}
+              onOpenDocument={(conversationID, artifactID) => void app.openMarkdownEditor(conversationID, artifactID)}
             />
           </div>
         ) : null}
-        {view === 'settings' ? (
+        {app.view === 'settings' ? (
           <>
             <div className="toolbar">
-              <button className="back-button" onClick={() => setView('app')}>← Back</button>
+              <button className="back-button" onClick={() => app.setView('app')}>← Back</button>
               <div className="model-count">Saved to ~/.atelier/config.json</div>
             </div>
             <div className="settings-screen">
@@ -3037,34 +725,34 @@ function App() {
                 <button
                   type="button"
                   role="tab"
-                  aria-selected={settingsTab === 'providers'}
-                  className={settingsTab === 'providers' ? 'active' : ''}
-                  onClick={() => setSettingsTab('providers')}
+                  aria-selected={app.settingsTab === 'providers'}
+                  className={app.settingsTab === 'providers' ? 'active' : ''}
+                  onClick={() => app.setSettingsTab('providers')}
                 >Providers</button>
                 <button
                   type="button"
                   role="tab"
-                  aria-selected={settingsTab === 'models'}
-                  className={settingsTab === 'models' ? 'active' : ''}
-                  onClick={() => setSettingsTab('models')}
+                  aria-selected={app.settingsTab === 'models'}
+                  className={app.settingsTab === 'models' ? 'active' : ''}
+                  onClick={() => app.setSettingsTab('models')}
                 >Models</button>
                 <button
                   type="button"
                   role="tab"
-                  aria-selected={settingsTab === 'tools'}
-                  className={settingsTab === 'tools' ? 'active' : ''}
-                  onClick={() => setSettingsTab('tools')}
+                  aria-selected={app.settingsTab === 'tools'}
+                  className={app.settingsTab === 'tools' ? 'active' : ''}
+                  onClick={() => app.setSettingsTab('tools')}
                 >Local Tools</button>
                 <button
                   type="button"
                   role="tab"
-                  aria-selected={settingsTab === 'general'}
-                  className={settingsTab === 'general' ? 'active' : ''}
-                  onClick={() => setSettingsTab('general')}
+                  aria-selected={app.settingsTab === 'general'}
+                  className={app.settingsTab === 'general' ? 'active' : ''}
+                  onClick={() => app.setSettingsTab('general')}
                 >General</button>
               </div>
 
-              {settingsTab === 'providers' ? (
+              {app.settingsTab === 'providers' ? (
               <>
               <section className="settings-section">
                 <h3>
@@ -3078,8 +766,8 @@ function App() {
                   <label className="airplane-toggle">
                     <input
                       type="checkbox"
-                      checked={airplaneMode}
-                      onChange={(event) => setAirplaneMode(event.target.checked)}
+                      checked={app.airplaneMode}
+                      onChange={(event) => app.setAirplaneMode(event.target.checked)}
                       aria-label="Airplane mode — block all cloud providers"
                     />
                     <span>Block all cloud providers — local models and tools only</span>
@@ -3094,12 +782,12 @@ function App() {
                 <div className="connection">
                   <label htmlFor="base-url">Ollama endpoint</label>
                   <div className="endpoint-row">
-                    <input id="base-url" value={baseURL} onChange={(event) => setBaseURL(event.target.value)} />
+                    <input id="base-url" value={app.baseURL} onChange={(event) => app.setBaseURL(event.target.value)} />
                     <button
                       type="button"
-                      className={`icon-btn${refreshing ? ' spinning' : ''}`}
-                      onClick={() => refreshOllama()}
-                      disabled={refreshing}
+                      className={`icon-btn${app.refreshing ? ' spinning' : ''}`}
+                      onClick={() => app.refreshOllama()}
+                      disabled={app.refreshing}
                       aria-label="Refresh models"
                       title="Refresh models"
                     >
@@ -3111,17 +799,17 @@ function App() {
                       </svg>
                     </button>
                   </div>
-                  <div className={status?.online ? 'status online' : 'status offline'}>
+                  <div className={app.status?.online ? 'status online' : 'status offline'}>
                     <span />
-                    {status?.online
-                      ? `Online${status.version ? ` ${status.version}` : ''} — ${asArray(models).length} local models available`
-                      : status ? 'Offline' : 'Not checked'}
+                    {app.status?.online
+                      ? `Online${app.status.version ? ` ${app.status.version}` : ''} — ${asArray(app.models).length} local models available`
+                      : app.status ? 'Offline' : 'Not checked'}
                   </div>
                   {/* Ollama's own reachability reason: CheckOllama's error
                       when the endpoint is down, or the boot fallback's
                       refresh failure. Nothing else writes the field — config,
                       window-state, and key-write failures toast instead. */}
-                  {status?.error ? <div className="status-error">{status.error}</div> : null}
+                  {app.status?.error ? <div className="status-error">{app.status.error}</div> : null}
                   <div className="field-label-row">
                     <label htmlFor="ollama-num-ctx">Context Window (num_ctx)</label>
                     <InfoHint
@@ -3131,10 +819,10 @@ function App() {
                   </div>
                   <select
                     id="ollama-num-ctx"
-                    value={ollamaNumCtx}
-                    onChange={(event) => setOllamaNumCtx(Number(event.target.value) || defaultOllamaNumCtx)}
+                    value={app.ollamaNumCtx}
+                    onChange={(event) => app.setOllamaNumCtx(Number(event.target.value) || defaultOllamaNumCtx)}
                   >
-                    {(numCtxOptions.includes(ollamaNumCtx) ? numCtxOptions : [...numCtxOptions, ollamaNumCtx].sort((a, b) => a - b)).map((value) => (
+                    {(numCtxOptions.includes(app.ollamaNumCtx) ? numCtxOptions : [...numCtxOptions, app.ollamaNumCtx].sort((a, b) => a - b)).map((value) => (
                       <option key={value} value={value}>{numCtxLabel(value)}</option>
                     ))}
                   </select>
@@ -3154,16 +842,16 @@ function App() {
                   <div className="endpoint-row">
                     <input
                       id="openai-image-endpoint"
-                      value={openaiCompatibleBaseURL}
-                      onChange={(event) => setOpenaiCompatibleBaseURL(event.target.value)}
+                      value={app.openaiCompatibleBaseURL}
+                      onChange={(event) => app.setOpenaiCompatibleBaseURL(event.target.value)}
                     />
-                    <button onClick={() => refreshOpenAICompatibleModels()}>Refresh</button>
+                    <button onClick={() => app.refreshOpenAICompatibleModels()}>Refresh</button>
                   </div>
-                  <div className={openaiCompatibleStatus === 'ok' ? 'status online' : 'status offline'}>
+                  <div className={app.openaiCompatibleStatus === 'ok' ? 'status online' : 'status offline'}>
                     <span />
-                    {openaiCompatibleStatus === 'ok'
-                      ? `Online — ${openaiCompatibleModels.length} model${openaiCompatibleModels.length === 1 ? '' : 's'} listed`
-                      : openaiCompatibleStatus === 'error'
+                    {app.openaiCompatibleStatus === 'ok'
+                      ? `Online — ${app.openaiCompatibleModels.length} model${app.openaiCompatibleModels.length === 1 ? '' : 's'} listed`
+                      : app.openaiCompatibleStatus === 'error'
                         ? 'Server unreachable or no /v1/models — enter model ids manually in Models.'
                         : 'Not checked.'}
                   </div>
@@ -3174,19 +862,19 @@ function App() {
                     <input
                       id="openai-image-key"
                       type="password"
-                      placeholder={openaiCompatibleHasKey ? 'Key saved — enter a new key to replace it' : 'Leave empty for a local server without auth'}
-                      value={openaiCompatibleKeyInput}
-                      onChange={(event) => setOpenaiCompatibleKeyInput(event.target.value)}
+                      placeholder={app.openaiCompatibleHasKey ? 'Key saved — enter a new key to replace it' : 'Leave empty for a local server without auth'}
+                      value={app.openaiCompatibleKeyInput}
+                      onChange={(event) => app.setOpenaiCompatibleKeyInput(event.target.value)}
                     />
-                    <button type="button" className="icon-btn" onClick={saveOpenAICompatibleKey} disabled={!openaiCompatibleKeyInput} aria-label="Save key" title="Save key">
+                    <button type="button" className="icon-btn" onClick={app.saveOpenAICompatibleKey} disabled={!app.openaiCompatibleKeyInput} aria-label="Save key" title="Save key">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
                         <polyline points="17 21 17 13 7 13 7 21" />
                         <polyline points="7 3 7 8 15 8" />
                       </svg>
                     </button>
-                    {openaiCompatibleHasKey ? (
-                      <button type="button" className="icon-btn" onClick={clearOpenAICompatibleKey} aria-label="Clear key" title="Clear key">
+                    {app.openaiCompatibleHasKey ? (
+                      <button type="button" className="icon-btn" onClick={app.clearOpenAICompatibleKey} aria-label="Clear key" title="Clear key">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                           <polyline points="3 6 5 6 21 6" />
                           <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
@@ -3194,19 +882,19 @@ function App() {
                       </button>
                     ) : <span className="icon-btn-placeholder" aria-hidden="true" />}
                   </div>
-                  <div className={openaiCompatibleHasKey ? 'status online' : 'status offline'}>
+                  <div className={app.openaiCompatibleHasKey ? 'status online' : 'status offline'}>
                     <span />
-                    {openaiCompatibleHasKey ? 'Bearer key saved' : 'No key — requests go unauthenticated.'}
+                    {app.openaiCompatibleHasKey ? 'Bearer key saved' : 'No key — requests go unauthenticated.'}
                   </div>
                 </div>
               </section>
 
               <div className="settings-group-label">Cloud services</div>
 
-              <section className={airplaneMode ? 'settings-section airplane-blocked' : 'settings-section'}>
+              <section className={app.airplaneMode ? 'settings-section airplane-blocked' : 'settings-section'}>
                 <h3>
                   OpenRouter{' '}
-                  {airplaneMode ? (
+                  {app.airplaneMode ? (
                     <AirplaneHint label="OpenRouter unavailable" text="Unavailable while airplane mode is on — turn it off above to configure." />
                   ) : null}
                 </h3>
@@ -3216,18 +904,18 @@ function App() {
                     <input
                       id="openrouter-key"
                       type="password"
-                      placeholder={openRouterHasKey ? 'Key saved — enter a new key to replace it' : 'sk-or-...'}
-                      value={openRouterAPIKeyInput}
-                      onChange={(event) => setOpenRouterAPIKeyInput(event.target.value)}
+                      placeholder={app.openRouterHasKey ? 'Key saved — enter a new key to replace it' : 'sk-or-...'}
+                      value={app.openRouterAPIKeyInput}
+                      onChange={(event) => app.setOpenRouterAPIKeyInput(event.target.value)}
                     />
-                    <button type="button" className="icon-btn" onClick={saveOpenRouterKey} disabled={!openRouterAPIKeyInput} aria-label="Save key" title="Save key">
+                    <button type="button" className="icon-btn" onClick={app.saveOpenRouterKey} disabled={!app.openRouterAPIKeyInput} aria-label="Save key" title="Save key">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
                         <polyline points="17 21 17 13 7 13 7 21" />
                         <polyline points="7 3 7 8 15 8" />
                       </svg>
                     </button>
-                    <button type="button" className={`icon-btn${openRouterStatus === 'connected' ? ' spinning' : ''}`} onClick={checkOpenRouterConnection} disabled={!openRouterHasKey} aria-label="Check connection" title="Check connection">
+                    <button type="button" className={`icon-btn${app.openRouterStatus === 'connected' ? ' spinning' : ''}`} onClick={app.checkOpenRouterConnection} disabled={!app.openRouterHasKey} aria-label="Check connection" title="Check connection">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.7-3" />
                         <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.7 3" />
@@ -3235,8 +923,8 @@ function App() {
                         <polyline points="3 20 3 15 8 15" />
                       </svg>
                     </button>
-                    {openRouterHasKey ? (
-                      <button type="button" className="icon-btn" onClick={clearOpenRouterKey} aria-label="Clear key" title="Clear key">
+                    {app.openRouterHasKey ? (
+                      <button type="button" className="icon-btn" onClick={app.clearOpenRouterKey} aria-label="Clear key" title="Clear key">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                           <polyline points="3 6 5 6 21 6" />
                           <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
@@ -3244,23 +932,23 @@ function App() {
                       </button>
                     ) : <span className="icon-btn-placeholder" aria-hidden="true" />}
                   </div>
-                  <div className={openRouterStatus === 'connected' ? 'status online' : 'status offline'}>
+                  <div className={app.openRouterStatus === 'connected' ? 'status online' : 'status offline'}>
                     <span />
-                    {openRouterStatus === 'connected'
+                    {app.openRouterStatus === 'connected'
                       ? 'Connected'
-                      : openRouterStatus === 'error'
-                        ? `OpenRouter: ${openRouterError}`
-                        : openRouterHasKey
+                      : app.openRouterStatus === 'error'
+                        ? `OpenRouter: ${app.openRouterError}`
+                        : app.openRouterHasKey
                           ? 'API key saved — not checked'
                           : 'No key saved.'}
                   </div>
                 </div>
               </section>
 
-              <section className={airplaneMode ? 'settings-section airplane-blocked' : 'settings-section'}>
+              <section className={app.airplaneMode ? 'settings-section airplane-blocked' : 'settings-section'}>
                 <h3>
                   fal.ai{' '}
-                  {airplaneMode ? (
+                  {app.airplaneMode ? (
                     <AirplaneHint label="fal.ai unavailable" text="Unavailable while airplane mode is on — turn it off above to configure." />
                   ) : null}
                 </h3>
@@ -3270,18 +958,18 @@ function App() {
                     <input
                       id="fal-key"
                       type="password"
-                      placeholder={falHasKey ? 'Key saved — enter a new key to replace it' : 'fal-...'}
-                      value={falAPIKeyInput}
-                      onChange={(event) => setFalAPIKeyInput(event.target.value)}
+                      placeholder={app.falHasKey ? 'Key saved — enter a new key to replace it' : 'fal-...'}
+                      value={app.falAPIKeyInput}
+                      onChange={(event) => app.setFalAPIKeyInput(event.target.value)}
                     />
-                    <button type="button" className="icon-btn" onClick={saveFalKey} disabled={!falAPIKeyInput} aria-label="Save key" title="Save key">
+                    <button type="button" className="icon-btn" onClick={app.saveFalKey} disabled={!app.falAPIKeyInput} aria-label="Save key" title="Save key">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
                         <polyline points="17 21 17 13 7 13 7 21" />
                         <polyline points="7 3 7 8 15 8" />
                       </svg>
                     </button>
-                    <button type="button" className={`icon-btn${falStatus === 'connected' ? ' spinning' : ''}`} onClick={checkFalConnection} disabled={!falHasKey} aria-label="Check connection" title="Check connection">
+                    <button type="button" className={`icon-btn${app.falStatus === 'connected' ? ' spinning' : ''}`} onClick={app.checkFalConnection} disabled={!app.falHasKey} aria-label="Check connection" title="Check connection">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.7-3" />
                         <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.7 3" />
@@ -3289,8 +977,8 @@ function App() {
                         <polyline points="3 20 3 15 8 15" />
                       </svg>
                     </button>
-                    {falHasKey ? (
-                      <button type="button" className="icon-btn" onClick={clearFalKey} aria-label="Clear key" title="Clear key">
+                    {app.falHasKey ? (
+                      <button type="button" className="icon-btn" onClick={app.clearFalKey} aria-label="Clear key" title="Clear key">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                           <polyline points="3 6 5 6 21 6" />
                           <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
@@ -3298,23 +986,23 @@ function App() {
                       </button>
                     ) : <span className="icon-btn-placeholder" aria-hidden="true" />}
                   </div>
-                  <div className={falStatus === 'connected' ? 'status online' : 'status offline'}>
+                  <div className={app.falStatus === 'connected' ? 'status online' : 'status offline'}>
                     <span />
-                    {falStatus === 'connected'
+                    {app.falStatus === 'connected'
                       ? 'Connected'
-                      : falStatus === 'error'
-                        ? `fal.ai: ${falError}`
-                        : falHasKey
+                      : app.falStatus === 'error'
+                        ? `fal.ai: ${app.falError}`
+                        : app.falHasKey
                           ? 'API key saved — not checked'
                           : 'No key saved.'}
                   </div>
                 </div>
               </section>
 
-              <section className={airplaneMode ? 'settings-section airplane-blocked' : 'settings-section'}>
+              <section className={app.airplaneMode ? 'settings-section airplane-blocked' : 'settings-section'}>
                 <h3>
                   Replicate{' '}
-                  {airplaneMode ? (
+                  {app.airplaneMode ? (
                     <AirplaneHint label="Replicate unavailable" text="Unavailable while airplane mode is on — turn it off above to configure." />
                   ) : null}
                 </h3>
@@ -3324,18 +1012,18 @@ function App() {
                     <input
                       id="replicate-key"
                       type="password"
-                      placeholder={replicateHasKey ? 'Token saved — enter a new token to replace it' : 'r8_...'}
-                      value={replicateAPIKeyInput}
-                      onChange={(event) => setReplicateAPIKeyInput(event.target.value)}
+                      placeholder={app.replicateHasKey ? 'Token saved — enter a new token to replace it' : 'r8_...'}
+                      value={app.replicateAPIKeyInput}
+                      onChange={(event) => app.setReplicateAPIKeyInput(event.target.value)}
                     />
-                    <button type="button" className="icon-btn" onClick={saveReplicateKey} disabled={!replicateAPIKeyInput} aria-label="Save token" title="Save token">
+                    <button type="button" className="icon-btn" onClick={app.saveReplicateKey} disabled={!app.replicateAPIKeyInput} aria-label="Save token" title="Save token">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
                         <polyline points="17 21 17 13 7 13 7 21" />
                         <polyline points="7 3 7 8 15 8" />
                       </svg>
                     </button>
-                    <button type="button" className={`icon-btn${replicateStatus === 'connected' ? ' spinning' : ''}`} onClick={checkReplicateConnection} disabled={!replicateHasKey} aria-label="Check connection" title="Check connection">
+                    <button type="button" className={`icon-btn${app.replicateStatus === 'connected' ? ' spinning' : ''}`} onClick={app.checkReplicateConnection} disabled={!app.replicateHasKey} aria-label="Check connection" title="Check connection">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.7-3" />
                         <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.7 3" />
@@ -3343,8 +1031,8 @@ function App() {
                         <polyline points="3 20 3 15 8 15" />
                       </svg>
                     </button>
-                    {replicateHasKey ? (
-                      <button type="button" className="icon-btn" onClick={clearReplicateKey} aria-label="Clear token" title="Clear token">
+                    {app.replicateHasKey ? (
+                      <button type="button" className="icon-btn" onClick={app.clearReplicateKey} aria-label="Clear token" title="Clear token">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                           <polyline points="3 6 5 6 21 6" />
                           <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
@@ -3352,13 +1040,13 @@ function App() {
                       </button>
                     ) : <span className="icon-btn-placeholder" aria-hidden="true" />}
                   </div>
-                  <div className={replicateStatus === 'connected' ? 'status online' : 'status offline'}>
+                  <div className={app.replicateStatus === 'connected' ? 'status online' : 'status offline'}>
                     <span />
-                    {replicateStatus === 'connected'
+                    {app.replicateStatus === 'connected'
                       ? 'Connected'
-                      : replicateStatus === 'error'
-                        ? `Replicate: ${replicateError}`
-                        : replicateHasKey
+                      : app.replicateStatus === 'error'
+                        ? `Replicate: ${app.replicateError}`
+                        : app.replicateHasKey
                           ? 'API token saved — not checked'
                           : 'No token saved.'}
                   </div>
@@ -3368,12 +1056,12 @@ function App() {
               </>
               ) : null}
 
-              {settingsTab === 'tools' ? (
+              {app.settingsTab === 'tools' ? (
               <>
               <div className="tools-tab-intro">
                 <span>Binaries installed on this machine — Atelier detects them on the PATH automatically, so most of this stays untouched. Local tools keep working in airplane mode.</span>
-                <button type="button" onClick={redetectLocalTools} disabled={localToolsDetecting}>
-                  {localToolsDetecting ? 'Detecting…' : 'Re-detect'}
+                <button type="button" onClick={app.redetectLocalTools} disabled={app.localToolsDetecting}>
+                  {app.localToolsDetecting ? 'Detecting…' : 'Re-detect'}
                 </button>
               </div>
 
@@ -3390,35 +1078,35 @@ function App() {
                     <div className="field">
                       <div className="field-label-row">
                         <label htmlFor="ffmpeg-binary">FFmpeg Binary</label>
-                        {ffmpegStatus?.detail ? (
-                          <InfoHint label="FFmpeg binary detection" text={ffmpegStatus.detail} />
+                        {app.ffmpegStatus?.detail ? (
+                          <InfoHint label="FFmpeg binary detection" text={app.ffmpegStatus.detail} />
                         ) : null}
                       </div>
                       <input
                         id="ffmpeg-binary"
-                        value={ffmpegBinary}
-                        onChange={(event) => setFfmpegBinary(event.target.value)}
-                        placeholder={ffmpegStatus?.path || 'auto-detect on PATH: ffmpeg'}
+                        value={app.ffmpegBinary}
+                        onChange={(event) => app.setFfmpegBinary(event.target.value)}
+                        placeholder={app.ffmpegStatus?.path || 'auto-detect on PATH: ffmpeg'}
                       />
                     </div>
 
                     <div className="field">
                       <div className="field-label-row">
                         <label htmlFor="ffprobe-binary">FFprobe Binary</label>
-                        {ffprobeStatus?.detail ? (
-                          <InfoHint label="FFprobe binary detection" text={ffprobeStatus.detail} />
+                        {app.ffprobeStatus?.detail ? (
+                          <InfoHint label="FFprobe binary detection" text={app.ffprobeStatus.detail} />
                         ) : null}
                       </div>
                       <input
                         id="ffprobe-binary"
-                        value={ffprobeBinary}
-                        onChange={(event) => setFfprobeBinary(event.target.value)}
-                        placeholder={ffprobeStatus?.path || 'auto-detect on PATH: ffprobe'}
+                        value={app.ffprobeBinary}
+                        onChange={(event) => app.setFfprobeBinary(event.target.value)}
+                        placeholder={app.ffprobeStatus?.path || 'auto-detect on PATH: ffprobe'}
                       />
                     </div>
                   </div>
-                  {!ffmpegStatus?.available ? (
-                    <span className="hint">{ffmpegStatus?.detail ?? 'Detecting local tools…'}</span>
+                  {!app.ffmpegStatus?.available ? (
+                    <span className="hint">{app.ffmpegStatus?.detail ?? 'Detecting local tools…'}</span>
                   ) : null}
                 </div>
               </section>
@@ -3436,35 +1124,35 @@ function App() {
                     <div className="field">
                       <div className="field-label-row">
                         <label htmlFor="sips-binary">sips Binary</label>
-                        {sipsStatus?.detail ? (
-                          <InfoHint label="sips binary detection" text={sipsStatus.detail} />
+                        {app.sipsStatus?.detail ? (
+                          <InfoHint label="sips binary detection" text={app.sipsStatus.detail} />
                         ) : null}
                       </div>
                       <input
                         id="sips-binary"
-                        value={sipsBinary}
-                        onChange={(event) => setSipsBinary(event.target.value)}
-                        placeholder={sipsStatus?.path || 'auto-detect on PATH: sips'}
+                        value={app.sipsBinary}
+                        onChange={(event) => app.setSipsBinary(event.target.value)}
+                        placeholder={app.sipsStatus?.path || 'auto-detect on PATH: sips'}
                       />
                     </div>
 
                     <div className="field">
                       <div className="field-label-row">
                         <label htmlFor="magick-binary">ImageMagick Binary</label>
-                        {magickStatus?.detail ? (
-                          <InfoHint label="ImageMagick binary detection" text={magickStatus.detail} />
+                        {app.magickStatus?.detail ? (
+                          <InfoHint label="ImageMagick binary detection" text={app.magickStatus.detail} />
                         ) : null}
                       </div>
                       <input
                         id="magick-binary"
-                        value={magickBinary}
-                        onChange={(event) => setMagickBinary(event.target.value)}
-                        placeholder={magickStatus?.path || 'auto-detect on PATH: magick / convert'}
+                        value={app.magickBinary}
+                        onChange={(event) => app.setMagickBinary(event.target.value)}
+                        placeholder={app.magickStatus?.path || 'auto-detect on PATH: magick / convert'}
                       />
                     </div>
                   </div>
-                  {!magickStatus?.available ? (
-                    <span className="hint">{magickStatus?.detail ?? 'Detecting local tools…'}</span>
+                  {!app.magickStatus?.available ? (
+                    <span className="hint">{app.magickStatus?.detail ?? 'Detecting local tools…'}</span>
                   ) : null}
                 </div>
               </section>
@@ -3482,15 +1170,15 @@ function App() {
                     <div className="field">
                       <div className="field-label-row">
                         <label htmlFor="whisper-binary">Whisper Binary</label>
-                        {whisperStatus?.detail ? (
-                          <InfoHint label="Whisper binary detection" text={whisperStatus.detail} />
+                        {app.whisperStatus?.detail ? (
+                          <InfoHint label="Whisper binary detection" text={app.whisperStatus.detail} />
                         ) : null}
                       </div>
                       <input
                         id="whisper-binary"
-                        value={whisperBinary}
-                        onChange={(event) => setWhisperBinary(event.target.value)}
-                        placeholder={whisperStatus?.path || 'auto-detect on PATH: whisper, then whisper-cli'}
+                        value={app.whisperBinary}
+                        onChange={(event) => app.setWhisperBinary(event.target.value)}
+                        placeholder={app.whisperStatus?.path || 'auto-detect on PATH: whisper, then whisper-cli'}
                       />
                     </div>
 
@@ -3499,16 +1187,16 @@ function App() {
                         <label htmlFor="whisper-model">Whisper Model</label>
                         <InfoHint
                           label="Whisper model"
-                          text={whisperStatus?.flavor === 'whisper-cpp'
+                          text={app.whisperStatus?.flavor === 'whisper-cpp'
                             ? 'A ggml model file for whisper.cpp (a leading ~/ is expanded). Empty resolves: $WHISPER_MODEL (if set when Atelier launched) → ~/.whisper-base.en.bin → ~/.cache/whisper.cpp/ggml-base.en.bin → ~/models/ggml-base.en.bin.'
                             : 'An openai-whisper model size (tiny, base, small, medium, large-v3, ...), downloaded on first use. Empty uses the CLI\'s own default, small. With whisper.cpp this becomes a ggml model file path instead.'}
                         />
                       </div>
                       <input
                         id="whisper-model"
-                        value={whisperModel}
-                        onChange={(event) => setWhisperModel(event.target.value)}
-                        placeholder={whisperStatus?.flavor === 'whisper-cpp' ? '/path/to/ggml-base.en.bin' : 'small (whisper default)'}
+                        value={app.whisperModel}
+                        onChange={(event) => app.setWhisperModel(event.target.value)}
+                        placeholder={app.whisperStatus?.flavor === 'whisper-cpp' ? '/path/to/ggml-base.en.bin' : 'small (whisper default)'}
                       />
                     </div>
 
@@ -3522,8 +1210,8 @@ function App() {
                       </div>
                       <input
                         id="whisper-vad-model"
-                        value={whisperVADModel}
-                        onChange={(event) => setWhisperVADModel(event.target.value)}
+                        value={app.whisperVADModel}
+                        onChange={(event) => app.setWhisperVADModel(event.target.value)}
                         placeholder="optional: ~/.cache/whisper.cpp/ggml-silero-v6.2.0.bin"
                       />
                     </div>
@@ -3539,38 +1227,38 @@ function App() {
                       <input
                         id="whisper-chunk-minutes"
                         inputMode="numeric"
-                        value={whisperChunkMinutes}
-                        onChange={(event) => setWhisperChunkMinutes(event.target.value)}
+                        value={app.whisperChunkMinutes}
+                        onChange={(event) => app.setWhisperChunkMinutes(event.target.value)}
                         placeholder="optional: e.g. 5"
                       />
                     </div>
                   </div>
-                  {!whisperStatus?.available ? (
-                    <span className="hint">{whisperStatus?.detail ?? 'Detecting local tools…'}</span>
+                  {!app.whisperStatus?.available ? (
+                    <span className="hint">{app.whisperStatus?.detail ?? 'Detecting local tools…'}</span>
                   ) : null}
                 </div>
               </section>
               </>
               ) : null}
 
-              {settingsTab === 'general' ? (
+              {app.settingsTab === 'general' ? (
               <>
               <section className="settings-section">
                 <h3>Storage</h3>
                 <div className="storage-list">
                   <div>
                     <span>Root</span>
-                    <code>{shortenHomePath(storageConfig?.root ?? '~/.atelier')}</code>
+                    <code>{shortenHomePath(app.storageConfig?.root ?? '~/.atelier')}</code>
                   </div>
                   <div>
                     <span>History</span>
-                    <code>{shortenHomePath(storageConfig?.history ?? '~/.atelier/history')}</code>
+                    <code>{shortenHomePath(app.storageConfig?.history ?? '~/.atelier/history')}</code>
                   </div>
                   <div>
                     <span>Default workspace</span>
                     <div className="workspace-picker">
-                      <code>{shortenHomePath(toolConfig?.filesystem?.root ?? '~/Documents')}</code>
-                      <button onClick={chooseToolWorkspace}>Choose</button>
+                      <code>{shortenHomePath(app.toolConfig?.filesystem?.root ?? '~/Documents')}</code>
+                      <button onClick={app.chooseToolWorkspace}>Choose</button>
                     </div>
                     <div className="storage-hint">
                       Used when a new conversation doesn't pick its own folder. Each conversation's workspace is locked at creation.
@@ -3578,14 +1266,14 @@ function App() {
                   </div>
                 </div>
                 <div className="storage-actions">
-                  <button className="danger" onClick={purgeArchivedConversations} disabled={purgeBusy}>
-                    {purgeBusy ? 'Deleting...' : confirmPurgeArchived ? 'Confirm Delete' : 'Delete Archived Conversations'}
+                  <button className="danger" onClick={app.purgeArchivedConversations} disabled={app.purgeBusy}>
+                    {app.purgeBusy ? 'Deleting...' : app.confirmPurgeArchived ? 'Confirm Delete' : 'Delete Archived Conversations'}
                   </button>
-                  {confirmPurgeArchived && !purgeBusy ? (
-                    <button onClick={() => setConfirmPurgeArchived(false)}>Cancel</button>
+                  {app.confirmPurgeArchived && !app.purgeBusy ? (
+                    <button onClick={() => app.setConfirmPurgeArchived(false)}>Cancel</button>
                   ) : null}
                 </div>
-                {confirmPurgeArchived ? (
+                {app.confirmPurgeArchived ? (
                   <div className="storage-confirmation">
                     This permanently deletes archived conversations and local assets from ~/.atelier/history.
                   </div>
@@ -3594,8 +1282,8 @@ function App() {
               <section className="settings-section">
                 <h3>Updates</h3>
                 <div className="storage-actions">
-                  <button onClick={checkForUpdates} disabled={updateCheckBusy}>
-                    {updateCheckBusy ? 'Checking...' : 'Check for Updates'}
+                  <button onClick={app.checkForUpdates} disabled={app.updateCheckBusy}>
+                    {app.updateCheckBusy ? 'Checking...' : 'Check for Updates'}
                   </button>
                 </div>
                 <div className="storage-hint">
@@ -3617,8 +1305,8 @@ function App() {
                     type="number"
                     min={1}
                     max={240}
-                    value={mediaTimeoutMinutes}
-                    onChange={(event) => setMediaTimeoutMinutes(Math.min(240, Math.max(1, Math.round(Number(event.target.value) || Math.round(defaultMediaTimeoutSeconds / 60)))))}
+                    value={app.mediaTimeoutMinutes}
+                    onChange={(event) => app.setMediaTimeoutMinutes(Math.min(240, Math.max(1, Math.round(Number(event.target.value) || Math.round(defaultMediaTimeoutSeconds / 60)))))}
                   />
                   <span className="hint">minutes</span>
                 </div>
@@ -3626,53 +1314,53 @@ function App() {
               </>
               ) : null}
 
-              {settingsTab === 'models' ? (
+              {app.settingsTab === 'models' ? (
               <>
               <ModelSelectionPanel
                 variant="settings"
-                value={globalModelSelection}
-                onChange={patchSettingsModelSelection}
-                catalogs={modelSelectionCatalogs}
-                durationOptions={{video: videoDurationOptions, image: videoDurationImageOptions, keyframe: videoDurationKeyframeOptions, extend: videoDurationExtendOptions, sound: soundDurationOptions}}
-                airplaneMode={airplaneMode}
-                onOpenLocalTools={() => setSettingsTab('tools')}
+                value={app.globalModelSelection}
+                onChange={app.patchSettingsModelSelection}
+                catalogs={app.modelSelectionCatalogs}
+                durationOptions={{video: app.videoDurationOptions, image: app.videoDurationImageOptions, keyframe: app.videoDurationKeyframeOptions, extend: app.videoDurationExtendOptions, sound: app.soundDurationOptions}}
+                airplaneMode={app.airplaneMode}
+                onOpenLocalTools={() => app.setSettingsTab('tools')}
               />
               </>
               ) : null}
 
-              {settingsTab === 'general' ? (
+              {app.settingsTab === 'general' ? (
               <section className="settings-section">
                 <h3>System</h3>
                 <div className="field">
-                  <textarea id="system" aria-label="System" value={system} onChange={(event) => setSystem(event.target.value)} />
+                  <textarea id="system" aria-label="System" value={app.system} onChange={(event) => app.setSystem(event.target.value)} />
                 </div>
               </section>
               ) : null}
             </div>
           </>
-        ) : view === 'conversation-models' ? (
+        ) : app.view === 'conversation-models' ? (
           <>
             <div className="toolbar">
               <div className="toolbar-left">
-                <button className="back-button" onClick={closeConversationModels}>← Back</button>
+                <button className="back-button" onClick={app.closeConversationModels}>← Back</button>
                 <div className="model-count">
-                  {convModelsKeys.size
-                    ? `${convModelsKeys.size} override${convModelsKeys.size === 1 ? '' : 's'} ${activeConversationID ? 'for this conversation' : 'for your next conversation'}`
+                  {app.convModelsKeys.size
+                    ? `${app.convModelsKeys.size} override${app.convModelsKeys.size === 1 ? '' : 's'} ${app.activeConversationID ? 'for this conversation' : 'for your next conversation'}`
                     : 'Following the Settings → Models defaults'}
                 </div>
               </div>
-              {convModelsKeys.size ? (
+              {app.convModelsKeys.size ? (
                 <div className="toolbar-right">
-                  <button className="back-button" onClick={resetAllConversationModels}>Reset all</button>
+                  <button className="back-button" onClick={app.resetAllConversationModels}>Reset all</button>
                 </div>
               ) : null}
             </div>
             <div className="settings-screen conversation-models-screen">
               <div className="settings-header">
-                <h2>{activeConversationID ? 'Models for this conversation' : 'Models for your next conversation'}</h2>
-                {activeConversationID ? (
+                <h2>{app.activeConversationID ? 'Models for this conversation' : 'Models for your next conversation'}</h2>
+                {app.activeConversationID ? (
                   <p>
-                    Changes here apply only to “{activeConversation?.title || 'this conversation'}”. Everything you
+                    Changes here apply only to “{app.activeConversation?.title || 'this conversation'}”. Everything you
                     leave alone keeps following the Settings → Models defaults, and later Settings changes reach those
                     fields too.
                   </p>
@@ -3685,49 +1373,49 @@ function App() {
               </div>
               <ModelSelectionPanel
                 variant="conversation"
-                value={convModelsDraft ?? conversationModelSelection}
-                onChange={patchConversationModels}
-                catalogs={modelSelectionCatalogs}
+                value={app.convModelsDraft ?? app.conversationModelSelection}
+                onChange={app.patchConversationModels}
+                catalogs={app.modelSelectionCatalogs}
                 durationOptions={(() => {
                   const withCurrent = (options: string[], current: string) => (options.includes(current) ? options : [current, ...options]);
-                  const shown = convModelsDraft ?? conversationModelSelection;
+                  const shown = app.convModelsDraft ?? app.conversationModelSelection;
                   return {
-                    video: withCurrent(convDurationOptions.video, shown.videoDuration),
-                    image: convDurationOptions.image,
-                    keyframe: convDurationOptions.keyframe,
-                    extend: convDurationOptions.extend,
-                    sound: withCurrent(convDurationOptions.sound, shown.soundDuration),
+                    video: withCurrent(app.convDurationOptions.video, shown.videoDuration),
+                    image: app.convDurationOptions.image,
+                    keyframe: app.convDurationOptions.keyframe,
+                    extend: app.convDurationOptions.extend,
+                    sound: withCurrent(app.convDurationOptions.sound, shown.soundDuration),
                   };
                 })()}
-                overriddenKeys={convModelsKeys}
-                onResetField={resetConversationModelField}
-                airplaneMode={airplaneMode}
+                overriddenKeys={app.convModelsKeys}
+                onResetField={app.resetConversationModelField}
+                airplaneMode={app.airplaneMode}
               />
             </div>
           </>
-        ) : view === 'usage' ? (
+        ) : app.view === 'usage' ? (
           <UsageReportView
-            report={usageReport}
-            loading={usageLoading}
-            error={usageError}
-            onBack={() => setView('app')}
+            report={app.usageReport}
+            loading={app.usageLoading}
+            error={app.usageError}
+            onBack={() => app.setView('app')}
             onOpenChild={(child) => {
               // A library report's children are projects, a project report's
               // are conversations — the child scope follows the parent's.
-              if (usageReport?.scope === 'library') {
-                openProjectUsageReport(child.id);
+              if (app.usageReport?.scope === 'library') {
+                app.openProjectUsageReport(child.id);
               } else {
-                openConversationUsageReport(child.id);
+                app.openConversationUsageReport(child.id);
               }
             }}
           />
-        ) : !editorOpen ? (
+        ) : !app.editorOpen ? (
           <>
             <div className="toolbar">
               <div className="toolbar-left">
-                {composerProjectNames ? (
+                {app.composerProjectNames ? (
                   <div className="project-context" title="This chat is scoped to a library project">
-                    {composerProjectNames.libraryName}{composerProjectNames.projectName ? ` › ${composerProjectNames.projectName}` : ''}
+                    {app.composerProjectNames.libraryName}{app.composerProjectNames.projectName ? ` › ${app.composerProjectNames.projectName}` : ''}
                   </div>
                 ) : null}
               </div>
@@ -3739,11 +1427,11 @@ function App() {
                     persists through the debounced settings save. */}
                 <button
                   type="button"
-                  className={`assets-toggle airplane-indicator${airplaneMode ? ' on' : ''}`}
-                  onClick={() => setAirplaneMode((current) => !current)}
-                  aria-pressed={airplaneMode}
-                  aria-label={airplaneMode ? 'Airplane mode is on — click to turn it off' : 'Airplane mode is off — click to turn it on'}
-                  title={airplaneMode
+                  className={`assets-toggle airplane-indicator${app.airplaneMode ? ' on' : ''}`}
+                  onClick={() => app.setAirplaneMode((current) => !current)}
+                  aria-pressed={app.airplaneMode}
+                  aria-label={app.airplaneMode ? 'Airplane mode is on — click to turn it off' : 'Airplane mode is off — click to turn it on'}
+                  title={app.airplaneMode
                     ? 'Airplane mode is on — Atelier contacts no cloud provider. Click to turn it off.'
                     : 'Airplane mode is off — cloud providers are available. Click to turn it on.'}
                 >
@@ -3754,11 +1442,11 @@ function App() {
                 {/* The persisted usage report for the active conversation —
                     the aggregate over every turn on disk, not just the ones
                     loaded in this session. */}
-                {activeConversationID ? (
+                {app.activeConversationID ? (
                   <button
                     type="button"
                     className="assets-toggle usage-report-toggle"
-                    onClick={() => openConversationUsageReport(activeConversationID)}
+                    onClick={() => app.openConversationUsageReport(app.activeConversationID)}
                     aria-label="Usage report for this conversation"
                     title="Usage report — cost and tool calls across this conversation"
                   >
@@ -3770,18 +1458,18 @@ function App() {
                     </svg>
                   </button>
                 ) : null}
-                <ConversationUsage usage={modelUsage} media={mediaUsage} />
+                <ConversationUsage usage={app.modelUsage} media={app.mediaUsage} />
                 <button
                   type="button"
-                  className={`assets-toggle conversation-models-toggle${uiOverridesActive ? ' has-overrides' : ''}`}
-                  onClick={openConversationModels}
-                  aria-label={activeConversationID ? 'Model overrides for this conversation' : 'Model overrides for your next conversation'}
+                  className={`assets-toggle conversation-models-toggle${app.uiOverridesActive ? ' has-overrides' : ''}`}
+                  onClick={app.openConversationModels}
+                  aria-label={app.activeConversationID ? 'Model overrides for this conversation' : 'Model overrides for your next conversation'}
                   title={
-                    activeConversationID
-                      ? uiOverridesActive
+                    app.activeConversationID
+                      ? app.uiOverridesActive
                         ? 'This conversation overrides some model selections — click to change'
                         : 'Override model selections for this conversation'
-                      : uiOverridesActive
+                      : app.uiOverridesActive
                         ? 'Your next conversation will override some model selections — click to change'
                         : 'Override model selections for the conversation you start next'
                   }
@@ -3798,11 +1486,11 @@ function App() {
                   </button>
                   <button
                     type="button"
-                    className={`assets-toggle${assetsPanelOpen ? ' active' : ''}`}
-                    onClick={() => setAssetsPanelOpen((open) => !open)}
-                    aria-label={assetsPanelOpen ? 'Hide assets panel' : 'Show assets panel'}
-                    aria-pressed={assetsPanelOpen}
-                    title={assetsPanelOpen ? 'Hide assets' : 'Show assets'}
+                    className={`assets-toggle${app.assetsPanelOpen ? ' active' : ''}`}
+                    onClick={() => app.setAssetsPanelOpen((open) => !open)}
+                    aria-label={app.assetsPanelOpen ? 'Hide assets panel' : 'Show assets panel'}
+                    aria-pressed={app.assetsPanelOpen}
+                    title={app.assetsPanelOpen ? 'Hide assets' : 'Show assets'}
                 >
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="m22 11-1.296-1.296a2.4 2.4 0 0 0-3.408 0L11 16" />
@@ -3817,19 +1505,19 @@ function App() {
             <div className="chat-panel">
               <div
                 className="transcript"
-                ref={transcriptRef}
+                ref={app.transcriptRef}
                 onScroll={(event) => {
-                  shouldFollowTranscriptRef.current = isNearScrollBottom(event.currentTarget);
+                  app.shouldFollowTranscriptRef.current = isNearScrollBottom(event.currentTarget);
                 }}
               >
-                {visibleHarnessRun ? <HarnessRunPanel run={visibleHarnessRun} /> : null}
-                {asArray(chat).length === 0 ? (
+                {app.visibleHarnessRun ? <HarnessRunPanel run={app.visibleHarnessRun} /> : null}
+                {asArray(app.chat).length === 0 ? (
                   <div className="empty-state">
-                    <h2>{emptyPrompt?.heading ?? 'What are we making today?'}</h2>
-                    <p>{emptyPrompt?.sub ?? 'Describe an image, video, or sound to begin.'}</p>
+                    <h2>{app.emptyPrompt?.heading ?? 'What are we making today?'}</h2>
+                    <p>{app.emptyPrompt?.sub ?? 'Describe an image, video, or sound to begin.'}</p>
                   </div>
-                ) : asArray(chat).map((entry) => {
-                  const thinkingCollapsed = Boolean(entry.thinking && (collapsedThinkingIDs[entry.id] ?? !entry.streaming));
+                ) : asArray(app.chat).map((entry) => {
+                  const thinkingCollapsed = Boolean(entry.thinking && (app.collapsedThinkingIDs[entry.id] ?? !entry.streaming));
                   return (
                     <article key={entry.id} id={`msg-${entry.id}`} className={`message ${entry.role}`}>
                       <div className="message-meta">
@@ -3847,9 +1535,9 @@ function App() {
                                     type="button"
                                     aria-label={`Open generated image ${index + 1}`}
                                     onClick={() => {
-                                      setPreviewImage(image);
-                                      setPreviewEditContext(editArtifactIDFromURL(image) && activeConversationID
-                                        ? {conversationID: activeConversationID, artifactID: editArtifactIDFromURL(image)!}
+                                      app.setPreviewImage(image);
+                                      app.setPreviewEditContext(app.editArtifactIDFromURL(image) && app.activeConversationID
+                                        ? {conversationID: app.activeConversationID, artifactID: app.editArtifactIDFromURL(image)!}
                                         : null);
                                     }}
                                   >
@@ -3857,11 +1545,11 @@ function App() {
                                   </button>
                                   <InlineMediaActions
                                     downloadTitle="Download image"
-                                    onDownload={() => saveGeneratedImage(image, index)}
+                                    onDownload={() => app.saveGeneratedImage(image, index)}
                                     editTitle="Edit image with AI"
-                                    editDisabled={editorOpening}
-                                    onEdit={activeConversationID && editArtifactIDFromURL(image)
-                                      ? () => void openImageEditor(activeConversationID, editArtifactIDFromURL(image)!)
+                                    editDisabled={app.editorOpening}
+                                    onEdit={app.activeConversationID && app.editArtifactIDFromURL(image)
+                                      ? () => void app.openImageEditor(app.activeConversationID, app.editArtifactIDFromURL(image)!)
                                       : null}
                                   />
                                 </div>
@@ -3877,9 +1565,9 @@ function App() {
                                 type="button"
                                 aria-label={`Open attached image ${index + 1}`}
                                 onClick={() => {
-                                  setPreviewImage(image);
-                                  setPreviewEditContext(editArtifactIDFromURL(image) && activeConversationID
-                                    ? {conversationID: activeConversationID, artifactID: editArtifactIDFromURL(image)!}
+                                  app.setPreviewImage(image);
+                                  app.setPreviewEditContext(app.editArtifactIDFromURL(image) && app.activeConversationID
+                                    ? {conversationID: app.activeConversationID, artifactID: app.editArtifactIDFromURL(image)!}
                                     : null);
                                 }}
                               >
@@ -3899,10 +1587,10 @@ function App() {
                                   inline form) hides download until the persisted
                                   artifact URL replaces it. */}
                               <AudioCardActions
-                                onDownload={audio.startsWith('/atelier-artifact/') ? () => saveGeneratedAudio(audio, index) : null}
-                                editDisabled={editorOpening}
-                                onEdit={activeConversationID && audioArtifactIDFromURL(audio)
-                                  ? () => void openAudioEditor(activeConversationID, audioArtifactIDFromURL(audio)!)
+                                onDownload={audio.startsWith('/atelier-artifact/') ? () => app.saveGeneratedAudio(audio, index) : null}
+                                editDisabled={app.editorOpening}
+                                onEdit={app.activeConversationID && app.audioArtifactIDFromURL(audio)
+                                  ? () => void app.openAudioEditor(app.activeConversationID, app.audioArtifactIDFromURL(audio)!)
                                   : null}
                               />
                             </div>
@@ -3920,11 +1608,11 @@ function App() {
                                     (VideoPlayer already renders it as a still). */}
                                 <InlineMediaActions
                                   downloadTitle="Download video"
-                                  onDownload={videoArtifactIDFromURL(video) ? () => saveGeneratedVideo(video, index) : null}
+                                  onDownload={app.videoArtifactIDFromURL(video) ? () => app.saveGeneratedVideo(video, index) : null}
                                   editTitle="Edit video"
-                                  editDisabled={editorOpening}
-                                  onEdit={activeConversationID && videoArtifactIDFromURL(video) && !videoThumbnailOnlySrc(video)
-                                    ? () => void openVideoEditor(activeConversationID, videoArtifactIDFromURL(video)!)
+                                  editDisabled={app.editorOpening}
+                                  onEdit={app.activeConversationID && app.videoArtifactIDFromURL(video) && !videoThumbnailOnlySrc(video)
+                                    ? () => void app.openVideoEditor(app.activeConversationID, app.videoArtifactIDFromURL(video)!)
                                     : null}
                                 />
                               </div>
@@ -3940,12 +1628,12 @@ function App() {
                               <div className="chat-transcript-actions">
                                 <button
                                   type="button"
-                                  disabled={editorOpening || !activeConversationID || !transcriptArtifactIDFromURL(subtitle)}
-                                  title={transcriptArtifactIDFromURL(subtitle) ? 'Open in the subtitle editor' : 'Persisted subtitle required'}
+                                  disabled={app.editorOpening || !app.activeConversationID || !app.transcriptArtifactIDFromURL(subtitle)}
+                                  title={app.transcriptArtifactIDFromURL(subtitle) ? 'Open in the subtitle editor' : 'Persisted subtitle required'}
                                   onClick={() => {
-                                    const artifactID = transcriptArtifactIDFromURL(subtitle);
-                                    if (artifactID && activeConversationID) {
-                                      void openSubtitleEditor(activeConversationID, artifactID);
+                                    const artifactID = app.transcriptArtifactIDFromURL(subtitle);
+                                    if (artifactID && app.activeConversationID) {
+                                      void app.openSubtitleEditor(app.activeConversationID, artifactID);
                                     }
                                   }}
                                 >
@@ -3958,7 +1646,7 @@ function App() {
                                     block applies. */}
                                 <button
                                   type="button"
-                                  onClick={() => saveGeneratedTranscript(subtitle, index)}
+                                  onClick={() => app.saveGeneratedTranscript(subtitle, index)}
                                   disabled={!subtitle.startsWith('/atelier-artifact/')}
                                 >
                                   Download subtitle
@@ -3976,11 +1664,11 @@ function App() {
                                 <VideoPlayer src={video} />
                                 <InlineMediaActions
                                   downloadTitle="Download video"
-                                  onDownload={() => saveGeneratedVideo(video, index)}
+                                  onDownload={() => app.saveGeneratedVideo(video, index)}
                                   editTitle="Edit video"
-                                  editDisabled={editorOpening}
-                                  onEdit={activeConversationID && videoArtifactIDFromURL(video) && !videoThumbnailOnlySrc(video)
-                                    ? () => void openVideoEditor(activeConversationID, videoArtifactIDFromURL(video)!)
+                                  editDisabled={app.editorOpening}
+                                  onEdit={app.activeConversationID && app.videoArtifactIDFromURL(video) && !videoThumbnailOnlySrc(video)
+                                    ? () => void app.openVideoEditor(app.activeConversationID, app.videoArtifactIDFromURL(video)!)
                                     : null}
                                 />
                               </div>
@@ -3994,10 +1682,10 @@ function App() {
                             <figure key={`${entry.id}-audio-${index}`} className="chat-audio-card">
                               <AudioPlayer src={audio} />
                               <AudioCardActions
-                                onDownload={() => saveGeneratedAudio(audio, index)}
-                                editDisabled={editorOpening}
-                                onEdit={activeConversationID && audioArtifactIDFromURL(audio)
-                                  ? () => void openAudioEditor(activeConversationID, audioArtifactIDFromURL(audio)!)
+                                onDownload={() => app.saveGeneratedAudio(audio, index)}
+                                editDisabled={app.editorOpening}
+                                onEdit={app.activeConversationID && app.audioArtifactIDFromURL(audio)
+                                  ? () => void app.openAudioEditor(app.activeConversationID, app.audioArtifactIDFromURL(audio)!)
                                   : null}
                               />
                             </figure>
@@ -4012,16 +1700,16 @@ function App() {
                               <div className="chat-transcript-actions">
                                 {/* Only .vtt/.srt open in the subtitle editor; a
                                     plain .txt transcript has nothing to edit. */}
-                                {transcriptArtifactIDFromURL(transcript) && activeConversationID ? (
+                                {app.transcriptArtifactIDFromURL(transcript) && app.activeConversationID ? (
                                   <button
                                     type="button"
-                                    disabled={editorOpening}
-                                    onClick={() => void openSubtitleEditor(activeConversationID, transcriptArtifactIDFromURL(transcript)!)}
+                                    disabled={app.editorOpening}
+                                    onClick={() => void app.openSubtitleEditor(app.activeConversationID, app.transcriptArtifactIDFromURL(transcript)!)}
                                   >
                                     Edit
                                   </button>
                                 ) : null}
-                                <button type="button" onClick={() => saveGeneratedTranscript(transcript, index)}>{transcript.toLowerCase().endsWith('.srt') ? 'Download subtitles' : 'Download transcript'}</button>
+                                <button type="button" onClick={() => app.saveGeneratedTranscript(transcript, index)}>{transcript.toLowerCase().endsWith('.srt') ? 'Download subtitles' : 'Download transcript'}</button>
                               </div>
                             </div>
                           ))}
@@ -4035,12 +1723,12 @@ function App() {
                               <div className="chat-transcript-actions">
                                 <button
                                   type="button"
-                                  disabled={editorOpening || !activeConversationID || !markdownArtifactIDFromURL(markdown)}
-                                  title={markdownArtifactIDFromURL(markdown) ? (markdown.toLowerCase().endsWith('.fountain') ? 'Open in the screenplay editor' : 'Open in the markdown editor') : 'Persisted document required'}
+                                  disabled={app.editorOpening || !app.activeConversationID || !app.markdownArtifactIDFromURL(markdown)}
+                                  title={app.markdownArtifactIDFromURL(markdown) ? (markdown.toLowerCase().endsWith('.fountain') ? 'Open in the screenplay editor' : 'Open in the markdown editor') : 'Persisted document required'}
                                   onClick={() => {
-                                    const artifactID = markdownArtifactIDFromURL(markdown);
-                                    if (artifactID && activeConversationID) {
-                                      void openMarkdownEditor(activeConversationID, artifactID);
+                                    const artifactID = app.markdownArtifactIDFromURL(markdown);
+                                    if (artifactID && app.activeConversationID) {
+                                      void app.openMarkdownEditor(app.activeConversationID, artifactID);
                                     }
                                   }}
                                 >
@@ -4048,7 +1736,7 @@ function App() {
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => saveGeneratedMarkdown(markdown, index)}
+                                  onClick={() => app.saveGeneratedMarkdown(markdown, index)}
                                   disabled={!markdown.startsWith('/atelier-artifact/')}
                                 >
                                   Download document
@@ -4066,12 +1754,12 @@ function App() {
                               <div className="chat-transcript-actions">
                                 <button
                                   type="button"
-                                  disabled={editorOpening || !activeConversationID || !compositionArtifactIDFromURL(composition)}
-                                  title={compositionArtifactIDFromURL(composition) ? 'Open this revision in the video composer' : 'Persisted composition required'}
+                                  disabled={app.editorOpening || !app.activeConversationID || !app.compositionArtifactIDFromURL(composition)}
+                                  title={app.compositionArtifactIDFromURL(composition) ? 'Open this revision in the video composer' : 'Persisted composition required'}
                                   onClick={() => {
-                                    const artifactID = compositionArtifactIDFromURL(composition);
-                                    if (artifactID && activeConversationID) {
-                                      void openCompositionEditor(activeConversationID, artifactID);
+                                    const artifactID = app.compositionArtifactIDFromURL(composition);
+                                    if (artifactID && app.activeConversationID) {
+                                      void app.openCompositionEditor(app.activeConversationID, artifactID);
                                     }
                                   }}
                                 >
@@ -4079,7 +1767,7 @@ function App() {
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => saveGeneratedComposition(composition, index)}
+                                  onClick={() => app.saveGeneratedComposition(composition, index)}
                                   disabled={!composition.startsWith('/atelier-artifact/')}
                                 >
                                   Download project
@@ -4097,12 +1785,12 @@ function App() {
                               <div className="chat-transcript-actions">
                                 <button
                                   type="button"
-                                  disabled={editorOpening || !activeConversationID || !comicArtifactIDFromURL(comic)}
-                                  title={comicArtifactIDFromURL(comic) ? 'Open this revision in the comic editor' : 'Persisted comic required'}
+                                  disabled={app.editorOpening || !app.activeConversationID || !app.comicArtifactIDFromURL(comic)}
+                                  title={app.comicArtifactIDFromURL(comic) ? 'Open this revision in the comic editor' : 'Persisted comic required'}
                                   onClick={() => {
-                                    const artifactID = comicArtifactIDFromURL(comic);
-                                    if (artifactID && activeConversationID) {
-                                      void openComicEditor(activeConversationID, artifactID);
+                                    const artifactID = app.comicArtifactIDFromURL(comic);
+                                    if (artifactID && app.activeConversationID) {
+                                      void app.openComicEditor(app.activeConversationID, artifactID);
                                     }
                                   }}
                                 >
@@ -4110,7 +1798,7 @@ function App() {
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => saveGeneratedComic(comic, index)}
+                                  onClick={() => app.saveGeneratedComic(comic, index)}
                                   disabled={!comic.startsWith('/atelier-artifact/')}
                                 >
                                   Download project
@@ -4126,7 +1814,7 @@ function App() {
                             className="thinking-toggle"
                             type="button"
                             aria-expanded={!thinkingCollapsed}
-                            onClick={() => toggleThinkingCollapsed(entry.id)}
+                            onClick={() => app.toggleThinkingCollapsed(entry.id)}
                           >
                             {thinkingCollapsed ? 'Show thinking' : 'Hide thinking'}
                           </button>
@@ -4159,10 +1847,10 @@ function App() {
                           className="message-copy-button"
                           type="button"
                           aria-label={entry.role === 'user' ? 'Copy prompt' : 'Copy agent response'}
-                          title={copiedMessageID === entry.id ? 'Copied' : entry.role === 'user' ? 'Copy prompt' : 'Copy response'}
-                          onClick={() => copyMessage(entry)}
+                          title={app.copiedMessageID === entry.id ? 'Copied' : entry.role === 'user' ? 'Copy prompt' : 'Copy response'}
+                          onClick={() => app.copyMessage(entry)}
                         >
-                          {copiedMessageID === entry.id ? '✓' : '⧉'}
+                          {app.copiedMessageID === entry.id ? '✓' : '⧉'}
                         </button>
                       ) : null}
                       {entry.error ? (
@@ -4170,10 +1858,10 @@ function App() {
                           <button
                             className="message-retry-button"
                             type="button"
-                            disabled={Boolean(activeStream)}
+                            disabled={Boolean(app.activeStream)}
                             aria-label="Retry last turn"
                             title="Retry last turn"
-                            onClick={() => retryFailedTurn(entry.id)}
+                            onClick={() => app.retryFailedTurn(entry.id)}
                           >
                             ↻ Retry
                           </button>
@@ -4187,19 +1875,19 @@ function App() {
               </div>
 
               <div
-                ref={composerRef}
-                className={`composer${composerDragging ? ' composer--dragging' : ''}`}
-                onDragEnter={handleComposerDragEnter}
-                onDragOver={handleComposerDragOver}
-                onDragLeave={handleComposerDragLeave}
-                onDrop={handleComposerDrop}
+                ref={app.composerRef}
+                className={`composer${app.composerDragging ? ' composer--dragging' : ''}`}
+                onDragEnter={app.handleComposerDragEnter}
+                onDragOver={app.handleComposerDragOver}
+                onDragLeave={app.handleComposerDragLeave}
+                onDrop={app.handleComposerDrop}
               >
-                {composerDragging ? (
+                {app.composerDragging ? (
                   <div className="composer-drop-overlay">Drop media to attach</div>
                 ) : null}
-                {asArray(stagingAttachments).length ? (
+                {asArray(app.stagingAttachments).length ? (
                   <div className="composer-staging">
-                    {asArray(stagingAttachments).map((item) => (
+                    {asArray(app.stagingAttachments).map((item) => (
                       <span key={item.key} className="composer-staging-row">
                         <span aria-hidden="true">{item.kind === 'audio' ? '♪' : '▶'}</span>
                         Staging {item.name}… {Math.round(item.fraction * 100)}%
@@ -4207,9 +1895,9 @@ function App() {
                     ))}
                   </div>
                 ) : null}
-                {asArray(attachments).length ? (
+                {asArray(app.attachments).length ? (
                   <div className="attachment-strip">
-                    {asArray(attachments).map((item) => (
+                    {asArray(app.attachments).map((item) => (
                       <button
                         key={item.name}
                         onClick={() => {
@@ -4218,7 +1906,7 @@ function App() {
                           if (item.stagedPath) {
                             void DiscardMediaUpload(item.stagedPath).catch(() => {});
                           }
-                          setAttachments((items) => items.filter((next) => next.name !== item.name));
+                          app.setAttachments((items) => items.filter((next) => next.name !== item.name));
                         }}
                       >
                         {item.kind === 'audio' ? (
@@ -4262,20 +1950,20 @@ function App() {
                     ))}
                   </div>
                 ) : null}
-                {mentionOpen && mentionMatchesState.length ? (
-                  <ul className="mention-list" role="listbox" ref={mentionListRef}>
-                    {mentionMatchesState.map((item, index) => (
-                      <li key={item.name} role="option" aria-selected={index === mentionIndex}>
+                {app.mentionOpen && app.mentionMatchesState.length ? (
+                  <ul className="mention-list" role="listbox" ref={app.mentionListRef}>
+                    {app.mentionMatchesState.map((item, index) => (
+                      <li key={item.name} role="option" aria-selected={index === app.mentionIndex}>
                         <button
                           type="button"
-                          className={index === mentionIndex ? 'mention-item active' : 'mention-item'}
+                          className={index === app.mentionIndex ? 'mention-item active' : 'mention-item'}
                           onMouseDown={(event) => {
                             // mousedown (not click) fires before the textarea
                             // loses focus, so the accept caret-restore works.
                             event.preventDefault();
-                            acceptMention(index);
+                            app.acceptMention(index);
                           }}
-                          onMouseEnter={() => setMentionIndex(index)}
+                          onMouseEnter={() => app.setMentionIndex(index)}
                         >
                           {item.kind === 'image' ? (
                             <img src={item.src} alt="" className="mention-thumb" />
@@ -4301,16 +1989,16 @@ function App() {
                       typographic and box properties must match
                       .composer-input textarea exactly or chips drift out of
                       alignment. */}
-                  <div ref={chatPromptMirrorRef} className="composer-input-mirror" aria-hidden="true">
-                    {renderMentionOverlay(prompt)}
+                  <div ref={app.chatPromptMirrorRef} className="composer-input-mirror" aria-hidden="true">
+                    {app.renderMentionOverlay(app.prompt)}
                   </div>
                   <textarea
-                    ref={chatPromptRef}
-                    value={prompt}
-                    onChange={handleChatPromptChange}
-                    onKeyDown={handleChatPromptKeyDown}
-                    onPaste={handleChatPromptPaste}
-                    onScroll={handleChatPromptScroll}
+                    ref={app.chatPromptRef}
+                    value={app.prompt}
+                    onChange={app.handleChatPromptChange}
+                    onKeyDown={app.handleChatPromptKeyDown}
+                    onPaste={app.handleChatPromptPaste}
+                    onScroll={app.handleChatPromptScroll}
                     placeholder="Prompt Atelier..."
                   />
                 </div>
@@ -4322,29 +2010,29 @@ function App() {
                       // The workspace is immutable once a conversation exists.
                       // For a new chat, clicking opens the folder picker to
                       // choose the per-conversation root before the first send.
-                      disabled={Boolean(activeConversationID) || Boolean(activeStream)}
-                      onClick={chooseDraftWorkspace}
-                      aria-label={activeConversationID
-                        ? `Workspace locked to ${displayedWorkspace}`
+                      disabled={Boolean(app.activeConversationID) || Boolean(app.activeStream)}
+                      onClick={app.chooseDraftWorkspace}
+                      aria-label={app.activeConversationID
+                        ? `Workspace locked to ${app.displayedWorkspace}`
                         : 'Choose workspace for this conversation'}
-                      title={activeConversationID
-                        ? `Workspace locked to ${displayedWorkspace}`
+                      title={app.activeConversationID
+                        ? `Workspace locked to ${app.displayedWorkspace}`
                         : 'Choose workspace for this conversation'}
                     >
                       <svg className="workspace-chip-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
                       </svg>
-                      <code>{shortenHomePath(displayedWorkspace)}</code>
+                      <code>{shortenHomePath(app.displayedWorkspace)}</code>
                     </button>
-                    {composerProjectNames ? (
+                    {app.composerProjectNames ? (
                       <span
                         className="composer-project-chip"
-                        title={`Filed under ${composerProjectNames.libraryName}${composerProjectNames.projectName ? ` › ${composerProjectNames.projectName}` : ''} — the assets panel and @-mentions scope to the library`}
+                        title={`Filed under ${app.composerProjectNames.libraryName}${app.composerProjectNames.projectName ? ` › ${app.composerProjectNames.projectName}` : ''} — the assets panel and @-mentions scope to the library`}
                       >
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                           <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z" />
                         </svg>
-                        <code>{composerProjectNames.projectName || composerProjectNames.libraryName}</code>
+                        <code>{app.composerProjectNames.projectName || app.composerProjectNames.libraryName}</code>
                       </span>
                     ) : null}
                     <label className="file-button" aria-label="Attach file" title="Attach file">
@@ -4356,22 +2044,22 @@ function App() {
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
                       </svg>
-                      <input type="file" accept="image/*,audio/*,video/*,.mkv,.flv,.avi,.ts,.mpg,.mpeg,.vtt,.srt,application/x-subrip,text/vtt,.md,.markdown,.fountain,text/markdown" multiple onChange={(event) => addFiles(event.target.files)} />
+                      <input type="file" accept="image/*,audio/*,video/*,.mkv,.flv,.avi,.ts,.mpg,.mpeg,.vtt,.srt,application/x-subrip,text/vtt,.md,.markdown,.fountain,text/markdown" multiple onChange={(event) => app.addFiles(event.target.files)} />
                     </label>
                   </div>
                   <div className="composer-submit-row">
                     <div className="composer-model-switch">
                       <label className="model-inline" htmlFor="primary-provider">
-                        <span>Provider{conversationPrimaryOverride ? ' · this chat' : ''}</span>
+                        <span>Provider{app.conversationPrimaryOverride ? ' · this chat' : ''}</span>
                         <div className="model-inline-control">
                           <select
                             id="primary-provider"
                             aria-label="Provider for next message"
-                            value={composerProvider}
-                            onChange={(event) => selectComposerProvider(event.target.value as ChatProviderID)}
+                            value={app.composerProvider}
+                            onChange={(event) => app.selectComposerProvider(event.target.value as ChatProviderID)}
                           >
                             <option value="ollama">Ollama</option>
-                            <option value="openrouter" disabled={airplaneMode}>OpenRouter</option>
+                            <option value="openrouter" disabled={app.airplaneMode}>OpenRouter</option>
                             <option value="openai-compatible">OpenAI-compatible (local)</option>
                           </select>
                         </div>
@@ -4383,33 +2071,33 @@ function App() {
                             id="primary-model"
                             ariaLabel="Model for next message"
                             placeholder="Type to filter models..."
-                            value={composerModel}
-                            onChange={selectComposerModel}
-                            options={composerModelOptions}
-                            allowCustom={composerProvider === 'openai-compatible'}
+                            value={app.composerModel}
+                            onChange={app.selectComposerModel}
+                            options={app.composerModelOptions}
+                            allowCustom={app.composerProvider === 'openai-compatible'}
                           />
-                          {composerProvider === 'ollama' || composerProvider === 'openrouter' ? (
+                          {app.composerProvider === 'ollama' || app.composerProvider === 'openrouter' ? (
                             <ModelCapabilityLink
                               id="primary-model"
-                              modelName={composerModel}
-                              models={composerProvider === 'ollama' ? models : undefined}
-                              openRouterModels={composerProvider === 'openrouter' ? openRouterModels : undefined}
-                              openID={openCapabilityID}
-                              setOpenID={setOpenCapabilityID}
+                              modelName={app.composerModel}
+                              models={app.composerProvider === 'ollama' ? app.models : undefined}
+                              openRouterModels={app.composerProvider === 'openrouter' ? app.openRouterModels : undefined}
+                              openID={app.openCapabilityID}
+                              setOpenID={app.setOpenCapabilityID}
                               variant="icon"
                             />
                           ) : null}
                         </div>
                       </label>
                     </div>
-                    {activeStream ? (
-                      <button className="danger" onClick={stopChat} aria-label="Stop generating" title="Stop">
+                    {app.activeStream ? (
+                      <button className="danger" onClick={app.stopChat} aria-label="Stop generating" title="Stop">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true">
                           <rect x="5" y="5" width="14" height="14" rx="2" />
                         </svg>
                       </button>
                     ) : (
-                      <button className="primary" onClick={submitChat} disabled={!prompt.trim() || !composerModel || !composerModelIsValid} aria-label="Send message" title="Send">
+                      <button className="primary" onClick={app.submitChat} disabled={!app.prompt.trim() || !app.composerModel || !app.composerModelIsValid} aria-label="Send message" title="Send">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                           <path d="M3.714 3.048a.498.498 0 0 0-.683.627l2.843 7.627a2 2 0 0 1 0 1.396l-2.842 7.627a.498.498 0 0 0 .682.627l18-8.5a.5.5 0 0 0 0-.904z" />
                           <path d="M6 12h16" />
@@ -4423,7 +2111,7 @@ function App() {
           </>
         ) : null}
       </section>
-      {view !== 'app' || editorOpen || !assetsPanelOpen ? null : (
+      {app.view !== 'app' || app.editorOpen || !app.assetsPanelOpen ? null : (
         <div
           className="assets-resizer"
           role="separator"
@@ -4431,24 +2119,24 @@ function App() {
           aria-label="Resize assets panel"
           onMouseDown={(event) => {
             event.preventDefault();
-            setResizingAssets(true);
+            app.setResizingAssets(true);
           }}
         />
       )}
-      {view !== 'app' || editorOpen || !assetsPanelOpen ? null : (
-        <aside className="assets-panel" aria-label={composerLibraryID ? 'Library assets' : 'Conversation assets'}>
+      {app.view !== 'app' || app.editorOpen || !app.assetsPanelOpen ? null : (
+        <aside className="assets-panel" aria-label={app.composerLibraryID ? 'Library assets' : 'Conversation assets'}>
           <div className="assets-panel-header">
             <span className="assets-panel-title">
-              {composerLibraryID && composerProjectNames ? `Assets · ${composerProjectNames.libraryName}` : 'Assets'}
+              {app.composerLibraryID && app.composerProjectNames ? `Assets · ${app.composerProjectNames.libraryName}` : 'Assets'}
             </span>
-            {activeConversationID ? (
+            {app.activeConversationID ? (
               <button
                 type="button"
                 className="assets-panel-new-composition"
-                disabled={editorOpening}
+                disabled={app.editorOpening}
                 aria-label="New comic"
                 title="Open the comic editor on an unsaved draft for this conversation — add art from the picker inside it"
-                onClick={() => void openNewComic(activeConversationID, [])}
+                onClick={() => void app.openNewComic(app.activeConversationID, [])}
               >
                 {/* A comic page: a framed grid with a plus. */}
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -4459,14 +2147,14 @@ function App() {
                 </svg>
               </button>
             ) : null}
-            {activeConversationID ? (
+            {app.activeConversationID ? (
               <button
                 type="button"
                 className="assets-panel-new-composition"
-                disabled={editorOpening}
+                disabled={app.editorOpening}
                 aria-label="New composition"
                 title="Open the video composer on an unsaved draft for this conversation — add clips from the picker inside it"
-                onClick={() => void openNewComposition(activeConversationID, [])}
+                onClick={() => void app.openNewComposition(app.activeConversationID, [])}
               >
                 {/* Staggered clips on tracks + a plus — deliberately
                     media-neutral: the composer hosts audio-only mixes too. */}
@@ -4479,14 +2167,14 @@ function App() {
                 </svg>
               </button>
             ) : null}
-            {activeConversationID ? (
+            {app.activeConversationID ? (
               <button
                 type="button"
                 className="assets-panel-new-composition"
-                disabled={editorOpening}
+                disabled={app.editorOpening}
                 aria-label="New audio mix"
                 title="Open the composer on an audio-only draft — arrange music, voice, and sound on the audio lanes; a video added later turns it into a video sequence"
-                onClick={() => void openNewComposition(activeConversationID, [], true)}
+                onClick={() => void app.openNewComposition(app.activeConversationID, [], true)}
               >
                 {/* A note head + stem with an equalizer bar and a plus — the
                     audio-first sibling of the composition glyph. */}
@@ -4501,7 +2189,7 @@ function App() {
             <button
               type="button"
               className="assets-panel-close"
-              onClick={() => setAssetsPanelOpen(false)}
+              onClick={() => app.setAssetsPanelOpen(false)}
               aria-label="Close assets panel"
               title="Close assets panel"
             >
@@ -4511,14 +2199,14 @@ function App() {
             </button>
           </div>
           <div className="assets-list">
-            {panelAssets.length === 0 ? (
+            {app.panelAssets.length === 0 ? (
               <p className="assets-empty">
-                {composerLibraryID
+                {app.composerLibraryID
                   ? 'No library assets yet. Uploads and generated media from every chat in this library show up here.'
                   : 'No assets yet. Images, audio, video, and subtitles — attached, generated, or converted — show up here as the conversation produces them.'}
               </p>
             ) : (
-              panelAssets.map((asset) => (
+              app.panelAssets.map((asset) => (
                 <figure key={`${asset.id}-${asset.originTurnId}`} className={`asset-card asset-${asset.kind}`}>
                   <div className="asset-preview">
                     {asset.kind === 'image' && asset.url ? (
@@ -4526,9 +2214,9 @@ function App() {
                         type="button"
                         className="asset-image-button"
                         onClick={() => {
-                          setPreviewImage(asset.url || '');
-                          setPreviewEditContext(editArtifactIDFromURL(asset.url || '') && asset.conversationId
-                            ? {conversationID: asset.conversationId, artifactID: editArtifactIDFromURL(asset.url || '') ?? asset.id}
+                          app.setPreviewImage(asset.url || '');
+                          app.setPreviewEditContext(app.editArtifactIDFromURL(asset.url || '') && asset.conversationId
+                            ? {conversationID: asset.conversationId, artifactID: app.editArtifactIDFromURL(asset.url || '') ?? asset.id}
                             : null);
                         }}
                         aria-label="Preview image asset"
@@ -4571,7 +2259,7 @@ function App() {
                         // caret-position insert in insertAssetReference.
                         // Keyboard focus (Tab) is unaffected.
                         onMouseDown={(event) => event.preventDefault()}
-                        onClick={() => insertAssetReference(asset)}
+                        onClick={() => app.insertAssetReference(asset)}
                         aria-label="Reference this asset in the composer"
                         title="Reference this asset in the composer"
                       >
@@ -4585,7 +2273,7 @@ function App() {
                       <button
                         type="button"
                         className="asset-download-button"
-                        onClick={() => downloadAsset(asset)}
+                        onClick={() => app.downloadAsset(asset)}
                         aria-label="Download asset"
                         title="Download asset"
                       >
@@ -4600,8 +2288,8 @@ function App() {
                       <button
                         type="button"
                         className="asset-edit-button"
-                        disabled={editorOpening}
-                        onClick={() => void openImageEditor(asset.conversationId, asset.id)}
+                        disabled={app.editorOpening}
+                        onClick={() => void app.openImageEditor(asset.conversationId, asset.id)}
                         aria-label="Edit image with AI"
                         title="Edit image with AI"
                       >
@@ -4614,8 +2302,8 @@ function App() {
                     {/* The video editor's trim stage plays the clip, so a container
                         WebKit cannot decode gets no Edit door here either. */}
                     {asset.kind === 'video' && asset.url && asset.conversationId && !videoThumbnailOnlySrc(asset.url) ? (
-                      <button type="button" className="asset-edit-button" disabled={editorOpening}
-                        onClick={() => void openVideoEditor(asset.conversationId, asset.id)}
+                      <button type="button" className="asset-edit-button" disabled={app.editorOpening}
+                        onClick={() => void app.openVideoEditor(asset.conversationId, asset.id)}
                         aria-label="Edit video" title="Edit video">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                           <path d="M12 20h9" />
@@ -4624,8 +2312,8 @@ function App() {
                       </button>
                     ) : null}
                     {asset.kind === 'audio' && asset.url && asset.conversationId ? (
-                      <button type="button" className="asset-edit-button" disabled={editorOpening}
-                        onClick={() => void openAudioEditor(asset.conversationId, asset.id)}
+                      <button type="button" className="asset-edit-button" disabled={app.editorOpening}
+                        onClick={() => void app.openAudioEditor(asset.conversationId, asset.id)}
                         aria-label="Edit audio" title="Edit audio">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                           <path d="M12 20h9" />
@@ -4634,8 +2322,8 @@ function App() {
                       </button>
                     ) : null}
                     {asset.kind === 'transcript' && asset.url && asset.conversationId ? (
-                      <button type="button" className="asset-edit-button" disabled={editorOpening}
-                        onClick={() => void openSubtitleEditor(asset.conversationId, asset.id)}
+                      <button type="button" className="asset-edit-button" disabled={app.editorOpening}
+                        onClick={() => void app.openSubtitleEditor(asset.conversationId, asset.id)}
                         aria-label="Edit subtitles" title="Edit subtitles">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                           <path d="M12 20h9" />
@@ -4644,8 +2332,8 @@ function App() {
                       </button>
                     ) : null}
                     {asset.kind === 'markdown' && asset.url && asset.conversationId ? (
-                      <button type="button" className="asset-edit-button" disabled={editorOpening}
-                        onClick={() => void openMarkdownEditor(asset.conversationId, asset.id)}
+                      <button type="button" className="asset-edit-button" disabled={app.editorOpening}
+                        onClick={() => void app.openMarkdownEditor(asset.conversationId, asset.id)}
                         aria-label="Edit document" title="Edit document">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                           <path d="M12 20h9" />
@@ -4654,8 +2342,8 @@ function App() {
                       </button>
                     ) : null}
                     {asset.kind === 'comic' && asset.url && asset.conversationId ? (
-                      <button type="button" className="asset-edit-button" disabled={editorOpening}
-                        onClick={() => void openComicEditor(asset.conversationId, asset.id)}
+                      <button type="button" className="asset-edit-button" disabled={app.editorOpening}
+                        onClick={() => void app.openComicEditor(asset.conversationId, asset.id)}
                         aria-label="Open comic" title="Open this comic revision in the comic editor">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                           <path d="M12 20h9" />
@@ -4664,8 +2352,8 @@ function App() {
                       </button>
                     ) : null}
                     {asset.kind === 'composition' && asset.url && asset.conversationId ? (
-                      <button type="button" className="asset-edit-button" disabled={editorOpening}
-                        onClick={() => void openCompositionEditor(asset.conversationId, asset.id)}
+                      <button type="button" className="asset-edit-button" disabled={app.editorOpening}
+                        onClick={() => void app.openCompositionEditor(asset.conversationId, asset.id)}
                         aria-label="Open composition" title="Open this composition revision in the video composer">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                           <path d="M12 20h9" />
@@ -4679,14 +2367,14 @@ function App() {
                       <button
                         type="button"
                         className="asset-conversation-button"
-                        onClick={() => openAssetConversation(asset)}
+                        onClick={() => app.openAssetConversation(asset)}
                         aria-label={
-                          composerLibraryID && asset.conversationId !== activeConversationID
+                          app.composerLibraryID && asset.conversationId !== app.activeConversationID
                             ? `Open ${asset.conversationTitle || 'conversation'}`
                             : 'Jump to this asset in the conversation'
                         }
                         title={
-                          composerLibraryID && asset.conversationId !== activeConversationID
+                          app.composerLibraryID && asset.conversationId !== app.activeConversationID
                             ? `Open in ${asset.conversationTitle || 'conversation'}`
                             : 'Jump to the turn that produced this asset'
                         }
@@ -4700,7 +2388,7 @@ function App() {
                   <figcaption>
                     <span className="asset-kind">{asset.kind}</span>
                     <span className="asset-meta">
-                      {asset.role === 'user' ? 'attached' : 'generated'} · {composerLibraryID ? (asset.conversationTitle || 'chat') : assetTurnLabel(asset.originTurnId)}
+                      {asset.role === 'user' ? 'attached' : 'generated'} · {app.composerLibraryID ? (asset.conversationTitle || 'chat') : assetTurnLabel(asset.originTurnId)}
                     </span>
                   </figcaption>
                 </figure>
@@ -4709,21 +2397,21 @@ function App() {
           </div>
         </aside>
       )}
-      {discardEditorDraft ? (
-        <div className="move-dialog-overlay" role="presentation" onClick={() => resolveEditorNavigation(false)}>
+      {app.discardEditorDraft ? (
+        <div className="move-dialog-overlay" role="presentation" onClick={() => app.resolveEditorNavigation(false)}>
           <div className="move-dialog" role="dialog" aria-modal="true" aria-labelledby="discard-video-title"
             onClick={(event) => event.stopPropagation()} onKeyDown={(event) => {
-              if (event.key === 'Escape') {event.stopPropagation(); resolveEditorNavigation(false);}
+              if (event.key === 'Escape') {event.stopPropagation(); app.resolveEditorNavigation(false);}
             }}>
             <strong id="discard-video-title">Discard unsaved edits?</strong>
-            <p>{discardEditorDraft === 'subtitle' ? 'Your unexported changes will be lost.' : discardEditorDraft === 'markdown' ? 'Your unsaved changes will be lost. Saved versions remain in the conversation.' : discardEditorDraft === 'composition' ? 'Your unsaved timeline changes will be lost. Saved revisions remain in the conversation.' : discardEditorDraft === 'comic' ? 'Your unsaved comic changes will be lost. Saved revisions remain in the conversation.' : 'Your unrendered changes will be lost. Saved edits remain available.'}</p>
-            <button type="button" autoFocus onClick={() => resolveEditorNavigation(false)}>Keep editing</button>
-            <button type="button" onClick={() => resolveEditorNavigation(true)}>Discard changes</button>
+            <p>{app.discardEditorDraft === 'subtitle' ? 'Your unexported changes will be lost.' : app.discardEditorDraft === 'markdown' ? 'Your unsaved changes will be lost. Saved versions remain in the conversation.' : app.discardEditorDraft === 'composition' ? 'Your unsaved timeline changes will be lost. Saved revisions remain in the conversation.' : app.discardEditorDraft === 'comic' ? 'Your unsaved comic changes will be lost. Saved revisions remain in the conversation.' : 'Your unrendered changes will be lost. Saved edits remain available.'}</p>
+            <button type="button" autoFocus onClick={() => app.resolveEditorNavigation(false)}>Keep editing</button>
+            <button type="button" onClick={() => app.resolveEditorNavigation(true)}>Discard changes</button>
           </div>
         </div>
       ) : null}
-      {previewImage ? (
-        <div className="image-preview-overlay" role="presentation" onClick={() => setPreviewImage('')}>
+      {app.previewImage ? (
+        <div className="image-preview-overlay" role="presentation" onClick={() => app.setPreviewImage('')}>
           <div
             className="image-preview-dialog"
             role="dialog"
@@ -4731,10 +2419,10 @@ function App() {
             aria-label="Attached image preview"
             onClick={(event) => event.stopPropagation()}
           >
-            <button className="image-preview-close" type="button" aria-label="Close image preview" onClick={() => setPreviewImage('')}>
+            <button className="image-preview-close" type="button" aria-label="Close image preview" onClick={() => app.setPreviewImage('')}>
               ×
             </button>
-            <button className="image-preview-download" type="button" aria-label="Download image" title="Download" onClick={() => saveGeneratedImage(previewImage, 0)}>
+            <button className="image-preview-download" type="button" aria-label="Download image" title="Download" onClick={() => app.saveGeneratedImage(app.previewImage, 0)}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M12 4v11" />
                 <path d="m7 10 5 5 5-5" />
@@ -4745,14 +2433,14 @@ function App() {
               <button
                 className="image-preview-edit"
                 type="button"
-                disabled={editorOpening}
+                disabled={app.editorOpening}
                 aria-label="Edit image with AI"
                 title="Edit image with AI"
                 onClick={() => {
                   const context = previewEditContext;
-                  setPreviewImage('');
-                  setPreviewEditContext(null);
-                  void openImageEditor(context.conversationID, context.artifactID);
+                  app.setPreviewImage('');
+                  app.setPreviewEditContext(null);
+                  void app.openImageEditor(context.conversationID, context.artifactID);
                 }}
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -4761,32 +2449,32 @@ function App() {
                 </svg>
               </button>
             ) : null}
-            <img src={previewImage} alt="Attached preview" />
+            <img src={app.previewImage} alt="Attached preview" />
           </div>
         </div>
       ) : null}
-      {notesDialogProject ? (
+      {app.notesDialogProject ? (
         <ProjectNotesDialog
-          project={notesDialogProject}
-          value={notesDraft}
-          saving={notesSaving}
-          onChange={setNotesDraft}
-          onSave={() => void saveProjectNotes()}
-          onClose={closeProjectNotes}
+          project={app.notesDialogProject}
+          value={app.notesDraft}
+          saving={app.notesSaving}
+          onChange={app.setNotesDraft}
+          onSave={() => void app.saveProjectNotes()}
+          onClose={app.closeProjectNotes}
         />
       ) : null}
       {moveDialogConversation ? (
         <MoveConversationDialog
           conversation={moveDialogConversation}
-          groups={moveTargetGroups}
+          groups={app.moveTargetGroups}
           onMove={(projectID) => {
             // Close first so the picker never lingers over the moved row's
             // reveal; moveConversation owns refresh + error reporting.
             const conversation = moveDialogConversation;
-            setMoveDialogConversation(null);
-            void moveConversation(conversation, projectID);
+            app.setMoveDialogConversation(null);
+            void app.moveConversation(conversation, projectID);
           }}
-          onClose={() => setMoveDialogConversation(null)}
+          onClose={() => app.setMoveDialogConversation(null)}
         />
       ) : null}
     </main>
