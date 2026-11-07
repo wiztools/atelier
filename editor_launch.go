@@ -35,8 +35,8 @@ type EditorLaunchEvent struct {
 	ArtifactID     string `json:"artifactId"`
 	Kind           string `json:"kind"`
 	// SeedArtifactIDs carries the workspace editors' seeding — the video
-	// composer's referenced video and audio, the comic editor's referenced
-	// images, in order (empty for an unseeded open) — and the compare
+	// composer's referenced video, images, and audio, the comic editor's
+	// referenced images, in order (empty for an unseeded open) — and the compare
 	// workspace's two documents, [before, after] (kind "compare", see
 	// document_compare.go). The artifact editors ignore it.
 	SeedArtifactIDs []string `json:"seedArtifactIds,omitempty"`
@@ -177,15 +177,16 @@ func newestEditorArtifact(storage ConfigStorage, conversationID, kind string) (s
 	return "", "", fmt.Errorf("open_editor found no %s in this conversation — ask the user to attach or generate one first", kind)
 }
 
-// compositionSeedIDs gathers the video and audio artifact ids this turn's
-// explicit media carries — attachments and @-mentions both land as content
-// entries on the user turn, so one walk covers them (cross-conversation
-// mentions carry their globally-unique ids). Videos first, then audio:
-// cross-kind interleaving is lost at persistence (attachments arrive as
-// per-kind arrays), so the deterministic reading of "reference order" is
-// within-kind order with clips ahead of music. Empty when the newest turn
-// isn't the user's or holds no media: the composer opens unseeded, and its
-// picker is right there.
+// compositionSeedIDs gathers the video, image, and audio artifact ids this
+// turn's explicit media carries — attachments and @-mentions both land as
+// content entries on the user turn, so one walk covers them (cross-
+// conversation mentions carry their globally-unique ids). Videos first, then
+// images (stills on the same lane), then audio: cross-kind interleaving is
+// lost at persistence (attachments arrive as per-kind arrays), so the
+// deterministic reading of "reference order" is within-kind order with clips
+// ahead of stills ahead of music. Empty when the newest turn isn't the user's
+// or holds no media: the composer opens unseeded, and its picker is right
+// there.
 func compositionSeedIDs(storage ConfigStorage, conversationID string) ([]string, error) {
 	detail, err := getConversation(storage, conversationID)
 	if err != nil {
@@ -196,18 +197,22 @@ func compositionSeedIDs(storage ConfigStorage, conversationID string) ([]string,
 	}
 	turn := detail.Turns[len(detail.Turns)-1]
 	videos := []string{}
+	images := []string{}
 	audios := []string{}
 	for _, content := range turn.Content {
 		if content.ArtifactID == "" {
 			continue
 		}
-		if content.Type == "video" {
+		switch content.Type {
+		case "video":
 			videos = append(videos, content.ArtifactID)
-		} else if content.Type == "audio" {
+		case "image":
+			images = append(images, content.ArtifactID)
+		case "audio":
 			audios = append(audios, content.ArtifactID)
 		}
 	}
-	return append(videos, audios...), nil
+	return append(append(videos, images...), audios...), nil
 }
 
 // comicSeedIDs gathers the image artifact ids the comic editor's draft seeds
@@ -298,9 +303,9 @@ func executeOpenEditor(tools HarnessToolExecutionContext, mode string) (ToolOpen
 			if len(seeds) == 1 {
 				plural = ""
 			}
-			summary += fmt.Sprintf(", seeded with %d referenced clip%s in reference order — nothing was arranged, trimmed, or transitioned; the composition is an unsaved draft until the user saves it", len(seeds), plural)
+			summary += fmt.Sprintf(", seeded with %d referenced item%s in reference order (images enter as stills) — nothing was arranged, trimmed, or transitioned; the composition is an unsaved draft until the user saves it", len(seeds), plural)
 		} else {
-			summary += " (unseeded — this turn referenced no video or audio); the user adds media from the composer's picker"
+			summary += " (unseeded — this turn referenced no video, image, or audio); the user adds media from the composer's picker"
 		}
 		return ToolOpenEditorResult{Kind: "composition", ConversationID: tools.ConversationID}, summary, nil
 	}
@@ -345,14 +350,14 @@ func openEditorToolDefinition() HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "open_editor",
 		Title:       "Open in editor",
-		Description: "Opens one of the conversation's assets in Atelier's built-in editor on the user's screen. mode \"image\" opens the image editor, \"video\" the video editor, \"audio\" the audio editor, \"subtitle\" the subtitle editor (a .vtt or .srt transcript artifact), \"markdown\" the markdown editor (a .md document artifact), \"composition\" the video composer — the multi-clip editing workspace, opened seeded with the turn's referenced video and audio in reference order (nothing is arranged) — and \"comic\" the comic book editor (some users word it the \"comic composer\") — the page-and-panel workspace, opened seeded with the conversation's images (this turn's references first, then newer art first; nothing is arranged — the images wait in the unplaced tray). Omit mode to open whichever editor matches the asset the user means — this turn's attachment when one exists, otherwise the conversation's newest image, video, or audio artifact. The asset is the newest artifact of that kind — this turn's attachment, an @-mentioned asset, or one from conversation history — and it is opened as-is, never modified or regenerated. Call this ONLY when the user asks to open an asset in an editor or workspace (e.g. \"open this in the video editor\", \"open the document in the markdown editor\", \"open the video composer\", \"open the comic editor\"); it does not perform edits — for a change the user described, use the edit or generation tools instead. When the user asks to JOIN or CONCATENATE clips into one rendered file with no editing workspace in the wording, that is join_videos/join_audios, not mode \"composition\" — the composer is for when the user names the composer or wants an editable composition.",
+		Description: "Opens one of the conversation's assets in Atelier's built-in editor on the user's screen. mode \"image\" opens the image editor, \"video\" the video editor, \"audio\" the audio editor, \"subtitle\" the subtitle editor (a .vtt or .srt transcript artifact), \"markdown\" the markdown editor (a .md document artifact), \"composition\" the video composer — the multi-clip editing workspace, opened seeded with the turn's referenced video, images (as stills), and audio in reference order (nothing is arranged) — and \"comic\" the comic book editor (some users word it the \"comic composer\") — the page-and-panel workspace, opened seeded with the conversation's images (this turn's references first, then newer art first; nothing is arranged — the images wait in the unplaced tray). Omit mode to open whichever editor matches the asset the user means — this turn's attachment when one exists, otherwise the conversation's newest image, video, or audio artifact. The asset is the newest artifact of that kind — this turn's attachment, an @-mentioned asset, or one from conversation history — and it is opened as-is, never modified or regenerated. Call this ONLY when the user asks to open an asset in an editor or workspace (e.g. \"open this in the video editor\", \"open the document in the markdown editor\", \"open the video composer\", \"open the comic editor\"); it does not perform edits — for a change the user described, use the edit or generation tools instead. When the user asks to JOIN or CONCATENATE clips into one rendered file with no editing workspace in the wording, that is join_videos/join_audios, not mode \"composition\" — the composer is for when the user names the composer or wants an editable composition.",
 		Example:     `{"name":"open_editor","mode":"video"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"mode": enumParam(`Which editor to open — "image", "video", "audio", "subtitle" (a .vtt/.srt transcript artifact), "markdown" (a .md document artifact), "composition" (the video composer, seeded with this turn's referenced video and audio), or "comic" (the comic book editor, seeded with the conversation's images). Omit when the user attached the asset this turn or the ask names the kind — omitting resolves this turn's attachment first, else the conversation's newest image, video, or audio artifact.`, "image", "video", "audio", "subtitle", "markdown", "composition", "comic"),
+				"mode": enumParam(`Which editor to open — "image", "video", "audio", "subtitle" (a .vtt/.srt transcript artifact), "markdown" (a .md document artifact), "composition" (the video composer, seeded with this turn's referenced video, images, and audio), or "comic" (the comic book editor, seeded with the conversation's images). Omit when the user attached the asset this turn or the ask names the kind — omitting resolves this turn's attachment first, else the conversation's newest image, video, or audio artifact.`, "image", "video", "audio", "subtitle", "markdown", "composition", "comic"),
 			},
 			"required": []string{},
 		},

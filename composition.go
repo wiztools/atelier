@@ -2,8 +2,9 @@ package main
 
 // The video composition workspace's document format — the OTIO-shaped JSON a
 // composition artifact (cmp_<hex>.json) carries: one sequential video lane of
-// clips with source ranges and junction transitions, plus additional audio
-// lanes of positioned segments. Media refs point at conversation artifacts by
+// clips — video sources with source ranges, or still images held for a
+// length — joined by junction transitions, plus additional audio lanes of
+// positioned segments. Media refs point at conversation artifacts by
 // id + absolute path (the cross-conversation mention shape, so every reader
 // resolves them as-is) and carry a facts snapshot seeded at add time so the
 // timeline can lay out without probing. This file owns the schema, the
@@ -41,6 +42,18 @@ const (
 	compositionGainMinDb = -60.0
 	compositionGainMaxDb = 12.0
 
+	// A still image has no source duration — its clip's length is the edit.
+	// It lands at Final Cut Pro's default still length, resizes freely down
+	// to the floor, and stops at a sanity ceiling long enough to hold one
+	// still under a full-length podcast.
+	compositionStillDefaultSeconds = 4.0
+	compositionStillMinSeconds     = 0.1
+	compositionStillMaxSeconds     = 3 * 60 * 60.0
+	// A stills-only sequence inherits the first still's shape, but a photo's
+	// native size (a 12MP phone shot is 4032x3024) is no video frame — the
+	// inherited frame fits within this long edge.
+	compositionStillFrameMaxEdge = 1920
+
 	compositionDefaultFPS  = 30.0
 	compositionMaxFPS      = 60.0
 	compositionFitPad      = "pad"
@@ -62,16 +75,21 @@ type CompositionMediaRef struct {
 	// Path is the absolute path of the artifact file on disk.
 	Path     string `json:"path"`
 	MimeType string `json:"mimeType,omitempty"`
-	// Kind is "video" or "audio" — the HistoryContent type of the referenced
-	// artifact. A video ref on an audio lane is legal (detached audio points
-	// back at the clip's own artifact); an audio ref on the video lane is not.
+	// Kind is "video", "audio", or "image" — the HistoryContent type of the
+	// referenced artifact. A video ref on an audio lane is legal (detached
+	// audio points back at the clip's own artifact); an audio ref on the video
+	// lane is not, and an image lives only on the video lane, as a still.
 	Kind string `json:"kind"`
-	// DurationSeconds is the probed source duration the in/out ranges clamp to.
+	// DurationSeconds is the probed source duration the in/out ranges clamp
+	// to — zero for a still, which has none (its clip's range is its length).
 	DurationSeconds float64 `json:"durationSeconds"`
-	Width           int     `json:"width,omitempty"`
-	Height          int     `json:"height,omitempty"`
-	FPS             float64 `json:"fps,omitempty"`
-	HasAudio        bool    `json:"hasAudio,omitempty"`
+	// Width and Height are the display size — for a still, the pixel size
+	// with any JPEG EXIF orientation applied, so a portrait phone photo reads
+	// portrait here, in the renderer's graph, and in the webview alike.
+	Width    int     `json:"width,omitempty"`
+	Height   int     `json:"height,omitempty"`
+	FPS      float64 `json:"fps,omitempty"`
+	HasAudio bool    `json:"hasAudio,omitempty"`
 }
 
 // CompositionTransition is the junction between one clip and the next. Nil
@@ -99,7 +117,9 @@ type CompositionOriginalAudio struct {
 
 // CompositionClip is one video lane entry: a source range into its ref and
 // the junction transition that follows it (the last clip's transition, if
-// any, is dropped — there is nothing after it to transition into).
+// any, is dropped — there is nothing after it to transition into). A still
+// image's range is always [0, length]: there is no source to trim into, so
+// the range IS how long the still holds, and it carries no original audio.
 type CompositionClip struct {
 	ID         string                   `json:"id"`
 	Ref        CompositionMediaRef      `json:"ref"`
@@ -306,9 +326,9 @@ func compositionXfadeName(kind string) string {
 // Go half of a contract the frontend's compositionModel mirrors. Normalizing
 // (sorting segments, clamping gains and fades) matches what the editor does
 // interactively, so a save that reaches an untouched rule still round-trips;
-// the errors are for the states the editor refuses to build: empty or
-// non-video clip sources, overlapping lane segments, duplicate ids, unknown
-// kinds.
+// the errors are for the states the editor refuses to build: empty clip
+// sources or ones that are neither video nor a still image, overlapping lane
+// segments, duplicate ids, unknown kinds.
 func validateCompositionDoc(doc *CompositionDoc) error {
 	doc.Name = strings.TrimSpace(doc.Name)
 	if doc.Name == "" {
@@ -364,16 +384,31 @@ func validateCompositionDoc(doc *CompositionDoc) error {
 		if err := claimID(clip.ID, label); err != nil {
 			return err
 		}
-		if clip.Ref.Kind != "video" {
-			return fmt.Errorf("%s references %s media — the video lane holds video clips", label, compositionRefKindPhrase(clip.Ref.Kind))
+		switch clip.Ref.Kind {
+		case "video":
+			if clip.Ref.DurationSeconds <= 0 {
+				return fmt.Errorf("%s's source was never measured (no duration)", label)
+			}
+			if err := compositionNormalizeRange(&clip.InSeconds, &clip.OutSeconds, clip.Ref.DurationSeconds, label); err != nil {
+				return err
+			}
+			clip.Audio.GainDb = compositionClampGain(clip.Audio.GainDb)
+		case "image":
+			// The renderer conforms a still by its measured size (the blur
+			// fit and a stills-only sequence's frame read it), so an
+			// unmeasured one is as unrenderable as a durationless video.
+			if clip.Ref.Width <= 0 || clip.Ref.Height <= 0 {
+				return fmt.Errorf("%s's still was never measured (no pixel size)", label)
+			}
+			if err := compositionNormalizeStill(&clip.InSeconds, &clip.OutSeconds, label); err != nil {
+				return err
+			}
+			// A still has no sound to mix, mute, or detach — audio state a
+			// hand edit left behind means nothing and normalizes away.
+			clip.Audio = CompositionOriginalAudio{}
+		default:
+			return fmt.Errorf("%s references %s media — the video lane holds video clips and stills", label, compositionRefKindPhrase(clip.Ref.Kind))
 		}
-		if clip.Ref.DurationSeconds <= 0 {
-			return fmt.Errorf("%s's source was never measured (no duration)", label)
-		}
-		if err := compositionNormalizeRange(&clip.InSeconds, &clip.OutSeconds, clip.Ref.DurationSeconds, label); err != nil {
-			return err
-		}
-		clip.Audio.GainDb = compositionClampGain(clip.Audio.GainDb)
 		if i < len(doc.Video)-1 {
 			next := doc.Video[i+1]
 			transition, err := compositionNormalizeTransition(clip.Transition, clip.OutSeconds-clip.InSeconds, next.OutSeconds-next.InSeconds, i)
@@ -479,6 +514,21 @@ func compositionNormalizeRange(in, out *float64, duration float64, label string)
 	return nil
 }
 
+// compositionNormalizeStill pins a still's range to [0, length], the length
+// clamped into [min, max]. A still has no source to trim into, so its range
+// is only ever a length — the editor resizes within these bounds, and a save
+// that strays past them is normalized, not refused. Only a non-finite range
+// refuses: there is no length to recover from NaN.
+func compositionNormalizeStill(in, out *float64, label string) error {
+	if !compositionFinite(*in, *out) {
+		return fmt.Errorf("%s has a non-finite length", label)
+	}
+	length := math.Min(compositionStillMaxSeconds, math.Max(compositionStillMinSeconds, *out-*in))
+	*in = 0
+	*out = length
+	return nil
+}
+
 // compositionNormalizeDucks sorts and bounds a segment's duck ranges. Ducks
 // must not overlap — two simultaneous gains are ambiguous on the wire even
 // though the renderer would resolve them by filter order.
@@ -555,19 +605,32 @@ func compositionDocSummary(doc CompositionDoc) string {
 		lanePhrase = fmt.Sprintf("%d audio lanes", lanes)
 	}
 	dissolves := 0
+	stills := 0
 	for _, clip := range doc.Video {
 		if clip.Transition != nil {
 			dissolves++
 		}
+		if clip.Ref.Kind == "image" {
+			stills++
+		}
 	}
-	return fmt.Sprintf("%d clips · %s · %s", len(doc.Video), lanePhrase, formatJoinSeconds(compositionTimelineDuration(doc))+"s")
+	clipPhrase := fmt.Sprintf("%d clips", len(doc.Video))
+	switch stills {
+	case 0:
+	case 1:
+		clipPhrase += " (1 still)"
+	default:
+		clipPhrase += fmt.Sprintf(" (%d stills)", stills)
+	}
+	return fmt.Sprintf("%s · %s · %s", clipPhrase, lanePhrase, formatJoinSeconds(compositionTimelineDuration(doc))+"s")
 }
 
 // seedCompositionDoc builds a starting document from resolved refs, in
 // reference order — the seeded-only rule: media land exactly as if the user
 // had picked them from the picker in that order. Video refs become clips at
-// their full range with no transitions; audio refs queue sequentially onto a
-// single starter lane from the sequence start.
+// their full range with no transitions; image refs become stills held for the
+// default length; audio refs queue sequentially onto a single starter lane
+// from the sequence start.
 func seedCompositionDoc(name string, refs []CompositionMediaRef) CompositionDoc {
 	doc := CompositionDoc{
 		SchemaVersion: compositionSchemaVersion,
@@ -582,12 +645,21 @@ func seedCompositionDoc(name string, refs []CompositionMediaRef) CompositionDoc 
 	var lane *CompositionLane
 	laneEnd := 0.0
 	for _, ref := range refs {
-		if ref.Kind == "video" {
+		switch ref.Kind {
+		case "video":
 			doc.Video = append(doc.Video, CompositionClip{
 				ID:         randomID("clp"),
 				Ref:        ref,
 				InSeconds:  0,
 				OutSeconds: ref.DurationSeconds,
+			})
+			continue
+		case "image":
+			doc.Video = append(doc.Video, CompositionClip{
+				ID:         randomID("clp"),
+				Ref:        ref,
+				InSeconds:  0,
+				OutSeconds: compositionStillDefaultSeconds,
 			})
 			continue
 		}

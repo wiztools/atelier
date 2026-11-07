@@ -2127,11 +2127,13 @@ export function useAppModel() {
       const detail = await GetConversation(result.conversationId);
       hydrateChatConversation(detail);
       // The composer opens on the conversation itself, seeded with the
-      // persisted media (videos then audio — the seed's deterministic
-      // order); every other editor opens the turn's first artifact of kind.
+      // persisted media (videos, images as stills, then audio — the seed's
+      // deterministic order, compositionSeedIDs' twin); every other editor
+      // opens the turn's first artifact of kind.
       if (kind === 'composition') {
         await openNewComposition(result.conversationId, [
           ...asArray(result.videoArtifactIds),
+          ...asArray(result.imageArtifactIds),
           ...asArray(result.audioArtifactIds),
         ]);
         return;
