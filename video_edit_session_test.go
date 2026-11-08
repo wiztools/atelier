@@ -243,6 +243,38 @@ func TestVideoEditProgressRunnerCancellation(t *testing.T) {
 	}
 }
 
+func TestTailBufferKeepsTheEnd(t *testing.T) {
+	// The head-keeping writer it replaced turned every failure into the
+	// banner: a render's diagnosis lives at the end of stderr.
+	buffer := newTailBuffer(2000)
+	banner := strings.Repeat("banner\n", 300) // 2100 bytes — overflows once
+	error := "Error reinitializing filters!"
+	if _, err := fmt.Fprintf(buffer, "%s%s", banner, error); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got := buffer.String()
+	want := (banner + error)[len(banner)+len(error)-2000:]
+	if got != want {
+		t.Fatalf("tail buffer kept the wrong window: %d bytes ending %q", len(got), got[len(got)-60:])
+	}
+	// A small stream comes back whole and in order.
+	small := newTailBuffer(16)
+	if _, err := small.Write([]byte("abcdefghij")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if small.String() != "abcdefghij" {
+		t.Fatalf("small stream = %q", small.String())
+	}
+	// A single write larger than the buffer keeps that write's own tail.
+	big := newTailBuffer(8)
+	if _, err := big.Write([]byte("1234567890ABCDEF")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if big.String() != "90ABCDEF" {
+		t.Fatalf("oversized write = %q, want the last 8 bytes", big.String())
+	}
+}
+
 func TestVideoEditThumbnailURLsPersistBesideSource(t *testing.T) {
 	withRealLocalLookup(t)
 	config := editTestHome(t)

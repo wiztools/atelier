@@ -837,7 +837,9 @@ func runLocalFFmpegProgress(ctx context.Context, config AppConfig, duration floa
 	deadline := max(localFFmpegTimeout, time.Duration(min(duration*2, 1800))*time.Second)
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
-	progressArgs := append([]string{"-progress", "pipe:1", "-nostats"}, args...)
+	// -hide_banner, the plain runner's rule: a failure's capped output must
+	// start with the actual error, not the build banner.
+	progressArgs := append([]string{"-progress", "pipe:1", "-nostats", "-hide_banner"}, args...)
 	cmd := exec.CommandContext(ctx, resolved.path, progressArgs...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -850,11 +852,11 @@ func runLocalFFmpegProgress(ctx context.Context, config AppConfig, duration floa
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	var stderrBuf strings.Builder
+	stderrTail := newTailBuffer(2000)
 	stderrDone := make(chan struct{})
 	doneErr := make(chan error, 1)
 	go func() {
-		_, _ = io.Copy(&boundedStringWriter{builder: &stderrBuf, limit: 2000}, stderr)
+		_, _ = io.Copy(stderrTail, stderr)
 		close(stderrDone)
 	}()
 	go func() {
@@ -888,7 +890,7 @@ func runLocalFFmpegProgress(ctx context.Context, config AppConfig, duration floa
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return fmt.Errorf("ffmpeg failed: %s", truncateLocalToolOutput([]byte(stderrBuf.String())))
+		return fmt.Errorf("ffmpeg failed: %s", truncateLocalToolOutput([]byte(stderrTail.String())))
 	}
 	if scanErr != nil {
 		return scanErr
@@ -898,21 +900,56 @@ func runLocalFFmpegProgress(ctx context.Context, config AppConfig, duration floa
 	return nil
 }
 
-type boundedStringWriter struct {
-	builder *strings.Builder
-	limit   int
+// tailBuffer keeps the LAST limit bytes written to it: a long render's stderr
+// can hold megabytes of stale warnings, and the failure being diagnosed is
+// always at the end — the head is banner and startup noise the capped output
+// must not spend its budget on (the head-keeping writer it replaces turned
+// every composer failure into three lines of build banner, with the real
+// error dropped entirely).
+type tailBuffer struct {
+	buf    []byte
+	filled bool
+	pos    int
 }
 
-func (w *boundedStringWriter) Write(p []byte) (int, error) {
-	original := len(p)
-	if w.builder.Len() < w.limit {
-		remaining := w.limit - w.builder.Len()
-		if len(p) > remaining {
-			p = p[:remaining]
-		}
-		_, _ = w.builder.Write(p)
+func newTailBuffer(limit int) *tailBuffer {
+	return &tailBuffer{buf: make([]byte, limit)}
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	if n == 0 {
+		return 0, nil
 	}
-	return original, nil
+	if n >= len(t.buf) {
+		copy(t.buf, p[n-len(t.buf):])
+		t.filled, t.pos = true, 0
+		return n, nil
+	}
+	wrap := n - (len(t.buf) - t.pos)
+	if wrap > 0 {
+		copy(t.buf[t.pos:], p[:len(p)-wrap])
+		copy(t.buf, p[len(p)-wrap:])
+		t.pos = wrap
+		t.filled = true
+		return n, nil
+	}
+	copy(t.buf[t.pos:], p)
+	t.pos += n
+	if t.pos == len(t.buf) {
+		t.pos = 0
+		t.filled = true
+	}
+	return n, nil
+}
+
+// String materializes the buffer oldest-first; a wrap seam may split a
+// multi-byte rune, which truncateLocalToolOutput repairs.
+func (t *tailBuffer) String() string {
+	if !t.filled {
+		return string(t.buf[:t.pos])
+	}
+	return string(t.buf[t.pos:]) + string(t.buf[:t.pos])
 }
 
 func fileDigest(path string) (string, error) {

@@ -41,6 +41,16 @@ const (
 	compositionRenderModeExport  = "export"
 	compositionAudioSampleRate   = 48000
 	compositionAudioChannels     = 2
+	// compositionJunctionTimeBase is the timebase every junction-bound chain
+	// is pinned to. The clip chains end in fps (whose output link runs at
+	// 1/fps), but on recent ffmpeg builds the concat junction's output link
+	// runs at 1/1000000 — and xfade hard-refuses inputs whose timebases
+	// differ, so a cut junction anywhere before a dissolve junction failed
+	// the whole graph ("First input link main timebase (1/1000000) do not
+	// match the corresponding second input link xfade timebase (1/24)").
+	// Explicit settb/asettb stages make every side of every junction agree
+	// regardless of what the filters between them chose.
+	compositionJunctionTimeBase = "1/1000000"
 )
 
 // compositionRenderOptions carries the per-render choices the plan builder
@@ -176,7 +186,7 @@ func compositionFitStillFrame(width, height int) (int, int) {
 // chain returns statements rather than one comma-joined string.
 func compositionConformStatements(inputIndex int, clip CompositionClip, fact joinClipFact, fit string, width, height int, fpsText string, outLabel string) []string {
 	trim := fmt.Sprintf("[%d:v]trim=start=%s:end=%s,setpts=PTS-STARTPTS", inputIndex, formatJoinSeconds(clip.InSeconds), formatJoinSeconds(clip.OutSeconds))
-	tail := fmt.Sprintf("setsar=1,fps=%s,format=yuv420p", fpsText)
+	tail := fmt.Sprintf("setsar=1,fps=%s,format=yuv420p,settb=%s", fpsText, compositionJunctionTimeBase)
 	switch fit {
 	case compositionFitCrop:
 		return []string{fmt.Sprintf("%s,scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,%s[%s]",
@@ -220,7 +230,7 @@ func compositionStillStatements(inputIndex, frames, orientation int, fact joinCl
 	stages = append(stages,
 		"loop=loop=-1:size=1:start=0",
 		fmt.Sprintf("trim=end_frame=%d", frames),
-		fmt.Sprintf("setsar=1,fps=%s,format=yuv420p", fpsText))
+		fmt.Sprintf("setsar=1,fps=%s,format=yuv420p,settb=%s", fpsText, compositionJunctionTimeBase))
 	return []string{fmt.Sprintf("[%d:v]%s[%s]", inputIndex, strings.Join(stages, ","), outLabel)}
 }
 
@@ -461,16 +471,16 @@ func buildCompositionRenderPlan(doc CompositionDoc, facts map[string]joinClipFac
 				if clip.Audio.GainDb != 0 {
 					gain = fmt.Sprintf(",volume=%sdB", formatJoinSeconds(clip.Audio.GainDb))
 				}
-				statements = append(statements, fmt.Sprintf("[%d:a]atrim=start=%s:end=%s,asetpts=PTS-STARTPTS,aformat=sample_rates=%d:channel_layouts=stereo%s%s",
-					clipInputs[i], formatJoinSeconds(clip.InSeconds), formatJoinSeconds(clip.OutSeconds), compositionAudioSampleRate, gain, label))
+				statements = append(statements, fmt.Sprintf("[%d:a]atrim=start=%s:end=%s,asetpts=PTS-STARTPTS,aformat=sample_rates=%d:channel_layouts=stereo,asettb=%s%s%s",
+					clipInputs[i], formatJoinSeconds(clip.InSeconds), formatJoinSeconds(clip.OutSeconds), compositionAudioSampleRate, compositionJunctionTimeBase, gain, label))
 			} else {
 				// A still is silent by nature, so only a VIDEO clip that
 				// lost its sound is worth the notice.
 				if clip.Ref.Kind != "image" {
 					silentVideoClips++
 				}
-				statements = append(statements, fmt.Sprintf("[%d:a]aformat=sample_rates=%d:channel_layouts=stereo%s",
-					nextSynthetic(duration), compositionAudioSampleRate, label))
+				statements = append(statements, fmt.Sprintf("[%d:a]aformat=sample_rates=%d:channel_layouts=stereo,asettb=%s%s",
+					nextSynthetic(duration), compositionAudioSampleRate, compositionJunctionTimeBase, label))
 			}
 		}
 		audioLabel = "[ac0]"

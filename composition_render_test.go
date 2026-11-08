@@ -63,13 +63,13 @@ func TestBuildCompositionRenderPlanStillThenClip(t *testing.T) {
 		t.Fatalf("buildCompositionRenderPlan returned error: %v", err)
 	}
 	want := "[0:v]sidedata=mode=delete:type=DISPLAYMATRIX,transpose=1,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2," +
-		"loop=loop=-1:size=1:start=0,trim=end_frame=120,setsar=1,fps=30,format=yuv420p[v0];" +
+		"loop=loop=-1:size=1:start=0,trim=end_frame=120,setsar=1,fps=30,format=yuv420p,settb=1/1000000[v0];" +
 		"[1:v]trim=start=0:end=10,setpts=PTS-STARTPTS," +
-		"scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v1];" +
+		"scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p,settb=1/1000000[v1];" +
 		"[v0][v1]xfade=transition=fade:duration=1:offset=3[vx0];" +
 		"[vx0]null[vout];" +
-		"[2:a]aformat=sample_rates=48000:channel_layouts=stereo[ac0];" +
-		"[1:a]atrim=start=0:end=10,asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo[ac1];" +
+		"[2:a]aformat=sample_rates=48000:channel_layouts=stereo,asettb=1/1000000[ac0];" +
+		"[1:a]atrim=start=0:end=10,asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo,asettb=1/1000000[ac1];" +
 		"[ac0]atrim=start=0:end=3,asetpts=PTS-STARTPTS[at0];" +
 		"[at0][ac1]concat=n=2:v=0:a=1[ax0];" +
 		"[ax0]anull[aout]"
@@ -207,9 +207,9 @@ func TestBuildCompositionRenderPlanSingleClip(t *testing.T) {
 		t.Fatalf("buildCompositionRenderPlan returned error: %v", err)
 	}
 	want := "[0:v]trim=start=0:end=10,setpts=PTS-STARTPTS," +
-		"scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v0];" +
+		"scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p,settb=1/1000000[v0];" +
 		"[v0]null[vout];" +
-		"[0:a]atrim=start=0:end=10,asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo[ac0];" +
+		"[0:a]atrim=start=0:end=10,asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo,asettb=1/1000000[ac0];" +
 		"[ac0]anull[aout]"
 	if plan.FilterComplex != want {
 		t.Fatalf("FilterComplex =\n%s\nwant\n%s", plan.FilterComplex, want)
@@ -235,13 +235,13 @@ func TestBuildCompositionRenderPlanDissolveWithAudioCut(t *testing.T) {
 		t.Fatalf("buildCompositionRenderPlan returned error: %v", err)
 	}
 	want := "[0:v]trim=start=0:end=4,setpts=PTS-STARTPTS," +
-		"scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v0];" +
+		"scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p,settb=1/1000000[v0];" +
 		"[1:v]trim=start=0:end=3,setpts=PTS-STARTPTS," +
-		"scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v1];" +
+		"scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p,settb=1/1000000[v1];" +
 		"[v0][v1]xfade=transition=fade:duration=1:offset=3[vx0];" +
 		"[vx0]null[vout];" +
-		"[0:a]atrim=start=0:end=4,asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo[ac0];" +
-		"[2:a]aformat=sample_rates=48000:channel_layouts=stereo[ac1];" +
+		"[0:a]atrim=start=0:end=4,asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo,asettb=1/1000000[ac0];" +
+		"[2:a]aformat=sample_rates=48000:channel_layouts=stereo,asettb=1/1000000[ac1];" +
 		"[ac0]atrim=start=0:end=3,asetpts=PTS-STARTPTS[at0];" +
 		"[at0][ac1]concat=n=2:v=0:a=1[ax0];" +
 		"[ax0]anull[aout]"
@@ -1035,6 +1035,12 @@ func TestCompositionRenderGraphsOnRealFFmpeg(t *testing.T) {
 		{"single clip", renderTestDoc(renderTestClip("c1", refA, 0, 3, nil)), compositionRenderOptions{}, true, 0, true},
 		{"cut with silent peer", cutWithSilent(), compositionRenderOptions{}, true, 0, true},
 		{"dissolve with crossfade", dissolveDoc(), compositionRenderOptions{}, true, 0, true},
+		// The conv_0ffd6212 shape: a cut junction (concat) ahead of a dissolve
+		// junction (xfade). ffmpeg 9's concat junction outputs a 1/1000000
+		// timebase link while the incoming clip chain runs at 1/fps, and xfade
+		// refuses the mismatch — the settb stages on every junction-bound
+		// chain are what let this graph configure.
+		{"cut before dissolve", renderTestDoc(renderTestClip("c1", refA, 0, 3, nil), renderTestClip("c2", refB, 0, 3, dissolve), renderTestClip("c3", refA, 0, 3, nil)), compositionRenderOptions{}, true, 0, true},
 		{"wipe transition", renderTestDoc(renderTestClip("c1", refA, 0, 3, &CompositionTransition{Kind: "wipeleft", Seconds: 1}), renderTestClip("c2", refB, 0, 3, nil)), compositionRenderOptions{}, true, 0, true},
 		{"lanes with ducks", withLanes(), compositionRenderOptions{}, true, 0, true},
 		{"audio only", CompositionDoc{SchemaVersion: compositionSchemaVersion, Name: "Test", Output: CompositionOutput{Fit: compositionFitPad}, AudioLanes: []CompositionLane{musicLane}}, compositionRenderOptions{}, true, 0, true},
