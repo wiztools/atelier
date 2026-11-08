@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"atelier/internal/mediasniff"
 )
 
 type AudioEditSubmitRequest struct {
@@ -121,7 +123,7 @@ func audioEditSourceInfoFor(storage ConfigStorage, conversationID, title, origin
 	if duration <= 0 {
 		// No ffprobe (or it failed): the MP4 sniffer still covers m4a sources.
 		if data, readErr := os.ReadFile(absPath); readErr == nil {
-			if parsed, ok := mp4DurationSeconds(data); ok {
+			if parsed, ok := mediasniff.MP4Duration(data); ok {
 				duration = parsed
 			}
 		}
@@ -330,7 +332,7 @@ func audioEditSourceDuration(config AppConfig, path string) (float64, error) {
 		return probe.Duration, nil
 	}
 	if data, readErr := os.ReadFile(path); readErr == nil {
-		if duration, ok := mp4DurationSeconds(data); ok && duration > 0 {
+		if duration, ok := mediasniff.MP4Duration(data); ok && duration > 0 {
 			return duration, nil
 		}
 	}

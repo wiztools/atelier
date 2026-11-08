@@ -1,41 +1,12 @@
-package main
+package mediasniff
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/binary"
 	"testing"
+
+	"atelier/internal/mediasniff/mediasnifftest"
 )
-
-// buildWAV builds a minimal PCM WAV: 8 kHz mono 8-bit (byte rate 8000), so
-// dataSize bytes of payload equal dataSize/8000 seconds.
-func buildWAV(dataSize uint32) []byte {
-	var buf bytes.Buffer
-	buf.WriteString("RIFF")
-	_ = binary.Write(&buf, binary.LittleEndian, uint32(36+dataSize))
-	buf.WriteString("WAVE")
-	buf.WriteString("fmt ")
-	_ = binary.Write(&buf, binary.LittleEndian, uint32(16))
-	_ = binary.Write(&buf, binary.LittleEndian, uint16(1))    // PCM
-	_ = binary.Write(&buf, binary.LittleEndian, uint16(1))    // mono
-	_ = binary.Write(&buf, binary.LittleEndian, uint32(8000)) // sample rate
-	_ = binary.Write(&buf, binary.LittleEndian, uint32(8000)) // byte rate
-	_ = binary.Write(&buf, binary.LittleEndian, uint16(1))    // block align
-	_ = binary.Write(&buf, binary.LittleEndian, uint16(8))    // bits per sample
-	buf.WriteString("data")
-	_ = binary.Write(&buf, binary.LittleEndian, dataSize)
-	buf.Write(bytes.Repeat([]byte{0x55}, int(dataSize)))
-	return buf.Bytes()
-}
-
-// buildMP3 builds n MPEG1 Layer III frames — 128 kbps, 44.1 kHz, 417 bytes and
-// 1152 samples each (the same header bytes the fal harness tests serve as
-// downloadable MP3s).
-func buildMP3(frames int) []byte {
-	frame := make([]byte, 417)
-	frame[0], frame[1], frame[2], frame[3] = 0xFF, 0xFB, 0x90, 0x00
-	return bytes.Repeat(frame, frames)
-}
 
 // buildID3v2 prepends a 10-byte ID3v2 header declaring pad bytes of padding.
 func buildID3v2(pad int) []byte {
@@ -108,13 +79,13 @@ func TestProbeAudioDuration(t *testing.T) {
 		want   float64
 		wantOK bool
 	}{
-		{"wav 1s", buildWAV(8000), 1.0, true},
-		{"wav 2.5s", buildWAV(20000), 2.5, true},
-		{"wav empty data chunk", buildWAV(0), 0, false},
-		{"mp3 ten frames", buildMP3(10), 10 * 1152.0 / 44100, true},
-		{"mp3 one frame", buildMP3(1), 1152.0 / 44100, true},
-		{"mp3 behind id3v2", append(buildID3v2(16), buildMP3(4)...), 4 * 1152.0 / 44100, true},
-		{"mp3 junk after frames stops the walk", append(buildMP3(2), []byte("TAG trailing id3v1 block")...), 2 * 1152.0 / 44100, true},
+		{"wav 1s", mediasnifftest.WAV(8000), 1.0, true},
+		{"wav 2.5s", mediasnifftest.WAV(20000), 2.5, true},
+		{"wav empty data chunk", mediasnifftest.WAV(0), 0, false},
+		{"mp3 ten frames", mediasnifftest.MP3(10), 10 * 1152.0 / 44100, true},
+		{"mp3 one frame", mediasnifftest.MP3(1), 1152.0 / 44100, true},
+		{"mp3 behind id3v2", append(buildID3v2(16), mediasnifftest.MP3(4)...), 4 * 1152.0 / 44100, true},
+		{"mp3 junk after frames stops the walk", append(mediasnifftest.MP3(2), []byte("TAG trailing id3v1 block")...), 2 * 1152.0 / 44100, true},
 		{"flac 2s", buildFLAC(44100, 88200), 2.0, true},
 		{"flac unknown total samples", buildFLAC(44100, 0), 0, false},
 		{"ogg vorbis 2s", buildOGGVorbis(22050, 44100), 2.0, true},
@@ -125,7 +96,7 @@ func TestProbeAudioDuration(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := probeAudioDuration(tc.data)
+			got, ok := AudioDuration(tc.data)
 			if ok != tc.wantOK {
 				t.Fatalf("ok = %v, want %v (got %v)", ok, tc.wantOK, got)
 			}
@@ -137,14 +108,14 @@ func TestProbeAudioDuration(t *testing.T) {
 }
 
 func TestDataURLAudioDuration(t *testing.T) {
-	dataURL := "data:audio/wav;base64," + base64.StdEncoding.EncodeToString(buildWAV(8000))
-	if secs, ok := dataURLAudioDuration(dataURL); !ok || secs != 1.0 {
-		t.Fatalf("dataURLAudioDuration(wav) = %v, %v; want 1.0, true", secs, ok)
+	dataURL := "data:audio/wav;base64," + base64.StdEncoding.EncodeToString(mediasnifftest.WAV(8000))
+	if secs, ok := DataURLAudioDuration(dataURL); !ok || secs != 1.0 {
+		t.Fatalf("DataURLAudioDuration(wav) = %v, %v; want 1.0, true", secs, ok)
 	}
-	if _, ok := dataURLAudioDuration("https://example.com/clip.mp3"); ok {
+	if _, ok := DataURLAudioDuration("https://example.com/clip.mp3"); ok {
 		t.Fatal("a remote URL is not probeable; want ok=false")
 	}
-	if _, ok := dataURLAudioDuration("data:audio/mpeg;base64,!!!not-base64!!!"); ok {
+	if _, ok := DataURLAudioDuration("data:audio/mpeg;base64,!!!not-base64!!!"); ok {
 		t.Fatal("undecodable payload; want ok=false")
 	}
 }

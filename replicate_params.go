@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"atelier/internal/mediasniff"
 )
 
 // The Replicate param layer maps Atelier's canonical image/video requests onto
@@ -632,7 +634,7 @@ func dataURLVideoShortEdge(reference string) (int, bool) {
 	if err != nil || len(data) == 0 {
 		return 0, false
 	}
-	width, height, ok := mp4VideoDimensions(data)
+	width, height, ok := mediasniff.MP4VideoDimensions(data)
 	if !ok || width <= 0 || height <= 0 {
 		return 0, false
 	}

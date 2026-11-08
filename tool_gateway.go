@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 	"strings"
+
+	"atelier/internal/mediasniff"
 )
 
 type ToolExecutionRequest struct {
@@ -99,7 +101,7 @@ func noteReframeDurationMismatch(generated *GeneratedVideo, sourceSeconds float6
 	if !sourceReadable || sourceSeconds <= 0 {
 		return
 	}
-	outputSeconds, ok := mp4DurationSeconds(generated.Data)
+	outputSeconds, ok := mediasniff.MP4Duration(generated.Data)
 	if !ok || outputSeconds <= 0 {
 		return
 	}
@@ -576,7 +578,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			// sound), and its schema resolver carries the same bounds guard.
 			if req.Duration <= 0 {
 				if data, _, decErr := decodeMediaDataURL(req.Video); decErr == nil {
-					if seconds, ok := mp4DurationSeconds(data); ok {
+					if seconds, ok := mediasniff.MP4Duration(data); ok {
 						req.Duration = seconds
 					}
 				}
@@ -665,9 +667,9 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				seconds, priced := req.Duration, req.Duration > 0
 				if !priced {
 					if result.Video.Data != nil {
-						seconds, priced = mp4DurationSeconds(result.Video.Data)
+						seconds, priced = mediasniff.MP4Duration(result.Video.Data)
 					} else if result.Audio.Data != nil {
-						seconds, priced = probeAudioDuration(result.Audio.Data)
+						seconds, priced = mediasniff.AudioDuration(result.Audio.Data)
 					}
 				}
 				if priced {
@@ -1261,7 +1263,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			// mask-based endpoints (stable-audio inpaint) need it to place the
 			// mask, the replicate continuation total is source plus added, and
 			// after the upload below only a URL remains.
-			if seconds, ok := dataURLAudioDuration(req.SourceAudio); ok {
+			if seconds, ok := mediasniff.DataURLAudioDuration(req.SourceAudio); ok {
 				req.SourceDurationSeconds = seconds
 			}
 			if resolveAudioProvider(config) == "replicate" {
@@ -1411,7 +1413,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			// Duration for the per-second billing hint is probed while the clip
 			// is still inline — after resolution only a URL remains.
 			hints := falBillingHints{Requests: 1}
-			if seconds, ok := dataURLAudioDuration(req.Audio); ok {
+			if seconds, ok := mediasniff.DataURLAudioDuration(req.Audio); ok {
 				hints.Seconds = seconds
 			}
 			if resolved, err := client.resolveMediaURL(ctx, req.Audio, "audio/mpeg", "audio.mp3"); err == nil {

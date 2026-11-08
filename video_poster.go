@@ -31,6 +31,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"atelier/internal/mediasniff"
 )
 
 // videoPosterMaxWidth caps the poster's width. Posters ride the same asset
@@ -71,10 +73,10 @@ func generateVideoPoster(config AppConfig, videoPath string) bool {
 	seekAt := defaultVideoPosterSeekSeconds
 	displayWidth, displayHeight := 0, 0
 	if data, err := os.ReadFile(videoPath); err == nil {
-		if duration, ok := mp4DurationSeconds(data); ok && duration > 0 {
+		if duration, ok := mediasniff.MP4Duration(data); ok && duration > 0 {
 			seekAt = clampVideoPosterSeekSeconds(0.1 * duration)
 		}
-		if width, height, ok := mp4VideoDimensions(data); ok {
+		if width, height, ok := mediasniff.MP4VideoDimensions(data); ok {
 			displayWidth, displayHeight = int(width), int(height)
 		}
 	}

@@ -25,6 +25,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"atelier/internal/mediasniff"
 )
 
 // ffmpegModelName is the Model stamped on every ffmpeg tool result and
@@ -595,15 +597,15 @@ func joinClipFactFor(ctx context.Context, config AppConfig, input, sourceDataURL
 		}
 	}
 	if data, _, err := decodeMediaDataURL(sourceDataURL); err == nil {
-		seconds, durationOK := mp4DurationSeconds(data)
-		width, height, sizeOK := mp4VideoDimensions(data)
+		seconds, durationOK := mediasniff.MP4Duration(data)
+		width, height, sizeOK := mediasniff.MP4VideoDimensions(data)
 		if durationOK && sizeOK {
 			return joinClipFact{
 				Duration: seconds,
 				Width:    int(width),
 				Height:   int(height),
 				FPS:      joinTransitionsDefaultFPS,
-				HasAudio: mp4HasAudioTrack(data),
+				HasAudio: mediasniff.MP4HasAudioTrack(data),
 			}, true
 		}
 	}
@@ -827,7 +829,7 @@ func joinAudioClipFacts(ctx context.Context, config AppConfig, inputs, sources [
 
 // joinAudioClipFactFor measures one staged clip: ffprobe answers for any
 // container (codec, rate, channels, duration); the pure-Go sniff
-// (probeAudioDuration — WAV, MP3, FLAC, OGG, M4A, ADTS) covers the length when
+// (mediasniff.AudioDuration — WAV, MP3, FLAC, OGG, M4A, ADTS) covers the length when
 // ffprobe is absent, leaving the shape to the defaults.
 func joinAudioClipFactFor(ctx context.Context, config AppConfig, input, sourceDataURL string) (joinAudioClipFact, bool) {
 	if _, ok := resolveLocalFFprobeBinary(config); ok {
@@ -841,7 +843,7 @@ func joinAudioClipFactFor(ctx context.Context, config AppConfig, input, sourceDa
 		}
 	}
 	if data, _, err := decodeMediaDataURL(sourceDataURL); err == nil {
-		if seconds, ok := probeAudioDuration(data); ok {
+		if seconds, ok := mediasniff.AudioDuration(data); ok {
 			return joinAudioClipFact{Duration: seconds}, true
 		}
 	}
@@ -1482,8 +1484,8 @@ func transformVideoClipFacts(ctx context.Context, config AppConfig, input, sourc
 		}
 	}
 	if data, _, err := decodeMediaDataURL(sourceDataURL); err == nil {
-		if seconds, ok := mp4DurationSeconds(data); ok {
-			return seconds, mp4HasAudioTrack(data), nil
+		if seconds, ok := mediasniff.MP4Duration(data); ok {
+			return seconds, mediasniff.MP4HasAudioTrack(data), nil
 		}
 	}
 	return 0, false, fmt.Errorf("transform_video could not read the attached clip's duration for %s — ffprobe is unavailable and the clip is not a readable MP4", purpose)
@@ -1679,7 +1681,7 @@ func clipDurationForEqualIntervals(ctx context.Context, config AppConfig, input,
 		}
 	}
 	if data, _, err := decodeMediaDataURL(sourceDataURL); err == nil {
-		if seconds, ok := mp4DurationSeconds(data); ok {
+		if seconds, ok := mediasniff.MP4Duration(data); ok {
 			return seconds, nil
 		}
 	}
@@ -1733,11 +1735,11 @@ func screenshotAspectCorrection(ctx context.Context, config AppConfig, input, so
 		}
 	}
 	if data, _, err := decodeMediaDataURL(sourceDataURL); err == nil {
-		codedWidth, codedHeight, ok := mp4CodedVideoDimensions(data)
+		codedWidth, codedHeight, ok := mediasniff.MP4CodedVideoDimensions(data)
 		if !ok {
 			return aspectCorrection{}, false
 		}
-		storedWidth, storedHeight, ok := mp4VideoDimensions(data)
+		storedWidth, storedHeight, ok := mediasniff.MP4VideoDimensions(data)
 		if !ok {
 			return aspectCorrection{}, false
 		}
@@ -3966,7 +3968,7 @@ func transformVideoSourceDimensions(ctx context.Context, config AppConfig, input
 	}
 	if width <= 0 || height <= 0 {
 		if data, _, err := decodeMediaDataURL(sourceDataURL); err == nil {
-			if w, h, ok := mp4VideoDimensions(data); ok {
+			if w, h, ok := mediasniff.MP4VideoDimensions(data); ok {
 				width, height = int(w), int(h)
 			}
 		}
@@ -4202,10 +4204,10 @@ func reverseVideoSourceFacts(ctx context.Context, config AppConfig, input, sourc
 		}
 	}
 	if data, _, decodeErr := decodeMediaDataURL(sourceDataURL); decodeErr == nil {
-		seconds, ok := mp4DurationSeconds(data)
-		w, h, sizeOK := mp4VideoDimensions(data)
+		seconds, ok := mediasniff.MP4Duration(data)
+		w, h, sizeOK := mediasniff.MP4VideoDimensions(data)
 		if ok && sizeOK {
-			return seconds, reverseVideoDefaultFPS, int(w), int(h), mp4HasAudioTrack(data), nil
+			return seconds, reverseVideoDefaultFPS, int(w), int(h), mediasniff.MP4HasAudioTrack(data), nil
 		}
 	}
 	return 0, 0, 0, 0, false, errors.New("reverse_video could not measure the attached clip's length or frame size, and reversing buffers the whole decode in memory — Atelier refuses clips it cannot size. Install ffprobe (`brew install ffmpeg` includes it, or set both binaries in Settings → Local Tools) and re-attach the clip, or trim it to MP4 with split_video first")

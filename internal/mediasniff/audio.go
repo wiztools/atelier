@@ -1,4 +1,4 @@
-package main
+package mediasniff
 
 // Audio duration probing, pure Go. extend_audio's stable-audio inpaint path
 // needs the source clip's length to place its mask (mask_start = clip length
@@ -18,11 +18,11 @@ import (
 	"strings"
 )
 
-// probeAudioDuration returns the clip's duration in seconds for the formats
+// AudioDuration returns the clip's duration in seconds for the formats
 // Atelier persists or accepts as attachments: WAV, MP3 (CBR and VBR via a
 // frame walk), AAC (ADTS), FLAC, OGG (Vorbis/Opus), and M4A/MP4. ok is false
 // for anything it cannot parse with confidence.
-func probeAudioDuration(data []byte) (seconds float64, ok bool) {
+func AudioDuration(data []byte) (seconds float64, ok bool) {
 	switch {
 	case len(data) >= 12 && bytes.Equal(data[:4], []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WAVE")):
 		return wavDuration(data)
@@ -31,7 +31,7 @@ func probeAudioDuration(data []byte) (seconds float64, ok bool) {
 	case len(data) >= 4 && bytes.Equal(data[:4], []byte("OggS")):
 		return oggDuration(data)
 	case len(data) >= 12 && bytes.Equal(data[4:8], []byte("ftyp")):
-		return mp4Duration(data)
+		return MP4Duration(data)
 	case len(data) >= 3 && bytes.Equal(data[:3], []byte("ID3")):
 		return mpegDuration(data)
 	case len(data) >= 4 && data[0] == 0xFF && (data[1]&0xE0) == 0xE0:
@@ -40,10 +40,10 @@ func probeAudioDuration(data []byte) (seconds float64, ok bool) {
 	return 0, false
 }
 
-// dataURLAudioDuration decodes a data-URL media reference and probes it. A
+// DataURLAudioDuration decodes a data-URL media reference and probes it. A
 // non-data URL or undecodable payload reports !ok — the caller decides how to
 // degrade (see the extend gateway).
-func dataURLAudioDuration(dataURL string) (seconds float64, ok bool) {
+func DataURLAudioDuration(dataURL string) (seconds float64, ok bool) {
 	trimmed := strings.TrimSpace(dataURL)
 	if !strings.HasPrefix(trimmed, "data:") {
 		return 0, false
@@ -56,10 +56,10 @@ func dataURLAudioDuration(dataURL string) (seconds float64, ok bool) {
 	if err != nil {
 		return 0, false
 	}
-	return probeAudioDuration(data)
+	return AudioDuration(data)
 }
 
-// fixStreamingWAVHeader rewrites the size fields of a streamed WAV. Streaming
+// FixStreamingWAVHeader rewrites the size fields of a streamed WAV. Streaming
 // encoders cannot know the payload length up front, so they emit 0xFFFFFFFF
 // placeholders in the RIFF size and the data chunk's size (Ollama's
 // /v1/audio/speech does exactly this — the file is well-formed audio that
@@ -67,7 +67,7 @@ func dataURLAudioDuration(dataURL string) (seconds float64, ok bool) {
 // as wavDuration below fail closed on it). A size is patched only where it
 // claims more than the buffer holds — a well-formed header is untouched —
 // and a non-RIFF/WAVE buffer comes back unchanged.
-func fixStreamingWAVHeader(data []byte) []byte {
+func FixStreamingWAVHeader(data []byte) []byte {
 	if len(data) < 12 || !bytes.Equal(data[0:4], []byte("RIFF")) || !bytes.Equal(data[8:12], []byte("WAVE")) {
 		return data
 	}
@@ -167,58 +167,6 @@ func oggDuration(data []byte) (float64, bool) {
 		return 0, false
 	}
 	return float64(granule) / rate, true
-}
-
-// mp4Duration walks ISO-boxes to moov/mvhd and divides the duration by the
-// movie timescale. Only 32-bit box sizes are handled (a 64-bit size never
-// appears on this path in practice).
-func mp4Duration(data []byte) (float64, bool) {
-	findBox := func(start, end int, want string) (int, int, bool) {
-		for pos := start; pos+8 <= end; {
-			size := int(binary.BigEndian.Uint32(data[pos : pos+4]))
-			boxType := string(data[pos+4 : pos+8])
-			if size == 0 {
-				size = end - pos // box runs to the end of the buffer
-			}
-			if size < 8 || pos+size > end {
-				return 0, 0, false
-			}
-			if boxType == want {
-				return pos + 8, pos + size, true
-			}
-			pos += size
-		}
-		return 0, 0, false
-	}
-	moovStart, moovEnd, ok := findBox(0, len(data), "moov")
-	if !ok {
-		return 0, false
-	}
-	mvhdStart, mvhdEnd, ok := findBox(moovStart, moovEnd, "mvhd")
-	if !ok {
-		return 0, false
-	}
-	var timescale, duration uint64
-	switch data[mvhdStart] {
-	case 0:
-		if mvhdEnd-mvhdStart < 20 {
-			return 0, false
-		}
-		timescale = uint64(binary.BigEndian.Uint32(data[mvhdStart+12 : mvhdStart+16]))
-		duration = uint64(binary.BigEndian.Uint32(data[mvhdStart+16 : mvhdStart+20]))
-	case 1:
-		if mvhdEnd-mvhdStart < 32 {
-			return 0, false
-		}
-		timescale = uint64(binary.BigEndian.Uint32(data[mvhdStart+20 : mvhdStart+24]))
-		duration = binary.BigEndian.Uint64(data[mvhdStart+24 : mvhdStart+32])
-	default:
-		return 0, false
-	}
-	if timescale == 0 || duration == 0 {
-		return 0, false
-	}
-	return float64(duration) / float64(timescale), true
 }
 
 // mpegDuration probes raw MPEG-audio streams: an optional ID3v2 tag, then a

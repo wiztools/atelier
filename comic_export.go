@@ -32,6 +32,8 @@ import (
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"atelier/internal/mediasniff"
 )
 
 // comicPDFPageWidthPt is the trim width: 6.625in — the standard US comic
@@ -221,7 +223,7 @@ func filepathExtensionFor(ref ComicMediaRef) string {
 // segment deciding the color transform (1-channel grayscale renders wrong
 // with the YCbCr transform on).
 func comicJPEGImage(data []byte) (comicPDFImage, error) {
-	width, height, ok := imagePixelDimensions(data)
+	width, height, ok := mediasniff.ImagePixelDimensions(data)
 	if !ok {
 		return comicPDFImage{}, errors.New("the JPEG's dimensions could not be read")
 	}

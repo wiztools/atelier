@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/zalando/go-keyring"
+
+	"atelier/internal/mediasniff/mediasnifftest"
 )
 
 // TestReframeVideoToolRequiresAttachedVideo verifies the tool errors when no
@@ -314,7 +316,7 @@ func TestNoteReframeDurationMismatch(t *testing.T) {
 			name:         "shorter re-render is flagged",
 			source:       15.083,
 			sourceOK:     true,
-			output:       mp4FixtureWithDuration(0, 1000, 14208),
+			output:       mediasnifftest.MP4WithDuration(0, 1000, 14208),
 			existing:     []string{"pre-existing notice"},
 			wantContains: []string{"14.2s", "15.1s", "transform_video"},
 		},
@@ -322,13 +324,13 @@ func TestNoteReframeDurationMismatch(t *testing.T) {
 			name:         "longer re-render is flagged",
 			source:       10,
 			sourceOK:     true,
-			output:       mp4FixtureWithDuration(0, 24000, 297600),
+			output:       mediasnifftest.MP4WithDuration(0, 24000, 297600),
 			wantContains: []string{"12.4s", "10.0s"},
 		},
-		{name: "within tolerance stays quiet", source: 10, sourceOK: true, output: mp4FixtureWithDuration(0, 1000, 10300)},
-		{name: "exactly at tolerance stays quiet", source: 10, sourceOK: true, output: mp4FixtureWithDuration(0, 1000, 10500)},
-		{name: "unreadable source skips the guard", source: 15, sourceOK: false, output: mp4FixtureWithDuration(0, 1000, 14208)},
-		{name: "non-positive source skips the guard", source: 0, sourceOK: true, output: mp4FixtureWithDuration(0, 1000, 14208)},
+		{name: "within tolerance stays quiet", source: 10, sourceOK: true, output: mediasnifftest.MP4WithDuration(0, 1000, 10300)},
+		{name: "exactly at tolerance stays quiet", source: 10, sourceOK: true, output: mediasnifftest.MP4WithDuration(0, 1000, 10500)},
+		{name: "unreadable source skips the guard", source: 15, sourceOK: false, output: mediasnifftest.MP4WithDuration(0, 1000, 14208)},
+		{name: "non-positive source skips the guard", source: 0, sourceOK: true, output: mediasnifftest.MP4WithDuration(0, 1000, 14208)},
 		{name: "unparseable output skips the guard", source: 15, sourceOK: true, output: tinyMP4()},
 	}
 	for _, tc := range cases {
@@ -359,7 +361,7 @@ func TestNoteReframeDurationMismatch(t *testing.T) {
 // wins even when the rendered container disagrees; the rendered clip is the
 // fallback, and two unreadable containers price nothing.
 func TestReframeBilledSeconds(t *testing.T) {
-	output := mp4FixtureWithDuration(0, 1000, 14208) // 14.208s
+	output := mediasnifftest.MP4WithDuration(0, 1000, 14208) // 14.208s
 	if got, ok := reframeBilledSeconds(15.083, true, output); !ok || got != 15.083 {
 		t.Fatalf("reframeBilledSeconds(readable source) = (%v, %v), want (15.083, true)", got, ok)
 	}
@@ -397,7 +399,7 @@ func TestReframeVideoDurationGuardReplicate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			predictions := replicatePredictionHandler(t, nil,
 				`"https://replicate.delivery/out/reframed.mp4"`, "/out/reframed.mp4",
-				mp4FixtureWithDuration(0, 1000, tc.outputDur), "video/mp4")
+				mediasnifftest.MP4WithDuration(0, 1000, tc.outputDur), "video/mp4")
 			transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				if req.Method == http.MethodGet && req.URL.Path == "/v1/models/luma/reframe-video" {
 					return jsonResp(`{"latest_version":{"openapi_schema":` + reframeSchema + `}}`), nil
@@ -411,7 +413,7 @@ func TestReframeVideoDurationGuardReplicate(t *testing.T) {
 			config.Providers.Replicate.VideoReframeModel = "luma/reframe-video"
 			gateway := newToolGateway(app, config)
 
-			source := base64.StdEncoding.EncodeToString(mp4FixtureWithDuration(0, 1000, tc.sourceDur))
+			source := base64.StdEncoding.EncodeToString(mediasnifftest.MP4WithDuration(0, 1000, tc.sourceDur))
 			generated, err := gateway.tools.ReframeVideo(context.Background(), VideoReframeRequest{
 				Model:       "luma/reframe-video",
 				Video:       "data:video/mp4;base64," + source,

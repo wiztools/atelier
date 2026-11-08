@@ -30,6 +30,8 @@ import (
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"atelier/internal/mediasniff"
 )
 
 const (
@@ -1300,12 +1302,12 @@ func verifyCompositionOutput(ctx context.Context, config AppConfig, path, kind s
 		return 0, false
 	}
 	if kind == "audio" {
-		if seconds, ok := probeAudioDuration(data); ok && seconds > 0 {
+		if seconds, ok := mediasniff.AudioDuration(data); ok && seconds > 0 {
 			return seconds, true
 		}
 		return 0, false
 	}
-	seconds, durationOK := mp4DurationSeconds(data)
-	_, _, sizeOK := mp4VideoDimensions(data)
+	seconds, durationOK := mediasniff.MP4Duration(data)
+	_, _, sizeOK := mediasniff.MP4VideoDimensions(data)
 	return seconds, durationOK && sizeOK
 }

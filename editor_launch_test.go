@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"atelier/internal/mediasniff/mediasnifftest"
 )
 
 // newEditorLaunchTestConfig points the app at a temp HOME the same way the
@@ -344,7 +346,7 @@ func TestOpenEditorCompositionSeeds(t *testing.T) {
 			Role:    "user",
 			Content: "Open the video composer for these",
 			Videos:  []string{"data:video/mp4;base64," + base64.StdEncoding.EncodeToString(compositionMP4Fixture(8, 1280, 720, true))},
-			Audios:  []string{"data:audio/wav;base64," + base64.StdEncoding.EncodeToString(buildWAV(8000))},
+			Audios:  []string{"data:audio/wav;base64," + base64.StdEncoding.EncodeToString(mediasnifftest.WAV(8000))},
 			Images:  []string{"data:image/png;base64," + base64.StdEncoding.EncodeToString(editorLaunchPNG)},
 		}},
 	})

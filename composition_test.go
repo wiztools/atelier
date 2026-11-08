@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"atelier/internal/mediasniff/mediasnifftest"
 )
 
 // compositionMP4Fixture builds ftyp + moov{mvhd, video trak, [audio trak]} —
@@ -32,18 +34,18 @@ func compositionMP4Fixture(seconds float64, width, height uint32, withAudio bool
 	binary.BigEndian.PutUint32(tkhd[80:84], height<<16)
 	videoHdlr := make([]byte, 24)
 	copy(videoHdlr[8:12], "vide")
-	videoTrak := mp4TestBox("trak", append(mp4TestBox("tkhd", tkhd), mp4TestBox("mdia", mp4TestBox("hdlr", videoHdlr))...))
-	moov := append(mp4TestBox("mvhd", mvhd), videoTrak...)
+	videoTrak := mediasnifftest.MP4Box("trak", append(mediasnifftest.MP4Box("tkhd", tkhd), mediasnifftest.MP4Box("mdia", mediasnifftest.MP4Box("hdlr", videoHdlr))...))
+	moov := append(mediasnifftest.MP4Box("mvhd", mvhd), videoTrak...)
 	if withAudio {
 		audioHdlr := make([]byte, 24)
 		copy(audioHdlr[8:12], "soun")
-		moov = append(moov, mp4TestBox("trak", mp4TestBox("mdia", mp4TestBox("hdlr", audioHdlr)))...)
+		moov = append(moov, mediasnifftest.MP4Box("trak", mediasnifftest.MP4Box("mdia", mediasnifftest.MP4Box("hdlr", audioHdlr)))...)
 	}
-	return append(tinyMP4(), mp4TestBox("moov", moov)...)
+	return append(tinyMP4(), mediasnifftest.MP4Box("moov", moov)...)
 }
 
 // compositionEXIFJPEG encodes a real width x height JPEG and splices
-// exifJPEGBytes' APP1 orientation block in after SOI — a photo whose stored
+// mediasnifftest.EXIFJPEG' APP1 orientation block in after SOI — a photo whose stored
 // pixels are one shape and whose EXIF tells every viewer to turn it.
 func compositionEXIFJPEG(t *testing.T, width, height int, orientation uint16) []byte {
 	t.Helper()
@@ -57,7 +59,7 @@ func compositionEXIFJPEGOf(t *testing.T, img image.Image, orientation uint16) []
 	if err := jpeg.Encode(encoded, img, nil); err != nil {
 		t.Fatalf("jpeg.Encode: %v", err)
 	}
-	header := exifJPEGBytes(orientation)
+	header := mediasnifftest.EXIFJPEG(orientation)
 	app1 := header[2 : len(header)-2]
 	data := encoded.Bytes()
 	return append(append(append([]byte{}, data[:2]...), app1...), data[2:]...)
@@ -76,7 +78,7 @@ func compositionConversationFixture(t *testing.T, storage ConfigStorage) string 
 	files := map[string][]byte{
 		"vid_a.mp4": compositionMP4Fixture(8, 1280, 720, true),
 		"vid_b.mp4": compositionMP4Fixture(4, 640, 480, false),
-		"aud_a.wav": buildWAV(16000), // 2s at the 8000 byte/s fixture rate
+		"aud_a.wav": mediasnifftest.WAV(16000), // 2s at the 8000 byte/s fixture rate
 		"img_y.png": editTestPNG(t, editSolidImage(64, 48, color.RGBA{B: 200, A: 255})),
 		"img_r.jpg": compositionEXIFJPEG(t, 64, 48, 6),
 		"md_x.md":   []byte("# Notes\n"),

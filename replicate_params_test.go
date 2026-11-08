@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/zalando/go-keyring"
+
+	"atelier/internal/mediasniff/mediasnifftest"
 )
 
 // parseReplicateFixtureSchema builds a ModelInputSchema from a raw OpenAPI
@@ -852,7 +854,7 @@ func TestResolveReplicateVideoUpscaleInput(t *testing.T) {
 		"video":{"type":"string"},
 		"target_resolution":{"type":"string","enum":["720p","1080p","4k"]}
 	}}}}}`)
-	inline1080p := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(mp4FixtureWithVideoTrack(1920, 1080))
+	inline1080p := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(mediasnifftest.MP4WithVideoTrack(1920, 1080))
 	input, _, notices, err = resolveReplicateVideoUpscaleInput(tierSchema, VideoUpscaleRequest{
 		Model: "topazlabs/video-upscale",
 		Video: inline1080p,

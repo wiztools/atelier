@@ -10,6 +10,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"atelier/internal/mediasniff"
 )
 
 type OllamaClient struct {
@@ -412,7 +414,7 @@ func (client OllamaClient) GenerateImage(ctx context.Context, req ImageGenerateR
 // synchronous call that streams binary audio: a 24 kHz mono 16-bit PCM WAV
 // whose RIFF and data-chunk sizes are 0xFFFFFFFF streaming placeholders
 // (the encoder cannot know the length up front), so the buffered bytes get
-// their header rewritten before returning (fixStreamingWAVHeader) — every
+// their header rewritten before returning (mediasniff.FixStreamingWAVHeader) — every
 // downstream reader, strict or lenient, then sees honest sizes. Only wav and
 // pcm are offered by the server, and wav is the one with a container. An
 // empty voice leaves the model's default; the server matches names
@@ -459,7 +461,7 @@ func (client OllamaClient) GenerateSpeech(ctx context.Context, model, voice, inp
 	if len(audio) < 12 || !bytes.Equal(audio[:4], []byte("RIFF")) || !bytes.Equal(audio[8:12], []byte("WAVE")) {
 		return GeneratedAudio{}, fmt.Errorf("ollama speech returned %s instead of WAV audio", firstNonEmpty([]string{resp.Header.Get("Content-Type"), "an unrecognized payload"}))
 	}
-	return GeneratedAudio{Data: fixStreamingWAVHeader(audio), MimeType: "audio/wav"}, nil
+	return GeneratedAudio{Data: mediasniff.FixStreamingWAVHeader(audio), MimeType: "audio/wav"}, nil
 }
 
 // openAIErrorMessage pulls the human-readable message out of an OpenAI-shaped
