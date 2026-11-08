@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"atelier/internal/mediasniff"
 )
 
 type HarnessToolRisk string
@@ -191,6 +194,15 @@ type ToolVideoResult struct {
 	// the chat reply; the json tag rides them into tool evidence and the
 	// persisted run.
 	Diagnostics []string `json:"diagnostics,omitempty"`
+	// Width/Height/AspectRatio are the delivered clip's presentation size as
+	// measured from its own bytes (generate_video only; zero/empty when the
+	// MP4 can't be read, AspectRatio also when the size matches no preset).
+	// They let the final model describe the shape that shipped rather than
+	// the one asked for — conv_357cd8af5943e138ab8a9178's reply called a
+	// 1920x1080 clip "9:16" because nothing in the evidence said otherwise.
+	Width       int    `json:"width,omitempty"`
+	Height      int    `json:"height,omitempty"`
+	AspectRatio string `json:"aspectRatio,omitempty"`
 	// CostMicros estimates what this generation cost in USD millionths
 	// (fal_pricing.go); zero for the local ffmpeg tools.
 	CostMicros int64 `json:"costMicros,omitempty"`
@@ -201,6 +213,17 @@ type ToolVideoResult struct {
 
 // ToolCommand names the executed argv of the local CLI run behind this result.
 func (r ToolVideoResult) ToolCommand() []string { return r.Command }
+
+// measureVideoShape fills the result's delivered-shape fields from the MP4's
+// track header. Fail-soft: an unreadable container leaves them unset.
+func (r *ToolVideoResult) measureVideoShape(data []byte) {
+	w, h, ok := mediasniff.MP4VideoDimensions(data)
+	if !ok || w <= 0 || h <= 0 {
+		return
+	}
+	r.Width, r.Height = int(math.Round(w)), int(math.Round(h))
+	r.AspectRatio = aspectRatioForPixels(r.Width, r.Height)
+}
 
 type ToolVideoFile struct {
 	TempPath  string `json:"tempPath,omitempty"`
@@ -1178,6 +1201,7 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 				Videos:     []ToolVideoFile{{TempPath: tempPath, MimeType: generated.MimeType, SourceURL: generated.SourceURL}},
 				CostMicros: generated.CostMicros,
 			}
+			output.measureVideoShape(generated.Data)
 			// Resolver notices ride the result; the executor adds its own only
 			// after generation succeeded, so a failed call carries nothing but
 			// the error (media usage drops failed calls entirely). Diagnostics

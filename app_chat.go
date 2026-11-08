@@ -36,6 +36,14 @@ func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {
 	if strings.TrimSpace(workspaceRoot) != "" {
 		config.Tools.Filesystem.Root = workspaceRoot
 	}
+	// Resolve the project's instruction block onto the request — the same
+	// seam as the workspace/model overrides, but read live every turn (see
+	// resolveTurnProjectNotes). From here req.ProjectNotes reaches the triage
+	// and planner prompts unchanged. The aspect ratios it names also become
+	// the turn's generation defaults (applyProjectGenerationDefaults) — before
+	// the conversation overrides, which outrank a project-wide convention.
+	req.ProjectNotes = resolveTurnProjectNotes(config, req)
+	config = applyProjectGenerationDefaults(config, req.ProjectNotes)
 	// Apply the conversation's model-selection overrides the same way — one
 	// rewrite of the per-stream config copy before engine construction scopes
 	// harness routing, tool-registry gating, and every tool's default model
@@ -46,11 +54,6 @@ func (a *App) StreamChat(req ChatRequest) (*ChatStreamStart, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Resolve the project's instruction block onto the request — the same
-	// seam as the workspace/model overrides, but read live every turn (see
-	// resolveTurnProjectNotes). From here req.ProjectNotes reaches the triage
-	// and planner prompts unchanged, so no further plumbing is needed.
-	req.ProjectNotes = resolveTurnProjectNotes(config, req)
 	engine := newHarnessEngine(config, a)
 	if strings.TrimSpace(req.Model) == "" {
 		req.Model = strings.TrimSpace(config.Providers.Ollama.Models.Primary)
