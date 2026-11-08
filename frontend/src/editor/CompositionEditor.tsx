@@ -287,7 +287,8 @@ function TransitionControls(props: {doc: CompositionDoc; clipID: string; commit:
             onChange={(event) => props.commit(setClipTransition(props.doc, props.clipID, event.target.value === 'cut' ? null : {kind: event.target.value, seconds: transition?.seconds ?? 1, audioCrossfade: transition?.audioCrossfade ?? true}))}
           >
             <option value="cut">cut</option>
-            {compositionTransitions.map((name) => <option key={name} value={name}>{name}</option>)}
+            {/* alphabetical for scanning; the model's array keeps the Go mirror's order */}
+            {[...compositionTransitions].sort().map((name) => <option key={name} value={name}>{name}</option>)}
           </select>
         </label>
         {transition ? (
