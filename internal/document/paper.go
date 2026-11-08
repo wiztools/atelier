@@ -1,4 +1,4 @@
-package main
+package document
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -25,7 +26,7 @@ import (
 // shorter with its breaks in different places. Which page to print is the
 // writer's call: the editor's Print block starts a screenplay on US Letter
 // whatever the region (the industry page travels), a markdown document at the
-// machine's region's paper (defaultDocumentPaperSize), and remembers the last
+// machine's region's paper (DefaultPaperSize), and remembers the last
 // choice per dialect.
 
 const (
@@ -33,9 +34,9 @@ const (
 	documentPaperA4     = "a4"
 )
 
-// pdfPaper is one sheet's geometry in points (1/72"): the page box and the
+// Paper is one sheet's geometry in points (1/72"): the page box and the
 // text block its margins leave.
-type pdfPaper struct {
+type Paper struct {
 	name   string
 	width  float64
 	height float64
@@ -52,35 +53,35 @@ type pdfPaper struct {
 }
 
 // pdfPaperLetter is US Letter (8.5" × 11"): 60 characters × 55 lines.
-var pdfPaperLetter = pdfPaper{name: documentPaperLetter, width: 612, height: 792, columns: 60, textRight: 540, topBaseline: 720, linesPerPage: 55}
+var pdfPaperLetter = Paper{name: documentPaperLetter, width: 612, height: 792, columns: 60, textRight: 540, topBaseline: 720, linesPerPage: 55}
 
 // pdfPaperA4 is A4 (210 × 297 mm): 57 characters × 59 lines — the right
 // margin lands at 1.07" (a 58th character would cross 1"), the last baseline
 // at 1.03" above the bottom edge.
-var pdfPaperA4 = pdfPaper{name: documentPaperA4, width: 595.28, height: 841.89, columns: 57, textRight: 518.4, topBaseline: 769.89, linesPerPage: 59}
+var pdfPaperA4 = Paper{name: documentPaperA4, width: 595.28, height: 841.89, columns: 57, textRight: 518.4, topBaseline: 769.89, linesPerPage: 59}
 
-// documentPaperFor resolves a paper size name — "letter" or "a4", any case.
+// PaperFor resolves a paper size name — "letter" or "a4", any case.
 // Empty is US Letter, the export's page before the choice existed.
-func documentPaperFor(name string) (pdfPaper, error) {
+func PaperFor(name string) (Paper, error) {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "", documentPaperLetter:
 		return pdfPaperLetter, nil
 	case documentPaperA4:
 		return pdfPaperA4, nil
 	}
-	return pdfPaper{}, fmt.Errorf(`paper size must be %q or %q, got %q`, documentPaperLetter, documentPaperA4, name)
+	return Paper{}, fmt.Errorf(`paper size must be %q or %q, got %q`, documentPaperLetter, documentPaperA4, name)
 }
 
 // titleTopRow is the row the title page's creative block starts on — a
 // third of the way down the page.
-func (p pdfPaper) titleTopRow() int {
+func (p Paper) titleTopRow() int {
 	return p.linesPerPage / 3
 }
 
 // columnsAt is how many characters of Courier at a point size fit the text
 // block — the markdown layout's measure for its smaller code and table text
 // and its larger headings. At 12pt it is the paper's own column.
-func (p pdfPaper) columnsAt(size float64) int {
+func (p Paper) columnsAt(size float64) int {
 	return int(math.Floor((p.textRight-pdfMarginLeft)/pdfCharWidthAt(size) + 1e-9))
 }
 
@@ -92,15 +93,16 @@ var letterPaperRegions = map[string]bool{
 	"NI": true, "PA": true, "PH": true, "PR": true, "SV": true, "US": true, "VE": true,
 }
 
-// systemLocaleIdentifier reports the machine's locale. On macOS that is the
+// SystemLocale reports the machine's locale. On macOS that is the
 // AppleLocale default, which carries the Region setting even where it
 // differs from the language — "en_US@rg=inzzzz" is US English formatted for
 // India — and is read even for a Dock launch, which inherits no LANG. A
 // terminal's LANG is no stand-in there: it often says en_US whatever the
 // region. Elsewhere it is the POSIX locale variables in their precedence. A
-// seam: TestMain pins it so tests never read the machine's region.
-var systemLocaleIdentifier = func() string {
-	if runtimeGOOS == "darwin" {
+// seam: the app's and this package's TestMain pin it so tests never read
+// the machine's region.
+var SystemLocale = func() string {
+	if runtime.GOOS == "darwin" {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		if out, err := exec.CommandContext(ctx, "/usr/bin/defaults", "read", "-g", "AppleLocale").Output(); err == nil {
@@ -154,21 +156,15 @@ func isASCIILetters(s string) bool {
 	return s != ""
 }
 
-// defaultDocumentPaperSize is a markdown document's starting paper in the
+// DefaultPaperSize is a markdown document's starting paper in the
 // Print block until the writer picks one: the region's office paper — US
 // Letter where CLDR says so, A4 everywhere else — and US Letter, the export's
 // historical page, when no region can be read. Screenplays don't ask: they
 // start on US Letter everywhere.
-func defaultDocumentPaperSize() string {
-	region := localeRegion(systemLocaleIdentifier())
+func DefaultPaperSize() string {
+	region := localeRegion(SystemLocale())
 	if region == "" || letterPaperRegions[region] {
 		return documentPaperLetter
 	}
 	return documentPaperA4
-}
-
-// DefaultDocumentPaperSize is the Print block's starting choice for a
-// markdown document before the writer has made one ("letter" or "a4").
-func (a *App) DefaultDocumentPaperSize() string {
-	return defaultDocumentPaperSize()
 }

@@ -1,4 +1,4 @@
-package main
+package document
 
 // Fountain: the plaintext screenplay format — the "Markdown for scripts"
 // dialect of the document editor. fountain.go owns the parser and the review
@@ -50,8 +50,8 @@ type FountainElement struct {
 // preview and editing model the editor drives — the content itself is plain
 // text either way, and switching format at save time is the conversion path.
 const (
-	documentFormatMarkdown = "markdown"
-	documentFormatFountain = "fountain"
+	FormatMarkdown = "markdown"
+	FormatFountain = "fountain"
 )
 
 // fountainTitlePage is the raw key/value block a script may open with. Keys

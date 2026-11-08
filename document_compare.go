@@ -4,7 +4,7 @@ package main
 // ask like "compare @md_a and @md_b") and the ResolveDocumentCompare binding
 // the compare workspace loads through. Both read two markdown artifacts (.md
 // or .fountain — the document editor's two dialects) and diff them with
-// buildDocumentDiff; nothing here writes to the conversation. The workspace
+// document.BuildDiff; nothing here writes to the conversation. The workspace
 // is read-only, so unlike the editors there is no save path, no streaming
 // guard, and nothing to discard.
 //
@@ -19,6 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"atelier/internal/document"
 )
 
 // documentCompareLaunchKind is the atelier:editor-launch kind the compare
@@ -52,7 +54,7 @@ type DocumentCompareInfo struct {
 	Before           MarkdownSourceInfo `json:"before"`
 	After            MarkdownSourceInfo `json:"after"`
 	IgnoreWhitespace bool               `json:"ignoreWhitespace"`
-	Diff             DocumentDiff       `json:"diff"`
+	Diff             document.Diff      `json:"diff"`
 }
 
 // ResolveDocumentCompare loads two documents and diffs them for the compare
@@ -100,7 +102,7 @@ func compareDocumentContents(storage ConfigStorage, detail ConversationDetail, b
 		Before:           beforeSource,
 		After:            afterSource,
 		IgnoreWhitespace: ignoreWhitespace,
-		Diff:             buildDocumentDiff(beforeSource.Text, afterSource.Text, beforeSource.Format, afterSource.Format, ignoreWhitespace),
+		Diff:             document.BuildDiff(beforeSource.Text, afterSource.Text, beforeSource.Format, afterSource.Format, ignoreWhitespace),
 	}, nil
 }
 
@@ -311,8 +313,8 @@ func executeCompareDocuments(tools HarnessToolExecutionContext, beforeID, afterI
 		AfterArtifactID:  after.ArtifactID,
 		BeforeFormat:     info.Before.Format,
 		AfterFormat:      info.After.Format,
-		BeforeLines:      len(splitDocumentLines(info.Before.Text)),
-		AfterLines:       len(splitDocumentLines(info.After.Text)),
+		BeforeLines:      len(document.SplitLines(info.Before.Text)),
+		AfterLines:       len(document.SplitLines(info.After.Text)),
 		Added:            diff.Stats.Added,
 		Removed:          diff.Stats.Removed,
 		Changes:          diff.Stats.Changes,
@@ -333,7 +335,7 @@ func documentSectionLabel(section string) string {
 
 // changedSectionNames lists the distinct places the changes sit, in document
 // order, capped at documentCompareMaxSections.
-func changedSectionNames(diff DocumentDiff) []string {
+func changedSectionNames(diff document.Diff) []string {
 	names := []string{}
 	seen := map[string]bool{}
 	for _, hunk := range diff.Hunks {
@@ -367,7 +369,7 @@ func hunkSideRange(line, count int) string {
 // ("- ") and added lines ("+ ") — until documentCompareExcerptLines changed
 // lines or documentCompareExcerptChars bytes, closing with a count of what
 // was left out. Empty for identical documents.
-func documentCompareExcerpt(diff DocumentDiff) string {
+func documentCompareExcerpt(diff document.Diff) string {
 	if diff.Stats.Identical {
 		return ""
 	}

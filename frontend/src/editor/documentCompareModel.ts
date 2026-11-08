@@ -3,7 +3,7 @@
 // unchanged stretches, re-shapes rows for the unified layout, and steps
 // between changes. No React and no bindings import, so the .cjs runner can
 // compile it alone (test:document-compare-model). Types are structural
-// mirrors of the wire shapes (main.DocumentDiffRow & co.) so the generated
+// mirrors of the wire shapes (document.DiffRow & co.) so the generated
 // models satisfy them.
 
 export type DiffSegment = {text: string; changed?: boolean};

@@ -18,6 +18,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"atelier/internal/document"
 )
 
 // documentAuthorMaxAttempts bounds the authoring call: one initial attempt
@@ -37,7 +39,7 @@ const documentAuthorTimeout = 5 * time.Minute
 // (what the save path persists via writeMarkdownAttachment), the dialect it
 // was fenced as, and the model that wrote it.
 type authoredChatDocument struct {
-	Format string // documentFormatMarkdown | documentFormatFountain
+	Format string // document.FormatMarkdown | document.FormatFountain
 	Body   string
 	Words  int
 	Model  string
@@ -109,7 +111,7 @@ func buildAuthoredDocument(body, format string) (authoredChatDocument, error) {
 	if strings.TrimSpace(body) == "" {
 		return authoredChatDocument{}, fmt.Errorf("the fenced document block is empty")
 	}
-	if format != documentFormatMarkdown && format != documentFormatFountain {
+	if format != document.FormatMarkdown && format != document.FormatFountain {
 		return authoredChatDocument{}, fmt.Errorf("unknown document dialect %q", format)
 	}
 	return authoredChatDocument{Format: format, Body: body, Words: markdownWordCount(body)}, nil
@@ -120,9 +122,9 @@ func buildAuthoredDocument(body, format string) (authoredChatDocument, error) {
 func documentFormatFromTask(task string) string {
 	normalized := strings.ToLower(task)
 	if strings.Contains(normalized, "fountain") || strings.Contains(normalized, "screenplay") || strings.Contains(normalized, "script") {
-		return documentFormatFountain
+		return document.FormatFountain
 	}
-	return documentFormatMarkdown
+	return document.FormatMarkdown
 }
 
 // documentAuthorCorrectionPrompt is the parse-failure feedback, modeled on

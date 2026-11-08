@@ -33,6 +33,7 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"atelier/internal/document"
 	"atelier/internal/mediasniff"
 )
 
@@ -316,41 +317,41 @@ func comicDecodedImage(data []byte) (comicPDFImage, error) {
 // shape, parameterized because a comic's object count varies with its image
 // count.
 type comicPDFBuilder struct {
-	w       *pdfBuf
+	w       *bytes.Buffer
 	offsets []int
 }
 
 func newComicPDFBuilder() *comicPDFBuilder {
-	b := &comicPDFBuilder{w: &pdfBuf{}}
-	b.w.writeString("%PDF-1.4\n")
+	b := &comicPDFBuilder{w: &bytes.Buffer{}}
+	b.w.WriteString("%PDF-1.4\n")
 	return b
 }
 
 func (b *comicPDFBuilder) raw(format string, args ...any) int {
 	id := len(b.offsets) + 1
-	b.offsets = append(b.offsets, b.w.len())
-	fmt.Fprintf(b.w.raw(), "%d 0 obj\n%s\nendobj\n", id, fmt.Sprintf(format, args...))
+	b.offsets = append(b.offsets, b.w.Len())
+	fmt.Fprintf(b.w, "%d 0 obj\n%s\nendobj\n", id, fmt.Sprintf(format, args...))
 	return id
 }
 
 func (b *comicPDFBuilder) stream(dict string, payload []byte) int {
 	id := len(b.offsets) + 1
-	b.offsets = append(b.offsets, b.w.len())
-	fmt.Fprintf(b.w.raw(), "%d 0 obj\n<< %s /Length %d >>\nstream\n", id, dict, len(payload))
-	b.w.raw().Write(payload)
-	b.w.raw().WriteString("\nendstream\nendobj\n")
+	b.offsets = append(b.offsets, b.w.Len())
+	fmt.Fprintf(b.w, "%d 0 obj\n<< %s /Length %d >>\nstream\n", id, dict, len(payload))
+	b.w.Write(payload)
+	b.w.WriteString("\nendstream\nendobj\n")
 	return id
 }
 
 func (b *comicPDFBuilder) finish() []byte {
-	xrefHead := b.w.len()
-	fmt.Fprintf(b.w.raw(), "xref\n0 %d\n", len(b.offsets)+1)
-	b.w.writeString("0000000000 65535 f \n")
+	xrefHead := b.w.Len()
+	fmt.Fprintf(b.w, "xref\n0 %d\n", len(b.offsets)+1)
+	b.w.WriteString("0000000000 65535 f \n")
 	for _, head := range b.offsets {
-		fmt.Fprintf(b.w.raw(), "%010d 00000 n \n", head)
+		fmt.Fprintf(b.w, "%010d 00000 n \n", head)
 	}
-	fmt.Fprintf(b.w.raw(), "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", len(b.offsets)+1, xrefHead)
-	return b.w.bytes()
+	fmt.Fprintf(b.w, "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", len(b.offsets)+1, xrefHead)
+	return b.w.Bytes()
 }
 
 // comicTextStrokePt is the lettering outline's weight, the editor's 3-unit
@@ -497,7 +498,7 @@ func renderComicPDF(ctx context.Context, config AppConfig, doc ComicDoc) ([]byte
 				baseline := cyPDF + total/2 - (float64(i)+0.5)*lineHeight + fontSize*0.35
 				width := float64(len([]rune(line))) * fontSize * 0.6
 				x := cx - width/2
-				fmt.Fprintf(&stream, "BT /F1 %.2f Tf 1 0 0 1 %.2f %.2f Tm (%s) Tj ET\n", fontSize, x, baseline, pdfEscape(line))
+				fmt.Fprintf(&stream, "BT /F1 %.2f Tf 1 0 0 1 %.2f %.2f Tm (%s) Tj ET\n", fontSize, x, baseline, document.PDFEscape(line))
 			}
 		}
 

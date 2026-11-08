@@ -1,4 +1,4 @@
-package main
+package document
 
 import (
 	"math"
@@ -12,7 +12,7 @@ import (
 // as large as those margins allow.
 func TestPDFPaperMarginsHold(t *testing.T) {
 	const inch, eps = 72.0, 1e-6
-	for _, paper := range []pdfPaper{pdfPaperLetter, pdfPaperA4} {
+	for _, paper := range []Paper{pdfPaperLetter, pdfPaperA4} {
 		if got := pdfMarginLeft + float64(paper.columns)*pdfCharWidth; math.Abs(got-paper.textRight) > eps {
 			t.Errorf("%s: textRight = %v, want the margin plus %d characters = %v", paper.name, paper.textRight, paper.columns, got)
 		}
@@ -43,13 +43,13 @@ func TestPDFPaperMarginsHold(t *testing.T) {
 
 func TestDocumentPaperFor(t *testing.T) {
 	for name, want := range map[string]string{"": "letter", "letter": "letter", "LETTER": "letter", " a4 ": "a4", "A4": "a4"} {
-		paper, err := documentPaperFor(name)
+		paper, err := PaperFor(name)
 		if err != nil || paper.name != want {
-			t.Errorf("documentPaperFor(%q) = %q, %v; want %q", name, paper.name, err, want)
+			t.Errorf("PaperFor(%q) = %q, %v; want %q", name, paper.name, err, want)
 		}
 	}
-	if _, err := documentPaperFor("legal"); err == nil || !strings.Contains(err.Error(), `"letter" or "a4"`) {
-		t.Fatalf("documentPaperFor(legal) = %v, want the choices named", err)
+	if _, err := PaperFor("legal"); err == nil || !strings.Contains(err.Error(), `"letter" or "a4"`) {
+		t.Fatalf("PaperFor(legal) = %v, want the choices named", err)
 	}
 }
 
@@ -83,10 +83,10 @@ func TestLocaleRegion(t *testing.T) {
 // the region override decides, Letter where CLDR says so, A4 elsewhere, and
 // Letter when nothing can be read (TestMain's pinned state).
 func TestDefaultDocumentPaperSizeFollowsTheRegion(t *testing.T) {
-	if got := defaultDocumentPaperSize(); got != documentPaperLetter {
+	if got := DefaultPaperSize(); got != documentPaperLetter {
 		t.Fatalf("with no locale = %q, want letter", got)
 	}
-	t.Cleanup(func() { systemLocaleIdentifier = func() string { return "" } })
+	t.Cleanup(func() { SystemLocale = func() string { return "" } })
 	for identifier, want := range map[string]string{
 		"en_US@rg=inzzzz": "a4",
 		"en_IN":           "a4",
@@ -98,18 +98,9 @@ func TestDefaultDocumentPaperSizeFollowsTheRegion(t *testing.T) {
 		"en_GB@rg=uszzzz": "letter",
 		"en":              "letter",
 	} {
-		systemLocaleIdentifier = func() string { return identifier }
-		if got := NewApp().DefaultDocumentPaperSize(); got != want {
+		SystemLocale = func() string { return identifier }
+		if got := DefaultPaperSize(); got != want {
 			t.Errorf("locale %q: default paper = %q, want %q", identifier, got, want)
 		}
-	}
-}
-
-// A bad paper name fails at the binding before anything is read or a
-// dialog opens.
-func TestSaveDocumentExportRejectsUnknownPaper(t *testing.T) {
-	_, err := NewApp().SaveDocumentExport(SaveDocumentExportRequest{Path: "/nonexistent/script.fountain", Format: "pdf", PaperSize: "legal"})
-	if err == nil || !strings.Contains(err.Error(), "paper size") {
-		t.Fatalf("SaveDocumentExport(legal) = %v, want the paper size refused", err)
 	}
 }

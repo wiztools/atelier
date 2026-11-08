@@ -1,3 +1,174 @@
+export namespace document {
+	
+	export class DiffStats {
+	    added: number;
+	    removed: number;
+	    changes: number;
+	    identical: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiffStats(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.added = source["added"];
+	        this.removed = source["removed"];
+	        this.changes = source["changes"];
+	        this.identical = source["identical"];
+	    }
+	}
+	export class DiffHunk {
+	    firstRow: number;
+	    lastRow: number;
+	    beforeLine: number;
+	    beforeCount: number;
+	    afterLine: number;
+	    afterCount: number;
+	    added: number;
+	    removed: number;
+	    section?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiffHunk(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.firstRow = source["firstRow"];
+	        this.lastRow = source["lastRow"];
+	        this.beforeLine = source["beforeLine"];
+	        this.beforeCount = source["beforeCount"];
+	        this.afterLine = source["afterLine"];
+	        this.afterCount = source["afterCount"];
+	        this.added = source["added"];
+	        this.removed = source["removed"];
+	        this.section = source["section"];
+	    }
+	}
+	export class DiffSegment {
+	    text: string;
+	    changed?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiffSegment(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.text = source["text"];
+	        this.changed = source["changed"];
+	    }
+	}
+	export class DiffLine {
+	    number: number;
+	    text: string;
+	    segments?: DiffSegment[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DiffLine(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.number = source["number"];
+	        this.text = source["text"];
+	        this.segments = this.convertValues(source["segments"], DiffSegment);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DiffRow {
+	    kind: string;
+	    before?: DiffLine;
+	    after?: DiffLine;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiffRow(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.before = this.convertValues(source["before"], DiffLine);
+	        this.after = this.convertValues(source["after"], DiffLine);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Diff {
+	    rows: DiffRow[];
+	    hunks: DiffHunk[];
+	    stats: DiffStats;
+	
+	    static createFrom(source: any = {}) {
+	        return new Diff(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.rows = this.convertValues(source["rows"], DiffRow);
+	        this.hunks = this.convertValues(source["hunks"], DiffHunk);
+	        this.stats = this.convertValues(source["stats"], DiffStats);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
+	
+	
+
+}
+
 export namespace main {
 	
 	export class AdoptComicPagePNGRequest {
@@ -2172,168 +2343,6 @@ export namespace main {
 	        this.deletedAssets = source["deletedAssets"];
 	    }
 	}
-	export class DocumentDiffStats {
-	    added: number;
-	    removed: number;
-	    changes: number;
-	    identical: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new DocumentDiffStats(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.added = source["added"];
-	        this.removed = source["removed"];
-	        this.changes = source["changes"];
-	        this.identical = source["identical"];
-	    }
-	}
-	export class DocumentDiffHunk {
-	    firstRow: number;
-	    lastRow: number;
-	    beforeLine: number;
-	    beforeCount: number;
-	    afterLine: number;
-	    afterCount: number;
-	    added: number;
-	    removed: number;
-	    section?: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new DocumentDiffHunk(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.firstRow = source["firstRow"];
-	        this.lastRow = source["lastRow"];
-	        this.beforeLine = source["beforeLine"];
-	        this.beforeCount = source["beforeCount"];
-	        this.afterLine = source["afterLine"];
-	        this.afterCount = source["afterCount"];
-	        this.added = source["added"];
-	        this.removed = source["removed"];
-	        this.section = source["section"];
-	    }
-	}
-	export class DocumentDiffSegment {
-	    text: string;
-	    changed?: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new DocumentDiffSegment(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.text = source["text"];
-	        this.changed = source["changed"];
-	    }
-	}
-	export class DocumentDiffLine {
-	    number: number;
-	    text: string;
-	    segments?: DocumentDiffSegment[];
-	
-	    static createFrom(source: any = {}) {
-	        return new DocumentDiffLine(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.number = source["number"];
-	        this.text = source["text"];
-	        this.segments = this.convertValues(source["segments"], DocumentDiffSegment);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	export class DocumentDiffRow {
-	    kind: string;
-	    before?: DocumentDiffLine;
-	    after?: DocumentDiffLine;
-	
-	    static createFrom(source: any = {}) {
-	        return new DocumentDiffRow(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.kind = source["kind"];
-	        this.before = this.convertValues(source["before"], DocumentDiffLine);
-	        this.after = this.convertValues(source["after"], DocumentDiffLine);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	export class DocumentDiff {
-	    rows: DocumentDiffRow[];
-	    hunks: DocumentDiffHunk[];
-	    stats: DocumentDiffStats;
-	
-	    static createFrom(source: any = {}) {
-	        return new DocumentDiff(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.rows = this.convertValues(source["rows"], DocumentDiffRow);
-	        this.hunks = this.convertValues(source["hunks"], DocumentDiffHunk);
-	        this.stats = this.convertValues(source["stats"], DocumentDiffStats);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
 	export class MarkdownSourceInfo {
 	    conversationId: string;
 	    conversationTitle?: string;
@@ -2364,7 +2373,7 @@ export namespace main {
 	    before: MarkdownSourceInfo;
 	    after: MarkdownSourceInfo;
 	    ignoreWhitespace: boolean;
-	    diff: DocumentDiff;
+	    diff: document.Diff;
 	
 	    static createFrom(source: any = {}) {
 	        return new DocumentCompareInfo(source);
@@ -2375,7 +2384,7 @@ export namespace main {
 	        this.before = this.convertValues(source["before"], MarkdownSourceInfo);
 	        this.after = this.convertValues(source["after"], MarkdownSourceInfo);
 	        this.ignoreWhitespace = source["ignoreWhitespace"];
-	        this.diff = this.convertValues(source["diff"], DocumentDiff);
+	        this.diff = this.convertValues(source["diff"], document.Diff);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -2414,12 +2423,6 @@ export namespace main {
 	        this.ignoreWhitespace = source["ignoreWhitespace"];
 	    }
 	}
-	
-	
-	
-	
-	
-	
 	export class VideoTrimSegment {
 	    startSeconds: number;
 	    endSeconds: number;

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"atelier/internal/document"
 )
 
 func TestParseAuthoredDocumentTaggedFences(t *testing.T) {
@@ -16,7 +18,7 @@ func TestParseAuthoredDocumentTaggedFences(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseAuthoredDocument returned error: %v", err)
 	}
-	if doc.Format != documentFormatMarkdown {
+	if doc.Format != document.FormatMarkdown {
 		t.Fatalf("format = %q, want markdown", doc.Format)
 	}
 	if doc.Body != "# Report\n\nHello." {
@@ -30,7 +32,7 @@ func TestParseAuthoredDocumentTaggedFences(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseAuthoredDocument(fountain) returned error: %v", err)
 	}
-	if doc.Format != documentFormatFountain {
+	if doc.Format != document.FormatFountain {
 		t.Fatalf("format = %q, want fountain", doc.Format)
 	}
 	if !strings.Contains(doc.Body, "INT. ROOM - DAY") {
@@ -60,7 +62,7 @@ func TestParseAuthoredDocumentBareFenceUsesTaskHint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseAuthoredDocument(bare, screenplay hint) returned error: %v", err)
 	}
-	if doc.Format != documentFormatFountain {
+	if doc.Format != document.FormatFountain {
 		t.Fatalf("format = %q, want fountain from the task hint", doc.Format)
 	}
 
@@ -68,7 +70,7 @@ func TestParseAuthoredDocumentBareFenceUsesTaskHint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseAuthoredDocument(bare, plain hint) returned error: %v", err)
 	}
-	if doc.Format != documentFormatMarkdown {
+	if doc.Format != document.FormatMarkdown {
 		t.Fatalf("format = %q, want markdown default", doc.Format)
 	}
 }
@@ -115,7 +117,7 @@ func TestDocumentAuthoredEvidenceNote(t *testing.T) {
 	if note := documentAuthoredEvidenceNote(nil); note != "" {
 		t.Fatalf("nil document produced note %q", note)
 	}
-	note := documentAuthoredEvidenceNote(&authoredChatDocument{Format: documentFormatFountain, Words: 420})
+	note := documentAuthoredEvidenceNote(&authoredChatDocument{Format: document.FormatFountain, Words: 420})
 	if !strings.Contains(note, "Fountain") || !strings.Contains(note, "420") || !strings.Contains(note, "Do not repeat") {
 		t.Fatalf("note = %q", note)
 	}
@@ -194,7 +196,7 @@ func TestAuthorChatDocumentRetriesParseFailure(t *testing.T) {
 	if calls != 2 {
 		t.Fatalf("provider calls = %d, want 2 (initial + correction retry)", calls)
 	}
-	if doc.Format != documentFormatMarkdown || doc.Body != "# Report\n\nHello." || doc.Model != "chat-model" {
+	if doc.Format != document.FormatMarkdown || doc.Body != "# Report\n\nHello." || doc.Model != "chat-model" {
 		t.Fatalf("document = %+v", doc)
 	}
 	if len(run.Steps) != 2 {

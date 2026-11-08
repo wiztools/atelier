@@ -19,6 +19,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"atelier/internal/document"
 )
 
 // markdownArtifactExtension reports ".md" or ".fountain" when a history
@@ -60,7 +62,7 @@ func markdownExtensionForMime(mimeType string) string {
 
 // markdownFormatExtension maps a save format onto the artifact extension.
 func markdownFormatExtension(format string) string {
-	if format == documentFormatFountain {
+	if format == document.FormatFountain {
 		return ".fountain"
 	}
 	return ".md"
@@ -69,7 +71,7 @@ func markdownFormatExtension(format string) string {
 // markdownFormatLabel renders a format for the save summary ("saved as
 // Markdown" / "saved as Fountain").
 func markdownFormatLabel(format string) string {
-	if format == documentFormatFountain {
+	if format == document.FormatFountain {
 		return "Fountain"
 	}
 	return "Markdown"
@@ -210,9 +212,9 @@ func markdownSourceForContent(storage ConfigStorage, conversationID, title strin
 // carries — the resolve path's Format value.
 func documentFormatForExtension(extension string) string {
 	if extension == ".fountain" {
-		return documentFormatFountain
+		return document.FormatFountain
 	}
-	return documentFormatMarkdown
+	return document.FormatMarkdown
 }
 
 // SaveMarkdownEditRequest carries one commit of the editor's document back
@@ -253,9 +255,9 @@ func (a *App) SaveMarkdownEdit(req SaveMarkdownEditRequest) (SaveMarkdownEditRes
 	}
 	format := strings.ToLower(strings.TrimSpace(req.Format))
 	if format == "" {
-		format = documentFormatMarkdown
+		format = document.FormatMarkdown
 	}
-	if format != documentFormatMarkdown && format != documentFormatFountain {
+	if format != document.FormatMarkdown && format != document.FormatFountain {
 		return SaveMarkdownEditResult{}, fmt.Errorf(`document format must be "markdown" or "fountain", got %q`, req.Format)
 	}
 	a.streamsMu.Lock()

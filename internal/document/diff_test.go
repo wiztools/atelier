@@ -1,4 +1,4 @@
-package main
+package document
 
 import (
 	"fmt"
@@ -11,7 +11,7 @@ import (
 
 // diffRowsText renders rows compactly for failure messages and exact
 // expectations: " text" equal, "-text" delete, "+text" insert, "~a|b" change.
-func diffRowsText(rows []DocumentDiffRow) []string {
+func diffRowsText(rows []DiffRow) []string {
 	out := make([]string, 0, len(rows))
 	for _, row := range rows {
 		switch row.Kind {
@@ -34,10 +34,10 @@ func diffRowsText(rows []DocumentDiffRow) []string {
 // before side's lines, read down the rows, are exactly the before document
 // (numbered 1..n in order), the same for the after side, and an equal row
 // pairs lines that compare equal.
-func assertDiffReconstructs(t *testing.T, diff DocumentDiff, before, after string, ignoreWhitespace bool) {
+func assertDiffReconstructs(t *testing.T, diff Diff, before, after string, ignoreWhitespace bool) {
 	t.Helper()
-	wantBefore := splitDocumentLines(before)
-	wantAfter := splitDocumentLines(after)
+	wantBefore := SplitLines(before)
+	wantAfter := SplitLines(after)
 	gotBefore, gotAfter := []string{}, []string{}
 	for index, row := range diff.Rows {
 		if row.Before != nil {
@@ -90,8 +90,8 @@ func TestSplitDocumentLines(t *testing.T) {
 		{"\n", []string{""}},
 	}
 	for _, tc := range cases {
-		if got := splitDocumentLines(tc.text); !reflect.DeepEqual(got, tc.want) {
-			t.Errorf("splitDocumentLines(%q) = %q, want %q", tc.text, got, tc.want)
+		if got := SplitLines(tc.text); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("SplitLines(%q) = %q, want %q", tc.text, got, tc.want)
 		}
 	}
 }
@@ -119,7 +119,7 @@ func TestBuildDocumentDiffBasics(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			diff := buildDocumentDiff(tc.before, tc.after, documentFormatMarkdown, documentFormatMarkdown, false)
+			diff := BuildDiff(tc.before, tc.after, FormatMarkdown, FormatMarkdown, false)
 			if got := diffRowsText(diff.Rows); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("rows = %q, want %q", got, tc.want)
 			}
@@ -155,7 +155,7 @@ func TestBuildDocumentDiffHunkLines(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			diff := buildDocumentDiff(tc.before, tc.after, documentFormatMarkdown, documentFormatMarkdown, false)
+			diff := BuildDiff(tc.before, tc.after, FormatMarkdown, FormatMarkdown, false)
 			if len(diff.Hunks) != 1 {
 				t.Fatalf("hunks = %+v, want one", diff.Hunks)
 			}
@@ -171,12 +171,12 @@ func TestBuildDocumentDiffHunkLines(t *testing.T) {
 }
 
 func TestBuildDocumentDiffWordSegments(t *testing.T) {
-	diff := buildDocumentDiff("JOHN\nI never said that.", "JOHN\nI never said it.", documentFormatFountain, documentFormatFountain, false)
+	diff := BuildDiff("JOHN\nI never said that.", "JOHN\nI never said it.", FormatFountain, FormatFountain, false)
 	if len(diff.Rows) != 2 || diff.Rows[1].Kind != "change" {
 		t.Fatalf("rows = %q, want the dialogue line as a change", diffRowsText(diff.Rows))
 	}
-	wantBefore := []DocumentDiffSegment{{Text: "I never said "}, {Text: "that", Changed: true}, {Text: "."}}
-	wantAfter := []DocumentDiffSegment{{Text: "I never said "}, {Text: "it", Changed: true}, {Text: "."}}
+	wantBefore := []DiffSegment{{Text: "I never said "}, {Text: "that", Changed: true}, {Text: "."}}
+	wantAfter := []DiffSegment{{Text: "I never said "}, {Text: "it", Changed: true}, {Text: "."}}
 	if !reflect.DeepEqual(diff.Rows[1].Before.Segments, wantBefore) || !reflect.DeepEqual(diff.Rows[1].After.Segments, wantAfter) {
 		t.Fatalf("segments = %+v / %+v, want %+v / %+v", diff.Rows[1].Before.Segments, diff.Rows[1].After.Segments, wantBefore, wantAfter)
 	}
@@ -184,10 +184,10 @@ func TestBuildDocumentDiffWordSegments(t *testing.T) {
 	// A rewritten phrase highlights as one span — the space between two
 	// changed words joins them.
 	before, after := wordDiffSegments("the quick brown fox", "the slow red fox", false)
-	if !reflect.DeepEqual(before, []DocumentDiffSegment{{Text: "the "}, {Text: "quick brown", Changed: true}, {Text: " fox"}}) {
+	if !reflect.DeepEqual(before, []DiffSegment{{Text: "the "}, {Text: "quick brown", Changed: true}, {Text: " fox"}}) {
 		t.Fatalf("before segments = %+v, want the rewritten phrase as one span", before)
 	}
-	if !reflect.DeepEqual(after, []DocumentDiffSegment{{Text: "the "}, {Text: "slow red", Changed: true}, {Text: " fox"}}) {
+	if !reflect.DeepEqual(after, []DiffSegment{{Text: "the "}, {Text: "slow red", Changed: true}, {Text: " fox"}}) {
 		t.Fatalf("after segments = %+v, want the rewritten phrase as one span", after)
 	}
 
@@ -196,7 +196,7 @@ func TestBuildDocumentDiffWordSegments(t *testing.T) {
 	if before, after := wordDiffSegments("The quick brown fox jumps.", "Completely unrelated words here!", false); before != nil || after != nil {
 		t.Fatalf("dissimilar pair segments = %+v / %+v, want none", before, after)
 	}
-	diff = buildDocumentDiff("a\nThe quick brown fox jumps.\nz", "a\nCompletely unrelated words here!\nz", documentFormatMarkdown, documentFormatMarkdown, false)
+	diff = BuildDiff("a\nThe quick brown fox jumps.\nz", "a\nCompletely unrelated words here!\nz", FormatMarkdown, FormatMarkdown, false)
 	if row := diff.Rows[1]; row.Kind != "change" || row.Before.Segments != nil || row.After.Segments != nil {
 		t.Fatalf("dissimilar change row = %+v, want a change with no segments", row)
 	}
@@ -225,11 +225,11 @@ func TestDiffTokenize(t *testing.T) {
 func TestBuildDocumentDiffIgnoreWhitespace(t *testing.T) {
 	before := "JOHN  \nHello   world\n\tIndented"
 	after := "JOHN\nHello world\nIndented"
-	exact := buildDocumentDiff(before, after, documentFormatMarkdown, documentFormatMarkdown, false)
+	exact := BuildDiff(before, after, FormatMarkdown, FormatMarkdown, false)
 	if exact.Stats.Identical || exact.Stats.Changes != 1 || exact.Stats.Removed != 3 {
 		t.Fatalf("exact stats = %+v, want one change of three whitespace-edited lines", exact.Stats)
 	}
-	loose := buildDocumentDiff(before, after, documentFormatMarkdown, documentFormatMarkdown, true)
+	loose := BuildDiff(before, after, FormatMarkdown, FormatMarkdown, true)
 	if !loose.Stats.Identical {
 		t.Fatalf("ignore-whitespace stats = %+v, want identical", loose.Stats)
 	}
@@ -240,7 +240,7 @@ func TestBuildDocumentDiffIgnoreWhitespace(t *testing.T) {
 	assertDiffReconstructs(t, loose, before, after, true)
 
 	// Under ignore-whitespace a respaced, reworded line marks only its words.
-	diff := buildDocumentDiff("a\nthe  quick fox\nz", "a\nthe quick  dog\nz", documentFormatMarkdown, documentFormatMarkdown, true)
+	diff := BuildDiff("a\nthe  quick fox\nz", "a\nthe quick  dog\nz", FormatMarkdown, FormatMarkdown, true)
 	before2 := diff.Rows[1].Before.Segments
 	if len(before2) != 2 || before2[0].Changed || before2[0].Text != "the  quick " || !before2[1].Changed || before2[1].Text != "fox" {
 		t.Fatalf("respaced segments = %+v, want only the reworded word marked", before2)
@@ -257,7 +257,7 @@ func TestBuildDocumentDiffIgnoreWhitespace(t *testing.T) {
 func TestBuildDocumentDiffPatienceAnchors(t *testing.T) {
 	before := "JOHN\nI never said that.\n\n\nMARY"
 	after := "JOHN\n\nI never said that.\nMARY"
-	diff := buildDocumentDiff(before, after, documentFormatFountain, documentFormatFountain, false)
+	diff := BuildDiff(before, after, FormatFountain, FormatFountain, false)
 	assertDiffReconstructs(t, diff, before, after, false)
 	if got, want := diffRowsText(diff.Rows), []string{" JOHN", "+", " I never said that.", "-", "-", " MARY"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("rows = %q, want the dialogue kept and the blank lines moved (%q)", got, want)
@@ -278,7 +278,7 @@ func TestBuildDocumentDiffPatienceAnchors(t *testing.T) {
 		}
 		return out
 	}
-	beforeLines, afterLines := splitDocumentLines(before), splitDocumentLines(after)
+	beforeLines, afterLines := SplitLines(before), SplitLines(after)
 	for _, op := range diffKeys(intern(beforeLines), intern(afterLines), false) {
 		if op.kind == diffEqual && beforeLines[op.before] == "I never said that." {
 			t.Fatalf("plain Myers kept the dialogue matched too — the patience test no longer shows a difference; revisit its premise")
@@ -329,9 +329,9 @@ func TestBuildDocumentDiffRepeatedLinesReconstruct(t *testing.T) {
 			}
 		}
 		before, after := strings.Join(lines, "\n"), strings.Join(edited, "\n")
-		diff := buildDocumentDiff(before, after, documentFormatFountain, documentFormatFountain, false)
+		diff := BuildDiff(before, after, FormatFountain, FormatFountain, false)
 		assertDiffReconstructs(t, diff, before, after, false)
-		if want := reflect.DeepEqual(splitDocumentLines(before), splitDocumentLines(after)); diff.Stats.Identical != want {
+		if want := reflect.DeepEqual(SplitLines(before), SplitLines(after)); diff.Stats.Identical != want {
 			t.Fatalf("trial %d: identical = %v, want %v for before %q after %q", trial, diff.Stats.Identical, want, before, after)
 		}
 	}
@@ -352,7 +352,7 @@ func TestDocumentSectionIndexFountain(t *testing.T) {
 		"",                   // 11
 		"Mary waves.",        // 12
 	}, "\n")
-	sections := documentSectionIndex(before, documentFormatFountain)
+	sections := documentSectionIndex(before, FormatFountain)
 	cases := map[int]string{1: "Title page", 2: "Title page", 4: "", 5: "", 6: "INT. KITCHEN - DAY", 8: "INT. KITCHEN - DAY", 10: "FLASHBACK", 12: "FLASHBACK"}
 	for line, want := range cases {
 		if got := sections.at(line); got != want {
@@ -361,7 +361,7 @@ func TestDocumentSectionIndexFountain(t *testing.T) {
 	}
 
 	after := strings.Replace(strings.Replace(strings.Replace(before, "Author: Me", "Author: You", 1), "John enters.", "John runs in.", 1), "Mary waves.", "Mary waves back.", 1)
-	diff := buildDocumentDiff(before, after, documentFormatFountain, documentFormatFountain, false)
+	diff := BuildDiff(before, after, FormatFountain, FormatFountain, false)
 	got := []string{}
 	for _, hunk := range diff.Hunks {
 		got = append(got, hunk.Section)
@@ -373,7 +373,7 @@ func TestDocumentSectionIndexFountain(t *testing.T) {
 	// A script without a title page has no title-page section, and a change
 	// before the first scene sits in no section.
 	plain := "FADE IN:\n\nINT. ROOF - NIGHT\n\nRain."
-	if got := documentSectionIndex(plain, documentFormatFountain).at(1); got != "" {
+	if got := documentSectionIndex(plain, FormatFountain).at(1); got != "" {
 		t.Fatalf("section before the first scene = %q, want none", got)
 	}
 }
@@ -393,7 +393,7 @@ func TestDocumentSectionIndexMarkdown(t *testing.T) {
 		"#hashtag",        // 11
 		"# C#",            // 12
 	}, "\n")
-	sections := documentSectionIndex(before, documentFormatMarkdown)
+	sections := documentSectionIndex(before, FormatMarkdown)
 	cases := map[int]string{1: "", 2: "Intro", 3: "Intro", 5: "Intro", 6: "Intro", 9: "Usage", 10: "Usage", 11: "Usage", 12: "C#"}
 	for line, want := range cases {
 		if got := sections.at(line); got != want {
@@ -404,7 +404,7 @@ func TestDocumentSectionIndexMarkdown(t *testing.T) {
 	// A deletion labels from the before side; an insertion from the after.
 	after := strings.Replace(before, "text a\n", "", 1)
 	after = strings.Replace(after, "text b", "text b\ntext c", 1)
-	diff := buildDocumentDiff(before, after, documentFormatMarkdown, documentFormatMarkdown, false)
+	diff := BuildDiff(before, after, FormatMarkdown, FormatMarkdown, false)
 	got := []string{}
 	for _, hunk := range diff.Hunks {
 		got = append(got, hunk.Section)
@@ -466,7 +466,7 @@ func TestBuildDocumentDiffPerformance(t *testing.T) {
 	}
 	revision = append(revision[:4000], append([]string{"INT. NEW SCENE - NIGHT", "", "JOHN", "Brand new."}, revision[4000:]...)...)
 	start := time.Now()
-	diff := buildDocumentDiff(strings.Join(draft, "\n"), strings.Join(revision, "\n"), documentFormatFountain, documentFormatFountain, false)
+	diff := BuildDiff(strings.Join(draft, "\n"), strings.Join(revision, "\n"), FormatFountain, FormatFountain, false)
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("8,000-line revision compared in %v, want well under a second", elapsed)
 	}
@@ -483,7 +483,7 @@ func TestBuildDocumentDiffPerformance(t *testing.T) {
 		right[i] = strings.ReplaceAll(right[i], "LOCATION", "PLACE")
 	}
 	start = time.Now()
-	unrelated := buildDocumentDiff(strings.Join(left, "\n"), strings.Join(right, "\n"), documentFormatFountain, documentFormatFountain, false)
+	unrelated := BuildDiff(strings.Join(left, "\n"), strings.Join(right, "\n"), FormatFountain, FormatFountain, false)
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("two unrelated 5,000-line documents compared in %v, want well under a second", elapsed)
 	}

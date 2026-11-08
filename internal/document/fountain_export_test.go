@@ -1,4 +1,4 @@
-package main
+package document
 
 import (
 	"encoding/xml"
@@ -351,8 +351,8 @@ func TestPDFEscapeWinAnsi(t *testing.T) {
 		"tab\there":     "tab here",
 	}
 	for in, want := range cases {
-		if got := pdfEscape(in); got != want {
-			t.Errorf("pdfEscape(%q) = %q, want %q", in, got, want)
+		if got := PDFEscape(in); got != want {
+			t.Errorf("PDFEscape(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -377,14 +377,14 @@ func TestFountainFDXTitlePageLines(t *testing.T) {
 }
 
 // paginatedScriptOnPaper is paginatedScript on a chosen sheet.
-func paginatedScriptOnPaper(paper pdfPaper, script string, includeNotes bool) [][]fountainPDFLine {
+func paginatedScriptOnPaper(paper Paper, script string, includeNotes bool) [][]fountainPDFLine {
 	elements, _ := fountainParse([]byte(script))
 	return fountainPaginate(paper, fountainBlocks(paper, elements, includeNotes))
 }
 
 // renderedPageCount runs a script through the full PDF pipeline on a sheet
 // and returns the page count — the end-to-end check for the paper's effect.
-func renderedPageCount(t *testing.T, paper pdfPaper, script string) int {
+func renderedPageCount(t *testing.T, paper Paper, script string) int {
 	t.Helper()
 	elements, titlePage := fountainParse([]byte(script))
 	pdf, err := fountainPDF(paper, elements, titlePage, false)
@@ -487,19 +487,19 @@ func TestSaveDocumentExportPaperSize(t *testing.T) {
 		{"letter", "/MediaBox [0 0 612 792]"},
 		{"A4", "/MediaBox [0 0 595.28 841.89]"},
 	} {
-		paper, err := documentPaperFor(tc.paperSize)
+		paper, err := PaperFor(tc.paperSize)
 		if err != nil {
 			t.Fatal(err)
 		}
-		data, _, _, _, err := renderDocumentExport(script, "/x/script.fountain", "pdf", false, paper)
+		export, err := RenderExport(script, "/x/script.fountain", "pdf", false, paper)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(data), tc.wantBox) {
+		if !strings.Contains(string(export.Data), tc.wantBox) {
 			t.Fatalf("paperSize %q: MediaBox missing %s", tc.paperSize, tc.wantBox)
 		}
 	}
-	if _, err := documentPaperFor("legal"); err == nil || !strings.Contains(err.Error(), `"letter"`) {
-		t.Fatalf("documentPaperFor(legal) = %v, want the choices named", err)
+	if _, err := PaperFor("legal"); err == nil || !strings.Contains(err.Error(), `"letter"`) {
+		t.Fatalf("PaperFor(legal) = %v, want the choices named", err)
 	}
 }

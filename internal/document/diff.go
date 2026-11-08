@@ -1,4 +1,4 @@
-package main
+package document
 
 // The document diff behind the compare workspace and the compare_documents
 // tool — pure functions over two texts, no storage, no UI. Lines are the unit
@@ -286,42 +286,42 @@ func bisectKeys(a, b []int) (int, int, bool) {
 	return 0, 0, false
 }
 
-// DocumentDiff is one comparison, ready to render: the aligned rows the
+// Diff is one comparison, ready to render: the aligned rows the
 // workspace draws, the hunks its change list navigates, and the stats the
 // summary states. The frontend renders it as-is — it never re-diffs.
-type DocumentDiff struct {
-	Rows  []DocumentDiffRow  `json:"rows"`
-	Hunks []DocumentDiffHunk `json:"hunks"`
-	Stats DocumentDiffStats  `json:"stats"`
+type Diff struct {
+	Rows  []DiffRow  `json:"rows"`
+	Hunks []DiffHunk `json:"hunks"`
+	Stats DiffStats  `json:"stats"`
 }
 
-// DocumentDiffRow is one aligned row. Kind is "equal" (both sides), "delete"
+// DiffRow is one aligned row. Kind is "equal" (both sides), "delete"
 // (before only), "insert" (after only), or "change" (a deleted line and an
 // inserted one paired by position inside a change block). Under
 // ignore-whitespace an equal row's two texts may differ in spacing — each
 // side keeps its own text.
-type DocumentDiffRow struct {
-	Kind   string            `json:"kind"`
-	Before *DocumentDiffLine `json:"before,omitempty"`
-	After  *DocumentDiffLine `json:"after,omitempty"`
+type DiffRow struct {
+	Kind   string    `json:"kind"`
+	Before *DiffLine `json:"before,omitempty"`
+	After  *DiffLine `json:"after,omitempty"`
 }
 
-// DocumentDiffLine is one side of a row: the 1-based line number and text,
+// DiffLine is one side of a row: the 1-based line number and text,
 // plus word segments when the row is a change similar enough to mark.
-type DocumentDiffLine struct {
-	Number   int                   `json:"number"`
-	Text     string                `json:"text"`
-	Segments []DocumentDiffSegment `json:"segments,omitempty"`
+type DiffLine struct {
+	Number   int           `json:"number"`
+	Text     string        `json:"text"`
+	Segments []DiffSegment `json:"segments,omitempty"`
 }
 
-// DocumentDiffSegment is a run of a changed line's text; Changed marks the
+// DiffSegment is a run of a changed line's text; Changed marks the
 // words this side deleted (before) or inserted (after).
-type DocumentDiffSegment struct {
+type DiffSegment struct {
 	Text    string `json:"text"`
 	Changed bool   `json:"changed,omitempty"`
 }
 
-// DocumentDiffHunk is one change: a maximal run of non-equal rows
+// DiffHunk is one change: a maximal run of non-equal rows
 // (FirstRow..LastRow, inclusive row indexes). Line/Count follow the unified
 // diff convention per side — Line is the hunk's first line on that side, or,
 // when the side has none (a pure insertion or deletion), the line just before
@@ -330,7 +330,7 @@ type DocumentDiffSegment struct {
 // (Markdown) at the change's first non-blank line, read from the after side
 // when it has lines, else the before side; empty before the first scene or
 // heading.
-type DocumentDiffHunk struct {
+type DiffHunk struct {
 	FirstRow    int    `json:"firstRow"`
 	LastRow     int    `json:"lastRow"`
 	BeforeLine  int    `json:"beforeLine"`
@@ -342,19 +342,19 @@ type DocumentDiffHunk struct {
 	Section     string `json:"section,omitempty"`
 }
 
-// DocumentDiffStats counts lines git-style: a changed line is one removal
+// DiffStats counts lines git-style: a changed line is one removal
 // plus one addition. Changes is the hunk count.
-type DocumentDiffStats struct {
+type DiffStats struct {
 	Added     int  `json:"added"`
 	Removed   int  `json:"removed"`
 	Changes   int  `json:"changes"`
 	Identical bool `json:"identical"`
 }
 
-// splitDocumentLines splits a document into lines: CRLF normalizes, and a
+// SplitLines splits a document into lines: CRLF normalizes, and a
 // final newline ends the last line rather than opening an empty one — so
 // "text" and "text\n" compare identical.
-func splitDocumentLines(text string) []string {
+func SplitLines(text string) []string {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	if text == "" {
 		return nil
@@ -362,13 +362,13 @@ func splitDocumentLines(text string) []string {
 	return strings.Split(strings.TrimSuffix(text, "\n"), "\n")
 }
 
-// buildDocumentDiff compares two document texts. The formats ("markdown" |
+// BuildDiff compares two document texts. The formats ("markdown" |
 // "fountain") pick each side's section labels; ignoreWhitespace compares
 // lines with whitespace runs collapsed and the ends trimmed (the rows still
 // show each side's own text).
-func buildDocumentDiff(beforeText, afterText, beforeFormat, afterFormat string, ignoreWhitespace bool) DocumentDiff {
-	before := splitDocumentLines(beforeText)
-	after := splitDocumentLines(afterText)
+func BuildDiff(beforeText, afterText, beforeFormat, afterFormat string, ignoreWhitespace bool) Diff {
+	before := SplitLines(beforeText)
+	after := SplitLines(afterText)
 	keys := map[string]int{}
 	intern := func(lines []string) []int {
 		out := make([]int, len(lines))
@@ -387,15 +387,15 @@ func buildDocumentDiff(beforeText, afterText, beforeFormat, afterFormat string, 
 	}
 	ops := diffKeys(intern(before), intern(after), true)
 
-	diff := DocumentDiff{Rows: make([]DocumentDiffRow, 0, len(ops)), Hunks: []DocumentDiffHunk{}}
+	diff := Diff{Rows: make([]DiffRow, 0, len(ops)), Hunks: []DiffHunk{}}
 	beforeSections := documentSectionIndex(beforeText, beforeFormat)
 	afterSections := documentSectionIndex(afterText, afterFormat)
 	for i := 0; i < len(ops); {
 		if ops[i].kind == diffEqual {
-			diff.Rows = append(diff.Rows, DocumentDiffRow{
+			diff.Rows = append(diff.Rows, DiffRow{
 				Kind:   "equal",
-				Before: &DocumentDiffLine{Number: ops[i].before + 1, Text: before[ops[i].before]},
-				After:  &DocumentDiffLine{Number: ops[i].after + 1, Text: after[ops[i].after]},
+				Before: &DiffLine{Number: ops[i].before + 1, Text: before[ops[i].before]},
+				After:  &DiffLine{Number: ops[i].after + 1, Text: after[ops[i].after]},
 			})
 			i++
 			continue
@@ -411,16 +411,16 @@ func buildDocumentDiff(beforeText, afterText, beforeFormat, afterFormat string, 
 				inss = append(inss, ops[i].after)
 			}
 		}
-		hunk := DocumentDiffHunk{FirstRow: len(diff.Rows), BeforeCount: len(dels), AfterCount: len(inss), Added: len(inss), Removed: len(dels)}
+		hunk := DiffHunk{FirstRow: len(diff.Rows), BeforeCount: len(dels), AfterCount: len(inss), Added: len(inss), Removed: len(dels)}
 		hunk.BeforeLine = changePointLine(dels, diff.Rows, true)
 		hunk.AfterLine = changePointLine(inss, diff.Rows, false)
 		for k := 0; k < max(len(dels), len(inss)); k++ {
-			row := DocumentDiffRow{}
+			row := DiffRow{}
 			if k < len(dels) {
-				row.Before = &DocumentDiffLine{Number: dels[k] + 1, Text: before[dels[k]]}
+				row.Before = &DiffLine{Number: dels[k] + 1, Text: before[dels[k]]}
 			}
 			if k < len(inss) {
-				row.After = &DocumentDiffLine{Number: inss[k] + 1, Text: after[inss[k]]}
+				row.After = &DiffLine{Number: inss[k] + 1, Text: after[inss[k]]}
 			}
 			switch {
 			case row.Before != nil && row.After != nil:
@@ -451,7 +451,7 @@ func buildDocumentDiff(beforeText, afterText, beforeFormat, afterFormat string, 
 // changePointLine is a hunk side's unified-diff line: its first line when the
 // side has lines, else the same side's line on the row just above the change
 // (0 at the document's top).
-func changePointLine(indexes []int, rows []DocumentDiffRow, beforeSide bool) int {
+func changePointLine(indexes []int, rows []DiffRow, beforeSide bool) int {
 	if len(indexes) > 0 {
 		return indexes[0] + 1
 	}
@@ -515,7 +515,7 @@ func diffTokenize(text string) []string {
 // line (wordDiffMinSimilarity) — the row is then tinted whole. Under
 // ignoreWhitespace every whitespace run matches every other, so a respaced
 // phrase marks only its words.
-func wordDiffSegments(beforeText, afterText string, ignoreWhitespace bool) ([]DocumentDiffSegment, []DocumentDiffSegment) {
+func wordDiffSegments(beforeText, afterText string, ignoreWhitespace bool) ([]DiffSegment, []DiffSegment) {
 	beforeTokens := diffTokenize(beforeText)
 	afterTokens := diffTokenize(afterText)
 	keys := map[string]int{}
@@ -568,19 +568,19 @@ func wordDiffSegments(beforeText, afterText string, ignoreWhitespace bool) ([]Do
 // whitespace token sitting between two changed tokens is marked changed too,
 // so a rewritten phrase highlights as one span ("quick brown"), not words
 // with gaps.
-func mergeDiffSegments(tokens []string, changed []bool) []DocumentDiffSegment {
+func mergeDiffSegments(tokens []string, changed []bool) []DiffSegment {
 	for i := 1; i+1 < len(tokens); i++ {
 		if !changed[i] && changed[i-1] && changed[i+1] && strings.TrimSpace(tokens[i]) == "" {
 			changed[i] = true
 		}
 	}
-	segments := []DocumentDiffSegment{}
+	segments := []DiffSegment{}
 	for i, token := range tokens {
 		if n := len(segments); n > 0 && segments[n-1].Changed == changed[i] {
 			segments[n-1].Text += token
 			continue
 		}
-		segments = append(segments, DocumentDiffSegment{Text: token, Changed: changed[i]})
+		segments = append(segments, DiffSegment{Text: token, Changed: changed[i]})
 	}
 	return segments
 }
@@ -611,11 +611,11 @@ func (sections documentSectionList) at(line int) string {
 // rules of the editor's outline (markdownOutline in markdownModel.ts).
 func documentSectionIndex(text, format string) documentSectionList {
 	sections := documentSectionList{}
-	if format == documentFormatFountain {
+	if format == FormatFountain {
 		elements, titlePage := fountainParse([]byte(text))
 		if len(titlePage) > 0 {
 			sections = append(sections, documentSection{line: 1, title: "Title page"})
-			bodyStart := len(splitDocumentLines(text)) + 1
+			bodyStart := len(SplitLines(text)) + 1
 			if len(elements) > 0 {
 				bodyStart = elements[0].Line
 			}
@@ -630,7 +630,7 @@ func documentSectionIndex(text, format string) documentSectionList {
 	}
 	var fenceChar byte
 	fenceLength := 0
-	for index, line := range splitDocumentLines(text) {
+	for index, line := range SplitLines(text) {
 		markerChar, markerLength, rest := markdownFenceMarker(line)
 		if fenceLength > 0 {
 			if markerChar == fenceChar && markerLength >= fenceLength && strings.TrimSpace(rest) == "" {
