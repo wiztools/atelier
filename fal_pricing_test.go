@@ -51,6 +51,10 @@ func TestFalBillingHintsQuantityForUnit(t *testing.T) {
 	}{
 		{unit: "image", wantQty: 4, wantOK: true},
 		{unit: "Image", wantQty: 4, wantOK: true},
+		// The nano-banana-pro family's plural spelling of the same unit —
+		// conv_a465108a5f7ec78267191163 priced a nano-banana-pro/edit call "?"
+		// before the plural was taught.
+		{unit: "images", wantQty: 4, wantOK: true},
 		{unit: "second", wantQty: 7.5, wantOK: true},
 		{unit: "seconds", wantQty: 7.5, wantOK: true},
 		{unit: "character", wantQty: 120, wantOK: true},
@@ -492,6 +496,7 @@ func (transport *falPricingTransport) RoundTrip(req *http.Request) (*http.Respon
 	if body == "" {
 		body = `{"prices":[` +
 			`{"endpoint_id":"fal-ai/flux/schnell","unit_price":0.003,"unit":"image","currency":"USD"},` +
+			`{"endpoint_id":"fal-ai/nano-banana-pro/edit","unit_price":0.15,"unit":"images","currency":"USD"},` +
 			`{"endpoint_id":"fal-ai/kling-video/v2/master/text-to-video","unit_price":0.07,"unit":"second","currency":"USD"},` +
 			`{"endpoint_id":"bytedance/seedance-2.0/reference-to-video","unit_price":0.014,"unit":"1000 tokens","currency":"USD"},` +
 			`{"endpoint_id":"bytedance/seedance-2.5/reference-to-video","unit_price":0.0214,"unit":"1000 tokens","currency":"USD"},` +
@@ -637,6 +642,13 @@ func TestEstimateFalCostMicros(t *testing.T) {
 	got := estimateFalCostMicros(ctx, cache, client, "key", "fal-ai/flux/schnell", nil, falBillingHints{Images: 4, Requests: 1})
 	if got != 12000 {
 		t.Fatalf("image estimate = %d, want 12000", got)
+	}
+	// The nano-banana-pro family's plural "images" unit prices identically —
+	// conv_a465108a5f7ec78267191163's turn stamped costUnknown because the
+	// plural fell through every case. 1 image × $0.15.
+	got = estimateFalCostMicros(ctx, cache, client, "key", "fal-ai/nano-banana-pro/edit", nil, falBillingHints{Images: 1, Requests: 1})
+	if got != 150000 {
+		t.Fatalf("nano-banana estimate = %d, want 150000", got)
 	}
 	// Per-second: 5s × $0.07 = $0.35.
 	got = estimateFalCostMicros(ctx, cache, client, "key", "fal-ai/kling-video/v2/master/text-to-video", nil, falBillingHints{Seconds: 5, Requests: 1})

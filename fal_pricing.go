@@ -245,7 +245,13 @@ type falBillingHints struct {
 // quantityForUnit maps a billing unit onto the hint that prices it.
 func (hints falBillingHints) quantityForUnit(unit string) (float64, bool) {
 	switch strings.ToLower(strings.TrimSpace(unit)) {
-	case "image":
+	case "image", "images":
+		// fal's flat per-generated-image unit. The nano-banana-pro family
+		// (text-to-image and /edit alike) returns the PLURAL "images" —
+		// conv_a465108a5f7ec78267191163 priced a nano-banana-pro/edit call "?"
+		// until the plural was taught (verified against the live pricing API,
+		// 2026-11: unit_price 0.15, unit "images") — while "image" singular
+		// stays for the endpoints that still spell it that way.
 		return float64(hints.Images), hints.Images > 0
 	case "second", "seconds":
 		return hints.Seconds, hints.Seconds > 0
