@@ -1768,6 +1768,8 @@ export namespace main {
 	    rangeEndSeconds?: number;
 	    soloLaneId?: string;
 	    previewKey?: string;
+	    auto?: boolean;
+	    supersededBy?: string;
 	    startedAt: string;
 	    updatedAt: string;
 	
@@ -1797,6 +1799,8 @@ export namespace main {
 	        this.rangeEndSeconds = source["rangeEndSeconds"];
 	        this.soloLaneId = source["soloLaneId"];
 	        this.previewKey = source["previewKey"];
+	        this.auto = source["auto"];
+	        this.supersededBy = source["supersededBy"];
 	        this.startedAt = source["startedAt"];
 	        this.updatedAt = source["updatedAt"];
 	    }
@@ -1815,6 +1819,8 @@ export namespace main {
 	    fps?: number;
 	    crf?: number;
 	    previewKey?: string;
+	    replace?: boolean;
+	    auto?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new CompositionRenderRequest(source);
@@ -1835,6 +1841,8 @@ export namespace main {
 	        this.fps = source["fps"];
 	        this.crf = source["crf"];
 	        this.previewKey = source["previewKey"];
+	        this.replace = source["replace"];
+	        this.auto = source["auto"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

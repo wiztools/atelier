@@ -110,6 +110,10 @@ export function DetectLocalTools(arg1) {
   return window['go']['main']['App']['DetectLocalTools'](arg1);
 }
 
+export function DiscardCompositionPreview(arg1) {
+  return window['go']['main']['App']['DiscardCompositionPreview'](arg1);
+}
+
 export function DiscardMediaUpload(arg1) {
   return window['go']['main']['App']['DiscardMediaUpload'](arg1);
 }

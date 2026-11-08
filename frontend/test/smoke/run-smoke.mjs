@@ -103,6 +103,24 @@ const SCENARIO = [
   ['composer-remove-clip', `__smoke.press('.composition-clip', 'vid_1a2b3c4d').then((pressed) => pressed && __smoke.click('button[aria-label="Remove clip"]'))`, 800],
   ['composer-rerender', `__smoke.click('button.composition-render-stale', 'Re-render preview')`, 600],
   ['composer-rerendered', `__smoke.completeRender()`, 800],
+  // Auto-update: on, an undo back to the first render's timeline restages
+  // that render instead of re-rendering, a new edit renders on its own after
+  // the settle delay (replacing nothing yet), a second edit restarts it, and
+  // the two auto renders share one row.
+  ['composer-auto-on', `__smoke.click('.composition-auto-toggle input')`, 600],
+  ['composer-auto-undo', `__smoke.undo()`, 900],
+  ['composer-auto-restaged', `__smoke.staged('crend_1') && !document.querySelector('.composition-stage-badge')`, 200],
+  ['composer-auto-edit', `__smoke.select('.composition-inspector select', 'blur')`, 1600],
+  ['composer-auto-rendering', `(() => {
+    const req = window.__atelier.lastRender;
+    return !!req && req.auto === true && req.replace === true && __smoke.find('.composition-stage-badge', 'rendering the latest changes') !== null;
+  })()`, 200],
+  ['composer-auto-restart', `__smoke.select('.composition-inspector select', 'crop')`, 1600],
+  ['composer-auto-landed', `__smoke.completeRender()`, 800],
+  ['composer-auto-row', `(() => {
+    const autoRows = [...document.querySelectorAll('.editor-op-title')].filter((el) => el.textContent.startsWith('Auto preview'));
+    return autoRows.length === 1 && __smoke.staged(window.__atelier.lastRenderId) && !document.querySelector('.composition-stage-badge');
+  })()`, 200],
   ['composer-close', `__smoke.click('button[aria-label="Close editor"]')`, 600],
   ['composer-discard', `__smoke.click('.move-dialog button', 'Discard changes')`, 1000],
   ['row-menu', `__smoke.click('button[aria-label="More actions for Storyboard ideas"]')`, 800],
@@ -156,8 +174,28 @@ const IN_PAGE_HELPERS = `window.__smoke = {
       setTimeout(() => resolve(true), 200);
     }, 50));
   },
+  // undo() is the composer's Cmd+Z, which listens on window and ignores
+  // keystrokes aimed at form controls.
+  undo() {
+    document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'z', metaKey: true, bubbles: true, cancelable: true}));
+    return true;
+  },
+  // select() picks an option in the first <select> offering it, through the
+  // native value setter so React sees a real change event.
+  select(selector, value) {
+    const el = [...document.querySelectorAll(selector)].find((candidate) => [...candidate.options].some((option) => option.value === value));
+    if (!el) return false;
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(el, value);
+    el.dispatchEvent(new Event('change', {bubbles: true}));
+    return true;
+  },
+  // staged() reports whether the composer's stage plays the given render.
+  staged(id) {
+    return (document.querySelector('.composition-preview')?.getAttribute('src') || '').includes('/' + id + '.');
+  },
   // completeRender replays the backend's completion event for the newest
-  // submitted composition render, echoing its preview key as Go does.
+  // submitted composition render, echoing its preview key and auto flag as
+  // Go does.
   completeRender() {
     const req = window.__atelier.lastRender;
     if (!req) return false;
@@ -165,7 +203,7 @@ const IN_PAGE_HELPERS = `window.__smoke = {
     return window.__atelier.emit('atelier:composition-op', {
       id, mode: req.mode || 'preview', conversationId: req.conversationId, status: 'completed', progress: 1, notices: [],
       resultUrl: '/atelier-artifact/tmp/atelier-composition-previews/' + id + '.mp4', outputSeconds: 10, width: 1280, height: 720, fps: 30,
-      audioOnly: false, includeAudio: true, previewKey: req.previewKey, startedAt: '2026-11-04T10:00:00Z', updatedAt: '2026-11-04T10:00:00Z',
+      audioOnly: false, includeAudio: true, previewKey: req.previewKey, auto: !!req.auto, startedAt: '2026-11-04T10:00:00Z', updatedAt: '2026-11-04T10:00:00Z',
     }) > 0;
   },
 };`;

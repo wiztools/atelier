@@ -657,6 +657,12 @@
   flex: 0 1 96px;
 }
 
+/* Auto-update sits with the render actions, centered on the 36px buttons
+   rather than dropped to the field row's baseline. */
+.composition-stage-controls .composition-auto-toggle {
+  align-self: center;
+}
+
 /* Direct manipulation: bodies grab, edges resize. touch-action none keeps
    pointer drags from turning into scroll gestures. */
 

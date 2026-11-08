@@ -56,6 +56,8 @@ export function DeleteProject(arg1:string):Promise<main.DeleteProjectResult>;
 
 export function DetectLocalTools(arg1:main.LocalToolOverrides):Promise<main.LocalToolsReport>;
 
+export function DiscardCompositionPreview(arg1:string):Promise<void>;
+
 export function DiscardMediaUpload(arg1:string):Promise<void>;
 
 export function ExecuteTool(arg1:main.ToolExecutionRequest):Promise<main.HarnessToolResult>;

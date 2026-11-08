@@ -1,4 +1,5 @@
 import {
+  CompositionAutoPreviewState,
   CompositionDoc,
   CompositionMediaRef,
   addClip,
@@ -9,10 +10,12 @@ import {
   clampStillLength,
   cloneCompositionDoc,
   compositionClipLayout,
+  compositionAutoPreviewAction,
   compositionIsAudioOnly,
   compositionPreviewFreshness,
   compositionPreviewKey,
   compositionPreviewRange,
+  compositionPreviewTakesStage,
   compositionProblems,
   compositionSequenceDuration,
   compositionStillDefaultSeconds,
@@ -317,5 +320,32 @@ assert(compositionPreviewRange(keyed, 3, null)?.end === 22, 'a video doc ranges 
 const audioOnlyKeyed = normalizeCompositionDoc({video: [], audioLanes: [{id: 'l1', name: 'Mix', segments: [{id: 's1', ref: audioRef('aud_1', 9), inSeconds: 0, outSeconds: 9, startSeconds: 0}]}]});
 assert(compositionPreviewRange(audioOnlyKeyed, 3, null)?.end === 9, 'an audio-only doc ranges over its audio extent');
 assert(compositionPreviewFreshness('', baseKey) === 'unknown' && compositionPreviewFreshness(undefined, baseKey) === 'unknown', 'a render without a key cannot be vouched for');
+
+// A finished render takes the stage unless it would swap a current preview
+// for an outdated one (an undo landed while it rendered).
+assert(compositionPreviewTakesStage(null, 'k2', 'k1'), 'an empty stage takes any render');
+assert(compositionPreviewTakesStage('k0', 'k2', 'k1'), 'an outdated stage takes a newer render, even an outdated one');
+assert(compositionPreviewTakesStage('k0', 'k1', 'k1'), 'an outdated stage takes the current render');
+assert(compositionPreviewTakesStage('k1', 'k1', 'k1'), 'a re-render of the current timeline still lands');
+assert(!compositionPreviewTakesStage('k1', 'k2', 'k1'), 'a current stage keeps its place over an outdated render');
+
+// Auto-update brings an outdated stage up to date — restaging a listed render
+// of the timeline, else rendering — unless something holds it back.
+const idle: CompositionAutoPreviewState = {enabled: true, paused: false, pinned: false, blocked: false, currentKey: 'k2', stagedKey: 'k1', running: null, completedKeys: ['k1'], skipKey: ''};
+const act = (patch: Partial<CompositionAutoPreviewState>) => compositionAutoPreviewAction({...idle, ...patch});
+assert(act({}) === 'render', 'an outdated stage asks for a render');
+assert(act({stagedKey: null, completedKeys: []}) === 'render', 'an empty stage asks for a render');
+assert(act({enabled: false}) === 'none', 'auto-update off never renders');
+assert(act({paused: true}) === 'none', 'a drag in flight (or a hidden editor) waits');
+assert(act({pinned: true}) === 'none', 'a render played by hand holds the stage until the next edit');
+assert(act({blocked: true}) === 'none', 'an unrenderable timeline waits');
+assert(act({stagedKey: 'k2'}) === 'none', 'a current stage needs nothing');
+assert(act({completedKeys: ['k1', 'k2']}) === 'stage', 'a listed render of this timeline is restaged, not re-rendered');
+assert(act({completedKeys: ['k2'], blocked: true}) === 'stage', 'restaging needs no render, so a blocked timeline still restages');
+assert(act({skipKey: 'k2'}) === 'none', 'the timeline auto-update gave up on is not retried');
+assert(act({skipKey: 'k1'}) === 'render', 'an older give-up does not block a new edit');
+assert(act({running: {mode: 'preview', previewKey: 'k2'}}) === 'none', 'a render of this timeline under way is enough');
+assert(act({running: {mode: 'preview', previewKey: 'k1'}}) === 'render', 'a render of an older timeline is replaced');
+assert(act({running: {mode: 'export', previewKey: ''}}) === 'none', 'an export is never replaced — auto-update waits');
 
 console.log('composition model assertions passed');

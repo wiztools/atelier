@@ -703,6 +703,8 @@ func compositionFFmpegArgs(plan compositionRenderPlan, encodeArgs []string, outp
 // conversation as a new artifact, so it refuses a working document and a
 // streaming conversation up front. The optional fields are export choices:
 // audio omission (AU-11), frame overrides (0 = the revision's own), and CRF.
+// Renders run one per conversation; Replace is the one way past that rule —
+// a running PREVIEW yields to the new render, an export never does.
 type CompositionRenderRequest struct {
 	ConversationID string          `json:"conversationId"`
 	ArtifactID     string          `json:"artifactId,omitempty"`
@@ -722,6 +724,15 @@ type CompositionRenderRequest struct {
 	// Opaque here: the op echoes it so the editor can tell whether the render
 	// on its stage still matches the timeline.
 	PreviewKey string `json:"previewKey,omitempty"`
+	// Replace cancels the conversation's running preview to make room for
+	// this render — auto mode's restart on a newer edit, and a re-render or
+	// export submitted while an outdated preview runs. The replaced op ends
+	// cancelled with SupersededBy naming this one. A running export is never
+	// replaced: the request is refused until it finishes.
+	Replace bool `json:"replace,omitempty"`
+	// Auto marks a render the editor's auto mode started, echoed on the op so
+	// the editor can fold its auto renders into one row.
+	Auto bool `json:"auto,omitempty"`
 }
 
 // CompositionRenderOperation is the live op the editor tracks; every
@@ -760,8 +771,14 @@ type CompositionRenderOperation struct {
 	// render that outlived its editor still says what it was built from
 	// when a reopened composer stages it.
 	PreviewKey string `json:"previewKey,omitempty"`
-	StartedAt  string `json:"startedAt"`
-	UpdatedAt  string `json:"updatedAt"`
+	// Auto echoes the request's flag: auto mode's renders share one row.
+	Auto bool `json:"auto,omitempty"`
+	// SupersededBy names the render that replaced this one (Replace) — set
+	// on the cancelled terminal state, so a retired render reads apart from
+	// one stopped by hand.
+	SupersededBy string `json:"supersededBy,omitempty"`
+	StartedAt    string `json:"startedAt"`
+	UpdatedAt    string `json:"updatedAt"`
 }
 
 type compositionRenderRun struct {
@@ -770,6 +787,11 @@ type compositionRenderRun struct {
 	// op is the live operation snapshot — tests poll it, and the terminal
 	// transition moves it into the history map before the run deregisters.
 	op CompositionRenderOperation
+	// supersededBy is the replacing render's id once Replace retired this
+	// run (guarded by compositionRendersMu, like op): the run stays
+	// registered until its executor winds down, invisible to the
+	// one-per-conversation rule and to ListCompositionRenders.
+	supersededBy string
 	// The export choices captured at submit: the pinned revision, audio
 	// omission, and the frame/CRF overrides (0 = inherit).
 	artifactID    string
@@ -777,6 +799,23 @@ type compositionRenderRun struct {
 	width, height int
 	fps           float64
 	crf           int
+}
+
+// compositionRenderTerminal reports a status no further transition follows.
+func compositionRenderTerminal(status string) bool {
+	return status == "completed" || status == "failed" || status == "cancelled"
+}
+
+// compositionRenderIDPattern is randomID("crend")'s shape — the only names a
+// preview file path is ever built from.
+var compositionRenderIDPattern = regexp.MustCompile(`^crend_[0-9a-f]+$`)
+
+// removeCompositionPreviewFiles deletes one preview's outputs from the
+// preview directory: the video or audio file and the video's poster.
+func removeCompositionPreviewFiles(operationID string) {
+	for _, name := range []string{operationID + ".mp4", operationID + ".m4a", operationID + "_poster.jpg"} {
+		_ = os.Remove(filepath.Join(compositionPreviewDir(), name))
+	}
 }
 
 // compositionPreviewDir is where preview outputs live, served through the
@@ -864,20 +903,42 @@ func (a *App) SubmitCompositionRender(req CompositionRenderRequest) (Composition
 		SoloLaneID:     strings.TrimSpace(req.SoloLaneID),
 		IncludeAudio:   includeAudio,
 		PreviewKey:     strings.TrimSpace(req.PreviewKey),
+		Auto:           req.Auto,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	run := &compositionRenderRun{conversationID: conversationID, cancel: cancel, op: op,
 		artifactID: strings.TrimSpace(req.ArtifactID), muteAudio: muteAudio, width: req.Width, height: req.Height, fps: req.FPS, crf: req.CRF}
+	// One live render per conversation. A run already retired by Replace or
+	// filing its terminal state this instant no longer counts; a running
+	// preview yields to a Replace request, anything else refuses.
 	a.compositionRendersMu.Lock()
+	var replaced []*compositionRenderRun
 	for _, existing := range a.compositionRenders {
-		if existing.conversationID == conversationID {
-			a.compositionRendersMu.Unlock()
-			cancel()
-			return CompositionRenderOperation{}, errors.New("a render is already running for this composition — cancel it first")
+		if existing.conversationID != conversationID || existing.supersededBy != "" || compositionRenderTerminal(existing.op.Status) {
+			continue
 		}
+		if req.Replace && existing.op.Mode == compositionRenderModePreview {
+			replaced = append(replaced, existing)
+			continue
+		}
+		a.compositionRendersMu.Unlock()
+		cancel()
+		if req.Replace {
+			return CompositionRenderOperation{}, errors.New("an export is rendering for this composition — wait for it to finish")
+		}
+		return CompositionRenderOperation{}, errors.New("a render is already running for this composition — cancel it first")
+	}
+	// The retired runs learn their successor under the same lock their
+	// executors read it under for the final transition, so a preview either
+	// finishes before this point or reports itself superseded — never both.
+	for _, existing := range replaced {
+		existing.supersededBy = op.ID
 	}
 	a.compositionRenders[op.ID] = run
 	a.compositionRendersMu.Unlock()
+	for _, existing := range replaced {
+		existing.cancel()
+	}
 	a.emitCompositionRender(op)
 	go a.executeCompositionRender(ctx, config, run, doc)
 	return op, nil
@@ -896,6 +957,28 @@ func (a *App) CancelCompositionRender(operationID string) error {
 	return nil
 }
 
+// DiscardCompositionPreview deletes a finished preview's files. The editor's
+// auto mode renders after every settled edit and discards each render it
+// replaces, so a long session doesn't pile full-length previews into the temp
+// directory (the launch sweep only clears day-old ones). Previews only, by
+// construction: the path is built from the op id inside the preview
+// directory, where an export never writes. A render still registered is
+// refused — its executor owns its files until it deregisters.
+func (a *App) DiscardCompositionPreview(operationID string) error {
+	operationID = strings.TrimSpace(operationID)
+	if !compositionRenderIDPattern.MatchString(operationID) {
+		return fmt.Errorf("%q is not a composition render id", operationID)
+	}
+	a.compositionRendersMu.Lock()
+	_, live := a.compositionRenders[operationID]
+	a.compositionRendersMu.Unlock()
+	if live {
+		return errors.New("that render is still running — cancel it instead")
+	}
+	removeCompositionPreviewFiles(operationID)
+	return nil
+}
+
 // ListCompositionRenders snapshots the conversation's registered render: the
 // one in flight (renders are one per conversation), or one finishing this
 // instant. A render outlives its editor, so a reopened composer seeds its
@@ -903,7 +986,8 @@ func (a *App) CancelCompositionRender(operationID string) error {
 // until its next progress tick, and a new render was refused as "already
 // running" with nothing on screen to cancel. Finished renders aren't listed:
 // an export's record is its artifact in the conversation, and a preview is
-// ephemeral. Never nil, so the frontend always gets an array.
+// ephemeral. A preview retired by Replace isn't listed either — it is only
+// winding down. Never nil, so the frontend always gets an array.
 func (a *App) ListCompositionRenders(conversationID string) []CompositionRenderOperation {
 	ops := []CompositionRenderOperation{}
 	conversationID = strings.TrimSpace(conversationID)
@@ -913,7 +997,7 @@ func (a *App) ListCompositionRenders(conversationID string) []CompositionRenderO
 	a.compositionRendersMu.Lock()
 	defer a.compositionRendersMu.Unlock()
 	for _, run := range a.compositionRenders {
-		if run.conversationID != conversationID {
+		if run.conversationID != conversationID || run.supersededBy != "" {
 			continue
 		}
 		snapshot := run.op
@@ -1028,21 +1112,42 @@ func (a *App) executeCompositionRender(ctx context.Context, config AppConfig, ru
 		}
 		a.compositionRendersMu.Unlock()
 	}()
+	// update applies a transition under the registry lock — the lock Replace
+	// retires a run under — so a retired run's terminal state is always its
+	// cancellation, naming its successor, even when its own work finished in
+	// the same instant: the editor never stages a render it already replaced.
 	update := func(mutate func(*CompositionRenderOperation)) {
-		mutate(&op)
-		op.UpdatedAt = time.Now().Format(time.RFC3339)
 		a.compositionRendersMu.Lock()
+		mutate(&op)
+		if run.supersededBy != "" && compositionRenderTerminal(op.Status) {
+			op.Status, op.Error, op.SupersededBy = "cancelled", "", run.supersededBy
+			op.ResultURL, op.ResultPosterURL = "", ""
+		}
+		op.UpdatedAt = time.Now().Format(time.RFC3339)
 		if live, ok := a.compositionRenders[op.ID]; ok {
 			live.op = op
 		}
 		a.compositionRendersMu.Unlock()
 		a.emitCompositionRender(op)
 	}
+	// stop ends the run on an error — unless its context was cancelled (a
+	// Cancel, or a Replace retiring it), which is what really stopped it: a
+	// cancel lands mid-probe as "could not measure" and mid-verify as "no
+	// playable output", neither of which is true.
+	stop := func(message string) {
+		update(func(o *CompositionRenderOperation) {
+			if ctx.Err() != nil {
+				o.Status, o.Error = "cancelled", ""
+				return
+			}
+			o.Status, o.Error = "failed", message
+		})
+	}
 	update(func(o *CompositionRenderOperation) { o.Status = "running" })
 
 	staging, err := os.MkdirTemp("", "atelier-composition-render-")
 	if err != nil {
-		update(func(o *CompositionRenderOperation) { o.Status = "failed"; o.Error = err.Error() })
+		stop(err.Error())
 		return
 	}
 	defer os.RemoveAll(staging)
@@ -1057,11 +1162,8 @@ func (a *App) executeCompositionRender(ctx context.Context, config AppConfig, ru
 			plural = ""
 			pronoun = "it"
 		}
-		update(func(o *CompositionRenderOperation) {
-			o.Status = "failed"
-			o.Error = fmt.Sprintf("missing source file%s: %s — relink or remove %s from the composition before rendering",
-				plural, strings.Join(missing, ", "), pronoun)
-		})
+		stop(fmt.Sprintf("missing source file%s: %s — relink or remove %s from the composition before rendering",
+			plural, strings.Join(missing, ", "), pronoun))
 		return
 	}
 	facts := map[string]joinClipFact{}
@@ -1073,10 +1175,7 @@ func (a *App) executeCompositionRender(ctx context.Context, config AppConfig, ru
 		if clip.Ref.Kind == "image" {
 			still, err := measureCompositionStillFile(clip.Ref.Path)
 			if err != nil {
-				update(func(o *CompositionRenderOperation) {
-					o.Status = "failed"
-					o.Error = fmt.Sprintf("could not read the still %s (%v) — convert it to PNG or JPEG (convert_image) and add that instead", clip.Ref.ArtifactID, err)
-				})
+				stop(fmt.Sprintf("could not read the still %s (%v) — convert it to PNG or JPEG (convert_image) and add that instead", clip.Ref.ArtifactID, err))
 				return
 			}
 			facts[clip.Ref.ArtifactID] = joinClipFact{Width: still.Width, Height: still.Height}
@@ -1085,10 +1184,7 @@ func (a *App) executeCompositionRender(ctx context.Context, config AppConfig, ru
 		}
 		fact, ok := joinClipFactFor(ctx, config, clip.Ref.Path, artifactPrefix+clip.Ref.Path)
 		if !ok {
-			update(func(o *CompositionRenderOperation) {
-				o.Status = "failed"
-				o.Error = fmt.Sprintf("could not measure %s (duration and frame size) — install ffmpeg (ffprobe) to render this composition", clip.Ref.ArtifactID)
-			})
+			stop(fmt.Sprintf("could not measure %s (duration and frame size) — install ffmpeg (ffprobe) to render this composition", clip.Ref.ArtifactID))
 			return
 		}
 		facts[clip.Ref.ArtifactID] = fact
@@ -1118,7 +1214,7 @@ func (a *App) executeCompositionRender(ctx context.Context, config AppConfig, ru
 		Stills:               stills,
 	})
 	if err != nil {
-		update(func(o *CompositionRenderOperation) { o.Status = "failed"; o.Error = err.Error() })
+		stop(err.Error())
 		return
 	}
 	update(func(o *CompositionRenderOperation) {
@@ -1140,12 +1236,7 @@ func (a *App) executeCompositionRender(ctx context.Context, config AppConfig, ru
 		update(func(o *CompositionRenderOperation) { o.Progress = progress })
 	})
 	if err != nil {
-		status, message := "failed", err.Error()
-		if ctx.Err() != nil {
-			status = "cancelled"
-			message = ""
-		}
-		update(func(o *CompositionRenderOperation) { o.Status = status; o.Error = message })
+		stop(err.Error())
 		return
 	}
 	probeKind := "video"
@@ -1154,10 +1245,13 @@ func (a *App) executeCompositionRender(ctx context.Context, config AppConfig, ru
 	}
 	seconds, ok := verifyCompositionOutput(ctx, config, stagedOutput, probeKind)
 	if !ok {
-		update(func(o *CompositionRenderOperation) {
-			o.Status = "failed"
-			o.Error = "the render produced no playable output — try again, or report the composition if it repeats"
-		})
+		stop("the render produced no playable output — try again, or report the composition if it repeats")
+		return
+	}
+	// Cancelled once ffmpeg was done: nothing is promoted or adopted —
+	// whoever cancelled the render is not waiting for its file.
+	if ctx.Err() != nil {
+		stop("")
 		return
 	}
 
@@ -1166,10 +1260,7 @@ func (a *App) executeCompositionRender(ctx context.Context, config AppConfig, ru
 	// directory. The AU-10-lite clipping check reads the export's own mix.
 	if op.Mode == compositionRenderModeExport {
 		if a.conversationStreaming(run.conversationID) {
-			update(func(o *CompositionRenderOperation) {
-				o.Status = "failed"
-				o.Error = "the conversation started streaming while the export rendered — retry once the turn finishes (nothing was written)"
-			})
+			stop("the conversation started streaming while the export rendered — retry once the turn finishes (nothing was written)")
 			return
 		}
 		notices := plan.Notices
@@ -1180,7 +1271,7 @@ func (a *App) executeCompositionRender(ctx context.Context, config AppConfig, ru
 		}
 		artifactID, resultURL, adoptErr := adoptCompositionExport(config, run.conversationID, doc, run.artifactID, stagedOutput, extension, op.ID)
 		if adoptErr != nil {
-			update(func(o *CompositionRenderOperation) { o.Status = "failed"; o.Error = adoptErr.Error() })
+			stop(adoptErr.Error())
 			return
 		}
 		update(func(o *CompositionRenderOperation) {
@@ -1195,12 +1286,12 @@ func (a *App) executeCompositionRender(ctx context.Context, config AppConfig, ru
 	}
 
 	if err := os.MkdirAll(compositionPreviewDir(), 0755); err != nil {
-		update(func(o *CompositionRenderOperation) { o.Status = "failed"; o.Error = err.Error() })
+		stop(err.Error())
 		return
 	}
 	destination := filepath.Join(compositionPreviewDir(), op.ID+extension)
 	if err := os.Rename(stagedOutput, destination); err != nil {
-		update(func(o *CompositionRenderOperation) { o.Status = "failed"; o.Error = err.Error() })
+		stop(err.Error())
 		return
 	}
 	resultURL := artifactPrefix + destination
@@ -1217,6 +1308,11 @@ func (a *App) executeCompositionRender(ctx context.Context, config AppConfig, ru
 		o.ResultPosterURL = posterURL
 		o.OutputSeconds = seconds
 	})
+	// Retired while its files were being promoted: the transition above
+	// already reported the cancellation, so nothing may keep the files.
+	if op.Status != "completed" {
+		removeCompositionPreviewFiles(op.ID)
+	}
 }
 
 // adoptCompositionExport writes the rendered file into the conversation as a

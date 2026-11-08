@@ -106,7 +106,7 @@
       renderCount += 1;
       window.__atelier.lastRender = req;
       window.__atelier.lastRenderId = `crend_${renderCount}`;
-      return {id: `crend_${renderCount}`, mode: req.mode || 'preview', conversationId: req.conversationId, status: 'queued', progress: 0, notices: [], outputSeconds: 0, audioOnly: false, includeAudio: true, previewKey: req.previewKey, startedAt: at(4), updatedAt: at(4)};
+      return {id: `crend_${renderCount}`, mode: req.mode || 'preview', conversationId: req.conversationId, status: 'queued', progress: 0, notices: [], outputSeconds: 0, audioOnly: false, includeAudio: true, previewKey: req.previewKey, auto: !!req.auto, startedAt: at(4), updatedAt: at(4)};
     },
   };
   const call = (name) => (...args) => {

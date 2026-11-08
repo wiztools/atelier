@@ -695,6 +695,125 @@ func TestCompositionRenderLifecycle(t *testing.T) {
 	}
 }
 
+// TestCompositionRenderReplace pins the auto-preview contract: a running
+// preview yields to a Replace request and reports itself superseded (never
+// failed, though its killed ffmpeg errored), an export may replace a preview
+// but nothing replaces an export, and a finished preview's files can be
+// discarded by id — previews only, never while registered.
+func TestCompositionRenderReplace(t *testing.T) {
+	config := editTestHome(t)
+	compositionConversationFixture(t, config.Storage)
+	app := NewApp()
+	seed, err := app.SeedComposition(SeedCompositionRequest{ConversationID: "conv_comp", ArtifactIDs: []string{"vid_a", "aud_a"}})
+	if err != nil {
+		t.Fatalf("SeedComposition returned error: %v", err)
+	}
+	saved, err := app.SaveCompositionEdit(SaveCompositionEditRequest{ConversationID: "conv_comp", Doc: seed.Doc})
+	if err != nil {
+		t.Fatalf("SaveCompositionEdit returned error: %v", err)
+	}
+	useFake := func(mode string) {
+		phase := config
+		phase.Providers.Local.FFmpeg.Binary = writeFakeCompositionFFmpeg(t, filepath.Join(t.TempDir(), mode), mode)
+		if err := writeAppConfig(phase); err != nil {
+			t.Fatalf("writeAppConfig: %v", err)
+		}
+		stubLocalLookup(t, map[string]string{phase.Providers.Local.FFmpeg.Binary: phase.Providers.Local.FFmpeg.Binary})
+	}
+	previewDoc := func() *CompositionDoc {
+		doc := seed.Doc
+		return &doc
+	}
+
+	useFake("sleep")
+	first, err := app.SubmitCompositionRender(CompositionRenderRequest{ConversationID: "conv_comp", Doc: previewDoc(), PreviewKey: "key_first", Auto: true})
+	if err != nil {
+		t.Fatalf("SubmitCompositionRender returned error: %v", err)
+	}
+	if !first.Auto || first.PreviewKey != "key_first" {
+		t.Fatalf("submitted op = %+v, want auto with its key", first)
+	}
+	waitCompositionRenderRunning(t, app, first.ID)
+	second, err := app.SubmitCompositionRender(CompositionRenderRequest{ConversationID: "conv_comp", Doc: previewDoc(), PreviewKey: "key_second", Auto: true, Replace: true})
+	if err != nil {
+		t.Fatalf("a Replace preview must make room, got %v", err)
+	}
+	// The retired run may still be winding down, but it is no longer the
+	// conversation's render: only its successor is listed.
+	if listed := app.ListCompositionRenders("conv_comp"); len(listed) != 1 || listed[0].ID != second.ID {
+		t.Fatalf("ListCompositionRenders = %+v, want only the replacing render", listed)
+	}
+	retired := waitCompositionRenderTerminal(t, app, first.ID)
+	if retired.Status != "cancelled" || retired.SupersededBy != second.ID || retired.Error != "" || retired.ResultURL != "" {
+		t.Fatalf("replaced op = %+v, want cancelled, superseded by %s, no error, no result", retired, second.ID)
+	}
+	waitCompositionRenderRunning(t, app, second.ID)
+	if _, err := app.SubmitCompositionRender(CompositionRenderRequest{ConversationID: "conv_comp", Doc: previewDoc()}); err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("without Replace a second render must still refuse, got %v", err)
+	}
+
+	// An export makes room the same way — and then nothing replaces it.
+	export, err := app.SubmitCompositionRender(CompositionRenderRequest{ConversationID: "conv_comp", Mode: "export", ArtifactID: saved.ArtifactID, Replace: true})
+	if err != nil {
+		t.Fatalf("an export must replace a running preview, got %v", err)
+	}
+	if export.Auto {
+		t.Fatalf("an export submitted without Auto echoed auto: %+v", export)
+	}
+	retired = waitCompositionRenderTerminal(t, app, second.ID)
+	if retired.Status != "cancelled" || retired.SupersededBy != export.ID {
+		t.Fatalf("preview replaced by the export = %+v", retired)
+	}
+	waitCompositionRenderRunning(t, app, export.ID)
+	if _, err := app.SubmitCompositionRender(CompositionRenderRequest{ConversationID: "conv_comp", Doc: previewDoc(), Replace: true}); err == nil || !strings.Contains(err.Error(), "export is rendering") {
+		t.Fatalf("a preview must never replace an export, got %v", err)
+	}
+	if err := app.DiscardCompositionPreview(export.ID); err == nil || !strings.Contains(err.Error(), "still running") {
+		t.Fatalf("discarding a registered render must refuse, got %v", err)
+	}
+	// A hand cancel names no successor, and an export cancelled mid-encode
+	// adopts nothing.
+	if err := app.CancelCompositionRender(export.ID); err != nil {
+		t.Fatalf("CancelCompositionRender returned error: %v", err)
+	}
+	stopped := waitCompositionRenderTerminal(t, app, export.ID)
+	if stopped.Status != "cancelled" || stopped.SupersededBy != "" || stopped.Error != "" || stopped.ExportArtifactID != "" {
+		t.Fatalf("hand-cancelled export = %+v", stopped)
+	}
+
+	// Discard removes a finished preview's file and poster.
+	useFake("ok")
+	done, err := app.SubmitCompositionRender(CompositionRenderRequest{ConversationID: "conv_comp", Doc: previewDoc(), Replace: true})
+	if err != nil {
+		t.Fatalf("SubmitCompositionRender returned error: %v", err)
+	}
+	finished := waitCompositionRenderTerminal(t, app, done.ID)
+	if finished.Status != "completed" || finished.ResultPosterURL == "" {
+		t.Fatalf("finished preview = %+v, want completed with a poster", finished)
+	}
+	previewPath := strings.TrimPrefix(finished.ResultURL, artifactPrefix)
+	posterPath := strings.TrimPrefix(finished.ResultPosterURL, artifactPrefix)
+	for _, path := range []string{previewPath, posterPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("preview output %s missing before the discard: %v", path, err)
+		}
+	}
+	if err := app.DiscardCompositionPreview(done.ID); err != nil {
+		t.Fatalf("DiscardCompositionPreview returned error: %v", err)
+	}
+	for _, path := range []string{previewPath, posterPath} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("preview output %s survived the discard (%v)", path, err)
+		}
+	}
+	// Only render ids build a path — nothing else reaches the filesystem.
+	for _, id := range []string{"", "../etc/passwd", "crend_../../x", "vid_a", "crend_XYZ"} {
+		if err := app.DiscardCompositionPreview(id); err == nil {
+			t.Fatalf("DiscardCompositionPreview(%q) must refuse", id)
+		}
+	}
+}
+
 func TestCompositionRenderReadsStills(t *testing.T) {
 	config := editTestHome(t)
 	artifacts := compositionConversationFixture(t, config.Storage)

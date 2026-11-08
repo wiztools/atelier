@@ -28,6 +28,8 @@ import {
   compositionMaxAudioLanes,
   compositionPreviewFreshness,
   compositionPreviewKey,
+  compositionPreviewTakesStage,
+  compositionAutoPreviewAction,
   compositionProblems,
   compositionSequenceDuration,
   compositionStillMaxSeconds,
@@ -99,10 +101,32 @@ type Selection =
 // StagePreview is the completed render on the stage. key is the fingerprint
 // it was built from — the op's echo of the request's previewKey — which is
 // what the stage compares against the timeline's key as it is now.
-type StagePreview = {url: string; audioOnly: boolean; offsetSeconds: number; key: string};
+type StagePreview = {opId: string; url: string; audioOnly: boolean; offsetSeconds: number; key: string};
 
 function stagePreviewFromOp(op: main.CompositionRenderOperation): StagePreview {
-  return {url: op.resultUrl ?? '', audioOnly: op.audioOnly, offsetSeconds: op.rangeStartSeconds ?? 0, key: op.previewKey ?? ''};
+  return {opId: op.id, url: op.resultUrl ?? '', audioOnly: op.audioOnly, offsetSeconds: op.rangeStartSeconds ?? 0, key: op.previewKey ?? ''};
+}
+
+// Auto-update re-renders the preview on its own once the timeline settles:
+// off by default (every preview re-encodes the whole timeline at full output
+// size, so a long sequence would keep ffmpeg busy for most of a session), and
+// remembered once turned on — the EditsPanel-height localStorage idiom.
+const autoPreviewStorageKey = 'atelier.compositionAutoPreview';
+const autoPreviewDelayMs = 1000;
+// Restaging a listed render of the timeline (an undo back to a rendered
+// state) costs nothing, so it only waits out rapid-fire edits.
+const autoRestageDelayMs = 200;
+
+function storedAutoPreview(): boolean {
+  try {
+    return window.localStorage.getItem(autoPreviewStorageKey) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function renderInFlight(op: main.CompositionRenderOperation | null | undefined): boolean {
+  return op?.status === 'queued' || op?.status === 'running';
 }
 
 // previewRequestOptions reads the stage controls as a render request does:
@@ -116,8 +140,9 @@ function previewRequestOptions(rangeFrom: string, rangeTo: string, soloLaneID: s
 
 // stalePreviewText is the stage badge's line for a preview that no longer
 // matches the timeline.
-function stalePreviewText(freshness: CompositionPreviewFreshness, renderingLatest: boolean): string {
+function stalePreviewText(freshness: CompositionPreviewFreshness, renderingLatest: boolean, autoUpdating: boolean): string {
   if (renderingLatest) return 'Updating — rendering the latest changes…';
+  if (autoUpdating) return 'Outdated — auto-update re-renders it in a moment';
   if (freshness === 'settings') return 'Outdated — the range or solo lane changed after this render';
   if (freshness === 'unknown') return "Can't confirm this preview matches the timeline";
   return 'Outdated — the timeline changed after this render';
@@ -152,7 +177,8 @@ function asArray<T>(value: T[] | null | undefined): T[] {
 
 // compositionRenderSummary is a render row's status line. Only a preview is
 // ephemeral (its file is swept when the app restarts); a finished export was
-// adopted into the conversation, and a cancelled render produced nothing.
+// adopted into the conversation, and a cancelled render produced nothing — a
+// replaced one says so, since nobody pressed Cancel.
 function compositionRenderSummary(op: main.CompositionRenderOperation): string {
   switch (op.status) {
     case 'queued':
@@ -161,7 +187,7 @@ function compositionRenderSummary(op: main.CompositionRenderOperation): string {
     case 'failed':
       return op.error || 'failed';
     case 'cancelled':
-      return 'cancelled';
+      return op.supersededBy ? 'replaced by a newer render' : 'cancelled';
     default: {
       const outcome = op.mode !== 'export' ? 'rendered for this session' : op.exportArtifactId ? 'saved to the conversation' : 'export finished';
       return [outcome, ...asArray(op.notices)].join(' · ');
@@ -383,11 +409,45 @@ export function CompositionEditor(props: {
   // never overwrite a later one because the op id keys the merge).
   const [renders, setRenders] = useState<main.CompositionRenderOperation[]>([]);
   // The stage plays the chosen completed render, carrying the key it was
-  // built from, so edits after a render light the Render button.
+  // built from, so edits after a render light the Render button. previewRef
+  // mirrors it synchronously for the app-global event handler.
   const [preview, setPreview] = useState<StagePreview | null>(null);
+  const previewRef = useRef<StagePreview | null>(null);
   const [rangeFrom, setRangeFrom] = useState('');
   const [rangeTo, setRangeTo] = useState('');
   const [soloLaneID, setSoloLaneID] = useState('');
+
+  // Auto-update. Its renders share ONE Edits row — autoRender, the newest —
+  // instead of one row per edit: the first sight of a newer auto op retires
+  // the previous one (Go cancels it as superseded), and a retired op's late
+  // events change nothing.
+  const [autoPreview, setAutoPreview] = useState(storedAutoPreview);
+  const [autoRender, setAutoRender] = useState<main.CompositionRenderOperation | null>(null);
+  const autoRenderRef = useRef<main.CompositionRenderOperation | null>(null);
+  const retiredAutoIDsRef = useRef(new Set<string>());
+  // The key auto-update gave up on: a preview of it failed or was cancelled
+  // by hand, or the submit was refused. It never retries that timeline on
+  // its own (a broken ffmpeg would loop); the next edit or the button does.
+  const [autoSkipKey, setAutoSkipKey] = useState('');
+  // Rows sort by first sight, newest first — the auto row lands among the
+  // manual renders and exports where it arrived.
+  const arrivalRef = useRef(new Map<string, number>());
+  const noteArrival = (id: string) => {
+    if (!arrivalRef.current.has(id)) arrivalRef.current.set(id, arrivalRef.current.size + 1);
+  };
+  // Completed auto renders' files. Once a newer render has replaced one in
+  // the auto row and on the stage, nothing can reach it anymore, so it is
+  // discarded rather than left for the launch sweep.
+  const autoFilesRef = useRef(new Set<string>());
+  // Where the viewer was when a newer render replaced the staged one — the
+  // replacement resumes there, playing if it was.
+  const resumeRef = useRef<{time: number; playing: boolean} | null>(null);
+  // The timeline's key when the viewer played a row by hand: auto-update
+  // leaves that choice on the stage until the next edit moves the key.
+  const [stagePinnedKey, setStagePinnedKey] = useState<string | null>(null);
+  // The timeline's current preview key, mirrored for the app-global event
+  // handler (kept in step where the key is computed below).
+  const currentPreviewKeyRef = useRef('');
 
   // Export choices (AU-11's audio toggle; the advanced overrides are
   // per-export — empty inherits the revision's own output settings).
@@ -511,6 +571,60 @@ export function CompositionEditor(props: {
     };
   }, [sourceConversationID, props.libraryID]);
 
+  // stageRender puts a completed render on the stage. A render replacing one
+  // already staged (not a replay of the same file) keeps the viewer's place.
+  const stageRender = (op: main.CompositionRenderOperation, resume: boolean) => {
+    const next = stagePreviewFromOp(op);
+    const staged = previewRef.current;
+    const media = previewMediaRef.current;
+    resumeRef.current = resume && staged && media && staged.url !== next.url
+      ? {time: staged.offsetSeconds + media.currentTime, playing: !media.paused}
+      : null;
+    previewRef.current = next;
+    setPreview(next);
+  };
+
+  // applyRenderOp folds one op state into the rows: an auto op into the
+  // shared auto row, anything else into its own. A completed preview takes
+  // the stage unless the stage already shows the timeline and the newcomer
+  // doesn't (an undo landed while it rendered — its row still plays it).
+  // Refs and state setters only, so the app-global listener — registered
+  // once — always acts on the current state.
+  const applyRenderOp = (op: main.CompositionRenderOperation) => {
+    if (op.auto && retiredAutoIDsRef.current.has(op.id)) {
+      return;
+    }
+    noteArrival(op.id);
+    if (op.auto) {
+      const previous = autoRenderRef.current;
+      if (previous && previous.id !== op.id) {
+        retiredAutoIDsRef.current.add(previous.id);
+      }
+      if (op.status === 'completed' && op.resultUrl) {
+        autoFilesRef.current.add(op.id);
+      }
+      autoRenderRef.current = op;
+      setAutoRender(op);
+    } else {
+      setRenders((current) => {
+        const index = current.findIndex((candidate) => candidate.id === op.id);
+        if (index < 0) {
+          return [op, ...current];
+        }
+        const next = [...current];
+        next[index] = op;
+        return next;
+      });
+    }
+    if (op.mode !== 'export' && (op.status === 'failed' || (op.status === 'cancelled' && !op.supersededBy))) {
+      setAutoSkipKey(op.previewKey ?? '');
+    }
+    if (op.status === 'completed' && op.resultUrl && op.mode !== 'export' &&
+      compositionPreviewTakesStage(previewRef.current?.key ?? null, op.previewKey ?? '', currentPreviewKeyRef.current)) {
+      stageRender(op, true);
+    }
+  };
+
   // Render-op events fold into the rows, and a completed preview takes the
   // stage. The event is app-global, so another conversation's op — a render
   // still running after its editor closed — is ignored. A completed EXPORT's
@@ -522,18 +636,7 @@ export function CompositionEditor(props: {
       if (op.conversationId !== sourceConversationID) {
         return;
       }
-      setRenders((current) => {
-        const index = current.findIndex((candidate) => candidate.id === op.id);
-        if (index < 0) {
-          return [op, ...current];
-        }
-        const next = [...current];
-        next[index] = op;
-        return next;
-      });
-      if (op.status === 'completed' && op.resultUrl && op.mode !== 'export') {
-        setPreview(stagePreviewFromOp(op));
-      }
+      applyRenderOp(op);
     };
     // The canceller, not EventsOff(name): that drops every listener for the
     // event, including App's own.
@@ -545,8 +648,9 @@ export function CompositionEditor(props: {
   // visible and cancellable again instead of waiting for its next progress
   // tick (meanwhile a new render was refused as "already running" with
   // nothing on screen to cancel). A row an event already delivered wins — the
-  // event is at least as new as this snapshot. Best-effort: when the list
-  // fails, the next event brings the row back.
+  // event is at least as new as this snapshot — and a snapshot never
+  // displaces an auto row this editor already started. Best-effort: when the
+  // list fails, the next event brings the row back.
   useEffect(() => {
     let stale = false;
     void AppBindings.ListCompositionRenders(sourceConversationID).then((ops) => {
@@ -554,22 +658,45 @@ export function CompositionEditor(props: {
       if (stale || seeded.length === 0) {
         return;
       }
-      setRenders((current) => [...seeded.filter((op) => !current.some((candidate) => candidate.id === op.id)), ...current]);
+      for (const op of seeded.filter((candidate) => candidate.auto)) {
+        if (!autoRenderRef.current && !retiredAutoIDsRef.current.has(op.id)) {
+          applyRenderOp(op);
+        }
+      }
+      const manual = seeded.filter((candidate) => !candidate.auto);
+      manual.forEach((op) => noteArrival(op.id));
+      setRenders((current) => [...manual.filter((op) => !current.some((candidate) => candidate.id === op.id)), ...current]);
     }).catch(() => {});
     return () => {
       stale = true;
     };
   }, [sourceConversationID]);
 
-  const runningRender = renders.find((op) => op.status === 'queued' || op.status === 'running') ?? null;
+  // The Edits panel's render rows, newest first: the manual renders plus the
+  // one auto row. A replaced render is still winding down for a moment, so
+  // the running render is the newest one in flight.
+  const renderRows = useMemo(() => {
+    const arrival = (op: main.CompositionRenderOperation) => arrivalRef.current.get(op.id) ?? 0;
+    return [...(autoRender ? [autoRender] : []), ...renders].sort((a, b) => arrival(b) - arrival(a));
+  }, [autoRender, renders]);
+  const runningRender = renderRows.find(renderInFlight) ?? null;
   // SubmitCompositionRender emits the queued op as an event BEFORE its
   // promise resolves, so the event handler usually inserts the row first —
   // the submit-side insert must not prepend a second copy of the same id
-  // (the twin would freeze at 0%: events dedupe to the first match only).
+  // (the twin would freeze at 0%: events dedupe to the first match only),
+  // nor replay a queued auto op the events already moved past.
   const addRenderOp = (op: main.CompositionRenderOperation) => {
+    if (op.auto) {
+      if (autoRenderRef.current?.id !== op.id) {
+        applyRenderOp(op);
+      }
+      return;
+    }
+    noteArrival(op.id);
     setRenders((current) => current.some((candidate) => candidate.id === op.id) ? current : [op, ...current]);
   };
-  const renderDisabled = !!runningRender || problems.length > 0 || missingRefs.size > 0 ||
+  // The timeline itself can't render — no click gets past these.
+  const renderBlocked = problems.length > 0 || missingRefs.size > 0 ||
     (doc.video.length === 0 && doc.audioLanes.every((lane) => lane.segments.length === 0));
 
   // A soloed lane that was since removed solos nothing (the renderer would
@@ -583,35 +710,59 @@ export function CompositionEditor(props: {
     () => compositionPreviewKey(doc, previewRequestOptions(rangeFrom, rangeTo, effectiveSoloLaneID)),
     [doc, rangeFrom, rangeTo, effectiveSoloLaneID],
   );
+  useEffect(() => {
+    currentPreviewKeyRef.current = currentPreviewKey;
+    // A render played by hand holds the stage only until the next edit —
+    // an undo back to that timeline later is not the same choice.
+    setStagePinnedKey((pinned) => (pinned !== null && pinned !== currentPreviewKey ? null : pinned));
+  }, [currentPreviewKey]);
   const stageFreshness: CompositionPreviewFreshness | null = preview ? compositionPreviewFreshness(preview.key, currentPreviewKey) : null;
   const stageStale = stageFreshness !== null && stageFreshness !== 'current';
-  // A running preview of exactly this timeline is the fix already underway.
+  // A running preview of exactly this timeline is the fix already underway;
+  // one of an older timeline can be restarted with the edits (Replace).
   const renderingLatest = !!runningRender && runningRender.mode !== 'export' && runningRender.previewKey === currentPreviewKey;
+  const restartable = !!runningRender && runningRender.mode !== 'export' && !renderingLatest && !renderBlocked;
   // The Render button doubles as the stage's freshness light: primary with
   // nothing staged, lit when the staged render no longer matches the
-  // timeline, quiet when it does — and clickable whenever no render runs.
-  const renderButton = ((): {label: string; className: string; title: string} => {
-    if (runningRender) {
+  // timeline, quiet when it does. A running preview of an older timeline
+  // turns it into "Restart with changes"; an export holds it until done.
+  const renderButton = ((): {label: string; className: string; title: string; disabled: boolean} => {
+    if (runningRender && !restartable) {
+      const percent = Math.round((runningRender.progress ?? 0) * 100);
+      if (runningRender.mode === 'export') {
+        return {label: `Exporting… ${percent}%`, className: 'editor-generate', title: 'An export is rendering — previews wait until it finishes', disabled: true};
+      }
       return {
-        label: `Rendering… ${Math.round((runningRender.progress ?? 0) * 100)}%`,
+        label: `Rendering… ${percent}%`,
         className: 'editor-generate',
-        title: renderingLatest ? 'Rendering this timeline — the stage switches to it when it lands' : 'A render is running — cancel it to start another',
+        title: renderingLatest
+          ? 'Rendering this timeline — the stage switches to it when it lands'
+          : "Rendering an earlier version of the timeline — the current one can't render until it's fixed",
+        disabled: true,
+      };
+    }
+    if (restartable) {
+      return {
+        label: 'Restart with changes',
+        className: 'editor-generate composition-render-stale',
+        title: 'The running render predates your latest edits — replace it with a render of the timeline as it is now',
+        disabled: false,
       };
     }
     const label = stageStale ? 'Re-render preview' : 'Render preview';
     const className = stageFreshness === 'current' ? 'composition-render-current' : `editor-generate${stageStale ? ' composition-render-stale' : ''}`;
-    if (missingRefs.size > 0) return {label, className, title: 'A source file is missing — the render refuses until it is removed'};
-    if (problems.length > 0) return {label, className, title: 'Fix the timeline problems first'};
+    if (missingRefs.size > 0) return {label, className, title: 'A source file is missing — the render refuses until it is removed', disabled: true};
+    if (renderBlocked) return {label, className, title: problems.length > 0 ? 'Fix the timeline problems first' : 'Add clips or audio to render a preview', disabled: true};
     switch (stageFreshness) {
       case 'current':
-        return {label, className, title: 'The preview already shows this timeline — render it again anyway'};
+        return {label, className, title: 'The preview already shows this timeline — render it again anyway', disabled: false};
       case 'settings':
-        return {label, className, title: 'The range or solo lane changed after this preview — render it again'};
+        return {label, className, title: 'The range or solo lane changed after this preview — render it again', disabled: false};
       case 'timeline':
       case 'unknown':
-        return {label, className, title: 'The timeline changed after this preview was rendered — render it again'};
+        return {label, className, title: 'The timeline changed after this preview was rendered — render it again', disabled: false};
       default:
-        return {label, className, title: 'Render the working timeline to a preview file — no save required'};
+        return {label, className, title: 'Render the working timeline to a preview file — no save required', disabled: false};
     }
   })();
 
@@ -724,21 +875,50 @@ export function CompositionEditor(props: {
       return;
     }
     playOnStageRef.current = true;
-    setPreview(stagePreviewFromOp(op));
+    setStagePinnedKey(currentPreviewKeyRef.current);
+    stageRender(op, false);
   };
   useEffect(() => {
     if (!playOnStageRef.current) {
       return;
     }
     playOnStageRef.current = false;
-    void previewMediaRef.current?.play();
+    void previewMediaRef.current?.play().catch(() => {});
   }, [preview]);
+  // A render that replaced the staged one resumes where the viewer was, once
+  // the new file's metadata says how long it is.
+  const resumeStagedMedia = () => {
+    const media = previewMediaRef.current;
+    const resume = resumeRef.current;
+    resumeRef.current = null;
+    if (!media || !resume) {
+      return;
+    }
+    const at = resume.time - (previewRef.current?.offsetSeconds ?? 0);
+    if (at > 0 && at < (media.duration || 0)) {
+      media.currentTime = at;
+    }
+    if (resume.playing) {
+      void media.play().catch(() => {});
+    }
+    handleMediaTime();
+  };
 
+  // Every preview submit ticks this, so a pending auto-update timer can tell
+  // that a click already rendered.
+  const submitCountRef = useRef(0);
   // submitRender previews the WORKING document — the no-forced-save
   // contract; the export path pins a saved revision. The request carries the
-  // key of what it asks to see, and the op echoes it back to the stage.
-  const submitRender = async () => {
+  // key of what it asks to see, and the op echoes it back to the stage. It
+  // always replaces a running preview (the button only offers that when the
+  // running one is outdated); with auto-update on, every preview is an auto
+  // render sharing the auto row, whoever started it. A refused submit is a
+  // key auto-update won't retry on its own.
+  const submitRender = async (fromAutoUpdate = false) => {
     const options = previewRequestOptions(rangeFrom, rangeTo, effectiveSoloLaneID);
+    const key = compositionPreviewKey(docRef.current, options);
+    const auto = autoPreview;
+    submitCountRef.current += 1;
     try {
       const op = await AppBindings.SubmitCompositionRender(main.CompositionRenderRequest.createFrom({
         conversationId: sourceConversationID,
@@ -747,13 +927,33 @@ export function CompositionEditor(props: {
         ...(options.startSeconds !== null ? {startSeconds: options.startSeconds} : {}),
         ...(options.endSeconds !== null ? {endSeconds: options.endSeconds} : {}),
         ...(options.soloLaneId ? {soloLaneId: options.soloLaneId} : {}),
-        previewKey: compositionPreviewKey(docRef.current, options),
+        previewKey: key,
+        replace: true,
+        ...(auto ? {auto: true} : {}),
       }));
       addRenderOp(op);
     } catch (error) {
-      notifyError("Couldn't start the preview", error);
+      setAutoSkipKey(key);
+      if (fromAutoUpdate) {
+        notifyError("Auto-update couldn't start the preview", error, {key: 'composition-auto-update'});
+      } else {
+        notifyError("Couldn't start the preview", error);
+      }
     }
   };
+
+  const toggleAutoPreview = (enabled: boolean) => {
+    setAutoPreview(enabled);
+    if (enabled) {
+      setAutoSkipKey('');
+    }
+    try {
+      window.localStorage.setItem(autoPreviewStorageKey, enabled ? '1' : '0');
+    } catch {
+      // Storage refused (private mode): the choice holds for this session.
+    }
+  };
+
 
   const cancelRender = async (operationID: string) => {
     try {
@@ -982,6 +1182,77 @@ export function CompositionEditor(props: {
     };
   }, [drag, timelineExtent, props.suspended]);
 
+  // Auto-update: once the timeline has sat still for a beat — no drag in
+  // flight, the editor on screen — a stage that doesn't show it is brought up
+  // to date: a listed render of exactly this timeline is restaged, anything
+  // else re-renders (restarting a preview still busy with an older edit). The
+  // decision is the model's (compositionAutoPreviewAction); this only times
+  // it. The timer checks the submit count when it fires, so a click that
+  // rendered in the meantime wins.
+  const completedPreviews = renderRows.filter((op) => op.mode !== 'export' && op.status === 'completed' && !!op.resultUrl);
+  const autoAction = compositionAutoPreviewAction({
+    enabled: autoPreview,
+    paused: !!props.suspended || drag !== null,
+    pinned: stagePinnedKey === currentPreviewKey,
+    blocked: renderBlocked,
+    currentKey: currentPreviewKey,
+    stagedKey: preview?.key ?? null,
+    running: runningRender ? {mode: runningRender.mode, previewKey: runningRender.previewKey} : null,
+    completedKeys: completedPreviews.map((op) => op.previewKey ?? ''),
+    skipKey: autoSkipKey,
+  });
+  const autoRenders = autoAction === 'render';
+  const latestRef = useRef({submitRender, completedPreviews});
+  latestRef.current = {submitRender, completedPreviews};
+  useEffect(() => {
+    if (autoAction === 'none') {
+      return;
+    }
+    const submitsAtSchedule = submitCountRef.current;
+    const timer = window.setTimeout(() => {
+      if (autoAction === 'stage') {
+        const listed = latestRef.current.completedPreviews.find((op) => op.previewKey === currentPreviewKey);
+        if (listed) {
+          stageRender(listed, true);
+        }
+        return;
+      }
+      if (submitCountRef.current === submitsAtSchedule) {
+        void latestRef.current.submitRender(true);
+      }
+    }, autoAction === 'stage' ? autoRestageDelayMs : autoPreviewDelayMs);
+    return () => window.clearTimeout(timer);
+  }, [autoAction, currentPreviewKey]);
+
+  // A completed auto render's file goes once a newer render has replaced it
+  // in the auto row and on the stage — nothing can reach it after that.
+  useEffect(() => {
+    for (const id of [...autoFilesRef.current]) {
+      if (id !== autoRender?.id && id !== preview?.opId) {
+        autoFilesRef.current.delete(id);
+        void AppBindings.DiscardCompositionPreview(id).catch(() => {});
+      }
+    }
+  }, [autoRender?.id, preview?.opId]);
+
+  // Closing the editor leaves no way back to its previews (a reopened
+  // composer lists only renders still in flight), so their files go, and an
+  // auto render still running is cancelled — it was upkeep for a stage that
+  // no longer exists. A manual render keeps running and lands in a reopened
+  // composer, as before.
+  const rendersRef = useRef(renders);
+  rendersRef.current = renders;
+  useEffect(() => () => {
+    const auto = autoRenderRef.current;
+    if (auto && renderInFlight(auto)) {
+      void CancelCompositionRender(auto.id).catch(() => {});
+    }
+    const finished = rendersRef.current.filter((op) => op.mode !== 'export' && op.status === 'completed' && op.resultUrl).map((op) => op.id);
+    for (const id of new Set([...autoFilesRef.current, ...finished])) {
+      void AppBindings.DiscardCompositionPreview(id).catch(() => {});
+    }
+  }, []);
+
   // addMedia resolves and measures one picked asset, then lands it: videos
   // and images (as stills held for the default length) append to the video
   // lane, audio queues onto the selected lane when one is selected, else the
@@ -1077,6 +1348,9 @@ export function CompositionEditor(props: {
         mode: 'export',
         artifactId: artifactID,
         includeAudio: exportIncludeAudio,
+        // A running preview yields to the export (Replace never stops an
+        // export, and auto-update waits for this one).
+        replace: true,
         ...(exportAdvancedOpen && Number.isFinite(width) && width > 0 ? {width} : {}),
         ...(exportAdvancedOpen && Number.isFinite(height) && height > 0 ? {height} : {}),
         ...(exportAdvancedOpen && Number.isFinite(fps) && fps > 0 ? {fps} : {}),
@@ -1216,18 +1490,18 @@ export function CompositionEditor(props: {
               <div className={`composition-stage-media${preview.audioOnly ? ' audio' : ''}${stageStale ? ' stale' : ''}`}>
                 {preview.audioOnly ? (
                   <audio key={preview.url} ref={(el) => { previewMediaRef.current = el; }} className="composition-preview composition-preview-audio" src={preview.url} controls
-                    onTimeUpdate={handleMediaTime} onSeeked={handleMediaTime} onVolumeChange={() => { if (previewMediaRef.current) setTransportMuted(previewMediaRef.current.muted); }}
+                    onLoadedMetadata={resumeStagedMedia} onTimeUpdate={handleMediaTime} onSeeked={handleMediaTime} onVolumeChange={() => { if (previewMediaRef.current) setTransportMuted(previewMediaRef.current.muted); }}
                     onPlay={() => { setTransportPlaying(true); startPlayheadLoop(); }} onPause={() => { setTransportPlaying(false); stopPlayheadLoop(); handleMediaTime(); }} onEnded={() => { setTransportPlaying(false); stopPlayheadLoop(); handleMediaTime(); }} />
                 ) : (
                   <video key={preview.url} ref={(el) => { previewMediaRef.current = el; }} className="composition-preview" src={preview.url} poster={compositionPosterURL(preview.url)} controls
-                    onTimeUpdate={handleMediaTime} onSeeked={handleMediaTime} onVolumeChange={() => { if (previewMediaRef.current) setTransportMuted(previewMediaRef.current.muted); }}
+                    onLoadedMetadata={resumeStagedMedia} onTimeUpdate={handleMediaTime} onSeeked={handleMediaTime} onVolumeChange={() => { if (previewMediaRef.current) setTransportMuted(previewMediaRef.current.muted); }}
                     onPlay={() => { setTransportPlaying(true); startPlayheadLoop(); }} onPause={() => { setTransportPlaying(false); stopPlayheadLoop(); handleMediaTime(); }} onEnded={() => { setTransportPlaying(false); stopPlayheadLoop(); handleMediaTime(); }} />
                 )}
                 {/* The staged render lags the timeline: say so where the
                     eye already is. Pointer-transparent over the video so its
                     controls keep working. */}
                 {stageFreshness !== null && stageStale ? (
-                  <div className="composition-stage-badge" role="status">{stalePreviewText(stageFreshness, renderingLatest)}</div>
+                  <div className="composition-stage-badge" role="status">{stalePreviewText(stageFreshness, renderingLatest, autoRenders)}</div>
                 ) : null}
               </div>
             ) : (
@@ -1241,7 +1515,7 @@ export function CompositionEditor(props: {
               <button
                 type="button"
                 className={renderButton.className}
-                disabled={renderDisabled}
+                disabled={renderButton.disabled}
                 title={renderButton.title}
                 onClick={() => void submitRender()}
               >
@@ -1250,6 +1524,13 @@ export function CompositionEditor(props: {
               {runningRender ? (
                 <button type="button" onClick={() => void cancelRender(runningRender.id)}>Cancel</button>
               ) : null}
+              <label
+                className="composition-toggle composition-auto-toggle"
+                title="Re-render the preview on its own about a second after each change settles — never mid-drag; a newer edit restarts a render still running. Each preview re-encodes the whole timeline (or the From/To range) at full output size, so a long sequence keeps ffmpeg busy while you edit."
+              >
+                <input type="checkbox" checked={autoPreview} onChange={(event) => toggleAutoPreview(event.target.checked)} />
+                Auto-update
+              </label>
               <label className="composition-field" title="Render only part of the output timeline — leave empty for the whole sequence">
                 <span>From (s)</span>
                 <input type="number" min={0} step={0.5} value={rangeFrom} placeholder="0" onChange={(event) => setRangeFrom(event.target.value)} />
@@ -1652,7 +1933,7 @@ export function CompositionEditor(props: {
             <button
               type="button"
               className="editor-generate"
-              disabled={exporting || renderDisabled}
+              disabled={exporting || renderBlocked || runningRender?.mode === 'export'}
               title={dirty || !activeArtifactID
                 ? 'Save the working timeline as a revision, then export that revision — later edits cannot change the file'
                 : `Export the pinned revision into the conversation as a new ${audioOnly ? 'audio' : 'video'} artifact`}
@@ -1685,14 +1966,14 @@ export function CompositionEditor(props: {
         </aside>
       </div>
 
-      <EditsPanel count={log.length + renders.length} emptyText="Nothing rendered or saved yet." bodyReservePx={editsPanelBodyReservePx}>
+      <EditsPanel count={log.length + renderRows.length} emptyText="Nothing rendered or saved yet." bodyReservePx={editsPanelBodyReservePx}>
         <ul className="editor-op-list">
-          {renders.map((op) => (
+          {renderRows.map((op) => (
             <li key={op.id} className={`editor-op editor-op-${op.status}`}>
               <span className="editor-op-thumb-glyph">{op.status === 'completed' ? '▶' : op.status === 'failed' ? '✕' : op.status === 'cancelled' ? '–' : '⋯'}</span>
               <div className="editor-op-meta">
                 <span className="editor-op-title">
-                  {op.mode === 'export' ? 'Export' : 'Preview'} · {op.audioOnly ? 'audio only' : `${op.width || '?'}×${op.height || '?'}`} · {formatCompositionClock(op.outputSeconds || 0)}
+                  {op.mode === 'export' ? 'Export' : op.auto ? 'Auto preview' : 'Preview'} · {op.audioOnly ? 'audio only' : `${op.width || '?'}×${op.height || '?'}`} · {formatCompositionClock(op.outputSeconds || 0)}
                   {op.rangeStartSeconds !== undefined && op.rangeEndSeconds !== undefined
                     ? ` · ${formatCompositionClock(op.rangeStartSeconds)}–${formatCompositionClock(op.rangeEndSeconds)}`
                     : ''}

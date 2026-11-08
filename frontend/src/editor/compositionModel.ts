@@ -357,6 +357,53 @@ export function compositionPreviewFreshness(renderedKey: string | null | undefin
   return renderedKey.split('.')[0] === currentKey.split('.')[0] ? 'settings' : 'timeline';
 }
 
+// compositionPreviewTakesStage decides whether a render that just finished
+// replaces the staged one: always, unless the stage already shows the
+// timeline as it is and the newcomer doesn't — an undo landed while it was
+// rendering, so it would only swap a current preview for an outdated one
+// (its row still plays it). A null staged key means nothing is staged.
+export function compositionPreviewTakesStage(stagedKey: string | null, incomingKey: string, currentKey: string): boolean {
+  return stagedKey === null || stagedKey !== currentKey || incomingKey === currentKey;
+}
+
+export type CompositionAutoPreviewState = {
+  enabled: boolean;
+  // A drag in flight, or the editor hidden under another screen.
+  paused: boolean;
+  // The viewer put an older render on the stage by hand (an Edits row's
+  // Play) and hasn't edited since.
+  pinned: boolean;
+  // The timeline can't render (problems, missing sources, nothing on it).
+  blocked: boolean;
+  currentKey: string;
+  stagedKey: string | null;
+  // The newest render in flight, if any.
+  running: {mode: string; previewKey?: string} | null;
+  // Keys of finished previews still listed — any of them can be staged.
+  completedKeys: string[];
+  // The key auto-update gave up on (a failed or hand-cancelled render).
+  skipKey: string;
+};
+
+// compositionAutoPreviewAction is auto-update's decision for the timeline as
+// it is now, once the editor's settle delay passes: 'stage' a listed render
+// that already shows it (an undo back to a rendered state costs nothing),
+// 'render' it, or do nothing — the setting off, a drag in flight, the editor
+// hidden, a render the viewer chose to watch, the stage already current, an
+// unrenderable timeline, an export running (nothing replaces an export), a
+// render of exactly this timeline under way, or the key it last gave up on (so
+// a broken ffmpeg can't loop it). A running preview of an OLDER timeline
+// doesn't stop a render: the new one replaces it.
+export function compositionAutoPreviewAction(state: CompositionAutoPreviewState): 'stage' | 'render' | 'none' {
+  if (!state.enabled || state.paused || state.pinned) return 'none';
+  if (state.stagedKey === state.currentKey) return 'none';
+  if (state.completedKeys.includes(state.currentKey)) return 'stage';
+  if (state.blocked) return 'none';
+  if (state.skipKey !== '' && state.skipKey === state.currentKey) return 'none';
+  if (state.running && (state.running.mode === 'export' || state.running.previewKey === state.currentKey)) return 'none';
+  return 'render';
+}
+
 export function clipDurationSeconds(clip: CompositionClip): number {
   return Math.max(0, clip.outSeconds - clip.inSeconds);
 }
