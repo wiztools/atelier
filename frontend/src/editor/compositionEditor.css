@@ -537,22 +537,27 @@
   color: #8d9498;
 }
 
-/* The preview stage: the rendered proxy and the controls that produce it.
-   The media element is native controls — the preview IS the render, so
-   scrubbing it is exactly what export produces (render-to-preview only). */
+/* The preview stage: the rendered proxy. The media element is native
+   controls — the preview IS the render, so scrubbing it is exactly what export
+   produces (render-to-preview only). The controls that produce it are the
+   next row, outside the stage. */
 
 .composition-stage {
   display: flex;
   flex-direction: column;
-  gap: 8px;
   /* Compresses when the window is short (the video editor's stage rule) —
-     the timeline keeps its floor and the lanes scroll inside it instead. */
+     the timeline keeps its floor and the lanes scroll inside it instead. The
+     media shrinks with it (min-height 0 down the chain, letterboxing inside
+     the element box), so the player's own controls stay at its bottom edge
+     rather than being cut off. */
   flex: 0 1 auto;
   min-height: 0;
   overflow: hidden;
 }
 
 .composition-preview {
+  flex: 0 1 auto;
+  min-height: 0;
   width: 100%;
   max-height: 280px;
   border-radius: 6px;
@@ -560,14 +565,20 @@
   transition: opacity 160ms ease, filter 160ms ease;
 }
 
-/* The staged media's frame — the anchor the freshness badge sits on. A
-   non-shrinking flex column, so the media sizes exactly as it did as the
-   stage's direct child (and no inline baseline gap opens beneath it). */
+/* An audio player is one fixed-height control bar — squeezing it would crush
+   the bar, so it keeps its height and the stage clips instead. */
+.composition-preview-audio {
+  flex-shrink: 0;
+}
+
+/* The staged media's frame — the anchor the freshness badge sits on. It
+   shrinks with the stage, handing the squeeze down to the media. */
 .composition-stage-media {
   position: relative;
   display: flex;
   flex-direction: column;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-height: 0;
   gap: 6px;
 }
 
@@ -635,7 +646,11 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 120px;
+  /* A hint, not content: it gives way to a short window like the media. */
+  flex: 0 1 auto;
+  height: 120px;
+  min-height: 0;
+  overflow: hidden;
   padding: 12px;
   font-size: 12px;
   font-style: italic;
@@ -645,7 +660,10 @@
   border-radius: 6px;
 }
 
+/* Never compressed: the Render button is the stage's freshness light, so this
+   row stays whole whatever the window's height — the stage above yields. */
 .composition-stage-controls {
+  flex: 0 0 auto;
   display: flex;
   align-items: flex-end;
   flex-wrap: wrap;

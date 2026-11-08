@@ -1512,44 +1512,49 @@ export function CompositionEditor(props: {
                   : 'No preview yet — render one to watch the assembled sequence. Trims, dissolves, and the audio mix are exactly what export will produce.'}
               </div>
             )}
-            <div className="composition-stage-controls">
-              <button
-                type="button"
-                className={renderButton.className}
-                disabled={renderButton.disabled}
-                title={renderButton.title}
-                onClick={() => void submitRender()}
-              >
-                {renderButton.label}
-              </button>
-              {runningRender ? (
-                <button type="button" onClick={() => void cancelRender(runningRender.id)}>Cancel</button>
-              ) : null}
-              <label
-                className="composition-toggle composition-auto-toggle"
-                title="Re-render the preview on its own about a second after each change settles — never mid-drag; a newer edit restarts a render still running. Each preview re-encodes the whole timeline (or the From/To range) at full output size, so a long sequence keeps ffmpeg busy while you edit."
-              >
-                <input type="checkbox" checked={autoPreview} onChange={(event) => toggleAutoPreview(event.target.checked)} />
-                Auto-update
+          </div>
+
+          {/* The render controls are their own row, outside the stage: a
+              short window compresses the stage (the media letterboxes down),
+              never this row — the Render button is the freshness light, so it
+              must stay on screen whenever the badge can say "outdated". */}
+          <div className="composition-stage-controls">
+            <button
+              type="button"
+              className={renderButton.className}
+              disabled={renderButton.disabled}
+              title={renderButton.title}
+              onClick={() => void submitRender()}
+            >
+              {renderButton.label}
+            </button>
+            {runningRender ? (
+              <button type="button" onClick={() => void cancelRender(runningRender.id)}>Cancel</button>
+            ) : null}
+            <label
+              className="composition-toggle composition-auto-toggle"
+              title="Re-render the preview on its own about a second after each change settles — never mid-drag; a newer edit restarts a render still running. Each preview re-encodes the whole timeline (or the From/To range) at full output size, so a long sequence keeps ffmpeg busy while you edit."
+            >
+              <input type="checkbox" checked={autoPreview} onChange={(event) => toggleAutoPreview(event.target.checked)} />
+              Auto-update
+            </label>
+            <label className="composition-field" title="Render only part of the output timeline — leave empty for the whole sequence">
+              <span>From (s)</span>
+              <input type="number" min={0} step={0.5} value={rangeFrom} placeholder="0" onChange={(event) => setRangeFrom(event.target.value)} />
+            </label>
+            <label className="composition-field" title="Range end — leave empty to run to the sequence end">
+              <span>To (s)</span>
+              <input type="number" min={0} step={0.5} value={rangeTo} placeholder={formatCompositionClock(timelineExtent)} onChange={(event) => setRangeTo(event.target.value)} />
+            </label>
+            {doc.audioLanes.length ? (
+              <label className="composition-field" title="Preview with only this lane audible — every other lane and the clips' original audio drop out">
+                <span>Solo lane</span>
+                <select value={effectiveSoloLaneID} onChange={(event) => setSoloLaneID(event.target.value)}>
+                  <option value="">— none —</option>
+                  {doc.audioLanes.map((lane) => <option key={lane.id} value={lane.id}>{lane.name}</option>)}
+                </select>
               </label>
-              <label className="composition-field" title="Render only part of the output timeline — leave empty for the whole sequence">
-                <span>From (s)</span>
-                <input type="number" min={0} step={0.5} value={rangeFrom} placeholder="0" onChange={(event) => setRangeFrom(event.target.value)} />
-              </label>
-              <label className="composition-field" title="Range end — leave empty to run to the sequence end">
-                <span>To (s)</span>
-                <input type="number" min={0} step={0.5} value={rangeTo} placeholder={formatCompositionClock(timelineExtent)} onChange={(event) => setRangeTo(event.target.value)} />
-              </label>
-              {doc.audioLanes.length ? (
-                <label className="composition-field" title="Preview with only this lane audible — every other lane and the clips' original audio drop out">
-                  <span>Solo lane</span>
-                  <select value={effectiveSoloLaneID} onChange={(event) => setSoloLaneID(event.target.value)}>
-                    <option value="">— none —</option>
-                    {doc.audioLanes.map((lane) => <option key={lane.id} value={lane.id}>{lane.name}</option>)}
-                  </select>
-                </label>
-              ) : null}
-            </div>
+            ) : null}
           </div>
 
           <div className="composition-timeline">
