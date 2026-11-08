@@ -10,6 +10,9 @@ import {
   cloneCompositionDoc,
   compositionClipLayout,
   compositionIsAudioOnly,
+  compositionPreviewFreshness,
+  compositionPreviewKey,
+  compositionPreviewRange,
   compositionProblems,
   compositionSequenceDuration,
   compositionStillDefaultSeconds,
@@ -29,14 +32,18 @@ import {
   normalizeTransitionKind,
   outputFrameSource,
   reattachClipAudio,
+  removeClip,
   removeDuck,
   removeSegment,
+  renameComposition,
+  renameLane,
   resolveOutputFrame,
   sameCompositionDoc,
   setClipAudio,
   setClipRange,
   setClipTransition,
   setCompositionOutput,
+  setLaneMix,
   setSegmentMix,
   setSegmentRange,
   setStillDuration,
@@ -266,5 +273,49 @@ assert(clampStillLength(compositionStillMaxSeconds + 1) === compositionStillMaxS
 assert(clampStillLength(-3) === compositionStillMinSeconds, 'clampStillLength clamps to the floor');
 assert(clampStillLength(NaN) === null, 'clampStillLength refuses NaN');
 assert(compositionStillFrameMaxEdge === 1920, 'the frame cap mirrors Go');
+
+// Preview freshness: the key covers what reaches the renderer and nothing
+// else, and its two halves say whether the timeline or the options moved.
+// threeClips is 10s + 5s + 8s with a 1s dissolve after the first (22s).
+const keyedLanes = addLane(threeClips(), 'Music');
+const keyedLane = keyedLanes.audioLanes[0].id;
+const keyed = addSegmentToLane(keyedLanes, keyedLane, audioRef('aud_1', 6), 2);
+const baseKey = compositionPreviewKey(keyed);
+assert(baseKey === compositionPreviewKey(cloneCompositionDoc(keyed)), 'the key is deterministic across clones');
+assert(/^[0-9a-z]+\.[0-9a-z]+$/.test(baseKey), `the key is two hashed halves, got ${baseKey}`);
+assert(compositionPreviewFreshness(baseKey, baseKey) === 'current', 'an unchanged timeline is current');
+// The reported bugs: removing a clip and adding a transition both stale it.
+const removedKey = compositionPreviewKey(removeClip(keyed, keyed.video[1].id));
+assert(compositionPreviewFreshness(baseKey, removedKey) === 'timeline', 'removing a clip stales the preview');
+const dissolvedKey = compositionPreviewKey(setClipTransition(keyed, keyed.video[1].id, {seconds: 1, audioCrossfade: true}));
+assert(compositionPreviewFreshness(baseKey, dissolvedKey) === 'timeline', 'adding a transition stales the preview');
+const rekindKey = compositionPreviewKey(setClipTransition(keyed, keyed.video[0].id, {kind: 'wipeleft', seconds: 1, audioCrossfade: true}));
+assert(compositionPreviewFreshness(baseKey, rekindKey) === 'timeline', 'changing a transition kind stales the preview');
+const mixKey = compositionPreviewKey(setLaneMix(keyed, keyedLane, {gainDb: -6}));
+assert(compositionPreviewFreshness(baseKey, mixKey) === 'timeline', 'a lane gain change stales the preview');
+const fitKey = compositionPreviewKey(setCompositionOutput(keyed, {fit: 'blur'}));
+assert(compositionPreviewFreshness(baseKey, fitKey) === 'timeline', 'an output fit change stales the preview');
+// Names never reach the renderer.
+assert(compositionPreviewKey(renameComposition(keyed, 'Retitled')) === baseKey, 'renaming the composition keeps the preview current');
+assert(compositionPreviewKey(renameLane(keyed, keyedLane, 'Music bed')) === baseKey, 'renaming a lane keeps the preview current');
+// Options: the range and solo lane move only the second half.
+const rangedKey = compositionPreviewKey(keyed, {startSeconds: 2, endSeconds: 6});
+assert(compositionPreviewFreshness(baseKey, rangedKey) === 'settings', 'a range change is a settings change');
+const soloKey = compositionPreviewKey(keyed, {soloLaneId: keyedLane});
+assert(compositionPreviewFreshness(baseKey, soloKey) === 'settings', 'a solo change is a settings change');
+assert(compositionPreviewFreshness(rangedKey, removedKey) === 'timeline', 'a timeline change outranks a settings change');
+// Ranges that render the same file key the same (Go's normalization, plus
+// "covers everything" = no range).
+assert(compositionPreviewKey(keyed, {startSeconds: 0}) === baseKey, 'a range starting at zero with no end is the whole timeline');
+assert(compositionPreviewKey(keyed, {startSeconds: -3, endSeconds: 99}) === baseKey, 'a range past both ends is the whole timeline');
+assert(compositionPreviewKey(keyed, {startSeconds: 5, endSeconds: 5}) === baseKey, 'a degenerate range renders the whole timeline');
+assert(compositionPreviewKey(keyed, {startSeconds: 5, endSeconds: 99}) === compositionPreviewKey(keyed, {startSeconds: 5}), 'an end past the sequence clamps to it');
+assert(compositionPreviewKey(keyed, {startSeconds: null, endSeconds: null}) === baseKey, 'null bounds are no range');
+// The range total follows the renderer: the video sequence, or the audio
+// extent once the lane holds no video.
+assert(compositionPreviewRange(keyed, 3, null)?.end === 22, 'a video doc ranges over its sequence');
+const audioOnlyKeyed = normalizeCompositionDoc({video: [], audioLanes: [{id: 'l1', name: 'Mix', segments: [{id: 's1', ref: audioRef('aud_1', 9), inSeconds: 0, outSeconds: 9, startSeconds: 0}]}]});
+assert(compositionPreviewRange(audioOnlyKeyed, 3, null)?.end === 9, 'an audio-only doc ranges over its audio extent');
+assert(compositionPreviewFreshness('', baseKey) === 'unknown' && compositionPreviewFreshness(undefined, baseKey) === 'unknown', 'a render without a key cannot be vouched for');
 
 console.log('composition model assertions passed');

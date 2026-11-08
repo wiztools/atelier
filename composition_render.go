@@ -716,6 +716,12 @@ type CompositionRenderRequest struct {
 	Height         int             `json:"height,omitempty"`
 	FPS            float64         `json:"fps,omitempty"`
 	CRF            int             `json:"crf,omitempty"`
+	// PreviewKey is the editor's fingerprint of what it asked to see — the
+	// document's render-relevant content plus the range and solo lane, as the
+	// editor computes it (compositionPreviewKey in compositionModel.ts).
+	// Opaque here: the op echoes it so the editor can tell whether the render
+	// on its stage still matches the timeline.
+	PreviewKey string `json:"previewKey,omitempty"`
 }
 
 // CompositionRenderOperation is the live op the editor tracks; every
@@ -750,8 +756,12 @@ type CompositionRenderOperation struct {
 	RangeStart       *float64 `json:"rangeStartSeconds,omitempty"`
 	RangeEnd         *float64 `json:"rangeEndSeconds,omitempty"`
 	SoloLaneID       string   `json:"soloLaneId,omitempty"`
-	StartedAt        string   `json:"startedAt"`
-	UpdatedAt        string   `json:"updatedAt"`
+	// PreviewKey echoes the request's fingerprint on every transition, so a
+	// render that outlived its editor still says what it was built from
+	// when a reopened composer stages it.
+	PreviewKey string `json:"previewKey,omitempty"`
+	StartedAt  string `json:"startedAt"`
+	UpdatedAt  string `json:"updatedAt"`
 }
 
 type compositionRenderRun struct {
@@ -853,6 +863,7 @@ func (a *App) SubmitCompositionRender(req CompositionRenderRequest) (Composition
 		RangeEnd:       req.EndSeconds,
 		SoloLaneID:     strings.TrimSpace(req.SoloLaneID),
 		IncludeAudio:   includeAudio,
+		PreviewKey:     strings.TrimSpace(req.PreviewKey),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	run := &compositionRenderRun{conversationID: conversationID, cancel: cancel, op: op,

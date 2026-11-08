@@ -285,6 +285,78 @@ export function sameCompositionDoc(a: CompositionDoc, b: CompositionDoc): boolea
   return JSON.stringify(toWireDoc(a)) === JSON.stringify(toWireDoc(b));
 }
 
+// ---- Preview freshness ----
+// A preview is a finished render, so the stage can lag the timeline. Each
+// render request carries the key of what it was asked to show — the
+// document's render-relevant content, then the render options — and Go echoes
+// it on every op transition (CompositionRenderOperation.previewKey, opaque
+// there), so the stage judges the render it actually SHOWS against the
+// timeline as it is now, even a render that outlived a closed editor.
+
+export type CompositionPreviewOptions = {
+  startSeconds?: number | null;
+  endSeconds?: number | null;
+  soloLaneId?: string;
+};
+
+// compositionPreviewRange is the range a render request resolves to — Go's
+// normalizeCompositionRange over the same total (the sequence, or the audio
+// extent for an audio-only document) — with one more equivalence for the
+// key: a range covering the whole timeline renders the same file as no range.
+// Null means the full timeline.
+export function compositionPreviewRange(doc: CompositionDoc, startSeconds?: number | null, endSeconds?: number | null): {start: number; end: number} | null {
+  const start = startSeconds !== undefined && startSeconds !== null && finite(startSeconds) ? startSeconds : null;
+  const end = endSeconds !== undefined && endSeconds !== null && finite(endSeconds) ? endSeconds : null;
+  if (start === null && end === null) return null;
+  const total = compositionIsAudioOnly(doc) ? compositionAudioExtent(doc) : compositionSequenceDuration(doc);
+  const from = start !== null && start > 0 ? start : 0;
+  const to = end !== null && end < total ? end : total;
+  if (from >= to - compositionMinRangeSeconds) return null;
+  if (from <= 0 && to >= total) return null;
+  return {start: from, end: to};
+}
+
+// previewFingerprint is cyrb53, a fast 53-bit string hash: the key rides
+// every progress event, so it stays short, and a collision only costs one
+// missed staleness note.
+function previewFingerprint(text: string): string {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+// compositionPreviewKey is "<timeline>.<options>". Names never reach the
+// renderer, so the composition's and the lanes' names are blanked — a rename
+// leaves the preview current. The options part is the resolved range (as
+// compositionPreviewRange reads it) and the solo lane, which the caller
+// passes only when that lane still exists.
+export function compositionPreviewKey(doc: CompositionDoc, options: CompositionPreviewOptions = {}): string {
+  const wire = toWireDoc(doc);
+  wire.name = '';
+  for (const lane of wire.audioLanes) lane.name = '';
+  const range = compositionPreviewRange(doc, options.startSeconds, options.endSeconds);
+  const settings = {range: range ? [range.start, range.end] : null, solo: options.soloLaneId ?? ''};
+  return `${previewFingerprint(JSON.stringify(wire))}.${previewFingerprint(JSON.stringify(settings))}`;
+}
+
+// 'current': the render shows the timeline as it is. 'timeline': an edit
+// landed after it. 'settings': only the range or solo lane differs.
+// 'unknown': the render carries no key, so nothing can vouch for it.
+export type CompositionPreviewFreshness = 'current' | 'timeline' | 'settings' | 'unknown';
+
+export function compositionPreviewFreshness(renderedKey: string | null | undefined, currentKey: string): CompositionPreviewFreshness {
+  if (!renderedKey) return 'unknown';
+  if (renderedKey === currentKey) return 'current';
+  return renderedKey.split('.')[0] === currentKey.split('.')[0] ? 'settings' : 'timeline';
+}
+
 export function clipDurationSeconds(clip: CompositionClip): number {
   return Math.max(0, clip.outSeconds - clip.inSeconds);
 }

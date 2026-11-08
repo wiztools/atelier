@@ -585,14 +585,19 @@ func TestCompositionRenderLifecycle(t *testing.T) {
 	// TestMain pins binary lookup off for the whole package; the edit-session
 	// tests re-stub it per phase, and so does this one.
 	stubLocalLookup(t, map[string]string{okConfig.Providers.Local.FFmpeg.Binary: okConfig.Providers.Local.FFmpeg.Binary})
-	op, err := app.SubmitCompositionRender(CompositionRenderRequest{ConversationID: "conv_comp", Doc: &seed.Doc})
+	op, err := app.SubmitCompositionRender(CompositionRenderRequest{ConversationID: "conv_comp", Doc: &seed.Doc, PreviewKey: " key_timeline.key_settings "})
 	if err != nil {
 		t.Fatalf("SubmitCompositionRender returned error: %v", err)
 	}
 	// The op names its conversation from submit through every transition:
-	// the event is app-global, so listeners filter and attribute by it.
+	// the event is app-global, so listeners filter and attribute by it. It
+	// echoes the editor's preview key the same way — opaque, trimmed — so
+	// the stage can tell whether a finished render matches the timeline.
 	if op.ConversationID != "conv_comp" {
 		t.Fatalf("submitted op conversationId = %q, want conv_comp", op.ConversationID)
+	}
+	if op.PreviewKey != "key_timeline.key_settings" {
+		t.Fatalf("submitted op previewKey = %q, want the request's key", op.PreviewKey)
 	}
 	terminal := waitCompositionRenderTerminal(t, app, op.ID)
 	if terminal.Status != "completed" {
@@ -600,6 +605,9 @@ func TestCompositionRenderLifecycle(t *testing.T) {
 	}
 	if terminal.ConversationID != "conv_comp" {
 		t.Fatalf("terminal op conversationId = %q, want conv_comp", terminal.ConversationID)
+	}
+	if terminal.PreviewKey != "key_timeline.key_settings" {
+		t.Fatalf("terminal op previewKey = %q, want the request's key", terminal.PreviewKey)
 	}
 	if terminal.Error != "" || terminal.ResultURL == "" || terminal.OutputSeconds != 8 || terminal.AudioOnly || terminal.Width != 1280 {
 		t.Fatalf("completed op = %+v", terminal)
@@ -640,7 +648,7 @@ func TestCompositionRenderLifecycle(t *testing.T) {
 		t.Fatalf("writeAppConfig: %v", err)
 	}
 	stubLocalLookup(t, map[string]string{sleepConfig.Providers.Local.FFmpeg.Binary: sleepConfig.Providers.Local.FFmpeg.Binary})
-	op, err = app.SubmitCompositionRender(CompositionRenderRequest{ConversationID: "conv_comp", Doc: &seed.Doc})
+	op, err = app.SubmitCompositionRender(CompositionRenderRequest{ConversationID: "conv_comp", Doc: &seed.Doc, PreviewKey: "key_running"})
 	if err != nil {
 		t.Fatalf("SubmitCompositionRender returned error: %v", err)
 	}
@@ -649,8 +657,9 @@ func TestCompositionRenderLifecycle(t *testing.T) {
 	}
 	waitCompositionRenderRunning(t, app, op.ID)
 	// A render outlives its editor: the lister hands a reopened composer the
-	// in-flight op — its own conversation's only.
-	if listed := app.ListCompositionRenders("conv_comp"); len(listed) != 1 || listed[0].ID != op.ID || listed[0].Status != "running" || listed[0].ConversationID != "conv_comp" {
+	// in-flight op — its own conversation's only — with the key it was built
+	// from, so the reopened stage can judge it when it lands.
+	if listed := app.ListCompositionRenders("conv_comp"); len(listed) != 1 || listed[0].ID != op.ID || listed[0].Status != "running" || listed[0].ConversationID != "conv_comp" || listed[0].PreviewKey != "key_running" {
 		t.Fatalf("ListCompositionRenders(conv_comp) = %+v, want the running op", listed)
 	}
 	if listed := app.ListCompositionRenders("conv_other"); listed == nil || len(listed) != 0 {

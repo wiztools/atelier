@@ -1767,6 +1767,7 @@ export namespace main {
 	    rangeStartSeconds?: number;
 	    rangeEndSeconds?: number;
 	    soloLaneId?: string;
+	    previewKey?: string;
 	    startedAt: string;
 	    updatedAt: string;
 	
@@ -1795,6 +1796,7 @@ export namespace main {
 	        this.rangeStartSeconds = source["rangeStartSeconds"];
 	        this.rangeEndSeconds = source["rangeEndSeconds"];
 	        this.soloLaneId = source["soloLaneId"];
+	        this.previewKey = source["previewKey"];
 	        this.startedAt = source["startedAt"];
 	        this.updatedAt = source["updatedAt"];
 	    }
@@ -1812,6 +1814,7 @@ export namespace main {
 	    height?: number;
 	    fps?: number;
 	    crf?: number;
+	    previewKey?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new CompositionRenderRequest(source);
@@ -1831,6 +1834,7 @@ export namespace main {
 	        this.height = source["height"];
 	        this.fps = source["fps"];
 	        this.crf = source["crf"];
+	        this.previewKey = source["previewKey"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

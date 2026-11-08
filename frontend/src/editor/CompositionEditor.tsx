@@ -14,6 +14,7 @@ import {
   CompositionDoc,
   CompositionFit,
   CompositionMediaRef,
+  CompositionPreviewFreshness,
   CompositionSegment,
   addClip,
   addDuck,
@@ -25,6 +26,8 @@ import {
   compositionClipLayout,
   compositionIsAudioOnly,
   compositionMaxAudioLanes,
+  compositionPreviewFreshness,
+  compositionPreviewKey,
   compositionProblems,
   compositionSequenceDuration,
   compositionStillMaxSeconds,
@@ -92,6 +95,33 @@ type Selection =
   | {kind: 'junction'; clipID: string}
   | {kind: 'lane'; laneID: string}
   | {kind: 'segment'; laneID: string; segmentID: string};
+
+// StagePreview is the completed render on the stage. key is the fingerprint
+// it was built from — the op's echo of the request's previewKey — which is
+// what the stage compares against the timeline's key as it is now.
+type StagePreview = {url: string; audioOnly: boolean; offsetSeconds: number; key: string};
+
+function stagePreviewFromOp(op: main.CompositionRenderOperation): StagePreview {
+  return {url: op.resultUrl ?? '', audioOnly: op.audioOnly, offsetSeconds: op.rangeStartSeconds ?? 0, key: op.previewKey ?? ''};
+}
+
+// previewRequestOptions reads the stage controls as a render request does:
+// an unparsable range field means "unbounded", and the solo lane arrives
+// already resolved against the lanes that still exist.
+function previewRequestOptions(rangeFrom: string, rangeTo: string, soloLaneID: string): {startSeconds: number | null; endSeconds: number | null; soloLaneId: string} {
+  const from = parseFloat(rangeFrom);
+  const to = parseFloat(rangeTo);
+  return {startSeconds: Number.isFinite(from) ? from : null, endSeconds: Number.isFinite(to) ? to : null, soloLaneId: soloLaneID};
+}
+
+// stalePreviewText is the stage badge's line for a preview that no longer
+// matches the timeline.
+function stalePreviewText(freshness: CompositionPreviewFreshness, renderingLatest: boolean): string {
+  if (renderingLatest) return 'Updating — rendering the latest changes…';
+  if (freshness === 'settings') return 'Outdated — the range or solo lane changed after this render';
+  if (freshness === 'unknown') return "Can't confirm this preview matches the timeline";
+  return 'Outdated — the timeline changed after this render';
+}
 
 // The Edits panel's height clamp needs this editor's content floor: header +
 // toolbar + the timeline's two-row minimum + paddings.
@@ -352,10 +382,9 @@ export function CompositionEditor(props: {
   // atelier:composition-op event and folds into the row (terminal states
   // never overwrite a later one because the op id keys the merge).
   const [renders, setRenders] = useState<main.CompositionRenderOperation[]>([]);
-  // The stage plays the chosen completed render; renderedDoc is the snapshot
-  // it was built from, so edits after a render show the stale note.
-  const [preview, setPreview] = useState<{url: string; audioOnly: boolean; offsetSeconds: number} | null>(null);
-  const [renderedDoc, setRenderedDoc] = useState<CompositionDoc | null>(null);
+  // The stage plays the chosen completed render, carrying the key it was
+  // built from, so edits after a render light the Render button.
+  const [preview, setPreview] = useState<StagePreview | null>(null);
   const [rangeFrom, setRangeFrom] = useState('');
   const [rangeTo, setRangeTo] = useState('');
   const [soloLaneID, setSoloLaneID] = useState('');
@@ -503,7 +532,7 @@ export function CompositionEditor(props: {
         return next;
       });
       if (op.status === 'completed' && op.resultUrl && op.mode !== 'export') {
-        setPreview({url: op.resultUrl, audioOnly: op.audioOnly, offsetSeconds: op.rangeStartSeconds ?? 0});
+        setPreview(stagePreviewFromOp(op));
       }
     };
     // The canceller, not EventsOff(name): that drops every listener for the
@@ -542,7 +571,49 @@ export function CompositionEditor(props: {
   };
   const renderDisabled = !!runningRender || problems.length > 0 || missingRefs.size > 0 ||
     (doc.video.length === 0 && doc.audioLanes.every((lane) => lane.segments.length === 0));
-  const previewOutdated = !!preview && renderedDoc !== null && !sameCompositionDoc(renderedDoc, doc);
+
+  // A soloed lane that was since removed solos nothing (the renderer would
+  // mute every lane), so a stale id reads as "none" — in the select, the
+  // request, and the key alike.
+  const effectiveSoloLaneID = doc.audioLanes.some((lane) => lane.id === soloLaneID) ? soloLaneID : '';
+  // Freshness: the key of what the controls would render now, against the
+  // key the staged render was built from. Names never reach the renderer, so
+  // renaming the composition or a lane leaves the preview current.
+  const currentPreviewKey = useMemo(
+    () => compositionPreviewKey(doc, previewRequestOptions(rangeFrom, rangeTo, effectiveSoloLaneID)),
+    [doc, rangeFrom, rangeTo, effectiveSoloLaneID],
+  );
+  const stageFreshness: CompositionPreviewFreshness | null = preview ? compositionPreviewFreshness(preview.key, currentPreviewKey) : null;
+  const stageStale = stageFreshness !== null && stageFreshness !== 'current';
+  // A running preview of exactly this timeline is the fix already underway.
+  const renderingLatest = !!runningRender && runningRender.mode !== 'export' && runningRender.previewKey === currentPreviewKey;
+  // The Render button doubles as the stage's freshness light: primary with
+  // nothing staged, lit when the staged render no longer matches the
+  // timeline, quiet when it does — and clickable whenever no render runs.
+  const renderButton = ((): {label: string; className: string; title: string} => {
+    if (runningRender) {
+      return {
+        label: `Rendering… ${Math.round((runningRender.progress ?? 0) * 100)}%`,
+        className: 'editor-generate',
+        title: renderingLatest ? 'Rendering this timeline — the stage switches to it when it lands' : 'A render is running — cancel it to start another',
+      };
+    }
+    const label = stageStale ? 'Re-render preview' : 'Render preview';
+    const className = stageFreshness === 'current' ? 'composition-render-current' : `editor-generate${stageStale ? ' composition-render-stale' : ''}`;
+    if (missingRefs.size > 0) return {label, className, title: 'A source file is missing — the render refuses until it is removed'};
+    if (problems.length > 0) return {label, className, title: 'Fix the timeline problems first'};
+    switch (stageFreshness) {
+      case 'current':
+        return {label, className, title: 'The preview already shows this timeline — render it again anyway'};
+      case 'settings':
+        return {label, className, title: 'The range or solo lane changed after this preview — render it again'};
+      case 'timeline':
+      case 'unknown':
+        return {label, className, title: 'The timeline changed after this preview was rendered — render it again'};
+      default:
+        return {label, className, title: 'Render the working timeline to a preview file — no save required'};
+    }
+  })();
 
   // The playhead: a timeline line pinned to the preview player's position.
   // The line's left is set imperatively (a 60fps React re-render for one
@@ -649,12 +720,11 @@ export function CompositionEditor(props: {
   // must wait for the commit. The flag carries the intent across either.
   const playOnStageRef = useRef(false);
   const playRenderOnStage = (op: main.CompositionRenderOperation) => {
-    const url = op.resultUrl;
-    if (!url) {
+    if (!op.resultUrl) {
       return;
     }
     playOnStageRef.current = true;
-    setPreview({url, audioOnly: op.audioOnly, offsetSeconds: op.rangeStartSeconds ?? 0});
+    setPreview(stagePreviewFromOp(op));
   };
   useEffect(() => {
     if (!playOnStageRef.current) {
@@ -665,20 +735,20 @@ export function CompositionEditor(props: {
   }, [preview]);
 
   // submitRender previews the WORKING document — the no-forced-save
-  // contract; the export path (next milestone) will pin a saved revision.
+  // contract; the export path pins a saved revision. The request carries the
+  // key of what it asks to see, and the op echoes it back to the stage.
   const submitRender = async () => {
-    const from = parseFloat(rangeFrom);
-    const to = parseFloat(rangeTo);
+    const options = previewRequestOptions(rangeFrom, rangeTo, effectiveSoloLaneID);
     try {
       const op = await AppBindings.SubmitCompositionRender(main.CompositionRenderRequest.createFrom({
         conversationId: sourceConversationID,
         mode: 'preview',
         doc: toWireDoc(docRef.current),
-        ...(Number.isFinite(from) ? {startSeconds: from} : {}),
-        ...(Number.isFinite(to) ? {endSeconds: to} : {}),
-        ...(soloLaneID ? {soloLaneId: soloLaneID} : {}),
+        ...(options.startSeconds !== null ? {startSeconds: options.startSeconds} : {}),
+        ...(options.endSeconds !== null ? {endSeconds: options.endSeconds} : {}),
+        ...(options.soloLaneId ? {soloLaneId: options.soloLaneId} : {}),
+        previewKey: compositionPreviewKey(docRef.current, options),
       }));
-      setRenderedDoc(normalizeCompositionDoc(docRef.current));
       addRenderOp(op);
     } catch (error) {
       notifyError("Couldn't start the preview", error);
@@ -1143,33 +1213,39 @@ export function CompositionEditor(props: {
 
           <div className="composition-stage">
             {preview ? (
-              preview.audioOnly ? (
-                <audio key={preview.url} ref={(el) => { previewMediaRef.current = el; }} className="composition-preview composition-preview-audio" src={preview.url} controls
-                  onTimeUpdate={handleMediaTime} onSeeked={handleMediaTime} onVolumeChange={() => { if (previewMediaRef.current) setTransportMuted(previewMediaRef.current.muted); }}
-                  onPlay={() => { setTransportPlaying(true); startPlayheadLoop(); }} onPause={() => { setTransportPlaying(false); stopPlayheadLoop(); handleMediaTime(); }} onEnded={() => { setTransportPlaying(false); stopPlayheadLoop(); handleMediaTime(); }} />
-              ) : (
-                <video key={preview.url} ref={(el) => { previewMediaRef.current = el; }} className="composition-preview" src={preview.url} poster={compositionPosterURL(preview.url)} controls
-                  onTimeUpdate={handleMediaTime} onSeeked={handleMediaTime} onVolumeChange={() => { if (previewMediaRef.current) setTransportMuted(previewMediaRef.current.muted); }}
-                  onPlay={() => { setTransportPlaying(true); startPlayheadLoop(); }} onPause={() => { setTransportPlaying(false); stopPlayheadLoop(); handleMediaTime(); }} onEnded={() => { setTransportPlaying(false); stopPlayheadLoop(); handleMediaTime(); }} />
-              )
+              <div className={`composition-stage-media${preview.audioOnly ? ' audio' : ''}${stageStale ? ' stale' : ''}`}>
+                {preview.audioOnly ? (
+                  <audio key={preview.url} ref={(el) => { previewMediaRef.current = el; }} className="composition-preview composition-preview-audio" src={preview.url} controls
+                    onTimeUpdate={handleMediaTime} onSeeked={handleMediaTime} onVolumeChange={() => { if (previewMediaRef.current) setTransportMuted(previewMediaRef.current.muted); }}
+                    onPlay={() => { setTransportPlaying(true); startPlayheadLoop(); }} onPause={() => { setTransportPlaying(false); stopPlayheadLoop(); handleMediaTime(); }} onEnded={() => { setTransportPlaying(false); stopPlayheadLoop(); handleMediaTime(); }} />
+                ) : (
+                  <video key={preview.url} ref={(el) => { previewMediaRef.current = el; }} className="composition-preview" src={preview.url} poster={compositionPosterURL(preview.url)} controls
+                    onTimeUpdate={handleMediaTime} onSeeked={handleMediaTime} onVolumeChange={() => { if (previewMediaRef.current) setTransportMuted(previewMediaRef.current.muted); }}
+                    onPlay={() => { setTransportPlaying(true); startPlayheadLoop(); }} onPause={() => { setTransportPlaying(false); stopPlayheadLoop(); handleMediaTime(); }} onEnded={() => { setTransportPlaying(false); stopPlayheadLoop(); handleMediaTime(); }} />
+                )}
+                {/* The staged render lags the timeline: say so where the
+                    eye already is. Pointer-transparent over the video so its
+                    controls keep working. */}
+                {stageFreshness !== null && stageStale ? (
+                  <div className="composition-stage-badge" role="status">{stalePreviewText(stageFreshness, renderingLatest)}</div>
+                ) : null}
+              </div>
             ) : (
               <div className="composition-preview-empty">
-                No preview yet — render one to watch the assembled sequence. Trims, dissolves, and the audio mix are exactly what export will produce.
+                {runningRender && runningRender.mode !== 'export'
+                  ? 'Rendering the preview…'
+                  : 'No preview yet — render one to watch the assembled sequence. Trims, dissolves, and the audio mix are exactly what export will produce.'}
               </div>
             )}
             <div className="composition-stage-controls">
               <button
                 type="button"
-                className="editor-generate"
+                className={renderButton.className}
                 disabled={renderDisabled}
-                title={missingRefs.size > 0
-                  ? 'A source file is missing — the render refuses until it is removed'
-                  : problems.length > 0
-                    ? 'Fix the timeline problems first'
-                    : 'Render the working timeline to a preview file — no save required'}
+                title={renderButton.title}
                 onClick={() => void submitRender()}
               >
-                {runningRender ? `Rendering… ${Math.round((runningRender.progress ?? 0) * 100)}%` : 'Render preview'}
+                {renderButton.label}
               </button>
               {runningRender ? (
                 <button type="button" onClick={() => void cancelRender(runningRender.id)}>Cancel</button>
@@ -1185,13 +1261,12 @@ export function CompositionEditor(props: {
               {doc.audioLanes.length ? (
                 <label className="composition-field" title="Preview with only this lane audible — every other lane and the clips' original audio drop out">
                   <span>Solo lane</span>
-                  <select value={soloLaneID} onChange={(event) => setSoloLaneID(event.target.value)}>
+                  <select value={effectiveSoloLaneID} onChange={(event) => setSoloLaneID(event.target.value)}>
                     <option value="">— none —</option>
                     {doc.audioLanes.map((lane) => <option key={lane.id} value={lane.id}>{lane.name}</option>)}
                   </select>
                 </label>
               ) : null}
-              {previewOutdated ? <span className="composition-warning" title="The timeline changed after this preview was rendered">preview outdated — re-render</span> : null}
             </div>
           </div>
 

@@ -93,6 +93,18 @@ const SCENARIO = [
   ['assets-panel', `__smoke.click('button[aria-label="Show assets panel"]')`, 1500],
   ['assets-image', `__smoke.click('button[aria-label="Open generated image 1"]')`, 800],
   ['preview-closed', `__smoke.click('button[aria-label="Close image preview"]')`, 600],
+  // The composer's preview freshness: render the seeded draft, land the
+  // render, remove a clip — the Render button must light (its target only
+  // exists lit) — re-render, land that too, then leave through the
+  // discard-edits dialog.
+  ['composer-open', `__smoke.click('button[aria-label="New composition"]')`, 1500],
+  ['composer-render', `__smoke.click('.composition-stage-controls button', 'Render preview')`, 600],
+  ['composer-rendered', `__smoke.completeRender()`, 800],
+  ['composer-remove-clip', `__smoke.press('.composition-clip', 'vid_1a2b3c4d').then((pressed) => pressed && __smoke.click('button[aria-label="Remove clip"]'))`, 800],
+  ['composer-rerender', `__smoke.click('button.composition-render-stale', 'Re-render preview')`, 600],
+  ['composer-rerendered', `__smoke.completeRender()`, 800],
+  ['composer-close', `__smoke.click('button[aria-label="Close editor"]')`, 600],
+  ['composer-discard', `__smoke.click('.move-dialog button', 'Discard changes')`, 1000],
   ['row-menu', `__smoke.click('button[aria-label="More actions for Storyboard ideas"]')`, 800],
   ['menu-closed', `(() => { document.body.dispatchEvent(new MouseEvent('mousedown', {bubbles: true})); return true; })()`, 400],
   ['models-view', `__smoke.click('button[aria-label="Model overrides for this conversation"]')`, 1200],
@@ -129,6 +141,32 @@ const IN_PAGE_HELPERS = `window.__smoke = {
     if (!el) return false;
     el.dispatchEvent(new KeyboardEvent('keydown', {key, bubbles: true, cancelable: true}));
     return true;
+  },
+  // press() is a pointer press-and-release at the element's center — the
+  // composer's timeline items select on pointerdown, not click. The release
+  // waits a beat so the drag's window listeners are attached to hear it.
+  press(selector, text) {
+    const el = this.find(selector, text);
+    if (!el) return Promise.resolve(false);
+    const rect = el.getBoundingClientRect();
+    const at = {bubbles: true, cancelable: true, button: 0, pointerId: 1, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2};
+    el.dispatchEvent(new PointerEvent('pointerdown', at));
+    return new Promise((resolve) => setTimeout(() => {
+      window.dispatchEvent(new PointerEvent('pointerup', at));
+      setTimeout(() => resolve(true), 200);
+    }, 50));
+  },
+  // completeRender replays the backend's completion event for the newest
+  // submitted composition render, echoing its preview key as Go does.
+  completeRender() {
+    const req = window.__atelier.lastRender;
+    if (!req) return false;
+    const id = window.__atelier.lastRenderId;
+    return window.__atelier.emit('atelier:composition-op', {
+      id, mode: req.mode || 'preview', conversationId: req.conversationId, status: 'completed', progress: 1, notices: [],
+      resultUrl: '/atelier-artifact/tmp/atelier-composition-previews/' + id + '.mp4', outputSeconds: 10, width: 1280, height: 720, fps: 30,
+      audioOnly: false, includeAudio: true, previewKey: req.previewKey, startedAt: '2026-11-04T10:00:00Z', updatedAt: '2026-11-04T10:00:00Z',
+    }) > 0;
   },
 };`;
 

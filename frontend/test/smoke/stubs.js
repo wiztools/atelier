@@ -7,8 +7,10 @@
 // carries an image, a transcript, a markdown document, and a completed run
 // with media usage (so the usage tables, chips, and panels all render), the
 // markdown chip resolves through ResolveMarkdownEditSource so the editor
-// opens, and the search returns the wire shape ({conversation, titleMatched,
-// matches}). Extend a fixture when the session grows a step that needs it.
+// opens, the composer seeds a two-clip draft whose renders the runner
+// completes by replaying atelier:composition-op, and the search returns the
+// wire shape ({conversation, titleMatched, matches}). Extend a fixture when
+// the session grows a step that needs it.
 (() => {
   const at = (day) => `2026-11-0${day}T10:00:00Z`;
   const conversations = [
@@ -52,10 +54,20 @@
       ],
     },
   };
+  // The composer's seeded draft: two measured clips, so the session can
+  // render, remove one, and see the preview go stale. Submitted renders are
+  // recorded (lastRender) so the runner can replay their completion events.
+  const clipRef = (id, seconds) => ({artifactId: id, conversationId: 'conv_alpha', path: `/Users/ana/.atelier/history/conv_alpha/${id}.mp4`, mimeType: 'video/mp4', kind: 'video', durationSeconds: seconds, width: 1280, height: 720, fps: 30, hasAudio: true});
+  const clip = (id, ref) => ({id, ref, inSeconds: 0, outSeconds: ref.durationSeconds, audio: {gainDb: 0, muted: false, detached: false}});
+  const compositionDraft = {
+    schemaVersion: 1, name: 'Untitled composition', output: {width: 0, height: 0, fps: 0, fit: 'pad'}, audioLanes: [],
+    video: [clip('clp_0000000000000000000000a1', clipRef('vid_0a1b2c3d4e5f', 6)), clip('clp_0000000000000000000000a2', clipRef('vid_1a2b3c4d5e6f', 4))],
+  };
+  let renderCount = 0;
   const listeners = {};
   const calls = [];
   window.__atelier = {
-    calls, listeners, lastStream: null,
+    calls, listeners, lastStream: null, lastRender: null, lastRenderId: null,
     emit(name, payload) {
       const cbs = listeners[name] || [];
       cbs.forEach((cb) => cb(payload));
@@ -89,6 +101,13 @@
     }),
     ResolveMarkdownEditSource: () => ({conversationId: 'conv_alpha', conversationTitle: 'Storyboard ideas', artifactId: 'md_0a1b2c3d', url: '/atelier-artifact/conv_alpha/md_0a1b2c3d.md', mimeType: 'text/markdown', format: 'markdown', text: '# Shot list\n\n- Opening wide on the city\n- Close-up on the poster\n', wordCount: 11}),
     SearchConversations: () => ({results: [{conversation: conversations[1], titleMatched: true, matches: []}], truncated: false}),
+    SeedComposition: (req) => ({conversationId: req.conversationId, conversationTitle: 'Storyboard ideas', doc: compositionDraft, missingRefs: [], warnings: []}),
+    SubmitCompositionRender: (req) => {
+      renderCount += 1;
+      window.__atelier.lastRender = req;
+      window.__atelier.lastRenderId = `crend_${renderCount}`;
+      return {id: `crend_${renderCount}`, mode: req.mode || 'preview', conversationId: req.conversationId, status: 'queued', progress: 0, notices: [], outputSeconds: 0, audioOnly: false, includeAudio: true, previewKey: req.previewKey, startedAt: at(4), updatedAt: at(4)};
+    },
   };
   const call = (name) => (...args) => {
     calls.push(name);
