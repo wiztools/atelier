@@ -23,6 +23,8 @@ import (
 	"testing"
 
 	"github.com/zalando/go-keyring"
+
+	"atelier/internal/mediasniff/mediasnifftest"
 )
 
 // withRealLocalLookup restores real PATH lookup for one test.
@@ -101,7 +103,7 @@ printf 'WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nhello\n\n00:00:01.000 --> 00:00
 `
 
 func wavDataURL() string {
-	return "data:audio/wav;base64," + base64.StdEncoding.EncodeToString(buildWAV(8000))
+	return "data:audio/wav;base64," + base64.StdEncoding.EncodeToString(mediasnifftest.WAV(8000))
 }
 
 // m4aDataURL serves an AAC-in-M4A payload — the container extract_audio
@@ -1641,7 +1643,7 @@ func TestWhisperCPPChunksLongClips(t *testing.T) {
 	dir := t.TempDir()
 
 	longWAV := func() string {
-		return "data:audio/wav;base64," + base64.StdEncoding.EncodeToString(buildWAV(488000)) // 61 s at 8 kHz
+		return "data:audio/wav;base64," + base64.StdEncoding.EncodeToString(mediasnifftest.WAV(488000)) // 61 s at 8 kHz
 	}
 	newConfig := func(ffmpegScript string) AppConfig {
 		config := defaultAppConfig()

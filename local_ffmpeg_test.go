@@ -22,6 +22,8 @@ import (
 	"testing"
 
 	"github.com/zalando/go-keyring"
+
+	"atelier/internal/mediasniff/mediasnifftest"
 )
 
 // fakeFFmpegScript fakes the ffmpeg CLI: it appends its args to args.txt next
@@ -1693,7 +1695,7 @@ func TestFFmpegScreenshotAnamorphicCorrection(t *testing.T) {
 		ffmpegPath := writeFakeWhisper(t, bin, "ffmpeg", fakeFFmpegScript)
 		stubLocalLookup(t, map[string]string{"ffmpeg": ffmpegPath, ffmpegPath: ffmpegPath})
 		config.Providers.Local.FFmpeg.Binary = ffmpegPath
-		clip := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(mp4FixtureWithSampleEntry(1280, 720, 960, 720))
+		clip := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(mediasnifftest.MP4WithSampleEntry(1280, 720, 960, 720))
 		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
 			AttachedVideos: []string{clip},
 		}, "screenshot_video", HarnessToolCall{At: "1"})
@@ -1715,7 +1717,7 @@ func TestFFmpegScreenshotAnamorphicCorrection(t *testing.T) {
 		ffmpegPath := writeFakeWhisper(t, bin, "ffmpeg", fakeFFmpegScript)
 		stubLocalLookup(t, map[string]string{"ffmpeg": ffmpegPath, ffmpegPath: ffmpegPath})
 		config.Providers.Local.FFmpeg.Binary = ffmpegPath
-		clip := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(mp4FixtureWithSampleEntry(1344, 768, 1344, 768))
+		clip := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(mediasnifftest.MP4WithSampleEntry(1344, 768, 1344, 768))
 		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
 			AttachedVideos: []string{clip},
 		}, "screenshot_video", HarnessToolCall{At: "1"})
@@ -2837,7 +2839,7 @@ func TestFFmpegTransformExecutes(t *testing.T) {
 		ffmpegPath := writeFakeWhisper(t, bin, "ffmpeg", fakeFFmpegScript)
 		stubLocalLookup(t, map[string]string{"ffmpeg": ffmpegPath, ffmpegPath: ffmpegPath})
 		config.Providers.Local.FFmpeg.Binary = ffmpegPath
-		clip := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(mp4FixtureWithVideoTrack(1344, 768))
+		clip := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(mediasnifftest.MP4WithVideoTrack(1344, 768))
 		result := executeFFmpegTool(t, config, HarnessToolExecutionContext{
 			AttachedVideos: []string{clip},
 		}, "transform_video", HarnessToolCall{AspectRatio: "16:9"})

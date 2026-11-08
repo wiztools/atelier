@@ -1,14 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/binary"
-	"image"
-	"image/gif"
-	"image/jpeg"
-	"image/png"
 	"io"
 	"math"
 	"net/http"
@@ -18,6 +12,8 @@ import (
 	"time"
 
 	"github.com/zalando/go-keyring"
+
+	"atelier/internal/mediasniff/mediasnifftest"
 )
 
 func TestUsdCostMicros(t *testing.T) {
@@ -260,246 +256,6 @@ func TestFalVideoTokenCount(t *testing.T) {
 	}
 }
 
-func TestMp4DurationSeconds(t *testing.T) {
-	for _, tt := range []struct {
-		name string
-		data []byte
-		want float64
-	}{
-		{name: "v0 mvhd", data: mp4FixtureWithDuration(0, 1000, 10500), want: 10.5},
-		{name: "v1 mvhd", data: mp4FixtureWithDuration(1, 24000, 240000), want: 10},
-		{name: "no moov", data: tinyMP4(), want: 0},
-		{name: "not mp4", data: []byte("not a video at all"), want: 0},
-		{name: "empty", data: nil, want: 0},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := mp4DurationSeconds(tt.data)
-			if tt.want > 0 {
-				if !ok || got != tt.want {
-					t.Fatalf("mp4DurationSeconds = (%v, %v), want (%v, true)", got, ok, tt.want)
-				}
-			} else if ok {
-				t.Fatalf("mp4DurationSeconds should fail-soft, got (%v, true)", got)
-			}
-		})
-	}
-}
-
-// mp4FixtureWithDuration builds a minimal MP4 byte sequence — ftyp + moov +
-// mvhd — carrying the given timescale and duration so the duration probe has
-// a real container to parse. version selects mvhd box version 0 or 1. The
-// header layout follows ISO BMFF: version+flags, then creation+modification
-// (4+4 bytes in v0, 8+8 in v1), then timescale, then duration — no reserved
-// fields between them.
-func mp4FixtureWithDuration(version byte, timescale, duration uint32) []byte {
-	var mvhd []byte
-	mvhd = append(mvhd, version, 0, 0, 0) // version + flags
-	if version == 1 {
-		mvhd = append(mvhd, make([]byte, 16)...) // creation + modification (64-bit)
-		mvhd = binary.BigEndian.AppendUint32(mvhd, timescale)
-		mvhd = binary.BigEndian.AppendUint64(mvhd, uint64(duration))
-	} else {
-		mvhd = append(mvhd, make([]byte, 8)...) // creation + modification (32-bit)
-		mvhd = binary.BigEndian.AppendUint32(mvhd, timescale)
-		mvhd = binary.BigEndian.AppendUint32(mvhd, duration)
-	}
-	// rate + volume + matrix + predefined + next track id pad the payload to
-	// the classic 0x6c-byte box; the parser only reads the header fields, but
-	// a full-size box keeps the fixture shaped like real output.
-	if pad := 0x64 - len(mvhd); pad > 0 {
-		mvhd = append(mvhd, make([]byte, pad)...)
-	}
-	mvhdBox := append(binary.BigEndian.AppendUint32(nil, uint32(len(mvhd)+8)), []byte("mvhd")...)
-	mvhdBox = append(mvhdBox, mvhd...)
-	moovBox := append(binary.BigEndian.AppendUint32(nil, uint32(len(mvhdBox)+8)), []byte("moov")...)
-	moovBox = append(moovBox, mvhdBox...)
-	out := tinyMP4()
-	return append(out, moovBox...)
-}
-
-// mp4TestBox builds one length-prefixed ISO BMFF box around a payload.
-func mp4TestBox(boxType string, payload []byte) []byte {
-	out := binary.BigEndian.AppendUint32(nil, uint32(len(payload)+8))
-	out = append(out, boxType...)
-	return append(out, payload...)
-}
-
-// mp4FixtureWithVideoTrack builds ftyp + moov{video trak, audio trak}. The
-// video track's tkhd carries the 16.16 fixed-point presentation size and its
-// stbl one stts entry per sampleCounts element (their sum is the frame
-// count); the trailing audio trak proves the probes pick the 'vide' handler.
-// A call with no sampleCounts omits the sample table entirely — the
-// frame-count-unparseable shape.
-func mp4FixtureWithVideoTrack(width, height uint32, sampleCounts ...uint32) []byte {
-	tkhd := make([]byte, 84) // v0 layout; width/height close the box as 16.16
-	binary.BigEndian.PutUint32(tkhd[76:80], width<<16)
-	binary.BigEndian.PutUint32(tkhd[80:84], height<<16)
-
-	videoHdlr := make([]byte, 24)
-	copy(videoHdlr[8:12], "vide")
-
-	mdiaPayload := mp4TestBox("hdlr", videoHdlr)
-	if len(sampleCounts) > 0 {
-		stts := make([]byte, 8, 8+len(sampleCounts)*8)
-		binary.BigEndian.PutUint32(stts[4:8], uint32(len(sampleCounts)))
-		for _, count := range sampleCounts {
-			stts = binary.BigEndian.AppendUint32(stts, count)
-			stts = binary.BigEndian.AppendUint32(stts, 1) // sample_delta
-		}
-		mdiaPayload = append(mdiaPayload,
-			mp4TestBox("minf", mp4TestBox("stbl", mp4TestBox("stts", stts)))...)
-	}
-	videoTrak := mp4TestBox("trak", append(mp4TestBox("tkhd", tkhd), mp4TestBox("mdia", mdiaPayload)...))
-
-	audioHdlr := make([]byte, 24)
-	copy(audioHdlr[8:12], "soun")
-	audioTrak := mp4TestBox("trak", mp4TestBox("mdia", mp4TestBox("hdlr", audioHdlr)))
-
-	moov := mp4TestBox("moov", append(videoTrak, audioTrak...))
-	return append(tinyMP4(), moov...)
-}
-
-// mp4FixtureAudioOnly builds ftyp + moov{trak} with no video track — the
-// shape every video probe must refuse.
-func mp4FixtureAudioOnly() []byte {
-	audioHdlr := make([]byte, 24)
-	copy(audioHdlr[8:12], "soun")
-	moov := mp4TestBox("moov", mp4TestBox("trak", mp4TestBox("mdia", mp4TestBox("hdlr", audioHdlr))))
-	return append(tinyMP4(), moov...)
-}
-
-// mp4FixtureVideoOnly builds ftyp + moov{video trak} with no audio track —
-// the silent-clip shape the portion-speed audio sniff must recognize.
-func mp4FixtureVideoOnly() []byte {
-	tkhd := make([]byte, 84)
-	binary.BigEndian.PutUint32(tkhd[76:80], 1344<<16)
-	binary.BigEndian.PutUint32(tkhd[80:84], 768<<16)
-	videoHdlr := make([]byte, 24)
-	copy(videoHdlr[8:12], "vide")
-	videoTrak := mp4TestBox("trak", append(mp4TestBox("tkhd", tkhd), mp4TestBox("mdia", mp4TestBox("hdlr", videoHdlr))...))
-	return append(tinyMP4(), mp4TestBox("moov", videoTrak)...)
-}
-
-// mp4FixtureWithSampleEntry builds ftyp + moov{video trak} whose tkhd carries
-// the display (presentation) size and whose stsd sample entry carries the
-// coded size — anamorphic when they differ (players stretch the coded frames
-// to the tkhd size), square when they match.
-func mp4FixtureWithSampleEntry(displayWidth, displayHeight, codedWidth, codedHeight uint32) []byte {
-	tkhd := make([]byte, 84)
-	binary.BigEndian.PutUint32(tkhd[76:80], displayWidth<<16)
-	binary.BigEndian.PutUint32(tkhd[80:84], displayHeight<<16)
-	videoHdlr := make([]byte, 24)
-	copy(videoHdlr[8:12], "vide")
-	// A VisualSampleEntry fixed header: width/height ride as the uint16 pair
-	// at payload offsets 24/26; the trailing fields stay zeroed — the coded
-	// reader only walks that far.
-	entry := make([]byte, 78)
-	binary.BigEndian.PutUint16(entry[24:26], uint16(codedWidth))
-	binary.BigEndian.PutUint16(entry[26:28], uint16(codedHeight))
-	stsd := append(make([]byte, 8), mp4TestBox("avc1", entry)...) // version+flags + entry_count
-	mdiaPayload := append(mp4TestBox("hdlr", videoHdlr),
-		mp4TestBox("minf", mp4TestBox("stbl", mp4TestBox("stsd", stsd)))...)
-	videoTrak := mp4TestBox("trak", append(mp4TestBox("tkhd", tkhd), mp4TestBox("mdia", mdiaPayload)...))
-	return append(tinyMP4(), mp4TestBox("moov", videoTrak)...)
-}
-
-// TestMp4CodedVideoDimensions pins the stsd sample-entry read: the coded size
-// of an anamorphic or square track, and fail-soft everywhere the sample table
-// is missing or unreadable.
-func TestMp4CodedVideoDimensions(t *testing.T) {
-	for _, tt := range []struct {
-		name       string
-		data       []byte
-		wantWidth  int
-		wantHeight int
-		wantOK     bool
-	}{
-		{name: "anamorphic track", data: mp4FixtureWithSampleEntry(1280, 720, 960, 720), wantWidth: 960, wantHeight: 720, wantOK: true},
-		{name: "square track", data: mp4FixtureWithSampleEntry(1344, 768, 1344, 768), wantWidth: 1344, wantHeight: 768, wantOK: true},
-		{name: "no sample table", data: mp4FixtureWithVideoTrack(1344, 768), wantOK: false},
-		{name: "video trak without stsd", data: mp4FixtureVideoOnly(), wantOK: false},
-		{name: "no moov", data: tinyMP4(), wantOK: false},
-		{name: "not mp4", data: []byte("not a video at all"), wantOK: false},
-		{name: "empty", data: nil, wantOK: false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			width, height, ok := mp4CodedVideoDimensions(tt.data)
-			if ok != tt.wantOK || (ok && (width != tt.wantWidth || height != tt.wantHeight)) {
-				t.Fatalf("mp4CodedVideoDimensions = (%d, %d, %v), want (%d, %d, %v)", width, height, ok, tt.wantWidth, tt.wantHeight, tt.wantOK)
-			}
-		})
-	}
-}
-
-func TestMp4HasAudioTrack(t *testing.T) {
-	for _, tt := range []struct {
-		name string
-		data []byte
-		want bool
-	}{
-		{name: "video and audio tracks", data: mp4FixtureWithVideoTrack(1344, 768, 339), want: true},
-		{name: "audio only", data: mp4FixtureAudioOnly(), want: true},
-		{name: "video only", data: mp4FixtureVideoOnly(), want: false},
-		{name: "no trak at all", data: mp4FixtureWithDuration(0, 1000, 10500), want: false},
-		{name: "no moov", data: tinyMP4(), want: false},
-		{name: "not mp4", data: []byte("not a video at all"), want: false},
-		{name: "empty", data: nil, want: false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := mp4HasAudioTrack(tt.data); got != tt.want {
-				t.Fatalf("mp4HasAudioTrack = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestMp4VideoDimensions(t *testing.T) {
-	for _, tt := range []struct {
-		name   string
-		data   []byte
-		wantW  float64
-		wantH  float64
-		wantOK bool
-	}{
-		{name: "ltx extend output", data: mp4FixtureWithVideoTrack(1344, 768, 339), wantW: 1344, wantH: 768, wantOK: true},
-		{name: "portrait", data: mp4FixtureWithVideoTrack(720, 1280), wantW: 720, wantH: 1280, wantOK: true},
-		{name: "audio only", data: mp4FixtureAudioOnly(), wantOK: false},
-		{name: "no moov", data: tinyMP4(), wantOK: false},
-		{name: "not mp4", data: []byte("not a video at all"), wantOK: false},
-		{name: "empty", data: nil, wantOK: false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			w, h, ok := mp4VideoDimensions(tt.data)
-			if ok != tt.wantOK || (tt.wantOK && (w != tt.wantW || h != tt.wantH)) {
-				t.Fatalf("mp4VideoDimensions = (%v, %v, %v), want (%v, %v, %v)", w, h, ok, tt.wantW, tt.wantH, tt.wantOK)
-			}
-		})
-	}
-}
-
-func TestMp4VideoFrameCount(t *testing.T) {
-	for _, tt := range []struct {
-		name   string
-		data   []byte
-		want   float64
-		wantOK bool
-	}{
-		{name: "single run", data: mp4FixtureWithVideoTrack(1344, 768, 339), want: 339, wantOK: true},
-		{name: "runs sum", data: mp4FixtureWithVideoTrack(1344, 768, 243, 96), want: 339, wantOK: true},
-		{name: "no sample table", data: mp4FixtureWithVideoTrack(1344, 768), wantOK: false},
-		{name: "audio only", data: mp4FixtureAudioOnly(), wantOK: false},
-		{name: "not mp4", data: []byte("not a video at all"), wantOK: false},
-		{name: "empty", data: nil, wantOK: false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := mp4VideoFrameCount(tt.data)
-			if ok != tt.wantOK || got != tt.want {
-				t.Fatalf("mp4VideoFrameCount = (%v, %v), want (%v, %v)", got, ok, tt.want, tt.wantOK)
-			}
-		})
-	}
-}
-
 func TestSchemaStringInput(t *testing.T) {
 	schema := &ModelInputSchema{Properties: map[string]SchemaProperty{
 		"resolution":   {Name: "resolution", Enum: []string{"480p", "720p", "1080p", "4k"}, Default: "720p"},
@@ -571,8 +327,8 @@ func TestFalVideoSourceSeconds(t *testing.T) {
 	}
 	// Two parseable clips sum: 8s + 2.25s.
 	got, ok := falVideoSourceSeconds([]string{
-		dataURL(mp4FixtureWithDuration(0, 1000, 8000)),
-		dataURL(mp4FixtureWithDuration(0, 1000, 2250)),
+		dataURL(mediasnifftest.MP4WithDuration(0, 1000, 8000)),
+		dataURL(mediasnifftest.MP4WithDuration(0, 1000, 2250)),
 	})
 	if !ok || got != 10.25 {
 		t.Fatalf("source seconds = (%v, %v), want (10.25, true)", got, ok)
@@ -581,7 +337,7 @@ func TestFalVideoSourceSeconds(t *testing.T) {
 		"hosted url":     {"https://v3.fal.media/files/x.mp4"},
 		"non-mp4 bytes":  {dataURL([]byte("not a video at all"))},
 		"unparseable":    {dataURL(tinyMP4())},
-		"one of two":     {dataURL(mp4FixtureWithDuration(0, 1000, 8000)), "https://v3.fal.media/files/x.mp4"},
+		"one of two":     {dataURL(mediasnifftest.MP4WithDuration(0, 1000, 8000)), "https://v3.fal.media/files/x.mp4"},
 		"empty list":     nil,
 		"empty data url": {""},
 	} {
@@ -616,27 +372,27 @@ func TestFalVideoBilledMegapixels(t *testing.T) {
 	// but the bill is the 121 generated frames — the schema default the request
 	// rode when the planner set no duration knob.
 	extend := VideoGenerateRequest{Prompt: "earthquake", Videos: []string{"data:video/mp4;base64,AAAA"}}
-	if got := falVideoBilledMegapixels(schema, extend, mp4FixtureWithVideoTrack(1344, 768, 339)); got != 124.895232 {
+	if got := falVideoBilledMegapixels(schema, extend, mediasnifftest.MP4WithVideoTrack(1344, 768, 339)); got != 124.895232 {
 		t.Fatalf("extend megapixels = %v, want 124.895232 (1344×768×121/1e6)", got)
 	}
 	// Pure generation: every frame in the container was rendered by the model,
 	// so the stts count is the billed quantity.
 	pure := VideoGenerateRequest{Prompt: "tornado"}
-	if got := falVideoBilledMegapixels(schema, pure, mp4FixtureWithVideoTrack(1344, 768, 339)); got != 349.913088 {
+	if got := falVideoBilledMegapixels(schema, pure, mediasnifftest.MP4WithVideoTrack(1344, 768, 339)); got != 349.913088 {
 		t.Fatalf("pure megapixels = %v, want 349.913088 (1344×768×339/1e6)", got)
 	}
 	// Pure generation with no parseable frame table falls back to the schema's
 	// num_frames default.
-	if got := falVideoBilledMegapixels(schema, pure, mp4FixtureWithVideoTrack(1280, 720)); got != 111.5136 {
+	if got := falVideoBilledMegapixels(schema, pure, mediasnifftest.MP4WithVideoTrack(1280, 720)); got != 111.5136 {
 		t.Fatalf("fallback megapixels = %v, want 111.5136 (1280×720×121/1e6)", got)
 	}
 	// Extend with no num_frames default on the schema: not computable, and a
 	// zero quantity skips the estimate rather than guessing.
-	if got := falVideoBilledMegapixels(&ModelInputSchema{}, extend, mp4FixtureWithVideoTrack(1344, 768, 339)); got != 0 {
+	if got := falVideoBilledMegapixels(&ModelInputSchema{}, extend, mediasnifftest.MP4WithVideoTrack(1344, 768, 339)); got != 0 {
 		t.Fatalf("extend with no num_frames default should estimate 0, got %v", got)
 	}
 	// No frame size at all: not computable.
-	if got := falVideoBilledMegapixels(schema, extend, mp4FixtureAudioOnly()); got != 0 {
+	if got := falVideoBilledMegapixels(schema, extend, mediasnifftest.MP4AudioOnly()); got != 0 {
 		t.Fatalf("audio-only output should estimate 0, got %v", got)
 	}
 	if got := falVideoBilledMegapixels(schema, extend, nil); got != 0 {
@@ -644,75 +400,8 @@ func TestFalVideoBilledMegapixels(t *testing.T) {
 	}
 }
 
-// testImageBytes encodes a zero-filled image of the given size in one of the
-// formats fal returns for image generation.
-func testImageBytes(t *testing.T, format string, width, height int) []byte {
-	t.Helper()
-	img := image.NewRGBA(image.Rect(0, 0, width, height))
-	var buf bytes.Buffer
-	var err error
-	switch format {
-	case "png":
-		err = png.Encode(&buf, img)
-	case "jpeg":
-		err = jpeg.Encode(&buf, img, nil)
-	case "gif":
-		err = gif.Encode(&buf, img, nil)
-	default:
-		t.Fatalf("unknown fixture format %q", format)
-	}
-	if err != nil {
-		t.Fatalf("encode %s fixture: %v", format, err)
-	}
-	return buf.Bytes()
-}
-
-func TestImagePixelDimensions(t *testing.T) {
-	for _, tt := range []struct {
-		name   string
-		data   []byte
-		wantW  float64
-		wantH  float64
-		wantOK bool
-	}{
-		{name: "png", data: testImageBytes(t, "png", 64, 48), wantW: 64, wantH: 48, wantOK: true},
-		{name: "jpeg", data: testImageBytes(t, "jpeg", 64, 48), wantW: 64, wantH: 48, wantOK: true},
-		{name: "gif", data: testImageBytes(t, "gif", 64, 48), wantW: 64, wantH: 48, wantOK: true},
-		{name: "not an image", data: []byte("plain text"), wantOK: false},
-		{name: "empty", data: nil, wantOK: false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			w, h, ok := imagePixelDimensions(tt.data)
-			if ok != tt.wantOK || (tt.wantOK && (w != tt.wantW || h != tt.wantH)) {
-				t.Fatalf("imagePixelDimensions = (%v, %v, %v), want (%v, %v, %v)", w, h, ok, tt.wantW, tt.wantH, tt.wantOK)
-			}
-		})
-	}
-	// WebP's three chunk layouts, hand-built to the container spec (no stdlib
-	// encoder): VP8X carries the canvas size, VP8/VP8L their own dimensions.
-	vp8x := append([]byte("RIFF\x00\x00\x00\x00WEBPVP8X\x0a\x00\x00\x00\x00\x00\x00\x00"),
-		byte(63), 0, 0, // width-1 = 63 → 64
-		byte(47), 0, 0) // height-1 = 47 → 48
-	if w, h, ok := imagePixelDimensions(vp8x); !ok || w != 64 || h != 48 {
-		t.Fatalf("VP8X dimensions = (%v, %v, %v), want (64, 48, true)", w, h, ok)
-	}
-	vp8 := append([]byte("RIFF\x00\x00\x00\x00WEBPVP8 \x0a\x00\x00\x00\x00\x00\x00\x9d\x01\x2a"),
-		byte(64), 0, // width = 64
-		byte(48), 0) // height = 48
-	if w, h, ok := imagePixelDimensions(vp8); !ok || w != 64 || h != 48 {
-		t.Fatalf("VP8 dimensions = (%v, %v, %v), want (64, 48, true)", w, h, ok)
-	}
-	// VP8L packs (width-1)|(height-1)<<14 into 32 bits after its 0x2f marker.
-	// Padded past the 30-byte webp guard — real files carry much more.
-	vp8l := append([]byte("RIFF\x00\x00\x00\x00WEBPVP8L\x05\x00\x00\x00\x2f"),
-		append(binary.LittleEndian.AppendUint32(nil, 63|47<<14), make([]byte, 5)...)...)
-	if w, h, ok := imagePixelDimensions(vp8l); !ok || w != 64 || h != 48 {
-		t.Fatalf("VP8L dimensions = (%v, %v, %v), want (64, 48, true)", w, h, ok)
-	}
-}
-
 func TestImageResultMegapixels(t *testing.T) {
-	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(testImageBytes(t, "png", 64, 48))
+	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(mediasnifftest.Image(t, "png", 64, 48))
 	// Two 64×48 images + one legacy scalar: (3 × 3072 px) / 1e6.
 	got := imageResultMegapixels([]string{dataURL, dataURL}, dataURL)
 	if got != 3*64*48/1e6 {
@@ -751,7 +440,7 @@ func TestFalDurationSeconds(t *testing.T) {
 // requested length, the request stands in when the bytes don't probe, and
 // neither known means not-ok — the cost is skipped rather than guessed.
 func TestAudioBillingSeconds(t *testing.T) {
-	rendered := 10 * 1152.0 / 44100 // buildMP3(10): ten 1152-sample frames at 44.1kHz
+	rendered := 10 * 1152.0 / 44100 // mediasnifftest.MP3(10): ten 1152-sample frames at 44.1kHz
 	for _, tt := range []struct {
 		name      string
 		requested string
@@ -759,7 +448,7 @@ func TestAudioBillingSeconds(t *testing.T) {
 		want      float64
 		wantOK    bool
 	}{
-		{"rendered wins over requested", "5", buildMP3(10), rendered, true},
+		{"rendered wins over requested", "5", mediasnifftest.MP3(10), rendered, true},
 		{"requested stands in for junk bytes", "7.5", []byte("not audio"), 7.5, true},
 		{"requested with no bytes", "5", nil, 5, true},
 		{"neither known", "", nil, 0, false},
@@ -1043,7 +732,7 @@ func TestEstimateFalCostMicros(t *testing.T) {
 func TestFalVideoBilledSeconds(t *testing.T) {
 	// The rendered container wins: it prices what was actually produced,
 	// including "auto" durations the request never stated.
-	if got, ok := falVideoBilledSeconds(mp4FixtureWithDuration(0, 1000, 8000), "5"); !ok || got != 8 {
+	if got, ok := falVideoBilledSeconds(mediasnifftest.MP4WithDuration(0, 1000, 8000), "5"); !ok || got != 8 {
 		t.Fatalf("billed seconds = (%v, %v), want (8, true) from the container", got, ok)
 	}
 	// Unparseable container falls back to the requested duration.
@@ -1062,12 +751,12 @@ func TestFalVideoBilledSeconds(t *testing.T) {
 // neither measurable means not-ok — the cost is skipped rather than guessed.
 func TestFalLipsyncBillingSeconds(t *testing.T) {
 	// Container wins: the conv_d5a03dfe turn's 0.875s output.
-	if got, ok := falLipsyncBillingSeconds(mp4FixtureWithDuration(0, 1000, 875), "data:audio/mp4;base64,AAAA"); !ok || got != 0.875 {
+	if got, ok := falLipsyncBillingSeconds(mediasnifftest.MP4WithDuration(0, 1000, 875), "data:audio/mp4;base64,AAAA"); !ok || got != 0.875 {
 		t.Fatalf("lipsync billed seconds = (%v, %v), want (0.875, true) from the container", got, ok)
 	}
 	// Unparseable output falls back to the driving audio: a 1s WAV (8000
 	// payload bytes at the fixture's 8kHz byte rate).
-	wavURL := "data:audio/wav;base64," + base64.StdEncoding.EncodeToString(buildWAV(8000))
+	wavURL := "data:audio/wav;base64," + base64.StdEncoding.EncodeToString(mediasnifftest.WAV(8000))
 	if got, ok := falLipsyncBillingSeconds(tinyMP4(), wavURL); !ok || got != 1 {
 		t.Fatalf("lipsync billed seconds = (%v, %v), want (1, true) from the audio", got, ok)
 	}
@@ -1165,7 +854,7 @@ func TestGatewayGenerateVideoPricesTokenBilledModel(t *testing.T) {
 			default:
 				// The clip download: a 10-second container, priced instead of
 				// the request's absent "auto" duration.
-				return mp4Resp(mp4FixtureWithDuration(0, 1000, 10000), "video/mp4"), nil
+				return mp4Resp(mediasnifftest.MP4WithDuration(0, 1000, 10000), "video/mp4"), nil
 			}
 		}
 		t.Fatalf("unexpected request %s %s", req.Method, req.URL)
@@ -1249,7 +938,7 @@ func TestGatewayGenerateVideoPricesTokenBilledVideoSourceTurn(t *testing.T) {
 			default:
 				// The clip download: a 10.030998-second container — the
 				// output_duration term of the formula.
-				return mp4Resp(mp4FixtureWithDuration(0, 1000000, 10030998), "video/mp4"), nil
+				return mp4Resp(mediasnifftest.MP4WithDuration(0, 1000000, 10030998), "video/mp4"), nil
 			}
 		}
 		t.Fatalf("unexpected request %s %s", req.Method, req.URL)
@@ -1260,7 +949,7 @@ func TestGatewayGenerateVideoPricesTokenBilledVideoSourceTurn(t *testing.T) {
 	generated, err := gateway.tools.GenerateVideo(context.Background(), VideoGenerateRequest{
 		Model:  "bytedance/seedance-2.5/reference-to-video",
 		Prompt: "The girl stops walking and looks around Scissor-land.",
-		Videos: []string{"data:video/mp4;base64," + base64.StdEncoding.EncodeToString(mp4FixtureWithDuration(0, 1000, 2250))},
+		Videos: []string{"data:video/mp4;base64," + base64.StdEncoding.EncodeToString(mediasnifftest.MP4WithDuration(0, 1000, 2250))},
 	})
 	if err != nil {
 		t.Fatalf("GenerateVideo: %v", err)
@@ -1322,7 +1011,7 @@ func TestGatewayGenerateVideoPricesMegapixelBilledModel(t *testing.T) {
 				// The clip download: a 1344×768 container carrying 339 frames
 				// (243 source + 96 extension). The extend turn must bill the
 				// 121 generated frames, not the container's total.
-				return mp4Resp(mp4FixtureWithVideoTrack(1344, 768, 339), "video/mp4"), nil
+				return mp4Resp(mediasnifftest.MP4WithVideoTrack(1344, 768, 339), "video/mp4"), nil
 			}
 		}
 		t.Fatalf("unexpected request %s %s", req.Method, req.URL)
@@ -1403,7 +1092,7 @@ func TestGatewayGenerateLipsyncPricesMinuteBilledModel(t *testing.T) {
 			default:
 				// The clip download: a 0.875-second container — the rendered
 				// length the per-minute bill tracks (the conv's output shape).
-				return mp4Resp(mp4FixtureWithDuration(0, 1000, 875), "video/mp4"), nil
+				return mp4Resp(mediasnifftest.MP4WithDuration(0, 1000, 875), "video/mp4"), nil
 			}
 		}
 		t.Fatalf("unexpected request %s %s", req.Method, req.URL)
@@ -1413,7 +1102,7 @@ func TestGatewayGenerateLipsyncPricesMinuteBilledModel(t *testing.T) {
 	gateway := newToolGateway(app, config)
 	generated, err := gateway.tools.GenerateLipsync(context.Background(), LipsyncGenerateRequest{
 		Model: "fal-ai/sync-lipsync/v2",
-		Audio: "data:audio/mpeg;base64," + base64.StdEncoding.EncodeToString(buildMP3(4)),
+		Audio: "data:audio/mpeg;base64," + base64.StdEncoding.EncodeToString(mediasnifftest.MP3(4)),
 		Video: "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(tinyMP4()),
 	})
 	if err != nil {

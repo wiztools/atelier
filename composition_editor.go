@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"atelier/internal/mediasniff"
 )
 
 // compositionProbeTimeout bounds the measurement of one media ref — ffprobe
@@ -240,7 +242,7 @@ func compositionMediaKind(kind string) bool {
 // size with any JPEG EXIF orientation applied — a portrait phone photo reads
 // portrait), the ffmpeg decoder its magic bytes name (the render forces it
 // rather than trusting the file extension), and the EXIF orientation
-// (jpegEXIFOrientation's 2–8 turn the picture; 0 or 1 leave it as stored) the
+// (mediasniff.JPEGEXIFOrientation's 2–8 turn the picture; 0 or 1 leave it as stored) the
 // render graph applies itself, so the result is the same on an ffmpeg that
 // auto-rotates EXIF and on one that does not.
 type compositionStillFact struct {
@@ -252,7 +254,7 @@ type compositionStillFact struct {
 
 // measureCompositionStill sniffs a still from its bytes: PNG, JPEG, WebP, and
 // GIF — the formats ffmpeg's image2 reader decodes under a forced decoder —
-// sized by imagePixelDimensions's header read (no codec import, no CLI). An
+// sized by mediasniff.ImagePixelDimensions's header read (no codec import, no CLI). An
 // animated WebP refuses (ffmpeg's webp decoder cannot read its frames, so the
 // render would fail); an animated GIF holds its first frame. HEIC, AVIF, and
 // everything else refuse — convert_image is the way in.
@@ -264,13 +266,13 @@ func measureCompositionStill(data []byte) (compositionStillFact, error) {
 	if decoder == "webp" && webpAnimated(data) {
 		return compositionStillFact{}, errors.New("an animated WebP cannot be held as a still")
 	}
-	width, height, ok := imagePixelDimensions(data)
+	width, height, ok := mediasniff.ImagePixelDimensions(data)
 	if !ok {
 		return compositionStillFact{}, errors.New("its pixel size is unreadable")
 	}
 	fact := compositionStillFact{Width: int(width), Height: int(height), Decoder: decoder}
 	if decoder == "mjpeg" {
-		fact.Orientation = jpegEXIFOrientation(data)
+		fact.Orientation = mediasniff.JPEGEXIFOrientation(data)
 		if fact.Orientation >= 5 {
 			// Orientations 5–8 transpose the axes: the stored landscape
 			// pixels display portrait.

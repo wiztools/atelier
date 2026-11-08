@@ -25,6 +25,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"atelier/internal/mediasniff"
 )
 
 // Whisper CLI flavors. The flavor names the command-line dialect the runner
@@ -634,7 +636,7 @@ func runWhisperCPPChunked(ctx context.Context, config AppConfig, resolved resolv
 	if chunkSeconds <= 0 {
 		return GeneratedTranscript{}, nil, false, nil
 	}
-	duration, ok := probeAudioDuration(audioBytes)
+	duration, ok := mediasniff.AudioDuration(audioBytes)
 	if !ok || duration <= float64(chunkSeconds) {
 		return GeneratedTranscript{}, nil, false, nil
 	}

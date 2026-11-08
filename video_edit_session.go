@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"atelier/internal/mediasniff"
 )
 
 type VideoEditSubmitRequest struct {
@@ -198,10 +200,10 @@ func videoEditSourceInfoFor(storage ConfigStorage, conversationID, title, origin
 	}
 	if probe.Width <= 0 || probe.Height <= 0 || probe.Duration <= 0 {
 		if data, readErr := os.ReadFile(absPath); readErr == nil {
-			if w, h, ok := mp4VideoDimensions(data); ok {
+			if w, h, ok := mediasniff.MP4VideoDimensions(data); ok {
 				probe.Width, probe.Height = int(w+0.5), int(h+0.5)
 			}
-			if duration, ok := mp4DurationSeconds(data); ok {
+			if duration, ok := mediasniff.MP4Duration(data); ok {
 				probe.Duration = duration
 			}
 		}

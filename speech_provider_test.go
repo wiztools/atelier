@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/zalando/go-keyring"
+
+	"atelier/internal/mediasniff"
 )
 
 // TestLiveOllamaSpeechEndToEnd exercises the real /v1/audio/speech transport
@@ -37,9 +39,9 @@ func TestLiveOllamaSpeechEndToEnd(t *testing.T) {
 	if got := binary.LittleEndian.Uint32(generated.Data[4:8]); got != uint32(len(generated.Data)-8) {
 		t.Fatalf("RIFF size = %d, want %d (header not rewritten)", got, len(generated.Data)-8)
 	}
-	seconds, ok := probeAudioDuration(generated.Data)
+	seconds, ok := mediasniff.AudioDuration(generated.Data)
 	if !ok || seconds < 0.5 || seconds > 30 {
-		t.Fatalf("probeAudioDuration = %.2fs ok=%v, want a measurable short clip", seconds, ok)
+		t.Fatalf("mediasniff.AudioDuration = %.2fs ok=%v, want a measurable short clip", seconds, ok)
 	}
 	t.Logf("live %s: %d bytes, %.2fs", model, len(generated.Data), seconds)
 }
@@ -83,27 +85,27 @@ func buildTestWAV(riffSize, dataSize uint32, samples int) []byte {
 // sniffer, a well-formed file passes through untouched, and a non-WAV buffer
 // is returned unchanged.
 func TestFixStreamingWAVHeader(t *testing.T) {
-	if !bytes.Equal(fixStreamingWAVHeader([]byte("not a wav")), []byte("not a wav")) {
+	if !bytes.Equal(mediasniff.FixStreamingWAVHeader([]byte("not a wav")), []byte("not a wav")) {
 		t.Fatal("non-WAV input must pass through unchanged")
 	}
 	wellFormed := buildTestWAV(uint32(36+8), 8, 4)
-	fixed := fixStreamingWAVHeader(append([]byte{}, wellFormed...))
+	fixed := mediasniff.FixStreamingWAVHeader(append([]byte{}, wellFormed...))
 	if !bytes.Equal(fixed, wellFormed) {
 		t.Fatal("a well-formed WAV header must not be rewritten")
 	}
 	streaming := buildTestWAV(0xFFFFFFFF, 0xFFFFFFFF, 4)
-	fixed = fixStreamingWAVHeader(append([]byte(nil), streaming...))
+	fixed = mediasniff.FixStreamingWAVHeader(append([]byte(nil), streaming...))
 	if got := binary.LittleEndian.Uint32(fixed[4:8]); got != uint32(len(fixed)-8) {
 		t.Fatalf("RIFF size = %d, want %d", got, len(fixed)-8)
 	}
 	if got := binary.LittleEndian.Uint32(fixed[40:44]); got != 8 {
 		t.Fatalf("data size = %d, want 8 (4 samples x 2 bytes)", got)
 	}
-	if seconds, ok := wavDuration(fixed); !ok || seconds < 0.0001 || seconds > 0.001 {
+	if seconds, ok := mediasniff.AudioDuration(fixed); !ok || seconds < 0.0001 || seconds > 0.001 {
 		t.Fatalf("wavDuration after fix = %.6f (ok=%v), want ~0.00033s", seconds, ok)
 	}
 	// The unpatched original stays unmeasurable — the reason the fix exists.
-	if _, ok := wavDuration(streaming); ok {
+	if _, ok := mediasniff.AudioDuration(streaming); ok {
 		t.Fatal("the streaming header must stay unmeasurable to the strict sniffer")
 	}
 }

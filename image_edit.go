@@ -16,7 +16,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"image"
@@ -26,6 +25,8 @@ import (
 	"image/png"
 	"math"
 	"strings"
+
+	"atelier/internal/mediasniff"
 )
 
 // Edit operation kinds. Inpaint is provider-backed; crop is deterministic and
@@ -178,7 +179,7 @@ func normalizeEditSourceBytes(ctx context.Context, config AppConfig, data []byte
 	if extension == "" {
 		return nil, "", errors.New("unsupported image payload")
 	}
-	orientation := jpegEXIFOrientation(data)
+	orientation := mediasniff.JPEGEXIFOrientation(data)
 	if extension == ".gif" || orientation > 1 {
 		// Freeze GIFs on their first frame and bake JPEG orientation before
 		// previewing. PNG keeps the decoded pixels without another lossy encode.
@@ -205,7 +206,7 @@ func normalizeEditSourceBytes(ctx context.Context, config AppConfig, data []byte
 	if sniffed := imageExtensionForBytes(converted); sniffed != ".jpg" && sniffed != ".jpeg" {
 		return nil, "", errors.New("the local image backend returned an unexpected format while normalizing the source")
 	}
-	if orientation := jpegEXIFOrientation(converted); orientation > 1 {
+	if orientation := mediasniff.JPEGEXIFOrientation(converted); orientation > 1 {
 		baked, err := bakeJPEGOrientation(converted, orientation)
 		if err != nil {
 			return nil, "", fmt.Errorf("could not bake the source image's EXIF orientation: %w", err)
@@ -213,83 +214,6 @@ func normalizeEditSourceBytes(ctx context.Context, config AppConfig, data []byte
 		converted = baked
 	}
 	return converted, ".jpg", nil
-}
-
-// jpegEXIFOrientation extracts the EXIF orientation tag (0x0112) from a JPEG's
-// APP1 Exif segment: 1 when absent or upright, 2–8 for the flip/rotate values,
-// 0 when the payload is not a JPEG (callers treat 0 like 1). Only the segment
-// walk and IFD0 are parsed — no dependencies, no full EXIF decode.
-func jpegEXIFOrientation(data []byte) int {
-	if len(data) < 4 || data[0] != 0xFF || data[1] != 0xD8 {
-		return 0
-	}
-	pos := 2
-	for pos+4 <= len(data) {
-		if data[pos] != 0xFF {
-			return 1
-		}
-		marker := data[pos+1]
-		// Standalone markers carry no length segment.
-		if marker == 0xFF || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7) {
-			pos += 2
-			continue
-		}
-		// Start of scan: the EXIF segment always precedes the entropy-coded data.
-		if marker == 0xDA {
-			break
-		}
-		segmentLength := int(binary.BigEndian.Uint16(data[pos+2 : pos+4]))
-		if segmentLength < 2 {
-			return 1
-		}
-		if marker == 0xE1 && pos+10 <= len(data) && string(data[pos+4:pos+10]) == "Exif\x00\x00" {
-			segmentEnd := pos + 2 + segmentLength
-			if segmentEnd > len(data) {
-				segmentEnd = len(data)
-			}
-			return tiffOrientation(data[pos+10 : segmentEnd])
-		}
-		pos += 2 + segmentLength
-	}
-	return 1
-}
-
-// tiffOrientation reads the orientation entry (tag 0x0112) from a TIFF header
-// (the body of the Exif APP1 segment, after its 6-byte signature). Anything
-// unreadable or out of range reports 1 — the fail-safe is "no rotation".
-func tiffOrientation(tiff []byte) int {
-	if len(tiff) < 8 {
-		return 1
-	}
-	var order binary.ByteOrder = binary.BigEndian
-	switch string(tiff[:2]) {
-	case "II":
-		order = binary.LittleEndian
-	case "MM":
-	default:
-		return 1
-	}
-	ifdOffset := int(order.Uint32(tiff[4:8]))
-	if ifdOffset < 2 || ifdOffset+2 > len(tiff) {
-		return 1
-	}
-	entryCount := int(order.Uint16(tiff[ifdOffset : ifdOffset+2]))
-	for i := 0; i < entryCount; i++ {
-		entryStart := ifdOffset + 2 + i*12
-		if entryStart+12 > len(tiff) {
-			break
-		}
-		entry := tiff[entryStart : entryStart+12]
-		if order.Uint16(entry[0:2]) != 0x0112 {
-			continue
-		}
-		value := int(order.Uint16(entry[8:10]))
-		if value >= 1 && value <= 8 {
-			return value
-		}
-		return 1
-	}
-	return 1
 }
 
 // bakeJPEGOrientation applies a JPEG's EXIF orientation (2–8) to its pixels and
@@ -435,7 +359,7 @@ func decodeComposableImage(data []byte) (image.Image, error) {
 // magic-byte sniffer (fal_pricing.go) — no full decode, works for every
 // container imageExtensionForBytes recognizes.
 func editImageDimensions(data []byte) (width, height int, ok bool) {
-	w, h, sniffed := imagePixelDimensions(data)
+	w, h, sniffed := mediasniff.ImagePixelDimensions(data)
 	return int(w), int(h), sniffed
 }
 

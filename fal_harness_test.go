@@ -15,6 +15,8 @@ import (
 	"testing"
 
 	"github.com/zalando/go-keyring"
+
+	"atelier/internal/mediasniff/mediasnifftest"
 )
 
 // falTestPricingResponse answers fal's pricing API (api.fal.ai/v1/models/
@@ -1324,7 +1326,7 @@ func TestHarnessExtendsAudioViaFal(t *testing.T) {
 	}
 
 	// A 1s WAV the user "attached" (8 kHz mono 8-bit, 8000 payload bytes).
-	attached := "data:audio/wav;base64," + base64.StdEncoding.EncodeToString(buildWAV(8000))
+	attached := "data:audio/wav;base64," + base64.StdEncoding.EncodeToString(mediasnifftest.WAV(8000))
 	const cdnSource = "https://v3.test.fal.media/files/abc/source.wav"
 
 	var submitted []map[string]any
@@ -1364,7 +1366,7 @@ func TestHarnessExtendsAudioViaFal(t *testing.T) {
 			// Download: a WAV probing to exactly 1s, so turn 2's fallback
 			// probe computes mask_start=1.
 			return &http.Response{StatusCode: 200, Status: "200 OK",
-				Body:   io.NopCloser(bytes.NewReader(buildWAV(8000))),
+				Body:   io.NopCloser(bytes.NewReader(mediasnifftest.WAV(8000))),
 				Header: http.Header{"Content-Type": []string{"audio/wav"}}}, nil
 		}
 		switch req.URL.Path {

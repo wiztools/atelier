@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-gofmt -w *.go
+gofmt -w *.go internal
 # The frontend builds before the Go suite: main.go embeds frontend/dist, so
 # this is what the test binary compiles against.
 npm run build --prefix frontend

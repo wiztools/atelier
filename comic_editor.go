@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"atelier/internal/mediasniff"
 )
 
 // ComicSourceInfo is what the editor loads: the document plus the identity
@@ -187,7 +189,7 @@ func comicMediaRefFor(storage ConfigStorage, conversationID, artifactID string) 
 }
 
 // probeComicMediaRef fills a ref's facts snapshot — the pixel size, sniffed
-// from the file's magic bytes (PNG/JPEG/WebP/GIF; imagePixelDimensions needs
+// from the file's magic bytes (PNG/JPEG/WebP/GIF; mediasniff.ImagePixelDimensions needs
 // no CLI and no codec import). A ref the sniff cannot measure is refused:
 // the editor crops by percentage of the source, and a wrong guess would
 // misplace every crop — an exotic container (HEIC, AVIF) should go through
@@ -200,7 +202,7 @@ func probeComicMediaRef(config AppConfig, ref ComicMediaRef) (ComicMediaRef, err
 	if err != nil {
 		return ComicMediaRef{}, fmt.Errorf("reading %s failed: %w", ref.ArtifactID, err)
 	}
-	width, height, ok := imagePixelDimensions(data)
+	width, height, ok := mediasniff.ImagePixelDimensions(data)
 	if !ok {
 		return ComicMediaRef{}, fmt.Errorf("could not measure %s — the comic needs its pixel size; convert the file to PNG or JPEG (convert_image) to add it", ref.ArtifactID)
 	}

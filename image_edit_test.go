@@ -8,6 +8,8 @@ import (
 	"image/jpeg"
 	"image/png"
 	"testing"
+
+	"atelier/internal/mediasniff/mediasnifftest"
 )
 
 func editTestPNG(t *testing.T, img image.Image) []byte {
@@ -27,52 +29,6 @@ func editSolidImage(width, height int, c color.Color) *image.RGBA {
 		}
 	}
 	return img
-}
-
-// exifJPEGBytes crafts a minimal JPEG marker stream carrying an APP1 Exif
-// segment whose IFD0 holds exactly one entry: the orientation tag. The parser
-// only walks markers and the TIFF header, so no entropy-coded data is needed —
-// the SOS marker terminates the walk.
-func exifJPEGBytes(orientation uint16) []byte {
-	tiff := []byte{'I', 'I', 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00}
-	tiff = append(tiff, 0x01, 0x00)             // one IFD entry
-	tiff = append(tiff, 0x12, 0x01)             // tag 0x0112 (orientation)
-	tiff = append(tiff, 0x03, 0x00)             // type SHORT
-	tiff = append(tiff, 0x01, 0x00, 0x00, 0x00) // count 1
-	tiff = append(tiff, byte(orientation), 0x00, 0x00, 0x00)
-	tiff = append(tiff, 0x00, 0x00, 0x00, 0x00) // next IFD offset
-	exif := append([]byte("Exif\x00\x00"), tiff...)
-	out := []byte{0xFF, 0xD8}
-	out = append(out, 0xFF, 0xE1, 0x00, byte(len(exif)+2))
-	out = append(out, exif...)
-	return append(out, 0xFF, 0xDA)
-}
-
-func TestJPEGEXIFOrientation(t *testing.T) {
-	plainJPEG := &bytes.Buffer{}
-	if err := jpeg.Encode(plainJPEG, editSolidImage(2, 2, color.RGBA{R: 255, A: 255}), nil); err != nil {
-		t.Fatalf("jpeg.Encode: %v", err)
-	}
-	cases := []struct {
-		name string
-		data []byte
-		want int
-	}{
-		{"exif orientation 6", exifJPEGBytes(6), 6},
-		{"exif orientation 1", exifJPEGBytes(1), 1},
-		{"exif orientation 8", exifJPEGBytes(8), 8},
-		{"orientation out of range fails safe", exifJPEGBytes(9), 1},
-		{"plain JFIF jpeg has none", plainJPEG.Bytes(), 1},
-		{"png bytes are not jpeg", editTestPNG(t, editSolidImage(2, 2, color.RGBA{R: 255, A: 255})), 0},
-		{"truncated payload is not a jpeg", []byte{0xFF, 0xD8, 0xFF}, 0},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := jpegEXIFOrientation(tc.data); got != tc.want {
-				t.Fatalf("jpegEXIFOrientation = %d, want %d", got, tc.want)
-			}
-		})
-	}
 }
 
 func TestApplyEXIFOrientation(t *testing.T) {
@@ -290,7 +246,7 @@ func TestNormalizeEditSourceBakesEXIFWithoutLocalTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	for orientation := uint16(2); orientation <= 8; orientation++ {
-		exif := exifJPEGBytes(orientation)
+		exif := mediasnifftest.EXIFJPEG(orientation)
 		raw := append(append([]byte(nil), exif[:len(exif)-2]...), encoded.Bytes()[2:]...)
 		normalized, ext, err := normalizeEditSourceBytes(t.Context(), defaultAppConfig(), raw, ".jpg")
 		if err != nil {
