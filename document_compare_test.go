@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"atelier/internal/document"
 )
 
 // Artifact ids in the real md_<24 hex> shape. draft1 and notes share the
@@ -145,7 +147,7 @@ func TestCompareDocumentsToolDefaultsToTheTurnsDocuments(t *testing.T) {
 	if !ok {
 		t.Fatalf("output type = %T, want ToolCompareDocumentsResult", output)
 	}
-	if result.BeforeArtifactID != compareDraft1 || result.AfterArtifactID != compareDraft2 || result.BeforeFormat != documentFormatFountain || result.AfterFormat != documentFormatFountain {
+	if result.BeforeArtifactID != compareDraft1 || result.AfterArtifactID != compareDraft2 || result.BeforeFormat != document.FormatFountain || result.AfterFormat != document.FormatFountain {
 		t.Fatalf("result identity = %+v", result)
 	}
 	// One changed dialogue line (1+/1-) and a new scene: its heading, its
@@ -204,7 +206,7 @@ func TestCompareDocumentsToolNamedSides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("history compare returned error: %v", err)
 	}
-	if result := output.(ToolCompareDocumentsResult); result.BeforeFormat != documentFormatMarkdown || result.AfterFormat != documentFormatFountain {
+	if result := output.(ToolCompareDocumentsResult); result.BeforeFormat != document.FormatMarkdown || result.AfterFormat != document.FormatFountain {
 		t.Fatalf("mixed-format result = %+v", result)
 	}
 	if len(*fired) != 3 {
@@ -302,7 +304,7 @@ func TestCompareDocumentsToolIdenticalAndMixed(t *testing.T) {
 		t.Fatalf("identical documents still open the workspace, fired %v", *fired)
 	}
 
-	mixed := documentCompareSummary(ToolCompareDocumentsResult{BeforeArtifactID: "md_a", AfterArtifactID: "md_b", BeforeFormat: documentFormatMarkdown, AfterFormat: documentFormatFountain, Added: 1, Removed: 1, Changes: 1})
+	mixed := documentCompareSummary(ToolCompareDocumentsResult{BeforeArtifactID: "md_a", AfterArtifactID: "md_b", BeforeFormat: document.FormatMarkdown, AfterFormat: document.FormatFountain, Added: 1, Removed: 1, Changes: 1})
 	if !strings.Contains(mixed, "One document is Markdown and the other Fountain") || !strings.Contains(mixed, "1 line added and 1 removed across 1 change") {
 		t.Fatalf("mixed summary = %q", mixed)
 	}
@@ -316,7 +318,7 @@ func TestDocumentCompareExcerptCaps(t *testing.T) {
 		after = append(after, "keep "+strings.Repeat("x", i%3))
 		after = append(after, "new line "+string(rune('a'+i%26))+strings.Repeat(" long", 60))
 	}
-	diff := buildDocumentDiff(strings.Join(before, "\n"), strings.Join(after, "\n"), documentFormatMarkdown, documentFormatMarkdown, false)
+	diff := document.BuildDiff(strings.Join(before, "\n"), strings.Join(after, "\n"), document.FormatMarkdown, document.FormatMarkdown, false)
 	excerpt := documentCompareExcerpt(diff)
 	changed := 0
 	for _, line := range strings.Split(excerpt, "\n") {
@@ -347,7 +349,7 @@ func TestResolveDocumentCompare(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveDocumentCompare returned error: %v", err)
 	}
-	if info.Before.ArtifactID != compareDraft1 || info.After.ArtifactID != compareDraft2 || info.Before.Text != compareDraft1Text || info.After.Format != documentFormatFountain {
+	if info.Before.ArtifactID != compareDraft1 || info.After.ArtifactID != compareDraft2 || info.Before.Text != compareDraft1Text || info.After.Format != document.FormatFountain {
 		t.Fatalf("sides = %+v / %+v", info.Before, info.After)
 	}
 	if info.Before.ConversationTitle != "Drafts" || !strings.HasPrefix(info.After.URL, artifactPrefix) {

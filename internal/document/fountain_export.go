@@ -1,4 +1,4 @@
-package main
+package document
 
 // The document exports: a saved .fountain artifact renders to a print-layout
 // PDF or a Final Draft .fdx file. Both ride the save+download philosophy —
@@ -28,99 +28,55 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// SaveDocumentExportRequest names a saved document artifact and the export
-// rendering to write — "pdf" or "fdx". IncludeNotes prints a screenplay's
-// sections and synopses as gray notes, the way the preview shows them; left
-// off they stay out of the page. PaperSize names the sheet the PDF prints
-// on — "letter" (the default) or "a4"; the frontend remembers the last
-// choice per dialect, starting a screenplay on US Letter and a markdown
-// document at DefaultDocumentPaperSize (the region's office paper).
-// FDX ignores it: Final Draft paginates with its own page setup.
-type SaveDocumentExportRequest struct {
-	Path          string `json:"path"`
-	Format        string `json:"format"`
-	SuggestedName string `json:"suggestedName,omitempty"`
-	IncludeNotes  bool   `json:"includeNotes,omitempty"`
-	PaperSize     string `json:"paperSize,omitempty"`
+// Export is one rendered export: the file bytes plus what the save dialog
+// needs to offer it — the extension and the file-type filter.
+type Export struct {
+	Data       []byte
+	Extension  string
+	FilterName string
+	Pattern    string
 }
 
-// SaveDocumentExport renders a saved document artifact to the requested
-// format and opens the save dialog — the SaveMarkdown twin for the derived
-// exports. The artifact is parsed fresh from disk (fountainParse accepts any
-// text, so an .md saved over as .fountain exports too), never regenerated
-// from editor state.
-func (a *App) SaveDocumentExport(req SaveDocumentExportRequest) (string, error) {
-	format := strings.ToLower(strings.TrimSpace(req.Format))
-	if format != "pdf" && format != "fdx" {
-		return "", fmt.Errorf(`document export format must be "pdf" or "fdx", got %q`, req.Format)
-	}
-	paper, err := documentPaperFor(req.PaperSize)
-	if err != nil {
-		return "", err
-	}
-	sourcePath := strings.TrimSpace(req.Path)
-	sourcePath = strings.TrimPrefix(sourcePath, artifactPrefix)
-	if sourcePath == "" {
-		return "", errors.New("document path is empty")
-	}
-	data, err := os.ReadFile(sourcePath)
-	if err != nil {
-		return "", err
-	}
-	if len(bytes.TrimSpace(data)) == 0 {
-		return "", errors.New("document artifact is empty")
-	}
-	rendered, extension, filterName, pattern, err := renderDocumentExport(data, sourcePath, format, req.IncludeNotes, paper)
-	if err != nil {
-		return "", err
-	}
-	return a.saveArtifactDialog(rendered, req.SuggestedName, "atelier-screenplay", extension, "Export document", []runtime.FileFilter{
-		{DisplayName: filterName, Pattern: pattern},
-		{DisplayName: "All Files", Pattern: "*.*"},
-	})
-}
-
-// renderDocumentExport is the save dialog's testable half: the artifact's own
+// RenderExport is the save dialog's testable half: the artifact's own
 // extension picks the layout — .fountain renders as a screenplay (PDF) or
 // exports to Final Draft; everything else renders as a document, the markdown
 // print layout. FDX has no meaning for a markdown document, so it refuses
 // with the fix. includeNotes reaches only the screenplay PDF; the paper, both
 // PDFs (Final Draft paginates an .fdx with its own page setup).
-func renderDocumentExport(data []byte, sourcePath, format string, includeNotes bool, paper pdfPaper) ([]byte, string, string, string, error) {
+func RenderExport(data []byte, sourcePath, format string, includeNotes bool, paper Paper) (Export, error) {
 	isFountain := strings.EqualFold(filepath.Ext(sourcePath), ".fountain")
 	switch format {
 	case "pdf":
+		var rendered []byte
+		var err error
 		if isFountain {
 			elements, titlePage := fountainParse(data)
-			rendered, err := fountainPDF(paper, elements, titlePage, includeNotes)
-			return rendered, ".pdf", "PDF Files", "*.pdf", err
+			rendered, err = fountainPDF(paper, elements, titlePage, includeNotes)
+		} else {
+			rendered, err = markdownPDF(paper, parseMarkdownBlocks(data))
 		}
-		rendered, err := markdownPDF(paper, parseMarkdownBlocks(data))
-		return rendered, ".pdf", "PDF Files", "*.pdf", err
+		return Export{Data: rendered, Extension: ".pdf", FilterName: "PDF Files", Pattern: "*.pdf"}, err
 	default:
 		if !isFountain {
-			return nil, "", "", "", errors.New("FDX export renders Fountain screenplays — save the document as .fountain first")
+			return Export{}, errors.New("FDX export renders Fountain screenplays — save the document as .fountain first")
 		}
 		elements, titlePage := fountainParse(data)
 		rendered, err := fountainFDX(elements, titlePage)
-		return rendered, ".fdx", "Final Draft Files", "*.fdx", err
+		return Export{Data: rendered, Extension: ".fdx", FilterName: "Final Draft Files", Pattern: "*.fdx"}, err
 	}
 }
 
 // --- PDF ---------------------------------------------------------------
 
 // The page grid every paper shares: Courier 12pt (10 characters per inch, 6
-// lines per inch) behind a 1.5" left margin. The paper (pdfPaper) sets the
+// lines per inch) behind a 1.5" left margin. The paper (Paper) sets the
 // rest — the page box, the full-width column, the line count. Element
 // indents follow the convention measured from the text edge, in characters.
 const (
@@ -239,7 +195,7 @@ func fountainWrapText(text string, width int) []string {
 // honoring a per-block keep-with-next room requirement — the markdown
 // layout's widow rule (a heading needs a body line below it). The screenplay
 // has its own page flow (fountainPaginate).
-func pdfPaginate(paper pdfPaper, blocks [][]fountainPDFLine, keepRoom func([]fountainPDFLine) int) [][]fountainPDFLine {
+func pdfPaginate(paper Paper, blocks [][]fountainPDFLine, keepRoom func([]fountainPDFLine) int) [][]fountainPDFLine {
 	pages := [][]fountainPDFLine{}
 	current := []fountainPDFLine{}
 	lineAt := 0
@@ -273,7 +229,7 @@ func pdfPaginate(paper pdfPaper, blocks [][]fountainPDFLine, keepRoom func([]fou
 // one and stands outside the numbering: the script's own pages count from the
 // next one, and the number prints from the second of them ("2." top-right),
 // the industry habit.
-func pdfWrite(paper pdfPaper, pages [][]fountainPDFLine, titlePage bool) []byte {
+func pdfWrite(paper Paper, pages [][]fountainPDFLine, titlePage bool) []byte {
 	w := &pdfBuf{}
 	w.writeString("%PDF-1.4\n")
 	type objRef struct {
@@ -287,7 +243,7 @@ func pdfWrite(paper pdfPaper, pages [][]fountainPDFLine, titlePage bool) []byte 
 		fmt.Fprintf(w.raw(), "%d 0 obj\n%s\nendobj\n", id, body)
 	}
 	// Courier's four faces, F1-F4 (pdfSpan.pdfFont), in WinAnsi — the
-	// latin-1 repertoire pdfEscape writes.
+	// latin-1 repertoire PDFEscape writes.
 	faces := []string{"Courier", "Courier-Bold", "Courier-Oblique", "Courier-BoldOblique"}
 	firstPage := 3 + len(faces)
 	kids := []string{}
@@ -332,7 +288,7 @@ func pdfWrite(paper pdfPaper, pages [][]fountainPDFLine, titlePage bool) []byte 
 // fountainPDF renders the script on the paper: the title page when the
 // script opens with one, then the body grouped into flows and paginated with
 // the screenplay page-flow rules, then the shared object assembly.
-func fountainPDF(paper pdfPaper, elements []FountainElement, titlePage map[string]string, includeNotes bool) ([]byte, error) {
+func fountainPDF(paper Paper, elements []FountainElement, titlePage map[string]string, includeNotes bool) ([]byte, error) {
 	pages := [][]fountainPDFLine{}
 	hasTitle := len(titlePage) > 0
 	if hasTitle {
@@ -351,7 +307,7 @@ func fountainPDF(paper pdfPaper, elements []FountainElement, titlePage map[strin
 // BT/Tj/ET blocks at absolute positions in their own faces, underline rules
 // under underlined runs, notes in gray, and the page number top-right on
 // script pages from the second (number 0 — a title page — prints none).
-func fountainPageStream(paper pdfPaper, lines []fountainPDFLine, number int) string {
+func fountainPageStream(paper Paper, lines []fountainPDFLine, number int) string {
 	var b bytes.Buffer
 	for row, line := range lines {
 		if strings.TrimSpace(line.text) == "" {
@@ -374,12 +330,12 @@ func fountainPageStream(paper pdfPaper, lines []fountainPDFLine, number int) str
 			fmt.Fprintf(&b, "q %.2f g %.2f G\n", pdfNoteGray, pdfNoteGray)
 		}
 		if len(line.spans) == 0 {
-			fmt.Fprintf(&b, "BT %s %.0f Tf 1 0 0 1 %.2f %.2f Tm (%s) Tj ET\n", line.pdfFont(), size, x, y, pdfEscape(line.text))
+			fmt.Fprintf(&b, "BT %s %.0f Tf 1 0 0 1 %.2f %.2f Tm (%s) Tj ET\n", line.pdfFont(), size, x, y, PDFEscape(line.text))
 		}
 		for _, span := range line.spans {
 			spanWidth := float64(utf8.RuneCountInString(span.text)) * charWidth
 			if strings.TrimSpace(span.text) != "" {
-				fmt.Fprintf(&b, "BT %s %.0f Tf 1 0 0 1 %.2f %.2f Tm (%s) Tj ET\n", span.pdfFont(), size, x, y, pdfEscape(span.text))
+				fmt.Fprintf(&b, "BT %s %.0f Tf 1 0 0 1 %.2f %.2f Tm (%s) Tj ET\n", span.pdfFont(), size, x, y, PDFEscape(span.text))
 			}
 			if span.underline {
 				fmt.Fprintf(&b, "%.1f w %.2f %.2f m %.2f %.2f l S\n", pdfUnderlineWidth, x, y-pdfUnderlineDrop, x+spanWidth, y-pdfUnderlineDrop)
@@ -393,7 +349,7 @@ func fountainPageStream(paper pdfPaper, lines []fountainPDFLine, number int) str
 	if number >= 2 {
 		label := fmt.Sprintf("%d.", number)
 		x := paper.textRight - float64(len(label))*pdfCharWidth
-		fmt.Fprintf(&b, "BT /F1 12 Tf 1 0 0 1 %.2f %.2f Tm (%s) Tj ET\n", x, paper.topBaseline+pdfLineHeight, pdfEscape(label))
+		fmt.Fprintf(&b, "BT /F1 12 Tf 1 0 0 1 %.2f %.2f Tm (%s) Tj ET\n", x, paper.topBaseline+pdfLineHeight, PDFEscape(label))
 	}
 	return b.String()
 }
@@ -799,7 +755,7 @@ type fountainBlock struct {
 // zero) print as one block — an action paragraph, a speech, a run of lyric or
 // centered lines. Notes print only when asked for, and spacing then measures
 // from the previous printed element. Words wrap to the paper's columns.
-func fountainBlocks(paper pdfPaper, elements []FountainElement, includeNotes bool) []fountainBlock {
+func fountainBlocks(paper Paper, elements []FountainElement, includeNotes bool) []fountainBlock {
 	blocks := []fountainBlock{}
 	var prev *FountainElement
 	for i := 0; i < len(elements); i++ {
@@ -855,7 +811,7 @@ func fountainLeadRoom(blocks []fountainBlock, j int) int {
 // and a block that doesn't fit splits at its best legal break — or moves to
 // the next page whole when it can't split. Only a block taller than a whole
 // page with no legal break is cut where the page ends.
-func fountainPaginate(paper pdfPaper, blocks []fountainBlock) [][]fountainPDFLine {
+func fountainPaginate(paper Paper, blocks []fountainBlock) [][]fountainPDFLine {
 	pages := [][]fountainPDFLine{}
 	page := []fountainPDFLine{}
 	flush := func() {
@@ -926,7 +882,7 @@ func fountainPaginate(paper pdfPaper, blocks []fountainBlock) [][]fountainPDFLin
 // draft date centered from a third of the way down, each value keeping its
 // own line breaks; then the print-only keys — the contact block, copyright,
 // notes — pinned to the bottom-left.
-func fountainTitlePageLines(paper pdfPaper, titlePage map[string]string) []fountainPDFLine {
+func fountainTitlePageLines(paper Paper, titlePage map[string]string) []fountainPDFLine {
 	topRow := paper.titleTopRow()
 	lines := make([]fountainPDFLine, topRow)
 	valueRows := func(value string, style fountainPrintStyle, underline bool) []fountainPDFLine {
@@ -1021,11 +977,11 @@ func pdfPrintable(text string) string {
 	return b.String()
 }
 
-// pdfEscape encodes text as a PDF literal string in WinAnsi: printable ASCII
+// PDFEscape encodes text as a PDF literal string in WinAnsi: printable ASCII
 // as itself (backslash and parentheses escaped), the latin-1 upper half as
 // octal byte escapes — the content stream stays ASCII — and control
 // characters as spaces.
-func pdfEscape(text string) string {
+func PDFEscape(text string) string {
 	var b strings.Builder
 	for _, r := range pdfPrintable(text) {
 		switch {

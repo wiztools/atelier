@@ -1,4 +1,4 @@
-package main
+package document
 
 import (
 	"strings"
@@ -117,57 +117,6 @@ func TestMarkdownPDFShape(t *testing.T) {
 	}
 }
 
-func TestSaveDocumentExportMarkdown(t *testing.T) {
-	config := editTestHome(t)
-	markdownConversationFixture(t, config.Storage)
-	app := NewApp()
-
-	result, err := app.SaveMarkdownEdit(SaveMarkdownEditRequest{
-		ConversationID:   "conv_doc",
-		SourceArtifactID: "md_old",
-		Format:           "markdown",
-		Text:             "# Saved doc\n\nBody text.\n",
-	})
-	if err != nil {
-		t.Fatalf("SaveMarkdownEdit returned error: %v", err)
-	}
-	data, extension, _, _, err := renderDocumentExport([]byte("# Saved doc\n\nBody text.\n"), result.URL, "pdf", false, pdfPaperLetter)
-	if err != nil {
-		t.Fatalf("renderDocumentExport(pdf) returned error: %v", err)
-	}
-	if extension != ".pdf" || !strings.HasPrefix(string(data), "%PDF-1.4\n") || !strings.Contains(string(data), "(Saved doc) Tj") {
-		t.Fatalf("the markdown render must be the document's PDF (ext %q, %d bytes)", extension, len(data))
-	}
-
-	// FDX renders screenplays: a markdown artifact refuses with the fix.
-	if _, _, _, _, err := renderDocumentExport([]byte("# doc"), result.URL, "fdx", false, pdfPaperLetter); err == nil || !strings.Contains(err.Error(), ".fountain") {
-		t.Fatalf("fdx on a markdown artifact = %v, want the .fountain guidance", err)
-	}
-
-	// The fountain path still works end to end.
-	fdx, extension, _, _, err := renderDocumentExport([]byte("INT. ROOM - DAY\n\nMAYA\nHello.\n"), scriptArtifactURL(t, config), "fdx", false, pdfPaperLetter)
-	if err != nil || extension != ".fdx" || !strings.Contains(string(fdx), "FinalDraft") {
-		t.Fatalf("fdx render = %v, ext %q", err, extension)
-	}
-}
-
-// scriptArtifactURL saves a fountain document through the editor's door and
-// returns its artifact URL — the dispatch keys on the URL's extension.
-func scriptArtifactURL(t *testing.T, config AppConfig) string {
-	t.Helper()
-	app := NewApp()
-	result, err := app.SaveMarkdownEdit(SaveMarkdownEditRequest{
-		ConversationID:   "conv_doc",
-		SourceArtifactID: "md_old",
-		Format:           "fountain",
-		Text:             "INT. ROOM - DAY\n\nMAYA\nHello.\n",
-	})
-	if err != nil {
-		t.Fatalf("SaveMarkdownEdit(fountain) returned error: %v", err)
-	}
-	return result.URL
-}
-
 // A heading wraps at its own size's column, not the body's: a 16pt heading
 // wrapped at the 12pt column printed its last glyphs past the right margin.
 func TestMarkdownHeadingWrapsAtItsOwnSize(t *testing.T) {
@@ -200,7 +149,7 @@ func TestMarkdownRowsStayInsideTheTextBlock(t *testing.T) {
 		"- " + strings.Repeat("bullet words wrap under the hang. ", 4) + "\n" +
 		"1. " + strings.Repeat("ordered words wrap under the hang. ", 4) + "\n\n" +
 		"---\n\n```\n" + strings.Repeat("c", 90) + "\n```\n\n| " + strings.Repeat("t", 100) + " |\n"
-	for _, paper := range []pdfPaper{pdfPaperLetter, pdfPaperA4} {
+	for _, paper := range []Paper{pdfPaperLetter, pdfPaperA4} {
 		for _, block := range markdownPDFLines(paper, parseMarkdownBlocks([]byte(doc))) {
 			for _, line := range block {
 				if strings.TrimSpace(line.text) == "" {

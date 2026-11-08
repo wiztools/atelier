@@ -1,4 +1,4 @@
-package main
+package document
 
 // The markdown dialect's print layout: a saved .md artifact renders to PDF
 // through the same page writer as the screenplay (fountain_export.go), with
@@ -264,7 +264,7 @@ func markdownPlainInline(text string) string {
 // headings at stepped sizes, hanging-indent lists, verbatim clipped code,
 // quoted lines, rules of underscores. Body text wraps to the paper's column;
 // code and table lines clip where their smaller text meets the margin.
-func markdownPDFLines(paper pdfPaper, blocks []markdownBlock) [][]fountainPDFLine {
+func markdownPDFLines(paper Paper, blocks []markdownBlock) [][]fountainPDFLine {
 	const (
 		headingLarge  = 16.0
 		headingMedium = 14.0
@@ -367,7 +367,7 @@ func markdownPDFLines(paper pdfPaper, blocks []markdownBlock) [][]fountainPDFLin
 // layout is paginated with the markdown widow rule (a heading keeps a body
 // line below it) and no title page — the document's own H1 opens page 1,
 // which numbers from page 2 like every rendered document.
-func markdownPDF(paper pdfPaper, blocks []markdownBlock) ([]byte, error) {
+func markdownPDF(paper Paper, blocks []markdownBlock) ([]byte, error) {
 	lines := markdownPDFLines(paper, blocks)
 	pages := pdfPaginate(paper, lines, markdownKeepRoom)
 	return pdfWrite(paper, pages, false), nil

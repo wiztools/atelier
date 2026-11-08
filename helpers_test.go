@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+
+	"atelier/internal/document"
 )
 
 // This file holds helpers used only by tests, kept out of the production build
@@ -23,12 +25,12 @@ import (
 // mode on. Tests that exercise the airplane path re-pin via
 // pinAirplaneDiskConfig (airplane_mode_test.go). And it pins the machine's
 // locale away, so the export's default paper never follows the developer's
-// region; tests that exercise it re-pin systemLocaleIdentifier
+// region; tests that exercise it re-pin document.SystemLocale
 // (document_paper_test.go).
 func TestMain(m *testing.M) {
 	localBinaryLookPath = func(string) (string, error) { return "", exec.ErrNotFound }
 	airplaneDiskConfig = func() (AppConfig, bool) { return AppConfig{}, false }
-	systemLocaleIdentifier = func() string { return "" }
+	document.SystemLocale = func() string { return "" }
 	os.Exit(m.Run())
 }
 
