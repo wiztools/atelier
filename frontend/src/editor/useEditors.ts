@@ -24,6 +24,7 @@ import {MarkdownEditorHandle} from './MarkdownEditor';
 import {CompositionEditorHandle} from './CompositionEditor';
 import {ComicEditorHandle} from './ComicEditor';
 import {DocumentCompareHandle} from './DocumentCompare';
+import {DetachedDraft} from './detachedDraft';
 import {notifyError} from '../notifications';
 import {View, EditSessionEditor} from '../types';
 
@@ -34,10 +35,15 @@ import {View, EditSessionEditor} from '../types';
 // workspaces in its editor slot; the hook reaches back only to switch the view,
 // open Settings for a missing tool, and resolve a project's library for the
 // pickers.
-function useEditors({setView, openSettings, libraryIDForProject}: {
+function useEditors({setView, openSettings, libraryIDForProject, captureDetachedDraft}: {
   setView: React.Dispatch<React.SetStateAction<View>>;
   openSettings: () => void;
   libraryIDForProject: (projectID: string) => string;
+  // The ＋ actions' context for a DETACHED draft: the pending "New chat"
+  // state of the moment (project, library scope, workspace, model selection),
+  // read through a getter so the capturer never sees a stale closure. The
+  // draft carries it until its first save materializes the host conversation.
+  captureDetachedDraft: () => DetachedDraft;
 }) {
   // The edit context the preview's Edit button uses: the conversation whose
   // card opened the preview plus the artifact id parsed from its URL. Null
@@ -492,7 +498,9 @@ function useEditors({setView, openSettings, libraryIDForProject}: {
   // persists until the editor's first save, which is what lets this run
   // mid-stream safely. audioFirst is the ＋ Audio intent: an empty draft
   // presents audio-first (starter lane, no video-frame chrome) until content
-  // decides otherwise.
+  // decides otherwise. A DETACHED draft (no conversation yet — the ＋
+  // action on a brand-new chat) opens empty with the captured pending
+  // context; its first save gives birth to the host conversation.
   async function openNewComposition(conversationID: string, seedArtifactIDs: string[], audioFirst = false) {
     if (!(await confirmLeaveEditor())) return;
     cancelVideoPreparation();
@@ -501,11 +509,24 @@ function useEditors({setView, openSettings, libraryIDForProject}: {
     const generation = ++compositionOpenGeneration.current;
     setCompositionEditorOpening(true);
     try {
-      const owner = await GetConversation(conversationID);
-      const source = await SeedComposition(main.SeedCompositionRequest.createFrom({
-        conversationId: conversationID,
-        artifactIds: seedArtifactIDs,
-      }));
+      let source: main.CompositionSourceInfo;
+      let handle: CompositionEditorHandle;
+      if (conversationID) {
+        const owner = await GetConversation(conversationID);
+        source = await SeedComposition(main.SeedCompositionRequest.createFrom({
+          conversationId: conversationID,
+          artifactIds: seedArtifactIDs,
+        }));
+        handle = {source, libraryID: libraryIDForProject(owner.conversation.projectId ?? ''), ...(audioFirst ? {audioFirst: true} : {})};
+      } else {
+        const draft = captureDetachedDraft();
+        source = await SeedComposition(main.SeedCompositionRequest.createFrom({
+          conversationId: '',
+          libraryId: draft.libraryID || undefined,
+          artifactIds: seedArtifactIDs,
+        }));
+        handle = {source, libraryID: draft.libraryID, ...(audioFirst ? {audioFirst: true} : {}), draft};
+      }
       if (generation !== compositionOpenGeneration.current) return;
       setEditorHandle(null);
       setDocumentCompareHandle(null);
@@ -518,7 +539,7 @@ function useEditors({setView, openSettings, libraryIDForProject}: {
       subtitleEditorDirty.current = false;
       markdownEditorDirty.current = false;
       compositionEditorDirty.current = false;
-      setCompositionEditorHandle({source, libraryID: libraryIDForProject(owner.conversation.projectId ?? ''), ...(audioFirst ? {audioFirst: true} : {})});
+      setCompositionEditorHandle(handle);
       setView((current) => (current === 'settings' ? current : 'app'));
     } catch (error) {
       if (generation === compositionOpenGeneration.current) notifyError("Couldn't open the composer", error);
@@ -572,7 +593,9 @@ function useEditors({setView, openSettings, libraryIDForProject}: {
   // openNewComic starts an unsaved draft — the "New comic" action and the
   // editor-launch intent's door. Seeding resolves and measures the referenced
   // images in order into the unplaced tray; nothing persists until the
-  // editor's first save, which is what lets this run mid-stream safely.
+  // editor's first save, which is what lets this run mid-stream safely. A
+  // DETACHED draft (no conversation yet) opens empty with the captured
+  // pending context; its first save gives birth to the host conversation.
   async function openNewComic(conversationID: string, seedArtifactIDs: string[]) {
     if (!(await confirmLeaveEditor())) return;
     cancelVideoPreparation();
@@ -581,11 +604,24 @@ function useEditors({setView, openSettings, libraryIDForProject}: {
     const generation = ++comicOpenGeneration.current;
     setComicEditorOpening(true);
     try {
-      const owner = await GetConversation(conversationID);
-      const source = await SeedComic(main.SeedComicRequest.createFrom({
-        conversationId: conversationID,
-        artifactIds: seedArtifactIDs,
-      }));
+      let source: main.ComicSourceInfo;
+      let handle: ComicEditorHandle;
+      if (conversationID) {
+        const owner = await GetConversation(conversationID);
+        source = await SeedComic(main.SeedComicRequest.createFrom({
+          conversationId: conversationID,
+          artifactIds: seedArtifactIDs,
+        }));
+        handle = {source, libraryID: libraryIDForProject(owner.conversation.projectId ?? '')};
+      } else {
+        const draft = captureDetachedDraft();
+        source = await SeedComic(main.SeedComicRequest.createFrom({
+          conversationId: '',
+          libraryId: draft.libraryID || undefined,
+          artifactIds: seedArtifactIDs,
+        }));
+        handle = {source, libraryID: draft.libraryID, draft};
+      }
       if (generation !== comicOpenGeneration.current) return;
       setEditorHandle(null);
       setDocumentCompareHandle(null);
@@ -600,7 +636,7 @@ function useEditors({setView, openSettings, libraryIDForProject}: {
       markdownEditorDirty.current = false;
       compositionEditorDirty.current = false;
       comicEditorDirty.current = false;
-      setComicEditorHandle({source, libraryID: libraryIDForProject(owner.conversation.projectId ?? '')});
+      setComicEditorHandle(handle);
       setView((current) => (current === 'settings' ? current : 'app'));
     } catch (error) {
       if (generation === comicOpenGeneration.current) notifyError("Couldn't open the comic editor", error);

@@ -92,7 +92,7 @@ func TestComicEditorLifecycle(t *testing.T) {
 
 	// A video id straight through the picker's add refuses — the comic takes
 	// images.
-	if _, err := app.ResolveComicMedia("conv_comic", "vid_a"); err == nil || !strings.Contains(err.Error(), "comic takes images") {
+	if _, err := app.ResolveComicMedia("conv_comic", "vid_a", ""); err == nil || !strings.Contains(err.Error(), "comic takes images") {
 		t.Fatalf("ResolveComicMedia(video) = %v", err)
 	}
 

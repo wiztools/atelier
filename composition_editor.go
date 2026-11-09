@@ -167,20 +167,36 @@ func compositionMediaRefFor(storage ConfigStorage, conversationID, artifactID st
 		if !found {
 			return CompositionMediaRef{}, fmt.Errorf("no video, audio, or image asset with id %q in this conversation or its library", artifactID)
 		}
-		if !compositionMediaKind(asset.Kind) {
-			return CompositionMediaRef{}, fmt.Errorf("%s is %s media — the composer takes video, audio, and images", artifactID, compositionRefKindPhrase(asset.Kind))
-		}
-		if asset.URL == "" {
-			return CompositionMediaRef{}, fmt.Errorf("the file for %s is missing on disk", artifactID)
-		}
-		ref = CompositionMediaRef{
-			ArtifactID:     asset.ID,
-			ConversationID: asset.ConversationID,
-			Path:           strings.TrimPrefix(asset.URL, artifactPrefix),
-			MimeType:       asset.MimeType,
-			Kind:           asset.Kind,
+		ref, err = compositionRefFromLibraryAsset(asset)
+		if err != nil {
+			return CompositionMediaRef{}, err
 		}
 	}
+	return finishCompositionMediaRef(ref)
+}
+
+// compositionRefFromLibraryAsset maps a library asset onto an unmeasured ref —
+// the asset keeps its OWN conversation, which is what lets a composition cite
+// media from a sibling chat.
+func compositionRefFromLibraryAsset(asset ConversationAsset) (CompositionMediaRef, error) {
+	if !compositionMediaKind(asset.Kind) {
+		return CompositionMediaRef{}, fmt.Errorf("%s is %s media — the composer takes video, audio, and images", asset.ID, compositionRefKindPhrase(asset.Kind))
+	}
+	if asset.URL == "" {
+		return CompositionMediaRef{}, fmt.Errorf("the file for %s is missing on disk", asset.ID)
+	}
+	return CompositionMediaRef{
+		ArtifactID:     asset.ID,
+		ConversationID: asset.ConversationID,
+		Path:           strings.TrimPrefix(asset.URL, artifactPrefix),
+		MimeType:       asset.MimeType,
+		Kind:           asset.Kind,
+	}, nil
+}
+
+// finishCompositionMediaRef absolutizes a ref's path and requires the file —
+// a ref missing at add time is a mistake rather than a later loss.
+func finishCompositionMediaRef(ref CompositionMediaRef) (CompositionMediaRef, error) {
 	absPath, err := filepath.Abs(ref.Path)
 	if err == nil {
 		ref.Path = absPath
@@ -312,10 +328,42 @@ func webpAnimated(data []byte) bool {
 	return len(data) >= 21 && string(data[12:16]) == "VP8X" && data[20]&0x02 != 0
 }
 
-// resolveCompositionMedia is the shared resolve-and-measure the picker's add
-// and the seed path both run.
-func resolveCompositionMedia(config AppConfig, conversationID, artifactID string) (CompositionMediaRef, error) {
-	ref, err := compositionMediaRefFor(config.Storage, conversationID, artifactID)
+// compositionLibraryMediaRefFor resolves an artifact id through a LIBRARY's
+// assets alone — the detached draft's scope: no conversation (and so no
+// record project) exists yet, so widening has nothing to widen from and the
+// library the draft was opened from IS the whole scope.
+func compositionLibraryMediaRefFor(storage ConfigStorage, libraryID, artifactID string) (CompositionMediaRef, error) {
+	libraryID = strings.TrimSpace(libraryID)
+	if libraryID == "" {
+		return CompositionMediaRef{}, errors.New("a detached composition picks from its library, and no library was given")
+	}
+	lookup, err := libraryAssetIndex(storage, libraryID)
+	if err != nil {
+		return CompositionMediaRef{}, err
+	}
+	asset, found := lookup[artifactID]
+	if !found {
+		return CompositionMediaRef{}, fmt.Errorf("no video, audio, or image asset with id %q in this library", artifactID)
+	}
+	ref, err := compositionRefFromLibraryAsset(asset)
+	if err != nil {
+		return CompositionMediaRef{}, err
+	}
+	return finishCompositionMediaRef(ref)
+}
+
+// resolveCompositionMedia resolves an artifact id against the draft's scope —
+// a conversation (the owning record, widened to its library) or, when the
+// conversation is empty, a bare library (the detached draft). The shared
+// resolve-and-measure the picker's add and the seed path both run.
+func resolveCompositionMedia(config AppConfig, conversationID, libraryID, artifactID string) (CompositionMediaRef, error) {
+	var ref CompositionMediaRef
+	var err error
+	if strings.TrimSpace(conversationID) != "" {
+		ref, err = compositionMediaRefFor(config.Storage, conversationID, artifactID)
+	} else {
+		ref, err = compositionLibraryMediaRefFor(config.Storage, libraryID, artifactID)
+	}
 	if err != nil {
 		return CompositionMediaRef{}, err
 	}
@@ -328,25 +376,29 @@ func resolveCompositionMedia(config AppConfig, conversationID, artifactID string
 // artifact into a ref the editor appends to its document — the picker's add
 // path. conversationID is the composition's OWNING conversation (its picker
 // scope), not necessarily the artifact's: a library sibling's asset resolves
-// through the widening rule and carries its own conversation on the ref.
-func (a *App) ResolveCompositionMedia(conversationID, artifactID string) (CompositionMediaRef, error) {
+// through the widening rule and carries its own conversation on the ref. For
+// a DETACHED draft the conversation is empty and libraryID is the scope the
+// draft opened with.
+func (a *App) ResolveCompositionMedia(conversationID, artifactID, libraryID string) (CompositionMediaRef, error) {
 	config, err := loadReadyConfig()
 	if err != nil {
 		return CompositionMediaRef{}, err
 	}
 	conversationID = strings.TrimSpace(conversationID)
-	if conversationID == "" {
-		return CompositionMediaRef{}, errors.New("adding media to a composition requires its conversation id")
+	if conversationID == "" && strings.TrimSpace(libraryID) == "" {
+		return CompositionMediaRef{}, errors.New("adding media to a composition requires a conversation or library scope")
 	}
-	return resolveCompositionMedia(config, conversationID, artifactID)
+	return resolveCompositionMedia(config, conversationID, libraryID, artifactID)
 }
 
 // SeedCompositionRequest asks for a fresh draft seeded with referenced media
 // — the editor-launch intent's payload and the "New composition" action's
 // (with no ids). ArtifactIDs are in reference order, which IS the seeded
-// order.
+// order. A DETACHED draft (the ＋ action on a brand-new conversation) passes
+// no conversation and carries LibraryID as its picker scope; it starts empty.
 type SeedCompositionRequest struct {
 	ConversationID string   `json:"conversationId"`
+	LibraryID      string   `json:"libraryId,omitempty"`
 	Name           string   `json:"name,omitempty"`
 	ArtifactIDs    []string `json:"artifactIds"`
 }
@@ -357,7 +409,9 @@ type SeedCompositionRequest struct {
 // nothing is persisted until the editor's first save. An id that will not
 // resolve or measure is skipped with a warning rather than failing the open
 // (the picker is right there to add it by hand), so the workspace always
-// opens.
+// opens. A detached draft opens empty: its seeds could only resolve through
+// the library, and a bare "New composition" has no ids to seed anyway — the
+// picker is the way in.
 func (a *App) SeedComposition(req SeedCompositionRequest) (CompositionSourceInfo, error) {
 	config, err := loadReadyConfig()
 	if err != nil {
@@ -365,7 +419,21 @@ func (a *App) SeedComposition(req SeedCompositionRequest) (CompositionSourceInfo
 	}
 	conversationID := strings.TrimSpace(req.ConversationID)
 	if conversationID == "" {
-		return CompositionSourceInfo{}, errors.New("a composition belongs to a conversation, and no conversation was given")
+		for _, id := range req.ArtifactIDs {
+			if strings.TrimSpace(id) != "" {
+				return CompositionSourceInfo{}, errors.New("a detached composition starts empty — seeding needs the conversation whose media the ids belong to")
+			}
+		}
+		doc := seedCompositionDoc(req.Name, nil)
+		if err := validateCompositionDoc(&doc); err != nil {
+			return CompositionSourceInfo{}, err
+		}
+		return CompositionSourceInfo{
+			ConversationID: "",
+			Doc:            doc,
+			MissingRefs:    []string{},
+			Warnings:       []string{},
+		}, nil
 	}
 	detail, err := getConversation(config.Storage, conversationID)
 	if err != nil {
@@ -378,7 +446,7 @@ func (a *App) SeedComposition(req SeedCompositionRequest) (CompositionSourceInfo
 		if id == "" {
 			continue
 		}
-		ref, err := resolveCompositionMedia(config, conversationID, id)
+		ref, err := resolveCompositionMedia(config, conversationID, req.LibraryID, id)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("Skipped %s: %v", id, err))
 			continue
@@ -402,58 +470,59 @@ func (a *App) SeedComposition(req SeedCompositionRequest) (CompositionSourceInfo
 // into its conversation — the single door the other editors have: a new
 // cmp_ artifact plus a small assistant turn recording the save. The source
 // artifact is provenance for the turn's summary; the original is never
-// touched. Saving under a new name from an older revision IS duplication.
+// touched. Saving under a new name from an older revision IS duplication. A
+// DETACHED draft passes no conversation and carries its Lifecycle — the
+// creation context captured at open — so this save gives birth to the host
+// conversation.
 type SaveCompositionEditRequest struct {
-	ConversationID   string         `json:"conversationId"`
-	SourceArtifactID string         `json:"sourceArtifactId,omitempty"`
-	Doc              CompositionDoc `json:"doc"`
+	ConversationID   string               `json:"conversationId"`
+	SourceArtifactID string               `json:"sourceArtifactId,omitempty"`
+	Doc              CompositionDoc       `json:"doc"`
+	Lifecycle        *EditorSaveLifecycle `json:"lifecycle,omitempty"`
 }
 
 // SaveCompositionEditResult names what the save produced: the new artifact's
 // identity (the reply chips, the assets panel, a later open, and an export
 // all read it) plus the normalized document, so the editor re-baselines on
-// exactly what landed.
+// exactly what landed. ConversationID is the host — for a materializing save
+// it names the conversation this save created, which the draft adopts.
 type SaveCompositionEditResult struct {
-	ArtifactID string         `json:"artifactId"`
-	URL        string         `json:"url"`
-	Doc        CompositionDoc `json:"doc"`
-	Summary    string         `json:"summary"`
+	ConversationID string         `json:"conversationId"`
+	ArtifactID     string         `json:"artifactId"`
+	URL            string         `json:"url"`
+	Doc            CompositionDoc `json:"doc"`
+	Summary        string         `json:"summary"`
 }
 
 // SaveCompositionEdit commits the edited document to the conversation: the
 // document lands as a fresh cmp_<hex>.json artifact and a short assistant
 // turn records the save (name, clip count, lanes, length). Every save is
 // additive. Refused while the conversation streams, like every other
-// sanctioned rewrite.
+// sanctioned rewrite. For a detached draft the save CREATES the
+// conversation — its summary turn is turn 1, the assistant's by design, and
+// the title comes from the document's name.
 func (a *App) SaveCompositionEdit(req SaveCompositionEditRequest) (SaveCompositionEditResult, error) {
-	conversationID := strings.TrimSpace(req.ConversationID)
-	if conversationID == "" {
-		return SaveCompositionEditResult{}, errors.New("saving a composition to a conversation requires a conversation id")
-	}
 	doc := req.Doc
 	if err := validateCompositionDoc(&doc); err != nil {
 		return SaveCompositionEditResult{}, err
 	}
-	a.streamsMu.Lock()
-	for _, active := range a.streamConversations {
-		if active == conversationID {
-			a.streamsMu.Unlock()
-			return SaveCompositionEditResult{}, errors.New("the conversation is still streaming — wait for the turn to finish before saving")
-		}
+	conversationID := strings.TrimSpace(req.ConversationID)
+	if conversationID == "" && req.Lifecycle == nil {
+		return SaveCompositionEditResult{}, errors.New("saving a composition requires a conversation id, or the draft's creation context")
 	}
-	a.streamsMu.Unlock()
-
 	config, err := loadReadyConfig()
 	if err != nil {
 		return SaveCompositionEditResult{}, err
 	}
-	store := newHistoryStore(config.Storage)
-	loaded, err := store.loadForAppend(conversationID, "chat", "a chat", config.Tools.Filesystem.Root)
+	target, err := a.openEditorSaveTarget(config, conversationID, doc.Name, req.Lifecycle)
 	if err != nil {
 		return SaveCompositionEditResult{}, err
 	}
-	content, err := writeCompositionArtifact(loaded.ArtifactsDir, doc)
+	content, err := writeCompositionArtifact(target.ArtifactsDir, doc)
 	if err != nil {
+		if target.Created {
+			target.discard()
+		}
 		return SaveCompositionEditResult{}, err
 	}
 	source := strings.TrimSpace(req.SourceArtifactID)
@@ -462,27 +531,20 @@ func (a *App) SaveCompositionEdit(req SaveCompositionEditRequest) (SaveCompositi
 		summary = fmt.Sprintf("Saved composition “%s” from %s · %s", doc.Name, source, compositionDocSummary(doc))
 	}
 	nowText := time.Now().Format(time.RFC3339)
-	assistantTurn := buildChatAssistantTurn(conversationID, loaded.NextTurnNumber, nowText, summary, "", "", "", "", 0, HarnessRun{}, "")
+	assistantTurn := buildChatAssistantTurn(target.ConversationID, target.TurnNumber, nowText, summary, "", "", "", "", 0, HarnessRun{}, "")
 	assistantTurn.Content = append(assistantTurn.Content, content)
-
-	loaded.Conversation.UpdatedAt = nowText
-	loaded.Conversation.Stats.TurnCount++
-	loaded.Conversation.Stats.ArtifactCount++
-	if err := store.writeConversation(loaded.Path, loaded.Conversation); err != nil {
+	if err := target.commit(assistantTurn, nowText); err != nil {
+		if target.Created {
+			target.discard()
+		}
 		return SaveCompositionEditResult{}, err
-	}
-	if err := store.writeTurn(loaded.TurnsDir, assistantTurn); err != nil {
-		return SaveCompositionEditResult{}, err
-	}
-	absArtifactsDir, err := filepath.Abs(loaded.ArtifactsDir)
-	if err != nil {
-		absArtifactsDir = loaded.ArtifactsDir
 	}
 	return SaveCompositionEditResult{
-		ArtifactID: content.ArtifactID,
-		URL:        artifactPrefix + filepath.Join(absArtifactsDir, filepath.Base(content.Path)),
-		Doc:        doc,
-		Summary:    summary,
+		ConversationID: target.ConversationID,
+		ArtifactID:     content.ArtifactID,
+		URL:            target.artifactURL(content.Path),
+		Doc:            doc,
+		Summary:        summary,
 	}, nil
 }
 

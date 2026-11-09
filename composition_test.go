@@ -441,7 +441,7 @@ func TestResolveCompositionMediaMeasuresWithoutFFprobe(t *testing.T) {
 	artifacts := compositionConversationFixture(t, config.Storage)
 	app := NewApp()
 
-	ref, err := app.ResolveCompositionMedia("conv_comp", "vid_a")
+	ref, err := app.ResolveCompositionMedia("conv_comp", "vid_a", "")
 	if err != nil {
 		t.Fatalf("ResolveCompositionMedia(vid_a) returned error: %v", err)
 	}
@@ -454,18 +454,18 @@ func TestResolveCompositionMediaMeasuresWithoutFFprobe(t *testing.T) {
 	if _, err := os.Stat(ref.Path); err != nil {
 		t.Fatalf("ref path %q does not exist: %v", ref.Path, err)
 	}
-	silent, err := app.ResolveCompositionMedia("conv_comp", "vid_b")
+	silent, err := app.ResolveCompositionMedia("conv_comp", "vid_b", "")
 	if err != nil || silent.HasAudio || silent.DurationSeconds != 4 || silent.Width != 640 {
 		t.Fatalf("vid_b = %+v (err %v), want a silent 4s 640-wide clip", silent, err)
 	}
-	audio, err := app.ResolveCompositionMedia("conv_comp", "aud_a")
+	audio, err := app.ResolveCompositionMedia("conv_comp", "aud_a", "")
 	if err != nil || audio.Kind != "audio" || audio.DurationSeconds != 2 || !audio.HasAudio {
 		t.Fatalf("aud_a = %+v (err %v), want a 2s audio ref", audio, err)
 	}
 
 	// An image enters as a still: measured from its bytes (no ffprobe), with
 	// no duration and no sound.
-	still, err := app.ResolveCompositionMedia("conv_comp", "img_y")
+	still, err := app.ResolveCompositionMedia("conv_comp", "img_y", "")
 	if err != nil || still.Kind != "image" || still.Width != 64 || still.Height != 48 || still.DurationSeconds != 0 || still.FPS != 0 || still.HasAudio {
 		t.Fatalf("img_y = %+v (err %v), want a measured 64x48 still with no duration or audio", still, err)
 	}
@@ -474,27 +474,27 @@ func TestResolveCompositionMediaMeasuresWithoutFFprobe(t *testing.T) {
 	}
 	// A JPEG whose EXIF turns it measures by its DISPLAY size — what the
 	// webview shows and the render graph produces.
-	rotated, err := app.ResolveCompositionMedia("conv_comp", "img_r")
+	rotated, err := app.ResolveCompositionMedia("conv_comp", "img_r", "")
 	if err != nil || rotated.Width != 48 || rotated.Height != 64 {
 		t.Fatalf("img_r = %+v (err %v), want the orientation-6 photo measured portrait (48x64)", rotated, err)
 	}
 
-	if _, err := app.ResolveCompositionMedia("conv_comp", "md_x"); err == nil || !strings.Contains(err.Error(), "markdown media") {
+	if _, err := app.ResolveCompositionMedia("conv_comp", "md_x", ""); err == nil || !strings.Contains(err.Error(), "markdown media") {
 		t.Fatalf("a document must be refused naming its kind, got %v", err)
 	}
-	if _, err := app.ResolveCompositionMedia("conv_comp", "img_x"); err == nil || !strings.Contains(err.Error(), "missing on disk") {
+	if _, err := app.ResolveCompositionMedia("conv_comp", "img_x", ""); err == nil || !strings.Contains(err.Error(), "missing on disk") {
 		t.Fatalf("an image whose file is gone must be refused at add time, got %v", err)
 	}
-	if _, err := app.ResolveCompositionMedia("conv_comp", "vid_nope"); err == nil || !strings.Contains(err.Error(), "no video, audio, or image asset") {
+	if _, err := app.ResolveCompositionMedia("conv_comp", "vid_nope", ""); err == nil || !strings.Contains(err.Error(), "no video, audio, or image asset") {
 		t.Fatalf("an unknown id must be refused, got %v", err)
 	}
-	if _, err := app.ResolveCompositionMedia("", "vid_a"); err == nil {
+	if _, err := app.ResolveCompositionMedia("", "vid_a", ""); err == nil {
 		t.Fatal("an empty conversation id must be refused")
 	}
 	if err := os.Remove(filepath.Join(artifacts, "vid_b.mp4")); err != nil {
 		t.Fatalf("remove vid_b: %v", err)
 	}
-	if _, err := app.ResolveCompositionMedia("conv_comp", "vid_b"); err == nil || !strings.Contains(err.Error(), "missing on disk") {
+	if _, err := app.ResolveCompositionMedia("conv_comp", "vid_b", ""); err == nil || !strings.Contains(err.Error(), "missing on disk") {
 		t.Fatalf("a missing file must be refused at add time, got %v", err)
 	}
 }
@@ -531,7 +531,7 @@ func TestResolveCompositionMediaWidensToLibrary(t *testing.T) {
 			HistoryContent{Type: "video", ArtifactID: "vid_lib", Path: "artifacts/vid_lib.mp4", MimeType: "video/mp4"}),
 	)
 	app := NewApp()
-	ref, err := app.ResolveCompositionMedia("conv_a", "vid_lib")
+	ref, err := app.ResolveCompositionMedia("conv_a", "vid_lib", "")
 	if err != nil {
 		t.Fatalf("ResolveCompositionMedia across the library returned error: %v", err)
 	}

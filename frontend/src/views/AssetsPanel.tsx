@@ -13,63 +13,62 @@ export function AssetsPanel({app}: {app: AppModel}) {
               <span className="assets-panel-title">
                 {app.composerLibraryID && app.composerProjectNames ? `Assets · ${app.composerProjectNames.libraryName}` : 'Assets'}
               </span>
-              {app.activeConversationID ? (
-                <button
-                  type="button"
-                  className="assets-panel-new-composition"
-                  disabled={app.editorOpening}
-                  aria-label="New comic"
-                  title="Open the comic editor on an unsaved draft for this conversation — add art from the picker inside it"
-                  onClick={() => void app.openNewComic(app.activeConversationID, [])}
-                >
-                  {/* A comic page: a framed grid with a plus. */}
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <rect x="3" y="4" width="18" height="16" rx="1.5" strokeWidth="2" />
-                    <path d="M3 12h18M12 4v8" strokeWidth="2" />
-                    <path d="M19 15.5v5" strokeWidth="2" />
-                    <path d="M16.5 18h5" strokeWidth="2" />
-                  </svg>
-                </button>
-              ) : null}
-              {app.activeConversationID ? (
-                <button
-                  type="button"
-                  className="assets-panel-new-composition"
-                  disabled={app.editorOpening}
-                  aria-label="New composition"
-                  title="Open the video composer on an unsaved draft for this conversation — add clips from the picker inside it"
-                  onClick={() => void app.openNewComposition(app.activeConversationID, [])}
-                >
-                  {/* Staggered clips on tracks + a plus — deliberately
-                      media-neutral: the composer hosts audio-only mixes too. */}
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <path d="M3 5.5h9" strokeWidth="3" />
-                    <path d="M7 12h7" strokeWidth="3" />
-                    <path d="M3 18.5h7" strokeWidth="3" />
-                    <path d="M18.5 15v6" strokeWidth="2" />
-                    <path d="M15.5 18h6" strokeWidth="2" />
-                  </svg>
-                </button>
-              ) : null}
-              {app.activeConversationID ? (
-                <button
-                  type="button"
-                  className="assets-panel-new-composition"
-                  disabled={app.editorOpening}
-                  aria-label="New audio mix"
-                  title="Open the composer on an audio-only draft — arrange music, voice, and sound on the audio lanes; a video added later turns it into a video sequence"
-                  onClick={() => void app.openNewComposition(app.activeConversationID, [], true)}
-                >
-                  {/* A note head + stem with an equalizer bar and a plus — the
-                      audio-first sibling of the composition glyph. */}
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <circle cx="7.5" cy="16.5" r="2.5" strokeWidth="2" />
-                    <path d="M10 16.5V4.5l6 1.5" strokeWidth="2" />
-                    <path d="M15 12v2M18 10v4" strokeWidth="2" />
-                    <path d="M19.5 17v4M17.5 19h4" strokeWidth="2" />
-                  </svg>
-                </button>
-              ) : null}
+              {/* The ＋ actions open session-free drafts — a draft on a
+                  conversation-less new chat opens DETACHED and materializes
+                  its host conversation at the first save, so the icons need
+                  no conversation to be useful (the original gap: they were
+                  hidden until the first send created one). */}
+              <button
+                type="button"
+                className="assets-panel-new-composition"
+                disabled={app.editorOpening}
+                aria-label="New comic"
+                title="Open the comic editor on an unsaved draft — add art from the picker inside it"
+                onClick={() => void app.openNewComic(app.activeConversationID, [])}
+              >
+                {/* A comic page: a framed grid with a plus. */}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <rect x="3" y="4" width="18" height="16" rx="1.5" strokeWidth="2" />
+                  <path d="M3 12h18M12 4v8" strokeWidth="2" />
+                  <path d="M19 15.5v5" strokeWidth="2" />
+                  <path d="M16.5 18h5" strokeWidth="2" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="assets-panel-new-composition"
+                disabled={app.editorOpening}
+                aria-label="New composition"
+                title="Open the video composer on an unsaved draft — add clips from the picker inside it"
+                onClick={() => void app.openNewComposition(app.activeConversationID, [])}
+              >
+                {/* Staggered clips on tracks + a plus — deliberately
+                    media-neutral: the composer hosts audio-only mixes too. */}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M3 5.5h9" strokeWidth="3" />
+                  <path d="M7 12h7" strokeWidth="3" />
+                  <path d="M3 18.5h7" strokeWidth="3" />
+                  <path d="M18.5 15v6" strokeWidth="2" />
+                  <path d="M15.5 18h6" strokeWidth="2" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="assets-panel-new-composition"
+                disabled={app.editorOpening}
+                aria-label="New audio mix"
+                title="Open the composer on an audio-only draft — arrange music, voice, and sound on the audio lanes; a video added later turns it into a video sequence"
+                onClick={() => void app.openNewComposition(app.activeConversationID, [], true)}
+              >
+                {/* A note head + stem with an equalizer bar and a plus — the
+                    audio-first sibling of the composition glyph. */}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <circle cx="7.5" cy="16.5" r="2.5" strokeWidth="2" />
+                  <path d="M10 16.5V4.5l6 1.5" strokeWidth="2" />
+                  <path d="M15 12v2M18 10v4" strokeWidth="2" />
+                  <path d="M19.5 17v4M17.5 19h4" strokeWidth="2" />
+                </svg>
+              </button>
               <button
                 type="button"
                 className="assets-panel-close"

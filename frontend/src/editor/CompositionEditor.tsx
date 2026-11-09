@@ -69,6 +69,7 @@ import {
   updateDuck,
 } from './compositionModel';
 import './compositionEditor.css';
+import {DetachedDraft, detachedDraftLifecycle} from './detachedDraft';
 
 export type CompositionEditorHandle = {
   source: main.CompositionSourceInfo;
@@ -82,6 +83,11 @@ export type CompositionEditorHandle = {
   // to decide. Once any video clip exists — or on any saved revision — the
   // content rule (compositionIsAudioOnly) takes over and this is moot.
   audioFirst?: boolean;
+  // Set only on a DETACHED draft — opened with no conversation from the ＋
+  // actions on a brand-new chat. Its first save materializes the host
+  // conversation from this captured context (project, workspace, model
+  // selection), after which the editor targets the real conversation.
+  draft?: DetachedDraft;
 };
 
 type EditorLogEntry = {
@@ -403,10 +409,25 @@ export function CompositionEditor(props: {
   onDirtyChange?: (dirty: boolean) => void;
   // Fired after a save lands a new artifact on the conversation so the parent
   // can refresh the sidebar and the assets panel.
-  onSavedToConversation?: () => void;
+  onSavedToConversation?: (conversationID: string) => void;
+  // Fired instead when a DETACHED draft's first save gave birth to its host
+  // conversation: the parent adopts it (reveals the row, moves the new chat's
+  // unsent text into it, makes it the active conversation).
+  onConversationCreated?: (conversationID: string) => void;
 }) {
   const {source} = props.handle;
-  const sourceConversationID = useState(source.conversationId)[0];
+  // The host conversation. A detached draft starts with none and adopts the
+  // one its first save creates — so this is state (plus a ref for the
+  // empty-deps event listener and the serialized saves), not the frozen
+  // open-time value: the picker, saves, exports, and the parent link follow
+  // the materialization without remounting the editor.
+  const [conversationID, setConversationID] = useState(source.conversationId);
+  const conversationIDRef = useRef(source.conversationId);
+  // A preview needs SOME scope before the conversation exists. It never reads
+  // or writes the conversation, so a detached draft renders under a
+  // client-minted scope — and keeps folding that scope's events after it
+  // materializes, so a preview in flight across the first save still lands.
+  const draftScope = useState(() => source.conversationId || `composition-draft-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`)[0];
 
   const [doc, setDoc] = useState<CompositionDoc>(() => initialCompositionDoc(source, props.handle.audioFirst));
   const [baseline, setBaseline] = useState<CompositionDoc>(() => initialCompositionDoc(source, props.handle.audioFirst));
@@ -568,12 +589,13 @@ export function CompositionEditor(props: {
   }, [dirty]);
 
   // The picker's dual-scope candidates: the conversation's assets widened to
-  // its library — the same fold the subtitle editor performs.
+  // its library — the same fold the subtitle editor performs. A detached
+  // draft has no conversation yet, so its scope is the library alone.
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       try {
-        const conversationAssets = asArray(await AppBindings.ListConversationAssets(sourceConversationID));
+        const conversationAssets = conversationID ? asArray(await AppBindings.ListConversationAssets(conversationID)) : [];
         let combined = conversationAssets;
         if (props.libraryID) {
           const libraryAssets = asArray(await AppBindings.ListLibraryAssets(props.libraryID));
@@ -593,7 +615,7 @@ export function CompositionEditor(props: {
     return () => {
       cancelled = true;
     };
-  }, [sourceConversationID, props.libraryID]);
+  }, [conversationID, props.libraryID]);
 
   // stageRender puts a completed render on the stage. A render replacing one
   // already staged (not a replay of the same file) keeps the viewer's place.
@@ -651,13 +673,15 @@ export function CompositionEditor(props: {
 
   // Render-op events fold into the rows, and a completed preview takes the
   // stage. The event is app-global, so another conversation's op — a render
-  // still running after its editor closed — is ignored. A completed EXPORT's
-  // refresh and toast belong to App's listener, which hears it whether or not
-  // this editor is still open.
+  // still running after its editor closed — is ignored. A detached draft's
+  // previews ride its draft scope, which stays recognized after the first
+  // save adopts the real conversation. A completed EXPORT's refresh and
+  // toast belong to App's listener, which hears it whether or not this
+  // editor is still open.
   useEffect(() => {
     const onUpdate = (event: any) => {
       const op = main.CompositionRenderOperation.createFrom(event);
-      if (op.conversationId !== sourceConversationID) {
+      if (op.conversationId !== conversationIDRef.current && op.conversationId !== draftScope) {
         return;
       }
       applyRenderOp(op);
@@ -676,8 +700,11 @@ export function CompositionEditor(props: {
   // displaces an auto row this editor already started. Best-effort: when the
   // list fails, the next event brings the row back.
   useEffect(() => {
+    if (!conversationID) {
+      return; // a detached draft has no renders that outlived it — its scope is this session's rows
+    }
     let stale = false;
-    void AppBindings.ListCompositionRenders(sourceConversationID).then((ops) => {
+    void AppBindings.ListCompositionRenders(conversationID).then((ops) => {
       const seeded = asArray(ops).map((op) => main.CompositionRenderOperation.createFrom(op));
       if (stale || seeded.length === 0) {
         return;
@@ -694,7 +721,7 @@ export function CompositionEditor(props: {
     return () => {
       stale = true;
     };
-  }, [sourceConversationID]);
+  }, [conversationID]);
 
   // The Edits panel's render rows, newest first: the manual renders plus the
   // one auto row. A replaced render is still winding down for a moment, so
@@ -945,7 +972,7 @@ export function CompositionEditor(props: {
     submitCountRef.current += 1;
     try {
       const op = await AppBindings.SubmitCompositionRender(main.CompositionRenderRequest.createFrom({
-        conversationId: sourceConversationID,
+        conversationId: conversationID || draftScope,
         mode: 'preview',
         doc: toWireDoc(docRef.current),
         ...(options.startSeconds !== null ? {startSeconds: options.startSeconds} : {}),
@@ -1286,7 +1313,7 @@ export function CompositionEditor(props: {
     setPickerError('');
     setAddingIDs((ids) => [...ids, asset.id]);
     try {
-      const wireRef = await AppBindings.ResolveCompositionMedia(sourceConversationID, asset.id);
+      const wireRef = await AppBindings.ResolveCompositionMedia(conversationID, asset.id, props.libraryID ?? '');
       const ref = normalizeCompositionMediaRef(wireRef);
       if (ref.kind === 'audio') {
         let next = docRef.current;
@@ -1311,12 +1338,27 @@ export function CompositionEditor(props: {
   // persistRevision is the one save door both the Save button and
   // save-and-export walk through: it writes the working doc as a new
   // revision, re-baselines on the server's normalization, and returns the
-  // revision's artifact id (what an export pins — EX-04).
-  const persistRevision = async (): Promise<string> => {
+  // revision's artifact id (what an export pins — EX-04). For a DETACHED
+  // draft the save carries the captured creation context and CREATES the
+  // host conversation; the editor adopts its id mid-session — the picker's
+  // conversation fold, the parent link, and later saves all follow — and the
+  // parent hears onConversationCreated once. Saves run one at a time, each
+  // reading the host from the ref when it starts: a save racing the birth
+  // (Save, then Export before the first lands) must append to the
+  // conversation the first one created, never give birth to a second.
+  const saveQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const persistRevision = (): Promise<string> => {
+    const run = saveQueueRef.current.catch(() => {}).then(() => persistRevisionNow());
+    saveQueueRef.current = run;
+    return run;
+  };
+  const persistRevisionNow = async (): Promise<string> => {
+    const hostID = conversationIDRef.current;
     const result = await AppBindings.SaveCompositionEdit(main.SaveCompositionEditRequest.createFrom({
-      conversationId: sourceConversationID,
+      conversationId: hostID,
       sourceArtifactId: activeArtifactID || undefined,
       doc: toWireDoc(docRef.current),
+      ...(hostID ? {} : props.handle.draft ? {lifecycle: detachedDraftLifecycle(props.handle.draft)} : {}),
     }));
     const normalized = normalizeCompositionDoc(result.doc);
     setLog((entries) => [
@@ -1329,7 +1371,13 @@ export function CompositionEditor(props: {
     docRef.current = normalized;
     setNameDraft(normalized.name);
     setActiveArtifactID(result.artifactId);
-    props.onSavedToConversation?.();
+    if (!hostID && result.conversationId) {
+      conversationIDRef.current = result.conversationId;
+      setConversationID(result.conversationId);
+      props.onConversationCreated?.(result.conversationId);
+    } else {
+      props.onSavedToConversation?.(hostID);
+    }
     return result.artifactId;
   };
 
@@ -1368,7 +1416,10 @@ export function CompositionEditor(props: {
       const fps = parseFloat(exportFPS);
       const crf = parseInt(exportCRF, 10);
       const op = await AppBindings.SubmitCompositionRender(main.CompositionRenderRequest.createFrom({
-        conversationId: sourceConversationID,
+        // An export always has a conversation: the save above materialized
+        // one for a detached draft, and the ref reads it even when the state
+        // update is still in flight.
+        conversationId: conversationIDRef.current,
         mode: 'export',
         artifactId: artifactID,
         includeAudio: exportIncludeAudio,
@@ -1395,7 +1446,7 @@ export function CompositionEditor(props: {
     if (loadingRevision || entry.artifactId === activeArtifactID) return;
     setLoadingRevision(true);
     try {
-      const revision = await AppBindings.ResolveCompositionEditSource(sourceConversationID, entry.artifactId);
+      const revision = await AppBindings.ResolveCompositionEditSource(conversationID, entry.artifactId);
       const next = normalizeCompositionDoc(revision.doc);
       setUndoStack((stack) => [...stack, docRef.current].slice(-undoLimit));
       setRedoStack([]);
@@ -1433,8 +1484,10 @@ export function CompositionEditor(props: {
     <section className={`composition-editor${audioOnly ? ' audio-first' : ''}`}>
       <EditorHeader
         title={audioOnly ? 'Audio Composer' : 'Video Composer'}
-        parentAvailable
-        parentConversationID={sourceConversationID}
+        // A detached draft has no chat to return to until its first save
+        // creates one — the header wears "unsaved draft" until then.
+        parentAvailable={!!conversationID}
+        parentConversationID={conversationID}
         onClose={props.onClose}
         onOpenParent={props.onOpenParent}
       />
@@ -1497,7 +1550,7 @@ export function CompositionEditor(props: {
           {pickerOpen ? (
             <MediaPicker
               assets={mediaAssets}
-              editedConversationID={sourceConversationID}
+              editedConversationID={conversationID}
               kinds={['video', 'audio', 'image']}
               addTitles={{image: 'Add this image to the end of the video lane as a still'}}
               refCounts={refCounts}
@@ -1791,7 +1844,7 @@ export function CompositionEditor(props: {
               <strong>{isStillClip(selectedClip) ? 'Still' : 'Clip'} {doc.video.findIndex((clip) => clip.id === selectedClip.id) + 1}</strong>
               <p className="hint composition-ref-line" title={selectedClip.ref.path}>
                 {selectedClip.ref.artifactId} · {selectedClip.ref.width ?? '?'}×{selectedClip.ref.height ?? '?'} · {isStillClip(selectedClip) ? 'still image' : formatCompositionClock(selectedClip.ref.durationSeconds)}
-                {selectedClip.ref.conversationId && selectedClip.ref.conversationId !== sourceConversationID ? ' · another chat' : ''}
+                {selectedClip.ref.conversationId && selectedClip.ref.conversationId !== conversationID ? ' · another chat' : ''}
               </p>
               {isStillClip(selectedClip) ? (
                 <>

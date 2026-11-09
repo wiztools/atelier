@@ -162,22 +162,38 @@ func comicMediaRefFor(storage ConfigStorage, conversationID, artifactID string) 
 		if !found {
 			return ComicMediaRef{}, fmt.Errorf("no image asset with id %q in this conversation or its library", artifactID)
 		}
-		if asset.Kind != "image" {
-			return ComicMediaRef{}, fmt.Errorf("%s is %s media — the comic takes images", artifactID, comicRefKindPhrase(asset.Kind))
-		}
-		if asset.URL == "" {
-			return ComicMediaRef{}, fmt.Errorf("the file for %s is missing on disk", artifactID)
-		}
-		ref = ComicMediaRef{
-			ArtifactID:     asset.ID,
-			ConversationID: asset.ConversationID,
-			Path:           strings.TrimPrefix(asset.URL, artifactPrefix),
-			MimeType:       asset.MimeType,
-			Kind:           "image",
-			Width:          asset.Width,
-			Height:         asset.Height,
+		ref, err = comicRefFromLibraryAsset(asset)
+		if err != nil {
+			return ComicMediaRef{}, err
 		}
 	}
+	return finishComicMediaRef(ref)
+}
+
+// comicRefFromLibraryAsset maps a library asset onto an unmeasured image ref —
+// the asset keeps its OWN conversation, which is what lets a comic cite art
+// from a sibling chat.
+func comicRefFromLibraryAsset(asset ConversationAsset) (ComicMediaRef, error) {
+	if asset.Kind != "image" {
+		return ComicMediaRef{}, fmt.Errorf("%s is %s media — the comic takes images", asset.ID, comicRefKindPhrase(asset.Kind))
+	}
+	if asset.URL == "" {
+		return ComicMediaRef{}, fmt.Errorf("the file for %s is missing on disk", asset.ID)
+	}
+	return ComicMediaRef{
+		ArtifactID:     asset.ID,
+		ConversationID: asset.ConversationID,
+		Path:           strings.TrimPrefix(asset.URL, artifactPrefix),
+		MimeType:       asset.MimeType,
+		Kind:           "image",
+		Width:          asset.Width,
+		Height:         asset.Height,
+	}, nil
+}
+
+// finishComicMediaRef absolutizes a ref's path and requires the file — a ref
+// missing at add time is a mistake rather than a later loss.
+func finishComicMediaRef(ref ComicMediaRef) (ComicMediaRef, error) {
 	absPath, err := filepath.Abs(ref.Path)
 	if err == nil {
 		ref.Path = absPath
@@ -186,6 +202,28 @@ func comicMediaRefFor(storage ConfigStorage, conversationID, artifactID string) 
 		return ComicMediaRef{}, fmt.Errorf("the file for %s is missing on disk", ref.ArtifactID)
 	}
 	return ref, nil
+}
+
+// comicLibraryMediaRefFor resolves an artifact id through a LIBRARY's assets
+// alone — the detached draft's scope (compositionLibraryMediaRefFor's twin).
+func comicLibraryMediaRefFor(storage ConfigStorage, libraryID, artifactID string) (ComicMediaRef, error) {
+	libraryID = strings.TrimSpace(libraryID)
+	if libraryID == "" {
+		return ComicMediaRef{}, errors.New("a detached comic picks from its library, and no library was given")
+	}
+	lookup, err := libraryAssetIndex(storage, libraryID)
+	if err != nil {
+		return ComicMediaRef{}, err
+	}
+	asset, found := lookup[strings.TrimSpace(artifactID)]
+	if !found {
+		return ComicMediaRef{}, fmt.Errorf("no image asset with id %q in this library", artifactID)
+	}
+	ref, err := comicRefFromLibraryAsset(asset)
+	if err != nil {
+		return ComicMediaRef{}, err
+	}
+	return finishComicMediaRef(ref)
 }
 
 // probeComicMediaRef fills a ref's facts snapshot — the pixel size, sniffed
@@ -211,10 +249,18 @@ func probeComicMediaRef(config AppConfig, ref ComicMediaRef) (ComicMediaRef, err
 	return ref, nil
 }
 
-// resolveComicMedia is the shared resolve-and-measure the picker's add and
-// the seed path both run.
-func resolveComicMedia(config AppConfig, conversationID, artifactID string) (ComicMediaRef, error) {
-	ref, err := comicMediaRefFor(config.Storage, conversationID, artifactID)
+// resolveComicMedia resolves an artifact id against the draft's scope — a
+// conversation (widened to its library) or, when the conversation is empty, a
+// bare library (the detached draft). The shared resolve-and-measure the
+// picker's add and the seed path both run.
+func resolveComicMedia(config AppConfig, conversationID, libraryID, artifactID string) (ComicMediaRef, error) {
+	var ref ComicMediaRef
+	var err error
+	if strings.TrimSpace(conversationID) != "" {
+		ref, err = comicMediaRefFor(config.Storage, conversationID, artifactID)
+	} else {
+		ref, err = comicLibraryMediaRefFor(config.Storage, libraryID, artifactID)
+	}
 	if err != nil {
 		return ComicMediaRef{}, err
 	}
@@ -225,24 +271,28 @@ func resolveComicMedia(config AppConfig, conversationID, artifactID string) (Com
 // editor appends to its document — the picker's add path. conversationID is
 // the comic's OWNING conversation (its picker scope), not necessarily the
 // artifact's: a library sibling's asset resolves through the widening rule
-// and carries its own conversation on the ref.
-func (a *App) ResolveComicMedia(conversationID, artifactID string) (ComicMediaRef, error) {
+// and carries its own conversation on the ref. For a DETACHED draft the
+// conversation is empty and libraryID is the scope the draft opened with.
+func (a *App) ResolveComicMedia(conversationID, artifactID, libraryID string) (ComicMediaRef, error) {
 	config, err := loadReadyConfig()
 	if err != nil {
 		return ComicMediaRef{}, err
 	}
 	conversationID = strings.TrimSpace(conversationID)
-	if conversationID == "" {
-		return ComicMediaRef{}, errors.New("adding media to a comic requires its conversation id")
+	if conversationID == "" && strings.TrimSpace(libraryID) == "" {
+		return ComicMediaRef{}, errors.New("adding media to a comic requires a conversation or library scope")
 	}
-	return resolveComicMedia(config, conversationID, artifactID)
+	return resolveComicMedia(config, conversationID, libraryID, artifactID)
 }
 
 // SeedComicRequest asks for a fresh draft seeded with referenced images —
 // the editor-launch intent's payload and the "New comic" action's (with no
-// ids). ArtifactIDs are in reference order, which IS the seeded order.
+// ids). ArtifactIDs are in reference order, which IS the seeded order. A
+// DETACHED draft passes no conversation and carries LibraryID as its picker
+// scope; it starts empty.
 type SeedComicRequest struct {
 	ConversationID string   `json:"conversationId"`
+	LibraryID      string   `json:"libraryId,omitempty"`
 	Name           string   `json:"name,omitempty"`
 	ArtifactIDs    []string `json:"artifactIds"`
 }
@@ -254,7 +304,8 @@ type SeedComicRequest struct {
 // frames is the human's half of the loop). Read-only; nothing is persisted
 // until the editor's first save. An id that will not resolve or measure is
 // skipped with a warning rather than failing the open (the picker is right
-// there to add it by hand), so the workspace always opens.
+// there to add it by hand), so the workspace always opens. A detached draft
+// opens empty — the picker is the way in.
 func (a *App) SeedComic(req SeedComicRequest) (ComicSourceInfo, error) {
 	config, err := loadReadyConfig()
 	if err != nil {
@@ -262,7 +313,21 @@ func (a *App) SeedComic(req SeedComicRequest) (ComicSourceInfo, error) {
 	}
 	conversationID := strings.TrimSpace(req.ConversationID)
 	if conversationID == "" {
-		return ComicSourceInfo{}, errors.New("a comic belongs to a conversation, and no conversation was given")
+		for _, id := range req.ArtifactIDs {
+			if strings.TrimSpace(id) != "" {
+				return ComicSourceInfo{}, errors.New("a detached comic starts empty — seeding needs the conversation whose images the ids belong to")
+			}
+		}
+		doc := seedComicDoc(req.Name, nil)
+		if err := validateComicDoc(&doc); err != nil {
+			return ComicSourceInfo{}, err
+		}
+		return ComicSourceInfo{
+			ConversationID: "",
+			Doc:            doc,
+			MissingRefs:    []string{},
+			Warnings:       []string{},
+		}, nil
 	}
 	detail, err := getConversation(config.Storage, conversationID)
 	if err != nil {
@@ -275,7 +340,7 @@ func (a *App) SeedComic(req SeedComicRequest) (ComicSourceInfo, error) {
 		if id == "" {
 			continue
 		}
-		ref, err := resolveComicMedia(config, conversationID, id)
+		ref, err := resolveComicMedia(config, conversationID, req.LibraryID, id)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("Skipped %s: %v", id, err))
 			continue
@@ -299,57 +364,56 @@ func (a *App) SeedComic(req SeedComicRequest) (ComicSourceInfo, error) {
 // conversation — the single door the other editors have: a new cbc_ artifact
 // plus a small assistant turn recording the save. The source artifact is
 // provenance for the turn's summary; the original is never touched. Saving
-// under a new name from an older revision IS duplication.
+// under a new name from an older revision IS duplication. A DETACHED draft
+// passes no conversation and carries its Lifecycle, so this save gives birth
+// to the host conversation.
 type SaveComicEditRequest struct {
-	ConversationID   string   `json:"conversationId"`
-	SourceArtifactID string   `json:"sourceArtifactId,omitempty"`
-	Doc              ComicDoc `json:"doc"`
+	ConversationID   string               `json:"conversationId"`
+	SourceArtifactID string               `json:"sourceArtifactId,omitempty"`
+	Doc              ComicDoc             `json:"doc"`
+	Lifecycle        *EditorSaveLifecycle `json:"lifecycle,omitempty"`
 }
 
 // SaveComicEditResult names what the save produced: the new artifact's
 // identity (the reply chips, the assets panel, a later open all read it)
 // plus the normalized document, so the editor re-baselines on exactly what
-// landed.
+// landed. ConversationID is the host — for a materializing save, the
+// conversation this save created.
 type SaveComicEditResult struct {
-	ArtifactID string   `json:"artifactId"`
-	URL        string   `json:"url"`
-	Doc        ComicDoc `json:"doc"`
-	Summary    string   `json:"summary"`
+	ConversationID string   `json:"conversationId"`
+	ArtifactID     string   `json:"artifactId"`
+	URL            string   `json:"url"`
+	Doc            ComicDoc `json:"doc"`
+	Summary        string   `json:"summary"`
 }
 
 // SaveComicEdit commits the edited book to the conversation: the document
 // lands as a fresh cbc_<hex>.json artifact and a short assistant turn
 // records the save (name, pages, panels). Every save is additive. Refused
-// while the conversation streams, like every other sanctioned rewrite.
+// while the conversation streams, like every other sanctioned rewrite. For a
+// detached draft the save CREATES the conversation, titled from the book.
 func (a *App) SaveComicEdit(req SaveComicEditRequest) (SaveComicEditResult, error) {
-	conversationID := strings.TrimSpace(req.ConversationID)
-	if conversationID == "" {
-		return SaveComicEditResult{}, errors.New("saving a comic to a conversation requires a conversation id")
-	}
 	doc := req.Doc
 	if err := validateComicDoc(&doc); err != nil {
 		return SaveComicEditResult{}, err
 	}
-	a.streamsMu.Lock()
-	for _, active := range a.streamConversations {
-		if active == conversationID {
-			a.streamsMu.Unlock()
-			return SaveComicEditResult{}, errors.New("the conversation is still streaming — wait for the turn to finish before saving")
-		}
+	conversationID := strings.TrimSpace(req.ConversationID)
+	if conversationID == "" && req.Lifecycle == nil {
+		return SaveComicEditResult{}, errors.New("saving a comic requires a conversation id, or the draft's creation context")
 	}
-	a.streamsMu.Unlock()
-
 	config, err := loadReadyConfig()
 	if err != nil {
 		return SaveComicEditResult{}, err
 	}
-	store := newHistoryStore(config.Storage)
-	loaded, err := store.loadForAppend(conversationID, "chat", "a chat", config.Tools.Filesystem.Root)
+	target, err := a.openEditorSaveTarget(config, conversationID, doc.Name, req.Lifecycle)
 	if err != nil {
 		return SaveComicEditResult{}, err
 	}
-	content, err := writeComicArtifact(loaded.ArtifactsDir, doc)
+	content, err := writeComicArtifact(target.ArtifactsDir, doc)
 	if err != nil {
+		if target.Created {
+			target.discard()
+		}
 		return SaveComicEditResult{}, err
 	}
 	source := strings.TrimSpace(req.SourceArtifactID)
@@ -358,27 +422,20 @@ func (a *App) SaveComicEdit(req SaveComicEditRequest) (SaveComicEditResult, erro
 		summary = fmt.Sprintf("Saved comic “%s” from %s · %s", doc.Name, source, comicDocSummary(doc))
 	}
 	nowText := time.Now().Format(time.RFC3339)
-	assistantTurn := buildChatAssistantTurn(conversationID, loaded.NextTurnNumber, nowText, summary, "", "", "", "", 0, HarnessRun{}, "")
+	assistantTurn := buildChatAssistantTurn(target.ConversationID, target.TurnNumber, nowText, summary, "", "", "", "", 0, HarnessRun{}, "")
 	assistantTurn.Content = append(assistantTurn.Content, content)
-
-	loaded.Conversation.UpdatedAt = nowText
-	loaded.Conversation.Stats.TurnCount++
-	loaded.Conversation.Stats.ArtifactCount++
-	if err := store.writeConversation(loaded.Path, loaded.Conversation); err != nil {
+	if err := target.commit(assistantTurn, nowText); err != nil {
+		if target.Created {
+			target.discard()
+		}
 		return SaveComicEditResult{}, err
-	}
-	if err := store.writeTurn(loaded.TurnsDir, assistantTurn); err != nil {
-		return SaveComicEditResult{}, err
-	}
-	absArtifactsDir, err := filepath.Abs(loaded.ArtifactsDir)
-	if err != nil {
-		absArtifactsDir = loaded.ArtifactsDir
 	}
 	return SaveComicEditResult{
-		ArtifactID: content.ArtifactID,
-		URL:        artifactPrefix + filepath.Join(absArtifactsDir, filepath.Base(content.Path)),
-		Doc:        doc,
-		Summary:    summary,
+		ConversationID: target.ConversationID,
+		ArtifactID:     content.ArtifactID,
+		URL:            target.artifactURL(content.Path),
+		Doc:            doc,
+		Summary:        summary,
 	}, nil
 }
 

@@ -42,6 +42,7 @@ import {
 import {main} from '../../wailsjs/go/models';
 import {Environment, EventsOn} from '../../wailsjs/runtime/runtime';
 import {detectEditorLaunchIntent} from '../editorLaunch';
+import {DetachedDraft} from '../editor/detachedDraft';
 import {
   composerHasMediaDrag,
   imagePayloadForOllama,
@@ -369,7 +370,7 @@ export function useAppModel() {
     openNewComposition, openSubtitleEditor, openVideoEditor, previewEditContext, resolveEditorNavigation,
     setPreviewEditContext, subtitleEditorDirty, subtitleEditorHandle, videoEditorDirty, videoEditorHandle,
     videoEditorOpening,
-  } = useEditors({setView, openSettings, libraryIDForProject});
+  } = useEditors({setView, openSettings, libraryIDForProject, captureDetachedDraft: () => captureDetachedDraftRef.current()});
   // The AI-routed launch listener below subscribes once at mount (empty
   // deps), so it must never call these open functions directly: they close
   // over libraryIDForProject, whose libraries list loads after mount — a
@@ -865,6 +866,26 @@ export function useAppModel() {
     [composerProvider, modelOptions, openRouterModels, openaiCompatibleModelOptions],
   );
   const composerModelIsValid = composerModelOptions.some((option) => option.value === composerModel);
+
+  // captureDetachedDraft reads the pending "New chat" state for a DETACHED
+  // editor draft — the composer/comic ＋ actions on a brand-new conversation,
+  // which has no id until its first send. The draft carries the same
+  // turn-1 lifecycle a first send would pin (project, library scope,
+  // workspace, model selection) and hands it back at its first save, which
+  // gives birth to the host conversation. Read through a ref assigned after
+  // the composer values are derived, so useEditors' open functions never
+  // see a stale closure.
+  const captureDetachedDraftRef = useRef<() => DetachedDraft>(() => ({
+    projectID: '', libraryID: '', workspace: '', chatModel: '', chatSystem: '', modelOverrides: null,
+  }));
+  captureDetachedDraftRef.current = () => ({
+    projectID: pendingProjectRef.current?.projectID ?? '',
+    libraryID: pendingProjectRef.current?.libraryID ?? '',
+    workspace: draftWorkspace,
+    chatModel: composerModel,
+    chatSystem: system,
+    modelOverrides: draftModelOverrides,
+  });
 
   const openConversationModels = () => {
     // With no conversation active this edits the PENDING override the next
@@ -1740,6 +1761,53 @@ export function useAppModel() {
       void GetConversation(conversationID).then((detail) => {
         if (activeConversationIDRef.current === conversationID) hydrateChatConversation(detail);
       }).catch((error) => notifyError("Couldn't refresh the conversation", error));
+    }
+  }
+
+  // adoptEditorConversation lands the conversation a DETACHED composer or
+  // comic draft's first save just gave birth to — the editor twin of a first
+  // chat send's reveal. When the user is still on the new chat the draft
+  // opened from, that chat BECOMES the new conversation: its unsent composer
+  // text moves in, it turns active beneath the editor (so closing the editor
+  // lands on it), and the pending project and model override are spent — the
+  // record carries them now. The sidebar reveals the row where it was filed
+  // either way; a user who has since moved to another conversation keeps it
+  // on screen.
+  async function adoptEditorConversation(conversationID: string, draft: DetachedDraft | undefined) {
+    const fromNewChat = activeConversationIDRef.current === '';
+    if (fromNewChat) {
+      // Hydration stashes the live composer under the new-chat key and then
+      // restores from the conversation's key, so the unsent draft is copied
+      // to its new home first and dropped from the old one after — leaving it
+      // under '' would resurrect it on the next New chat.
+      stashCurrentDraft();
+      const unsent = composerDraftsRef.current[''];
+      if (unsent) {
+        composerDraftsRef.current[conversationID] = unsent;
+      }
+      setPendingProject(null);
+      setDraftModelOverrides(null);
+    }
+    if (draft?.projectID && draft.libraryID) {
+      revealConversationInProject({projectID: draft.projectID, libraryID: draft.libraryID});
+    } else {
+      setChatsOpen(true);
+    }
+    void refreshConversations();
+    setAssetsRefreshTick((tick) => tick + 1);
+    if (!fromNewChat) {
+      return;
+    }
+    try {
+      const detail = await GetConversation(conversationID);
+      // Still on the new chat: adopt it (a navigation while the record loaded
+      // wins over the adoption).
+      if (activeConversationIDRef.current === '') {
+        hydrateChatConversation(detail);
+        delete composerDraftsRef.current[''];
+      }
+    } catch (error) {
+      notifyError("Couldn't open the new conversation", error);
     }
   }
 
@@ -2679,6 +2747,7 @@ export function useAppModel() {
     comicArtifactIDFromURL,
     openSettings,
     refreshAfterConversationWrite,
+    adoptEditorConversation,
     openConversationSummary,
     submitChat,
     retryFailedTurn,
