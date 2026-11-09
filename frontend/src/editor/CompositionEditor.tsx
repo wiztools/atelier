@@ -1603,12 +1603,18 @@ export function CompositionEditor(props: {
                 const missing = missingRefs.has(clip.ref.artifactId);
                 const still = isStillClip(clip);
                 const refURL = compositionRefURL(clip.ref);
+                // The junction pill straddles the seam — about half its fixed
+                // width onto each side — so a fixed pad keeps the tile's label
+                // clear of it at any zoom (percent padding would track the
+                // track's width, not the pill's).
+                const prevClip = index > 0 ? doc.video[index - 1] : undefined;
+                const nextClip = doc.video[index + 1];
                 return (
                   <button
                     key={clip.id}
                     type="button"
                     className={`composition-clip${still ? ' still' : ''}${selection.kind === 'clip' && selection.clipID === clip.id ? ' selected' : ''}${missing ? ' missing' : ''}${clip.audio.muted ? ' audio-muted' : ''}${clip.audio.detached ? ' audio-detached' : ''}${drag?.kind === 'clip-move' && drag.clipID === clip.id ? ' dragging' : ''}`}
-                    style={{left: pct(layout.starts[index]), width: pct(clipDurationSeconds(clip))}}
+                    style={{left: pct(layout.starts[index]), width: pct(clipDurationSeconds(clip)), paddingLeft: prevClip?.transitionToNext ? '20px' : undefined, paddingRight: nextClip?.transitionToNext ? '20px' : undefined}}
                     title={`${clip.ref.artifactId}${still ? ' · still' : ''} · ${formatCompositionClock(clipDurationSeconds(clip))}${missing ? ' · source file missing' : ''}\nDrag to reorder · drag an edge to ${still ? 'resize' : 'trim'} · select to edit`}
                     onPointerDown={(event) => beginClipDrag(event, clip, index)}
                   >
@@ -1634,7 +1640,9 @@ export function CompositionEditor(props: {
                       : 'Cut — drag right to create a transition, or pick one in the inspector'}
                     onPointerDown={(event) => beginJunctionDrag(event, clip)}
                   >
-                    {transition ? `${transition.seconds.toFixed(1)}s` : ''}
+                    {transition ? (
+                      <span className="composition-junction-pill">{transition.seconds.toFixed(1)}s</span>
+                    ) : null}
                   </button>
                 );
               })}

@@ -185,6 +185,10 @@
   position: absolute;
   top: 4px;
   bottom: 4px;
+  /* Timeline geometry: the inline padding insets (keep a clip's label clear
+     of its junction badges) must shrink the content, not widen the tile past
+     its declared width. */
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -241,6 +245,24 @@
   opacity: 0.45;
 }
 
+/* Width queries need the tile as a container; containment is free here — the
+   tile's size is timeline geometry, never content-driven. */
+.composition-clip {
+  container-type: inline-size;
+}
+
+/* A still's picture rides behind its label only when the tile is wide enough
+   for the slice to read — below this it is a random smear of the source that
+   collides with the centered text, and the label and length are the
+   information that matters. The query measures the content box, so a tile
+   giving 20px to a junction pill's clearance hides its picture a little
+   earlier. */
+@container (max-width: 140px) {
+  .composition-clip-thumb {
+    display: none;
+  }
+}
+
 .composition-clip.still .composition-clip-name,
 .composition-clip.still .composition-clip-duration {
   position: relative;
@@ -275,27 +297,45 @@
   color: #d9a441;
 }
 
+/* The dissolve rides as a compact pill straddling the seam — the region's
+   left edge — so it stays legible at every zoom: the pill's overhang onto
+   either tile is half its fixed width, and a tile's label clears it with a
+   fixed pad (the clip buttons' inline padding). The full region stays the
+   drag target; the pill itself never takes the pointer. */
 .composition-junction {
   position: absolute;
   top: 2px;
   bottom: 2px;
   min-width: 14px;
   z-index: 2;
-  border: 1px solid #6a737d;
+  border: 1px solid transparent;
   border-radius: 3px;
-  background: #454f58;
-  color: #e6ebee;
+  background: transparent;
   font-size: 10px;
   cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
   white-space: nowrap;
   padding: 0 2px;
 }
 
-.composition-junction.dissolve {
+.composition-junction-pill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  transform: translateX(-50%);
+  min-width: 14px;
+  padding: 0 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #6a737d;
+  border-radius: 3px;
+  background: #454f58;
+  color: #e6ebee;
+  pointer-events: none;
+}
+
+.composition-junction.dissolve .composition-junction-pill {
   background: #4a4364;
   border-color: #6f66a3;
 }
