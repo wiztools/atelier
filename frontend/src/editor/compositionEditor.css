@@ -96,7 +96,7 @@
   height: 16px;
   /* Indented by the lane-label column + gap, so ticks sit over the shared
      track geometry every lane (and the playhead) uses. */
-  margin-left: 104px;
+  margin-left: 36px;
   font-size: 10px;
   color: #7d8488;
   cursor: pointer;
@@ -148,10 +148,12 @@
 }
 
 .composition-lane-label {
-  flex: 0 0 96px;
+  /* Icon-wide in a video project; audio-first widens it for the name. */
+  flex: 0 0 28px;
   display: flex;
   align-items: center;
-  padding: 0 8px;
+  justify-content: center;
+  padding: 0 4px;
   font-size: 11px;
   color: #9aa1a6;
   overflow: hidden;
@@ -780,6 +782,8 @@
 
 .composition-editor.audio-first .composition-lane-label {
   flex-basis: 128px;
+  justify-content: flex-start;
+  padding: 0 8px;
   gap: 4px;
 }
 

@@ -263,6 +263,28 @@ function TrashIcon() {
   );
 }
 
+// The lane headers mark their kind with an icon rather than a word, so the
+// header column stays narrow and the track keeps the width; the lane's name
+// rides the title.
+function FilmIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <path d="M7 3v18M17 3v18M3 7.5h4M3 12h18M3 16.5h4M17 7.5h4M17 16.5h4" />
+    </svg>
+  );
+}
+
+function MusicIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M9 18V5l12-2v13" />
+      <circle cx="6" cy="18" r="3" />
+      <circle cx="18" cy="16" r="3" />
+    </svg>
+  );
+}
+
 // TransitionControls is the Kind/Seconds/crossfade block for the transition
 // ONTO the clip after clipID — shared by the clip inspector ("Transition to
 // next") and the junction's own inspector.
@@ -1597,7 +1619,7 @@ export function CompositionEditor(props: {
             >
               {/* Every lane shares the label + track geometry, so clips,
                   segments, the ruler, and the playhead share one time axis. */}
-              <span className="composition-lane-label">Video</span>
+              <span className="composition-lane-label" title="Video" role="img" aria-label="Video"><FilmIcon /></span>
               <div className="composition-lane-track" ref={laneElementRef}>
               {doc.video.map((clip, index) => {
                 const missing = missingRefs.has(clip.ref.artifactId);
@@ -1662,8 +1684,15 @@ export function CompositionEditor(props: {
                   setSelection({kind: 'lane', laneID: lane.id});
                 }}
               >
-                <span className="composition-lane-label" title={`${lane.name}${lane.gainDb !== 0 ? ` ${lane.gainDb > 0 ? '+' : ''}${lane.gainDb}dB` : ''}${lane.muted ? ' (muted)' : ''}`}>
-                  <span className="composition-lane-name">{lane.name}{lane.gainDb !== 0 ? ` ${lane.gainDb > 0 ? '+' : ''}${lane.gainDb}dB` : ''}</span>
+                {/* A video project shows only the kind icon (the name rides
+                    the title and the inspector); the audio-first track
+                    headers have the width for the name and mute button. */}
+                <span className="composition-lane-label" title={`${lane.name}${lane.gainDb !== 0 ? ` ${lane.gainDb > 0 ? '+' : ''}${lane.gainDb}dB` : ''}${lane.muted ? ' (muted)' : ''}`} role={audioOnly ? undefined : 'img'} aria-label={audioOnly ? undefined : lane.name}>
+                  {audioOnly ? (
+                    <span className="composition-lane-name">{lane.name}{lane.gainDb !== 0 ? ` ${lane.gainDb > 0 ? '+' : ''}${lane.gainDb}dB` : ''}</span>
+                  ) : (
+                    <MusicIcon />
+                  )}
                   {audioOnly ? (
                     <button
                       type="button"
