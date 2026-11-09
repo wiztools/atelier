@@ -5,6 +5,7 @@ import {main} from '../../wailsjs/go/models';
 import {EventsOn} from '../../wailsjs/runtime/runtime';
 import {notifyError, notifySuccess, trackSave} from '../notifications';
 import {AudioPeaksEntry, loadAudioPeaks, sliceAudioPeaks, waveformPath} from './audioPeaks';
+import {CompositionAutoMenu} from './CompositionAutoMenu';
 import {EditsPanel} from './EditsPanel';
 import {EditorHeader} from './EditorHeader';
 import {MediaPicker} from './MediaPicker';
@@ -1553,13 +1554,7 @@ export function CompositionEditor(props: {
             {runningRender ? (
               <button type="button" onClick={() => void cancelRender(runningRender.id)}>Cancel</button>
             ) : null}
-            <label
-              className="composition-toggle composition-auto-toggle"
-              title="Re-render the preview on its own about a second after each change settles — never mid-drag; a newer edit restarts a render still running. Each preview re-encodes the whole timeline (or the From/To range) at full output size, so a long sequence keeps ffmpeg busy while you edit."
-            >
-              <input type="checkbox" checked={autoPreview} onChange={(event) => toggleAutoPreview(event.target.checked)} />
-              Auto-update
-            </label>
+            <CompositionAutoMenu enabled={autoPreview} onToggle={toggleAutoPreview} />
             <label className="composition-field" title="Render only part of the output timeline — leave empty for the whole sequence">
               <span>From (s)</span>
               <input type="number" min={0} step={0.5} value={rangeFrom} placeholder="0" onChange={(event) => setRangeFrom(event.target.value)} />

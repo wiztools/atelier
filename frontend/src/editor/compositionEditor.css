@@ -721,6 +721,45 @@
   font-size: 12px;
 }
 
+/* The auto-update gear (CompositionAutoMenu): a stateful icon in place of a
+   labeled checkbox — accent while auto-update is on, so the mode reads
+   without opening the menu. */
+.composition-auto-gear {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #9aa1a6;
+  font-size: 17px;
+  line-height: 1;
+  border-radius: 6px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.composition-auto-gear:hover,
+.composition-auto-gear[aria-expanded='true'] {
+  color: #f3f0e8;
+  background: #303438;
+}
+
+.composition-auto-gear.on {
+  color: #5c8be0;
+}
+
+.composition-auto-gear.on:hover,
+.composition-auto-gear.on[aria-expanded='true'] {
+  color: #8fb3ee;
+}
+
+/* The shared .history-menu item color is the delete menus' red; this item
+   is an ordinary toggle. */
+.composition-auto-menu button {
+  color: #c7cdd1;
+  white-space: nowrap;
+}
+
 .composition-stage-controls .composition-field {
   flex: 0 0 auto;
   flex-direction: row;

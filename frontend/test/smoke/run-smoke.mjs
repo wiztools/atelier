@@ -107,9 +107,10 @@ const SCENARIO = [
   // that render instead of re-rendering, a new edit renders on its own after
   // the settle delay (replacing nothing yet), a second edit restarts it, and
   // the two auto renders share one row.
-  ['composer-auto-on', `__smoke.click('.composition-auto-toggle input')`, 600],
+  ['composer-auto-menu', `__smoke.click('button.composition-auto-gear')`, 400],
+  ['composer-auto-on', `__smoke.click('.composition-auto-menu button', 'Enable auto-update')`, 600],
   ['composer-auto-undo', `__smoke.undo()`, 900],
-  ['composer-auto-restaged', `__smoke.staged('crend_1') && !document.querySelector('.composition-stage-badge')`, 200],
+  ['composer-auto-restaged', `__smoke.staged('crend_1') && !document.querySelector('.composition-stage-badge') && document.querySelector('button.composition-auto-gear.on') !== null`, 200],
   ['composer-auto-edit', `__smoke.select('.composition-inspector select', 'blur')`, 1600],
   ['composer-auto-rendering', `(() => {
     const req = window.__atelier.lastRender;
