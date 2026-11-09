@@ -370,6 +370,22 @@ export function useAppModel() {
     setPreviewEditContext, subtitleEditorDirty, subtitleEditorHandle, videoEditorDirty, videoEditorHandle,
     videoEditorOpening,
   } = useEditors({setView, openSettings, libraryIDForProject});
+  // The AI-routed launch listener below subscribes once at mount (empty
+  // deps), so it must never call these open functions directly: they close
+  // over libraryIDForProject, whose libraries list loads after mount — a
+  // mount-time capture would read the empty initial list forever and open
+  // the composer (and the comic tray, the subtitle picker) without its
+  // library scope, so the picker would list only the conversation's own
+  // media. Mirrors the File-menu action refs: re-pointed at the latest
+  // closures every render; the listener calls through the ref.
+  const editorLaunchActionsRef = useRef({
+    openDocumentCompare, openNewComposition, openNewComic, openVideoEditor,
+    openAudioEditor, openSubtitleEditor, openMarkdownEditor, openImageEditor,
+  });
+  editorLaunchActionsRef.current = {
+    openDocumentCompare, openNewComposition, openNewComic, openVideoEditor,
+    openAudioEditor, openSubtitleEditor, openMarkdownEditor, openImageEditor,
+  };
   // Restore the left navigation's collapsed/expanded sections from the last
   // session. applySidebarState is a first-render copy by design (it only
   // touches stable setters and a ref), so this mount effect never refires.
@@ -569,9 +585,11 @@ export function useAppModel() {
   // screen, and an already-open editor is never replaced — an unsaved draft is
   // not discarded by a tool-timed open, and the reply's evidence still tells
   // the user what was opened. Mirrors the chat:chunk pattern — refs only, so
-  // the empty-deps subscription never fires a stale closure.
+  // the empty-deps subscription never fires a stale closure: the guards read
+  // refs, and the open functions ride editorLaunchActionsRef.
   useEffect(() => {
     const onEditorLaunch = (event: {conversationId?: string; artifactId?: string; kind?: string; seedArtifactIds?: string[]}) => {
+      const actions = editorLaunchActionsRef.current;
       const conversationID = event?.conversationId ?? '';
       const artifactID = event?.artifactId ?? '';
       const kind = event?.kind;
@@ -593,27 +611,27 @@ export function useAppModel() {
       }
       if (compare) {
         const seeds = asArray(event?.seedArtifactIds);
-        if (seeds.length === 2) void openDocumentCompare(conversationID, seeds[0], seeds[1]);
+        if (seeds.length === 2) void actions.openDocumentCompare(conversationID, seeds[0], seeds[1]);
         return;
       }
       if (composition) {
-        void openNewComposition(conversationID, asArray(event?.seedArtifactIds));
+        void actions.openNewComposition(conversationID, asArray(event?.seedArtifactIds));
         return;
       }
       if (comic) {
-        void openNewComic(conversationID, asArray(event?.seedArtifactIds));
+        void actions.openNewComic(conversationID, asArray(event?.seedArtifactIds));
         return;
       }
       if (kind === 'video') {
-        void openVideoEditor(conversationID, artifactID);
+        void actions.openVideoEditor(conversationID, artifactID);
       } else if (kind === 'audio') {
-        void openAudioEditor(conversationID, artifactID);
+        void actions.openAudioEditor(conversationID, artifactID);
       } else if (kind === 'subtitle') {
-        void openSubtitleEditor(conversationID, artifactID);
+        void actions.openSubtitleEditor(conversationID, artifactID);
       } else if (kind === 'markdown') {
-        void openMarkdownEditor(conversationID, artifactID);
+        void actions.openMarkdownEditor(conversationID, artifactID);
       } else {
-        void openImageEditor(conversationID, artifactID);
+        void actions.openImageEditor(conversationID, artifactID);
       }
     };
     return EventsOn('atelier:editor-launch', onEditorLaunch);
