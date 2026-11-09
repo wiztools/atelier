@@ -362,6 +362,10 @@
 
 .composition-media-picker li button {
   width: 100%;
+  /* The global button rule pins height: 36px — one line. This row is two
+     deliberate lines (see below), so it must size to its content or the
+     provenance line clips to a sliver. */
+  height: auto;
   /* Two deliberate lines — name + state, provenance full-width below — so
      the row holds at any inspector width (the composer's 320px aside and the
      comic's 300px one alike); a single flex line clipped the state. */
