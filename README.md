@@ -4,6 +4,8 @@
 
 It's a desktop app (Go + Wails + React), MIT licensed, and runs against your own Ollama endpoint or the cloud providers you configure.
 
+> **What I believe:** humans will always have a creativity advantage over machines, and Atelier is a tool for leveraging it. The models draft; [the editors](#human-in-the-loop-editors) keep the final call in your hands.
+
 <!-- TODO: add a hero screenshot showing a tool-use turn or the permission-approval dialog -->
 <!-- ![Atelier](docs/screenshot.png) -->
 
@@ -40,6 +42,28 @@ All file and command operations are scoped to a configurable, per-conversation w
 
 Drop a `SKILL.md` file into `~/.agents/skills/<name>/` or `~/.atelier/skills/<name>/` and the harness can auto-select it and inject its instructions into the planner — domain-specific workflows without hardcoding them.
 
+## Human-in-the-loop editors
+
+Chat gets you a first draft; the editors are where you take over. Open any generated or attached asset in its editor from its chip in the chat or the assets panel, or just ask ("open this in the video editor"). No editor overwrites its source: each edit lands as a new result or revision you can compare, keep, or discard.
+
+| Editor | What you do in it | Runs on |
+| --- | --- | --- |
+| **Image** | Crop to free or preset aspect ratios, or paint a selection and inpaint it with AI. | Crop is local; inpainting uses fal.ai or Replicate. |
+| **Video** | **Trim & cut** by marking cuts on the timeline and removing ranges, with playback skipping the removed footage. **Reframe** to a new aspect ratio by placing crop markers over time, moving between them linearly or smoothly, or holding. | Local ffmpeg. |
+| **Video composer** | Build a multi-clip sequence: arrange video clips and still images on a lane, drag to trim, add transitions, and mix audio lanes with gain, fades, and ducking. Render previews on demand or turn on auto-update, and export any saved revision. A project with no video becomes an audio mix. | Local ffmpeg. |
+| **Comic** | Lay out a book page by page: freeform polygon or grid panels, art dragged in from a tray, and balloons, captions, and SFX lettering. Export the book to PDF, or a page to PNG. | Fully local. |
+| **Audio** | Trim and cut recordings against a waveform. | Local ffmpeg. |
+| **Subtitle** | Review SRT/VTT cues against linked playback, with a checklist for overlaps and reading speed. | Fully local. |
+| **Markdown & screenplay** | Edit documents in a split source and live preview. Fountain screenplays get scene outlines and export to PDF or Final Draft (`.fdx`). | Fully local. |
+| **Document compare** | Read a side-by-side or unified diff of two documents, stepping through changes by section. Read-only. | Fully local. |
+
+The local editors need no API key and keep working in airplane mode. The ffmpeg-based ones need `ffmpeg` installed (`brew install ffmpeg`).
+
+**Inpainting in the image editor**
+- Painting a selection marks the pixels an AI model may change. Brush and Subtract (Option-drag) with undo/redo, zoom/pan, and a before/after compare.
+- Each edit session is a child conversation of the original chat, keeping the full operation chain (prompt, selection, provider/model, cost) and the source image untouched. A chosen result can be copied back into the original conversation with **Add to original chat**.
+- Runs on a verified mask-capable model for the configured **Inpaint Provider** (fal.ai by default, Replicate supported) — pick the model in Settings → Models → Inpainting. The selection guides the model; its full output is kept, including changes outside the selection. A notice reports detected outside-selection changes and output-size differences; the result retains the model’s original pixels and dimensions. Editing costs whatever the provider bills and is shown on each iteration.
+
 ## Capabilities
 
 **Chat providers**
@@ -56,11 +80,6 @@ Drop a `SKILL.md` file into `~/.agents/skills/<name>/` or `~/.atelier/skills/<na
 - **Audio** — fal.ai text-to-speech, music, and sound effects.
 - **Transcription** — fal.ai speech-to-text (`fal-ai/wizper`) on attached audio.
 - **Upscaling** — fal.ai image upscaling on attached images.
-
-**Image editing (AI inpainting)**
-- **Edit with AI** — every generated or attached image can be opened in an editor where painting a selection marks the pixels an AI model may change. Brush and Subtract (Option-drag) with undo/redo, zoom/pan, and a before/after compare.
-- Each edit session is a child conversation of the original chat, keeping the full operation chain (prompt, selection, provider/model, cost) and the source image untouched. A chosen result can be copied back into the original conversation with **Add to original chat**.
-- Runs on a verified mask-capable model for the configured **Inpaint Provider** (fal.ai by default, Replicate supported) — pick the model in Settings → Models → Inpainting. The selection guides the model; its full output is kept, including changes outside the selection. A notice reports detected outside-selection changes and output-size differences; the result retains the model’s original pixels and dimensions. Editing costs whatever the provider bills and is shown on each iteration.
 
 **Agent loop & tooling**
 - Skills — see [Skills](#skills) below.
