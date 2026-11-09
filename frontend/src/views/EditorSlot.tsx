@@ -130,11 +130,15 @@ export function EditorSlot({app}: {app: AppModel}) {
           ) : compositionEditorHandle ? (
             <div className="editor-slot" hidden={app.view !== 'app'}>
               <CompositionEditor
+                // Keyed on the handle, which a detached draft's first save
+                // never replaces: the editor adopts its new conversation in
+                // place, keeping the undo stack, stage, and render rows.
                 key={compositionEditorHandle.source.artifactId || 'composition-draft'}
                 handle={compositionEditorHandle}
                 // The media picker widens to the library exactly when the
                 // composition's conversation belongs to a project — the scope
-                // resolved from its own record at open time.
+                // resolved from its own record at open time (a detached
+                // draft's: the pending project's library).
                 libraryID={compositionEditorHandle.libraryID || undefined}
                 suspended={app.view !== 'app'}
                 onClose={() => {void app.confirmLeaveEditor().then((discard) => {if (discard) app.closeImageEditor();});}}
@@ -146,7 +150,8 @@ export function EditorSlot({app}: {app: AppModel}) {
                   });
                 }}
                 onDirtyChange={(dirty) => {app.compositionEditorDirty.current = dirty;}}
-                onSavedToConversation={() => app.refreshAfterConversationWrite(compositionEditorHandle.source.conversationId)}
+                onSavedToConversation={(conversationID) => app.refreshAfterConversationWrite(conversationID)}
+                onConversationCreated={(conversationID) => {void app.adoptEditorConversation(conversationID, compositionEditorHandle.draft);}}
               />
             </div>
           ) : comicEditorHandle ? (
@@ -168,7 +173,8 @@ export function EditorSlot({app}: {app: AppModel}) {
                   });
                 }}
                 onDirtyChange={(dirty) => {app.comicEditorDirty.current = dirty;}}
-                onSavedToConversation={() => app.refreshAfterConversationWrite(comicEditorHandle.source.conversationId)}
+                onSavedToConversation={(conversationID) => app.refreshAfterConversationWrite(conversationID)}
+                onConversationCreated={(conversationID) => {void app.adoptEditorConversation(conversationID, comicEditorHandle.draft);}}
               />
             </div>
           ) : app.documentCompareHandle ? (

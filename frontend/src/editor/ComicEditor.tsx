@@ -60,6 +60,7 @@ import {
   validPanelGeometry,
 } from './comicModel';
 import './comicEditor.css';
+import {DetachedDraft, detachedDraftLifecycle} from './detachedDraft';
 
 export type ComicEditorHandle = {
   source: main.ComicSourceInfo;
@@ -68,6 +69,10 @@ export type ComicEditorHandle = {
   // a project conversation outside the sidebar's recency window keeps its
   // library scope, an independent conversation passes none.
   libraryID: string;
+  // Set only on a DETACHED draft — opened with no conversation from the ＋
+  // actions on a brand-new chat. Its first save materializes the host
+  // conversation from this captured context.
+  draft?: DetachedDraft;
 };
 
 type EditorLogEntry = {
@@ -188,10 +193,19 @@ export function ComicEditor(props: {
   onDirtyChange?: (dirty: boolean) => void;
   // Fired after a save lands a new artifact on the conversation so the parent
   // can refresh the sidebar and the assets panel.
-  onSavedToConversation?: () => void;
+  onSavedToConversation?: (conversationID: string) => void;
+  // Fired instead when a DETACHED draft's first save gave birth to its host
+  // conversation: the parent adopts it (reveals the row, moves the new chat's
+  // unsent text into it, makes it the active conversation).
+  onConversationCreated?: (conversationID: string) => void;
 }) {
   const {source} = props.handle;
-  const sourceConversationID = useState(source.conversationId)[0];
+  // The host conversation. A detached draft starts with none and adopts the
+  // one its first save creates — state plus ref, like the composer's, so the
+  // picker, saves, exports, and the parent link follow the materialization
+  // without remounting the editor.
+  const [conversationID, setConversationID] = useState(source.conversationId);
+  const conversationIDRef = useRef(source.conversationId);
 
   const [doc, setDoc] = useState<ComicDoc>(() => normalizeComicDoc(source.doc));
   const [baseline, setBaseline] = useState<ComicDoc>(() => normalizeComicDoc(source.doc));
@@ -300,12 +314,13 @@ export function ComicEditor(props: {
   }, [dirty]);
 
   // The picker's dual-scope candidates: the conversation's assets widened to
-  // its library — the same fold the composer performs, images only.
+  // its library — the same fold the composer performs, images only. A
+  // detached draft has no conversation yet, so its scope is the library alone.
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       try {
-        const conversationAssets = asArray(await AppBindings.ListConversationAssets(sourceConversationID));
+        const conversationAssets = conversationID ? asArray(await AppBindings.ListConversationAssets(conversationID)) : [];
         let combined = conversationAssets;
         if (props.libraryID) {
           const libraryAssets = asArray(await AppBindings.ListLibraryAssets(props.libraryID));
@@ -325,7 +340,7 @@ export function ComicEditor(props: {
     return () => {
       cancelled = true;
     };
-  }, [sourceConversationID, props.libraryID]);
+  }, [conversationID, props.libraryID]);
 
   const svgRef = useRef<SVGSVGElement | null>(null);
   const clientToPage = (clientX: number, clientY: number): ComicPoint => {
@@ -741,7 +756,7 @@ export function ComicEditor(props: {
     setPickerError('');
     setAddingIDs((ids) => [...ids, asset.id]);
     try {
-      const wireRef = await AppBindings.ResolveComicMedia(sourceConversationID, asset.id);
+      const wireRef = await AppBindings.ResolveComicMedia(conversationID, asset.id, props.libraryID ?? '');
       commit(addUnplacedImage(docRef.current, normalizeComicRef(wireRef)));
     } catch (error) {
       setPickerError(formatEditorError(error));
@@ -754,11 +769,25 @@ export function ComicEditor(props: {
 
   // ——— persistence ———
 
-  const persistRevision = async (): Promise<string> => {
+  // persistRevision is the one save door every comic write walks through.
+  // For a DETACHED draft the save carries the captured creation context and
+  // CREATES the host conversation; the editor adopts its id mid-session and
+  // the parent hears onConversationCreated once. Queued like the composer's,
+  // so a save racing the birth appends to the conversation the first save
+  // created rather than giving birth twice.
+  const saveQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const persistRevision = (): Promise<string> => {
+    const run = saveQueueRef.current.catch(() => {}).then(() => persistRevisionNow());
+    saveQueueRef.current = run;
+    return run;
+  };
+  const persistRevisionNow = async (): Promise<string> => {
+    const hostID = conversationIDRef.current;
     const result = await SaveComicEdit(main.SaveComicEditRequest.createFrom({
-      conversationId: sourceConversationID,
+      conversationId: hostID,
       sourceArtifactId: activeArtifactID || undefined,
       doc: toWireDoc(docRef.current),
+      ...(hostID ? {} : props.handle.draft ? {lifecycle: detachedDraftLifecycle(props.handle.draft)} : {}),
     }));
     const normalized = normalizeComicDoc(result.doc);
     setLog((entries) => [
@@ -774,7 +803,13 @@ export function ComicEditor(props: {
     if (!normalized.pages.some((candidate) => candidate.id === activePageID)) {
       setActivePageID(normalized.pages[0]?.id ?? '');
     }
-    props.onSavedToConversation?.();
+    if (!hostID && result.conversationId) {
+      conversationIDRef.current = result.conversationId;
+      setConversationID(result.conversationId);
+      props.onConversationCreated?.(result.conversationId);
+    } else {
+      props.onSavedToConversation?.(hostID);
+    }
     return result.artifactId;
   };
 
@@ -793,7 +828,7 @@ export function ComicEditor(props: {
   const loadRevision = async (artifactID: string) => {
     setLoadingRevision(true);
     try {
-      const reloaded = await AppBindings.ResolveComicEditSource(sourceConversationID, artifactID);
+      const reloaded = await AppBindings.ResolveComicEditSource(conversationID, artifactID);
       const normalized = normalizeComicDoc(reloaded.doc);
       setDoc(normalized);
       setBaseline(normalizeComicDoc(normalized));
@@ -914,7 +949,7 @@ export function ComicEditor(props: {
           return;
         }
       }
-      const chosen = await trackSave('PDF', ExportComicPDF(sourceConversationID, revisionID));
+      const chosen = await trackSave('PDF', ExportComicPDF(conversationIDRef.current, revisionID));
       if (!chosen) {
         return; // the save dialog was cancelled — nothing was exported
       }
@@ -954,7 +989,7 @@ export function ComicEditor(props: {
       const pngBase64 = await rasterizePagePNG();
       const pageIndex = doc.pages.findIndex((candidate) => candidate.id === page.id) + 1;
       const adopted = await AdoptComicPagePNG(main.AdoptComicPagePNGRequest.createFrom({
-        conversationId: sourceConversationID,
+        conversationId: conversationIDRef.current,
         name: doc.name,
         revisionArtifactId: revisionID || undefined,
         pageLabel: String(pageIndex),
@@ -970,7 +1005,7 @@ export function ComicEditor(props: {
         },
         ...entries,
       ]);
-      props.onSavedToConversation?.();
+      props.onSavedToConversation?.(conversationIDRef.current);
       notifySuccess('Added to the conversation', {message: `Page ${pageIndex} image`});
     } catch (error) {
       notifyError("Couldn't add the page image", error);
@@ -1180,8 +1215,8 @@ export function ComicEditor(props: {
     <section className="comic-editor">
       <EditorHeader
         title={doc.name}
-        parentAvailable
-        parentConversationID={sourceConversationID}
+        parentAvailable={!!conversationID}
+        parentConversationID={conversationID}
         busyLabel={saving ? 'Saving…' : loadingRevision ? 'Loading…' : ''}
         onClose={props.onClose}
         onOpenParent={props.onOpenParent}
@@ -1359,7 +1394,7 @@ export function ComicEditor(props: {
           {pickerOpen ? (
             <MediaPicker
               assets={imageAssets}
-              editedConversationID={sourceConversationID}
+              editedConversationID={conversationID}
               kinds={['image']}
               refCounts={refCounts}
               busyIDs={addingIDs}

@@ -214,11 +214,11 @@ export function ResolveAudioEditSource(arg1:string,arg2:string):Promise<main.Edi
 
 export function ResolveComicEditSource(arg1:string,arg2:string):Promise<main.ComicSourceInfo>;
 
-export function ResolveComicMedia(arg1:string,arg2:string):Promise<main.ComicMediaRef>;
+export function ResolveComicMedia(arg1:string,arg2:string,arg3:string):Promise<main.ComicMediaRef>;
 
 export function ResolveCompositionEditSource(arg1:string,arg2:string):Promise<main.CompositionSourceInfo>;
 
-export function ResolveCompositionMedia(arg1:string,arg2:string):Promise<main.CompositionMediaRef>;
+export function ResolveCompositionMedia(arg1:string,arg2:string,arg3:string):Promise<main.CompositionMediaRef>;
 
 export function ResolveDocumentCompare(arg1:main.DocumentCompareRequest):Promise<main.DocumentCompareInfo>;
 

@@ -426,16 +426,16 @@ export function ResolveComicEditSource(arg1, arg2) {
   return window['go']['main']['App']['ResolveComicEditSource'](arg1, arg2);
 }
 
-export function ResolveComicMedia(arg1, arg2) {
-  return window['go']['main']['App']['ResolveComicMedia'](arg1, arg2);
+export function ResolveComicMedia(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ResolveComicMedia'](arg1, arg2, arg3);
 }
 
 export function ResolveCompositionEditSource(arg1, arg2) {
   return window['go']['main']['App']['ResolveCompositionEditSource'](arg1, arg2);
 }
 
-export function ResolveCompositionMedia(arg1, arg2) {
-  return window['go']['main']['App']['ResolveCompositionMedia'](arg1, arg2);
+export function ResolveCompositionMedia(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ResolveCompositionMedia'](arg1, arg2, arg3);
 }
 
 export function ResolveDocumentCompare(arg1) {

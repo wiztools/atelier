@@ -261,7 +261,14 @@ func libraryAssetLookup(storage ConfigStorage, projectID string) (map[string]Con
 	if err != nil {
 		return nil, err
 	}
-	assets, err := listLibraryAssets(storage, project.LibraryID)
+	return libraryAssetIndex(storage, project.LibraryID)
+}
+
+// libraryAssetIndex is libraryAssetLookup keyed by the library itself — the
+// scope a detached editor draft carries before any conversation (and so any
+// project membership on a record) exists.
+func libraryAssetIndex(storage ConfigStorage, libraryID string) (map[string]ConversationAsset, error) {
+	assets, err := listLibraryAssets(storage, libraryID)
 	if err != nil {
 		return nil, err
 	}

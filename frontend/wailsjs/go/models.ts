@@ -2825,6 +2825,44 @@ export namespace main {
 	        this.markdownArtifactIds = source["markdownArtifactIds"];
 	    }
 	}
+	export class EditorSaveLifecycle {
+	    projectId?: string;
+	    workspace?: string;
+	    chatModel?: string;
+	    chatSystem?: string;
+	    modelOverrides?: ConversationModelOverrides;
+	
+	    static createFrom(source: any = {}) {
+	        return new EditorSaveLifecycle(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.projectId = source["projectId"];
+	        this.workspace = source["workspace"];
+	        this.chatModel = source["chatModel"];
+	        this.chatSystem = source["chatSystem"];
+	        this.modelOverrides = this.convertValues(source["modelOverrides"], ConversationModelOverrides);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class EmptyStatePrompt {
 	    heading: string;
 	    sub: string;
@@ -3467,6 +3505,7 @@ export namespace main {
 	    conversationId: string;
 	    sourceArtifactId?: string;
 	    doc: ComicDoc;
+	    lifecycle?: EditorSaveLifecycle;
 	
 	    static createFrom(source: any = {}) {
 	        return new SaveComicEditRequest(source);
@@ -3477,6 +3516,7 @@ export namespace main {
 	        this.conversationId = source["conversationId"];
 	        this.sourceArtifactId = source["sourceArtifactId"];
 	        this.doc = this.convertValues(source["doc"], ComicDoc);
+	        this.lifecycle = this.convertValues(source["lifecycle"], EditorSaveLifecycle);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -3498,6 +3538,7 @@ export namespace main {
 		}
 	}
 	export class SaveComicEditResult {
+	    conversationId: string;
 	    artifactId: string;
 	    url: string;
 	    doc: ComicDoc;
@@ -3509,6 +3550,7 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.conversationId = source["conversationId"];
 	        this.artifactId = source["artifactId"];
 	        this.url = source["url"];
 	        this.doc = this.convertValues(source["doc"], ComicDoc);
@@ -3537,6 +3579,7 @@ export namespace main {
 	    conversationId: string;
 	    sourceArtifactId?: string;
 	    doc: CompositionDoc;
+	    lifecycle?: EditorSaveLifecycle;
 	
 	    static createFrom(source: any = {}) {
 	        return new SaveCompositionEditRequest(source);
@@ -3547,6 +3590,7 @@ export namespace main {
 	        this.conversationId = source["conversationId"];
 	        this.sourceArtifactId = source["sourceArtifactId"];
 	        this.doc = this.convertValues(source["doc"], CompositionDoc);
+	        this.lifecycle = this.convertValues(source["lifecycle"], EditorSaveLifecycle);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -3568,6 +3612,7 @@ export namespace main {
 		}
 	}
 	export class SaveCompositionEditResult {
+	    conversationId: string;
 	    artifactId: string;
 	    url: string;
 	    doc: CompositionDoc;
@@ -3579,6 +3624,7 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.conversationId = source["conversationId"];
 	        this.artifactId = source["artifactId"];
 	        this.url = source["url"];
 	        this.doc = this.convertValues(source["doc"], CompositionDoc);
@@ -3823,6 +3869,7 @@ export namespace main {
 	}
 	export class SeedComicRequest {
 	    conversationId: string;
+	    libraryId?: string;
 	    name?: string;
 	    artifactIds: string[];
 	
@@ -3833,12 +3880,14 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.conversationId = source["conversationId"];
+	        this.libraryId = source["libraryId"];
 	        this.name = source["name"];
 	        this.artifactIds = source["artifactIds"];
 	    }
 	}
 	export class SeedCompositionRequest {
 	    conversationId: string;
+	    libraryId?: string;
 	    name?: string;
 	    artifactIds: string[];
 	
@@ -3849,6 +3898,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.conversationId = source["conversationId"];
+	        this.libraryId = source["libraryId"];
 	        this.name = source["name"];
 	        this.artifactIds = source["artifactIds"];
 	    }
