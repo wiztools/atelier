@@ -546,6 +546,10 @@ export function SaveUIState(arg1) {
   return window['go']['main']['App']['SaveUIState'](arg1);
 }
 
+export function SaveUsageReportExport(arg1) {
+  return window['go']['main']['App']['SaveUsageReportExport'](arg1);
+}
+
 export function SaveVideo(arg1) {
   return window['go']['main']['App']['SaveVideo'](arg1);
 }

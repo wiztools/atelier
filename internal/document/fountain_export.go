@@ -86,6 +86,8 @@ const (
 	pdfNoteGray        = 0.45 // a printed note's fill: legible, plainly not script
 	pdfUnderlineDrop   = 1.5  // Courier's underline position below the baseline
 	pdfUnderlineWidth  = 0.6  // and its thickness
+	pdfRuleDrop        = 3.5  // a row's ruleBelow, below its baseline
+	pdfRuleWidth       = 0.5  // and its thickness
 	fountainIndentChar = 22   // character cue
 	fountainIndentPar  = 16   // parenthetical
 	fountainIndentDia  = 10   // dialogue
@@ -145,6 +147,10 @@ type fountainPDFLine struct {
 	// lines the layout inserts around headings keeping them clear.
 	font string
 	size float64
+	// ruleBelow draws a hairline under the row from its start to the text
+	// block's right edge — the report layout's table-header and section
+	// underlines (report_export.go).
+	ruleBelow bool
 }
 
 // pdfFont returns the line's font resource name, defaulting to regular Courier.
@@ -344,6 +350,10 @@ func fountainPageStream(paper Paper, lines []fountainPDFLine, number int) string
 		}
 		if line.gray {
 			b.WriteString("Q\n")
+		}
+		if line.ruleBelow {
+			start := pdfMarginLeft + float64(line.indent)*charWidth
+			fmt.Fprintf(&b, "%.1f w %.2f %.2f m %.2f %.2f l S\n", pdfRuleWidth, start, y-pdfRuleDrop, paper.textRight, y-pdfRuleDrop)
 		}
 	}
 	if number >= 2 {

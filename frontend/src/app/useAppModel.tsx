@@ -276,10 +276,12 @@ export function useAppModel() {
   }, [pendingProject]);
   const [view, setView] = useState<View>('app');
   const {
+    exportUsageReport,
     openConversationUsageReport,
     openLibraryUsageReport,
     openProjectUsageReport,
     usageError,
+    usageExporting,
     usageLoading,
     usageReport,
   } = useUsageReport({setView});
@@ -2589,6 +2591,8 @@ export function useAppModel() {
     openConversationUsageReport,
     usageError,
     usageLoading,
+    usageExporting,
+    exportUsageReport,
     openLibraryUsageReport,
     startupError,
     setStartupError,

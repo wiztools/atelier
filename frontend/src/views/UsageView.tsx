@@ -8,6 +8,8 @@ export function UsageView({app}: {app: AppModel}) {
               report={app.usageReport}
               loading={app.usageLoading}
               error={app.usageError}
+              exporting={app.usageExporting}
+              onExport={app.exportUsageReport}
               onBack={() => app.setView('app')}
               onOpenChild={(child) => {
                 // A library report's children are projects, a project report's

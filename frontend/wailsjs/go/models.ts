@@ -3803,6 +3803,22 @@ export namespace main {
 	        this.suggestedName = source["suggestedName"];
 	    }
 	}
+	export class SaveUsageReportExportRequest {
+	    scope: string;
+	    id: string;
+	    format: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SaveUsageReportExportRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.scope = source["scope"];
+	        this.id = source["id"];
+	        this.format = source["format"];
+	    }
+	}
 	export class SaveVideoRequest {
 	    path: string;
 	    suggestedName?: string;

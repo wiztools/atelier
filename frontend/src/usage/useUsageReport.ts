@@ -1,7 +1,28 @@
 import {useState} from 'react';
-import {GetConversationUsageReport, GetLibraryUsageReport, GetProjectUsageReport} from '../../wailsjs/go/main/App';
+import {
+  GetConversationUsageReport,
+  GetLibraryUsageReport,
+  GetProjectUsageReport,
+  SaveUsageReportExport,
+} from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
+import {trackSave} from '../notifications';
 import {View} from '../types';
+
+type UsageReportExportFormat = 'pdf' | 'json';
+
+// usageReportScopeID is the id the report was folded for — the one its own
+// scope names.
+function usageReportScopeID(report: main.UsageReport): string {
+  switch (report.scope) {
+    case 'library':
+      return report.libraryId ?? '';
+    case 'project':
+      return report.projectId ?? '';
+    default:
+      return report.conversationId ?? '';
+  }
+}
 
 // useUsageReport owns the usage report screen's state — the report being
 // shown, its loading and error flags — and the open functions for each scope
@@ -38,15 +59,36 @@ function useUsageReport({setView}: {
   const openLibraryUsageReport = (libraryID: string) => {
     openUsageReport(() => GetLibraryUsageReport(libraryID));
   };
+  // Export re-folds the shown scope on the Go side (the report is never
+  // cached, so the file matches the history at the moment of the click) and
+  // opens the save dialog; trackSave reports the saved file or the failure.
+  const [usageExporting, setUsageExporting] = useState<UsageReportExportFormat | null>(null);
+  const exportUsageReport = (format: UsageReportExportFormat) => {
+    if (!usageReport || usageExporting) {
+      return;
+    }
+    setUsageExporting(format);
+    void trackSave(
+      format === 'pdf' ? 'usage report PDF' : 'usage report JSON',
+      SaveUsageReportExport(main.SaveUsageReportExportRequest.createFrom({
+        scope: usageReport.scope,
+        id: usageReportScopeID(usageReport),
+        format,
+      })),
+    ).finally(() => setUsageExporting(null));
+  };
 
   return {
+    exportUsageReport,
     openConversationUsageReport,
     openLibraryUsageReport,
     openProjectUsageReport,
     usageError,
+    usageExporting,
     usageLoading,
     usageReport,
   };
 }
 
 export {useUsageReport};
+export type {UsageReportExportFormat};

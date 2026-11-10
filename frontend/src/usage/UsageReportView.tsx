@@ -1,16 +1,20 @@
 import {main} from '../../wailsjs/go/models';
 import {asArray} from '../utils';
 import {mediaCountsLabel, formatTokenCount, formatCostMicros} from './usageModel';
+import type {UsageReportExportFormat} from './useUsageReport';
 
 // The scope-level usage report (view === 'usage'): aggregated cost and
 // tool-call telemetry folded from persisted history on the Go side. One stop
 // per level — a conversation, a project (per-conversation child rows), or a
 // library (per-project child rows) — and the child rows drill down one level,
-// re-fetching at the narrower scope.
-function UsageReportView({report, loading, error, onBack, onOpenChild}: {
+// re-fetching at the narrower scope. The toolbar exports the shown scope as a
+// PDF to share or as JSON for the raw numbers.
+function UsageReportView({report, loading, error, exporting, onExport, onBack, onOpenChild}: {
   report: main.UsageReport | null;
   loading: boolean;
   error: string;
+  exporting: UsageReportExportFormat | null;
+  onExport: (format: UsageReportExportFormat) => void;
   onBack: () => void;
   onOpenChild: (child: main.UsageChildRow) => void;
 }) {
@@ -31,6 +35,26 @@ function UsageReportView({report, loading, error, onBack, onOpenChild}: {
           <button className="back-button" onClick={onBack}>← Back</button>
           <div className="model-count">{scopeLabel}</div>
         </div>
+        {report && !loading ? (
+          <div className="toolbar-right">
+            <button
+              className="back-button"
+              disabled={exporting !== null}
+              title="Save this report as a PDF to share"
+              onClick={() => onExport('pdf')}
+            >
+              {exporting === 'pdf' ? 'Exporting…' : 'Export PDF'}
+            </button>
+            <button
+              className="back-button"
+              disabled={exporting !== null}
+              title="Save this report's numbers as JSON — costs in exact USD millionths"
+              onClick={() => onExport('json')}
+            >
+              {exporting === 'json' ? 'Exporting…' : 'Export JSON'}
+            </button>
+          </div>
+        ) : null}
       </div>
       <div className="settings-screen usage-screen">
         <div className="settings-header">

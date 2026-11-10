@@ -274,6 +274,8 @@ export function SaveTranscript(arg1:main.SaveTranscriptRequest):Promise<string>;
 
 export function SaveUIState(arg1:main.UIState):Promise<void>;
 
+export function SaveUsageReportExport(arg1:main.SaveUsageReportExportRequest):Promise<string>;
+
 export function SaveVideo(arg1:main.SaveVideoRequest):Promise<string>;
 
 export function SearchConversations(arg1:string,arg2:main.SearchOptions):Promise<main.SearchResponse>;

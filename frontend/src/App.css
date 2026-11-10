@@ -4132,6 +4132,14 @@ button:disabled {
   color: #f3f0e8;
 }
 
+.back-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+  border-color: transparent;
+  background: transparent;
+  color: #b5b1a8;
+}
+
 .editor-breadcrumb {
   display: flex;
   align-items: baseline;
