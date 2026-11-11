@@ -2,11 +2,14 @@ package main
 
 import (
 	"archive/zip"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"atelier/internal/mediasniff/mediasnifftest"
 )
 
 // archiveConversationFixture is libraryConversationFixture plus the
@@ -702,4 +705,175 @@ func mustParseTime(t *testing.T, value string) time.Time {
 		t.Fatalf("parse %q: %v", value, err)
 	}
 	return parsed
+}
+
+func TestLibraryArchiveRoundTripWithUploads(t *testing.T) {
+	source := libraryTestStorage(t)
+	config := libraryAssetTestConfig(t, source)
+	libraryID := mustCreateLibrary(t, source)
+	project, err := createProject(source, libraryID, "P")
+	if err != nil {
+		t.Fatalf("createProject returned error: %v", err)
+	}
+
+	// Uploads first, so the conversation's mention turn can carry the real
+	// absolute path an @-mention persists.
+	uploadImage := mustUploadLibraryAsset(t, config, libraryID, "", "hero.png", "image",
+		dataURLFor("image/png", mediasnifftest.Image(t, "png", 2, 3)))
+	uploadAudio := mustUploadLibraryAsset(t, config, libraryID, "", "tone.wav", "audio",
+		dataURLFor("audio/wav", mediasnifftest.WAV(8000)))
+	mentionPath := filepath.ToSlash(filepath.Join(libraryAssetsDir(source, libraryID), "mention-reference.png"))
+	if err := os.WriteFile(filepath.FromSlash(mentionPath), []byte("png-bytes"), 0644); err != nil {
+		t.Fatalf("write mention reference: %v", err)
+	}
+
+	createdAt := "2025-11-02T10:00:00Z"
+	turn := searchTurnFixture("turn_000001", "user", createdAt,
+		HistoryContent{Type: "image", Path: "artifacts/img_local.png", MimeType: "image/png", ArtifactID: "img_local"},
+		HistoryContent{Type: "image", Path: mentionPath, ArtifactID: uploadImage.ID, MimeType: "image/png"},
+	)
+	writeArchiveConversation(t, source, archiveConversationFixture("conv_uploads", project.ID, "", createdAt), []HistoryTurn{turn},
+		map[string][]byte{"img_local.png": []byte("png-bytes")})
+
+	plan, err := inspectLibraryExport(source, libraryID)
+	if err != nil {
+		t.Fatalf("inspectLibraryExport returned error: %v", err)
+	}
+	// 1 conversation artifact + 4 upload files (2 records + 2 media) + the
+	// loose mention reference, and the mention counts as satisfied (it points
+	// into the assets dir, which ships) — not missing.
+	if plan.Conversations != 1 || plan.Assets != 6 {
+		t.Fatalf("plan = %+v, want 1 conversation and 6 assets", plan)
+	}
+	if len(plan.MissingAssets) != 0 {
+		t.Fatalf("plan.MissingAssets = %+v, want none — asset-dir references are satisfied", plan.MissingAssets)
+	}
+
+	archivePath := mustExportLibrary(t, source, libraryID)
+	names := archiveEntryNames(t, archivePath)
+	records, err := listLibraryAssetRecords(source, libraryID)
+	if err != nil {
+		t.Fatalf("listLibraryAssetRecords returned error: %v", err)
+	}
+	for _, record := range records {
+		if !containsString(names, "assets/"+record.ID+".json") || !containsString(names, "assets/"+record.FileName) {
+			t.Fatalf("archive is missing the upload entries for %s; got %v", record.ID, names)
+		}
+	}
+
+	target := libraryTestStorage(t)
+	imported := mustImportLibrary(t, target, archivePath)
+	if imported.Assets != 6 {
+		t.Fatalf("imported = %+v, want 6 assets", imported)
+	}
+	importedRecords, err := listLibraryAssetRecords(target, libraryID)
+	if err != nil {
+		t.Fatalf("listLibraryAssetRecords returned error: %v", err)
+	}
+	if len(importedRecords) != 2 {
+		t.Fatalf("imported records = %d, want 2", len(importedRecords))
+	}
+	importedIDs := map[string]bool{}
+	for _, record := range importedRecords {
+		importedIDs[record.ID] = true
+		if _, err := os.Stat(filepath.Join(libraryAssetsDir(target, libraryID), record.FileName)); err != nil {
+			t.Fatalf("imported media missing for %s: %v", record.ID, err)
+		}
+	}
+	if !importedIDs[uploadImage.ID] || !importedIDs[uploadAudio.ID] {
+		t.Fatalf("imported records = %v, want %s and %s", importedIDs, uploadImage.ID, uploadAudio.ID)
+	}
+
+	// The mention's absolute path rewrites onto the importer's libraries root.
+	importedTurn := readImportedTurn(t, target, "conv_uploads", "turn_000001")
+	rewritten := importedTurn.Content[1].Path
+	if rewritten == mentionPath {
+		t.Fatalf("mention path was not rewritten: %q", rewritten)
+	}
+	wantPath := filepath.ToSlash(filepath.Join(libraryAssetsDir(target, libraryID), "mention-reference.png"))
+	if rewritten != wantPath {
+		t.Fatalf("mention path = %q, want %q", rewritten, wantPath)
+	}
+	if _, err := os.Stat(filepath.FromSlash(rewritten)); err != nil {
+		t.Fatalf("rewritten reference dangles: %v", err)
+	}
+
+	// The fold dedupes the record against the citing conversation's mention
+	// entry (same ast_ id): one image row, from the chat that cited it.
+	assets, err := listLibraryAssets(target, libraryID)
+	if err != nil {
+		t.Fatalf("listLibraryAssets returned error: %v", err)
+	}
+	astRows := 0
+	for _, asset := range assets {
+		if asset.ID == uploadImage.ID {
+			astRows++
+			if asset.Role != "user" {
+				t.Fatalf("mention row role = %q, want the citing conversation's user entry", asset.Role)
+			}
+		}
+	}
+	if astRows != 1 {
+		t.Fatalf("fold carries %d rows for %s, want 1", astRows, uploadImage.ID)
+	}
+}
+
+func TestLibraryArchiveV1StillImports(t *testing.T) {
+	source := libraryTestStorage(t)
+	config := libraryAssetTestConfig(t, source)
+	libraryID := mustCreateLibrary(t, source)
+	project, err := createProject(source, libraryID, "P")
+	if err != nil {
+		t.Fatalf("createProject returned error: %v", err)
+	}
+	mustUploadLibraryAsset(t, config, libraryID, "", "hero.png", "image",
+		dataURLFor("image/png", mediasnifftest.Image(t, "png", 2, 3)))
+	writeArchiveConversation(t, source, archiveConversationFixture("conv_v1", project.ID, "", "2025-01-05T08:00:00Z"), nil, nil)
+
+	archivePath := mustExportLibrary(t, source, libraryID)
+	// Downgrade the manifest to what a v1 app wrote: no assets entries, no
+	// OriginalLibraryRoot, formatVersion 1. The upload disappears (v1 had no
+	// place for it) but the rest imports unchanged.
+	rewriteArchiveEntries(t, archivePath, func(data map[string][]byte) {
+		var manifest LibraryArchiveManifest
+		if err := json.Unmarshal(data[archiveManifestPath], &manifest); err != nil {
+			t.Fatalf("unmarshal manifest: %v", err)
+		}
+		manifest.FormatVersion = 1
+		manifest.OriginalLibraryRoot = ""
+		files := manifest.Files[:0]
+		for _, archived := range manifest.Files {
+			if !strings.HasPrefix(archived.Path, "assets/") {
+				files = append(files, archived)
+			}
+		}
+		manifest.Files = files
+		for name := range data {
+			if strings.HasPrefix(name, "assets/") {
+				delete(data, name)
+			}
+		}
+		manifest.Counts.Assets -= 2
+		manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+		if err != nil {
+			t.Fatalf("marshal manifest: %v", err)
+		}
+		data[archiveManifestPath] = append(manifestJSON, '\n')
+	})
+
+	target := libraryTestStorage(t)
+	imported := mustImportLibrary(t, target, archivePath)
+	if imported.Conversations != 1 {
+		t.Fatalf("imported = %+v", imported)
+	}
+	if _, err := findConversationPath(target, "conv_v1"); err != nil {
+		t.Fatalf("v1 conversation did not import: %v", err)
+	}
+	records, err := listLibraryAssetRecords(target, libraryID)
+	if err != nil {
+		t.Fatalf("listLibraryAssetRecords returned error: %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("v1 import carried uploads: %+v", records)
+	}
 }

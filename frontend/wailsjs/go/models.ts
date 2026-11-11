@@ -1945,6 +1945,7 @@ export namespace main {
 	    role: string;
 	    createdAt?: string;
 	    conversationTitle?: string;
+	    name?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConversationAsset(source);
@@ -1963,6 +1964,7 @@ export namespace main {
 	        this.role = source["role"];
 	        this.createdAt = source["createdAt"];
 	        this.conversationTitle = source["conversationTitle"];
+	        this.name = source["name"];
 	    }
 	}
 	export class HistoryContent {

@@ -47,6 +47,10 @@ type ConversationAsset struct {
 	// panel needs it to say which chat each asset came from; per conversation
 	// it is constant but harmless.
 	ConversationTitle string `json:"conversationTitle,omitempty"`
+	// Name is the uploaded file's original filename — uploads only (see
+	// library_assets.go); derived assets keep it empty, their filenames never
+	// persisted anywhere.
+	Name string `json:"name,omitempty"`
 }
 
 // listConversationAssets derives a conversation's assets from its stored
@@ -241,9 +245,10 @@ func readTranscriptArtifact(storage ConfigStorage, conversationID string, conten
 // libraryArtifactID keeps ArtifactID empty for legacy path-fallback asset IDs —
 // those are only meaningful inside their own conversation, so the absolute
 // Path key carries the cross-conversation reference instead. Modern IDs
-// (img_/aud_/vid_/md_<hex>) are globally unique and pass through.
+// (img_/aud_/vid_/md_<hex>, and ast_<hex> for uploaded library records) are
+// globally unique and pass through.
 func libraryArtifactID(id string) string {
-	for _, prefix := range []string{"img_", "aud_", "vid_", "md_"} {
+	for _, prefix := range []string{"img_", "aud_", "vid_", "md_", "ast_"} {
 		if strings.HasPrefix(id, prefix) {
 			return id
 		}
@@ -340,9 +345,11 @@ func listLibraryAssets(storage ConfigStorage, libraryID string) ([]ConversationA
 		}
 		return members[i].conversation.UpdatedAt > members[j].conversation.UpdatedAt
 	})
+	memberIDs := make(map[string]bool, len(members))
 	assets := []ConversationAsset{}
 	seen := map[string]bool{}
 	for _, member := range members {
+		memberIDs[member.conversation.ID] = true
 		for _, asset := range cachedConversationAssets(member.path, member.conversation) {
 			if seen[asset.ID] {
 				continue
@@ -350,6 +357,20 @@ func listLibraryAssets(storage ConfigStorage, libraryID string) ([]ConversationA
 			seen[asset.ID] = true
 			assets = append(assets, asset)
 		}
+	}
+	// Uploaded records fold in beside the derived assets (library_assets.go):
+	// the library owns them outright, and the source-conversation link is
+	// kept only while that conversation is still a member here.
+	records, err := listLibraryAssetRecords(storage, libraryID)
+	if err != nil {
+		return nil, err
+	}
+	for _, record := range records {
+		if seen[record.ID] {
+			continue
+		}
+		seen[record.ID] = true
+		assets = append(assets, libraryAssetFromRecord(storage, record, memberIDs))
 	}
 	sort.Slice(assets, func(i, j int) bool {
 		if assets[i].CreatedAt == assets[j].CreatedAt {

@@ -1,4 +1,5 @@
-import {videoThumbnailOnlySrc} from '../mediaIntake';
+import {useRef, useState} from 'react';
+import {composerAcceptAttribute, composerHasMediaDrag, dropAcceptsFile, videoThumbnailOnlySrc} from '../mediaIntake';
 import {AudioPlayer} from '../media/AudioPlayer';
 import {LazyPanelVideo} from '../media/LazyPanelVideo';
 import {assetTurnLabel} from '../composerMentions';
@@ -6,9 +7,57 @@ import {transcriptChipLabel} from '../historyContent';
 import {AppModel} from '../app/useAppModel';
 
 export function AssetsPanel({app}: {app: AppModel}) {
+  // Upload affordances: a ＋ button over a hidden multi-file input, and the
+  // panel itself as a drop target — both feed app.uploadLibraryAssets, which
+  // rides the composer's own attachment readers. Only meaningful in library
+  // scope: uploads are records of the LIBRARY (library_assets.go), so a chat
+  // filed under no project has nowhere to put them.
+  const [uploadDragging, setUploadDragging] = useState(false);
+  const [armedDeleteID, setArmedDeleteID] = useState('');
+  const uploadInputRef = useRef<HTMLInputElement | null>(null);
+  const uploadDragDepthRef = useRef(0);
+  const uploadEnabled = Boolean(app.composerLibraryID);
+
+  function handleUploadDragEnter(event: React.DragEvent) {
+    if (!uploadEnabled) return;
+    if (!composerHasMediaDrag(Array.from(event.dataTransfer.items), Array.from(event.dataTransfer.types))) return;
+    uploadDragDepthRef.current += 1;
+    setUploadDragging(true);
+    event.preventDefault();
+  }
+
+  function handleUploadDragOver(event: React.DragEvent) {
+    if (!uploadDragging) return;
+    event.preventDefault();
+  }
+
+  function handleUploadDragLeave() {
+    uploadDragDepthRef.current = Math.max(0, uploadDragDepthRef.current - 1);
+    if (uploadDragDepthRef.current === 0) {
+      setUploadDragging(false);
+    }
+  }
+
+  function handleUploadDrop(event: React.DragEvent) {
+    uploadDragDepthRef.current = 0;
+    setUploadDragging(false);
+    if (!uploadEnabled) return;
+    const files = Array.from(event.dataTransfer.files).filter(dropAcceptsFile);
+    if (files.length === 0) return;
+    event.preventDefault();
+    void app.uploadLibraryAssets(files);
+  }
+
   return (
     <>
-          <aside className="assets-panel" aria-label={app.composerLibraryID ? 'Library assets' : 'Conversation assets'}>
+          <aside
+            className="assets-panel"
+            aria-label={app.composerLibraryID ? 'Library assets' : 'Conversation assets'}
+            onDragEnter={handleUploadDragEnter}
+            onDragOver={handleUploadDragOver}
+            onDragLeave={handleUploadDragLeave}
+            onDrop={handleUploadDrop}
+          >
             <div className="assets-panel-header">
               <span className="assets-panel-title">
                 {app.composerLibraryID && app.composerProjectNames ? `Assets · ${app.composerProjectNames.libraryName}` : 'Assets'}
@@ -69,6 +118,38 @@ export function AssetsPanel({app}: {app: AppModel}) {
                   <path d="M19.5 17v4M17.5 19h4" strokeWidth="2" />
                 </svg>
               </button>
+                {/* An upload glyph: a tray with an arrow rising into it — the
+                    one ＋ action that files media into the library itself
+                    rather than opening an editor on it. */}
+              <button
+                type="button"
+                className="assets-panel-new-composition"
+                disabled={!uploadEnabled || app.libraryUploadsBusy}
+                aria-label="Upload files to the library"
+                title={uploadEnabled
+                  ? 'Upload files to this library — images, audio, video, subtitles, and markdown documents'
+                  : 'Uploads live in a library — pick a project for this chat first'}
+                onClick={() => uploadInputRef.current?.click()}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M12 15V4.5" strokeWidth="2" />
+                  <path d="m7.5 9 4.5-4.5L16.5 9" strokeWidth="2" />
+                  <path d="M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15" strokeWidth="2" />
+                </svg>
+              </button>
+              <input
+                ref={uploadInputRef}
+                type="file"
+                multiple
+                accept={composerAcceptAttribute}
+                className="assets-panel-upload-input"
+                onChange={(event) => {
+                  if (event.target.files && event.target.files.length > 0) {
+                    void app.uploadLibraryAssets(Array.from(event.target.files));
+                  }
+                  event.target.value = '';
+                }}
+              />
               <button
                 type="button"
                 className="assets-panel-close"
@@ -90,7 +171,11 @@ export function AssetsPanel({app}: {app: AppModel}) {
                 </p>
               ) : (
                 app.panelAssets.map((asset) => (
-                  <figure key={`${asset.id}-${asset.originTurnId}`} className={`asset-card asset-${asset.kind}`}>
+                  <figure
+                    key={`${asset.id}-${asset.originTurnId}`}
+                    className={`asset-card asset-${asset.kind}`}
+                    title={asset.role === 'upload' && asset.name ? asset.name : undefined}
+                  >
                     <div className="asset-preview">
                       {asset.kind === 'image' && asset.url ? (
                         <button
@@ -267,17 +352,55 @@ export function AssetsPanel({app}: {app: AppModel}) {
                           </svg>
                         </button>
                       ) : null}
+                      {/* Uploads carry the one delete affordance in the panel:
+                          the record is the asset's whole existence (the
+                          library owns the file), so removal is a real delete
+                          — armed, then confirmed with a second click. Derived
+                          assets keep their conversation-owned lifecycle and
+                          offer nothing here. */}
+                      {asset.role === 'upload' ? (
+                        <button
+                          type="button"
+                          className={armedDeleteID === asset.id ? 'asset-delete-button armed' : 'asset-delete-button'}
+                          aria-label={armedDeleteID === asset.id ? 'Click again to remove this upload' : 'Remove this upload from the library'}
+                          title={armedDeleteID === asset.id ? 'Click again to remove' : (asset.name ? `Remove ${asset.name} from the library` : 'Remove this upload from the library')}
+                          onClick={() => {
+                            if (armedDeleteID === asset.id) {
+                              setArmedDeleteID('');
+                              void app.deleteLibraryAsset(asset);
+                            } else {
+                              setArmedDeleteID(asset.id);
+                              window.setTimeout(() => setArmedDeleteID((current) => (current === asset.id ? '' : current)), 3000);
+                            }
+                          }}
+                          onBlur={() => {
+                            if (armedDeleteID === asset.id) {
+                              setArmedDeleteID('');
+                            }
+                          }}
+                        >
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <path d="M4 7h16" />
+                            <path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+                            <path d="M6 7v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7" />
+                            <path d="M10 11v6M14 11v6" />
+                          </svg>
+                        </button>
+                      ) : null}
                     </div>
                     <figcaption>
                       <span className="asset-kind">{asset.kind}</span>
                       <span className="asset-meta">
-                        {asset.role === 'user' ? 'attached' : 'generated'} · {app.composerLibraryID ? (asset.conversationTitle || 'chat') : assetTurnLabel(asset.originTurnId)}
+                        {asset.role === 'upload' ? 'uploaded' : asset.role === 'user' ? 'attached' : 'generated'} · {app.composerLibraryID ? (asset.conversationTitle || (asset.role === 'upload' ? 'library' : 'chat')) : assetTurnLabel(asset.originTurnId)}
                       </span>
                     </figcaption>
                   </figure>
                 ))
               )}
             </div>
+            {uploadDragging ? (
+              <div className="assets-drop-overlay">Drop to add to the library</div>
+            ) : null}
           </aside>
     </>
   );

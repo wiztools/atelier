@@ -1,7 +1,7 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {DiscardMediaUpload} from '../../wailsjs/go/main/App';
-import {videoThumbnailOnlySrc} from '../mediaIntake';
+import {composerAcceptAttribute, videoThumbnailOnlySrc} from '../mediaIntake';
 import {ChatProviderID} from '../types';
 import {asArray, shortenHomePath} from '../utils';
 import {ModelCombobox} from '../settings/ModelCombobox';
@@ -653,7 +653,7 @@ export function ChatView({app}: {app: AppModel}) {
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                           <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
                         </svg>
-                        <input type="file" accept="image/*,audio/*,video/*,.mkv,.flv,.avi,.ts,.mpg,.mpeg,.vtt,.srt,application/x-subrip,text/vtt,.md,.markdown,.fountain,text/markdown" multiple onChange={(event) => app.addFiles(event.target.files)} />
+                        <input type="file" accept={composerAcceptAttribute} multiple onChange={(event) => app.addFiles(event.target.files)} />
                       </label>
                     </div>
                     <div className="composer-submit-row">

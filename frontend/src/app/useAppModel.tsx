@@ -11,6 +11,7 @@ import {
   ChooseToolWorkspace,
   CreateEditorConversation,
   DeleteConversation,
+  DeleteLibraryAsset,
   DetectLocalTools,
   GetConversation,
   GetConfig,
@@ -38,13 +39,16 @@ import {
   SaveTranscript,
   StreamChat,
   RevealFile,
+  UploadLibraryAsset,
 } from '../../wailsjs/go/main/App';
 import {main} from '../../wailsjs/go/models';
 import {Environment, EventsOn} from '../../wailsjs/runtime/runtime';
 import {detectEditorLaunchIntent} from '../editorLaunch';
+import {readFileAsAttachment} from '../attachments';
 import {DetachedDraft} from '../editor/detachedDraft';
 import {
   composerHasMediaDrag,
+  dropAcceptsFile,
   imagePayloadForOllama,
 } from '../mediaIntake';
 import {
@@ -211,6 +215,7 @@ export function useAppModel() {
     whisperStatus,
   } = useLocalTools({configLoaded, whisperBinary, ffmpegBinary, ffprobeBinary, sipsBinary, magickBinary});
   const [assetsRefreshTick, setAssetsRefreshTick] = useState(0);
+  const [libraryUploadsBusy, setLibraryUploadsBusy] = useState(false);
   const [activeConversationID, setActiveConversationID] = useState('');
   const copyResetRef = useRef<number | null>(null);
   // useChatStream registers its chunk listener before the conversation list
@@ -2355,38 +2360,42 @@ export function useAppModel() {
   // The chat's download helpers: each hands its Save* binding to trackSave,
   // which toasts the saved file and its folder, stays silent when the save
   // dialog was cancelled, and toasts a failure.
-  function saveGeneratedImage(image: string, index: number) {
+  // Each saveGenerated* builds the request and toasts the outcome through
+  // trackSave. suggestedName overrides the timestamp form — the assets
+  // panel passes an upload's original filename (the record's Name);
+  // sanitizeFilename on the Go side guards whatever it receives.
+  function saveGeneratedImage(image: string, index: number, suggestedName = '') {
     return trackSave('image', SaveImage(main.SaveImageRequest.createFrom({
       image,
-      suggestedName: `atelier-${Date.now()}-${index + 1}`,
+      suggestedName: suggestedName || `atelier-${Date.now()}-${index + 1}`,
     })));
   }
 
-  function saveGeneratedVideo(video: string, index: number) {
+  function saveGeneratedVideo(video: string, index: number, suggestedName = '') {
     return trackSave('video', SaveVideo(main.SaveVideoRequest.createFrom({
       path: video,
-      suggestedName: `atelier-${Date.now()}-${index + 1}`,
+      suggestedName: suggestedName || `atelier-${Date.now()}-${index + 1}`,
     })));
   }
 
-  function saveGeneratedAudio(audio: string, index: number) {
+  function saveGeneratedAudio(audio: string, index: number, suggestedName = '') {
     return trackSave('audio', SaveAudio(main.SaveAudioRequest.createFrom({
       path: audio,
-      suggestedName: `atelier-${Date.now()}-${index + 1}`,
+      suggestedName: suggestedName || `atelier-${Date.now()}-${index + 1}`,
     })));
   }
 
-  function saveGeneratedTranscript(transcript: string, index: number) {
+  function saveGeneratedTranscript(transcript: string, index: number, suggestedName = '') {
     return trackSave('transcript', SaveTranscript(main.SaveTranscriptRequest.createFrom({
       path: transcript,
-      suggestedName: `atelier-${Date.now()}-${index + 1}`,
+      suggestedName: suggestedName || `atelier-${Date.now()}-${index + 1}`,
     })));
   }
 
-  function saveGeneratedMarkdown(markdown: string, index: number) {
+  function saveGeneratedMarkdown(markdown: string, index: number, suggestedName = '') {
     return trackSave('document', SaveMarkdown(main.SaveTranscriptRequest.createFrom({
       path: markdown,
-      suggestedName: `atelier-${Date.now()}-${index + 1}`,
+      suggestedName: suggestedName || `atelier-${Date.now()}-${index + 1}`,
     })));
   }
 
@@ -2409,17 +2418,20 @@ export function useAppModel() {
   // artifact bytes on disk), so one per-kind dispatcher covers every card.
   function downloadAsset(asset: main.ConversationAsset) {
     if (!asset.url) return;
+    // An upload keeps its original filename — the save dialogs suggest it
+    // instead of the timestamp form (the record's Name, library_assets.go).
+    const suggestedName = asset.name || '';
     if (asset.kind === 'audio') {
-      return saveGeneratedAudio(asset.url, 0);
+      return saveGeneratedAudio(asset.url, 0, suggestedName);
     }
     if (asset.kind === 'video') {
-      return saveGeneratedVideo(asset.url, 0);
+      return saveGeneratedVideo(asset.url, 0, suggestedName);
     }
     if (asset.kind === 'transcript') {
-      return saveGeneratedTranscript(asset.url, 0);
+      return saveGeneratedTranscript(asset.url, 0, suggestedName);
     }
     if (asset.kind === 'markdown') {
-      return saveGeneratedMarkdown(asset.url, 0);
+      return saveGeneratedMarkdown(asset.url, 0, suggestedName);
     }
     if (asset.kind === 'composition') {
       return saveGeneratedComposition(asset.url, 0);
@@ -2427,7 +2439,64 @@ export function useAppModel() {
     if (asset.kind === 'comic') {
       return saveGeneratedComic(asset.url, 0);
     }
-    return saveGeneratedImage(asset.url, 0);
+    return saveGeneratedImage(asset.url, 0, suggestedName);
+  }
+
+  // refreshAssets re-runs the assets panel's fetches — the tick useAssets'
+  // effects depend on. Uploads and deletes touch no conversation, so this is
+  // the only refresh they need (refreshAfterConversationWrite's transcript
+  // and sidebar work does not apply).
+  function refreshAssets() {
+    setAssetsRefreshTick((tick) => tick + 1);
+  }
+
+  // uploadLibraryAssets files picked or dropped files into the composer's
+  // library as first-class upload records (library_assets.go) — no chat turn
+  // behind them. Each file rides the composer's own reader
+  // (readFileAsAttachment: data URL for small files, the chunked staged
+  // upload for audio/video past 24 MiB), so validation and large-file
+  // handling are exactly the attachment path's; the payload handed to the
+  // binding is the same string a chat send would carry. Failures are
+  // per-file: one bad drop member never sinks the rest.
+  async function uploadLibraryAssets(files: FileList | File[]) {
+    const libraryID = composerLibraryID;
+    if (!libraryID) return;
+    const list = Array.from(files).filter(dropAcceptsFile);
+    if (list.length === 0) return;
+    setLibraryUploadsBusy(true);
+    try {
+      for (const file of list) {
+        try {
+          const attachment = await readFileAsAttachment(file);
+          await UploadLibraryAsset(
+            libraryID,
+            activeConversationIDRef.current || '',
+            attachment.name,
+            attachment.kind,
+            attachment.src,
+          );
+        } catch (error) {
+          notifyError(`Couldn't upload ${file.name}`, error);
+        }
+      }
+    } finally {
+      setLibraryUploadsBusy(false);
+      refreshAssets();
+    }
+  }
+
+  // deleteLibraryAsset removes an uploaded record and its media — the only
+  // per-asset delete in the app, because uploads are the only assets the
+  // library owns outright. Conversations that @-mentioned it keep dangling
+  // entries (unresolvable mentions are dropped at resolution), and derived
+  // assets are untouched: they still live in their conversations.
+  async function deleteLibraryAsset(asset: main.ConversationAsset) {
+    try {
+      await DeleteLibraryAsset(asset.id);
+    } catch (error) {
+      notifyError(`Couldn't remove ${asset.name || 'the upload'}`, error);
+    }
+    refreshAssets();
   }
 
   // openAssetConversation is the assets-panel navigation affordance: it opens
@@ -2766,5 +2835,9 @@ export function useAppModel() {
     saveGeneratedComic,
     downloadAsset,
     openAssetConversation,
+    refreshAssets,
+    uploadLibraryAssets,
+    deleteLibraryAsset,
+    libraryUploadsBusy,
   };
 }

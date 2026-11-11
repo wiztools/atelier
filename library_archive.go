@@ -29,6 +29,7 @@ import (
 //	manifest.json
 //	library.json
 //	projects/<projectID>/project.json
+//	assets/<fileName>           — uploaded library assets, records and media
 //	conversations/<conversationID>/{conversation.json,turns/*,artifacts/*}
 //
 // Portability: cross-conversation references and per-conversation workspaces
@@ -40,8 +41,10 @@ import (
 
 // currentLibraryArchiveFormatVersion is bumped whenever the archive layout or
 // manifest gains a field. Import refuses anything newer than itself; older
-// manifests keep importing (fields are additive).
-const currentLibraryArchiveFormatVersion = 1
+// manifests keep importing (fields are additive). v2 added the uploaded
+// library assets (library_assets.go): assets/ entries plus the
+// OriginalLibraryRoot the turn-level mention references are rewritten by.
+const currentLibraryArchiveFormatVersion = 2
 
 // libraryArchiveExtension is the archive's document extension. The container
 // is a plain zip, so archives stay inspectable regardless of extension.
@@ -67,7 +70,11 @@ type LibraryArchiveManifest struct {
 	// OriginalHistoryRoot is the exporter's Storage.History — the prefix
 	// absolute cross-conversation references (and any workspace under the
 	// storage root) were written against, and the key import rewrites them by.
+	// OriginalLibraryRoot is the exporter's Storage.Libraries — the prefix
+	// absolute @-mention references into the library's uploaded assets were
+	// written against (v2; empty on v1 archives, which had no uploads).
 	OriginalHistoryRoot string                     `json:"originalHistoryRoot"`
+	OriginalLibraryRoot string                     `json:"originalLibraryRoot,omitempty"`
 	Counts              LibraryArchiveCounts       `json:"counts"`
 	Files               []LibraryArchiveFile       `json:"files"`
 	Missing             []LibraryArchiveMissingRef `json:"missing,omitempty"`
@@ -135,9 +142,14 @@ type libraryExportScan struct {
 	library       Library
 	projects      []Project
 	conversations []scannedConversation
-	assets        int
-	bytes         int64
-	missing       []LibraryArchiveMissingRef
+	// assetFiles are the library's uploaded assets (library_assets.go), rel
+	// relative to the assets dir; the whole directory is archived verbatim —
+	// records, media, and poster siblings alike.
+	assetsDir  string
+	assetFiles []scannedFile
+	assets     int
+	bytes      int64
+	missing    []LibraryArchiveMissingRef
 }
 
 type scannedConversation struct {
@@ -197,6 +209,21 @@ func scanLibraryExport(storage ConfigStorage, libraryID string) (libraryExportSc
 	}
 	sort.Slice(scan.conversations, func(i, j int) bool { return scan.conversations[i].id < scan.conversations[j].id })
 
+	// The library's uploaded assets ride beside the conversations: every file
+	// under the assets dir is archived, and its dir becomes a satisfied
+	// location for the missing-reference walk below (an @-mention of an
+	// upload points into it, and the file IS in the archive).
+	scan.assetsDir = libraryAssetsDir(storage, libraryID)
+	assetFiles, err := scanConversationFiles(scan.assetsDir)
+	if err != nil && !os.IsNotExist(err) {
+		return libraryExportScan{}, err
+	}
+	scan.assetFiles = assetFiles
+	for _, file := range scan.assetFiles {
+		scan.bytes += file.size
+		scan.assets++
+	}
+
 	// Missing-reference detection runs with the full member set in hand: an
 	// absolute reference is only satisfiable when it points inside one of the
 	// member directories, since @-mentions resolve within the library and the
@@ -206,7 +233,7 @@ func scanLibraryExport(storage ConfigStorage, libraryID string) (libraryExportSc
 		memberDirs[i] = conversation.dir
 	}
 	for _, conversation := range scan.conversations {
-		missing, err := missingConversationRefs(conversation, memberDirs)
+		missing, err := missingConversationRefs(conversation, memberDirs, scan.assetsDir)
 		if err != nil {
 			return libraryExportScan{}, err
 		}
@@ -246,10 +273,17 @@ func scanConversationFiles(dir string) ([]scannedFile, error) {
 // missingConversationRefs finds the conversation's referenced artifacts that
 // will not be in the archive: files absent on disk, or present but outside
 // every member directory (only reachable through hand-edited or foreign
-// records — mentions resolve within the library). Deleted turns are skipped,
-// matching how assets are derived; their files still ride along in the copy.
-func missingConversationRefs(conversation scannedConversation, memberDirs []string) ([]LibraryArchiveMissingRef, error) {
+// records — mentions resolve within the library). The library's assets dir
+// counts as satisfied too: an @-mention of an uploaded asset points there, and
+// the assets/ entries ship beside the conversations. Deleted turns are
+// skipped, matching how assets are derived; their files still ride along in
+// the copy.
+func missingConversationRefs(conversation scannedConversation, memberDirs []string, assetsDir string) ([]LibraryArchiveMissingRef, error) {
 	missing := []LibraryArchiveMissingRef{}
+	satisfied := memberDirs
+	if assetsDir != "" {
+		satisfied = append(append([]string{}, memberDirs...), assetsDir)
+	}
 	for _, file := range conversation.files {
 		if !strings.HasPrefix(file.rel, "turns/") || !strings.HasSuffix(file.rel, ".json") {
 			continue
@@ -274,7 +308,7 @@ func missingConversationRefs(conversation scannedConversation, memberDirs []stri
 				missing = append(missing, LibraryArchiveMissingRef{ConversationID: conversation.id, TurnID: turn.ID, Path: path})
 				continue
 			}
-			if !pathInsideAnyDir(resolved, memberDirs) {
+			if !pathInsideAnyDir(resolved, satisfied) {
 				missing = append(missing, LibraryArchiveMissingRef{ConversationID: conversation.id, TurnID: turn.ID, Path: path})
 			}
 		}
@@ -376,6 +410,11 @@ func exportLibrary(storage ConfigStorage, libraryID, destPath string, onProgress
 			onProgress("write", i+1, len(scan.conversations))
 		}
 	}
+	for _, scanned := range scan.assetFiles {
+		if err := addFile("assets/"+scanned.rel, filepath.Join(scan.assetsDir, filepath.FromSlash(scanned.rel))); err != nil {
+			return LibraryExportResult{}, err
+		}
+	}
 
 	manifest := LibraryArchiveManifest{
 		FormatVersion:       currentLibraryArchiveFormatVersion,
@@ -384,6 +423,7 @@ func exportLibrary(storage ConfigStorage, libraryID, destPath string, onProgress
 		Library:             scan.library,
 		Projects:            scan.projects,
 		OriginalHistoryRoot: storage.History,
+		OriginalLibraryRoot: storage.Libraries,
 		Counts: LibraryArchiveCounts{
 			Projects:      len(scan.projects),
 			Conversations: len(scan.conversations),
@@ -577,8 +617,35 @@ func importLibraryArchive(storage ConfigStorage, defaultWorkspace, archivePath s
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+
+	// Uploaded assets restore verbatim into the library's assets dir — the
+	// records carry relative filenames, so nothing to rewrite inside them.
+	// Sorted for determinism; the manifest's SHA verification above already
+	// covered every byte.
+	assetsDir := libraryAssetsDir(storage, library.ID)
+	if err := os.MkdirAll(assetsDir, 0755); err != nil {
+		return LibraryImportResult{}, err
+	}
+	assetEntries := []string{}
+	for _, archived := range manifest.Files {
+		if strings.HasPrefix(archived.Path, "assets/") {
+			assetEntries = append(assetEntries, archived.Path)
+		}
+	}
+	sort.Strings(assetEntries)
+	for _, archived := range assetEntries {
+		data, err := readArchiveEntryBytes(entries[archived])
+		if err != nil {
+			return LibraryImportResult{}, err
+		}
+		target := filepath.Join(assetsDir, filepath.FromSlash(strings.TrimPrefix(archived, "assets/")))
+		if err := os.WriteFile(target, data, 0644); err != nil {
+			return LibraryImportResult{}, err
+		}
+	}
+
 	for index, id := range ids {
-		if err := importArchiveConversation(storage, defaultWorkspace, manifest.OriginalHistoryRoot, id, conversations[id], entries); err != nil {
+		if err := importArchiveConversation(storage, defaultWorkspace, manifest.OriginalHistoryRoot, manifest.OriginalLibraryRoot, id, conversations[id], entries); err != nil {
 			return LibraryImportResult{}, err
 		}
 		if onProgress != nil {
@@ -601,9 +668,10 @@ func importLibraryArchive(storage ConfigStorage, defaultWorkspace, archivePath s
 // importArchiveConversation materializes one archived conversation at its
 // re-derived date bucket. conversation.json is always re-marshalled (the
 // workspace fallback applies to it); turn files are written byte-verbatim
-// unless they contain the exporter's history root, in which case their
-// absolute reference paths are rewritten.
-func importArchiveConversation(storage ConfigStorage, defaultWorkspace, originalHistoryRoot, conversationID string, files []LibraryArchiveFile, entries map[string]*zip.File) error {
+// unless they contain the exporter's history root or its library-assets root
+// (an @-mention of an uploaded asset), in which case their absolute reference
+// paths are rewritten.
+func importArchiveConversation(storage ConfigStorage, defaultWorkspace, originalHistoryRoot, originalLibraryRoot, conversationID string, files []LibraryArchiveFile, entries map[string]*zip.File) error {
 	var record HistoryConversation
 	if err := readArchiveEntryJSON(entries["conversations/"+conversationID+"/conversation.json"], &record); err != nil {
 		return err
@@ -635,7 +703,7 @@ func importArchiveConversation(storage ConfigStorage, defaultWorkspace, original
 			return err
 		}
 		if strings.HasPrefix(archived.Path, "turns/") {
-			data, err = rewriteArchiveTurn(data, originalHistoryRoot, storage.History)
+			data, err = rewriteArchiveTurn(data, originalHistoryRoot, originalLibraryRoot, storage)
 			if err != nil {
 				return err
 			}
@@ -652,11 +720,15 @@ func importArchiveConversation(storage ConfigStorage, defaultWorkspace, original
 }
 
 // rewriteArchiveTurn rewrites a turn's absolute content paths from the
-// exporter's history root to the importer's. The fast path returns the
-// original bytes untouched — most turns contain no absolute references and
-// stay byte-identical to what was exported.
-func rewriteArchiveTurn(data []byte, fromRoot, toRoot string) ([]byte, error) {
-	if fromRoot == "" || !strings.Contains(string(data), fromRoot) {
+// exporter's roots to the importer's — Storage.History for cross-conversation
+// references, Storage.Libraries for @-mentions of uploaded assets (whose
+// library ID survives import verbatim). The fast path returns the original
+// bytes untouched — most turns contain no absolute references and stay
+// byte-identical to what was exported.
+func rewriteArchiveTurn(data []byte, fromHistoryRoot, fromLibraryRoot string, storage ConfigStorage) ([]byte, error) {
+	containsHistory := fromHistoryRoot != "" && strings.Contains(string(data), fromHistoryRoot)
+	containsLibrary := fromLibraryRoot != "" && strings.Contains(string(data), fromLibraryRoot)
+	if !containsHistory && !containsLibrary {
 		return data, nil
 	}
 	var turn HistoryTurn
@@ -665,7 +737,11 @@ func rewriteArchiveTurn(data []byte, fromRoot, toRoot string) ([]byte, error) {
 	}
 	changed := false
 	for i := range turn.Content {
-		if rewritten := rewriteArchivePath(turn.Content[i].Path, fromRoot, toRoot); rewritten != turn.Content[i].Path {
+		if rewritten := rewriteArchivePath(turn.Content[i].Path, fromHistoryRoot, storage.History); rewritten != turn.Content[i].Path {
+			turn.Content[i].Path = rewritten
+			changed = true
+		}
+		if rewritten := rewriteArchiveLibraryPath(turn.Content[i].Path, fromLibraryRoot, storage.Libraries); rewritten != turn.Content[i].Path {
 			turn.Content[i].Path = rewritten
 			changed = true
 		}
@@ -678,6 +754,29 @@ func rewriteArchiveTurn(data []byte, fromRoot, toRoot string) ([]byte, error) {
 		return nil, err
 	}
 	return append(rewritten, '\n'), nil
+}
+
+// rewriteArchiveLibraryPath re-prefixes an absolute reference into the
+// exporter's uploaded-assets directory ("<libRoot>/<libraryID>/assets/…")
+// onto the importer's tree. The library ID is preserved — create-only import
+// guarantees it. Anything else passes through untouched.
+func rewriteArchiveLibraryPath(path, fromLibraryRoot, toLibraryRoot string) string {
+	if path == "" || fromLibraryRoot == "" || toLibraryRoot == "" {
+		return path
+	}
+	normalized := filepath.FromSlash(path)
+	fromPrefix := filepath.FromSlash(fromLibraryRoot) + string(filepath.Separator)
+	if !strings.HasPrefix(normalized, fromPrefix) {
+		return path
+	}
+	// Only paths that name an assets dir directly under a library dir rewrite:
+	// <fromLibraryRoot>/<libID>/assets/<file>.
+	relative := strings.TrimPrefix(normalized, fromPrefix)
+	parts := strings.SplitN(relative, string(filepath.Separator), 3)
+	if len(parts) != 3 || parts[1] != "assets" {
+		return path
+	}
+	return filepath.Join(toLibraryRoot, parts[0], "assets", parts[2])
 }
 
 // rewriteArchivePath re-prefixes an absolute path recorded against the
@@ -698,8 +797,9 @@ func rewriteArchivePath(path, fromRoot, toRoot string) string {
 // groupArchiveConversations buckets the manifest's payload files by the
 // conversation they belong to, keeping each bucket's internal order. Non-
 // conversation payloads are validated to be exactly the record shapes the
-// exporter writes (library.json and project.json), never imported from bytes —
-// the manifest structs are the write-time source of truth.
+// exporter writes (library.json, project.json, and the uploaded assets'
+// assets/ entries), never imported from bytes — the manifest structs are the
+// write-time source of truth.
 func groupArchiveConversations(files []LibraryArchiveFile) (map[string][]LibraryArchiveFile, error) {
 	conversations := map[string][]LibraryArchiveFile{}
 	for _, archived := range files {
@@ -707,6 +807,9 @@ func groupArchiveConversations(files []LibraryArchiveFile) (map[string][]Library
 			continue
 		}
 		if strings.HasPrefix(archived.Path, "projects/") && strings.HasSuffix(archived.Path, "/project.json") {
+			continue
+		}
+		if strings.HasPrefix(archived.Path, "assets/") {
 			continue
 		}
 		rest, ok := strings.CutPrefix(archived.Path, "conversations/")

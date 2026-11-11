@@ -3209,6 +3209,30 @@ button:disabled {
   border-left: 1px solid #2b2e30;
   background: #181b1d;
   overflow: hidden;
+  /* The drop overlay anchors to the panel while a library upload drag hovers. */
+  position: relative;
+}
+
+/* The upload button's hidden multi-file input — the visible ＋ tray button
+   clicks it. Shares the composer's accept list (mediaIntake.ts). */
+.assets-panel-upload-input {
+  display: none;
+}
+
+/* The assets panel's drop hint, the composer overlay's sibling: dimmed wash
+   over the panel with one centered instruction line. */
+.assets-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 17, 19, 0.82);
+  border: 1px dashed #5a6360;
+  color: #d9d7cf;
+  font-size: 13px;
+  pointer-events: none;
 }
 
 .assets-panel-header {
@@ -4058,6 +4082,42 @@ button:disabled {
 .image-preview-edit:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* The upload row's remove pill — the edit slot (right: 110px), which an
+   upload never fills (its Edit doors are conversation-bound and hidden).
+   Armed (first click) it turns red and stays revealed until the second
+   click deletes or the focus/timeout disarms it. */
+.asset-delete-button {
+  position: absolute;
+  top: 8px;
+  right: 110px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid #3a3e41;
+  border-radius: 50%;
+  background: rgba(20, 22, 24, 0.88);
+  color: #d9d7cf;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.asset-card:hover .asset-delete-button,
+.asset-delete-button:focus-visible,
+.asset-delete-button.armed {
+  opacity: 1;
+}
+
+.asset-delete-button.armed {
+  border-color: #b0552f;
+  color: #e08a63;
 }
 
 /* Wrapper that keeps an editor mounted while another screen (Settings) shows

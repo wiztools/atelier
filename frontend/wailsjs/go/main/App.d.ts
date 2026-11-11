@@ -52,6 +52,8 @@ export function DeleteEditOperation(arg1:string,arg2:string):Promise<void>;
 
 export function DeleteLibrary(arg1:string):Promise<main.DeleteLibraryResult>;
 
+export function DeleteLibraryAsset(arg1:string):Promise<void>;
+
 export function DeleteProject(arg1:string):Promise<main.DeleteProjectResult>;
 
 export function DetectLocalTools(arg1:main.LocalToolOverrides):Promise<main.LocalToolsReport>;
@@ -301,5 +303,7 @@ export function SubmitImageEdit(arg1:main.ImageEditSubmitRequest):Promise<main.E
 export function SubmitVideoEdit(arg1:main.VideoEditSubmitRequest):Promise<main.EditOperationState>;
 
 export function UpdateConversationTitle(arg1:string,arg2:string):Promise<main.ConversationSummary>;
+
+export function UploadLibraryAsset(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<main.ConversationAsset>;
 
 export function WriteToolFile(arg1:main.ToolFileWriteRequest):Promise<main.ToolFileWriteResult>;

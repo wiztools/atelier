@@ -102,6 +102,10 @@ export function DeleteLibrary(arg1) {
   return window['go']['main']['App']['DeleteLibrary'](arg1);
 }
 
+export function DeleteLibraryAsset(arg1) {
+  return window['go']['main']['App']['DeleteLibraryAsset'](arg1);
+}
+
 export function DeleteProject(arg1) {
   return window['go']['main']['App']['DeleteProject'](arg1);
 }
@@ -600,6 +604,10 @@ export function SubmitVideoEdit(arg1) {
 
 export function UpdateConversationTitle(arg1, arg2) {
   return window['go']['main']['App']['UpdateConversationTitle'](arg1, arg2);
+}
+
+export function UploadLibraryAsset(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['UploadLibraryAsset'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function WriteToolFile(arg1) {

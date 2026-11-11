@@ -600,7 +600,10 @@ export function CompositionEditor(props: {
         if (props.libraryID) {
           const libraryAssets = asArray(await AppBindings.ListLibraryAssets(props.libraryID));
           const seen = new Set(combined.map((asset) => asset.id));
-          combined = [...combined, ...libraryAssets.filter((asset) => !seen.has(asset.id))];
+          // Uploaded library records (role "upload") stay out: their ast_ ids
+          // resolve through the library store, not a conversation artifact,
+          // which ResolveCompositionMedia cannot measure yet.
+          combined = [...combined, ...libraryAssets.filter((asset) => !seen.has(asset.id) && asset.role !== 'upload')];
         }
         if (!cancelled) {
           setMediaAssets(combined);

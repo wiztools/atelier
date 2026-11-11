@@ -121,6 +121,13 @@ export function markdownMimeForFile(file: {name: string; type: string}): string 
   return null;
 }
 
+// composerAcceptAttribute is the file picker's accept list, shared by the
+// composer and the assets panel's upload button so the two can never drift:
+// images ride image/*, audio/video their mimes plus the containers the OS
+// leaves unlabeled, subtitles and markdown documents their extensions.
+export const composerAcceptAttribute =
+  'image/*,audio/*,video/*,.mkv,.flv,.avi,.ts,.mpg,.mpeg,.vtt,.srt,application/x-subrip,text/vtt,.md,.markdown,.fountain,text/markdown';
+
 // dropAcceptsFile is the composer drop's admission test, the drop-side twin of
 // the picker's accept list: containers ride mediaKindForFile (extension first —
 // an .mkv carries no MIME on macOS, and the filter that predates it turned such
