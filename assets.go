@@ -51,6 +51,10 @@ type ConversationAsset struct {
 	// library_assets.go); derived assets keep it empty, their filenames never
 	// persisted anywhere.
 	Name string `json:"name,omitempty"`
+	// Alias is the user-set unique search name (asset_aliases.go). Filled by
+	// the listing functions after the fold — never by the folds themselves,
+	// whose cache holds no alias state (asset_aliases.go stampAssetAliases).
+	Alias string `json:"alias,omitempty"`
 }
 
 // listConversationAssets derives a conversation's assets from its stored
@@ -62,7 +66,7 @@ func listConversationAssets(storage ConfigStorage, conversationID string) ([]Con
 	if err != nil {
 		return nil, err
 	}
-	return conversationAssetsFromDetail(detail), nil
+	return stampAssetAliases(storage, conversationAssetsFromDetail(detail)), nil
 }
 
 // conversationAssetsFromDetail folds a conversation's (sorted) turns into
@@ -382,7 +386,7 @@ func listLibraryAssets(storage ConfigStorage, libraryID string) ([]ConversationA
 		}
 		return assets[i].CreatedAt > assets[j].CreatedAt
 	})
-	return assets, nil
+	return stampAssetAliases(storage, assets), nil
 }
 
 // cachedConversationAssets returns a conversation's asset fold through the

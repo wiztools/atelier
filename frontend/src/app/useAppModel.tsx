@@ -28,6 +28,7 @@ import {
   SaveImage,
   SaveVideo,
   SaveAudio,
+  SetAssetAlias,
   SetConversationModelOverrides,
   SaveFalAPIKey,
   SaveReplicateAPIKey,
@@ -2315,14 +2316,19 @@ export function useAppModel() {
   // @-mention can cite any asset in the library.
   function mentionCandidates(): MentionCandidate[] {
     const source = composerLibraryID ? libraryAssets : panelAssets;
+    const provenance = (asset: main.ConversationAsset) =>
+      composerLibraryID
+        ? `${asset.role === 'user' ? 'attached' : 'generated'} · ${asset.conversationTitle || 'another chat'}`
+        : `${asset.role === 'user' ? 'attached' : 'generated'} · ${assetTurnLabel(asset.originTurnId)}`;
     const assets: MentionCandidate[] = source.map((asset) => ({
-      name: assetMentionLabel(asset),
+      // An aliased asset faces the menu under its alias — the name the user
+      // gave it — and the id prefix stays resolvable through the binding pool
+      // below, so old @id text in the prompt keeps resolving after the rename.
+      name: asset.alias || assetMentionLabel(asset),
       src: asset.url ?? '',
       payload: '',
       kind: asset.kind === 'audio' ? 'audio' : asset.kind === 'video' ? 'video' : asset.kind === 'transcript' ? 'subtitle' : asset.kind === 'markdown' ? 'markdown' : 'image',
-      hint: composerLibraryID
-        ? `${asset.role === 'user' ? 'attached' : 'generated'} · ${asset.conversationTitle || 'another chat'}`
-        : `${asset.role === 'user' ? 'attached' : 'generated'} · ${assetTurnLabel(asset.originTurnId)}`,
+      hint: asset.alias ? `alias · ${provenance(asset)}` : provenance(asset),
     }));
     return [...attachmentsRef.current, ...assets];
   }
@@ -2335,7 +2341,19 @@ export function useAppModel() {
   function mentionBindingPool(): { label: string; assetID?: string }[] {
     return [
       ...attachmentsRef.current.map((item) => ({ label: item.name })),
-      ...panelAssets.map((asset) => ({ label: assetMentionLabel(asset), assetID: asset.id })),
+      // Both labels bind each asset: the id prefix (token-safe, stable) and
+      // the alias when set (asset_aliases.go — globally unique, so a collision
+      // between two assets' labels can't happen; first-wins only guards an
+      // alias that happens to spell another asset's id prefix). Bare alias
+      // tokens only work when the alias has no whitespace — aliases may carry
+      // spaces, and those resolve as @"quoted alias" tokens only.
+      ...panelAssets.flatMap((asset) => {
+        const entries: { label: string; assetID?: string }[] = [{ label: assetMentionLabel(asset), assetID: asset.id }];
+        if (asset.alias) {
+          entries.push({ label: asset.alias, assetID: asset.id });
+        }
+        return entries;
+      }),
     ];
   }
 
@@ -2497,6 +2515,22 @@ export function useAppModel() {
       notifyError(`Couldn't remove ${asset.name || 'the upload'}`, error);
     }
     refreshAssets();
+  }
+
+  // setAssetAlias stores (or, committed empty, clears) an asset's unique
+  // search name (asset_aliases.go). The alias rides the listings, so success
+  // only refetches; failure is a toast — the backend names the asset that
+  // already holds the alias — and a false return, which the row's editor
+  // reads to stay open with the rejected value for fixing.
+  async function setAssetAlias(asset: main.ConversationAsset, alias: string): Promise<boolean> {
+    try {
+      await SetAssetAlias(asset.id, alias);
+    } catch (error) {
+      notifyError("Couldn't set the alias", error);
+      return false;
+    }
+    refreshAssets();
+    return true;
   }
 
   // openAssetConversation is the assets-panel navigation affordance: it opens
@@ -2838,6 +2872,7 @@ export function useAppModel() {
     refreshAssets,
     uploadLibraryAssets,
     deleteLibraryAsset,
+    setAssetAlias,
     libraryUploadsBusy,
   };
 }

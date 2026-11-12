@@ -286,6 +286,8 @@ export function SeedComic(arg1:main.SeedComicRequest):Promise<main.ComicSourceIn
 
 export function SeedComposition(arg1:main.SeedCompositionRequest):Promise<main.CompositionSourceInfo>;
 
+export function SetAssetAlias(arg1:string,arg2:string):Promise<void>;
+
 export function SetConversationModelOverrides(arg1:string,arg2:main.ConversationModelOverrides):Promise<main.ConversationSummary>;
 
 export function SetOllamaBaseURL(arg1:string):Promise<void>;

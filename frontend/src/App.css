@@ -3205,7 +3205,8 @@ button:disabled {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  /* header, search row, list (the third row is what scrolls). */
+  grid-template-rows: auto auto minmax(0, 1fr);
   border-left: 1px solid #2b2e30;
   background: #181b1d;
   overflow: hidden;
@@ -3303,6 +3304,45 @@ button:disabled {
 .assets-panel-close svg {
   width: 100%;
   height: 100%;
+}
+
+/* The panel's search row (AssetsPanel.tsx): one query box matching an
+   asset's id or its user-set alias, filtering the rows the panel already
+   lists — client-side, so no debounce (a few hundred rows fold instantly).
+   Styling follows the sidebar's history search: a slim dark input with the
+   webkit cancel button drawn from crossing strokes. */
+.assets-panel-search {
+  padding: 8px 14px;
+  border-bottom: 1px solid #2b2e30;
+}
+
+.assets-panel-search input {
+  width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid #2b2e30;
+  background: #1f2225;
+  color: #d9d7cf;
+  font-size: 12px;
+}
+
+.assets-panel-search input::placeholder {
+  color: #777c7f;
+}
+
+.assets-panel-search input:focus {
+  outline: none;
+  border-color: #3a3e41;
+}
+
+.assets-panel-search input[type="search"]::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  background:
+    linear-gradient(45deg, transparent 44%, #9ea5a3 44%, #9ea5a3 56%, transparent 56%),
+    linear-gradient(-45deg, transparent 44%, #9ea5a3 44%, #9ea5a3 56%, transparent 56%);
 }
 
 .assets-list {
@@ -3473,7 +3513,8 @@ button:disabled {
    Semi-opaque dark base so they read over any media. */
 .asset-reference-button,
 .asset-download-button,
-.asset-conversation-button {
+.asset-conversation-button,
+.asset-alias-button {
   position: absolute;
   top: 8px;
   right: 8px;
@@ -3506,12 +3547,28 @@ button:disabled {
   right: 76px;
 }
 
+/* The alias affordance takes the fifth slot (144px): the 110px slot is the
+   per-kind edit button XOR the upload delete — the alias must coexist with
+   BOTH, so it goes one gutter further out. Present on every kind and role:
+   naming is search metadata, untied to previewability or mentionability. */
+.asset-alias-button {
+  right: 144px;
+}
+
+.asset-alias-button.active {
+  border-color: rgba(213, 166, 79, 0.55);
+  color: #d5a64f;
+}
+
 .asset-card:hover .asset-reference-button,
 .asset-card:hover .asset-download-button,
 .asset-card:hover .asset-conversation-button,
+.asset-card:hover .asset-alias-button,
 .asset-reference-button:focus-visible,
 .asset-download-button:focus-visible,
-.asset-conversation-button:focus-visible {
+.asset-conversation-button:focus-visible,
+.asset-alias-button:focus-visible,
+.asset-alias-button.active {
   opacity: 1;
 }
 
@@ -3546,6 +3603,33 @@ button:disabled {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* The asset's user-set alias (asset_aliases.go): a third caption run on its
+   own line under kind + meta, in the accent gold the rename input shares.
+   flex-basis 100% forces the wrap so an over-long alias ellipsizes against
+   the card edge instead of colliding with the meta. */
+.asset-alias {
+  flex-basis: 100%;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11.5px;
+  color: #d5a64f;
+}
+
+/* While the row edits its alias the run becomes the shared inline rename
+   input (ContainerNameInput), sized down to the caption's rhythm. */
+.asset-alias.editing {
+  flex-basis: 100%;
+}
+
+.asset-alias.editing .container-name-input {
+  height: 24px;
+  padding: 0 6px;
+  font-size: 11.5px;
+  border-radius: 4px;
 }
 
 .mention-hint {

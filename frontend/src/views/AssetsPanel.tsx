@@ -1,10 +1,13 @@
-import {useRef, useState} from 'react';
+import {useMemo, useRef, useState} from 'react';
 import {composerAcceptAttribute, composerHasMediaDrag, dropAcceptsFile, videoThumbnailOnlySrc} from '../mediaIntake';
 import {AudioPlayer} from '../media/AudioPlayer';
 import {LazyPanelVideo} from '../media/LazyPanelVideo';
 import {assetTurnLabel} from '../composerMentions';
 import {transcriptChipLabel} from '../historyContent';
+import {assetMatchesQuery} from '../assets/assetSearch';
+import {ContainerNameInput} from '../dialogs/ContainerNameInput';
 import {AppModel} from '../app/useAppModel';
+import type {main} from '../../wailsjs/go/models';
 
 export function AssetsPanel({app}: {app: AppModel}) {
   // Upload affordances: a ＋ button over a hidden multi-file input, and the
@@ -14,6 +17,15 @@ export function AssetsPanel({app}: {app: AppModel}) {
   // filed under no project has nowhere to put them.
   const [uploadDragging, setUploadDragging] = useState(false);
   const [armedDeleteID, setArmedDeleteID] = useState('');
+  // Search filters whatever the panel currently lists (conversation or
+  // library scope) client-side — a few hundred rows need no debounce — over
+  // id and alias (assetSearch.ts).
+  const [assetQuery, setAssetQuery] = useState('');
+  // Alias editing: one row at a time, an inline ContainerNameInput seeded
+  // from the current alias (the library/project rename idiom — Enter/blur
+  // commit, Escape cancels). Failure (a duplicate) keeps the editor open.
+  const [editingAliasID, setEditingAliasID] = useState('');
+  const [aliasDraft, setAliasDraft] = useState('');
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const uploadDragDepthRef = useRef(0);
   const uploadEnabled = Boolean(app.composerLibraryID);
@@ -46,6 +58,28 @@ export function AssetsPanel({app}: {app: AppModel}) {
     if (files.length === 0) return;
     event.preventDefault();
     void app.uploadLibraryAssets(files);
+  }
+
+  const visibleAssets = useMemo(
+    () => app.panelAssets.filter((asset) => assetMatchesQuery(asset, assetQuery)),
+    [app.panelAssets, assetQuery],
+  );
+
+  // commitAliasEdit hands the draft to the model: an unchanged value just
+  // closes (so Escape's stray blur-commit is a no-op), a cleared one removes
+  // the alias, and only success closes the editor — a duplicate keeps it up
+  // with the rejected value (the toast names the asset that holds it).
+  function commitAliasEdit(asset: main.ConversationAsset, value: string) {
+    const next = value.trim();
+    if (next === (asset.alias ?? '')) {
+      setEditingAliasID('');
+      return;
+    }
+    void app.setAssetAlias(asset, next).then((ok) => {
+      if (ok) {
+        setEditingAliasID('');
+      }
+    });
   }
 
   return (
@@ -162,6 +196,21 @@ export function AssetsPanel({app}: {app: AppModel}) {
                 </svg>
               </button>
             </div>
+            <div className="assets-panel-search">
+              <input
+                type="search"
+                value={assetQuery}
+                onChange={(event) => setAssetQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') {
+                    event.preventDefault();
+                    setAssetQuery('');
+                  }
+                }}
+                placeholder="Search id or alias"
+                aria-label="Search assets by id or alias"
+              />
+            </div>
             <div className="assets-list">
               {app.panelAssets.length === 0 ? (
                 <p className="assets-empty">
@@ -169,8 +218,12 @@ export function AssetsPanel({app}: {app: AppModel}) {
                     ? 'No library assets yet. Uploads and generated media from every chat in this library show up here.'
                     : 'No assets yet. Images, audio, video, and subtitles — attached, generated, or converted — show up here as the conversation produces them.'}
                 </p>
+              ) : visibleAssets.length === 0 ? (
+                <p className="assets-empty">
+                  No assets match “{assetQuery.trim()}”. Ids and aliases match as substrings.
+                </p>
               ) : (
-                app.panelAssets.map((asset) => (
+                visibleAssets.map((asset) => (
                   <figure
                     key={`${asset.id}-${asset.originTurnId}`}
                     className={`asset-card asset-${asset.kind}`}
@@ -234,6 +287,32 @@ export function AssetsPanel({app}: {app: AppModel}) {
                           <span aria-hidden="true">@</span>
                         </button>
                       ) : null}
+                      {/* The alias affordance is the one overlay every kind
+                          and role gets — naming is search metadata, not tied
+                          to previewability or mentionability. Clicking while
+                          this row already edits abandons the draft (its blur
+                          has already committed it). */}
+                      <button
+                        type="button"
+                        className={editingAliasID === asset.id ? 'asset-alias-button active' : 'asset-alias-button'}
+                        onClick={() => {
+                          if (editingAliasID === asset.id) {
+                            setEditingAliasID('');
+                            return;
+                          }
+                          setAliasDraft(asset.alias ?? '');
+                          setEditingAliasID(asset.id);
+                        }}
+                        aria-label={asset.alias ? 'Edit alias' : 'Add alias'}
+                        title={asset.alias ? `Edit alias — currently “${asset.alias}”` : 'Add an alias to find this asset by name'}
+                      >
+                        {/* A tag: the naming glyph, distinct from the pencil
+                            the per-kind Edit buttons share. */}
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0l-7-7V4h9.6l7.4 7.4a2 2 0 0 1 0 2Z" />
+                          <circle cx="7.5" cy="7.5" r="0.5" fill="currentColor" />
+                        </svg>
+                      </button>
                       {/* Same sibling rule as the reference button; hidden when
                           the artifact is missing on disk — there is nothing to
                           save. */}
@@ -397,6 +476,19 @@ export function AssetsPanel({app}: {app: AppModel}) {
                       <span className="asset-meta">
                         {asset.role === 'upload' ? 'uploaded' : asset.role === 'user' ? 'attached' : 'generated'} · {app.composerLibraryID ? (asset.conversationTitle || (asset.role === 'upload' ? 'library' : 'chat')) : assetTurnLabel(asset.originTurnId)}
                       </span>
+                      {editingAliasID === asset.id ? (
+                        <span className="asset-alias editing">
+                          <ContainerNameInput
+                            value={aliasDraft}
+                            placeholder="Alias for search — unique"
+                            onChange={setAliasDraft}
+                            onSubmit={() => commitAliasEdit(asset, aliasDraft)}
+                            onCancel={() => setEditingAliasID('')}
+                          />
+                        </span>
+                      ) : asset.alias ? (
+                        <span className="asset-alias" title={`Alias — search “${asset.alias}”`}>{asset.alias}</span>
+                      ) : null}
                     </figcaption>
                   </figure>
                 ))

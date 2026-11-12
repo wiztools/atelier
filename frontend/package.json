@@ -25,6 +25,7 @@
     "test:notifications": "node test/run-notifications-tests.cjs",
     "test:history-content": "node test/run-history-content-tests.cjs",
     "test:composer-mentions": "node test/run-composer-mentions-tests.cjs",
+    "test:asset-search": "node test/run-asset-search-tests.cjs",
     "test:tool-permission": "node test/run-tool-permission-tests.cjs",
     "test:utils": "node test/run-utils-tests.cjs",
     "test:usage-model": "node test/run-usage-model-tests.cjs",

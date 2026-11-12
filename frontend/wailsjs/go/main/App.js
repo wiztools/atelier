@@ -570,6 +570,10 @@ export function SeedComposition(arg1) {
   return window['go']['main']['App']['SeedComposition'](arg1);
 }
 
+export function SetAssetAlias(arg1, arg2) {
+  return window['go']['main']['App']['SetAssetAlias'](arg1, arg2);
+}
+
 export function SetConversationModelOverrides(arg1, arg2) {
   return window['go']['main']['App']['SetConversationModelOverrides'](arg1, arg2);
 }

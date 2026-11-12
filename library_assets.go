@@ -367,6 +367,11 @@ func deleteLibraryAsset(storage ConfigStorage, assetID string) error {
 		if err := os.Remove(recordPath); err != nil && !os.IsNotExist(err) {
 			return err
 		}
+		// The upload's alias (asset_aliases.go) dies with the record so the
+		// name frees up. The media and record are already gone at this point —
+		// a registry failure here must not read as a failed delete, so the
+		// prune is best-effort.
+		_ = setAssetAlias(storage, assetID, "")
 		return nil
 	}
 	return fmt.Errorf("no library asset %s", assetID)

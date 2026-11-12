@@ -213,9 +213,12 @@ function useComposer({chatIsEmpty, activeConversationID, activeConversationIDRef
   // mention, then browsed); only with focus elsewhere is it appended at the
   // end. Same resolution path as typed mentions — nothing is recorded here,
   // the composer text stays the single source of truth. Hex labels are
-  // token-safe, so no quoted form.
+  // token-safe, so no quoted form; an alias (asset_aliases.go) is preferred
+  // when set — the name the user knows — and takes the quoted @"…" form when
+  // it carries whitespace, the same shape acceptMention inserts.
   function insertAssetReference(asset: main.ConversationAsset) {
-    const token = `@${assetMentionLabel(asset)} `;
+    const label = asset.alias || assetMentionLabel(asset);
+    const token = /\s/.test(label) ? `@"${label}" ` : `@${label} `;
     closeMention();
     const el = chatPromptRef.current;
     if (el && document.activeElement === el) {
