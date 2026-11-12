@@ -346,10 +346,28 @@ func listLibraryAssets(storage ConfigStorage, libraryID string) ([]ConversationA
 		return members[i].conversation.UpdatedAt > members[j].conversation.UpdatedAt
 	})
 	memberIDs := make(map[string]bool, len(members))
-	assets := []ConversationAsset{}
-	seen := map[string]bool{}
 	for _, member := range members {
 		memberIDs[member.conversation.ID] = true
+	}
+	assets := []ConversationAsset{}
+	seen := map[string]bool{}
+	// Uploaded records fold in BEFORE the derived walk (library_assets.go):
+	// the library owns them outright, and the source-conversation link is
+	// kept only while that conversation is still a member here. Records must
+	// claim their ast_ ids first — an @-mention persists the id on the
+	// mentioning turn, so the derived fold produces an entry with the SAME id
+	// and role "user"; letting it win the dedupe demotes the upload to an
+	// "attached" card, losing its name snapshot and the panel's delete
+	// affordance with it.
+	records, err := listLibraryAssetRecords(storage, libraryID)
+	if err != nil {
+		return nil, err
+	}
+	for _, record := range records {
+		seen[record.ID] = true
+		assets = append(assets, libraryAssetFromRecord(storage, record, memberIDs))
+	}
+	for _, member := range members {
 		for _, asset := range cachedConversationAssets(member.path, member.conversation) {
 			if seen[asset.ID] {
 				continue
@@ -357,20 +375,6 @@ func listLibraryAssets(storage ConfigStorage, libraryID string) ([]ConversationA
 			seen[asset.ID] = true
 			assets = append(assets, asset)
 		}
-	}
-	// Uploaded records fold in beside the derived assets (library_assets.go):
-	// the library owns them outright, and the source-conversation link is
-	// kept only while that conversation is still a member here.
-	records, err := listLibraryAssetRecords(storage, libraryID)
-	if err != nil {
-		return nil, err
-	}
-	for _, record := range records {
-		if seen[record.ID] {
-			continue
-		}
-		seen[record.ID] = true
-		assets = append(assets, libraryAssetFromRecord(storage, record, memberIDs))
 	}
 	sort.Slice(assets, func(i, j int) bool {
 		if assets[i].CreatedAt == assets[j].CreatedAt {

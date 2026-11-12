@@ -4086,8 +4086,10 @@ button:disabled {
 
 /* The upload row's remove pill — the edit slot (right: 110px), which an
    upload never fills (its Edit doors are conversation-bound and hidden).
-   Armed (first click) it turns red and stays revealed until the second
-   click deletes or the focus/timeout disarms it. */
+   Armed (first click) it FILLS red and stays revealed until the second
+   click deletes or the focus/timeout disarms it. The fill matters: a tint
+   on the border and glyph alone read as hover noise on top of an image
+   thumbnail, and the confirm contract then looks like a dead button. */
 .asset-delete-button {
   position: absolute;
   top: 8px;
@@ -4116,8 +4118,9 @@ button:disabled {
 }
 
 .asset-delete-button.armed {
-  border-color: #b0552f;
-  color: #e08a63;
+  border-color: #c9663a;
+  background: #b0552f;
+  color: #f3ede2;
 }
 
 /* Wrapper that keeps an editor mounted while another screen (Settings) shows

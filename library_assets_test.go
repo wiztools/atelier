@@ -306,6 +306,57 @@ func findConversationDirForTest(t *testing.T, storage ConfigStorage, conversatio
 	return filepath.Dir(path)
 }
 
+// An @-mention persists the upload's ast_ id on the mentioning turn, so the
+// derived fold produces an entry with the same id and role "user". The record
+// must win that dedupe: the asset keeps its upload identity (role, name
+// snapshot, the panel's delete affordance), not the mentioning turn's.
+func TestListLibraryAssetsMentionKeepsUploadIdentity(t *testing.T) {
+	storage := libraryTestStorage(t)
+	config := libraryAssetTestConfig(t, storage)
+	libraryID := mustCreateLibrary(t, storage)
+	project, err := createProject(storage, libraryID, "Project")
+	if err != nil {
+		t.Fatalf("createProject returned error: %v", err)
+	}
+
+	upload := mustUploadLibraryAsset(t, config, libraryID, "", "uploaded.png", "image",
+		dataURLFor("image/png", mediasnifftest.Image(t, "png", 4, 5)))
+
+	// A member conversation @-mentioned the upload: the persisted entry
+	// carries the ast_ id and the absolute media path (the cross-conversation
+	// mention shape), exactly as resolveReferencedAssets writes it.
+	createdAt := "2025-11-02T10:00:00Z"
+	writeArchiveConversation(t, storage, libraryConversationFixture("conv_mention", "Mentioning Chat", createdAt, project.ID), []HistoryTurn{
+		searchTurnFixture("turn_000001", "user", createdAt,
+			HistoryContent{
+				Type:       "image",
+				Path:       filepath.Join(libraryAssetsDir(storage, libraryID), upload.ID+".png"),
+				MimeType:   "image/png",
+				ArtifactID: upload.ID,
+			},
+		),
+	}, nil)
+
+	assets, err := listLibraryAssets(storage, libraryID)
+	if err != nil {
+		t.Fatalf("listLibraryAssets returned error: %v", err)
+	}
+	var folded *ConversationAsset
+	matches := 0
+	for i := range assets {
+		if assets[i].ID == upload.ID {
+			matches++
+			folded = &assets[i]
+		}
+	}
+	if matches != 1 || folded == nil {
+		t.Fatalf("fold holds %d entries for %s, want 1: %+v", matches, upload.ID, assets)
+	}
+	if folded.Role != "upload" || folded.Name != "uploaded.png" {
+		t.Fatalf("mention demoted the upload: %+v", folded)
+	}
+}
+
 func TestDeleteLibraryAsset(t *testing.T) {
 	storage := libraryTestStorage(t)
 	config := libraryAssetTestConfig(t, storage)

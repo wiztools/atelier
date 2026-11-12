@@ -799,7 +799,10 @@ func TestLibraryArchiveRoundTripWithUploads(t *testing.T) {
 	}
 
 	// The fold dedupes the record against the citing conversation's mention
-	// entry (same ast_ id): one image row, from the chat that cited it.
+	// entry (same ast_ id): one image row, carrying the upload record's
+	// identity. The record wins the dedupe — the mention's derived entry would
+	// demote the asset to an "attached" row and strip its name and the panel's
+	// delete affordance (the citing chat stays discoverable in its history).
 	assets, err := listLibraryAssets(target, libraryID)
 	if err != nil {
 		t.Fatalf("listLibraryAssets returned error: %v", err)
@@ -808,8 +811,8 @@ func TestLibraryArchiveRoundTripWithUploads(t *testing.T) {
 	for _, asset := range assets {
 		if asset.ID == uploadImage.ID {
 			astRows++
-			if asset.Role != "user" {
-				t.Fatalf("mention row role = %q, want the citing conversation's user entry", asset.Role)
+			if asset.Role != "upload" || asset.Name != "hero.png" {
+				t.Fatalf("mention row = %+v, want the upload record's identity", asset)
 			}
 		}
 	}

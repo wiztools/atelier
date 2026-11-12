@@ -370,7 +370,11 @@ export function AssetsPanel({app}: {app: AppModel}) {
                               void app.deleteLibraryAsset(asset);
                             } else {
                               setArmedDeleteID(asset.id);
-                              window.setTimeout(() => setArmedDeleteID((current) => (current === asset.id ? '' : current)), 3000);
+                              // 6s confirm window: short enough to read as
+                              // deliberate, long enough that a user who
+                              // clicked, looked for feedback, and clicked
+                              // again still lands inside it.
+                              window.setTimeout(() => setArmedDeleteID((current) => (current === asset.id ? '' : current)), 6000);
                             }
                           }}
                           onBlur={() => {
