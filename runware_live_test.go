@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -94,4 +98,58 @@ func TestLiveRunwareEndToEnd(t *testing.T) {
 		Model: "bytedance:seedream@5.5", Prompt: "turn this fox photo into a 16:9 cinematic winter scene",
 		Width: 1344, Height: 768, Resolution: "1k", Images: []string{base},
 	}, 0, 0)
+
+	// A large source (~12 MB noise PNG) must upload through mediaStorage and
+	// be deleted afterwards. FLUX dev at 512px keeps this step ~$0.0013.
+	large := "data:image/png;base64," + base64.StdEncoding.EncodeToString(runwareLiveNoisePNG(t, 2048, 2048))
+	start := time.Now()
+	resp, _, _, err := gateway.tools.GenerateImage(ctx, ImageGenerateRequest{
+		Model: "runware:101@1", Prompt: "abstract colorful painting", Width: 512, Height: 512, Images: []string{large},
+	})
+	if err != nil {
+		t.Fatalf("large-source edit: %v", err)
+	}
+	var mediaUUID string
+	for _, d := range resp.Diagnostics {
+		if i := strings.Index(d, "uploaded as media "); i >= 0 {
+			mediaUUID = strings.TrimSpace(d[i+len("uploaded as media "):])
+		}
+	}
+	if mediaUUID == "" || len(resp.Images) != 1 {
+		t.Fatalf("large-source edit did not upload: images=%d diagnostics=%v", len(resp.Images), resp.Diagnostics)
+	}
+	t.Logf("large-source edit: %d MB source uploaded as %s, %s, $%.6f", len(large)*3/4>>20, mediaUUID, time.Since(start).Round(time.Millisecond), float64(resp.CostMicros)/1e6)
+	// The cleanup must have deleted it: referencing it again has to fail.
+	_, err = newRunwareClient(app.client, key).GenerateImage(ctx, map[string]any{
+		"taskType": "imageInference", "taskUUID": runwareTaskUUID(), "model": "runware:101@1",
+		"positivePrompt": "abstract painting", "width": 512, "height": 512, "outputType": "dataURI", "includeCost": true,
+		"inputs": map[string]any{"seedImage": mediaUUID},
+	})
+	if err == nil {
+		t.Fatalf("uploaded media %s still usable after cleanup", mediaUUID)
+	}
+	// Only an error about the image input proves the delete; any other
+	// rejection (a bad prompt, say) would pass this check vacuously.
+	if msg := strings.ToLower(err.Error()); !strings.Contains(msg, "seedimage") && !strings.Contains(msg, "image") && !strings.Contains(msg, "media") {
+		t.Fatalf("reference to deleted media failed for an unrelated reason: %v", err)
+	}
+	t.Logf("deleted upload rejected as expected: %v", err)
+}
+
+// runwareLiveNoisePNG encodes random RGB noise, which PNG cannot compress, so
+// the payload is reliably past runwareUploadThreshold.
+func runwareLiveNoisePNG(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	if _, err := rand.Read(img.Pix); err != nil {
+		t.Fatal(err)
+	}
+	for i := 3; i < len(img.Pix); i += 4 {
+		img.Pix[i] = 255
+	}
+	var buf bytes.Buffer
+	if err := (&png.Encoder{CompressionLevel: png.BestSpeed}).Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }

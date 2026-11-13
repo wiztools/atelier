@@ -235,6 +235,128 @@ func (c *RunwareClient) GenerateImage(ctx context.Context, task map[string]any) 
 	return out, nil
 }
 
+// runwareUploadThreshold is the decoded size above which an input image is
+// uploaded through mediaStorage and referenced by its mediaUUID instead of
+// riding inline. Measured live (2026-11): inline never failed, even a 24 MB
+// PNG (33.5 MB of base64), and uploading costs about the same transfer time
+// — so the threshold isn't about acceptance. It protects the SYNC request's
+// 120s window: inline, the transfer eats into it (the 24 MB edit spent 44s),
+// and a request that outlives it comes back "processing", where a resend is a
+// second paid generation. Uploading first keeps the paid request small, and a
+// failed upload is free to retry.
+const runwareUploadThreshold = 2 << 20
+
+// runwareUploadTimeout bounds one upload; it runs before the paid request.
+const runwareUploadTimeout = 3 * time.Minute
+
+// isRunwareUUID reports whether s is a canonical UUID — the shape a
+// mediaUUID/imageUUID takes, which Runware accepts as an image input.
+func isRunwareUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, r := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			if !strings.ContainsRune("0123456789abcdefABCDEF", r) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// UploadMedia stores one payload (data URI, bare base64, or public URL)
+// through the mediaStorage task and returns its mediaUUID.
+func (c *RunwareClient) UploadMedia(ctx context.Context, media string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, runwareUploadTimeout)
+	defer cancel()
+	decoded, err := c.do(ctx, []map[string]any{{
+		"taskType": "mediaStorage", "taskUUID": runwareTaskUUID(), "operation": "upload", "media": media,
+	}})
+	if err != nil {
+		return "", err
+	}
+	for _, raw := range decoded.Data {
+		var result struct {
+			MediaUUID string `json:"mediaUUID"`
+		}
+		if json.Unmarshal(raw, &result) == nil && isRunwareUUID(result.MediaUUID) {
+			return result.MediaUUID, nil
+		}
+	}
+	return "", errors.New("runware media upload returned no mediaUUID")
+}
+
+// DeleteMedia removes an uploaded payload. Best-effort cleanup after a
+// generation: the source has done its job, and nothing else references it.
+func (c *RunwareClient) DeleteMedia(ctx context.Context, mediaUUID string) error {
+	_, err := c.do(ctx, []map[string]any{{
+		"taskType": "mediaStorage", "taskUUID": runwareTaskUUID(), "operation": "delete", "media": mediaUUID,
+	}})
+	return err
+}
+
+// CleanupUploads deletes uploaded sources once their generation is over,
+// best-effort on a fresh context: the request's may already be cancelled,
+// and a failed delete costs only storage.
+func (c *RunwareClient) CleanupUploads(uploads []string) {
+	if len(uploads) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	for _, id := range uploads {
+		_ = c.DeleteMedia(ctx, id)
+	}
+}
+
+// ResolveImageInputs uploads every source image whose decoded payload exceeds
+// runwareUploadThreshold and swaps it for its mediaUUID; smaller payloads,
+// hosted URLs, and UUIDs pass through. An upload failure keeps that image
+// inline — the generation can still succeed — and is reported as a
+// diagnostic (a mapping decision, not something the reply should announce).
+// The returned uploads are the mediaUUIDs to clean up afterwards.
+func (c *RunwareClient) ResolveImageInputs(ctx context.Context, images []string) (resolved, uploads, diagnostics []string) {
+	resolved = make([]string, len(images))
+	for i, img := range images {
+		resolved[i] = img
+		if runwareInlineSize(img) <= runwareUploadThreshold {
+			continue
+		}
+		mediaUUID, err := c.UploadMedia(ctx, img)
+		if err != nil {
+			diagnostics = append(diagnostics, fmt.Sprintf("runware: upload of source image %d failed (%v); sent it inline", i+1, err))
+			continue
+		}
+		resolved[i] = mediaUUID
+		uploads = append(uploads, mediaUUID)
+		diagnostics = append(diagnostics, fmt.Sprintf("runware: source image %d (%d bytes) uploaded as media %s", i+1, runwareInlineSize(img), mediaUUID))
+	}
+	return resolved, uploads, diagnostics
+}
+
+// runwareInlineSize estimates the decoded byte size of an inline payload
+// (data URI or bare base64) from its base64 length; URLs and UUIDs are 0.
+func runwareInlineSize(img string) int {
+	img = strings.TrimSpace(img)
+	if img == "" || isRunwareUUID(img) || strings.HasPrefix(img, "http://") || strings.HasPrefix(img, "https://") {
+		return 0
+	}
+	if strings.HasPrefix(img, "data:") {
+		comma := strings.IndexByte(img, ',')
+		if comma < 0 {
+			return 0
+		}
+		img = img[comma+1:]
+	}
+	return len(img) * 3 / 4
+}
+
 // VerifyKey is the Settings "Check Connection" ping: an authentication task
 // alone, which validates the key without running inference.
 func (c *RunwareClient) VerifyKey(ctx context.Context) error {
@@ -604,7 +726,14 @@ func resolveRunwareImageTask(schema *ModelInputSchema, req ImageGenerateRequest)
 	// inline, so nothing is uploaded first.
 	images := make([]string, 0, len(req.Images))
 	for _, img := range req.Images {
-		if u := falImageURL(strings.TrimSpace(img)); u != "" {
+		img = strings.TrimSpace(img)
+		if isRunwareUUID(img) {
+			// An uploaded mediaUUID rides as-is; falImageURL would wrap it as
+			// base64.
+			images = append(images, img)
+			continue
+		}
+		if u := falImageURL(img); u != "" {
 			images = append(images, u)
 		}
 	}

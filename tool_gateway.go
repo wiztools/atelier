@@ -273,13 +273,19 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				if strings.TrimSpace(apiKey) == "" {
 					return ollamaGenerateResponse{}, nil, nil, errRunwareKeyNotConfigured
 				}
-				// Runware takes data URIs inline for every image input, so no
-				// upload pass; the client reports the actual charge.
-				task, notices, err := resolveRunwareImageTask(runwareSchemaCache.Get(ctx, req.Model), req)
+				client := newRunwareClient(app.client, apiKey)
+				// Large sources upload first (mediaStorage) so the paid,
+				// synchronous request stays small; see runwareUploadThreshold.
+				schema := runwareSchemaCache.Get(ctx, req.Model)
+				var uploads, diagnostics []string
+				req.Images, uploads, diagnostics = client.ResolveImageInputs(ctx, req.Images)
+				defer client.CleanupUploads(uploads)
+				task, notices, err := resolveRunwareImageTask(schema, req)
 				if err != nil {
 					return ollamaGenerateResponse{}, nil, nil, err
 				}
-				resp, err := newRunwareClient(app.client, apiKey).GenerateImage(ctx, task)
+				resp, err := client.GenerateImage(ctx, task)
+				resp.Diagnostics = diagnostics
 				return resp, nil, notices, err
 			}
 			resp, raw, err := app.ollamaClient(config.Providers.Ollama.BaseURL).GenerateImage(ctx, req)

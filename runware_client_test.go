@@ -379,3 +379,80 @@ func TestRunwareSizePresetsFromSchema(t *testing.T) {
 		})
 	}
 }
+
+func TestRunwareResolveImageInputs(t *testing.T) {
+	small := "data:image/png;base64," + strings.Repeat("A", 1024)
+	large := "data:image/png;base64," + strings.Repeat("B", runwareUploadThreshold*4/3+400)
+	const uuid = "25a9717a-f382-4f4c-ab1d-fa0e062e0d01"
+
+	t.Run("only payloads over the threshold upload", func(t *testing.T) {
+		var tasks []map[string]any
+		client := runwareTestClient(func(r *http.Request) (*http.Response, error) {
+			var sent []map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&sent)
+			tasks = append(tasks, sent...)
+			return runwareResponseOf(200, `{"data":[{"taskType":"mediaStorage","mediaUUID":"`+uuid+`","mediaURL":"https://mm.runware.ai/x.png"}]}`), nil
+		})
+		resolved, uploads, diags := client.ResolveImageInputs(context.Background(), []string{small, large, "https://example.com/a.png", uuid})
+		if len(tasks) != 1 || tasks[0]["taskType"] != "mediaStorage" || tasks[0]["operation"] != "upload" || tasks[0]["media"] != large {
+			t.Fatalf("upload tasks = %d %v", len(tasks), tasks)
+		}
+		if resolved[0] != small || resolved[1] != uuid || resolved[2] != "https://example.com/a.png" || resolved[3] != uuid {
+			t.Fatalf("resolved = %v", resolved)
+		}
+		if len(uploads) != 1 || uploads[0] != uuid || len(diags) != 1 || !strings.Contains(diags[0], "uploaded as media") {
+			t.Fatalf("uploads=%v diags=%v", uploads, diags)
+		}
+	})
+
+	t.Run("a failed upload keeps the image inline with a diagnostic", func(t *testing.T) {
+		client := runwareTestClient(func(*http.Request) (*http.Response, error) {
+			return runwareResponseOf(500, `{"errors":[{"code":"x","message":"storage down"}]}`), nil
+		})
+		resolved, uploads, diags := client.ResolveImageInputs(context.Background(), []string{large})
+		if resolved[0] != large || len(uploads) != 0 || len(diags) != 1 || !strings.Contains(diags[0], "storage down") {
+			t.Fatalf("resolved=%.40q uploads=%v diags=%v", resolved[0], uploads, diags)
+		}
+	})
+
+	t.Run("cleanup deletes each upload", func(t *testing.T) {
+		var deleted []any
+		client := runwareTestClient(func(r *http.Request) (*http.Response, error) {
+			var sent []map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&sent)
+			if sent[0]["operation"] == "delete" {
+				deleted = append(deleted, sent[0]["media"])
+			}
+			return runwareResponseOf(200, `{"data":[{"taskType":"mediaStorage"}]}`), nil
+		})
+		client.CleanupUploads([]string{uuid})
+		client.CleanupUploads(nil)
+		if len(deleted) != 1 || deleted[0] != uuid {
+			t.Fatalf("deleted = %v", deleted)
+		}
+	})
+
+	t.Run("an uploaded UUID rides the task unwrapped", func(t *testing.T) {
+		task, _, err := resolveRunwareImageTask(parseRunwareFixture(t, runwareFluxSchemaFixture), ImageGenerateRequest{Model: "runware:101@1", Prompt: "p", Width: 512, Height: 512, Images: []string{uuid}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := task["inputs"].(map[string]any)["seedImage"]; got != uuid {
+			t.Fatalf("seedImage = %v, want the bare UUID", got)
+		}
+	})
+}
+
+func TestIsRunwareUUID(t *testing.T) {
+	for in, want := range map[string]bool{
+		"25a9717a-f382-4f4c-ab1d-fa0e062e0d01": true,
+		"25A9717A-F382-4F4C-AB1D-FA0E062E0D01": true,
+		"25a9717af3824f4cab1dfa0e062e0d01":     false,
+		"25a9717a-f382-4f4c-ab1d-fa0e062e0d0g": false,
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYA": false,
+	} {
+		if got := isRunwareUUID(in); got != want {
+			t.Errorf("isRunwareUUID(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
