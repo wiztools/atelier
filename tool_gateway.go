@@ -864,9 +864,48 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			// The source image is normalized to a model-decodable format for
 			// every backend (model_image_compat.go) before the provider branch.
 			req.Image = ensureModelSafeImage(ctx, config, req.Image)
-			// Upscale follows the image provider: replicate routes there (the
-			// same seam generate_image reads), every other provider stays on
-			// fal — the only cloud upscaler otherwise (Ollama has none).
+			// Upscale follows the image provider: replicate and runware route
+			// there (the same seam generate_image reads), every other provider
+			// stays on fal.
+			if imageGenerationProvider(config) == "runware" {
+				apiKey, err := loadRunwareAPIKey()
+				if err != nil {
+					return ollamaGenerateResponse{}, nil, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return ollamaGenerateResponse{}, nil, errRunwareKeyNotConfigured
+				}
+				client := newRunwareClient(app.client, apiKey)
+				// Large sources upload first (mediaStorage) so the paid,
+				// synchronous request stays small; see runwareUploadThreshold.
+				schema := runwareSchemaCache.Get(ctx, req.Model)
+				var uploads, diagnostics []string
+				resolved, up, diags := client.ResolveImageInputs(ctx, []string{req.Image})
+				uploads, diagnostics = up, diags
+				defer client.CleanupUploads(uploads)
+				req.Image = resolved[0]
+				task, notices, err := resolveRunwareImageUpscaleTask(schema, req)
+				if err != nil {
+					return ollamaGenerateResponse{}, notices, err
+				}
+				// runTask answers "processing" past the sync window and polls
+				// by the recorded taskUUID — resending would be a second paid
+				// generation; the reported cost rides the result row.
+				job := &mediaJob{}
+				client.jobSink = job
+				resp, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (ollamaGenerateResponse, error) {
+						return client.UpscaleImage(jctx, task)
+					},
+					client.CancelMediaJob,
+					client.RecoverImageJob,
+				)
+				if genErr == nil && recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
+				resp.Diagnostics = diagnostics
+				return resp, notices, genErr
+			}
 			if imageGenerationProvider(config) == "replicate" {
 				apiKey, err := loadReplicateAPIKey()
 				if err != nil {

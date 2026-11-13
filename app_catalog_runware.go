@@ -85,6 +85,23 @@ func (a *App) ListRunwareVideoUpscaleModels() ([]RunwareModel, error) {
 	return models, nil
 }
 
+// ListRunwareImageUpscaleModels returns the image upscalers for the
+// upscale_image picker shown when runware is the ImageProvider — the index
+// tags them image-to-image + upscale (Real-ESRGAN, Clarity, SwinIR, the Bria
+// and Topaz enhancers), an unambiguous pair, so unlike the audio and lipsync
+// pickers no schema check is needed to tell the family from same-tagged
+// neighbors. Bare falls back to the verified default.
+func (a *App) ListRunwareImageUpscaleModels() ([]RunwareModel, error) {
+	models, err := a.listRunwareCapabilityModels("upscale", "image-to-image")
+	if err != nil {
+		return nil, err
+	}
+	if len(models) == 0 {
+		models = append(models, RunwareModel{ID: defaultRunwareImageUpscaleModel})
+	}
+	return models, nil
+}
+
 // ListRunwareVideoRestyleModels returns the video-to-video editing models —
 // the edit tag separates restylers (FLUX Video Edit, Kling) from plain
 // video-to-video generators.

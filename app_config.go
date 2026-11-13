@@ -165,7 +165,9 @@ type ConfigFal struct {
 // ConfigRunware configures the Runware media backend (runware_client.go).
 // Model serves text-to-image and edits — Runware models declare their image
 // inputs (seedImage / referenceImages) in their own schema, so the edit path
-// needs no second slot. The video-family and audio slots below serve when
+// needs no second slot — and UpscaleModel the image upscaler upscale_image
+// uses when runware is the ImageProvider (Real-ESRGAN by default). The
+// video-family and audio slots below serve when
 // the matching Models.*Provider picks runware, the same dimension split
 // ConfigReplicate documents: VideoModel/VideoImageModel follow VideoProvider
 // (generate_video text-to-video / image-to-video), VideoExtendModel the
@@ -181,6 +183,10 @@ type ConfigFal struct {
 type ConfigRunware struct {
 	Enabled bool   `json:"enabled"`
 	Model   string `json:"model,omitempty"`
+	// UpscaleModel is the image upscaler upscale_image uses when runware is
+	// the ImageProvider (Real-ESRGAN by default — the ESRGAN family fal's
+	// and Replicate's defaults speak).
+	UpscaleModel string `json:"upscaleModel,omitempty"`
 	// InpaintModel is a verified mask model (FLUX.1 Fill by default) — an
 	// unverified id typed by hand is refused at the resolver, the
 	// verifiedInpaintModels contract.
@@ -856,6 +862,11 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	}
 	if config.Models.ImageProvider == "runware" && strings.TrimSpace(config.Providers.Runware.Model) == "" {
 		config.Providers.Runware.Model = defaultRunwareImageModel
+	}
+	// The image upscaler follows the image provider (resolveDefaultImageUpscaleModel's
+	// rule), so a runware image selection seeds its slot the same way.
+	if config.Models.ImageProvider == "runware" && strings.TrimSpace(config.Providers.Runware.UpscaleModel) == "" {
+		config.Providers.Runware.UpscaleModel = defaultRunwareImageUpscaleModel
 	}
 	config.Providers.Runware.Model = strings.TrimSpace(config.Providers.Runware.Model)
 	// Seed the Runware video family the provider-selection way (the image and

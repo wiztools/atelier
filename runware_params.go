@@ -24,6 +24,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -355,6 +356,92 @@ func resolveRunwareVideoUpscaleTask(schema *ModelInputSchema, req VideoUpscaleRe
 		task["outputFormat"] = "MP4"
 	}
 	return task, notices, nil
+}
+
+// resolveRunwareImageUpscaleTask maps the canonical image-upscale request
+// onto one upscale task: the source on inputs.image (the field every catalog
+// image upscaler declares — Real-ESRGAN, Clarity, SwinIR, Bria, Topaz Wonder,
+// CCSR, SD Latent, P-Image) and the factor bound to the model's declared
+// shape — a fixed enum (Real-ESRGAN's [2,4]) snaps to the nearest legal
+// value, a numeric window (Clarity 1–4, Wonder 1–6, P-Image 2–16) gets the
+// notice-carrying clamp, the transform tools' over-ask stance either way.
+// Inline PNG delivery is requested like the image and inpaint resolvers'.
+func resolveRunwareImageUpscaleTask(schema *ModelInputSchema, req ImageUpscaleRequest) (map[string]any, []string, error) {
+	if strings.TrimSpace(req.Image) == "" {
+		return nil, nil, errors.New("runware image upscaling needs the attached image")
+	}
+	task := runwareTaskBase("upscale", req.Model)
+	var notices []string
+	if schema == nil {
+		notices = append(notices, "Couldn't load the Runware model's parameter schema; generated with default parameters.")
+	} else if !hasKey(runwareInputsNested(schema), "image") {
+		return nil, nil, fmt.Errorf("Runware model %q takes no source-image input and cannot upscale; pick an image upscaler (the catalog tags them image-to-image + upscale)", req.Model)
+	}
+	runwareSetInput(schema, task, "image", runwareImageRef(req.Image))
+	if req.Scale > 0 && runwareDeclares(schema, "upscaleFactor") {
+		factor := req.Scale
+		if schema != nil {
+			if prop, ok := schema.property("upscaleFactor"); ok {
+				if len(prop.Enum) > 0 {
+					// A fixed factor menu (Real-ESRGAN's [2,4]) snaps to the
+					// nearest member, ties toward the smaller — the
+					// conservative upscale.
+					if snap, ok := runwareNearestEnumNumber(prop.Enum, factor); ok && snap != factor {
+						notices = append(notices, fmt.Sprintf("Runware model %q scales in %gx steps; using %gx instead of the requested %gx.", req.Model, snap, snap, req.Scale))
+						factor = snap
+					}
+				} else {
+					if prop.Minimum != nil && factor < *prop.Minimum {
+						notices = append(notices, fmt.Sprintf("Runware model %q scales by at least %gx; using %gx instead of the requested %gx.", req.Model, *prop.Minimum, *prop.Minimum, req.Scale))
+						factor = *prop.Minimum
+					}
+					if prop.Maximum != nil && factor > *prop.Maximum {
+						notices = append(notices, fmt.Sprintf("Runware model %q scales by at most %gx; using %gx instead of the requested %gx.", req.Model, *prop.Maximum, *prop.Maximum, req.Scale))
+						factor = *prop.Maximum
+					}
+				}
+				task["upscaleFactor"] = runwareNumberFor(prop, factor)
+			} else {
+				task["upscaleFactor"] = factor
+			}
+		} else {
+			task["upscaleFactor"] = factor
+		}
+	}
+	// Output delivery: inline data URI (the URL is only fetched when a model
+	// ignores the request) and lossless PNG, the image and inpaint resolvers'
+	// stance — with no schema the universal fields ride blind.
+	if schema == nil {
+		task["outputType"] = "dataURI"
+		task["outputFormat"] = "PNG"
+	} else {
+		if prop, ok := schema.property("outputType"); ok {
+			if _, allowed := enumValueFor(prop, "dataURI"); allowed {
+				task["outputType"] = "dataURI"
+			}
+		}
+		if _, ok := schema.property("outputFormat"); ok {
+			task["outputFormat"] = "PNG"
+		}
+	}
+	return task, notices, nil
+}
+
+// runwareNearestEnumNumber picks the numerically nearest member of a numeric
+// enum, ties toward the smaller value. False when no member parses as a
+// number, in which case the caller sends the request as-is.
+func runwareNearestEnumNumber(enum []string, value float64) (float64, bool) {
+	best, bestDist, found := 0.0, math.Inf(1), false
+	for _, member := range enum {
+		f, err := strconv.ParseFloat(strings.TrimSpace(member), 64)
+		if err != nil {
+			continue
+		}
+		if dist := math.Abs(f - value); dist < bestDist-1e-9 || (dist <= bestDist+1e-9 && f < best) {
+			best, bestDist, found = f, dist, true
+		}
+	}
+	return best, found
 }
 
 // resolveRunwareVideoRestyleTask maps the canonical restyle request onto one

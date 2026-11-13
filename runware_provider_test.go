@@ -144,6 +144,140 @@ const runwareFillSchemaFixture = `{"components":{"schemas":{"RequestBody":{"type
       "maskImage":{"type":"string"}}}
   }}}}}}`
 
+// runwareUpscaleSchemaFixture trims the real real-esrgan schema: the upscale
+// contract — required inputs.image, a fixed [2,4] upscaleFactor enum, dataURI
+// output. The other image upscalers share the shape with a numeric factor
+// window instead of the enum (clarity: 1–4).
+const runwareUpscaleSchemaFixture = `{"components":{"schemas":{"RequestBody":{"type":"array","items":{
+  "type":"object","additionalProperties":false,
+  "required":["taskType","taskUUID","model","inputs"],
+  "properties":{
+    "model":{"type":"string"},
+    "taskType":{"type":"string"},
+    "taskUUID":{"type":"string"},
+    "includeCost":{"type":"boolean"},
+    "upscaleFactor":{"type":"integer","enum":[2,4]},
+    "outputType":{"type":"string","enum":["URL","base64Data","dataURI"]},
+    "outputFormat":{"type":"string","enum":["JPG","PNG","WEBP"]},
+    "inputs":{"type":"object","properties":{
+      "image":{"type":"string"}}}
+  }}}}}}`
+
+// runwareClarityUpscaleSchemaFixture trims the real clarity schema: the same
+// upscale contract with a numeric factor window (1–4) instead of the enum.
+const runwareClarityUpscaleSchemaFixture = `{"components":{"schemas":{"RequestBody":{"type":"array","items":{
+  "type":"object","additionalProperties":false,
+  "required":["taskType","taskUUID","model","inputs"],
+  "properties":{
+    "model":{"type":"string"},
+    "taskType":{"type":"string"},
+    "taskUUID":{"type":"string"},
+    "includeCost":{"type":"boolean"},
+    "upscaleFactor":{"type":"number","minimum":1,"maximum":4},
+    "outputType":{"type":"string","enum":["URL","base64Data","dataURI"]},
+    "outputFormat":{"type":"string","enum":["JPG","PNG","WEBP"]},
+    "inputs":{"type":"object","properties":{
+      "image":{"type":"string"}}}
+  }}}}}}`
+
+func TestResolveRunwareImageUpscaleTask(t *testing.T) {
+	schema := parseRunwareFixture(t, runwareUpscaleSchemaFixture)
+	task, notices, err := resolveRunwareImageUpscaleTask(schema, ImageUpscaleRequest{
+		Model: defaultRunwareImageUpscaleModel, Image: "data:image/png;base64,QUJD", Scale: 2,
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if task["taskType"] != "upscale" {
+		t.Fatalf("taskType = %+v, want upscale", task["taskType"])
+	}
+	inputs, _ := task["inputs"].(map[string]any)
+	if inputs == nil || inputs["image"] != "data:image/png;base64,QUJD" {
+		t.Fatalf("the source must ride inputs.image, got %+v", inputs)
+	}
+	// The [2,4] enum declares integer: the factor goes out as an int.
+	if got, ok := task["upscaleFactor"].(int); !ok || got != 2 {
+		t.Fatalf("upscaleFactor = %+v, want integer 2", task["upscaleFactor"])
+	}
+	if task["outputType"] != "dataURI" || task["outputFormat"] != "PNG" {
+		t.Fatalf("inline PNG delivery expected, got %+v / %+v", task["outputType"], task["outputFormat"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("a served 2x upscale should be notice-free, got %v", notices)
+	}
+
+	// An off-menu factor snaps to the nearest member, ties toward the
+	// smaller — the conservative upscale — under a notice.
+	task, notices, err = resolveRunwareImageUpscaleTask(schema, ImageUpscaleRequest{
+		Model: defaultRunwareImageUpscaleModel, Image: "data:image/png;base64,QUJD", Scale: 3,
+	})
+	if err != nil {
+		t.Fatalf("resolve snap: %v", err)
+	}
+	if got := task["upscaleFactor"]; got != 2 {
+		t.Fatalf("upscaleFactor = %+v, want the snapped 2 (tie toward smaller)", got)
+	}
+	if len(notices) == 0 {
+		t.Fatal("the snapped factor must say so")
+	}
+	task, notices, err = resolveRunwareImageUpscaleTask(schema, ImageUpscaleRequest{
+		Model: defaultRunwareImageUpscaleModel, Image: "data:image/png;base64,QUJD", Scale: 5,
+	})
+	if err != nil {
+		t.Fatalf("resolve snap high: %v", err)
+	}
+	if got := task["upscaleFactor"]; got != 4 {
+		t.Fatalf("upscaleFactor = %+v, want the snapped 4", got)
+	}
+
+	// A numeric window clamps instead of snapping (the video-upscale stance).
+	clarity := parseRunwareFixture(t, runwareClarityUpscaleSchemaFixture)
+	task, notices, err = resolveRunwareImageUpscaleTask(clarity, ImageUpscaleRequest{
+		Model: "runware:500@1", Image: "data:image/png;base64,QUJD", Scale: 8,
+	})
+	if err != nil {
+		t.Fatalf("resolve clamp: %v", err)
+	}
+	if got, ok := task["upscaleFactor"].(float64); !ok || got != 4 {
+		t.Fatalf("upscaleFactor = %+v, want clamped 4", task["upscaleFactor"])
+	}
+	if len(notices) == 0 {
+		t.Fatal("the clamped factor must say so")
+	}
+
+	// A direct caller with no factor sends none.
+	task, _, err = resolveRunwareImageUpscaleTask(schema, ImageUpscaleRequest{
+		Model: defaultRunwareImageUpscaleModel, Image: "data:image/png;base64,QUJD",
+	})
+	if err != nil {
+		t.Fatalf("resolve no scale: %v", err)
+	}
+	if _, ok := task["upscaleFactor"]; ok {
+		t.Fatal("no requested factor must send none")
+	}
+
+	// A model whose inputs declare no image refuses before any money moves.
+	if _, _, err := resolveRunwareImageUpscaleTask(parseRunwareFixture(t, runwareSoundSchemaFixture), ImageUpscaleRequest{
+		Model: "mirelo:1@1", Image: "data:image/png;base64,QUJD", Scale: 2,
+	}); err == nil {
+		t.Fatal("a model with no image input must refuse the upscale request")
+	}
+
+	// Without a schema the universal fields ride with a notice.
+	task, notices, err = resolveRunwareImageUpscaleTask(nil, ImageUpscaleRequest{
+		Model: defaultRunwareImageUpscaleModel, Image: "data:image/png;base64,QUJD", Scale: 2,
+	})
+	if err != nil {
+		t.Fatalf("resolve nil schema: %v", err)
+	}
+	if task["inputs"].(map[string]any)["image"] == "" || task["outputType"] != "dataURI" || task["upscaleFactor"] == nil {
+		t.Fatalf("nil-schema task must still carry the universal fields, got %+v", task)
+	}
+	if len(notices) != 1 {
+		t.Fatalf("the missing schema must say so, got %v", notices)
+	}
+}
+
 func TestResolveRunwareVideoTaskTextToVideo(t *testing.T) {
 	schema := parseRunwareFixture(t, runwareKlingSchemaFixture)
 	task, notices, _, err := resolveRunwareVideoTask(schema, VideoGenerateRequest{
@@ -524,6 +658,75 @@ func TestRunwareVideoAudioProviderRoutingAndGates(t *testing.T) {
 	}
 }
 
+func TestRunwareImageUpscaleRoutingAndGates(t *testing.T) {
+	keyring.MockInit()
+	t.Cleanup(func() { _ = clearRunwareAPIKey() })
+
+	// Pinning runware as the image provider seeds the upscale slot the
+	// provider-selection way, so picking runware opens the gate without a
+	// Settings visit.
+	merged := mergeAppConfig(AppConfig{Models: ConfigModels{ImageProvider: "runware"}})
+	if merged.Providers.Runware.UpscaleModel != defaultRunwareImageUpscaleModel {
+		t.Fatalf("pinning runware should seed the image-upscale default, got %q", merged.Providers.Runware.UpscaleModel)
+	}
+	if err := saveRunwareAPIKey("rw-live-key"); err != nil {
+		t.Fatalf("save key: %v", err)
+	}
+	if !imageUpscaleConfigured(merged) {
+		t.Fatal("the gate should open with the seeded slot and a key")
+	}
+	if got := resolveDefaultImageUpscaleModel(merged); got != defaultRunwareImageUpscaleModel {
+		t.Fatalf("resolver = %q, want the runware slot", got)
+	}
+	merged.Providers.Runware.UpscaleModel = "runware:500@1"
+	if got := resolveDefaultImageUpscaleModel(merged); got != "runware:500@1" {
+		t.Fatalf("resolver = %q, want the configured runware slot", got)
+	}
+
+	// Airplane mode drops the cloud route like every other one.
+	merged.AirplaneMode = true
+	if imageUpscaleConfigured(merged) {
+		t.Fatal("upscale_image must drop under airplane mode")
+	}
+	merged.AirplaneMode = false
+
+	// Without a key the gate closes even with the slot seeded.
+	if err := clearRunwareAPIKey(); err != nil {
+		t.Fatalf("clear key: %v", err)
+	}
+	if imageUpscaleConfigured(merged) {
+		t.Fatal("the runware upscale gate needs the key, not just the slot")
+	}
+
+	// The executor dispatches to the runware slot and the activity names the
+	// routed backend.
+	merged.Providers.Runware.UpscaleModel = defaultRunwareImageUpscaleModel
+	var captured ImageUpscaleRequest
+	tools := HarnessToolExecutionContext{
+		Config:         merged,
+		AttachedImages: []string{"data:image/png;base64,QUJD"},
+		UpscaleImage: func(ctx context.Context, req ImageUpscaleRequest) (ollamaGenerateResponse, []string, error) {
+			captured = req
+			return ollamaGenerateResponse{Image: "data:image/png;base64,iVBORw0KGgo=", Done: true}, nil, nil
+		},
+	}
+	def := imageUpscaleToolDefinition(merged)
+	out, _, err := def.Execute(context.Background(), tools, HarnessToolCall{})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if captured.Model != defaultRunwareImageUpscaleModel {
+		t.Fatalf("model = %q, want the runware slot", captured.Model)
+	}
+	if _, ok := out.(ToolImageResult); !ok {
+		t.Fatalf("expected ToolImageResult, got %T", out)
+	}
+	activity := def.Activity(HarnessToolResult{Result: out})
+	if len(activity.Command) != 3 || activity.Command[0] != "runware" || activity.Command[2] != defaultRunwareImageUpscaleModel {
+		t.Fatalf("activity.Command = %v, want {runware upscale model}", activity.Command)
+	}
+}
+
 func TestGenerateSpeechRunwareRouteStandsDownCloning(t *testing.T) {
 	config := defaultAppConfig()
 	config.Models.SpeechProvider = "runware"
@@ -661,6 +864,79 @@ func TestRunwareWaitForTaskPollsThenDownloads(t *testing.T) {
 	}
 }
 
+// TestRunwareUpscaleImagePollsThenPacks drives UpscaleImage through the async
+// contract the upscale task shares with video: the submit answers
+// "processing", a getResponse poll reports success with an inline data URI,
+// and the image packs onto ollamaGenerateResponse with the reported cost. The
+// task UUID lands in the jobSink before the submit posts, so RecoverImageJob
+// delivers the same row with one poll after a caller-side timeout.
+func TestRunwareUpscaleImagePollsThenPacks(t *testing.T) {
+	taskUUID := ""
+	polls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var tasks []map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&tasks)
+		first := tasks[0]
+		w.Header().Set("Content-Type", "application/json")
+		switch first["taskType"] {
+		case "getResponse":
+			polls++
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{{
+					"taskType": "upscale", "taskUUID": first["taskUUID"], "status": "success",
+					"imageUUID":    "b7db282d-2943-4f12-992f-77df3ad3ec71",
+					"imageDataURI": "data:image/png;base64,QUJD", "cost": 0.0013,
+				}},
+			})
+		case "upscale":
+			taskUUID, _ = first["taskUUID"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{{
+					"taskType": "upscale", "taskUUID": taskUUID,
+					"status": "processing", "progress": 40,
+				}},
+			})
+		default:
+			return
+		}
+	}))
+	defer server.Close()
+
+	client := newRunwareClient(server.Client(), "rw-key")
+	client.baseURL = server.URL
+	job := &mediaJob{}
+	client.jobSink = job
+
+	resp, err := client.UpscaleImage(context.Background(), map[string]any{
+		"taskType": "upscale", "taskUUID": runwareTaskUUID(), "model": defaultRunwareImageUpscaleModel,
+	})
+	if err != nil {
+		t.Fatalf("UpscaleImage: %v", err)
+	}
+	if polls != 1 {
+		t.Fatalf("expected one getResponse poll, got %d", polls)
+	}
+	if job.Provider != "runware" || job.ID == "" || job.ID != taskUUID {
+		t.Fatalf("jobSink must record the submitted task UUID, got %+v (submitted %q)", job, taskUUID)
+	}
+	if len(resp.Images) != 1 || resp.Images[0] != "data:image/png;base64,QUJD" {
+		t.Fatalf("images = %v, want the inline data URI", resp.Images)
+	}
+	if resp.CostMicros != 1300 {
+		t.Fatalf("cost = %d, want the reported $0.0013", resp.CostMicros)
+	}
+
+	// Recovery polls the recorded job id once and delivers without
+	// resubmitting — the task finished remotely during the timeout window.
+	recovered, err := client.RecoverImageJob(context.Background(), *job)
+	if err != nil {
+		t.Fatalf("RecoverImageJob: %v", err)
+	}
+	if polls != 2 || len(recovered.Images) != 1 {
+		t.Fatalf("recovery should poll once and deliver, got polls=%d images=%d", polls, len(recovered.Images))
+	}
+}
+
 func TestRunwareMediaGenGapNotices(t *testing.T) {
 	// A runware-pinned audio setup learns about the Runware key, not a fal
 	// key that would light up nothing.
@@ -712,6 +988,23 @@ func TestRunwareConversationOverrides(t *testing.T) {
 	}
 	if overlaid.Providers.Fal.VideoModel != "" {
 		t.Fatalf("the override must not leak onto the fal slot, got %q", overlaid.Providers.Fal.VideoModel)
+	}
+
+	// The upscale-model override follows the effective image provider — a
+	// runware-pinned conversation upscales on the runware slot.
+	imageBase := defaultAppConfig()
+	imageBase.Models.ImageProvider = "fal"
+	overlaid, _, err = overlayModelOverrides(imageBase, ChatRequest{}, ConversationModelOverrides{
+		ImageProvider: "runware", UpscaleModel: "runware:500@1",
+	})
+	if err != nil {
+		t.Fatalf("overlay upscale: %v", err)
+	}
+	if overlaid.Providers.Runware.UpscaleModel != "runware:500@1" {
+		t.Fatalf("runware UpscaleModel = %q, want the override", overlaid.Providers.Runware.UpscaleModel)
+	}
+	if overlaid.Providers.Fal.UpscaleModel != "" {
+		t.Fatalf("the upscale override must not leak onto the fal slot, got %q", overlaid.Providers.Fal.UpscaleModel)
 	}
 }
 

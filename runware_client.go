@@ -76,11 +76,17 @@ const (
 	// models, MiniMax Speech 2.8 the voice (a ~300-voice catalog enum, no
 	// cloning), and Mirelo SFX 1.5 both sound models (text-to-audio, and the
 	// video soundtrack that answers MP4 with the sound mixed in).
-	defaultRunwareVideoModel             = "klingai:kling-video@4.0"
-	defaultRunwareVideoImageModel        = "klingai:kling-video@4.0"
-	defaultRunwareVideoExtendModel       = "google:3@2"
-	defaultRunwareVideoUpscaleModel      = "bfl:flux@video-upscale"
-	defaultRunwareVideoRestyleModel      = "bfl:flux@video-edit-fast"
+	defaultRunwareVideoModel        = "klingai:kling-video@4.0"
+	defaultRunwareVideoImageModel   = "klingai:kling-video@4.0"
+	defaultRunwareVideoExtendModel  = "google:3@2"
+	defaultRunwareVideoUpscaleModel = "bfl:flux@video-upscale"
+	defaultRunwareVideoRestyleModel = "bfl:flux@video-edit-fast"
+	// defaultRunwareImageUpscaleModel is Real-ESRGAN: the same ESRGAN family
+	// fal's default upscaler (fal-ai/esrgan) and Replicate's
+	// (nightmareai/real-esrgan) speak, so the house default travels with the
+	// provider — and its enum [2,4] upscaleFactor matches the tool's 2x/4x
+	// vocabulary exactly.
+	defaultRunwareImageUpscaleModel      = "runware:504@1"
 	defaultRunwareInpaintModel           = "bfl:1@2"
 	defaultRunwareLipsyncImageModel      = "veed:fabric@1.0-hosted"
 	defaultRunwareLipsyncVideoModel      = "klingai:7@1"
@@ -1063,6 +1069,48 @@ func (c *RunwareClient) GenerateSFX(ctx context.Context, task map[string]any) (S
 	return SFXGenerateResult{Audio: audio}, nil
 }
 
+// UpscaleImage submits an already-native upscale task (built by
+// resolveRunwareImageUpscaleTask) and packs the result the way GenerateImage
+// does: a data URL on ollamaGenerateResponse with the reported cost in
+// CostMicros. The transport is runTask rather than GenerateImage's bare
+// submit because an upscale of a large source can outlive the sync window
+// like a video task — the "processing" row then needs the getResponse poll,
+// and resending would start a second paid generation.
+func (c *RunwareClient) UpscaleImage(ctx context.Context, task map[string]any) (ollamaGenerateResponse, error) {
+	row, err := c.runTask(ctx, task)
+	if err != nil {
+		return ollamaGenerateResponse{}, err
+	}
+	return runwareImageResponse(ctx, c, row)
+}
+
+// runwareImageResponse packs a finished row's image payload the way every
+// image backend delivers: inline data URI first, bare base64 wrapped, else
+// the output URL fetched now so the artifact never depends on Runware's
+// retention window.
+func runwareImageResponse(ctx context.Context, c *RunwareClient, row runwareMediaResult) (ollamaGenerateResponse, error) {
+	image := strings.TrimSpace(row.ImageDataURI)
+	if image == "" && strings.TrimSpace(row.ImageBase64Data) != "" {
+		image = falImageURL(row.ImageBase64Data)
+	}
+	if image == "" && strings.TrimSpace(row.ImageURL) != "" {
+		fetched, err := fetchImageAsDataURL(ctx, c.http, row.ImageURL)
+		if err != nil {
+			return ollamaGenerateResponse{}, fmt.Errorf("runware image download failed: %w", err)
+		}
+		image = fetched
+	}
+	if image == "" {
+		return ollamaGenerateResponse{}, errors.New("runware returned no image")
+	}
+	return ollamaGenerateResponse{
+		Done:       true,
+		Images:     []string{image},
+		Image:      image,
+		CostMicros: runwareCostMicros(row.Cost),
+	}, nil
+}
+
 // TranscribeAudio submits an already-native textInference task (built by
 // resolveRunwareTranscribeTask) and returns the plain transcript. Runware's
 // speech-to-text rides its Gemini text models: the answer is `text` and a
@@ -1202,6 +1250,17 @@ func (c *RunwareClient) RecoverAudioJob(ctx context.Context, job mediaJob) (Gene
 		SourceURL:  strings.TrimSpace(row.AudioURL),
 		CostMicros: runwareCostMicros(row.Cost),
 	}, nil
+}
+
+// RecoverImageJob is the image sibling: one getResponse poll on the recorded
+// task delivers the finished upscale when the caller's window closed while
+// the task kept running server-side.
+func (c *RunwareClient) RecoverImageJob(ctx context.Context, job mediaJob) (ollamaGenerateResponse, error) {
+	row, err := c.pollTaskOnce(ctx, job)
+	if err != nil {
+		return ollamaGenerateResponse{}, err
+	}
+	return runwareImageResponse(ctx, c, row)
 }
 
 // RecoverSFXJob reuses the audio recovery and re-splits the sides the way

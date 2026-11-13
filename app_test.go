@@ -5564,6 +5564,7 @@ func TestImageUpscaleConfiguredAndResolver(t *testing.T) {
 	t.Cleanup(func() {
 		_ = clearFalAPIKey()
 		_ = clearReplicateAPIKey()
+		_ = clearRunwareAPIKey()
 	})
 
 	// With a key present the tool is offered on the fal-routed providers.
@@ -5583,6 +5584,18 @@ func TestImageUpscaleConfiguredAndResolver(t *testing.T) {
 	}
 	if !imageUpscaleConfigured(AppConfig{Models: ConfigModels{ImageProvider: "replicate"}}) {
 		t.Error("imageUpscaleConfigured(replicate, with token) = false, want true")
+	}
+
+	// The runware provider routes upscale to runware — a fal key alone must
+	// not light the tool up there.
+	if imageUpscaleConfigured(AppConfig{Models: ConfigModels{ImageProvider: "runware"}}) {
+		t.Error("imageUpscaleConfigured(runware, only a fal key) = true, want false")
+	}
+	if err := saveRunwareAPIKey("runware-test-key"); err != nil {
+		t.Fatalf("saveRunwareAPIKey: %v", err)
+	}
+	if !imageUpscaleConfigured(AppConfig{Models: ConfigModels{ImageProvider: "runware"}}) {
+		t.Error("imageUpscaleConfigured(runware, with key) = false, want true")
 	}
 
 	// With the key cleared the tool is not offered on the fal path.
@@ -5607,6 +5620,15 @@ func TestImageUpscaleConfiguredAndResolver(t *testing.T) {
 	replicateConfig.Providers.Replicate.UpscaleModel = "philz1337x/clarity-upscaler"
 	if got := resolveDefaultImageUpscaleModel(replicateConfig); got != "philz1337x/clarity-upscaler" {
 		t.Errorf("resolveDefaultImageUpscaleModel(replicate, configured) = %q", got)
+	}
+	// The runware provider resolves its own slot and default.
+	runwareConfig := AppConfig{Models: ConfigModels{ImageProvider: "runware"}}
+	if got := resolveDefaultImageUpscaleModel(runwareConfig); got != defaultRunwareImageUpscaleModel {
+		t.Errorf("resolveDefaultImageUpscaleModel(runware, unset) = %q, want %q", got, defaultRunwareImageUpscaleModel)
+	}
+	runwareConfig.Providers.Runware.UpscaleModel = "runware:500@1"
+	if got := resolveDefaultImageUpscaleModel(runwareConfig); got != "runware:500@1" {
+		t.Errorf("resolveDefaultImageUpscaleModel(runware, configured) = %q", got)
 	}
 }
 

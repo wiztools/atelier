@@ -395,9 +395,12 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 		if imageProvider == "" {
 			imageProvider = config.Models.ImageProvider
 		}
-		if imageProvider == "replicate" {
+		switch imageProvider {
+		case "replicate":
 			config.Providers.Replicate.UpscaleModel = o.UpscaleModel
-		} else {
+		case "runware":
+			config.Providers.Runware.UpscaleModel = o.UpscaleModel
+		default:
 			config.Providers.Fal.UpscaleModel = o.UpscaleModel
 		}
 	}

@@ -36,6 +36,7 @@ import {
   defaultFalUpscaleModel,
   defaultReplicateImageModel,
   defaultRunwareImageModel,
+  defaultRunwareUpscaleModel,
   defaultRunwareVideoModel,
   defaultRunwareVideoImageModel,
   defaultRunwareVideoExtendModel,
@@ -213,6 +214,7 @@ type ModelSelectionValue = {
   openaiImageModel: string;
   replicateModel: string;
   runwareModel: string;
+  runwareUpscaleModel: string;
   runwareVideoModel: string;
   runwareVideoImageModel: string;
   runwareVideoExtendModel: string;
@@ -376,7 +378,7 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   // The edit/video model overrides ride the provider the draft has selected,
   // mirroring the backend's provider-conditional overlay.
   if (keys.has('imageEditModel')) payload.imageEditModel = draft.imageProvider === 'replicate' ? draft.replicateImageEditModel : draft.falImageEditModel;
-  if (keys.has('upscaleModel')) payload.upscaleModel = draft.imageProvider === 'replicate' ? draft.replicateUpscaleModel : draft.falUpscaleModel;
+  if (keys.has('upscaleModel')) payload.upscaleModel = draft.imageProvider === 'replicate' ? draft.replicateUpscaleModel : draft.imageProvider === 'runware' ? draft.runwareUpscaleModel : draft.falUpscaleModel;
   if (keys.has('inpaintProvider')) payload.inpaintProvider = draft.inpaintProvider;
   if (keys.has('inpaintModel')) payload.inpaintModel = draft.inpaintProvider === 'replicate' ? draft.replicateInpaintModel : draft.inpaintProvider === 'runware' ? draft.runwareInpaintModel : draft.falInpaintModel;
   if (keys.has('videoModel')) payload.videoModel = draft.videoProvider === 'replicate' ? draft.replicateVideoModel : draft.videoProvider === 'runware' ? draft.runwareVideoModel : draft.falVideoModel;
@@ -451,6 +453,7 @@ function ModelSelectionPanel({
     falImageEditModels: main.FalModel[];
     replicateModels: main.ReplicateModel[];
     runwareModels: main.RunwareModel[];
+    runwareUpscaleModels: main.RunwareModel[];
     runwareVideoModels: main.RunwareModel[];
     runwareVideoImageModels: main.RunwareModel[];
     runwareVideoExtendModels: main.RunwareModel[];
@@ -535,6 +538,7 @@ function ModelSelectionPanel({
   const falImageEditOptions = falModelOptionList(catalogs.falImageEditModels);
   const replicateImageOptions = falModelOptionList(catalogs.replicateModels);
   const runwareImageOptions = falModelOptionList(catalogs.runwareModels);
+  const runwareUpscaleOptions = falModelOptionList(catalogs.runwareUpscaleModels);
   const runwareVideoOptions = falModelOptionList(catalogs.runwareVideoModels);
   const runwareVideoImageOptions = falModelOptionList(catalogs.runwareVideoImageModels);
   const runwareVideoExtendOptions = falModelOptionList(catalogs.runwareVideoExtendModels);
@@ -897,7 +901,7 @@ function ModelSelectionPanel({
             </div>
           ) : null}
 
-          {/* Upscaling is cloud-only (fal or Replicate): airplane mode drops it. */}
+          {/* Upscaling is cloud-only (fal, Replicate, or Runware): airplane mode drops it. */}
           {airplaneMode ? null : value.imageProvider === 'replicate' ? (
             <div className="field">
               {fieldLabel('replicate-upscale-model', 'Image-Upscale Model (Replicate)', 'upscaleModel')}
@@ -914,6 +918,24 @@ function ModelSelectionPanel({
                 <span className="hint">Add a Replicate API token {keyWhere} to upscale images.</span>
               ) : replicateUpscaleOptions.length ? null : (
                 <span className="hint">Type an owner/name model id — the model list couldn't be loaded.</span>
+              )}
+            </div>
+          ) : value.imageProvider === 'runware' ? (
+            <div className="field">
+              {fieldLabel('runware-upscale-model', 'Image-Upscale Model (Runware)', 'upscaleModel')}
+              <ModelCombobox
+                id="runware-upscale-model"
+                ariaLabel="Runware image-upscale model"
+                placeholder={defaultRunwareUpscaleModel}
+                value={value.runwareUpscaleModel}
+                onChange={(next) => onChange({runwareUpscaleModel: next})}
+                options={runwareUpscaleOptions}
+                allowCustom
+              />
+              {!catalogs.runwareHasKey ? (
+                <span className="hint">Add a Runware API key {keyWhere} to upscale images.</span>
+              ) : runwareUpscaleOptions.length ? null : (
+                <span className="hint">Type an AIR model id (e.g. runware:504@1) — the model list couldn't be loaded.</span>
               )}
             </div>
           ) : (

@@ -390,6 +390,10 @@ export function ListRunwareImageModels() {
   return window['go']['main']['App']['ListRunwareImageModels']();
 }
 
+export function ListRunwareImageUpscaleModels() {
+  return window['go']['main']['App']['ListRunwareImageUpscaleModels']();
+}
+
 export function ListRunwareLipsyncImageModels() {
   return window['go']['main']['App']['ListRunwareLipsyncImageModels']();
 }

@@ -634,32 +634,41 @@ func runwareKeyConfigured() bool {
 }
 
 // imageUpscaleConfigured reports whether the upscale_image tool should be
-// offered, routing by imageGenerationProvider: the replicate path needs its
-// token, every other provider runs fal and needs a fal.ai key. The key check
-// avoids offering a tool guaranteed to fail at call time with a
+// offered, routing by imageGenerationProvider: replicate needs its token,
+// runware its key, every other provider runs fal and needs a fal.ai key. The
+// key check avoids offering a tool guaranteed to fail at call time with a
 // key-not-configured error.
 func imageUpscaleConfigured(config AppConfig) bool {
-	// Cloud-only (fal endpoint, or Replicate when it routes the image
+	// Cloud-only (fal endpoint, or Replicate/Runware when they route the image
 	// provider): airplane mode drops the tool.
 	if airplaneModeActive(config) {
 		return false
 	}
-	if imageGenerationProvider(config) == "replicate" {
+	switch imageGenerationProvider(config) {
+	case "replicate":
 		return replicateKeyConfigured()
+	case "runware":
+		return runwareKeyConfigured()
 	}
 	return falKeyConfigured()
 }
 
 // resolveDefaultImageUpscaleModel returns the upscaler model the upscale_image
 // tool uses when the call doesn't override it, routing by the image provider —
-// fal's endpoint on every provider but replicate. Falls back to the const
-// default when the user hasn't picked one in Settings.
+// fal's endpoint on every provider but replicate and runware. Falls back to
+// the const default when the user hasn't picked one in Settings.
 func resolveDefaultImageUpscaleModel(config AppConfig) string {
-	if imageGenerationProvider(config) == "replicate" {
+	switch imageGenerationProvider(config) {
+	case "replicate":
 		if model := strings.TrimSpace(config.Providers.Replicate.UpscaleModel); model != "" {
 			return model
 		}
 		return defaultReplicateUpscaleModel
+	case "runware":
+		if model := strings.TrimSpace(config.Providers.Runware.UpscaleModel); model != "" {
+			return model
+		}
+		return defaultRunwareImageUpscaleModel
 	}
 	if model := strings.TrimSpace(config.Providers.Fal.UpscaleModel); model != "" {
 		return model
@@ -3136,7 +3145,7 @@ func generateImageParamSchema() map[string]any {
 
 // imageUpscaleToolDefinition exposes the upscale_image tool. It takes an
 // attached image and returns a higher-resolution version via the configured
-// cloud upscaler — fal.ai, or Replicate when replicate is the image provider
+// cloud upscaler — fal.ai, Replicate, or Runware per the image provider
 // (upscale follows ImageProvider). No Ollama path; the attached-image
 // requirement is enforced in Execute because Validate only sees the call, not
 // tools.
@@ -3144,7 +3153,7 @@ func imageUpscaleToolDefinition(config AppConfig) HarnessToolDefinition {
 	return HarnessToolDefinition{
 		Name:        "upscale_image",
 		Title:       "Upscale image",
-		Description: "Use this when the user asks to upscale, increase the resolution of, or make a higher-resolution version of an attached image. Requires an attached image. Runs unattended like image generation on the configured cloud image provider (fal.ai or Replicate).",
+		Description: "Use this when the user asks to upscale, increase the resolution of, or make a higher-resolution version of an attached image. Requires an attached image. Runs unattended like image generation on the configured cloud image provider (fal.ai, Replicate, or Runware).",
 		Example:     `{"name":"upscale_image","scale":"2x"}`,
 		Risk:        HarnessToolRiskRead,
 		ParamSchema: imageUpscaleParamSchema(),

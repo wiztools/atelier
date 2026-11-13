@@ -530,6 +530,7 @@ export namespace main {
 	export class ConfigRunware {
 	    enabled: boolean;
 	    model?: string;
+	    upscaleModel?: string;
 	    inpaintModel?: string;
 	    videoModel?: string;
 	    videoImageModel?: string;
@@ -551,6 +552,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.enabled = source["enabled"];
 	        this.model = source["model"];
+	        this.upscaleModel = source["upscaleModel"];
 	        this.inpaintModel = source["inpaintModel"];
 	        this.videoModel = source["videoModel"];
 	        this.videoImageModel = source["videoImageModel"];
