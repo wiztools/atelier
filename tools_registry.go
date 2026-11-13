@@ -486,11 +486,40 @@ func videoModelSupportsAudio(ctx context.Context, config AppConfig, app *App) bo
 	// below reads fal's schema dialect and fal's model slots, and guessing a
 	// Replicate model's audio capability would let the planner promise
 	// narration the model can't render. Fail-closed to the generic
-	// description, the same posture as an unavailable schema. Runware reports
-	// false the same way: its video models carry no generate_audio toggle in
-	// their schemas (audio is model-fixed, not requested), so promising
-	// silence or narration would be a guess.
-	if videoGenerationProvider(config) != "fal" {
+	// description, the same posture as an unavailable schema.
+	provider := videoGenerationProvider(config)
+	if provider != "fal" && provider != "runware" {
+		return false
+	}
+	if provider == "runware" {
+		// Runware's video schemas carry no generate_audio toggle (audio is
+		// model-fixed, not requested), but the public models index tags the
+		// audio-native packagings with the "audio" capability — the
+		// provider's own statement that the model renders synchronized audio,
+		// speech included, from the prompt alone (MiniMax H3 serves t2v and
+		// i2v with it; Kling 4.0's untagged packaging stays silent). The tag
+		// drives the same single-call narration guidance a fal generateAudio
+		// toggle does.
+		if app == nil || app.client == nil {
+			return false
+		}
+		models, err := newRunwareClient(app.client, "").ListModels(ctx)
+		if err != nil {
+			return false
+		}
+		audioTagged := make(map[string]bool, len(models))
+		for _, model := range models {
+			audioTagged[model.ID] = runwareModelHasCapability(model, "audio")
+		}
+		for _, model := range []string{
+			resolveDefaultVideoModel(config),
+			resolveDefaultVideoImageModel(config),
+			resolveDefaultVideoExtendModel(config),
+		} {
+			if audioTagged[strings.TrimSpace(model)] {
+				return true
+			}
+		}
 		return false
 	}
 	cache := newFalSchemaCache(app.client, config.Storage.Root)
@@ -1057,7 +1086,7 @@ func referenceMediaPhrase(imagesUsed bool, videosUsed bool, imageCount, videoCou
 func videoGenerationDescription(audioCapable bool) string {
 	base := "Use this when the user asks to create, animate, extend, or render a video or short clip. Works from a text description; when the user attached an image, animates that image (image-to-video); when the user attached a video, extends it into a longer clip (Veo extend); when the user attached both an image and a video, transfers the video's motion onto the image's subject (motion control) — describe the desired result in the prompt and do not ask the user which source to use. These defaults interpret the attachments as sources to animate, extend, or copy motion from; pass useVideoAs:\"reference\" instead when the attachments are references — characters, style, or scenes that should guide a brand-new clip rather than serve as its source — and every attached image and video is sent as reference media. When the user's words name one source but the attachments imply another (\"animate the image\" while the newest conversation artifact is a video, or \"extend the clip\" while it is an image), pass source:\"image\", \"video\", or \"motion\" to make the named source drive the clip — it is fetched from conversation history when not attached. The clip is attached to the assistant reply. Generation runs for a minute or more. Pass negativePrompt to steer content away from unwanted elements, and generateAudio:false when the user wants a silent clip. To make a transition between two images — a start frame morphing into an end frame — attach exactly two images and pass imageRole:\"keyframes\" (the first image is the opening frame, the last is the closing frame; images resolve attached files first, then @-mentioned assets, so when the user's words name the start frame as an @-mention and the end frame as the attached file, pass openingFrame:\"second\" to open on the mention)."
 	if audioCapable {
-		return base + " This video model can also generate synchronized audio (speech, music, ambient sound) from the prompt. For narration, a voice-over, or a speaking character, prefer a single generate_video call with the spoken text in the prompt over chaining generate_speech + lip_sync."
+		return base + " This video model can also generate synchronized audio (speech, music, ambient sound) from the prompt. For narration, a voice-over, or a speaking character, prefer a single generate_video call with the spoken text in the prompt over chaining generate_speech + lip_sync. When the voice is a THOUGHT or inner monologue — the user asks for no lip movement — keep the single call and say so in the prompt (the character thinks it as a voice-over, the lips stay still), so the model does not animate the line as on-screen speech."
 	}
 	return base
 }
@@ -1080,12 +1109,20 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 			if src := strings.TrimSpace(call.Source); src != "" && src != "image" && src != "video" && src != "motion" {
 				return []string{prefix + ".source must be \"image\", \"video\", or \"motion\" for generate_video"}
 			}
+			// Both corrections lead with OMIT: the remedy for a single starting
+			// frame is dropping the param, and a message that only names
+			// "keyframes" reads as an instruction to set it — which needs two
+			// images. conv_85f269b404afda6d3bf7f845: the planner passed
+			// imageRole:"reference" (useVideoAs's value) for a one-image
+			// animate ask, read "imageRole must be \"keyframes\"" literally,
+			// concluded the request was impossible with one image, and closed
+			// the loop with no video.
 			if role := strings.TrimSpace(call.ImageRole); role != "" && role != "keyframes" {
-				return []string{prefix + ".imageRole must be \"keyframes\" for generate_video"}
+				return []string{fmt.Sprintf("%s.imageRole %q is not valid for generate_video: omit imageRole to animate a single attached image (image-to-video, the default); pass \"keyframes\" only for a start→end transition between exactly two images; for attachments that are references, pass useVideoAs:\"reference\" instead", prefix, role)}
 			}
 			if opening := strings.ToLower(strings.TrimSpace(call.OpeningFrame)); opening != "" {
 				if !strings.EqualFold(strings.TrimSpace(call.ImageRole), "keyframes") {
-					return []string{prefix + ".openingFrame only applies when imageRole is \"keyframes\" for generate_video"}
+					return []string{prefix + ".openingFrame is not valid here for generate_video: omit openingFrame — a single attached image is already the clip's starting frame; it only applies with imageRole \"keyframes\" (a transition between exactly two images)"}
 				}
 				if opening != "first" && opening != "second" {
 					return []string{prefix + ".openingFrame must be \"first\" or \"second\" for generate_video"}

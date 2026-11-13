@@ -285,6 +285,39 @@ func TestGenerateVideoImageRoleValidation(t *testing.T) {
 	}
 }
 
+// TestGenerateVideoFrameCorrectionsNameTheOmitRemedy pins the wording of the
+// two frame-param corrections: each must tell the planner to OMIT the param,
+// since that is the fix for a single starting frame. The old imageRole message
+// named only "keyframes", which a planner holding one image read as an
+// impossible requirement and gave up on the video
+// (conv_85f269b404afda6d3bf7f845).
+func TestGenerateVideoFrameCorrectionsNameTheOmitRemedy(t *testing.T) {
+	def := videoGenerationToolDefinition(AppConfig{}, false)
+
+	errs := def.Validate("toolCalls[0]", HarnessToolCall{Name: "generate_video", Content: "dolly in", ImageRole: "reference", OpeningFrame: "first"})
+	if len(errs) != 1 {
+		t.Fatalf("imageRole \"reference\" should yield one correction, got %v", errs)
+	}
+	for _, want := range []string{`toolCalls[0].imageRole "reference"`, "omit imageRole", "single attached image", `useVideoAs:"reference"`} {
+		if !strings.Contains(errs[0], want) {
+			t.Fatalf("imageRole correction = %q, want it to contain %q", errs[0], want)
+		}
+	}
+	if strings.Contains(errs[0], "must be \"keyframes\"") {
+		t.Fatalf("imageRole correction = %q, must not read as a demand for keyframes", errs[0])
+	}
+
+	errs = def.Validate("toolCalls[0]", HarnessToolCall{Name: "generate_video", Content: "dolly in", OpeningFrame: "first"})
+	if len(errs) != 1 {
+		t.Fatalf("openingFrame without keyframes should yield one correction, got %v", errs)
+	}
+	for _, want := range []string{"toolCalls[0].openingFrame", "omit openingFrame", "already the clip's starting frame"} {
+		if !strings.Contains(errs[0], want) {
+			t.Fatalf("openingFrame correction = %q, want it to contain %q", errs[0], want)
+		}
+	}
+}
+
 // TestGenerateVideoImageRoleKeyframesRouting pins the keyframe diagnosis: an
 // imageRole:"keyframes" turn with exactly two attached images routes to the
 // configured keyframe model, sets the internal Keyframes flag, and forwards

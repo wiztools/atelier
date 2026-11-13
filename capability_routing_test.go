@@ -115,6 +115,59 @@ func TestVideoModelSupportsAudio_FalseWhenSchemaMissing(t *testing.T) {
 	}
 }
 
+// TestVideoModelSupportsAudio_RunwareReadsTheIndexAudioTag pins the Runware
+// branch: its video schemas carry no generate_audio toggle, so the capability
+// comes from the public models index, whose "audio" tag marks the packagings
+// that render synchronized audio from the prompt. conv_f20d9814014b5f5204178459
+// is the failure being fixed: with the branch hard-wired false, the planner
+// never learned that MiniMax H3 can voice a line itself, called generate_video
+// without the spoken text, and paid for a separate generate_speech clip the
+// turn then delivered unassembled.
+func TestVideoModelSupportsAudio_RunwareReadsTheIndexAudioTag(t *testing.T) {
+	resetIndex := func() {
+		runwareIndexCache.Lock()
+		runwareIndexCache.models, runwareIndexCache.fetchedAt = nil, time.Time{}
+		runwareIndexCache.Unlock()
+	}
+	resetIndex()
+	t.Cleanup(resetIndex)
+
+	const audioModel, silentModel = "minimax:h3@0", "klingai:kling-video@4.0"
+	app := NewApp()
+	app.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return runwareResponseOf(200, `[
+			{"id":"minimax-h3","air":"`+audioModel+`","name":"MiniMax H3","status":"live","capabilities":["text-to-video","image-to-video","audio"]},
+			{"id":"klingai-video-4-0","air":"`+silentModel+`","name":"Kling VIDEO 4.0","status":"live","capabilities":["text-to-video","image-to-video"]}
+		]`), nil
+	})
+	pinned := func(model string) AppConfig {
+		config := mergeAppConfig(AppConfig{Models: ConfigModels{VideoProvider: "runware"}})
+		config.Providers.Runware.VideoModel = model
+		config.Providers.Runware.VideoImageModel = model
+		config.Providers.Runware.VideoExtendModel = model
+		return config
+	}
+
+	if !videoModelSupportsAudio(context.Background(), pinned(audioModel), app) {
+		t.Fatal("an index entry tagged \"audio\" must report audio capability")
+	}
+	if videoModelSupportsAudio(context.Background(), pinned(silentModel), app) {
+		t.Fatal("an untagged index entry must not report audio capability")
+	}
+	if videoModelSupportsAudio(context.Background(), pinned(audioModel), nil) {
+		t.Fatal("expected false with nil app")
+	}
+
+	// An unreachable index fails closed to the generic description.
+	resetIndex()
+	app.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return runwareResponseOf(500, `{}`), nil
+	})
+	if videoModelSupportsAudio(context.Background(), pinned(audioModel), app) {
+		t.Fatal("expected false when the models index is unavailable")
+	}
+}
+
 // --- Fix #1: capability-aware descriptions ---
 
 func TestVideoGenerationDescription_AudioCapableSteersToSingleCall(t *testing.T) {
@@ -124,6 +177,11 @@ func TestVideoGenerationDescription_AudioCapableSteersToSingleCall(t *testing.T)
 	}
 	if !strings.Contains(desc, "prefer a single generate_video") {
 		t.Fatalf("audio-capable description should steer away from the chain: %q", desc)
+	}
+	// A thought spoken with no lip movement stays a single call, phrased as a
+	// voice-over — otherwise the model animates the line as on-screen speech.
+	if !strings.Contains(desc, "inner monologue") || !strings.Contains(desc, "lips stay still") {
+		t.Fatalf("audio-capable description should teach the inner-voice phrasing: %q", desc)
 	}
 }
 

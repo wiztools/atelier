@@ -2224,19 +2224,20 @@ func (h *HarnessEngine) prepareChatTurnLoop(ctx context.Context, requestID, conv
 		// attachment folds above).
 		turn.TranscriptFiles = append(turn.TranscriptFiles, transcriptFilesFromResults(results)...)
 
-		// A round whose calls ALL failed delivered nothing the final model could
-		// answer from beyond the failures — the planner's next round is the
-		// turn's only recovery path, and the wall-time budget must not abandon
-		// it at a knife-edge. conv_51b85fd58d6818d38b3fe5aa: the same fal 422
-		// (Kling o1's 2500-character prompt cap) that an earlier planner
-		// one-shot fixed with a shortened retry (conv_0f9cc90f61402bae64acf707)
-		// ended this turn as a bare failure, because the deadline — anchored
-		// after triage and skill selection had spent 89 seconds, then a
-		// 112-second planning round — expired during the 11-second failed call.
-		// Refresh the budget so the correction round runs; harnessChatMaxSteps
-		// still bounds the loop, and a round that delivered any evidence keeps
-		// today's semantics (stop; the final model answers from it).
-		if allToolCallsFailed(results) {
+		// Refresh the budget when the round itself spent it: an all-failed
+		// round needs the planner's retry (conv_51b85fd6818d38b3fe5aa), and a
+		// round whose generation ran longer than the whole budget leaves the
+		// same shape — the loop would stop right here, and a chained call
+		// (replace_audio under the new clip, lip_sync, a screenshot of it)
+		// would never run. The final model cannot call tools, so the assembly
+		// lands on the user as homework (conv_f20d9814014b5f5204178459: a
+		// six-minute video generation spent the budget, the loop closed after
+		// round 1, and the reply told the user to combine the video and the
+		// voice themselves). The forward-feed slots are the signal: generated
+		// media is exactly what a later round consumes. harnessChatMaxSteps
+		// still bounds the loop, and a round that delivered plain evidence
+		// keeps today's semantics (stop; the final model answers from it).
+		if allToolCallsFailed(results) || batch.deliveredGeneratedMedia() {
 			deadline = time.Now().Add(harnessChatMaxWallTime)
 		}
 		if time.Now().After(deadline) {
@@ -2275,6 +2276,17 @@ func allToolCallsFailed(results []HarnessToolResult) bool {
 		}
 	}
 	return true
+}
+
+// deliveredGeneratedMedia reports whether a tool batch produced media the
+// next planning round can consume — the same slots the forward-feed folds
+// back into the turn. It is the refresh signal for the wall-time budget: a
+// generation that outlives the budget must not close the loop before the
+// planner gets its chaining round.
+func (batch harnessToolBatchResult) deliveredGeneratedMedia() bool {
+	return strings.TrimSpace(batch.GeneratedAudio) != "" ||
+		strings.TrimSpace(batch.GeneratedVideo) != "" ||
+		len(batch.GeneratedImages) > 0
 }
 
 // planParseFailed reports whether the validation errors include a JSON parse
@@ -2469,10 +2481,31 @@ func plannerMediaRoutingGuidance(registry HarnessToolRegistry) string {
 	if hasImage || hasVideo {
 		notes = append(notes, "Generation constraint failures: when generate_image or generate_video fails with an error naming a parameter window — output pixel area, aspect ratio, width/height, or duration — resend the SAME call once with its parameters adjusted inside the stated window (an output-area error is fixed by explicit width and height inside the named range, e.g. 1280x720 for a 16:9 shape) before reporting failure. Report the failure to the final model only if the adjusted retry fails too.")
 	}
+	// conv_f20d9814014b5f5204178459: the user asked for "no lip movement",
+	// the planner read it as a reason to skip lip_sync, and the generate_video
+	// prompt it wrote never mentioned lips — the constraint died in the
+	// rewrite, on a $1.30 clip. The rule is stated once for every tool whose
+	// prompt the planner authors, because the loss is the same everywhere: the
+	// generation model sees the call and nothing else.
+	for _, name := range promptAuthoredGenerationTools {
+		if _, ok := registry.Get(name); ok {
+			notes = append(notes, "Generation prompts are the model's whole world: the model behind a generation tool cannot see this conversation — only the content and parameters of your call. Every requirement the user stated for the result must be written into that call or it does not exist for the model: subject, style, camera, timing, spoken words, and above all the NEGATIVE ones (\"no lip movement\", \"no text\", \"don't change the background\"). A constraint that only shaped which tool you chose has not been passed on — state it in the prompt as well. Keep the user's own wording for anything they quoted or specified exactly.")
+			break
+		}
+	}
 	if len(notes) == 0 {
 		return ""
 	}
 	return "\n" + strings.Join(notes, "\n")
+}
+
+// promptAuthoredGenerationTools are the tools whose call carries a free-text
+// prompt the planner writes for a generative model — the calls where a
+// user-stated requirement can be lost in the rewrite. The local ffmpeg, image,
+// and file tools are absent on purpose: their parameters are exact.
+var promptAuthoredGenerationTools = []string{
+	"generate_image", "generate_video", "generate_speech", "generate_sound",
+	"generate_voice", "extend_audio", "add_sound_effects", "restyle_video",
 }
 
 // skillGuidesPlanner decides whether a selected SKILL.md's body should steer the

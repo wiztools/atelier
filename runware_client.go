@@ -922,11 +922,46 @@ type runwareMediaResult struct {
 	Cost *float64 `json:"cost"`
 }
 
-// runwareRowDone reports whether a data row carries a finished result:
-// either the explicit success status or a sync row (no status field at all
-// — the shape image results have always had).
+// runwareRowHasPayload reports whether a data row carries anything
+// deliverable: any media field of any kind, or a textInference answer.
+func runwareRowHasPayload(row runwareMediaResult) bool {
+	return row.VideoURL != "" || row.VideoDataURI != "" || row.VideoBase64Data != "" ||
+		row.ImageURL != "" || row.ImageDataURI != "" || row.ImageBase64Data != "" ||
+		row.AudioURL != "" || row.AudioDataURI != "" || row.AudioBase64Data != "" ||
+		strings.TrimSpace(row.Text) != ""
+}
+
+// runwareRowDone reports whether a data row carries a finished result: the
+// explicit success status, or a sync row with no status field at all — the
+// shape image results have always had — that actually carries a payload. The
+// payload requirement is the async-ack guard: deliveryMethod defaults to
+// async on Runware's video packagings, and a model that answers the submit
+// with a bare acknowledgment row (taskType and taskUUID, no status, no media)
+// must read as "still running" and drop into the getResponse poll rather than
+// as a finished result whose empty fields become "returned no media"
+// (conv_2abf9ca68c1bfb009f303967: MiniMax H3 acked both video submits within
+// seconds and the tool reported failure while the generations kept running
+// server-side).
 func runwareRowDone(row runwareMediaResult) bool {
-	return row.Status == "" || strings.EqualFold(row.Status, "success")
+	if strings.EqualFold(row.Status, "success") {
+		return true
+	}
+	return row.Status == "" && runwareRowHasPayload(row)
+}
+
+// runwareNoMediaError names a finished row's own fields. A task that completed
+// without delivering media is a provider-side outcome the planner must see —
+// a finish reason, a zero-output result — and the old bare "returned no
+// media" gave the adjusted-retry guidance nothing to act on.
+func runwareNoMediaError(row runwareMediaResult) error {
+	detail := fmt.Sprintf("status %q", row.Status)
+	if reason := strings.TrimSpace(row.FinishReason); reason != "" {
+		detail += ", finishReason " + reason
+	}
+	if row.Cost != nil {
+		detail += fmt.Sprintf(", reported cost $%.4f", *row.Cost)
+	}
+	return fmt.Errorf("runware task finished without media (%s)", detail)
 }
 
 // runwareRowFor finds the data row matching taskUUID. A foreign UUID is
@@ -1017,6 +1052,9 @@ func (c *RunwareClient) GenerateVideo(ctx context.Context, task map[string]any) 
 	if err != nil {
 		return GeneratedVideo{}, err
 	}
+	if row.VideoDataURI == "" && row.VideoBase64Data == "" && row.VideoURL == "" {
+		return GeneratedVideo{}, runwareNoMediaError(row)
+	}
 	data, err := c.mediaBytes(ctx, row.VideoDataURI, row.VideoBase64Data, row.VideoURL, runwareVideoMaxBytes)
 	if err != nil {
 		return GeneratedVideo{}, err
@@ -1041,6 +1079,9 @@ func (c *RunwareClient) GenerateAudio(ctx context.Context, task map[string]any) 
 	row, err := c.runTask(ctx, task)
 	if err != nil {
 		return GeneratedAudio{}, err
+	}
+	if row.AudioDataURI == "" && row.AudioBase64Data == "" && row.AudioURL == "" {
+		return GeneratedAudio{}, runwareNoMediaError(row)
 	}
 	data, err := c.mediaBytes(ctx, row.AudioDataURI, row.AudioBase64Data, row.AudioURL, runwareAudioMaxBytes)
 	if err != nil {
@@ -1314,6 +1355,12 @@ func (c *RunwareClient) pollTaskOnce(ctx context.Context, job mediaJob) (runware
 	}
 	if !runwareRowDone(row) && !strings.EqualFold(row.Status, "error") {
 		return runwareMediaResult{}, fmt.Errorf("runware task %s is still processing", job.ID)
+	}
+	if !runwareRowHasPayload(row) {
+		// A finished row with nothing in it — an explicit success that
+		// delivered no media, or an error row whose fields live outside our
+		// struct — names itself instead of surfacing as a bare download miss.
+		return runwareMediaResult{}, runwareNoMediaError(row)
 	}
 	return row, nil
 }

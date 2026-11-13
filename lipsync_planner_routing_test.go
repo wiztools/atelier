@@ -203,6 +203,44 @@ func TestPlannerMediaRoutingGuidanceIncludesExtendNote(t *testing.T) {
 	}
 }
 
+// TestPlannerMediaRoutingGuidancePromptCompletenessRule pins the
+// conv_f20d9814014b5f5204178459 rule: the user asked for "no lip movement",
+// the planner read it as a tool-choice reason, and the generate_video prompt
+// it wrote never mentioned lips — the constraint died in the rewrite on a paid
+// generation. The note must ride whenever ANY prompt-authored generation tool
+// is offered (the loss is the same everywhere) and stay out of a registry
+// with only exact-parameter tools.
+func TestPlannerMediaRoutingGuidancePromptCompletenessRule(t *testing.T) {
+	for _, registry := range []HarnessToolRegistry{
+		newPlannerRegistry(false),
+		newPlannerRegistry(true),
+		newHarnessToolRegistry([]HarnessToolDefinition{{Name: "generate_image"}}),
+		newHarnessToolRegistry([]HarnessToolDefinition{{Name: "generate_speech"}}),
+	} {
+		got := plannerMediaRoutingGuidance(registry)
+		for _, phrase := range []string{"cannot see this conversation", "NEGATIVE ones", "no lip movement"} {
+			if !strings.Contains(got, phrase) {
+				t.Fatalf("guidance with a prompt-authored generation tool must carry %q, got %q", phrase, got)
+			}
+		}
+	}
+	if got := plannerMediaRoutingGuidance(newHarnessToolRegistry([]HarnessToolDefinition{{Name: "read_file"}})); strings.Contains(got, "cannot see this conversation") {
+		t.Fatalf("a registry without prompt-authored generation tools must not carry the rule, got %q", got)
+	}
+
+	engine := newHarnessEngine(defaultAppConfig())
+	req := ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "make a video"}}}
+	registry := newPlannerRegistry(false)
+	for name, prompt := range map[string]string{
+		"json":   engine.plannerSystemPrompt(registry, req, nil, "", "", false),
+		"native": engine.plannerSystemPromptNative(registry, req, nil, "", "", false),
+	} {
+		if !strings.Contains(prompt, "NEGATIVE ones") {
+			t.Fatalf("%s planner prompt must carry the prompt-completeness rule", name)
+		}
+	}
+}
+
 // TestPlannerMediaRoutingGuidanceConstraintRetryRule pins the generation-
 // constraint retry note (conv_2d4937338a9bd96d05420e98): a generate_image 422
 // naming the model's output-area window came back with a planning round still

@@ -6,6 +6,7 @@ package main
 // counts each model call exactly once).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,6 +18,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"atelier/internal/mediasniff/mediasnifftest"
 )
 
 // telemetryTestConfig builds an isolated config with distinct harness and
@@ -114,6 +117,109 @@ func TestHarnessStepTokenAccountingDirectPath(t *testing.T) {
 	}
 	if _, exists := savedStep["promptTokens"]; exists {
 		t.Fatalf("saved step carries promptTokens (%v); bookkeeping steps must not duplicate model-call usage", savedStep["promptTokens"])
+	}
+}
+
+// TestHarnessPlanningLoopContinuesAfterSlowGeneration pins the wall-time
+// refresh for a round that delivered generated media: a generation that
+// outlives the whole budget must not close the loop, because the planner's
+// next round is the only place a chained call (replace_audio under a new clip,
+// lip_sync, a screenshot of it) can run — the final model cannot call tools.
+// conv_f20d9814014b5f5204178459 is the failure being fixed: a six-minute video
+// generation spent the 2-minute budget, the loop stopped after round 1 with a
+// clip and a voice line both delivered, and the reply told the user to combine
+// them. Round 1's planning call sleeps past the pinned 1ms budget, so the
+// deadline is always past when the speech clip lands — the old behavior stops
+// there (one round); the refresh must grant the planner its second round.
+func TestHarnessPlanningLoopContinuesAfterSlowGeneration(t *testing.T) {
+	defer func(orig time.Duration) { harnessChatMaxWallTime = orig }(harnessChatMaxWallTime)
+	harnessChatMaxWallTime = 1 * time.Millisecond
+
+	config := telemetryTestConfig(t)
+	// The local Ollama speech route: no key, one plain endpoint to stub.
+	config.Models.SpeechProvider = "ollama"
+	config.Providers.Ollama.Models.Speech = "phonon"
+	if err := writeAppConfig(config); err != nil {
+		t.Fatalf("writeAppConfig returned error: %v", err)
+	}
+
+	app := NewApp()
+	nonStreamCount := 0
+	app.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/v1/audio/speech" {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(bytes.NewReader(mediasnifftest.WAV(8000))),
+				Header:     http.Header{"Content-Type": []string{"audio/wav"}},
+			}, nil
+		}
+		if req.URL.Path != "/api/chat" {
+			return notFoundResponse(), nil
+		}
+		var payload map[string]any
+		data, _ := io.ReadAll(req.Body)
+		if err := json.Unmarshal(data, &payload); err != nil {
+			t.Fatalf("provider request body is not JSON: %v", err)
+		}
+		if payload["stream"] == false {
+			nonStreamCount++
+			harnessPlan := func(content string) (*http.Response, error) {
+				return jsonResponse(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(content) + `},"done":true,"done_reason":"stop","prompt_eval_count":33,"eval_count":4}`), nil
+			}
+			switch nonStreamCount {
+			case 1:
+				decision := `{"needsTools":true,"responseMode":"audio","toolTask":"generate_speech for the line.","reason":"The user wants the line spoken."}`
+				return jsonResponse(`{"model":"harness-model","message":{"role":"assistant","content":` + strconv.Quote(decision) + `},"done":true,"done_reason":"stop","prompt_eval_count":11,"eval_count":2}`), nil
+			case 2:
+				// Round 1's planning call overshoots the pinned budget, so the
+				// deadline is already past when the generated clip lands.
+				time.Sleep(5 * time.Millisecond)
+				return harnessPlan("```json\n{\"brief\":\"Speak the line.\",\"needsTools\":true,\"reason\":\"Needs a voice clip.\",\"toolCalls\":[{\"name\":\"generate_speech\",\"content\":\"Hello there.\"}]}\n```")
+			default:
+				return harnessPlan("```json\n{\"brief\":\"The clip is ready.\",\"needsTools\":false,\"reason\":\"Nothing left to chain.\",\"toolCalls\":[]}\n```")
+			}
+		}
+		body := fmt.Sprintln(`{"model":"chat-box-model","message":{"role":"assistant","content":"Here is the line."},"done":false}`) +
+			fmt.Sprintln(`{"model":"chat-box-model","done":true,"done_reason":"stop","prompt_eval_count":22,"eval_count":3}`)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{"Content-Type": []string{"application/x-ndjson"}},
+		}, nil
+	})
+
+	app.runChatStream(context.Background(), "request-slow-generation", ChatRequest{
+		BaseURL: "http://ollama.test",
+		Model:   "chat-box-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Say hello out loud."},
+		},
+	})
+
+	run := persistedHarnessRun(t, config, 1)
+	steps, _ := run["steps"].([]any)
+
+	toolSteps := harnessStepsByKind(t, steps, "tool_call")
+	if len(toolSteps) != 1 {
+		t.Fatalf("tool_call steps = %d, want the one generate_speech round", len(toolSteps))
+	}
+	tools, _ := toolSteps[0]["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("round 1 tools = %v, want one generate_speech activity", toolSteps[0]["tools"])
+	}
+	if activity, _ := tools[0].(map[string]any); activity["name"] != "generate_speech" || activity["status"] != "completed" {
+		t.Fatalf("round 1 activity = %v, want a completed generate_speech (the test needs delivered media)", tools[0])
+	}
+
+	planningSteps := harnessStepsByKind(t, steps, "planning")
+	if len(planningSteps) != 2 {
+		t.Fatalf("planning steps = %d, want 2 (a delivered generation must still get its chaining round)", len(planningSteps))
+	}
+	loop, _ := run["loop"].(map[string]any)
+	if iterations, _ := loop["iterations"].(float64); iterations != 2 {
+		t.Fatalf("loop iterations = %v, want 2", loop["iterations"])
 	}
 }
 

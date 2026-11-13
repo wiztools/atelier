@@ -22,7 +22,8 @@ import (
 
 // runwareKlingSchemaFixture trims the real klingai-video-4-0 schema: integer
 // duration 3-30, fixed width/height pairs in a oneOf, frameImages and video
-// under inputs, no negativePrompt.
+// under inputs, no negativePrompt, and the deliveryMethod dial whose default
+// is async (the async-ack guard's declared case).
 const runwareKlingSchemaFixture = `{"components":{"schemas":{"RequestBody":{"type":"array","items":{
   "type":"object","additionalProperties":false,
   "properties":{
@@ -31,6 +32,7 @@ const runwareKlingSchemaFixture = `{"components":{"schemas":{"RequestBody":{"typ
     "width":{"type":"integer"},"height":{"type":"integer"},
     "resolution":{"type":"string","enum":["720p","1080p"]},
     "outputFormat":{"type":"string","enum":["MP4","WEBM","MOV"]},
+    "deliveryMethod":{"type":"string","enum":["sync","async"],"default":"async"},
     "includeCost":{"type":"boolean"},
     "inputs":{"type":"object","properties":{
       "frameImages":{"type":"array","maxItems":10,"items":{"type":"string"}},
@@ -301,6 +303,9 @@ func TestResolveRunwareVideoTaskTextToVideo(t *testing.T) {
 	if got, ok := task["outputFormat"].(string); !ok || got != "MP4" {
 		t.Fatalf("outputFormat = %+v, want MP4", task["outputFormat"])
 	}
+	if got, ok := task["deliveryMethod"].(string); !ok || got != "sync" {
+		t.Fatalf("deliveryMethod = %+v, want sync (the schema declares the dial and its async default would ack)", task["deliveryMethod"])
+	}
 	if _, ok := task["negativePrompt"]; ok {
 		t.Fatal("the schema declares no negativePrompt; it must never be written")
 	}
@@ -337,6 +342,19 @@ func TestResolveRunwareVideoTaskTextToVideo(t *testing.T) {
 	}
 	if _, ok := task["width"]; ok {
 		t.Fatal("i2v inherits the frame's orientation; no pixels may ride")
+	}
+
+	// The deliveryMethod dial is written only where the schema declares it —
+	// the Veo fixture carries no such property, and additionalProperties:false
+	// makes a speculative field a 400.
+	task, _, _, err = resolveRunwareVideoTask(parseRunwareFixture(t, runwareVeoSchemaFixture), VideoGenerateRequest{
+		Model: "google:3@2", Prompt: "animate", Images: []string{"data:image/png;base64,QUJD"},
+	})
+	if err != nil {
+		t.Fatalf("resolve without the dial: %v", err)
+	}
+	if _, ok := task["deliveryMethod"]; ok {
+		t.Fatal("deliveryMethod must never ride when the schema does not declare it")
 	}
 }
 
@@ -934,6 +952,105 @@ func TestRunwareUpscaleImagePollsThenPacks(t *testing.T) {
 	}
 	if polls != 2 || len(recovered.Images) != 1 {
 		t.Fatalf("recovery should poll once and deliver, got polls=%d images=%d", polls, len(recovered.Images))
+	}
+}
+
+// TestRunwareAsyncAckRowIsNotAResult is the conv_2abf9ca68c1bfb009f303967
+// regression: MiniMax H3 answers a video submit with a bare acknowledgment
+// row — taskType and taskUUID only, no status, no media — and the old
+// row-done check read that as a finished result whose empty fields became
+// "runware returned no media" seconds after submit, while the generation kept
+// running server-side. The submit's ack must drop into the getResponse poll
+// and the clip must be delivered from it.
+func TestRunwareAsyncAckRowIsNotAResult(t *testing.T) {
+	polls := 0
+	var resultURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Write([]byte("\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isomiso2avc1mp41" + strings.Repeat("x", 256)))
+			return
+		}
+		var tasks []map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&tasks)
+		first := tasks[0]
+		w.Header().Set("Content-Type", "application/json")
+		if first["taskType"] == "getResponse" {
+			polls++
+			status := "processing"
+			if polls >= 2 {
+				status = "success"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{{
+					"taskType": "videoInference", "taskUUID": first["taskUUID"],
+					"status": status, "videoURL": resultURL, "cost": 0.18,
+				}},
+			})
+			return
+		}
+		// The acknowledgment: no status field at all.
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"taskType": "videoInference", "taskUUID": first["taskUUID"]}},
+		})
+	}))
+	defer server.Close()
+	resultURL = server.URL + "/result.mp4"
+
+	client := newRunwareClient(server.Client(), "rw-key")
+	client.baseURL = server.URL
+
+	generated, err := client.GenerateVideo(context.Background(), map[string]any{
+		"taskType": "videoInference", "taskUUID": runwareTaskUUID(), "model": "minimax:h3@0",
+		"positivePrompt": "dolly in",
+	})
+	if err != nil {
+		t.Fatalf("GenerateVideo: %v", err)
+	}
+	if polls < 2 {
+		t.Fatalf("the ack must be polled to delivery, got %d getResponse polls", polls)
+	}
+	if len(generated.Data) == 0 {
+		t.Fatalf("no bytes delivered")
+	}
+}
+
+// TestRunwareFinishedRowWithoutMediaNamesTheRow pins the other half: a row
+// that IS finished but carries nothing must not surface as the bare "returned
+// no media" — the error names the row's status (and cost) so the planner's
+// adjusted-retry guidance has something to act on. The direct GenerateVideo
+// path and the job-recovery path (pollTaskOnce) both get the named error.
+func TestRunwareFinishedRowWithoutMediaNamesTheRow(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var tasks []map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&tasks)
+		first := tasks[0]
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{
+				"taskType": first["taskType"], "taskUUID": first["taskUUID"],
+				"status": "success", "cost": 0.09,
+			}},
+		})
+	}))
+	defer server.Close()
+
+	client := newRunwareClient(server.Client(), "rw-key")
+	client.baseURL = server.URL
+
+	_, err := client.GenerateVideo(context.Background(), map[string]any{
+		"taskType": "videoInference", "taskUUID": runwareTaskUUID(), "model": "minimax:h3@0",
+		"positivePrompt": "dolly in",
+	})
+	if err == nil || !strings.Contains(err.Error(), "finished without media") || !strings.Contains(err.Error(), `status "success"`) || !strings.Contains(err.Error(), "$0.0900") {
+		t.Fatalf("GenerateVideo err = %v, want the named row", err)
+	}
+	if strings.Contains(err.Error(), "returned no media") {
+		t.Fatalf("err = %v, must not be the bare no-media miss", err)
+	}
+
+	_, err = client.pollTaskOnce(context.Background(), mediaJob{Provider: "runware", ID: runwareTaskUUID()})
+	if err == nil || !strings.Contains(err.Error(), "finished without media") {
+		t.Fatalf("pollTaskOnce err = %v, want the named row", err)
 	}
 }
 

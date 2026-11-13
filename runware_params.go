@@ -273,6 +273,16 @@ func resolveRunwareVideoTask(schema *ModelInputSchema, req VideoGenerateRequest)
 	if runwareDeclares(schema, "outputFormat") {
 		task["outputFormat"] = "MP4"
 	}
+	// Delivery: request the documented sync window where the schema declares
+	// the dial — every video packaging does, and its default is "async", under
+	// which the submit answers with a bare acknowledgment row and the result
+	// must be polled (conv_2abf9ca68c1bfb009f303967). With "sync" a task that
+	// finishes inside the 120s window delivers in the submit's own response;
+	// one that outlives it still comes back "processing" and drops into the
+	// same getResponse poll the async path uses.
+	if runwareDeclares(schema, "deliveryMethod") {
+		task["deliveryMethod"] = "sync"
+	}
 	return task, notices, diagnostics, nil
 }
 
