@@ -32,6 +32,8 @@ export function CheckOpenRouterConnection():Promise<void>;
 
 export function CheckReplicateConnection():Promise<void>;
 
+export function CheckRunwareConnection():Promise<void>;
+
 export function ChooseToolWorkspace(arg1:string):Promise<string>;
 
 export function ClearOpenAICompatibleAPIKey():Promise<void>;
@@ -85,6 +87,8 @@ export function HasOpenAICompatibleAPIKey():Promise<boolean>;
 export function HasOpenRouterAPIKey():Promise<boolean>;
 
 export function HasReplicateAPIKey():Promise<boolean>;
+
+export function HasRunwareAPIKey():Promise<boolean>;
 
 export function ImportLibrary():Promise<main.LibraryImportResult>;
 
@@ -190,6 +194,8 @@ export function ListReplicateVideoRestyleModels():Promise<Array<main.ReplicateMo
 
 export function ListReplicateVideoUpscaleModels():Promise<Array<main.ReplicateModel>>;
 
+export function ListRunwareImageModels():Promise<Array<main.RunwareModel>>;
+
 export function ListToolFiles(arg1:main.ToolFileListRequest):Promise<main.ToolFileListResult>;
 
 export function LoadUIState():Promise<main.UIState>;
@@ -269,6 +275,8 @@ export function SaveOpenAICompatibleAPIKey(arg1:string):Promise<void>;
 export function SaveOpenRouterAPIKey(arg1:string):Promise<void>;
 
 export function SaveReplicateAPIKey(arg1:string):Promise<void>;
+
+export function SaveRunwareAPIKey(arg1:string):Promise<void>;
 
 export function SaveSubtitleEdit(arg1:main.SaveSubtitleEditRequest):Promise<main.SaveSubtitleEditResult>;
 

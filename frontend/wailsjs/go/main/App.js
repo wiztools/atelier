@@ -62,6 +62,10 @@ export function CheckReplicateConnection() {
   return window['go']['main']['App']['CheckReplicateConnection']();
 }
 
+export function CheckRunwareConnection() {
+  return window['go']['main']['App']['CheckRunwareConnection']();
+}
+
 export function ChooseToolWorkspace(arg1) {
   return window['go']['main']['App']['ChooseToolWorkspace'](arg1);
 }
@@ -168,6 +172,10 @@ export function HasOpenRouterAPIKey() {
 
 export function HasReplicateAPIKey() {
   return window['go']['main']['App']['HasReplicateAPIKey']();
+}
+
+export function HasRunwareAPIKey() {
+  return window['go']['main']['App']['HasRunwareAPIKey']();
 }
 
 export function ImportLibrary() {
@@ -378,6 +386,10 @@ export function ListReplicateVideoUpscaleModels() {
   return window['go']['main']['App']['ListReplicateVideoUpscaleModels']();
 }
 
+export function ListRunwareImageModels() {
+  return window['go']['main']['App']['ListRunwareImageModels']();
+}
+
 export function ListToolFiles(arg1) {
   return window['go']['main']['App']['ListToolFiles'](arg1);
 }
@@ -536,6 +548,10 @@ export function SaveOpenRouterAPIKey(arg1) {
 
 export function SaveReplicateAPIKey(arg1) {
   return window['go']['main']['App']['SaveReplicateAPIKey'](arg1);
+}
+
+export function SaveRunwareAPIKey(arg1) {
+  return window['go']['main']['App']['SaveRunwareAPIKey'](arg1);
 }
 
 export function SaveSubtitleEdit(arg1) {

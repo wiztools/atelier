@@ -55,6 +55,8 @@ func imageGenerationProvider(config AppConfig) string {
 		return "fal"
 	case "replicate":
 		return "replicate"
+	case "runware":
+		return "runware"
 	case "openai-compatible":
 		return "openai-compatible"
 	default:
@@ -148,6 +150,7 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 		schemaCache := newFalSchemaCache(app.client, config.Storage.Root)
 		falOverrides := loadFalOverrides(config.Storage.Root)
 		replicateSchemaCache := newReplicateSchemaCache(app.client, config.Storage.Root)
+		runwareSchemaCache := newRunwareSchemaCache(app.client, config.Storage.Root)
 		gateway.tools.GenerateImage = func(ctx context.Context, req ImageGenerateRequest) (ollamaGenerateResponse, []byte, []string, error) {
 			// Airplane mode refuses the cloud-routed backends (fal, Replicate)
 			// before any source normalization; a local backend falls through.
@@ -261,6 +264,23 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				}
 				resp.Diagnostics = diagnostics
 				return resp, nil, notices, genErr
+			}
+			if provider == "runware" {
+				apiKey, err := loadRunwareAPIKey()
+				if err != nil {
+					return ollamaGenerateResponse{}, nil, nil, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return ollamaGenerateResponse{}, nil, nil, errRunwareKeyNotConfigured
+				}
+				// Runware takes data URIs inline for every image input, so no
+				// upload pass; the client reports the actual charge.
+				task, notices, err := resolveRunwareImageTask(runwareSchemaCache.Get(ctx, req.Model), req)
+				if err != nil {
+					return ollamaGenerateResponse{}, nil, nil, err
+				}
+				resp, err := newRunwareClient(app.client, apiKey).GenerateImage(ctx, task)
+				return resp, nil, notices, err
 			}
 			resp, raw, err := app.ollamaClient(config.Providers.Ollama.BaseURL).GenerateImage(ctx, req)
 			return resp, raw, nil, err

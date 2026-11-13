@@ -129,7 +129,8 @@ export function useAppModel() {
     setFalAPIKeyInput, setFalError, setFalHasKey, setFalStatus, setOpenRouterAPIKeyInput, setOpenRouterError,
     setOpenRouterHasKey, setOpenRouterStatus, setOpenaiCompatibleHasKey, setOpenaiCompatibleKeyInput,
     setOpenaiCompatibleStatus, setReplicateAPIKeyInput, setReplicateError, setReplicateHasKey,
-    setReplicateStatus,
+    setReplicateStatus, checkRunwareConnection, clearRunwareKey, loadRunwareKeyState, runwareAPIKeyInput,
+    runwareError, runwareHasKey, runwareStatus, saveRunwareKey, setRunwareAPIKeyInput,
   } = useProviderKeys();
   const {
     airplaneMode, applyConfig, audioExtendDuration, audioProvider, baseURL, chooseToolWorkspace,
@@ -143,7 +144,7 @@ export function useAppModel() {
     mediaTimeoutMinutes, model, ollamaNumCtx, ollamaSpeechModel, openaiCompatibleBaseURL,
     openaiCompatibleModel, patchSettingsModelSelection, primaryModels, primaryProvider,
     replicateAudioExtendModel, replicateImageEditModel, replicateInpaintModel, replicateLipsyncImageModel,
-    replicateLipsyncVideoModel, replicateModel, replicateSoundEffectsModel, replicateSoundEffectsVideoModel,
+    replicateLipsyncVideoModel, replicateModel, runwareModel, replicateSoundEffectsModel, replicateSoundEffectsVideoModel,
     replicateSpeechModel, replicateTranscribeModel, replicateUpscaleModel, replicateVideoExtendModel,
     replicateVideoImageModel, replicateVideoModel, replicateVideoReframeModel, replicateVideoRestyleModel,
     replicateVideoUpscaleModel, setAirplaneMode, setBaseURL, setConfigLoaded, setFfmpegBinary,
@@ -154,7 +155,7 @@ export function useAppModel() {
     setWhisperModel, setWhisperVADModel, sipsBinary, soundDuration, speechProvider, storageConfig, system,
     toolConfig, transcriptionProvider, videoAspectRatio, videoDuration, videoProvider, videoResolution,
     whisperBinary, whisperChunkMinutes, whisperModel, whisperVADModel,
-  } = useAppConfig({openRouterHasKey, falHasKey, replicateHasKey});
+  } = useAppConfig({openRouterHasKey, falHasKey, replicateHasKey, runwareHasKey});
   const [status, setStatus] = useState<main.OllamaStatus | null>(null);
   const [models, setModels] = useState<main.OllamaModel[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -186,6 +187,8 @@ export function useAppModel() {
     refreshFalModels,
     refreshOpenRouterModels,
     refreshReplicateModels,
+    refreshRunwareModels,
+    runwareModels,
     replicateAudioExtendModels,
     replicateImageEditModels,
     replicateLipsyncImageModels,
@@ -808,6 +811,7 @@ export function useAppModel() {
       falModel: overrides.imageModel && imageProvider === 'fal' ? overrides.imageModel : global.falModel,
       openaiImageModel: overrides.imageModel && imageProvider === 'openai-compatible' ? overrides.imageModel : global.openaiImageModel,
       replicateModel: overrides.imageModel && imageProvider === 'replicate' ? overrides.imageModel : global.replicateModel,
+      runwareModel: overrides.imageModel && imageProvider === 'runware' ? overrides.imageModel : global.runwareModel,
       replicateImageEditModel: overrides.imageEditModel && imageProvider === 'replicate' ? overrides.imageEditModel : global.replicateImageEditModel,
       falImageEditModel: overrides.imageEditModel && imageProvider !== 'replicate' ? overrides.imageEditModel : global.falImageEditModel,
       replicateUpscaleModel: overrides.upscaleModel && imageProvider === 'replicate' ? overrides.upscaleModel : global.replicateUpscaleModel,
@@ -913,11 +917,13 @@ export function useAppModel() {
     if (draftPatch.harnessProvider !== undefined && patch.harnessModel === undefined) {
       draftPatch.harnessModel = harnessModels[draftPatch.harnessProvider];
     }
-    if (draftPatch.imageProvider !== undefined && patch.falModel === undefined && patch.openaiImageModel === undefined && patch.replicateModel === undefined) {
+    if (draftPatch.imageProvider !== undefined && patch.falModel === undefined && patch.openaiImageModel === undefined && patch.replicateModel === undefined && patch.runwareModel === undefined) {
       if (draftPatch.imageProvider === 'fal') {
         draftPatch.falModel = falModel;
       } else if (draftPatch.imageProvider === 'replicate') {
         draftPatch.replicateModel = replicateModel;
+      } else if (draftPatch.imageProvider === 'runware') {
+        draftPatch.runwareModel = runwareModel;
       } else {
         draftPatch.openaiImageModel = openaiCompatibleModel;
       }
@@ -974,7 +980,7 @@ export function useAppModel() {
         next.add('imageProvider');
         next.delete('imageModel');
       }
-      if (patch.falModel !== undefined || patch.openaiImageModel !== undefined || patch.replicateModel !== undefined) next.add('imageModel');
+      if (patch.falModel !== undefined || patch.openaiImageModel !== undefined || patch.replicateModel !== undefined || patch.runwareModel !== undefined) next.add('imageModel');
       if (patch.videoProvider !== undefined) {
         next.add('videoProvider');
         next.delete('videoModel');
@@ -1065,6 +1071,8 @@ export function useAppModel() {
             next.falModel = global.falModel;
           } else if (next.imageProvider === 'replicate') {
             next.replicateModel = global.replicateModel;
+          } else if (next.imageProvider === 'runware') {
+            next.runwareModel = global.runwareModel;
           } else {
             next.openaiImageModel = global.openaiImageModel;
           }
@@ -1330,6 +1338,7 @@ export function useAppModel() {
     falModels,
     falImageEditModels,
     replicateModels,
+    runwareModels,
     replicateImageEditModels,
     replicateUpscaleModels,
     replicateVideoUpscaleModels,
@@ -1365,6 +1374,7 @@ export function useAppModel() {
     openRouterHasKey,
     falHasKey,
     replicateHasKey,
+    runwareHasKey,
     whisperStatus,
     openCapabilityID,
     setOpenCapabilityID,
@@ -1434,6 +1444,8 @@ export function useAppModel() {
           checkReplicateConnection();
         }
       }).catch(() => setReplicateHasKey(false)),
+      loadRunwareKeyState(),
+      refreshRunwareModels(),
       DetectLocalTools(new main.LocalToolOverrides()).then((report) => {
         setLocalToolsReport(report);
         // An unset provider auto-resolves in Go (fal when a key exists, else a
@@ -2551,6 +2563,14 @@ export function useAppModel() {
 
   return {
     saveOpenAICompatibleKey,
+    checkRunwareConnection,
+    clearRunwareKey,
+    runwareAPIKeyInput,
+    runwareError,
+    runwareHasKey,
+    runwareStatus,
+    saveRunwareKey,
+    setRunwareAPIKeyInput,
     checkOpenRouterConnection,
     checkReplicateConnection,
     clearOpenAICompatibleKey,

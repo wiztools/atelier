@@ -527,6 +527,20 @@ export namespace main {
 	        this.model = source["model"];
 	    }
 	}
+	export class ConfigRunware {
+	    enabled: boolean;
+	    model?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConfigRunware(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.model = source["model"];
+	    }
+	}
 	export class ConfigReplicate {
 	    enabled: boolean;
 	    model?: string;
@@ -700,6 +714,7 @@ export namespace main {
 	    openrouter: ConfigOpenRouter;
 	    fal: ConfigFal;
 	    replicate: ConfigReplicate;
+	    runware: ConfigRunware;
 	    openaiCompatible: ConfigOpenAICompatible;
 	    local: ConfigLocalProviders;
 	
@@ -713,6 +728,7 @@ export namespace main {
 	        this.openrouter = this.convertValues(source["openrouter"], ConfigOpenRouter);
 	        this.fal = this.convertValues(source["fal"], ConfigFal);
 	        this.replicate = this.convertValues(source["replicate"], ConfigReplicate);
+	        this.runware = this.convertValues(source["runware"], ConfigRunware);
 	        this.openaiCompatible = this.convertValues(source["openaiCompatible"], ConfigOpenAICompatible);
 	        this.local = this.convertValues(source["local"], ConfigLocalProviders);
 	    }
@@ -1908,6 +1924,7 @@ export namespace main {
 		    return a;
 		}
 	}
+	
 	
 	
 	
@@ -3489,6 +3506,26 @@ export namespace main {
 	        this.status = source["status"];
 	        this.tags = source["tags"];
 	        this.thumbnailUrl = source["thumbnailUrl"];
+	    }
+	}
+	export class RunwareModel {
+	    id: string;
+	    docId: string;
+	    displayName: string;
+	    creator: string;
+	    capabilities: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new RunwareModel(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.docId = source["docId"];
+	        this.displayName = source["displayName"];
+	        this.creator = source["creator"];
+	        this.capabilities = source["capabilities"];
 	    }
 	}
 	export class SaveAudioRequest {

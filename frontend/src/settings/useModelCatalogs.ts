@@ -20,6 +20,7 @@ import {
   ListFalLipsyncVideoModels,
   ListFalSoundEffectsVideoModels,
   ListReplicateModels,
+  ListRunwareImageModels,
   ListReplicateImageEditModels,
   ListReplicateLipsyncImageModels,
   ListReplicateLipsyncVideoModels,
@@ -74,6 +75,7 @@ function useModelCatalogs() {
 
   const [replicateSpeechModels, setReplicateSpeechModels] = useState<main.ReplicateModel[]>([]);
   const [replicateModels, setReplicateModels] = useState<main.ReplicateModel[]>([]);
+  const [runwareModels, setRunwareModels] = useState<main.RunwareModel[]>([]);
   const [replicateImageEditModels, setReplicateImageEditModels] = useState<main.ReplicateModel[]>([]);
   const [replicateUpscaleModels, setReplicateUpscaleModels] = useState<main.ReplicateModel[]>([]);
   const [replicateVideoUpscaleModels, setReplicateVideoUpscaleModels] = useState<main.ReplicateModel[]>([]);
@@ -261,6 +263,16 @@ function useModelCatalogs() {
     }
   }
 
+  // Runware's model index is a public static file, so it loads without a key;
+  // a failure leaves the picker as free text (AIR ids are typeable).
+  async function refreshRunwareModels() {
+    try {
+      setRunwareModels(asArray(await ListRunwareImageModels()));
+    } catch {
+      setRunwareModels([]);
+    }
+  }
+
   async function refreshReplicateModels() {
     // The Replicate collections are a discovery aid like fal's catalog — a
     // load failure leaves the field as free text, so swallow the error.
@@ -374,6 +386,8 @@ function useModelCatalogs() {
     refreshFalModels,
     refreshOpenRouterModels,
     refreshReplicateModels,
+    refreshRunwareModels,
+    runwareModels,
     replicateAudioExtendModels,
     replicateImageEditModels,
     replicateLipsyncImageModels,

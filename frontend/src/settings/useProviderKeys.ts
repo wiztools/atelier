@@ -3,9 +3,12 @@ import {
   CheckFalConnection,
   CheckOpenRouterConnection,
   CheckReplicateConnection,
+  CheckRunwareConnection,
   ClearOpenAICompatibleAPIKey,
   HasOpenAICompatibleAPIKey,
+  HasRunwareAPIKey,
   SaveOpenAICompatibleAPIKey,
+  SaveRunwareAPIKey,
 } from '../../wailsjs/go/main/App';
 import {notifications, notifyError} from '../notifications';
 import {formatError, formatFalError, formatOpenRouterError} from '../utils';
@@ -38,6 +41,62 @@ function useProviderKeys() {
   const [replicateHasKey, setReplicateHasKey] = useState(false);
   const [replicateStatus, setReplicateStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
   const [replicateError, setReplicateError] = useState('');
+
+  // Runware (image generation only, for now). Its save/clear/check handlers
+  // live here rather than in App: nothing else reacts to the key — the model
+  // index is public, so the catalog loads with or without it.
+  const [runwareAPIKeyInput, setRunwareAPIKeyInput] = useState('');
+  const [runwareHasKey, setRunwareHasKey] = useState(false);
+  const [runwareStatus, setRunwareStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
+  const [runwareError, setRunwareError] = useState('');
+
+  async function checkRunwareConnection() {
+    try {
+      await CheckRunwareConnection();
+      setRunwareStatus('connected');
+      setRunwareError('');
+    } catch (error) {
+      setRunwareStatus('error');
+      setRunwareError(formatError(error));
+    }
+  }
+
+  async function loadRunwareKeyState() {
+    try {
+      const hasKey = await HasRunwareAPIKey();
+      setRunwareHasKey(hasKey);
+      if (hasKey) await checkRunwareConnection();
+    } catch {
+      setRunwareHasKey(false);
+    }
+  }
+
+  async function saveRunwareKey() {
+    try {
+      await SaveRunwareAPIKey(runwareAPIKeyInput);
+      setRunwareAPIKeyInput('');
+      setRunwareStatus('unknown');
+      setRunwareError('');
+      const hasKey = await HasRunwareAPIKey();
+      setRunwareHasKey(hasKey);
+      notifications.dismissKey('key-runware');
+      if (hasKey) await checkRunwareConnection();
+    } catch (error) {
+      notifyError("Couldn't save the Runware key", error, {key: 'key-runware'});
+    }
+  }
+
+  async function clearRunwareKey() {
+    try {
+      await SaveRunwareAPIKey('');
+      setRunwareHasKey(false);
+      setRunwareStatus('unknown');
+      setRunwareError('');
+      notifications.dismissKey('key-runware');
+    } catch (error) {
+      notifyError("Couldn't remove the Runware key", error, {key: 'key-runware'});
+    }
+  }
 
   async function checkOpenRouterConnection() {
     try {
@@ -97,7 +156,16 @@ function useProviderKeys() {
     checkFalConnection,
     checkOpenRouterConnection,
     checkReplicateConnection,
+    checkRunwareConnection,
     clearOpenAICompatibleKey,
+    clearRunwareKey,
+    loadRunwareKeyState,
+    runwareAPIKeyInput,
+    runwareError,
+    runwareHasKey,
+    runwareStatus,
+    saveRunwareKey,
+    setRunwareAPIKeyInput,
     falAPIKeyInput,
     falError,
     falHasKey,

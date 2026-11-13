@@ -535,6 +535,10 @@ func imageGenerationConfigured(config AppConfig) bool {
 		strings.TrimSpace(config.Providers.Replicate.Model) != "" {
 		return true
 	}
+	if strings.TrimSpace(config.Models.ImageProvider) == "runware" &&
+		strings.TrimSpace(config.Providers.Runware.Model) != "" {
+		return true
+	}
 	return strings.TrimSpace(config.Models.ImageProvider) == "openai-compatible" &&
 		strings.TrimSpace(config.Providers.OpenAICompatible.Model) != ""
 }
@@ -554,6 +558,12 @@ func resolveDefaultImageModel(config AppConfig) string {
 			return model
 		}
 		return defaultReplicateImageModel
+	}
+	if strings.TrimSpace(config.Models.ImageProvider) == "runware" {
+		if model := strings.TrimSpace(config.Providers.Runware.Model); model != "" {
+			return model
+		}
+		return defaultRunwareImageModel
 	}
 	if strings.TrimSpace(config.Models.ImageProvider) == "openai-compatible" {
 		return strings.TrimSpace(config.Providers.OpenAICompatible.Model)
@@ -580,6 +590,12 @@ func resolveDefaultImageEditModel(config AppConfig) string {
 			return model
 		}
 		return defaultReplicateImageEditModel
+	}
+	if strings.TrimSpace(config.Models.ImageProvider) == "runware" {
+		if model := strings.TrimSpace(config.Providers.Runware.Model); model != "" {
+			return model
+		}
+		return defaultRunwareImageModel
 	}
 	if strings.TrimSpace(config.Models.ImageProvider) == "openai-compatible" {
 		return strings.TrimSpace(config.Providers.OpenAICompatible.Model)

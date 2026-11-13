@@ -240,3 +240,53 @@ func (a *App) resolvedPrimaryModelAndProvider(config AppConfig) (model, provider
 	}
 	return strings.TrimSpace(config.Providers.Ollama.Models.Primary), provider
 }
+
+func (a *App) SaveRunwareAPIKey(apiKey string) error {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return clearRunwareAPIKey()
+	}
+	return saveRunwareAPIKey(apiKey)
+}
+
+func (a *App) HasRunwareAPIKey() (bool, error) {
+	key, err := loadRunwareAPIKey()
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(key) != "", nil
+}
+
+// CheckRunwareConnection validates the stored Runware key with an
+// authentication-only task (no inference), mirroring CheckReplicateConnection.
+func (a *App) CheckRunwareConnection() error {
+	key, err := loadRunwareAPIKey()
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(key) == "" {
+		return errRunwareKeyNotConfigured
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return newRunwareClient(a.client, key).VerifyKey(ctx)
+}
+
+// ListRunwareImageModels returns the Runware models that generate images
+// (text-to-image or edit) for the Settings image-model picker. The index is
+// public, so no key is needed to browse it.
+func (a *App) ListRunwareImageModels() ([]RunwareModel, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	models, err := newRunwareClient(a.client, "").ListModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]RunwareModel, 0, len(models))
+	for _, m := range models {
+		if runwareModelHasCapability(m, "text-to-image", "edit") {
+			filtered = append(filtered, m)
+		}
+	}
+	return filtered, nil
+}

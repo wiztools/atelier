@@ -61,7 +61,7 @@ function speechModelOptionsWithVoiceDesignBadge(options: {value: string; label: 
   });
 }
 
-function falModelOptionList(models: main.FalModel[] | main.ReplicateModel[] | null | undefined): {value: string; label: string}[] {
+function falModelOptionList(models: {id?: string; displayName?: string}[] | null | undefined): {value: string; label: string}[] {
   const items = asArray(models).map((item) => ({id: item.id || '', base: item.displayName || item.id || ''}));
   // Group by display name to find collisions.
   const counts: Record<string, number> = {};

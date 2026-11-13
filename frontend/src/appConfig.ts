@@ -38,6 +38,7 @@ import {
   defaultReplicateAudioExtendModel,
   defaultReplicateImageEditModel,
   defaultReplicateImageModel,
+  defaultRunwareImageModel,
   defaultReplicateInpaintModel,
   defaultReplicateLipsyncImageModel,
   defaultReplicateLipsyncVideoModel,
@@ -84,11 +85,12 @@ function configValues(config: main.AppConfig) {
   const nextImageAspectRatio = config.generation?.image?.aspectRatio || defaultImageAspectRatio;
   const nextImageSizePreset = config.generation?.image?.sizePreset || defaultImageSizePreset;
   const nextImageSteps = config.generation?.image?.steps || defaultImageSteps;
-  const nextImageProvider: 'fal' | 'replicate' | 'openai-compatible' = config.models?.imageProvider === 'fal' ? 'fal' : config.models?.imageProvider === 'replicate' ? 'replicate' : 'openai-compatible';
+  const nextImageProvider: 'fal' | 'replicate' | 'runware' | 'openai-compatible' = config.models?.imageProvider === 'fal' ? 'fal' : config.models?.imageProvider === 'replicate' ? 'replicate' : config.models?.imageProvider === 'runware' ? 'runware' : 'openai-compatible';
   const nextVideoProvider: 'fal' | 'replicate' = config.models?.videoProvider === 'replicate' ? 'replicate' : 'fal';
   const nextOpenAICompatibleBaseURL = config.providers?.openaiCompatible?.baseURL || 'http://localhost:8080';
   const nextOpenAICompatibleModel = config.providers?.openaiCompatible?.model ?? '';
   const nextReplicateModel = config.providers?.replicate?.model || defaultReplicateImageModel;
+  const nextRunwareModel = config.providers?.runware?.model || defaultRunwareImageModel;
   const nextReplicateImageEditModel = config.providers?.replicate?.imageEditModel || defaultReplicateImageEditModel;
   const nextReplicateUpscaleModel = config.providers?.replicate?.upscaleModel || defaultReplicateUpscaleModel;
   const nextReplicateVideoUpscaleModel = config.providers?.replicate?.videoUpscaleModel || defaultReplicateVideoUpscaleModel;
@@ -177,6 +179,7 @@ function configValues(config: main.AppConfig) {
     openaiCompatibleBaseURL: nextOpenAICompatibleBaseURL,
     openaiCompatibleModel: nextOpenAICompatibleModel,
     replicateModel: nextReplicateModel,
+    runwareModel: nextRunwareModel,
     replicateImageEditModel: nextReplicateImageEditModel,
     replicateUpscaleModel: nextReplicateUpscaleModel,
     replicateVideoUpscaleModel: nextReplicateVideoUpscaleModel,
@@ -235,7 +238,7 @@ type AppConfigValues = ReturnType<typeof configValues>;
 
 // The three key flags ride along as each provider's enabled bit; they come
 // from the keychain, not from the config file.
-type ConfigKeyFlags = {openRouterHasKey: boolean; falHasKey: boolean; replicateHasKey: boolean};
+type ConfigKeyFlags = {openRouterHasKey: boolean; falHasKey: boolean; replicateHasKey: boolean; runwareHasKey: boolean};
 
 function appConfigPayload(s: AppConfigValues & ConfigKeyFlags) {
   return {
@@ -281,6 +284,10 @@ function appConfigPayload(s: AppConfigValues & ConfigKeyFlags) {
         inpaintModel: s.falInpaintModel,
         lipsyncImageModel: s.falLipsyncImageModel,
         lipsyncVideoModel: s.falLipsyncVideoModel,
+      },
+      runware: {
+        enabled: s.runwareHasKey,
+        model: s.runwareModel,
       },
       replicate: {
         enabled: s.replicateHasKey,

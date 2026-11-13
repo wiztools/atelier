@@ -4111,6 +4111,8 @@ func (h *HarnessEngine) toolActivityFromResult(result HarnessToolResult) Harness
 			activity.Provider = imageGenerationProvider(h.config)
 		}
 	}
+	// Runware reports the actual charge (includeCost), so a zero there means
+	// the result carried no cost field — unknown, not free.
 	// Replicate media generation is paid but unpriceable here — no pricing
 	// API, no cost on the prediction — so mark the row unknown rather than
 	// letting it render as a free call. CostMicros stays 0 and the turn total
@@ -4122,7 +4124,7 @@ func (h *HarnessEngine) toolActivityFromResult(result HarnessToolResult) Harness
 	// providers (ollama, openai-compatible) generate no dollar cost by nature
 	// and stay unmarked.
 	if activity.MediaKind != "" && activity.CostMicros == 0 &&
-		(activity.Provider == "replicate" || activity.Provider == "fal") {
+		(activity.Provider == "replicate" || activity.Provider == "fal" || activity.Provider == "runware") {
 		activity.CostUnknown = true
 	}
 	return activity

@@ -17,7 +17,7 @@ function asConfig(value: unknown): main.AppConfig {
   return value as main.AppConfig;
 }
 
-const keys = {openRouterHasKey: true, falHasKey: false, replicateHasKey: true};
+const keys = {openRouterHasKey: true, falHasKey: false, replicateHasKey: true, runwareHasKey: true};
 
 // An empty config (first launch) fills every field's default.
 const defaults = configValues(asConfig({}));
@@ -72,6 +72,7 @@ const full = asConfig({
     openaiCompatible: {baseURL: 'http://localai.lan:8080', primary: 'local-chat', harness: 'local-tools', model: 'sd-xl'},
     fal,
     replicate,
+    runware: {model: 'civitai:4201@130072'},
     local: {
       whisper: {binary: '/opt/whisper', model: '~/models/ggml-large.bin', vadModel: '~/models/silero.bin', chunkMinutes: 20},
       ffmpeg: {binary: '/opt/ffmpeg'},
@@ -105,7 +106,7 @@ same(configValues(asConfig(appConfigPayload({...values, ...keys}))), values, 'ev
 // The payload's own shape: the key flags ride as each provider's enabled bit,
 // an automatic resolution is omitted, and chunking off saves as 0.
 const payload = appConfigPayload({...values, ...keys});
-same([payload.providers.openrouter.enabled, payload.providers.fal.enabled, payload.providers.replicate.enabled], [true, false, true], 'key flags become enabled bits');
+same([payload.providers.openrouter.enabled, payload.providers.fal.enabled, payload.providers.replicate.enabled, payload.providers.runware.enabled], [true, false, true, true], 'key flags become enabled bits');
 const autoPayload = appConfigPayload({...defaults, ...keys});
 assert(autoPayload.generation.video.resolution === undefined, 'an automatic video resolution is omitted');
 same(autoPayload.providers.local.whisper.chunkMinutes, 0, 'chunking off saves as 0');

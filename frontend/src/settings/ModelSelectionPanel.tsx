@@ -35,6 +35,7 @@ import {
   defaultFalLipsyncVideoModel,
   defaultFalUpscaleModel,
   defaultReplicateImageModel,
+  defaultRunwareImageModel,
   defaultReplicateImageEditModel,
   defaultReplicateVideoModel,
   defaultReplicateVideoImageModel,
@@ -193,12 +194,13 @@ type ModelSelectionValue = {
   primaryModel: string;
   harnessProvider: ChatProviderID;
   harnessModel: string;
-  imageProvider: 'fal' | 'replicate' | 'openai-compatible';
+  imageProvider: 'fal' | 'replicate' | 'runware' | 'openai-compatible';
   videoProvider: 'fal' | 'replicate';
   inpaintProvider: 'fal' | 'replicate';
   falModel: string;
   openaiImageModel: string;
   replicateModel: string;
+  runwareModel: string;
   replicateImageEditModel: string;
   replicateUpscaleModel: string;
   falImageEditModel: string;
@@ -342,7 +344,9 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
       ? draft.falModel
       : draft.imageProvider === 'replicate'
         ? draft.replicateModel
-        : draft.openaiImageModel;
+        : draft.imageProvider === 'runware'
+          ? draft.runwareModel
+          : draft.openaiImageModel;
   }
   if (keys.has('videoProvider')) payload.videoProvider = draft.videoProvider;
   // The edit/video model overrides ride the provider the draft has selected,
@@ -422,6 +426,7 @@ function ModelSelectionPanel({
     falModels: main.FalModel[];
     falImageEditModels: main.FalModel[];
     replicateModels: main.ReplicateModel[];
+    runwareModels: main.RunwareModel[];
     replicateImageEditModels: main.ReplicateModel[];
     replicateUpscaleModels: main.ReplicateModel[];
     replicateVideoUpscaleModels: main.ReplicateModel[];
@@ -457,6 +462,7 @@ function ModelSelectionPanel({
     openRouterHasKey: boolean;
     falHasKey: boolean;
     replicateHasKey: boolean;
+    runwareHasKey: boolean;
     whisperStatus: main.LocalBinaryStatus | null;
     openCapabilityID: string;
     setOpenCapabilityID: (id: string) => void;
@@ -493,6 +499,7 @@ function ModelSelectionPanel({
   const falImageOptions = falModelOptionList(catalogs.falModels);
   const falImageEditOptions = falModelOptionList(catalogs.falImageEditModels);
   const replicateImageOptions = falModelOptionList(catalogs.replicateModels);
+  const runwareImageOptions = falModelOptionList(catalogs.runwareModels);
   const replicateImageEditOptions = falModelOptionList(catalogs.replicateImageEditModels);
   const replicateUpscaleOptions = falModelOptionList(catalogs.replicateUpscaleModels);
   const replicateVideoUpscaleOptions = falModelOptionList(catalogs.replicateVideoUpscaleModels);
@@ -727,10 +734,11 @@ function ModelSelectionPanel({
               <select
                 id="image-provider"
                 value={value.imageProvider}
-                onChange={(event) => onChange({imageProvider: event.target.value as 'fal' | 'replicate' | 'openai-compatible'})}
+                onChange={(event) => onChange({imageProvider: event.target.value as 'fal' | 'replicate' | 'runware' | 'openai-compatible'})}
               >
                 <option value="fal" disabled={airplaneMode}>fal.ai (cloud)</option>
                 <option value="replicate" disabled={airplaneMode}>Replicate (cloud)</option>
+                <option value="runware" disabled={airplaneMode}>Runware (cloud)</option>
                 <option value="openai-compatible">OpenAI-compatible (local)</option>
               </select>
             </div>
@@ -769,6 +777,30 @@ function ModelSelectionPanel({
                   <span className="hint">Add a Replicate API token {keyWhere} before generating images.</span>
                 ) : replicateImageOptions.length ? null : (
                   <span className="hint">Type an owner/name model id — the model list couldn't be loaded.</span>
+                )}
+              </div>
+            ) : value.imageProvider === 'runware' ? (
+              <div className="field">
+                <div className="field-label-row">
+                  {fieldLabel('runware-model', 'Runware Model', 'imageModel')}
+                  <InfoHint
+                    label="About Runware models"
+                    text="One model serves text-to-image and edits: an attached image rides the model's own image input (a seed image or reference images), so pick an edit-capable model for image edits. Any AIR id works, including community models (civitai:…@…). Cost is the amount Runware reports charging."
+                  />
+                </div>
+                <ModelCombobox
+                  id="runware-model"
+                  ariaLabel="Runware model"
+                  placeholder={defaultRunwareImageModel}
+                  value={value.runwareModel}
+                  onChange={(next) => onChange({runwareModel: next})}
+                  options={runwareImageOptions}
+                  allowCustom
+                />
+                {!catalogs.runwareHasKey ? (
+                  <span className="hint">Add a Runware API key {keyWhere} before generating images.</span>
+                ) : runwareImageOptions.length ? null : (
+                  <span className="hint">Type an AIR model id (e.g. runware:101@1) — the model list couldn't be loaded.</span>
                 )}
               </div>
             ) : (

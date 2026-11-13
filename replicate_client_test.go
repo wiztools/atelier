@@ -721,7 +721,7 @@ func TestMergeAppConfigReplicateProviders(t *testing.T) {
 	}
 
 	unknown := defaultAppConfig()
-	unknown.Models.ImageProvider = "runware"
+	unknown.Models.ImageProvider = "dalle"
 	unknown.Models.VideoProvider = "runware"
 	merged = mergeAppConfig(unknown)
 	if merged.Models.ImageProvider != "ollama" {

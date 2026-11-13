@@ -51,6 +51,7 @@ type ConfigProviders struct {
 	OpenRouter       ConfigOpenRouter       `json:"openrouter"`
 	Fal              ConfigFal              `json:"fal"`
 	Replicate        ConfigReplicate        `json:"replicate"`
+	Runware          ConfigRunware          `json:"runware"`
 	OpenAICompatible ConfigOpenAICompatible `json:"openaiCompatible"`
 	Local            ConfigLocalProviders   `json:"local"`
 }
@@ -159,6 +160,16 @@ type ConfigFal struct {
 	// for it, returning the video with the sound mixed in (or, on the
 	// video-to-audio family, the standalone soundtrack).
 	SoundEffectsVideoModel string `json:"soundEffectsVideoModel,omitempty"`
+}
+
+// ConfigRunware configures the Runware media backend (runware_client.go).
+// SPIKE: generate_image only. One Model serves text-to-image and edits —
+// Runware models declare their image inputs (seedImage / referenceImages) in
+// their own schema, so the edit path needs no second slot. The key lives in
+// the OS keychain; Enabled mirrors its presence like ConfigFal.
+type ConfigRunware struct {
+	Enabled bool   `json:"enabled"`
+	Model   string `json:"model,omitempty"`
 }
 
 // ConfigReplicate configures the Replicate image/video-generation backend —
@@ -700,7 +711,7 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	// ImageProvider selects the generate_image backend. Normalize unknown or
 	// empty values to the Ollama default so the tool path never sees a stray id.
 	switch strings.TrimSpace(config.Models.ImageProvider) {
-	case "ollama", "fal", "replicate", "openai-compatible":
+	case "ollama", "fal", "replicate", "runware", "openai-compatible":
 		config.Models.ImageProvider = strings.TrimSpace(config.Models.ImageProvider)
 	default:
 		config.Models.ImageProvider = defaults.Models.ImageProvider
@@ -794,6 +805,10 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	if config.Models.ImageProvider == "replicate" && strings.TrimSpace(config.Providers.Replicate.Model) == "" {
 		config.Providers.Replicate.Model = defaultReplicateImageModel
 	}
+	if config.Models.ImageProvider == "runware" && strings.TrimSpace(config.Providers.Runware.Model) == "" {
+		config.Providers.Runware.Model = defaultRunwareImageModel
+	}
+	config.Providers.Runware.Model = strings.TrimSpace(config.Providers.Runware.Model)
 	// Seed the editor's inpaint endpoint the same way: a provider selected
 	// without a model would leave the editor's Generate permanently disabled.
 	if config.Models.InpaintProvider == "fal" && strings.TrimSpace(config.Providers.Fal.InpaintModel) == "" {

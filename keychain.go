@@ -97,6 +97,36 @@ func clearOpenAICompatibleAPIKey() error {
 	return nil
 }
 
+const (
+	runwareKeyringService = "atelier-runware-key"
+	runwareKeyringUser    = "runware"
+)
+
+func saveRunwareAPIKey(apiKey string) error {
+	return keyring.Set(runwareKeyringService, runwareKeyringUser, apiKey)
+}
+
+// loadRunwareAPIKey returns "" with a nil error when no key is saved, like
+// its fal and Replicate siblings.
+func loadRunwareAPIKey() (string, error) {
+	key, err := keyring.Get(runwareKeyringService, runwareKeyringUser)
+	if err != nil {
+		if err == keyring.ErrNotFound {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(key), nil
+}
+
+func clearRunwareAPIKey() error {
+	err := keyring.Delete(runwareKeyringService, runwareKeyringUser)
+	if err != nil && err != keyring.ErrNotFound {
+		return err
+	}
+	return nil
+}
+
 func saveReplicateAPIKey(apiKey string) error {
 	return keyring.Set(replicateKeyringService, replicateKeyringUser, apiKey)
 }

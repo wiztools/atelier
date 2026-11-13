@@ -351,6 +351,60 @@ export function SettingsView({app}: {app: AppModel}) {
                   </div>
                 </section>
 
+                <section className={app.airplaneMode ? 'settings-section airplane-blocked' : 'settings-section'}>
+                  <h3>
+                    Runware{' '}
+                    {app.airplaneMode ? (
+                      <AirplaneHint label="Runware unavailable" text="Unavailable while airplane mode is on — turn it off above to configure." />
+                    ) : null}
+                  </h3>
+                  <div className="connection">
+                    <label htmlFor="runware-key">API Key</label>
+                    <div className="endpoint-row">
+                      <input
+                        id="runware-key"
+                        type="password"
+                        placeholder={app.runwareHasKey ? 'Key saved — enter a new key to replace it' : 'Runware API key'}
+                        value={app.runwareAPIKeyInput}
+                        onChange={(event) => app.setRunwareAPIKeyInput(event.target.value)}
+                      />
+                      <button type="button" className="icon-btn" onClick={app.saveRunwareKey} disabled={!app.runwareAPIKeyInput} aria-label="Save key" title="Save key">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                          <polyline points="17 21 17 13 7 13 7 21" />
+                          <polyline points="7 3 7 8 15 8" />
+                        </svg>
+                      </button>
+                      <button type="button" className={`icon-btn${app.runwareStatus === 'connected' ? ' spinning' : ''}`} onClick={app.checkRunwareConnection} disabled={!app.runwareHasKey} aria-label="Check connection" title="Check connection">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.7-3" />
+                          <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.7 3" />
+                          <polyline points="21 4 21 9 16 9" />
+                          <polyline points="3 20 3 15 8 15" />
+                        </svg>
+                      </button>
+                      {app.runwareHasKey ? (
+                        <button type="button" className="icon-btn" onClick={app.clearRunwareKey} aria-label="Clear key" title="Clear key">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <polyline points="3 6 5 6 21 6" />
+                            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                          </svg>
+                        </button>
+                      ) : <span className="icon-btn-placeholder" aria-hidden="true" />}
+                    </div>
+                    <div className={app.runwareStatus === 'connected' ? 'status online' : 'status offline'}>
+                      <span />
+                      {app.runwareStatus === 'connected'
+                        ? 'Connected'
+                        : app.runwareStatus === 'error'
+                          ? `Runware: ${app.runwareError}`
+                          : app.runwareHasKey
+                            ? 'API key saved — not checked'
+                            : 'No key saved.'}
+                    </div>
+                  </div>
+                </section>
+
                 </>
                 ) : null}
 
