@@ -386,6 +386,10 @@ export function ListReplicateVideoUpscaleModels() {
   return window['go']['main']['App']['ListReplicateVideoUpscaleModels']();
 }
 
+export function ListRunwareImageEditModels() {
+  return window['go']['main']['App']['ListRunwareImageEditModels']();
+}
+
 export function ListRunwareImageModels() {
   return window['go']['main']['App']['ListRunwareImageModels']();
 }

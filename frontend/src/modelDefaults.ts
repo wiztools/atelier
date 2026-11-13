@@ -73,9 +73,13 @@ const defaultFalUpscaleModel = 'fal-ai/esrgan';
 // consts in replicate_client.go (the single source of truth; these mirror it
 // for the Settings pickers the same way the fal constants above do).
 const defaultReplicateImageModel = 'black-forest-labs/flux-schnell';
-// FLUX.1 Kontext [dev] on Runware (text-to-image and edits) — mirrors
+// FLUX.1 [dev] on Runware (pure text-to-image) — mirrors
 // defaultRunwareImageModel in runware_client.go.
-const defaultRunwareImageModel = 'runware:106@1';
+const defaultRunwareImageModel = 'runware:101@1';
+// generate_image's runware image-to-image model — FLUX.1 Kontext [dev], the
+// editor the single-slot era defaulted to. Mirrors
+// defaultRunwareImageEditModel in runware_client.go.
+const defaultRunwareImageEditModel = 'runware:106@1';
 // The runware video-family, inpaint, lipsync, speech, and sound defaults —
 // AIR ids kept in sync with the Go consts in runware_client.go (the single
 // source of truth; each one's schema was read before it was pinned there).
@@ -257,6 +261,7 @@ export {
   defaultFalUpscaleModel,
   defaultReplicateImageModel,
   defaultRunwareImageModel,
+  defaultRunwareImageEditModel,
   defaultRunwareVideoModel,
   defaultRunwareVideoImageModel,
   defaultRunwareVideoExtendModel,

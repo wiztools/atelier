@@ -144,7 +144,7 @@ export function useAppModel() {
     mediaTimeoutMinutes, model, ollamaNumCtx, ollamaSpeechModel, openaiCompatibleBaseURL,
     openaiCompatibleModel, patchSettingsModelSelection, primaryModels, primaryProvider,
     replicateAudioExtendModel, replicateImageEditModel, replicateInpaintModel, replicateLipsyncImageModel,
-    replicateLipsyncVideoModel, replicateModel, runwareModel, runwareUpscaleModel, runwareVideoModel, runwareVideoImageModel,
+    replicateLipsyncVideoModel, replicateModel, runwareModel, runwareImageEditModel, runwareUpscaleModel, runwareVideoModel, runwareVideoImageModel,
     runwareVideoExtendModel, runwareVideoUpscaleModel, runwareVideoRestyleModel, runwareInpaintModel,
     runwareTranscribeModel, runwareSpeechModel, runwareSoundEffectsModel, runwareSoundEffectsVideoModel, runwareLipsyncImageModel,
     runwareLipsyncVideoModel, replicateSoundEffectsModel, replicateSoundEffectsVideoModel,
@@ -192,6 +192,7 @@ export function useAppModel() {
     refreshReplicateModels,
     refreshRunwareModels,
     runwareModels,
+    runwareImageEditModels,
     runwareUpscaleModels,
     runwareVideoModels,
     runwareVideoImageModels,
@@ -840,8 +841,9 @@ export function useAppModel() {
       runwareSoundEffectsVideoModel: overrides.soundEffectsVideoModel && audioProvider === 'runware' ? overrides.soundEffectsVideoModel : global.runwareSoundEffectsVideoModel,
       runwareLipsyncImageModel: overrides.lipsyncImageModel && lipsyncProvider === 'runware' ? overrides.lipsyncImageModel : global.runwareLipsyncImageModel,
       runwareLipsyncVideoModel: overrides.lipsyncVideoModel && lipsyncProvider === 'runware' ? overrides.lipsyncVideoModel : global.runwareLipsyncVideoModel,
+      runwareImageEditModel: overrides.imageEditModel && imageProvider === 'runware' ? overrides.imageEditModel : global.runwareImageEditModel,
       replicateImageEditModel: overrides.imageEditModel && imageProvider === 'replicate' ? overrides.imageEditModel : global.replicateImageEditModel,
-      falImageEditModel: overrides.imageEditModel && imageProvider !== 'replicate' ? overrides.imageEditModel : global.falImageEditModel,
+      falImageEditModel: overrides.imageEditModel && imageProvider !== 'replicate' && imageProvider !== 'runware' ? overrides.imageEditModel : global.falImageEditModel,
       replicateUpscaleModel: overrides.upscaleModel && imageProvider === 'replicate' ? overrides.upscaleModel : global.replicateUpscaleModel,
       falUpscaleModel: overrides.upscaleModel && imageProvider !== 'replicate' && imageProvider !== 'runware' ? overrides.upscaleModel : global.falUpscaleModel,
       falInpaintModel: overrides.inpaintModel && inpaintProvider !== 'replicate' ? overrides.inpaintModel : global.falInpaintModel,
@@ -948,10 +950,13 @@ export function useAppModel() {
     if (draftPatch.imageProvider !== undefined && patch.falModel === undefined && patch.openaiImageModel === undefined && patch.replicateModel === undefined && patch.runwareModel === undefined) {
       if (draftPatch.imageProvider === 'fal') {
         draftPatch.falModel = falModel;
+        draftPatch.falImageEditModel = falImageEditModel;
       } else if (draftPatch.imageProvider === 'replicate') {
         draftPatch.replicateModel = replicateModel;
+        draftPatch.replicateImageEditModel = replicateImageEditModel;
       } else if (draftPatch.imageProvider === 'runware') {
         draftPatch.runwareModel = runwareModel;
+        draftPatch.runwareImageEditModel = runwareImageEditModel;
       } else {
         draftPatch.openaiImageModel = openaiCompatibleModel;
       }
@@ -1023,7 +1028,7 @@ export function useAppModel() {
         next.delete('videoModel');
         next.delete('videoImageModel');
       }
-      if (patch.falImageEditModel !== undefined || patch.replicateImageEditModel !== undefined) next.add('imageEditModel');
+      if (patch.falImageEditModel !== undefined || patch.replicateImageEditModel !== undefined || patch.runwareImageEditModel !== undefined) next.add('imageEditModel');
       if (patch.falUpscaleModel !== undefined || patch.replicateUpscaleModel !== undefined || patch.runwareUpscaleModel !== undefined) next.add('upscaleModel');
       if (patch.inpaintProvider !== undefined) {
         next.add('inpaintProvider');
@@ -1120,6 +1125,7 @@ export function useAppModel() {
         case 'imageEditModel':
           next.falImageEditModel = global.falImageEditModel;
           next.replicateImageEditModel = global.replicateImageEditModel;
+          next.runwareImageEditModel = global.runwareImageEditModel;
           break;
         case 'upscaleModel':
           next.falUpscaleModel = global.falUpscaleModel;
@@ -1396,6 +1402,7 @@ export function useAppModel() {
     falImageEditModels,
     replicateModels,
     runwareModels,
+    runwareImageEditModels,
     runwareUpscaleModels,
     runwareVideoModels,
     runwareVideoImageModels,

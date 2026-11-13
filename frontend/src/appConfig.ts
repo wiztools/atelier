@@ -39,6 +39,7 @@ import {
   defaultReplicateImageEditModel,
   defaultReplicateImageModel,
   defaultRunwareImageModel,
+  defaultRunwareImageEditModel,
   defaultRunwareUpscaleModel,
   defaultRunwareVideoModel,
   defaultRunwareVideoImageModel,
@@ -104,6 +105,7 @@ function configValues(config: main.AppConfig) {
   const nextOpenAICompatibleModel = config.providers?.openaiCompatible?.model ?? '';
   const nextReplicateModel = config.providers?.replicate?.model || defaultReplicateImageModel;
   const nextRunwareModel = config.providers?.runware?.model || defaultRunwareImageModel;
+  const nextRunwareImageEditModel = config.providers?.runware?.imageEditModel || defaultRunwareImageEditModel;
   const nextRunwareUpscaleModel = config.providers?.runware?.upscaleModel || defaultRunwareUpscaleModel;
   const nextRunwareVideoModel = config.providers?.runware?.videoModel || defaultRunwareVideoModel;
   const nextRunwareVideoImageModel = config.providers?.runware?.videoImageModel || defaultRunwareVideoImageModel;
@@ -206,6 +208,7 @@ function configValues(config: main.AppConfig) {
     openaiCompatibleModel: nextOpenAICompatibleModel,
     replicateModel: nextReplicateModel,
     runwareModel: nextRunwareModel,
+    runwareImageEditModel: nextRunwareImageEditModel,
     runwareUpscaleModel: nextRunwareUpscaleModel,
     runwareVideoModel: nextRunwareVideoModel,
     runwareVideoImageModel: nextRunwareVideoImageModel,
@@ -327,6 +330,7 @@ function appConfigPayload(s: AppConfigValues & ConfigKeyFlags) {
       runware: {
         enabled: s.runwareHasKey,
         model: s.runwareModel,
+        imageEditModel: s.runwareImageEditModel,
         upscaleModel: s.runwareUpscaleModel,
         videoModel: s.runwareVideoModel,
         videoImageModel: s.runwareVideoImageModel,

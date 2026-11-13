@@ -576,11 +576,14 @@ func resolveDefaultImageModel(config AppConfig) string {
 
 // resolveDefaultImageEditModel returns the image-to-image model the
 // generate_image tool uses when the user attached a source image to transform.
-// Mirrors resolveDefaultImageModel: fal and Replicate expose image-to-image as
-// dedicated models, while Ollama reuses its single image model (it accepts
-// source images inline via the request's images field). The OpenAI-compatible
-// server is ollama-style — one model for both, with source images riding the
-// request.
+// Mirrors resolveDefaultImageModel: fal, Replicate, and Runware expose
+// image-to-image as dedicated models, while Ollama reuses its single image
+// model (it accepts source images inline via the request's images field). The
+// OpenAI-compatible server is ollama-style — one model for both, with source
+// images riding the request. Runware's edit resolver falls back to its
+// generation slot (ImageEditModel → Model) so a config from the single-slot
+// era — or a conversation pin saved before the split, which landed on Model —
+// keeps editing with the model it always did.
 func resolveDefaultImageEditModel(config AppConfig) string {
 	if strings.TrimSpace(config.Models.ImageProvider) == "fal" {
 		if model := strings.TrimSpace(config.Providers.Fal.ImageEditModel); model != "" {
@@ -595,10 +598,13 @@ func resolveDefaultImageEditModel(config AppConfig) string {
 		return defaultReplicateImageEditModel
 	}
 	if strings.TrimSpace(config.Models.ImageProvider) == "runware" {
+		if model := strings.TrimSpace(config.Providers.Runware.ImageEditModel); model != "" {
+			return model
+		}
 		if model := strings.TrimSpace(config.Providers.Runware.Model); model != "" {
 			return model
 		}
-		return defaultRunwareImageModel
+		return defaultRunwareImageEditModel
 	}
 	if strings.TrimSpace(config.Models.ImageProvider) == "openai-compatible" {
 		return strings.TrimSpace(config.Providers.OpenAICompatible.Model)

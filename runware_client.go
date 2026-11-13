@@ -60,12 +60,20 @@ const (
 	runwareTimeout      = 3 * time.Minute
 	runwareMaxResponse  = 64 << 20 // inline dataURI images are big
 	runwareMaxIndexSize = 8 << 20
-	// defaultRunwareImageModel is FLUX.1 Kontext [dev]: one model that does
-	// text-to-image AND instruction edits through referenceImages, so the
-	// single Runware slot serves both. FLUX.1 [dev] (runware:101@1) was the
-	// first default, but its seedImage is plain image-to-image — a live
-	// "make it a watercolor" edit came back as a re-rolled photo.
-	defaultRunwareImageModel = "runware:106@1"
+	// defaultRunwareImageModel is FLUX.1 [dev]: pure text-to-image (the only
+	// tag its catalog entry carries). It held the single image slot until that
+	// split — Kontext displaced it as the t2i default because its seedImage is
+	// plain image-to-image and a live "make it a watercolor" edit came back as
+	// a re-rolled photo — and it returns as the generation default now that
+	// edits have their own slot.
+	defaultRunwareImageModel = "runware:101@1"
+	// defaultRunwareImageEditModel is FLUX.1 Kontext [dev]: the instruction
+	// editor the single-slot era defaulted to, kept as the image-to-image
+	// default (it edits through referenceImages). The edit slot's catalog
+	// filter is edit + image-to-image, and every Runware model declares its
+	// own image inputs in its schema, so an attachment rides whichever input
+	// the pinned editor declares.
+	defaultRunwareImageEditModel = "runware:106@1"
 	// The video-family, lipsync, speech, and sound defaults are every one a
 	// live model whose schema was read before it was pinned (2026-11): Kling
 	// 4.0 serves text-to-video AND image-to-video (inputs.frameImages), Veo

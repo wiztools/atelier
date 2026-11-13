@@ -194,6 +194,8 @@ export function ListReplicateVideoRestyleModels():Promise<Array<main.ReplicateMo
 
 export function ListReplicateVideoUpscaleModels():Promise<Array<main.ReplicateModel>>;
 
+export function ListRunwareImageEditModels():Promise<Array<main.RunwareModel>>;
+
 export function ListRunwareImageModels():Promise<Array<main.RunwareModel>>;
 
 export function ListRunwareImageUpscaleModels():Promise<Array<main.RunwareModel>>;

@@ -5850,7 +5850,10 @@ func TestIsFalSpeechModel(t *testing.T) {
 // when the image provider is fal and ImageEditModel is unset, the resolver falls
 // back to defaultFalImageEditModel; when set, it returns the configured value.
 // For a non-fal provider the resolver defers to the Ollama image model (Ollama
-// reuses its single image model for image-to-image).
+// reuses its single image model for image-to-image). The runware provider
+// resolves its own slot with a generation-slot fallback: a config from the
+// single-slot era (or a conversation pin saved before the split, which landed
+// on Model) keeps editing with the model it always did.
 func TestResolveDefaultImageEditModel(t *testing.T) {
 	// Empty config (no fal provider) → Ollama image model, which is empty here.
 	if got := resolveDefaultImageEditModel(AppConfig{}); got != "" {
@@ -5874,6 +5877,100 @@ func TestResolveDefaultImageEditModel(t *testing.T) {
 		Providers: ConfigProviders{Ollama: ConfigOllama{Models: ConfigOllamaModels{Image: "x/s-image:latest"}}},
 	}); got != "x/s-image:latest" {
 		t.Errorf("resolveDefaultImageEditModel(ollama) = %q, want Ollama image model", got)
+	}
+	// runware provider, no slot set → the image-to-image default.
+	if got := resolveDefaultImageEditModel(AppConfig{Models: ConfigModels{ImageProvider: "runware"}}); got != defaultRunwareImageEditModel {
+		t.Errorf("resolveDefaultImageEditModel(runware, unset) = %q, want %q", got, defaultRunwareImageEditModel)
+	}
+	// runware provider with an explicit ImageEditModel → that value wins.
+	runwareConfig := AppConfig{
+		Models:    ConfigModels{ImageProvider: "runware"},
+		Providers: ConfigProviders{Runware: ConfigRunware{ImageEditModel: "google:4@2"}},
+	}
+	if got := resolveDefaultImageEditModel(runwareConfig); got != "google:4@2" {
+		t.Errorf("resolveDefaultImageEditModel(runware, configured) = %q, want google:4@2", got)
+	}
+	// runware provider from the single-slot era: ImageEditModel unset but the
+	// generation slot populated → the generation slot serves edits.
+	legacyConfig := AppConfig{
+		Models:    ConfigModels{ImageProvider: "runware"},
+		Providers: ConfigProviders{Runware: ConfigRunware{Model: "runware:106@1"}},
+	}
+	if got := resolveDefaultImageEditModel(legacyConfig); got != "runware:106@1" {
+		t.Errorf("resolveDefaultImageEditModel(runware, legacy Model only) = %q, want the generation slot", got)
+	}
+}
+
+// TestMergeAppConfigSeedsRunwareImageEditModel pins the runware image-to-image
+// seed: pinning runware as the image provider seeds the edit slot the
+// provider-selection way, so a single-slot-era config (Model persisted, edit
+// slot empty) edits with Kontext [dev] even after its Model moves to a pure
+// generation model. An explicit edit slot always wins, and a non-runware
+// provider gains nothing.
+func TestMergeAppConfigSeedsRunwareImageEditModel(t *testing.T) {
+	legacy := defaultAppConfig()
+	legacy.Models.ImageProvider = "runware"
+	legacy.Providers.Runware.Model = "runware:106@1"
+	legacy.Providers.Runware.ImageEditModel = ""
+	merged := mergeAppConfig(legacy)
+	if merged.Providers.Runware.ImageEditModel != defaultRunwareImageEditModel {
+		t.Fatalf("merged imageEditModel = %q, want the default %q", merged.Providers.Runware.ImageEditModel, defaultRunwareImageEditModel)
+	}
+	if merged.Providers.Runware.Model != "runware:106@1" {
+		t.Fatalf("merge must not touch model, got %q", merged.Providers.Runware.Model)
+	}
+
+	fresh := defaultAppConfig()
+	fresh.Models.ImageProvider = "runware"
+	fresh.Providers.Runware.Model = ""
+	fresh.Providers.Runware.ImageEditModel = ""
+	merged = mergeAppConfig(fresh)
+	if merged.Providers.Runware.Model != defaultRunwareImageModel || merged.Providers.Runware.ImageEditModel != defaultRunwareImageEditModel {
+		t.Fatalf("fresh runware config seeded model=%q edit=%q", merged.Providers.Runware.Model, merged.Providers.Runware.ImageEditModel)
+	}
+
+	explicit := defaultAppConfig()
+	explicit.Models.ImageProvider = "runware"
+	explicit.Providers.Runware.ImageEditModel = "google:4@3"
+	if merged := mergeAppConfig(explicit); merged.Providers.Runware.ImageEditModel != "google:4@3" {
+		t.Fatalf("explicit imageEditModel must win, got %q", merged.Providers.Runware.ImageEditModel)
+	}
+
+	other := defaultAppConfig()
+	other.Models.ImageProvider = "fal"
+	other.Providers.Runware.ImageEditModel = ""
+	if merged := mergeAppConfig(other); merged.Providers.Runware.ImageEditModel != "" {
+		t.Fatalf("fal-pinned config should gain no runware imageEditModel, got %q", merged.Providers.Runware.ImageEditModel)
+	}
+}
+
+// TestRunwareImageEditModelsFilter pins the edit picker's all-tags filter: the
+// index tags the prompt-driven editors image-to-image + edit, while the
+// same-tagged utility family — upscalers, background removers, ControlNet
+// preprocessors, mask models, and plain i2i re-rollers — carries
+// image-to-image without edit. Entries shaped like the live index.
+func TestRunwareImageEditModelsFilter(t *testing.T) {
+	cases := []struct {
+		name string
+		id   string
+		tags []string
+		want bool
+	}{
+		{"kontext dev", "runware:106@1", []string{"image-to-image", "edit", "checkpoint"}, true},
+		{"nano banana 2", "google:4@3", []string{"text-to-image", "image-to-image", "edit", "checkpoint"}, true},
+		{"seedream 4.0", "bytedance:5@0", []string{"text-to-image", "image-to-image", "edit", "checkpoint"}, true},
+		{"qwen edit", "runware:108@20", []string{"image-to-image", "edit", "checkpoint"}, true},
+		{"upscaler", "runware:504@1", []string{"image-to-image", "upscale", "checkpoint"}, false},
+		{"background remover", "runware:112@5", []string{"image-to-image", "remove-background", "checkpoint"}, false},
+		{"preprocessor", "runware:controlnet-preprocess@canny", []string{"image-to-image", "preprocess", "edge-detection", "checkpoint"}, false},
+		{"mask model", "runware:35@8", []string{"image-to-image", "mask", "checkpoint"}, false},
+		{"plain i2i", "runware:101@1", []string{"text-to-image", "checkpoint"}, false},
+		{"inpaint fill", "bfl:1@2", []string{"image-to-image", "checkpoint"}, false},
+	}
+	for _, tc := range cases {
+		if got := runwareModelHasAllCapabilities(RunwareModel{ID: tc.id, Capabilities: tc.tags}, []string{"edit", "image-to-image"}); got != tc.want {
+			t.Errorf("%s (%s): serves = %v, want %v", tc.name, tc.id, got, tc.want)
+		}
 	}
 }
 

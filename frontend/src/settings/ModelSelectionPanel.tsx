@@ -36,6 +36,7 @@ import {
   defaultFalUpscaleModel,
   defaultReplicateImageModel,
   defaultRunwareImageModel,
+  defaultRunwareImageEditModel,
   defaultRunwareUpscaleModel,
   defaultRunwareVideoModel,
   defaultRunwareVideoImageModel,
@@ -214,6 +215,7 @@ type ModelSelectionValue = {
   openaiImageModel: string;
   replicateModel: string;
   runwareModel: string;
+  runwareImageEditModel: string;
   runwareUpscaleModel: string;
   runwareVideoModel: string;
   runwareVideoImageModel: string;
@@ -377,7 +379,7 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   if (keys.has('videoProvider')) payload.videoProvider = draft.videoProvider;
   // The edit/video model overrides ride the provider the draft has selected,
   // mirroring the backend's provider-conditional overlay.
-  if (keys.has('imageEditModel')) payload.imageEditModel = draft.imageProvider === 'replicate' ? draft.replicateImageEditModel : draft.falImageEditModel;
+  if (keys.has('imageEditModel')) payload.imageEditModel = draft.imageProvider === 'replicate' ? draft.replicateImageEditModel : draft.imageProvider === 'runware' ? draft.runwareImageEditModel : draft.falImageEditModel;
   if (keys.has('upscaleModel')) payload.upscaleModel = draft.imageProvider === 'replicate' ? draft.replicateUpscaleModel : draft.imageProvider === 'runware' ? draft.runwareUpscaleModel : draft.falUpscaleModel;
   if (keys.has('inpaintProvider')) payload.inpaintProvider = draft.inpaintProvider;
   if (keys.has('inpaintModel')) payload.inpaintModel = draft.inpaintProvider === 'replicate' ? draft.replicateInpaintModel : draft.inpaintProvider === 'runware' ? draft.runwareInpaintModel : draft.falInpaintModel;
@@ -453,6 +455,7 @@ function ModelSelectionPanel({
     falImageEditModels: main.FalModel[];
     replicateModels: main.ReplicateModel[];
     runwareModels: main.RunwareModel[];
+    runwareImageEditModels: main.RunwareModel[];
     runwareUpscaleModels: main.RunwareModel[];
     runwareVideoModels: main.RunwareModel[];
     runwareVideoImageModels: main.RunwareModel[];
@@ -538,6 +541,7 @@ function ModelSelectionPanel({
   const falImageEditOptions = falModelOptionList(catalogs.falImageEditModels);
   const replicateImageOptions = falModelOptionList(catalogs.replicateModels);
   const runwareImageOptions = falModelOptionList(catalogs.runwareModels);
+  const runwareImageEditOptions = falModelOptionList(catalogs.runwareImageEditModels);
   const runwareUpscaleOptions = falModelOptionList(catalogs.runwareUpscaleModels);
   const runwareVideoOptions = falModelOptionList(catalogs.runwareVideoModels);
   const runwareVideoImageOptions = falModelOptionList(catalogs.runwareVideoImageModels);
@@ -836,7 +840,7 @@ function ModelSelectionPanel({
                   {fieldLabel('runware-model', 'Runware Model', 'imageModel')}
                   <InfoHint
                     label="About Runware models"
-                    text="One model serves text-to-image and edits: an attached image rides the model's own image input (a seed image or reference images), so pick an edit-capable model for image edits. Any AIR id works, including community models (civitai:…@…). Cost is the amount Runware reports charging."
+                    text="The model for text-to-image generation; when the user attaches an image, the Image-to-Image model below edits it instead. Each model's schema decides which image inputs it accepts, so a model that takes no image refuses edits. Any AIR id works, including community models (civitai:…@…). Cost is the amount Runware reports charging."
                   />
                 </div>
                 <ModelCombobox
@@ -898,6 +902,24 @@ function ModelSelectionPanel({
                 options={replicateImageEditOptions}
                 allowCustom
               />
+            </div>
+          ) : value.imageProvider === 'runware' ? (
+            <div className="field">
+              {fieldLabel('runware-image-edit-model', 'Image-to-Image Model (Runware)', 'imageEditModel')}
+              <ModelCombobox
+                id="runware-image-edit-model"
+                ariaLabel="Runware image-to-image model"
+                placeholder={defaultRunwareImageEditModel}
+                value={value.runwareImageEditModel}
+                onChange={(next) => onChange({runwareImageEditModel: next})}
+                options={runwareImageEditOptions}
+                allowCustom
+              />
+              {!catalogs.runwareHasKey ? (
+                <span className="hint">Add a Runware API key {keyWhere} before generating images.</span>
+              ) : runwareImageEditOptions.length ? null : (
+                <span className="hint">Type an AIR model id (e.g. runware:106@1) — the model list couldn't be loaded.</span>
+              )}
             </div>
           ) : null}
 

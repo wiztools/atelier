@@ -102,6 +102,25 @@ func (a *App) ListRunwareImageUpscaleModels() ([]RunwareModel, error) {
 	return models, nil
 }
 
+// ListRunwareImageEditModels returns the image-to-image models for the
+// Settings edit picker shown when runware is the ImageProvider — the index
+// tags them image-to-image + edit (FLUX.1 Kontext, Nano Banana, Seedream,
+// Qwen-Image-Edit, GPT Image), and `edit` is what separates the prompt-driven
+// editors from the same-tagged utility family: the upscalers, background
+// removers, ControlNet preprocessors, and vectorizers all carry
+// image-to-image but never edit, so the all-tags check drops them without a
+// schema walk. Bare falls back to the verified default (Kontext [dev]).
+func (a *App) ListRunwareImageEditModels() ([]RunwareModel, error) {
+	models, err := a.listRunwareCapabilityModels("edit", "image-to-image")
+	if err != nil {
+		return nil, err
+	}
+	if len(models) == 0 {
+		models = append(models, RunwareModel{ID: defaultRunwareImageEditModel})
+	}
+	return models, nil
+}
+
 // ListRunwareVideoRestyleModels returns the video-to-video editing models —
 // the edit tag separates restylers (FLUX Video Edit, Kling) from plain
 // video-to-video generators.

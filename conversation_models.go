@@ -370,10 +370,9 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 	}
 	if o.ImageEditModel != "" {
 		// The edit-model override follows the effective image provider too:
-		// both fal and Replicate expose a dedicated image-to-image model, so
-		// a Replicate-pinned conversation edits with its Replicate model.
-		// Runware serves edits with the same single model that generates
-		// (the ConfigRunware.Model contract), so the override lands there.
+		// fal, Replicate, and Runware all expose a dedicated image-to-image
+		// model, so a Replicate-pinned conversation edits with its Replicate
+		// model and a runware-pinned one with its own editor.
 		imageProvider := o.ImageProvider
 		if imageProvider == "" {
 			imageProvider = config.Models.ImageProvider
@@ -382,7 +381,7 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 		case "replicate":
 			config.Providers.Replicate.ImageEditModel = o.ImageEditModel
 		case "runware":
-			config.Providers.Runware.Model = o.ImageEditModel
+			config.Providers.Runware.ImageEditModel = o.ImageEditModel
 		default:
 			config.Providers.Fal.ImageEditModel = o.ImageEditModel
 		}

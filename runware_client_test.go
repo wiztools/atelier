@@ -303,8 +303,11 @@ func TestRunwareImageProviderRouting(t *testing.T) {
 	if config.Providers.Runware.Model != defaultRunwareImageModel {
 		t.Fatalf("model not seeded: %q", config.Providers.Runware.Model)
 	}
-	if resolveDefaultImageModel(config) != defaultRunwareImageModel || resolveDefaultImageEditModel(config) != defaultRunwareImageModel {
-		t.Fatal("default models should both resolve to the one Runware slot")
+	if config.Providers.Runware.ImageEditModel != defaultRunwareImageEditModel {
+		t.Fatalf("image edit model not seeded: %q", config.Providers.Runware.ImageEditModel)
+	}
+	if resolveDefaultImageModel(config) != defaultRunwareImageModel || resolveDefaultImageEditModel(config) != defaultRunwareImageEditModel {
+		t.Fatal("default models should resolve to their own Runware slots")
 	}
 	if !imageGenerationConfigured(config) {
 		t.Fatal("generate_image should be offered")

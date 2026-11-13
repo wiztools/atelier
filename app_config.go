@@ -163,10 +163,14 @@ type ConfigFal struct {
 }
 
 // ConfigRunware configures the Runware media backend (runware_client.go).
-// Model serves text-to-image and edits — Runware models declare their image
-// inputs (seedImage / referenceImages) in their own schema, so the edit path
-// needs no second slot — and UpscaleModel the image upscaler upscale_image
-// uses when runware is the ImageProvider (Real-ESRGAN by default). The
+// Model is the text-to-image model and ImageEditModel the image-to-image
+// model generate_image uses when the user attaches a source image — the
+// fal/Replicate split. Every Runware model still declares its image inputs
+// (seedImage / referenceImages) in its own schema, so the resolver rides the
+// attachment onto whichever input the pinned editor declares; the edit
+// resolver falls back to Model when ImageEditModel is unset. UpscaleModel is
+// the image upscaler upscale_image uses when runware is the ImageProvider
+// (Real-ESRGAN by default). The
 // video-family and audio slots below serve when
 // the matching Models.*Provider picks runware, the same dimension split
 // ConfigReplicate documents: VideoModel/VideoImageModel follow VideoProvider
@@ -183,6 +187,10 @@ type ConfigFal struct {
 type ConfigRunware struct {
 	Enabled bool   `json:"enabled"`
 	Model   string `json:"model,omitempty"`
+	// ImageEditModel is the image-to-image model used when the user attaches
+	// a source image (FLUX.1 Kontext [dev] by default — the editor the
+	// single-slot era defaulted to).
+	ImageEditModel string `json:"imageEditModel,omitempty"`
 	// UpscaleModel is the image upscaler upscale_image uses when runware is
 	// the ImageProvider (Real-ESRGAN by default — the ESRGAN family fal's
 	// and Replicate's defaults speak).
@@ -863,12 +871,20 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	if config.Models.ImageProvider == "runware" && strings.TrimSpace(config.Providers.Runware.Model) == "" {
 		config.Providers.Runware.Model = defaultRunwareImageModel
 	}
+	// The image-to-image model follows the image provider too, so a runware
+	// image selection seeds its slot the same way — a config from the
+	// single-slot era edits with Kontext [dev] even after its Model moves to a
+	// pure generation model.
+	if config.Models.ImageProvider == "runware" && strings.TrimSpace(config.Providers.Runware.ImageEditModel) == "" {
+		config.Providers.Runware.ImageEditModel = defaultRunwareImageEditModel
+	}
 	// The image upscaler follows the image provider (resolveDefaultImageUpscaleModel's
 	// rule), so a runware image selection seeds its slot the same way.
 	if config.Models.ImageProvider == "runware" && strings.TrimSpace(config.Providers.Runware.UpscaleModel) == "" {
 		config.Providers.Runware.UpscaleModel = defaultRunwareImageUpscaleModel
 	}
 	config.Providers.Runware.Model = strings.TrimSpace(config.Providers.Runware.Model)
+	config.Providers.Runware.ImageEditModel = strings.TrimSpace(config.Providers.Runware.ImageEditModel)
 	// Seed the Runware video family the provider-selection way (the image and
 	// inpaint seeds above): selecting runware as the VideoProvider without
 	// models would leave the pickers empty and the gates closed, so pin the
