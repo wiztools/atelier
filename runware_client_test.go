@@ -314,3 +314,68 @@ func TestRunwareImageProviderRouting(t *testing.T) {
 		t.Fatal("airplane mode must drop the cloud Runware route")
 	}
 }
+
+// runwareKontextSchemaFixture trims the real bfl-flux-1-kontext-dev schema:
+// free-integer width/height whose legal pairs live only in allOf's
+// if(width|height) → then.oneOf of const pairs.
+const runwareKontextSchemaFixture = `{"components":{"schemas":{"RequestBody":{"type":"array","items":{
+  "type":"object",
+  "properties":{
+    "positivePrompt":{"type":"string"},
+    "width":{"type":"integer"},"height":{"type":"integer"},
+    "inputs":{"type":"object","properties":{"referenceImages":{"type":"array","minItems":1,"items":{"type":"string"}}}}
+  },
+  "allOf":[
+    {"dependentRequired":{"width":["height"],"height":["width"]}},
+    {"if":{"anyOf":[{"required":["width"]},{"required":["height"]}]},
+     "then":{"oneOf":[
+       {"title":"1K (~21:9)","properties":{"width":{"const":1568},"height":{"const":672}}},
+       {"title":"1K (5:3)","properties":{"width":{"const":1328},"height":{"const":800}}},
+       {"title":"1K (3:2)","properties":{"width":{"const":1248},"height":{"const":832}}},
+       {"title":"1K (1:1)","properties":{"width":{"const":1024},"height":{"const":1024}}},
+       {"title":"1K (2:3)","properties":{"width":{"const":832},"height":{"const":1248}}},
+       {"title":"1K (~9:21)","properties":{"width":{"const":672},"height":{"const":1568}}}
+     ]}}
+  ]}}}}}`
+
+func TestRunwareSizePresetsFromSchema(t *testing.T) {
+	schema := parseRunwareFixture(t, runwareKontextSchemaFixture)
+	prop, ok := schema.property(runwareSizePresetsProperty)
+	if !ok || strings.Join(prop.Enum, ",") != "1568x672,1328x800,1248x832,1024x1024,832x1248,672x1568" {
+		t.Fatalf("presets = %v (ok=%v)", prop.Enum, ok)
+	}
+	// A schema without const pairs carries no synthetic property.
+	if _, ok := parseRunwareFixture(t, runwareFluxSchemaFixture).property(runwareSizePresetsProperty); ok {
+		t.Fatal("FLUX dev schema should carry no presets")
+	}
+
+	tests := []struct {
+		name         string
+		w, h         int
+		wantW, wantH int
+		wantNotice   bool
+	}{
+		{"square lands on the square preset", 1024, 1024, 1024, 1024, false},
+		{"16:9 lands on 5:3, a shape change worth a notice", 1344, 768, 1328, 800, true},
+		{"3:2 source keeps its shape at a different size, quietly", 1536, 1024, 1248, 832, false},
+		{"tall portrait picks the tall preset", 720, 1680, 672, 1568, false},
+		{"21:9 is matched exactly", 2560, 1097, 1568, 672, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			task, notices, err := resolveRunwareImageTask(schema, ImageGenerateRequest{Model: "runware:106@1", Prompt: "p", Width: tc.w, Height: tc.h})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if task["width"] != tc.wantW || task["height"] != tc.wantH {
+				t.Fatalf("size = %vx%v, want %dx%d", task["width"], task["height"], tc.wantW, tc.wantH)
+			}
+			if (len(notices) > 0) != tc.wantNotice {
+				t.Fatalf("notices = %v, want notice=%v", notices, tc.wantNotice)
+			}
+			if _, leaked := task[runwareSizePresetsProperty]; leaked {
+				t.Fatal("the synthetic presets property must never reach the task")
+			}
+		})
+	}
+}

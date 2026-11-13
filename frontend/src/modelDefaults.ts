@@ -73,8 +73,9 @@ const defaultFalUpscaleModel = 'fal-ai/esrgan';
 // consts in replicate_client.go (the single source of truth; these mirror it
 // for the Settings pickers the same way the fal constants above do).
 const defaultReplicateImageModel = 'black-forest-labs/flux-schnell';
-// FLUX.1 [dev] on Runware — mirrors defaultRunwareImageModel in runware_client.go.
-const defaultRunwareImageModel = 'runware:101@1';
+// FLUX.1 Kontext [dev] on Runware (text-to-image and edits) — mirrors
+// defaultRunwareImageModel in runware_client.go.
+const defaultRunwareImageModel = 'runware:106@1';
 const defaultReplicateImageEditModel = 'black-forest-labs/flux-kontext-pro';
 const defaultReplicateVideoModel = 'wan-video/wan-2.5-t2v';
 const defaultReplicateVideoImageModel = 'wan-video/wan-2.5-i2v';

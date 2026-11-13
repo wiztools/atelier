@@ -23,7 +23,7 @@ package main
 // schema cache rewraps that as a *Input component so parseModelInputSchema
 // (fal_schema.go) reads it unchanged. The catalog is the static
 // runware.ai/docs/models/index.json, which maps the AIR id the API takes
-// (runware:101@1) to the docs id the schema URL needs (bfl-flux-1-dev).
+// (runware:106@1) to the docs id the schema URL needs (bfl-flux-1-kontext-dev).
 
 import (
 	"bytes"
@@ -48,10 +48,12 @@ const (
 	runwareTimeout      = 3 * time.Minute
 	runwareMaxResponse  = 64 << 20 // inline dataURI images are big
 	runwareMaxIndexSize = 8 << 20
-	// defaultRunwareImageModel is FLUX.1 [dev] on Runware's own inference —
-	// a cheap, fast text-to-image model whose schema also takes a seedImage,
-	// so it serves both the text-to-image and the edit slot.
-	defaultRunwareImageModel = "runware:101@1"
+	// defaultRunwareImageModel is FLUX.1 Kontext [dev]: one model that does
+	// text-to-image AND instruction edits through referenceImages, so the
+	// single Runware slot serves both. FLUX.1 [dev] (runware:101@1) was the
+	// first default, but its seedImage is plain image-to-image — a live
+	// "make it a watercolor" edit came back as a re-rolled photo.
+	defaultRunwareImageModel = "runware:106@1"
 )
 
 var errRunwareKeyNotConfigured = errors.New("runware api key is not configured")
@@ -383,8 +385,126 @@ func rewrapRunwareSchema(raw []byte) ([]byte, error) {
 			schemas[name] = s
 		}
 	}
-	schemas["RunwareTaskInput"] = body.Items
+	task := json.RawMessage(body.Items)
+	if presets := runwareSizePresets(body.Items); len(presets) > 0 {
+		injected, err := injectRunwareSizePresets(body.Items, presets)
+		if err != nil {
+			return nil, err
+		}
+		task = injected
+	}
+	schemas["RunwareTaskInput"] = task
 	return json.Marshal(map[string]any{"components": map[string]any{"schemas": schemas}})
+}
+
+// runwareSizePresetsProperty is a synthetic property the rewrap injects to
+// carry a model's fixed output sizes through the shared parser, which keeps
+// only properties. FLUX.1 Kontext accepts exactly a list of width/height
+// pairs, declared as allOf → if(width|height) → then.oneOf[{width:{const},
+// height:{const}}]; a 64-grid size outside that list is a 400. The resolver
+// never writes this key into a task — it only reads it.
+const runwareSizePresetsProperty = "x-atelier-size-presets"
+
+// runwareSizePresets collects every width/height const pair from oneOf/anyOf
+// arrays anywhere in the task schema whose every branch pins both, as
+// "WxH" strings in schema order.
+func runwareSizePresets(task json.RawMessage) []string {
+	var presets []string
+	seen := map[string]bool{}
+	var walk func(v any)
+	walk = func(v any) {
+		switch node := v.(type) {
+		case map[string]any:
+			for _, key := range []string{"oneOf", "anyOf"} {
+				branches, ok := node[key].([]any)
+				if !ok || len(branches) == 0 {
+					continue
+				}
+				pairs := make([]string, 0, len(branches))
+				for _, b := range branches {
+					w, h, ok := runwareConstSize(b)
+					if !ok {
+						pairs = nil
+						break
+					}
+					pairs = append(pairs, fmt.Sprintf("%dx%d", w, h))
+				}
+				for _, p := range pairs {
+					if !seen[p] {
+						seen[p] = true
+						presets = append(presets, p)
+					}
+				}
+			}
+			for _, child := range node {
+				walk(child)
+			}
+		case []any:
+			for _, child := range node {
+				walk(child)
+			}
+		}
+	}
+	var root any
+	if json.Unmarshal(task, &root) == nil {
+		walk(root)
+	}
+	return presets
+}
+
+func runwareConstSize(branch any) (int, int, bool) {
+	node, _ := branch.(map[string]any)
+	props, _ := node["properties"].(map[string]any)
+	read := func(name string) (int, bool) {
+		p, _ := props[name].(map[string]any)
+		f, ok := p["const"].(float64)
+		return int(f), ok && f > 0
+	}
+	w, okW := read("width")
+	h, okH := read("height")
+	return w, h, okW && okH
+}
+
+func injectRunwareSizePresets(task json.RawMessage, presets []string) (json.RawMessage, error) {
+	var node map[string]json.RawMessage
+	if err := json.Unmarshal(task, &node); err != nil {
+		return nil, err
+	}
+	var props map[string]json.RawMessage
+	if err := json.Unmarshal(node["properties"], &props); err != nil || props == nil {
+		return task, nil
+	}
+	enc, err := json.Marshal(map[string]any{"type": "string", "enum": presets})
+	if err != nil {
+		return nil, err
+	}
+	props[runwareSizePresetsProperty] = enc
+	if node["properties"], err = json.Marshal(props); err != nil {
+		return nil, err
+	}
+	out, err := json.Marshal(node)
+	return out, err
+}
+
+// runwareNearestPreset picks the preset whose aspect ratio is closest to the
+// request's (log-distance, so 2:1 and 1:2 are equally far from 1:1), breaking
+// ties toward the area closest to the requested one.
+func runwareNearestPreset(presets []string, width, height int) (int, int, bool) {
+	want := math.Log(float64(width) / float64(height))
+	bestW, bestH := 0, 0
+	bestRatio, bestArea := math.Inf(1), math.Inf(1)
+	for _, p := range presets {
+		var w, h int
+		if _, err := fmt.Sscanf(p, "%dx%d", &w, &h); err != nil || w <= 0 || h <= 0 {
+			continue
+		}
+		ratio := math.Abs(math.Log(float64(w)/float64(h)) - want)
+		area := math.Abs(float64(w*h - width*height))
+		if ratio < bestRatio-1e-9 || (math.Abs(ratio-bestRatio) <= 1e-9 && area < bestArea) {
+			bestW, bestH, bestRatio, bestArea = w, h, ratio, area
+		}
+	}
+	return bestW, bestH, bestW > 0
 }
 
 func newRunwareSchemaCache(httpClient *http.Client, storageRoot string) *SchemaCache {
@@ -454,9 +574,18 @@ func resolveRunwareImageTask(schema *ModelInputSchema, req ImageGenerateRequest)
 	if !tierSent && declares("width") && declares("height") {
 		w := runwareSnapDimension(schema, "width", width)
 		h := runwareSnapDimension(schema, "height", height)
+		if prop, ok := schema.property(runwareSizePresetsProperty); ok && len(prop.Enum) > 0 {
+			if pw, ph, ok := runwareNearestPreset(prop.Enum, width, height); ok {
+				w, h = pw, ph
+			}
+		}
 		task["width"], task["height"] = w, h
-		if (w != width || h != height) && (req.Width > 0 || req.Height > 0) {
-			notices = append(notices, fmt.Sprintf("Runware model %q needs sizes on its own grid; generated at %dx%d instead of %dx%d.", req.Model, w, h, width, height))
+		// Speak up only when the SHAPE changed: a preset or grid size a little
+		// larger or smaller than asked is the model's normal rounding, and a
+		// notice on every call would teach the reader to ignore them.
+		aspectDrift := math.Abs(math.Log(float64(w)/float64(h)) - math.Log(float64(width)/float64(height)))
+		if aspectDrift > runwareAspectNoticeTolerance && (req.Width > 0 || req.Height > 0) {
+			notices = append(notices, fmt.Sprintf("Runware model %q only renders certain sizes; generated at %dx%d instead of %dx%d.", req.Model, w, h, width, height))
 		}
 	}
 	if req.Steps > 0 && schema != nil {
@@ -515,6 +644,10 @@ func hasKey(m map[string]SchemaProperty, key string) bool {
 	_, ok := m[key]
 	return ok
 }
+
+// runwareAspectNoticeTolerance is how far (natural-log ratio, ~3%) a sent
+// size's aspect may drift from the requested one before a notice says so.
+const runwareAspectNoticeTolerance = 0.03
 
 // runwareSnapDimension clamps a pixel size into the property's declared
 // bounds and onto the 64-px grid most Runware diffusion models require

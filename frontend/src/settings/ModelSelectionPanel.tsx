@@ -800,7 +800,7 @@ function ModelSelectionPanel({
                 {!catalogs.runwareHasKey ? (
                   <span className="hint">Add a Runware API key {keyWhere} before generating images.</span>
                 ) : runwareImageOptions.length ? null : (
-                  <span className="hint">Type an AIR model id (e.g. runware:101@1) — the model list couldn't be loaded.</span>
+                  <span className="hint">Type an AIR model id (e.g. runware:106@1) — the model list couldn't be loaded.</span>
                 )}
               </div>
             ) : (
