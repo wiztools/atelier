@@ -36,6 +36,17 @@ import {
   defaultFalUpscaleModel,
   defaultReplicateImageModel,
   defaultRunwareImageModel,
+  defaultRunwareVideoModel,
+  defaultRunwareVideoImageModel,
+  defaultRunwareVideoExtendModel,
+  defaultRunwareVideoUpscaleModel,
+  defaultRunwareVideoRestyleModel,
+  defaultRunwareInpaintModel,
+  defaultRunwareLipsyncImageModel,
+  defaultRunwareLipsyncVideoModel,
+  defaultRunwareSpeechModel,
+  defaultRunwareSoundEffectsModel,
+  defaultRunwareSoundEffectsVideoModel,
   defaultReplicateImageEditModel,
   defaultReplicateVideoModel,
   defaultReplicateVideoImageModel,
@@ -195,12 +206,23 @@ type ModelSelectionValue = {
   harnessProvider: ChatProviderID;
   harnessModel: string;
   imageProvider: 'fal' | 'replicate' | 'runware' | 'openai-compatible';
-  videoProvider: 'fal' | 'replicate';
-  inpaintProvider: 'fal' | 'replicate';
+  videoProvider: 'fal' | 'replicate' | 'runware';
+  inpaintProvider: 'fal' | 'replicate' | 'runware';
   falModel: string;
   openaiImageModel: string;
   replicateModel: string;
   runwareModel: string;
+  runwareVideoModel: string;
+  runwareVideoImageModel: string;
+  runwareVideoExtendModel: string;
+  runwareVideoUpscaleModel: string;
+  runwareVideoRestyleModel: string;
+  runwareInpaintModel: string;
+  runwareSpeechModel: string;
+  runwareSoundEffectsModel: string;
+  runwareSoundEffectsVideoModel: string;
+  runwareLipsyncImageModel: string;
+  runwareLipsyncVideoModel: string;
   replicateImageEditModel: string;
   replicateUpscaleModel: string;
   falImageEditModel: string;
@@ -232,11 +254,11 @@ type ModelSelectionValue = {
   replicateTranscribeModel: string;
   falLipsyncImageModel: string;
   falLipsyncVideoModel: string;
-  lipsyncProvider: 'fal' | 'replicate';
+  lipsyncProvider: 'fal' | 'replicate' | 'runware';
   speechProvider: SpeechProviderID;
   ollamaSpeechModel: string;
   replicateSpeechModel: string;
-  audioProvider: 'fal' | 'replicate';
+  audioProvider: 'fal' | 'replicate' | 'runware';
   replicateSoundEffectsModel: string;
   replicateSoundEffectsVideoModel: string;
   replicateAudioExtendModel: string;
@@ -354,22 +376,22 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   if (keys.has('imageEditModel')) payload.imageEditModel = draft.imageProvider === 'replicate' ? draft.replicateImageEditModel : draft.falImageEditModel;
   if (keys.has('upscaleModel')) payload.upscaleModel = draft.imageProvider === 'replicate' ? draft.replicateUpscaleModel : draft.falUpscaleModel;
   if (keys.has('inpaintProvider')) payload.inpaintProvider = draft.inpaintProvider;
-  if (keys.has('inpaintModel')) payload.inpaintModel = draft.inpaintProvider === 'replicate' ? draft.replicateInpaintModel : draft.falInpaintModel;
-  if (keys.has('videoModel')) payload.videoModel = draft.videoProvider === 'replicate' ? draft.replicateVideoModel : draft.falVideoModel;
-  if (keys.has('videoImageModel')) payload.videoImageModel = draft.videoProvider === 'replicate' ? draft.replicateVideoImageModel : draft.falVideoImageModel;
+  if (keys.has('inpaintModel')) payload.inpaintModel = draft.inpaintProvider === 'replicate' ? draft.replicateInpaintModel : draft.inpaintProvider === 'runware' ? draft.runwareInpaintModel : draft.falInpaintModel;
+  if (keys.has('videoModel')) payload.videoModel = draft.videoProvider === 'replicate' ? draft.replicateVideoModel : draft.videoProvider === 'runware' ? draft.runwareVideoModel : draft.falVideoModel;
+  if (keys.has('videoImageModel')) payload.videoImageModel = draft.videoProvider === 'replicate' ? draft.replicateVideoImageModel : draft.videoProvider === 'runware' ? draft.runwareVideoImageModel : draft.falVideoImageModel;
   if (keys.has('videoKeyframeModel')) payload.videoKeyframeModel = draft.falVideoKeyframeModel;
-  if (keys.has('videoExtendModel')) payload.videoExtendModel = draft.videoProvider === 'replicate' ? draft.replicateVideoExtendModel : draft.falVideoExtendModel;
+  if (keys.has('videoExtendModel')) payload.videoExtendModel = draft.videoProvider === 'replicate' ? draft.replicateVideoExtendModel : draft.videoProvider === 'runware' ? draft.runwareVideoExtendModel : draft.falVideoExtendModel;
   if (keys.has('videoMotionModel')) payload.videoMotionModel = draft.falVideoMotionModel;
-  if (keys.has('videoUpscaleModel')) payload.videoUpscaleModel = draft.videoProvider === 'replicate' ? draft.replicateVideoUpscaleModel : draft.falVideoUpscaleModel;
+  if (keys.has('videoUpscaleModel')) payload.videoUpscaleModel = draft.videoProvider === 'replicate' ? draft.replicateVideoUpscaleModel : draft.videoProvider === 'runware' ? draft.runwareVideoUpscaleModel : draft.falVideoUpscaleModel;
   if (keys.has('videoReframeModel')) payload.videoReframeModel = draft.videoProvider === 'replicate' ? draft.replicateVideoReframeModel : draft.falVideoReframeModel;
-  if (keys.has('videoRestyleModel')) payload.videoRestyleModel = draft.videoProvider === 'replicate' ? draft.replicateVideoRestyleModel : draft.falVideoRestyleModel;
+  if (keys.has('videoRestyleModel')) payload.videoRestyleModel = draft.videoProvider === 'replicate' ? draft.replicateVideoRestyleModel : draft.videoProvider === 'runware' ? draft.runwareVideoRestyleModel : draft.falVideoRestyleModel;
   if (keys.has('speechProvider')) payload.speechProvider = draft.speechProvider;
-  if (keys.has('audioModel')) payload.audioModel = draft.speechProvider === 'ollama' ? draft.ollamaSpeechModel : draft.speechProvider === 'replicate' ? draft.replicateSpeechModel : draft.falAudioModel;
+  if (keys.has('audioModel')) payload.audioModel = draft.speechProvider === 'ollama' ? draft.ollamaSpeechModel : draft.speechProvider === 'replicate' ? draft.replicateSpeechModel : draft.speechProvider === 'runware' ? draft.runwareSpeechModel : draft.falAudioModel;
   if (keys.has('audioCloneModel')) payload.audioCloneModel = draft.falAudioCloneModel;
   // The sound-slot overrides land on the slot the effective audio provider
   // reads, mirroring the backend's provider-conditional overlay.
-  if (keys.has('soundEffectsModel')) payload.soundEffectsModel = draft.audioProvider === 'replicate' ? draft.replicateSoundEffectsModel : draft.falSoundEffectsModel;
-  if (keys.has('soundEffectsVideoModel')) payload.soundEffectsVideoModel = draft.audioProvider === 'replicate' ? draft.replicateSoundEffectsVideoModel : draft.falSoundEffectsVideoModel;
+  if (keys.has('soundEffectsModel')) payload.soundEffectsModel = draft.audioProvider === 'replicate' ? draft.replicateSoundEffectsModel : draft.audioProvider === 'runware' ? draft.runwareSoundEffectsModel : draft.falSoundEffectsModel;
+  if (keys.has('soundEffectsVideoModel')) payload.soundEffectsVideoModel = draft.audioProvider === 'replicate' ? draft.replicateSoundEffectsVideoModel : draft.audioProvider === 'runware' ? draft.runwareSoundEffectsVideoModel : draft.falSoundEffectsVideoModel;
   if (keys.has('voiceDesignModel')) payload.voiceDesignModel = draft.falVoiceDesignModel;
   if (keys.has('audioExtendModel')) payload.audioExtendModel = draft.audioProvider === 'replicate' ? draft.replicateAudioExtendModel : draft.falAudioExtendModel;
   // The transcription model lands on the slot the effective provider reads,
@@ -385,8 +407,8 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   if (keys.has('soundDuration')) payload.soundDuration = draft.soundDuration;
   if (keys.has('audioExtendDuration')) payload.audioExtendDuration = draft.audioExtendDuration;
   if (keys.has('lipsyncProvider')) payload.lipsyncProvider = draft.lipsyncProvider;
-  if (keys.has('lipsyncImageModel')) payload.lipsyncImageModel = draft.lipsyncProvider === 'replicate' ? draft.replicateLipsyncImageModel : draft.falLipsyncImageModel;
-  if (keys.has('lipsyncVideoModel')) payload.lipsyncVideoModel = draft.lipsyncProvider === 'replicate' ? draft.replicateLipsyncVideoModel : draft.falLipsyncVideoModel;
+  if (keys.has('lipsyncImageModel')) payload.lipsyncImageModel = draft.lipsyncProvider === 'replicate' ? draft.replicateLipsyncImageModel : draft.lipsyncProvider === 'runware' ? draft.runwareLipsyncImageModel : draft.falLipsyncImageModel;
+  if (keys.has('lipsyncVideoModel')) payload.lipsyncVideoModel = draft.lipsyncProvider === 'replicate' ? draft.replicateLipsyncVideoModel : draft.lipsyncProvider === 'runware' ? draft.runwareLipsyncVideoModel : draft.falLipsyncVideoModel;
   return main.ConversationModelOverrides.createFrom(payload);
 }
 
@@ -427,6 +449,16 @@ function ModelSelectionPanel({
     falImageEditModels: main.FalModel[];
     replicateModels: main.ReplicateModel[];
     runwareModels: main.RunwareModel[];
+    runwareVideoModels: main.RunwareModel[];
+    runwareVideoImageModels: main.RunwareModel[];
+    runwareVideoExtendModels: main.RunwareModel[];
+    runwareVideoUpscaleModels: main.RunwareModel[];
+    runwareVideoRestyleModels: main.RunwareModel[];
+    runwareSpeechModels: main.RunwareModel[];
+    runwareSoundEffectModels: main.RunwareModel[];
+    runwareSoundEffectsVideoModels: main.RunwareModel[];
+    runwareLipsyncImageModels: main.RunwareModel[];
+    runwareLipsyncVideoModels: main.RunwareModel[];
     replicateImageEditModels: main.ReplicateModel[];
     replicateUpscaleModels: main.ReplicateModel[];
     replicateVideoUpscaleModels: main.ReplicateModel[];
@@ -500,6 +532,16 @@ function ModelSelectionPanel({
   const falImageEditOptions = falModelOptionList(catalogs.falImageEditModels);
   const replicateImageOptions = falModelOptionList(catalogs.replicateModels);
   const runwareImageOptions = falModelOptionList(catalogs.runwareModels);
+  const runwareVideoOptions = falModelOptionList(catalogs.runwareVideoModels);
+  const runwareVideoImageOptions = falModelOptionList(catalogs.runwareVideoImageModels);
+  const runwareVideoExtendOptions = falModelOptionList(catalogs.runwareVideoExtendModels);
+  const runwareVideoUpscaleOptions = falModelOptionList(catalogs.runwareVideoUpscaleModels);
+  const runwareVideoRestyleOptions = falModelOptionList(catalogs.runwareVideoRestyleModels);
+  const runwareSpeechOptions = falModelOptionList(catalogs.runwareSpeechModels);
+  const runwareSoundEffectOptions = falModelOptionList(catalogs.runwareSoundEffectModels);
+  const runwareSoundEffectsVideoOptions = falModelOptionList(catalogs.runwareSoundEffectsVideoModels);
+  const runwareLipsyncImageOptions = falModelOptionList(catalogs.runwareLipsyncImageModels);
+  const runwareLipsyncVideoOptions = falModelOptionList(catalogs.runwareLipsyncVideoModels);
   const replicateImageEditOptions = falModelOptionList(catalogs.replicateImageEditModels);
   const replicateUpscaleOptions = falModelOptionList(catalogs.replicateUpscaleModels);
   const replicateVideoUpscaleOptions = falModelOptionList(catalogs.replicateVideoUpscaleModels);
@@ -543,13 +585,13 @@ function ModelSelectionPanel({
   // The inpainting catalog is a small VERIFIED list (a curated Go-side table,
   // not the broad image-edit category), so the panel fetches it directly
   // instead of riding the big shared catalogs fetch.
-  const [inpaintCatalogs, setInpaintCatalogs] = useState<{fal: main.InpaintModelOption[]; replicate: main.InpaintModelOption[]}>({fal: [], replicate: []});
+  const [inpaintCatalogs, setInpaintCatalogs] = useState<{fal: main.InpaintModelOption[]; replicate: main.InpaintModelOption[]; runware: main.InpaintModelOption[]}>({fal: [], replicate: [], runware: []});
   useEffect(() => {
     let cancelled = false;
-    Promise.all([ListInpaintModels('fal'), ListInpaintModels('replicate')])
-      .then(([falList, replicateList]) => {
+    Promise.all([ListInpaintModels('fal'), ListInpaintModels('replicate'), ListInpaintModels('runware')])
+      .then(([falList, replicateList, runwareList]) => {
         if (!cancelled) {
-          setInpaintCatalogs({fal: falList, replicate: replicateList});
+          setInpaintCatalogs({fal: falList, replicate: replicateList, runware: runwareList});
         }
       })
       .catch(() => {});
@@ -559,6 +601,7 @@ function ModelSelectionPanel({
   }, []);
   const falInpaintOptions = inpaintCatalogs.fal.map((option) => ({value: option.id, label: option.label}));
   const replicateInpaintOptions = inpaintCatalogs.replicate.map((option) => ({value: option.id, label: option.label}));
+  const runwareInpaintOptions = inpaintCatalogs.runware.map((option) => ({value: option.id, label: option.label}));
 
   // Airplane mode: a cloud-routed image provider can't serve generate_image
   // (the tool gate drops it), so the model pickers yield to an explanation
@@ -940,13 +983,37 @@ function ModelSelectionPanel({
               <select
                 id="inpaint-provider"
                 value={value.inpaintProvider}
-                onChange={(event) => onChange({inpaintProvider: event.target.value as 'fal' | 'replicate'})}
+                onChange={(event) => onChange({inpaintProvider: event.target.value as 'fal' | 'replicate' | 'runware'})}
               >
                 <option value="fal">fal.ai (cloud)</option>
                 <option value="replicate">Replicate (cloud)</option>
+                <option value="runware">Runware (cloud)</option>
               </select>
             </div>
-            {value.inpaintProvider === 'replicate' ? (
+            {value.inpaintProvider === 'runware' ? (
+              <div className="field">
+                <div className="field-label-row">
+                  {fieldLabel('runware-inpaint-model', 'Inpaint Model (Runware)', 'inpaintModel')}
+                  <InfoHint
+                    label="Runware inpaint models"
+                    text="The verified Runware mask models (FLUX.1 Fill): the source and mask upload through Runware's media storage when large, white marks the area to edit, and the result keeps the source image's dimensions. An unverified id typed by hand is refused at the resolver."
+                  />
+                </div>
+                <select
+                  id="runware-inpaint-model"
+                  value={value.runwareInpaintModel}
+                  onChange={(event) => onChange({runwareInpaintModel: event.target.value})}
+                >
+                  {runwareInpaintOptions.some((option) => option.value === value.runwareInpaintModel) ? null : (
+                    <option value={value.runwareInpaintModel}>{value.runwareInpaintModel}</option>
+                  )}
+                  {runwareInpaintOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+                {!catalogs.runwareHasKey ? (
+                  <span className="hint">Add a Runware API key {keyWhere} to inpaint images.</span>
+                ) : null}
+              </div>
+            ) : value.inpaintProvider === 'replicate' ? (
               <div className="field">
                 {fieldLabel('replicate-inpaint-model', 'Inpaint Model (Replicate)', 'inpaintModel')}
                 <select
@@ -991,7 +1058,7 @@ function ModelSelectionPanel({
           {airplaneMode ? (
             <AirplaneHint
               label="Video generation unavailable"
-              text="Video generation runs on a cloud provider (fal.ai or Replicate), which airplane mode blocks. The local video tools — trim, crop, screenshot, split, join, convert — still work in chat and the video editor."
+              text="Video generation runs on a cloud provider (fal.ai, Replicate, or Runware), which airplane mode blocks. The local video tools — trim, crop, screenshot, split, join, convert — still work in chat and the video editor."
             />
           ) : null}
         </h3>
@@ -1000,16 +1067,17 @@ function ModelSelectionPanel({
             <div className="field-label-row">
               {fieldLabel('video-provider', 'Video Provider', 'videoProvider')}              <InfoHint
                 label="Video provider"
-                text="Which cloud backend generate_video uses: fal.ai or Replicate. Both serve text-to-video, image-to-video, and extending an attached clip; motion control and keyframe transitions are fal.ai only (a request for those on Replicate fails with a note suggesting the switch). The video transforms (upscale, reframe, restyle) follow this provider too; lip sync and audio are always fal.ai and configured below regardless of this setting."
+                text="Which cloud backend generate_video uses: fal.ai, Replicate, or Runware. All serve text-to-video, image-to-video, and extending an attached clip; motion control and keyframe transitions are fal.ai only (a request for those elsewhere fails with a note suggesting the switch). The video transforms follow this provider too — reframe stays fal/Replicate, since Runware's catalog carries no video-reframe model. Lip sync and audio are configured below regardless of this setting."
               />
             </div>
             <select
               id="video-provider"
               value={value.videoProvider}
-              onChange={(event) => onChange({videoProvider: event.target.value as 'fal' | 'replicate'})}
+              onChange={(event) => onChange({videoProvider: event.target.value as 'fal' | 'replicate' | 'runware'})}
             >
               <option value="fal">fal.ai</option>
               <option value="replicate">Replicate</option>
+              <option value="runware" disabled={airplaneMode}>Runware (cloud)</option>
             </select>
           </div>
 
@@ -1054,7 +1122,52 @@ function ModelSelectionPanel({
             </div>
           </div>
 
-          {value.videoProvider === 'replicate' ? (
+          {value.videoProvider === 'runware' ? (
+          <div className="two-column">
+            <div className="field">
+              <div className="field-label-row">
+                {fieldLabel('runware-video-model', 'Text-to-Video Model (Runware)', 'videoModel')}
+                <InfoHint
+                  label="Runware video models"
+                  text="Kling 4.0 serves text-to-video and image-to-video (an attached frame animates through its frameImages input); Veo 3.1 is the extend default (its inputs.video continues an attached clip). Costs are the amounts Runware reports charging."
+                />
+              </div>
+              <ModelCombobox
+                id="runware-video-model"
+                ariaLabel="Runware text-to-video model"
+                placeholder={defaultRunwareVideoModel}
+                value={value.runwareVideoModel}
+                onChange={(next) => onChange({runwareVideoModel: next})}
+                options={runwareVideoOptions}
+                allowCustom
+              />
+              {!catalogs.runwareHasKey ? (
+                <span className="hint">Add a Runware API key {keyWhere} to generate videos.</span>
+              ) : runwareVideoOptions.length ? null : (
+                <span className="hint">Type an AIR model id (e.g. klingai:kling-video@4.0).</span>
+              )}
+            </div>
+
+            <div className="field">
+              <div className="field-label-row">
+                {fieldLabel('runware-video-image-model', 'Image-to-Video Model (Runware)', 'videoImageModel')}
+                <InfoHint
+                  label="Image-to-video clip lengths"
+                  text={`Supported clip lengths: ${formatSupportedDurations(durationOptions.image)}`}
+                />
+              </div>
+              <ModelCombobox
+                id="runware-video-image-model"
+                ariaLabel="Runware image-to-video model"
+                placeholder={defaultRunwareVideoImageModel}
+                value={value.runwareVideoImageModel}
+                onChange={(next) => onChange({runwareVideoImageModel: next})}
+                options={runwareVideoImageOptions}
+                allowCustom
+              />
+            </div>
+          </div>
+          ) : value.videoProvider === 'replicate' ? (
           <div className="two-column">
             <div className="field">
               {fieldLabel('replicate-video-model', 'Text-to-Video Model (Replicate)', 'videoModel')}
@@ -1134,7 +1247,47 @@ function ModelSelectionPanel({
           </div>
           )}
 
-          {value.videoProvider === 'fal' ? (
+          {value.videoProvider === 'runware' ? (
+          <div className="two-column">
+            <div className="field">
+              <div className="field-label-row">
+                {fieldLabel('runware-video-extend-model', 'Video-Extend Model (Runware)', 'videoExtendModel')}
+                <InfoHint
+                  label="Video-extend clip lengths"
+                  text={`Supported clip lengths: ${formatSupportedDurations(durationOptions.extend)}`}
+                />
+              </div>
+              <ModelCombobox
+                id="runware-video-extend-model"
+                ariaLabel="Runware video-extend model"
+                placeholder={defaultRunwareVideoExtendModel}
+                value={value.runwareVideoExtendModel}
+                onChange={(next) => onChange({runwareVideoExtendModel: next})}
+                options={runwareVideoExtendOptions}
+                allowCustom
+              />
+            </div>
+
+            <div className="field">
+              <div className="field-label-row">
+                {fieldLabel('runware-video-upscale-model', 'Video-Upscale Model (Runware)', 'videoUpscaleModel')}
+                <InfoHint
+                  label="Video upscaling on Runware"
+                  text="upscale_video's task when Runware is the video provider. The default (FLUX 3 Upscaler) takes a 1.5–3× factor; a request outside that range scales by what the model can do, with a notice."
+                />
+              </div>
+              <ModelCombobox
+                id="runware-video-upscale-model"
+                ariaLabel="Runware video-upscale model"
+                placeholder={defaultRunwareVideoUpscaleModel}
+                value={value.runwareVideoUpscaleModel}
+                onChange={(next) => onChange({runwareVideoUpscaleModel: next})}
+                options={runwareVideoUpscaleOptions}
+                allowCustom
+              />
+            </div>
+          </div>
+          ) : value.videoProvider === 'fal' ? (
           <>
           <div className="two-column">
             <div className="field">
@@ -1251,7 +1404,28 @@ function ModelSelectionPanel({
           </div>
           )}
 
-          {value.videoProvider === 'replicate' ? (
+          {value.videoProvider === 'runware' ? (
+          <div className="two-column">
+            <div className="field">
+              <div className="field-label-row">
+                {fieldLabel('runware-video-restyle-model', 'Video-Restyle Model (Runware)', 'videoRestyleModel')}
+                <InfoHint
+                  label="Video restyling on Runware"
+                  text="Re-renders an attached clip under a style prompt while keeping its motion — the restyle_video tool's task when Runware is the video provider. The default (FLUX Video Edit [fast]) edits via natural-language instruction and caps input clips at 15 seconds; Runware's catalog has no video-reframe model, so reframe_video stays on fal.ai or Replicate (the local transform_video crops or pads for free)."
+                />
+              </div>
+              <ModelCombobox
+                id="runware-video-restyle-model"
+                ariaLabel="Runware video-restyle model"
+                placeholder={defaultRunwareVideoRestyleModel}
+                value={value.runwareVideoRestyleModel}
+                onChange={(next) => onChange({runwareVideoRestyleModel: next})}
+                options={runwareVideoRestyleOptions}
+                allowCustom
+              />
+            </div>
+          </div>
+          ) : value.videoProvider === 'replicate' ? (
           <div className="two-column">
             <div className="field">
               <div className="field-label-row">
@@ -1343,7 +1517,7 @@ function ModelSelectionPanel({
               label="Audio generation unavailable"
               text={value.speechProvider === 'ollama'
                 ? 'Music, sound effects, audio extension, voice design, and voice cloning run on fal.ai or Replicate, which airplane mode blocks. Speech still works — it runs on the local Ollama speech model — and the local audio tools (trim, cut, split, join, convert) keep working in chat and the audio editor.'
-                : 'Speech, music, sound effects, and audio extension run on fal.ai or Replicate, which airplane mode blocks. The local audio tools — trim, cut, split, join, convert — still work in chat and the audio editor. Switching Speech Provider to Ollama keeps text-to-speech available offline.'}
+                : 'Speech, music, sound effects, and audio extension run on a cloud provider, which airplane mode blocks. The local audio tools — trim, cut, split, join, convert — still work in chat and the audio editor. Switching Speech Provider to Ollama keeps text-to-speech available offline.'}
             />
           ) : null}
         </h3>
@@ -1377,25 +1551,64 @@ function ModelSelectionPanel({
               {fieldLabel('audio-provider', 'Audio Provider', 'audioProvider')}
               <InfoHint
                 label="Audio provider"
-                text="Where the non-voice audio tools run — generate_sound (music and sound effects) and add_sound_effects (a video's soundtrack). fal.ai's endpoints cover both; Replicate's generate_sound default (stable-audio-2.5) also covers both, and its video sound-effects default (MMAudio) delivers the soundtrack as a clip replace_audio lays under the video. Audio extension, voice design, and voice cloning stay on fal.ai, and speech routes by the Speech Provider below."
+                text="Where the non-voice audio tools run — generate_sound (music and sound effects) and add_sound_effects (a video's soundtrack). fal.ai's endpoints cover both; Replicate's defaults also cover both, and Runware's Mirelo SFX serves text-to-audio and mixes the soundtrack into the attached clip. Audio extension stays on fal.ai/Replicate (Runware has no input-audio model), voice design and voice cloning stay on fal.ai, and speech routes by the Speech Provider below."
               />
               {airplaneMode ? (
                 <AirplaneHint
                   label="Cloud audio unavailable"
-                  text="Music and sound-effect generation runs on a cloud provider (fal.ai or Replicate), which airplane mode blocks."
+                  text="Music and sound-effect generation runs on a cloud provider, which airplane mode blocks."
                 />
               ) : null}
             </div>
             <select
               id="audio-provider"
               value={value.audioProvider}
-              onChange={(event) => onChange({audioProvider: event.target.value as 'fal' | 'replicate'})}
+              onChange={(event) => onChange({audioProvider: event.target.value as 'fal' | 'replicate' | 'runware'})}
             >
               <option value="fal" disabled={airplaneMode}>fal.ai (cloud)</option>
               <option value="replicate" disabled={airplaneMode}>Replicate (cloud)</option>
+              <option value="runware" disabled={airplaneMode}>Runware (cloud)</option>
             </select>
           </div>
-          {value.audioProvider === 'replicate' ? (
+          {value.audioProvider === 'runware' ? (
+            <>
+              <div className="field">
+                {fieldLabel('runware-sound-effects-model', 'Music & Sound Effects Model (Runware)', 'soundEffectsModel')}
+                <ModelCombobox
+                  id="runware-sound-effects-model"
+                  ariaLabel="Runware music and sound effects model"
+                  placeholder={defaultRunwareSoundEffectsModel}
+                  value={value.runwareSoundEffectsModel}
+                  onChange={(next) => onChange({runwareSoundEffectsModel: next})}
+                  options={runwareSoundEffectOptions}
+                  allowCustom
+                />
+                {!catalogs.runwareHasKey ? (
+                  <span className="hint">Add a Runware API key {keyWhere} to generate sound.</span>
+                ) : runwareSoundEffectOptions.length ? null : (
+                  <span className="hint">Type an AIR model id (e.g. mirelo:1@1 for SFX, minimax:music@2.6 for music).</span>
+                )}
+              </div>
+              <div className="field">
+                <div className="field-label-row">
+                  {fieldLabel('runware-sound-effects-video-model', 'Video Sound Effects Model (Runware)', 'soundEffectsVideoModel')}
+                  <InfoHint
+                    label="Video sound effects model"
+                    text="Watches an attached video and generates a synchronized soundtrack for it (the add_sound_effects tool). Runware's Mirelo SFX mixes the sound INTO the clip and returns the video directly; its text-only shape delivers a standalone soundtrack replace_audio can lay under the video."
+                  />
+                </div>
+                <ModelCombobox
+                  id="runware-sound-effects-video-model"
+                  ariaLabel="Runware video sound effects model"
+                  placeholder={defaultRunwareSoundEffectsVideoModel}
+                  value={value.runwareSoundEffectsVideoModel}
+                  onChange={(next) => onChange({runwareSoundEffectsVideoModel: next})}
+                  options={runwareSoundEffectsVideoOptions}
+                  allowCustom
+                />
+              </div>
+            </>
+          ) : value.audioProvider === 'replicate' ? (
             <>
               <div className="field">
                 {fieldLabel('replicate-sound-effects-model', 'Music & Sound Effects Model (Replicate)', 'soundEffectsModel')}
@@ -1462,7 +1675,9 @@ function ModelSelectionPanel({
               </div>
             </>
           )}
-          {value.audioProvider === 'replicate' ? (
+          {value.audioProvider === 'runware' ? (
+            <span className="hint">Audio extension (extend_audio) runs on fal.ai or Replicate — Runware publishes no input-audio model. Pick this section's Audio Provider accordingly when a workflow needs extensions.</span>
+          ) : value.audioProvider === 'replicate' ? (
             <div className="field">
               <div className="field-label-row">
                 {fieldLabel('replicate-audio-extend-model', 'Audio Extend Model (Replicate)', 'audioExtendModel')}
@@ -1510,7 +1725,7 @@ function ModelSelectionPanel({
                 {fieldLabel('speech-provider', 'Speech Provider', 'speechProvider')}
                 <InfoHint
                   label="Speech provider"
-                  text="Where generate_speech runs: fal.ai's cloud speech endpoints, Replicate's text-to-speech collection (MiniMax speech, Chatterbox, Qwen3-TTS, …), or a speech model pulled into the local Ollama (phonon and its language variants — Ollama 0.40.11+, macOS). Ollama speech needs no API key and keeps working in airplane mode, but it speaks only its model's catalog voices. Voice design and voice cloning stay on fal.ai whichever provider is selected — on Ollama or Replicate an attached clip is ignored with a notice — and music, sound effects, and audio extension follow the Audio Provider above."
+                  text="Where generate_speech runs: fal.ai's cloud speech endpoints, Replicate's text-to-speech collection (MiniMax speech, Chatterbox, Qwen3-TTS, …), Runware's speech models (MiniMax Speech's ~300-voice catalog), or a speech model pulled into the local Ollama (phonon and its language variants — Ollama 0.40.11+, macOS). Ollama speech needs no API key and keeps working in airplane mode, but it speaks only its model's catalog voices. Voice design and voice cloning stay on fal.ai whichever provider is selected — on Ollama, Replicate, or Runware an attached clip is ignored with a notice — and music, sound effects, and audio extension follow the Audio Provider above."
                 />
                 {airplaneMode && value.speechProvider !== 'ollama' ? (
                   <AirplaneHint
@@ -1526,6 +1741,7 @@ function ModelSelectionPanel({
               >
                 <option value="fal" disabled={airplaneMode}>fal.ai (cloud)</option>
                 <option value="replicate" disabled={airplaneMode}>Replicate (cloud)</option>
+                <option value="runware" disabled={airplaneMode}>Runware (cloud)</option>
                 <option value="ollama">Ollama (local)</option>
               </select>
             </div>
@@ -1543,6 +1759,30 @@ function ModelSelectionPanel({
                 />
                 {ollamaSpeechOptions.length ? null : (
                   <span className="hint">No speech model is pulled — run <code>ollama pull phonon</code> (Ollama 0.40.11+ on macOS), then refresh the Ollama connection.</span>
+                )}
+              </div>
+            ) : value.speechProvider === 'runware' ? (
+              <div className="field">
+                <div className="field-label-row">
+                  {fieldLabel('runware-speech-model', 'Speech Model (TTS, Runware)', 'audioModel')}
+                  <InfoHint
+                    label="Runware speech model"
+                    text="Runware's text-to-speech models, filtered to the ones that speak written text. The MiniMax speech models carry a ~300-voice catalog enum (English_expressive_narrator, Japanese_ColdQueen, …); a model applies whichever emotion/speed controls its schema declares and drops the rest with a notice. No voice cloning on Runware — an attached reference clip is ignored with a notice naming fal.ai. The reported cost is what Runware charged."
+                  />
+                </div>
+                <ModelCombobox
+                  id="runware-speech-model"
+                  ariaLabel="Runware speech model"
+                  placeholder={defaultRunwareSpeechModel}
+                  value={value.runwareSpeechModel}
+                  onChange={(next) => onChange({runwareSpeechModel: next})}
+                  options={runwareSpeechOptions}
+                  allowCustom
+                />
+                {!catalogs.runwareHasKey ? (
+                  <span className="hint">Add a Runware API key {keyWhere} to generate speech.</span>
+                ) : runwareSpeechOptions.length ? null : (
+                  <span className="hint">Type an AIR model id (e.g. minimax:speech@2.8).</span>
                 )}
               </div>
             ) : value.speechProvider === 'replicate' ? (
@@ -1732,7 +1972,7 @@ function ModelSelectionPanel({
           {airplaneMode ? (
             <AirplaneHint
               label="Lip sync unavailable"
-              text="Lip sync runs on a cloud provider (fal.ai or Replicate), which airplane mode blocks."
+              text="Lip sync runs on a cloud provider (fal.ai, Replicate, or Runware), which airplane mode blocks."
             />
           ) : null}
         </h3>
@@ -1743,14 +1983,49 @@ function ModelSelectionPanel({
               <select
                 id="lipsync-provider"
                 value={value.lipsyncProvider}
-                onChange={(event) => onChange({lipsyncProvider: event.target.value as 'fal' | 'replicate'})}
+                onChange={(event) => onChange({lipsyncProvider: event.target.value as 'fal' | 'replicate' | 'runware'})}
               >
                 <option value="fal" disabled={airplaneMode}>fal.ai (cloud)</option>
                 <option value="replicate" disabled={airplaneMode}>Replicate (cloud)</option>
+                <option value="runware" disabled={airplaneMode}>Runware (cloud)</option>
               </select>
             </div>
           </div>
-          {value.lipsyncProvider === 'replicate' ? (
+          {value.lipsyncProvider === 'runware' ? (
+            <div className="two-column">
+              <div className="field">
+                <div className="field-label-row">
+                  {fieldLabel('runware-lipsync-image-model', 'Image+Audio Input (Runware)', 'lipsyncImageModel')}
+                  <InfoHint
+                    label="Runware image-face lipsync"
+                    text="Produces a talking head from an attached image plus a driving audio clip. Runware's image-face model is VEED Fabric 1.0 (60-second audio ceiling); its video-face model (KlingAI Lip-Sync) re-syncs an attached clip instead. Both are schema-verified for the inputs the tool sends."
+                  />
+                </div>
+                <ModelCombobox
+                  id="runware-lipsync-image-model"
+                  ariaLabel="Runware image+audio lip sync model"
+                  placeholder={defaultRunwareLipsyncImageModel}
+                  value={value.runwareLipsyncImageModel}
+                  onChange={(next) => onChange({runwareLipsyncImageModel: next})}
+                  options={runwareLipsyncImageOptions}
+                  allowCustom
+                />
+              </div>
+
+              <div className="field">
+                {fieldLabel('runware-lipsync-video-model', 'Video+Audio Input (Runware)', 'lipsyncVideoModel')}
+                <ModelCombobox
+                  id="runware-lipsync-video-model"
+                  ariaLabel="Runware video+audio lip sync model"
+                  placeholder={defaultRunwareLipsyncVideoModel}
+                  value={value.runwareLipsyncVideoModel}
+                  onChange={(next) => onChange({runwareLipsyncVideoModel: next})}
+                  options={runwareLipsyncVideoOptions}
+                  allowCustom
+                />
+              </div>
+            </div>
+          ) : value.lipsyncProvider === 'replicate' ? (
             <div className="two-column">
               <div className="field">
                 {fieldLabel('replicate-lipsync-image-model', 'Image+Audio Input (Replicate)', 'lipsyncImageModel')}
@@ -1810,7 +2085,10 @@ function ModelSelectionPanel({
           {!airplaneMode && value.lipsyncProvider === 'replicate' && !catalogs.replicateHasKey ? (
             <span className="hint">Add a Replicate API token {keyWhere} to use lip sync.</span>
           ) : null}
-          {!airplaneMode && value.lipsyncProvider !== 'replicate' && !catalogs.falHasKey ? (
+          {!airplaneMode && value.lipsyncProvider === 'runware' && !catalogs.runwareHasKey ? (
+            <span className="hint">Add a Runware API key {keyWhere} to use lip sync.</span>
+          ) : null}
+          {!airplaneMode && value.lipsyncProvider !== 'replicate' && value.lipsyncProvider !== 'runware' && !catalogs.falHasKey ? (
             <span className="hint">Add a fal.ai API key {keyWhere} to use lip sync.</span>
           ) : null}
         </div>

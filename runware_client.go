@@ -1,22 +1,31 @@
 package main
 
-// runware_client.go is the Runware media backend — a third cloud provider for
-// generate_image beside fal and Replicate, routed by imageGenerationProvider
-// when Models.ImageProvider is "runware". SPIKE SCOPE: text-to-image and
-// reference-image edits through one synchronous imageInference task; video,
-// audio, upscale, and inpaint stay on the existing providers.
+// runware_client.go is the Runware media backend — a cloud provider for
+// generate_image routed by imageGenerationProvider, and for the video family
+// (generate_video, upscale/restyle), lipsync, speech, and sound routed by
+// videoGenerationProvider / resolveSpeechProvider / resolveAudioProvider /
+// resolveLipsyncProvider when the matching Models.*Provider is "runware".
+// extend_audio, generate_voice, and voice cloning stay on the other
+// providers: Runware publishes no input-audio continuation and no voice
+// design or cloning endpoint.
 //
-// The wire contract differs from both existing backends in three ways that
+// The wire contract differs from both older backends in three ways that
 // shape this file:
 //
 //   - One endpoint (POST /v1) takes a JSON ARRAY of tasks, each naming its
-//     taskType and a client-minted taskUUID (UUIDv4); results come back in a
-//     top-level `data` array keyed by that UUID, failures in `errors`.
+//     taskType (imageInference / videoInference / audioInference) and a
+//     client-minted taskUUID (UUIDv4); results come back in a top-level
+//     `data` array keyed by that UUID, failures in `errors`.
 //   - Cost is REPORTED, not estimated: includeCost:true puts the USD amount
 //     actually deducted on each result, so the activity carries real cost —
 //     no pricing-API estimate (fal) and no CostUnknown (Replicate).
-//   - outputType:"dataURI" returns the bytes inline, so nothing is
-//     downloaded afterwards and no output URL can expire under us.
+//   - Images ride outputType:"dataURI" so the bytes come inline. Video and
+//     long audio tasks outlive the sync window (120s): the API then answers
+//     with a "processing" row and the task finishes server-side, so the
+//     transports poll getResponse by the SAME taskUUID until success —
+//     resending would start a second paid generation. There is no cancel
+//     API, so CancelMediaJob is a no-op and the taskUUID recorded in the
+//     mediaJob before the submit posts is what timeout recovery polls.
 //
 // Per-model input schemas live at runware.ai/docs/models/<id>/schema.json as
 // OpenAPI 3.1 with the task under components.schemas.RequestBody.items; the
@@ -29,12 +38,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -54,6 +65,27 @@ const (
 	// first default, but its seedImage is plain image-to-image — a live
 	// "make it a watercolor" edit came back as a re-rolled photo.
 	defaultRunwareImageModel = "runware:106@1"
+	// The video-family, lipsync, speech, and sound defaults are every one a
+	// live model whose schema was read before it was pinned (2026-11): Kling
+	// 4.0 serves text-to-video AND image-to-video (inputs.frameImages), Veo
+	// 3.1 is the extend model (its inputs.video is the continuation source
+	// and the output length is its own), FLUX 3 Upscaler and FLUX Video Edit
+	// [fast] are the two video transforms the catalog serves, KlingAI
+	// Lip-Sync and VEED Fabric 1.0 are the video-face and image-face lipsync
+	// models, MiniMax Speech 2.8 the voice (a ~300-voice catalog enum, no
+	// cloning), and Mirelo SFX 1.5 both sound models (text-to-audio, and the
+	// video soundtrack that answers MP4 with the sound mixed in).
+	defaultRunwareVideoModel             = "klingai:kling-video@4.0"
+	defaultRunwareVideoImageModel        = "klingai:kling-video@4.0"
+	defaultRunwareVideoExtendModel       = "google:3@2"
+	defaultRunwareVideoUpscaleModel      = "bfl:flux@video-upscale"
+	defaultRunwareVideoRestyleModel      = "bfl:flux@video-edit-fast"
+	defaultRunwareInpaintModel           = "bfl:1@2"
+	defaultRunwareLipsyncImageModel      = "veed:fabric@1.0-hosted"
+	defaultRunwareLipsyncVideoModel      = "klingai:7@1"
+	defaultRunwareSpeechModel            = "minimax:speech@2.8"
+	defaultRunwareSoundEffectsModel      = "mirelo:1@1"
+	defaultRunwareSoundEffectsVideoModel = "mirelo:1@1"
 )
 
 var errRunwareKeyNotConfigured = errors.New("runware api key is not configured")
@@ -64,6 +96,12 @@ type RunwareClient struct {
 	baseURL string
 	// indexURL and schemaURL are test seams; production reads the docs site.
 	indexURL string
+	// jobSink mirrors the fal and Replicate clients: the gateway points it at
+	// the mediaJob handle it owns, and runTask records the submitted task's
+	// UUID before posting — the UUID is client-minted, so recording early
+	// means even a timeout inside the submit call itself (the task accepted
+	// server-side anyway) can be recovered by polling.
+	jobSink *mediaJob
 }
 
 func newRunwareClient(httpClient *http.Client, apiKey string) *RunwareClient {
@@ -322,22 +360,7 @@ func (c *RunwareClient) CleanupUploads(uploads []string) {
 // diagnostic (a mapping decision, not something the reply should announce).
 // The returned uploads are the mediaUUIDs to clean up afterwards.
 func (c *RunwareClient) ResolveImageInputs(ctx context.Context, images []string) (resolved, uploads, diagnostics []string) {
-	resolved = make([]string, len(images))
-	for i, img := range images {
-		resolved[i] = img
-		if runwareInlineSize(img) <= runwareUploadThreshold {
-			continue
-		}
-		mediaUUID, err := c.UploadMedia(ctx, img)
-		if err != nil {
-			diagnostics = append(diagnostics, fmt.Sprintf("runware: upload of source image %d failed (%v); sent it inline", i+1, err))
-			continue
-		}
-		resolved[i] = mediaUUID
-		uploads = append(uploads, mediaUUID)
-		diagnostics = append(diagnostics, fmt.Sprintf("runware: source image %d (%d bytes) uploaded as media %s", i+1, runwareInlineSize(img), mediaUUID))
-	}
-	return resolved, uploads, diagnostics
+	return c.ResolveMediaInputs(ctx, images, "source image")
 }
 
 // runwareInlineSize estimates the decoded byte size of an inline payload
@@ -798,4 +821,403 @@ func runwareSnapDimension(schema *ModelInputSchema, name string, value int) int 
 		}
 	}
 	return v
+}
+
+// --- video, audio, and lipsync transports ---
+
+const (
+	// Video tasks are asynchronous by default on every video model the app
+	// drives; they run under the caller's (runMediaGeneration's) deadline,
+	// never under the 3-minute sync window image tasks get.
+	runwareVideoMaxBytes = 1 << 30
+	runwareAudioMaxBytes = 256 << 20
+	// runwarePollStart is the first getResponse delay; it grows 1.5× per
+	// poll up to runwarePollMax. Runware's own polling guidance says to
+	// start at 1–2s and back off; a video that misses the sync window has
+	// minutes left, so the curve is unremarkable either way.
+	runwarePollStart = 2 * time.Second
+	runwarePollMax   = 8 * time.Second
+)
+
+// runwareMediaResult is one `data` row from any inference task — image,
+// video, or audio — plus the async status fields. A row whose Status is
+// "processing" means the task outlived the sync window and keeps running
+// server-side; poll getResponse by TaskUUID. Failures arrive in the
+// envelope's errors array (which do() turns into an error) but a belt
+// status check catches them in-band too.
+type runwareMediaResult struct {
+	TaskType string `json:"taskType"`
+	TaskUUID string `json:"taskUUID"`
+	Status   string `json:"status"`
+	Progress *int   `json:"progress"`
+
+	ImageUUID       string `json:"imageUUID"`
+	ImageURL        string `json:"imageURL"`
+	ImageDataURI    string `json:"imageDataURI"`
+	ImageBase64Data string `json:"imageBase64Data"`
+
+	VideoUUID       string `json:"videoUUID"`
+	VideoURL        string `json:"videoURL"`
+	VideoDataURI    string `json:"videoDataURI"`
+	VideoBase64Data string `json:"videoBase64Data"`
+
+	AudioUUID       string `json:"audioUUID"`
+	AudioURL        string `json:"audioURL"`
+	AudioDataURI    string `json:"audioDataURI"`
+	AudioBase64Data string `json:"audioBase64Data"`
+
+	Seed *int64   `json:"seed"`
+	Cost *float64 `json:"cost"`
+}
+
+// runwareRowDone reports whether a data row carries a finished result:
+// either the explicit success status or a sync row (no status field at all
+// — the shape image results have always had).
+func runwareRowDone(row runwareMediaResult) bool {
+	return row.Status == "" || strings.EqualFold(row.Status, "success")
+}
+
+// runwareRowFor finds the data row matching taskUUID. A foreign UUID is
+// never harvested — the endpoint returns one row per task in the batch.
+func runwareRowFor(decoded runwareResponse, taskUUID string) (runwareMediaResult, bool) {
+	for _, raw := range decoded.Data {
+		var row runwareMediaResult
+		if json.Unmarshal(raw, &row) != nil {
+			continue
+		}
+		if row.TaskUUID != "" && taskUUID != "" && row.TaskUUID != taskUUID {
+			continue
+		}
+		return row, true
+	}
+	return runwareMediaResult{}, false
+}
+
+// recordRunwareJob writes the task UUID into the caller's mediaJob handle —
+// called before the task posts, since the UUID is minted here and is the
+// only thing timeout recovery needs.
+func (c *RunwareClient) recordRunwareJob(taskUUID string) {
+	if c.jobSink != nil {
+		c.jobSink.record(mediaJob{Provider: "runware", ID: taskUUID})
+	}
+}
+
+// runTask submits one task and delivers its finished row. When the sync
+// window closes with the task still running ("processing" row), it polls
+// getResponse by the same taskUUID — resending would start a second paid
+// generation, so a poll loop is the only correct wait.
+func (c *RunwareClient) runTask(ctx context.Context, task map[string]any) (runwareMediaResult, error) {
+	taskUUID, _ := task["taskUUID"].(string)
+	if taskUUID == "" {
+		taskUUID = runwareTaskUUID()
+		task["taskUUID"] = taskUUID
+	}
+	c.recordRunwareJob(taskUUID)
+	decoded, err := c.do(ctx, []map[string]any{task})
+	if err != nil {
+		return runwareMediaResult{}, err
+	}
+	if row, ok := runwareRowFor(decoded, taskUUID); ok && runwareRowDone(row) {
+		return row, nil
+	}
+	return c.waitForTask(ctx, taskUUID)
+}
+
+// waitForTask polls getResponse until the task reports success, moves into
+// the errors array (do() surfaces that as an error), or the caller's context
+// deadline ends the wait — the runMediaGeneration timeout is the intended
+// bound, and its recovery path polls the same UUID.
+func (c *RunwareClient) waitForTask(ctx context.Context, taskUUID string) (runwareMediaResult, error) {
+	delay := runwarePollStart
+	for {
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return runwareMediaResult{}, ctx.Err()
+		case <-timer.C:
+		}
+		decoded, err := c.do(ctx, []map[string]any{{"taskType": "getResponse", "taskUUID": taskUUID}})
+		if err != nil {
+			return runwareMediaResult{}, err
+		}
+		row, ok := runwareRowFor(decoded, taskUUID)
+		if ok && runwareRowDone(row) {
+			return row, nil
+		}
+		if ok && strings.EqualFold(row.Status, "error") {
+			return runwareMediaResult{}, fmt.Errorf("runware request failed: task %s reported an error", taskUUID)
+		}
+		delay = time.Duration(float64(delay) * 1.5)
+		if delay > runwarePollMax {
+			delay = runwarePollMax
+		}
+	}
+}
+
+// GenerateVideo submits an already-native videoInference task (built by
+// resolveRunwareVideoTask and its upscale/restyle/lipsync siblings) and
+// downloads the result. Inline delivery is never requested on video — the
+// models declare URL output — so the URL is fetched immediately; nothing
+// may depend on Runware's retention window.
+func (c *RunwareClient) GenerateVideo(ctx context.Context, task map[string]any) (GeneratedVideo, error) {
+	row, err := c.runTask(ctx, task)
+	if err != nil {
+		return GeneratedVideo{}, err
+	}
+	data, err := c.mediaBytes(ctx, row.VideoDataURI, row.VideoBase64Data, row.VideoURL, runwareVideoMaxBytes)
+	if err != nil {
+		return GeneratedVideo{}, err
+	}
+	if !isVideoBytes(data) {
+		return GeneratedVideo{}, errors.New("runware returned an unsupported video")
+	}
+	return GeneratedVideo{
+		Data:       data,
+		MimeType:   runwareMediaMimeType(data, row.VideoURL, "video/mp4"),
+		SourceURL:  strings.TrimSpace(row.VideoURL),
+		CostMicros: runwareCostMicros(row.Cost),
+	}, nil
+}
+
+// GenerateAudio submits an already-native audioInference task (speech or
+// sound; the SFX sibling reuses it) and delivers the bytes. Speech and
+// sound models declare dataURI output, so the bytes usually ride inline —
+// mirelo's video-soundtrack branch answers with MP4 bytes on the same
+// audio* fields, which the SFX caller separates by sniffing.
+func (c *RunwareClient) GenerateAudio(ctx context.Context, task map[string]any) (GeneratedAudio, error) {
+	row, err := c.runTask(ctx, task)
+	if err != nil {
+		return GeneratedAudio{}, err
+	}
+	data, err := c.mediaBytes(ctx, row.AudioDataURI, row.AudioBase64Data, row.AudioURL, runwareAudioMaxBytes)
+	if err != nil {
+		return GeneratedAudio{}, err
+	}
+	if !isAudioBytes(data) && !isVideoBytes(data) {
+		return GeneratedAudio{}, errors.New("runware returned an unsupported audio clip")
+	}
+	return GeneratedAudio{
+		Data:       data,
+		MimeType:   runwareMediaMimeType(data, row.AudioURL, "audio/mpeg"),
+		SourceURL:  strings.TrimSpace(row.AudioURL),
+		CostMicros: runwareCostMicros(row.Cost),
+	}, nil
+}
+
+// GenerateSFX submits a video-soundtrack audioInference task and carries the
+// result on whichever side filled: mirelo mixes the sound INTO the clip and
+// answers MP4 bytes on the audio* fields (Video side), while the same model
+// without a video input returns a standalone soundtrack (Audio side).
+func (c *RunwareClient) GenerateSFX(ctx context.Context, task map[string]any) (SFXGenerateResult, error) {
+	audio, err := c.GenerateAudio(ctx, task)
+	if err != nil {
+		return SFXGenerateResult{}, err
+	}
+	if isVideoBytes(audio.Data) {
+		return SFXGenerateResult{Video: GeneratedVideo{
+			Data:       audio.Data,
+			MimeType:   audio.MimeType,
+			SourceURL:  audio.SourceURL,
+			CostMicros: audio.CostMicros,
+		}}, nil
+	}
+	return SFXGenerateResult{Audio: audio}, nil
+}
+
+// mediaBytes materializes a result row's payload: inline data URI / bare
+// base64 when the model honored them, else the output URL fetched now —
+// results are retained only for the ttl window, so nothing may wait.
+func (c *RunwareClient) mediaBytes(ctx context.Context, dataURI, base64Data, url string, maxBytes int64) ([]byte, error) {
+	if s := strings.TrimSpace(dataURI); s != "" {
+		decoded, _, err := decodeMediaDataURL(s)
+		return decoded, err
+	}
+	if s := strings.TrimSpace(base64Data); s != "" {
+		decoded, err := base64.StdEncoding.DecodeString(s)
+		if err != nil {
+			return nil, fmt.Errorf("runware result base64 unreadable: %w", err)
+		}
+		return decoded, nil
+	}
+	if s := strings.TrimSpace(url); s != "" {
+		return c.downloadMedia(ctx, s, maxBytes)
+	}
+	return nil, errors.New("runware returned no media")
+}
+
+// downloadMedia fetches a generated result URL and returns its raw bytes —
+// video and audio alike, since the caller validates the kind it expects.
+func (c *RunwareClient) downloadMedia(ctx context.Context, mediaURL string, maxBytes int64) ([]byte, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, mediaURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("runware result download failed: %s", resp.Status)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, maxBytes))
+}
+
+// runwareMediaMimeType names a downloaded payload: the response Content-Type
+// when it is media-shaped, else a magic-byte detection, else the caller's
+// kind default. The download path drops headers, so the sniff matters.
+func runwareMediaMimeType(data []byte, url, fallback string) string {
+	mimeType := strings.TrimSpace(mediaTypeForURL(url))
+	if !strings.Contains(mimeType, "/") {
+		mimeType = ""
+	}
+	if detected := http.DetectContentType(data); strings.HasPrefix(detected, "video/") || strings.HasPrefix(detected, "audio/") {
+		if mimeType == "" {
+			mimeType = detected
+		}
+	}
+	if mimeType == "" {
+		mimeType = fallback
+	}
+	return mimeType
+}
+
+// mediaTypeForURL reads an extension off a result URL — vm.runware.ai paths
+// end in the container (.mp4/.mp3/...), which is more specific than a sniff.
+func mediaTypeForURL(url string) string {
+	if url == "" {
+		return ""
+	}
+	ext := strings.ToLower(path.Ext(url))
+	return mediaTypeForExtension(ext)
+}
+
+// runwareCostMicros rounds a reported USD cost into millionths.
+func runwareCostMicros(cost *float64) int64 {
+	if cost == nil {
+		return 0
+	}
+	return int64(math.Round(*cost * 1e6))
+}
+
+// CancelMediaJob is a no-op: Runware publishes no cancel API, so an
+// abandoned task keeps running remotely and the cost is already committed.
+// Returning nil (success) keeps runMediaGeneration's recovery shape
+// identical to the fal and Replicate siblings.
+func (c *RunwareClient) CancelMediaJob(ctx context.Context, job mediaJob) error {
+	return nil
+}
+
+// RecoverVideoJob resolves a timed-out generation with one getResponse poll:
+// success delivers the finished bytes, failure reports the task's end, and
+// "still processing" errors — runMediaGeneration then reports that the job
+// could not be confirmed (its no-op cancel can't stop it either).
+func (c *RunwareClient) RecoverVideoJob(ctx context.Context, job mediaJob) (GeneratedVideo, error) {
+	row, err := c.pollTaskOnce(ctx, job)
+	if err != nil {
+		return GeneratedVideo{}, err
+	}
+	data, err := c.mediaBytes(ctx, row.VideoDataURI, row.VideoBase64Data, row.VideoURL, runwareVideoMaxBytes)
+	if err != nil {
+		return GeneratedVideo{}, err
+	}
+	return GeneratedVideo{
+		Data:       data,
+		MimeType:   runwareMediaMimeType(data, row.VideoURL, "video/mp4"),
+		SourceURL:  strings.TrimSpace(row.VideoURL),
+		CostMicros: runwareCostMicros(row.Cost),
+	}, nil
+}
+
+// RecoverAudioJob is the audio sibling of RecoverVideoJob.
+func (c *RunwareClient) RecoverAudioJob(ctx context.Context, job mediaJob) (GeneratedAudio, error) {
+	row, err := c.pollTaskOnce(ctx, job)
+	if err != nil {
+		return GeneratedAudio{}, err
+	}
+	data, err := c.mediaBytes(ctx, row.AudioDataURI, row.AudioBase64Data, row.AudioURL, runwareAudioMaxBytes)
+	if err != nil {
+		return GeneratedAudio{}, err
+	}
+	return GeneratedAudio{
+		Data:       data,
+		MimeType:   runwareMediaMimeType(data, row.AudioURL, "audio/mpeg"),
+		SourceURL:  strings.TrimSpace(row.AudioURL),
+		CostMicros: runwareCostMicros(row.Cost),
+	}, nil
+}
+
+// RecoverSFXJob reuses the audio recovery and re-splits the sides the way
+// GenerateSFX does.
+func (c *RunwareClient) RecoverSFXJob(ctx context.Context, job mediaJob) (SFXGenerateResult, error) {
+	row, err := c.pollTaskOnce(ctx, job)
+	if err != nil {
+		return SFXGenerateResult{}, err
+	}
+	audio, err := c.mediaBytes(ctx, row.AudioDataURI, row.AudioBase64Data, row.AudioURL, runwareAudioMaxBytes)
+	if err != nil {
+		return SFXGenerateResult{}, err
+	}
+	if isVideoBytes(audio) {
+		return SFXGenerateResult{Video: GeneratedVideo{
+			Data:       audio,
+			MimeType:   runwareMediaMimeType(audio, row.AudioURL, "video/mp4"),
+			SourceURL:  strings.TrimSpace(row.AudioURL),
+			CostMicros: runwareCostMicros(row.Cost),
+		}}, nil
+	}
+	return SFXGenerateResult{Audio: GeneratedAudio{
+		Data:       audio,
+		MimeType:   runwareMediaMimeType(audio, row.AudioURL, "audio/mpeg"),
+		SourceURL:  strings.TrimSpace(row.AudioURL),
+		CostMicros: runwareCostMicros(row.Cost),
+	}}, nil
+}
+
+// pollTaskOnce reads a timed-out task's current state by the UUID the
+// jobSink recorded at submit time.
+func (c *RunwareClient) pollTaskOnce(ctx context.Context, job mediaJob) (runwareMediaResult, error) {
+	if job.Provider != "runware" || strings.TrimSpace(job.ID) == "" {
+		return runwareMediaResult{}, errors.New("no runware task was recorded for this generation")
+	}
+	decoded, err := c.do(ctx, []map[string]any{{"taskType": "getResponse", "taskUUID": job.ID}})
+	if err != nil {
+		return runwareMediaResult{}, err
+	}
+	row, ok := runwareRowFor(decoded, job.ID)
+	if !ok {
+		return runwareMediaResult{}, fmt.Errorf("runware task %s is unknown to the API", job.ID)
+	}
+	if !runwareRowDone(row) && !strings.EqualFold(row.Status, "error") {
+		return runwareMediaResult{}, fmt.Errorf("runware task %s is still processing", job.ID)
+	}
+	return row, nil
+}
+
+// ResolveMediaInputs uploads every source payload whose decoded size exceeds
+// runwareUploadThreshold and swaps it for its mediaUUID; smaller payloads,
+// hosted URLs, and UUIDs pass through. Video and audio attachments are
+// routinely megabytes, so the upload-first path is the norm for them — the
+// same 120s sync-window protection the image path documents. An upload
+// failure keeps that source inline (the generation can still succeed) and
+// is reported as a diagnostic. The returned uploads are the mediaUUIDs to
+// clean up afterwards.
+func (c *RunwareClient) ResolveMediaInputs(ctx context.Context, media []string, label string) (resolved, uploads, diagnostics []string) {
+	resolved = make([]string, len(media))
+	for i, src := range media {
+		resolved[i] = src
+		if runwareInlineSize(src) <= runwareUploadThreshold {
+			continue
+		}
+		mediaUUID, err := c.UploadMedia(ctx, src)
+		if err != nil {
+			diagnostics = append(diagnostics, fmt.Sprintf("runware: upload of %s %d failed (%v); sent it inline", label, i+1, err))
+			continue
+		}
+		resolved[i] = mediaUUID
+		uploads = append(uploads, mediaUUID)
+		diagnostics = append(diagnostics, fmt.Sprintf("runware: %s %d (%d bytes) uploaded as media %s", label, i+1, runwareInlineSize(src), mediaUUID))
+	}
+	return resolved, uploads, diagnostics
 }

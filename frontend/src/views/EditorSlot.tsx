@@ -29,8 +29,10 @@ export function EditorSlot({app}: {app: AppModel}) {
                 defaultProvider={app.inpaintProvider}
                 falDefaultModel={app.falInpaintModel}
                 replicateDefaultModel={app.replicateInpaintModel}
+                runwareDefaultModel={app.runwareInpaintModel}
                 falHasKey={app.falHasKey}
                 replicateHasKey={app.replicateHasKey}
+                runwareHasKey={app.runwareHasKey}
                 airplaneMode={app.airplaneMode}
                 suspended={app.view !== 'app'}
                 onClose={app.closeImageEditor}

@@ -196,6 +196,30 @@ export function ListReplicateVideoUpscaleModels():Promise<Array<main.ReplicateMo
 
 export function ListRunwareImageModels():Promise<Array<main.RunwareModel>>;
 
+export function ListRunwareLipsyncImageModels():Promise<Array<main.RunwareModel>>;
+
+export function ListRunwareLipsyncVideoModels():Promise<Array<main.RunwareModel>>;
+
+export function ListRunwareSoundEffectDurations(arg1:string):Promise<Array<string>>;
+
+export function ListRunwareSoundEffectModels():Promise<Array<main.RunwareModel>>;
+
+export function ListRunwareSoundEffectsVideoModels():Promise<Array<main.RunwareModel>>;
+
+export function ListRunwareSpeechModels():Promise<Array<main.RunwareModel>>;
+
+export function ListRunwareVideoDurations(arg1:string):Promise<Array<string>>;
+
+export function ListRunwareVideoExtendModels():Promise<Array<main.RunwareModel>>;
+
+export function ListRunwareVideoImageModels():Promise<Array<main.RunwareModel>>;
+
+export function ListRunwareVideoModels():Promise<Array<main.RunwareModel>>;
+
+export function ListRunwareVideoRestyleModels():Promise<Array<main.RunwareModel>>;
+
+export function ListRunwareVideoUpscaleModels():Promise<Array<main.RunwareModel>>;
+
 export function ListToolFiles(arg1:main.ToolFileListRequest):Promise<main.ToolFileListResult>;
 
 export function LoadUIState():Promise<main.UIState>;

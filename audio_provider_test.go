@@ -419,18 +419,18 @@ func TestConversationModelOverridesAudioProvider(t *testing.T) {
 // keeps the fal copy, and an answer naming replicate suppresses the replicate
 // fallback notice.
 func TestMediaGenGapAudioReplicate(t *testing.T) {
-	note := mediaGenUnavailableNote("audio", false, "fal", true)
+	note := mediaGenUnavailableNote("audio", false, "fal", "replicate")
 	if !strings.Contains(note, "Replicate API token") || strings.Contains(note, "fal.ai API key") {
 		t.Fatalf("replicate-pinned audio gap should name the token, got %q", note)
 	}
-	falNote := mediaGenUnavailableNote("audio", false, "fal", false)
+	falNote := mediaGenUnavailableNote("audio", false, "fal", "fal")
 	if !strings.Contains(falNote, "fal.ai API key") {
 		t.Fatalf("fal audio gap should keep the fal remedy, got %q", falNote)
 	}
-	if got := mediaGenFallbackNotice(true, "audio", "Add a Replicate token in Settings.", false, "fal", true); got != "" {
+	if got := mediaGenFallbackNotice(true, "audio", "Add a Replicate token in Settings.", false, "fal", "replicate"); got != "" {
 		t.Fatalf("a replicate-remedied answer should suppress the notice, got %q", got)
 	}
-	notice := mediaGenFallbackNotice(true, "audio", "Sure, generating now.", false, "fal", true)
+	notice := mediaGenFallbackNotice(true, "audio", "Sure, generating now.", false, "fal", "replicate")
 	if !strings.Contains(notice, "Replicate API token") {
 		t.Fatalf("replicate fallback notice should name the token, got %q", notice)
 	}

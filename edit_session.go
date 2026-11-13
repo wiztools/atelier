@@ -142,8 +142,10 @@ type EditSessionState struct {
 	InpaintProvider       string          `json:"inpaintProvider,omitempty"`
 	InpaintFalModel       string          `json:"inpaintFalModel,omitempty"`
 	InpaintReplicateModel string          `json:"inpaintReplicateModel,omitempty"`
+	InpaintRunwareModel   string          `json:"inpaintRunwareModel,omitempty"`
 	FalConfigured         bool            `json:"falConfigured"`
 	ReplicateConfigured   bool            `json:"replicateConfigured"`
+	RunwareConfigured     bool            `json:"runwareConfigured"`
 }
 
 // ImageInpaintRequest is the canonical inpaint call the provider adapters map
@@ -173,14 +175,24 @@ type InpaintModelOption struct {
 
 // verifiedInpaintModels is the curated catalog, one entry per contract
 // verified against the provider's published schema (fal registry OpenAPI,
-// Replicate model pages — see the constants' comments in fal_client.go /
-// replicate_client.go for the verification record).
+// Replicate model pages, Runware docs schemas — see the constants' comments
+// in fal_client.go / replicate_client.go / runware_client.go for the
+// verification record).
 func verifiedInpaintModels(provider string) []InpaintModelOption {
 	switch provider {
 	case "replicate":
 		return []InpaintModelOption{
 			{ID: defaultReplicateInpaintModel, Label: "FLUX.1 Fill [pro]", Note: "Official, actively maintained. Black areas preserved, white areas filled; the mask must match the image size."},
 			{ID: "black-forest-labs/flux-fill-dev", Label: "FLUX.1 Fill [dev]", Note: "Official, open weights, cheaper. Inputs snap to 32-pixel multiples and cap at 1440×1440; the result keeps the model’s output dimensions."},
+		}
+	case "runware":
+		// Both entries' schemas were read before pinning: their inputs object
+		// declares exactly seedImage + maskImage (mode seed-image+mask-image),
+		// white marks the area to edit — Atelier's canonical polarity — and
+		// the output inherits the seed image's dimensions (no width/height).
+		return []InpaintModelOption{
+			{ID: defaultRunwareInpaintModel, Label: "FLUX.1 Fill [pro]", Note: "Official, actively maintained. Follows the source’s shape. Runs on Runware’s sync window; large sources upload first."},
+			{ID: "runware:102@1", Label: "FLUX.1 Fill [dev]", Note: "Open weights, cheaper. Same mask contract as the pro model; results keep the source’s dimensions."},
 		}
 	default:
 		return []InpaintModelOption{
@@ -452,9 +464,10 @@ func (a *App) SubmitImageEdit(req ImageEditSubmitRequest) (EditOperationState, e
 	if kind != editOperationKindInpaint && kind != editOperationKindCrop {
 		return EditOperationState{}, fmt.Errorf("unsupported edit operation kind %q", kind)
 	}
-	// Inpainting is provider-backed (fal/Replicate) with no local backend, so
-	// airplane mode refuses it up front — before the provider/model pair even
-	// resolves. Crop stays: it is local sips/ImageMagick work.
+	// Inpainting is provider-backed (fal/Replicate/Runware) with no local
+	// backend, so airplane mode refuses it up front — before the
+	// provider/model pair even resolves. Crop stays: it is local
+	// sips/ImageMagick work.
 	if kind == editOperationKindInpaint {
 		if err := airplaneInpaintError(config); err != nil {
 			return EditOperationState{}, err
@@ -471,14 +484,17 @@ func (a *App) SubmitImageEdit(req ImageEditSubmitRequest) (EditOperationState, e
 		switch provider {
 		case "":
 			provider = config.Models.InpaintProvider
-		case "fal", "replicate":
+		case "fal", "replicate", "runware":
 		default:
-			return EditOperationState{}, fmt.Errorf("unknown inpaint provider %q — choose fal.ai or Replicate", provider)
+			return EditOperationState{}, fmt.Errorf("unknown inpaint provider %q — choose fal.ai, Replicate, or Runware", provider)
 		}
 		if model == "" {
-			if provider == "replicate" {
+			switch provider {
+			case "replicate":
 				model = config.Providers.Replicate.InpaintModel
-			} else {
+			case "runware":
+				model = config.Providers.Runware.InpaintModel
+			default:
 				model = config.Providers.Fal.InpaintModel
 			}
 		}
@@ -926,6 +942,49 @@ func (a *App) executeInpaintProvider(ctx context.Context, config AppConfig, op E
 		Height:      params.MaskHeight,
 	}
 
+	if op.Provider == "runware" {
+		apiKey, err := loadRunwareAPIKey()
+		if err != nil {
+			return nil, 0, false, nil, err
+		}
+		if strings.TrimSpace(apiKey) == "" {
+			return nil, 0, false, nil, errRunwareKeyNotConfigured
+		}
+		client := newRunwareClient(a.client, apiKey)
+		// Large sources upload through mediaStorage first (the runware
+		// generate_image branch's rule) — the paid request must stay small
+		// inside the sync window, and a failed upload falls back inline as a
+		// diagnostic, never a notice.
+		var uploads, diagnostics []string
+		resolvedSource, sourceUploads, sourceDiags := client.ResolveImageInputs(ctx, []string{req.SourceImage})
+		req.SourceImage = resolvedSource[0]
+		resolvedMask, maskUploads, maskDiags := client.ResolveImageInputs(ctx, []string{req.MaskImage})
+		req.MaskImage = resolvedMask[0]
+		uploads = append(uploads, sourceUploads...)
+		uploads = append(uploads, maskUploads...)
+		diagnostics = append(diagnostics, sourceDiags...)
+		diagnostics = append(diagnostics, maskDiags...)
+		defer client.CleanupUploads(uploads)
+		schema := newRunwareSchemaCache(a.client, config.Storage.Root).Get(ctx, op.Model)
+		task, resolveNotices, err := resolveRunwareInpaintTask(schema, req)
+		if err != nil {
+			return nil, 0, false, nil, err
+		}
+		notices = resolveNotices
+		resp, genErr := client.GenerateImage(ctx, task)
+		resp.Diagnostics = diagnostics
+		if genErr != nil {
+			return nil, 0, false, notices, genErr
+		}
+		data, derr := firstInpaintImage(resp)
+		if derr != nil {
+			return nil, 0, false, notices, derr
+		}
+		// The reported cost rides the result row (includeCost); zero carries
+		// CostUnknown through the engine layer's runware rule.
+		return data, resp.CostMicros, resp.CostMicros == 0, notices, nil
+	}
+
 	if op.Provider == "replicate" {
 		apiKey, err := loadReplicateAPIKey()
 		if err != nil {
@@ -1223,11 +1282,15 @@ func (a *App) ListEditSession(sessionConversationID string) (EditSessionState, e
 		state.InpaintProvider = config.Models.InpaintProvider
 		state.InpaintFalModel = config.Providers.Fal.InpaintModel
 		state.InpaintReplicateModel = config.Providers.Replicate.InpaintModel
+		state.InpaintRunwareModel = config.Providers.Runware.InpaintModel
 		if falKey, err := loadFalAPIKey(); err == nil && strings.TrimSpace(falKey) != "" {
 			state.FalConfigured = true
 		}
 		if repKey, err := loadReplicateAPIKey(); err == nil && strings.TrimSpace(repKey) != "" {
 			state.ReplicateConfigured = true
+		}
+		if rwKey, err := loadRunwareAPIKey(); err == nil && strings.TrimSpace(rwKey) != "" {
+			state.RunwareConfigured = true
 		}
 	}
 	// Parent breadcrumb: a record that loads and is not deleted means the

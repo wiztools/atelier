@@ -432,31 +432,31 @@ func TestReplicateGatewaySpeechRouting(t *testing.T) {
 // remedy for speech; the user-facing blockquote does the same, an answer that
 // already names Replicate suppresses it, and video stays untouched.
 func TestMediaGenGapSpeechReplicate(t *testing.T) {
-	note := mediaGenUnavailableNote("audio", false, "replicate", false)
+	note := mediaGenUnavailableNote("audio", false, "replicate", "fal")
 	if !strings.Contains(note, "fal.ai API key") || !strings.Contains(note, "Replicate API token") {
 		t.Fatalf("mixed-route audio gap should name both remedies, got %q", note)
 	}
 	if strings.Contains(note, "Ollama") {
 		t.Fatalf("the replicate speech route must not suggest Ollama, got %q", note)
 	}
-	if got := mediaGenUnavailableNote("video", false, "replicate", false); strings.Contains(got, "Speech") {
+	if got := mediaGenUnavailableNote("video", false, "replicate", "fal"); strings.Contains(got, "Speech") {
 		t.Fatalf("video note must stay untouched by the speech route, got %q", got)
 	}
 	// With the sound tools on Replicate too, the single Replicate remedy
 	// already covers speech — no second sentence.
-	both := mediaGenUnavailableNote("audio", false, "replicate", true)
+	both := mediaGenUnavailableNote("audio", false, "replicate", "replicate")
 	if strings.Count(both, "Replicate API token") != 1 || strings.Contains(both, "fal.ai API key") {
 		t.Fatalf("an all-replicate audio gap should name the token once, got %q", both)
 	}
 
-	notice := mediaGenFallbackNotice(true, "audio", "Sure, generating now.", false, "replicate", false)
+	notice := mediaGenFallbackNotice(true, "audio", "Sure, generating now.", false, "replicate", "fal")
 	if !strings.Contains(notice, "fal.ai API key") || !strings.Contains(notice, "Speech is set to Replicate") {
 		t.Fatalf("mixed-route fallback notice should name both remedies, got %q", notice)
 	}
-	if got := mediaGenFallbackNotice(true, "audio", "Add a Replicate token in Settings first.", false, "replicate", false); got != "" {
+	if got := mediaGenFallbackNotice(true, "audio", "Add a Replicate token in Settings first.", false, "replicate", "fal"); got != "" {
 		t.Fatalf("an answer naming Replicate should suppress the notice on the replicate speech route, got %q", got)
 	}
-	if got := mediaGenFallbackNotice(true, "video", "Sure.", false, "replicate", false); strings.Contains(got, "Speech") {
+	if got := mediaGenFallbackNotice(true, "video", "Sure.", false, "replicate", "fal"); strings.Contains(got, "Speech") {
 		t.Fatalf("video notice must stay untouched by the speech route, got %q", got)
 	}
 }

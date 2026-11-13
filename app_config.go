@@ -163,13 +163,56 @@ type ConfigFal struct {
 }
 
 // ConfigRunware configures the Runware media backend (runware_client.go).
-// SPIKE: generate_image only. One Model serves text-to-image and edits —
-// Runware models declare their image inputs (seedImage / referenceImages) in
-// their own schema, so the edit path needs no second slot. The key lives in
-// the OS keychain; Enabled mirrors its presence like ConfigFal.
+// Model serves text-to-image and edits — Runware models declare their image
+// inputs (seedImage / referenceImages) in their own schema, so the edit path
+// needs no second slot. The video-family and audio slots below serve when
+// the matching Models.*Provider picks runware, the same dimension split
+// ConfigReplicate documents: VideoModel/VideoImageModel follow VideoProvider
+// (generate_video text-to-video / image-to-video), VideoExtendModel the
+// extend turn, VideoUpscaleModel/VideoRestyleModel the two video transforms
+// Runware serves (its catalog has no video reframe model, so reframe_video
+// stays on fal/Replicate under a runware video provider), LipsyncImageModel/
+// LipsyncVideoModel follow LipsyncProvider, SpeechModel follows
+// SpeechProvider, and SoundEffectsModel/SoundEffectsVideoModel follow
+// AudioProvider (extend_audio stays off Runware — no input-audio model).
+// InpaintModel is the mask-inpainting model the image editor uses when
+// runware is the InpaintProvider. The key lives in the OS keychain; Enabled
+// mirrors its presence like ConfigFal.
 type ConfigRunware struct {
 	Enabled bool   `json:"enabled"`
 	Model   string `json:"model,omitempty"`
+	// InpaintModel is a verified mask model (FLUX.1 Fill by default) — an
+	// unverified id typed by hand is refused at the resolver, the
+	// verifiedInpaintModels contract.
+	InpaintModel string `json:"inpaintModel,omitempty"`
+	// VideoModel is the text-to-video model (Kling 4.0 by default);
+	// VideoImageModel the image-to-video model used when the user attaches an
+	// image to animate; VideoExtendModel the extension model used when the
+	// user attaches a video to continue (Veo 3.1 by default — its
+	// inputs.video is the continuation source).
+	VideoModel       string `json:"videoModel,omitempty"`
+	VideoImageModel  string `json:"videoImageModel,omitempty"`
+	VideoExtendModel string `json:"videoExtendModel,omitempty"`
+	// VideoUpscaleModel is the video upscaler (FLUX 3 Upscaler by default)
+	// and VideoRestyleModel the restyler (FLUX Video Edit [fast] by
+	// default) — both follow VideoProvider like the slots above.
+	VideoUpscaleModel string `json:"videoUpscaleModel,omitempty"`
+	VideoRestyleModel string `json:"videoRestyleModel,omitempty"`
+	// LipsyncImageModel is the image-face lipsync model (VEED Fabric by
+	// default) and LipsyncVideoModel the video-face model (KlingAI Lip-Sync
+	// by default) when runware is the LipsyncProvider.
+	LipsyncImageModel string `json:"lipsyncImageModel,omitempty"`
+	LipsyncVideoModel string `json:"lipsyncVideoModel,omitempty"`
+	// SpeechModel is the text-to-speech model generate_speech uses when
+	// runware is the SpeechProvider (MiniMax Speech 2.8 by default);
+	// SoundEffectsModel the text-to-audio model generate_sound uses when
+	// runware is the AudioProvider (Mirelo SFX by default — MiniMax Music
+	// rides the picker for music), SoundEffectsVideoModel the
+	// video-soundtrack model add_sound_effects uses (Mirelo SFX, whose MP4
+	// answer mixes the sound into the clip).
+	SpeechModel            string `json:"speechModel,omitempty"`
+	SoundEffectsModel      string `json:"soundEffectsModel,omitempty"`
+	SoundEffectsVideoModel string `json:"soundEffectsVideoModel,omitempty"`
 }
 
 // ConfigReplicate configures the Replicate image/video-generation backend —
@@ -716,12 +759,12 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	default:
 		config.Models.ImageProvider = defaults.Models.ImageProvider
 	}
-	// VideoProvider selects the generate_video backend ("fal" | "replicate").
-	// Normalize unknown or empty values to "fal": an absent field means a
-	// config written before the second video provider existed, which must keep
-	// routing to fal exactly as before.
+	// VideoProvider selects the generate_video backend ("fal" | "replicate" |
+	// "runware"). Normalize unknown or empty values to "fal": an absent field
+	// means a config written before the second video provider existed, which
+	// must keep routing to fal exactly as before.
 	switch strings.TrimSpace(config.Models.VideoProvider) {
-	case "fal", "replicate":
+	case "fal", "replicate", "runware":
 		config.Models.VideoProvider = strings.TrimSpace(config.Models.VideoProvider)
 	default:
 		config.Models.VideoProvider = "fal"
@@ -740,11 +783,11 @@ func mergeAppConfig(config AppConfig) AppConfig {
 		config.Models.TranscriptionProvider = ""
 	}
 	// InpaintProvider selects the image editor's mask-inpainting backend
-	// ("fal" | "replicate"). Unknown or empty normalizes to "fal", the
-	// default: an absent field means a config written before the editor
-	// existed, which must keep routing there.
+	// ("fal" | "replicate" | "runware"). Unknown or empty normalizes to
+	// "fal", the default: an absent field means a config written before the
+	// editor existed, which must keep routing there.
 	switch strings.TrimSpace(config.Models.InpaintProvider) {
-	case "fal", "replicate":
+	case "fal", "replicate", "runware":
 		config.Models.InpaintProvider = strings.TrimSpace(config.Models.InpaintProvider)
 	default:
 		config.Models.InpaintProvider = "fal"
@@ -756,7 +799,7 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	// resolvers fall back to known-good constants on both providers, the
 	// transcription slots' contract.
 	switch strings.TrimSpace(config.Models.LipsyncProvider) {
-	case "fal", "replicate":
+	case "fal", "replicate", "runware":
 		config.Models.LipsyncProvider = strings.TrimSpace(config.Models.LipsyncProvider)
 	default:
 		config.Models.LipsyncProvider = "fal"
@@ -768,18 +811,20 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	// default — the gate requires it and the resolver's constant is only a
 	// belt; the Replicate slot seeds below the provider-selection way.
 	switch strings.TrimSpace(config.Models.SpeechProvider) {
-	case "fal", "ollama", "replicate":
+	case "fal", "ollama", "replicate", "runware":
 		config.Models.SpeechProvider = strings.TrimSpace(config.Models.SpeechProvider)
 	default:
 		config.Models.SpeechProvider = "fal"
 	}
 	// AudioProvider selects the non-voice audio backend ("fal" |
-	// "replicate") for generate_sound and add_sound_effects. Unknown or
-	// empty normalizes to "fal": audio was fal-only before Replicate served
-	// it, so a config written then must keep routing there. Like the lipsync
-	// slots, the model slots carry no forced defaults beyond the seeds below.
+	// "replicate" | "runware") for generate_sound and add_sound_effects.
+	// Unknown or empty normalizes to "fal": audio was fal-only before
+	// Replicate served it, so a config written then must keep routing there.
+	// Like the lipsync slots, the model slots carry no forced defaults beyond
+	// the seeds below. extend_audio has no runware backend — its gate closes
+	// under this provider (no input-audio model exists on Runware).
 	switch strings.TrimSpace(config.Models.AudioProvider) {
-	case "fal", "replicate":
+	case "fal", "replicate", "runware":
 		config.Models.AudioProvider = strings.TrimSpace(config.Models.AudioProvider)
 	default:
 		config.Models.AudioProvider = "fal"
@@ -809,6 +854,30 @@ func mergeAppConfig(config AppConfig) AppConfig {
 		config.Providers.Runware.Model = defaultRunwareImageModel
 	}
 	config.Providers.Runware.Model = strings.TrimSpace(config.Providers.Runware.Model)
+	// Seed the Runware video family the provider-selection way (the image and
+	// inpaint seeds above): selecting runware as the VideoProvider without
+	// models would leave the pickers empty and the gates closed, so pin the
+	// schema-verified defaults once — text-to-video and image-to-video on
+	// Kling 4.0, the extend turn on Veo 3.1, the transforms on the FLUX video
+	// pair. reframe_video has no runware model (the catalog carries none), so
+	// there is no slot to seed — its gate closes under this provider.
+	if config.Models.VideoProvider == "runware" {
+		if strings.TrimSpace(config.Providers.Runware.VideoModel) == "" {
+			config.Providers.Runware.VideoModel = defaultRunwareVideoModel
+		}
+		if strings.TrimSpace(config.Providers.Runware.VideoImageModel) == "" {
+			config.Providers.Runware.VideoImageModel = defaultRunwareVideoImageModel
+		}
+		if strings.TrimSpace(config.Providers.Runware.VideoExtendModel) == "" {
+			config.Providers.Runware.VideoExtendModel = defaultRunwareVideoExtendModel
+		}
+		if strings.TrimSpace(config.Providers.Runware.VideoUpscaleModel) == "" {
+			config.Providers.Runware.VideoUpscaleModel = defaultRunwareVideoUpscaleModel
+		}
+		if strings.TrimSpace(config.Providers.Runware.VideoRestyleModel) == "" {
+			config.Providers.Runware.VideoRestyleModel = defaultRunwareVideoRestyleModel
+		}
+	}
 	// Seed the editor's inpaint endpoint the same way: a provider selected
 	// without a model would leave the editor's Generate permanently disabled.
 	if config.Models.InpaintProvider == "fal" && strings.TrimSpace(config.Providers.Fal.InpaintModel) == "" {
@@ -816,6 +885,9 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	}
 	if config.Models.InpaintProvider == "replicate" && strings.TrimSpace(config.Providers.Replicate.InpaintModel) == "" {
 		config.Providers.Replicate.InpaintModel = defaultReplicateInpaintModel
+	}
+	if config.Models.InpaintProvider == "runware" && strings.TrimSpace(config.Providers.Runware.InpaintModel) == "" {
+		config.Providers.Runware.InpaintModel = defaultRunwareInpaintModel
 	}
 	// Seed the sound-effects endpoint for configs written before the
 	// generate_speech/generate_sound split: an AudioModel already configured for
@@ -862,6 +934,20 @@ func mergeAppConfig(config AppConfig) AppConfig {
 	// generate_speech gate closed.
 	if config.Models.SpeechProvider == "replicate" && strings.TrimSpace(config.Providers.Replicate.SpeechModel) == "" {
 		config.Providers.Replicate.SpeechModel = defaultReplicateSpeechModel
+	}
+	// Seed the Runware speech and sound slots the same provider-selection way:
+	// selecting runware pins the schema-verified defaults (MiniMax Speech 2.8
+	// for the voice, Mirelo SFX for text-to-audio and the video soundtrack).
+	if config.Models.SpeechProvider == "runware" && strings.TrimSpace(config.Providers.Runware.SpeechModel) == "" {
+		config.Providers.Runware.SpeechModel = defaultRunwareSpeechModel
+	}
+	if config.Models.AudioProvider == "runware" {
+		if strings.TrimSpace(config.Providers.Runware.SoundEffectsModel) == "" {
+			config.Providers.Runware.SoundEffectsModel = defaultRunwareSoundEffectsModel
+		}
+		if strings.TrimSpace(config.Providers.Runware.SoundEffectsVideoModel) == "" {
+			config.Providers.Runware.SoundEffectsVideoModel = defaultRunwareSoundEffectsVideoModel
+		}
 	}
 	if strings.TrimSpace(config.Prompts.System) == "" {
 		config.Prompts.System = defaults.Prompts.System

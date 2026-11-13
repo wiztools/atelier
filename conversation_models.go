@@ -167,27 +167,27 @@ func validateConversationModelOverrides(o ConversationModelOverrides) error {
 	} {
 		switch name {
 		case "imageProvider":
-			if value != "" && value != "ollama" && value != "fal" && value != "replicate" && value != "openai-compatible" {
+			if value != "" && value != "ollama" && value != "fal" && value != "replicate" && value != "runware" && value != "openai-compatible" {
 				return fmt.Errorf("unknown image provider %q", value)
 			}
 		case "videoProvider":
-			if value != "" && value != "fal" && value != "replicate" {
+			if value != "" && value != "fal" && value != "replicate" && value != "runware" {
 				return fmt.Errorf("unknown video provider %q", value)
 			}
 		case "inpaintProvider":
-			if value != "" && value != "fal" && value != "replicate" {
+			if value != "" && value != "fal" && value != "replicate" && value != "runware" {
 				return fmt.Errorf("unknown inpaint provider %q", value)
 			}
 		case "lipsyncProvider":
-			if value != "" && value != "fal" && value != "replicate" {
+			if value != "" && value != "fal" && value != "replicate" && value != "runware" {
 				return fmt.Errorf("unknown lipsync provider %q", value)
 			}
 		case "audioProvider":
-			if value != "" && value != "fal" && value != "replicate" {
+			if value != "" && value != "fal" && value != "replicate" && value != "runware" {
 				return fmt.Errorf("unknown audio provider %q", value)
 			}
 		case "speechProvider":
-			if value != "" && value != "fal" && value != "ollama" && value != "replicate" {
+			if value != "" && value != "fal" && value != "ollama" && value != "replicate" && value != "runware" {
 				return fmt.Errorf("unknown speech provider %q", value)
 			}
 		case "transcriptionProvider":
@@ -327,6 +327,8 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 			config.Providers.Fal.Model = o.ImageModel
 		case "replicate":
 			config.Providers.Replicate.Model = o.ImageModel
+		case "runware":
+			config.Providers.Runware.Model = o.ImageModel
 		case "openai-compatible":
 			config.Providers.OpenAICompatible.Model = o.ImageModel
 		default:
@@ -343,9 +345,12 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 		if videoProvider == "" {
 			videoProvider = config.Models.VideoProvider
 		}
-		if videoProvider == "replicate" {
+		switch videoProvider {
+		case "replicate":
 			config.Providers.Replicate.VideoModel = o.VideoModel
-		} else {
+		case "runware":
+			config.Providers.Runware.VideoModel = o.VideoModel
+		default:
 			config.Providers.Fal.VideoModel = o.VideoModel
 		}
 	}
@@ -354,9 +359,12 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 		if videoProvider == "" {
 			videoProvider = config.Models.VideoProvider
 		}
-		if videoProvider == "replicate" {
+		switch videoProvider {
+		case "replicate":
 			config.Providers.Replicate.VideoImageModel = o.VideoImageModel
-		} else {
+		case "runware":
+			config.Providers.Runware.VideoImageModel = o.VideoImageModel
+		default:
 			config.Providers.Fal.VideoImageModel = o.VideoImageModel
 		}
 	}
@@ -364,13 +372,18 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 		// The edit-model override follows the effective image provider too:
 		// both fal and Replicate expose a dedicated image-to-image model, so
 		// a Replicate-pinned conversation edits with its Replicate model.
+		// Runware serves edits with the same single model that generates
+		// (the ConfigRunware.Model contract), so the override lands there.
 		imageProvider := o.ImageProvider
 		if imageProvider == "" {
 			imageProvider = config.Models.ImageProvider
 		}
-		if imageProvider == "replicate" {
+		switch imageProvider {
+		case "replicate":
 			config.Providers.Replicate.ImageEditModel = o.ImageEditModel
-		} else {
+		case "runware":
+			config.Providers.Runware.Model = o.ImageEditModel
+		default:
 			config.Providers.Fal.ImageEditModel = o.ImageEditModel
 		}
 	}
@@ -403,9 +416,12 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 		if inpaintProvider == "" {
 			inpaintProvider = config.Models.InpaintProvider
 		}
-		if inpaintProvider == "replicate" {
+		switch inpaintProvider {
+		case "replicate":
 			config.Providers.Replicate.InpaintModel = o.InpaintModel
-		} else {
+		case "runware":
+			config.Providers.Runware.InpaintModel = o.InpaintModel
+		default:
 			config.Providers.Fal.InpaintModel = o.InpaintModel
 		}
 	}
@@ -416,9 +432,12 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 		if videoProvider == "" {
 			videoProvider = config.Models.VideoProvider
 		}
-		if videoProvider == "replicate" {
+		switch videoProvider {
+		case "replicate":
 			config.Providers.Replicate.VideoExtendModel = o.VideoExtendModel
-		} else {
+		case "runware":
+			config.Providers.Runware.VideoExtendModel = o.VideoExtendModel
+		default:
 			config.Providers.Fal.VideoExtendModel = o.VideoExtendModel
 		}
 	}
@@ -436,9 +455,12 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 		if videoProvider == "" {
 			videoProvider = config.Models.VideoProvider
 		}
-		if videoProvider == "replicate" {
+		switch videoProvider {
+		case "replicate":
 			config.Providers.Replicate.VideoUpscaleModel = o.VideoUpscaleModel
-		} else {
+		case "runware":
+			config.Providers.Runware.VideoUpscaleModel = o.VideoUpscaleModel
+		default:
 			config.Providers.Fal.VideoUpscaleModel = o.VideoUpscaleModel
 		}
 	}
@@ -462,9 +484,12 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 		if videoProvider == "" {
 			videoProvider = config.Models.VideoProvider
 		}
-		if videoProvider == "replicate" {
+		switch videoProvider {
+		case "replicate":
 			config.Providers.Replicate.VideoRestyleModel = o.VideoRestyleModel
-		} else {
+		case "runware":
+			config.Providers.Runware.VideoRestyleModel = o.VideoRestyleModel
+		default:
 			config.Providers.Fal.VideoRestyleModel = o.VideoRestyleModel
 		}
 	}
@@ -485,6 +510,8 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 			config.Providers.Ollama.Models.Speech = o.AudioModel
 		case "replicate":
 			config.Providers.Replicate.SpeechModel = o.AudioModel
+		case "runware":
+			config.Providers.Runware.SpeechModel = o.AudioModel
 		default:
 			config.Providers.Fal.AudioModel = o.AudioModel
 		}
@@ -506,7 +533,8 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 		if provider == "" {
 			provider = config.Models.AudioProvider
 		}
-		if provider == "replicate" {
+		switch provider {
+		case "replicate":
 			if o.SoundEffectsModel != "" {
 				config.Providers.Replicate.SoundEffectsModel = o.SoundEffectsModel
 			}
@@ -516,7 +544,17 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 			if o.AudioExtendModel != "" {
 				config.Providers.Replicate.AudioExtendModel = o.AudioExtendModel
 			}
-		} else {
+		case "runware":
+			// extend_audio has no runware backend (the gate closes), so the
+			// extend override has nowhere to land here — the sound pair is
+			// what the provider serves.
+			if o.SoundEffectsModel != "" {
+				config.Providers.Runware.SoundEffectsModel = o.SoundEffectsModel
+			}
+			if o.SoundEffectsVideoModel != "" {
+				config.Providers.Runware.SoundEffectsVideoModel = o.SoundEffectsVideoModel
+			}
+		default:
 			if o.SoundEffectsModel != "" {
 				config.Providers.Fal.SoundEffectsModel = o.SoundEffectsModel
 			}
@@ -565,14 +603,22 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 		if provider == "" {
 			provider = config.Models.LipsyncProvider
 		}
-		if provider == "replicate" {
+		switch provider {
+		case "replicate":
 			if o.LipsyncImageModel != "" {
 				config.Providers.Replicate.LipsyncImageModel = o.LipsyncImageModel
 			}
 			if o.LipsyncVideoModel != "" {
 				config.Providers.Replicate.LipsyncVideoModel = o.LipsyncVideoModel
 			}
-		} else {
+		case "runware":
+			if o.LipsyncImageModel != "" {
+				config.Providers.Runware.LipsyncImageModel = o.LipsyncImageModel
+			}
+			if o.LipsyncVideoModel != "" {
+				config.Providers.Runware.LipsyncVideoModel = o.LipsyncVideoModel
+			}
+		default:
 			if o.LipsyncImageModel != "" {
 				config.Providers.Fal.LipsyncImageModel = o.LipsyncImageModel
 			}

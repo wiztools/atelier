@@ -486,8 +486,11 @@ func videoModelSupportsAudio(ctx context.Context, config AppConfig, app *App) bo
 	// below reads fal's schema dialect and fal's model slots, and guessing a
 	// Replicate model's audio capability would let the planner promise
 	// narration the model can't render. Fail-closed to the generic
-	// description, the same posture as an unavailable schema.
-	if videoGenerationProvider(config) == "replicate" {
+	// description, the same posture as an unavailable schema. Runware reports
+	// false the same way: its video models carry no generate_audio toggle in
+	// their schemas (audio is model-fixed, not requested), so promising
+	// silence or narration would be a guess.
+	if videoGenerationProvider(config) != "fal" {
 		return false
 	}
 	cache := newFalSchemaCache(app.client, config.Storage.Root)
@@ -623,6 +626,13 @@ func replicateKeyConfigured() bool {
 	return err == nil && strings.TrimSpace(key) != ""
 }
 
+// runwareKeyConfigured is the Runware sibling of the two above, gating every
+// runware-routed media path on live keychain state.
+func runwareKeyConfigured() bool {
+	key, err := loadRunwareAPIKey()
+	return err == nil && strings.TrimSpace(key) != ""
+}
+
 // imageUpscaleConfigured reports whether the upscale_image tool should be
 // offered, routing by imageGenerationProvider: the replicate path needs its
 // token, every other provider runs fal and needs a fal.ai key. The key check
@@ -658,29 +668,39 @@ func resolveDefaultImageUpscaleModel(config AppConfig) string {
 }
 
 // videoUpscaleConfigured mirrors imageUpscaleConfigured's provider-aware
-// routing for the upscale_video tool: replicate needs its token, every other
-// provider runs fal and needs a fal.ai key.
+// routing for the upscale_video tool: replicate needs its token, runware its
+// key, every other provider runs fal and needs a fal.ai key.
 func videoUpscaleConfigured(config AppConfig) bool {
 	// Cloud-only: airplane mode drops the tool.
 	if airplaneModeActive(config) {
 		return false
 	}
-	if videoGenerationProvider(config) == "replicate" {
+	switch videoGenerationProvider(config) {
+	case "replicate":
 		return replicateKeyConfigured()
+	case "runware":
+		return runwareKeyConfigured()
 	}
 	return falKeyConfigured()
 }
 
 // resolveDefaultVideoUpscaleModel returns the video-upscaler model the
 // upscale_video tool uses when the call doesn't override it, routing by the
-// video provider — fal's endpoint on every provider but replicate. Falls back
-// to the const default when the user hasn't picked one in Settings.
+// video provider — fal's endpoint on every provider but replicate and
+// runware. Falls back to the const default when the user hasn't picked one
+// in Settings.
 func resolveDefaultVideoUpscaleModel(config AppConfig) string {
-	if videoGenerationProvider(config) == "replicate" {
+	switch videoGenerationProvider(config) {
+	case "replicate":
 		if model := strings.TrimSpace(config.Providers.Replicate.VideoUpscaleModel); model != "" {
 			return model
 		}
 		return defaultReplicateVideoUpscaleModel
+	case "runware":
+		if model := strings.TrimSpace(config.Providers.Runware.VideoUpscaleModel); model != "" {
+			return model
+		}
+		return defaultRunwareVideoUpscaleModel
 	}
 	if model := strings.TrimSpace(config.Providers.Fal.VideoUpscaleModel); model != "" {
 		return model
@@ -690,15 +710,22 @@ func resolveDefaultVideoUpscaleModel(config AppConfig) string {
 
 // videoReframeConfigured mirrors imageUpscaleConfigured's provider-aware
 // routing for the reframe_video tool: replicate needs its token, every other
-// provider runs fal and needs a fal.ai key.
+// provider runs fal and needs a fal.ai key. Runware is the exception that
+// proves the provider-follows rule: its catalog publishes no video-reframe
+// model (the only "reframe" entry is Ideogram's IMAGE reframer), so the gate
+// closes under a runware video provider rather than offering a tool that can
+// only fail — the local transform_video covers shape changes by crop/blur/pad.
 func videoReframeConfigured(config AppConfig) bool {
 	// Cloud-only: airplane mode drops the tool (the local transform_video
 	// covers shape changes by crop/blur/pad).
 	if airplaneModeActive(config) {
 		return false
 	}
-	if videoGenerationProvider(config) == "replicate" {
+	switch videoGenerationProvider(config) {
+	case "replicate":
 		return replicateKeyConfigured()
+	case "runware":
+		return false
 	}
 	return falKeyConfigured()
 }
@@ -721,29 +748,38 @@ func resolveDefaultVideoReframeModel(config AppConfig) string {
 }
 
 // videoRestyleConfigured mirrors imageUpscaleConfigured's provider-aware
-// routing for the restyle_video tool: replicate needs its token, every other
-// provider runs fal and needs a fal.ai key.
+// routing for the restyle_video tool: replicate needs its token, runware its
+// key, every other provider runs fal and needs a fal.ai key.
 func videoRestyleConfigured(config AppConfig) bool {
 	// Cloud-only: airplane mode drops the tool.
 	if airplaneModeActive(config) {
 		return false
 	}
-	if videoGenerationProvider(config) == "replicate" {
+	switch videoGenerationProvider(config) {
+	case "replicate":
 		return replicateKeyConfigured()
+	case "runware":
+		return runwareKeyConfigured()
 	}
 	return falKeyConfigured()
 }
 
 // resolveDefaultVideoRestyleModel returns the restyle model the restyle_video
 // tool uses when the call doesn't override it, routing by the video provider —
-// fal's endpoint on every provider but replicate. Falls back to the const
-// default when the user hasn't picked one in Settings.
+// fal's endpoint on every provider but replicate and runware. Falls back to
+// the const default when the user hasn't picked one in Settings.
 func resolveDefaultVideoRestyleModel(config AppConfig) string {
-	if videoGenerationProvider(config) == "replicate" {
+	switch videoGenerationProvider(config) {
+	case "replicate":
 		if model := strings.TrimSpace(config.Providers.Replicate.VideoRestyleModel); model != "" {
 			return model
 		}
 		return defaultReplicateVideoRestyleModel
+	case "runware":
+		if model := strings.TrimSpace(config.Providers.Runware.VideoRestyleModel); model != "" {
+			return model
+		}
+		return defaultRunwareVideoRestyleModel
 	}
 	if model := strings.TrimSpace(config.Providers.Fal.VideoRestyleModel); model != "" {
 		return model
@@ -761,17 +797,26 @@ func resolveDefaultVideoRestyleModel(config AppConfig) string {
 // transforms (upscale/reframe/restyle) follow VideoProvider and keep their own
 // provider-aware gates.
 func videoGenerationConfigured(config AppConfig) bool {
-	// Cloud-only: fal and Replicate are the only video backends, so airplane
-	// mode drops the tool outright.
+	// Cloud-only: fal, Replicate, and Runware are the video backends, so
+	// airplane mode drops the tool outright.
 	if airplaneModeActive(config) {
 		return false
 	}
-	if videoGenerationProvider(config) == "replicate" {
+	switch videoGenerationProvider(config) {
+	case "replicate":
 		if strings.TrimSpace(config.Providers.Replicate.VideoModel) == "" &&
 			strings.TrimSpace(config.Providers.Replicate.VideoImageModel) == "" {
 			return false
 		}
 		return replicateKeyConfigured()
+	case "runware":
+		// mergeAppConfig seeds the runware slots on provider selection, so the
+		// slot half is normally satisfied the moment the provider is picked.
+		if strings.TrimSpace(config.Providers.Runware.VideoModel) == "" &&
+			strings.TrimSpace(config.Providers.Runware.VideoImageModel) == "" {
+			return false
+		}
+		return runwareKeyConfigured()
 	}
 	if strings.TrimSpace(config.Providers.Fal.VideoModel) == "" &&
 		strings.TrimSpace(config.Providers.Fal.VideoImageModel) == "" {
@@ -784,11 +829,17 @@ func videoGenerationConfigured(config AppConfig) bool {
 // tool uses when the call doesn't override it, routing by
 // videoGenerationProvider.
 func resolveDefaultVideoModel(config AppConfig) string {
-	if videoGenerationProvider(config) == "replicate" {
+	switch videoGenerationProvider(config) {
+	case "replicate":
 		if model := strings.TrimSpace(config.Providers.Replicate.VideoModel); model != "" {
 			return model
 		}
 		return defaultReplicateVideoModel
+	case "runware":
+		if model := strings.TrimSpace(config.Providers.Runware.VideoModel); model != "" {
+			return model
+		}
+		return defaultRunwareVideoModel
 	}
 	if model := strings.TrimSpace(config.Providers.Fal.VideoModel); model != "" {
 		return model
@@ -800,11 +851,17 @@ func resolveDefaultVideoModel(config AppConfig) string {
 // an attached image, routing by videoGenerationProvider like
 // resolveDefaultVideoModel.
 func resolveDefaultVideoImageModel(config AppConfig) string {
-	if videoGenerationProvider(config) == "replicate" {
+	switch videoGenerationProvider(config) {
+	case "replicate":
 		if model := strings.TrimSpace(config.Providers.Replicate.VideoImageModel); model != "" {
 			return model
 		}
 		return defaultReplicateVideoImageModel
+	case "runware":
+		if model := strings.TrimSpace(config.Providers.Runware.VideoImageModel); model != "" {
+			return model
+		}
+		return defaultRunwareVideoImageModel
 	}
 	if model := strings.TrimSpace(config.Providers.Fal.VideoImageModel); model != "" {
 		return model
@@ -819,11 +876,17 @@ func resolveDefaultVideoImageModel(config AppConfig) string {
 // extend endpoints, so both defaults are known-good ids the user can override
 // in Settings.
 func resolveDefaultVideoExtendModel(config AppConfig) string {
-	if videoGenerationProvider(config) == "replicate" {
+	switch videoGenerationProvider(config) {
+	case "replicate":
 		if model := strings.TrimSpace(config.Providers.Replicate.VideoExtendModel); model != "" {
 			return model
 		}
 		return defaultReplicateVideoExtendModel
+	case "runware":
+		if model := strings.TrimSpace(config.Providers.Runware.VideoExtendModel); model != "" {
+			return model
+		}
+		return defaultRunwareVideoExtendModel
 	}
 	if model := strings.TrimSpace(config.Providers.Fal.VideoExtendModel); model != "" {
 		return model
@@ -1106,9 +1169,16 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 			// still fail up front with the remedy in the message
 			// (errReplicateVideoSourceUnsupported) rather than selecting a fal
 			// slot that would 404 at Replicate — the resolver holds the same
-			// line for requests that carry a planner-specified model.
+			// line for requests that carry a planner-specified model. The
+			// Runware backend holds the same line with the same condition: it
+			// serves text-to-video and image-to-video (Kling's frameImages) and
+			// extends an attached clip on Veo 3.1 (inputs.video), but motion
+			// control, video references, and keyframes have no runware shape.
 			extendTurn := len(attachedVideos) > 0 && len(attachedImages) == 0 && videoRole != "reference"
-			if videoGenerationProvider(tools.Config) == "replicate" && (keyframes || (len(attachedVideos) > 0 && !extendTurn)) {
+			if provider := videoGenerationProvider(tools.Config); (provider == "replicate" || provider == "runware") && (keyframes || (len(attachedVideos) > 0 && !extendTurn)) {
+				if provider == "runware" {
+					return nil, "video generation unavailable", errRunwareVideoSourceUnsupported
+				}
 				return nil, "video generation unavailable", errReplicateVideoSourceUnsupported
 			}
 			model := strings.TrimSpace(call.Model)
@@ -1315,6 +1385,11 @@ func speechGenerationConfigured(config AppConfig) bool {
 			return false
 		}
 		return strings.TrimSpace(config.Providers.Replicate.SpeechModel) != "" && replicateKeyConfigured()
+	case "runware":
+		if airplaneModeActive(config) {
+			return false
+		}
+		return strings.TrimSpace(config.Providers.Runware.SpeechModel) != "" && runwareKeyConfigured()
 	}
 	if airplaneModeActive(config) {
 		return false
@@ -1333,12 +1408,15 @@ func speechGenerationConfigured(config AppConfig) bool {
 // is the other half — the imageUpscaleConfigured pattern of checking the
 // routed provider's key.
 func soundEffectsGenerationConfigured(config AppConfig) bool {
-	// Cloud-only (fal or Replicate): airplane mode drops the tool.
+	// Cloud-only (fal, Replicate, or Runware): airplane mode drops the tool.
 	if airplaneModeActive(config) {
 		return false
 	}
-	if resolveAudioProvider(config) == "replicate" {
+	switch resolveAudioProvider(config) {
+	case "replicate":
 		return strings.TrimSpace(config.Providers.Replicate.SoundEffectsModel) != "" && replicateKeyConfigured()
+	case "runware":
+		return strings.TrimSpace(config.Providers.Runware.SoundEffectsModel) != "" && runwareKeyConfigured()
 	}
 	if strings.TrimSpace(config.Providers.Fal.SoundEffectsModel) == "" {
 		return false
@@ -1376,21 +1454,28 @@ func resolveSpeechProvider(config AppConfig) string {
 		return "ollama"
 	case "replicate":
 		return "replicate"
+	case "runware":
+		return "runware"
 	}
 	return "fal"
 }
 
 // resolveAudioProvider returns the backend the NON-voice audio tools run on
-// for this config: "replicate" when Models.AudioProvider says so, else fal —
-// audio was fal-only before Replicate served it, so an unset or unrecognized
-// value keeps routing there. The routing truth for the generate_sound and
-// add_sound_effects gates, the gateway's GenerateAudio/GenerateSFX branches,
-// and activity attribution. Scope is the non-voice pair alone: speech routes
-// by resolveSpeechProvider, and extend_audio, generate_voice, and voice
-// cloning stay fal-only regardless.
+// for this config: "replicate" or "runware" when Models.AudioProvider says
+// so, else fal — audio was fal-only before the other backends served it, so
+// an unset or unrecognized value keeps routing there. The routing truth for
+// the generate_sound and add_sound_effects gates, the gateway's
+// GenerateAudio/GenerateSFX branches, and activity attribution. Scope is the
+// non-voice pair alone: speech routes by resolveSpeechProvider, and
+// extend_audio, generate_voice, and voice cloning stay fal-only regardless
+// (extend_audio's gate closes under runware — Runware publishes no
+// input-audio continuation model).
 func resolveAudioProvider(config AppConfig) string {
-	if strings.TrimSpace(config.Models.AudioProvider) == "replicate" {
+	switch strings.TrimSpace(config.Models.AudioProvider) {
+	case "replicate":
 		return "replicate"
+	case "runware":
+		return "runware"
 	}
 	return "fal"
 }
@@ -1411,6 +1496,11 @@ func resolveDefaultSpeechModel(config AppConfig) string {
 			return model
 		}
 		return defaultReplicateSpeechModel
+	case "runware":
+		if model := strings.TrimSpace(config.Providers.Runware.SpeechModel); model != "" {
+			return model
+		}
+		return defaultRunwareSpeechModel
 	}
 	return resolveDefaultAudioModel(config)
 }
@@ -1438,11 +1528,17 @@ func resolveDefaultAudioCloneModel(config AppConfig) string {
 // uses when the call doesn't override it, routed by the effective audio
 // provider — the resolveDefaultSpeechModel recipe one tool over.
 func resolveDefaultSoundEffectsModel(config AppConfig) string {
-	if resolveAudioProvider(config) == "replicate" {
+	switch resolveAudioProvider(config) {
+	case "replicate":
 		if model := strings.TrimSpace(config.Providers.Replicate.SoundEffectsModel); model != "" {
 			return model
 		}
 		return defaultReplicateSoundEffectsModel
+	case "runware":
+		if model := strings.TrimSpace(config.Providers.Runware.SoundEffectsModel); model != "" {
+			return model
+		}
+		return defaultRunwareSoundEffectsModel
 	}
 	if model := strings.TrimSpace(config.Providers.Fal.SoundEffectsModel); model != "" {
 		return model
@@ -1457,12 +1553,15 @@ func resolveDefaultSoundEffectsModel(config AppConfig) string {
 // defaults on both routes, so anyone with speech configured (fal) or with the
 // provider selected (replicate) gets the tool without a Settings visit.
 func soundEffectsVideoConfigured(config AppConfig) bool {
-	// Cloud-only (fal or Replicate): airplane mode drops the tool.
+	// Cloud-only (fal, Replicate, or Runware): airplane mode drops the tool.
 	if airplaneModeActive(config) {
 		return false
 	}
-	if resolveAudioProvider(config) == "replicate" {
+	switch resolveAudioProvider(config) {
+	case "replicate":
 		return strings.TrimSpace(config.Providers.Replicate.SoundEffectsVideoModel) != "" && replicateKeyConfigured()
+	case "runware":
+		return strings.TrimSpace(config.Providers.Runware.SoundEffectsVideoModel) != "" && runwareKeyConfigured()
 	}
 	if strings.TrimSpace(config.Providers.Fal.SoundEffectsVideoModel) == "" {
 		return false
@@ -1474,11 +1573,17 @@ func soundEffectsVideoConfigured(config AppConfig) bool {
 // the add_sound_effects tool uses when the call doesn't override it, routed
 // by the effective audio provider like resolveDefaultSoundEffectsModel.
 func resolveDefaultSoundEffectsVideoModel(config AppConfig) string {
-	if resolveAudioProvider(config) == "replicate" {
+	switch resolveAudioProvider(config) {
+	case "replicate":
 		if model := strings.TrimSpace(config.Providers.Replicate.SoundEffectsVideoModel); model != "" {
 			return model
 		}
 		return defaultReplicateSoundEffectsVideoModel
+	case "runware":
+		if model := strings.TrimSpace(config.Providers.Runware.SoundEffectsVideoModel); model != "" {
+			return model
+		}
+		return defaultRunwareSoundEffectsVideoModel
 	}
 	if model := strings.TrimSpace(config.Providers.Fal.SoundEffectsVideoModel); model != "" {
 		return model
@@ -1497,6 +1602,13 @@ func audioExtendConfigured(config AppConfig) bool {
 	// Cloud-only (fal or Replicate, by Models.AudioProvider): airplane mode
 	// drops the tool.
 	if airplaneModeActive(config) {
+		return false
+	}
+	// Runware has no input-audio continuation model (MiniMax Music is
+	// text/lyrics-only), so extend_audio closes under a runware audio
+	// provider — the reframe_video rule: the tool is withdrawn rather than
+	// offered with a guaranteed failure.
+	if resolveAudioProvider(config) == "runware" {
 		return false
 	}
 	if resolveAudioProvider(config) == "replicate" {
@@ -1625,6 +1737,8 @@ func resolveLipsyncProvider(config AppConfig) string {
 	switch strings.TrimSpace(config.Models.LipsyncProvider) {
 	case "replicate":
 		return "replicate"
+	case "runware":
+		return "runware"
 	default:
 		return "fal"
 	}
@@ -1632,17 +1746,20 @@ func resolveLipsyncProvider(config AppConfig) string {
 
 // lipsyncConfigured reports whether the lip_sync tool should be offered,
 // routing by resolveLipsyncProvider: the fal path needs a fal.ai key, the
-// Replicate path its token. Like transcribe_audio, no model needs to be
-// configured first — both providers' default lip sync models are known-good
-// and resolve at call time.
+// Replicate path its token, the runware path its key. Like transcribe_audio,
+// no model needs to be configured first — all three providers' default lip
+// sync models are known-good and resolve at call time.
 func lipsyncConfigured(config AppConfig) bool {
-	// Cloud-only: fal and Replicate are the only lipsync backends, so
+	// Cloud-only: fal, Replicate, and Runware are the lipsync backends, so
 	// airplane mode drops the tool.
 	if airplaneModeActive(config) {
 		return false
 	}
-	if resolveLipsyncProvider(config) == "replicate" {
+	switch resolveLipsyncProvider(config) {
+	case "replicate":
 		return replicateKeyConfigured()
+	case "runware":
+		return runwareKeyConfigured()
 	}
 	return falKeyConfigured()
 }
@@ -1651,11 +1768,17 @@ func lipsyncConfigured(config AppConfig) bool {
 // used when the user attaches an audio clip plus an image (a talking head),
 // routed by the effective lipsync provider.
 func resolveDefaultLipsyncImageModel(config AppConfig, provider string) string {
-	if provider == "replicate" {
+	switch provider {
+	case "replicate":
 		if model := strings.TrimSpace(config.Providers.Replicate.LipsyncImageModel); model != "" {
 			return model
 		}
 		return defaultReplicateLipsyncImageModel
+	case "runware":
+		if model := strings.TrimSpace(config.Providers.Runware.LipsyncImageModel); model != "" {
+			return model
+		}
+		return defaultRunwareLipsyncImageModel
 	}
 	if model := strings.TrimSpace(config.Providers.Fal.LipsyncImageModel); model != "" {
 		return model
@@ -1667,11 +1790,17 @@ func resolveDefaultLipsyncImageModel(config AppConfig, provider string) string {
 // used when the user attaches an audio clip plus a video (re-lip-sync a clip),
 // routed by the effective lipsync provider.
 func resolveDefaultLipsyncVideoModel(config AppConfig, provider string) string {
-	if provider == "replicate" {
+	switch provider {
+	case "replicate":
 		if model := strings.TrimSpace(config.Providers.Replicate.LipsyncVideoModel); model != "" {
 			return model
 		}
 		return defaultReplicateLipsyncVideoModel
+	case "runware":
+		if model := strings.TrimSpace(config.Providers.Runware.LipsyncVideoModel); model != "" {
+			return model
+		}
+		return defaultRunwareLipsyncVideoModel
 	}
 	if model := strings.TrimSpace(config.Providers.Fal.LipsyncVideoModel); model != "" {
 		return model
@@ -1696,6 +1825,8 @@ func speechGenerationDescription(videoAudioCapable bool, provider string) string
 		base = "Use this when the user asks to speak, narrate, or read text aloud (text-to-speech). The configured local Ollama speech model generates the clip and it is attached to the assistant reply — it runs locally, needs no API key, and works in airplane mode. Pass voice only when the user names one: the value is a catalog voice from the model (e.g. \"Zoey\"), and an unknown name fails listing the valid ones — retry with one of those. This model cannot clone voices from an attached clip and cannot design new voices."
 	case "replicate":
 		base = "Use this when the user asks to speak, narrate, or read text aloud (text-to-speech). The configured Replicate speech model generates the clip and it is attached to the assistant reply. Pass voice only when the user names one: the value is a voice id from the model's own catalog (the MiniMax speech models take names like \"Wise_Woman\" or \"English_Wiselady\", or a previously cloned voice id), and an unknown id fails the call. Pass emotion and speed when the user asks for a tone or pace — a model that declares the controls applies them, any other drops them with a notice. Cloning a voice from an attached clip and designing new voices stay on fal.ai: on this provider an attached clip is ignored with a notice."
+	case "runware":
+		base = "Use this when the user asks to speak, narrate, or read text aloud (text-to-speech). The configured Runware speech model generates the clip and it is attached to the assistant reply. Pass voice only when the user names one: the value is a voice from the model's own catalog (the MiniMax speech models take names like \"English_expressive_narrator\" or \"Japanese_ColdQueen\"), and an unknown name is dropped with a notice and the model's default voice speaks. A model that declares emotion or speed controls applies them; Runware's speech models mostly publish neither, and an unsupported control drops with a notice. Cloning a voice from an attached clip and designing new voices stay on fal.ai: on this provider an attached clip is ignored with a notice."
 	default:
 		base = "Use this when the user asks to speak, narrate, or read text aloud (text-to-speech). The configured fal.ai speech model generates the clip and it is attached to the assistant reply. When the user attached an audio clip, the speech is generated in that voice (voice cloning) automatically; pass cloneVoice:false to keep the regular speech voice even though a clip is attached (e.g. the clip holds content to transcribe, not a voice to copy), or cloneVoice:true to require cloning. Naming a voice (voice) speaks in that named voice directly — a clip present in the turn is not cloned from unless cloneVoice:true is also passed."
 	}
@@ -1714,6 +1845,9 @@ func soundEffectsGenerationDescription(provider string) string {
 	backend := "fal.ai sound-effects model"
 	if provider == "replicate" {
 		backend = "Replicate audio model"
+	}
+	if provider == "runware" {
+		backend = "Runware audio model"
 	}
 	return "Use this when the user asks to create music, ambience, or a sound effect from a description. The configured " + backend + " generates the clip and it is attached to the assistant reply. When the request names a genre or mood, pass it as style and keep content as the pure lyrics or sound description. To make an existing clip longer (\"extend this\", \"add 30 seconds to this clip\", \"continue this song\") use extend_audio instead."
 }
@@ -1864,8 +1998,11 @@ func speechGenerationToolDefinition(videoAudioCapable bool, provider string) Har
 			if providerCannotClone {
 				if audio, ok := out.(ToolAudioResult); ok {
 					notice := "The local Ollama speech model can't clone voices, so the clip was ignored and the speech used a catalog voice. Switch the Speech Provider back to fal.ai to clone."
-					if provider == "replicate" {
+					switch provider {
+					case "replicate":
 						notice = "The Replicate speech route doesn't clone voices, so the clip was ignored and the speech used the model's own voice. Switch the Speech Provider to fal.ai to clone."
+					case "runware":
+						notice = "The Runware speech route doesn't clone voices, so the clip was ignored and the speech used a catalog voice. Switch the Speech Provider to fal.ai to clone."
 					}
 					audio.Notices = append(audio.Notices, notice)
 					out = audio
@@ -1888,6 +2025,11 @@ func speechGenerationToolDefinition(videoAudioCapable bool, provider string) Har
 				activity.Provider = "replicate"
 				if typed, ok := result.Result.(ToolAudioResult); ok {
 					activity.Command = []string{"replicate", "generate", typed.Model}
+				}
+			case "runware":
+				activity.Provider = "runware"
+				if typed, ok := result.Result.(ToolAudioResult); ok {
+					activity.Command = []string{"runware", "generate", typed.Model}
 				}
 			}
 			return activity
@@ -2064,10 +2206,10 @@ func soundEffectsGenerationToolDefinition(provider string) HarnessToolDefinition
 			// own provider, so the builder stamps it — the generate_speech
 			// captured-config pattern.
 			activity := audioGenerationActivity(result)
-			if provider == "replicate" {
-				activity.Provider = "replicate"
+			if provider != "fal" {
+				activity.Provider = provider
 				if typed, ok := result.Result.(ToolAudioResult); ok {
-					activity.Command = []string{"replicate", "generate", typed.Model}
+					activity.Command = []string{provider, "generate", typed.Model}
 				}
 			}
 			return activity
@@ -2087,6 +2229,9 @@ func soundEffectsVideoDescription(provider string) string {
 	backend := "fal.ai sound-effects model"
 	if provider == "replicate" {
 		backend = "Replicate sound-effects model"
+	}
+	if provider == "runware" {
+		backend = "Runware sound-effects model"
 	}
 	return "Use this when the user asks to add or generate sound effects for an attached video — a synchronized soundtrack, foley, ambience for the picture (footsteps, rain, doors, whooshes, room tone). Requires an attached video; the configured " + backend + " watches the clip and generates matching sound. Pass content describing the sound — name off-screen sources the picture doesn't show (\"distant thunder, footsteps on gravel, low room tone\"); when the user didn't name specific sounds, describe the scene's likely sound world. The result is the video with the new soundtrack mixed in, or — when the configured model delivers sound only — a soundtrack clip; chain replace_audio in the same turn to lay that one under the video. Pass preserveSpeech:false when the generated sound must replace everything including dialogue; leave it unset to keep any speech in the clip. Generation runs for a minute or more."
 }

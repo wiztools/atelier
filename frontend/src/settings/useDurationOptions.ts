@@ -3,6 +3,8 @@ import {
   ListFalVideoDurations,
   ListFalSoundEffectDurations,
   ListReplicateVideoDurations,
+  ListRunwareSoundEffectDurations,
+  ListRunwareVideoDurations,
 } from '../../wailsjs/go/main/App';
 import {
   defaultVideoDuration,
@@ -17,10 +19,14 @@ import {
 // house ladder when a schema can't be loaded. A model swap re-fetches its
 // ladder; the text-to-video and sound loaders also move the selected duration
 // onto the new ladder when it no longer offers the old one.
-function useDurationOptions({videoProvider, falVideoModel, replicateVideoModel, setVideoDuration, audioProvider, falSoundEffectsModel, setSoundDuration, falVideoImageModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, replicateVideoExtendModel}: {
+function useDurationOptions({videoProvider, falVideoModel, replicateVideoModel, runwareVideoModel, runwareVideoImageModel, runwareVideoExtendModel, runwareSoundEffectsModel, setVideoDuration, audioProvider, falSoundEffectsModel, setSoundDuration, falVideoImageModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, replicateVideoExtendModel}: {
   videoProvider: string;
   falVideoModel: string;
   replicateVideoModel: string;
+  runwareVideoModel: string;
+  runwareVideoImageModel: string;
+  runwareVideoExtendModel: string;
+  runwareSoundEffectsModel: string;
   setVideoDuration: React.Dispatch<React.SetStateAction<string>>;
   audioProvider: string;
   falSoundEffectsModel: string;
@@ -48,9 +54,11 @@ function useDurationOptions({videoProvider, falVideoModel, replicateVideoModel, 
     let cancelled = false;
     // The fetch follows the routed backend: fal's schema cache on fal,
     // Replicate's on replicate — the same seam generate_video routes by.
-    const fetchDurations = videoProvider === 'replicate'
-      ? ListReplicateVideoDurations(replicateVideoModel)
-      : ListFalVideoDurations(falVideoModel);
+    const fetchDurations = videoProvider === 'runware'
+      ? ListRunwareVideoDurations(runwareVideoModel)
+      : videoProvider === 'replicate'
+        ? ListReplicateVideoDurations(replicateVideoModel)
+        : ListFalVideoDurations(falVideoModel);
     fetchDurations
       .then((durations) => {
         if (cancelled) return;
@@ -62,7 +70,7 @@ function useDurationOptions({videoProvider, falVideoModel, replicateVideoModel, 
     return () => {
       cancelled = true;
     };
-  }, [videoProvider, falVideoModel, replicateVideoModel]);
+  }, [videoProvider, falVideoModel, replicateVideoModel, runwareVideoModel]);
 
   // Sound duration options follow the selected sound-effects model the same
   // way: ListFalSoundEffectDurations returns the model's accepted durations
@@ -79,6 +87,18 @@ function useDurationOptions({videoProvider, falVideoModel, replicateVideoModel, 
       setSoundDurationOptions(defaultSoundDurationOptions);
       return;
     }
+    if (audioProvider === 'runware') {
+      ListRunwareSoundEffectDurations(runwareSoundEffectsModel)
+        .then((durations) => {
+          if (cancelled) return;
+          const schemaOpts = durations && durations.length ? durations : defaultSoundDurationOptions;
+          const opts = schemaOpts.includes('auto') ? schemaOpts : ['auto', ...schemaOpts];
+          setSoundDurationOptions(opts);
+          setSoundDuration((current) => (opts.includes(current) ? current : defaultSoundDuration));
+        })
+        .catch(() => setSoundDurationOptions(defaultSoundDurationOptions));
+      return;
+    }
     ListFalSoundEffectDurations(falSoundEffectsModel)
       .then((durations) => {
         if (cancelled) return;
@@ -91,13 +111,15 @@ function useDurationOptions({videoProvider, falVideoModel, replicateVideoModel, 
     return () => {
       cancelled = true;
     };
-  }, [audioProvider, falSoundEffectsModel]);
+  }, [audioProvider, falSoundEffectsModel, runwareSoundEffectsModel]);
 
   useEffect(() => {
     let cancelled = false;
-    const fetchDurations = videoProvider === 'replicate'
-      ? ListReplicateVideoDurations(replicateVideoImageModel)
-      : ListFalVideoDurations(falVideoImageModel);
+    const fetchDurations = videoProvider === 'runware'
+      ? ListRunwareVideoDurations(runwareVideoImageModel)
+      : videoProvider === 'replicate'
+        ? ListReplicateVideoDurations(replicateVideoImageModel)
+        : ListFalVideoDurations(falVideoImageModel);
     fetchDurations
       .then((durations) => {
         if (cancelled) return;
@@ -107,7 +129,7 @@ function useDurationOptions({videoProvider, falVideoModel, replicateVideoModel, 
     return () => {
       cancelled = true;
     };
-  }, [videoProvider, falVideoImageModel, replicateVideoImageModel]);
+  }, [videoProvider, falVideoImageModel, replicateVideoImageModel, runwareVideoImageModel]);
 
   useEffect(() => {
     let cancelled = false;
@@ -126,9 +148,11 @@ function useDurationOptions({videoProvider, falVideoModel, replicateVideoModel, 
     let cancelled = false;
     // The extend picker's durations follow the routed backend like the t2v/i2v
     // pickers above.
-    const fetchDurations = videoProvider === 'replicate'
-      ? ListReplicateVideoDurations(replicateVideoExtendModel)
-      : ListFalVideoDurations(falVideoExtendModel);
+    const fetchDurations = videoProvider === 'runware'
+      ? ListRunwareVideoDurations(runwareVideoExtendModel)
+      : videoProvider === 'replicate'
+        ? ListReplicateVideoDurations(replicateVideoExtendModel)
+        : ListFalVideoDurations(falVideoExtendModel);
     fetchDurations
       .then((durations) => {
         if (cancelled) return;
@@ -138,7 +162,7 @@ function useDurationOptions({videoProvider, falVideoModel, replicateVideoModel, 
     return () => {
       cancelled = true;
     };
-  }, [videoProvider, falVideoExtendModel, replicateVideoExtendModel]);
+  }, [videoProvider, falVideoExtendModel, replicateVideoExtendModel, runwareVideoExtendModel]);
 
   return {
     soundDurationOptions,

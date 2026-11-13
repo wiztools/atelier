@@ -360,6 +360,7 @@ export function AudioEditor(props: {
           parentStreaming: false,
           falConfigured: false,
           replicateConfigured: false,
+          runwareConfigured: false,
           ...current,
           conversationId: state.sessionConversationId,
           operations,

@@ -21,6 +21,16 @@ import {
   ListFalSoundEffectsVideoModels,
   ListReplicateModels,
   ListRunwareImageModels,
+  ListRunwareLipsyncImageModels,
+  ListRunwareLipsyncVideoModels,
+  ListRunwareSoundEffectModels,
+  ListRunwareSoundEffectsVideoModels,
+  ListRunwareSpeechModels,
+  ListRunwareVideoExtendModels,
+  ListRunwareVideoImageModels,
+  ListRunwareVideoModels,
+  ListRunwareVideoRestyleModels,
+  ListRunwareVideoUpscaleModels,
   ListReplicateImageEditModels,
   ListReplicateLipsyncImageModels,
   ListReplicateLipsyncVideoModels,
@@ -76,6 +86,16 @@ function useModelCatalogs() {
   const [replicateSpeechModels, setReplicateSpeechModels] = useState<main.ReplicateModel[]>([]);
   const [replicateModels, setReplicateModels] = useState<main.ReplicateModel[]>([]);
   const [runwareModels, setRunwareModels] = useState<main.RunwareModel[]>([]);
+  const [runwareVideoModels, setRunwareVideoModels] = useState<main.RunwareModel[]>([]);
+  const [runwareVideoImageModels, setRunwareVideoImageModels] = useState<main.RunwareModel[]>([]);
+  const [runwareVideoExtendModels, setRunwareVideoExtendModels] = useState<main.RunwareModel[]>([]);
+  const [runwareVideoUpscaleModels, setRunwareVideoUpscaleModels] = useState<main.RunwareModel[]>([]);
+  const [runwareVideoRestyleModels, setRunwareVideoRestyleModels] = useState<main.RunwareModel[]>([]);
+  const [runwareSpeechModels, setRunwareSpeechModels] = useState<main.RunwareModel[]>([]);
+  const [runwareSoundEffectModels, setRunwareSoundEffectModels] = useState<main.RunwareModel[]>([]);
+  const [runwareSoundEffectsVideoModels, setRunwareSoundEffectsVideoModels] = useState<main.RunwareModel[]>([]);
+  const [runwareLipsyncImageModels, setRunwareLipsyncImageModels] = useState<main.RunwareModel[]>([]);
+  const [runwareLipsyncVideoModels, setRunwareLipsyncVideoModels] = useState<main.RunwareModel[]>([]);
   const [replicateImageEditModels, setReplicateImageEditModels] = useState<main.ReplicateModel[]>([]);
   const [replicateUpscaleModels, setReplicateUpscaleModels] = useState<main.ReplicateModel[]>([]);
   const [replicateVideoUpscaleModels, setReplicateVideoUpscaleModels] = useState<main.ReplicateModel[]>([]);
@@ -266,10 +286,62 @@ function useModelCatalogs() {
   // Runware's model index is a public static file, so it loads without a key;
   // a failure leaves the picker as free text (AIR ids are typeable).
   async function refreshRunwareModels() {
+    // The model index is a public static file, so every list loads without a
+    // key; a failure leaves the picker as free text (AIR ids are typeable).
     try {
       setRunwareModels(asArray(await ListRunwareImageModels()));
     } catch {
       setRunwareModels([]);
+    }
+    try {
+      setRunwareVideoModels(asArray(await ListRunwareVideoModels()));
+    } catch {
+      setRunwareVideoModels([]);
+    }
+    try {
+      setRunwareVideoImageModels(asArray(await ListRunwareVideoImageModels()));
+    } catch {
+      setRunwareVideoImageModels([]);
+    }
+    try {
+      setRunwareVideoExtendModels(asArray(await ListRunwareVideoExtendModels()));
+    } catch {
+      setRunwareVideoExtendModels([]);
+    }
+    try {
+      setRunwareVideoUpscaleModels(asArray(await ListRunwareVideoUpscaleModels()));
+    } catch {
+      setRunwareVideoUpscaleModels([]);
+    }
+    try {
+      setRunwareVideoRestyleModels(asArray(await ListRunwareVideoRestyleModels()));
+    } catch {
+      setRunwareVideoRestyleModels([]);
+    }
+    try {
+      setRunwareSpeechModels(asArray(await ListRunwareSpeechModels()));
+    } catch {
+      setRunwareSpeechModels([]);
+    }
+    try {
+      setRunwareSoundEffectModels(asArray(await ListRunwareSoundEffectModels()));
+    } catch {
+      setRunwareSoundEffectModels([]);
+    }
+    try {
+      setRunwareSoundEffectsVideoModels(asArray(await ListRunwareSoundEffectsVideoModels()));
+    } catch {
+      setRunwareSoundEffectsVideoModels([]);
+    }
+    try {
+      setRunwareLipsyncImageModels(asArray(await ListRunwareLipsyncImageModels()));
+    } catch {
+      setRunwareLipsyncImageModels([]);
+    }
+    try {
+      setRunwareLipsyncVideoModels(asArray(await ListRunwareLipsyncVideoModels()));
+    } catch {
+      setRunwareLipsyncVideoModels([]);
     }
   }
 
@@ -388,6 +460,16 @@ function useModelCatalogs() {
     refreshReplicateModels,
     refreshRunwareModels,
     runwareModels,
+    runwareVideoModels,
+    runwareVideoImageModels,
+    runwareVideoExtendModels,
+    runwareVideoUpscaleModels,
+    runwareVideoRestyleModels,
+    runwareSpeechModels,
+    runwareSoundEffectModels,
+    runwareSoundEffectsVideoModels,
+    runwareLipsyncImageModels,
+    runwareLipsyncVideoModels,
     replicateAudioExtendModels,
     replicateImageEditModels,
     replicateLipsyncImageModels,

@@ -17,9 +17,10 @@ type SettingsTab = 'providers' | 'models' | 'tools' | 'general';
 const settingsTabs: SettingsTab[] = ['providers', 'models', 'tools', 'general'];
 type ChatProviderID = 'ollama' | 'openrouter' | 'openai-compatible';
 // The generate_speech backends: fal.ai's cloud endpoints, a local Ollama
-// speech model, or Replicate's text-to-speech collection. Mirrors the Go
-// resolveSpeechProvider vocabulary (anything else normalizes to fal).
-type SpeechProviderID = 'fal' | 'ollama' | 'replicate';
+// speech model, Replicate's text-to-speech collection, or Runware's speech
+// models. Mirrors the Go resolveSpeechProvider vocabulary (anything else
+// normalizes to fal).
+type SpeechProviderID = 'fal' | 'ollama' | 'replicate' | 'runware';
 // 'edit' marks an image-editor session child conversation: the sidebar lists
 // it, but opening it routes to the editor workspace, not the chat transcript.
 type ConversationKind = 'chat' | 'edit';

@@ -39,6 +39,17 @@ import {
   defaultReplicateImageEditModel,
   defaultReplicateImageModel,
   defaultRunwareImageModel,
+  defaultRunwareVideoModel,
+  defaultRunwareVideoImageModel,
+  defaultRunwareVideoExtendModel,
+  defaultRunwareVideoUpscaleModel,
+  defaultRunwareVideoRestyleModel,
+  defaultRunwareInpaintModel,
+  defaultRunwareLipsyncImageModel,
+  defaultRunwareLipsyncVideoModel,
+  defaultRunwareSpeechModel,
+  defaultRunwareSoundEffectsModel,
+  defaultRunwareSoundEffectsVideoModel,
   defaultReplicateInpaintModel,
   defaultReplicateLipsyncImageModel,
   defaultReplicateLipsyncVideoModel,
@@ -86,11 +97,22 @@ function configValues(config: main.AppConfig) {
   const nextImageSizePreset = config.generation?.image?.sizePreset || defaultImageSizePreset;
   const nextImageSteps = config.generation?.image?.steps || defaultImageSteps;
   const nextImageProvider: 'fal' | 'replicate' | 'runware' | 'openai-compatible' = config.models?.imageProvider === 'fal' ? 'fal' : config.models?.imageProvider === 'replicate' ? 'replicate' : config.models?.imageProvider === 'runware' ? 'runware' : 'openai-compatible';
-  const nextVideoProvider: 'fal' | 'replicate' = config.models?.videoProvider === 'replicate' ? 'replicate' : 'fal';
+  const nextVideoProvider: 'fal' | 'replicate' | 'runware' = config.models?.videoProvider === 'replicate' ? 'replicate' : config.models?.videoProvider === 'runware' ? 'runware' : 'fal';
   const nextOpenAICompatibleBaseURL = config.providers?.openaiCompatible?.baseURL || 'http://localhost:8080';
   const nextOpenAICompatibleModel = config.providers?.openaiCompatible?.model ?? '';
   const nextReplicateModel = config.providers?.replicate?.model || defaultReplicateImageModel;
   const nextRunwareModel = config.providers?.runware?.model || defaultRunwareImageModel;
+  const nextRunwareVideoModel = config.providers?.runware?.videoModel || defaultRunwareVideoModel;
+  const nextRunwareVideoImageModel = config.providers?.runware?.videoImageModel || defaultRunwareVideoImageModel;
+  const nextRunwareVideoExtendModel = config.providers?.runware?.videoExtendModel || defaultRunwareVideoExtendModel;
+  const nextRunwareVideoUpscaleModel = config.providers?.runware?.videoUpscaleModel || defaultRunwareVideoUpscaleModel;
+  const nextRunwareVideoRestyleModel = config.providers?.runware?.videoRestyleModel || defaultRunwareVideoRestyleModel;
+  const nextRunwareInpaintModel = config.providers?.runware?.inpaintModel || defaultRunwareInpaintModel;
+  const nextRunwareLipsyncImageModel = config.providers?.runware?.lipsyncImageModel || defaultRunwareLipsyncImageModel;
+  const nextRunwareLipsyncVideoModel = config.providers?.runware?.lipsyncVideoModel || defaultRunwareLipsyncVideoModel;
+  const nextRunwareSpeechModel = config.providers?.runware?.speechModel || defaultRunwareSpeechModel;
+  const nextRunwareSoundEffectsModel = config.providers?.runware?.soundEffectsModel || defaultRunwareSoundEffectsModel;
+  const nextRunwareSoundEffectsVideoModel = config.providers?.runware?.soundEffectsVideoModel || defaultRunwareSoundEffectsVideoModel;
   const nextReplicateImageEditModel = config.providers?.replicate?.imageEditModel || defaultReplicateImageEditModel;
   const nextReplicateUpscaleModel = config.providers?.replicate?.upscaleModel || defaultReplicateUpscaleModel;
   const nextReplicateVideoUpscaleModel = config.providers?.replicate?.videoUpscaleModel || defaultReplicateVideoUpscaleModel;
@@ -128,18 +150,18 @@ function configValues(config: main.AppConfig) {
   const nextMagickBinary = config.providers?.local?.magick?.binary ?? '';
   const nextFalLipsyncImageModel = config.providers?.fal?.lipsyncImageModel || defaultFalLipsyncImageModel;
   const nextFalLipsyncVideoModel = config.providers?.fal?.lipsyncVideoModel || defaultFalLipsyncVideoModel;
-  const nextLipsyncProvider: 'fal' | 'replicate' = config.models?.lipsyncProvider === 'replicate' ? 'replicate' : 'fal';
-  const nextSpeechProvider: SpeechProviderID = config.models?.speechProvider === 'ollama' || config.models?.speechProvider === 'replicate' ? config.models.speechProvider : 'fal';
+  const nextLipsyncProvider: 'fal' | 'replicate' | 'runware' = config.models?.lipsyncProvider === 'replicate' ? 'replicate' : config.models?.lipsyncProvider === 'runware' ? 'runware' : 'fal';
+  const nextSpeechProvider: SpeechProviderID = config.models?.speechProvider === 'ollama' || config.models?.speechProvider === 'replicate' || config.models?.speechProvider === 'runware' ? config.models.speechProvider : 'fal';
   const nextOllamaSpeechModel = config.providers?.ollama?.models?.speech ?? '';
   const nextReplicateSpeechModel = config.providers?.replicate?.speechModel || defaultReplicateSpeechModel;
-  const nextAudioProvider: 'fal' | 'replicate' = config.models?.audioProvider === 'replicate' ? 'replicate' : 'fal';
+  const nextAudioProvider: 'fal' | 'replicate' | 'runware' = config.models?.audioProvider === 'replicate' ? 'replicate' : config.models?.audioProvider === 'runware' ? 'runware' : 'fal';
   const nextReplicateSoundEffectsModel = config.providers?.replicate?.soundEffectsModel || defaultReplicateSoundEffectsModel;
   const nextReplicateSoundEffectsVideoModel = config.providers?.replicate?.soundEffectsVideoModel || defaultReplicateSoundEffectsVideoModel;
   const nextReplicateAudioExtendModel = config.providers?.replicate?.audioExtendModel || defaultReplicateAudioExtendModel;
   const nextReplicateLipsyncImageModel = config.providers?.replicate?.lipsyncImageModel || defaultReplicateLipsyncImageModel;
   const nextReplicateLipsyncVideoModel = config.providers?.replicate?.lipsyncVideoModel || defaultReplicateLipsyncVideoModel;
   const nextFalUpscaleModel = config.providers?.fal?.upscaleModel || defaultFalUpscaleModel;
-  const nextInpaintProvider: 'fal' | 'replicate' = config.models?.inpaintProvider === 'replicate' ? 'replicate' : 'fal';
+  const nextInpaintProvider: 'fal' | 'replicate' | 'runware' = config.models?.inpaintProvider === 'replicate' ? 'replicate' : config.models?.inpaintProvider === 'runware' ? 'runware' : 'fal';
   const nextFalInpaintModel = config.providers?.fal?.inpaintModel || defaultFalInpaintModel;
   const nextReplicateInpaintModel = config.providers?.replicate?.inpaintModel || defaultReplicateInpaintModel;
   const nextVideoDuration = config.generation?.video?.duration || defaultVideoDuration;
@@ -180,6 +202,17 @@ function configValues(config: main.AppConfig) {
     openaiCompatibleModel: nextOpenAICompatibleModel,
     replicateModel: nextReplicateModel,
     runwareModel: nextRunwareModel,
+    runwareVideoModel: nextRunwareVideoModel,
+    runwareVideoImageModel: nextRunwareVideoImageModel,
+    runwareVideoExtendModel: nextRunwareVideoExtendModel,
+    runwareVideoUpscaleModel: nextRunwareVideoUpscaleModel,
+    runwareVideoRestyleModel: nextRunwareVideoRestyleModel,
+    runwareInpaintModel: nextRunwareInpaintModel,
+    runwareLipsyncImageModel: nextRunwareLipsyncImageModel,
+    runwareLipsyncVideoModel: nextRunwareLipsyncVideoModel,
+    runwareSpeechModel: nextRunwareSpeechModel,
+    runwareSoundEffectsModel: nextRunwareSoundEffectsModel,
+    runwareSoundEffectsVideoModel: nextRunwareSoundEffectsVideoModel,
     replicateImageEditModel: nextReplicateImageEditModel,
     replicateUpscaleModel: nextReplicateUpscaleModel,
     replicateVideoUpscaleModel: nextReplicateVideoUpscaleModel,
@@ -288,6 +321,17 @@ function appConfigPayload(s: AppConfigValues & ConfigKeyFlags) {
       runware: {
         enabled: s.runwareHasKey,
         model: s.runwareModel,
+        videoModel: s.runwareVideoModel,
+        videoImageModel: s.runwareVideoImageModel,
+        videoExtendModel: s.runwareVideoExtendModel,
+        videoUpscaleModel: s.runwareVideoUpscaleModel,
+        videoRestyleModel: s.runwareVideoRestyleModel,
+        inpaintModel: s.runwareInpaintModel,
+        lipsyncImageModel: s.runwareLipsyncImageModel,
+        lipsyncVideoModel: s.runwareLipsyncVideoModel,
+        speechModel: s.runwareSpeechModel,
+        soundEffectsModel: s.runwareSoundEffectsModel,
+        soundEffectsVideoModel: s.runwareSoundEffectsVideoModel,
       },
       replicate: {
         enabled: s.replicateHasKey,

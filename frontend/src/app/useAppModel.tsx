@@ -21,7 +21,7 @@ import {
   HasOpenRouterAPIKey,
   ListFalVideoDurations,
   ListFalSoundEffectDurations,
-  ListReplicateVideoDurations,
+  ListReplicateVideoDurations, ListRunwareVideoDurations,
   ListModels,
   ListOpenAICompatibleModels,
   LoadUIState,
@@ -144,7 +144,10 @@ export function useAppModel() {
     mediaTimeoutMinutes, model, ollamaNumCtx, ollamaSpeechModel, openaiCompatibleBaseURL,
     openaiCompatibleModel, patchSettingsModelSelection, primaryModels, primaryProvider,
     replicateAudioExtendModel, replicateImageEditModel, replicateInpaintModel, replicateLipsyncImageModel,
-    replicateLipsyncVideoModel, replicateModel, runwareModel, replicateSoundEffectsModel, replicateSoundEffectsVideoModel,
+    replicateLipsyncVideoModel, replicateModel, runwareModel, runwareVideoModel, runwareVideoImageModel,
+    runwareVideoExtendModel, runwareVideoUpscaleModel, runwareVideoRestyleModel, runwareInpaintModel,
+    runwareSpeechModel, runwareSoundEffectsModel, runwareSoundEffectsVideoModel, runwareLipsyncImageModel,
+    runwareLipsyncVideoModel, replicateSoundEffectsModel, replicateSoundEffectsVideoModel,
     replicateSpeechModel, replicateTranscribeModel, replicateUpscaleModel, replicateVideoExtendModel,
     replicateVideoImageModel, replicateVideoModel, replicateVideoReframeModel, replicateVideoRestyleModel,
     replicateVideoUpscaleModel, setAirplaneMode, setBaseURL, setConfigLoaded, setFfmpegBinary,
@@ -189,6 +192,16 @@ export function useAppModel() {
     refreshReplicateModels,
     refreshRunwareModels,
     runwareModels,
+    runwareVideoModels,
+    runwareVideoImageModels,
+    runwareVideoExtendModels,
+    runwareVideoUpscaleModels,
+    runwareVideoRestyleModels,
+    runwareSpeechModels,
+    runwareSoundEffectModels,
+    runwareSoundEffectsVideoModels,
+    runwareLipsyncImageModels,
+    runwareLipsyncVideoModels,
     replicateAudioExtendModels,
     replicateImageEditModels,
     replicateLipsyncImageModels,
@@ -790,11 +803,11 @@ export function useAppModel() {
     const harnessProvider = isChatProvider(overrides.harnessProvider) ? overrides.harnessProvider : global.harnessProvider;
     const primaryProvider = isChatProvider(overrides.primaryProvider) ? overrides.primaryProvider : global.primaryProvider;
     const imageProvider = overrides.imageProvider === 'fal' || overrides.imageProvider === 'replicate' || overrides.imageProvider === 'openai-compatible' ? overrides.imageProvider : global.imageProvider;
-    const videoProvider = overrides.videoProvider === 'replicate' ? 'replicate' : overrides.videoProvider === 'fal' ? 'fal' : global.videoProvider;
-    const inpaintProvider = overrides.inpaintProvider === 'replicate' ? 'replicate' : overrides.inpaintProvider === 'fal' ? 'fal' : global.inpaintProvider;
-    const lipsyncProvider = overrides.lipsyncProvider === 'replicate' ? 'replicate' : overrides.lipsyncProvider === 'fal' ? 'fal' : global.lipsyncProvider;
-    const speechProvider: SpeechProviderID = overrides.speechProvider === 'ollama' || overrides.speechProvider === 'replicate' || overrides.speechProvider === 'fal' ? overrides.speechProvider : global.speechProvider;
-    const audioProvider = overrides.audioProvider === 'replicate' ? 'replicate' : overrides.audioProvider === 'fal' ? 'fal' : global.audioProvider;
+    const videoProvider = overrides.videoProvider === 'replicate' ? 'replicate' : overrides.videoProvider === 'runware' ? 'runware' : overrides.videoProvider === 'fal' ? 'fal' : global.videoProvider;
+    const inpaintProvider = overrides.inpaintProvider === 'replicate' ? 'replicate' : overrides.inpaintProvider === 'runware' ? 'runware' : overrides.inpaintProvider === 'fal' ? 'fal' : global.inpaintProvider;
+    const lipsyncProvider = overrides.lipsyncProvider === 'replicate' ? 'replicate' : overrides.lipsyncProvider === 'runware' ? 'runware' : overrides.lipsyncProvider === 'fal' ? 'fal' : global.lipsyncProvider;
+    const speechProvider: SpeechProviderID = overrides.speechProvider === 'ollama' || overrides.speechProvider === 'replicate' || overrides.speechProvider === 'runware' || overrides.speechProvider === 'fal' ? overrides.speechProvider : global.speechProvider;
+    const audioProvider = overrides.audioProvider === 'replicate' ? 'replicate' : overrides.audioProvider === 'runware' ? 'runware' : overrides.audioProvider === 'fal' ? 'fal' : global.audioProvider;
     const effectiveTranscriptionProvider = overrides.transcriptionProvider === 'fal' || overrides.transcriptionProvider === 'local-whisper' || overrides.transcriptionProvider === 'replicate' ? overrides.transcriptionProvider : global.transcriptionProvider;
     const next: ModelSelectionValue = {
       ...global,
@@ -812,6 +825,17 @@ export function useAppModel() {
       openaiImageModel: overrides.imageModel && imageProvider === 'openai-compatible' ? overrides.imageModel : global.openaiImageModel,
       replicateModel: overrides.imageModel && imageProvider === 'replicate' ? overrides.imageModel : global.replicateModel,
       runwareModel: overrides.imageModel && imageProvider === 'runware' ? overrides.imageModel : global.runwareModel,
+      runwareVideoModel: overrides.videoModel && videoProvider === 'runware' ? overrides.videoModel : global.runwareVideoModel,
+      runwareVideoImageModel: overrides.videoImageModel && videoProvider === 'runware' ? overrides.videoImageModel : global.runwareVideoImageModel,
+      runwareVideoExtendModel: overrides.videoExtendModel && videoProvider === 'runware' ? overrides.videoExtendModel : global.runwareVideoExtendModel,
+      runwareVideoUpscaleModel: overrides.videoUpscaleModel && videoProvider === 'runware' ? overrides.videoUpscaleModel : global.runwareVideoUpscaleModel,
+      runwareVideoRestyleModel: overrides.videoRestyleModel && videoProvider === 'runware' ? overrides.videoRestyleModel : global.runwareVideoRestyleModel,
+      runwareInpaintModel: overrides.inpaintModel && inpaintProvider === 'runware' ? overrides.inpaintModel : global.runwareInpaintModel,
+      runwareSpeechModel: overrides.audioModel && speechProvider === 'runware' ? overrides.audioModel : global.runwareSpeechModel,
+      runwareSoundEffectsModel: overrides.soundEffectsModel && audioProvider === 'runware' ? overrides.soundEffectsModel : global.runwareSoundEffectsModel,
+      runwareSoundEffectsVideoModel: overrides.soundEffectsVideoModel && audioProvider === 'runware' ? overrides.soundEffectsVideoModel : global.runwareSoundEffectsVideoModel,
+      runwareLipsyncImageModel: overrides.lipsyncImageModel && lipsyncProvider === 'runware' ? overrides.lipsyncImageModel : global.runwareLipsyncImageModel,
+      runwareLipsyncVideoModel: overrides.lipsyncVideoModel && lipsyncProvider === 'runware' ? overrides.lipsyncVideoModel : global.runwareLipsyncVideoModel,
       replicateImageEditModel: overrides.imageEditModel && imageProvider === 'replicate' ? overrides.imageEditModel : global.replicateImageEditModel,
       falImageEditModel: overrides.imageEditModel && imageProvider !== 'replicate' ? overrides.imageEditModel : global.falImageEditModel,
       replicateUpscaleModel: overrides.upscaleModel && imageProvider === 'replicate' ? overrides.upscaleModel : global.replicateUpscaleModel,
@@ -930,11 +954,15 @@ export function useAppModel() {
     }
     // A video-provider switch carries the new backend's inherited models into
     // the draft so the paired pickers display them (the image-provider rule).
-    if (draftPatch.videoProvider !== undefined && patch.falVideoModel === undefined && patch.replicateVideoModel === undefined) {
+    if (draftPatch.videoProvider !== undefined && patch.falVideoModel === undefined && patch.replicateVideoModel === undefined && patch.runwareVideoModel === undefined) {
       if (draftPatch.videoProvider === 'replicate') {
         draftPatch.replicateVideoModel = replicateVideoModel;
         draftPatch.replicateVideoImageModel = replicateVideoImageModel;
         draftPatch.replicateVideoExtendModel = replicateVideoExtendModel;
+      } else if (draftPatch.videoProvider === 'runware') {
+        draftPatch.runwareVideoModel = runwareVideoModel;
+        draftPatch.runwareVideoImageModel = runwareVideoImageModel;
+        draftPatch.runwareVideoExtendModel = runwareVideoExtendModel;
       } else {
         draftPatch.falVideoModel = falVideoModel;
         draftPatch.falVideoImageModel = falVideoImageModel;
@@ -953,11 +981,14 @@ export function useAppModel() {
     // An audio-provider switch carries the new backend's inherited sound
     // models into the draft so the paired pickers display them (the video
     // pair's rule).
-    if (draftPatch.audioProvider !== undefined && patch.falSoundEffectsModel === undefined && patch.replicateSoundEffectsModel === undefined) {
+    if (draftPatch.audioProvider !== undefined && patch.falSoundEffectsModel === undefined && patch.replicateSoundEffectsModel === undefined && patch.runwareSoundEffectsModel === undefined) {
       if (draftPatch.audioProvider === 'replicate') {
         draftPatch.replicateSoundEffectsModel = replicateSoundEffectsModel;
         draftPatch.replicateSoundEffectsVideoModel = replicateSoundEffectsVideoModel;
         draftPatch.replicateAudioExtendModel = replicateAudioExtendModel;
+      } else if (draftPatch.audioProvider === 'runware') {
+        draftPatch.runwareSoundEffectsModel = runwareSoundEffectsModel;
+        draftPatch.runwareSoundEffectsVideoModel = runwareSoundEffectsVideoModel;
       } else {
         draftPatch.falSoundEffectsModel = falSoundEffectsModel;
         draftPatch.falSoundEffectsVideoModel = falSoundEffectsVideoModel;
@@ -1094,18 +1125,21 @@ export function useAppModel() {
         case 'inpaintModel':
           next.falInpaintModel = global.falInpaintModel;
           next.replicateInpaintModel = global.replicateInpaintModel;
+          next.runwareInpaintModel = global.runwareInpaintModel;
           break;
-        case 'videoModel': next.falVideoModel = global.falVideoModel; next.replicateVideoModel = global.replicateVideoModel; break;
-        case 'videoImageModel': next.falVideoImageModel = global.falVideoImageModel; next.replicateVideoImageModel = global.replicateVideoImageModel; break;
+        case 'videoModel': next.falVideoModel = global.falVideoModel; next.replicateVideoModel = global.replicateVideoModel; next.runwareVideoModel = global.runwareVideoModel; break;
+        case 'videoImageModel': next.falVideoImageModel = global.falVideoImageModel; next.replicateVideoImageModel = global.replicateVideoImageModel; next.runwareVideoImageModel = global.runwareVideoImageModel; break;
         case 'videoKeyframeModel': next.falVideoKeyframeModel = global.falVideoKeyframeModel; break;
         case 'videoExtendModel':
           next.falVideoExtendModel = global.falVideoExtendModel;
           next.replicateVideoExtendModel = global.replicateVideoExtendModel;
+          next.runwareVideoExtendModel = global.runwareVideoExtendModel;
           break;
         case 'videoMotionModel': next.falVideoMotionModel = global.falVideoMotionModel; break;
         case 'videoUpscaleModel':
           next.falVideoUpscaleModel = global.falVideoUpscaleModel;
           next.replicateVideoUpscaleModel = global.replicateVideoUpscaleModel;
+          next.runwareVideoUpscaleModel = global.runwareVideoUpscaleModel;
           break;
         case 'videoReframeModel':
           next.falVideoReframeModel = global.falVideoReframeModel;
@@ -1114,11 +1148,13 @@ export function useAppModel() {
         case 'videoRestyleModel':
           next.falVideoRestyleModel = global.falVideoRestyleModel;
           next.replicateVideoRestyleModel = global.replicateVideoRestyleModel;
+          next.runwareVideoRestyleModel = global.runwareVideoRestyleModel;
           break;
         case 'audioModel':
           next.falAudioModel = global.falAudioModel;
           next.ollamaSpeechModel = global.ollamaSpeechModel;
           next.replicateSpeechModel = global.replicateSpeechModel;
+          next.runwareSpeechModel = global.runwareSpeechModel;
           break;
         case 'speechProvider': next.speechProvider = global.speechProvider; break;
         case 'audioProvider': next.audioProvider = global.audioProvider; break;
@@ -1126,10 +1162,12 @@ export function useAppModel() {
         case 'soundEffectsModel':
           next.falSoundEffectsModel = global.falSoundEffectsModel;
           next.replicateSoundEffectsModel = global.replicateSoundEffectsModel;
+          next.runwareSoundEffectsModel = global.runwareSoundEffectsModel;
           break;
         case 'soundEffectsVideoModel':
           next.falSoundEffectsVideoModel = global.falSoundEffectsVideoModel;
           next.replicateSoundEffectsVideoModel = global.replicateSoundEffectsVideoModel;
+          next.runwareSoundEffectsVideoModel = global.runwareSoundEffectsVideoModel;
           break;
         case 'voiceDesignModel': next.falVoiceDesignModel = global.falVoiceDesignModel; break;
         case 'audioExtendModel':
@@ -1153,10 +1191,12 @@ export function useAppModel() {
         case 'lipsyncImageModel':
           next.falLipsyncImageModel = global.falLipsyncImageModel;
           next.replicateLipsyncImageModel = global.replicateLipsyncImageModel;
+          next.runwareLipsyncImageModel = global.runwareLipsyncImageModel;
           break;
         case 'lipsyncVideoModel':
           next.falLipsyncVideoModel = global.falLipsyncVideoModel;
           next.replicateLipsyncVideoModel = global.replicateLipsyncVideoModel;
+          next.runwareLipsyncVideoModel = global.runwareLipsyncVideoModel;
           break;
       }
       return next;
@@ -1232,7 +1272,9 @@ export function useAppModel() {
   // keyframes stay fal-only.
   const convDraftVideoExtendModel = convDraftVideoProvider === 'replicate'
     ? (convModelsDraft?.replicateVideoExtendModel ?? '')
-    : (convModelsDraft?.falVideoExtendModel ?? '');
+    : convDraftVideoProvider === 'runware'
+      ? (convModelsDraft?.runwareVideoExtendModel ?? '')
+      : (convModelsDraft?.falVideoExtendModel ?? '');
   const convDraftSoundEffectsModel = convModelsDraft?.falSoundEffectsModel ?? '';
   useEffect(() => {
     if (view !== 'conversation-models') {
@@ -1242,8 +1284,10 @@ export function useAppModel() {
     // The t2v/i2v/extend duration lookups follow the draft's video provider
     // (the replicate backend reads its own schema cache); keyframes are a
     // fal-only tool and always read fal's.
-    const fetchOptions = async (model: string, provider: 'fal' | 'replicate') => {
-      const fetcher = provider === 'replicate' ? ListReplicateVideoDurations : ListFalVideoDurations;
+    const fetchOptions = async (model: string, provider: 'fal' | 'replicate' | 'runware') => {
+      const fetcher = provider === 'runware'
+        ? ListRunwareVideoDurations
+        : provider === 'replicate' ? ListReplicateVideoDurations : ListFalVideoDurations;
       try {
         const durations = await fetcher(model);
         return durations && durations.length ? durations : defaultVideoDurationOptions;
@@ -1267,9 +1311,14 @@ export function useAppModel() {
         return defaultSoundDurationOptions;
       }
     };
+    const draftVideoModelFor = (falValue: string, replicateValue: string, runwareValue: string, fallback: string) => (
+      convDraftVideoProvider === 'replicate' ? (replicateValue || fallback)
+        : convDraftVideoProvider === 'runware' ? (runwareValue || fallback)
+          : (falValue || fallback)
+    );
     Promise.all([
-      fetchOptions(convDraftVideoProvider === 'replicate' ? (convModelsDraft?.replicateVideoModel ?? '') : convDraftVideoModel, convDraftVideoProvider),
-      fetchOptions(convDraftVideoProvider === 'replicate' ? (convModelsDraft?.replicateVideoImageModel ?? '') : convDraftVideoImageModel, convDraftVideoProvider),
+      fetchOptions(draftVideoModelFor(convDraftVideoModel, convModelsDraft?.replicateVideoModel ?? '', convModelsDraft?.runwareVideoModel ?? '', ''), convDraftVideoProvider),
+      fetchOptions(draftVideoModelFor(convDraftVideoImageModel, convModelsDraft?.replicateVideoImageModel ?? '', convModelsDraft?.runwareVideoImageModel ?? '', ''), convDraftVideoProvider),
       fetchOptions(convDraftVideoKeyframeModel, 'fal'),
       fetchOptions(convDraftVideoExtendModel, convDraftVideoProvider),
       fetchSoundOptions(),
@@ -1339,6 +1388,16 @@ export function useAppModel() {
     falImageEditModels,
     replicateModels,
     runwareModels,
+    runwareVideoModels,
+    runwareVideoImageModels,
+    runwareVideoExtendModels,
+    runwareVideoUpscaleModels,
+    runwareVideoRestyleModels,
+    runwareSpeechModels,
+    runwareSoundEffectModels,
+    runwareSoundEffectsVideoModels,
+    runwareLipsyncImageModels,
+    runwareLipsyncVideoModels,
     replicateImageEditModels,
     replicateUpscaleModels,
     replicateVideoUpscaleModels,
@@ -1388,7 +1447,7 @@ export function useAppModel() {
     videoDurationImageOptions,
     videoDurationKeyframeOptions,
     videoDurationOptions,
-  } = useDurationOptions({videoProvider, falVideoModel, replicateVideoModel, setVideoDuration, audioProvider, falSoundEffectsModel, setSoundDuration, falVideoImageModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, replicateVideoExtendModel});
+  } = useDurationOptions({videoProvider, falVideoModel, replicateVideoModel, runwareVideoModel, runwareVideoImageModel, runwareVideoExtendModel, runwareSoundEffectsModel, setVideoDuration, audioProvider, falSoundEffectsModel, setSoundDuration, falVideoImageModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, replicateVideoExtendModel});
   useEffect(() => {
     // Only re-run when the option list itself changes (provider switch, or
     // the OpenRouter list finishing a load) — not on every keystroke of
@@ -2604,6 +2663,7 @@ export function useAppModel() {
     setFfmpegBinary,
     openaiCompatibleBaseURL,
     falInpaintModel,
+    runwareInpaintModel,
     setWhisperModel,
     chooseToolWorkspace,
     ollamaNumCtx,

@@ -76,6 +76,20 @@ const defaultReplicateImageModel = 'black-forest-labs/flux-schnell';
 // FLUX.1 Kontext [dev] on Runware (text-to-image and edits) — mirrors
 // defaultRunwareImageModel in runware_client.go.
 const defaultRunwareImageModel = 'runware:106@1';
+// The runware video-family, inpaint, lipsync, speech, and sound defaults —
+// AIR ids kept in sync with the Go consts in runware_client.go (the single
+// source of truth; each one's schema was read before it was pinned there).
+const defaultRunwareVideoModel = 'klingai:kling-video@4.0';
+const defaultRunwareVideoImageModel = 'klingai:kling-video@4.0';
+const defaultRunwareVideoExtendModel = 'google:3@2';
+const defaultRunwareVideoUpscaleModel = 'bfl:flux@video-upscale';
+const defaultRunwareVideoRestyleModel = 'bfl:flux@video-edit-fast';
+const defaultRunwareInpaintModel = 'bfl:1@2';
+const defaultRunwareLipsyncImageModel = 'veed:fabric@1.0-hosted';
+const defaultRunwareLipsyncVideoModel = 'klingai:7@1';
+const defaultRunwareSpeechModel = 'minimax:speech@2.8';
+const defaultRunwareSoundEffectsModel = 'mirelo:1@1';
+const defaultRunwareSoundEffectsVideoModel = 'mirelo:1@1';
 const defaultReplicateImageEditModel = 'black-forest-labs/flux-kontext-pro';
 const defaultReplicateVideoModel = 'wan-video/wan-2.5-t2v';
 const defaultReplicateVideoImageModel = 'wan-video/wan-2.5-i2v';
@@ -236,6 +250,17 @@ export {
   defaultFalUpscaleModel,
   defaultReplicateImageModel,
   defaultRunwareImageModel,
+  defaultRunwareVideoModel,
+  defaultRunwareVideoImageModel,
+  defaultRunwareVideoExtendModel,
+  defaultRunwareVideoUpscaleModel,
+  defaultRunwareVideoRestyleModel,
+  defaultRunwareInpaintModel,
+  defaultRunwareLipsyncImageModel,
+  defaultRunwareLipsyncVideoModel,
+  defaultRunwareSpeechModel,
+  defaultRunwareSoundEffectsModel,
+  defaultRunwareSoundEffectsVideoModel,
   defaultReplicateImageEditModel,
   defaultReplicateVideoModel,
   defaultReplicateVideoImageModel,

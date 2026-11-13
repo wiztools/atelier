@@ -88,13 +88,14 @@ func generationMediaKindPhrase(mode string) string {
 // generate_speech backend, regardless of the mode) shapes the audio case: the
 // Ollama route appends the local text-to-speech remedy — the gap firing there
 // means the slot is empty, and choosing one needs no key and survives
-// airplane mode; the Replicate route appends the token remedy for speech when
-// the sound tools still name fal's key — a fal key would light up nothing for
-// speech there. audioReplicate names the AudioProvider selection: the audio
-// gap's key remedy follows it (the generate_sound gate checks the routed
-// provider's key), so a replicate-pinned setup must be told about the
-// Replicate token, not a fal key that would light up nothing.
-func mediaGenUnavailableNote(mode string, airplane bool, speechProvider string, audioReplicate bool) string {
+// airplane mode; the Replicate and Runware routes append their key remedies
+// for speech when the sound tools still name fal's key — a fal key would
+// light up nothing for speech there. audioProvider names the AudioProvider
+// selection: the audio gap's key remedy follows it (the generate_sound gate
+// checks the routed provider's key), so a replicate- or runware-pinned setup
+// must be told about that provider's key, not a fal key that would light up
+// nothing.
+func mediaGenUnavailableNote(mode string, airplane bool, speechProvider string, audioProvider string) string {
 	kind := generationMediaKindPhrase(mode)
 	if kind == "" {
 		return ""
@@ -110,7 +111,15 @@ func mediaGenUnavailableNote(mode string, airplane bool, speechProvider string, 
 			"Tell the user plainly that " + kind + " generation needs a cloud provider, which airplane mode blocks: turning it off in Settings → Providers re-enables it." +
 			localSpeech
 	}
-	if mode == "audio" && audioReplicate {
+	if mode == "audio" && audioProvider == "runware" {
+		return "Atelier note: the user's latest request asks Atelier to generate or extend " + kind +
+			", but no " + kind + " generation model is configured on this machine, so Atelier has no tool that can do it. " +
+			"Do not claim the " + kind + " was created, queued, or is rendering, and do not attempt it through other tools. " +
+			"Tell the user plainly that " + kind + " generation needs a one-time setup: add a Runware API key and choose a " + kind +
+			" model in Settings → Providers (the Audio Provider there is set to Runware), and Atelier enables it automatically on the next message." +
+			localSpeech
+	}
+	if mode == "audio" && audioProvider == "replicate" {
 		return "Atelier note: the user's latest request asks Atelier to generate or extend " + kind +
 			", but no " + kind + " generation model is configured on this machine, so Atelier has no tool that can do it. " +
 			"Do not claim the " + kind + " was created, queued, or is rendering, and do not attempt it through other tools. " +
@@ -118,25 +127,29 @@ func mediaGenUnavailableNote(mode string, airplane bool, speechProvider string, 
 			" model in Settings → Providers (the Audio Provider there is set to Replicate), and Atelier enables it automatically on the next message." +
 			localSpeech
 	}
-	replicateSpeech := ""
-	if mode == "audio" && speechProvider == "replicate" {
-		replicateSpeech = " Speech generation is set to run on Replicate (Settings → Models, Speech Provider): that half needs a Replicate API token and a speech model there, not the fal.ai key."
+	otherSpeech := ""
+	switch {
+	case mode == "audio" && speechProvider == "replicate":
+		otherSpeech = " Speech generation is set to run on Replicate (Settings → Models, Speech Provider): that half needs a Replicate API token and a speech model there, not the fal.ai key."
+	case mode == "audio" && speechProvider == "runware":
+		otherSpeech = " Speech generation is set to run on Runware (Settings → Models, Speech Provider): that half needs a Runware API key and a speech model there, not the fal.ai key."
 	}
 	return "Atelier note: the user's latest request asks Atelier to generate or extend " + kind +
 		", but no " + kind + " generation model is configured on this machine, so Atelier has no tool that can do it. " +
 		"Do not claim the " + kind + " was created, queued, or is rendering, and do not attempt it through other tools. " +
 		"Tell the user plainly that " + kind + " generation needs a one-time setup: add a fal.ai API key and choose a " + kind +
 		" model in Settings → Providers, and Atelier enables it automatically on the next message." +
-		localSpeech + replicateSpeech
+		localSpeech + otherSpeech
 }
 
 // mediaGenFallbackNotice returns the deterministic one-line blockquote for the
 // chat reply when a generation capability is missing and the final model's
 // answer did not already name the remedy — mirroring mediaEditFallbackNotice.
 // Empty when the capability is available, the mode is not a generation mode, or
-// the answer already covered the remedy (fal.ai, or the Replicate token on a
-// replicate audio or speech route, or Ollama on the local speech route).
-func mediaGenFallbackNotice(unavailable bool, mode string, assistantContent string, airplane bool, speechProvider string, audioReplicate bool) string {
+// the answer already covered the remedy (fal.ai, the Replicate token on a
+// replicate audio or speech route, the Runware key on a runware route, or
+// Ollama on the local speech route).
+func mediaGenFallbackNotice(unavailable bool, mode string, assistantContent string, airplane bool, speechProvider string, audioProvider string) string {
 	if !unavailable {
 		return ""
 	}
@@ -147,6 +160,9 @@ func mediaGenFallbackNotice(unavailable bool, mode string, assistantContent stri
 	lower := strings.ToLower(assistantContent)
 	localSpeech := mode == "audio" && speechProvider == "ollama"
 	replicateSpeech := mode == "audio" && speechProvider == "replicate"
+	runwareSpeech := mode == "audio" && speechProvider == "runware"
+	runwareAudio := mode == "audio" && audioProvider == "runware"
+	replicateAudio := mode == "audio" && audioProvider == "replicate"
 	if airplane {
 		if strings.Contains(lower, "airplane mode") {
 			return ""
@@ -163,13 +179,24 @@ func mediaGenFallbackNotice(unavailable bool, mode string, assistantContent stri
 	if strings.Contains(lower, "fal.ai") || strings.Contains(lower, "settings → providers") {
 		return ""
 	}
-	if mode == "audio" && (audioReplicate || replicateSpeech) && strings.Contains(lower, "replicate") {
+	if mode == "audio" && (replicateAudio || replicateSpeech) && strings.Contains(lower, "replicate") {
+		return ""
+	}
+	if mode == "audio" && (runwareAudio || runwareSpeech) && strings.Contains(lower, "runware") {
 		return ""
 	}
 	if localSpeech && strings.Contains(lower, "ollama") {
 		return ""
 	}
-	if mode == "audio" && audioReplicate {
+	if runwareAudio {
+		notice := "> ⚠️ " + kind + " generation isn't set up yet — add a Runware API key and choose a " + kind +
+			" model in Settings → Providers, and Atelier picks it up automatically."
+		if localSpeech {
+			notice += " Or set Speech Provider to Ollama and pick a local speech model (e.g. phonon)."
+		}
+		return notice
+	}
+	if replicateAudio {
 		notice := "> ⚠️ " + kind + " generation isn't set up yet — add a Replicate API token and choose a " + kind +
 			" model in Settings → Providers, and Atelier picks it up automatically."
 		if localSpeech {
@@ -184,6 +211,9 @@ func mediaGenFallbackNotice(unavailable bool, mode string, assistantContent stri
 	}
 	if replicateSpeech {
 		notice += " Speech is set to Replicate — add a Replicate API token and pick a speech model under Speech Provider."
+	}
+	if runwareSpeech {
+		notice += " Speech is set to Runware — add a Runware API key and pick a speech model under Speech Provider."
 	}
 	return notice
 }

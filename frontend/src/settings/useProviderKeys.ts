@@ -42,7 +42,7 @@ function useProviderKeys() {
   const [replicateStatus, setReplicateStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
   const [replicateError, setReplicateError] = useState('');
 
-  // Runware (image generation only, for now). Its save/clear/check handlers
+  // Runware (image, video, audio, and lipsync generation). Its save/clear/check handlers
   // live here rather than in App: nothing else reacts to the key — the model
   // index is public, so the catalog loads with or without it.
   const [runwareAPIKeyInput, setRunwareAPIKeyInput] = useState('');

@@ -530,6 +530,17 @@ export namespace main {
 	export class ConfigRunware {
 	    enabled: boolean;
 	    model?: string;
+	    inpaintModel?: string;
+	    videoModel?: string;
+	    videoImageModel?: string;
+	    videoExtendModel?: string;
+	    videoUpscaleModel?: string;
+	    videoRestyleModel?: string;
+	    lipsyncImageModel?: string;
+	    lipsyncVideoModel?: string;
+	    speechModel?: string;
+	    soundEffectsModel?: string;
+	    soundEffectsVideoModel?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigRunware(source);
@@ -539,6 +550,17 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.enabled = source["enabled"];
 	        this.model = source["model"];
+	        this.inpaintModel = source["inpaintModel"];
+	        this.videoModel = source["videoModel"];
+	        this.videoImageModel = source["videoImageModel"];
+	        this.videoExtendModel = source["videoExtendModel"];
+	        this.videoUpscaleModel = source["videoUpscaleModel"];
+	        this.videoRestyleModel = source["videoRestyleModel"];
+	        this.lipsyncImageModel = source["lipsyncImageModel"];
+	        this.lipsyncVideoModel = source["lipsyncVideoModel"];
+	        this.speechModel = source["speechModel"];
+	        this.soundEffectsModel = source["soundEffectsModel"];
+	        this.soundEffectsVideoModel = source["soundEffectsVideoModel"];
 	    }
 	}
 	export class ConfigReplicate {
@@ -2781,8 +2803,10 @@ export namespace main {
 	    inpaintProvider?: string;
 	    inpaintFalModel?: string;
 	    inpaintReplicateModel?: string;
+	    inpaintRunwareModel?: string;
 	    falConfigured: boolean;
 	    replicateConfigured: boolean;
+	    runwareConfigured: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new EditSessionState(source);
@@ -2801,8 +2825,10 @@ export namespace main {
 	        this.inpaintProvider = source["inpaintProvider"];
 	        this.inpaintFalModel = source["inpaintFalModel"];
 	        this.inpaintReplicateModel = source["inpaintReplicateModel"];
+	        this.inpaintRunwareModel = source["inpaintRunwareModel"];
 	        this.falConfigured = source["falConfigured"];
 	        this.replicateConfigured = source["replicateConfigured"];
+	        this.runwareConfigured = source["runwareConfigured"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

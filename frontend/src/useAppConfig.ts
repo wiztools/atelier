@@ -37,6 +37,7 @@ import {
   defaultFalUpscaleModel,
   defaultReplicateImageModel,
   defaultRunwareImageModel,
+  defaultRunwareVideoModel, defaultRunwareVideoImageModel, defaultRunwareVideoExtendModel, defaultRunwareVideoUpscaleModel, defaultRunwareVideoRestyleModel, defaultRunwareInpaintModel, defaultRunwareLipsyncImageModel, defaultRunwareLipsyncVideoModel, defaultRunwareSpeechModel, defaultRunwareSoundEffectsModel, defaultRunwareSoundEffectsVideoModel,
   defaultReplicateImageEditModel,
   defaultReplicateVideoModel,
   defaultReplicateVideoImageModel,
@@ -120,13 +121,13 @@ function useAppConfig({openRouterHasKey, falHasKey, replicateHasKey, runwareHasK
   // The generate_video backend: fal.ai (the historical default) or Replicate.
   // A config written before the second backend existed says "fal" via the Go
   // merge, so the state mirrors that default.
-  const [videoProvider, setVideoProvider] = useState<'fal' | 'replicate'>('fal');
+  const [videoProvider, setVideoProvider] = useState<'fal' | 'replicate' | 'runware'>('fal');
   // The image editor's mask-inpainting backend — independent of ImageProvider
   // on purpose (the plan's Inpainting section): a user's ordinary image
   // generator and their verified mask-capable editor model need not share a
   // cloud. Defaults mirror the Go merge (fal).
-  const [inpaintProvider, setInpaintProvider] = useState<'fal' | 'replicate'>('fal');
-  const [lipsyncProvider, setLipsyncProvider] = useState<'fal' | 'replicate'>('fal');
+  const [inpaintProvider, setInpaintProvider] = useState<'fal' | 'replicate' | 'runware'>('fal');
+  const [lipsyncProvider, setLipsyncProvider] = useState<'fal' | 'replicate' | 'runware'>('fal');
   // generate_speech's backend — fal.ai or the local Ollama speech models
   // (phonon and friends). Scoped to the voice models alone: extension, voice
   // design, and cloning stay fal-only, and music/sound effects route by the
@@ -142,7 +143,7 @@ function useAppConfig({openRouterHasKey, falHasKey, replicateHasKey, runwareHasK
   // stay fal-only. Defaults mirror the Go merge (fal); the per-provider
   // model slots are their own fields so switching providers never loses the
   // other side's model.
-  const [audioProvider, setAudioProvider] = useState<'fal' | 'replicate'>('fal');
+  const [audioProvider, setAudioProvider] = useState<'fal' | 'replicate' | 'runware'>('fal');
   const [replicateAudioExtendModel, setReplicateAudioExtendModel] = useState(defaultReplicateAudioExtendModel);
   const [falInpaintModel, setFalInpaintModel] = useState(defaultFalInpaintModel);
   const [replicateInpaintModel, setReplicateInpaintModel] = useState(defaultReplicateInpaintModel);
@@ -188,6 +189,17 @@ function useAppConfig({openRouterHasKey, falHasKey, replicateHasKey, runwareHasK
   const [falUpscaleModel, setFalUpscaleModel] = useState(defaultFalUpscaleModel);
   const [replicateModel, setReplicateModel] = useState(defaultReplicateImageModel);
   const [runwareModel, setRunwareModel] = useState(defaultRunwareImageModel);
+  const [runwareVideoModel, setRunwareVideoModel] = useState(defaultRunwareVideoModel);
+  const [runwareVideoImageModel, setRunwareVideoImageModel] = useState(defaultRunwareVideoImageModel);
+  const [runwareVideoExtendModel, setRunwareVideoExtendModel] = useState(defaultRunwareVideoExtendModel);
+  const [runwareVideoUpscaleModel, setRunwareVideoUpscaleModel] = useState(defaultRunwareVideoUpscaleModel);
+  const [runwareVideoRestyleModel, setRunwareVideoRestyleModel] = useState(defaultRunwareVideoRestyleModel);
+  const [runwareInpaintModel, setRunwareInpaintModel] = useState(defaultRunwareInpaintModel);
+  const [runwareLipsyncImageModel, setRunwareLipsyncImageModel] = useState(defaultRunwareLipsyncImageModel);
+  const [runwareLipsyncVideoModel, setRunwareLipsyncVideoModel] = useState(defaultRunwareLipsyncVideoModel);
+  const [runwareSpeechModel, setRunwareSpeechModel] = useState(defaultRunwareSpeechModel);
+  const [runwareSoundEffectsModel, setRunwareSoundEffectsModel] = useState(defaultRunwareSoundEffectsModel);
+  const [runwareSoundEffectsVideoModel, setRunwareSoundEffectsVideoModel] = useState(defaultRunwareSoundEffectsVideoModel);
   const [replicateImageEditModel, setReplicateImageEditModel] = useState(defaultReplicateImageEditModel);
   const [replicateUpscaleModel, setReplicateUpscaleModel] = useState(defaultReplicateUpscaleModel);
   const [replicateVideoUpscaleModel, setReplicateVideoUpscaleModel] = useState(defaultReplicateVideoUpscaleModel);
@@ -244,6 +256,9 @@ function useAppConfig({openRouterHasKey, falHasKey, replicateHasKey, runwareHasK
         primaryProvider, harnessModels, harnessProvider, imageModel, system, imageAspectRatio,
         imageSizePreset, imageSteps, imageProvider, videoProvider, inpaintProvider, falInpaintModel,
         replicateInpaintModel, soundDuration, audioExtendDuration, mediaTimeoutMinutes,
+        runwareVideoModel, runwareVideoImageModel, runwareVideoExtendModel, runwareVideoUpscaleModel,
+        runwareVideoRestyleModel, runwareInpaintModel, runwareLipsyncImageModel, runwareLipsyncVideoModel,
+        runwareSpeechModel, runwareSoundEffectsModel, runwareSoundEffectsVideoModel,
         openaiCompatibleBaseURL, openaiCompatibleModel, replicateModel, runwareModel, replicateImageEditModel,
         replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel,
         replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel,
@@ -263,7 +278,7 @@ function useAppConfig({openRouterHasKey, falHasKey, replicateHasKey, runwareHasK
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [airplaneMode, baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, runwareHasKey, replicateModel, runwareModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, replicateTranscribeModel, replicateLipsyncImageModel, replicateLipsyncVideoModel, lipsyncProvider, speechProvider, ollamaSpeechModel, replicateSpeechModel, audioProvider, replicateSoundEffectsModel, replicateSoundEffectsVideoModel, replicateAudioExtendModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel, whisperVADModel, whisperChunkMinutes]);
+  }, [airplaneMode, baseURL, configLoaded, falHasKey, falModel, falImageEditModel, falVideoModel, falVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, falTranscribeModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, inpaintProvider, falLipsyncImageModel, falLipsyncVideoModel, replicateHasKey, runwareHasKey, replicateModel, runwareModel, runwareVideoModel, runwareVideoImageModel, runwareVideoExtendModel, runwareVideoUpscaleModel, runwareVideoRestyleModel, runwareInpaintModel, runwareLipsyncImageModel, runwareLipsyncVideoModel, runwareSpeechModel, runwareSoundEffectsModel, runwareSoundEffectsVideoModel, replicateImageEditModel, replicateUpscaleModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, replicateVideoModel, replicateVideoImageModel, replicateTranscribeModel, replicateLipsyncImageModel, replicateLipsyncVideoModel, lipsyncProvider, speechProvider, ollamaSpeechModel, replicateSpeechModel, audioProvider, replicateSoundEffectsModel, replicateSoundEffectsVideoModel, replicateAudioExtendModel, videoProvider, ffmpegBinary, ffprobeBinary, harnessModels, harnessProvider, imageAspectRatio, imageModel, imageProvider, imageSizePreset, imageSteps, magickBinary, ollamaNumCtx, openaiCompatibleBaseURL, openaiCompatibleModel, openRouterHasKey, primaryModels, primaryProvider, sipsBinary, soundDuration, audioExtendDuration, storageConfig, system, toolConfig, transcriptionProvider, updatesConfig, videoAspectRatio, videoDuration, videoResolution, whisperBinary, whisperModel, whisperVADModel, whisperChunkMinutes]);
 
   const globalModelSelection = useMemo<ModelSelectionValue>(() => ({
     primaryProvider,
@@ -285,6 +300,17 @@ function useAppConfig({openRouterHasKey, falHasKey, replicateHasKey, runwareHasK
     openaiImageModel: openaiCompatibleModel,
     replicateModel,
     runwareModel,
+    runwareVideoModel,
+    runwareVideoImageModel,
+    runwareVideoExtendModel,
+    runwareVideoUpscaleModel,
+    runwareVideoRestyleModel,
+    runwareInpaintModel,
+    runwareLipsyncImageModel,
+    runwareLipsyncVideoModel,
+    runwareSpeechModel,
+    runwareSoundEffectsModel,
+    runwareSoundEffectsVideoModel,
     replicateImageEditModel,
     replicateUpscaleModel,
     falImageEditModel,
@@ -326,7 +352,7 @@ function useAppConfig({openRouterHasKey, falHasKey, replicateHasKey, runwareHasK
     videoResolution,
     soundDuration,
     audioExtendDuration,
-  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, inpaintProvider, falModel, openaiCompatibleModel, replicateModel, runwareModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, transcriptionProvider, audioProvider, replicateSoundEffectsModel, replicateSoundEffectsVideoModel, replicateAudioExtendModel, falTranscribeModel, replicateTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, replicateLipsyncImageModel, replicateLipsyncVideoModel, lipsyncProvider, speechProvider, ollamaSpeechModel, replicateSpeechModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration]);
+  }), [primaryProvider, primaryModels, harnessProvider, harnessModels, imageProvider, videoProvider, inpaintProvider, falModel, openaiCompatibleModel, replicateModel, runwareModel, runwareVideoModel, runwareVideoImageModel, runwareVideoExtendModel, runwareVideoUpscaleModel, runwareVideoRestyleModel, runwareInpaintModel, runwareLipsyncImageModel, runwareLipsyncVideoModel, runwareSpeechModel, runwareSoundEffectsModel, runwareSoundEffectsVideoModel, replicateImageEditModel, replicateUpscaleModel, falImageEditModel, falUpscaleModel, falInpaintModel, replicateInpaintModel, replicateVideoUpscaleModel, replicateVideoRestyleModel, replicateVideoReframeModel, replicateVideoExtendModel, falVideoModel, falVideoImageModel, replicateVideoModel, replicateVideoImageModel, falVideoKeyframeModel, falVideoExtendModel, falVideoMotionModel, falVideoUpscaleModel, falVideoReframeModel, falVideoRestyleModel, falAudioModel, falAudioCloneModel, falSoundEffectsModel, falSoundEffectsVideoModel, falVoiceDesignModel, falAudioExtendModel, transcriptionProvider, audioProvider, replicateSoundEffectsModel, replicateSoundEffectsVideoModel, replicateAudioExtendModel, falTranscribeModel, replicateTranscribeModel, falLipsyncImageModel, falLipsyncVideoModel, replicateLipsyncImageModel, replicateLipsyncVideoModel, lipsyncProvider, speechProvider, ollamaSpeechModel, replicateSpeechModel, imageAspectRatio, imageSizePreset, imageSteps, videoDuration, videoAspectRatio, videoResolution, soundDuration, audioExtendDuration]);
 
   const patchSettingsModelSelection = (patch: Partial<ModelSelectionValue>) => {
     if (patch.primaryProvider !== undefined) setPrimaryProvider(patch.primaryProvider);
@@ -345,6 +371,17 @@ function useAppConfig({openRouterHasKey, falHasKey, replicateHasKey, runwareHasK
     if (patch.openaiImageModel !== undefined) setOpenaiCompatibleModel(patch.openaiImageModel);
     if (patch.replicateModel !== undefined) setReplicateModel(patch.replicateModel);
     if (patch.runwareModel !== undefined) setRunwareModel(patch.runwareModel);
+    if (patch.runwareVideoModel !== undefined) setRunwareVideoModel(patch.runwareVideoModel);
+    if (patch.runwareVideoImageModel !== undefined) setRunwareVideoImageModel(patch.runwareVideoImageModel);
+    if (patch.runwareVideoExtendModel !== undefined) setRunwareVideoExtendModel(patch.runwareVideoExtendModel);
+    if (patch.runwareVideoUpscaleModel !== undefined) setRunwareVideoUpscaleModel(patch.runwareVideoUpscaleModel);
+    if (patch.runwareVideoRestyleModel !== undefined) setRunwareVideoRestyleModel(patch.runwareVideoRestyleModel);
+    if (patch.runwareInpaintModel !== undefined) setRunwareInpaintModel(patch.runwareInpaintModel);
+    if (patch.runwareLipsyncImageModel !== undefined) setRunwareLipsyncImageModel(patch.runwareLipsyncImageModel);
+    if (patch.runwareLipsyncVideoModel !== undefined) setRunwareLipsyncVideoModel(patch.runwareLipsyncVideoModel);
+    if (patch.runwareSpeechModel !== undefined) setRunwareSpeechModel(patch.runwareSpeechModel);
+    if (patch.runwareSoundEffectsModel !== undefined) setRunwareSoundEffectsModel(patch.runwareSoundEffectsModel);
+    if (patch.runwareSoundEffectsVideoModel !== undefined) setRunwareSoundEffectsVideoModel(patch.runwareSoundEffectsVideoModel);
     if (patch.replicateImageEditModel !== undefined) setReplicateImageEditModel(patch.replicateImageEditModel);
     if (patch.replicateUpscaleModel !== undefined) setReplicateUpscaleModel(patch.replicateUpscaleModel);
     if (patch.replicateVideoUpscaleModel !== undefined) setReplicateVideoUpscaleModel(patch.replicateVideoUpscaleModel);
@@ -455,6 +492,17 @@ function useAppConfig({openRouterHasKey, falHasKey, replicateHasKey, runwareHasK
     setOpenaiCompatibleModel(next.openaiCompatibleModel);
     setReplicateModel(next.replicateModel);
     setRunwareModel(next.runwareModel);
+    setRunwareVideoModel(next.runwareVideoModel);
+    setRunwareVideoImageModel(next.runwareVideoImageModel);
+    setRunwareVideoExtendModel(next.runwareVideoExtendModel);
+    setRunwareVideoUpscaleModel(next.runwareVideoUpscaleModel);
+    setRunwareVideoRestyleModel(next.runwareVideoRestyleModel);
+    setRunwareInpaintModel(next.runwareInpaintModel);
+    setRunwareLipsyncImageModel(next.runwareLipsyncImageModel);
+    setRunwareLipsyncVideoModel(next.runwareLipsyncVideoModel);
+    setRunwareSpeechModel(next.runwareSpeechModel);
+    setRunwareSoundEffectsModel(next.runwareSoundEffectsModel);
+    setRunwareSoundEffectsVideoModel(next.runwareSoundEffectsVideoModel);
     setReplicateImageEditModel(next.replicateImageEditModel);
     setReplicateUpscaleModel(next.replicateUpscaleModel);
     setReplicateVideoUpscaleModel(next.replicateVideoUpscaleModel);
@@ -589,6 +637,17 @@ function useAppConfig({openRouterHasKey, falHasKey, replicateHasKey, runwareHasK
     replicateAudioExtendModel,
     replicateImageEditModel,
     replicateInpaintModel,
+    runwareVideoModel,
+    runwareVideoImageModel,
+    runwareVideoExtendModel,
+    runwareVideoUpscaleModel,
+    runwareVideoRestyleModel,
+    runwareInpaintModel,
+    runwareLipsyncImageModel,
+    runwareLipsyncVideoModel,
+    runwareSpeechModel,
+    runwareSoundEffectsModel,
+    runwareSoundEffectsVideoModel,
     replicateLipsyncImageModel,
     replicateLipsyncVideoModel,
     replicateModel,

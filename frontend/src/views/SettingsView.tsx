@@ -648,7 +648,7 @@ export function SettingsView({app}: {app: AppModel}) {
                     <label htmlFor="media-timeout">Generation timeout</label>
                     <InfoHint
                       label="What the timeout covers"
-                      text="Bounds each fal.ai or Replicate generation (image, video, audio, upscale, and the video transforms) from submit to delivered file, so an unavailable provider can't hold a turn open indefinitely. On timeout, a job that finished anyway is still delivered; one still running is cancelled so it stops billing. Local tools (ffmpeg, whisper) are unaffected."
+                      text="Bounds each cloud media generation (image, video, audio, upscale, and the video transforms — fal.ai, Replicate, or Runware) from submit to delivered file, so an unavailable provider can't hold a turn open indefinitely. On timeout, a job that finished anyway is still delivered; one still running is cancelled so it stops billing. Local tools (ffmpeg, whisper) are unaffected."
                     />
                   </div>
                   <div className="endpoint-row">

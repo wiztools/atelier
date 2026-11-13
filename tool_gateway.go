@@ -72,12 +72,15 @@ func imageGenerationProvider(config AppConfig) string {
 // backend existed, so a config written then must keep routing there. The
 // non-voice audio tools route by their own Models.AudioProvider
 // (resolveAudioProvider), speech by Models.SpeechProvider, lip_sync by
-// Models.LipsyncProvider, and the video-source transforms
-// (upscale/reframe/restyle) follow this provider.
+// Models.LipsyncProvider, and the video-source transforms follow this
+// provider — except reframe_video, which has no runware model in Runware's
+// catalog and keeps fal/Replicate under a runware video provider.
 func videoGenerationProvider(config AppConfig) string {
 	switch strings.TrimSpace(config.Models.VideoProvider) {
 	case "replicate":
 		return "replicate"
+	case "runware":
+		return "runware"
 	default:
 		return "fal"
 	}
@@ -353,6 +356,51 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				generated.Diagnostics = diagnostics
 				return generated, genErr
 			}
+			if videoGenerationProvider(config) == "runware" {
+				apiKey, err := loadRunwareAPIKey()
+				if err != nil {
+					return GeneratedVideo{}, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return GeneratedVideo{}, errRunwareKeyNotConfigured
+				}
+				client := newRunwareClient(app.client, apiKey)
+				// Large sources upload through mediaStorage first (the image
+				// path's rule): video attachments are routinely megabytes, and
+				// the paid request must stay small inside the sync window — a
+				// request that outlives it comes back "processing", where a
+				// resend is a second paid generation.
+				var uploads, diagnostics []string
+				req.Images, uploads, diagnostics = client.ResolveImageInputs(ctx, req.Images)
+				videos := req.SourceVideos()
+				videos, videoUploads, videoDiags := client.ResolveMediaInputs(ctx, videos, "source clip")
+				uploads = append(uploads, videoUploads...)
+				diagnostics = append(diagnostics, videoDiags...)
+				defer client.CleanupUploads(uploads)
+				req.Videos = videos
+				req.Video = ""
+				schema := runwareSchemaCache.Get(ctx, req.Model)
+				task, notices, taskDiagnostics, err := resolveRunwareVideoTask(schema, req)
+				diagnostics = append(diagnostics, taskDiagnostics...)
+				if err != nil {
+					return GeneratedVideo{}, err
+				}
+				job := &mediaJob{}
+				client.jobSink = job
+				generated, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (GeneratedVideo, error) {
+						return client.GenerateVideo(jctx, task)
+					},
+					client.CancelMediaJob,
+					client.RecoverVideoJob,
+				)
+				if genErr == nil && recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
+				generated.Notices = notices
+				generated.Diagnostics = diagnostics
+				return generated, genErr
+			}
 			apiKey, err := loadFalAPIKey()
 			if err != nil {
 				return GeneratedVideo{}, err
@@ -459,9 +507,55 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			return generated, genErr
 		}
 		gateway.tools.GenerateLipsync = func(ctx context.Context, req LipsyncGenerateRequest) (GeneratedVideo, error) {
-			// Cloud-only (fal or Replicate): airplane mode refuses the call.
+			// Cloud-only (fal, Replicate, or Runware): airplane mode refuses the call.
 			if err := airplaneMediaError(config, "lip_sync"); err != nil {
 				return GeneratedVideo{}, err
+			}
+			if resolveLipsyncProvider(config) == "runware" {
+				apiKey, err := loadRunwareAPIKey()
+				if err != nil {
+					return GeneratedVideo{}, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return GeneratedVideo{}, errRunwareKeyNotConfigured
+				}
+				client := newRunwareClient(app.client, apiKey)
+				// The image face is normalized to a model-decodable format
+				// first (model_image_compat.go) — a HEIC face source can't
+				// ride a runware image input any better than a generation
+				// source can.
+				req.Image = ensureModelSafeImage(ctx, config, req.Image)
+				// Pre-resolve the media references through mediaStorage when
+				// oversized (the generate_video runware branch's rule): a clip
+				// plus its soundtrack is always oversized in practice.
+				var uploads, diagnostics []string
+				media := []string{req.Audio, req.Video, req.Image}
+				media, uploads, diagnostics = client.ResolveMediaInputs(ctx, media, "lipsync source")
+				defer client.CleanupUploads(uploads)
+				req.Audio, req.Video, req.Image = media[0], media[1], media[2]
+				schema := runwareSchemaCache.Get(ctx, req.Model)
+				task, notices, err := resolveRunwareLipsyncTask(schema, req)
+				if err != nil {
+					return GeneratedVideo{Notices: notices}, err
+				}
+				// Lip sync returns a video, so it reuses the GenerateVideo
+				// transport — the submit/poll lifecycle and the reported cost
+				// ride with it.
+				job := &mediaJob{}
+				client.jobSink = job
+				generated, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (GeneratedVideo, error) {
+						return client.GenerateVideo(jctx, task)
+					},
+					client.CancelMediaJob,
+					client.RecoverVideoJob,
+				)
+				if genErr == nil && recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
+				generated.Notices = notices
+				generated.Diagnostics = diagnostics
+				return generated, genErr
 			}
 			if resolveLipsyncProvider(config) == "replicate" {
 				apiKey, err := loadReplicateAPIKey()
@@ -608,6 +702,55 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 						req.Duration = seconds
 					}
 				}
+			}
+			if resolveAudioProvider(config) == "runware" {
+				apiKey, err := loadRunwareAPIKey()
+				if err != nil {
+					return SFXGenerateResult{}, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return SFXGenerateResult{}, errRunwareKeyNotConfigured
+				}
+				client := newRunwareClient(app.client, apiKey)
+				// The attached clip uploads through mediaStorage when oversized
+				// (the runware generate_video branch's rule). The probed duration
+				// above is deliberately NOT sent: mirelo's duration dial is
+				// mutually exclusive with its video input, and the model matches
+				// the clip's length by design.
+				var uploads, diagnostics []string
+				resolved, up, diags := client.ResolveMediaInputs(ctx, []string{req.Video}, "source clip")
+				uploads, diagnostics = up, diags
+				defer client.CleanupUploads(uploads)
+				req.Video = resolved[0]
+				schema := runwareSchemaCache.Get(ctx, req.Model)
+				task, notices, err := resolveRunwareSFXTask(schema, req)
+				if err != nil {
+					return SFXGenerateResult{}, err
+				}
+				// The SFX endpoint answers MP4 bytes (sound mixed in) on the
+				// audio* fields or a standalone soundtrack; both the transport
+				// and the recovery are kind-agnostic (GenerateSFX/RecoverSFXJob
+				// sniff the bytes). The reported cost rides the row.
+				job := &mediaJob{}
+				client.jobSink = job
+				result, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (SFXGenerateResult, error) {
+						return client.GenerateSFX(jctx, task)
+					},
+					client.CancelMediaJob,
+					client.RecoverSFXJob,
+				)
+				if genErr == nil && recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
+				if result.Video.Data != nil {
+					result.Video.Notices = notices
+					result.Video.Diagnostics = diagnostics
+				}
+				if result.Audio.Data != nil {
+					result.Audio.Notices = notices
+				}
+				return result, genErr
 			}
 			if resolveAudioProvider(config) == "replicate" {
 				apiKey, err := loadReplicateAPIKey()
@@ -786,13 +929,50 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			return resp, notices, err
 		}
 		gateway.tools.UpscaleVideo = func(ctx context.Context, req VideoUpscaleRequest) (GeneratedVideo, error) {
-			// Cloud-only (fal or Replicate): airplane mode refuses the call.
+			// Cloud-only (fal, Replicate, or Runware): airplane mode refuses the call.
 			if err := airplaneMediaError(config, "upscale_video"); err != nil {
 				return GeneratedVideo{}, err
 			}
-			// Video upscale follows the video provider: replicate routes there,
-			// every other provider stays on fal — the same seam generate_video
-			// reads.
+			// Video upscale follows the video provider: replicate and runware
+			// route there, every other provider stays on fal — the same seam
+			// generate_video reads.
+			if videoGenerationProvider(config) == "runware" {
+				apiKey, err := loadRunwareAPIKey()
+				if err != nil {
+					return GeneratedVideo{}, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return GeneratedVideo{}, errRunwareKeyNotConfigured
+				}
+				client := newRunwareClient(app.client, apiKey)
+				var uploads, diagnostics []string
+				resolved, up, diags := client.ResolveMediaInputs(ctx, []string{req.Video}, "source clip")
+				uploads, diagnostics = up, diags
+				defer client.CleanupUploads(uploads)
+				req.Video = resolved[0]
+				schema := runwareSchemaCache.Get(ctx, req.Model)
+				task, notices, err := resolveRunwareVideoUpscaleTask(schema, req)
+				if err != nil {
+					return GeneratedVideo{Notices: notices}, err
+				}
+				// Upscaling returns a video, so it reuses the GenerateVideo
+				// transport; the reported cost rides the result row.
+				job := &mediaJob{}
+				client.jobSink = job
+				generated, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (GeneratedVideo, error) {
+						return client.GenerateVideo(jctx, task)
+					},
+					client.CancelMediaJob,
+					client.RecoverVideoJob,
+				)
+				if genErr == nil && recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
+				generated.Notices = notices
+				generated.Diagnostics = diagnostics
+				return generated, genErr
+			}
 			if videoGenerationProvider(config) == "replicate" {
 				apiKey, err := loadReplicateAPIKey()
 				if err != nil {
@@ -881,6 +1061,14 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			// the local transform_video covers shape changes by crop/blur/pad.
 			if err := airplaneMediaError(config, "reframe_video"); err != nil {
 				return GeneratedVideo{}, err
+			}
+			// Runware publishes no video-reframe model (its catalog's only
+			// "reframe" entry is Ideogram's image reframer), so the tool gate
+			// closes under a runware video provider; a direct caller that
+			// reaches the hook anyway gets the honest refusal rather than a
+			// runware AIR id sent to fal.
+			if videoGenerationProvider(config) == "runware" {
+				return GeneratedVideo{}, errors.New("reframe_video has no Runware backend — Runware's catalog carries no video-reframe model; switch Video Provider to fal.ai or Replicate in Settings → Models, or use the local transform_video")
 			}
 			// The duration guard (and the input-seconds billing) need the
 			// source clip's own length, readable only while it is staged
@@ -1032,6 +1220,55 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				generated.Diagnostics = diagnostics
 				return generated, genErr
 			}
+			if videoGenerationProvider(config) == "runware" {
+				apiKey, err := loadRunwareAPIKey()
+				if err != nil {
+					return GeneratedVideo{}, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return GeneratedVideo{}, errRunwareKeyNotConfigured
+				}
+				client := newRunwareClient(app.client, apiKey)
+				var uploads, diagnostics []string
+				resolved, up, diags := client.ResolveMediaInputs(ctx, []string{req.Video}, "source clip")
+				uploads, diagnostics = up, diags
+				req.Video = resolved[0]
+				// Style reference images are normalized to a model-decodable
+				// format first (model_image_compat.go) and uploaded when
+				// oversized — the resolver drops them with a notice when the
+				// model declares no reference input. The cleanup defer waits
+				// until after this append: Go evaluates defer arguments
+				// immediately, so a later append would escape the cleanup.
+				req.Images = ensureModelSafeImages(ctx, config, req.Images)
+				resolvedImages, imageUploads, imageDiags := client.ResolveImageInputs(ctx, req.Images)
+				req.Images = resolvedImages
+				uploads = append(uploads, imageUploads...)
+				diagnostics = append(diagnostics, imageDiags...)
+				defer client.CleanupUploads(uploads)
+				schema := runwareSchemaCache.Get(ctx, req.Model)
+				task, notices, taskDiagnostics, err := resolveRunwareVideoRestyleTask(schema, req)
+				diagnostics = append(diagnostics, taskDiagnostics...)
+				if err != nil {
+					return GeneratedVideo{Notices: notices}, err
+				}
+				// Restyling returns a video, so it reuses the GenerateVideo
+				// transport; the reported cost rides the result row.
+				job := &mediaJob{}
+				client.jobSink = job
+				generated, recovered, genErr := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (GeneratedVideo, error) {
+						return client.GenerateVideo(jctx, task)
+					},
+					client.CancelMediaJob,
+					client.RecoverVideoJob,
+				)
+				if genErr == nil && recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
+				generated.Notices = notices
+				generated.Diagnostics = diagnostics
+				return generated, genErr
+			}
 			apiKey, err := loadFalAPIKey()
 			if err != nil {
 				return GeneratedVideo{}, err
@@ -1147,6 +1384,72 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 				generated, recovered, err := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
 					func(jctx context.Context) (GeneratedAudio, error) {
 						return client.GenerateAudio(jctx, req.Model, body)
+					},
+					client.CancelMediaJob,
+					client.RecoverAudioJob,
+				)
+				if err == nil && recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
+				generated.Notices = notices
+				return generated, err
+			}
+			// The runware speech route mirrors the replicate one: schema-driven
+			// resolution against the model's nested speech object, the
+			// submit/poll lifecycle, and a clone reference that never arrives
+			// (the executor stands it down). The reported cost rides the
+			// result row — real cost, not CostUnknown.
+			if req.Kind == audioKindSpeech && resolveSpeechProvider(config) == "runware" {
+				apiKey, err := loadRunwareAPIKey()
+				if err != nil {
+					return GeneratedAudio{}, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return GeneratedAudio{}, errRunwareKeyNotConfigured
+				}
+				client := newRunwareClient(app.client, apiKey)
+				schema := runwareSchemaCache.Get(ctx, req.Model)
+				task, notices, err := resolveRunwareSpeechTask(schema, req)
+				if err != nil {
+					return GeneratedAudio{Notices: notices}, err
+				}
+				job := &mediaJob{}
+				client.jobSink = job
+				generated, recovered, err := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (GeneratedAudio, error) {
+						return client.GenerateAudio(jctx, task)
+					},
+					client.CancelMediaJob,
+					client.RecoverAudioJob,
+				)
+				if err == nil && recovered {
+					notices = append(notices, mediaGenerationRecoveredNotice)
+				}
+				generated.Notices = notices
+				return generated, err
+			}
+			// The runware sound route (generate_sound): same shape, its own
+			// resolver (music models carry a settings.instrumental switch the
+			// canonical request satisfies as instrumental).
+			if req.Kind == audioKindSound && resolveAudioProvider(config) == "runware" {
+				apiKey, err := loadRunwareAPIKey()
+				if err != nil {
+					return GeneratedAudio{}, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return GeneratedAudio{}, errRunwareKeyNotConfigured
+				}
+				client := newRunwareClient(app.client, apiKey)
+				schema := runwareSchemaCache.Get(ctx, req.Model)
+				task, notices, err := resolveRunwareSoundTask(schema, req)
+				if err != nil {
+					return GeneratedAudio{Notices: notices}, err
+				}
+				job := &mediaJob{}
+				client.jobSink = job
+				generated, recovered, err := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (GeneratedAudio, error) {
+						return client.GenerateAudio(jctx, task)
 					},
 					client.CancelMediaJob,
 					client.RecoverAudioJob,

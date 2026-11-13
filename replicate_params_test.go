@@ -680,8 +680,13 @@ func TestConversationModelOverridesReplicateRouting(t *testing.T) {
 	if overlaid.Providers.Replicate.VideoModel != "owner/another-t2v" {
 		t.Fatalf("inherited-provider VideoModel = %q", overlaid.Providers.Replicate.VideoModel)
 	}
-	if err := validateConversationModelOverrides(ConversationModelOverrides{VideoProvider: "runware"}); err == nil {
+	if err := validateConversationModelOverrides(ConversationModelOverrides{VideoProvider: "none"}); err == nil {
 		t.Fatal("an unknown video provider must be rejected")
+	}
+	// runware is now a legal video provider override — it used to be the
+	// junk value pinning rejection here, back when it was image-only.
+	if err := validateConversationModelOverrides(ConversationModelOverrides{VideoProvider: "runware"}); err != nil {
+		t.Fatalf("runware must be a valid video provider override: %v", err)
 	}
 	if err := validateConversationModelOverrides(ConversationModelOverrides{ImageProvider: "replicate"}); err != nil {
 		t.Fatalf("replicate must be a valid image provider override: %v", err)

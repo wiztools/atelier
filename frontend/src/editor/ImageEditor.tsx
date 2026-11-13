@@ -85,8 +85,10 @@ export function ImageEditor(props: {
   defaultProvider: string;
   falDefaultModel: string;
   replicateDefaultModel: string;
+  runwareDefaultModel: string;
   falHasKey: boolean;
   replicateHasKey: boolean;
+  runwareHasKey: boolean;
   // True while the editor is hidden beneath another screen (Settings). Detaches
   // the global shortcuts; all edit state stays.
   suspended?: boolean;
@@ -136,17 +138,20 @@ export function ImageEditor(props: {
   const submitLock = useRef(false);
   const previewReleases = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const [prompt, setPrompt] = useState('');
-  const [provider, setProvider] = useState(props.defaultProvider === 'replicate' ? 'replicate' : 'fal');
+  const isProvider = (value: string | undefined): value is 'fal' | 'replicate' | 'runware' =>
+    value === 'fal' || value === 'replicate' || value === 'runware';
+  const [provider, setProvider] = useState<'fal' | 'replicate' | 'runware'>(isProvider(props.defaultProvider) ? props.defaultProvider : 'fal');
   const [falModel, setFalModel] = useState(props.falDefaultModel);
   const [replicateModel, setReplicateModel] = useState(props.replicateDefaultModel);
+  const [runwareModel, setRunwareModel] = useState(props.runwareDefaultModel);
   // The verified inpaint catalogs (small curated lists from the backend).
-  const [catalogs, setCatalogs] = useState<{fal: main.InpaintModelOption[]; replicate: main.InpaintModelOption[]}>({fal: [], replicate: []});
+  const [catalogs, setCatalogs] = useState<{fal: main.InpaintModelOption[]; replicate: main.InpaintModelOption[]; runware: main.InpaintModelOption[]}>({fal: [], replicate: [], runware: []});
   useEffect(() => {
     let cancelled = false;
-    Promise.all([ListInpaintModels('fal'), ListInpaintModels('replicate')])
-      .then(([falList, replicateList]) => {
+    Promise.all([ListInpaintModels('fal'), ListInpaintModels('replicate'), ListInpaintModels('runware')])
+      .then(([falList, replicateList, runwareList]) => {
         if (!cancelled) {
-          setCatalogs({fal: falList, replicate: replicateList});
+          setCatalogs({fal: falList, replicate: replicateList, runware: runwareList});
         }
       })
       .catch(() => {});
@@ -462,8 +467,8 @@ export function ImageEditor(props: {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [props.suspended, undo, redo, tool, busy, cropRect, cropRatio, cropUndo, cropRedo, canvas.width, canvas.height, sessionID, prompt, provider, falModel, replicateModel, strokes]);
 
-  const effectiveModel = provider === 'replicate' ? replicateModel : falModel;
-  const providerKeyed = provider === 'replicate' ? props.replicateHasKey : props.falHasKey;
+  const effectiveModel = provider === 'replicate' ? replicateModel : provider === 'runware' ? runwareModel : falModel;
+  const providerKeyed = provider === 'replicate' ? props.replicateHasKey : provider === 'runware' ? props.runwareHasKey : props.falHasKey;
   const selectionPresent = useMemo(() => {
     const mask = maskCanvasRef.current;
     return strokes.length > 0 || (!!mask && maskHasSelection(mask));
@@ -746,10 +751,11 @@ export function ImageEditor(props: {
               <select
                 id="editor-provider"
                 value={provider}
-                onChange={(event) => setProvider(event.target.value as 'fal' | 'replicate')}
+                onChange={(event) => setProvider(event.target.value as 'fal' | 'replicate' | 'runware')}
               >
                 <option value="fal">fal.ai</option>
                 <option value="replicate" disabled={!props.replicateHasKey}>Replicate</option>
+                <option value="runware" disabled={!props.runwareHasKey}>Runware</option>
               </select>
             </div>
             <div className="field">
@@ -757,19 +763,23 @@ export function ImageEditor(props: {
               <select
                 id="editor-model"
                 value={effectiveModel}
-                onChange={(event) => (provider === 'replicate' ? setReplicateModel(event.target.value) : setFalModel(event.target.value))}
+                onChange={(event) => {
+                  if (provider === 'replicate') setReplicateModel(event.target.value);
+                  else if (provider === 'runware') setRunwareModel(event.target.value);
+                  else setFalModel(event.target.value);
+                }}
               >
-                {(provider === 'replicate' ? catalogs.replicate : catalogs.fal).map((option) => (
+                {(provider === 'replicate' ? catalogs.replicate : provider === 'runware' ? catalogs.runware : catalogs.fal).map((option) => (
                   <option key={option.id} value={option.id}>{option.label}</option>
                 ))}
-                {effectiveModel && !(provider === 'replicate' ? catalogs.replicate : catalogs.fal).some((option) => option.id === effectiveModel) ? (
+                {effectiveModel && !(provider === 'replicate' ? catalogs.replicate : provider === 'runware' ? catalogs.runware : catalogs.fal).some((option) => option.id === effectiveModel) ? (
                   <option value={effectiveModel}>{effectiveModel}</option>
                 ) : null}
               </select>
             </div>
           </div>
           {!providerKeyed ? (
-            <span className="hint">Add a {provider === 'replicate' ? 'Replicate' : 'fal.ai'} API key in Settings → Providers to generate edits.</span>
+            <span className="hint">Add a {provider === 'replicate' ? 'Replicate' : provider === 'runware' ? 'Runware' : 'fal.ai'} API key in Settings → Providers to generate edits.</span>
           ) : null}
 
           <button type="button" className="editor-generate" onClick={() => void generate()} disabled={!canGenerate}>

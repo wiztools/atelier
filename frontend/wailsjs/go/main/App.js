@@ -390,6 +390,54 @@ export function ListRunwareImageModels() {
   return window['go']['main']['App']['ListRunwareImageModels']();
 }
 
+export function ListRunwareLipsyncImageModels() {
+  return window['go']['main']['App']['ListRunwareLipsyncImageModels']();
+}
+
+export function ListRunwareLipsyncVideoModels() {
+  return window['go']['main']['App']['ListRunwareLipsyncVideoModels']();
+}
+
+export function ListRunwareSoundEffectDurations(arg1) {
+  return window['go']['main']['App']['ListRunwareSoundEffectDurations'](arg1);
+}
+
+export function ListRunwareSoundEffectModels() {
+  return window['go']['main']['App']['ListRunwareSoundEffectModels']();
+}
+
+export function ListRunwareSoundEffectsVideoModels() {
+  return window['go']['main']['App']['ListRunwareSoundEffectsVideoModels']();
+}
+
+export function ListRunwareSpeechModels() {
+  return window['go']['main']['App']['ListRunwareSpeechModels']();
+}
+
+export function ListRunwareVideoDurations(arg1) {
+  return window['go']['main']['App']['ListRunwareVideoDurations'](arg1);
+}
+
+export function ListRunwareVideoExtendModels() {
+  return window['go']['main']['App']['ListRunwareVideoExtendModels']();
+}
+
+export function ListRunwareVideoImageModels() {
+  return window['go']['main']['App']['ListRunwareVideoImageModels']();
+}
+
+export function ListRunwareVideoModels() {
+  return window['go']['main']['App']['ListRunwareVideoModels']();
+}
+
+export function ListRunwareVideoRestyleModels() {
+  return window['go']['main']['App']['ListRunwareVideoRestyleModels']();
+}
+
+export function ListRunwareVideoUpscaleModels() {
+  return window['go']['main']['App']['ListRunwareVideoUpscaleModels']();
+}
+
 export function ListToolFiles(arg1) {
   return window['go']['main']['App']['ListToolFiles'](arg1);
 }

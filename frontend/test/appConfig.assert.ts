@@ -72,7 +72,15 @@ const full = asConfig({
     openaiCompatible: {baseURL: 'http://localai.lan:8080', primary: 'local-chat', harness: 'local-tools', model: 'sd-xl'},
     fal,
     replicate,
-    runware: {model: 'civitai:4201@130072'},
+    runware: {
+      model: 'civitai:4201@130072',
+      videoModel: 'klingai:kling-video@9.9', videoImageModel: 'klingai:kling-video@9.8',
+      videoExtendModel: 'google:3@1', videoUpscaleModel: 'bfl:flux@video-upscale-9',
+      videoRestyleModel: 'bfl:flux@video-edit-9', inpaintModel: 'bfl:9@9',
+      lipsyncImageModel: 'veed:fabric@9', lipsyncVideoModel: 'klingai:9@9',
+      speechModel: 'minimax:speech@9.9', soundEffectsModel: 'mirelo:9@9',
+      soundEffectsVideoModel: 'mirelo:9@8',
+    },
     local: {
       whisper: {binary: '/opt/whisper', model: '~/models/ggml-large.bin', vadModel: '~/models/silero.bin', chunkMinutes: 20},
       ffmpeg: {binary: '/opt/ffmpeg'},

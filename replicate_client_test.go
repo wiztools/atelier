@@ -525,7 +525,8 @@ func TestMediaProviderRouting(t *testing.T) {
 		{"defaults", AppConfig{}, "ollama", "fal"},
 		{"fal selected", AppConfig{Models: ConfigModels{ImageProvider: "fal", VideoProvider: "fal"}}, "fal", "fal"},
 		{"replicate selected", AppConfig{Models: ConfigModels{ImageProvider: "replicate", VideoProvider: "replicate"}}, "replicate", "replicate"},
-		{"unknown ids", AppConfig{Models: ConfigModels{ImageProvider: "dalle", VideoProvider: "runware"}}, "ollama", "fal"},
+		{"runware selected", AppConfig{Models: ConfigModels{ImageProvider: "runware", VideoProvider: "runware"}}, "runware", "runware"},
+		{"unknown ids", AppConfig{Models: ConfigModels{ImageProvider: "dalle", VideoProvider: "none"}}, "ollama", "fal"},
 		{"openai-compatible image", AppConfig{Models: ConfigModels{ImageProvider: "openai-compatible"}}, "openai-compatible", "fal"},
 	}
 	for _, tc := range cases {
@@ -722,13 +723,32 @@ func TestMergeAppConfigReplicateProviders(t *testing.T) {
 
 	unknown := defaultAppConfig()
 	unknown.Models.ImageProvider = "dalle"
-	unknown.Models.VideoProvider = "runware"
+	unknown.Models.VideoProvider = "none"
 	merged = mergeAppConfig(unknown)
 	if merged.Models.ImageProvider != "ollama" {
 		t.Fatalf("unknown image provider = %q, want ollama", merged.Models.ImageProvider)
 	}
 	if merged.Models.VideoProvider != "fal" {
 		t.Fatalf("unknown video provider = %q, want fal", merged.Models.VideoProvider)
+	}
+
+	// The runware video selection normalizes AND seeds its verified defaults
+	// — the provider-selection way (the replicate audio trio's rule), so
+	// picking runware lights up the video family without a Settings visit.
+	runware := defaultAppConfig()
+	runware.Models.VideoProvider = "runware"
+	merged = mergeAppConfig(runware)
+	if merged.Models.VideoProvider != "runware" {
+		t.Fatalf("runware video provider = %q, want it kept", merged.Models.VideoProvider)
+	}
+	if merged.Providers.Runware.VideoModel != defaultRunwareVideoModel {
+		t.Fatalf("runware VideoModel = %q, want the seeded default", merged.Providers.Runware.VideoModel)
+	}
+	if merged.Providers.Runware.VideoImageModel != defaultRunwareVideoImageModel {
+		t.Fatalf("runware VideoImageModel = %q, want the seeded default", merged.Providers.Runware.VideoImageModel)
+	}
+	if merged.Providers.Runware.VideoExtendModel != defaultRunwareVideoExtendModel {
+		t.Fatalf("runware VideoExtendModel = %q, want the seeded default", merged.Providers.Runware.VideoExtendModel)
 	}
 
 	legacy := defaultAppConfig()

@@ -136,6 +136,161 @@ func TestLiveRunwareEndToEnd(t *testing.T) {
 	t.Logf("deleted upload rejected as expected: %v", err)
 }
 
+// TestLiveRunwareMediaFamilies runs one gated live call per new media family
+// against the real API — speech, sound, inpaint, and a short text-to-video
+// — through the same gateway paths chat uses, asserting honest artifacts:
+// audio/image/video bytes that sniff as their kind, the reported cost, and
+// the poll machinery for video (async submit → getResponse → download).
+// It spends real (small) money, around $0.10 total.
+//
+//	ATELIER_LIVE_RUNWARE=1 go test -run TestLiveRunwareMediaFamilies -v .
+func TestLiveRunwareMediaFamilies(t *testing.T) {
+	if os.Getenv("ATELIER_LIVE_RUNWARE") == "" {
+		t.Skip("set ATELIER_LIVE_RUNWARE=1 to run against the live Runware API with the keychain key")
+	}
+	key, err := loadRunwareAPIKey()
+	if err != nil || key == "" {
+		t.Fatalf("no Runware key in the keychain (err=%v)", err)
+	}
+	app := NewApp()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+
+	// Speech: the MiniMax default speaks one short line; the reported cost
+	// must ride and the bytes must sniff as audio.
+	config := mergeAppConfig(AppConfig{
+		Models: ConfigModels{
+			ImageProvider: "runware", VideoProvider: "runware", InpaintProvider: "runware",
+			SpeechProvider: "runware", AudioProvider: "runware",
+		},
+		Storage: ConfigStorage{Root: t.TempDir()},
+	})
+	if !speechGenerationConfigured(config) {
+		t.Fatal("generate_speech not offered under the runware provider")
+	}
+	gateway := newToolGateway(app, config)
+	speech, err := gateway.tools.GenerateAudio(ctx, AudioGenerateRequest{
+		Model: defaultRunwareSpeechModel, Kind: audioKindSpeech,
+		Prompt: "Runware media backends are live.", Voice: "Japanese_ColdQueen",
+	})
+	if err != nil {
+		t.Fatalf("GenerateAudio: %v", err)
+	}
+	if len(speech.Data) == 0 || !isAudioBytes(speech.Data) {
+		t.Fatalf("speech bytes do not sniff as audio (%d bytes)", len(speech.Data))
+	}
+	if speech.CostMicros <= 0 {
+		t.Fatal("speech must report its cost")
+	}
+	t.Logf("speech: %d bytes, $%.6f", len(speech.Data), float64(speech.CostMicros)/1e6)
+
+	// Sound: mirelo text-to-audio, clamped into its 1–10s window.
+	sound, err := gateway.tools.GenerateAudio(ctx, AudioGenerateRequest{
+		Model: defaultRunwareSoundEffectsModel, Kind: audioKindSound,
+		Prompt: "rain on a tin roof", Duration: "30",
+	})
+	if err != nil {
+		t.Fatalf("GenerateAudio sound: %v", err)
+	}
+	if len(sound.Data) == 0 || !isAudioBytes(sound.Data) {
+		t.Fatalf("sound bytes do not sniff as audio (%d bytes)", len(sound.Data))
+	}
+	clamped := false
+	for _, notice := range sound.Notices {
+		if strings.Contains(notice, "instead of the requested 30") {
+			clamped = true
+		}
+	}
+	if !clamped {
+		t.Fatalf("the 30s request must carry the clamp notice, got %v", sound.Notices)
+	}
+	t.Logf("sound: %d bytes, $%.6f, notices=%v", len(sound.Data), float64(sound.CostMicros)/1e6, sound.Notices)
+
+	// Inpaint: a small Kontext image, masked at its center, through the same
+	// executeInpaintProvider path the editor drives (run inline like images).
+	base, _, _, err := gateway.tools.GenerateImage(ctx, ImageGenerateRequest{
+		Model: defaultRunwareImageModel, Prompt: "a plain white wall, photograph", Width: 1248, Height: 832,
+	})
+	if err != nil {
+		t.Fatalf("inpaint source: %v", err)
+	}
+	mask := runwareLiveMaskPNG(t, 1248, 832)
+	inpaintConfig := config
+	inpaintConfig.Models.InpaintProvider = "runware"
+	sourceURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(mustDecodeDataURL(t, base.Image))
+	resultData, costMicros, _, inpaintNotices, err := app.executeInpaintProvider(ctx, inpaintConfig, EditOperation{
+		ID: "live-inpaint", Kind: editOperationKindInpaint, Provider: "runware", Model: defaultRunwareInpaintModel,
+		Inpaint: &InpaintOperationParams{Prompt: "a wall of bookshelves", MaskWidth: 1248, MaskHeight: 832},
+	}, mustDecodeDataURL(t, sourceURL), mask)
+	if err != nil {
+		t.Fatalf("inpaint: %v (notices=%v)", err, inpaintNotices)
+	}
+	if !isImageBytes(resultData) {
+		t.Fatal("inpaint result does not sniff as an image")
+	}
+	t.Logf("inpaint: %d bytes, $%.6f", len(resultData), float64(costMicros)/1e6)
+
+	// Video: one short Kling t2v clip through the runware gateway branch —
+	// the async submit, the getResponse poll loop, the download, and the
+	// reported cost all ride this one call.
+	if !videoGenerationConfigured(config) {
+		t.Fatal("generate_video not offered under the runware provider")
+	}
+	start := time.Now()
+	video, err := gateway.tools.GenerateVideo(ctx, VideoGenerateRequest{
+		Model: defaultRunwareVideoModel, Prompt: "a red fox trotting through fresh snow",
+		Duration: "5", AspectRatio: "16:9",
+	})
+	if err != nil {
+		t.Fatalf("GenerateVideo: %v", err)
+	}
+	if !isVideoBytes(video.Data) {
+		t.Fatalf("video bytes do not sniff as a video (%d bytes)", len(video.Data))
+	}
+	if video.CostMicros <= 0 {
+		t.Fatal("video must report its cost")
+	}
+	if _, ok := mediasniff.MP4Duration(video.Data); !ok {
+		t.Fatal("the rendered clip's MP4 duration must be measurable")
+	}
+	t.Logf("video: %d bytes, $%.6f, %s, notices=%v", len(video.Data), float64(video.CostMicros)/1e6, time.Since(start).Round(time.Second), video.Notices)
+	if out := os.Getenv("ATELIER_LIVE_RUNWARE_OUT"); out != "" {
+		_ = os.WriteFile(filepath.Join(out, "live-speech.mp3"), speech.Data, 0o644)
+		_ = os.WriteFile(filepath.Join(out, "live-sound.mp3"), sound.Data, 0o644)
+		_ = os.WriteFile(filepath.Join(out, "live-inpaint.png"), resultData, 0o644)
+		_ = os.WriteFile(filepath.Join(out, "live-video.mp4"), video.Data, 0o644)
+	}
+}
+
+// runwareLiveMaskPNG renders the canonical polarity mask: a white center
+// rectangle (the area to edit) on black (preserved).
+func runwareLiveMaskPNG(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			i := (y*w + x) * 4
+			if x > w/4 && x < 3*w/4 && y > h/4 && y < 3*h/4 {
+				img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = 255, 255, 255, 255
+			}
+		}
+	}
+	var buf bytes.Buffer
+	if err := (&png.Encoder{CompressionLevel: png.BestSpeed}).Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func mustDecodeDataURL(t *testing.T, dataURL string) []byte {
+	t.Helper()
+	data, _, err := decodeMediaDataURL(dataURL)
+	if err != nil {
+		t.Fatalf("decode data URL: %v", err)
+	}
+	return data
+}
+
 // runwareLiveNoisePNG encodes random RGB noise, which PNG cannot compress, so
 // the payload is reliably past runwareUploadThreshold.
 func runwareLiveNoisePNG(t *testing.T, w, h int) []byte {
