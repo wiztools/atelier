@@ -541,6 +541,7 @@ export namespace main {
 	    speechModel?: string;
 	    soundEffectsModel?: string;
 	    soundEffectsVideoModel?: string;
+	    transcribeModel?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigRunware(source);
@@ -561,6 +562,7 @@ export namespace main {
 	        this.speechModel = source["speechModel"];
 	        this.soundEffectsModel = source["soundEffectsModel"];
 	        this.soundEffectsVideoModel = source["soundEffectsVideoModel"];
+	        this.transcribeModel = source["transcribeModel"];
 	    }
 	}
 	export class ConfigReplicate {

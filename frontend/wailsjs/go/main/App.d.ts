@@ -208,6 +208,8 @@ export function ListRunwareSoundEffectsVideoModels():Promise<Array<main.RunwareM
 
 export function ListRunwareSpeechModels():Promise<Array<main.RunwareModel>>;
 
+export function ListRunwareTranscribeModels():Promise<Array<main.RunwareModel>>;
+
 export function ListRunwareVideoDurations(arg1:string):Promise<Array<string>>;
 
 export function ListRunwareVideoExtendModels():Promise<Array<main.RunwareModel>>;

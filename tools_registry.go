@@ -1642,6 +1642,7 @@ const (
 	transcriptionProviderFal          = "fal"
 	transcriptionProviderLocalWhisper = "local-whisper"
 	transcriptionProviderReplicate    = "replicate"
+	transcriptionProviderRunware      = "runware"
 )
 
 // resolveTranscriptionProvider returns the backend transcribe_audio runs on
@@ -1664,7 +1665,7 @@ func resolveTranscriptionProvider(config AppConfig) string {
 		return transcriptionProviderLocalWhisper
 	}
 	switch strings.TrimSpace(config.Models.TranscriptionProvider) {
-	case transcriptionProviderFal, transcriptionProviderLocalWhisper, transcriptionProviderReplicate:
+	case transcriptionProviderFal, transcriptionProviderLocalWhisper, transcriptionProviderReplicate, transcriptionProviderRunware:
 		return strings.TrimSpace(config.Models.TranscriptionProvider)
 	}
 	if falKeyConfigured() {
@@ -1692,6 +1693,11 @@ func transcribeAudioConfigured(config AppConfig) bool {
 		// Unreachable in airplane mode, which resolveTranscriptionProvider
 		// never resolves past the local backend.
 		return replicateKeyConfigured()
+	case transcriptionProviderRunware:
+		// Same pinned-only shape as replicate: the runware backend needs its
+		// key AND a model slot (mergeAppConfig seeds the verified default when
+		// the provider is pinned).
+		return strings.TrimSpace(config.Providers.Runware.TranscribeModel) != "" && runwareKeyConfigured()
 	}
 	// The fal backend needs its key — and is unreachable in airplane mode,
 	// which resolveTranscriptionProvider never resolves to.
@@ -1716,6 +1722,17 @@ func resolveDefaultReplicateTranscribeModel(config AppConfig) string {
 		return model
 	}
 	return defaultReplicateTranscribeModel
+}
+
+// resolveDefaultRunwareTranscribeModel returns the speech-to-text model the
+// transcribe_audio tool uses on the runware backend when the call doesn't
+// override it — the Replicate sibling of resolveDefaultTranscribeModel, over
+// the verified Gemini text-inference family.
+func resolveDefaultRunwareTranscribeModel(config AppConfig) string {
+	if model := strings.TrimSpace(config.Providers.Runware.TranscribeModel); model != "" {
+		return model
+	}
+	return defaultRunwareTranscribeModel
 }
 
 // resolveDefaultLocalWhisperModel returns the whisper model the
@@ -2530,6 +2547,20 @@ func transcribeAudioToolDefinition(config AppConfig) HarnessToolDefinition {
 					return nil, "audio transcription failed", err
 				}
 				return transcribeAudioOutput(req, backend, transcript)
+			case transcriptionProviderRunware:
+				// Runware's speech-to-text rides its Gemini text models — plain
+				// text only, so a timestamps request degrades in the resolver
+				// under a notice and this backend never produces a cue track.
+				if tools.TranscribeAudio == nil {
+					return nil, "audio transcription unavailable", errors.New("audio transcription is not available in this context")
+				}
+				req.Model = firstNonEmpty([]string{strings.TrimSpace(call.Model), resolveDefaultRunwareTranscribeModel(tools.Config)})
+				backend = "Runware"
+				transcript, err := tools.TranscribeAudio(ctx, req)
+				if err != nil {
+					return nil, "audio transcription failed", err
+				}
+				return transcribeAudioOutput(req, backend, transcript)
 			}
 			if tools.TranscribeAudio == nil {
 				return nil, "audio transcription unavailable", errors.New("audio transcription is not available in this context")
@@ -2558,6 +2589,9 @@ func transcribeAudioToolDefinition(config AppConfig) HarnessToolDefinition {
 				case transcriptionProviderReplicate:
 					activity.Provider = "replicate"
 					activity.Command = []string{"replicate", "transcribe", typed.Model}
+				case transcriptionProviderRunware:
+					activity.Provider = "runware"
+					activity.Command = []string{"runware", "transcribe", typed.Model}
 				default:
 					activity.Provider = "fal"
 					activity.Command = []string{"fal", "transcribe", typed.Model}

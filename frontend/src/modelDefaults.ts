@@ -88,6 +88,10 @@ const defaultRunwareInpaintModel = 'bfl:1@2';
 const defaultRunwareLipsyncImageModel = 'veed:fabric@1.0-hosted';
 const defaultRunwareLipsyncVideoModel = 'klingai:7@1';
 const defaultRunwareSpeechModel = 'minimax:speech@2.8';
+// transcribe_audio's runware model — a Gemini text-inference model with audio
+// inputs (the transcript is plain text; no cue track). Mirrors the Go const
+// in runware_client.go.
+const defaultRunwareTranscribeModel = 'google:gemini@3.5-flash';
 const defaultRunwareSoundEffectsModel = 'mirelo:1@1';
 const defaultRunwareSoundEffectsVideoModel = 'mirelo:1@1';
 const defaultReplicateImageEditModel = 'black-forest-labs/flux-kontext-pro';
@@ -259,6 +263,7 @@ export {
   defaultRunwareLipsyncImageModel,
   defaultRunwareLipsyncVideoModel,
   defaultRunwareSpeechModel,
+  defaultRunwareTranscribeModel,
   defaultRunwareSoundEffectsModel,
   defaultRunwareSoundEffectsVideoModel,
   defaultReplicateImageEditModel,

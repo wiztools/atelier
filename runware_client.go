@@ -56,6 +56,7 @@ import (
 const (
 	runwareAPIURL       = "https://api.runware.ai/v1"
 	runwareModelsIndex  = "https://runware.ai/docs/models/index.json"
+	runwareDocsBaseURL  = "https://runware.ai/docs/models/"
 	runwareTimeout      = 3 * time.Minute
 	runwareMaxResponse  = 64 << 20 // inline dataURI images are big
 	runwareMaxIndexSize = 8 << 20
@@ -86,7 +87,30 @@ const (
 	defaultRunwareSpeechModel            = "minimax:speech@2.8"
 	defaultRunwareSoundEffectsModel      = "mirelo:1@1"
 	defaultRunwareSoundEffectsVideoModel = "mirelo:1@1"
+	// defaultRunwareTranscribeModel is the transcription default — Runware
+	// serves speech-to-text through its Gemini text-inference models (audio
+	// inputs on a text task), not a dedicated STT engine: plain text comes
+	// back, with no timestamp cues, no language dial, and translate folded
+	// into the prompt. 3.5 Flash is the newest mid-tier model of the four
+	// verified ones (the picker lists all; the ids are deliberately pinned —
+	// the family mixes ':' and '@' spellings, so a mechanical derivation
+	// would guess wrong).
+	defaultRunwareTranscribeModel = "google:gemini@3.5-flash"
 )
+
+// runwareTextInferenceDocIDs maps the verified text-inference models' API ids
+// to the docs id their schema.json lives under. The models index drops these
+// entries entirely (their `air` field is null — text tasks are addressed by
+// the model id alone), so GetModelInputSchema's AIR scan cannot find them and
+// this table is the only honest bridge. Each pair was verified by fetching
+// the schema and reading its `model` const (2026-11); a model outside the
+// table has no schema and rides the nil-schema path (universal fields only).
+var runwareTextInferenceDocIDs = map[string]string{
+	"google:gemini:3-flash":        "google-gemini-3-flash",
+	"google:gemini@3.1-flash-lite": "google-gemini-3-1-flash-lite",
+	"google:gemini@3.1-pro":        "google-gemini-3-1-pro",
+	"google:gemini@3.5-flash":      "google-gemini-3-5-flash",
+}
 
 var errRunwareKeyNotConfigured = errors.New("runware api key is not configured")
 
@@ -485,6 +509,14 @@ func (c *RunwareClient) GetModelInputSchema(ctx context.Context, air string) ([]
 		}
 	}
 	if schemaURL == "" {
+		// The text-inference models are absent from the index (their `air`
+		// field is null), so the verified table bridges an API model id to
+		// its docs id; anything else is genuinely unknown.
+		if docID := runwareTextInferenceDocIDs[air]; docID != "" {
+			schemaURL = runwareDocsBaseURL + docID + "/schema.json"
+		}
+	}
+	if schemaURL == "" {
 		return nil, fmt.Errorf("runware model %q is not in the models index", air)
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, schemaURL, nil)
@@ -866,6 +898,12 @@ type runwareMediaResult struct {
 	AudioDataURI    string `json:"audioDataURI"`
 	AudioBase64Data string `json:"audioBase64Data"`
 
+	// Text/FinishReason are the textInference row's payload — the
+	// transcription path reads Text; an empty one means the model answered
+	// nothing.
+	Text         string `json:"text"`
+	FinishReason string `json:"finishReason"`
+
 	Seed *int64   `json:"seed"`
 	Cost *float64 `json:"cost"`
 }
@@ -1023,6 +1061,24 @@ func (c *RunwareClient) GenerateSFX(ctx context.Context, task map[string]any) (S
 		}}, nil
 	}
 	return SFXGenerateResult{Audio: audio}, nil
+}
+
+// TranscribeAudio submits an already-native textInference task (built by
+// resolveRunwareTranscribeTask) and returns the plain transcript. Runware's
+// speech-to-text rides its Gemini text models: the answer is `text` and a
+// reported cost — no cue track exists to parse.
+func (c *RunwareClient) TranscribeAudio(ctx context.Context, task map[string]any) (GeneratedTranscript, error) {
+	row, err := c.runTask(ctx, task)
+	if err != nil {
+		return GeneratedTranscript{}, err
+	}
+	if strings.TrimSpace(row.Text) == "" {
+		return GeneratedTranscript{}, errors.New("runware returned an empty transcript")
+	}
+	return GeneratedTranscript{
+		Text:       row.Text,
+		CostMicros: runwareCostMicros(row.Cost),
+	}, nil
 }
 
 // mediaBytes materializes a result row's payload: inline data URI / bare

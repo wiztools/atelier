@@ -1689,6 +1689,48 @@ func newToolGateway(app *App, config AppConfig, registry ...HarnessToolRegistry)
 			if err := airplaneMediaError(config, "transcribe_audio"); err != nil {
 				return GeneratedTranscript{}, err
 			}
+			// The runware backend rides the same pinned-only shape as
+			// replicate, but its text models take NO inline audio: inputs.audios
+			// validates uuid/uri only, so the clip uploads through mediaStorage
+			// unconditionally and an upload failure fails the call (there is no
+			// inline fallback to fall back to).
+			if resolveTranscriptionProvider(config) == transcriptionProviderRunware {
+				apiKey, err := loadRunwareAPIKey()
+				if err != nil {
+					return GeneratedTranscript{}, err
+				}
+				if strings.TrimSpace(apiKey) == "" {
+					return GeneratedTranscript{}, errRunwareKeyNotConfigured
+				}
+				client := newRunwareClient(app.client, apiKey)
+				resolved, uploads, diagnostics := client.ResolveMediaInputs(ctx, []string{req.Audio}, "source audio")
+				defer client.CleanupUploads(uploads)
+				if !isRunwareUUID(resolved[0]) {
+					return GeneratedTranscript{}, fmt.Errorf("the audio clip could not be uploaded to Runware's media storage; its text models take no inline audio (%v)", diagnostics)
+				}
+				req.Audio = resolved[0]
+				schema := runwareSchemaCache.Get(ctx, req.Model)
+				task, notices, err := resolveRunwareTranscribeTask(schema, req)
+				if err != nil {
+					return GeneratedTranscript{Notices: notices}, err
+				}
+				job := &mediaJob{}
+				client.jobSink = job
+				// Cancel-only like the siblings: there is no recover step — a
+				// transcript is cheap to redo (and the no-op cancel just
+				// releases the poll).
+				generated, _, err := runMediaGeneration(ctx, mediaGenerationTimeout(config), job,
+					func(jctx context.Context) (GeneratedTranscript, error) {
+						return client.TranscribeAudio(jctx, task)
+					},
+					client.CancelMediaJob,
+					nil,
+				)
+				if err == nil {
+					generated.Notices = append(generated.Notices, notices...)
+				}
+				return generated, err
+			}
 			if resolveTranscriptionProvider(config) == transcriptionProviderReplicate {
 				apiKey, err := loadReplicateAPIKey()
 				if err != nil {

@@ -735,3 +735,163 @@ func TestVerifiedInpaintModelsRunware(t *testing.T) {
 func boolPtr(v bool) *bool { return &v }
 
 var _ = time.Second // keep the time import honest if fixtures change
+
+// runwareTranscribeSchemaFixture trims the real google-gemini-3-5-flash
+// schema: the messages contract plus inputs.audios (uuid/uri items — no data
+// URIs), the transcription backend's shape.
+const runwareTranscribeSchemaFixture = `{"components":{"schemas":{"RequestBody":{"type":"array","items":{
+  "type":"object","additionalProperties":false,
+  "required":["messages","taskType","taskUUID","model"],
+  "properties":{
+    "messages":{"type":"array","items":{"type":"object","properties":{"role":{"type":"string"},"content":{"type":"string"}}}},
+    "systemPrompt":{"type":"string"},
+    "includeCost":{"type":"boolean"},
+    "inputs":{"type":"object","properties":{
+      "audios":{"type":"array","minItems":1,"items":{"type":"string"}},
+      "images":{"type":"array","items":{"type":"string"}}}}
+  }}}}}}`
+
+func TestResolveRunwareTranscribeTask(t *testing.T) {
+	schema := parseRunwareFixture(t, runwareTranscribeSchemaFixture)
+	task, notices, err := resolveRunwareTranscribeTask(schema, TranscribeAudioRequest{
+		Model: defaultRunwareTranscribeModel, Audio: "0f4a44e1-1a2b-4c3d-8e5f-9a8b7c6d5e4f", Task: "transcribe",
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if task["taskType"] != "textInference" {
+		t.Fatalf("taskType = %+v, want textInference", task["taskType"])
+	}
+	messages := task["messages"].([]map[string]any)
+	if len(messages) != 1 || messages[0]["role"] != "user" {
+		t.Fatalf("messages = %+v, want one user turn", task["messages"])
+	}
+	content, _ := messages[0]["content"].(string)
+	if !strings.Contains(content, "Transcribe") {
+		t.Fatalf("the instruction must ask for a transcription, got %q", content)
+	}
+	inputs := task["inputs"].(map[string]any)
+	if inputs["audios"].([]string)[0] != "0f4a44e1-1a2b-4c3d-8e5f-9a8b7c6d5e4f" {
+		t.Fatalf("audios = %+v, want the uploaded mediaUUID verbatim", inputs["audios"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("a plain transcribe should be notice-free, got %v", notices)
+	}
+
+	// Translate folds into the instruction; the language hint rides beside it.
+	task, _, err = resolveRunwareTranscribeTask(schema, TranscribeAudioRequest{
+		Model: defaultRunwareTranscribeModel, Audio: "uuid", Task: "translate", Language: "ja",
+	})
+	if err != nil {
+		t.Fatalf("resolve translate: %v", err)
+	}
+	content = task["messages"].([]map[string]any)[0]["content"].(string)
+	if !strings.Contains(content, "translate it to English") || !strings.Contains(content, `"ja"`) {
+		t.Fatalf("translate + language must fold into the instruction, got %q", content)
+	}
+
+	// A timestamps request degrades to plain under a notice — there is no
+	// cue-capable output on the text models to fake.
+	task, notices, err = resolveRunwareTranscribeTask(schema, TranscribeAudioRequest{
+		Model: defaultRunwareTranscribeModel, Audio: "uuid", Timestamps: "segments",
+	})
+	if err != nil {
+		t.Fatalf("resolve timestamps: %v", err)
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "no cue track") {
+		t.Fatalf("the timestamps degrade must say so, got %v", notices)
+	}
+
+	// A model without the audio contract refuses by name.
+	if _, _, err := resolveRunwareTranscribeTask(parseRunwareFixture(t, runwareSoundSchemaFixture), TranscribeAudioRequest{
+		Model: "mirelo:1@1", Audio: "uuid",
+	}); err == nil {
+		t.Fatal("a model with no audios input must refuse the transcription request")
+	}
+}
+
+func TestRunwareTranscriptionRoutingAndGates(t *testing.T) {
+	keyring.MockInit()
+	t.Cleanup(func() { _ = clearRunwareAPIKey() })
+
+	// Pinned runware routes there — auto never resolves it (fal has no key
+	// and no whisper here, but auto must still fall back to fal, never
+	// runware).
+	config := defaultAppConfig()
+	config.Models.TranscriptionProvider = "none"
+	if got := resolveTranscriptionProvider(config); got != transcriptionProviderFal {
+		t.Fatalf("auto with nothing configured = %q, want fal", got)
+	}
+	config.Models.TranscriptionProvider = transcriptionProviderRunware
+	if got := resolveTranscriptionProvider(config); got != transcriptionProviderRunware {
+		t.Fatalf("pinned = %q, want runware", got)
+	}
+	if transcribeAudioConfigured(config) {
+		t.Fatal("the gate needs the key AND the slot")
+	}
+	if err := saveRunwareAPIKey("rw-key"); err != nil {
+		t.Fatalf("save key: %v", err)
+	}
+	if transcribeAudioConfigured(config) {
+		t.Fatal("the gate needs the slot even with a key")
+	}
+	merged := mergeAppConfig(config)
+	if merged.Providers.Runware.TranscribeModel != defaultRunwareTranscribeModel {
+		t.Fatalf("pinning runware should seed the verified default, got %q", merged.Providers.Runware.TranscribeModel)
+	}
+	if !transcribeAudioConfigured(merged) {
+		t.Fatal("the gate should open with the seeded slot and a key")
+	}
+	if resolveDefaultRunwareTranscribeModel(merged) != defaultRunwareTranscribeModel {
+		t.Fatal("the resolver should route to the runware slot")
+	}
+	merged.AirplaneMode = true
+	if got := resolveTranscriptionProvider(merged); got != transcriptionProviderLocalWhisper {
+		t.Fatalf("airplane mode must route transcription to local whisper, got %q", got)
+	}
+
+	// The executor dispatches to the runware slot and stamps the activity.
+	merged.AirplaneMode = false
+	var captured TranscribeAudioRequest
+	tools := HarnessToolExecutionContext{
+		Config:         merged,
+		AttachedAudios: []string{"data:audio/mpeg;base64,QUJD"},
+		TranscribeAudio: func(ctx context.Context, req TranscribeAudioRequest) (GeneratedTranscript, error) {
+			captured = req
+			return GeneratedTranscript{Text: "hello there"}, nil
+		},
+	}
+	def := transcribeAudioToolDefinition(merged)
+	out, _, err := def.Execute(context.Background(), tools, HarnessToolCall{Content: "transcribe"})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if captured.Model != defaultRunwareTranscribeModel {
+		t.Fatalf("model = %q, want the runware slot", captured.Model)
+	}
+	typed, ok := out.(ToolTranscribeResult)
+	if !ok {
+		t.Fatalf("expected ToolTranscribeResult, got %T", out)
+	}
+	if typed.Model != defaultRunwareTranscribeModel || typed.Transcript != "hello there" {
+		t.Fatalf("result = %+v", typed)
+	}
+	activity := def.Activity(HarnessToolResult{Result: typed})
+	if activity.Provider != "runware" {
+		t.Fatalf("activity.Provider = %q, want runware", activity.Provider)
+	}
+
+	// A per-conversation transcription override lands on the runware slot.
+	overlaid, _, err := overlayModelOverrides(merged, ChatRequest{}, ConversationModelOverrides{
+		TranscriptionProvider: transcriptionProviderRunware, TranscribeModel: "google:gemini@3.1-pro",
+	})
+	if err != nil {
+		t.Fatalf("overlay: %v", err)
+	}
+	if overlaid.Providers.Runware.TranscribeModel != "google:gemini@3.1-pro" {
+		t.Fatalf("runware TranscribeModel = %q, want the override", overlaid.Providers.Runware.TranscribeModel)
+	}
+	if err := validateConversationModelOverrides(ConversationModelOverrides{TranscriptionProvider: "none"}); err == nil {
+		t.Fatal("an unknown transcription provider must be rejected")
+	}
+}

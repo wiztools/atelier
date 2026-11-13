@@ -213,6 +213,10 @@ type ConfigRunware struct {
 	SpeechModel            string `json:"speechModel,omitempty"`
 	SoundEffectsModel      string `json:"soundEffectsModel,omitempty"`
 	SoundEffectsVideoModel string `json:"soundEffectsVideoModel,omitempty"`
+	// TranscribeModel is the speech-to-text model transcribe_audio uses when
+	// runware is the transcription provider (the Gemini text-inference family
+	// takes audio inputs; the transcript is plain text — no cue track).
+	TranscribeModel string `json:"transcribeModel,omitempty"`
 }
 
 // ConfigReplicate configures the Replicate image/video-generation backend —
@@ -770,14 +774,14 @@ func mergeAppConfig(config AppConfig) AppConfig {
 		config.Models.VideoProvider = "fal"
 	}
 	// TranscriptionProvider selects the transcribe_audio backend ("fal" |
-	// "replicate" | "local-whisper"). Unknown or empty normalizes to "" —
-	// empty auto-resolves at use time (fal when its key is configured, else
-	// a detected local whisper; replicate only serves when pinned), so a
-	// config written before this setting existed keeps its old behaviour
-	// exactly. Deliberately not seeded from defaults: the effective provider
-	// depends on live key/detection state.
+	// "replicate" | "local-whisper" | "runware"). Unknown or empty
+	// normalizes to "" — empty auto-resolves at use time (fal when its key
+	// is configured, else a detected local whisper; replicate and runware
+	// only serve when pinned), so a config written before this setting
+	// existed keeps its old behaviour exactly. Deliberately not seeded from
+	// defaults: the effective provider depends on live key/detection state.
 	switch strings.TrimSpace(config.Models.TranscriptionProvider) {
-	case transcriptionProviderFal, transcriptionProviderLocalWhisper, transcriptionProviderReplicate:
+	case transcriptionProviderFal, transcriptionProviderLocalWhisper, transcriptionProviderReplicate, transcriptionProviderRunware:
 		config.Models.TranscriptionProvider = strings.TrimSpace(config.Models.TranscriptionProvider)
 	default:
 		config.Models.TranscriptionProvider = ""
@@ -948,6 +952,12 @@ func mergeAppConfig(config AppConfig) AppConfig {
 		if strings.TrimSpace(config.Providers.Runware.SoundEffectsVideoModel) == "" {
 			config.Providers.Runware.SoundEffectsVideoModel = defaultRunwareSoundEffectsVideoModel
 		}
+	}
+	// Seed the Runware transcribe slot the same way: pinning runware as the
+	// TranscriptionProvider pins the verified default, so the tool lights up
+	// with just a key.
+	if config.Models.TranscriptionProvider == "runware" && strings.TrimSpace(config.Providers.Runware.TranscribeModel) == "" {
+		config.Providers.Runware.TranscribeModel = defaultRunwareTranscribeModel
 	}
 	if strings.TrimSpace(config.Prompts.System) == "" {
 		config.Prompts.System = defaults.Prompts.System

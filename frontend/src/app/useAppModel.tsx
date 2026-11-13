@@ -146,7 +146,7 @@ export function useAppModel() {
     replicateAudioExtendModel, replicateImageEditModel, replicateInpaintModel, replicateLipsyncImageModel,
     replicateLipsyncVideoModel, replicateModel, runwareModel, runwareVideoModel, runwareVideoImageModel,
     runwareVideoExtendModel, runwareVideoUpscaleModel, runwareVideoRestyleModel, runwareInpaintModel,
-    runwareSpeechModel, runwareSoundEffectsModel, runwareSoundEffectsVideoModel, runwareLipsyncImageModel,
+    runwareTranscribeModel, runwareSpeechModel, runwareSoundEffectsModel, runwareSoundEffectsVideoModel, runwareLipsyncImageModel,
     runwareLipsyncVideoModel, replicateSoundEffectsModel, replicateSoundEffectsVideoModel,
     replicateSpeechModel, replicateTranscribeModel, replicateUpscaleModel, replicateVideoExtendModel,
     replicateVideoImageModel, replicateVideoModel, replicateVideoReframeModel, replicateVideoRestyleModel,
@@ -198,6 +198,7 @@ export function useAppModel() {
     runwareVideoUpscaleModels,
     runwareVideoRestyleModels,
     runwareSpeechModels,
+    runwareTranscribeModels,
     runwareSoundEffectModels,
     runwareSoundEffectsVideoModels,
     runwareLipsyncImageModels,
@@ -808,7 +809,7 @@ export function useAppModel() {
     const lipsyncProvider = overrides.lipsyncProvider === 'replicate' ? 'replicate' : overrides.lipsyncProvider === 'runware' ? 'runware' : overrides.lipsyncProvider === 'fal' ? 'fal' : global.lipsyncProvider;
     const speechProvider: SpeechProviderID = overrides.speechProvider === 'ollama' || overrides.speechProvider === 'replicate' || overrides.speechProvider === 'runware' || overrides.speechProvider === 'fal' ? overrides.speechProvider : global.speechProvider;
     const audioProvider = overrides.audioProvider === 'replicate' ? 'replicate' : overrides.audioProvider === 'runware' ? 'runware' : overrides.audioProvider === 'fal' ? 'fal' : global.audioProvider;
-    const effectiveTranscriptionProvider = overrides.transcriptionProvider === 'fal' || overrides.transcriptionProvider === 'local-whisper' || overrides.transcriptionProvider === 'replicate' ? overrides.transcriptionProvider : global.transcriptionProvider;
+    const effectiveTranscriptionProvider = overrides.transcriptionProvider === 'fal' || overrides.transcriptionProvider === 'local-whisper' || overrides.transcriptionProvider === 'replicate' || overrides.transcriptionProvider === 'runware' ? overrides.transcriptionProvider : global.transcriptionProvider;
     const next: ModelSelectionValue = {
       ...global,
       primaryProvider,
@@ -832,6 +833,7 @@ export function useAppModel() {
       runwareVideoRestyleModel: overrides.videoRestyleModel && videoProvider === 'runware' ? overrides.videoRestyleModel : global.runwareVideoRestyleModel,
       runwareInpaintModel: overrides.inpaintModel && inpaintProvider === 'runware' ? overrides.inpaintModel : global.runwareInpaintModel,
       runwareSpeechModel: overrides.audioModel && speechProvider === 'runware' ? overrides.audioModel : global.runwareSpeechModel,
+      runwareTranscribeModel: overrides.transcribeModel && effectiveTranscriptionProvider === 'runware' ? overrides.transcribeModel : global.runwareTranscribeModel,
       runwareSoundEffectsModel: overrides.soundEffectsModel && audioProvider === 'runware' ? overrides.soundEffectsModel : global.runwareSoundEffectsModel,
       runwareSoundEffectsVideoModel: overrides.soundEffectsVideoModel && audioProvider === 'runware' ? overrides.soundEffectsVideoModel : global.runwareSoundEffectsVideoModel,
       runwareLipsyncImageModel: overrides.lipsyncImageModel && lipsyncProvider === 'runware' ? overrides.lipsyncImageModel : global.runwareLipsyncImageModel,
@@ -971,9 +973,11 @@ export function useAppModel() {
     }
     // A transcription-provider switch carries the new backend's inherited
     // model into the draft so the picker displays it (the video pair's rule).
-    if (draftPatch.transcriptionProvider !== undefined && patch.falTranscribeModel === undefined && patch.replicateTranscribeModel === undefined) {
+    if (draftPatch.transcriptionProvider !== undefined && patch.falTranscribeModel === undefined && patch.replicateTranscribeModel === undefined && patch.runwareTranscribeModel === undefined) {
       if (draftPatch.transcriptionProvider === 'replicate') {
         draftPatch.replicateTranscribeModel = replicateTranscribeModel;
+      } else if (draftPatch.transcriptionProvider === 'runware') {
+        draftPatch.runwareTranscribeModel = runwareTranscribeModel;
       } else {
         draftPatch.falTranscribeModel = falTranscribeModel;
       }
@@ -1177,6 +1181,7 @@ export function useAppModel() {
         case 'transcribeModel':
           next.falTranscribeModel = global.falTranscribeModel;
           next.replicateTranscribeModel = global.replicateTranscribeModel;
+          next.runwareTranscribeModel = global.runwareTranscribeModel;
           break;
         case 'transcriptionProvider': next.transcriptionProvider = global.transcriptionProvider; break;
         case 'imageAspectRatio': next.imageAspectRatio = global.imageAspectRatio; break;
@@ -1394,6 +1399,7 @@ export function useAppModel() {
     runwareVideoUpscaleModels,
     runwareVideoRestyleModels,
     runwareSpeechModels,
+    runwareTranscribeModels,
     runwareSoundEffectModels,
     runwareSoundEffectsVideoModels,
     runwareLipsyncImageModels,

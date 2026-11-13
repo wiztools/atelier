@@ -48,6 +48,7 @@ import {
   defaultRunwareLipsyncImageModel,
   defaultRunwareLipsyncVideoModel,
   defaultRunwareSpeechModel,
+  defaultRunwareTranscribeModel,
   defaultRunwareSoundEffectsModel,
   defaultRunwareSoundEffectsVideoModel,
   defaultReplicateInpaintModel,
@@ -111,6 +112,7 @@ function configValues(config: main.AppConfig) {
   const nextRunwareLipsyncImageModel = config.providers?.runware?.lipsyncImageModel || defaultRunwareLipsyncImageModel;
   const nextRunwareLipsyncVideoModel = config.providers?.runware?.lipsyncVideoModel || defaultRunwareLipsyncVideoModel;
   const nextRunwareSpeechModel = config.providers?.runware?.speechModel || defaultRunwareSpeechModel;
+  const nextRunwareTranscribeModel = config.providers?.runware?.transcribeModel || defaultRunwareTranscribeModel;
   const nextRunwareSoundEffectsModel = config.providers?.runware?.soundEffectsModel || defaultRunwareSoundEffectsModel;
   const nextRunwareSoundEffectsVideoModel = config.providers?.runware?.soundEffectsVideoModel || defaultRunwareSoundEffectsVideoModel;
   const nextReplicateImageEditModel = config.providers?.replicate?.imageEditModel || defaultReplicateImageEditModel;
@@ -139,7 +141,7 @@ function configValues(config: main.AppConfig) {
   const nextFalAudioExtendModel = config.providers?.fal?.audioExtendModel || defaultFalAudioExtendModel;
   const nextFalTranscribeModel = config.providers?.fal?.transcribeModel || defaultFalTranscribeModel;
   const nextReplicateTranscribeModel = config.providers?.replicate?.transcribeModel || defaultReplicateTranscribeModel;
-  const nextTranscriptionProvider: 'fal' | 'local-whisper' | 'replicate' = config.models?.transcriptionProvider === 'local-whisper' ? 'local-whisper' : config.models?.transcriptionProvider === 'replicate' ? 'replicate' : 'fal';
+  const nextTranscriptionProvider: 'fal' | 'local-whisper' | 'replicate' | 'runware' = config.models?.transcriptionProvider === 'local-whisper' ? 'local-whisper' : config.models?.transcriptionProvider === 'replicate' ? 'replicate' : config.models?.transcriptionProvider === 'runware' ? 'runware' : 'fal';
   const nextWhisperModel = config.providers?.local?.whisper?.model ?? '';
   const nextWhisperBinary = config.providers?.local?.whisper?.binary ?? '';
   const nextWhisperVADModel = config.providers?.local?.whisper?.vadModel ?? '';
@@ -211,6 +213,7 @@ function configValues(config: main.AppConfig) {
     runwareLipsyncImageModel: nextRunwareLipsyncImageModel,
     runwareLipsyncVideoModel: nextRunwareLipsyncVideoModel,
     runwareSpeechModel: nextRunwareSpeechModel,
+    runwareTranscribeModel: nextRunwareTranscribeModel,
     runwareSoundEffectsModel: nextRunwareSoundEffectsModel,
     runwareSoundEffectsVideoModel: nextRunwareSoundEffectsVideoModel,
     replicateImageEditModel: nextReplicateImageEditModel,
@@ -330,6 +333,7 @@ function appConfigPayload(s: AppConfigValues & ConfigKeyFlags) {
         lipsyncImageModel: s.runwareLipsyncImageModel,
         lipsyncVideoModel: s.runwareLipsyncVideoModel,
         speechModel: s.runwareSpeechModel,
+        transcribeModel: s.runwareTranscribeModel,
         soundEffectsModel: s.runwareSoundEffectsModel,
         soundEffectsVideoModel: s.runwareSoundEffectsVideoModel,
       },

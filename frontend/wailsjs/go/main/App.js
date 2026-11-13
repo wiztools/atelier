@@ -414,6 +414,10 @@ export function ListRunwareSpeechModels() {
   return window['go']['main']['App']['ListRunwareSpeechModels']();
 }
 
+export function ListRunwareTranscribeModels() {
+  return window['go']['main']['App']['ListRunwareTranscribeModels']();
+}
+
 export function ListRunwareVideoDurations(arg1) {
   return window['go']['main']['App']['ListRunwareVideoDurations'](arg1);
 }

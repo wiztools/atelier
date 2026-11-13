@@ -191,7 +191,7 @@ func validateConversationModelOverrides(o ConversationModelOverrides) error {
 				return fmt.Errorf("unknown speech provider %q", value)
 			}
 		case "transcriptionProvider":
-			if value != "" && value != transcriptionProviderFal && value != transcriptionProviderLocalWhisper && value != transcriptionProviderReplicate {
+			if value != "" && value != transcriptionProviderFal && value != transcriptionProviderLocalWhisper && value != transcriptionProviderReplicate && value != transcriptionProviderRunware {
 				return fmt.Errorf("unknown transcription provider %q", value)
 			}
 		default:
@@ -581,9 +581,12 @@ func overlayModelOverrides(config AppConfig, req ChatRequest, o ConversationMode
 		if provider == "" {
 			provider = config.Models.TranscriptionProvider
 		}
-		if provider == transcriptionProviderReplicate {
+		switch provider {
+		case transcriptionProviderReplicate:
 			config.Providers.Replicate.TranscribeModel = o.TranscribeModel
-		} else {
+		case transcriptionProviderRunware:
+			config.Providers.Runware.TranscribeModel = o.TranscribeModel
+		default:
 			config.Providers.Fal.TranscribeModel = o.TranscribeModel
 		}
 	}

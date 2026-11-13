@@ -45,6 +45,7 @@ import {
   defaultRunwareLipsyncImageModel,
   defaultRunwareLipsyncVideoModel,
   defaultRunwareSpeechModel,
+  defaultRunwareTranscribeModel,
   defaultRunwareSoundEffectsModel,
   defaultRunwareSoundEffectsVideoModel,
   defaultReplicateImageEditModel,
@@ -219,6 +220,7 @@ type ModelSelectionValue = {
   runwareVideoRestyleModel: string;
   runwareInpaintModel: string;
   runwareSpeechModel: string;
+  runwareTranscribeModel: string;
   runwareSoundEffectsModel: string;
   runwareSoundEffectsVideoModel: string;
   runwareLipsyncImageModel: string;
@@ -249,7 +251,7 @@ type ModelSelectionValue = {
   falSoundEffectsVideoModel: string;
   falVoiceDesignModel: string;
   falAudioExtendModel: string;
-  transcriptionProvider: 'fal' | 'local-whisper' | 'replicate';
+  transcriptionProvider: 'fal' | 'local-whisper' | 'replicate' | 'runware';
   falTranscribeModel: string;
   replicateTranscribeModel: string;
   falLipsyncImageModel: string;
@@ -396,7 +398,7 @@ function conversationOverridesPayload(draft: ModelSelectionValue, keys: Readonly
   if (keys.has('audioExtendModel')) payload.audioExtendModel = draft.audioProvider === 'replicate' ? draft.replicateAudioExtendModel : draft.falAudioExtendModel;
   // The transcription model lands on the slot the effective provider reads,
   // mirroring the video pair's provider-conditional overlay.
-  if (keys.has('transcribeModel')) payload.transcribeModel = draft.transcriptionProvider === 'replicate' ? draft.replicateTranscribeModel : draft.falTranscribeModel;
+  if (keys.has('transcribeModel')) payload.transcribeModel = draft.transcriptionProvider === 'replicate' ? draft.replicateTranscribeModel : draft.transcriptionProvider === 'runware' ? draft.runwareTranscribeModel : draft.falTranscribeModel;
   if (keys.has('transcriptionProvider')) payload.transcriptionProvider = draft.transcriptionProvider;
   if (keys.has('imageAspectRatio')) payload.imageAspectRatio = draft.imageAspectRatio;
   if (keys.has('imageSizePreset')) payload.imageSizePreset = draft.imageSizePreset;
@@ -455,6 +457,7 @@ function ModelSelectionPanel({
     runwareVideoUpscaleModels: main.RunwareModel[];
     runwareVideoRestyleModels: main.RunwareModel[];
     runwareSpeechModels: main.RunwareModel[];
+    runwareTranscribeModels: main.RunwareModel[];
     runwareSoundEffectModels: main.RunwareModel[];
     runwareSoundEffectsVideoModels: main.RunwareModel[];
     runwareLipsyncImageModels: main.RunwareModel[];
@@ -538,6 +541,7 @@ function ModelSelectionPanel({
   const runwareVideoUpscaleOptions = falModelOptionList(catalogs.runwareVideoUpscaleModels);
   const runwareVideoRestyleOptions = falModelOptionList(catalogs.runwareVideoRestyleModels);
   const runwareSpeechOptions = falModelOptionList(catalogs.runwareSpeechModels);
+  const runwareTranscribeOptions = falModelOptionList(catalogs.runwareTranscribeModels);
   const runwareSoundEffectOptions = falModelOptionList(catalogs.runwareSoundEffectModels);
   const runwareSoundEffectsVideoOptions = falModelOptionList(catalogs.runwareSoundEffectsVideoModels);
   const runwareLipsyncImageOptions = falModelOptionList(catalogs.runwareLipsyncImageModels);
@@ -1900,10 +1904,11 @@ function ModelSelectionPanel({
               <select
                 id="transcription-provider"
                 value={airplaneMode ? 'local-whisper' : value.transcriptionProvider}
-                onChange={(event) => onChange({transcriptionProvider: event.target.value as 'fal' | 'local-whisper' | 'replicate'})}
+                onChange={(event) => onChange({transcriptionProvider: event.target.value as 'fal' | 'local-whisper' | 'replicate' | 'runware'})}
               >
                 <option value="fal" disabled={airplaneMode}>fal.ai (cloud)</option>
                 <option value="replicate" disabled={airplaneMode}>Replicate (cloud)</option>
+                <option value="runware" disabled={airplaneMode}>Runware (cloud)</option>
                 <option
                   value="local-whisper"
                   disabled={!catalogs.whisperStatus?.available && value.transcriptionProvider !== 'local-whisper'}
@@ -1913,7 +1918,26 @@ function ModelSelectionPanel({
               </select>
             </div>
 
-            {localTranscriptionSelected ? null : value.transcriptionProvider === 'replicate' ? (
+            {localTranscriptionSelected ? null : value.transcriptionProvider === 'runware' ? (
+              <div className="field">
+                <div className="field-label-row">
+                  {fieldLabel('runware-transcribe-model', 'Transcription Model (Runware)', 'transcribeModel')}
+                  <InfoHint
+                    label="Runware transcription"
+                    text="Runware serves speech-to-text through its Gemini text-inference models (audio inputs on a text task) — not a dedicated whisper engine. The transcript is plain text: no word/segment timestamps, so a timestamped request degrades with a notice and produces no cue track; translate folds into the prompt. Costs are the amounts Runware reports."
+                  />
+                </div>
+                <ModelCombobox
+                  id="runware-transcribe-model"
+                  ariaLabel="Runware transcription model"
+                  placeholder={defaultRunwareTranscribeModel}
+                  value={value.runwareTranscribeModel}
+                  onChange={(next) => onChange({runwareTranscribeModel: next})}
+                  options={runwareTranscribeOptions}
+                  allowCustom
+                />
+              </div>
+            ) : value.transcriptionProvider === 'replicate' ? (
               <div className="field">
                 {fieldLabel('replicate-transcribe-model', 'Transcription Model (Replicate)', 'transcribeModel')}
                 <ModelCombobox
@@ -1955,6 +1979,11 @@ function ModelSelectionPanel({
                 {whisperFound ? null : openLocalToolsLink}
               </span>
             )
+          ) : value.transcriptionProvider === 'runware' && !catalogs.runwareHasKey ? (
+            <span className="hint">
+              Add a Runware API key {keyWhere} — or {whisperFound ? 'switch to Whisper (local)' : <>set up whisper {toolWhere}</>} — to transcribe audio.
+              {whisperFound ? null : openLocalToolsLink}
+            </span>
           ) : !catalogs.falHasKey ? (
             <span className="hint">
               Add a fal.ai API key {keyWhere} — or {whisperFound ? 'switch to Whisper (local)' : <>set up whisper {toolWhere}</>} — to transcribe audio.

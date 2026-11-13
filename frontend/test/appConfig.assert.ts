@@ -78,7 +78,8 @@ const full = asConfig({
       videoExtendModel: 'google:3@1', videoUpscaleModel: 'bfl:flux@video-upscale-9',
       videoRestyleModel: 'bfl:flux@video-edit-9', inpaintModel: 'bfl:9@9',
       lipsyncImageModel: 'veed:fabric@9', lipsyncVideoModel: 'klingai:9@9',
-      speechModel: 'minimax:speech@9.9', soundEffectsModel: 'mirelo:9@9',
+      speechModel: 'minimax:speech@9.9', transcribeModel: 'google:gemini@9.9',
+      soundEffectsModel: 'mirelo:9@9',
       soundEffectsVideoModel: 'mirelo:9@8',
     },
     local: {

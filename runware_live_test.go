@@ -161,7 +161,7 @@ func TestLiveRunwareMediaFamilies(t *testing.T) {
 	config := mergeAppConfig(AppConfig{
 		Models: ConfigModels{
 			ImageProvider: "runware", VideoProvider: "runware", InpaintProvider: "runware",
-			SpeechProvider: "runware", AudioProvider: "runware",
+			SpeechProvider: "runware", AudioProvider: "runware", TranscriptionProvider: "runware",
 		},
 		Storage: ConfigStorage{Root: t.TempDir()},
 	})
@@ -183,6 +183,41 @@ func TestLiveRunwareMediaFamilies(t *testing.T) {
 		t.Fatal("speech must report its cost")
 	}
 	t.Logf("speech: %d bytes, $%.6f", len(speech.Data), float64(speech.CostMicros)/1e6)
+
+	// Transcription (self-contained): the just-generated speech clip goes
+	// through the same gateway path chat uses — unconditional mediaStorage
+	// upload (inputs.audios takes no inline bytes), the textInference task,
+	// and the plain text back. The spoken words must survive the round trip.
+	if !transcribeAudioConfigured(config) {
+		t.Fatal("transcribe_audio not offered under the runware transcription provider")
+	}
+	transcript, err := gateway.tools.TranscribeAudio(ctx, TranscribeAudioRequest{
+		Model: defaultRunwareTranscribeModel, Audio: "data:audio/mpeg;base64," + base64.StdEncoding.EncodeToString(speech.Data),
+		Timestamps: "segments",
+	})
+	if err != nil {
+		t.Fatalf("TranscribeAudio: %v", err)
+	}
+	lower := strings.ToLower(transcript.Text)
+	if !strings.Contains(lower, "runware") || !strings.Contains(lower, "live") {
+		t.Fatalf("the round-trip transcript lost the spoken words: %q (notices=%v)", transcript.Text, transcript.Notices)
+	}
+	if transcript.Timestamps != "" {
+		t.Fatal("the runware backend must degrade a timestamps request to plain text")
+	}
+	degraded := false
+	for _, notice := range transcript.Notices {
+		if strings.Contains(notice, "no cue track") {
+			degraded = true
+		}
+	}
+	if !degraded {
+		t.Fatalf("the timestamps request must carry the degrade notice, got %v", transcript.Notices)
+	}
+	if transcript.CostMicros <= 0 {
+		t.Fatal("transcription must report its cost")
+	}
+	t.Logf("transcript: %q, $%.6f, notices=%v", transcript.Text, float64(transcript.CostMicros)/1e6, transcript.Notices)
 
 	// Sound: mirelo text-to-audio, clamped into its 1–10s window.
 	sound, err := gateway.tools.GenerateAudio(ctx, AudioGenerateRequest{

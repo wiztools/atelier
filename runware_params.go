@@ -725,3 +725,54 @@ func runwareClampNumber(prop SchemaProperty, value float64, model string) (float
 	}
 	return value, ""
 }
+
+// resolveRunwareTranscribeTask maps the canonical transcription request onto
+// one textInference task. Runware's speech-to-text rides its Gemini text
+// models — an audio array on a chat-shaped task — so the contract differs
+// from the whisper-shaped backends in three ways the resolver makes honest:
+// the transcribe/translate task folds into the instruction (there is no task
+// enum), the optional two-letter language hint folds in beside it (no
+// language dial), and a timestamps request degrades to a plain transcript
+// under a notice (the schemas carry no cue parameters — there is no VTT-able
+// output to fake). The audio must arrive as a mediaUUID or hosted URL: the
+// audios input validates uuid/uri only, no data URIs, so the gateway uploads
+// unconditionally before this resolver runs.
+func resolveRunwareTranscribeTask(schema *ModelInputSchema, req TranscribeAudioRequest) (map[string]any, []string, error) {
+	if strings.TrimSpace(req.Audio) == "" {
+		return nil, nil, errors.New("runware transcription needs the attached audio clip")
+	}
+	var notices []string
+	instruction := ""
+	if req.Task == "translate" {
+		instruction = "Listen to the speech in this audio recording and translate it to English. Output only the English translation as plain text, with no commentary."
+	} else {
+		instruction = "Transcribe this audio recording exactly as spoken, including every word. Output only the transcript as plain text, with no commentary."
+	}
+	if lang := strings.TrimSpace(req.Language); lang != "" && lang != "auto" {
+		instruction += fmt.Sprintf(" The speech is expected to be in language %q; transcribe it faithfully in its original words.", lang)
+	}
+	task := map[string]any{
+		"taskType":      "textInference",
+		"taskUUID":      runwareTaskUUID(),
+		"model":         req.Model,
+		"messages":      []map[string]any{{"role": "user", "content": instruction}},
+		"numberResults": 1,
+		"includeCost":   true,
+	}
+	if schema == nil {
+		notices = append(notices, "Couldn't load the Runware model's parameter schema; sent the universal text-task shape.")
+	} else {
+		if !runwareDeclares(schema, "messages") {
+			return nil, nil, fmt.Errorf("Runware model %q does not declare the messages contract the app speaks; pick a Runware text-inference model (the verified Gemini speech-to-text models)", req.Model)
+		}
+		if prop, ok := schema.property("inputs"); !ok || prop.Kind != schemaObject || !hasKey(prop.Nested, "audios") {
+			return nil, nil, fmt.Errorf("Runware model %q takes no audio input; pick an audio-to-text-capable Runware model", req.Model)
+		}
+	}
+	inputs := map[string]any{"audios": []string{runwareAudioRef(req.Audio)}}
+	task["inputs"] = inputs
+	if req.Timestamps != "" {
+		notices = append(notices, fmt.Sprintf("Runware's speech-to-text runs on text models that return plain text only, so the requested %s timestamps are not available — the transcript has no cue track (fal.ai, Replicate, or local whisper produce timestamped transcripts).", req.Timestamps))
+	}
+	return task, notices, nil
+}

@@ -321,3 +321,20 @@ func (a *App) ListRunwareVideoDurations(model string) ([]string, error) {
 func (a *App) ListRunwareSoundEffectDurations(model string) ([]string, error) {
 	return a.ListRunwareVideoDurations(model)
 }
+
+// ListRunwareTranscribeModels returns the verified speech-to-text models for
+// the transcription picker shown when runware is pinned — a curated static,
+// because the models index drops these entries entirely (their `air` field is
+// null), so there is nothing to capability-filter. Each id was verified by
+// fetching its schema and reading the `model` const (2026-11); the family's
+// ids mix ':' and '@' spellings, which is exactly why they're pinned and not
+// derived. All four are Gemini text-inference models with audio inputs — the
+// transcript is plain text, no cue track.
+func (a *App) ListRunwareTranscribeModels() ([]RunwareModel, error) {
+	return []RunwareModel{
+		{ID: defaultRunwareTranscribeModel, DocID: "google-gemini-3-5-flash", DisplayName: "Gemini 3.5 Flash", Creator: "Google"},
+		{ID: "google:gemini:3-flash", DocID: "google-gemini-3-flash", DisplayName: "Gemini 3 Flash", Creator: "Google"},
+		{ID: "google:gemini@3.1-flash-lite", DocID: "google-gemini-3-1-flash-lite", DisplayName: "Gemini 3.1 Flash Lite", Creator: "Google"},
+		{ID: "google:gemini@3.1-pro", DocID: "google-gemini-3-1-pro", DisplayName: "Gemini 3.1 Pro", Creator: "Google"},
+	}, nil
+}
