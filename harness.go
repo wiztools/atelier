@@ -2451,12 +2451,23 @@ func mapNativeToolCalls(calls []ToolCall) ([]HarnessToolCall, []string) {
 // catalog primes that name — and the turn exhausted its planning attempts
 // without any tool running.
 func plannerMediaRoutingGuidance(registry HarnessToolRegistry) string {
-	notes := make([]string, 0, 2)
+	notes := make([]string, 0, 3)
 	if registry.VideoAudioCapable() {
 		notes = append(notes, "Media routing: when the user wants speech, narration, a voice-over, or a speaking character in a video, call generate_video ONCE with the spoken text in the prompt — the configured video model generates the audio in the same call. Do NOT chain generate_speech + lip_sync for narration; lip_sync is only for dubbing or re-syncing an existing attached audio clip to a face. If a lip_sync call fails, retry the narration as a single generate_video call before reporting failure.")
 	}
 	if _, ok := registry.Get("generate_video"); ok {
 		notes = append(notes, "Video extends: when the user asks to extend, continue, or lengthen an attached or recent video, call generate_video — content describes the ADDED segment, duration is the seconds to add, and the attached or most recent video is continued automatically (there is no separate extend_video tool). Never emit a tool name outside the ones listed for you: a plan corrected for an unknown tool name is invalid input, not a failed execution — re-emit the call with the listed tool instead of reporting failure.")
+	}
+	// conv_2d4937338a9bd96d05420e98: a generate_image 422 naming the model's
+	// output-area window ("Output area must be 655360 to 20000000 pixels ...
+	// Got 1024x576") came back with a retry still available, and the planner
+	// gave up and apologized instead of resending with explicit width/height
+	// inside the named range. A constraint 422 is fixable in-flight — the error
+	// text itself states the window; teach the one adjusted retry.
+	_, hasImage := registry.Get("generate_image")
+	_, hasVideo := registry.Get("generate_video")
+	if hasImage || hasVideo {
+		notes = append(notes, "Generation constraint failures: when generate_image or generate_video fails with an error naming a parameter window — output pixel area, aspect ratio, width/height, or duration — resend the SAME call once with its parameters adjusted inside the stated window (an output-area error is fixed by explicit width and height inside the named range, e.g. 1280x720 for a 16:9 shape) before reporting failure. Report the failure to the final model only if the adjusted retry fails too.")
 	}
 	if len(notes) == 0 {
 		return ""

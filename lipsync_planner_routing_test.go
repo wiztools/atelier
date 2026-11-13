@@ -202,3 +202,29 @@ func TestPlannerMediaRoutingGuidanceIncludesExtendNote(t *testing.T) {
 		}
 	}
 }
+
+// TestPlannerMediaRoutingGuidanceConstraintRetryRule pins the generation-
+// constraint retry note (conv_2d4937338a9bd96d05420e98): a generate_image 422
+// naming the model's output-area window came back with a planning round still
+// available and the planner apologized instead of resending the call with
+// explicit width/height inside the named range. The note rides the same
+// registry gate as the media-routing notes — present whenever a generation
+// tool is offered, absent from a non-media registry.
+func TestPlannerMediaRoutingGuidanceConstraintRetryRule(t *testing.T) {
+	if got := plannerMediaRoutingGuidance(newPlannerRegistry(false)); !strings.Contains(got, "Generation constraint failures") {
+		t.Fatalf("guidance must teach the constraint retry when generate_video is offered, got %q", got)
+	}
+	imageOnly := newHarnessToolRegistry([]HarnessToolDefinition{{Name: "generate_image"}})
+	if got := plannerMediaRoutingGuidance(imageOnly); !strings.Contains(got, "Generation constraint failures") {
+		t.Fatalf("guidance must teach the constraint retry when generate_image is offered, got %q", got)
+	}
+	if got := plannerMediaRoutingGuidance(newHarnessToolRegistry([]HarnessToolDefinition{{Name: "read_file"}})); got != "" {
+		t.Fatalf("guidance must stay empty without a generation tool, got %q", got)
+	}
+	constrained := plannerMediaRoutingGuidance(newPlannerRegistry(true))
+	for _, phrase := range []string{"inside the stated window", "explicit width and height", "adjusted retry fails"} {
+		if !strings.Contains(constrained, phrase) {
+			t.Fatalf("constraint guidance must carry %q, got %q", phrase, constrained)
+		}
+	}
+}

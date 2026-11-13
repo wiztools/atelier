@@ -522,3 +522,61 @@ func TestParseModelInputSchemaSizeUnionWithRef(t *testing.T) {
 		t.Fatalf("expected nested height from the resolved $ref, got %+v", size.Nested)
 	}
 }
+
+// TestToSchemaPropertyCarriesXFalAreaWindow pins the x-fal output-area carry:
+// minimax/h3-image declares the window (min_area 655360, max_area 20000000)
+// beside the anyOf union, never on the branches, so every parse path — the
+// size union, a plain unwrap, and the direct scalar — must copy it onto the
+// parsed property. The body builders consult these bounds before sending a
+// preset enum whose pinned resolution can violate the endpoint's own floor
+// (conv_2d4937338a9bd96d05420e98: the enum-legal "landscape_16_9" resolves to
+// 1024x576 = 589,824 px, under the 655,360-px minimum, and 422s).
+func TestToSchemaPropertyCarriesXFalAreaWindow(t *testing.T) {
+	const window = `"x-fal":{"min_area":655360,"max_area":20000000}`
+	docs := map[string]string{
+		// The h3-image shape: anyOf[$ref ImageSize, enum presets] with the
+		// window on the parent property (parseSizeUnion).
+		"size union": `{"components":{"schemas":{
+			"ImageSize":{"type":"object","properties":{
+				"width":{"type":"integer"},"height":{"type":"integer"}
+			}},
+			"XInput":{"type":"object","properties":{
+				"image_size":{"anyOf":[{"$ref":"#/components/schemas/ImageSize"},{"type":"string","enum":["square_hd","square","portrait_4_3","portrait_16_9","landscape_4_3","landscape_16_9"]}],` + window + `}
+			}}
+		}}}`,
+		// A nullable union (unwrapUnion) with the window beside it.
+		"nullable union": `{"components":{"schemas":{"XInput":{"type":"object","properties":{
+			"image_size":{"anyOf":[{"type":"string","enum":["square_hd","landscape_16_9"]},{"type":"null"}],` + window + `}
+		}}}}}`,
+		// A direct scalar with no union at all.
+		"plain scalar": `{"components":{"schemas":{"XInput":{"type":"object","properties":{
+			"image_size":{"type":"string","enum":["square_hd","landscape_16_9"],` + window + `}
+		}}}}}`,
+	}
+	for name, doc := range docs {
+		t.Run(name, func(t *testing.T) {
+			schema, err := parseModelInputSchema([]byte(doc))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			p, ok := schema.property("image_size")
+			if !ok {
+				t.Fatal("expected image_size property")
+			}
+			if name == "size union" && p.Kind != schemaObject {
+				t.Fatalf("image_size.Kind = %v, want schemaObject (size union)", p.Kind)
+			}
+			if p.MinArea == nil || *p.MinArea != 655360 || p.MaxArea == nil || *p.MaxArea != 20000000 {
+				t.Fatalf("image_size area window = %v/%v, want 655360/20000000 carried from the parent", p.MinArea, p.MaxArea)
+			}
+		})
+	}
+	schema, err := parseModelInputSchema([]byte(docs["size union"]))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	size, _ := schema.property("image_size")
+	if len(size.Enum) != 6 {
+		t.Fatalf("size union: image_size.Enum = %v, want the six presets", size.Enum)
+	}
+}

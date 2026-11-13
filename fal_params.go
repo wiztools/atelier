@@ -405,11 +405,20 @@ func resolveInpaintBody(schema *ModelInputSchema, req ImageInpaintRequest, ov Ov
 	setBodyPath(schema, body, maskPath, coerceImages(maskProp, []string{mask}))
 
 	// Request source dimensions where supported; keep the model's actual output.
+	// Pixels landing outside the declared output-area window are scaled into it
+	// (the sendImageSize rule — the same x-fal window can floor inpainting).
 	if req.Width > 0 && req.Height > 0 {
 		if sizePath, sizeProp, hasSize := findNative(schema, ov, "inpaint", req.Model, "imageSize"); hasSize {
 			switch {
 			case sizeProp.Kind == schemaObject:
-				setBodyPath(schema, body, sizePath, map[string]any{"width": req.Width, "height": req.Height})
+				w, h := req.Width, req.Height
+				if sw, sh, scaled := scalePixelsToDeclaredArea(sizeProp, req.Width, req.Height); scaled {
+					w, h = sw, sh
+					notices = append(notices, fmt.Sprintf(
+						"The selected model %q declares an output area window of %s; the requested %dx%d image was resized to %dx%d to fit.",
+						req.Model, declaredAreaWindow(sizeProp), req.Width, req.Height, sw, sh))
+				}
+				setBodyPath(schema, body, sizePath, map[string]any{"width": w, "height": h})
 			default:
 				notices = append(notices, fmt.Sprintf(
 					"The selected model %q picks its output size from presets rather than pixels — the requested %dx%d cannot be sent exactly; the result will keep the model’s output dimensions.",
@@ -849,11 +858,16 @@ func resolveImageBody(schema *ModelInputSchema, req ImageGenerateRequest, ov Ove
 		// Forward the requested ratio onto the model's native ratio field. Try
 		// aspect_ratio (raw "9:16" enum) first; if the model has no aspect_ratio
 		// input, fall back to the image_size preset. The two field names don't
-		// overlap on any known model, so at most one fires.
+		// overlap on any known model, so at most one fires. A preset the model's
+		// declared output-area window rejects (h3-image_edit 422s
+		// "landscape_16_9" exactly like its text-to-image sibling) is skipped —
+		// unlike the text-to-image path there is no pixel fallback here (the
+		// source frame sets the resolution by design), so the model keeps its
+		// own default rather than taking a 422.
 		if !sendImageAspectRatio(schema, ov, body, req) {
 			if preset := falImageSizePreset(req.AspectRatio); preset != "" {
 				if sizePath, sizeProp, hasSize := findNative(schema, ov, "image", req.Model, "imageSize"); hasSize {
-					if len(sizeProp.Enum) == 0 || valueAllowedByEnum(sizeProp, preset) {
+					if (len(sizeProp.Enum) == 0 || valueAllowedByEnum(sizeProp, preset)) && !presetOutsideDeclaredArea(sizeProp, preset) {
 						setBodyPath(schema, body, sizePath, preset)
 					}
 				}
@@ -930,20 +944,34 @@ func sendImageAspectRatio(schema *ModelInputSchema, ov Overrides, body map[strin
 // model falls back to a default landscape size and the requested aspect ratio is
 // lost — see conv_b02dc16f: a 9:16 request returned a 2736x1536 landscape image.
 // When the requested ratio maps to a known preset, prefer the enum the model
-// honors; a mapped preset also fixes the resolution, so an explicit tier that
+// honors — unless the model declares an output-area window on image_size
+// (x-fal min_area/max_area) that the preset's pinned pixels violate
+// (conv_2d4937338a9bd96d05420e98: h3-image's enum lists landscape_16_9 yet
+// rejects its 1024x576 against a 655,360-px floor); then the preset is skipped
+// and the ratio rides the pixel object, which already encodes the configured
+// tier. A mapped preset also fixes the resolution, so an explicit tier that
 // couldn't be expressed anywhere is dropped with a notice. Tier-auto models
 // (seedream's auto_1K/auto_2K) get the tier there when no preset fired —
 // 1k pixels fall under seedream's area floor and 4k pixels exceed its ceiling,
 // so the auto value is the only safe carrier; 2k pixels carry both the ratio
 // and the tier and stay pixels. Otherwise send the pixel object (the original
-// behavior).
+// behavior), scaled into the declared window when it sits outside it.
 func sendImageSize(schema *ModelInputSchema, ov Overrides, body map[string]any, req ImageGenerateRequest, resolutionPlaced bool, notices *[]string) {
 	if sendImageAspectRatio(schema, ov, body, req) {
 		return
 	}
 	preset := falImageSizePreset(req.AspectRatio)
 	path, prop, hasSize := findNative(schema, ov, "image", req.Model, "imageSize")
-	if preset != "" && (!hasSize || valueAllowedByEnum(prop, preset) || len(prop.Enum) == 0) {
+	// The area-window guard rides the enum check: h3-image's enum lists every
+	// standard preset yet its x-fal window (min_area 655360) rejects the two
+	// 16:9 presets' pinned 1024x576 — enum membership alone is not safety. When
+	// the mapped preset's pinned pixels fall outside the declared window the
+	// preset is skipped and the ratio travels on the derived pixel object below,
+	// which already encodes the configured tier (conv_2d4937338a9bd96d05420e98:
+	// a 2k 16:9 request died on the preset string while its own 2048x1152
+	// pixels sat comfortably inside the window).
+	if preset != "" && (!hasSize || valueAllowedByEnum(prop, preset) || len(prop.Enum) == 0) &&
+		!presetOutsideDeclaredArea(prop, preset) {
 		// The property either has no enum constraint (seedream's anyOf leaves
 		// Enum empty in our parsed view) or explicitly accepts the preset —
 		// either way the preset is safe to send.
@@ -979,7 +1007,16 @@ func sendImageSize(schema *ModelInputSchema, ov Overrides, body map[string]any, 
 		}
 		return
 	}
-	pixels := map[string]any{"width": req.Width, "height": req.Height}
+	pixelsW, pixelsH := req.Width, req.Height
+	if hasSize {
+		if sw, sh, scaled := scalePixelsToDeclaredArea(prop, req.Width, req.Height); scaled {
+			pixelsW, pixelsH = sw, sh
+			*notices = append(*notices, fmt.Sprintf(
+				"The selected model %q declares an output area window of %s; the requested %dx%d image was resized to %dx%d to fit.",
+				req.Model, declaredAreaWindow(prop), req.Width, req.Height, sw, sh))
+		}
+	}
+	pixels := map[string]any{"width": pixelsW, "height": pixelsH}
 	if hasSize {
 		setBodyPath(schema, body, path, pixels)
 	} else {
@@ -1048,6 +1085,107 @@ func falImageSizePreset(ratio string) string {
 		return "portrait_4_3"
 	}
 	return ""
+}
+
+// falImageSizePresetPixels returns the resolution each standard fal image_size
+// preset string pins — the values every endpoint resolves the enum to (fal's
+// shared ImageSize vocabulary; h3-image's area 422 named exactly 1024x576 for
+// landscape_16_9). ok is false for any name outside the vocabulary, where no
+// pinned size is known to check.
+func falImageSizePresetPixels(preset string) (int, int, bool) {
+	switch preset {
+	case "square_hd":
+		return 1024, 1024, true
+	case "square":
+		return 512, 512, true
+	case "portrait_4_3":
+		return 768, 1024, true
+	case "landscape_4_3":
+		return 1024, 768, true
+	case "portrait_16_9":
+		return 576, 1024, true
+	case "landscape_16_9":
+		return 1024, 576, true
+	}
+	return 0, 0, false
+}
+
+// presetOutsideDeclaredArea reports whether a preset's pinned resolution falls
+// outside the image_size property's declared output-area window (the x-fal
+// min_area/max_area fal stamps beside the enum — see SchemaProperty.MinArea).
+// No window or an unknown preset returns false: there is nothing declared to
+// violate, so the preset branch behaves as before.
+func presetOutsideDeclaredArea(prop SchemaProperty, preset string) bool {
+	if prop.MinArea == nil && prop.MaxArea == nil {
+		return false
+	}
+	w, h, ok := falImageSizePresetPixels(preset)
+	if !ok {
+		return false
+	}
+	area := float64(w * h)
+	if prop.MinArea != nil && area < *prop.MinArea {
+		return true
+	}
+	if prop.MaxArea != nil && area > *prop.MaxArea {
+		return true
+	}
+	return false
+}
+
+// scalePixelsToDeclaredArea nudges derived pixel dimensions inside the
+// image_size property's declared output-area window, keeping the shape: dims
+// below min_area scale up by the window's sqrt factor (even dimensions, the
+// app's own transform flooring idiom), dims above max_area scale down the same
+// way. Returns the original values unchanged when nothing is declared, a
+// dimension is unset, or the pixels already fit — scaled tells the caller a
+// notice is owed. Both bounds can never fire on one call (that would need
+// min_area > max_area), so the sequence is ordered min first, then max.
+func scalePixelsToDeclaredArea(prop SchemaProperty, w, h int) (int, int, bool) {
+	if w <= 0 || h <= 0 || (prop.MinArea == nil && prop.MaxArea == nil) {
+		return w, h, false
+	}
+	outW, outH := w, h
+	if prop.MinArea != nil && float64(outW*outH) < *prop.MinArea {
+		f := math.Sqrt(*prop.MinArea / float64(outW*outH))
+		outW, outH = evenCeilPixels(float64(outW)*f), evenCeilPixels(float64(outH)*f)
+	}
+	if prop.MaxArea != nil && float64(outW*outH) > *prop.MaxArea {
+		f := math.Sqrt(*prop.MaxArea / float64(outW*outH))
+		outW, outH = evenFloorPixels(float64(outW)*f), evenFloorPixels(float64(outH)*f)
+	}
+	return outW, outH, outW != w || outH != h
+}
+
+func evenCeilPixels(v float64) int {
+	n := int(math.Ceil(v))
+	if n < 2 {
+		return 2
+	}
+	return n + n%2
+}
+
+func evenFloorPixels(v float64) int {
+	n := int(math.Floor(v))
+	if n < 2 {
+		return 2
+	}
+	return n - n%2
+}
+
+// declaredAreaWindow renders an image_size property's declared output-area
+// window for a notice — "655360–20000000 pixels" when both bounds exist, a
+// one-sided phrasing when only one does.
+func declaredAreaWindow(prop SchemaProperty) string {
+	switch {
+	case prop.MinArea != nil && prop.MaxArea != nil:
+		return fmt.Sprintf("%.0f–%.0f pixels", *prop.MinArea, *prop.MaxArea)
+	case prop.MinArea != nil:
+		return fmt.Sprintf("at least %.0f pixels", *prop.MinArea)
+	case prop.MaxArea != nil:
+		return fmt.Sprintf("at most %.0f pixels", *prop.MaxArea)
+	}
+	return "unbounded pixels"
 }
 
 // coerceImageValue adapts a canonical image value to the native property's type:

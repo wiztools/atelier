@@ -53,6 +53,12 @@ type SchemaProperty struct {
 	// offline option set. Nil when the property declares no bound.
 	Minimum *float64
 	Maximum *float64
+	// MinArea / MaxArea carry the property's declared output-area window (the
+	// x-fal min_area/max_area fal stamps on image_size endpoints like
+	// minimax/h3-image, whose enum presets individually resolve to sizes that
+	// can sit below the floor). Nil when the property declares no window.
+	MinArea *float64
+	MaxArea *float64
 }
 
 // ModelInputSchema is the parsed input model for one fal endpoint.
@@ -100,6 +106,16 @@ type openAPIProp struct {
 	OneOf      []json.RawMessage          `json:"oneOf"`
 	Minimum    *float64                   `json:"minimum"`
 	Maximum    *float64                   `json:"maximum"`
+	// XFal is fal's x-fal vendor extension. On an image_size property it
+	// declares the endpoint's output-area window the enum presets must sit
+	// inside — minimax/h3-image 422s the enum-legal "landscape_16_9" (1024x576
+	// = 589,824 px) against its own 655,360-px minimum, and the constraint
+	// lives only here and in the description. Carried onto SchemaProperty as
+	// MinArea/MaxArea so the body builders can check a preset before sending.
+	XFal struct {
+		MinArea *float64 `json:"min_area"`
+		MaxArea *float64 `json:"max_area"`
+	} `json:"x-fal"`
 	// Description is documented at the property level (not inside union
 	// branches), so it must survive the union unwrap to stay usable.
 	Description string `json:"description"`
@@ -200,6 +216,7 @@ func toSchemaProperty(name string, raw json.RawMessage, components map[string]js
 			if resolved.Description == "" {
 				resolved.Description = p.Description
 			}
+			carryAreaBounds(&resolved, p)
 			if resolved.Default == nil && len(p.Default) > 0 {
 				var d any
 				if err := json.Unmarshal(p.Default, &d); err == nil {
@@ -238,6 +255,7 @@ func toSchemaProperty(name string, raw json.RawMessage, components map[string]js
 			if unwrapped.Maximum == nil {
 				unwrapped.Maximum = p.Maximum
 			}
+			carryAreaBounds(&unwrapped, p)
 			// The same for a sibling default — fal declares it beside the
 			// union (voice_setting's object default sits on the property that
 			// $refs the shape), and setBodyPath's nested-default merge reads
@@ -251,7 +269,7 @@ func toSchemaProperty(name string, raw json.RawMessage, components map[string]js
 			return unwrapped
 		}
 	}
-	sp := SchemaProperty{Name: name, Kind: schemaScalar, Type: p.Type, Description: p.Description, Enum: enumStrings(p.Enum), Minimum: p.Minimum, Maximum: p.Maximum}
+	sp := SchemaProperty{Name: name, Kind: schemaScalar, Type: p.Type, Description: p.Description, Enum: enumStrings(p.Enum), Minimum: p.Minimum, Maximum: p.Maximum, MinArea: p.XFal.MinArea, MaxArea: p.XFal.MaxArea}
 	if len(p.Default) > 0 {
 		var d any
 		if err := json.Unmarshal(p.Default, &d); err == nil {
@@ -368,7 +386,24 @@ func parseSizeUnion(name string, p openAPIProp, components map[string]json.RawMe
 	}
 	sp := toSchemaProperty(name, objectBranch, components, depth+1)
 	sp.Enum = enumStrings(enumBranch.Enum)
+	// The window rides the parent property beside the union (h3-image's
+	// x-fal), never on the branches themselves.
+	carryAreaBounds(&sp, p)
 	return sp, true
+}
+
+// carryAreaBounds copies the parent property's declared output-area window
+// onto a parsed property that lacks its own. fal declares x-fal beside the
+// union (not on the branches), so every unwrap path — $ref resolution, union
+// unwrap, size union — must carry it the way Description and the numeric
+// bounds already do.
+func carryAreaBounds(sp *SchemaProperty, p openAPIProp) {
+	if sp.MinArea == nil && p.XFal.MinArea != nil {
+		sp.MinArea = p.XFal.MinArea
+	}
+	if sp.MaxArea == nil && p.XFal.MaxArea != nil {
+		sp.MaxArea = p.XFal.MaxArea
+	}
 }
 
 // enumStrings renders an OpenAPI enum (which may be strings OR numbers — fal's

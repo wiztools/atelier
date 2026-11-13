@@ -701,6 +701,221 @@ func TestResolveImageBodySendsAspectPresetEnum(t *testing.T) {
 	})
 }
 
+// areaWindowSizeSchema is the h3-image image_size shape: a {width,height}
+// object that also carries the six standard preset strings (fal's ImageSize
+// union) plus the x-fal output-area window those presets can violate.
+func areaWindowSizeSchema(min, max *float64) *ModelInputSchema {
+	return &ModelInputSchema{
+		Properties: map[string]SchemaProperty{
+			"image_size": {Name: "image_size", Kind: schemaObject,
+				Nested: map[string]SchemaProperty{
+					"width":  {Name: "width", Type: "integer"},
+					"height": {Name: "height", Type: "integer"},
+				},
+				Enum:    []string{"square_hd", "square", "portrait_4_3", "portrait_16_9", "landscape_4_3", "landscape_16_9"},
+				MinArea: min, MaxArea: max},
+		},
+		order: []string{"image_size"},
+	}
+}
+
+// TestResolveImageBodyRespectsDeclaredAreaWindow is the fix for
+// conv_2d4937338a9bd96d05420e98: a 16:9 + 2k request on minimax/h3-image died
+// with a 422 because sendImageSize's preset branch sent the enum-legal
+// "landscape_16_9" string, whose pinned 1024x576 sits below the model's own
+// x-fal floor (min_area 655360) — while the derived 2048x1152 pixels were
+// perfectly valid. When the schema declares an output-area window the preset
+// must be checked against it: a violating preset is skipped in favor of the
+// pixel object (which carries the configured tier), and pixels outside the
+// window are scaled into it under a notice.
+func TestResolveImageBodyRespectsDeclaredAreaWindow(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+
+	t.Run("preset below floor falls back to the tier pixels", func(t *testing.T) {
+		// The exact incident: 2k 16:9 → 2048x1152 derived pixels, preset would
+		// have pinned 1024x576. The pixel object must win, silently (the
+		// configured tier is honored, nothing was dropped).
+		body, notices, err := resolveImageBody(areaWindowSizeSchema(f(655360), f(20000000)),
+			ImageGenerateRequest{Model: "minimax/h3-image", Prompt: "line drawing of Nehru",
+				Width: 2048, Height: 1152, AspectRatio: "16:9", Resolution: "2k"},
+			builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		size, ok := body["image_size"].(map[string]any)
+		if !ok {
+			t.Fatalf("image_size = %+v, want the pixel object instead of the preset string", body["image_size"])
+		}
+		if size["width"] != 2048 || size["height"] != 1152 {
+			t.Fatalf("image_size = %+v, want the derived 2048x1152 inside the window", size)
+		}
+		if len(notices) != 0 {
+			t.Fatalf("expected no notices when the derived pixels fit, got %v", notices)
+		}
+	})
+
+	t.Run("pixels below floor scale up with a notice", func(t *testing.T) {
+		// 1k 16:9 derives the same 1024x576 the preset would have pinned; the
+		// window scales it up to the smallest even dims that clear 655360.
+		body, notices, err := resolveImageBody(areaWindowSizeSchema(f(655360), f(20000000)),
+			ImageGenerateRequest{Model: "minimax/h3-image", Prompt: "x",
+				Width: 1024, Height: 576, AspectRatio: "16:9"},
+			builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		size, ok := body["image_size"].(map[string]any)
+		if !ok {
+			t.Fatalf("image_size = %+v, want the scaled pixel object", body["image_size"])
+		}
+		w, h := size["width"].(int), size["height"].(int)
+		if w*h < 655360 {
+			t.Fatalf("image_size = %+v, want area >= 655360", size)
+		}
+		if w%2 != 0 || h%2 != 0 {
+			t.Fatalf("image_size = %+v, want even scaled dimensions", size)
+		}
+		if w == 1024 && h == 576 {
+			t.Fatalf("image_size = %+v, want the dimensions to move off the below-floor request", size)
+		}
+		if len(notices) != 1 || !strings.Contains(notices[0], "output area window") {
+			t.Fatalf("notices = %v, want one output-area-window resize notice", notices)
+		}
+	})
+
+	t.Run("preset inside window is still sent", func(t *testing.T) {
+		// 1:1 maps to square_hd (1024x1024 = 1,048,576 px, above the floor):
+		// the seedream preference must survive where the preset is legal.
+		body, notices, err := resolveImageBody(areaWindowSizeSchema(f(655360), f(20000000)),
+			ImageGenerateRequest{Model: "minimax/h3-image", Prompt: "x",
+				Width: 1024, Height: 1024, AspectRatio: "1:1"},
+			builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := body["image_size"]; got != "square_hd" {
+			t.Fatalf("image_size = %+v, want the legal square_hd preset", got)
+		}
+		if len(notices) != 0 {
+			t.Fatalf("expected no notices for a legal preset, got %v", notices)
+		}
+	})
+
+	t.Run("pixels above the ceiling scale down", func(t *testing.T) {
+		// Only a max bound: 1024x1024 (1,048,576 px) halves to 512x512
+		// (262,144 px, exactly the ceiling) under a notice.
+		body, notices, err := resolveImageBody(areaWindowSizeSchema(nil, f(262144)),
+			ImageGenerateRequest{Model: "m", Prompt: "x",
+				Width: 1024, Height: 1024, AspectRatio: "1:1"},
+			builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		size, ok := body["image_size"].(map[string]any)
+		if !ok {
+			t.Fatalf("image_size = %+v, want the scaled pixel object", body["image_size"])
+		}
+		if size["width"] != 512 || size["height"] != 512 {
+			t.Fatalf("image_size = %+v, want 512x512 scaled down to the ceiling", size)
+		}
+		if len(notices) != 1 || !strings.Contains(notices[0], "output area window") {
+			t.Fatalf("notices = %v, want one output-area-window resize notice", notices)
+		}
+	})
+
+	t.Run("edit preset below floor is skipped for the model default", func(t *testing.T) {
+		// The sourced path has no pixel fallback (the source frame sets the
+		// resolution), so a violating preset is simply withheld — h3-image_edit
+		// keeps its own "auto" instead of taking the 422.
+		schema := &ModelInputSchema{
+			Properties: map[string]SchemaProperty{
+				"image_urls": {Name: "image_urls", Kind: schemaArray},
+				"image_size": {Name: "image_size", Kind: schemaScalar,
+					Enum:    []string{"square_hd", "square", "portrait_4_3", "portrait_16_9", "landscape_4_3", "landscape_16_9"},
+					MinArea: f(655360), MaxArea: f(20000000)},
+			},
+			order: []string{"image_urls", "image_size"},
+		}
+		body, _, err := resolveImageBody(schema, ImageGenerateRequest{
+			Model: "minimax/h3-image/edit", Prompt: "make it a poster",
+			Width: 2048, Height: 1152, AspectRatio: "16:9",
+			Images: []string{"data:image/png;base64,iVBORw0KGgo="},
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if _, present := body["image_size"]; present {
+			t.Fatalf("image_size = %+v, want the below-floor preset withheld on the edit path", body["image_size"])
+		}
+		if _, present := body["image_urls"]; !present {
+			t.Fatalf("image_urls must still ride the edit: %+v", body)
+		}
+	})
+
+	t.Run("edit preset inside window is still sent", func(t *testing.T) {
+		// 4:3 maps to landscape_4_3 (1024x768 = 786,432 px, above the floor).
+		schema := &ModelInputSchema{
+			Properties: map[string]SchemaProperty{
+				"image_urls": {Name: "image_urls", Kind: schemaArray},
+				"image_size": {Name: "image_size", Kind: schemaScalar,
+					Enum:    []string{"square_hd", "square", "portrait_4_3", "portrait_16_9", "landscape_4_3", "landscape_16_9"},
+					MinArea: f(655360), MaxArea: f(20000000)},
+			},
+			order: []string{"image_urls", "image_size"},
+		}
+		body, _, err := resolveImageBody(schema, ImageGenerateRequest{
+			Model: "minimax/h3-image/edit", Prompt: "make it a poster",
+			Width: 2048, Height: 1536, AspectRatio: "4:3",
+			Images: []string{"data:image/png;base64,iVBORw0KGgo="},
+		}, builtinFalOverrides())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := body["image_size"]; got != "landscape_4_3" {
+			t.Fatalf("image_size = %+v, want the legal landscape_4_3 preset on the edit path", got)
+		}
+	})
+}
+
+// TestResolveInpaintBodyScalesPixelsToDeclaredArea covers the inpaint sibling:
+// exact-pixel image_size on an object-kind property gets the same window
+// scaling (and notice) the text-to-image path applies.
+func TestResolveInpaintBodyScalesPixelsToDeclaredArea(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	schema := &ModelInputSchema{
+		Properties: map[string]SchemaProperty{
+			"prompt":    {Name: "prompt", Kind: schemaScalar, Type: "string"},
+			"image_url": {Name: "image_url", Kind: schemaScalar, Type: "string"},
+			"mask_url":  {Name: "mask_url", Kind: schemaScalar, Type: "string"},
+			"image_size": {Name: "image_size", Kind: schemaObject,
+				Nested: map[string]SchemaProperty{
+					"width":  {Name: "width", Type: "integer"},
+					"height": {Name: "height", Type: "integer"},
+				},
+				MinArea: f(655360), MaxArea: f(20000000)},
+		},
+		order: []string{"prompt", "image_url", "mask_url", "image_size"},
+	}
+	body, notices, err := resolveInpaintBody(schema, ImageInpaintRequest{
+		Model: "m", Prompt: "remove the sign", SourceImage: "data:image/png;base64,iVBORw0KGgo=",
+		MaskImage: "data:image/png;base64,iVBORw0KGgo=", Width: 1024, Height: 576,
+	}, builtinFalOverrides())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	size, ok := body["image_size"].(map[string]any)
+	if !ok {
+		t.Fatalf("image_size = %+v, want the scaled pixel object", body["image_size"])
+	}
+	w, h := size["width"].(int), size["height"].(int)
+	if w*h < 655360 || w%2 != 0 || h%2 != 0 {
+		t.Fatalf("image_size = %+v, want even dims clearing the 655360 floor", size)
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "output area window") {
+		t.Fatalf("notices = %v, want one output-area-window resize notice", notices)
+	}
+}
+
 // TestResolveImageBodySendsAspectRatio is the regression for
 // conv_369b3099eed8483b7b6a14bf: a "create a 9:16 image" request on
 // fal-ai/nano-banana-2/edit (a sourced image edit) came back 1365x768 landscape.
