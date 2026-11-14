@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -383,6 +384,88 @@ func TestGenerateVideoImageRoleKeyframesRouting(t *testing.T) {
 		}
 		if called {
 			t.Fatalf("GenerateVideo should not be called when the image count is wrong")
+		}
+	})
+}
+
+// TestGenerateVideoKeyframesRouteOnRunware pins the runware keyframe lift: a
+// two-image transition is no longer refused on the runware backend — it rides
+// the image-to-video slot (the same packaging declares t2v, i2v, and the
+// two-frame inputs.frameImages — Kling 4.0, MiniMax H3) — while motion control
+// and video-reference turns keep refusing up front
+// (errRunwareVideoSourceUnsupported).
+func TestGenerateVideoKeyframesRouteOnRunware(t *testing.T) {
+	const (
+		imageModel = "klingai:test@4.0"
+		firstFrame = "data:image/png;base64,AAA"
+		lastFrame  = "data:image/png;base64,BBB"
+	)
+
+	t.Run("keyframes route to the runware image-to-video slot", func(t *testing.T) {
+		config := defaultAppConfig()
+		config.Models.VideoProvider = "runware"
+		config.Providers.Runware.VideoImageModel = imageModel
+
+		var captured VideoGenerateRequest
+		called := false
+		def := videoGenerationToolDefinition(AppConfig{}, false)
+		exec := HarnessToolExecutionContext{
+			Config:         config,
+			AttachedImages: []string{firstFrame, lastFrame},
+			GenerateVideo: func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
+				captured = req
+				called = true
+				return GeneratedVideo{Data: []byte("mp4"), MimeType: "video/mp4", SourceURL: "https://example.com/v.mp4"}, nil
+			},
+		}
+		call := HarnessToolCall{Name: "generate_video", Content: "morph the first into the last", ImageRole: "keyframes"}
+		if _, _, err := def.Execute(context.Background(), exec, call); err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if !called {
+			t.Fatalf("GenerateVideo was not called")
+		}
+		if !captured.Keyframes {
+			t.Fatalf("captured.Keyframes = false, want true")
+		}
+		if captured.Model != imageModel {
+			t.Fatalf("captured.Model = %q, want the runware image-to-video slot %q", captured.Model, imageModel)
+		}
+		imgs := captured.SourceImages()
+		if len(imgs) != 2 || imgs[0] != firstFrame || imgs[1] != lastFrame {
+			t.Fatalf("forwarded images = %v, want the ordered pair", imgs)
+		}
+	})
+
+	t.Run("motion and video references still refuse", func(t *testing.T) {
+		config := defaultAppConfig()
+		config.Models.VideoProvider = "runware"
+
+		for _, tc := range []struct {
+			name string
+			call HarnessToolCall
+		}{
+			{name: "motion control", call: HarnessToolCall{Name: "generate_video", Content: "apply the motion"}},
+			{name: "video reference", call: HarnessToolCall{Name: "generate_video", Content: "new clip", UseVideoAs: "reference"}},
+		} {
+			called := false
+			def := videoGenerationToolDefinition(AppConfig{}, false)
+			exec := HarnessToolExecutionContext{
+				Config:         config,
+				AttachedImages: []string{firstFrame},
+				AttachedVideos: []string{"data:video/mp4;base64,AAAA"},
+				GenerateVideo: func(ctx context.Context, req VideoGenerateRequest) (GeneratedVideo, error) {
+					called = true
+					return GeneratedVideo{Data: []byte("mp4"), MimeType: "video/mp4"}, nil
+				},
+			}
+			_, _, err := def.Execute(context.Background(), exec, tc.call)
+			if !errors.Is(err, errRunwareVideoSourceUnsupported) {
+				t.Fatalf("%s: expected errRunwareVideoSourceUnsupported, got %v", tc.name, err)
+			}
+			if called {
+				t.Fatalf("%s: GenerateVideo must not run on a refused turn", tc.name)
+			}
 		}
 	})
 }

@@ -5808,6 +5808,20 @@ func TestResolveDefaultVideoKeyframeModel(t *testing.T) {
 	if got := resolveDefaultVideoKeyframeModel(cfg); got != "fal-ai/custom/keyframe" {
 		t.Errorf("resolveDefaultVideoKeyframeModel(configured) = %q, want the configured value", got)
 	}
+	// On runware the pinned image-to-video model serves the transition — the
+	// same packaging declares t2v, i2v, and the two-frame inputs.frameImages —
+	// so the fal keyframe slot is ignored and the runware i2v slot (with its
+	// Kling 4.0 default) decides.
+	runware := AppConfig{}
+	runware.Models.VideoProvider = "runware"
+	if got := resolveDefaultVideoKeyframeModel(runware); got != defaultRunwareVideoImageModel {
+		t.Errorf("resolveDefaultVideoKeyframeModel(runware empty) = %q, want %q", got, defaultRunwareVideoImageModel)
+	}
+	runware.Providers.Fal.VideoKeyframeModel = "fal-ai/custom/keyframe"
+	runware.Providers.Runware.VideoImageModel = "klingai:custom@4.0"
+	if got := resolveDefaultVideoKeyframeModel(runware); got != "klingai:custom@4.0" {
+		t.Errorf("resolveDefaultVideoKeyframeModel(runware configured) = %q, want the runware image-to-video slot", got)
+	}
 }
 
 // TestIsFalSpeechModel covers the id/tag filter that separates speech endpoints

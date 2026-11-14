@@ -1283,7 +1283,8 @@ export function useAppModel() {
   const convDraftVideoKeyframeModel = convModelsDraft?.falVideoKeyframeModel ?? '';
   const convDraftVideoProvider = convModelsDraft?.videoProvider ?? videoProvider;
   // Extend routes by the draft's video provider like the t2v/i2v pair;
-  // keyframes stay fal-only.
+  // the keyframe override stays a fal-only slot (Runware keyframes ride its
+  // Image-to-Video model, so no separate override exists).
   const convDraftVideoExtendModel = convDraftVideoProvider === 'replicate'
     ? (convModelsDraft?.replicateVideoExtendModel ?? '')
     : convDraftVideoProvider === 'runware'
@@ -1296,8 +1297,8 @@ export function useAppModel() {
     }
     let cancelled = false;
     // The t2v/i2v/extend duration lookups follow the draft's video provider
-    // (the replicate backend reads its own schema cache); keyframes are a
-    // fal-only tool and always read fal's.
+    // (the replicate backend reads its own schema cache); the keyframe
+    // override is a fal-only slot, so its durations always read fal's.
     const fetchOptions = async (model: string, provider: 'fal' | 'replicate' | 'runware') => {
       const fetcher = provider === 'runware'
         ? ListRunwareVideoDurations

@@ -403,6 +403,71 @@ func TestResolveRunwareVideoTaskExtend(t *testing.T) {
 	}
 }
 
+func TestResolveRunwareVideoTaskKeyframes(t *testing.T) {
+	// A keyframe turn puts the pair on inputs.frameImages in order — the
+	// endpoint anchors the first entry as the opening frame and the last as
+	// the closing one — and inherits the frames' orientation like any other
+	// image turn: no width/height even with an aspect asked, while the
+	// duration still rides (a transition is not an extend).
+	schema := parseRunwareFixture(t, runwareKlingSchemaFixture)
+	task, _, _, err := resolveRunwareVideoTask(schema, VideoGenerateRequest{
+		Model: "klingai:kling-video@4.0", Prompt: "the scene melts between the two",
+		Duration: "6", AspectRatio: "16:9", Keyframes: true,
+		Images: []string{"data:image/png;base64,QUJD", "data:image/png;base64,REVG"},
+	})
+	if err != nil {
+		t.Fatalf("resolve keyframes: %v", err)
+	}
+	inputs, _ := task["inputs"].(map[string]any)
+	if inputs == nil {
+		t.Fatalf("keyframes must fill inputs, got %+v", task)
+	}
+	frames, ok := inputs["frameImages"].([]string)
+	if !ok || len(frames) != 2 || frames[0] != "data:image/png;base64,QUJD" || frames[1] != "data:image/png;base64,REVG" {
+		t.Fatalf("inputs.frameImages = %+v, want the ordered pair", inputs["frameImages"])
+	}
+	if got, ok := task["duration"].(int); !ok || got != 6 {
+		t.Fatalf("duration = %+v, want integer 6 on a keyframe turn", task["duration"])
+	}
+	if _, ok := task["width"]; ok {
+		t.Fatal("keyframes inherit the frames' orientation; no pixels may ride")
+	}
+
+	// A pinned model whose inputs declare no frameImages refuses the
+	// transition up front — the two images would degrade onto a reference or
+	// seed input and the clip would not start or end where the user's frames
+	// are. The FLUX fill fixture declares only seed/mask inputs.
+	task, _, _, err = resolveRunwareVideoTask(parseRunwareFixture(t, runwareFluxSchemaFixture), VideoGenerateRequest{
+		Model: "bfl:1@2", Prompt: "transition", Keyframes: true,
+		Images: []string{"data:image/png;base64,QUJD", "data:image/png;base64,REVG"},
+	})
+	if err == nil || task != nil {
+		t.Fatalf("a keyframe turn against a model with no frameImages must refuse, got task %+v err %v", task, err)
+	}
+	if !strings.Contains(err.Error(), "keyframe") {
+		t.Fatalf("the refusal must name the keyframe gap, got %v", err)
+	}
+
+	// The maxItems clamp still guards a ceiling: the Veo packaging declares
+	// frameImages maxItems 2, so three refs would truncate with a notice
+	// (the executor sends exactly two; this pins the resolver's own line).
+	var clampNotices []string
+	task, clampNotices, _, err = resolveRunwareVideoTask(parseRunwareFixture(t, runwareVeoSchemaFixture), VideoGenerateRequest{
+		Model: "google:3@2", Prompt: "p", Keyframes: true,
+		Images: []string{"data:image/png;base64,QUJD", "data:image/png;base64,REVG", "data:image/png;base64,R0hJ"},
+	})
+	if err != nil {
+		t.Fatalf("resolve clamped keyframes: %v", err)
+	}
+	inputs, _ = task["inputs"].(map[string]any)
+	if frames, _ := inputs["frameImages"].([]string); len(frames) != 2 {
+		t.Fatalf("frameImages = %+v, want clamped to the declared maxItems 2", inputs["frameImages"])
+	}
+	if len(clampNotices) == 0 || !strings.Contains(strings.Join(clampNotices, " "), "frame images") {
+		t.Fatalf("the clamp must say so, got %v", clampNotices)
+	}
+}
+
 func TestResolveRunwareSpeechTask(t *testing.T) {
 	schema := parseRunwareFixture(t, runwareSpeechSchemaFixture)
 	task, notices, err := resolveRunwareSpeechTask(schema, AudioGenerateRequest{

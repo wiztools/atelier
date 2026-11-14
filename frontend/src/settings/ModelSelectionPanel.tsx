@@ -1115,7 +1115,7 @@ function ModelSelectionPanel({
             <div className="field-label-row">
               {fieldLabel('video-provider', 'Video Provider', 'videoProvider')}              <InfoHint
                 label="Video provider"
-                text="Which cloud backend generate_video uses: fal.ai, Replicate, or Runware. All serve text-to-video, image-to-video, and extending an attached clip; motion control and keyframe transitions are fal.ai only (a request for those elsewhere fails with a note suggesting the switch). The video transforms follow this provider too — reframe stays fal/Replicate, since Runware's catalog carries no video-reframe model. Lip sync and audio are configured below regardless of this setting."
+                text="Which cloud backend generate_video uses: fal.ai, Replicate, or Runware. All serve text-to-video, image-to-video, and extending an attached clip; Runware also drives start→end keyframe transitions, from the Image-to-Video model below. Motion control and video-reference turns are fal.ai only, and Replicate also refuses keyframes — a refused request fails with a note suggesting the switch. The video transforms follow this provider too — reframe stays fal/Replicate, since Runware's catalog carries no video-reframe model. Lip sync and audio are configured below regardless of this setting."
               />
             </div>
             <select
@@ -1202,6 +1202,10 @@ function ModelSelectionPanel({
                 <InfoHint
                   label="Image-to-video clip lengths"
                   text={`Supported clip lengths: ${formatSupportedDurations(durationOptions.image)}`}
+                />
+                <InfoHint
+                  label="Keyframes on Runware"
+                  text="This model also drives start→end keyframe transitions — a two-image transition puts the pair on the model's frameImages input in order. There is no separate keyframe slot: the same Runware packagings (Kling 4.0, MiniMax H3, Veo 3.1) declare text-to-video, image-to-video, and the two-frame input. A pinned model that declares no frameImages refuses a transition before it runs."
                 />
               </div>
               <ModelCombobox

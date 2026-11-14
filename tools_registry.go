@@ -949,9 +949,16 @@ func resolveDefaultVideoMotionModel(config AppConfig) string {
 }
 
 // resolveDefaultVideoKeyframeModel returns the keyframe (start→end transition)
-// model used when the planner requests a two-frame transition, falling back to
-// the built-in Seedance endpoint when none is configured.
+// model used when the planner requests a two-frame transition. Fal keeps a
+// dedicated slot (the Seedance endpoint by default); on Runware the pinned
+// image-to-video model serves the transition, because the same packaging
+// declares text-to-video, image-to-video, and the two-frame inputs.frameImages
+// (Kling 4.0, MiniMax H3) — a separate keyframe slot would list the same
+// models twice.
 func resolveDefaultVideoKeyframeModel(config AppConfig) string {
+	if videoGenerationProvider(config) == "runware" {
+		return resolveDefaultVideoImageModel(config)
+	}
 	if model := strings.TrimSpace(config.Providers.Fal.VideoKeyframeModel); model != "" {
 		return model
 	}
@@ -1222,15 +1229,19 @@ func videoGenerationToolDefinition(config AppConfig, audioCapable bool) HarnessT
 			// (errReplicateVideoSourceUnsupported) rather than selecting a fal
 			// slot that would 404 at Replicate — the resolver holds the same
 			// line for requests that carry a planner-specified model. The
-			// Runware backend holds the same line with the same condition: it
-			// serves text-to-video and image-to-video (Kling's frameImages) and
-			// extends an attached clip on Veo 3.1 (inputs.video), but motion
-			// control, video references, and keyframes have no runware shape.
+			// Runware backend refuses only motion control and video-reference
+			// turns (errRunwareVideoSourceUnsupported): its models declare
+			// inputs.frameImages and two images auto-distribute to the first and
+			// last frames (Kling 4.0, the MiniMax H3 family), so a keyframe turn
+			// rides the image-to-video slot like any other frame turn, and the
+			// resolver holds the schema line — a pinned model whose inputs
+			// declare no frameImages fails before any money moves.
 			extendTurn := len(attachedVideos) > 0 && len(attachedImages) == 0 && videoRole != "reference"
-			if provider := videoGenerationProvider(tools.Config); (provider == "replicate" || provider == "runware") && (keyframes || (len(attachedVideos) > 0 && !extendTurn)) {
-				if provider == "runware" {
+			if provider := videoGenerationProvider(tools.Config); provider == "runware" {
+				if len(attachedVideos) > 0 && !extendTurn {
 					return nil, "video generation unavailable", errRunwareVideoSourceUnsupported
 				}
+			} else if provider == "replicate" && (keyframes || (len(attachedVideos) > 0 && !extendTurn)) {
 				return nil, "video generation unavailable", errReplicateVideoSourceUnsupported
 			}
 			model := strings.TrimSpace(call.Model)

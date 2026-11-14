@@ -31,10 +31,11 @@ import (
 
 // errRunwareVideoSourceUnsupported is the deterministic, planner-readable
 // refusal for the video turns the runware backend cannot serve — motion
-// control, video-reference turns, and keyframes — the
-// errReplicateVideoSourceUnsupported shape with runware's own facts (Veo 3.1
-// extends an attached clip; Kling's frameImages animates an attached image).
-var errRunwareVideoSourceUnsupported = errors.New("the Runware video backend supports text-to-video, image-to-video, and extending an attached clip; it cannot transfer a video's motion onto an image, use attached videos as generation references, or drive start→end keyframe transitions — switch Video Provider to fal.ai in Settings → Models")
+// control and video-reference turns, the errReplicateVideoSourceUnsupported
+// shape with runware's own facts (Veo 3.1 extends an attached clip; Kling's
+// frameImages animates an attached image or drives a start→end keyframe
+// transition).
+var errRunwareVideoSourceUnsupported = errors.New("the Runware video backend supports text-to-video, image-to-video (two attached images make a start→end keyframe transition), and extending an attached clip; it cannot transfer a video's motion onto an image or use attached videos as generation references — switch Video Provider to fal.ai in Settings → Models")
 
 // runwareImageRef / runwareVideoRef / runwareAudioRef normalize one source
 // reference for an inputs field: an uploaded mediaUUID rides as-is (the
@@ -116,10 +117,11 @@ func runwareSetInput(schema *ModelInputSchema, task map[string]any, key string, 
 
 // resolveRunwareVideoTask maps the canonical video request onto one
 // videoInference task. The executor has already refused the turns this
-// backend cannot serve (motion control, reference videos, keyframes), so the
-// resolver sees exactly three shapes: text-to-video, image-to-video (the
-// source frame lands on frameImages — one image auto-distributes to the
-// first frame), and an extend (the source clip on inputs.video).
+// backend cannot serve (motion control, reference videos), so the resolver
+// sees exactly four shapes: text-to-video, image-to-video (the source frame
+// lands on frameImages — one image auto-distributes to the first frame), a
+// keyframe transition (two images on frameImages, auto-distributed first and
+// last, schema-gated below), and an extend (the source clip on inputs.video).
 func resolveRunwareVideoTask(schema *ModelInputSchema, req VideoGenerateRequest) (map[string]any, []string, []string, error) {
 	task := runwareTaskBase("videoInference", req.Model)
 	var notices []string
@@ -166,10 +168,21 @@ func resolveRunwareVideoTask(schema *ModelInputSchema, req VideoGenerateRequest)
 			refs = append(refs, runwareImageRef(img))
 		}
 		nested := runwareInputsNested(schema)
+		// A keyframe transition is only honest on a model that anchors frames:
+		// without frameImages the two images would degrade onto referenceImages
+		// or image and the output would not start or end where the user's
+		// frames are. Fail before the submit — nothing has been paid yet.
+		if req.Keyframes && schema != nil && !hasKey(nested, "frameImages") {
+			return nil, nil, nil, fmt.Errorf("Runware model %q declares no start/end frame input (inputs.frameImages) and cannot drive a keyframe transition; pick a keyframe-capable model (Kling 4.0 and the MiniMax H3 family both take two) or switch Video Provider to fal.ai in Settings → Models", req.Model)
+		}
 		switch {
 		case schema != nil && hasKey(nested, "frameImages") && (len(refs) == 1 || req.Keyframes):
-			// One image auto-distributes to the first frame; the keyframe
-			// first/last split is the executor's refusal on this backend.
+			// One image auto-distributes to the first frame; two ride in order
+			// — the endpoint anchors refs[0] as the first frame and refs[1] as
+			// the last (the auto-distribution contract every frameImages
+			// packaging publishes), so the executor's openingFrame swap already
+			// oriented the pair, and plain strings need no model-specific
+			// {image, frame} tagging.
 			if schema != nil {
 				if prop := nested["frameImages"]; prop.MaxItems > 0 && len(refs) > prop.MaxItems {
 					notices = append(notices, fmt.Sprintf("Runware model %q takes at most %d frame images; used the first %d.", req.Model, prop.MaxItems, prop.MaxItems))
