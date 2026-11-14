@@ -229,38 +229,78 @@ func resolveRunwareVideoTask(schema *ModelInputSchema, req VideoGenerateRequest)
 		}
 	}
 
-	// Output shape. An image-to-video or extend inherits the source media's
-	// orientation (the fal-side rule), so explicit pixels ride only for
-	// text-to-video. A native resolution tier and explicit pixels are
-	// mutually exclusive on models that declare both; pixels win because they
-	// carry the aspect ratio, and an explicitly requested tier that lost the
-	// race says so.
-	if !extend && len(sourceImages) == 0 {
-		tierSent := false
-		if tier := strings.TrimSpace(req.Resolution); tier != "" && schema != nil {
-			if prop, ok := schema.property("resolution"); ok {
-				if _, hasPixels := schema.property("width"); !hasPixels {
+	// Output shape. An extend inherits the source clip's shape entirely —
+	// Veo's schema 400s width/height/seed/resolution beside inputs.video —
+	// and was fully resolved above, so nothing here writes to it. An
+	// image-to-video inherits the source frame's orientation too (the
+	// fal-side rule; no pixels ride beside input media), but the tier still
+	// does: the packagings publish resolution beside input media with the
+	// documented contract "automatically matches the aspect ratio from the
+	// input", so the configured tier scales the output instead of silently
+	// landing on the model's own default (Seedance 2.x defaults 720p). The
+	// restyle resolver has always sent it this way.
+	if !extend {
+		if len(sourceImages) > 0 {
+			if tier := strings.TrimSpace(req.Resolution); tier != "" {
+				if prop, ok := schema.property("resolution"); ok {
 					if canonical, allowed := enumValueFor(prop, tier); allowed {
 						task["resolution"] = canonical
-						tierSent = true
 					} else {
 						notices = append(notices, fmt.Sprintf("The selected model %q does not offer resolution %q; using its default.", req.Model, tier))
 					}
+				} else {
+					notices = append(notices, fmt.Sprintf("Runware model %q has no resolution control; the clip follows the source frame and the model's own resolution default.", req.Model))
 				}
 			}
-		}
-		if !tierSent {
-			if w, h, ok := runwareVideoDimensions(schema, req.AspectRatio); ok {
-				task["width"], task["height"] = w, h
-			} else if aspect := strings.TrimSpace(req.AspectRatio); aspect != "" && !isAutoAspectRatio(aspect) && req.AspectRatioExplicit && schema != nil {
+		} else {
+			// Text-to-video. The packagings publish the tier enum BESIDE
+			// width/height (Kling 4.0: ["720p","1080p"] next to its fixed size
+			// presets), so the old pixels-win rule — send the tier only when
+			// the model takes no pixels — dropped the configured tier on every
+			// Runware model, and the preset snap then broke its aspect tie
+			// toward the smallest same-ratio size because it scored area
+			// against the raw ratio numbers (16x9) instead of pixels. Pixels
+			// still win when an aspect is requested — they carry the shape —
+			// but the tier now steers WHICH same-shape preset wins: the aspect
+			// is rendered at the tier's long edge and the preset scored
+			// against that target, so 16:9 at 1080p lands 1920x1080 instead
+			// of 1280x720. A tier without an aspect rides the enum alone (the
+			// model's default shape at the requested tier); the two fields
+			// are never written together.
+			tierSent := false
+			tier := strings.TrimSpace(req.Resolution)
+			aspectToken := strings.TrimSpace(req.AspectRatio)
+			_, _, aspectParsed := parseAspectRatio(aspectToken)
+			aspectRequested := aspectToken != "" && !isAutoAspectRatio(aspectToken) && aspectParsed
+			if tier != "" && schema != nil {
 				if prop, ok := schema.property("resolution"); ok {
-					if canonical, allowed := enumValueFor(prop, aspect); allowed {
+					canonical, allowed := enumValueFor(prop, tier)
+					switch {
+					case !aspectRequested && allowed:
 						task["resolution"] = canonical
+						tierSent = true
+					case !allowed && aspectRequested:
+						notices = append(notices, fmt.Sprintf("The selected model %q does not offer resolution %q; generated at its closest available size.", req.Model, tier))
+					case !allowed:
+						notices = append(notices, fmt.Sprintf("The selected model %q does not offer resolution %q; using its default.", req.Model, tier))
+					}
+				} else if !aspectRequested {
+					notices = append(notices, fmt.Sprintf("Runware model %q has no resolution control; ignoring the requested tier.", req.Model))
+				}
+			}
+			if !tierSent {
+				if w, h, ok := runwareVideoDimensions(schema, req.AspectRatio, tier); ok {
+					task["width"], task["height"] = w, h
+				} else if aspect := aspectToken; aspect != "" && !isAutoAspectRatio(aspect) && req.AspectRatioExplicit && schema != nil {
+					if prop, ok := schema.property("resolution"); ok {
+						if canonical, allowed := enumValueFor(prop, aspect); allowed {
+							task["resolution"] = canonical
+						} else {
+							notices = append(notices, fmt.Sprintf("The selected model %q has no aspect-ratio control; ignoring the requested aspect ratio.", req.Model))
+						}
 					} else {
 						notices = append(notices, fmt.Sprintf("The selected model %q has no aspect-ratio control; ignoring the requested aspect ratio.", req.Model))
 					}
-				} else {
-					notices = append(notices, fmt.Sprintf("The selected model %q has no aspect-ratio control; ignoring the requested aspect ratio.", req.Model))
 				}
 			}
 		}
@@ -311,10 +351,15 @@ func runwareDeclaresInput(schema *ModelInputSchema, key string) bool {
 // runwareVideoDimensions derives an output size for text-to-video on the
 // model's own terms: a declared preset list wins — Kling and Veo publish
 // fixed width/height pairs and an off-list size is a 400 — else the aspect
-// is rendered onto the declared bounds at a 720p-class long edge, snapped to
-// the 64-px grid most Runware models require. Without a requestable aspect
-// nothing is sent and the model uses its own default.
-func runwareVideoDimensions(schema *ModelInputSchema, aspect string) (int, int, bool) {
+// is rendered onto the declared bounds at the tier's long edge, snapped to
+// the 64-px grid most Runware models require. The tier steers WHICH preset
+// wins when several share the aspect: the target the preset is scored
+// against is the aspect rendered at the tier's long edge, not the raw ratio
+// numbers, whose tiny product used to tie-break toward the smallest
+// same-ratio preset (16:9 at a configured 1080p landed 1280x720 instead of
+// 1920x1080). Without a requestable aspect nothing is sent and the model
+// uses its own default.
+func runwareVideoDimensions(schema *ModelInputSchema, aspect, tier string) (int, int, bool) {
 	aw, ah, hasAspect := 1, 1, false
 	if token := strings.TrimSpace(aspect); token != "" && !isAutoAspectRatio(token) {
 		if w, h, ok := parseAspectRatio(token); ok {
@@ -324,22 +369,45 @@ func runwareVideoDimensions(schema *ModelInputSchema, aspect string) (int, int, 
 	if !hasAspect {
 		return 0, 0, false
 	}
+	longEdge := runwareTierLongEdge(tier)
+	w, h := longEdge, longEdge*ah/aw
+	if aw < ah {
+		w, h = longEdge*aw/ah, longEdge
+	}
 	if schema != nil {
 		if prop, ok := schema.property(runwareSizePresetsProperty); ok && len(prop.Enum) > 0 {
-			if w, h, ok := runwareNearestPreset(prop.Enum, aw, ah); ok {
-				return w, h, true
-			}
+			return runwareNearestPreset(prop.Enum, w, h)
 		}
 	}
 	if !runwareDeclares(schema, "width") || !runwareDeclares(schema, "height") {
 		return 0, 0, false
 	}
-	const longEdge = 1280
-	w, h := longEdge, longEdge*ah/aw
-	if aw < ah {
-		w, h = longEdge*aw/ah, longEdge
-	}
 	return runwareSnapDimension(schema, "width", w), runwareSnapDimension(schema, "height", h), true
+}
+
+// runwareTierLongEdge renders a resolution tier as a target long edge in
+// pixels — what "1080p" means when scoring preset sizes (1920) and the long
+// edge a free-size model gets snapped toward. The canonical Settings tiers
+// land on their standard edges; an exotic planner tier ("768p", "1440p")
+// reads its number as the short edge of a 16:9 frame; anything unreadable
+// keeps the 720p-class default bare aspects have always rendered at.
+func runwareTierLongEdge(tier string) int {
+	switch strings.ToLower(strings.TrimSpace(tier)) {
+	case "480p":
+		return 854
+	case "720p":
+		return 1280
+	case "1080p":
+		return 1920
+	case "4k":
+		return 3840
+	}
+	if token := strings.ToLower(strings.TrimSpace(tier)); strings.HasSuffix(token, "p") {
+		if n, err := strconv.Atoi(strings.TrimSuffix(token, "p")); err == nil && n >= 240 && n <= 4320 {
+			return n * 16 / 9
+		}
+	}
+	return 1280
 }
 
 // resolveRunwareVideoUpscaleTask maps the canonical video-upscale request

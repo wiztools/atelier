@@ -679,7 +679,11 @@ func injectRunwareSizePresets(task json.RawMessage, presets []string) (json.RawM
 
 // runwareNearestPreset picks the preset whose aspect ratio is closest to the
 // request's (log-distance, so 2:1 and 1:2 are equally far from 1:1), breaking
-// ties toward the area closest to the requested one.
+// ties toward the area closest to the requested one. Width and height are the
+// requested PIXEL size, not a bare aspect ratio — the ratio's own numbers
+// (16x9 = 144 px²) would tie-break every same-ratio preset toward the
+// smallest, so a caller that knows only the shape renders it at its target
+// long edge first (runwareTierLongEdge).
 func runwareNearestPreset(presets []string, width, height int) (int, int, bool) {
 	want := math.Log(float64(width) / float64(height))
 	bestW, bestH := 0, 0

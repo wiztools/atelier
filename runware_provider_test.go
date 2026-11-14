@@ -43,7 +43,37 @@ const runwareKlingSchemaFixture = `{"components":{"schemas":{"RequestBody":{"typ
    "then":{"oneOf":[
      {"properties":{"width":{"const":1280},"height":{"const":720}}},
      {"properties":{"width":{"const":720},"height":{"const":1280}}},
-     {"properties":{"width":{"const":1920},"height":{"const":1080}}}
+     {"properties":{"width":{"const":1920},"height":{"const":1080}}},
+     {"properties":{"width":{"const":1080},"height":{"const":1920}}}
+   ]}}]}}}}}`
+
+// runwareSeedanceSchemaFixture trims the real bytedance-seedance-2-0 schema:
+// a four-member resolution enum spanning 480p–4k beside the same
+// width/height preset pairs (the tier enum and the pixels are published
+// together on every Runware video packaging, so the resolver can never
+// decide between them by the model's shape alone).
+const runwareSeedanceSchemaFixture = `{"components":{"schemas":{"RequestBody":{"type":"array","items":{
+  "type":"object","additionalProperties":false,
+  "properties":{
+    "positivePrompt":{"type":"string"},
+    "duration":{"type":"integer","minimum":3,"maximum":12},
+    "width":{"type":"integer"},"height":{"type":"integer"},
+    "resolution":{"type":"string","enum":["480p","720p","1080p","4k"]},
+    "deliveryMethod":{"type":"string","enum":["sync","async"],"default":"async"},
+    "includeCost":{"type":"boolean"},
+    "inputs":{"type":"object","properties":{
+      "frameImages":{"type":"array","maxItems":10,"items":{"type":"string"}},
+      "video":{"type":"string"}}}
+  },
+  "allOf":[{"if":{"anyOf":[{"required":["width"]},{"required":["height"]}]},
+   "then":{"oneOf":[
+     {"properties":{"width":{"const":864},"height":{"const":496}}},
+     {"properties":{"width":{"const":1280},"height":{"const":720}}},
+     {"properties":{"width":{"const":720},"height":{"const":1280}}},
+     {"properties":{"width":{"const":1920},"height":{"const":1080}}},
+     {"properties":{"width":{"const":1080},"height":{"const":1920}}},
+     {"properties":{"width":{"const":3840},"height":{"const":2160}}},
+     {"properties":{"width":{"const":2160},"height":{"const":3840}}}
    ]}}]}}}}}`
 
 // runwareVeoSchemaFixture trims the real google-veo-3-1 schema: the extend
@@ -465,6 +495,211 @@ func TestResolveRunwareVideoTaskKeyframes(t *testing.T) {
 	}
 	if len(clampNotices) == 0 || !strings.Contains(strings.Join(clampNotices, " "), "frame images") {
 		t.Fatalf("the clamp must say so, got %v", clampNotices)
+	}
+}
+
+func TestResolveRunwareVideoTaskResolutionTier(t *testing.T) {
+	schema := parseRunwareFixture(t, runwareKlingSchemaFixture)
+
+	// The configured tier steers the preset snap beside an aspect: 16:9 at
+	// 1080p lands on the 1920x1080 preset — every Runware packaging publishes
+	// the tier enum BESIDE width/height, so the old pixels-win drop silenced
+	// the tier and the aspect tie then broke toward the smallest same-ratio
+	// size (the preset was scored against the ratio's own numbers, 16x9).
+	task, notices, _, err := resolveRunwareVideoTask(schema, VideoGenerateRequest{
+		Model: "klingai:kling-video@4.0", Prompt: "a lighthouse in a storm",
+		AspectRatio: "16:9", Resolution: "1080p",
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if task["width"] != 1920 || task["height"] != 1080 {
+		t.Fatalf("size = %vx%v, want the 1080p preset 1920x1080 for 16:9", task["width"], task["height"])
+	}
+	if _, ok := task["resolution"]; ok {
+		t.Fatal("pixels carry the shape; the tier enum must not ride beside them")
+	}
+	if len(notices) != 0 {
+		t.Fatalf("an offered tier beside an aspect should be notice-free, got %v", notices)
+	}
+
+	// The lower tier picks the smaller preset on the same shape, and a
+	// portrait aspect renders its own pair.
+	task, _, _, err = resolveRunwareVideoTask(schema, VideoGenerateRequest{
+		Model: "klingai:kling-video@4.0", Prompt: "p",
+		AspectRatio: "16:9", Resolution: "720p",
+	})
+	if err != nil {
+		t.Fatalf("resolve 720p: %v", err)
+	}
+	if task["width"] != 1280 || task["height"] != 720 {
+		t.Fatalf("size = %vx%v, want 1280x720 at the 720p tier", task["width"], task["height"])
+	}
+	task, _, _, err = resolveRunwareVideoTask(schema, VideoGenerateRequest{
+		Model: "klingai:kling-video@4.0", Prompt: "p",
+		AspectRatio: "9:16", Resolution: "1080p",
+	})
+	if err != nil {
+		t.Fatalf("resolve portrait: %v", err)
+	}
+	if task["width"] != 1080 || task["height"] != 1920 {
+		t.Fatalf("size = %vx%v, want the portrait 1080x1920 preset", task["width"], task["height"])
+	}
+
+	// A bare aspect without a tier keeps the 720p-class default — the
+	// let-the-model-decide behavior before the setting existed is unchanged.
+	task, _, _, err = resolveRunwareVideoTask(schema, VideoGenerateRequest{
+		Model: "klingai:kling-video@4.0", Prompt: "p", AspectRatio: "16:9",
+	})
+	if err != nil {
+		t.Fatalf("resolve bare aspect: %v", err)
+	}
+	if task["width"] != 1280 || task["height"] != 720 {
+		t.Fatalf("size = %vx%v, want the bare-aspect default 1280x720", task["width"], task["height"])
+	}
+
+	// An exotic planner tier outside the canonical Settings set still steers
+	// — "1440p" reads as a 2560x1440 target, and Kling's closest available
+	// 16:9 size is its 1080p preset.
+	task, _, _, err = resolveRunwareVideoTask(schema, VideoGenerateRequest{
+		Model: "klingai:kling-video@4.0", Prompt: "p",
+		AspectRatio: "16:9", Resolution: "1440p",
+	})
+	if err != nil {
+		t.Fatalf("resolve exotic tier: %v", err)
+	}
+	if task["width"] != 1920 || task["height"] != 1080 {
+		t.Fatalf("size = %vx%v, want the closest 16:9 preset to 1440p", task["width"], task["height"])
+	}
+
+	// A tier the enum lacks, beside an aspect: the snap lands on the closest
+	// available size and the mismatch says so.
+	task, notices, _, err = resolveRunwareVideoTask(schema, VideoGenerateRequest{
+		Model: "klingai:kling-video@4.0", Prompt: "p",
+		AspectRatio: "16:9", Resolution: "4k",
+	})
+	if err != nil {
+		t.Fatalf("resolve 4k on Kling: %v", err)
+	}
+	if task["width"] != 1920 || task["height"] != 1080 {
+		t.Fatalf("size = %vx%v, want the model's largest 16:9 preset", task["width"], task["height"])
+	}
+	if len(notices) != 1 || !strings.Contains(strings.Join(notices, " "), "4k") {
+		t.Fatalf("the unoffered tier must say so, got %v", notices)
+	}
+
+	// A tier without an aspect rides the enum alone — the shape is the
+	// model's own default — and an unoffered one says so and sends nothing.
+	task, notices, _, err = resolveRunwareVideoTask(schema, VideoGenerateRequest{
+		Model: "klingai:kling-video@4.0", Prompt: "p", Resolution: "1080p",
+	})
+	if err != nil {
+		t.Fatalf("resolve tier alone: %v", err)
+	}
+	if task["resolution"] != "1080p" {
+		t.Fatalf("resolution = %+v, want the enum tier", task["resolution"])
+	}
+	if _, ok := task["width"]; ok {
+		t.Fatal("a tier without an aspect must not invent pixels")
+	}
+	task, notices, _, err = resolveRunwareVideoTask(schema, VideoGenerateRequest{
+		Model: "klingai:kling-video@4.0", Prompt: "p", Resolution: "8k",
+	})
+	if err != nil {
+		t.Fatalf("resolve unknown tier: %v", err)
+	}
+	if _, ok := task["resolution"]; ok {
+		t.Fatal("an unoffered tier must never ride")
+	}
+	if len(notices) != 1 {
+		t.Fatalf("the unknown tier must say so, got %v", notices)
+	}
+
+	// Seedance publishes the full 480p–4k ladder beside its presets: 4k at
+	// 16:9 lands on the 3840x2160 preset, 1080p portrait on 1080x1920.
+	seedance := parseRunwareFixture(t, runwareSeedanceSchemaFixture)
+	task, _, _, err = resolveRunwareVideoTask(seedance, VideoGenerateRequest{
+		Model: "bytedance:seedance@2.0", Prompt: "p",
+		AspectRatio: "16:9", Resolution: "4k",
+	})
+	if err != nil {
+		t.Fatalf("resolve seedance 4k: %v", err)
+	}
+	if task["width"] != 3840 || task["height"] != 2160 {
+		t.Fatalf("size = %vx%v, want the 4k preset 3840x2160", task["width"], task["height"])
+	}
+	task, _, _, err = resolveRunwareVideoTask(seedance, VideoGenerateRequest{
+		Model: "bytedance:seedance@2.0", Prompt: "p",
+		AspectRatio: "9:16", Resolution: "1080p",
+	})
+	if err != nil {
+		t.Fatalf("resolve seedance portrait: %v", err)
+	}
+	if task["width"] != 1080 || task["height"] != 1920 {
+		t.Fatalf("size = %vx%v, want the portrait 1080p preset", task["width"], task["height"])
+	}
+}
+
+func TestResolveRunwareVideoTaskTierImageToVideo(t *testing.T) {
+	schema := parseRunwareFixture(t, runwareKlingSchemaFixture)
+
+	// An image turn keeps inheriting the frame's orientation — no pixels —
+	// but the tier now rides resolution: the packagings publish it beside
+	// input media with the documented contract "automatically matches the
+	// aspect ratio from the input", so the configured 1080p scales the clip
+	// instead of silently landing on the model's default (Seedance 2.x
+	// defaults 720p).
+	task, notices, _, err := resolveRunwareVideoTask(schema, VideoGenerateRequest{
+		Model: "klingai:kling-video@4.0", Prompt: "animate",
+		AspectRatio: "16:9", Resolution: "1080p",
+		Images: []string{"data:image/png;base64,QUJD"},
+	})
+	if err != nil {
+		t.Fatalf("resolve i2v: %v", err)
+	}
+	if task["resolution"] != "1080p" {
+		t.Fatalf("resolution = %+v, want the tier on an image turn", task["resolution"])
+	}
+	if _, ok := task["width"]; ok {
+		t.Fatal("i2v inherits the frame's orientation; no pixels may ride")
+	}
+	inputs, _ := task["inputs"].(map[string]any)
+	if inputs == nil || len(inputs["frameImages"].([]string)) != 1 {
+		t.Fatalf("i2v must still fill inputs.frameImages, got %+v", inputs)
+	}
+	if len(notices) != 0 {
+		t.Fatalf("an offered tier should be notice-free, got %v", notices)
+	}
+
+	// A tier the model lacks says so and rides the model default — never a
+	// made-up enum value.
+	task, notices, _, err = resolveRunwareVideoTask(schema, VideoGenerateRequest{
+		Model: "klingai:kling-video@4.0", Prompt: "animate", Resolution: "4k",
+		Images: []string{"data:image/png;base64,QUJD"},
+	})
+	if err != nil {
+		t.Fatalf("resolve i2v 4k: %v", err)
+	}
+	if _, ok := task["resolution"]; ok {
+		t.Fatal("an unoffered tier must never ride on an image turn")
+	}
+	if len(notices) != 1 || !strings.Contains(strings.Join(notices, " "), "4k") {
+		t.Fatalf("the unoffered tier must say so, got %v", notices)
+	}
+
+	// A model without the control says so too.
+	task, notices, _, err = resolveRunwareVideoTask(parseRunwareFixture(t, runwareVeoSchemaFixture), VideoGenerateRequest{
+		Model: "google:3@2", Prompt: "animate", Resolution: "1080p",
+		Images: []string{"data:image/png;base64,QUJD"},
+	})
+	if err != nil {
+		t.Fatalf("resolve i2v without the control: %v", err)
+	}
+	if _, ok := task["resolution"]; ok {
+		t.Fatal("no resolution control on the schema; the tier must never ride")
+	}
+	if len(notices) != 1 || !strings.Contains(strings.Join(notices, " "), "no resolution control") {
+		t.Fatalf("the missing control must say so, got %v", notices)
 	}
 }
 
