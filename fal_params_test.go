@@ -2027,11 +2027,12 @@ func TestResolveVideoBodyExtendDurationSentNoSemanticsNotice(t *testing.T) {
 	}
 }
 
-// TestResolveVideoBodyExtendDurationOutOfEnumDropped verifies an out-of-enum
-// duration on an extend is dropped with only the duration-dropped notice (no
-// extension-length notice piles on). Uses an enum-constrained duration that
-// rejects "5".
-func TestResolveVideoBodyExtendDurationOutOfEnumDropped(t *testing.T) {
+// TestResolveVideoBodyExtendDurationSnapsToEnumNearest verifies an
+// out-of-enum duration on an extend binds to the nearest offered length under
+// the enum-snap notice — a drop would let the model default land farther from
+// the request than the nearest member is (videoDurationClamped). The snap is
+// the ONLY notice: no extension-length notice piles on.
+func TestResolveVideoBodyExtendDurationSnapsToEnumNearest(t *testing.T) {
 	schema := &ModelInputSchema{
 		Properties: map[string]SchemaProperty{
 			"prompt":    {Name: "prompt", Kind: schemaScalar},
@@ -2048,14 +2049,14 @@ func TestResolveVideoBodyExtendDurationOutOfEnumDropped(t *testing.T) {
 			Duration: "5", // not in the enum
 		},
 		builtinFalOverrides())
-	if _, present := body["duration"]; present {
-		t.Fatalf("duration must be dropped (out of enum), got %v", body["duration"])
+	if body["duration"] != "6" {
+		t.Fatalf("duration must snap to the nearest member, got %v", body["duration"])
 	}
 	if len(notices) != 1 {
-		t.Fatalf("expected only the duration-dropped notice, got %v", notices)
+		t.Fatalf("expected only the enum-snap notice, got %v", notices)
 	}
-	if !strings.Contains(notices[0], "does not accept duration") {
-		t.Fatalf("notice = %q, want the duration-dropped notice", notices[0])
+	if !strings.Contains(notices[0], "nearest, 6") {
+		t.Fatalf("notice = %q, want the enum-snap notice", notices[0])
 	}
 }
 

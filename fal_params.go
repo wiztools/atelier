@@ -1353,17 +1353,24 @@ func resolveVideoBody(schema *ModelInputSchema, req VideoGenerateRequest, ov Ove
 
 	if duration := strings.TrimSpace(req.Duration); duration != "" {
 		if path, prop, ok := findNative(schema, ov, "video", req.Model, "duration"); ok {
-			// Guard against unsendable durations before sending — "auto" is
-			// Seedance-only, Kling accepts just ["5","10"], and an enum-less
-			// numeric field (minimax/h3's integer 5–15) has no "auto" member at
-			// all. Passing any of those through would 422 at fal. Drop "auto"
-			// with a notice that names the model's own default so the request
-			// still runs; anything else unsendable drops the same way it always
-			// did.
-			if !videoDurationSendable(prop, duration) {
+			// Bind, don't drop: an in-range duration rides, an over-ask or
+			// under-ask clamps to the violated bound (or snaps to the nearest
+			// enum member) under a notice naming the length the clip actually
+			// gets — a drop lets the model default land farther from the
+			// request than the bound was (Kling's [5,10] defaulting to 5
+			// renders a 20s ask at 5s when 10s was one honest step away).
+			// Only an unusable value — "auto" on an enum-less field,
+			// unreadable text — still drops, with the notice that names the
+			// model default (conv_2c4fa3a2fb515a792869ca1c's enum-less
+			// minimax/h3 integer).
+			value, clampNotice, sendable := videoDurationClamped(req.Model, prop, duration)
+			if !sendable {
 				notices = append(notices, videoDurationDroppedNotice(req.Model, duration, prop))
 			} else {
-				setBodyPath(schema, body, path, coerceVideoValue(prop, duration))
+				if clampNotice != "" {
+					notices = append(notices, clampNotice)
+				}
+				setBodyPath(schema, body, path, value)
 			}
 		} else {
 			notices = append(notices, fmt.Sprintf(
@@ -1899,6 +1906,64 @@ func videoDurationSendable(prop SchemaProperty, duration string) bool {
 		return true
 	}
 	return true
+}
+
+// videoDurationClamped binds a requested duration onto the model's declared
+// control instead of dropping it: a value inside the enum/bounds rides
+// unchanged; a numeric over-ask or under-ask clamps to the violated bound
+// and a fixed enum snaps to the nearest member, ties toward the smaller (the
+// conservative length — the upscale-factor stance). The drop this replaces
+// was the worse outcome, not the safe one: the model default can sit farther
+// from the request than the bound does (Kling's enum [5,10] defaults to 5,
+// so a 20s ask dropped to 5s when 10s was one honest step away), and the
+// clamp's notice names the length the clip actually gets instead of
+// "letting the model choose". Not-ok means the value is unusable rather than
+// out of range — "auto" on an enum-less field, unreadable text — and the
+// caller drops it with the existing notice (videoDurationDroppedNotice).
+func videoDurationClamped(model string, prop SchemaProperty, duration string) (any, string, bool) {
+	if videoDurationSendable(prop, duration) {
+		return coerceVideoValue(prop, duration), "", true
+	}
+	seconds, err := strconv.ParseFloat(strings.TrimSpace(duration), 64)
+	if err != nil {
+		return nil, "", false
+	}
+	if len(prop.Enum) > 0 {
+		// Members parse leniently — Veo's "8s" reads as 8 — so a bare "8"
+		// snaps onto the schema's own spelling, which the strict enum leg
+		// above just rejected.
+		best, bestMember, bestDist, found := 0.0, "", math.Inf(1), false
+		for _, candidate := range prop.Enum {
+			v, err := strconv.ParseFloat(strings.TrimRight(strings.TrimSpace(candidate), "sS"), 64)
+			if err != nil {
+				continue
+			}
+			if dist := math.Abs(v - seconds); dist < bestDist-1e-9 || (dist <= bestDist+1e-9 && v < best) {
+				best, bestMember, bestDist, found = v, candidate, dist, true
+			}
+		}
+		if !found {
+			return nil, "", false
+		}
+		notice := ""
+		if best != seconds {
+			notice = fmt.Sprintf("The selected model %q does not offer a %gs duration; using its nearest, %gs.", model, seconds, best)
+		}
+		return coerceVideoValue(prop, bestMember), notice, true
+	}
+	if prop.Type == "integer" || prop.Type == "number" {
+		clamped := seconds
+		notice := ""
+		if prop.Minimum != nil && clamped < *prop.Minimum {
+			clamped = *prop.Minimum
+			notice = fmt.Sprintf("The selected model %q renders at least %gs clips; using %gs instead of the requested %gs.", model, clamped, clamped, seconds)
+		} else if prop.Maximum != nil && clamped > *prop.Maximum {
+			clamped = *prop.Maximum
+			notice = fmt.Sprintf("The selected model %q renders at most %gs clips; using %gs instead of the requested %gs.", model, clamped, clamped, seconds)
+		}
+		return coerceVideoValue(prop, clamped), notice, true
+	}
+	return nil, "", false
 }
 
 // videoDurationDroppedNotice explains a dropped duration. "auto" is a

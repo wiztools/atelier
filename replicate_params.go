@@ -276,17 +276,20 @@ func resolveReplicateVideoInput(schema *ModelInputSchema, req VideoGenerateReque
 		body["prompt"] = prompt
 	}
 	if duration := strings.TrimSpace(req.Duration); duration != "" {
-		// Enum guard first (some models list fixed durations), then the shared
-		// type-driven coercion — Replicate durations are usually free numbers,
-		// so coerceVideoValue turns "5" into 5 against a number-typed field. The
-		// guard's type leg resolves "auto" on those numeric fields: there is no
-		// auto member to send, so the field is dropped and the model's own
-		// default applies (videoDurationSendable, the fal-side fix).
+		// Bind, don't drop: an in-range duration rides, an over-ask or
+		// under-ask clamps to the violated bound (or snaps to the nearest
+		// enum member) under a notice, and only an unusable value ("auto" on
+		// an enum-less numeric field) drops with the notice that names the
+		// model default (videoDurationClamped, the fal-side fix).
 		if path, prop, ok := findNative(schema, ov, "replicate-video", req.Model, "duration"); ok {
-			if !videoDurationSendable(prop, duration) {
+			value, clampNotice, sendable := videoDurationClamped(req.Model, prop, duration)
+			if !sendable {
 				notices = append(notices, videoDurationDroppedNotice(req.Model, duration, prop))
 			} else {
-				setBodyPath(schema, body, path, coerceVideoValue(prop, duration))
+				if clampNotice != "" {
+					notices = append(notices, clampNotice)
+				}
+				setBodyPath(schema, body, path, value)
 			}
 		} else {
 			notices = append(notices, fmt.Sprintf(

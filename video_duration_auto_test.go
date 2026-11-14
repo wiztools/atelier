@@ -250,6 +250,144 @@ func TestNumericEnumSurvivesParsing(t *testing.T) {
 	}
 }
 
+// === Duration clamp: bind, don't drop ===
+//
+// An out-of-range duration used to drop entirely, letting the model default
+// land wherever it liked — for Kling's enum [5,10] (default 5) a 20s ask
+// rendered at 5s when 10s was one honest step away. The clamp binds the
+// request to the violated bound (numeric) or the nearest enum member (fixed
+// enum, ties toward the smaller) under a notice naming the length the clip
+// actually gets; only an unusable value ("auto" on an enum-less field,
+// unreadable text) still drops.
+
+// TestResolveVideoBodyDurationClampsToEnumNearest pins the enum snap: Kling's
+// [5,10] enum turns a 20s ask into a 10s clip and a 3s ask into a 5s one,
+// both under a notice; an exact member stays silent.
+func TestResolveVideoBodyDurationClampsToEnumNearest(t *testing.T) {
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "kling-image-to-video"),
+		VideoGenerateRequest{
+			Model:    "fal-ai/kling-video/v2/master/image-to-video",
+			Prompt:   "a drone shot over a forest",
+			Duration: "20",
+		},
+		builtinFalOverrides())
+	if body["duration"] != "10" {
+		t.Fatalf("duration = %v, want the nearest enum member \"10\"", body["duration"])
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "nearest, 10") {
+		t.Fatalf("the enum snap must say so, got %v", notices)
+	}
+
+	body, notices, _, _ = resolveVideoBody(loadSchema(t, "kling-image-to-video"),
+		VideoGenerateRequest{
+			Model:    "fal-ai/kling-video/v2/master/image-to-video",
+			Prompt:   "a drone shot over a forest",
+			Duration: "3",
+		},
+		builtinFalOverrides())
+	if body["duration"] != "5" {
+		t.Fatalf("duration = %v, want the nearest enum member \"5\"", body["duration"])
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "nearest, 5") {
+		t.Fatalf("the enum snap must say so, got %v", notices)
+	}
+}
+
+// TestResolveVideoBodyDurationClampsIntegerEnum pins the clamp on an
+// integer-typed enum (happy-horse's [3..15]): an under-ask rides the floor,
+// an over-ask the ceiling, both as JSON numbers and both under a notice.
+func TestResolveVideoBodyDurationClampsIntegerEnum(t *testing.T) {
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "happy-horse-image-to-video"),
+		VideoGenerateRequest{
+			Model:    "alibaba/happy-horse/image-to-video",
+			Prompt:   "a parent and child at dawn",
+			Duration: "1",
+			Images:   []string{"data:image/png;base64,AAAA"},
+		},
+		builtinFalOverrides())
+	if got, ok := body["duration"].(int); !ok || got != 3 {
+		t.Fatalf("duration = %+v, want the floor 3 as a JSON number", body["duration"])
+	}
+	// An integer ENUM snaps by member distance, so the notice reads "nearest",
+	// not the bounds clamp's "at least".
+	if len(notices) != 1 || !strings.Contains(notices[0], "nearest, 3") {
+		t.Fatalf("the enum snap must say so, got %v", notices)
+	}
+
+	body, notices, _, _ = resolveVideoBody(loadSchema(t, "happy-horse-image-to-video"),
+		VideoGenerateRequest{
+			Model:    "alibaba/happy-horse/image-to-video",
+			Prompt:   "a parent and child at dawn",
+			Duration: "20",
+			Images:   []string{"data:image/png;base64,AAAA"},
+		},
+		builtinFalOverrides())
+	if got, ok := body["duration"].(int); !ok || got != 15 {
+		t.Fatalf("duration = %+v, want the ceiling 15 as a JSON number", body["duration"])
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "nearest, 15") {
+		t.Fatalf("the enum snap must say so, got %v", notices)
+	}
+}
+
+// TestResolveVideoBodyDurationRidesOnH3MaxReference is the conv_a38c8da150fcc0a1a899c115
+// pin: minimax/h3-max/reference-to-video declares duration as a number
+// (0.92–15, default 5), so a planner-passed "3" reaches fal as 3 and renders
+// the requested 3s — the 10s that conversation saw was the planner dropping
+// the length entirely, not this resolver. A 30s over-ask clamps to the 15s
+// ceiling instead of falling to the default.
+func TestResolveVideoBodyDurationRidesOnH3MaxReference(t *testing.T) {
+	body, notices, _, _ := resolveVideoBody(loadSchema(t, "minimax-h3-max-reference-to-video"),
+		VideoGenerateRequest{
+			Model:    "minimax/h3-max/reference-to-video",
+			Prompt:   "pixar 3d style octopus",
+			Duration: "3",
+			Images:   []string{"data:image/png;base64,AAAA", "data:image/png;base64,BBBB"},
+		},
+		builtinFalOverrides())
+	got, ok := body["duration"].(float64)
+	if !ok || got != 3 {
+		t.Fatalf("duration = %+v, want 3 as a JSON number riding the 0.92–15 bounds", body["duration"])
+	}
+	if len(notices) != 0 {
+		t.Fatalf("an in-range duration must ride silently, got %v", notices)
+	}
+
+	body, notices, _, _ = resolveVideoBody(loadSchema(t, "minimax-h3-max-reference-to-video"),
+		VideoGenerateRequest{
+			Model:    "minimax/h3-max/reference-to-video",
+			Prompt:   "pixar 3d style octopus",
+			Duration: "30",
+			Images:   []string{"data:image/png;base64,AAAA", "data:image/png;base64,BBBB"},
+		},
+		builtinFalOverrides())
+	if got, ok := body["duration"].(float64); !ok || got != 15 {
+		t.Fatalf("duration = %+v, want the ceiling 15", body["duration"])
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "at most 15") {
+		t.Fatalf("the clamp must say so, got %v", notices)
+	}
+}
+
+// TestVideoDurationClampedLenientEnumSpelling pins the enum-snap spelling
+// strip standalone: Veo-style string members ("8s") read as seconds, so a
+// bare "8" snaps onto the schema's own spelling with no notice, and a value
+// no member can express still refuses.
+func TestVideoDurationClampedLenientEnumSpelling(t *testing.T) {
+	prop := SchemaProperty{Type: "string", Enum: []string{"5s", "6s", "8s"}}
+	value, notice, ok := videoDurationClamped("veo", prop, "8")
+	if !ok || value != "8s" || notice != "" {
+		t.Fatalf("videoDurationClamped(8) = (%v, %q, %v), want (\"8s\", \"\", true)", value, notice, ok)
+	}
+	value, notice, ok = videoDurationClamped("veo", prop, "7")
+	if !ok || value != "6s" || notice == "" {
+		t.Fatalf("videoDurationClamped(7) = (%v, %q, %v), want (\"6s\", notice, true)", value, notice, ok)
+	}
+	if _, _, ok = videoDurationClamped("veo", prop, "auto"); ok {
+		t.Fatal("\"auto\" must refuse against a seconds-suffixed enum")
+	}
+}
+
 // === Picker options for enum-less numeric durations ===
 //
 // minimax/h3's duration is a bare integer (5–15, no enum), so the picker

@@ -381,18 +381,20 @@ func TestResolveRunwareVideoTaskTextToVideo(t *testing.T) {
 		t.Fatalf("a plain t2v on a declared shape should be notice-free, got %v", notices)
 	}
 
-	// An out-of-range duration drops with a notice, never rides.
+	// An out-of-range duration clamps to the declared bound under a notice —
+	// the model default it used to fall to can sit farther from the request
+	// than the bound does.
 	task, notices, _, err = resolveRunwareVideoTask(schema, VideoGenerateRequest{
 		Model: "klingai:kling-video@4.0", Prompt: "p", Duration: "60",
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if _, ok := task["duration"]; ok {
-		t.Fatal("a 60s duration must be dropped against the 30s ceiling")
+	if got, ok := task["duration"].(int); !ok || got != 30 {
+		t.Fatalf("duration = %+v, want the ceiling 30 (an integer schema takes a JSON number)", task["duration"])
 	}
-	if len(notices) == 0 {
-		t.Fatal("the dropped duration must say so")
+	if len(notices) != 1 || !strings.Contains(strings.Join(notices, " "), "at most 30") {
+		t.Fatalf("the clamp must say so, got %v", notices)
 	}
 
 	// Image-to-video lands the frame on inputs.frameImages and inherits the

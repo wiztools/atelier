@@ -213,15 +213,19 @@ func resolveRunwareVideoTask(schema *ModelInputSchema, req VideoGenerateRequest)
 	if !extend {
 		if duration := strings.TrimSpace(req.Duration); duration != "" && duration != "auto" {
 			if prop, ok := schema.property("duration"); ok {
-				if !videoDurationSendable(prop, duration) {
+				// Bind, don't drop: an in-range duration rides, an over-ask or
+				// under-ask clamps to the violated bound (or snaps to the
+				// nearest enum member) under a notice naming the length the
+				// clip actually gets; only an unreadable value drops
+				// (videoDurationClamped, the fal-side fix).
+				value, clampNotice, sendable := videoDurationClamped(req.Model, prop, duration)
+				if !sendable {
 					notices = append(notices, videoDurationDroppedNotice(req.Model, duration, prop))
 				} else {
-					seconds, err := strconv.ParseFloat(duration, 64)
-					if err != nil {
-						notices = append(notices, fmt.Sprintf("The requested duration %q could not be read as seconds and was ignored.", duration))
-					} else {
-						task["duration"] = runwareNumberFor(prop, seconds)
+					if clampNotice != "" {
+						notices = append(notices, clampNotice)
 					}
+					task["duration"] = value
 				}
 			} else {
 				notices = append(notices, fmt.Sprintf("The selected model %q has no duration control; ignoring the requested duration.", req.Model))
